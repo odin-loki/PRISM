@@ -1,0 +1,746 @@
+// PRISM operational model of <forward_list> (docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <forward_list>` reaches this file instead of libstdc++'s.
+// libstdc++'s node hooks (_Fwd_list_node_base::_M_transfer_after /
+// _M_reverse_after) are inline, but the rest of the container is the same
+// shape as <list>: one heap node per element, easy for the encoder to inline.
+//
+//  * singly linked nodes from std::allocator (operator new/delete, PIR
+//    models). before_begin() is the sentinel stored in the container;
+//    begin() is its successor; end() is a null iterator. insert_after never
+//    invalidates iterators, pointers, or references to existing elements.
+//    erase_after and pop_front (erase_after of the sentinel) deallocate the
+//    removed node, so a pointer, reference, or iterator to that element
+//    points into a freed object and using it is MEM-UAF, as it is with
+//    libstdc++. clear, the destructor, remove / remove_if / unique, a
+//    shrinking resize, and an assign that drops a tail do the same;
+//  * remove / remove_if / unique splice removed nodes to the front of a
+//    side list and destroy that list at the end, so the removed elements
+//    are destroyed in reverse order of removal, as libstdc++ 13/14 does.
+//    That side list is not std::forward_list::splice_after;
+//  * max_size() from the size of libstdc++'s _Fwd_list_node (one pointer
+//    plus __aligned_buffer). The model node is larger: it records its
+//    container, the way the list model does, so a foreign iterator is a
+//    failed precondition rather than a silent relink;
+//  * sort is libstdc++'s iterative mergesort over the next pointers, so
+//    equivalent elements keep their order. reverse relinks. Neither
+//    constructs elements. A throwing comparator is libstdc++'s basic
+//    guarantee (the chain may be mid-merge); this model does not invent a
+//    rollback;
+//  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
+//    does not mention size() or nullptr): !this->empty() on front and
+//    pop_front, a dereferenceable iterator on * / ->, a non-end iterator
+//    on ++, an iterator of this list on insert_after / erase_after, and a
+//    dereferenceable successor on erase_after of one element.
+//
+// splice_after is not declared. Every overload takes another forward_list
+// and moves nodes into this one; those nodes would later be freed with this
+// list's allocator. That aliases ownership across allocators, and allocators
+// other than std::allocator<T> are not modelled. merge is omitted for the
+// same reason. They are not stubbed. A unit that names either fails to
+// compile against this header and the pir stage lowers it again with
+// libstdc++ (extra.cxx_models says so). std::pmr::forward_list is declared
+// and the class static_asserts on polymorphic_allocator, same as pmr::list.
+#ifndef _PRISM_MODEL_FORWARD_LIST
+#define _PRISM_MODEL_FORWARD_LIST 1
+#define _GLIBCXX_FORWARD_LIST 1  // libstdc++'s <forward_list> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/stl_algobase.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <bits/stl_iterator_base_funcs.h>
+#include <bits/stl_iterator.h>
+#include <bits/stl_function.h>
+#include <bits/functexcept.h>
+#include <bits/range_access.h>
+#include <bits/stl_algo.h>
+#include <ext/aligned_buffer.h>
+#include <initializer_list>
+#include <type_traits>
+#include <compare>
+#include <memory>
+#include <new>
+#include <utility>
+#include <bits/memory_resource.h>
+#include <debug/assertions.h>
+
+#define __cpp_lib_list_remove_return_type 201806L
+#define __cpp_lib_erase_if 202002L
+#define __cpp_lib_incomplete_container_elements 201505L
+#define __cpp_lib_nonmember_container_access 201411L
+#define __cpp_lib_allocator_traits_is_always_equal 201411L
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+_GLIBCXX_BEGIN_NAMESPACE_CONTAINER
+
+// One pointer, then the value: libstdc++'s _Fwd_list_node<T>.
+// max_size() is SIZE_MAX / sizeof(this), not sizeof(the model node).
+struct _Prism_fwd_lib_base {
+    void* _M_next;
+};
+template <typename _Tp>
+struct _Prism_fwd_lib_node : _Prism_fwd_lib_base {
+    __gnu_cxx::__aligned_buffer<_Tp> _M_storage;
+};
+
+// Model node. _M_owner is the sentinel of the list that holds it (the
+// sentinel owns itself, so it is not dereferenceable). One extra pointer
+// versus libstdc++; max_size() does not use this layout.
+struct _Prism_fwd_link {
+    _Prism_fwd_link* _M_next = nullptr;
+    const _Prism_fwd_link* _M_owner = nullptr;
+
+    bool _M_dereferenceable() const noexcept { return _M_owner != this; }
+};
+
+struct _Prism_fwd_head : _Prism_fwd_link {
+    _Prism_fwd_head() noexcept { _M_owner = this; }
+};
+
+template <typename _Tp>
+struct _Prism_fwd_node : _Prism_fwd_link {
+    __gnu_cxx::__aligned_buffer<_Tp> _M_storage;
+    _Tp* _M_valptr() noexcept { return _M_storage._M_ptr(); }
+    const _Tp* _M_valptr() const noexcept { return _M_storage._M_ptr(); }
+};
+
+template <typename _Tp>
+void _Prism_fwd_drop(_Prism_fwd_link* __b) {
+    using _Node = _Prism_fwd_node<_Tp>;
+    _Node* __n = static_cast<_Node*>(__b);
+    std::destroy_at(__n->_M_valptr());
+    std::destroy_at(__n);
+    allocator<_Node> __na;
+    allocator_traits<allocator<_Node>>::deallocate(__na, __n, 1);
+}
+
+// The sentinel lives in the base so a throwing constructor destroys the
+// nodes already linked (the class destructor does not run). clear() empties
+// the chain first, so the base destructor then frees nothing.
+template <typename _Tp>
+struct _Prism_fwd_base {
+    _Prism_fwd_head _M_head;
+
+    _Prism_fwd_base() = default;
+    _Prism_fwd_base(const _Prism_fwd_base&) = delete;
+    _Prism_fwd_base& operator=(const _Prism_fwd_base&) = delete;
+    _Prism_fwd_base(_Prism_fwd_base&& __x) noexcept {
+        _M_head._M_next = __x._M_head._M_next;
+        __x._M_head._M_next = nullptr;
+        _M_adopt();
+    }
+    _Prism_fwd_base& operator=(_Prism_fwd_base&& __x) noexcept {
+        // libstdc++ forward_list self-move-assigns to empty (it clears, then
+        // steals). list's self-move is a no-op; this container's is not.
+        _M_clear();
+        _M_head._M_next = __x._M_head._M_next;
+        __x._M_head._M_next = nullptr;
+        _M_adopt();
+        return *this;
+    }
+    ~_Prism_fwd_base() { _M_clear(); }
+
+    void _M_adopt() noexcept {
+        for (_Prism_fwd_link* __p = _M_head._M_next; __p; __p = __p->_M_next) __p->_M_owner = &_M_head;
+    }
+    void _M_clear() noexcept {
+        while (_M_head._M_next) {
+            _Prism_fwd_link* __n = _M_head._M_next;
+            _M_head._M_next = __n->_M_next;
+            _Prism_fwd_drop<_Tp>(__n);
+        }
+    }
+};
+
+template <typename _Tp>
+struct _Prism_fwd_const_iterator;
+
+template <typename _Tp>
+struct _Prism_fwd_iterator {
+    using _Self = _Prism_fwd_iterator<_Tp>;
+    using _Node = _Prism_fwd_node<_Tp>;
+    using difference_type = ptrdiff_t;
+    using iterator_category = forward_iterator_tag;
+    using value_type = _Tp;
+    using pointer = _Tp*;
+    using reference = _Tp&;
+
+    _Prism_fwd_link* _M_node = nullptr;
+
+    _Prism_fwd_iterator() noexcept = default;
+    explicit _Prism_fwd_iterator(_Prism_fwd_link* __x) noexcept : _M_node(__x) {}
+
+    reference operator*() const noexcept {
+        __glibcxx_assert(_M_node && _M_node->_M_dereferenceable());
+        return *static_cast<_Node*>(_M_node)->_M_valptr();
+    }
+    pointer operator->() const noexcept {
+        __glibcxx_assert(_M_node && _M_node->_M_dereferenceable());
+        return static_cast<_Node*>(_M_node)->_M_valptr();
+    }
+    _Self& operator++() noexcept {
+        __glibcxx_assert(_M_node);  // end() is not incrementable; before_begin is
+        _M_node = _M_node->_M_next;
+        return *this;
+    }
+    _Self operator++(int) noexcept {
+        _Self __tmp = *this;
+        ++*this;
+        return __tmp;
+    }
+    friend bool operator==(const _Self& __x, const _Self& __y) noexcept { return __x._M_node == __y._M_node; }
+};
+
+template <typename _Tp>
+struct _Prism_fwd_const_iterator {
+    using _Self = _Prism_fwd_const_iterator<_Tp>;
+    using _Node = const _Prism_fwd_node<_Tp>;
+    using iterator = _Prism_fwd_iterator<_Tp>;
+    using difference_type = ptrdiff_t;
+    using iterator_category = forward_iterator_tag;
+    using value_type = _Tp;
+    using pointer = const _Tp*;
+    using reference = const _Tp&;
+
+    const _Prism_fwd_link* _M_node = nullptr;
+
+    _Prism_fwd_const_iterator() noexcept = default;
+    explicit _Prism_fwd_const_iterator(const _Prism_fwd_link* __x) noexcept : _M_node(__x) {}
+    _Prism_fwd_const_iterator(const iterator& __it) noexcept : _M_node(__it._M_node) {}
+
+    reference operator*() const noexcept {
+        __glibcxx_assert(_M_node && _M_node->_M_dereferenceable());
+        return *static_cast<_Node*>(_M_node)->_M_valptr();
+    }
+    pointer operator->() const noexcept {
+        __glibcxx_assert(_M_node && _M_node->_M_dereferenceable());
+        return static_cast<_Node*>(_M_node)->_M_valptr();
+    }
+    _Self& operator++() noexcept {
+        __glibcxx_assert(_M_node);
+        _M_node = _M_node->_M_next;
+        return *this;
+    }
+    _Self operator++(int) noexcept {
+        _Self __tmp = *this;
+        ++*this;
+        return __tmp;
+    }
+    friend bool operator==(const _Self& __x, const _Self& __y) noexcept { return __x._M_node == __y._M_node; }
+};
+
+template <typename _Tp, typename _Alloc = allocator<_Tp>>
+class forward_list : _Prism_fwd_base<_Tp> {
+    static_assert(is_same_v<typename remove_cv<_Tp>::type, _Tp>,
+                  "std::forward_list must have a non-const, non-volatile value_type");
+    static_assert(is_same_v<_Alloc, allocator<_Tp>>,
+                  "PRISM forward_list model: only std::allocator<T> is modelled (the pir stage falls back to libstdc++)");
+
+    using _Base = _Prism_fwd_base<_Tp>;
+    using _Link = _Prism_fwd_link;
+    using _Node = _Prism_fwd_node<_Tp>;
+    using _Node_alloc = allocator<_Node>;
+    using _Node_traits = allocator_traits<_Node_alloc>;
+
+public:
+    using value_type = _Tp;
+    using allocator_type = _Alloc;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using reference = _Tp&;
+    using const_reference = const _Tp&;
+    using pointer = _Tp*;
+    using const_pointer = const _Tp*;
+    using iterator = _Prism_fwd_iterator<_Tp>;
+    using const_iterator = _Prism_fwd_const_iterator<_Tp>;
+
+private:
+    using _Base::_M_head;
+
+    static _Tp* _S_val(_Link* __p) noexcept { return static_cast<_Node*>(__p)->_M_valptr(); }
+    static const _Tp* _S_val(const _Link* __p) noexcept { return static_cast<const _Node*>(__p)->_M_valptr(); }
+
+    void _M_check_pos(const _Link* __p) const noexcept {
+        __glibcxx_assert(__p && __p->_M_owner == &_M_head);
+    }
+    void _M_check_erase(const _Link* __p) const noexcept {
+        __glibcxx_assert(__p && __p->_M_owner == &_M_head && __p->_M_next && __p->_M_next->_M_dereferenceable());
+    }
+
+    template <typename... _Args>
+    _Node* _M_create(_Args&&... __args) {
+        _Node_alloc __na;
+        _Node* __n = _Node_traits::allocate(__na, 1);
+        ::new (static_cast<void*>(__n)) _Node;
+        try {
+            std::construct_at(__n->_M_valptr(), std::forward<_Args>(__args)...);
+        } catch (...) {
+            std::destroy_at(__n);
+            _Node_traits::deallocate(__na, __n, 1);
+            throw;
+        }
+        return __n;
+    }
+    void _M_link_after(_Link* __pos, _Node* __n) noexcept {
+        __n->_M_next = __pos->_M_next;
+        __n->_M_owner = &_M_head;
+        __pos->_M_next = __n;
+    }
+    // Frees the successor of __pos. pop_front and erase_after both come here,
+    // so the removed element's storage is operator-delete'd, not flagged.
+    _Link* _M_erase_after(_Link* __pos) {
+        _Link* __curr = __pos->_M_next;
+        __pos->_M_next = __curr->_M_next;
+        _Prism_fwd_drop<_Tp>(__curr);
+        return __pos->_M_next;
+    }
+    _Link* _M_erase_after(_Link* __pos, _Link* __last) {
+        while (__pos->_M_next != __last) {
+            _Link* __n = __pos->_M_next;
+            __pos->_M_next = __n->_M_next;
+            _Prism_fwd_drop<_Tp>(__n);
+        }
+        return __last;
+    }
+    // Move the node after __before to the front of *this. Used by remove /
+    // unique to build the side list. Not splice_after: that overload is not
+    // part of this model.
+    void _M_splice_one(_Link* __before) noexcept {
+        _Link* __node = __before->_M_next;
+        __before->_M_next = __node->_M_next;
+        __node->_M_next = _M_head._M_next;
+        _M_head._M_next = __node;
+        __node->_M_owner = &_M_head;
+    }
+    // Transfer (__before, __last) so it sits just after __pos. __last is the
+    // past-the-end node (null when the range runs to end()). Returns the last
+    // transferred node, or __pos when the range is empty.
+    iterator _M_splice_range(_Link* __pos, _Link* __before, _Link* __last) noexcept {
+        _Link* __end = __before;
+        while (__end && __end->_M_next != __last) __end = __end->_M_next;
+        if (__before == __end) return iterator(__pos);
+        _Link* __keep = __before->_M_next;
+        __before->_M_next = __end->_M_next;
+        __end->_M_next = __pos->_M_next;
+        __pos->_M_next = __keep;
+        for (_Link* __n = __keep;; __n = __n->_M_next) {
+            __n->_M_owner = &_M_head;
+            if (__n == __end) break;
+        }
+        return iterator(__end);
+    }
+    void _M_fill(size_type __n, const value_type& __v) {
+        _Link* __to = &_M_head;
+        for (; __n; --__n) {
+            _Node* __node = _M_create(__v);
+            _M_link_after(__to, __node);
+            __to = __node;
+        }
+    }
+    void _M_default_init(size_type __n) {
+        _Link* __to = &_M_head;
+        for (; __n; --__n) {
+            _Node* __node = _M_create();
+            _M_link_after(__to, __node);
+            __to = __node;
+        }
+    }
+    template <typename _InputIterator>
+    void _M_range_init(_InputIterator __first, _InputIterator __last) {
+        _Link* __to = &_M_head;
+        for (; __first != __last; ++__first) {
+            _Node* __node = _M_create(*__first);
+            _M_link_after(__to, __node);
+            __to = __node;
+        }
+    }
+    void _M_default_insert_after(const_iterator __pos, size_type __n) {
+        const_iterator __saved = __pos;
+        try {
+            for (; __n; --__n) __pos = emplace_after(__pos);
+        } catch (...) {
+            erase_after(__saved, ++__pos);
+            throw;
+        }
+    }
+    // Walk n steps from the sentinel. __len is how far the list went.
+    iterator _M_walk(size_type __n, size_type& __len) noexcept {
+        iterator __k = before_begin();
+        __len = 0;
+        while (__k._M_node->_M_next && __len < __n) {
+            ++__k;
+            ++__len;
+        }
+        return __k;
+    }
+
+    template <typename _Pred>
+    size_type _M_remove_if(_Pred& __pred) {
+        forward_list __grave;
+        size_type __removed = 0;
+        _Link* __prev = &_M_head;
+        while (__prev->_M_next) {
+            if (__pred(*_S_val(__prev->_M_next))) {
+                __grave._M_splice_one(__prev);
+                ++__removed;
+            } else {
+                __prev = __prev->_M_next;
+            }
+        }
+        return __removed;
+    }
+    template <typename _BinPred>
+    size_type _M_unique(_BinPred& __pred) {
+        iterator __first = begin();
+        iterator __last = end();
+        if (__first == __last) return 0;
+        forward_list __grave;
+        size_type __removed = 0;
+        iterator __next = __first;
+        while (++__next != __last) {
+            if (__pred(*__first, *__next)) {
+                __grave._M_splice_one(__first._M_node);
+                ++__removed;
+            } else {
+                __first = __next;
+            }
+            __next = __first;
+        }
+        return __removed;
+    }
+
+    // libstdc++'s bottom-up mergesort (forward_list.tcc). Nodes stay in this
+    // list, so _M_owner does not change. The comparator is the one copy
+    // sort() took by value, not a fresh copy per merge.
+    template <typename _Comp>
+    void _M_sort(_Comp __comp) {
+        _Link* __list = _M_head._M_next;
+        if (!__list) return;
+        unsigned long __insize = 1;
+        while (true) {
+            _Link* __p = __list;
+            __list = nullptr;
+            _Link* __tail = nullptr;
+            unsigned long __nmerges = 0;
+            while (__p) {
+                ++__nmerges;
+                _Link* __q = __p;
+                unsigned long __psize = 0;
+                for (unsigned long __i = 0; __i < __insize; ++__i) {
+                    ++__psize;
+                    __q = __q->_M_next;
+                    if (!__q) break;
+                }
+                unsigned long __qsize = __insize;
+                while (__psize > 0 || (__qsize > 0 && __q)) {
+                    _Link* __e;
+                    if (__psize == 0) {
+                        __e = __q;
+                        __q = __q->_M_next;
+                        --__qsize;
+                    } else if (__qsize == 0 || !__q) {
+                        __e = __p;
+                        __p = __p->_M_next;
+                        --__psize;
+                    } else if (!__comp(*_S_val(__q), *_S_val(__p))) {
+                        __e = __p;
+                        __p = __p->_M_next;
+                        --__psize;
+                    } else {
+                        __e = __q;
+                        __q = __q->_M_next;
+                        --__qsize;
+                    }
+                    if (__tail)
+                        __tail->_M_next = __e;
+                    else
+                        __list = __e;
+                    __tail = __e;
+                }
+                __p = __q;
+            }
+            __tail->_M_next = nullptr;
+            if (__nmerges <= 1) {
+                _M_head._M_next = __list;
+                return;
+            }
+            __insize *= 2;
+        }
+    }
+
+public:
+    forward_list() = default;
+    explicit forward_list(const allocator_type&) noexcept {}
+    explicit forward_list(size_type __n, const allocator_type& = allocator_type()) { _M_default_init(__n); }
+    forward_list(size_type __n, const value_type& __v, const allocator_type& = allocator_type()) { _M_fill(__n, __v); }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    forward_list(_InputIterator __first, _InputIterator __last, const allocator_type& = allocator_type()) {
+        _M_range_init(__first, __last);
+    }
+    forward_list(const forward_list& __x) { _M_range_init(__x.begin(), __x.end()); }
+    forward_list(forward_list&& __x) noexcept : _Base(std::move(__x)) {}
+    forward_list(initializer_list<value_type> __l, const allocator_type& = allocator_type()) {
+        _M_range_init(__l.begin(), __l.end());
+    }
+    forward_list(const forward_list& __x, const allocator_type&) : forward_list(__x) {}
+    forward_list(forward_list&& __x, const allocator_type&) noexcept : forward_list(std::move(__x)) {}
+
+    forward_list& operator=(const forward_list& __x) {
+        if (this != std::__addressof(__x)) assign(__x.begin(), __x.end());
+        return *this;
+    }
+    forward_list& operator=(forward_list&& __x) noexcept {
+        _Base::operator=(std::move(__x));
+        return *this;
+    }
+    forward_list& operator=(initializer_list<value_type> __l) {
+        assign(__l.begin(), __l.end());
+        return *this;
+    }
+
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    void assign(_InputIterator __first, _InputIterator __last) {
+        if constexpr (is_assignable_v<value_type&, decltype(*__first)>) {
+            auto __prev = before_begin();
+            auto __curr = begin();
+            while (__curr != end() && __first != __last) {
+                *__curr = *__first;
+                ++__prev;
+                ++__curr;
+                ++__first;
+            }
+            if (__first != __last)
+                insert_after(__prev, __first, __last);
+            else if (__curr != end())
+                erase_after(__prev, end());
+        } else {
+            clear();
+            insert_after(cbefore_begin(), __first, __last);
+        }
+    }
+    void assign(size_type __n, const value_type& __v) {
+        if constexpr (is_copy_assignable_v<value_type>) {
+            auto __prev = before_begin();
+            auto __curr = begin();
+            while (__curr != end() && __n > 0) {
+                *__curr = __v;
+                ++__prev;
+                ++__curr;
+                --__n;
+            }
+            if (__n > 0)
+                insert_after(__prev, __n, __v);
+            else if (__curr != end())
+                erase_after(__prev, end());
+        } else {
+            clear();
+            insert_after(cbefore_begin(), __n, __v);
+        }
+    }
+    void assign(initializer_list<value_type> __l) { assign(__l.begin(), __l.end()); }
+
+    allocator_type get_allocator() const noexcept { return allocator_type(); }
+
+    iterator before_begin() noexcept { return iterator(&_M_head); }
+    const_iterator before_begin() const noexcept { return const_iterator(&_M_head); }
+    const_iterator cbefore_begin() const noexcept { return const_iterator(&_M_head); }
+    iterator begin() noexcept { return iterator(_M_head._M_next); }
+    const_iterator begin() const noexcept { return const_iterator(_M_head._M_next); }
+    iterator end() noexcept { return iterator(nullptr); }
+    const_iterator end() const noexcept { return const_iterator(nullptr); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+
+    [[nodiscard]] bool empty() const noexcept { return _M_head._M_next == nullptr; }
+    [[nodiscard]] size_type max_size() const noexcept {
+        return size_type(-1) / sizeof(_Prism_fwd_lib_node<value_type>);
+    }
+
+    reference front() {
+        __glibcxx_assert(!this->empty());
+        return *_S_val(_M_head._M_next);
+    }
+    const_reference front() const {
+        __glibcxx_assert(!this->empty());
+        return *_S_val(_M_head._M_next);
+    }
+
+    template <typename... _Args>
+    reference emplace_front(_Args&&... __args) {
+        return *emplace_after(cbefore_begin(), std::forward<_Args>(__args)...);
+    }
+    void push_front(const value_type& __x) { emplace_front(__x); }
+    void push_front(value_type&& __x) { emplace_front(std::move(__x)); }
+    void pop_front() {
+        __glibcxx_assert(!this->empty());
+        _M_erase_after(&_M_head);
+    }
+
+    template <typename... _Args>
+    iterator emplace_after(const_iterator __pos, _Args&&... __args) {
+        _Link* __p = const_cast<_Link*>(__pos._M_node);
+        _M_check_pos(__p);
+        _Node* __n = _M_create(std::forward<_Args>(__args)...);
+        _M_link_after(__p, __n);
+        return iterator(__n);
+    }
+    iterator insert_after(const_iterator __pos, const value_type& __x) { return emplace_after(__pos, __x); }
+    iterator insert_after(const_iterator __pos, value_type&& __x) { return emplace_after(__pos, std::move(__x)); }
+    iterator insert_after(const_iterator __pos, size_type __n, const value_type& __x) {
+        _Link* __p = const_cast<_Link*>(__pos._M_node);
+        _M_check_pos(__p);
+        if (__n == 0) return iterator(__p);
+        // A temporary, then one transfer: a throw leaves *this unchanged.
+        // The temporary's nodes were allocated with std::allocator and this
+        // list frees them; that is not splice_after from another user list.
+        forward_list __tmp(__n, __x);
+        return _M_splice_range(__p, &__tmp._M_head, nullptr);
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    iterator insert_after(const_iterator __pos, _InputIterator __first, _InputIterator __last) {
+        _Link* __p = const_cast<_Link*>(__pos._M_node);
+        _M_check_pos(__p);
+        forward_list __tmp(__first, __last);
+        if (__tmp.empty()) return iterator(__p);
+        return _M_splice_range(__p, &__tmp._M_head, nullptr);
+    }
+    iterator insert_after(const_iterator __pos, initializer_list<value_type> __l) {
+        return insert_after(__pos, __l.begin(), __l.end());
+    }
+
+    iterator erase_after(const_iterator __pos) {
+        _Link* __p = const_cast<_Link*>(__pos._M_node);
+        _M_check_erase(__p);
+        return iterator(_M_erase_after(__p));
+    }
+    iterator erase_after(const_iterator __pos, const_iterator __last) {
+        _Link* __p = const_cast<_Link*>(__pos._M_node);
+        _Link* __l = const_cast<_Link*>(__last._M_node);
+        _M_check_pos(__p);
+        if (__l) _M_check_pos(__l);
+        return iterator(_M_erase_after(__p, __l));
+    }
+
+    void resize(size_type __n) {
+        size_type __len = 0;
+        iterator __k = _M_walk(__n, __len);
+        if (__len == __n)
+            erase_after(__k, end());
+        else
+            _M_default_insert_after(__k, __n - __len);
+    }
+    void resize(size_type __n, const value_type& __v) {
+        size_type __len = 0;
+        iterator __k = _M_walk(__n, __len);
+        if (__len == __n)
+            erase_after(__k, end());
+        else
+            insert_after(__k, __n - __len, __v);
+    }
+
+    void clear() noexcept { this->_M_clear(); }
+
+    void swap(forward_list& __x) noexcept {
+        std::swap(_M_head._M_next, __x._M_head._M_next);
+        this->_M_adopt();
+        __x._M_adopt();
+    }
+
+    // splice_after is intentionally not declared: see the file comment.
+    // merge is not declared either.
+
+    size_type remove(const value_type& __v) {
+        struct _Eq {
+            const value_type& _M_v;
+            bool operator()(value_type& __e) const { return __e == _M_v; }
+        };
+        _Eq __eq{__v};
+        return _M_remove_if(__eq);
+    }
+    template <typename _Predicate>
+    size_type remove_if(_Predicate __pred) {
+        return _M_remove_if(__pred);
+    }
+    size_type unique() {
+        std::equal_to<value_type> __eq;
+        return _M_unique(__eq);
+    }
+    template <typename _BinPred>
+    size_type unique(_BinPred __pred) {
+        return _M_unique(__pred);
+    }
+
+    void reverse() noexcept {
+        _Link* __tail = _M_head._M_next;
+        if (!__tail) return;
+        while (_Link* __temp = __tail->_M_next) {
+            _Link* __keep = _M_head._M_next;
+            _M_head._M_next = __temp;
+            __tail->_M_next = __temp->_M_next;
+            _M_head._M_next->_M_next = __keep;
+        }
+    }
+    void sort() { _M_sort(std::less<value_type>{}); }
+    template <typename _StrictWeakOrdering>
+    void sort(_StrictWeakOrdering __comp) {
+        _M_sort(__comp);
+    }
+};
+
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] inline bool operator==(const forward_list<_Tp, _Alloc>& __x, const forward_list<_Tp, _Alloc>& __y) {
+    auto __i1 = __x.begin();
+    auto __i2 = __y.begin();
+    auto __e1 = __x.end();
+    auto __e2 = __y.end();
+    for (; __i1 != __e1 && __i2 != __e2; ++__i1, (void)++__i2)
+        if (!(*__i1 == *__i2)) return false;
+    return __i1 == __e1 && __i2 == __e2;
+}
+
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] inline __detail::__synth3way_t<_Tp> operator<=>(const forward_list<_Tp, _Alloc>& __x,
+                                                             const forward_list<_Tp, _Alloc>& __y) {
+    return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                  __detail::__synth3way);
+}
+
+template <typename _Tp, typename _Alloc>
+inline void swap(forward_list<_Tp, _Alloc>& __x, forward_list<_Tp, _Alloc>& __y) noexcept {
+    __x.swap(__y);
+}
+
+template <typename _InputIterator, typename _ValT = typename iterator_traits<_InputIterator>::value_type,
+          typename _Allocator = allocator<_ValT>, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+forward_list(_InputIterator, _InputIterator, _Allocator = _Allocator()) -> forward_list<_ValT, _Allocator>;
+
+_GLIBCXX_END_NAMESPACE_CONTAINER
+
+template <typename _Tp, typename _Alloc, typename _Predicate>
+inline typename forward_list<_Tp, _Alloc>::size_type erase_if(forward_list<_Tp, _Alloc>& __cont, _Predicate __pred) {
+    return __cont.remove_if(__pred);
+}
+template <typename _Tp, typename _Alloc, typename _Up>
+inline typename forward_list<_Tp, _Alloc>::size_type erase(forward_list<_Tp, _Alloc>& __cont, const _Up& __value) {
+    struct _Eq {
+        const _Up& _M_v;
+        bool operator()(_Tp& __e) const { return __e == _M_v; }
+    };
+    _Eq __eq{__value};
+    return erase_if(__cont, __eq);
+}
+
+namespace pmr {
+template <typename _Tp>
+using forward_list = std::forward_list<_Tp, polymorphic_allocator<_Tp>>;  // not modelled (static_assert: fallback)
+}  // namespace pmr
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
