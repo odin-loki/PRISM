@@ -704,6 +704,7 @@ if(PRISM_TESTS)
     tests/cpp/test_deps.cpp
     tests/cpp/test_cparse.cpp
     tests/cpp/test_report_load.cpp
+    tests/cpp/test_finding_roundtrip.cpp
     tests/cpp/test_report_md.cpp
     tests/cpp/test_shipdocs.cpp
     tests/cpp/test_cli_stages.cpp
