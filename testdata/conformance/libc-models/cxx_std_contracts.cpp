@@ -1,9 +1,11 @@
 // std::array, std::span, std::optional and std::unique_ptr against C++23
-// ([array], [views.span], [optional], [unique.ptr]). These are not replaced
+// ([array], [views.span], [optional], [unique.ptr]). <array> is the
+// operational model in src/prism/pir/models/cxx/array when that directory is
+// first on the include path. span, optional, and unique_ptr are not replaced
 // by PRISM models: libstdc++'s own header code is small, has no allocation
 // or loop the encoder cannot afford, and with -D_GLIBCXX_ASSERTIONS (always
-// on in the pir stage) it checks exactly the preconditions below, so the
-// library code is its own sound model (docs/PIR.md "C++ library models").
+// on in the pir stage) it checks exactly the preconditions below, so that
+// library code is its own model (docs/PIR.md "C++ library models").
 // Each function is one contract; `_false` ones must fail for their class.
 #include <array>
 #include <cassert>

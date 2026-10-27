@@ -1,0 +1,20 @@
+format_version: 1
+input_files: array_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900  # several array functions in one run
+expected:
+  array_access_true: true
+  array_empty_true: true
+  array_index_oob_false: false
+  array_at_true: true
+  array_at_nothrow_false: false
+  array_front_empty_false: false
+  array_back_empty_false: false
+  array_order_false: false
+expect_class:  # the violation each false harness plants
+  array_index_oob_false: "MEM-OOB-READ"
+  array_at_nothrow_false: "FUNC-CONTRACT"
+  array_front_empty_false: "FUNC-CONTRACT"
+  array_back_empty_false: "FUNC-CONTRACT"
+  array_order_false: "FUNC-CONTRACT"

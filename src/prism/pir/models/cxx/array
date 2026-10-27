@@ -1,0 +1,193 @@
+// PRISM operational model of <array> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). The pir stage puts this directory first on the C++ include path,
+// so `#include <array>` reaches this file instead of libstdc++'s. It is an
+// aggregate std::array<T, N>: the N elements live in the object, not on the
+// heap. There is no allocator and no reallocation, so data() addresses that
+// object for its whole lifetime.
+//
+//  * operator[] is the vector model's _GLIBCXX_ASSERTIONS check, with the
+//    same condition text (`__n < this->size()` -> MEM-OOB-READ). at() is the
+//    throwing path: std::out_of_range, libstdc++'s array::at message;
+//  * front/back require `!this->empty()` (FUNC-CONTRACT). N == 0 is a
+//    specialization with no element. Those calls are the precondition, not
+//    a stand-in T, and data() is nullptr (libstdc++'s empty _Type converts
+//    to a null pointer; this model does not store that stand-in either);
+//  * fill assigns in index order. swap exchanges elements through std::swap.
+//    Neither allocates.
+//
+// Not declared here, so a unit that names one fails to compile against this
+// header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
+// iterators and reverse iterators, operator== / operator<=>, std::get,
+// tuple_size, tuple_element, and std::to_array. Model code is inlined with
+// the unit. This header is not a proof.
+#ifndef _PRISM_MODEL_ARRAY
+#define _PRISM_MODEL_ARRAY 1
+#define _GLIBCXX_ARRAY 1  // libstdc++'s <array> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/functexcept.h>
+#include <cstddef>
+#include <debug/assertions.h>
+#include <type_traits>
+#include <utility>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+// Unqualified swap, so a type with its own swap is the one array::swap calls
+// (libstdc++ array::swap -> swap_ranges -> iter_swap). Not array::swap itself.
+template <typename _Up>
+constexpr void _Prism_array_elem_swap(_Up& __a, _Up& __b) noexcept(is_nothrow_swappable_v<_Up>) {
+    using std::swap;
+    swap(__a, __b);
+}
+
+template <typename _Tp, std::size_t _Nm>
+struct array {
+    static_assert(_Nm > 0, "std::array<T, 0> is the empty specialization");
+
+    typedef _Tp value_type;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef value_type& reference;
+    typedef const value_type& const_reference;
+    typedef value_type* pointer;
+    typedef const value_type* const_pointer;
+
+    // Public member: array is an aggregate, so array<T, N>{e0, e1, ...} is
+    // the element initialiser. Same member name as libstdc++.
+    _Tp _M_elems[_Nm];
+
+    constexpr void fill(const value_type& __u) {
+        for (size_type __i = 0; __i < _Nm; ++__i) _M_elems[__i] = __u;
+    }
+
+    constexpr void swap(array& __other) noexcept(is_nothrow_swappable_v<_Tp>) {
+        for (size_type __i = 0; __i < _Nm; ++__i) _Prism_array_elem_swap(_M_elems[__i], __other._M_elems[__i]);
+    }
+
+    constexpr size_type size() const noexcept { return _Nm; }
+    constexpr size_type max_size() const noexcept { return _Nm; }
+    constexpr bool empty() const noexcept { return size() == 0; }
+
+    constexpr reference operator[](size_type __n) noexcept {
+        __glibcxx_assert(__n < this->size());
+        return _M_elems[__n];
+    }
+    constexpr const_reference operator[](size_type __n) const noexcept {
+        __glibcxx_assert(__n < this->size());
+        return _M_elems[__n];
+    }
+
+    constexpr reference at(size_type __n) {
+        if (__n >= _Nm)
+            __throw_out_of_range_fmt(__N("array::at: __n (which is %zu) "
+                                         ">= _Nm (which is %zu)"),
+                                     __n, _Nm);
+        return _M_elems[__n];
+    }
+    constexpr const_reference at(size_type __n) const {
+        if (__n >= _Nm)
+            __throw_out_of_range_fmt(__N("array::at: __n (which is %zu) "
+                                         ">= _Nm (which is %zu)"),
+                                     __n, _Nm);
+        return _M_elems[__n];
+    }
+
+    constexpr reference front() noexcept {
+        __glibcxx_assert(!this->empty());
+        return _M_elems[0];
+    }
+    constexpr const_reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return _M_elems[0];
+    }
+    constexpr reference back() noexcept {
+        __glibcxx_assert(!this->empty());
+        return _M_elems[_Nm - 1];
+    }
+    constexpr const_reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return _M_elems[_Nm - 1];
+    }
+
+    constexpr pointer data() noexcept { return _M_elems; }
+    constexpr const_pointer data() const noexcept { return _M_elems; }
+};
+
+// No element object. front/back/operator[] are preconditions (then this
+// path is not a value). data() is a null pointer, not an object.
+template <typename _Tp>
+struct array<_Tp, 0> {
+    typedef _Tp value_type;
+    typedef std::size_t size_type;
+    typedef std::ptrdiff_t difference_type;
+    typedef value_type& reference;
+    typedef const value_type& const_reference;
+    typedef value_type* pointer;
+    typedef const value_type* const_pointer;
+
+    static constexpr size_type _Nm = 0;
+
+    constexpr void fill(const value_type&) {}
+    constexpr void swap(array&) noexcept {}
+
+    constexpr size_type size() const noexcept { return _Nm; }
+    constexpr size_type max_size() const noexcept { return _Nm; }
+    constexpr bool empty() const noexcept { return true; }
+
+    constexpr reference operator[](size_type __n) noexcept {
+        __glibcxx_assert(__n < this->size());
+        __builtin_unreachable();
+    }
+    constexpr const_reference operator[](size_type __n) const noexcept {
+        __glibcxx_assert(__n < this->size());
+        __builtin_unreachable();
+    }
+
+    constexpr reference at(size_type __n) {
+        __throw_out_of_range_fmt(__N("array::at: __n (which is %zu) "
+                                     ">= _Nm (which is %zu)"),
+                                 __n, _Nm);
+    }
+    constexpr const_reference at(size_type __n) const {
+        __throw_out_of_range_fmt(__N("array::at: __n (which is %zu) "
+                                     ">= _Nm (which is %zu)"),
+                                 __n, _Nm);
+    }
+
+    constexpr reference front() noexcept {
+        __glibcxx_assert(!this->empty());
+        __builtin_unreachable();
+    }
+    constexpr const_reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        __builtin_unreachable();
+    }
+    constexpr reference back() noexcept {
+        __glibcxx_assert(!this->empty());
+        __builtin_unreachable();
+    }
+    constexpr const_reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        __builtin_unreachable();
+    }
+
+    constexpr pointer data() noexcept { return nullptr; }
+    constexpr const_pointer data() const noexcept { return nullptr; }
+};
+
+#if __cpp_deduction_guides >= 201606
+template <typename _Tp, typename... _Up>
+array(_Tp, _Up...) -> array<enable_if_t<(is_same_v<_Tp, _Up> && ...), _Tp>, 1 + sizeof...(_Up)>;
+#endif
+
+template <typename _Tp, std::size_t _Nm>
+constexpr void swap(array<_Tp, _Nm>& __x, array<_Tp, _Nm>& __y) noexcept(noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
+
+}  // namespace std
+
+#endif
