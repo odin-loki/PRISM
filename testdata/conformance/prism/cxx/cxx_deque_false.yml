@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_deque_false.cpp
+language: C++
+property: memsafety
+timeout: 600  # std::deque model code: slow on a loaded machine
+expected:
+  cxx_deque_false: false
+witness:
+  cxx_deque_false: [1]

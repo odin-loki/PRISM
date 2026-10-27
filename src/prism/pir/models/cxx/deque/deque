@@ -1,0 +1,774 @@
+// PRISM operational model of <deque> (roadmap 2.6, docs/PIR.md "C++ library
+// models"). Not libstdc++'s block map: that growth policy is not implemented
+// here, and this header does not claim to be one. Each element is its own
+// heap node from ::operator new / ::operator delete (the PIR new/delete
+// models). Iterators carry a pointer to a heap anchor that is replaced, and
+// the old anchor deleted, on every operation that invalidates every iterator
+// (push/insert at either end, insert in the middle, clear, assignment).
+// Using such an iterator loads the freed anchor: MEM-UAF, not a flag check.
+//
+// What is the same as libstdc++ 13 for the operations below, and what the
+// differential trace checks (tests/cxx_models/deque_trace.cpp):
+//  * element order, size, max_size() (ptrdiff max vs allocator max_size);
+//  * one construction per push/emplace at either end, one destruction per
+//    pop, destructions front-to-back on clear and on a shrinking resize;
+//  * references to elements that the standard keeps valid stay at the same
+//    node (push/pop at the opposite end do not move surviving elements);
+//  * at()'s out_of_range message, the length_error from an oversized
+//    constructor, and the _GLIBCXX_ASSERTIONS checks
+//    (`__n < this->size()` -> MEM-OOB-READ, `!this->empty()` -> FUNC-CONTRACT).
+//
+// Not the same, and not pretended: libstdc++'s 512-byte block map, when a
+// block is freed, and the move-assignments a middle insert/erase uses to
+// shift the nearer side. Middle insert/erase splice the node list (the
+// final sequence matches; a traced type's assignment count does not) and
+// a middle operation frees the anchor so every iterator is MEM-UAF. A
+// reference to an element that was not itself destroyed stays live — the
+// standard invalidates those references too; libstdc++ does not free them
+// either. shrink_to_fit, C++23 range append/prepend/insert, over-aligned
+// element types, and allocators other than std::allocator<T> are not in
+// the overload set (or fail the static_assert): the unit does not compile
+// against this header and the pir stage, once the header is on the include
+// path, lowers it again with libstdc++. This directory is not on that path
+// yet (docs/finish-notes/deque.md).
+#ifndef _PRISM_MODEL_DEQUE
+#define _PRISM_MODEL_DEQUE 1
+#define _GLIBCXX_DEQUE 1  // libstdc++'s <deque> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/stl_algobase.h>
+#include <bits/allocator.h>
+#include <bits/alloc_traits.h>
+#include <bits/stl_construct.h>
+#include <bits/stl_iterator_base_funcs.h>
+#include <bits/stl_iterator.h>
+#include <bits/functexcept.h>
+#include <bits/stl_algo.h>
+#include <bits/range_access.h>
+#include <initializer_list>
+#include <type_traits>
+#include <compare>
+#include <new>
+#include <exception>
+#include <ext/aligned_buffer.h>
+#include <ext/numeric_traits.h>
+#include <debug/assertions.h>
+#include <bits/memory_resource.h>
+
+#define __cpp_lib_erase_if 202002L
+#define __cpp_lib_nonmember_container_access 201411L
+#define __cpp_lib_allocator_traits_is_always_equal 201411L
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+
+template <typename _Tp, typename _Alloc = allocator<_Tp>>
+class deque {
+    static_assert(is_same_v<_Alloc, allocator<_Tp>>,
+                  "PRISM deque model: only std::allocator<T> is modelled (the pir stage falls back to libstdc++)");
+    static_assert(is_same_v<remove_cv_t<_Tp>, _Tp>,
+                  "std::deque must have a non-const, non-volatile value_type");
+    static_assert(alignof(_Tp) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "PRISM deque model: over-aligned T is not modelled (fallback to libstdc++)");
+
+    struct _Node {
+        _Node* _M_prev;
+        _Node* _M_next;
+        __gnu_cxx::__aligned_membuf<_Tp> _M_buf;
+        _Tp* _M_ptr() noexcept { return _M_buf._M_ptr(); }
+        const _Tp* _M_ptr() const noexcept { return _M_buf._M_ptr(); }
+    };
+    static_assert(alignof(_Node) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "PRISM deque model: over-aligned node is not modelled (fallback to libstdc++)");
+
+    // Freed (operator delete) when every iterator is invalidated.
+    struct _Anchor {
+        unsigned _M_live;
+    };
+    // Freed when the past-the-end iterator is invalidated and other
+    // iterators are not (pop_back, erase of a suffix).
+    struct _End {
+        unsigned _M_live;
+    };
+    struct _Ctrl {
+        _Anchor* anchor;
+        _End* endc;
+        _Node* head;
+        _Node* tail;
+        size_t size;
+    };
+
+    template <bool _Const>
+    struct _Iter {
+        using iterator_category = random_access_iterator_tag;
+        using value_type = _Tp;
+        using difference_type = ptrdiff_t;
+        using pointer = conditional_t<_Const, const _Tp*, _Tp*>;
+        using reference = conditional_t<_Const, const _Tp&, _Tp&>;
+
+        _Anchor* _M_anchor = nullptr;
+        _Node* _M_node = nullptr;
+        bool _M_is_end = false;
+        _End* _M_end = nullptr;
+        _Ctrl* _M_ctrl = nullptr;
+
+        _Iter() noexcept = default;
+        _Iter(_Anchor* __a, _Node* __n, bool __end, _End* __e, _Ctrl* __c) noexcept
+            : _M_anchor(__a), _M_node(__n), _M_is_end(__end), _M_end(__e), _M_ctrl(__c) {}
+
+        template <bool _Other, typename = enable_if_t<_Const && !_Other>>
+        _Iter(const _Iter<_Other>& __o) noexcept
+            : _M_anchor(__o._M_anchor), _M_node(__o._M_node), _M_is_end(__o._M_is_end), _M_end(__o._M_end),
+              _M_ctrl(__o._M_ctrl) {}
+
+        // Offset is 0 while the anchor is live. The subtraction keeps the
+        // load of `_M_live`; after operator delete that load is MEM-UAF.
+        ptrdiff_t _M_off() const noexcept { return static_cast<ptrdiff_t>(_M_anchor->_M_live) - 1; }
+
+        reference operator*() const noexcept {
+            const ptrdiff_t __off = _M_off();
+            if (_M_is_end) __glibcxx_assert(_M_end->_M_live == 0);
+            __glibcxx_assert(!_M_is_end);
+            _Node* __n = _M_node + __off;
+            // Read the node header. erase/pop operator-delete this allocation,
+            // so the load is MEM-UAF when the iterator referred to that element.
+            // A live node never stores prev == self, so the address is unchanged.
+            if (__n->_M_prev == __n) __n = __n->_M_prev;
+            return *__n->_M_ptr();
+        }
+        pointer operator->() const noexcept { return std::__addressof(operator*()); }
+
+        _Iter& operator++() noexcept {
+            const ptrdiff_t __off = _M_off();
+            if (_M_is_end) __glibcxx_assert(_M_end->_M_live == 0);
+            __glibcxx_assert(!_M_is_end);
+            _Node* __n = _M_node + __off;
+            _M_node = __n->_M_next;
+            if (_M_node == nullptr) {
+                _M_is_end = true;
+                _M_end = _M_ctrl->endc;
+            }
+            return *this;
+        }
+        _Iter operator++(int) noexcept {
+            _Iter __t = *this;
+            ++*this;
+            return __t;
+        }
+        _Iter& operator--() noexcept {
+            const ptrdiff_t __off = _M_off();
+            if (_M_is_end) {
+                // Load the end cookie (MEM-UAF if pop_back/suffix erase freed it).
+                const ptrdiff_t __eoff = static_cast<ptrdiff_t>(_M_end->_M_live) - 1;
+                __glibcxx_assert(_M_ctrl->size != 0);
+                _M_node = _M_ctrl->tail + (__eoff + __off);
+                _M_is_end = false;
+                _M_end = nullptr;
+                return *this;
+            }
+            _Node* __n = _M_node + __off;
+            __glibcxx_assert(__n != _M_ctrl->head);  // decrement of begin()
+            _M_node = __n->_M_prev;
+            return *this;
+        }
+        _Iter operator--(int) noexcept {
+            _Iter __t = *this;
+            --*this;
+            return __t;
+        }
+
+        _Iter& operator+=(difference_type __n) noexcept {
+            if (__n > 0) {
+                while (__n-- > 0) ++*this;
+            } else {
+                while (__n++ < 0) --*this;
+            }
+            return *this;
+        }
+        _Iter& operator-=(difference_type __n) noexcept { return *this += -__n; }
+        _Iter operator+(difference_type __n) const noexcept {
+            _Iter __t = *this;
+            __t += __n;
+            return __t;
+        }
+        _Iter operator-(difference_type __n) const noexcept {
+            _Iter __t = *this;
+            __t -= __n;
+            return __t;
+        }
+        template <bool _Other>
+        difference_type operator-(const _Iter<_Other>& __o) const noexcept {
+            const ptrdiff_t __a = _M_off();
+            const ptrdiff_t __b = __o._M_off();
+            const auto __d =
+                static_cast<difference_type>(_M_index()) - static_cast<difference_type>(__o._M_index());
+            // `__a == __b` is true for two live anchors; the loads stay because
+            // a freed anchor must still be read (MEM-UAF).
+            return __a == __b ? __d : __d + (__a - __b);
+        }
+        friend _Iter operator+(difference_type __n, const _Iter& __it) noexcept { return __it + __n; }
+
+        reference operator[](difference_type __n) const noexcept { return *(*this + __n); }
+
+        template <bool _Other>
+        bool operator==(const _Iter<_Other>& __o) const noexcept {
+            const ptrdiff_t __off = _M_off() + __o._M_off();
+            unsigned __guard = 1;
+            if (_M_is_end) __guard += _M_end->_M_live;
+            if (__o._M_is_end) __guard += __o._M_end->_M_live;
+            const bool __eq = _M_ctrl == __o._M_ctrl && _M_is_end == __o._M_is_end && _M_node == __o._M_node;
+            return __eq && __off == 0 && __guard != 0;
+        }
+        template <bool _Other>
+        auto operator<=>(const _Iter<_Other>& __o) const noexcept {
+            (void)_M_off();
+            (void)__o._M_off();
+            return static_cast<difference_type>(_M_index()) <=> static_cast<difference_type>(__o._M_index());
+        }
+
+        size_t _M_index() const noexcept {
+            if (_M_is_end) return _M_ctrl->size;
+            size_t __i = 0;
+            for (_Node* __p = _M_ctrl->head; __p != _M_node; __p = __p->_M_next) ++__i;
+            return __i;
+        }
+
+        template <bool> friend struct _Iter;
+        friend class deque;
+    };
+
+    mutable _Ctrl* _M_c = nullptr;
+    [[no_unique_address]] _Alloc _M_alloc{};
+
+    static _Anchor* _S_new_anchor() {
+        auto* __a = static_cast<_Anchor*>(::operator new(sizeof(_Anchor)));
+        __a->_M_live = 1;
+        return __a;
+    }
+    static _End* _S_new_end() {
+        auto* __e = static_cast<_End*>(::operator new(sizeof(_End)));
+        __e->_M_live = 1;
+        return __e;
+    }
+    static _Ctrl* _S_make_ctrl() {
+        auto* __c = static_cast<_Ctrl*>(::operator new(sizeof(_Ctrl)));
+        __c->anchor = nullptr;
+        __c->endc = nullptr;
+        __c->head = nullptr;
+        __c->tail = nullptr;
+        __c->size = 0;
+        try {
+            __c->anchor = _S_new_anchor();
+            __c->endc = _S_new_end();
+        } catch (...) {
+            if (__c->anchor) ::operator delete(__c->anchor);
+            ::operator delete(__c);
+            throw;
+        }
+        return __c;
+    }
+    void _M_bind() const {
+        if (!_M_c) _M_c = _S_make_ctrl();
+    }
+
+    template <typename... _Args>
+    static _Node* _S_new_node(_Args&&... __args) {
+        auto* __n = static_cast<_Node*>(::operator new(sizeof(_Node)));
+        __n->_M_prev = nullptr;
+        __n->_M_next = nullptr;
+        try {
+            ::new (static_cast<void*>(__n->_M_ptr())) _Tp(std::forward<_Args>(__args)...);
+        } catch (...) {
+            ::operator delete(__n);
+            throw;
+        }
+        return __n;
+    }
+    static void _S_delete_node(_Node* __n) noexcept {
+        __n->_M_ptr()->~_Tp();
+        ::operator delete(__n);
+    }
+
+    void _M_invalidate_iters() {
+        _Anchor* __neu = _S_new_anchor();
+        _Anchor* __old = _M_c->anchor;
+        _M_c->anchor = __neu;
+        ::operator delete(__old);
+    }
+    void _M_invalidate_end() {
+        _End* __neu = _S_new_end();
+        _End* __old = _M_c->endc;
+        _M_c->endc = __neu;
+        ::operator delete(__old);
+    }
+
+    _Node* _M_nth(size_t __n) const noexcept {
+        _Node* __p = _M_c->head;
+        for (size_t __i = 0; __i < __n; ++__i) __p = __p->_M_next;
+        return __p;
+    }
+
+    template <bool _C>
+    _Iter<_C> _M_begin() const noexcept {
+        _M_bind();
+        if (!_M_c->head) return _M_end<_C>();
+        return _Iter<_C>(_M_c->anchor, _M_c->head, false, nullptr, _M_c);
+    }
+    template <bool _C>
+    _Iter<_C> _M_end() const noexcept {
+        _M_bind();
+        return _Iter<_C>(_M_c->anchor, nullptr, true, _M_c->endc, _M_c);
+    }
+    _Iter<false> _M_reify(const _Iter<true>& __it) noexcept {
+        _M_bind();
+        __glibcxx_assert(__it._M_ctrl == _M_c);
+        if (__it._M_is_end) return end();
+        return iterator(_M_c->anchor, __it._M_node, false, nullptr, _M_c);
+    }
+
+    void _M_check_len() const {
+        if (size() == max_size())
+            __throw_length_error(__N("cannot create std::deque larger than max_size()"));
+    }
+
+    void _M_link_back(_Node* __n) noexcept {
+        __n->_M_prev = _M_c->tail;
+        if (_M_c->tail)
+            _M_c->tail->_M_next = __n;
+        else
+            _M_c->head = __n;
+        _M_c->tail = __n;
+        ++_M_c->size;
+    }
+    void _M_link_front(_Node* __n) noexcept {
+        __n->_M_next = _M_c->head;
+        if (_M_c->head)
+            _M_c->head->_M_prev = __n;
+        else
+            _M_c->tail = __n;
+        _M_c->head = __n;
+        ++_M_c->size;
+    }
+
+    void _M_destroy_elems() noexcept {
+        for (_Node* __n = _M_c->head; __n;) {
+            _Node* __next = __n->_M_next;
+            _S_delete_node(__n);
+            __n = __next;
+        }
+        _M_c->head = nullptr;
+        _M_c->tail = nullptr;
+        _M_c->size = 0;
+    }
+
+public:
+    using value_type = _Tp;
+    using allocator_type = _Alloc;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using reference = _Tp&;
+    using const_reference = const _Tp&;
+    using pointer = _Tp*;
+    using const_pointer = const _Tp*;
+    using iterator = _Iter<false>;
+    using const_iterator = _Iter<true>;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+    deque() noexcept(is_nothrow_default_constructible_v<_Alloc>) = default;
+    explicit deque(const allocator_type& __a) noexcept : _M_alloc(__a) {}
+    explicit deque(size_type __n, const allocator_type& = allocator_type()) {
+        if (__n > max_size()) __throw_length_error(__N("cannot create std::deque larger than max_size()"));
+        for (size_type __i = 0; __i < __n; ++__i) emplace_back();
+    }
+    deque(size_type __n, const value_type& __val, const allocator_type& = allocator_type()) {
+        if (__n > max_size()) __throw_length_error(__N("cannot create std::deque larger than max_size()"));
+        for (size_type __i = 0; __i < __n; ++__i) push_back(__val);
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    deque(_InputIterator __first, _InputIterator __last, const allocator_type& = allocator_type()) {
+        for (; __first != __last; ++__first) push_back(*__first);
+    }
+    deque(initializer_list<value_type> __l, const allocator_type& = allocator_type())
+        : deque(__l.begin(), __l.end()) {}
+    deque(const deque& __o) {
+        _Node* __n = __o._M_c ? __o._M_c->head : nullptr;
+        for (; __n; __n = __n->_M_next) push_back(*__n->_M_ptr());
+    }
+    deque(deque&& __o) noexcept : _M_c(__o._M_c) {
+        __o._M_c = nullptr;
+        try {
+            __o._M_c = _S_make_ctrl();
+        } catch (...) {
+            std::terminate();
+        }
+    }
+    ~deque() { _M_release(); }
+
+    deque& operator=(const deque& __o) {
+        if (this != &__o) {
+            deque __tmp(__o);
+            swap(__tmp);
+        }
+        return *this;
+    }
+    deque& operator=(deque&& __o) noexcept {
+        if (this != &__o) {
+            deque __tmp(std::move(__o));
+            swap(__tmp);
+        }
+        return *this;
+    }
+    deque& operator=(initializer_list<value_type> __l) {
+        assign(__l.begin(), __l.end());
+        return *this;
+    }
+
+    void assign(size_type __n, const value_type& __val) {
+        deque __tmp(__n, __val, _M_alloc);
+        swap(__tmp);
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    void assign(_InputIterator __first, _InputIterator __last) {
+        deque __tmp(__first, __last, _M_alloc);
+        swap(__tmp);
+    }
+    void assign(initializer_list<value_type> __l) { assign(__l.begin(), __l.end()); }
+
+    allocator_type get_allocator() const noexcept { return _M_alloc; }
+
+    iterator begin() noexcept { return _M_begin<false>(); }
+    const_iterator begin() const noexcept { return _M_begin<true>(); }
+    iterator end() noexcept { return _M_end<false>(); }
+    const_iterator end() const noexcept { return _M_end<true>(); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    const_reverse_iterator crbegin() const noexcept { return rbegin(); }
+    const_reverse_iterator crend() const noexcept { return rend(); }
+
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+    size_type size() const noexcept { return _M_c ? _M_c->size : 0; }
+    size_type max_size() const noexcept {
+        const size_t __diffmax = static_cast<size_t>(__gnu_cxx::__numeric_traits<ptrdiff_t>::__max);
+        const size_t __allocmax = allocator_traits<_Alloc>::max_size(_M_alloc);
+        return (std::min)(__diffmax, __allocmax);
+    }
+
+    reference operator[](size_type __n) noexcept {
+        __glibcxx_assert(__n < this->size());
+        return *_M_nth(__n)->_M_ptr();
+    }
+    const_reference operator[](size_type __n) const noexcept {
+        __glibcxx_assert(__n < this->size());
+        return *_M_nth(__n)->_M_ptr();
+    }
+    reference at(size_type __n) {
+        _M_range_check(__n);
+        return (*this)[__n];
+    }
+    const_reference at(size_type __n) const {
+        _M_range_check(__n);
+        return (*this)[__n];
+    }
+    reference front() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_c->head->_M_ptr();
+    }
+    const_reference front() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_c->head->_M_ptr();
+    }
+    reference back() noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_c->tail->_M_ptr();
+    }
+    const_reference back() const noexcept {
+        __glibcxx_assert(!this->empty());
+        return *_M_c->tail->_M_ptr();
+    }
+
+    template <typename... _Args>
+    reference emplace_back(_Args&&... __args) {
+        _M_bind();
+        _M_check_len();
+        _Node* __n = _S_new_node(std::forward<_Args>(__args)...);
+        _Anchor* __neu = nullptr;
+        try {
+            __neu = _S_new_anchor();
+        } catch (...) {
+            _S_delete_node(__n);
+            throw;
+        }
+        _M_link_back(__n);
+        _Anchor* __old = _M_c->anchor;
+        _M_c->anchor = __neu;
+        ::operator delete(__old);
+        return *__n->_M_ptr();
+    }
+    template <typename... _Args>
+    reference emplace_front(_Args&&... __args) {
+        _M_bind();
+        _M_check_len();
+        _Node* __n = _S_new_node(std::forward<_Args>(__args)...);
+        _Anchor* __neu = nullptr;
+        try {
+            __neu = _S_new_anchor();
+        } catch (...) {
+            _S_delete_node(__n);
+            throw;
+        }
+        _M_link_front(__n);
+        _Anchor* __old = _M_c->anchor;
+        _M_c->anchor = __neu;
+        ::operator delete(__old);
+        return *__n->_M_ptr();
+    }
+    void push_back(const value_type& __x) { emplace_back(__x); }
+    void push_back(value_type&& __x) { emplace_back(std::move(__x)); }
+    void push_front(const value_type& __x) { emplace_front(__x); }
+    void push_front(value_type&& __x) { emplace_front(std::move(__x)); }
+
+    void pop_back() noexcept {
+        _M_bind();
+        __glibcxx_assert(!this->empty());
+        _End* __neu = _S_new_end();
+        _Node* __n = _M_c->tail;
+        _Node* __prev = __n->_M_prev;
+        if (__prev)
+            __prev->_M_next = nullptr;
+        else
+            _M_c->head = nullptr;
+        _M_c->tail = __prev;
+        --_M_c->size;
+        _S_delete_node(__n);
+        ::operator delete(_M_c->endc);
+        _M_c->endc = __neu;
+    }
+    void pop_front() noexcept {
+        _M_bind();
+        __glibcxx_assert(!this->empty());
+        const bool __kill_end = _M_c->size == 1;
+        _End* __neu = __kill_end ? _S_new_end() : nullptr;
+        _Node* __n = _M_c->head;
+        _Node* __next = __n->_M_next;
+        if (__next)
+            __next->_M_prev = nullptr;
+        else
+            _M_c->tail = nullptr;
+        _M_c->head = __next;
+        --_M_c->size;
+        _S_delete_node(__n);
+        if (__kill_end) {
+            ::operator delete(_M_c->endc);
+            _M_c->endc = __neu;
+        }
+    }
+
+    template <typename... _Args>
+    iterator emplace(const_iterator __pos, _Args&&... __args) {
+        _M_bind();
+        __glibcxx_assert(__pos._M_ctrl == _M_c);
+        if (__pos._M_is_end) {
+            emplace_back(std::forward<_Args>(__args)...);
+            return iterator(_M_c->anchor, _M_c->tail, false, nullptr, _M_c);
+        }
+        if (__pos._M_node == _M_c->head) {
+            emplace_front(std::forward<_Args>(__args)...);
+            return begin();
+        }
+        _M_check_len();
+        _Node* __n = _S_new_node(std::forward<_Args>(__args)...);
+        _Anchor* __neu = nullptr;
+        try {
+            __neu = _S_new_anchor();
+        } catch (...) {
+            _S_delete_node(__n);
+            throw;
+        }
+        _Node* __at = __pos._M_node;
+        _Node* __before = __at->_M_prev;
+        __n->_M_prev = __before;
+        __n->_M_next = __at;
+        __before->_M_next = __n;
+        __at->_M_prev = __n;
+        ++_M_c->size;
+        _Anchor* __old = _M_c->anchor;
+        _M_c->anchor = __neu;
+        ::operator delete(__old);
+        return iterator(_M_c->anchor, __n, false, nullptr, _M_c);
+    }
+    iterator insert(const_iterator __pos, const value_type& __x) { return emplace(__pos, __x); }
+    iterator insert(const_iterator __pos, value_type&& __x) { return emplace(__pos, std::move(__x)); }
+    iterator insert(const_iterator __pos, size_type __n, const value_type& __x) {
+        if (__n == 0) return _M_reify(__pos);
+        iterator __where = _M_reify(__pos);
+        iterator __first = __where;
+        for (size_type __i = 0; __i < __n; ++__i) {
+            __where = emplace(__where, __x);
+            if (__i == 0) __first = __where;
+            ++__where;
+        }
+        return __first;
+    }
+    template <typename _InputIterator, typename = _RequireInputIter<_InputIterator>>
+    iterator insert(const_iterator __pos, _InputIterator __first, _InputIterator __last) {
+        if (__first == __last) return _M_reify(__pos);
+        iterator __where = _M_reify(__pos);
+        iterator __at = __where;
+        bool __have = false;
+        for (; __first != __last; ++__first) {
+            __where = emplace(__where, *__first);
+            if (!__have) {
+                __at = __where;
+                __have = true;
+            }
+            ++__where;
+        }
+        return __at;
+    }
+    iterator insert(const_iterator __pos, initializer_list<value_type> __l) {
+        return insert(__pos, __l.begin(), __l.end());
+    }
+
+    iterator erase(const_iterator __first, const_iterator __last) {
+        _M_bind();
+        __glibcxx_assert(__first._M_ctrl == _M_c && __last._M_ctrl == _M_c);
+        if (__first == __last) return _M_reify(__first);
+        __glibcxx_assert(!__first._M_is_end);
+        const bool __prefix = __first._M_node == _M_c->head;
+        const bool __suffix = __last._M_is_end;
+        const bool __middle = !__prefix && !__suffix;
+        // Allocate the replacement anchor/cookie before unlinking so a
+        // throwing operator new leaves the deque unchanged.
+        _Anchor* __neu_a = __middle ? _S_new_anchor() : nullptr;
+        _End* __neu_e = __suffix ? _S_new_end() : nullptr;
+        _Node* __stop = __last._M_is_end ? nullptr : __last._M_node;
+        _Node* __before = __first._M_node->_M_prev;
+        _Node* __cur = __first._M_node;
+        while (__cur != __stop) {
+            _Node* __next = __cur->_M_next;
+            _S_delete_node(__cur);
+            --_M_c->size;
+            __cur = __next;
+        }
+        if (__before)
+            __before->_M_next = __stop;
+        else
+            _M_c->head = __stop;
+        if (__stop)
+            __stop->_M_prev = __before;
+        else
+            _M_c->tail = __before;
+        if (__neu_a) {
+            _Anchor* __old = _M_c->anchor;
+            _M_c->anchor = __neu_a;
+            ::operator delete(__old);
+        }
+        if (__neu_e) {
+            _End* __old = _M_c->endc;
+            _M_c->endc = __neu_e;
+            ::operator delete(__old);
+        }
+        if (!__stop) return end();
+        return iterator(_M_c->anchor, __stop, false, nullptr, _M_c);
+    }
+    iterator erase(const_iterator __pos) {
+        __glibcxx_assert(__pos._M_ctrl == _M_c && !__pos._M_is_end);
+        const_iterator __next = __pos;
+        ++__next;
+        return erase(__pos, __next);
+    }
+
+    void swap(deque& __x) noexcept { std::swap(_M_c, __x._M_c); }
+    void clear() noexcept {
+        if (!_M_c) return;
+        _Anchor* __neu = _S_new_anchor();
+        _End* __en = _S_new_end();
+        _M_destroy_elems();
+        ::operator delete(_M_c->anchor);
+        ::operator delete(_M_c->endc);
+        _M_c->anchor = __neu;
+        _M_c->endc = __en;
+    }
+    void resize(size_type __n) {
+        if (__n > size()) {
+            if (__n > max_size()) __throw_length_error(__N("cannot create std::deque larger than max_size()"));
+            while (size() < __n) emplace_back();
+        } else if (__n < size()) {
+            iterator __from = begin();
+            for (size_type __i = 0; __i < __n; ++__i) ++__from;
+            erase(__from, end());
+        }
+    }
+    void resize(size_type __n, const value_type& __x) {
+        if (__n > size()) {
+            if (__n > max_size()) __throw_length_error(__N("cannot create std::deque larger than max_size()"));
+            while (size() < __n) push_back(__x);
+        } else if (__n < size()) {
+            resize(__n);
+        }
+    }
+
+private:
+    void _M_release() noexcept {
+        if (!_M_c) return;
+        _M_destroy_elems();
+        ::operator delete(_M_c->anchor);
+        ::operator delete(_M_c->endc);
+        ::operator delete(_M_c);
+        _M_c = nullptr;
+    }
+    void _M_range_check(size_type __n) const {
+        if (__n >= this->size())
+            __throw_out_of_range_fmt(__N("deque::_M_range_check: __n "
+                                         "(which is %zu)>= this->size() "
+                                         "(which is %zu)"),
+                                     __n, this->size());
+    }
+};
+
+template <typename _InputIterator, typename _ValT = typename iterator_traits<_InputIterator>::value_type,
+          typename _Allocator = allocator<_ValT>, typename = _RequireInputIter<_InputIterator>,
+          typename = _RequireAllocator<_Allocator>>
+deque(_InputIterator, _InputIterator, _Allocator = _Allocator()) -> deque<_ValT, _Allocator>;
+
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] bool operator==(const deque<_Tp, _Alloc>& __x, const deque<_Tp, _Alloc>& __y) {
+    return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
+}
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] __detail::__synth3way_t<_Tp> operator<=>(const deque<_Tp, _Alloc>& __x, const deque<_Tp, _Alloc>& __y) {
+    return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),
+                                                  __detail::__synth3way);
+}
+template <typename _Tp, typename _Alloc>
+void swap(deque<_Tp, _Alloc>& __x, deque<_Tp, _Alloc>& __y) noexcept {
+    __x.swap(__y);
+}
+
+template <typename _Tp, typename _Alloc, typename _Predicate>
+typename deque<_Tp, _Alloc>::size_type erase_if(deque<_Tp, _Alloc>& __cont, _Predicate __pred) {
+    const auto __osz = __cont.size();
+    __cont.erase(std::remove_if(__cont.begin(), __cont.end(), __pred), __cont.end());
+    return __osz - __cont.size();
+}
+template <typename _Tp, typename _Alloc, typename _Up>
+typename deque<_Tp, _Alloc>::size_type erase(deque<_Tp, _Alloc>& __cont, const _Up& __value) {
+    const auto __osz = __cont.size();
+    __cont.erase(std::remove(__cont.begin(), __cont.end(), __value), __cont.end());
+    return __osz - __cont.size();
+}
+
+namespace pmr {
+template <typename _Tp>
+using deque = std::deque<_Tp, polymorphic_allocator<_Tp>>;  // not modelled (static_assert: fallback)
+}  // namespace pmr
+
+}  // namespace std
+
+#endif
