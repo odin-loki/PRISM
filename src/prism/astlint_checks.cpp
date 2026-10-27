@@ -578,6 +578,8 @@ struct Ctx {
     }
 };
 
+const json* function_body(const json* decl);
+
 struct BodySlice {
     std::string_view text;
     long long start = -1;
@@ -1599,7 +1601,7 @@ struct Checker {
         std::size_t size;
     };
 
-    const json* sizeof_operand(const json& n) {
+    const json* sizeof_operand(const json& n) const {
         const auto& sz = strip_all(n);
         if (kind(sz) != "UnaryExprOrTypeTraitExpr" || str_field(sz, "name") != "sizeof" || n_children(sz) == 0)
             return nullptr;
@@ -2549,6 +2551,7 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
     std::map<LockKey, std::optional<bool>> held;
     for (auto& e : seq) {
         if (e.release) {
+            if (auto lock_name = lock_of(e.key.first)) held[{*lock_name, e.key.second}] = false;
             auto it = held.find(e.key);
             if (it != held.end() && it->second == false) {
                 ck.add(*e.at, "LOCK-DOUBLE-UNLOCK",
@@ -3167,7 +3170,7 @@ struct Walker {
 
     Walker(Ctx& c, Fn& f) : cx(c), fn(f), ck{c, f} {}
 
-    bool missing_return_tail_ok(const json& stmt) const {
+    bool missing_return_tail_ok(const json& stmt) {
         if (kind(stmt_simple_tail(stmt)) == "ReturnStmt") return true;
         if (fatal_tail_callee(stmt)) return true;
         if (terminates(stmt)) return true;
