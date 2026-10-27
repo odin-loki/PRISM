@@ -472,8 +472,14 @@ TEST_CASE("agent: RLEF repair with a replaceable BMC oracle; a proof is about th
     chat.next = 0;
     auto bounded = sd::rlef_repair_with(fail, cfg, [](const std::string&) { return std::string("BOUNDED"); });
     REQUIRE(bounded.size() == 1);
-    CHECK(bounded[0].status == prism::laws::CLEAN);  // ran and passed: CLEAN, never PROVED
+    CHECK(bounded[0].status == prism::laws::HYPOTHESIS);  // score >= 3, no BMC proof
+    CHECK(bounded[0].strength == prism::laws::STRENGTH_READS);
+    CHECK(bounded[0].message.find("best score") != std::string::npos);
     CHECK(bounded[0].message.find("not a proof") != std::string::npos);
+    CHECK(bounded[0].extra.count("history") == 1);
+    CHECK(bounded[0].extra.count("best") == 1);
+    CHECK(bounded[0].status != prism::laws::PROVED);
+    CHECK(bounded[0].status != prism::laws::PROVED_UNBOUNDED);
     chat.next = 0;
     auto thrown = sd::rlef_repair_with(fail, cfg, [](const std::string&) -> std::string { throw std::runtime_error("x"); });
     REQUIRE(thrown.size() == 1);

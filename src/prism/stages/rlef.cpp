@@ -196,9 +196,12 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
         messages.push_back({"assistant", r.text});
         messages.push_back({"user", result.dump().substr(0, 1500)});
     }
+    // A sandbox score, including best_score >= 3, is not a proof of the scanned
+    // code or of the patch. The row stays HYPOTHESIS (Law 4). The proved
+    // candidate returned above is the only path that records patch_verdict.
     Finding f;
     f.stage = "repair";
-    f.status = best_score >= 3 ? std::string(laws::CLEAN) : std::string(laws::HYPOTHESIS);
+    f.status = std::string(laws::HYPOTHESIS);
     f.message = "RLEF best score " + std::to_string(best_score) + " over " + std::to_string(history.size()) +
                 " rounds (not a proof)";
     f.strength = std::string(laws::STRENGTH_READS);
