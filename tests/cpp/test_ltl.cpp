@@ -208,6 +208,33 @@ TEST_CASE("ltl fsm: one named case plus default is a machine; default feeds unma
     CHECK(bad.status == std::string(laws::FAILED));
 }
 
+TEST_CASE("ltl fsm: brace span ignores outside cases; (DEST) on state, p->state, obj.state is an edge") {
+    // A case label before the switch is not part of the machine.
+    auto tight = prism::extract_ltl_fsm(
+        "case OUTSIDE: ;\n"
+        "switch(state){case A:state=(B);break;default:state=(A);break;}");
+    REQUIRE(tight.has_value());
+    CHECK(std::find(tight->cases.begin(), tight->cases.end(), "OUTSIDE") == tight->cases.end());
+    CHECK(std::find(tight->states.begin(), tight->states.end(), "OUTSIDE") == tight->states.end());
+    CHECK(trans_set(*tight) == std::set<Trans>{{"A", "B"}, {"B", "A"}});
+    CHECK(check("G (state == A -> X (state == B))", *tight).status == std::string(laws::PROVED));
+    CHECK(check("G (state == B -> X (state == A))", *tight).status == std::string(laws::PROVED));
+    CHECK(check("G (state == A -> X (state == A))", *tight).status == std::string(laws::FAILED));
+
+    auto arrow = prism::extract_ltl_fsm(
+        "switch (p->state) { case A: p->state = (B); break; default: p->state = (A); break; }");
+    REQUIRE(arrow.has_value());
+    CHECK(trans_set(*arrow) == std::set<Trans>{{"A", "B"}, {"B", "A"}});
+
+    auto dot = prism::extract_ltl_fsm(
+        "switch (obj.state) { case ONLY: obj.state = (OTHER); break; default: obj.state = (ONLY); break; }");
+    REQUIRE(dot.has_value());
+    CHECK(dot->cases.size() == 1);
+    CHECK(trans_set(*dot) == std::set<Trans>{{"ONLY", "OTHER"}, {"OTHER", "ONLY"}});
+    CHECK_FALSE(trans_set(*dot).contains({"ONLY", "ONLY"}));
+    CHECK_FALSE(trans_set(*dot).contains({"OTHER", "OTHER"}));
+}
+
 TEST_CASE("ltl fsm: a nested switch (ev) in an arm keeps the state; its labels are not states") {
     const char* src =
         "switch (state) {\n"
