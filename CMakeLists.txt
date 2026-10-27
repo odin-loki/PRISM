@@ -706,6 +706,7 @@ if(PRISM_TESTS)
     tests/cpp/test_checkers_c.cpp
     tests/cpp/test_gen_tables.cpp
     tests/cpp/test_bmc_svcomp.cpp
+    tests/cpp/test_bmc_harness.cpp
     tests/cpp/test_havoc.cpp
     tests/cpp/test_verdict_repo.cpp
     tests/cpp/test_diff.cpp
