@@ -59,6 +59,11 @@ public:
     bool try_lock_shared() noexcept {
         if (_M_exclusive)
             return false;
+        // A wrapping increment would make the count look empty.
+        if (_M_shared == static_cast<unsigned>(-1)) {
+            __prism_check(0, "FUNC-CONTRACT", "shared_mutex::try_lock_shared count would wrap");
+            return false;
+        }
         ++_M_shared;
         return true;
     }

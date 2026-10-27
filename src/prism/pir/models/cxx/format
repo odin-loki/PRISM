@@ -57,6 +57,12 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     if (__n > 0)
         __prism_check(__out != nullptr ? 1 : 0, "PTR-NULL-DEREF",
                       "format_to_n called with a null output pointer");
+    // This model writes decimal for "{}" only. Any other format is not a
+    // successful conversion of the int.
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
     const std::size_t __put = __len < __n ? __len : __n;
     if (__out != nullptr) {
         for (std::size_t __k = 0; __k < __put; ++__k) __out[__k] = __tmp[__k];

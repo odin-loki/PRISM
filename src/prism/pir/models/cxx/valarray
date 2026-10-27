@@ -127,6 +127,13 @@ private:
 
     // ::operator new of n elements. n == 0 is not a call.
     static value_type* _S_alloc(size_type __n) {
+        // A wrapped byte count must not become a short successful allocation.
+        const int __ok = (sizeof(value_type) != 0 &&
+                          __n <= (static_cast<size_type>(-1) / sizeof(value_type)))
+                             ? 1
+                             : 0;
+        __prism_check(__ok, "MEM-OOB-WRITE", "valarray allocation byte count overflows");
+        if (!__ok) __builtin_trap();
         return static_cast<value_type*>(::operator new(__n * sizeof(value_type)));
     }
 

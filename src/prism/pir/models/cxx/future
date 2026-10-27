@@ -93,6 +93,8 @@ public:
         const int __ok =
             (_M_state != nullptr && _M_state->_M_ready && !_M_state->_M_retrieved) ? 1 : 0;
         __prism_check(__ok, "CXX-FUTURE-GET", "future::get() with no stored value");
+        // No stored value: do not read a null state or a missing T.
+        if (!__ok) __builtin_trap();
         _M_state->_M_retrieved = true;
         _Tp __out(static_cast<_Tp&&>(*_M_state->_M_value));
         delete _M_state->_M_value;
