@@ -760,6 +760,20 @@ TEST_CASE("ai-assist predict: every solve logs a training line; an enabled model
     auto r4 = prism::solver::solve(c, (x & 3) == 7, o);
     CHECK(r4.kind == prism::solver::SolveResult::Unsat);
     CHECK(r4.note.find("(model") == std::string::npos);
+    // A certified request whose formula cannot be certified still keeps the
+    // rules. The model above names a leader; an extra SMT-LIB2 member makes
+    // it a race, so a learned lead would be noted "(model,".
+    o.extra_solvers = {{"prism-no-such-solver",
+                        {"prism-no-such-solver", "{input}"},
+                        prism::solver::ExternalSolver::Input::Smt2}};
+    auto mem = c.constant("mem", c.array_sort(c.bv_sort(8), c.bv_sort(8)));
+    auto idx = c.bv_const("i", 8);
+    auto r5 = prism::solver::solve(c, z3::select(mem, idx) == c.bv_val(1, 8), o);
+    CHECK(r5.kind == prism::solver::SolveResult::Sat);
+    CHECK(r5.note.find("scheduler:") != std::string::npos);
+    CHECK(r5.note.find("(model,") == std::string::npos);
+    CHECK(r5.note.find("not certifiable") != std::string::npos);
+    CHECK_FALSE(r5.certified);
 }
 
 // The SMT-LIB2 members (Bitwuzla) rejected most pir VCs: Z3 prints 1-argument
@@ -809,6 +823,78 @@ TEST_CASE("solver: the SMT-LIB2 copy for Bitwuzla is portable and equivalent") {
         CHECK(r.winner == "bitwuzla");
         CHECK(r.kind == prism::solver::SolveResult::Sat);  // model validated in Z3
     }
+}
+
+// The file Bitwuzla reads is external_smt2. Z3's benchmark printer emits
+// (check-sat); a tactic command in a script is still removed, and a
+// 0-argument and/or is not printed.
+TEST_CASE("solver: Bitwuzla SMT-LIB2 dialect has no Z3 tactic") {
+    const char* tactic_script =
+        "(set-logic QF_BV)\n"
+        "(declare-fun x () (_ BitVec 8))\n"
+        "(assert (or x))\n"
+        "(check-sat-using (then simplify bit-blast smt))\n"
+        "(apply (using-params simplify :pull-cheap-ite true))\n"
+        "(bit-blast)\n"
+        "(tseitin-cnf)\n"
+        "(qfbv)\n"
+        "(exit)\n";
+    const auto cleaned = prism::solver::detail::bitwuzla_dialect(tactic_script);
+    for (const char* w : {"check-sat-using", "bit-blast", "using-params", "simplify", "tseitin-cnf", "qfbv"})
+        CHECK(cleaned.find(w) == std::string::npos);
+    CHECK(cleaned.find("(check-sat)") != std::string::npos);
+    CHECK(cleaned.find("(assert (or x))") != std::string::npos);
+    CHECK(cleaned.find("(declare-fun x () (_ BitVec 8))") != std::string::npos);
+    CHECK(cleaned.find("(set-logic QF_BV)") != std::string::npos);
+    CHECK(cleaned.find("(exit)") != std::string::npos);
+    // Parentheses inside a quoted symbol or a string stay put, so a tactic
+    // word there is the formula's text, and the real (check-sat) after it stays.
+    const char* quoted =
+        "(assert (let ((|a(b)| \"(check-sat-using bit-blast)\")) true))\n"
+        "(check-sat)\n";
+    const auto kept = prism::solver::detail::bitwuzla_dialect(quoted);
+    CHECK(kept.find("check-sat-using") != std::string::npos);
+    CHECK(kept.find("bit-blast") != std::string::npos);
+    CHECK(kept.find("(check-sat)\n") != std::string::npos);
+
+    z3::context c;
+    auto x = c.bv_const("x", 8);
+    z3::expr_vector one(c);
+    one.push_back(x == c.bv_val(1, 8));
+    Z3_ast one_a[1] = {one[0]};
+    z3::expr unary_or(c, Z3_mk_or(c, 1, one_a));
+    const auto or_script = prism::solver::detail::external_smt2(unary_or, "QF_BV");
+    CHECK(or_script.find("(or") == std::string::npos);
+    CHECK(or_script.find("(check-sat)") != std::string::npos);
+    CHECK(or_script.find("check-sat-using") == std::string::npos);
+    CHECK(or_script.find("bit-blast") == std::string::npos);
+
+    z3::expr ovf(c, Z3_mk_bvmul_no_overflow(c, x, x, true));
+    const auto ovf_script = prism::solver::detail::external_smt2(ovf, "QF_BV");
+    for (const char* w : {"check-sat-using", "bit-blast", "tseitin-cnf", "qfbv", "bvsmul_noovfl", "bvsmul_noudfl",
+                          "bvumul_noovfl"})
+        CHECK(ovf_script.find(w) == std::string::npos);
+    CHECK(ovf_script.find("(check-sat)") != std::string::npos);
+    CHECK(ovf_script.find("(set-logic QF_BV)") != std::string::npos);
+
+    z3::expr empty_and(c, Z3_mk_and(c, 0, nullptr));
+    z3::expr empty_or(c, Z3_mk_or(c, 0, nullptr));
+    {
+        z3::solver s(c);
+        s.add(prism::solver::detail::portable_smt2(empty_and) != c.bool_val(true));
+        CHECK(s.check() == z3::unsat);
+    }
+    {
+        z3::solver s(c);
+        s.add(prism::solver::detail::portable_smt2(empty_or) != c.bool_val(false));
+        CHECK(s.check() == z3::unsat);
+    }
+    const auto and_script = prism::solver::detail::external_smt2(empty_and, "QF_BV");
+    const auto or0_script = prism::solver::detail::external_smt2(empty_or, "QF_BV");
+    CHECK(and_script.find("and") == std::string::npos);
+    CHECK(or0_script.find("or") == std::string::npos);
+    CHECK(and_script.find("(check-sat)") != std::string::npos);
+    CHECK(or0_script.find("(check-sat)") != std::string::npos);
 }
 
 // Data collection for `prism_ai predict` (roadmap 3.1 / 9.3 measurement).

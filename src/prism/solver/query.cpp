@@ -49,8 +49,18 @@ z3::expr portable_smt2(const z3::expr& f) {
         auto [e, expanded] = stack.back();
         stack.pop_back();
         if (memo.count(e.id())) continue;
-        if (!e.is_app() || e.num_args() == 0) {
+        if (!e.is_app()) {
             memo.emplace(e.id(), e);
+            continue;
+        }
+        // 0-argument `and`/`or` are apps, so they must be rewritten here.
+        // Z3 prints them `(and )` / `(or )`, which Bitwuzla rejects. The
+        // identities are true and false.
+        if (e.num_args() == 0) {
+            const auto k = e.decl().decl_kind();
+            if (k == Z3_OP_AND) memo.emplace(e.id(), f.ctx().bool_val(true));
+            else if (k == Z3_OP_OR) memo.emplace(e.id(), f.ctx().bool_val(false));
+            else memo.emplace(e.id(), e);
             continue;
         }
         if (!expanded) {
@@ -94,6 +104,133 @@ z3::expr portable_smt2(const z3::expr& f) {
         }
     }
     return memo.at(f.id());
+}
+
+namespace {
+
+bool plain_symbol(const std::string& n) {
+    return !n.empty() && n.find('|') == std::string::npos && n.find('\\') == std::string::npos;
+}
+
+// Named Z3 tactics and the `apply` command. Not SMT-LIB commands.
+// `check-sat-using` is rewritten to `(check-sat)` by bitwuzla_dialect.
+bool z3_tactic_command(std::string_view head) {
+    return head == "apply" || head == "simplify" || head == "bit-blast" || head == "smt" || head == "qfbv" ||
+           head == "qfbv-solver" || head == "then" || head == "and-then" || head == "or-else" || head == "par-or" ||
+           head == "using-params" || head == "try-for" || head == "tseitin-cnf" || head == "propagate-values" ||
+           head == "solve-eqs" || head == "elim-uncnstr" || head == "ctx-solver-simplify" || head == "nnf" ||
+           head == "aig";
+}
+
+std::string_view head_of(std::string_view cmd) {
+    std::size_t i = 0;
+    if (i < cmd.size() && cmd[i] == '(') ++i;
+    while (i < cmd.size() && std::isspace(static_cast<unsigned char>(cmd[i]))) ++i;
+    const std::size_t b = i;
+    while (i < cmd.size()) {
+        const unsigned char c = static_cast<unsigned char>(cmd[i]);
+        if (std::isspace(c) || cmd[i] == '(' || cmd[i] == ')') break;
+        ++i;
+    }
+    return cmd.substr(b, i - b);
+}
+
+// End offset of the s-expression starting at `open`, or npos if it is unclosed.
+// Strings ("") and quoted symbols (|...|) can hold parentheses; comments run
+// to the end of the line.
+std::size_t sexpr_end(std::string_view in, std::size_t open) {
+    int depth = 0;
+    bool in_str = false;
+    bool in_bar = false;
+    for (std::size_t i = open; i < in.size(); ++i) {
+        const char c = in[i];
+        if (in_str) {
+            if (c == '"') {
+                if (i + 1 < in.size() && in[i + 1] == '"') {
+                    ++i;
+                    continue;
+                }
+                in_str = false;
+            }
+            continue;
+        }
+        if (in_bar) {
+            if (c == '|') in_bar = false;
+            continue;
+        }
+        if (c == ';') {
+            while (i + 1 < in.size() && in[i + 1] != '\n') ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_str = true;
+            continue;
+        }
+        if (c == '|') {
+            in_bar = true;
+            continue;
+        }
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            --depth;
+            if (depth == 0) return i + 1;
+        }
+    }
+    return std::string_view::npos;
+}
+
+}  // namespace
+
+std::string bitwuzla_dialect(std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    for (std::size_t i = 0; i < in.size();) {
+        if (in[i] == ';') {
+            const std::size_t e = in.find('\n', i);
+            if (e == std::string_view::npos) {
+                out.append(in.substr(i));
+                break;
+            }
+            out.append(in.substr(i, e + 1 - i));
+            i = e + 1;
+            continue;
+        }
+        if (in[i] != '(') {
+            out.push_back(in[i]);
+            ++i;
+            continue;
+        }
+        const std::size_t end = sexpr_end(in, i);
+        if (end == std::string_view::npos) {
+            out.append(in.substr(i));
+            break;
+        }
+        const std::string_view cmd = in.substr(i, end - i);
+        const std::string_view head = head_of(cmd);
+        if (head == "check-sat-using") out += "(check-sat)";
+        else if (!z3_tactic_command(head)) out.append(cmd);
+        i = end;
+    }
+    return out;
+}
+
+std::string external_smt2(const z3::expr& f, std::string_view logic) {
+    const z3::expr portable = portable_smt2(f);
+    const std::string logic_owned(logic);
+    std::string txt = "(set-option :produce-models true)\n";
+    if (const char* printed = Z3_benchmark_to_smtlib_string(f.ctx(), "prism", logic_owned.c_str(), "unknown", "", 0,
+                                                            nullptr, portable))
+        txt += printed;
+    std::string names;
+    for (const auto& k : collect_consts(f)) {
+        if (!plain_symbol(const_name(k))) continue;
+        if (!names.empty()) names += ' ';
+        names += "|" + const_name(k) + "|";
+    }
+    if (!names.empty()) txt += "(get-value (" + names + "))\n";
+    txt += "(exit)\n";
+    return bitwuzla_dialect(txt);
 }
 
 }  // namespace detail

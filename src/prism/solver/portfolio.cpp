@@ -193,10 +193,6 @@ SmtAnswer parse_smt_output(std::string_view out) {
     return a;
 }
 
-bool plain_symbol(const std::string& n) {
-    return !n.empty() && n.find('|') == std::string::npos && n.find('\\') == std::string::npos;
-}
-
 // ------------------------------------------------------------------ the board
 enum class MemberKind { Z3, Smt2, Dimacs, Sls };
 
@@ -818,9 +814,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         }
     }
     // Roadmap 3.1 / 9.3 learned scheduler (solver/predict.cpp, docs/SOLVERS.md):
-    // order and head start only; certified requests keep the rules.
+    // order and head start only. Every certified request keeps the rules
+    // (feature estimates, then history), including one whose formula cannot
+    // be certified. `want_cert` is only the certificate attempt; the model
+    // stays off for the whole certified request.
     const char* why = "history";
-    if (!want_cert && predict::enabled(root)) {
+    if (!opt.certified && predict::enabled(root)) {
         const auto x = predict::query_features(ft);
         std::optional<std::size_t> best;
         for (std::size_t i = 0; i < members.size(); ++i)
@@ -875,17 +874,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const fs::path cnf_path = work / "query.cnf";
     const fs::path lrat_path = work / "proof.lrat";
     const bool need_smt = std::any_of(members.begin(), members.end(), [](const Member& mem) { return mem.kind == MemberKind::Smt2; });
-    if (need_smt) {
-        std::string txt = "(set-option :produce-models true)\n";
-        txt += Z3_benchmark_to_smtlib_string(c, "prism", ft.logic().c_str(), "unknown", "", 0, nullptr,
-                                             detail::portable_smt2(formula));
-        std::vector<std::string> names;
-        for (const auto& k : collect_consts(formula))
-            if (plain_symbol(const_name(k))) names.push_back("|" + const_name(k) + "|");
-        if (!names.empty()) txt += "(get-value (" + join(names, " ") + "))\n";
-        txt += "(exit)\n";
-        detail::write_file(smt_path, txt);
-    }
+    if (need_smt) detail::write_file(smt_path, detail::external_smt2(formula, ft.logic()));
 
     const double t_files = now_s();
     auto J = std::make_shared<Jobs>();
