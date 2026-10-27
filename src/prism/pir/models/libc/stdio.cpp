@@ -46,10 +46,13 @@ int fclose(FILE *f) {
     return prism_eof_or(0);
 }
 
-/* requires: buf writable for n bytes, f an open FILE */
+/* requires: when n > 0, buf is non-null and writable for n bytes.
+ * n <= 0 writes nothing. f is an open FILE. */
 char *fgets(char *buf, int n, FILE *f) {
     prism_file_ok(f);
-    if (n <= 0 || __VERIFIER_nondet_int()) return 0;
+    if (n <= 0) return 0;
+    __prism_check(buf != 0, "STR-NULL-ARG", "fgets() called with unchecked pointer parameter buf");
+    if (buf == 0 || __VERIFIER_nondet_int()) return 0;
     size_t len = __VERIFIER_nondet_ulong();
     __prism_assume(len < (size_t)n);
     __prism_havoc_bytes(buf, len);
@@ -59,11 +62,20 @@ char *fgets(char *buf, int n, FILE *f) {
 
 size_t fread(void *p, size_t size, size_t nmemb, FILE *f) {
     prism_file_ok(f);
+    /* Overflow of size * nmemb is not a short read. */
+    size_t nbytes = 0;
+    int ovf = __builtin_mul_overflow(size, nmemb, &nbytes);
+    if (ovf) {
+        __prism_check(0, "MEM-OOB-WRITE", "fread size * nmemb overflows");
+        __prism_assume(0);
+        return nbytes;
+    }
+    if (nbytes == 0) return 0;
+    __prism_check(p != 0, "STR-NULL-ARG", "fread() called with unchecked pointer parameter p");
+    if (p == 0) return 0;
     size_t k = __VERIFIER_nondet_ulong();
     __prism_assume(k <= nmemb);
-    size_t t;
-    if (__builtin_mul_overflow(k, size, &t)) return 0;
-    __prism_havoc_bytes(p, t);
+    if (k != 0) __prism_havoc_bytes(p, k * size);
     return k;
 }
 
