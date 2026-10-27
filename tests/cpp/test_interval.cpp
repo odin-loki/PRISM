@@ -190,3 +190,26 @@ TEST_CASE("interval: `int x =` with an empty initialiser reads as 0; huge litera
     check_silent(synth("unsigned long long m = 0xFFFFFFFFFFFFFFFF; return 0;", {}));
     check_silent(synth("return 99999999999999999999 > 0;", {}));
 }
+
+TEST_CASE("interval: empty initialiser is [0,0]; a literal past int64 is unencoded, not 0") {
+    // Exactly [0,0]: 1/x divides by zero, 1/(x-1) and 5/(x+1) do not. A
+    // skipped function would be silent on the first; a missing initialiser
+    // (the full range) would alarm on the second. Neither result is PROVED.
+    check_failed(synth("int x = ; return 1 / x;", {}), "INT-DIV-ZERO");
+    check_silent(synth("int x = ; return 1 / (x - 1);", {}));
+    check_failed(synth("for (int x = ;;) return 1 / x;", {}), "INT-DIV-ZERO");
+    check_silent(synth("for (int x = ;;) return 1 / (x - 1);", {}));
+    // Hex (both prefixes), octal 2^63, and a decimal past uint64 abort the
+    // function before the later div-zero. Reading them as 0 would report
+    // INT-DIV-ZERO. A literal that fits still reaches that division.
+    check_silent(synth("return 0x8000000000000000 + (1 / 0);", {}));
+    check_silent(synth("return 0X8000000000000000 + (1 / 0);", {}));
+    check_silent(synth("return 0x10000000000000000 + (1 / 0);", {}));
+    check_silent(synth("return 01000000000000000000000 + (1 / 0);", {}));
+    check_silent(synth("return 99999999999999999999 + (1 / 0);", {}));
+    check_silent(synth("return 1 / 0X10;", {}));
+    check_failed(synth("return 0x7FFFFFFFFFFFFFFF + (1 / 0);", {}), "INT-DIV-ZERO");
+    check_failed(synth("return 0X10 + (1 / 0);", {}), "INT-DIV-ZERO");
+    check_failed(synth("return 010 + (1 / 0);", {}), "INT-DIV-ZERO");
+    check_silent(synth("return 08 + (1 / 0);", {}));
+}

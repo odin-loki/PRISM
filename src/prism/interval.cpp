@@ -9,6 +9,7 @@
 #include <fstream>
 #include <format>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -16,6 +17,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -243,7 +245,7 @@ std::vector<std::string> tok(const std::string& src) {
     if (src.find(SCRUBBED_BYTE) != std::string::npos)
         throw ParseFail("UNENCODED: byte that is not UTF-8 text (read as 0x7F)");
     static Regex rx(
-        R"(0x[0-9a-fA-F]+(?:'[0-9a-fA-F]+)*|\d+(?:'\d+)*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
+        R"(0[xX][0-9a-fA-F]+(?:'[0-9a-fA-F]+)*|\d+(?:'\d+)*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:])");
     std::vector<std::string> out;
     for (auto& m : rx.finditer(src)) {
         out.push_back(m.text);
@@ -554,6 +556,29 @@ R binop(Engine&, const R& a, const std::string& op, const R& b) {
     throw ParseFail("op " + op);
 }
 
+// Decimal, leading-0 octal, or 0x/0X hex. from_chars does not throw, so a
+// literal that does not fit cannot escape the stage as std::stoll /
+// std::stoull. Overflow is the unencoded-literal failure, never the value 0.
+uint64_t parse_uint_token(const std::string& t) {
+    std::string_view digits(t);
+    int base = 10;
+    if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
+        base = 16;
+        digits.remove_prefix(2);
+    } else if (digits.size() > 1 && digits[0] == '0') {
+        base = 8;
+        digits.remove_prefix(1);
+    }
+    if (digits.empty()) throw ParseFail("nud " + t);
+    uint64_t v = 0;
+    const char* const first = digits.data();
+    const char* const last = first + digits.size();
+    auto [ptr, ec] = std::from_chars(first, last, v, base);
+    if (ec == std::errc::result_out_of_range) throw ParseFail("64-bit literal unencoded");
+    if (ec != std::errc{} || ptr != last) throw ParseFail("nud " + t);
+    return v;
+}
+
 struct Parser {
     Engine& e;
     std::vector<std::string> tokens;
@@ -657,17 +682,8 @@ struct Parser {
             e.set(name, nxt);
             return nxt;
         }
-        if (is_digit_tok(t) || t.starts_with("0x")) {
-            uint64_t v = 0;
-            try {
-                std::size_t used = 0;
-                v = std::stoull(t, &used, 0);
-                if (used != t.size()) throw ParseFail("nud " + t);
-            } catch (const ParseFail&) {
-                throw;
-            } catch (...) {
-                throw ParseFail("64-bit literal unencoded");
-            }
+        if (is_digit_tok(t) || t.starts_with("0x") || t.starts_with("0X")) {
+            uint64_t v = parse_uint_token(t);
             // Integer suffix (the tokenizer splits `16U` / `5ULL`): U makes the
             // literal unsigned, L / LL makes it 64-bit (LP64). Without a
             // suffix a decimal constant above INT_MAX is a long; a hex or
@@ -847,8 +863,15 @@ void decl(Engine& e, std::string stmt_s) {
     if (ct->u) e.unsigned_names.insert(name);
     if (ct->w >= 64) e.wide_names.insert(name);
     else e.wide_names.erase(name);
-    // `int x =` with nothing after it reads as 0, like any empty expression.
-    e.set(name, has_init ? eval_expr(e, init) : top(e.width_of(name)));
+    // `int x =` reaches here with an empty initialiser string. That is the
+    // constant 0. No `=` is a missing initialiser: the full range of the
+    // type, not 0.
+    if (!has_init) {
+        e.set(name, top(e.width_of(name)));
+    } else {
+        auto expr = strip(init);
+        e.set(name, eval_expr(e, expr.empty() ? std::string("0") : expr));
+    }
 }
 
 void assign(Engine& e, std::string stmt_s) {
