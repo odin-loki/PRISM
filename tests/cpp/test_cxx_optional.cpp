@@ -5,6 +5,7 @@
 //
 // An engaged optional yields the stored T. value() / operator* / operator-> on
 // an empty optional are a __prism_check, and the model does not print a fake T.
+// value_or(99) is the stored T when engaged, and 99 when disengaged.
 
 #include <doctest/doctest.h>
 
@@ -156,6 +157,24 @@ fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_model
     return out;
 }
 
+fs::path build_value_or(const std::string& cxx, const fs::path& tmp, const fs::path& src, bool with_models) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = tmp / (with_models ? "value_or_trace.model" : "value_or_trace.lib");
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(src.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    return out;
+}
+
 std::vector<std::string> run_lines(const fs::path& exe) {
     std::string stdout_text;
     REQUIRE(run_cmd({exe.string()}, &stdout_text));
@@ -229,4 +248,65 @@ TEST_CASE("cxx optional model: engaged value is the stored T and empty value() i
     CHECK(disengaged_is_check(mod, "empty", "optional::value()"));
     CHECK(disengaged_is_check(mod, "star", "optional::operator*"));
     CHECK(disengaged_is_check(mod, "arrow", "optional::operator->"));
+}
+
+TEST_CASE("cxx optional model: value_or returns the stored T or the argument") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = c.tmp / "optional_value_or.cpp";
+    // Box has no default constructor. value_or(99) has to convert 99; it
+    // cannot value-initialize a Box. The stored value is 42, not the fallback.
+    std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <optional>\n"
+                          "struct Box {\n"
+                          "    int v;\n"
+                          "    Box() = delete;\n"
+                          "    Box(int x) : v(x) {}\n"
+                          "};\n"
+                          "int main() {\n"
+                          "    std::optional<int> engaged(42);\n"
+                          "    std::optional<int> empty;\n"
+                          "    std::printf(\"engaged %d\\n\", engaged.value_or(99));\n"
+                          "    std::printf(\"empty %d\\n\", empty.value_or(99));\n"
+                          "    std::printf(\"moved %d\\n\", std::optional<int>(42).value_or(99));\n"
+                          "    std::printf(\"movedE %d\\n\", std::optional<int>().value_or(99));\n"
+                          "    std::optional<Box> held(Box(42));\n"
+                          "    std::optional<Box> none;\n"
+                          "    std::printf(\"held %d\\n\", held.value_or(99).v);\n"
+                          "    std::printf(\"none %d\\n\", none.value_or(99).v);\n"
+                          "    return 0;\n"
+                          "}\n";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "optional").string())) != std::string::npos);
+
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true));
+    CHECK(lib == mod);
+    REQUIRE(mod.size() == 6);
+    CHECK(mod[0] == "engaged 42");
+    CHECK(mod[1] == "empty 99");
+    CHECK(mod[2] == "moved 42");
+    CHECK(mod[3] == "movedE 99");
+    CHECK(mod[4] == "held 42");
+    CHECK(mod[5] == "none 99");
+    for (const auto& line : mod) {
+        CHECK(line != "engaged 99");
+        CHECK(line != "engaged 0");
+        CHECK(line != "empty 0");
+        CHECK(line != "moved 99");
+        CHECK(line != "movedE 0");
+        CHECK(line != "held 99");
+        CHECK(line != "held 0");
+        CHECK(line != "none 0");
+    }
 }

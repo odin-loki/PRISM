@@ -14,10 +14,14 @@
 // disengaged call is a precondition failure (__prism_check, CXX-OPTIONAL-NULL).
 // It does not return a default T and it does not invent a value.
 //
-// value_or, emplace, transform, and_then, or_else (and, or), comparison, and
-// hash are not declared. A use of them fails to compile against this header
-// and pir falls back to libstdc++. nullopt, in_place, swap, make_optional,
-// and assignment from T are not declared either, so those uses fall back too.
+// value_or returns that stored T when the optional is engaged. When it is
+// disengaged, value_or returns the argument, converted to T. It does not
+// return T{} and it does not invent a value that was not passed in.
+//
+// emplace, transform, and_then, or_else (and, or), comparison, and hash are
+// not declared. A use of them fails to compile against this header and pir
+// falls back to libstdc++. nullopt, in_place, swap, make_optional, and
+// assignment from T are not declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_OPTIONAL
 #define _PRISM_MODEL_OPTIONAL 1
 #define _GLIBCXX_OPTIONAL 1  // libstdc++'s <optional> include guard: never both
@@ -94,6 +98,19 @@ public:
         __prism_check(_M_engaged ? 1 : 0, "CXX-OPTIONAL-NULL",
                       "optional::value() on a disengaged optional");
         return _M_storage._M_value;
+    }
+
+    // Engaged: the stored T, not the fallback. Disengaged: the argument
+    // converted to T. The inactive T is not read, and T{} is not built.
+    template <typename _Up>
+    _Tp value_or(_Up&& __u) const& {
+        if (_M_engaged) return _M_storage._M_value;
+        return static_cast<_Tp>(static_cast<_Up&&>(__u));
+    }
+    template <typename _Up>
+    _Tp value_or(_Up&& __u) && {
+        if (_M_engaged) return static_cast<_Tp&&>(_M_storage._M_value);
+        return static_cast<_Tp>(static_cast<_Up&&>(__u));
     }
 };
 
