@@ -133,6 +133,11 @@ inline void path::_M_free() noexcept {
 inline void path::_M_own(const char* __s, std::size_t __n) {
     char* __p = nullptr;
     if (__n != 0) {
+        // n + 1 must fit. A wrapped size is not a successful allocation.
+        if (__n == static_cast<std::size_t>(-1)) {
+            __prism_check(0, "MEM-OOB-WRITE", "std::filesystem::path length does not fit");
+            __builtin_trap();
+        }
         __p = static_cast<char*>(::operator new(__n + 1));
         for (std::size_t __i = 0; __i < __n; ++__i) __p[__i] = __s[__i];
         __p[__n] = '\0';
@@ -252,6 +257,11 @@ inline path& path::operator/=(const path& __p) {
         --__rn;
     } else if (!__left_slash && !__right_slash) {
         __extra = 1;
+    }
+    if (__extra > static_cast<std::size_t>(-1) - __rn ||
+        _M_len > static_cast<std::size_t>(-1) - (__extra + __rn)) {
+        __prism_check(0, "MEM-OOB-WRITE", "std::filesystem::path join length does not fit");
+        __builtin_trap();
     }
     const std::size_t __n = _M_len + __extra + __rn;
     path __joined;
