@@ -342,12 +342,15 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
             }
         }
         if (rec.status != laws::ERROR && decreases && has_loop(fn.body)) {
-            // Baseline = the same check minus only the decreases clause; the
-            // invariant stays (the Python engine dropped both). With an
-            // invariant the baseline is at best PROVED-ASSUMING, so
-            // closed_without is false and decreases_assumed follows the
-            // proof. That is the conservative reading: the flag can only
-            // lower a status, never raise one.
+            // Baseline = the same requires and ensures, minus only decreases.
+            // The invariant stays. Python's bmc_function_with_assume(...,
+            // decreases=None) leaves invariant at its default None, so that
+            // baseline drops the invariant too. Copying that default is not
+            // done: the main query still instruments decreases. When an
+            // invariant is present, bmc_with_assume rewrites a proof to
+            // PROVED-ASSUMING, so this baseline is not PROVED-UNBOUNDED.
+            // decreases_assumed can only lower a status. It does not skip the
+            // decreases check.
             auto baseline = bmc_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
             bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
             auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;

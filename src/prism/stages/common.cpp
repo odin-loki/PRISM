@@ -328,6 +328,8 @@ void parse_acsl_body(std::string body, Spec& spec) {
     }
     std::istringstream ss(body);
     std::string part;
+    // (?i) is local to this keyword pattern, not a CASELESS compile of the
+    // other patterns in this file. The value subpattern has no cased letters.
     static Regex kw("(?i)^(requires|ensures|invariant|decreases|assigns)\\s+(.+)$");
     while (std::getline(ss, part, ';')) {
         part = strip(part);
@@ -421,7 +423,8 @@ Spec parse_comments(const FunctionInfo& fn) {
         region_body += lines.at(static_cast<std::size_t>(i));
     }
     for (auto& b : extract_acsl_blocks(region_body)) parse_acsl_body(b, spec);
-    // `// Ensures:` and `/*@ Requires ... */` are clauses too: keywords are caseless.
+    // `// Ensures:` and `/*@ Requires ... */` are clauses too. (?i) is on this
+    // pattern only; kind is folded after the match.
     static Regex clause("(?i)(?://|/\\*|\\*)\\s*(requires|ensures|invariant|decreases|diff)\\s*:\\s*(.+?)(?:\\*/)?\\s*$");
     for (int i = start; i < end; ++i) {
         auto ln = lines.at(static_cast<std::size_t>(i));
