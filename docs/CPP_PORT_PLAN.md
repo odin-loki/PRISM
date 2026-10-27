@@ -25,7 +25,7 @@ jobs removed; doctest + `prism_tests` only.**
 - **CI:** no engine pytest job; lint fastpath + e2e smokes live in
   `prism_tests`. BenchExec smoke on the `cpp` job. `conformance.yml` /
   `self-check.yml` → `prism-qa`; supply-chain builds `prism-deps`. Gating
-  workflows: see latest green **PRISM CI** on `main` (audit `9acaeeeba`); [ENGINEERING_BACKLOG.md](ENGINEERING_BACKLOG.md) tracks PARTIAL rows.
+  workflows: latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068)). [ENGINEERING_BACKLOG.md](ENGINEERING_BACKLOG.md) tracks PARTIAL rows.
 - **port/ai-gen-tools:** **done** on `main` (`src/tools/prism_ai/`, `gbdt.cpp`, CMake `grammars.inc` / `predict_default.inc`).
 - **Still open:** owner-only items in `ROADMAP_STATUS.md`; Phase 4 docs/assurance sweep (`prism-qa docs-check`).
   **Phase 6 (Z3 without Python)** is **done** — see phase-6 section.
@@ -262,9 +262,10 @@ lands with a doctest.
 - **CLI**: move argument parsing into a testable
   `parse_cli(std::span<const char*>)` in `prism_core` (`--flag=value`
   forms, the flags only Python accepted).
-- **polyglot**: the C++ stage still shells out to `python3` for JSON/TOML
-  syntax (`SYNTAX_HELPER`, `polyglot.cpp:78`). Replace it with
-  `nlohmann::json::parse` and a C++ TOML reader.
+- **polyglot**: JSON and TOML syntax are built in (`json_syntax`, `toml_syntax`
+  in `polyglot.cpp`). Python *source* syntax still shells out to the scanned
+  project's `python3` (`PY_COMPILE`); that stays an external tool, `NOTRUN`
+  when Python is absent.
 
 **Intentional C++-only divergences.** Phase 1 fixes gaps in C++ only
 (`prism/*.py` is frozen until phase 5 deletes it), so these behaviours differ

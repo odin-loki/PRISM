@@ -11,10 +11,11 @@ BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
 **Epic status:** phases 1–8 (5a / 5b / 5c included) are **done**. Phase 6 (QA on Windows)
 is closed: the label self-check (UBSan+ASan replay) sample **passes** on the `clang-cl`
 smoke, and is `NOTRUN` (logged, Law 1) wherever no clang links the sanitizers, which is
-the case on the MSVC `cl` smoke. Latest green CI on `main` is `7b652bf9f`: run
-[`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603) passed all
-nine jobs (four Windows smokes, Qt GUI, Linux `prism_tests`, licence firewall,
-SARIF self-check), including native `cl` smokes after the LP64 libc shims
+the case on the MSVC `cl` smoke. Latest green CI on `main` is `4eb0b4ab1`: run
+[`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068) completed
+success. The nine-job breakdown (four Windows smokes, Qt GUI, Linux `prism_tests`,
+licence firewall, SARIF self-check) was checked on the earlier green `7b652bf9f`
+([`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603)), including native `cl` smokes after the LP64 libc shims
 (`src/prism/pir/models/libc/shim/`, `lp64_clang_driver_flags`) and honest `NOTRUN`
 rows for conc C11 atomics, `leanbb` without a PE `prism-bitblast`, and repair when
 only `cl` is on PATH. What is left is listed in [§7](#7-remaining-work-backlog).
@@ -214,7 +215,7 @@ String-only BMC/astlint files: **0** type migration expected.
 
 ## 6. Acceptance criteria
 
-Status on `main` @ `7b652bf9f` (latest green, run [`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603), all nine jobs success; job-log details below were read from run [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) on `1f59511ab` where noted): phases **5a**, **5b**, **5c**, **6**, **7** and
+Status on `main` @ `4eb0b4ab1` (latest green, run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068), workflow success; the nine-job writeup below was checked on `7b652bf9f` / [`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603), and job-log details were read from run [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) on `1f59511ab` where noted): phases **5a**, **5b**, **5c**, **6**, **7** and
 **8** below are **met**. Evidence: run
 [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356)
 (`PRISM CI` @ `1f59511ab`) finished **success** on all jobs: `Windows compile smoke`

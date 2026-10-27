@@ -10,7 +10,7 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 
 **2026-10-27 (corpus consolidation follow-up):** `main` was red after `4effa335` moved corpora to `testdata/` without updating every doctest path. Fixed: `tests/conformance` → `testdata/conformance` in QA/SV-COMP tools; `manifest_commit()` reads `third_party/MANIFEST.toml` from `PRISM_SOURCE_DIR`; planted inline corpus under `testdata/planted/`; PIR Lean export `L memcpy` line matches `proofs/refinement/fixtures/intrinsics.pirl` (width + memmove flag only). Local `./build/prism_tests`: **1023 passed**, 1 skipped (solver bench).
 
-**Do not bump** [ROADMAP_STATUS.md](ROADMAP_STATUS.md) D7 / [MSVC_PORT.md](MSVC_PORT.md) “latest green” until **PRISM CI** on the merge commit finishes **success** (Linux `prism_tests` + Windows smokes + conformance gate).
+Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068)), newer than the old citation `7b652bf9f`. `4effa335e` and the path-fix commits `3316cf909` / `e59a8b3df` are **not** green. Do not move the green pointer onto those commits until PRISM CI succeeds.
 
 ## 2.6 Standard library (libc + C++ models)
 
