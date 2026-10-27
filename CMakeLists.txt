@@ -704,6 +704,7 @@ if(PRISM_TESTS)
     tests/cpp/test_diff.cpp
     tests/cpp/test_journal_confidence.cpp
     tests/cpp/test_thread_taint.cpp
+    tests/cpp/test_thread.cpp
     tests/cpp/test_wp_harness.cpp
     tests/cpp/test_concrete.cpp
     tests/cpp/test_concolic.cpp
