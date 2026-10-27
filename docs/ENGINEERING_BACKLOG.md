@@ -65,8 +65,8 @@ Env: `PRISM_CERTIFY_BUDGET`, `PRISM_CERT_CACHE_MAX`, `PRISM_CHECKER_MEM` (`src/p
 
 | Priority | Task |
 |----------|------|
-| 1 | **ILP32** (`--data-model ILP32`) — largest lever on 203/417 `unknown`s |
-| 2 | Proof yield on remaining `unknown`s (assert forms, invariants, timeouts) |
+| 1 | **ILP32** — **Done (bmc + replay):** `Config::data_model`, `abi_model.hpp`, encoder + `-m32` replay; `pir` NOTRUN on ILP32. **Next:** full `pir` ILP32 (`kPtrW`, `-m32` IR). Re-run `prism svcomp score` for points. |
+| 2 | **Witness yield** — **Partial:** `correctness_invariants` exports when `PROVED*` carries `invariant_loops` + invariants/conjuncts even if `k_induction` is not exactly `closed-invariants`. Remaining: non-empty witnesses on more `true` tasks (Houdini / timeouts). |
 | 3 | Release tarball + `fm-tools.yml` + BenchExec upstream `prism.py` |
 | 4 | CI: `prism svcomp score` + witness validation (0 incorrect) |
 | 5 | Property scope (memsafety vs overflow+reach only) |

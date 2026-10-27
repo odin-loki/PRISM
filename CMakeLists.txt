@@ -203,6 +203,7 @@ set(PRISM_SRC
   src/prism/ai/review.cpp
   src/prism/ai/regress.cpp
   src/prism/ai/triage.cpp
+  src/prism/abi_model.cpp
   src/prism/bmc.cpp
   src/prism/checkers_api.cpp
   src/prism/checkers_core.cpp

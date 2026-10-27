@@ -1041,7 +1041,7 @@ TEST_CASE("taskdef: the YAML subset reader") {
 
 // ---------------------------------------------------------------- one task end to end
 
-TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown before any analysis") {
+TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run the bmc stage") {
     TempDir d;
     auto task = d.write("t.c", "int main(void) { long x = 1; return (int)x; }\n");
     auto prp = d.write("p.prp", "CHECK( init(main()), LTL(F end) )\n");
@@ -1053,9 +1053,8 @@ TEST_CASE("svcomp solve: unsupported properties and ILP32 width answer unknown b
     CHECK(oc.decision.reason == "unsupported property file p.prp");
     opt.data_model = "ilp32";
     oc = solve(task, props_dir() / "no-overflow.prp", opt);
-    CHECK(oc.decision.answer == "unknown");
-    CHECK(oc.decision.reason == "ILP32 task uses width-dependent types; PRISM's encoders are LP64");
-    CHECK_FALSE(fs::exists(d.path / "out"));
+    CHECK(fs::exists(d.path / "out" / "prism-out" / "report.json"));
+    CHECK(oc.decision.answer == "true");
     CHECK(version_string() == prism::PRISM_VERSION);
 }
 

@@ -18,6 +18,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -34,9 +35,9 @@ std::vector<prism::FunctionInfo> parse_source(const std::string& name, const std
 }
 
 [[maybe_unused]] std::map<std::string, prism::Finding> bmc_run(const std::string& name, const std::string& src,
-                                                               int unwind = 8) {
+                                                               int unwind = 8, std::string_view data_model = "LP64") {
     std::map<std::string, prism::Finding> by;
-    for (auto& f : prism::run_bmc(parse_source(name, src), unwind))
+    for (auto& f : prism::run_bmc(parse_source(name, src), unwind, false, data_model))
         if (f.function) by[*f.function] = f;
     return by;
 }
@@ -515,5 +516,25 @@ int g_3d(int i) {
     CHECK(by["g_3d"].status == kProved);
     // string rows are not modelled (never a wrong element value)
     CHECK(by["g_str"].status == kHarness);
+}
+
+TEST_CASE("bmc: ILP32 encodes long and size_t at 32 bits") {
+    const char* src =
+        "long __VERIFIER_nondet_long(void);\n"
+        "void __VERIFIER_assume(int);\n"
+        "int main(void) {\n"
+        "  long a = __VERIFIER_nondet_long();\n"
+        "  __VERIFIER_assume(a == 2147483647L);\n"
+        "  long b = a + 1L;\n"
+        "  (void)b;\n"
+        "  return 0;\n"
+        "}\n";
+    auto lp = bmc_run("lp64.c", src, 8, "LP64");
+    auto ilp = bmc_run("ilp32.c", src, 8, "ILP32");
+    REQUIRE(lp.contains("main"));
+    REQUIRE(ilp.contains("main"));
+    CHECK(ilp["main"].status == kFailed);
+    CHECK(ilp["main"].cls == "INT-SIGNED-OVF");
+    CHECK(lp["main"].status == kProved);
 }
 #endif

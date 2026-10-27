@@ -10,7 +10,7 @@ using namespace detail;
 
 namespace {
 
-// Types whose width differs between ILP32 and LP64: PRISM's encoders are LP64.
+// Types whose width differs between ILP32 and LP64 (bmc uses Config::data_model).
 const std::vector<std::string> WIDTH_TYPES = {"long", "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t"};
 
 std::string sub(const Regex& re, const std::string& text, const std::string& repl) {

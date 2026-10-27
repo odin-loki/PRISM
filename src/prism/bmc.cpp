@@ -1,3 +1,4 @@
+#include "prism/abi_model.hpp"
 #include "prism/stages.hpp"
 #include "prism/ai.hpp"
 #include "prism/astlint.hpp"
@@ -3055,6 +3056,8 @@ std::vector<std::string> split_comma(std::string_view s) {
 
 #ifdef PRISM_HAS_Z3
 
+AbiModel g_abi = abi_lp64();
+
 #include "bmc_encoder.inc"
 
 std::vector<int> unwind_schedule(int unwind) {
@@ -3728,8 +3731,9 @@ bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
 }
 
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
-                             bool allow_local_pointers) {
+                             bool allow_local_pointers, std::string_view data_model) {
 #ifdef PRISM_HAS_Z3
+    g_abi = abi_from_data_model(data_model);
     std::vector<Finding> out;
     // Nondet call sites are tagged with their source positions before
     // inlining, so a callee's calls keep the callee's positions.

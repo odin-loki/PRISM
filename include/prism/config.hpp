@@ -63,6 +63,8 @@ struct Config {
     // Solver query cache (--solver-cache DIR); empty = the solver library's
     // default ($XDG_CACHE_HOME/prism/solver). prism/config.py solver_cache.
     std::filesystem::path solver_cache;
+    // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
+    std::string data_model{"LP64"};
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

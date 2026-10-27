@@ -60,7 +60,7 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
 // ->, calls, ...), which makes the wp record ERROR.
 std::optional<std::string> encode_wp_predicate(const std::string& raw);
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
-                             bool allow_local_pointers = false);
+                             bool allow_local_pointers = false, std::string_view data_model = "LP64");
 // The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 -> 11,
 // c++2a/20 -> 20, gnu++ alike); 0 for anything else. Same in prism/bmc.py.
 int cxx_std_year(std::string_view std_flag);

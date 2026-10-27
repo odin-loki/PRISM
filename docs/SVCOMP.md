@@ -652,12 +652,15 @@ vendored code). Re-running needs Java 21 and the two archives above.
    `false(valid-free)` from a replayed refutation; `termination`,
    `no-data-race`, `valid-memcleanup` and the coverage properties are
    `unknown`.
-4. **ILP32.** The encoders are LP64. ILP32 tasks that use width-dependent
-   types are `unknown` instead of being analysed with 32-bit `long` and
-   pointers: 64 of the 128 `unknown` answers of the 174-task subset
-   (2026-09-25). `pir` would need a 32-bit target (`clang -m32` IR) and a
-   memory model with 4-byte pointers (it hard-codes 64-bit ones); the
-   replay would need a 32-bit C runtime, which this environment lacks.
+4. **ILP32.** **`bmc` + replay (2026-10-27):** `prism svcomp --data-model ILP32`
+   threads `Config::data_model` into the hand encoder (`include/prism/abi_model.hpp`,
+   `src/prism/bmc_encoder.inc`: 32-bit `long`, `size_t`, `sizeof`, literals with
+   `L`/`UL`, and `__VERIFIER_nondet_*`). Counterexample replay adds `-m32` on
+   Linux when the task YAML says ILP32. **`pir` stays LP64** (the stage is
+   `NOTRUN` on ILP32 so width-dependent tasks are not mis-proved). Full
+   `pir` ILP32 still needs `clang -m32` IR and a 32-bit pointer memory model.
+   Re-score the pinned subset after merge for updated points (baseline before
+   this change: **203**/417 at `02d7da9be`, 64 width-dependent `unknown`s).
 5. **Archive and registration.** A competition entry needs, per the current
    rules: a self-contained archive of the tool runnable on the competition
    machines (PRISM binary, the clang/opt it calls for the `pir` stage, the

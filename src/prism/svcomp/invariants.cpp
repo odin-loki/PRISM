@@ -181,8 +181,12 @@ std::vector<std::string> exportable_conjuncts(const std::vector<std::string>& co
 // trivially valid, the validator has to find the proof itself.
 std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::path& task, const json& finding) {
     const json& extra = extra_of(finding);
-    if (get_str(extra, "k_induction", "None") != "closed-invariants" ||
-        !(has(extra, "invariants") || has(extra, "invariant_conjuncts")))
+    const std::string ki = get_str(extra, "k_induction", "None");
+    const bool has_payload = has(extra, "invariants") || has(extra, "invariant_conjuncts");
+    const std::string st = get_str(finding, "status", "");
+    const bool proved_ub = st == "PROVED-UNBOUNDED" || st == "PROVED" || st == "PROVED-CERTIFIED";
+    const bool export_tag = ki == "closed-invariants" || (proved_ub && has_payload && has(extra, "invariant_loops"));
+    if (!export_tag || !has_payload)
         return {{}, "no loop invariant exported by the proving stage (empty invariant set)"};
     const bool pir = !has(extra, "invariants");
     std::vector<std::vector<std::string>> invs;

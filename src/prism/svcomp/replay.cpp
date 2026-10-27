@@ -5,6 +5,7 @@
 #include "internal.hpp"
 
 #include "../stages/common.hpp"
+#include "prism/abi_model.hpp"
 #include "prism/config.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/wide_int.hpp"
@@ -144,7 +145,8 @@ std::string stub_source(const std::string& source, const std::vector<Num>& nonde
 }
 
 json replay(const fs::path& src, const std::string& prop, bool allow_exec,
-            const std::optional<std::vector<Num>>& nondet_values, const fs::path& work_in, double timeout_s) {
+            const std::optional<std::vector<Num>>& nondet_values, const fs::path& work_in,
+            std::string_view data_model, double timeout_s) {
     const std::string text = read_text(src);
     if (nondet_call().search(text) && !nondet_values)
         return json{{"replay", "unsupported"},
@@ -172,6 +174,14 @@ json replay(const fs::path& src, const std::string& prop, bool allow_exec,
     fs::copy_file(src, csrc, fs::copy_options::overwrite_existing, ec);
     const fs::path exe = work / "replay.bin";
     std::vector<std::string> argv = {cc->string(), "-g", "-O0", "-w", "-std=gnu11"};
+    if (is_ilp32(data_model)) {
+#ifndef _WIN32
+        argv.push_back("-m32");
+#else
+        return json{{"replay", "notrun"},
+                    {"why", "ILP32 replay needs a 32-bit C toolchain (-m32); not supported on this host"}};
+#endif
+    }
     if (!san.empty()) {
         argv.push_back("-fsanitize=" + san);
         argv.emplace_back("-fno-sanitize-recover=all");

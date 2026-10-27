@@ -5,6 +5,7 @@
 // translation-validated: the PIR interpreter and `lli` (sandboxed) run the
 // same concrete inputs and must agree wherever PIR reports no UB.
 
+#include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
@@ -1105,6 +1106,14 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 }  // namespace
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
+    if (is_ilp32(cfg.data_model)) {
+        Finding f;
+        f.stage = "pir";
+        f.status = std::string(laws::NOTRUN);
+        f.message = "pir is LP64-only; ILP32 tasks are analysed by the bmc stage (32-bit long, size_t, pointers)";
+        f.strength = std::string(laws::STRENGTH_PROVES);
+        return {f};
+    }
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});

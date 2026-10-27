@@ -432,7 +432,9 @@ RunReport run_pipeline(const Config& cfg) {
         return out;
     });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
-    auto bmc_rec = stage("bmc", [&] { return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind); });
+    auto bmc_rec = stage("bmc", [&] {
+        return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind, false, cfg.data_model);
+    });
     stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
     stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
