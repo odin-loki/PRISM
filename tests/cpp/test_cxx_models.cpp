@@ -247,6 +247,21 @@ int run_capture(const fs::path& exe, const std::string& arg, std::string* combin
 }
 #endif
 
+TEST_CASE("cxx models: unordered_map/set trace matches libstdc++ and UAF on erase") {
+    if (!ctx().ok) return;
+    same_trace("unordered_map_set_trace", {"unordered_map", "unordered_set", "prism_hash_table.h"});
+#ifndef _WIN32
+    auto& c = ctx();
+    for (bool models : {false, true}) {
+        auto exe = c.tmp / ("unordered_map_set_trace" + std::string(models ? ".model" : ".lib"));
+        std::string out;
+        int rc = run_capture(exe, "uaf", &out);
+        CHECK(rc != 0);
+        CHECK(out.find("heap-use-after-free") != std::string::npos);
+    }
+#endif
+}
+
 TEST_CASE("cxx models: map/set trace matches libstdc++ and UAF on erase") {
     if (!ctx().ok) return;
     same_trace("map_set_trace", {"map", "set", "prism_tree.h"});

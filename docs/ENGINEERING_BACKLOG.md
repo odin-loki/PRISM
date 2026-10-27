@@ -17,10 +17,10 @@ Owner-only rows (history rewrite, GPU hardware, LoRA) are omitted. Supply-chain
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
-| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
+| `strcat`/`strncat` unbounded BOUNDED | **In progress:** Houdini `MemScopeAt` on write offsets + **read bases** (`houdini.inc`); still need MemEq/MemFrame fixpoint + measured PROVED-UNBOUNDED on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
 | `vector_insert_true` timeout | **In progress:** `PRISM_INDEX_LE3` + `seed_vs_bin` + `materialize_vs`; direct `pir` ~61 min failed (no output); `prism-qa conformance --stages pir` still **Law 7** (no findings, ~96 s) — raise mem limit / disable solver cache / debug OOM | `memory.cpp`, `encode.cpp`, `vector_insert.cpp` |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
-| iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
+| iostreams / unordered / libc++ | **Partial (2026-10-27):** `sstream`, `unordered_map`/`unordered_set` models + libc-models/prism/cxx harnesses; full `<iostream>`/libc++ `_LIBCPP_HARDENING` not done | `models/cxx/`, `docs/PIR.md` |
 
 ## 2.8 AST lints (`astlint`)
 

@@ -1,0 +1,17 @@
+format_version: 1
+input_files: unordered_map_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 900
+expected:
+  umap_insert_true: true
+  umap_index_true: true
+  umap_erase_true: true
+  umap_at_true: true
+  umap_erase_uaf_false: false
+  umap_end_deref_false: false
+  uset_unique_true: true
+  umap_load_factor_true: true
+expect_class:
+  umap_erase_uaf_false: "MEM-UAF"
+  umap_end_deref_false: "FUNC-CONTRACT"

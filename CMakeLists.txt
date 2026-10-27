@@ -301,7 +301,10 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map
   src/prism/pir/models/cxx/set
+  src/prism/pir/models/cxx/unordered_map
+  src/prism/pir/models/cxx/unordered_set
   src/prism/pir/models/cxx/prism_tree.h
+  src/prism/pir/models/cxx/prism_hash_table.h
   src/prism/pir/models/cxx/bits/basic_string.tcc
   src/prism/pir/models/cxx/sstream
 )

@@ -654,6 +654,13 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                     c.off = o;
                                     add(c);
                                 }
+                            // source reads s[i]: indices stay inside the read object's extent
+                            if (!wp && bases_r.count(p) != 0) {
+                                auto c = t;
+                                c.kind = InvCand::MemScopeAt;
+                                c.off = -1;
+                                add(c);
+                            }
                         }
                     }
         }
