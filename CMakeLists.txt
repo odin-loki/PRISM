@@ -793,6 +793,7 @@ if(PRISM_TESTS)
     tests/cpp/test_string_null.cpp
     tests/cpp/test_stdio_buffer.cpp
     tests/cpp/test_rand_unseeded.cpp
+    tests/cpp/test_qsort_null.cpp
     # C11 header: the test reads the shim comment as text and does not compile it.
     tests/cpp/test_stdatomic_shim.cpp
     tests/cpp/test_string_shim.cpp

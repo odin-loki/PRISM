@@ -99,6 +99,44 @@ char *getenv(const char *name) {
     return __prism_fresh_cstr(PRISM_CONST);
 }
 
+/* qsort does not permute the bytes and does not claim the array is sorted.
+ * qsort is not PROVED and not CLEAN. */
+void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *)) {
+    if (nmemb == 0 || size == 0) return;
+    size_t nbytes = 0;
+    if (__builtin_mul_overflow(nmemb, size, &nbytes)) {
+        __prism_check(0, "MEM-OOB-READ", "qsort nmemb * size overflows");
+        __prism_assume(0);
+    } else {
+        __prism_check(base != 0, "PTR-NULL-DEREF", "qsort() called with unchecked pointer parameter base");
+        if (base == 0) return;
+        __prism_check(compar != 0, "FUNC-CONTRACT", "qsort() called with unchecked pointer parameter compar");
+        if (compar == 0) return;
+        /* The bytes stay as they were. No order is invented. */
+        (void)nbytes;
+    }
+}
+
+/* A miss returns NULL. bsearch does not invent an element pointer and does
+ * not read past nmemb elements. bsearch is not PROVED and not CLEAN. */
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*compar)(const void *, const void *)) {
+    if (nmemb == 0 || size == 0) return 0;
+    size_t nbytes = 0;
+    if (__builtin_mul_overflow(nmemb, size, &nbytes)) {
+        __prism_check(0, "MEM-OOB-READ", "bsearch nmemb * size overflows");
+        return 0;
+    }
+    __prism_check(key != 0, "PTR-NULL-DEREF", "bsearch() called with unchecked pointer parameter key");
+    if (key == 0) return 0;
+    __prism_check(base != 0, "PTR-NULL-DEREF", "bsearch() called with unchecked pointer parameter base");
+    if (base == 0) return 0;
+    __prism_check(compar != 0, "FUNC-CONTRACT", "bsearch() called with unchecked pointer parameter compar");
+    if (compar == 0) return 0;
+    (void)nbytes;
+    return 0;
+}
+
 }  // extern "C"
 
 void *operator new(size_t n) {
