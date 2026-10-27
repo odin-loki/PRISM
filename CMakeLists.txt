@@ -740,6 +740,7 @@ if(PRISM_TESTS)
     tests/cpp/test_libc_messages.cpp
     tests/cpp/test_concolic_proof.cpp
     tests/cpp/test_lint_corpus.cpp
+    tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
