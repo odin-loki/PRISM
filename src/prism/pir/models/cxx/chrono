@@ -1,0 +1,113 @@
+// PRISM operational model of <chrono>. The pir stage puts this directory
+// first on the C++ include path, so `#include <chrono>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of
+// this name would make the include fail with EISDIR and every such unit
+// would fall back to libstdc++.
+//
+// Partial <chrono>. duration stores a signed 64-bit count. This file does
+// not include <ratio>; another change owns that header. Addition and
+// subtraction that would overflow the representation are a precondition
+// failure (__prism_check). They do not wrap to a negative count and return
+// that as success. A duration of the maximum count plus one count is that
+// failure. count() returns the stored count. Zero stays zero.
+//
+// Clocks, time_point conversions that call the OS, and sleep_for /
+// sleep_until are not declared. A sleep that returns immediately would be
+// a fake wait. Omitted names fail to compile against this header and pir
+// falls back to libstdc++. That includes period conversion, duration_cast,
+// the calendar typedefs, and compound assignment.
+#ifndef _GLIBCXX_CHRONO
+#define _GLIBCXX_CHRONO 1
+
+#pragma GCC system_header
+
+// PIR intrinsic (translate.cpp). A literal class and message, as in the
+// libc models. Not defined here: the analysed program does not link a body.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+static_assert(sizeof(long long) == 8, "duration stores a signed 64-bit count");
+
+namespace std::chrono {
+
+// Stand-in for the default period. Not std::ratio.
+struct __duration_period {
+    static constexpr long long num = 1;
+    static constexpr long long den = 1;
+};
+
+inline constexpr long long __duration_rep_max = 9223372036854775807LL;
+inline constexpr long long __duration_rep_min = -9223372036854775807LL - 1;
+
+template <typename _Rep, typename _Period = __duration_period>
+class duration {
+    static_assert(sizeof(_Rep) == 8, "duration stores a signed 64-bit count");
+    static_assert(static_cast<_Rep>(-1) < static_cast<_Rep>(0), "duration count is signed");
+
+    _Rep _M_count = 0;
+
+public:
+    using rep = _Rep;
+    using period = _Period;
+
+    constexpr duration() noexcept = default;
+    constexpr explicit duration(rep __count) noexcept : _M_count(__count) {}
+
+    // The stored count. A zero duration stays zero.
+    constexpr rep count() const noexcept { return _M_count; }
+};
+
+// True when __a + __b is representable. The limit arithmetic stays in range
+// on the branch that reaches it, so the test itself does not wrap.
+inline int __duration_add_fits(long long __a, long long __b) noexcept {
+    if (__b > 0) {
+        if (__a > __duration_rep_max - __b) return 0;
+        return 1;
+    }
+    if (__b < 0) {
+        if (__a < __duration_rep_min - __b) return 0;
+        return 1;
+    }
+    return 1;
+}
+
+inline int __duration_sub_fits(long long __a, long long __b) noexcept {
+    if (__b > 0) {
+        if (__a < __duration_rep_min + __b) return 0;
+        return 1;
+    }
+    if (__b < 0) {
+        if (__a > __duration_rep_max + __b) return 0;
+        return 1;
+    }
+    return 1;
+}
+
+template <typename _Rep, typename _Period>
+duration<_Rep, _Period> operator+(const duration<_Rep, _Period>& __a,
+                                  const duration<_Rep, _Period>& __b) {
+    const long long __x = static_cast<long long>(__a.count());
+    const long long __y = static_cast<long long>(__b.count());
+    const int __ok = __duration_add_fits(__x, __y);
+    __prism_check(__ok, "INT-SIGNED-OVF",
+                  "std::chrono::duration addition overflows the representation");
+    // Maximum count plus one count fails the check above. The wrapped
+    // negative value is not produced.
+    if (!__ok) return duration<_Rep, _Period>(0);
+    return duration<_Rep, _Period>(static_cast<_Rep>(__x + __y));
+}
+
+template <typename _Rep, typename _Period>
+duration<_Rep, _Period> operator-(const duration<_Rep, _Period>& __a,
+                                  const duration<_Rep, _Period>& __b) {
+    const long long __x = static_cast<long long>(__a.count());
+    const long long __y = static_cast<long long>(__b.count());
+    const int __ok = __duration_sub_fits(__x, __y);
+    __prism_check(__ok, "INT-SIGNED-OVF",
+                  "std::chrono::duration subtraction overflows the representation");
+    if (!__ok) return duration<_Rep, _Period>(0);
+    return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y));
+}
+
+}  // namespace std::chrono
+
+#endif

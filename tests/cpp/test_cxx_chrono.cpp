@@ -1,0 +1,85 @@
+// The <chrono> model is a file (src/prism/pir/models/cxx/chrono). Read it as
+// text. Addition and subtraction that overflow the signed 64-bit count call
+// __prism_check. The header does not return a wrapping `a + b` as the sum
+// without that check, and the overflow path does not hand back a negative
+// wrapped count. This case does not compile the header.
+
+#include <doctest/doctest.h>
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+namespace {
+
+std::string slurp(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::string slice_between(const std::string& text, const std::string& begin, const std::string& end) {
+    const auto i = text.find(begin);
+    REQUIRE(i != std::string::npos);
+    const auto j = text.find(end, i + begin.size());
+    REQUIRE(j != std::string::npos);
+    return text.substr(i, j - i);
+}
+
+// A wrapping sum is an arithmetic return that sits ahead of __prism_check,
+// or the tokens `return a + b` / `return a - b`. The overflow path returns
+// a zero duration after the check, not the wrapped count.
+void expect_checked(const std::string& body, const std::string& sum_return) {
+    CHECK(body.find("return a + b") == std::string::npos);
+    CHECK(body.find("return a - b") == std::string::npos);
+    CHECK(body.find("return __a + __b") == std::string::npos);
+    CHECK(body.find("return __a - __b") == std::string::npos);
+    const auto check = body.find("__prism_check");
+    REQUIRE(check != std::string::npos);
+    const auto fail = body.find("if (!__ok) return duration<_Rep, _Period>(0);");
+    REQUIRE(fail != std::string::npos);
+    CHECK(fail > check);
+    const auto okret = body.find(sum_return);
+    REQUIRE(okret != std::string::npos);
+    CHECK(okret > check);
+    CHECK(okret > fail);
+    std::size_t pos = 0;
+    while ((pos = body.find("return", pos)) != std::string::npos) {
+        const auto end = body.find(';', pos);
+        REQUIRE(end != std::string::npos);
+        const std::string expr = body.substr(pos, end - pos);
+        const bool arithmetic = expr.find('+') != std::string::npos || expr.find(" - ") != std::string::npos;
+        if (arithmetic) CHECK(pos > check);
+        pos = end + 1;
+    }
+}
+
+}  // namespace
+
+TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrapped sum") {
+    const auto path = std::filesystem::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "chrono";
+    REQUIRE(std::filesystem::is_regular_file(path));
+    CHECK_FALSE(std::filesystem::is_directory(path));
+    const std::string text = slurp(path);
+    REQUIRE_FALSE(text.empty());
+
+    CHECK(text.find("#include <ratio>") == std::string::npos);
+    CHECK(text.find("_GLIBCXX_CHRONO") != std::string::npos);
+    CHECK(text.find("#pragma GCC system_header") != std::string::npos);
+    CHECK(text.find("namespace std::chrono") != std::string::npos);
+    CHECK(text.find("return _M_count") != std::string::npos);
+    CHECK(text.find("_M_count = 0") != std::string::npos);
+    CHECK(text.find("return a + b") == std::string::npos);
+    CHECK(text.find("return a - b") == std::string::npos);
+    CHECK(text.find("sleep_for(") == std::string::npos);
+    CHECK(text.find("sleep_until(") == std::string::npos);
+    CHECK(text.find("class time_point") == std::string::npos);
+    CHECK(text.find("system_clock") == std::string::npos);
+
+    const std::string add = slice_between(text, "operator+", "operator-");
+    const std::string sub = slice_between(text, "operator-", "}  // namespace std::chrono");
+    expect_checked(add, "return duration<_Rep, _Period>(static_cast<_Rep>(__x + __y));");
+    expect_checked(sub, "return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y));");
+    CHECK(add.find("INT-SIGNED-OVF") != std::string::npos);
+    CHECK(sub.find("INT-SIGNED-OVF") != std::string::npos);
+}
