@@ -1,0 +1,178 @@
+// PRISM operational model of <flat_map> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <flat_map>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of this name would make the include
+// fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// Each key/value pair is one heap node from ::operator new. size() is the
+// number of those nodes. operator[] on a missing key inserts a node.
+// at(key) when the key is absent, including on an empty container, throws
+// std::out_of_range and does not return a default mapped T. erase of a
+// present key destroys that node and frees it, so a reference saved from
+// at() or operator[] is a use-after-free. erase of a missing key frees
+// nothing.
+//
+// insert ranges, try_emplace, and the rest are not declared. Omitted names
+// fail to compile against this header and pir falls back to libstdc++
+// (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
+// try_emplace, erase(iterator), iterators, find, contains, count, clear,
+// swap, the Compare / KeyContainer / MappedContainer parameters (this
+// template takes Key and T only), and any allocator other than the
+// ::operator new / ::operator delete pair above.
+#ifndef _PRISM_MODEL_FLAT_MAP
+#define _PRISM_MODEL_FLAT_MAP 1
+#define _GLIBCXX_FLAT_MAP 1  // libstdc++'s <flat_map> include guard: never both
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/functexcept.h>
+#include <cstddef>
+#include <new>
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+template <typename _Key, typename _Tp>
+class flat_map {
+public:
+    using key_type = _Key;
+    using mapped_type = _Tp;
+    using size_type = size_t;
+
+private:
+    // One pair. The mapped object lives in this allocation, so freeing the
+    // node ends that object's storage.
+    struct _Node {
+        _Node* _M_next;
+        key_type _M_key;
+        mapped_type _M_mapped;
+    };
+
+    _Node* _M_head = nullptr;
+    size_type _M_size = 0;
+
+    static bool _M_eq(const key_type& __a, const key_type& __b) { return !(__a < __b) && !(__b < __a); }
+
+    _Node* _M_find(const key_type& __k) noexcept {
+        for (_Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
+            if (_M_eq(__p->_M_key, __k)) return __p;
+        return nullptr;
+    }
+    const _Node* _M_find(const key_type& __k) const noexcept {
+        for (const _Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
+            if (_M_eq(__p->_M_key, __k)) return __p;
+        return nullptr;
+    }
+
+    template <typename _Uk, typename _Uv>
+    _Node* _M_make(_Uk&& __k, _Uv&& __v) {
+        void* __raw = ::operator new(sizeof(_Node));
+        try {
+            return ::new (static_cast<void*>(__raw))
+                _Node{nullptr, static_cast<_Uk&&>(__k), static_cast<_Uv&&>(__v)};
+        } catch (...) {
+            ::operator delete(__raw);
+            throw;
+        }
+    }
+    _Node* _M_link(_Node* __n) noexcept {
+        __n->_M_next = _M_head;
+        _M_head = __n;
+        ++_M_size;
+        return __n;
+    }
+    void _M_clear() noexcept {
+        while (_M_head != nullptr) {
+            _Node* __n = _M_head;
+            _M_head = __n->_M_next;
+            __n->~_Node();
+            ::operator delete(__n);
+        }
+        _M_size = 0;
+    }
+
+public:
+    flat_map() noexcept = default;
+
+    flat_map(const flat_map& __o) {
+        try {
+            for (const _Node* __p = __o._M_head; __p != nullptr; __p = __p->_M_next)
+                _M_link(_M_make(__p->_M_key, __p->_M_mapped));
+        } catch (...) {
+            _M_clear();
+            throw;
+        }
+    }
+    flat_map(flat_map&& __o) noexcept : _M_head(__o._M_head), _M_size(__o._M_size) {
+        __o._M_head = nullptr;
+        __o._M_size = 0;
+    }
+    flat_map& operator=(const flat_map& __o) {
+        if (this != &__o) {
+            flat_map __tmp(__o);
+            _M_clear();
+            _M_head = __tmp._M_head;
+            _M_size = __tmp._M_size;
+            __tmp._M_head = nullptr;
+            __tmp._M_size = 0;
+        }
+        return *this;
+    }
+    flat_map& operator=(flat_map&& __o) noexcept {
+        if (this != &__o) {
+            _M_clear();
+            _M_head = __o._M_head;
+            _M_size = __o._M_size;
+            __o._M_head = nullptr;
+            __o._M_size = 0;
+        }
+        return *this;
+    }
+    ~flat_map() { _M_clear(); }
+
+    // Missing key: insert a node and return its mapped object.
+    mapped_type& operator[](const key_type& __k) {
+        if (_Node* __n = _M_find(__k)) return __n->_M_mapped;
+        return _M_link(_M_make(__k, mapped_type{}))->_M_mapped;
+    }
+    mapped_type& operator[](key_type&& __k) {
+        if (_Node* __n = _M_find(__k)) return __n->_M_mapped;
+        return _M_link(_M_make(static_cast<key_type&&>(__k), mapped_type{}))->_M_mapped;
+    }
+
+    mapped_type& at(const key_type& __k) {
+        if (_Node* __n = _M_find(__k)) return __n->_M_mapped;
+        // Absent key, including an empty container: the miss, not a fabricated element.
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
+    const mapped_type& at(const key_type& __k) const {
+        if (const _Node* __n = _M_find(__k)) return __n->_M_mapped;
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
+
+    size_type erase(const key_type& __k) {
+        for (_Node** __pp = &_M_head; *__pp != nullptr; __pp = &(*__pp)->_M_next) {
+            if (!_M_eq((*__pp)->_M_key, __k)) continue;
+            // Present key: destroy that node and free it. A reference saved
+            // from at() or operator[] into this node is a use-after-free,
+            // because this frees the node.
+            _Node* __n = *__pp;
+            *__pp = __n->_M_next;
+            --_M_size;
+            __n->~_Node();
+            ::operator delete(__n);
+            return 1;
+        }
+        // Missing key: frees nothing.
+        return 0;
+    }
+
+    // The number of nodes.
+    size_type size() const noexcept { return _M_size; }
+};
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
