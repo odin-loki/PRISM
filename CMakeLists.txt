@@ -718,6 +718,7 @@ if(PRISM_TESTS)
     tests/cpp/test_bmc_harness.cpp
     tests/cpp/test_havoc.cpp
     tests/cpp/test_verdict_repo.cpp
+    tests/cpp/test_laws_status.cpp
     tests/cpp/test_diff.cpp
     tests/cpp/test_diff_exec.cpp
     tests/cpp/test_journal_confidence.cpp
