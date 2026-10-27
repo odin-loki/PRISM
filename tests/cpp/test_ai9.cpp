@@ -21,6 +21,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -105,6 +106,47 @@ prism::FunctionInfo scalar(const std::string& name, const std::string& body,
     fn.body = body;
     return fn;
 }
+
+// Saves and restores one environment variable. An empty set on Windows removes
+// the variable (_putenv_s); POSIX uses unsetenv.
+class EnvGuard {
+public:
+    explicit EnvGuard(const char* name) : name_(name) {
+        if (const char* v = std::getenv(name)) {
+            had_ = true;
+            old_ = v;
+        }
+    }
+    void set(const char* value) {
+#ifdef _WIN32
+        _putenv_s(name_, value);
+#else
+        ::setenv(name_, value, 1);
+#endif
+    }
+    void unset() {
+#ifdef _WIN32
+        _putenv_s(name_, "");
+#else
+        ::unsetenv(name_);
+#endif
+    }
+    ~EnvGuard() {
+#ifdef _WIN32
+        _putenv_s(name_, had_ ? old_.c_str() : "");
+#else
+        if (had_) ::setenv(name_, old_.c_str(), 1);
+        else ::unsetenv(name_);
+#endif
+    }
+    EnvGuard(const EnvGuard&) = delete;
+    EnvGuard& operator=(const EnvGuard&) = delete;
+
+private:
+    const char* name_;
+    std::string old_;
+    bool had_ = false;
+};
 
 }  // namespace ai9
 
@@ -308,6 +350,28 @@ TEST_CASE("ai9 lean: no prover model is NOTRUN, never a proof") {
     CHECK(r.status == std::string(laws::NOTRUN));
     CHECK_FALSE(r.reason.empty());
     CHECK(r.proof.empty());
+}
+
+TEST_CASE("ai9 lean: a missing lake is NOTRUN, never PROVED or CLEAN") {
+    // Point PRISM_LAKE at a file that is not there, so this does not need a Lean install
+    // and does not use a lake that happens to be on PATH.
+    EnvGuard lake("PRISM_LAKE");
+#ifdef _WIN32
+    lake.set("C:\\prism-no-such-lake.exe");
+#else
+    lake.set("/prism-no-such-lake");
+#endif
+    ai::ProveOptions o;
+    o.file = "no-such-theorem.lean";
+    o.theorem = "t";
+    o.out = tmp("lean-missing-lake") / "out";
+    auto r = ai::prove_theorem(o);
+    CHECK(r.status == std::string(laws::NOTRUN));
+    CHECK(r.status != std::string(laws::CLEAN));
+    CHECK(r.status != std::string(laws::PROVED));
+    CHECK_FALSE(laws::is_proof(r.status));
+    CHECK(r.proof.empty());
+    CHECK(r.reason.find("lake") != std::string::npos);
 }
 
 TEST_CASE("ai9 prove --all: finds sorry theorems in source order, ignoring comments") {
@@ -630,6 +694,98 @@ TEST_CASE("ai9 proof repair: model invariants for the changed loop are accepted 
     CHECK(ai::run_proof_regression({v2}, {}, cfg).at(0).extra["proof_store"] == "reused");
 }
 
+#endif
+
+TEST_CASE("ai9 proof store: a missing store returns no finding") {
+    EnvGuard cache("PRISM_PROOF_CACHE");
+    cache.unset();
+    auto dir = tmp("missing-store");
+    prism::Config cfg = prism::default_config();
+    cfg.root = dir;
+    cfg.out = dir / "out";
+    CHECK_FALSE(fs::exists(cfg.out / "proof_store.json"));
+    auto fn = scalar("inc", "return n + 1;");
+    prism::StageResult bmc;
+    bmc.name = "bmc";
+    prism::Finding clean;
+    clean.stage = "bmc";
+    clean.status = std::string(laws::CLEAN);
+    clean.file = fn.file;
+    clean.function = fn.name;
+    clean.line = fn.line;
+    bmc.findings = {clean};
+    auto out = ai::run_proof_regression({fn}, {bmc}, cfg);
+    // The check ran and wrote an empty store. CLEAN is not a stored proof,
+    // so the result is an empty finding list.
+    CHECK(out.empty());
+    CHECK(fs::exists(cfg.out / "proof_store.json"));
+    CHECK(ai::load_proof_store(cfg.out / "proof_store.json").empty());
+}
+
+TEST_CASE("ai9 proof store: an artefact the checker cannot re-apply is PROOF-REGRESSION") {
+    EnvGuard cache("PRISM_PROOF_CACHE");
+    cache.unset();
+    auto dir = tmp("store-nocheck");
+    prism::Config cfg = prism::default_config();
+    cfg.root = dir;
+    cfg.out = dir / "out";
+    auto fn = scalar("inc", "return n + 1;");
+    ai::ProofEntry e;
+    e.file = fn.file;
+    e.function = fn.name;
+    e.fingerprint = "stale-fingerprint";
+    ai::ProofArtefact a;
+    a.stage = "bmc";
+    a.status = std::string(laws::PROVED_UNBOUNDED);
+    a.invariants = "not-json";
+    a.unwind = 8;
+    e.artefacts = {a};
+    ai::save_proof_store(cfg.out / "proof_store.json", {e});
+    auto checked = ai::recheck_artefact(fn, a, cfg.unwind);
+    CHECK(checked.status == std::string(laws::UNKNOWN));
+    CHECK(checked.status != std::string(laws::CLEAN));
+    CHECK(checked.status != std::string(laws::PROVED));
+    CHECK_FALSE(laws::is_proof(checked.status));
+    auto out = ai::run_proof_regression({fn}, {}, cfg);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].status == std::string(laws::UNKNOWN));
+    CHECK(out[0].cls == "PROOF-REGRESSION");
+    CHECK(out[0].extra.at("regression") == "true");
+    CHECK(out[0].status != std::string(laws::CLEAN));
+    CHECK_FALSE(laws::is_proof(out[0].status));
+    CHECK(out[0].extra.at("repair").rfind("NOTRUN", 0) == 0);
+}
+
+#ifndef PRISM_HAS_Z3
+TEST_CASE("ai9 proof store: without Z3 a stored BMC proof is not re-proved") {
+    EnvGuard cache("PRISM_PROOF_CACHE");
+    cache.unset();
+    auto dir = tmp("store-no-z3");
+    prism::Config cfg = prism::default_config();
+    cfg.root = dir;
+    cfg.out = dir / "out";
+    auto fn = scalar("inc", "return n + 1;");
+    ai::ProofEntry e;
+    e.file = fn.file;
+    e.function = fn.name;
+    e.fingerprint = ai::function_fingerprint(fn);
+    ai::ProofArtefact a;
+    a.stage = "bmc";
+    a.status = std::string(laws::PROVED);
+    a.unwind = 8;
+    e.artefacts = {a};
+    ai::save_proof_store(cfg.out / "proof_store.json", {e});
+    auto checked = ai::recheck_artefact(fn, a, cfg.unwind);
+    CHECK(checked.status == std::string(laws::NOTRUN));
+    CHECK_FALSE(laws::is_proof(checked.status));
+    auto out = ai::run_proof_regression({fn}, {}, cfg);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].status == std::string(laws::UNKNOWN));
+    CHECK(out[0].cls == "PROOF-REGRESSION");
+    CHECK(out[0].status != std::string(laws::CLEAN));
+    CHECK(out[0].status != std::string(laws::PROVED));
+    CHECK_FALSE(laws::is_proof(out[0].status));
+}
 #endif
 
 TEST_CASE("ai9 review stage in the pipeline: vacuous requires found without a model; one NOTRUN row") {

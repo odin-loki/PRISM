@@ -361,6 +361,31 @@ TEST_CASE("ai-assist regress: --run needs --allow-exec (Law 9)") {
     CHECK_FALSE(fs::exists(root / "out" / "bin"));
 }
 
+TEST_CASE("ai-assist regress: a missing compiler is not a pass") {
+    auto root = assist_tmp("regress-nocc");
+    auto report = sample_report(root / "src");
+    prism::ai::RegressOptions opt;
+    opt.out_dir = root / "out";
+    opt.run = true;
+    opt.allow_exec = true;
+    opt.cc = "prism-no-such-cc";
+    opt.cxx = "prism-no-such-cxx";
+    auto res = prism::ai::generate_regression_tests(report, opt);
+    int ran = 0;
+    for (auto& t : res.tests) {
+        if (t.name.empty()) continue;
+        ++ran;
+        CHECK(t.status == "compile-error");
+        CHECK(t.detail.find("not found") != std::string::npos);
+        CHECK(t.status != std::string(prism::laws::CLEAN));
+        CHECK(t.status != std::string(prism::laws::PROVED));
+        CHECK(t.status != "reproduces");
+        CHECK(t.status != "does-not-reproduce");
+        CHECK(t.status != "written");
+    }
+    CHECK(ran == 2);
+}
+
 TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fix") {
     auto root = assist_tmp("regress-run");
     if (!have_clang_sanitizers(root)) {
