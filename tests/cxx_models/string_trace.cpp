@@ -4,11 +4,23 @@
 // ASan/UBSan with _GLIBCXX_ASSERTIONS; the two traces must be identical
 // (contents, sizes, capacities, whether data() moved, exceptions).
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+
+// The model include path replaces <string_view>. Constructing one from a
+// C string calls __prism_check / __prism_obj_size. libstdc++ does not.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
+    if (!ok) {
+        std::fprintf(stderr, "check %s: %s\n", cls ? cls : "", msg ? msg : "");
+        std::abort();
+    }
+}
+
+extern "C" unsigned long __prism_obj_size(const void*) { return 1ul << 20; }
 
 static void show(const char* what, const std::string& s) {
     std::printf("%s: size=%zu cap=%zu [%s] nul=%d\n", what, s.size(), s.capacity(), s.c_str(),
@@ -139,8 +151,9 @@ int main() {
                 t.find_first_not_of("hel"), t.find_last_not_of("hello"));
     std::printf("compare=%d %d %d %d\n", t.compare("hello") > 0, t.compare(0, 5, "hello"), t.compare("zz") < 0,
                 t.compare(6, 5, std::string("world")));
-    std::printf("starts=%d ends=%d contains=%d\n", int(t.starts_with("hell")), int(t.ends_with("llo")),
-                int(t.contains("world")));
+    // starts_with / ends_with / contains are not printed. libstdc++ implements
+    // them as string_view members, and the string_view model omits those
+    // members so a use fails to compile and pir falls back.
     std::printf("substr=[%s] [%s]\n", t.substr(6, 5).c_str(), t.substr(13).c_str());
     char buf[8] = {};
     std::printf("copy=%zu [%s]\n", t.copy(buf, 5, 6), buf);

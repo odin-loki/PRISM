@@ -1,0 +1,142 @@
+// PRISM operational model of <string_view> (roadmap 2.6, docs/PIR.md
+// "C++ library models"). The pir stage puts this directory first on the C++
+// include path, so `#include <string_view>` reaches this file instead of
+// libstdc++'s. It is a non-owning view of a character sequence: a pointer and
+// a length. Nothing here allocates, and the destructor does not free.
+//
+// compare, find, substr, starts_with, and every other member that is not
+// defined below are omitted on purpose. A use of one of them fails to compile
+// against this header, and the pir stage lowers that translation unit again
+// with libstdc++ (extra.cxx_models records the fallback). They are not stubbed.
+//
+// This header does not include <string>. libstdc++'s <string> includes
+// <string_view> and calls std::__sv_check / std::__sv_limit; those two helpers
+// stay so that header still compiles. They are not string_view operations.
+#ifndef _GLIBCXX_STRING_VIEW
+#define _GLIBCXX_STRING_VIEW 1
+
+#pragma GCC system_header
+
+#include <bits/c++config.h>
+#include <bits/char_traits.h>
+#include <bits/functexcept.h>
+#include <cstddef>
+
+// PIR intrinsics (src/prism/pir/models/libc/prism_model.h). Not defined here:
+// the encoder treats the calls as checks, and a host test supplies a stub.
+extern "C" {
+void __prism_check(int __ok, const char* __cls, const char* __msg);
+unsigned long __prism_obj_size(const void* __p);
+}
+
+namespace std _GLIBCXX_VISIBILITY(default) {
+_GLIBCXX_BEGIN_NAMESPACE_VERSION
+
+#if _GLIBCXX_HOSTED
+#define __cpp_lib_string_view 201803L
+#endif
+
+// Helpers <string> instantiates. Same contract as libstdc++'s <string_view>.
+constexpr size_t __sv_check(size_t __size, size_t __pos, const char* __s) {
+    if (__pos > __size)
+        __throw_out_of_range_fmt(__N("%s: __pos (which is %zu) > __size (which is %zu)"), __s, __pos, __size);
+    return __pos;
+}
+
+constexpr size_t __sv_limit(size_t __size, size_t __pos, size_t __off) noexcept {
+    const bool __testoff = __off < __size - __pos;
+    return __testoff ? __off : __size - __pos;
+}
+
+// basic_string_view<char, char_traits<char>> is std::string_view, the same
+// type libstdc++'s <string> converts to. The same pointer and length apply
+// to any character type so that __sv_type is complete. Only the members
+// written here are modelled.
+template <typename _CharT, typename _Traits = char_traits<_CharT>>
+class basic_string_view {
+public:
+    using value_type = _CharT;
+    using pointer = _CharT*;
+    using const_pointer = const _CharT*;
+    using reference = _CharT&;
+    using const_reference = const _CharT&;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+
+    constexpr basic_string_view() noexcept : _M_len{0}, _M_str{nullptr} {}
+
+    constexpr basic_string_view(const basic_string_view&) noexcept = default;
+
+    constexpr basic_string_view& operator=(const basic_string_view&) noexcept = default;
+
+    // Does not free. The characters belong to the caller.
+    constexpr ~basic_string_view() = default;
+
+    // [string.view.cons] const CharT*. A null pointer is a precondition
+    // failure, not an empty view, and this does not invent characters. The
+    // length is a bounded read of the object that starts at __s (PIR:
+    // __prism_obj_size). A missing terminator inside that object is a failed
+    // check, not a made-up length.
+    basic_string_view(const _CharT* __s) : _M_len{0}, _M_str{__s} {
+        __prism_check(__s != nullptr, "FUNC-CONTRACT", "std::string_view constructed from a null pointer");
+        if (__s == nullptr) return;
+        const unsigned long __bytes = __prism_obj_size(__s);
+        const size_type __bound = static_cast<size_type>(__bytes / sizeof(_CharT));
+        size_type __n = 0;
+        while (__n < __bound && __s[__n] != _CharT()) ++__n;
+        __prism_check(__n < __bound, "MEM-OOB-READ",
+                      "std::string_view C string is not terminated within its object");
+        if (__n < __bound) _M_len = __n;
+    }
+
+    // Pointer plus count. Stores the pointer and the count. Does not allocate
+    // and does not read the characters.
+    constexpr basic_string_view(const _CharT* __s, size_type __n) noexcept : _M_len{__n}, _M_str{__s} {}
+
+    [[nodiscard]] constexpr size_type size() const noexcept { return _M_len; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return _M_len == 0; }
+    [[nodiscard]] constexpr const_pointer data() const noexcept { return _M_str; }
+
+    // In range, the character at that index. Out of range is a precondition
+    // failure: not '\0', and not some other character substituted for it.
+    [[nodiscard]] const_reference operator[](size_type __pos) const noexcept {
+        __prism_check(__pos < _M_len, "MEM-OOB-READ", "std::string_view::operator[] index out of range");
+        return _M_str[__pos];
+    }
+
+    [[nodiscard]] const_reference front() const noexcept {
+        __prism_check(!empty(), "FUNC-CONTRACT", "std::string_view::front() on an empty view");
+        return _M_str[0];
+    }
+
+    [[nodiscard]] const_reference back() const noexcept {
+        __prism_check(!empty(), "FUNC-CONTRACT", "std::string_view::back() on an empty view");
+        return _M_str[_M_len - 1];
+    }
+
+    // A count past size() is a precondition failure. The view is left as it
+    // was: it does not slide onto characters outside the original range.
+    void remove_prefix(size_type __n) noexcept {
+        __prism_check(__n <= _M_len, "FUNC-CONTRACT", "std::string_view::remove_prefix exceeds size()");
+        if (__n <= _M_len) {
+            _M_str += __n;
+            _M_len -= __n;
+        }
+    }
+
+    void remove_suffix(size_type __n) noexcept {
+        __prism_check(__n <= _M_len, "FUNC-CONTRACT", "std::string_view::remove_suffix exceeds size()");
+        if (__n <= _M_len) _M_len -= __n;
+    }
+
+private:
+    size_type _M_len;
+    const_pointer _M_str;
+};
+
+using string_view = basic_string_view<char>;
+
+_GLIBCXX_END_NAMESPACE_VERSION
+}  // namespace std
+
+#endif
