@@ -1,0 +1,91 @@
+// PRISM operational model of <random>. The pir stage puts this directory first
+// on the C++ include path, so `#include <random>` reaches this file instead of
+// libstdc++'s. It is a file, not a directory: a directory of this name would
+// make the include fail with EISDIR and every such unit would fall back to
+// libstdc++.
+//
+// minstd_rand is the Park-Miller engine: multiplier 48271, modulus
+// 2147483647, increment 0. operator() returns the next state of that
+// recurrence. seed(s) sets the state. discard(z) advances z steps, and
+// discard(0) does not change the state.
+//
+// random_device::operator() may be nondeterministic. It is not a measure of
+// entropy. random_device is not a proof. A program that only calls it is not
+// PROVED and not CLEAN.
+//
+// Omitted names are not declared. A unit that names one fails to compile
+// against this header and pir falls back to libstdc++ (extra.cxx_models):
+// uniform_int_distribution, shuffle, the other engines (minstd_rand0,
+// mt19937, ranlux, knuth_b, default_random_engine), and the rest of <random>.
+// This header does not include <vector>, <functional>, or <memory>.
+#ifndef _GLIBCXX_RANDOM
+#define _GLIBCXX_RANDOM 1
+
+#pragma GCC system_header
+
+#include <cstdint>
+
+// C linkage so the call stays __VERIFIER_nondet_uint (not a mangled name).
+// The body is not a constant, and it is not zero on every call.
+extern "C" unsigned int __VERIFIER_nondet_uint(void);
+
+namespace std {
+
+class minstd_rand {
+public:
+    using result_type = uint_fast32_t;
+
+    static constexpr result_type multiplier = 48271;
+    static constexpr result_type increment = 0;
+    static constexpr result_type modulus = 2147483647;
+    static constexpr result_type default_seed = 1;
+
+    static constexpr result_type min() { return 1; }
+    static constexpr result_type max() { return modulus - 1; }
+
+    explicit minstd_rand(result_type s = default_seed) { seed(s); }
+
+    // seed(s) sets the state. A multiple of the modulus, including 0, is
+    // stored as 1: the increment is 0, and a zero state would stay 0.
+    void seed(result_type s = default_seed) {
+        const unsigned long long n =
+            static_cast<unsigned long long>(s) % static_cast<unsigned long long>(modulus);
+        _M_x = n == 0 ? result_type{1} : static_cast<result_type>(n);
+    }
+
+    // Next state of x -> (48271 * x) mod 2147483647. Not a nondet value.
+    result_type operator()() {
+        const unsigned long long x = _M_x;
+        const unsigned long long next = (static_cast<unsigned long long>(multiplier) * x) %
+                                         static_cast<unsigned long long>(modulus);
+        _M_x = static_cast<result_type>(next);
+        return _M_x;
+    }
+
+    // Advances z steps. discard(0) does not call operator() and does not
+    // change the state.
+    void discard(unsigned long long z) {
+        for (; z != 0; --z) (void)(*this)();
+    }
+
+private:
+    result_type _M_x;
+};
+
+class random_device {
+public:
+    using result_type = unsigned int;
+
+    random_device() = default;
+    random_device(const random_device&) = delete;
+    random_device& operator=(const random_device&) = delete;
+
+    // May be nondeterministic. It is not a measure of entropy.
+    // random_device is not a proof. A program that only calls it is not
+    // PROVED and not CLEAN.
+    result_type operator()() { return __VERIFIER_nondet_uint(); }
+};
+
+}  // namespace std
+
+#endif
