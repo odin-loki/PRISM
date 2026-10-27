@@ -1,11 +1,9 @@
 // std::array, std::span, std::optional and std::unique_ptr against C++23
-// ([array], [views.span], [optional], [unique.ptr]). <array> is the
-// operational model in src/prism/pir/models/cxx/array when that directory is
-// first on the include path. span, optional, and unique_ptr are not replaced
-// by PRISM models: libstdc++'s own header code is small, has no allocation
-// or loop the encoder cannot afford, and with -D_GLIBCXX_ASSERTIONS (always
-// on in the pir stage) it checks exactly the preconditions below, so that
-// library code is its own model (docs/PIR.md "C++ library models").
+// ([array], [views.span], [optional], [unique.ptr]). The operational models
+// are src/prism/pir/models/cxx/array, span, optional, and memory (unique_ptr)
+// when that directory is first on the include path. unique_ptr is the memory
+// model; allocator is not in that header. optional::value_or returns the
+// stored T or the argument. and_then and shared_ptr are not modelled.
 // Each function is one contract; `_false` ones must fail for their class.
 #include <array>
 #include <cassert>
