@@ -769,7 +769,8 @@ if(PRISM_TESTS)
     tests/cpp/test_llm_hypothesis.cpp)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-      tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp)
+      tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp
+      tests/cpp/test_solver_cert.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
   # fake_* stand-in executables and the PRISM_FAKE_* compile definitions the
