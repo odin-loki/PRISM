@@ -478,8 +478,18 @@ std::optional<TaskDef> parse_taskdef(const ojson& doc, std::string* error) {
             if (p.contains("property_file")) pr.property_file = as_text(p.at("property_file"));
             if (p.contains("expected_verdict")) {
                 const auto& ev = p.at("expected_verdict");
-                if (ev.is_boolean()) pr.expected_verdict = ev.get<bool>();
-                else pr.expected_verdict = !as_text(ev).empty();  // bool() of a non-empty value
+                // A JSON/YAML boolean stays. Only the exact strings "true" and
+                // "false" are accepted; any other type or text fails the load.
+                if (ev.is_boolean()) {
+                    pr.expected_verdict = ev.get<bool>();
+                } else if (ev.is_string()) {
+                    const std::string text = ev.get<std::string>();
+                    if (text == "true") pr.expected_verdict = true;
+                    else if (text == "false") pr.expected_verdict = false;
+                    else return bad("expected_verdict must be true or false");
+                } else {
+                    return bad("expected_verdict must be true or false");
+                }
             }
             if (p.contains("subproperty")) pr.subproperty = as_text(p.at("subproperty"));
             t.properties.push_back(std::move(pr));

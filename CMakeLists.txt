@@ -692,6 +692,7 @@ if(PRISM_TESTS)
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp
     tests/cpp/test_svcomp.cpp
+    tests/cpp/test_taskdef_verdict.cpp
     tests/cpp/test_svcomp_datamodel.cpp
     tests/cpp/test_svcomp_decide.cpp
     tests/cpp/test_svcomp_witness.cpp
