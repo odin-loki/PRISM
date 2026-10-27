@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 
 project(prism VERSION 0.1.0 LANGUAGES C CXX)
 
@@ -764,6 +764,7 @@ if(PRISM_TESTS)
     tests/cpp/test_libc_messages.cpp
     tests/cpp/test_string_null.cpp
     tests/cpp/test_stdio_buffer.cpp
+    tests/cpp/test_rand_unseeded.cpp
     # C11 header: the test reads the shim comment as text and does not compile it.
     tests/cpp/test_stdatomic_shim.cpp
     tests/cpp/test_string_shim.cpp

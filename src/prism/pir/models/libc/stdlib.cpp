@@ -81,6 +81,9 @@ unsigned long strtoul(const char *s, char **end, int base) {
     return (unsigned long)strtol(s, end, base);
 }
 
+/* srand and rand: the seed is not stored.
+ * rand is not a reproducible sequence.
+ * A run of rand is not PROVED and not CLEAN. */
 int rand(void) {
     int r = __VERIFIER_nondet_int();
     __prism_assume(r >= 0);
