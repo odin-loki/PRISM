@@ -534,6 +534,7 @@ TEST_CASE("agent: Dafny-style specs are hypotheses; no model is NOTRUN") {
     REQUIRE(none.size() == 1);
     CHECK(none[0].stage == "contracts");
     CHECK(none[0].status == prism::laws::NOTRUN);
+    CHECK(none[0].strength == prism::laws::STRENGTH_READS);
     CHECK(none[0].cls == "FUNC-CONTRACT");
     CHECK(none[0].message == "llama.cpp/Ollama not reachable");
     ChatDouble chat;
@@ -549,6 +550,33 @@ TEST_CASE("agent: Dafny-style specs are hypotheses; no model is NOTRUN") {
     CHECK(specs[1].status == prism::laws::NOTRUN);
     CHECK(specs[1].extra.count("install") == 1);
     CHECK(prism::dafny_specs(fns, 0, cfg).empty());
+}
+
+TEST_CASE("agent: dafny_specs with no GGUF is one NOTRUN FUNC-CONTRACT read") {
+    auto td = agent_tmp("dafny-nogguf");
+    std::ofstream(td / "c.c") << "int inc(int x) {\n    return x + 1;\n}\nvoid nop(void) {\n}\n";
+    auto fns = prism::extract_functions(td / "c.c", "c.c");
+    REQUIRE(fns.size() == 2);
+    // Config{}, not default_config(): the latter fills gguf from PRISM_GGUF or a guessed blob.
+    prism::Config cfg;
+    cfg.out = td / "out";
+    cfg.gguf.clear();
+    cfg.llm = true;
+    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.ollama_host = "http://127.0.0.1:1";
+    REQUIRE(cfg.gguf.empty());
+    auto specs = prism::dafny_specs(fns, 3, cfg);
+    REQUIRE(specs.size() == 1);
+    CHECK(specs[0].stage == "contracts");
+    CHECK(specs[0].status == prism::laws::NOTRUN);
+    CHECK(specs[0].strength == prism::laws::STRENGTH_READS);
+    CHECK(specs[0].cls == "FUNC-CONTRACT");
+    CHECK(specs[0].message == "llama.cpp/Ollama not reachable");
+    CHECK(specs[0].status != prism::laws::PROVED);
+    CHECK(specs[0].status != prism::laws::PROVED_UNBOUNDED);
+    CHECK(specs[0].status != prism::laws::PROVED_CERTIFIED);
+    CHECK(specs[0].status != prism::laws::CLEAN);
+    CHECK_FALSE(prism::laws::is_proof(specs[0].status));
 }
 
 TEST_CASE("agent: the contracts stage adds the model's specs beside its proofs, as hypotheses") {
