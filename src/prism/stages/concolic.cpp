@@ -230,8 +230,29 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     auto base_nh = [&](std::string text) {
         return make_find("concolic", laws::NEEDS_HARNESS, fn, "", std::move(text), laws::STRENGTH_FINDS);
     };
-    if (fn.kind == "POINTER")
-        return base_nh("pointer parameter: concolic engine does not invent buffers");
+    auto args_str = [](const Args& a) {
+        std::string argstr;
+        for (auto& [k, v] : a) {
+            if (!argstr.empty()) argstr += ", ";
+            argstr += k + "=" + std::to_string(v);
+        }
+        return argstr;
+    };
+    // ERROR and skip-pointer rows carry only this pair (Python {args, tried}).
+    auto put_args_tried = [&](Finding& f, const Args& a, int n) {
+        f.extra["tried"] = std::to_string(n);
+        f.extra["args"] = args_str(a);
+    };
+    if (fn.kind == "POINTER") {
+        // execute() returns "skip-pointer" before the body runs (Law 6). The
+        // first seed is the zero vector; that arm would record tried=1.
+        Args refused;
+        for (auto& p : fn.params)
+            if (!p.second.empty()) refused[p.second] = 0;
+        auto f = base_nh("pointer parameter: concolic engine does not invent buffers");
+        put_args_tried(f, refused, 1);
+        return f;
+    }
     if (fn.kind == "OTHER")
         return base_nh("non-scalar parameter: concolic engine does not invent objects");
     if (body_needs_pointer_harness(fn.body))
@@ -257,18 +278,7 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     std::set<ArgsKey> seen;
     std::set<ArgsKey> z3_keys;
     int tried = 0, generated = 0, z3_seeds = 0, skipped_unsat = 0, max_new = std::max(0, budget);
-    auto args_str = [](const Args& a) {
-        std::string argstr;
-        for (auto& [k, v] : a) {
-            if (!argstr.empty()) argstr += ", ";
-            argstr += k + "=" + std::to_string(v);
-        }
-        return argstr;
-    };
-    auto with_run_extra = [&](Finding& f, const Args& a) {
-        f.extra["tried"] = std::to_string(tried);
-        f.extra["args"] = args_str(a);
-    };
+    auto with_run_extra = [&](Finding& f, const Args& a) { put_args_tried(f, a, tried); };
     auto fill_stats = [&](Finding& f, bool this_from_z3 = false) {
         f.extra["tried"] = std::to_string(tried);
         f.extra["generated"] = std::to_string(generated);

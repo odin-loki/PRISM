@@ -760,6 +760,36 @@ TEST_CASE("concolic: run_concolic returns one row per function") {
 TEST_CASE("concolic: ERROR rows carry args and tried") {
     auto r = concolic_one(load_fn("with_goto"), 8);
     REQUIRE(r.status == std::string(laws::ERROR));
+    CHECK(r.status != std::string(laws::NEEDS_HARNESS));
+    CHECK(r.status != std::string(laws::PROVED));
+    CHECK(r.status != std::string(laws::BOUNDED));
     CHECK(r.extra.at("tried") == "1");
-    CHECK_FALSE(r.extra.at("args").empty());
+    CHECK(r.extra.at("args") == "x=0");
+    CHECK_FALSE(r.extra.contains("oracle"));
+    CHECK_FALSE(r.extra.contains("generated"));
+}
+
+TEST_CASE("concolic: skip-pointer NEEDS-HARNESS rows carry args and tried") {
+    auto planted = concolic_one(load_fn("null_branch"), 8);
+    REQUIRE(planted.status == std::string(laws::NEEDS_HARNESS));
+    CHECK(planted.message.find("pointer parameter") != std::string::npos);
+    CHECK(planted.status != std::string(laws::PROVED));
+    CHECK(planted.status != std::string(laws::BOUNDED));
+    CHECK_FALSE(laws::is_proof(planted.status));
+    CHECK(planted.extra.at("tried") == "1");
+    CHECK(planted.extra.at("args") == "p=0");
+    CHECK_FALSE(planted.extra.contains("oracle"));
+
+    prism::FunctionInfo fn;
+    fn.kind = "POINTER";
+    fn.name = "two_ptr";
+    fn.return_type = "int";
+    fn.params = {{"int *", "b"}, {"char *", "a"}};
+    fn.body = "return 0;";
+    auto r = concolic_one(fn, 4);
+    REQUIRE(r.status == std::string(laws::NEEDS_HARNESS));
+    CHECK(r.status != std::string(laws::PROVED));
+    CHECK(r.status != std::string(laws::BOUNDED));
+    CHECK(r.extra.at("tried") == "1");
+    CHECK(r.extra.at("args") == "a=0, b=0");
 }
