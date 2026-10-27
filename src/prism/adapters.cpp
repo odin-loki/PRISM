@@ -62,6 +62,7 @@ namespace {
 
 struct ProcResult {
     std::string text;
+    std::string err;  // why the child could not start (RunOut::err); empty if it ran
     int rc = -1;
     bool timed_out = false;
     bool failed = false;
@@ -175,6 +176,7 @@ ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, cons
     auto r = detail::run(spec);
     ProcResult out;
     out.text = std::move(r.out);
+    out.err = std::move(r.err);
     out.rc = r.rc;
     out.timed_out = r.timed_out;
     out.failed = r.failed;
@@ -1856,10 +1858,17 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
         out.push_back(std::move(f));
     }
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {
-        auto stub = finding("cppcheck", laws::NOTRUN, "", "",
-                            r.failed ? "cppcheck unusable: failed to start " + exe->string()
-                                     : "cppcheck at " + exe->string() + " is not cppcheck (not a proof)",
-                            laws::STRENGTH_FINDS);
+        // A child that never started is unusable (Python: "cppcheck unusable: {exc}").
+        // The runner's reason is RunOut::err; do not report only "not cppcheck".
+        std::string msg;
+        if (r.failed) {
+            msg = "cppcheck unusable: failed to start " + exe->string();
+            const auto why = trim_copy(r.err);
+            if (!why.empty()) msg += ": " + why;
+        } else {
+            msg = "cppcheck at " + exe->string() + " is not cppcheck (not a proof)";
+        }
+        auto stub = finding("cppcheck", laws::NOTRUN, "", "", std::move(msg), laws::STRENGTH_FINDS);
         stub.extra["exe"] = exe->string();
         stub.extra["install"] = adapter_install("cppcheck");
         return {std::move(stub)};
@@ -1918,16 +1927,23 @@ static std::vector<Finding> run_esbmc_unstamped(const std::vector<fs::path>& pat
             f.extra["exe"] = exe->string();
             f.extra["install"] = adapter_install("esbmc");
         } else if (upper.find("VERIFICATION SUCCESSFUL") != std::string::npos) {
-            std::string st = upper.find("INDUCTION") == std::string::npos
-                                 ? std::string(laws::PROVED)
-                                 : std::string(laws::PROVED_UNBOUNDED);
+            // INDUCTION is unbounded. Without --k-induction on the command (PRISM
+            // does not pass it), an unwinding assertion is still the bound.
+            // Neither of those is folded into PROVED. Plain SUCCESSFUL, with no
+            // induction and no unwinding assertion, is PROVED. CBMC's SUCCESSFUL
+            // stays BOUNDED in run_cbmc; this branch does not apply there.
+            const bool induction = upper.find("INDUCTION") != std::string::npos;
+            const bool unwinding = upper.find("UNWINDING ASSERTION") != std::string::npos;
             bool k_ind = false;
             for (const auto& flag : cmd)
                 if (flag == "--k-induction") k_ind = true;
-            if (!k_ind)
-                st = upper.find("UNWINDING ASSERTION") != std::string::npos
-                         ? std::string(laws::BOUNDED)
-                         : std::string(laws::PROVED);
+            std::string st;
+            if (!k_ind && unwinding)
+                st = std::string(laws::BOUNDED);
+            else if (induction)
+                st = std::string(laws::PROVED_UNBOUNDED);
+            else
+                st = std::string(laws::PROVED);
             f.status = st;
             f.message = "ESBMC: " + st;
         } else if (upper.find("VERIFICATION FAILED") != std::string::npos) {
@@ -2135,10 +2151,12 @@ namespace {
 
 // Python engine prism/pbsd.py run_pbsd_lints (~349). Tree present is never CLEAN-as-proof
 // and never PROVED. C++ cannot import tools/verify modules: extra.ported lists
-// VERIFY_SCANNERS; extra.invoked lists restaged checker class names that fired.
+// VERIFY_SCANNERS (the modules that were not imported); extra.invoked lists
+// restaged checker class names that fired, never those module names.
 // Without the tree, only PORTABLE_CLS (prism.portable). With the tree, also
 // restage matching in-tree copies as prism.checkers. Do not wrap sweep_all.py as CLEAN.
-// Behavioral tests: tests/test_pbsd.py (the Python engine).
+// A present tree whose scanners did not run is NOTRUN, not an empty clean stage
+// (Law 7). Importing the tree still needs --allow-exec.
 
 constexpr const char* kPbsdCExts[] = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"};
 
@@ -2286,14 +2304,29 @@ std::string pbsd_ported_json() {
     return j.dump();
 }
 
+bool pbsd_restaged_cls(std::string_view cls) {
+    return pbsd_portable_cls(cls) || pbsd_tree_extra_cls(cls);
+}
+
 std::string pbsd_invoked_json(const std::vector<Finding>& findings) {
+    // Restaged checker classes that fired. Not the tools/verify module names
+    // (those belong in extra.ported) and not a missing-bin row.
     nlohmann::json j = nlohmann::json::array();
     std::set<std::string> seen;
     for (const auto& f : findings) {
-        if (f.cls.empty() || !seen.insert(f.cls).second) continue;
+        if (f.cls.empty() || !pbsd_restaged_cls(f.cls) || !seen.insert(f.cls).second) continue;
         j.push_back(f.cls);
     }
     return j.dump();
+}
+
+void pbsd_stamp_scan(std::vector<Finding>& rows) {
+    const auto ported = pbsd_ported_json();
+    const auto invoked = pbsd_invoked_json(rows);
+    for (auto& f : rows) {
+        f.extra["invoked"] = invoked;
+        f.extra["ported"] = ported;
+    }
 }
 
 }  // namespace
@@ -2318,24 +2351,27 @@ std::vector<Finding> run_pbsd_lints(const std::vector<fs::path>& paths, const Co
             {{"looked", looked.string()}})};
     }
     if (!cfg.allow_exec) {
+        // Law 9: the tree is present but its modules are not imported.
         auto out = pbsd_dedupe(portable);
         out.push_back(sandbox::exec_notrun(
             "pbsd", "pbsd (import ParanoidBSD tools/verify modules)", {{"looked", looked.string()}}));
+        pbsd_stamp_scan(out);
         return out;
     }
 
     // Tree present: portable + prism.checkers restage + missing-bin NOTRUN.
-    // Not a clean sweep, not CLEAN-as-proof. Empty list is OK (heavies on PATH).
+    // Not a clean sweep, not CLEAN-as-proof. The verify modules still did not
+    // run; an empty list would be a clean stage (Law 7).
     auto heavy = pbsd_heavy_notrun(cfg);
     for (const auto& row : heavy) portable.push_back(row);
     auto out = pbsd_dedupe(std::move(portable));
-    if (out.empty()) return {};
-    const auto ported = pbsd_ported_json();
-    const auto invoked = pbsd_invoked_json(out);
-    for (auto& f : out) {
-        f.extra["invoked"] = invoked;
-        f.extra["ported"] = ported;
+    if (out.empty()) {
+        out.push_back(pbsd_not_run(
+            "ParanoidBSD tools/verify scanners did not run (not a clean sweep)",
+            "C++ restages checkers; it does not import tools/verify",
+            {{"looked", looked.string()}, {"via", "not-imported"}}));
     }
+    pbsd_stamp_scan(out);
     return out;
 }
 

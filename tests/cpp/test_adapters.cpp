@@ -1713,8 +1713,10 @@ TEST_CASE("esbmc: the verdict line maps to PROVED, BOUNDED, FAILED, UNKNOWN or E
         {"VERIFICATION SUCCESSFUL", laws::PROVED},
         // An unwinding assertion in the output: the bound was the limit.
         {"UNWINDING ASSERTION loop 0\\nVERIFICATION SUCCESSFUL", laws::BOUNDED},
-        // PROVED_UNBOUNDED needs --k-induction on the command line, which PRISM does not pass.
-        {"Solving with k-induction INDUCTION step\\nVERIFICATION SUCCESSFUL", laws::PROVED},
+        // INDUCTION is unbounded. It is not folded into PROVED. PRISM does not
+        // pass --k-induction; an unwinding assertion still forces BOUNDED.
+        {"Solving with k-induction INDUCTION step\\nVERIFICATION SUCCESSFUL", laws::PROVED_UNBOUNDED},
+        {"UNWINDING ASSERTION loop 0\\nINDUCTION step\\nVERIFICATION SUCCESSFUL", laws::BOUNDED},
         {"VERIFICATION FAILED", laws::FAILED},
         {"VERIFICATION UNKNOWN", laws::UNKNOWN},
         {"Segmentation fault", laws::ERROR},
@@ -1732,11 +1734,18 @@ TEST_CASE("esbmc: the verdict line maps to PROVED, BOUNDED, FAILED, UNKNOWN or E
         auto out = prism::run_esbmc(paths, cfg);
         REQUIRE(out.size() == 1);
         CHECK(out[0].status == c.status);
+        if (c.status == laws::BOUNDED || c.status == laws::PROVED_UNBOUNDED)
+            CHECK(out[0].status != laws::PROVED);
+        if (c.status == laws::PROVED) {
+            CHECK(out[0].status != laws::BOUNDED);
+            CHECK(out[0].status != laws::PROVED_UNBOUNDED);
+        }
         CHECK(out[0].strength == laws::STRENGTH_PROVES);
         CHECK_FALSE(xget(out[0], "tool_sha").empty());
         auto argv = slurp(args);
         CHECK(has(argv, "--overflow-check"));
         CHECK(has(argv, "--memory-leak-check"));
+        CHECK_FALSE(has(argv, "--k-induction"));
         CHECK_FALSE(has(argv, "--no-"));
     }
     auto cfg = nt.cfg;
@@ -1818,7 +1827,15 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     out = prism::run_cppcheck(paths, cfg);
     REQUIRE(out.size() == 1);
     CHECK(out[0].status == laws::NOTRUN);
-    CHECK(out[0].message == "cppcheck unusable: failed to start " + noexec.string());
+    CHECK(has(out[0].message, "unusable"));
+    CHECK(has(out[0].message, "failed to start"));
+    CHECK(has(out[0].message, noexec.string()));
+    CHECK(out[0].message.find("is not cppcheck") == std::string::npos);
+#ifdef _WIN32
+    CHECK(has(out[0].message, "CreateProcess failed"));
+#else
+    CHECK(has(out[0].message, "cannot execute"));
+#endif
     CHECK(xget(out[0], "install") == prism::adapter_install("cppcheck"));
     // Something that starts but answers like a test binary is not cppcheck.
     const auto impostor = fake(nt.t.dir / "t", "cppcheck", "echo '[doctest] doctest version is 2.4'; exit 0");
@@ -1828,6 +1845,120 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     CHECK(out[0].status == laws::NOTRUN);
     CHECK(out[0].message == "cppcheck at " + impostor.string() + " is not cppcheck (not a proof)");
     CHECK(xget(out[0], "install") == prism::adapter_install("cppcheck"));
+}
+
+TEST_CASE("esbmc and cbmc: SUCCESSFUL is PROVED only for plain ESBMC; induction is not PROVED") {
+    // Fake tool text only. CBMC's SUCCESSFUL is BOUNDED even when the log says
+    // INDUCTION or unbounded. Dafny follows its exit code, not those words.
+    NoTools nt;
+    auto paths = std::vector<fs::path>{testdata() / "abs_ok.c"};
+    const char* cbmc_log =
+        "echo VERIFICATION SUCCESSFUL\n"
+        "echo Solving with k-induction INDUCTION step\n"
+        "echo unbounded result\n";
+    auto cbmc = fake(nt.t.dir / "t", "cbmc-words", cbmc_log);
+    auto cb = ad::run_cbmc(cbmc.string(), paths, nt.cfg);
+    REQUIRE(cb.size() == 1);
+    CHECK(cb[0].status == laws::BOUNDED);
+    CHECK(cb[0].status != laws::PROVED);
+    CHECK(cb[0].status != laws::PROVED_UNBOUNDED);
+    CHECK_FALSE(laws::is_proof(cb[0].status));
+    CHECK(has(cb[0].message, "BOUNDED"));
+
+    TmpDir t;
+    auto dfy = t.put("m.dfy", "method M() ensures true {}\n");
+    auto cfg = nt.cfg;
+    cfg.tools["dafny"] = fake(nt.t.dir / "t", "dafny-ok",
+                              "echo VERIFICATION SUCCESSFUL\necho INDUCTION step\nexit 0");
+    auto proved = prism::run_dafny({dfy}, cfg);
+    REQUIRE(proved.size() == 1);
+    CHECK(proved[0].status == laws::PROVED);
+    CHECK(proved[0].status != laws::PROVED_UNBOUNDED);
+    CHECK(proved[0].status != laws::BOUNDED);
+    cfg.tools["dafny"] = fake(nt.t.dir / "t", "dafny-bad",
+                              "echo VERIFICATION SUCCESSFUL\necho INDUCTION step\nexit 4");
+    auto failed = prism::run_dafny({dfy}, cfg);
+    REQUIRE(failed.size() == 1);
+    CHECK(failed[0].status == laws::FAILED);
+    CHECK(failed[0].status != laws::PROVED);
+    CHECK(failed[0].status != laws::PROVED_UNBOUNDED);
+    CHECK(failed[0].status != laws::BOUNDED);
+}
+
+TEST_CASE("pbsd: invoked is restaged classes, ported is verify modules, scanners not run is not clean") {
+    EnvVar pbsd_env{"PRISM_PBSD", std::nullopt};
+    NoTools nt;
+    TmpDir tree;
+    fs::create_directories(tree.dir / "tools" / "verify");
+    auto cfg = nt.cfg;
+    cfg.pbsd_root = tree.dir;
+    cfg.root = testdata();
+
+    auto held = prism::run_pbsd_lints({testdata() / "onesided.c"}, cfg);
+    REQUIRE_FALSE(held.empty());
+    bool exec_held = false;
+    bool onesided = false;
+    for (const auto& f : held) {
+        CHECK(f.status != laws::CLEAN);
+        CHECK_FALSE(laws::is_proof(f.status));
+        CHECK(has(xget(f, "ported"), "realloc_self"));
+        CHECK(has(xget(f, "ported"), "onesided_index"));
+        CHECK(has(xget(f, "ported"), "masked_switch_check"));
+        CHECK(xget(f, "invoked").find("\"realloc_self\"") == std::string::npos);
+        CHECK(xget(f, "invoked").find("\"onesided_index\"") == std::string::npos);
+        if (xget(f, "reason") == prism::sandbox::EXEC_REASON) {
+            exec_held = true;
+            CHECK(f.status == laws::NOTRUN);
+        }
+        if (f.cls == "MEM-ONESIDED-INDEX") {
+            onesided = true;
+            CHECK(f.status == laws::FAILED);
+            CHECK(has(xget(f, "invoked"), "MEM-ONESIDED-INDEX"));
+        }
+    }
+    CHECK(exec_held);
+    CHECK(onesided);
+
+    // Heavies present, nothing for the restage to report: not an empty clean stage.
+    for (const char* bin : {"clang", "goto-cc", "cbmc"})
+        fake(nt.bin, bin, "exit 0");
+    cfg.allow_exec = true;
+    auto quiet_c = tree.put("quiet.c", "int quiet(int x) { return x; }\n");
+    auto quiet = prism::run_pbsd_lints({quiet_c}, cfg);
+    REQUIRE_FALSE(quiet.empty());
+    bool said = false;
+    for (const auto& f : quiet) {
+        CHECK(f.status != laws::CLEAN);
+        CHECK_FALSE(laws::is_proof(f.status));
+        CHECK(has(xget(f, "ported"), "realloc_self"));
+        CHECK(xget(f, "invoked").find("\"realloc_self\"") == std::string::npos);
+        if (has(f.message, "scanners did not run")) {
+            said = true;
+            CHECK(f.status == laws::NOTRUN);
+            CHECK(xget(f, "invoked") == "[]");
+            CHECK(xget(f, "via") == "not-imported");
+        }
+    }
+    CHECK(said);
+
+    cfg.allow_exec = true;
+    auto fired = prism::run_pbsd_lints({testdata() / "onesided.c"}, cfg);
+    REQUIRE_FALSE(fired.empty());
+    bool hit = false;
+    bool held_again = false;
+    for (const auto& f : fired) {
+        CHECK(f.status != laws::CLEAN);
+        CHECK_FALSE(laws::is_proof(f.status));
+        CHECK(has(xget(f, "ported"), "onesided_index"));
+        CHECK(xget(f, "invoked").find("\"onesided_index\"") == std::string::npos);
+        if (xget(f, "reason") == prism::sandbox::EXEC_REASON) held_again = true;
+        if (f.cls == "MEM-ONESIDED-INDEX" && f.status == laws::FAILED) {
+            hit = true;
+            CHECK(has(xget(f, "invoked"), "MEM-ONESIDED-INDEX"));
+        }
+    }
+    CHECK(hit);
+    CHECK_FALSE(held_again);
 }
 
 // ---------------------------------------------------------------- AFL++
