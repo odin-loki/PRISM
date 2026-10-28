@@ -16,9 +16,14 @@
 // operator- returns a duration of the same type. Negating the most
 // negative signed 64-bit count is __prism_check then __builtin_trap. That
 // path does not return a zero duration and does not form the negation.
-// Every other count returns duration(-count). Zero stays zero. Sleep stays
-// absent. This is not PROVED and not CLEAN. This case does not compile the
-// header.
+// Every other count returns duration(-count). Zero stays zero. operator/
+// divides a duration by a scalar of the same representation. A zero
+// divisor is __prism_check then __builtin_trap, before any quotient is
+// formed. That path does not return a zero duration. Dividing the most
+// negative signed 64-bit count by -1 is __prism_check then __builtin_trap
+// and does not form the negation. Every other quotient that fits is the
+// stored count divided by the scalar. Sleep stays absent. This is not
+// PROVED and not CLEAN. This case does not compile the header.
 
 #include <doctest/doctest.h>
 
@@ -173,7 +178,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(text.find("#include <compare>") == std::string::npos);
     CHECK(text.find("operator<=>") == std::string::npos);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 7);  // + the clocks
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 9);  // + the clocks
     CHECK(text.find("A different period is not an overload.") != std::string::npos);
     const auto note = text.find("Count comparison. Same duration type only.");
     const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");
@@ -321,7 +326,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     REQUIRE(neg_note != std::string::npos);
     CHECK(neg_note == mul_end);
     CHECK(neg_note > mul_note);
-    const auto neg_end = text.find("}  // namespace std::chrono", neg_note);
+    const auto neg_end = text.find("// Duration divided by a scalar of the same representation.", neg_note);
     REQUIRE(neg_end != std::string::npos);
     const std::string neg = text.substr(neg_note, neg_end - neg_note);
     CHECK(neg.find("This is not PROVED and not CLEAN.") != std::string::npos);
@@ -337,7 +342,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(neg, "operator-(const duration<_Rep, _Period>& __d)") == 1);
     const std::string neg_fn = slice_between(
         text, "duration<_Rep, _Period> operator-(const duration<_Rep, _Period>& __d)",
-        "}  // namespace std::chrono");
+        "// Duration divided by a scalar of the same representation.");
     const auto neg_check = neg_fn.find("__prism_check(__ok, \"INT-SIGNED-OVF\",");
     const auto neg_msg = neg_fn.find("std::chrono::duration negation overflows the representation");
     const auto neg_trap = neg_fn.find("__builtin_trap();");
@@ -368,4 +373,96 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(neg_kept.find("__builtin_trap") == std::string::npos);
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(count_of(text, "std::chrono::duration negation overflows the representation") == 1);
+    CHECK(neg.find("operator/(const duration") == std::string::npos);
+    CHECK(neg.find("__x / __y") == std::string::npos);
+
+    // Division by a same-rep scalar. A zero divisor traps before a
+    // quotient. The minimum count divided by -1 traps and does not form
+    // the negation. Every other quotient is the stored count divided by
+    // the scalar. The locked zero return stays on operator+ and binary
+    // operator- only.
+    const auto div_note = text.find("// Duration divided by a scalar of the same representation.");
+    REQUIRE(div_note != std::string::npos);
+    CHECK(div_note == neg_end);
+    CHECK(div_note > neg_note);
+    const auto div_end = text.find("}  // namespace std::chrono", div_note);
+    REQUIRE(div_end != std::string::npos);
+    const std::string div = text.substr(div_note, div_end - div_note);
+    CHECK(div.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(div.find("if (!__ok) return duration<_Rep, _Period>(0);") == std::string::npos);
+    CHECK(div.find("return duration<_Rep, _Period>(0)") == std::string::npos);
+    CHECK(div.find("operator*=(") == std::string::npos);
+    CHECK(div.find("operator/=(") == std::string::npos);
+    CHECK(div.find("_Period2") == std::string::npos);
+    CHECK(div.find("_Rep2") == std::string::npos);
+    CHECK(div.find("sleep_for(") == std::string::npos);
+    CHECK(div.find("sleep_until(") == std::string::npos);
+    CHECK(div.find("#include") == std::string::npos);
+    CHECK(div.find("common_type") == std::string::npos);
+    CHECK(div.find("operator-(const duration<_Rep, _Period>& __d)") == std::string::npos);
+    CHECK(div.find("operator+(const duration") == std::string::npos);
+    CHECK(count_of(div, "requires __duration_same_type<_Scalar, _Rep>") == 1);
+    CHECK(count_of(div, "operator/(const duration<_Rep, _Period>& __d, const _Scalar& __s)") == 1);
+    const std::string div_fn = slice_between(
+        text, "duration<_Rep, _Period> operator/(const duration<_Rep, _Period>& __d, const _Scalar& __s)",
+        "}  // namespace std::chrono");
+    const auto div_zcheck = div_fn.find("__prism_check(__nz, \"FUNC-CONTRACT\",");
+    const auto div_zmsg = div_fn.find("std::chrono::duration division by zero");
+    const auto div_ztrap = div_fn.find("__builtin_trap();");
+    const auto div_ocheck = div_fn.find("__prism_check(__ok, \"INT-SIGNED-OVF\",");
+    const auto div_omsg = div_fn.find("std::chrono::duration division overflows the representation");
+    const auto div_otrap = div_fn.find("__builtin_trap();", div_ztrap + 1);
+    const auto div_ret = div_fn.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x / __y));");
+    REQUIRE(div_zcheck != std::string::npos);
+    REQUIRE(div_zmsg != std::string::npos);
+    REQUIRE(div_ztrap != std::string::npos);
+    REQUIRE(div_ocheck != std::string::npos);
+    REQUIRE(div_omsg != std::string::npos);
+    REQUIRE(div_otrap != std::string::npos);
+    REQUIRE(div_ret != std::string::npos);
+    CHECK(div_zcheck < div_zmsg);
+    CHECK(div_zmsg < div_ztrap);
+    CHECK(div_ztrap < div_ocheck);
+    CHECK(div_ocheck < div_omsg);
+    CHECK(div_omsg < div_otrap);
+    CHECK(div_otrap < div_ret);
+    CHECK(div_fn.find("__duration_rep_min") != std::string::npos);
+    CHECK(div_fn.find("__y == -1") != std::string::npos);
+    CHECK(div_fn.find("-__x") == std::string::npos);
+    CHECK(div_fn.find("__duration_mul") == std::string::npos);
+    CHECK(div_fn.find("__duration_add_fits") == std::string::npos);
+    CHECK(div_fn.find("__duration_sub_fits") == std::string::npos);
+    CHECK(count_of(div_fn, "__x / __y") == 1);
+    const auto div_zbad = div_fn.find("if (!__nz) {");
+    const auto div_zelse = div_fn.find("} else {", div_zbad);
+    REQUIRE(div_zbad != std::string::npos);
+    REQUIRE(div_zelse != std::string::npos);
+    const std::string div_zarm = div_fn.substr(div_zbad, div_zelse - div_zbad);
+    CHECK(div_zarm.find("__builtin_trap();") != std::string::npos);
+    CHECK(div_zarm.find("return") == std::string::npos);
+    CHECK(div_zarm.find("duration(0)") == std::string::npos);
+    CHECK(div_zarm.find("/") == std::string::npos);
+    CHECK(div_zarm.find("__x / __y") == std::string::npos);
+    const auto div_obad = div_fn.find("if (!__ok) {", div_zelse);
+    const auto div_oelse = div_fn.find("} else {", div_obad);
+    REQUIRE(div_obad != std::string::npos);
+    REQUIRE(div_oelse != std::string::npos);
+    CHECK(div_obad > div_ztrap);
+    const std::string div_oarm = div_fn.substr(div_obad, div_oelse - div_obad);
+    CHECK(div_oarm.find("__builtin_trap();") != std::string::npos);
+    CHECK(div_oarm.find("return") == std::string::npos);
+    CHECK(div_oarm.find("duration(0)") == std::string::npos);
+    CHECK(div_oarm.find("-") == std::string::npos);
+    CHECK(div_oarm.find("/") == std::string::npos);
+    CHECK(div_oarm.find("__x / __y") == std::string::npos);
+    const std::string div_kept = div_fn.substr(div_oelse);
+    CHECK(div_kept.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x / __y));") != std::string::npos);
+    CHECK(div_kept.find("__builtin_trap") == std::string::npos);
+    const std::string div_before = div_fn.substr(0, div_ret);
+    CHECK(div_before.find("__x / __y") == std::string::npos);
+    CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
+    CHECK(count_of(text, "std::chrono::duration division by zero") == 1);
+    CHECK(count_of(text, "std::chrono::duration division overflows the representation") == 1);
+    CHECK(text.find("operator*=(") == std::string::npos);
+    CHECK(text.find("operator/=(") == std::string::npos);
 }
