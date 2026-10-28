@@ -1,7 +1,20 @@
 // stdio buffer models: a null fgets buffer, an overflowing fread, and an
 // overflowing fwrite are checks. feof and ferror on a null FILE return 0.
 // ftell on a null FILE returns -1. That is not a proof of the file position.
+// fseek on a null FILE returns -1. That is not a proof the position changed.
+// rewind on a null FILE assumes 0 and returns. That is not a success that
+// means the position is 0. A live FILE does not store a position of 0 and
+// is not a proof the stream is at the start.
+// clearerr on a null FILE assumes 0 and returns. That does not claim the
+// error flag is clear. A live FILE does not store a cleared error or eof
+// flag and is not a proof those flags changed.
+// ungetc on a null FILE is PTR-NULL-DEREF "ungetc null FILE" then
+// __builtin_trap before any store. That path does not return the character.
+// EOF returns EOF and does not store a character. Any other call returns
+// prism_eof_or of the unsigned char value. It does not store a pushback
+// buffer and does not make a later read return that character.
 // Reads stdio.cpp as text. Does not compile the model.
+// docs/finish-notes/ungetc.md
 
 #include <doctest/doctest.h>
 
@@ -276,7 +289,7 @@ TEST_CASE("stdio buffer: rewind null file returns without a position of 0") {
 
 TEST_CASE("stdio buffer: clearerr null file returns without clearing flags") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
-    const auto body = function_body(src, "void clearerr(", "}  // extern");
+    const auto body = function_body(src, "void clearerr(", "int ungetc(");
     REQUIRE(!body.empty());
     const auto note_at = src.rfind("/*", src.find("void clearerr("));
     const auto note = src.substr(note_at, src.find("void clearerr(") - note_at);
@@ -293,4 +306,121 @@ TEST_CASE("stdio buffer: clearerr null file returns without clearing flags") {
     CHECK(body.find("feof(") == std::string::npos);
     CHECK(body.find("ferror(") == std::string::npos);
     CHECK(body.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(body.find("fgetc(") == std::string::npos);
+    CHECK(body.find("fopen(") == std::string::npos);
+    CHECK(body.find("fclose(") == std::string::npos);
+    CHECK(body.find("ungetc(") == std::string::npos);
+    CHECK(body.find("snprintf(") == std::string::npos);
+    CHECK(body.find("sprintf(") == std::string::npos);
+    CHECK(body.find("printf(") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: ungetc null file traps and does not push a character back") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    REQUIRE(!src.empty());
+
+    const auto ungetc_at = src.find("int ungetc(");
+    const auto clearerr_at = src.find("void clearerr(");
+    REQUIRE(ungetc_at != std::string::npos);
+    REQUIRE(clearerr_at != std::string::npos);
+    REQUIRE(clearerr_at < ungetc_at);
+
+    const auto note_at = src.rfind("/*", ungetc_at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, ungetc_at - note_at);
+    CHECK(note.find("not a proof a character was pushed back") != std::string::npos);
+    CHECK(note.find("does not store a pushback buffer") != std::string::npos);
+    CHECK(note.find("A later read is not that character") != std::string::npos);
+    CHECK(note.find("does not yield the character") != std::string::npos);
+    CHECK(note.find("EOF yields EOF and stores nothing") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "int ungetc(", "}  // extern");
+    REQUIRE(!body.empty());
+    const auto check = body.find("__prism_check(");
+    REQUIRE(check != std::string::npos);
+    CHECK(body.find("PTR-NULL-DEREF") != std::string::npos);
+    CHECK(check_message(body, check) == "ungetc null FILE");
+
+    const auto null_if = body.find("if (f == 0)", check);
+    REQUIRE(null_if != std::string::npos);
+    CHECK(check < null_if);
+    const auto arm = brace_block_after(body, null_if);
+    REQUIRE(!arm.empty());
+    const auto trap = arm.find("__builtin_trap()");
+    REQUIRE(trap != std::string::npos);
+    CHECK(arm.find("return") == std::string::npos);
+    CHECK(arm.find(" = ") == std::string::npos);
+    CHECK(arm.find("c") == std::string::npos);
+    CHECK(arm.find("prism_eof_or") == std::string::npos);
+
+    const auto trap_at = body.find("__builtin_trap()");
+    REQUIRE(trap_at != std::string::npos);
+    const auto before = body.substr(0, trap_at);
+    CHECK(before.find(" = ") == std::string::npos);
+    CHECK(before.find("return") == std::string::npos);
+    CHECK(before.find("prism_eof_or") == std::string::npos);
+    CHECK(body.find(" = ") == std::string::npos);
+
+    const auto eof_if = body.find("if (c == EOF)", trap_at);
+    REQUIRE(eof_if != std::string::npos);
+    CHECK(trap_at < eof_if);
+    const auto eof_arm = brace_block_after(body, eof_if);
+    REQUIRE(!eof_arm.empty());
+    CHECK(eof_arm.find("return EOF;") != std::string::npos);
+    CHECK(eof_arm.find(" = ") == std::string::npos);
+    CHECK(eof_arm.find("c") == std::string::npos);
+    CHECK(eof_arm.find("prism_eof_or") == std::string::npos);
+    CHECK(eof_arm.find("__builtin_trap") == std::string::npos);
+    CHECK(eof_arm.find("unsigned char") == std::string::npos);
+
+    const auto eof_arm_at = body.find(eof_arm, eof_if);
+    REQUIRE(eof_arm_at != std::string::npos);
+    const auto rest = body.substr(eof_arm_at + eof_arm.size());
+    CHECK(rest.find("return prism_eof_or((unsigned char)c);") != std::string::npos);
+    CHECK(rest.find("return c") == std::string::npos);
+    CHECK(rest.find("return EOF") == std::string::npos);
+    CHECK(rest.find(" = ") == std::string::npos);
+    CHECK(rest.find("__builtin_trap") == std::string::npos);
+    CHECK(rest.find("[") == std::string::npos);
+    CHECK(body.find("pushback") == std::string::npos);
+    CHECK(body.find("[") == std::string::npos);
+    CHECK(body.find("fgetc(") == std::string::npos);
+    CHECK(body.find("fread(") == std::string::npos);
+    CHECK(body.find("fwrite(") == std::string::npos);
+    CHECK(body.find("fflush(") == std::string::npos);
+    CHECK(body.find("fputc(") == std::string::npos);
+    CHECK(body.find("putc(") == std::string::npos);
+    CHECK(body.find("putchar(") == std::string::npos);
+    CHECK(body.find("fseek(") == std::string::npos);
+    CHECK(body.find("ftell(") == std::string::npos);
+    CHECK(body.find("rewind(") == std::string::npos);
+    CHECK(body.find("clearerr(") == std::string::npos);
+    CHECK(body.find("feof(") == std::string::npos);
+    CHECK(body.find("ferror(") == std::string::npos);
+    CHECK(body.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(body.find("__prism_read_range") == std::string::npos);
+    CHECK(body.find("__prism_memset") == std::string::npos);
+    CHECK(body.find("prism_file_ok") == std::string::npos);
+
+    const auto fgetc_body = function_body(src, "int fgetc(", "int getc(");
+    REQUIRE(!fgetc_body.empty());
+    CHECK(fgetc_body.find("ungetc") == std::string::npos);
+    CHECK(fgetc_body.find("int c = __VERIFIER_nondet_int();") != std::string::npos);
+    CHECK(fgetc_body.find("return c;") != std::string::npos);
+    CHECK(fgetc_body.find("pushback") == std::string::npos);
+
+    const auto fflush_body = function_body(src, "int fflush(", "static int prism_file_flag(");
+    REQUIRE(!fflush_body.empty());
+    CHECK(fflush_body.find("if (f) prism_file_ok(f);") != std::string::npos);
+    CHECK(fflush_body.find("return prism_eof_or(0);") != std::string::npos);
+    CHECK(fflush_body.find("__builtin_trap") == std::string::npos);
+    CHECK(fflush_body.find("ungetc(") == std::string::npos);
+
+    const auto harness = slurp(repo() / "testdata" / "conformance" / "libc-models" / "stdio_contracts.cpp");
+    REQUIRE(!harness.empty());
+    CHECK(harness.find("ungetc(") != std::string::npos);
+    CHECK(harness.find("fflush((FILE *)0)") != std::string::npos);
+    CHECK(harness.find("pushed back") == std::string::npos);
 }

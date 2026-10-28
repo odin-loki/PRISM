@@ -5,6 +5,11 @@
  * (libc_format.cpp) because their argument lists are variadic. */
 #include "prism_model.h"
 
+/* EOF is -1, the same end signal the output models already use. */
+#ifndef EOF
+#define EOF (-1)
+#endif
+
 namespace {
 
 /* Output may fail on any call (disk full, closed pipe): every output
@@ -195,6 +200,23 @@ void clearerr(FILE *f) {
         __prism_assume(0);
         return;
     }
+}
+
+/* This is not a proof a character was pushed back.
+ * A live FILE does not store a pushback buffer.
+ * A later read is not that character.
+ * A null FILE traps and does not yield the character.
+ * EOF yields EOF and stores nothing.
+ * ungetc is not PROVED and not CLEAN. */
+int ungetc(int c, FILE *f) {
+    __prism_check(f != 0, "PTR-NULL-DEREF", "ungetc null FILE");
+    if (f == 0) {
+        __builtin_trap();
+    }
+    if (c == EOF) {
+        return EOF;
+    }
+    return prism_eof_or((unsigned char)c);
 }
 
 }  // extern "C"
