@@ -27,7 +27,13 @@
 // then __builtin_trap. That path does not return a zero duration and does
 // not form the negation. A negative count that is not the minimum returns
 // the negation. Zero stays zero. A positive count returns a duration with
-// the same count. Sleep stays absent. This is not PROVED and not CLEAN.
+// the same count. operator% takes the remainder of a duration divided by
+// a scalar of the same representation. A zero divisor is __prism_check
+// then __builtin_trap. That path does not return a zero duration. The
+// most negative signed 64-bit count modulo -1 is __prism_check then
+// __builtin_trap and does not form the remainder. Every other result is
+// the stored count modulo the scalar. operator%= is not declared. Sleep
+// stays absent. This is not PROVED and not CLEAN.
 // This case does not compile the header.
 
 #include <doctest/doctest.h>
@@ -183,7 +189,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(text.find("#include <compare>") == std::string::npos);
     CHECK(text.find("operator<=>") == std::string::npos);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 11);  // + the clocks
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 13);  // + the clocks
     CHECK(text.find("A different period is not an overload.") != std::string::npos);
     const auto note = text.find("Count comparison. Same duration type only.");
     const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");
@@ -478,7 +484,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     const auto abs_note = div_end;
     REQUIRE(abs_note != std::string::npos);
     CHECK(abs_note > div_note);
-    const auto abs_end = text.find("// Session 5: time points and clocks.", abs_note);
+    const auto abs_end = text.find("// Duration modulo a scalar of the same representation.", abs_note);
     REQUIRE(abs_end != std::string::npos);
     const std::string ab = text.substr(abs_note, abs_end - abs_note);
     CHECK(ab.find("This is not PROVED and not CLEAN.") != std::string::npos);
@@ -498,7 +504,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(ab, "duration<_Rep, _Period> abs(const duration<_Rep, _Period>& __d)") == 1);
     const std::string abs_fn = slice_between(
         text, "duration<_Rep, _Period> abs(const duration<_Rep, _Period>& __d)",
-        "// Session 5: time points and clocks.");
+        "// Duration modulo a scalar of the same representation.");
     const auto abs_check = abs_fn.find("__prism_check(__ok, \"INT-SIGNED-OVF\",");
     const auto abs_msg = abs_fn.find("std::chrono::duration abs overflows the representation");
     const auto abs_trap = abs_fn.find("__builtin_trap();");
@@ -545,10 +551,105 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(abs_pos_arm.find("-") == std::string::npos);
     CHECK(abs_pos_arm.find("__builtin_trap") == std::string::npos);
     CHECK(abs_pos_arm.find("duration(0)") == std::string::npos);
+    CHECK(ab.find("operator%") == std::string::npos);
+    CHECK(ab.find("%") == std::string::npos);
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(count_of(text, "std::chrono::duration abs overflows the representation") == 1);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 11);
+
+    // Modulo by a same-rep scalar. A zero divisor traps before a remainder.
+    // The minimum count modulo -1 traps and does not form the remainder.
+    // Every other result is the stored count modulo the scalar. The locked
+    // zero return stays on operator+ and binary operator- only.
+    const auto mod_note = abs_end;
+    REQUIRE(mod_note != std::string::npos);
+    CHECK(mod_note > abs_note);
+    const auto mod_end = text.find("// Session 5: time points and clocks.", mod_note);
+    REQUIRE(mod_end != std::string::npos);
+    const std::string mod = text.substr(mod_note, mod_end - mod_note);
+    CHECK(mod.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(mod.find("if (!__ok) return duration<_Rep, _Period>(0);") == std::string::npos);
+    CHECK(mod.find("return duration<_Rep, _Period>(0)") == std::string::npos);
+    CHECK(mod.find("operator*=(") == std::string::npos);
+    CHECK(mod.find("operator/=(") == std::string::npos);
+    CHECK(mod.find("operator%=(") == std::string::npos);
+    CHECK(mod.find("_Period2") == std::string::npos);
+    CHECK(mod.find("_Rep2") == std::string::npos);
+    CHECK(mod.find("sleep_for(") == std::string::npos);
+    CHECK(mod.find("sleep_until(") == std::string::npos);
+    CHECK(mod.find("#include") == std::string::npos);
+    CHECK(mod.find("common_type") == std::string::npos);
+    CHECK(mod.find("operator-(const duration") == std::string::npos);
+    CHECK(mod.find("operator/(const duration") == std::string::npos);
+    CHECK(mod.find("operator+(const duration") == std::string::npos);
+    CHECK(mod.find("duration<_Rep, _Period> abs(const duration") == std::string::npos);
+    CHECK(count_of(mod, "requires __duration_same_type<_Scalar, _Rep>") == 1);
+    CHECK(count_of(mod, "operator%(const duration<_Rep, _Period>& __d, const _Scalar& __s)") == 1);
+    const std::string mod_fn = slice_between(
+        text, "duration<_Rep, _Period> operator%(const duration<_Rep, _Period>& __d, const _Scalar& __s)",
+        "// Session 5: time points and clocks.");
+    const auto mod_zcheck = mod_fn.find("__prism_check(__nz, \"FUNC-CONTRACT\",");
+    const auto mod_zmsg = mod_fn.find("std::chrono::duration modulo by zero");
+    const auto mod_ztrap = mod_fn.find("__builtin_trap();");
+    const auto mod_ocheck = mod_fn.find("__prism_check(__ok, \"INT-SIGNED-OVF\",");
+    const auto mod_omsg = mod_fn.find("std::chrono::duration modulo overflows the representation");
+    const auto mod_otrap = mod_fn.find("__builtin_trap();", mod_ztrap + 1);
+    const auto mod_ret = mod_fn.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x % __y));");
+    REQUIRE(mod_zcheck != std::string::npos);
+    REQUIRE(mod_zmsg != std::string::npos);
+    REQUIRE(mod_ztrap != std::string::npos);
+    REQUIRE(mod_ocheck != std::string::npos);
+    REQUIRE(mod_omsg != std::string::npos);
+    REQUIRE(mod_otrap != std::string::npos);
+    REQUIRE(mod_ret != std::string::npos);
+    CHECK(mod_zcheck < mod_zmsg);
+    CHECK(mod_zmsg < mod_ztrap);
+    CHECK(mod_ztrap < mod_ocheck);
+    CHECK(mod_ocheck < mod_omsg);
+    CHECK(mod_omsg < mod_otrap);
+    CHECK(mod_otrap < mod_ret);
+    CHECK(mod_fn.find("__duration_rep_min") != std::string::npos);
+    CHECK(mod_fn.find("__y == -1") != std::string::npos);
+    CHECK(mod_fn.find("-__x") == std::string::npos);
+    CHECK(mod_fn.find("__x / __y") == std::string::npos);
+    CHECK(mod_fn.find("__duration_mul") == std::string::npos);
+    CHECK(mod_fn.find("__duration_add_fits") == std::string::npos);
+    CHECK(mod_fn.find("__duration_sub_fits") == std::string::npos);
+    CHECK(count_of(mod_fn, "__x % __y") == 1);
+    const auto mod_zbad = mod_fn.find("if (!__nz) {");
+    const auto mod_zelse = mod_fn.find("} else {", mod_zbad);
+    REQUIRE(mod_zbad != std::string::npos);
+    REQUIRE(mod_zelse != std::string::npos);
+    const std::string mod_zarm = mod_fn.substr(mod_zbad, mod_zelse - mod_zbad);
+    CHECK(mod_zarm.find("__builtin_trap();") != std::string::npos);
+    CHECK(mod_zarm.find("return") == std::string::npos);
+    CHECK(mod_zarm.find("duration(0)") == std::string::npos);
+    CHECK(mod_zarm.find("%") == std::string::npos);
+    CHECK(mod_zarm.find("__x % __y") == std::string::npos);
+    const auto mod_obad = mod_fn.find("if (!__ok) {", mod_zelse);
+    const auto mod_oelse = mod_fn.find("} else {", mod_obad);
+    REQUIRE(mod_obad != std::string::npos);
+    REQUIRE(mod_oelse != std::string::npos);
+    CHECK(mod_obad > mod_ztrap);
+    const std::string mod_oarm = mod_fn.substr(mod_obad, mod_oelse - mod_obad);
+    CHECK(mod_oarm.find("__builtin_trap();") != std::string::npos);
+    CHECK(mod_oarm.find("return") == std::string::npos);
+    CHECK(mod_oarm.find("duration(0)") == std::string::npos);
+    CHECK(mod_oarm.find("-") == std::string::npos);
+    CHECK(mod_oarm.find("%") == std::string::npos);
+    CHECK(mod_oarm.find("__x % __y") == std::string::npos);
+    const std::string mod_kept = mod_fn.substr(mod_oelse);
+    CHECK(mod_kept.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x % __y));") != std::string::npos);
+    CHECK(mod_kept.find("__builtin_trap") == std::string::npos);
+    const std::string mod_before = mod_fn.substr(0, mod_ret);
+    CHECK(mod_before.find("__x % __y") == std::string::npos);
+    CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
+    CHECK(count_of(text, "std::chrono::duration modulo by zero") == 1);
+    CHECK(count_of(text, "std::chrono::duration modulo overflows the representation") == 1);
+    CHECK(count_of(text, "__x % __y") == 1);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 13);
     CHECK(text.find("operator*=(") == std::string::npos);
+    CHECK(text.find("operator/=(") == std::string::npos);
+    CHECK(text.find("operator%=(") == std::string::npos);
     CHECK(text.find("sleep_for(") == std::string::npos);
     CHECK(text.find("sleep_until(") == std::string::npos);
 }
