@@ -4,9 +4,11 @@
 // imag are members of the object. Nothing is allocated.
 //
 // Division by a zero complex (both parts zero, including a scalar that
-// converts to one) is a precondition failure. The check is __prism_check.
-// That path does not divide, so it does not produce an infinity and it does
-// not substitute a quotient. IEEE infinities are not modelled.
+// converts to complex(y, 0)) is a precondition failure: __prism_check with
+// class FUNC-CONTRACT, then __builtin_trap. That path does not return *this,
+// does not divide, does not produce a quotient, and does not store into
+// the real or imag members. IEEE infinities are not modelled.
+// The zero-divisor path is not PROVED and not CLEAN.
 //
 // abs(const complex<T>&) of (0, 0) is 0, including -0. That path does not
 // call a sqrt builtin. For a nonzero value, if the square of either part
@@ -39,8 +41,8 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 
 // cl provides __builtin_sqrt / __builtin_sqrtf / __builtin_sqrtl and does
 // not provide __builtin_trap. clang, which the pir stage uses, provides
-// both. The stand-in is abort, so a square that does not fit still does
-// not return. This is not an include of <cmath>.
+// both. The stand-in is abort, so a square that does not fit, and a zero
+// divisor, still do not return. This is not an include of <cmath>.
 #if defined(_MSC_VER) && !defined(__clang__)
 extern "C" __declspec(noreturn) void abort(void);
 __declspec(noreturn) inline void __builtin_trap() { abort(); }
@@ -84,14 +86,19 @@ public:
     }
     complex& operator/=(const complex& __z) {
         // Both parts zero. -0 compares equal to 0, so it is the same divisor.
+        // The check is followed by a trap. That arm has no return, does not
+        // divide, and does not store into the real or imag members.
         const bool __zero = __z._M_real == _Tp() && __z._M_imag == _Tp();
         __prism_check(!__zero, "FUNC-CONTRACT", "complex division by zero");
-        if (__zero) return *this;
-        const _Tp __den = __z._M_real * __z._M_real + __z._M_imag * __z._M_imag;
-        const _Tp __r = _M_real * __z._M_real + _M_imag * __z._M_imag;
-        _M_imag = (_M_imag * __z._M_real - _M_real * __z._M_imag) / __den;
-        _M_real = __r / __den;
-        return *this;
+        if (__zero) {
+            __builtin_trap();
+        } else {
+            const _Tp __den = __z._M_real * __z._M_real + __z._M_imag * __z._M_imag;
+            const _Tp __r = _M_real * __z._M_real + _M_imag * __z._M_imag;
+            _M_imag = (_M_imag * __z._M_real - _M_real * __z._M_imag) / __den;
+            _M_real = __r / __den;
+            return *this;
+        }
     }
 
 private:
@@ -140,7 +147,8 @@ complex<_Tp> operator/(complex<_Tp> __x, const complex<_Tp>& __y) {
 
 // Scalar overloads are separate templates. Deduction does not convert a
 // scalar to complex, so `z / 0.0` would not see operator/(complex, complex).
-// Building complex(scalar, 0) makes a zero scalar the same zero-complex check.
+// Building complex(scalar, 0) makes a zero scalar the same zero-complex
+// check and the same __builtin_trap.
 template <typename _Tp>
 constexpr complex<_Tp> operator+(const complex<_Tp>& __x, const _Tp& __y) {
     return __x + complex<_Tp>(__y);

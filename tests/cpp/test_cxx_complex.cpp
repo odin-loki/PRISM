@@ -1,7 +1,9 @@
 // Direct checks of the <complex> stand-in. Included by path so prism_tests
 // does not put the model directory on the include path for every TU.
-// Division by complex(0, 0) must call __prism_check. real() and imag() of a
-// constructed value are the values that were passed in. No heap allocation.
+// Division by complex(0, 0) is __prism_check then __builtin_trap. That arm
+// does not return *this. A scalar zero builds complex(y, 0) and hits the
+// same arm. real() and imag() of a constructed value are the values that
+// were passed in. No heap allocation.
 // abs of (0, 0) is 0. A square that does not fit is __prism_check then
 // __builtin_trap, and that path does not return a magnitude.
 // norm of (0, 0) is 0. A square that does not fit is the same kind of
@@ -70,6 +72,21 @@ int count_of(std::string_view hay, std::string_view needle) {
     return n;
 }
 
+// Brace block that opens at or after `at`, including its braces.
+std::string brace_after(std::string_view src, std::size_t at) {
+    const auto open = src.find('{', at);
+    if (open == std::string_view::npos) return {};
+    int depth = 0;
+    for (std::size_t i = open; i < src.size(); ++i) {
+        if (src[i] == '{')
+            ++depth;
+        else if (src[i] == '}') {
+            if (--depth == 0) return std::string(src.substr(open, i - open + 1));
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
@@ -98,30 +115,80 @@ TEST_CASE("cxx complex model: real and imag are the constructed values") {
 }
 
 TEST_CASE("cxx complex model: division by a zero complex is a precondition check") {
+    const fs::path header = fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "complex";
+    REQUIRE(fs::is_regular_file(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    CHECK(src.find("not PROVED") != std::string::npos);
+    CHECK(src.find("not CLEAN") != std::string::npos);
+    CHECK(src.find("if (__zero) return *this;") == std::string::npos);
+
+    const std::string body = body_of(src, "complex& operator/=(const complex& __z)");
+    REQUIRE_FALSE(body.empty());
+    const auto check =
+        body.find("__prism_check(!__zero, \"FUNC-CONTRACT\", \"complex division by zero\");");
+    REQUIRE(check != std::string::npos);
+    const auto zero_if = body.find("if (__zero)", check);
+    REQUIRE(zero_if != std::string::npos);
+    CHECK(check < zero_if);
+    const std::string between = body.substr(check, zero_if - check);
+    CHECK(between.find("return *this") == std::string::npos);
+    CHECK(between.find("__builtin_trap") == std::string::npos);
+    const std::string arm = brace_after(body, zero_if);
+    REQUIRE_FALSE(arm.empty());
+    CHECK(arm.find("__builtin_trap") != std::string::npos);
+    CHECK(arm.find("return *this") == std::string::npos);
+    CHECK(arm.find("return ") == std::string::npos);
+    CHECK(arm.find("_M_real") == std::string::npos);
+    CHECK(arm.find("_M_imag") == std::string::npos);
+    CHECK(arm.find("/") == std::string::npos);
+
+    const auto arm_at = body.find(arm, zero_if);
+    REQUIRE(arm_at != std::string::npos);
+    const auto after = arm_at + arm.size();
+    const auto den = body.find("const _Tp __den", after);
+    const auto imag = body.find("_M_imag =", after);
+    const auto real = body.find("_M_real =", after);
+    const auto quot = body.find(" / __den", after);
+    const auto ret = body.find("return *this", after);
+    REQUIRE(den != std::string::npos);
+    REQUIRE(imag != std::string::npos);
+    REQUIRE(real != std::string::npos);
+    REQUIRE(quot != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(den < imag);
+    CHECK(imag < real);
+    CHECK(real < ret);
+    CHECK(count_of(body, "return *this") == 1);
+    CHECK(count_of(body, "__builtin_trap") == 1);
+    CHECK(count_of(src, "complex division by zero") == 1);
+
+    const std::string scalar =
+        body_of(src, "complex<_Tp> operator/(const complex<_Tp>& __x, const _Tp& __y)");
+    REQUIRE_FALSE(scalar.empty());
+    CHECK(scalar.find("return __x / complex<_Tp>(__y);") != std::string::npos);
+    CHECK(scalar.find("__prism_check") == std::string::npos);
+    CHECK(scalar.find("__builtin_trap") == std::string::npos);
+    CHECK(scalar.find("return *this") == std::string::npos);
+
     const std::complex<double> a(1.0, 2.0);
-
-    g_check = {};
-    const auto zero = a / std::complex<double>(0, 0);
-    (void)zero;
-    CHECK(g_check.n == 1);
-    CHECK(g_check.ok == 0);
-    CHECK(std::strcmp(g_check.cls, "FUNC-CONTRACT") == 0);
-    CHECK(std::strstr(g_check.msg, "zero") != nullptr);
-
-    // A scalar zero converts to complex(0, 0). Same check, still no quotient.
-    g_check = {};
-    const auto scalar = a / 0.0;
-    (void)scalar;
-    CHECK(g_check.n == 1);
-    CHECK(g_check.ok == 0);
 
     // One part nonzero is a real division, not the precondition failure.
     g_check = {};
     const auto q = a / std::complex<double>(0.0, 1.0);
     CHECK(g_check.n == 1);
     CHECK(g_check.ok != 0);
+    CHECK(std::strcmp(g_check.cls, "FUNC-CONTRACT") == 0);
     CHECK(q.real() == 2.0);
     CHECK(q.imag() == -1.0);
+
+    // A nonzero scalar builds complex(y, 0) and takes the same quotient path.
+    g_check = {};
+    const auto half = a / 2.0;
+    CHECK(g_check.n == 1);
+    CHECK(g_check.ok != 0);
+    CHECK(half.real() == 0.5);
+    CHECK(half.imag() == 1.0);
 }
 
 TEST_CASE("cxx complex model: abs of (0, 0) is 0 and a fitting magnitude is the root of the sum of squares") {
@@ -180,7 +247,7 @@ TEST_CASE("cxx complex model: a square that does not fit traps, and arg polar pr
     CHECK(src.find("atanh, arg, norm, polar") == std::string::npos);
     CHECK(src.find("atanh, arg, polar, and proj are not declared") != std::string::npos);
     CHECK(src.find("__prism_check(!__zero, \"FUNC-CONTRACT\", \"complex division by zero\");") != std::string::npos);
-    CHECK(src.find("if (__zero) return *this;") != std::string::npos);
+    CHECK(src.find("if (__zero) return *this;") == std::string::npos);
     CHECK(count_of(src, "complex division by zero") == 1);
 
     const std::string body = body_of(src, "_Tp abs(const complex<_Tp>& __z)");
