@@ -10,12 +10,16 @@
 // failure (__prism_check). They do not wrap to a negative count and return
 // that as success. A duration of the maximum count plus one count is that
 // failure. count() returns the stored count. Zero stays zero.
+// operator+= and operator-= for the same duration type use that same
+// check and update the stored count. A sum or difference that does not
+// fit stores 0. It does not store a wrapped negative.
 //
 // Clocks, time_point conversions that call the OS, and sleep_for /
 // sleep_until are not declared. A sleep that returns immediately would be
 // a fake wait. Omitted names fail to compile against this header and pir
-// falls back to libstdc++. That includes period conversion, the calendar
-// typedefs, and compound assignment. duration_cast is declared only when
+// falls back to libstdc++. That includes period conversion and the calendar
+// typedefs. Compound assignment is only the same duration type. A different
+// period is not declared for it. duration_cast is declared only when
 // the source and target period are the same type, this header's
 // __duration_period (num 1, den 1). The result count is that count. It
 // does not truncate and does not wrap. A cast to a different period is
@@ -58,6 +62,11 @@ public:
 
     // The stored count. A zero duration stays zero.
     constexpr rep count() const noexcept { return _M_count; }
+
+    // Same duration type. A different period is not declared, so that
+    // compound assignment fails to compile and pir still falls back.
+    duration& operator+=(const duration& __d);
+    duration& operator-=(const duration& __d);
 };
 
 // True when both types are the same type. Used so duration_cast exists
@@ -130,6 +139,42 @@ duration<_Rep, _Period> operator-(const duration<_Rep, _Period>& __a,
                   "std::chrono::duration subtraction overflows the representation");
     if (!__ok) return duration<_Rep, _Period>(0);
     return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y));
+}
+
+// Same duration type as operator+. The stored count is updated. A sum that
+// does not fit is the check and then 0. The wrapped negative value is not
+// stored.
+template <typename _Rep, typename _Period>
+duration<_Rep, _Period>& duration<_Rep, _Period>::operator+=(const duration<_Rep, _Period>& __d) {
+    const long long __x = static_cast<long long>(count());
+    const long long __y = static_cast<long long>(__d.count());
+    const int __ok = __duration_add_fits(__x, __y);
+    __prism_check(__ok, "INT-SIGNED-OVF",
+                  "std::chrono::duration addition overflows the representation");
+    if (!__ok) {
+        _M_count = static_cast<_Rep>(0);
+        return *this;
+    }
+    _M_count = static_cast<_Rep>(__x + __y);
+    return *this;
+}
+
+// Same duration type as operator-. The stored count is updated. A difference
+// that does not fit is the check and then 0. The wrapped negative value is
+// not stored.
+template <typename _Rep, typename _Period>
+duration<_Rep, _Period>& duration<_Rep, _Period>::operator-=(const duration<_Rep, _Period>& __d) {
+    const long long __x = static_cast<long long>(count());
+    const long long __y = static_cast<long long>(__d.count());
+    const int __ok = __duration_sub_fits(__x, __y);
+    __prism_check(__ok, "INT-SIGNED-OVF",
+                  "std::chrono::duration subtraction overflows the representation");
+    if (!__ok) {
+        _M_count = static_cast<_Rep>(0);
+        return *this;
+    }
+    _M_count = static_cast<_Rep>(__x - __y);
+    return *this;
 }
 
 }  // namespace std::chrono

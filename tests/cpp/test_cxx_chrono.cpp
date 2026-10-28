@@ -2,9 +2,10 @@
 // text. Addition and subtraction that overflow the signed 64-bit count call
 // __prism_check. The header does not return a wrapping `a + b` as the sum
 // without that check, and the overflow path does not hand back a negative
-// wrapped count. Same-period duration_cast returns that count. A different
-// period is not declared. Sleep stays absent. This case does not compile
-// the header.
+// wrapped count. Same-type operator+= and operator-= use that check and
+// store 0. They do not store a wrapped negative. Same-period duration_cast
+// returns that count. A different period is not declared. Sleep stays
+// absent. This case does not compile the header.
 
 #include <doctest/doctest.h>
 
@@ -31,6 +32,8 @@ std::string slice_between(const std::string& text, const std::string& begin, con
 // A wrapping sum is an arithmetic return that sits ahead of __prism_check,
 // or the tokens `return a + b` / `return a - b`. The overflow path returns
 // a zero duration after the check, not the wrapped count.
+// Compound assignment stores 0 after the same check. The binary-operator
+// slice begins at "operator+(const duration".
 void expect_checked(const std::string& body, const std::string& sum_return) {
     CHECK(body.find("return a + b") == std::string::npos);
     CHECK(body.find("return a - b") == std::string::npos);
@@ -78,12 +81,45 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(text.find("class time_point") == std::string::npos);
     CHECK(text.find("system_clock") == std::string::npos);
 
-    const std::string add = slice_between(text, "operator+", "operator-");
-    const std::string sub = slice_between(text, "operator-", "}  // namespace std::chrono");
+    // The binary operators are sliced at "(const duration" because
+    // operator+= also contains the text operator+. The overflow line stays
+    // the return of a zero duration after __prism_check.
+    const std::string add = slice_between(text, "operator+(const duration", "operator-(const duration");
+    const std::string sub = slice_between(text, "operator-(const duration",
+                                          "duration<_Rep, _Period>::operator+=");
     expect_checked(add, "return duration<_Rep, _Period>(static_cast<_Rep>(__x + __y));");
     expect_checked(sub, "return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y));");
     CHECK(add.find("INT-SIGNED-OVF") != std::string::npos);
     CHECK(sub.find("INT-SIGNED-OVF") != std::string::npos);
+    CHECK(add.find("if (!__ok) return duration<_Rep, _Period>(0);") != std::string::npos);
+    CHECK(sub.find("if (!__ok) return duration<_Rep, _Period>(0);") != std::string::npos);
+
+    CHECK(text.find("duration& operator+=(const duration& __d);") != std::string::npos);
+    CHECK(text.find("duration& operator-=(const duration& __d);") != std::string::npos);
+    const std::string add_eq =
+        slice_between(text, "duration<_Rep, _Period>::operator+=", "duration<_Rep, _Period>::operator-=");
+    const std::string sub_eq =
+        slice_between(text, "duration<_Rep, _Period>::operator-=", "}  // namespace std::chrono");
+    auto expect_stored = [](const std::string& body, const std::string& fits, const std::string& store) {
+        const auto check = body.find("__prism_check");
+        REQUIRE(check != std::string::npos);
+        CHECK(body.find(fits) != std::string::npos);
+        CHECK(body.find("INT-SIGNED-OVF") != std::string::npos);
+        const auto zero = body.find("_M_count = static_cast<_Rep>(0);");
+        REQUIRE(zero != std::string::npos);
+        CHECK(zero > check);
+        const auto kept = body.find(store);
+        REQUIRE(kept != std::string::npos);
+        CHECK(kept > zero);
+        CHECK(body.find("if (!__ok) return duration<_Rep, _Period>(0);") == std::string::npos);
+        CHECK(body.find("_Rep2") == std::string::npos);
+        CHECK(body.find("_Period2") == std::string::npos);
+        CHECK(body.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x + __y))") == std::string::npos);
+        CHECK(body.find("return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y))") == std::string::npos);
+    };
+    expect_stored(add_eq, "__duration_add_fits", "_M_count = static_cast<_Rep>(__x + __y);");
+    expect_stored(sub_eq, "__duration_sub_fits", "_M_count = static_cast<_Rep>(__x - __y);");
+    CHECK(text.find("A different period is not declared, so that") != std::string::npos);
 
     // Same-period cast exists. Sleep stays absent (checked above). The cast
     // copies the count. It does not divide, wrap, or static_cast.
