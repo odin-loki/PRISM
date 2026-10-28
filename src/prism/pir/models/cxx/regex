@@ -22,6 +22,10 @@
 // same null check as regex(const char*): a null pointer is FUNC-CONTRACT
 // then __builtin_trap, and it is not stored. The flag is stored only
 // after that check. Copy and move copy the flag.
+// empty() is size() == 0. It does not decide a match. mark_count()
+// returns 0. It does not scan the pattern for a match, and 0 is not a
+// claim that the pattern matches. A null const char* is still
+// FUNC-CONTRACT then __builtin_trap. flags() is unchanged.
 // This is not PROVED and not CLEAN.
 //
 // regex_search and regex_match run a real matcher (__prism_re_*, below):
@@ -240,12 +244,16 @@ public:
 
     // Character count of the owned copy. An empty pattern is 0.
     [[nodiscard]] std::size_t size() const noexcept { return _M_len; }
-    [[nodiscard]] bool empty() const noexcept { return _M_len == 0; }
+    // True when size() is 0. It does not decide a match.
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
     // Owned characters, or nullptr when the pattern is empty. Not a match.
     [[nodiscard]] const char* data() const noexcept { return _M_str; }
     // The stored unsigned. It does not read the pattern to decide a match,
     // and 0 is not a claim that the pattern matches.
     [[nodiscard]] unsigned flags() const noexcept { return _M_flags; }
+    // Always 0. It does not scan the pattern for a match, and 0 is not a
+    // claim that the pattern matches.
+    [[nodiscard]] unsigned mark_count() const noexcept { return 0; }
 
     // Locale ([re.regex.locale]). imbue resets the regex to the empty
     // pattern (it then matches no sequence until assigned), stores a copy of

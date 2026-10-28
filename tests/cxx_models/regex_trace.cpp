@@ -1,7 +1,9 @@
 // Trace of std::regex pattern ownership. `#include <regex>` is PRISM's
 // model when its directory is first on the include path. libstdc++'s
 // std::regex does not expose the pattern characters, so this trace is the
-// model: size, empty, and data are the owned copy, not a match. flags()
+// model: size, empty, and data are the owned copy, not a match. empty()
+// is size() == 0. It does not decide a match. mark_count() is 0. It does
+// not scan the pattern for a match, and 0 is not a match. flags()
 // is the stored unsigned. It is not a match, and 0 is not a match.
 //
 // regex_match, regex_search, and regex_replace are not called.
@@ -37,7 +39,8 @@ extern "C" unsigned long __prism_obj_size(const void* p) {
 }
 
 static void print_pat(const char* label, const std::regex& r) {
-    std::printf("%s size=%zu empty=%d flags=%u", label, r.size(), r.empty() ? 1 : 0, r.flags());
+    std::printf("%s size=%zu empty=%d flags=%u marks=%u", label, r.size(), r.empty() ? 1 : 0, r.flags(),
+                r.mark_count());
     if (r.data() == nullptr) {
         std::printf(" data=null\n");
         return;
@@ -50,6 +53,12 @@ static void print_pat(const char* label, const std::regex& r) {
 static int fail(const char* what) {
     std::fprintf(stderr, "trace %s\n", what);
     return 1;
+}
+
+static int query_ok(const char* what, const std::regex& r) {
+    if (r.mark_count() != 0) return fail(what);
+    if (r.empty() != (r.size() == 0)) return fail(what);
+    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -106,6 +115,7 @@ int main(int argc, char** argv) {
     flag_assigned = flag_copy;
     std::regex flag_sink("q", 2u);
     flag_sink = std::move(flag_assigned);
+    std::regex grouped("(a)");
 
     print_pat("empty", empty);
     print_pat("ptr", from_ptr);
@@ -129,6 +139,7 @@ int main(int argc, char** argv) {
     print_pat("flag_copy", flag_copy);
     print_pat("flag_sink", flag_sink);
     print_pat("flag_assign_src", flag_assigned);
+    print_pat("grouped", grouped);
     std::printf("flag_distinct=%d\n", flag_distinct);
 
     if (moved.size() != 2 || moved.data() == nullptr || moved.data()[0] != 'a' || moved.data()[1] != 'b')
@@ -163,5 +174,13 @@ int main(int argc, char** argv) {
         return fail("flag_sink");
     if (!flag_assigned.empty() || flag_assigned.flags() != 0 || flag_assigned.data() != nullptr)
         return fail("flag_assign_src");
+    if (grouped.mark_count() != 0 || grouped.size() != 3 || grouped.empty() || grouped.flags() != 0)
+        return fail("grouped");
+    if (grouped.data() == nullptr || grouped.data()[0] != '(' || grouped.data()[1] != 'a' || grouped.data()[2] != ')')
+        return fail("grouped_data");
+    if (query_ok("q_empty", empty) || query_ok("q_ptr", from_ptr) || query_ok("q_written", written) ||
+        query_ok("q_star", star) || query_ok("q_grouped", grouped) || query_ok("q_def", def) ||
+        query_ok("q_flag_empty", flag_empty) || query_ok("q_moved", moved) || query_ok("q_src", lit))
+        return 1;
     return 0;
 }

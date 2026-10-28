@@ -1,5 +1,7 @@
 // The <regex> model owns a copy of the pattern characters. An empty pattern
-// stays empty. A null const char* is a FUNC-CONTRACT check and is not stored
+// stays empty. empty() is size() == 0 and does not decide a match.
+// mark_count() returns 0 and does not scan the pattern for a match.
+// A null const char* is a FUNC-CONTRACT check and is not stored
 // as a match-all pattern. flags() returns the stored unsigned. It does not
 // read the pattern to decide a match, and 0 is not a claim that the pattern
 // matches. regex_match, regex_search, and regex_replace are not declared:
@@ -273,4 +275,32 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     const std::string own_body = body_of(src, "void regex::_M_own(const char* __s, std::size_t __n)");
     REQUIRE_FALSE(own_body.empty());
     CHECK(own_body.find("_M_flags") == std::string::npos);
+
+    const std::string empty_fn = body_of(src, "bool empty() const noexcept");
+    REQUIRE_FALSE(empty_fn.empty());
+    CHECK(empty_fn.find("return size() == 0;") != std::string::npos);
+    CHECK(empty_fn.find("_M_str") == std::string::npos);
+    CHECK(empty_fn.find("_M_len") == std::string::npos);
+    CHECK(empty_fn.find("_M_flags") == std::string::npos);
+    CHECK(empty_fn.find("_M_own") == std::string::npos);
+    CHECK(empty_fn.find("_M_from_cstr") == std::string::npos);
+    CHECK(empty_fn.find("__prism_obj_size") == std::string::npos);
+    CHECK(empty_fn.find("delete") == std::string::npos);
+    CHECK(src.find("empty() is size() == 0") != std::string::npos);
+    CHECK(src.find("It does not decide a match") != std::string::npos);
+
+    const std::string marks = body_of(src, "unsigned mark_count() const noexcept");
+    REQUIRE_FALSE(marks.empty());
+    CHECK(marks.find("return 0;") != std::string::npos);
+    CHECK(marks.find("_M_str") == std::string::npos);
+    CHECK(marks.find("_M_len") == std::string::npos);
+    CHECK(marks.find("_M_flags") == std::string::npos);
+    CHECK(marks.find("_M_own") == std::string::npos);
+    CHECK(marks.find("_M_from_cstr") == std::string::npos);
+    CHECK(marks.find("__prism_obj_size") == std::string::npos);
+    CHECK(marks.find("delete") == std::string::npos);
+    CHECK(src.find("does not scan the pattern for a match") != std::string::npos);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    CHECK(from.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
 }
