@@ -8,8 +8,9 @@
 // ordered by identity. Sift swaps node pointers, so a traced element is
 // move-constructed into its node once and destroyed on pop; it is not
 // move-assigned along the heap. emplace constructs in the new node and
-// returns void. `uaf` uses the reference from top() after pop, which frees
-// that node.
+// returns void. swap exchanges heap pointers and sizes: it does not
+// construct, copy, or destroy elements. `uaf` uses the reference from top()
+// after pop, which frees that node.
 #include <cstdio>
 #include <priority_queue>
 #include <string>
@@ -22,6 +23,13 @@ struct IntSeq {
 
 struct Greater {
     bool operator()(const int& a, const int& b) const { return a > b; }
+};
+
+// Same type, opposite order. swap must carry the comparator with the heap:
+// pop sifts with the comparator that arrives, not the one left behind.
+struct Keyed {
+    bool min;
+    bool operator()(const int& a, const int& b) const { return min ? a > b : a < b; }
 };
 
 struct E {
@@ -101,6 +109,64 @@ static void ints() {
     std::printf("copy top=%d size=%zu\n", cp.top(), cp.size());
     cp.pop();
     std::printf("copy after pop src=%d copysize=%zu\n", dst.top(), cp.size());
+
+    std::priority_queue<int> left;
+    left.push(1);
+    left.push(8);
+    left.push(3);
+    std::priority_queue<int> right;
+    right.push(7);
+    right.push(2);
+    static_assert(std::is_void_v<decltype(left.swap(right))>);
+    static_assert(noexcept(left.swap(right)));
+    static_assert(std::is_void_v<decltype(std::swap(left, right))>);
+    static_assert(noexcept(std::swap(left, right)));
+    const int& swkept = left.top();
+    left.swap(right);
+    std::printf("swap left=%d right=%d kept=%d lsize=%zu rsize=%zu\n", left.top(), right.top(), swkept, left.size(),
+                right.size());
+    std::swap(left, right);
+    std::printf("swap back left=%d right=%d\n", left.top(), right.top());
+    left.swap(left);
+    std::printf("self top=%d size=%zu\n", left.top(), left.size());
+
+    std::priority_queue<int> hole;
+    left.swap(hole);
+    std::printf("with empty leftempty=%d holesize=%zu holetop=%d\n", int(left.empty()), hole.size(), hole.top());
+    left.push(5);
+    std::printf("repush top=%d size=%zu\n", left.top(), left.size());
+    std::printf("hole");
+    while (!hole.empty()) {
+        std::printf(" %d", hole.top());
+        hole.pop();
+    }
+    std::printf("\n");
+
+    std::priority_queue<int> e1;
+    std::priority_queue<int> e2;
+    e1.swap(e2);
+    e1.swap(e1);
+    std::printf("empty swap %d %d\n", int(e1.empty()), int(e2.empty()));
+
+    std::priority_queue<int, IntSeq, Keyed> lo(Keyed{true});
+    std::priority_queue<int, IntSeq, Keyed> hi(Keyed{false});
+    int keyed[] = {1, 4, 2};
+    for (int v : keyed) {
+        lo.push(v);
+        hi.push(v);
+    }
+    lo.swap(hi);
+    std::printf("keyed lo");
+    while (!lo.empty()) {
+        std::printf(" %d", lo.top());
+        lo.pop();
+    }
+    std::printf(" hi");
+    while (!hi.empty()) {
+        std::printf(" %d", hi.top());
+        hi.pop();
+    }
+    std::printf("\n");
 }
 
 static void traced() {
@@ -125,6 +191,30 @@ static void traced() {
         while (!q.empty()) {
             std::printf(" top%d", q.top().v);
             q.pop();
+        }
+        std::printf("\n");
+    }
+    {
+        std::priority_queue<E> a;
+        a.emplace(1);
+        a.emplace(3);
+        std::priority_queue<E> b;
+        b.emplace(2);
+        std::printf(" |");
+        a.swap(b);
+        a.swap(a);
+        std::priority_queue<E> empty;
+        b.swap(empty);
+        std::printf(" |");
+        std::printf(" a");
+        while (!a.empty()) {
+            std::printf(" top%d", a.top().v);
+            a.pop();
+        }
+        std::printf(" hole");
+        while (!empty.empty()) {
+            std::printf(" top%d", empty.top().v);
+            empty.pop();
         }
         std::printf("\n");
     }

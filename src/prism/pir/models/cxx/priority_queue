@@ -14,8 +14,8 @@
 // template argument is not the representation. The default is
 // `_Prism_priority_queue_nodes<T>` (so this header does not name `vector`);
 // any other sequence whose value_type is T is accepted and ignored. push,
-// emplace, pop, top, empty, and size are the operations the standard makes
-// observable here.
+// emplace, pop, top, empty, size, and swap are the operations the standard
+// makes observable here.
 //
 //  * top is the greatest element under the comparator (std::less by default:
 //    comp(a, b) means a is ordered before b, so a max-heap). Equal elements
@@ -33,10 +33,16 @@
 //    size(), so PIR classifies the failure FUNC-CONTRACT. Neither call
 //    invents an element: with the assertion disabled the load of the missing
 //    root is the next thing that happens.
+//  * swap exchanges the heap pointer and the size with the other queue. The
+//    index capacity travels with that pointer, and the comparator travels
+//    with the heap, so a later sift still matches the order already built.
+//    It does not allocate, does not free, and does not copy elements.
+//    Self-swap changes nothing. Swapping with an empty queue leaves this
+//    empty and moves the nodes to the other queue.
 //
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
-// libstdc++ (extra.cxx_models says so): swap, the range and container
+// libstdc++ (extra.cxx_models says so): the range and container
 // constructors, container_type, and from_range / push_range.
 // Those are not stubbed.
 #ifndef _PRISM_MODEL_PRIORITY_QUEUE
@@ -186,6 +192,14 @@ public:
         _M_drop(__dead);
     }
 
+    // Exchanges the index pointer, its capacity, the size, and the
+    // comparator. Element nodes stay in place: no allocation, no
+    // deallocation, no element copy. Self-swap returns before any exchange.
+    void swap(priority_queue& __o) noexcept(is_nothrow_swappable_v<_Compare>) {
+        if (this == &__o) return;
+        _M_swap(__o);
+    }
+
 private:
     _Node** _M_heap = nullptr;
     size_type _M_size = 0;
@@ -302,6 +316,12 @@ private:
         std::swap(_M_cap, __o._M_cap);
     }
 };
+
+template <typename _Tp, typename _Sequence, typename _Compare>
+inline void swap(priority_queue<_Tp, _Sequence, _Compare>& __x,
+                 priority_queue<_Tp, _Sequence, _Compare>& __y) noexcept(noexcept(__x.swap(__y))) {
+    __x.swap(__y);
+}
 
 _GLIBCXX_END_NAMESPACE_VERSION
 }  // namespace std

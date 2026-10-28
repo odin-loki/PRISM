@@ -4,8 +4,9 @@
 // `extra.cxx_models` says "model: priority_queue"); see docs/PIR.md "C++
 // library models". Each function is one contract; `_false` ones must fail
 // for the class their yml names. At most 4 elements (size-bounded proofs).
-// swap and the range constructors are not part of the model. emplace
-// constructs in a new node and returns void.
+// swap exchanges the heap pointer and the size. It does not allocate, free,
+// or copy elements. The range constructors are not part of the model.
+// emplace constructs in a new node and returns void.
 #include <cassert>
 #include <priority_queue>
 
