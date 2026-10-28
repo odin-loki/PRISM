@@ -865,6 +865,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_forward_list_front.cpp
     tests/cpp/test_cxx_forward_list_pop.cpp
     tests/cpp/test_cxx_forward_list_ne.cpp
+    tests/cpp/test_cxx_vector_ne.cpp
     tests/cpp/test_cxx_regex.cpp
     tests/cpp/test_fuse.cpp
     tests/cpp/test_forge_ai.cpp

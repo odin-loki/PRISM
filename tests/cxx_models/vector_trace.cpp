@@ -4,6 +4,11 @@
 // ASan/UBSan with _GLIBCXX_ASSERTIONS; the two traces must be identical
 // (sizes, capacities, contents, element constructions/destructions in order,
 // exceptions).
+// operator!= is the negation of operator==. Two empty vectors compare
+// not-equal as false. operator== compares sizes first; when both sizes are
+// 0 it still calls std::equal, and that empty range does not load an
+// element. A size mismatch is false before std::equal. A mismatch of equal
+// length stops at the first difference inside operator==.
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -148,8 +153,113 @@ static void traced() {
     std::printf("\n");
 }
 
+struct Load {
+    int v;
+    static int calls;
+    static int reads;
+    static int ctors;
+    explicit Load(int x) : v(x) { ++ctors; }
+    Load(const Load& o) : v(o.v) { ++ctors; }
+    friend bool operator==(const Load& a, const Load& b) {
+        ++calls;
+        if (a.v < 0 || b.v < 0) ++reads;
+        return a.v == b.v;
+    }
+};
+int Load::calls = 0;
+int Load::reads = 0;
+int Load::ctors = 0;
+
+struct NoDef {
+    int v;
+    explicit NoDef(int x) : v(x) {}
+    NoDef(const NoDef&) = default;
+    friend bool operator==(const NoDef& a, const NoDef& b) { return a.v == b.v; }
+};
+
+static std::vector<Load> load_vec(std::initializer_list<int> xs) {
+    std::vector<Load> v;
+    v.reserve(xs.size());
+    for (int x : xs) v.emplace_back(x);
+    return v;
+}
+
+struct NeCount {
+    int ne = 0;
+    int calls = 0;
+    int reads = 0;
+    int ctors = 0;
+};
+
+static NeCount count_ne(std::vector<Load>& a, std::vector<Load>& b) {
+    Load::calls = 0;
+    Load::reads = 0;
+    Load::ctors = 0;
+    NeCount c;
+    c.ne = int(a != b);
+    c.calls = Load::calls;
+    c.reads = Load::reads;
+    c.ctors = Load::ctors;
+    return c;
+}
+
+static void not_equal() {
+    std::vector<int> empty_a, empty_b;
+    std::vector<int> same{1, 2, 3};
+    std::vector<int> copy{1, 2, 3};
+    std::vector<int> head{9, 2, 3};
+    std::vector<int> mid{1, 9, 3};
+    std::vector<int> tail{1, 2, 9};
+    std::vector<int> shorter{1, 2};
+    std::vector<int> longer{1, 2, 3, 4};
+    std::vector<int> cleared_a{1, 2};
+    std::vector<int> cleared_b{9};
+    cleared_a.clear();
+    cleared_b.clear();
+    std::vector<int> reserved_a, reserved_b;
+    reserved_a.reserve(8);
+    reserved_b.reserve(1);
+    const std::vector<int> csame{1, 2, 3};
+    std::vector<NoDef> nd_a, nd_b;
+    std::printf("ne empty=%d same=%d head=%d mid=%d tail=%d short=%d long=%d self=%d clear=%d reserve=%d csame=%d "
+                "nodef=%d\n",
+                int(empty_a != empty_b), int(same != copy), int(same != head), int(same != mid), int(same != tail),
+                int(same != shorter), int(shorter != longer), int(same != same), int(cleared_a != cleared_b),
+                int(reserved_a != reserved_b), int(csame != copy), int(nd_a != nd_b));
+
+    auto e1 = load_vec({});
+    auto e2 = load_vec({});
+    const NeCount empty = count_ne(e1, e2);
+    auto same_l = load_vec({1, 2, 3});
+    auto same_r = load_vec({1, 2, 3});
+    const NeCount same_c = count_ne(same_l, same_r);
+    auto head_r = load_vec({9, 2, 3});
+    const NeCount head_c = count_ne(same_l, head_r);
+    auto mid_r = load_vec({1, 9, 3});
+    const NeCount mid_c = count_ne(same_l, mid_r);
+    auto tail_r = load_vec({1, 2, 9});
+    const NeCount tail_c = count_ne(same_l, tail_r);
+    auto len_l = load_vec({1, -1});
+    auto len_r = load_vec({1});
+    const NeCount len_c = count_ne(len_l, len_r);
+    auto poison_l = load_vec({1, 2, -1});
+    auto poison_r = load_vec({1, 9, -1});
+    const NeCount poison_c = count_ne(poison_l, poison_r);
+    auto eq_l = load_vec({1, -1});
+    auto eq_r = load_vec({1, -1});
+    const NeCount eq_c = count_ne(eq_l, eq_r);
+    const int ctors = empty.ctors + same_c.ctors + head_c.ctors + mid_c.ctors + tail_c.ctors + len_c.ctors +
+                      poison_c.ctors + eq_c.ctors;
+    std::printf("nel empty=%d/%d same=%d/%d head=%d/%d mid=%d/%d tail=%d/%d len=%d/%d lreads=%d poison=%d/%d "
+                "preads=%d eqneg=%d/%d/%d ctors=%d\n",
+                empty.ne, empty.calls, same_c.ne, same_c.calls, head_c.ne, head_c.calls, mid_c.ne, mid_c.calls,
+                tail_c.ne, tail_c.calls, len_c.ne, len_c.calls, len_c.reads, poison_c.ne, poison_c.calls,
+                poison_c.reads, eq_c.ne, eq_c.calls, eq_c.reads, ctors);
+}
+
 int main() {
     ints();
     traced();
+    not_equal();
     return 0;
 }
