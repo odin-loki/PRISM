@@ -213,13 +213,35 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("::operator new") == std::string::npos);
     CHECK(src.find("::operator delete") == std::string::npos);
     CHECK(src.find("delete[]") == std::string::npos);
-    // Two ranks, each a defaulted destructor. No owned buffer.
-    CHECK(count_of(src, "~mdspan() = default") == 2);
-    CHECK(count_of(src, "PTR-NULL-DEREF") == 2);
+    CHECK(src.find("submdspan(") == std::string::npos);
+    CHECK(src.find("class mdarray") == std::string::npos);
+    CHECK(src.find("template <typename _Tp, typename _Extents") == std::string::npos);
+    // Ranks 1, 2, and 3. Any other rank stays the incomplete primary.
+    CHECK(src.find("class mdspan;") != std::string::npos);
+    CHECK(src.find("class mdspan {") == std::string::npos);
+    CHECK(src.find("class mdspan<_Tp, 1>") != std::string::npos);
+    CHECK(src.find("class mdspan<_Tp, 2>") != std::string::npos);
+    CHECK(src.find("class mdspan<_Tp, 3>") != std::string::npos);
+    CHECK(src.find("class mdspan<_Tp, 4>") == std::string::npos);
+    CHECK(count_of(src, "~mdspan() = default") == 3);
+    // The class name in the header comment is unquoted. The checks are quoted.
+    CHECK(count_of(src, "\"PTR-NULL-DEREF\"") == 3);
     CHECK(src.find("null data pointer with a non-zero extent") != std::string::npos);
+    // Rank 2's product is still a check, and the stored size is that product
+    // only when it fits. Rank 3 does not store a three-factor wrapped product.
+    CHECK(src.find("const bool __fits = __e1 == 0 || __e0 <= static_cast<size_type>(-1) / __e1;") !=
+          std::string::npos);
+    CHECK(src.find("if (__fits) _M_size = __e0 * __e1;") != std::string::npos);
+    CHECK(src.find("const bool __zero = __e0 == 0 || __e1 == 0 || __e2 == 0;") != std::string::npos);
+    CHECK(src.find("if (__fits) _M_size = __prod;") != std::string::npos);
+    CHECK(src.find("_M_size = __e0 * __e1 * __e2") == std::string::npos);
+    CHECK(count_of(src, "std::mdspan extents product overflows") == 2);
+    CHECK(src.find("__i < _M_e0 && __j < _M_e1,") != std::string::npos);
+    CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2") != std::string::npos);
+    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 3>;") != std::string::npos);
 
     std::size_t from = 0;
-    for (int n = 0; n < 2; ++n) {
+    for (int n = 0; n < 3; ++n) {
         const auto op = src.find("reference operator()", from);
         REQUIRE(op != std::string::npos);
         const auto ret = src.find("return _M_ptr[", op);
@@ -234,9 +256,11 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
         CHECK(body.find("return {}") == std::string::npos);
         from = ret + 1;
     }
+    CHECK(src.find("reference operator()", from) == std::string::npos);
     // Rank 1 reports the stored extent, not a padded stand-in.
     CHECK(src.find("return _M_ext;") != std::string::npos);
     CHECK(src.find("return _M_e0;") != std::string::npos);
+    CHECK(src.find("return _M_e2;") != std::string::npos);
 }
 
 TEST_CASE("cxx mdspan model: in-range call reads the real element and the view does not own") {
@@ -271,6 +295,12 @@ TEST_CASE("cxx mdspan model: in-range call reads the real element and the view d
     CHECK(ok.out.find("empty 0 0 1\n") != std::string::npos);
     // Rank 2: extent(0) is 2, extent(1) is 3, (1, 2) is the last real element.
     CHECK(ok.out.find("r2 6 2 3 1 6\n") != std::string::npos);
+    // Rank 3: 2*3*4 = 24, (1, 2, 3) is the last real element. A zero extent
+    // keeps size() at 0 even when the other two would overflow. All-zero
+    // extents may be a null pointer.
+    CHECK(ok.out.find("r3 24 2 3 4 1 24\n") != std::string::npos);
+    CHECK(ok.out.find("z3 0\n") != std::string::npos);
+    CHECK(ok.out.find("e3 0 1\n") != std::string::npos);
 
     const Proc oob = run_proc({exe.string(), "oob"});
     REQUIRE(oob.ran);
@@ -289,4 +319,67 @@ TEST_CASE("cxx mdspan model: in-range call reads the real element and the view d
     CHECK(nullp.rc != 0);
     CHECK(nullp.err.find("CHECK PTR-NULL-DEREF") != std::string::npos);
     CHECK(nullp.err.find("non-zero extent") != std::string::npos);
+
+    for (const char* mode : {"oob3", "oob3j", "oob3k"}) {
+        const Proc past = run_proc({exe.string(), mode});
+        REQUIRE(past.ran);
+        CHECK(past.rc != 0);
+        CHECK(past.err.find("CHECK MEM-OOB-READ") != std::string::npos);
+        CHECK(past.err.find("outside the extents") != std::string::npos);
+    }
+
+    const Proc null3 = run_proc({exe.string(), "null3"});
+    REQUIRE(null3.ran);
+    CHECK(null3.rc != 0);
+    CHECK(null3.err.find("CHECK PTR-NULL-DEREF") != std::string::npos);
+    CHECK(null3.err.find("non-zero extent") != std::string::npos);
+
+    const Proc ovf3 = run_proc({exe.string(), "ovf3"});
+    REQUIRE(ovf3.ran);
+    CHECK(ovf3.rc != 0);
+    CHECK(ovf3.err.find("CHECK MEM-OOB-READ") != std::string::npos);
+    CHECK(ovf3.err.find("extents product overflows") != std::string::npos);
+
+    // Rank 2's overflowing product is still a check. size() is not returned.
+    const Proc ovf2 = run_proc({exe.string(), "ovf2"});
+    REQUIRE(ovf2.ran);
+    CHECK(ovf2.rc != 0);
+    CHECK(ovf2.err.find("CHECK MEM-OOB-READ") != std::string::npos);
+    CHECK(ovf2.err.find("extents product overflows") != std::string::npos);
+
+    const fs::path rank4 = c.tmp / "rank4.cpp";
+    std::ofstream(rank4) << "#include <mdspan>\n"
+                            "int rank4() {\n"
+                            "  int a[1] = {1};\n"
+                            "  std::mdspan<int, 4> m(a, 1, 1, 1, 1);\n"
+                            "  return m(0, 0, 0, 0);\n"
+                            "}\n";
+    std::vector<std::string> bad{c.cxx};
+    bad.insert(bad.end(), flags().begin(), flags().end());
+    bad.push_back("-isystem");
+    bad.push_back((repo() / "src" / "prism" / "pir" / "models" / "cxx").string());
+    bad.push_back(rank4.string());
+    bad.push_back("-c");
+    bad.push_back("-o");
+    bad.push_back((c.tmp / "rank4.o").string());
+    CHECK_FALSE(run_ok(bad));
+
+    const fs::path standard_sig = c.tmp / "standard_sig.cpp";
+    std::ofstream(standard_sig) << "#include <mdspan>\n"
+                                   "struct E {};\n"
+                                   "struct L {};\n"
+                                   "struct A {};\n"
+                                   "int standard_sig() {\n"
+                                   "  std::mdspan<int, E, L, A> m;\n"
+                                   "  return m.rank();\n"
+                                   "}\n";
+    std::vector<std::string> sig{c.cxx};
+    sig.insert(sig.end(), flags().begin(), flags().end());
+    sig.push_back("-isystem");
+    sig.push_back((repo() / "src" / "prism" / "pir" / "models" / "cxx").string());
+    sig.push_back(standard_sig.string());
+    sig.push_back("-c");
+    sig.push_back("-o");
+    sig.push_back((c.tmp / "standard_sig.o").string());
+    CHECK_FALSE(run_ok(sig));
 }

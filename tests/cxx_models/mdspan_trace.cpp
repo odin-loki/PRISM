@@ -49,6 +49,28 @@ static void rank2() {
     std::printf("r2 %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m(0, 0), m(1, 2));
 }
 
+static void rank3() {
+    int c[24];
+    for (int i = 0; i < 24; ++i) c[i] = i + 1;
+    std::mdspan<int, 3> m(c, 2, 3, 4);
+    std::printf("r3 %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2), m(0, 0, 0),
+                m(1, 2, 3));
+}
+
+// The other two extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero3() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, 3> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(0));
+    std::printf("z3 %zu\n", m.size());
+}
+
+static void empty3() {
+    std::mdspan<int, 3> z(static_cast<int*>(nullptr), 0, 0, 0);
+    std::printf("e3 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
 static int oob() {
     int a[4] = {1, 2, 3, 4};
     std::mdspan<int> m(a, 4);
@@ -66,14 +88,51 @@ static int null_ext() {
     return static_cast<int>(m.size());
 }
 
+// which 0/1/2 is one past extent 0/1/2. The other indices are in range.
+static int oob3(int which) {
+    int c[24] = {};
+    std::mdspan<int, 3> m(c, 2, 3, 4);
+    if (which == 0) return m(2, 0, 0);
+    if (which == 1) return m(0, 3, 0);
+    return m(0, 0, 4);
+}
+
+static int null3() {
+    std::mdspan<int, 3> m(static_cast<int*>(nullptr), 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf3() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, 3> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2));
+    return static_cast<int>(m.size());
+}
+
+static int ovf2() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, 2> m(&one, huge, static_cast<std::size_t>(2));
+    return static_cast<int>(m.size());
+}
+
 int main(int argc, char** argv) {
     const std::string arg = argc > 1 ? argv[1] : "";
     if (arg == "oob") return oob();
     if (arg == "oob2") return oob2();
+    if (arg == "oob3") return oob3(0);
+    if (arg == "oob3j") return oob3(1);
+    if (arg == "oob3k") return oob3(2);
     if (arg == "null") return null_ext();
+    if (arg == "null3") return null3();
+    if (arg == "ovf3") return ovf3();
+    if (arg == "ovf2") return ovf2();
     in_range();
     not_own();
     empty();
     rank2();
+    rank3();
+    zero3();
+    empty3();
     return 0;
 }
