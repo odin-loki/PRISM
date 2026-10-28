@@ -5,6 +5,9 @@
 // is size() == 0. It does not decide a match. mark_count() is 0. It does
 // not scan the pattern for a match, and 0 is not a match. flags()
 // is the stored unsigned. It is not a match, and 0 is not a match.
+// basic_regex is this regex. basic_regex::swap exchanges the pattern
+// pointer, the length, and the flags. It does not read a character. Two
+// empty patterns stay empty. Self-swap keeps the same block.
 //
 // regex_match, regex_search, and regex_replace are not called.
 //
@@ -19,6 +22,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <regex>
+#include <type_traits>
+#include <utility>
 
 static const char* g_bound_base = nullptr;
 static unsigned long g_bound = 1ul << 20;
@@ -117,6 +122,42 @@ int main(int argc, char** argv) {
     flag_sink = std::move(flag_assigned);
     std::regex grouped("(a)");
 
+    static_assert(std::is_same_v<std::regex, std::basic_regex>);
+    static_assert(noexcept(std::declval<std::basic_regex&>().swap(std::declval<std::basic_regex&>())));
+    static_assert(std::is_void_v<decltype(std::declval<std::basic_regex&>().swap(std::declval<std::basic_regex&>()))>);
+    static_assert(noexcept(std::swap(std::declval<std::basic_regex&>(), std::declval<std::basic_regex&>())));
+
+    std::basic_regex swap_a(p, 4u);
+    std::regex swap_b(".*", 3u);
+    const char* swap_pa = swap_a.data();
+    const char* swap_pb = swap_b.data();
+    swap_a.swap(swap_b);
+    const int swap_exchanged = swap_a.data() == swap_pb && swap_b.data() == swap_pa;
+    std::regex swap_e1;
+    std::regex swap_e2(z, 7u);
+    swap_e1.swap(swap_e2);
+    std::regex both_a;
+    std::regex both_b;
+    both_a.swap(both_b);
+    std::regex swap_self(p, 4u);
+    const char* self_p = swap_self.data();
+    swap_self.swap(swap_self);
+    const int self_same = swap_self.data() == self_p;
+    std::regex swap_full("ab", 4u);
+    std::regex swap_hole;
+    const char* full_p = swap_full.data();
+    swap_full.swap(swap_hole);
+    std::basic_regex std_swap_a("ab", 1u);
+    std::regex std_swap_b("cd", 2u);
+    const char* std_pa = std_swap_a.data();
+    const char* std_pb = std_swap_b.data();
+    std::swap(std_swap_a, std_swap_b);
+    const int std_exchanged = std_swap_a.data() == std_pb && std_swap_b.data() == std_pa;
+    std::regex std_self("zw", 5u);
+    const char* std_self_p = std_self.data();
+    std::swap(std_self, std_self);
+    const int std_self_same = std_self.data() == std_self_p;
+
     print_pat("empty", empty);
     print_pat("ptr", from_ptr);
     print_pat("ptr_empty", ptr_empty);
@@ -141,6 +182,22 @@ int main(int argc, char** argv) {
     print_pat("flag_assign_src", flag_assigned);
     print_pat("grouped", grouped);
     std::printf("flag_distinct=%d\n", flag_distinct);
+    print_pat("swap_a", swap_a);
+    print_pat("swap_b", swap_b);
+    std::printf("swap_exchanged=%d\n", swap_exchanged);
+    print_pat("swap_empty_a", swap_e1);
+    print_pat("swap_empty_b", swap_e2);
+    print_pat("swap_both_empty", both_a);
+    print_pat("swap_both_empty_b", both_b);
+    print_pat("swap_self", swap_self);
+    std::printf("self_same=%d\n", self_same);
+    print_pat("swap_now_empty", swap_full);
+    print_pat("swap_now_full", swap_hole);
+    print_pat("std_swap_a", std_swap_a);
+    print_pat("std_swap_b", std_swap_b);
+    std::printf("std_exchanged=%d\n", std_exchanged);
+    print_pat("std_self", std_self);
+    std::printf("std_self_same=%d\n", std_self_same);
 
     if (moved.size() != 2 || moved.data() == nullptr || moved.data()[0] != 'a' || moved.data()[1] != 'b')
         return fail("moved");
@@ -181,6 +238,33 @@ int main(int argc, char** argv) {
     if (query_ok("q_empty", empty) || query_ok("q_ptr", from_ptr) || query_ok("q_written", written) ||
         query_ok("q_star", star) || query_ok("q_grouped", grouped) || query_ok("q_def", def) ||
         query_ok("q_flag_empty", flag_empty) || query_ok("q_moved", moved) || query_ok("q_src", lit))
+        return 1;
+    if (!swap_exchanged || swap_a.flags() != 3u || swap_b.flags() != 4u || swap_a.size() != 2 || swap_b.size() != 2)
+        return fail("swap_exchanged");
+    if (swap_a.data()[0] != '.' || swap_a.data()[1] != '*' || swap_b.data()[0] != 'a' || swap_b.data()[1] != 'b')
+        return fail("swap_chars");
+    if (!swap_e1.empty() || swap_e1.size() != 0 || swap_e1.data() != nullptr || swap_e1.flags() != 7u)
+        return fail("swap_empty_a");
+    if (!swap_e2.empty() || swap_e2.size() != 0 || swap_e2.data() != nullptr || swap_e2.flags() != 0)
+        return fail("swap_empty_b");
+    if (!both_a.empty() || both_a.data() != nullptr || both_a.flags() != 0 || !both_b.empty() ||
+        both_b.data() != nullptr || both_b.flags() != 0)
+        return fail("swap_both_empty");
+    if (!self_same || swap_self.flags() != 4u || swap_self.size() != 2 || swap_self.data()[0] != 'a' ||
+        swap_self.data()[1] != 'b')
+        return fail("swap_self");
+    if (!swap_full.empty() || swap_full.data() != nullptr || swap_full.flags() != 0) return fail("swap_now_empty");
+    if (swap_hole.data() != full_p || swap_hole.flags() != 4u || swap_hole.size() != 2 || swap_hole.data()[0] != 'a' ||
+        swap_hole.data()[1] != 'b')
+        return fail("swap_now_full");
+    if (!std_exchanged || std_swap_a.flags() != 2u || std_swap_b.flags() != 1u || std_swap_a.data()[0] != 'c' ||
+        std_swap_b.data()[0] != 'a')
+        return fail("std_swap");
+    if (!std_self_same || std_self.flags() != 5u || std_self.size() != 2 || std_self.data()[0] != 'z' ||
+        std_self.data()[1] != 'w')
+        return fail("std_self");
+    if (query_ok("q_swap_a", swap_a) || query_ok("q_swap_empty", swap_e1) || query_ok("q_both", both_a) ||
+        query_ok("q_self", swap_self) || query_ok("q_hole", swap_hole) || query_ok("q_std_self", std_self))
         return 1;
     return 0;
 }

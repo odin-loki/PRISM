@@ -4,7 +4,10 @@
 // A null const char* is a FUNC-CONTRACT check and is not stored
 // as a match-all pattern. flags() returns the stored unsigned. It does not
 // read the pattern to decide a match, and 0 is not a claim that the pattern
-// matches. regex_match, regex_search, and regex_replace are not declared:
+// matches. basic_regex is this regex. basic_regex::swap exchanges the
+// pattern pointer, the length, and the flags. It does not read a character.
+// Two empty patterns stay empty. Self-swap does not free the pattern.
+// regex_match, regex_search, and regex_replace are not declared:
 // a true return would be a fake match.
 //
 // CMake's prism_tests source list is explicit (not a glob): this file is one
@@ -137,10 +140,11 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(src.find("empty match-all") != std::string::npos);
     CHECK(src.find("stays empty") != std::string::npos);
     const std::string code = strip_comments(src);
-    for (const char* name : {"regex_replace", "basic_regex", "wregex"}) {
+    for (const char* name : {"regex_replace", "wregex"}) {
         CAPTURE(name);
         CHECK_FALSE(has_ident(code, name));
     }
+    CHECK(has_ident(code, "basic_regex"));
     CHECK(code.find("\".*\"") == std::string::npos);
     for (const char* name : {"regex_match", "regex_search", "match_results"}) {
         CAPTURE(name);
@@ -302,5 +306,35 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(src.find("does not scan the pattern for a match") != std::string::npos);
     CHECK(count_sub(code, "::operator delete(") == 1);
     CHECK(from.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
+
+    CHECK(src.find("using basic_regex = regex;") != std::string::npos);
+    CHECK(src.find("void swap(regex& __o) noexcept;") != std::string::npos);
+    CHECK(src.find("void basic_regex::swap(basic_regex& __o) noexcept") != std::string::npos);
+    const std::string swap_pub = body_of(src, "void basic_regex::swap(basic_regex& __o) noexcept");
+    REQUIRE_FALSE(swap_pub.empty());
+    const auto swap_self = swap_pub.find("if (this == &__o) return;");
+    const auto swap_call = swap_pub.find("_M_swap(__o);");
+    REQUIRE(swap_self != std::string::npos);
+    REQUIRE(swap_call != std::string::npos);
+    CHECK(swap_self < swap_call);
+    CHECK(swap_pub.find("delete") == std::string::npos);
+    CHECK(swap_pub.find("_M_free") == std::string::npos);
+    CHECK(swap_pub.find("_M_own") == std::string::npos);
+    CHECK(swap_pub.find("_M_from_cstr") == std::string::npos);
+    CHECK(swap_pub.find("__prism_obj_size") == std::string::npos);
+    CHECK(swap_pub.find("_M_str[") == std::string::npos);
+    CHECK(swap_pub.find("while") == std::string::npos);
+    CHECK(swap_body.find("delete") == std::string::npos);
+    CHECK(swap_body.find("_M_str[") == std::string::npos);
+    CHECK(swap_body.find("while") == std::string::npos);
+    const std::string swap_free = body_of(src, "void swap(basic_regex& __a, basic_regex& __b) noexcept");
+    REQUIRE_FALSE(swap_free.empty());
+    CHECK(swap_free.find("__a.swap(__b);") != std::string::npos);
+    CHECK(swap_free.find("delete") == std::string::npos);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    CHECK(dtor.find("::operator delete(") == std::string::npos);
+    CHECK(empty_fn.find("return size() == 0;") != std::string::npos);
+    CHECK(marks.find("return 0;") != std::string::npos);
     CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
 }

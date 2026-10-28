@@ -26,6 +26,9 @@
 // returns 0. It does not scan the pattern for a match, and 0 is not a
 // claim that the pattern matches. A null const char* is still
 // FUNC-CONTRACT then __builtin_trap. flags() is unchanged.
+// basic_regex is this regex. basic_regex::swap exchanges the pattern
+// pointer, the length, and the flags. It does not read a character. Two
+// empty patterns stay empty. Self-swap does not free the pattern.
 // This is not PROVED and not CLEAN.
 //
 // regex_search and regex_match run a real matcher (__prism_re_*, below):
@@ -283,6 +286,11 @@ public:
     }
     const __prism_re_loc& _M_locale() const noexcept { return _M_loc; }
 
+    // Exchanges the pattern pointer, the length, and the flags. It does
+    // not read a character. Two empty patterns stay empty. Self-swap does
+    // not free the pattern. This is not a match.
+    void swap(regex& __o) noexcept;
+
 private:
     char* _M_str;
     std::size_t _M_len;
@@ -295,6 +303,8 @@ private:
     void _M_from_cstr(const char* __s);
 };
 
+// The char pattern. Not a template. basic_regex::swap is the member below.
+using basic_regex = regex;
 
 inline void regex::_M_free() noexcept {
     if (_M_str != nullptr) {
@@ -331,6 +341,14 @@ inline void regex::_M_swap(regex& __o) noexcept {
     __o._M_flags = __f;
     _M_loc._M_swap(__o._M_loc);
 }
+
+inline void basic_regex::swap(basic_regex& __o) noexcept {
+    // Same object: the one block stays. No free, and no character read.
+    if (this == &__o) return;
+    _M_swap(__o);
+}
+
+inline void swap(basic_regex& __a, basic_regex& __b) noexcept { __a.swap(__b); }
 
 inline void regex::_M_from_cstr(const char* __s) {
     // Null is not a pattern. Do not store ".*" and do not store an empty
