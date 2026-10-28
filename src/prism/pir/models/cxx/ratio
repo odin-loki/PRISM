@@ -20,11 +20,18 @@
 // path does not return a boolean and does not return false. ratio_equal
 // is true only when the reduced ratios are the same.
 //
+// ratio_not_equal, ratio_greater, ratio_less_equal, and
+// ratio_greater_equal call that same _Prism_ratio_compare. ratio_not_equal
+// is the opposite of equal, and only after both products fit.
+// ratio_greater is less with the two ratios swapped. ratio_less_equal is
+// not greater, and ratio_greater_equal is not less. Those negations are
+// inside the fitting arm. An overflowing cross product still traps in
+// _Prism_ratio_compare and does not return a boolean.
+//
 // Not declared, so a unit that names one fails to compile against this
 // header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
-// ratio_not_equal, ratio_less_equal, ratio_greater, ratio_greater_equal,
-// and the SI prefixes whose literals this stand-in does not check (atto,
-// femto, pico, tera, peta, exa). <chrono> and <compare> are not included.
+// the SI prefixes whose literals this stand-in does not check (atto, femto,
+// pico, tera, peta, exa). <chrono> and <compare> are not included.
 #ifndef _GLIBCXX_RATIO
 #define _GLIBCXX_RATIO 1
 
@@ -197,9 +204,10 @@ template <class _R1, class _R2>
 using ratio_subtract = ratio_add<_R1, ratio<-_R2::num, _R2::den>>;
 
 // Cross-multiply n1/d1 ? n2/d2 as (n1*d2) ? (n2*d1). equal is the same
-// reduced ratio. less is the strict order. The denominators stored by
-// ratio are positive.
-enum class _Prism_ratio_rel { _S_equal, _S_less };
+// reduced ratio. less is the strict order. not_equal is the opposite of
+// equal. not_less is the opposite of less. The denominators stored by
+// ratio are positive. Each result is returned only after both products fit.
+enum class _Prism_ratio_rel { _S_equal, _S_less, _S_not_equal, _S_not_less };
 
 template <intmax_t _N1, intmax_t _D1, intmax_t _N2, intmax_t _D2, _Prism_ratio_rel _Rel>
 constexpr bool _Prism_ratio_compare() noexcept {
@@ -211,7 +219,10 @@ constexpr bool _Prism_ratio_compare() noexcept {
         const intmax_t _Left = _Prism_cross_product(_N1, _D2);
         const intmax_t _Right = _Prism_cross_product(_N2, _D1);
         // Equal cross products of reduced ratios are the same ratio.
+        // The negations below run only on this arm, after both products fit.
         if constexpr (_Rel == _Prism_ratio_rel::_S_less) return _Left < _Right;
+        else if constexpr (_Rel == _Prism_ratio_rel::_S_not_equal) return !(_Left == _Right);
+        else if constexpr (_Rel == _Prism_ratio_rel::_S_not_less) return !(_Left < _Right);
         else return _Left == _Right;
     }
 }
@@ -226,6 +237,38 @@ template <class _R1, class _R2>
 struct ratio_less {
     static constexpr bool value =
         _Prism_ratio_compare<_R1::num, _R1::den, _R2::num, _R2::den, _Prism_ratio_rel::_S_less>();
+};
+
+// Opposite of equal. The call traps before this member exists when a cross
+// product does not fit, so the opposite is not folded from a stand-in false.
+template <class _R1, class _R2>
+struct ratio_not_equal {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R1::num, _R1::den, _R2::num, _R2::den, _Prism_ratio_rel::_S_not_equal>();
+};
+
+// less with the two ratios swapped.
+template <class _R1, class _R2>
+struct ratio_greater {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R2::num, _R2::den, _R1::num, _R1::den, _Prism_ratio_rel::_S_less>();
+};
+
+// Not greater. Greater is less with the ratios swapped, so this is not-less
+// of that swapped pair. The negation is inside _Prism_ratio_compare, after
+// the products fit. An overflow traps there and does not return a boolean.
+template <class _R1, class _R2>
+struct ratio_less_equal {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R2::num, _R2::den, _R1::num, _R1::den, _Prism_ratio_rel::_S_not_less>();
+};
+
+// Not less. The negation is the _S_not_less arm, reached only after both
+// cross products fit.
+template <class _R1, class _R2>
+struct ratio_greater_equal {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R1::num, _R1::den, _R2::num, _R2::den, _Prism_ratio_rel::_S_not_less>();
 };
 
 // Aliases of ratio<...>. The prefixes whose magnitude this header does not

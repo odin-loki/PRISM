@@ -1,6 +1,6 @@
 // Trace of std::ratio. Compiled against libstdc++ or with PRISM's model
 // header (src/prism/pir/models/cxx/ratio) first on the include path. Prints
-// the reduced numerator and denominator, and a few comparisons whose cross
+// the reduced numerator and denominator, and comparisons whose cross
 // products fit in intmax_t. A zero denominator and a product that does not
 // fit in intmax_t are ill-formed, so this program does not name them. A
 // comparison whose cross product does not fit is not a boolean here.
@@ -32,5 +32,14 @@ int main() {
     flag("lt", std::ratio_less<std::ratio<1, 3>, std::ratio<1, 2>>::value);
     flag("lt_eq", std::ratio_less<std::ratio<1, 2>, std::ratio<2, 4>>::value);
     flag("lt_neg", std::ratio_less<std::ratio<-1, 2>, std::ratio<1, 3>>::value);
+    flag("neq", std::ratio_not_equal<std::ratio<1, 2>, std::ratio<1, 3>>::value);
+    flag("neq_same", std::ratio_not_equal<std::ratio<2, 4>, std::ratio<1, 2>>::value);
+    flag("gt", std::ratio_greater<std::ratio<1, 2>, std::ratio<1, 3>>::value);
+    flag("gt_eq", std::ratio_greater<std::ratio<1, 2>, std::ratio<2, 4>>::value);
+    flag("gt_neg", std::ratio_greater<std::ratio<-1, 3>, std::ratio<-1, 2>>::value);
+    flag("le", std::ratio_less_equal<std::ratio<1, 3>, std::ratio<1, 2>>::value);
+    flag("le_eq", std::ratio_less_equal<std::ratio<2, 4>, std::ratio<1, 2>>::value);
+    flag("ge", std::ratio_greater_equal<std::ratio<1, 2>, std::ratio<1, 3>>::value);
+    flag("ge_lt", std::ratio_greater_equal<std::ratio<1, 3>, std::ratio<1, 2>>::value);
     return 0;
 }
