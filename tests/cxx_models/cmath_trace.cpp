@@ -7,6 +7,10 @@
 // they are not a proof of a numeric identity. copysign(0, negative) prints
 // as a negative zero. fmin/fmax of one NaN print the other argument. Two
 // NaNs print as a NaN, not as zero. Those three are not PROVED and not CLEAN.
+// floor(1.5) is 1 and floor(-1.5) is -2. ceil(1.5) is 2 and ceil(-1.5) is
+// -1. trunc(1.5) is 1 and trunc(-1.5) is -1. A NaN stays a NaN, not zero.
+// An infinity stays that infinity. A negative zero stays a negative zero.
+// floor, ceil, and trunc are not PROVED and not CLEAN.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -118,5 +122,97 @@ int main(int argc, char** argv) {
     std::printf("fmaxl=%d\n", std::fmax(lthree, lone) == 3.0L ? 1 : 0);
     std::printf("fminnl=%d\n", std::fmin(lone, nanl) == 1.0L ? 1 : 0);
     std::printf("fmaxnnl=%d\n", std::isnan(std::fmax(nanl, __builtin_nanl("1"))) ? 1 : 0);
+
+    volatile double fl_a = 1.5;
+    volatile double fl_n = -1.5;
+    volatile double fl_two = 2.0;
+    volatile double fl_ntwo = -2.0;
+    std::printf("fl15=%d\n", std::floor(fl_a) == 1.0 ? 1 : 0);
+    std::printf("fln15=%d\n", std::floor(fl_n) == -2.0 ? 1 : 0);
+    std::printf("ce15=%d\n", std::ceil(fl_a) == 2.0 ? 1 : 0);
+    std::printf("cen15=%d\n", std::ceil(fl_n) == -1.0 ? 1 : 0);
+    std::printf("tr15=%d\n", std::trunc(fl_a) == 1.0 ? 1 : 0);
+    std::printf("trn15=%d\n", std::trunc(fl_n) == -1.0 ? 1 : 0);
+    std::printf("fl2=%d\n", std::floor(fl_two) == 2.0 ? 1 : 0);
+    std::printf("fln2=%d\n", std::floor(fl_ntwo) == -2.0 ? 1 : 0);
+    std::printf("ce2=%d\n", std::ceil(fl_two) == 2.0 ? 1 : 0);
+    std::printf("cen2=%d\n", std::ceil(fl_ntwo) == -2.0 ? 1 : 0);
+    std::printf("tr2=%d\n", std::trunc(fl_two) == 2.0 ? 1 : 0);
+    std::printf("trn2=%d\n", std::trunc(fl_ntwo) == -2.0 ? 1 : 0);
+    std::printf("flnan=%d\n", std::isnan(std::floor(nand)) ? 1 : 0);
+    std::printf("cenan=%d\n", std::isnan(std::ceil(nand)) ? 1 : 0);
+    std::printf("trnan=%d\n", std::isnan(std::trunc(nand)) ? 1 : 0);
+    volatile double pinf = __builtin_huge_val();
+    volatile double ninf = -__builtin_huge_val();
+    std::printf("flpinf=%d\n", std::floor(pinf) == pinf ? 1 : 0);
+    std::printf("flninf=%d\n", std::floor(ninf) == ninf ? 1 : 0);
+    std::printf("cepinf=%d\n", std::ceil(pinf) == pinf ? 1 : 0);
+    std::printf("ceninf=%d\n", std::ceil(ninf) == ninf ? 1 : 0);
+    std::printf("trpinf=%d\n", std::trunc(pinf) == pinf ? 1 : 0);
+    std::printf("trninf=%d\n", std::trunc(ninf) == ninf ? 1 : 0);
+    volatile double mzero = -0.0;
+    volatile double pzero = 0.0;
+    volatile double flmz = std::floor(mzero);
+    volatile double cemz = std::ceil(mzero);
+    volatile double trmz = std::trunc(mzero);
+    volatile double flpz = std::floor(pzero);
+    std::printf("flmz=%d\n", (flmz == 0.0 && std::signbit(flmz)) ? 1 : 0);
+    std::printf("cemz=%d\n", (cemz == 0.0 && std::signbit(cemz)) ? 1 : 0);
+    std::printf("trmz=%d\n", (trmz == 0.0 && std::signbit(trmz)) ? 1 : 0);
+    std::printf("flpz=%d\n", (flpz == 0.0 && !std::signbit(flpz)) ? 1 : 0);
+
+    volatile float fa = 1.5f;
+    volatile float fn15 = -1.5f;
+    std::printf("fl15f=%d\n", std::floor(fa) == 1.0f ? 1 : 0);
+    std::printf("fln15f=%d\n", std::floor(fn15) == -2.0f ? 1 : 0);
+    std::printf("ce15f=%d\n", std::ceil(fa) == 2.0f ? 1 : 0);
+    std::printf("cen15f=%d\n", std::ceil(fn15) == -1.0f ? 1 : 0);
+    std::printf("tr15f=%d\n", std::trunc(fa) == 1.0f ? 1 : 0);
+    std::printf("trn15f=%d\n", std::trunc(fn15) == -1.0f ? 1 : 0);
+    std::printf("flnanf=%d\n", std::isnan(std::floor(nanf)) ? 1 : 0);
+    std::printf("cenanf=%d\n", std::isnan(std::ceil(nanf)) ? 1 : 0);
+    std::printf("trnanf=%d\n", std::isnan(std::trunc(nanf)) ? 1 : 0);
+    volatile float pinff = __builtin_huge_valf();
+    volatile float ninff = -__builtin_huge_valf();
+    std::printf("flpinff=%d\n", std::floor(pinff) == pinff ? 1 : 0);
+    std::printf("flninff=%d\n", std::floor(ninff) == ninff ? 1 : 0);
+    std::printf("cepinff=%d\n", std::ceil(pinff) == pinff ? 1 : 0);
+    std::printf("ceninff=%d\n", std::ceil(ninff) == ninff ? 1 : 0);
+    std::printf("trpinff=%d\n", std::trunc(pinff) == pinff ? 1 : 0);
+    std::printf("trninff=%d\n", std::trunc(ninff) == ninff ? 1 : 0);
+    volatile float fmzero = -0.0f;
+    volatile float flmzf = std::floor(fmzero);
+    volatile float cemzf = std::ceil(fmzero);
+    volatile float trmzf = std::trunc(fmzero);
+    std::printf("flmzf=%d\n", (flmzf == 0.0f && std::signbit(flmzf)) ? 1 : 0);
+    std::printf("cemzf=%d\n", (cemzf == 0.0f && std::signbit(cemzf)) ? 1 : 0);
+    std::printf("trmzf=%d\n", (trmzf == 0.0f && std::signbit(trmzf)) ? 1 : 0);
+
+    volatile long double la = 1.5L;
+    volatile long double ln15 = -1.5L;
+    std::printf("fl15l=%d\n", std::floor(la) == 1.0L ? 1 : 0);
+    std::printf("fln15l=%d\n", std::floor(ln15) == -2.0L ? 1 : 0);
+    std::printf("ce15l=%d\n", std::ceil(la) == 2.0L ? 1 : 0);
+    std::printf("cen15l=%d\n", std::ceil(ln15) == -1.0L ? 1 : 0);
+    std::printf("tr15l=%d\n", std::trunc(la) == 1.0L ? 1 : 0);
+    std::printf("trn15l=%d\n", std::trunc(ln15) == -1.0L ? 1 : 0);
+    std::printf("flnanl=%d\n", std::isnan(std::floor(nanl)) ? 1 : 0);
+    std::printf("cenanl=%d\n", std::isnan(std::ceil(nanl)) ? 1 : 0);
+    std::printf("trnanl=%d\n", std::isnan(std::trunc(nanl)) ? 1 : 0);
+    volatile long double pinfl = __builtin_huge_vall();
+    volatile long double ninfl = -__builtin_huge_vall();
+    std::printf("flpinfl=%d\n", std::floor(pinfl) == pinfl ? 1 : 0);
+    std::printf("flninfl=%d\n", std::floor(ninfl) == ninfl ? 1 : 0);
+    std::printf("cepinfl=%d\n", std::ceil(pinfl) == pinfl ? 1 : 0);
+    std::printf("ceninfl=%d\n", std::ceil(ninfl) == ninfl ? 1 : 0);
+    std::printf("trpinfl=%d\n", std::trunc(pinfl) == pinfl ? 1 : 0);
+    std::printf("trninfl=%d\n", std::trunc(ninfl) == ninfl ? 1 : 0);
+    volatile long double lmzero = -0.0L;
+    volatile long double flmzl = std::floor(lmzero);
+    volatile long double cemzl = std::ceil(lmzero);
+    volatile long double trmzl = std::trunc(lmzero);
+    std::printf("flmzl=%d\n", (flmzl == 0.0L && std::signbit(flmzl)) ? 1 : 0);
+    std::printf("cemzl=%d\n", (cemzl == 0.0L && std::signbit(cemzl)) ? 1 : 0);
+    std::printf("trmzl=%d\n", (trmzl == 0.0L && std::signbit(trmzl)) ? 1 : 0);
     return 0;
 }

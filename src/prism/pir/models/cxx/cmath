@@ -18,6 +18,12 @@
 // for that NaN. An integer argument is not an overload. copysign, fmin,
 // and fmax are not PROVED and not CLEAN.
 //
+// floor, ceil, and trunc are declared for float, double, and long double.
+// They call __builtin_floor / __builtin_floorf / __builtin_floorl and the
+// ceil and trunc builtins. A NaN stays a NaN. The body does not return 0
+// in place of a NaN. An infinity stays that infinity. An integer argument
+// is not an overload. floor, ceil, and trunc are not PROVED and not CLEAN.
+//
 // sin, cos, tan, exp, log, and pow are not declared, and neither is the
 // rest of <cmath>. A use of them fails to compile against this header and
 // pir falls back to libstdc++. A partial header is intentional.
@@ -38,8 +44,9 @@
 // std::isfinite(x) into a name in namespace std. The guard stops that
 // include from defining the macros. This file does not include <math.h>,
 // so sin, cos, tan, exp, log, and pow stay undeclared. If <math.h> was
-// already included, the undefs drop the macros. copysign, fmin, and fmax
-// are cleared the same way when a macro of that name is present.
+// already included, the undefs drop the macros. copysign, fmin, fmax,
+// floor, ceil, and trunc are cleared the same way when a macro of that
+// name is present.
 #define _MATH_H 1
 #undef isfinite
 #undef isinf
@@ -48,6 +55,9 @@
 #undef copysign
 #undef fmin
 #undef fmax
+#undef floor
+#undef ceil
+#undef trunc
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -178,6 +188,22 @@ constexpr long double fmax(long double __x, long double __y) {
     if (isnan(__y)) return __x;
     return __x > __y ? __x : __y;
 }
+
+// Toward -infinity, toward +infinity, and toward zero. The builtin keeps a
+// NaN as a NaN and keeps an infinity as that infinity. It does not return
+// 0 in place of a NaN. float uses the f builtin and long double the l
+// builtin. An integer argument is not an overload.
+constexpr double floor(double __x) { return __builtin_floor(__x); }
+constexpr float floor(float __x) { return __builtin_floorf(__x); }
+constexpr long double floor(long double __x) { return __builtin_floorl(__x); }
+
+constexpr double ceil(double __x) { return __builtin_ceil(__x); }
+constexpr float ceil(float __x) { return __builtin_ceilf(__x); }
+constexpr long double ceil(long double __x) { return __builtin_ceill(__x); }
+
+constexpr double trunc(double __x) { return __builtin_trunc(__x); }
+constexpr float trunc(float __x) { return __builtin_truncf(__x); }
+constexpr long double trunc(long double __x) { return __builtin_truncl(__x); }
 
 }  // namespace std
 

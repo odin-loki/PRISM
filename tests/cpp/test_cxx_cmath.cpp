@@ -8,7 +8,10 @@
 // signbit of a negative value is true. Those four classify; they are not a
 // proof of a numeric identity. copysign(0, negative) is a negative zero.
 // fmin of a NaN and a number is the number. Two NaNs from fmin or fmax are
-// a NaN. Those three are not PROVED and not CLEAN.
+// a NaN. Those three are not PROVED and not CLEAN. floor(1.5) is 1 and
+// floor(-1.5) is -2. ceil(1.5) is 2 and ceil(-1.5) is -1. trunc(1.5) is 1
+// and trunc(-1.5) is -1. A NaN stays a NaN and an infinity stays that
+// infinity. floor, ceil, and trunc are not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -298,8 +301,12 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
     CHECK(fb.find("return 0") == std::string::npos);
 
     CHECK(src.find("copysign, fmin, and fmax are not PROVED and not CLEAN.") != std::string::npos);
-    CHECK(count_of(src, "PROVED") == 1);
-    CHECK(count_of(src, "CLEAN") == 1);
+    CHECK(src.find("floor, ceil, and trunc are not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("A NaN stays a NaN.") != std::string::npos);
+    CHECK(src.find("does not return 0 in place of a NaN") != std::string::npos);
+    CHECK(src.find("An infinity stays that infinity.") != std::string::npos);
+    CHECK(count_of(src, "PROVED") == 2);
+    CHECK(count_of(src, "CLEAN") == 2);
     CHECK(src.find("negative zero, not a positive") != std::string::npos);
     CHECK(src.find("Zero is not a stand-in") != std::string::npos);
     CHECK(src.find("copysign(int") == std::string::npos);
@@ -339,6 +346,31 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
         CHECK(fn_body.find("if (isnan(__x)) return __y;") != std::string::npos);
         CHECK(fn_body.find("if (isnan(__y)) return __x;") != std::string::npos);
         CHECK(fn_body.find("return __x > __y ? __x : __y;") != std::string::npos);
+        CHECK(fn_body.find("return 0") == std::string::npos);
+        CHECK(fn_body.find("0.0") == std::string::npos);
+    }
+
+    CHECK(src.find("#undef floor") != std::string::npos);
+    CHECK(src.find("#undef ceil") != std::string::npos);
+    CHECK(src.find("#undef trunc") != std::string::npos);
+    CHECK(src.find("floor(int") == std::string::npos);
+    CHECK(src.find("ceil(int") == std::string::npos);
+    CHECK(src.find("trunc(int") == std::string::npos);
+    CHECK(src.find("int floor(") == std::string::npos);
+    CHECK(src.find("int ceil(") == std::string::npos);
+    CHECK(src.find("int trunc(") == std::string::npos);
+    for (const char* line : {"constexpr double floor(double __x) { return __builtin_floor(__x); }",
+                             "constexpr float floor(float __x) { return __builtin_floorf(__x); }",
+                             "constexpr long double floor(long double __x) { return __builtin_floorl(__x); }",
+                             "constexpr double ceil(double __x) { return __builtin_ceil(__x); }",
+                             "constexpr float ceil(float __x) { return __builtin_ceilf(__x); }",
+                             "constexpr long double ceil(long double __x) { return __builtin_ceill(__x); }",
+                             "constexpr double trunc(double __x) { return __builtin_trunc(__x); }",
+                             "constexpr float trunc(float __x) { return __builtin_truncf(__x); }",
+                             "constexpr long double trunc(long double __x) { return __builtin_truncl(__x); }"}) {
+        CHECK(src.find(line) != std::string::npos);
+        const std::string fn_body = brace_body(src, line);
+        REQUIRE_FALSE(fn_body.empty());
         CHECK(fn_body.find("return 0") == std::string::npos);
         CHECK(fn_body.find("0.0") == std::string::npos);
     }
@@ -425,6 +457,67 @@ TEST_CASE("cxx cmath model: fabs(-2) is 2 when the model header is included") {
     CHECK(has_line(b, "fmaxl=1"));
     CHECK(has_line(b, "fminnl=1"));
     CHECK(has_line(b, "fmaxnnl=1"));
+    CHECK(has_line(b, "fl15=1"));
+    CHECK(has_line(b, "fln15=1"));
+    CHECK(has_line(b, "ce15=1"));
+    CHECK(has_line(b, "cen15=1"));
+    CHECK(has_line(b, "tr15=1"));
+    CHECK(has_line(b, "trn15=1"));
+    CHECK(has_line(b, "fl2=1"));
+    CHECK(has_line(b, "fln2=1"));
+    CHECK(has_line(b, "ce2=1"));
+    CHECK(has_line(b, "cen2=1"));
+    CHECK(has_line(b, "tr2=1"));
+    CHECK(has_line(b, "trn2=1"));
+    CHECK(has_line(b, "flnan=1"));
+    CHECK(has_line(b, "cenan=1"));
+    CHECK(has_line(b, "trnan=1"));
+    CHECK(has_line(b, "flpinf=1"));
+    CHECK(has_line(b, "flninf=1"));
+    CHECK(has_line(b, "cepinf=1"));
+    CHECK(has_line(b, "ceninf=1"));
+    CHECK(has_line(b, "trpinf=1"));
+    CHECK(has_line(b, "trninf=1"));
+    CHECK(has_line(b, "flmz=1"));
+    CHECK(has_line(b, "cemz=1"));
+    CHECK(has_line(b, "trmz=1"));
+    CHECK(has_line(b, "flpz=1"));
+    CHECK(has_line(b, "fl15f=1"));
+    CHECK(has_line(b, "fln15f=1"));
+    CHECK(has_line(b, "ce15f=1"));
+    CHECK(has_line(b, "cen15f=1"));
+    CHECK(has_line(b, "tr15f=1"));
+    CHECK(has_line(b, "trn15f=1"));
+    CHECK(has_line(b, "flnanf=1"));
+    CHECK(has_line(b, "cenanf=1"));
+    CHECK(has_line(b, "trnanf=1"));
+    CHECK(has_line(b, "flpinff=1"));
+    CHECK(has_line(b, "flninff=1"));
+    CHECK(has_line(b, "cepinff=1"));
+    CHECK(has_line(b, "ceninff=1"));
+    CHECK(has_line(b, "trpinff=1"));
+    CHECK(has_line(b, "trninff=1"));
+    CHECK(has_line(b, "flmzf=1"));
+    CHECK(has_line(b, "cemzf=1"));
+    CHECK(has_line(b, "trmzf=1"));
+    CHECK(has_line(b, "fl15l=1"));
+    CHECK(has_line(b, "fln15l=1"));
+    CHECK(has_line(b, "ce15l=1"));
+    CHECK(has_line(b, "cen15l=1"));
+    CHECK(has_line(b, "tr15l=1"));
+    CHECK(has_line(b, "trn15l=1"));
+    CHECK(has_line(b, "flnanl=1"));
+    CHECK(has_line(b, "cenanl=1"));
+    CHECK(has_line(b, "trnanl=1"));
+    CHECK(has_line(b, "flpinfl=1"));
+    CHECK(has_line(b, "flninfl=1"));
+    CHECK(has_line(b, "cepinfl=1"));
+    CHECK(has_line(b, "ceninfl=1"));
+    CHECK(has_line(b, "trpinfl=1"));
+    CHECK(has_line(b, "trninfl=1"));
+    CHECK(has_line(b, "flmzl=1"));
+    CHECK(has_line(b, "cemzl=1"));
+    CHECK(has_line(b, "trmzl=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "neg"}, &out, &err));
