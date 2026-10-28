@@ -13,16 +13,20 @@
 // try_wait is true only when the count is already zero. It does not
 // decrement, and it is not true while the count is positive.
 //
-// max, wait, and arrive_and_wait are omitted so a unit that names one
-// fails to compile and pir falls back to libstdc++. A blocking wait that
-// returns immediately would be a fake synchronization success. This
-// header is not a concurrency proof.
+// max() is modelled: it returns PTRDIFF_MAX. It does not wait and it does
+// not change a latch.
+//
+// wait and arrive_and_wait stay omitted so a unit that names one fails to
+// compile and pir falls back to libstdc++. A blocking wait that returns
+// immediately would be a fake synchronization success. This header is not
+// a concurrency proof.
 #ifndef _GLIBCXX_LATCH
 #define _GLIBCXX_LATCH 1
 
 #pragma GCC system_header
 
 #include <cstddef>
+#include <cstdint>
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the
 // libc models. Not defined here: the analysed program does not link a body.
@@ -44,8 +48,12 @@ public:
     latch(const latch&) = delete;
     latch& operator=(const latch&) = delete;
 
-    // max, wait, and arrive_and_wait are omitted so a unit that names one
-    // fails to compile and pir falls back to libstdc++. A blocking wait that
+    // max() is modelled. It returns PTRDIFF_MAX. It does not wait and it
+    // does not change a latch.
+    static constexpr ptrdiff_t max() noexcept { return PTRDIFF_MAX; }
+
+    // wait and arrive_and_wait stay omitted so a unit that names one fails
+    // to compile and pir falls back to libstdc++. A blocking wait that
     // returns immediately would be a fake synchronization success.
 
     void count_down(ptrdiff_t __n = 1) noexcept {

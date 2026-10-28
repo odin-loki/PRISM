@@ -4,7 +4,8 @@
 // tests/cxx_models/latch_trace.cpp.
 //
 // count_down past zero is a __prism_check. try_wait is false while the
-// count is positive. The header does not define wait(.
+// count is positive. max() returns PTRDIFF_MAX and does not change the
+// count. The header does not define wait(.
 
 #include <doctest/doctest.h>
 
@@ -257,8 +258,25 @@ TEST_CASE("cxx latch model: count_down past zero is a check and wait is not defi
 
     CHECK(defines_call(src, "try_wait"));
     CHECK(defines_call(src, "count_down"));
+    CHECK(defines_call(src, "max"));
     CHECK_FALSE(defines_call(src, "wait"));
     CHECK_FALSE(defines_call(src, "arrive_and_wait"));
+
+    const auto mx = src.find("static constexpr ptrdiff_t max() noexcept");
+    REQUIRE(mx != std::string::npos);
+    CHECK(mx < cd);
+    const auto mx_end = src.find('}', mx);
+    REQUIRE(mx_end != std::string::npos);
+    const std::string max_fn = src.substr(mx, mx_end - mx);
+    CHECK(max_fn.find("return PTRDIFF_MAX;") != std::string::npos);
+    CHECK(max_fn.find("_M_count") == std::string::npos);
+    CHECK(max_fn.find("-=") == std::string::npos);
+    CHECK(max_fn.find("count_down") == std::string::npos);
+    CHECK(max_fn.find("wait") == std::string::npos);
+    CHECK(src.find("max() is modelled") != std::string::npos);
+    CHECK(src.find("wait and arrive_and_wait stay omitted") != std::string::npos);
+    CHECK(src.find("max, wait, and arrive_and_wait are omitted") == std::string::npos);
+    CHECK(src.find("#include <cstdint>") != std::string::npos);
 }
 
 TEST_CASE("cxx latch model: setup clang++ with ASan/UBSan") {
