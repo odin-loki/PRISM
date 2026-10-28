@@ -4,7 +4,9 @@
 // line in _prism_test_sources. The trace is tests/cxx_models/cmath_trace.cpp.
 //
 // Header text: a negative sqrt is a __prism_check before any value.
-// With clang++, fabs(-2) is 2.
+// With clang++, fabs(-2) is 2. isfinite(0) is true, isnan(0) is false, and
+// signbit of a negative value is true. Those four classify; they are not a
+// proof of a numeric identity.
 
 #include <doctest/doctest.h>
 
@@ -203,6 +205,9 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
         }
     }
     CHECK(src.find("not a proof of numeric accuracy") != std::string::npos);
+    CHECK(src.find("not a proof of a numeric identity") != std::string::npos);
+    CHECK(src.find("#define _MATH_H 1") != std::string::npos);
+    CHECK(src.find("#include <math.h>") == std::string::npos);
     CHECK(src.find("fails to compile") != std::string::npos);
     CHECK(src.find("double sin(") == std::string::npos);
     CHECK(src.find("double cos(") == std::string::npos);
@@ -210,6 +215,26 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
     CHECK(src.find("double exp(") == std::string::npos);
     CHECK(src.find("double log(") == std::string::npos);
     CHECK(src.find("double pow(") == std::string::npos);
+    CHECK(src.find("constexpr bool isfinite(double __x) { return __builtin_isfinite(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool isfinite(float __x) { return __builtin_isfinite(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool isfinite(long double __x) { return __builtin_isfinite(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool isinf(double __x) { return __builtin_isinf(__x); }") != std::string::npos);
+    CHECK(src.find("constexpr bool isinf(float __x) { return __builtin_isinf(__x); }") != std::string::npos);
+    CHECK(src.find("constexpr bool isinf(long double __x) { return __builtin_isinf(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool isnan(double __x) { return __builtin_isnan(__x); }") != std::string::npos);
+    CHECK(src.find("constexpr bool isnan(float __x) { return __builtin_isnan(__x); }") != std::string::npos);
+    CHECK(src.find("constexpr bool isnan(long double __x) { return __builtin_isnan(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool signbit(double __x) { return __builtin_signbit(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool signbit(float __x) { return __builtin_signbitf(__x); }") !=
+          std::string::npos);
+    CHECK(src.find("constexpr bool signbit(long double __x) { return __builtin_signbitl(__x); }") !=
+          std::string::npos);
 
     const auto fn = src.find("inline double sqrt(double __x)");
     REQUIRE(fn != std::string::npos);
@@ -291,6 +316,18 @@ TEST_CASE("cxx cmath model: fabs(-2) is 2 when the model header is included") {
     CHECK(has_line(b, "fabs2=2"));
     CHECK(has_line(b, "fabs25=1"));
     CHECK(has_line(b, "abs25=1"));
+    CHECK(has_line(b, "fin0=1"));
+    CHECK(has_line(b, "fin0f=1"));
+    CHECK(has_line(b, "fin0l=1"));
+    CHECK(has_line(b, "nan0=0"));
+    CHECK(has_line(b, "nan0f=0"));
+    CHECK(has_line(b, "nan0l=0"));
+    CHECK(has_line(b, "inf0=0"));
+    CHECK(has_line(b, "inf0f=0"));
+    CHECK(has_line(b, "inf0l=0"));
+    CHECK(has_line(b, "sgn2=1"));
+    CHECK(has_line(b, "sgnf=1"));
+    CHECK(has_line(b, "sgnl=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "neg"}, &out, &err));

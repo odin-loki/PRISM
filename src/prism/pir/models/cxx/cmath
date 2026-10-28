@@ -6,9 +6,12 @@
 //
 // This header is not a proof of numeric accuracy.
 //
-// sin, cos, tan, exp, log, pow, and the rest of <cmath> are not declared.
-// A use of them fails to compile against this header and pir falls back to
-// libstdc++. A partial header is intentional.
+// isfinite, isinf, isnan, and signbit are declared. They classify a value.
+// They are not a proof of a numeric identity.
+//
+// sin, cos, tan, exp, log, and pow are not declared, and neither is the
+// rest of <cmath>. A use of them fails to compile against this header and
+// pir falls back to libstdc++. A partial header is intentional.
 #ifndef _GLIBCXX_CMATH
 #define _GLIBCXX_CMATH 1
 
@@ -21,6 +24,17 @@
 #undef abs
 #undef fabs
 #undef sqrt
+// <math.h> defines isfinite, isinf, isnan, and signbit as function-like
+// macros. A later include, such as <cstdio>, would then rewrite
+// std::isfinite(x) into a name in namespace std. The guard stops that
+// include from defining the macros. This file does not include <math.h>,
+// so sin, cos, tan, exp, log, and pow stay undeclared. If <math.h> was
+// already included, the undefs drop the macros.
+#define _MATH_H 1
+#undef isfinite
+#undef isinf
+#undef isnan
+#undef signbit
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -69,6 +83,27 @@ constexpr long double fabs(long double __x) { return __builtin_fabsl(__x); }
 constexpr double abs(double __x) { return __builtin_fabs(__x); }
 constexpr float abs(float __x) { return __builtin_fabsf(__x); }
 constexpr long double abs(long double __x) { return __builtin_fabsl(__x); }
+
+// Classification, not a numeric identity. A floating zero is finite and is
+// not a NaN. The sign bit of a negative value is set. Clang's isfinite,
+// isinf, and isnan builtins are type-generic, so the float and long double
+// overloads call the same builtin as double. signbit has f and l builtins.
+// An integer argument is not an overload.
+constexpr bool isfinite(double __x) { return __builtin_isfinite(__x); }
+constexpr bool isfinite(float __x) { return __builtin_isfinite(__x); }
+constexpr bool isfinite(long double __x) { return __builtin_isfinite(__x); }
+
+constexpr bool isinf(double __x) { return __builtin_isinf(__x); }
+constexpr bool isinf(float __x) { return __builtin_isinf(__x); }
+constexpr bool isinf(long double __x) { return __builtin_isinf(__x); }
+
+constexpr bool isnan(double __x) { return __builtin_isnan(__x); }
+constexpr bool isnan(float __x) { return __builtin_isnan(__x); }
+constexpr bool isnan(long double __x) { return __builtin_isnan(__x); }
+
+constexpr bool signbit(double __x) { return __builtin_signbit(__x); }
+constexpr bool signbit(float __x) { return __builtin_signbitf(__x); }
+constexpr bool signbit(long double __x) { return __builtin_signbitl(__x); }
 
 }  // namespace std
 
