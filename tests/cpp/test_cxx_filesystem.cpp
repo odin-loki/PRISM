@@ -1,8 +1,8 @@
 // The <filesystem> model is a partial path. These checks read the header
-// text: an empty path has size 0 and its filename is empty, and the header
-// does not define exists. CMake's prism_tests source list is explicit (not a
-// glob). The header is not included here: this binary already uses the
-// standard std::filesystem in other translation units.
+// text: an empty path has size 0, its filename is empty, and its stem is
+// empty. The header does not define exists. CMake's prism_tests source list
+// is explicit (not a glob). The header is not included here: this binary
+// already uses the standard std::filesystem in other translation units.
 
 #include <doctest/doctest.h>
 
@@ -153,4 +153,13 @@ TEST_CASE("cxx filesystem model: empty filename is empty and exists is not defin
     REQUIRE_FALSE(join.empty());
     CHECK(join.find("'/'" ) != std::string::npos);
     CHECK(join.find("\"..\"") == std::string::npos);
+
+    const std::string stem = body_of(src, "path path::stem() const");
+    REQUIRE_FALSE(stem.empty());
+    CHECK(stem.find("if (_M_len == 0) return path();") != std::string::npos);
+    CHECK(stem.find("\".\"") == std::string::npos);
+    CHECK(stem.find("'.'") == std::string::npos);
+    CHECK(stem.find("filename()") != std::string::npos);
+    CHECK(stem.find("extension()") != std::string::npos);
+    CHECK(stem.find("::operator delete(") == std::string::npos);
 }

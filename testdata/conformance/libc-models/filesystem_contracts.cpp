@@ -28,3 +28,20 @@ int fs_join_true(int) {
     assert(std::filesystem::path("a/..").filename() == "..");
     return 0;
 }
+
+// stem is the filename without its extension. An empty path stays empty.
+// "." and ".." stay themselves. A leading dot with no later dot stays.
+// ".." is not dropped.
+int fs_stem_true(int) {
+    const std::filesystem::path e;
+    assert(e.stem().empty());
+    assert(!(e.stem() == "."));
+    assert(std::filesystem::path("a/b.txt").stem() == "b");
+    assert(std::filesystem::path("a/b").stem() == "b");
+    assert(std::filesystem::path(".").stem() == ".");
+    assert(std::filesystem::path("..").stem() == "..");
+    assert(std::filesystem::path(".txt").stem() == ".txt");
+    assert(std::filesystem::path("a/..").stem() == "..");
+    assert(std::filesystem::path("a/b.tar.txt").stem() == "b.tar");
+    return 0;
+}

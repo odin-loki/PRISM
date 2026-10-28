@@ -10,6 +10,11 @@
 //
 // filename() of an empty path is an empty path. It is not a single dot.
 // filename() of "a/b" is "b". extension() of "a/b.txt" is ".txt".
+// stem() is that filename without its extension. An empty path's stem is
+// empty, not a dot. stem() of "a/b.txt" is "b". stem() of "a/b" is "b".
+// stem() of "." is ".". stem() of ".." is "..". stem() of ".txt" is ".txt":
+// a filename that is only a dot, or that starts with a dot and has no later
+// dot, is its own stem.
 // parent_path() of "a/b" is "a". operator/ inserts one '/' between the two
 // sides and keeps every component. A component that is ".." stays "..".
 // lexically_normal is not implemented. Dropping ".." would invent a path the
@@ -99,6 +104,7 @@ public:
 
     [[nodiscard]] path filename() const;
     [[nodiscard]] path extension() const;
+    [[nodiscard]] path stem() const;
     [[nodiscard]] path parent_path() const;
 
     path& operator/=(const path& __p);
@@ -227,6 +233,17 @@ inline path path::extension() const {
     // No dot, or the only dot is the first character (a leading-dot name).
     if (__dot == __n || __dot == 0) return path();
     return _M_slice(__b + __dot, __e);
+}
+
+inline path path::stem() const {
+    // Empty path: empty stem. Not a dot.
+    if (_M_len == 0) return path();
+    const path __file = filename();
+    const path __ext = extension();
+    // An empty extension means the filename is the stem, including a
+    // leading-dot name. Otherwise the stem is that filename without it.
+    if (__ext._M_len == 0 || __ext._M_len >= __file._M_len) return __file;
+    return __file._M_slice(0, __file._M_len - __ext._M_len);
 }
 
 inline path path::parent_path() const {
