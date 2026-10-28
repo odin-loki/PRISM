@@ -7,6 +7,8 @@
 // relative. A leading '/' is absolute. ".." is not removed.
 // has_root_directory reads one stored character. An empty path has no root
 // directory. A leading '/' has one. ".." is not removed.
+// has_filename reads one stored character. An empty path has no filename.
+// A trailing '/' has none. Every other non-empty path has one. ".." stays.
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
@@ -109,6 +111,25 @@ int main() {
     const int root_bslash = std::filesystem::path("\\a").has_root_directory();
     const int root_unc = std::filesystem::path("//net/share").has_root_directory();
     const int root_net = std::filesystem::path("//net").has_root_directory();
+    const int has_empty = empty.has_filename();
+    const int has_blank = std::filesystem::path("").has_filename();
+    const int has_root = std::filesystem::path("/").has_filename();
+    const int has_slash = std::filesystem::path("/a").has_filename();
+    const int has_rel = std::filesystem::path("a").has_filename();
+    const int has_nested = std::filesystem::path("a/b").has_filename();
+    const int has_trail = std::filesystem::path("a/").has_filename();
+    const int has_trail_b = std::filesystem::path("a/b/").has_filename();
+    const int has_dot = std::filesystem::path(".").has_filename();
+    const int has_dots = std::filesystem::path("..").has_filename();
+    const int has_keep = std::filesystem::path("a/..").has_filename();
+    const int has_dotdot = std::filesystem::path("a/../b").has_filename();
+    const int has_root_dotdot = std::filesystem::path("/a/../b").has_filename();
+    const int has_drive = std::filesystem::path("C:/a").has_filename();
+    const int has_bslash = std::filesystem::path("\\a").has_filename();
+    const int has_unc = std::filesystem::path("//net/share").has_filename();
+    const int has_net = std::filesystem::path("//net").has_filename();
+    const int has_txt = std::filesystem::path("a/b.txt").has_filename();
+    const int has_hidden = std::filesystem::path(".txt").has_filename();
     std::printf("empty_fn_empty=%d\n", empty_fn_empty);
     std::printf("empty_fn_dot=%d\n", empty_fn_dot);
     std::printf("fn_b=%d\n", fn_b);
@@ -180,6 +201,25 @@ int main() {
     std::printf("root_bslash=%d\n", root_bslash);
     std::printf("root_unc=%d\n", root_unc);
     std::printf("root_net=%d\n", root_net);
+    std::printf("has_empty=%d\n", has_empty);
+    std::printf("has_blank=%d\n", has_blank);
+    std::printf("has_root=%d\n", has_root);
+    std::printf("has_slash=%d\n", has_slash);
+    std::printf("has_rel=%d\n", has_rel);
+    std::printf("has_nested=%d\n", has_nested);
+    std::printf("has_trail=%d\n", has_trail);
+    std::printf("has_trail_b=%d\n", has_trail_b);
+    std::printf("has_dot=%d\n", has_dot);
+    std::printf("has_dots=%d\n", has_dots);
+    std::printf("has_keep=%d\n", has_keep);
+    std::printf("has_dotdot=%d\n", has_dotdot);
+    std::printf("has_root_dotdot=%d\n", has_root_dotdot);
+    std::printf("has_drive=%d\n", has_drive);
+    std::printf("has_bslash=%d\n", has_bslash);
+    std::printf("has_unc=%d\n", has_unc);
+    std::printf("has_net=%d\n", has_net);
+    std::printf("has_txt=%d\n", has_txt);
+    std::printf("has_hidden=%d\n", has_hidden);
     if (!empty_fn_empty || empty_fn_dot || !fn_b || !ext || !parent || !join || !dotdot || !keep || !stem_empty ||
         stem_empty_dot || !stem_txt || !stem_b || !stem_dot || !stem_dotdot || !stem_hidden || !stem_keep ||
         !stem_multi || !cmp_empty || !cmp_empty_a || !cmp_a_empty || !cmp_aa || !cmp_ab || !cmp_ba || !cmp_prefix ||
@@ -189,7 +229,9 @@ int main() {
         !rel_nested || abs_dotdot || !rel_dotdot || !abs_root_dotdot || rel_root_dotdot || abs_blank ||
         !rel_blank || abs_drive || !rel_drive || abs_bslash || !rel_bslash || !abs_unc || rel_unc || root_empty ||
         !root_root || !root_slash || root_rel || root_nested || root_dotdot || !root_root_dotdot || root_blank ||
-        root_drive || root_bslash || !root_unc || !root_net)
+        root_drive || root_bslash || !root_unc || !root_net || has_empty || has_blank || has_root || !has_slash ||
+        !has_rel || !has_nested || has_trail || has_trail_b || !has_dot || !has_dots || !has_keep || !has_dotdot ||
+        !has_root_dotdot || !has_drive || !has_bslash || !has_unc || !has_net || !has_txt || !has_hidden)
         return 1;
     return 0;
 }

@@ -377,3 +377,75 @@ TEST_CASE("cxx filesystem model: has_root_directory is a character test") {
     CHECK(rel.find("has_root_directory") == std::string::npos);
     CHECK(src.find("[[nodiscard]] bool empty() const noexcept { return _M_len == 0; }") != std::string::npos);
 }
+
+TEST_CASE("cxx filesystem model: has_filename is a character test") {
+    const std::string src = slurp(model_header());
+    REQUIRE_FALSE(src.empty());
+    const std::string code = strip_comments(src);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    for (const char* name : {"exists", "absolute", "lexically_normal", "status"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+
+    CHECK(count_sub(src, "[[nodiscard]] bool has_filename() const noexcept;") == 1);
+    CHECK(count_sub(src, "bool path::has_filename() const noexcept") == 1);
+
+    const std::string has = body_of(src, "bool path::has_filename() const noexcept");
+    REQUIRE_FALSE(has.empty());
+    const auto early = has.find("if (_M_len == 0) return false;");
+    REQUIRE(early != std::string::npos);
+    const auto str_at = has.find("_M_str");
+    REQUIRE(str_at != std::string::npos);
+    CHECK(early < str_at);
+    CHECK(has.find("return _M_str[_M_len - 1] != '/';") != std::string::npos);
+    CHECK(has.find("_M_str[_M_len]") == std::string::npos);
+    CHECK(has.find("filename()") == std::string::npos);
+    CHECK(has.find("::operator delete(") == std::string::npos);
+    CHECK(has.find("::operator new(") == std::string::npos);
+    CHECK(has.find("exists") == std::string::npos);
+    CHECK(has.find("stat(") == std::string::npos);
+    CHECK(has.find("opendir") == std::string::npos);
+    CHECK(has.find("lexically_normal") == std::string::npos);
+    CHECK(has.find("status") == std::string::npos);
+    CHECK(has.find("__prism_check") == std::string::npos);
+
+    // compare, stem, filename, extension, parent_path, operator/,
+    // replace_extension, is_absolute, is_relative, empty, and
+    // has_root_directory stay.
+    const std::string cmp = body_of(src, "int path::compare(const path&");
+    CHECK(cmp.find("if (_M_len == 0 && __p._M_len == 0) return 0;") != std::string::npos);
+    CHECK(cmp.find("has_filename") == std::string::npos);
+    const std::string stem = body_of(src, "path path::stem() const");
+    CHECK(stem.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string filename = body_of(src, "path path::filename() const");
+    CHECK(filename.find("if (_M_len == 0) return path();") != std::string::npos);
+    CHECK(filename.find("has_filename") == std::string::npos);
+    const std::string ext = body_of(src, "path path::extension() const");
+    CHECK(ext.find("if (__n == 2 && _M_str[__b] == '.' && _M_str[__b + 1] == '.') return path();") !=
+          std::string::npos);
+    const std::string parent = body_of(src, "path path::parent_path() const");
+    CHECK(parent.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string join = body_of(src, "path& path::operator/=(const path& __p)");
+    CHECK(join.find("'/'" ) != std::string::npos);
+    const std::string slash = body_of(src, "path operator/(const path&");
+    CHECK(slash.find("/=") != std::string::npos);
+    const std::string repl = body_of(src, "path& path::replace_extension(");
+    CHECK(repl.find("if (_M_len == 0) return *this;") != std::string::npos);
+    CHECK(repl.find("has_filename") == std::string::npos);
+    const std::string abs = body_of(src, "bool path::is_absolute() const noexcept");
+    CHECK(abs.find("if (_M_len == 0) return false;") != std::string::npos);
+    CHECK(abs.find("return _M_str[0] == '/';") != std::string::npos);
+    CHECK(abs.find("has_filename") == std::string::npos);
+    const std::string rel = body_of(src, "bool path::is_relative() const noexcept");
+    CHECK(rel.find("return !is_absolute();") != std::string::npos);
+    CHECK(rel.find("has_filename") == std::string::npos);
+    const std::string root = body_of(src, "bool path::has_root_directory() const noexcept");
+    CHECK(root.find("if (_M_len == 0) return false;") != std::string::npos);
+    CHECK(root.find("return _M_str[0] == '/';") != std::string::npos);
+    CHECK(root.find("has_filename") == std::string::npos);
+    CHECK(src.find("[[nodiscard]] bool empty() const noexcept { return _M_len == 0; }") != std::string::npos);
+}

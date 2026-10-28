@@ -38,6 +38,12 @@
 // whose first character is '/' has a root directory. Every other non-empty
 // path does not. It does not walk the filesystem.
 //
+// has_filename() is a character test. An empty path has no filename, and
+// that answer returns before the pointer is loaded. A non-empty path whose
+// last character is '/' has no filename. Every other non-empty path does.
+// The read is that one stored character, not the byte past the owned
+// length. It does not walk the filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -159,13 +165,17 @@ public:
     // answer does not load the pointer. The first character '/' has one.
     [[nodiscard]] bool has_root_directory() const noexcept;
 
+    // Stored characters only. An empty path has no filename, and that answer
+    // does not load the pointer. A trailing '/' has none. The last stored
+    // character is inside the owned length.
+    [[nodiscard]] bool has_filename() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool has_filename() const { return !filename().empty(); }
     [[nodiscard]] bool has_extension() const { return !extension().empty(); }
     [[nodiscard]] bool has_stem() const { return !stem().empty(); }
     [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
@@ -354,6 +364,15 @@ inline bool path::has_root_directory() const noexcept {
     // pointer is not loaded.
     if (_M_len == 0) return false;
     return _M_str[0] == '/';
+}
+
+inline bool path::has_filename() const noexcept {
+    // An empty path stores no characters. It has no filename. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    // One character, the last one stored. The index is inside the owned
+    // length, so this does not read the terminating NUL.
+    return _M_str[_M_len - 1] != '/';
 }
 
 inline path& path::replace_extension(const path& __rep) {
