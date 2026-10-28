@@ -26,6 +26,13 @@
 // prefix of the other. It does not ask the operating system whether a file
 // exists, and it does not drop "..".
 //
+// is_absolute() and is_relative() are character tests. An empty path is not
+// absolute, and that answer returns before the pointer is loaded.
+// is_relative() of an empty path is true. A path whose first character is
+// '/' is absolute. Every other non-empty path is not absolute.
+// is_relative() is the opposite of is_absolute(). Neither walks the
+// filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -136,14 +143,19 @@ public:
     // compares equal to an empty path.
     [[nodiscard]] int compare(const path& __p) const noexcept;
 
+    // Stored characters only. An empty path is not absolute, and that answer
+    // does not load the pointer. The first character '/' is absolute.
+    [[nodiscard]] bool is_absolute() const noexcept;
+
+    // Opposite of is_absolute. An empty path is relative. No filesystem walk.
+    [[nodiscard]] bool is_relative() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool is_absolute() const noexcept { return _M_len != 0 && _M_str[0] == '/'; }
-    [[nodiscard]] bool is_relative() const noexcept { return !is_absolute(); }
     [[nodiscard]] bool has_root_directory() const noexcept { return is_absolute(); }
     [[nodiscard]] bool has_filename() const { return !filename().empty(); }
     [[nodiscard]] bool has_extension() const { return !extension().empty(); }
@@ -314,6 +326,19 @@ inline int path::compare(const path& __p) const noexcept {
     if (_M_len < __p._M_len) return -1;
     if (_M_len > __p._M_len) return 1;
     return 0;
+}
+
+inline bool path::is_absolute() const noexcept {
+    // An empty path stores no characters. It is not absolute. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    return _M_str[0] == '/';
+}
+
+inline bool path::is_relative() const noexcept {
+    // Opposite of is_absolute. An empty path is relative. This does not
+    // walk the filesystem.
+    return !is_absolute();
 }
 
 inline path& path::replace_extension(const path& __rep) {

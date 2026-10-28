@@ -3,6 +3,8 @@
 // libstdc++ otherwise. These comparisons are the same either way.
 // exists, file_size, status, is_regular_file, is_directory, current_path,
 // and absolute are not called: the model does not declare them.
+// is_absolute and is_relative read one stored character. An empty path is
+// relative. A leading '/' is absolute. ".." is not removed.
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +73,28 @@ int main() {
     const int repl_multi = eq(re_multi.replace_extension(".md"), "a/b.tar.md");
     std::filesystem::path re_hidden(".txt");
     const int repl_hidden = eq(re_hidden.replace_extension(".md"), ".txt.md");
+    const int abs_empty = empty.is_absolute();
+    const int rel_empty = empty.is_relative();
+    const int abs_root = std::filesystem::path("/").is_absolute();
+    const int rel_root = std::filesystem::path("/").is_relative();
+    const int abs_slash = std::filesystem::path("/a").is_absolute();
+    const int rel_slash = std::filesystem::path("/a").is_relative();
+    const int abs_rel = std::filesystem::path("a").is_absolute();
+    const int rel_rel = std::filesystem::path("a").is_relative();
+    const int abs_nested = std::filesystem::path("a/b").is_absolute();
+    const int rel_nested = std::filesystem::path("a/b").is_relative();
+    const int abs_dotdot = std::filesystem::path("a/../b").is_absolute();
+    const int rel_dotdot = std::filesystem::path("a/../b").is_relative();
+    const int abs_root_dotdot = std::filesystem::path("/a/../b").is_absolute();
+    const int rel_root_dotdot = std::filesystem::path("/a/../b").is_relative();
+    const int abs_blank = std::filesystem::path("").is_absolute();
+    const int rel_blank = std::filesystem::path("").is_relative();
+    const int abs_drive = std::filesystem::path("C:/a").is_absolute();
+    const int rel_drive = std::filesystem::path("C:/a").is_relative();
+    const int abs_bslash = std::filesystem::path("\\a").is_absolute();
+    const int rel_bslash = std::filesystem::path("\\a").is_relative();
+    const int abs_unc = std::filesystem::path("//net/share").is_absolute();
+    const int rel_unc = std::filesystem::path("//net/share").is_relative();
     std::printf("empty_fn_empty=%d\n", empty_fn_empty);
     std::printf("empty_fn_dot=%d\n", empty_fn_dot);
     std::printf("fn_b=%d\n", fn_b);
@@ -108,11 +132,36 @@ int main() {
     std::printf("repl_empty_path=%d\n", repl_empty_path);
     std::printf("repl_multi=%d\n", repl_multi);
     std::printf("repl_hidden=%d\n", repl_hidden);
+    std::printf("abs_empty=%d\n", abs_empty);
+    std::printf("rel_empty=%d\n", rel_empty);
+    std::printf("abs_root=%d\n", abs_root);
+    std::printf("rel_root=%d\n", rel_root);
+    std::printf("abs_slash=%d\n", abs_slash);
+    std::printf("rel_slash=%d\n", rel_slash);
+    std::printf("abs_rel=%d\n", abs_rel);
+    std::printf("rel_rel=%d\n", rel_rel);
+    std::printf("abs_nested=%d\n", abs_nested);
+    std::printf("rel_nested=%d\n", rel_nested);
+    std::printf("abs_dotdot=%d\n", abs_dotdot);
+    std::printf("rel_dotdot=%d\n", rel_dotdot);
+    std::printf("abs_root_dotdot=%d\n", abs_root_dotdot);
+    std::printf("rel_root_dotdot=%d\n", rel_root_dotdot);
+    std::printf("abs_blank=%d\n", abs_blank);
+    std::printf("rel_blank=%d\n", rel_blank);
+    std::printf("abs_drive=%d\n", abs_drive);
+    std::printf("rel_drive=%d\n", rel_drive);
+    std::printf("abs_bslash=%d\n", abs_bslash);
+    std::printf("rel_bslash=%d\n", rel_bslash);
+    std::printf("abs_unc=%d\n", abs_unc);
+    std::printf("rel_unc=%d\n", rel_unc);
     if (!empty_fn_empty || empty_fn_dot || !fn_b || !ext || !parent || !join || !dotdot || !keep || !stem_empty ||
         stem_empty_dot || !stem_txt || !stem_b || !stem_dot || !stem_dotdot || !stem_hidden || !stem_keep ||
         !stem_multi || !cmp_empty || !cmp_empty_a || !cmp_a_empty || !cmp_aa || !cmp_ab || !cmp_ba || !cmp_prefix ||
         !cmp_longer || !cmp_dotdot || !cmp_keep || !cmp_dots || !repl_md || !repl_clear || !repl_nodot || !repl_dots ||
-        !repl_dots_md || !repl_keep_dots || !repl_empty_path || !repl_multi || !repl_hidden)
+        !repl_dots_md || !repl_keep_dots || !repl_empty_path || !repl_multi || !repl_hidden || abs_empty ||
+        !rel_empty || !abs_root || rel_root || !abs_slash || rel_slash || abs_rel || !rel_rel || abs_nested ||
+        !rel_nested || abs_dotdot || !rel_dotdot || !abs_root_dotdot || rel_root_dotdot || abs_blank ||
+        !rel_blank || abs_drive || !rel_drive || abs_bslash || !rel_bslash || !abs_unc || rel_unc)
         return 1;
     return 0;
 }
