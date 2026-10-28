@@ -30,11 +30,19 @@
 // value is inside [a, b]. This is not a proof of uniformity. It is not
 // PROVED and not CLEAN.
 //
+// bernoulli_distribution stores a double probability p. The default is 0.5.
+// p < 0, p > 1, or a NaN p is __prism_check with class FUNC-CONTRACT and
+// message "bernoulli_distribution probability is outside [0, 1]", then
+// __builtin_trap. That path returns no bool. p == 0 returns false and does
+// not call __VERIFIER_nondet_int. p == 1 returns true and does not call
+// nondet. Otherwise the result is __VERIFIER_nondet_int() ? true : false.
+// That is not a proof of the probability. It is not PROVED and not CLEAN.
+//
 // Omitted names are not declared. A unit that names one fails to compile
 // against this header and pir falls back to libstdc++ (extra.cxx_models):
 // shuffle, every other distribution (uniform_real_distribution,
-// bernoulli_distribution, normal_distribution), the other engines (mt19937,
-// ranlux, knuth_b, default_random_engine), and the rest of <random>.
+// normal_distribution), the other engines (mt19937, ranlux, knuth_b,
+// default_random_engine), and the rest of <random>.
 // uniform_int_distribution is only the int specialization. This header does
 // not include <vector>, <functional>, or <memory>.
 #ifndef _GLIBCXX_RANDOM
@@ -48,6 +56,12 @@
 // C linkage so the call stays __VERIFIER_nondet_uint (not a mangled name).
 // The body is not a constant, and it is not zero on every call.
 extern "C" unsigned int __VERIFIER_nondet_uint(void);
+
+// C linkage so the call stays __VERIFIER_nondet_int (not a mangled name).
+// The body is not a constant. bernoulli_distribution calls it only when
+// 0 < p < 1. A nonzero value is true and zero is false. That is not a
+// proof of the probability.
+extern "C" int __VERIFIER_nondet_int(void);
 
 // PIR intrinsic (translate.cpp). Literal class and message. Declared, not
 // defined: the analysed program does not link a body.
@@ -64,6 +78,8 @@ extern "C" __declspec(dllimport) __declspec(noreturn) void __cdecl abort(void);
 extern "C" __declspec(noreturn) void __cdecl abort(void);
 #  endif
 __declspec(noreturn) inline void __builtin_trap() { abort(); }
+// NaN is not equal to itself. clang provides __builtin_isnan.
+inline bool __builtin_isnan(double p) { return p != p; }
 #endif
 
 namespace std {
@@ -232,6 +248,55 @@ public:
 private:
     result_type _M_a;
     result_type _M_b;
+};
+
+// Double probability. Not a template. p < 0, p > 1, or a NaN p does not
+// return a bool. p == 0 and p == 1 do not call __VERIFIER_nondet_int.
+// Any other p returns __VERIFIER_nondet_int() ? true : false. That is not
+// a proof of the probability. It is not PROVED and not CLEAN.
+class bernoulli_distribution {
+public:
+    using result_type = bool;
+
+    bernoulli_distribution() : bernoulli_distribution(0.5) {}
+
+    // Stores p. p < 0, p > 1, or a NaN p is a contract failure: the check
+    // runs, then __builtin_trap, and p is not stored. That path returns no
+    // bool.
+    explicit bernoulli_distribution(double p) {
+        if (p < 0.0 || p > 1.0 || __builtin_isnan(p)) {
+            __prism_check(0, "FUNC-CONTRACT", "bernoulli_distribution probability is outside [0, 1]");
+            __builtin_trap();
+        } else {
+            _M_p = p;
+        }
+    }
+
+    double p() const { return _M_p; }
+    result_type min() const { return false; }
+    result_type max() const { return true; }
+
+    // p == 0 returns false and does not call __VERIFIER_nondet_int.
+    // p == 1 returns true and does not call it. Otherwise the result is
+    // __VERIFIER_nondet_int() ? true : false. That is not a proof of the
+    // probability. It is not PROVED and not CLEAN. The engine is not the
+    // source of the value. The failing path returns no bool.
+    template <class URNG>
+    bool operator()(URNG&) {
+        if (_M_p < 0.0 || _M_p > 1.0 || __builtin_isnan(_M_p)) {
+            __prism_check(0, "FUNC-CONTRACT", "bernoulli_distribution probability is outside [0, 1]");
+            __builtin_trap();
+        } else if (_M_p == 0.0) {
+            return false;
+        } else if (_M_p == 1.0) {
+            return true;
+        } else {
+            return __VERIFIER_nondet_int() ? true : false;
+        }
+    }
+
+private:
+    double _M_p;
 };
 
 }  // namespace std

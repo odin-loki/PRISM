@@ -11,6 +11,10 @@
 // uniformity and is not the libstdc++ engine sequence. argv "invert" is an
 // inverted range. argv "span" is a span that does not fit in an unsigned
 // 32-bit count. Those paths must not print wrapped=.
+// bernoulli_distribution(0) is false and bernoulli_distribution(1) is true.
+// The default probability is 0.5. argv "lo", "hi", and "nan" are a
+// probability outside [0, 1]. Those paths must not print drew=. The coin
+// flip is not a proof of the probability.
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +32,8 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
 }
 
 extern "C" unsigned int __VERIFIER_nondet_uint(void) { return 7u; }
+
+extern "C" int __VERIFIER_nondet_int(void) { return 1; }
 
 static int arg_is(int argc, char** argv, const char* name) {
     return argc >= 2 && std::strcmp(argv[1], name) == 0;
@@ -56,6 +62,16 @@ int main(int argc, char** argv) {
         std::uniform_int_distribution<int> d(lo, hi);
         const int r = d(g);
         std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "lo") || arg_is(argc, argv, "hi") || arg_is(argc, argv, "nan")) {
+        volatile double p = -0.25;
+        if (arg_is(argc, argv, "hi")) p = 1.25;
+        if (arg_is(argc, argv, "nan")) p = __builtin_nan("");
+        std::minstd_rand g;
+        std::bernoulli_distribution d(p);
+        const bool r = d(g);
+        std::printf("drew=%d\n", r ? 1 : 0);
         return 0;
     }
 
@@ -125,5 +141,12 @@ int main(int argc, char** argv) {
     const int inside = draw >= 1 && draw <= 6;
     std::printf("same=%d neg=%d defa=%d defb=%d inside=%d lo=%d hi=%d\n", same(ug), neg(ug), bounds.a(),
                 bounds.b(), inside, span.a(), span.b());
+
+    std::minstd_rand bg;
+    bg.seed(1);
+    std::bernoulli_distribution bz(0.0);
+    std::bernoulli_distribution bo(1.0);
+    std::bernoulli_distribution bd;
+    std::printf("bern0=%d bern1=%d defp=%g\n", bz(bg) ? 1 : 0, bo(bg) ? 1 : 0, bd.p());
     return 0;
 }
