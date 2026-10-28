@@ -44,6 +44,15 @@
 // The read is that one stored character, not the byte past the owned
 // length. It does not walk the filesystem.
 //
+// has_extension() is a character test. An empty path has no extension, and
+// that answer returns before the pointer is loaded. A non-empty path whose
+// last character is '/' has no extension. Otherwise only the filename, the
+// characters after the last '/', is examined. A filename with no '.', a
+// filename that is ".", a filename that is "..", or a filename whose only
+// '.' is the first character has no extension. A later '.' means the path
+// has an extension. Those reads stay inside the owned length. It does not
+// walk the filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -170,13 +179,17 @@ public:
     // character is inside the owned length.
     [[nodiscard]] bool has_filename() const noexcept;
 
+    // Stored characters only. An empty path has no extension, and that
+    // answer does not load the pointer. A trailing '/' has none. A later
+    // '.' in the filename is an extension. "." and ".." are not.
+    [[nodiscard]] bool has_extension() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool has_extension() const { return !extension().empty(); }
     [[nodiscard]] bool has_stem() const { return !stem().empty(); }
     [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
     void clear() noexcept { _M_free(); }
@@ -373,6 +386,28 @@ inline bool path::has_filename() const noexcept {
     // One character, the last one stored. The index is inside the owned
     // length, so this does not read the terminating NUL.
     return _M_str[_M_len - 1] != '/';
+}
+
+inline bool path::has_extension() const noexcept {
+    // An empty path stores no characters. It has no extension. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    // A trailing slash is an empty filename. The index is inside the owned
+    // length, so this does not read the terminating NUL.
+    if (_M_str[_M_len - 1] == '/') return false;
+
+    // Filename: the characters after the last '/'. The scan stays inside
+    // the owned length. A dot in an earlier component is not an extension.
+    std::size_t __b = _M_len;
+    while (__b > 0 && _M_str[__b - 1] != '/') --__b;
+    const std::size_t __n = _M_len - __b;
+    // "." and ".." have no extension.
+    if (__n == 1 && _M_str[__b] == '.') return false;
+    if (__n == 2 && _M_str[__b] == '.' && _M_str[__b + 1] == '.') return false;
+    // A later '.' is an extension. The first character's '.' is not one.
+    for (std::size_t __i = 1; __i < __n; ++__i)
+        if (_M_str[__b + __i] == '.') return true;
+    return false;
 }
 
 inline path& path::replace_extension(const path& __rep) {
