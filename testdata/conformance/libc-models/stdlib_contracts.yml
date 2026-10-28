@@ -28,6 +28,10 @@ expected:
   abs_intmin_false: false
   labs_min_false: false
   llabs_min_false: false
+  div_quot_true: true
+  div_rem_false: false
+  ldiv_rem_false: false
+  lldiv_rem_false: false
   strtol_true: true
   atoi_unterminated_false: false
   rand_true: true
@@ -54,3 +58,6 @@ expect_class:  # the violation each false harness plants
   realloc_freed_false: "MEM-DOUBLE-FREE"
   labs_min_false: "INT-SIGNED-OVF"
   llabs_min_false: "INT-SIGNED-OVF"
+  div_rem_false: "FUNC-CONTRACT"
+  ldiv_rem_false: "FUNC-CONTRACT"
+  lldiv_rem_false: "FUNC-CONTRACT"

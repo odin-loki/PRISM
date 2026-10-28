@@ -258,6 +258,57 @@ int abs_intmin_false(int x) { return abs(x); }
 int labs_min_false(long y) { return (int)(labs(y) & 1); }
 int llabs_min_false(long long z) { return (int)(llabs(z) & 1); }
 
+/* 7.22.6.2: quot is truncated toward zero. rem is dividend - quot * divisor. */
+int div_quot_true(void) {
+    div_t d = div(7, 3);
+    assert(d.quot == 2);
+    assert(d.rem == 7 - d.quot * 3);
+    div_t n = div(-7, 3);
+    assert(n.quot == -2);
+    assert(n.rem == -7 - n.quot * 3);
+    div_t p = div(7, -3);
+    assert(p.quot == -2);
+    assert(p.rem == 7 - p.quot * -3);
+    div_t b = div(-7, -3);
+    assert(b.quot == 2);
+    assert(b.rem == -7 - b.quot * -3);
+    div_t z = div(1, 2);
+    assert(z.quot == 0);
+    assert(z.rem == 1);
+
+    ldiv_t ld = ldiv(-7L, 3L);
+    assert(ld.quot == -2L);
+    assert(ld.rem == -7L - ld.quot * 3L);
+    ldiv_t lp = ldiv(7L, -3L);
+    assert(lp.quot == -2L);
+    assert(lp.rem == 7L - lp.quot * -3L);
+
+    lldiv_t lld = lldiv(-7LL, 3LL);
+    assert(lld.quot == -2LL);
+    assert(lld.rem == -7LL - lld.quot * 3LL);
+    lldiv_t llp = lldiv(7LL, -3LL);
+    assert(llp.quot == -2LL);
+    assert(llp.rem == 7LL - llp.quot * -3LL);
+    return 0;
+}
+
+/* Wrong contract: toward-zero rem of -7/3 is -1, not 2. */
+int div_rem_false(void) {
+    div_t d = div(-7, 3);
+    assert(d.rem == 2);
+    return 0;
+}
+int ldiv_rem_false(void) {
+    ldiv_t d = ldiv(-7L, 3L);
+    assert(d.rem == 2L);
+    return 0;
+}
+int lldiv_rem_false(void) {
+    lldiv_t d = lldiv(-7LL, 3LL);
+    assert(d.rem == 2LL);
+    return 0;
+}
+
 /* 7.22.1.4: strtol stores a pointer into s (at most at its NUL). */
 int strtol_true(int k) {
     char s[N];

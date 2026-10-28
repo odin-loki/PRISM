@@ -86,6 +86,61 @@ long long llabs(long long x) {
     }
 }
 
+/* Division by zero is __prism_check with class FUNC-CONTRACT, then
+ * __builtin_trap. That path does not return a quotient or a remainder.
+ * div(INT_MIN, -1), ldiv(LONG_MIN, -1), and lldiv(LLONG_MIN, -1) are
+ * FUNC-CONTRACT then __builtin_trap. Those paths do not negate the minimum
+ * and do not return a wrapped quotient. Other values use toward-zero
+ * division: quot is the truncated quotient and rem is
+ * dividend - quot * divisor. A remainder is not invented.
+ * div, ldiv, and lldiv are not PROVED and not CLEAN. */
+typedef struct { int quot; int rem; } div_t;
+typedef struct { long quot; long rem; } ldiv_t;
+typedef struct { long long quot; long long rem; } lldiv_t;
+
+div_t div(int dividend, int divisor) {
+    if (divisor == 0) {
+        __prism_check(0, "FUNC-CONTRACT", "div by zero is undefined");
+        __builtin_trap();
+    } else if (dividend == INT_MIN && divisor == -1) {
+        __prism_check(0, "FUNC-CONTRACT", "div(INT_MIN, -1) is undefined");
+        __builtin_trap();
+    } else {
+        div_t r;
+        r.quot = dividend / divisor;
+        r.rem = dividend - r.quot * divisor;
+        return r;
+    }
+}
+ldiv_t ldiv(long dividend, long divisor) {
+    if (divisor == 0) {
+        __prism_check(0, "FUNC-CONTRACT", "ldiv by zero is undefined");
+        __builtin_trap();
+    } else if (dividend == LONG_MIN && divisor == -1) {
+        __prism_check(0, "FUNC-CONTRACT", "ldiv(LONG_MIN, -1) is undefined");
+        __builtin_trap();
+    } else {
+        ldiv_t r;
+        r.quot = dividend / divisor;
+        r.rem = dividend - r.quot * divisor;
+        return r;
+    }
+}
+lldiv_t lldiv(long long dividend, long long divisor) {
+    if (divisor == 0) {
+        __prism_check(0, "FUNC-CONTRACT", "lldiv by zero is undefined");
+        __builtin_trap();
+    } else if (dividend == LLONG_MIN && divisor == -1) {
+        __prism_check(0, "FUNC-CONTRACT", "lldiv(LLONG_MIN, -1) is undefined");
+        __builtin_trap();
+    } else {
+        lldiv_t r;
+        r.quot = dividend / divisor;
+        r.rem = dividend - r.quot * divisor;
+        return r;
+    }
+}
+
 size_t strlen(const char *s);
 
 /* atoi/atol/strtol: the argument must be a string; the value is unknown. */
