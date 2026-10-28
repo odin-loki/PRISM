@@ -1,0 +1,33 @@
+// PRISM operational model of <execution>. The pir stage puts this directory
+// first on the C++ include path, so `#include <execution>` reaches this file
+// instead of libstdc++'s. It is a file, not a directory: a directory of this
+// name would make the include fail with EISDIR and every such unit would
+// fall back to libstdc++.
+//
+// Partial on purpose. namespace std::execution contains sequenced_policy and
+// seq, and nothing else. seq is the sequenced policy tag. The class has no
+// data members and no member runs an algorithm.
+//
+// par, par_unseq, and unseq are not declared. A parallel policy that ran
+// on one thread would be a fake parallel execution. A unit that names one
+// fails to compile against this header and pir falls back to libstdc++.
+// They are not stubbed.
+//
+// No algorithm is declared. This header does not include <thread>,
+// <atomic>, <algorithm>, or <memory>.
+//
+// This header is not a parallelism proof.
+#ifndef _GLIBCXX_EXECUTION
+#define _GLIBCXX_EXECUTION 1
+
+#pragma GCC system_header
+
+namespace std::execution {
+
+class sequenced_policy {};
+
+inline constexpr sequenced_policy seq{};
+
+}  // namespace std::execution
+
+#endif  // _GLIBCXX_EXECUTION
