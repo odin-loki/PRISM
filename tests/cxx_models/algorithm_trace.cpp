@@ -7,11 +7,17 @@
 // two pointers. An empty range returns last and does not read an element.
 // Equal elements keep the first. find takes two pointers and a const T&.
 // An empty range returns last and does not read. The result is the first
-// operator== match, or last. sort, copy, fill, and for_each are not called.
+// operator== match, or last. find_if takes two pointers and
+// bool (*)(const T&). An empty range returns last and does not call the
+// predicate. count returns how many elements compare equal. An empty range
+// returns 0 and does not read. sort, copy, fill, and for_each are not called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
-// argv "invert-find" calls find with last < first. The model must
-// __prism_check and must not print a value.
+// argv "invert-find" calls find with last < first. argv "invert-find-if"
+// calls find_if with last < first and must not call the predicate.
+// argv "null-find-if" and "null-find-if-empty" pass a null predicate.
+// argv "invert-count" calls count with last < first. The model must
+// __prism_check and must not print a value. This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -54,6 +60,33 @@ struct NoDefaultEq {
     NoDefaultEq() = delete;
     friend constexpr bool operator==(const NoDefaultEq& p, const NoDefaultEq& q) { return p.x == q.x; }
 };
+
+// No operator== and no default constructor. find_if must not invent a T.
+struct PredOnly {
+    int x;
+    constexpr explicit PredOnly(int v) : x(v) {}
+    PredOnly() = delete;
+};
+
+constexpr bool is_one(const int& x) { return x == 1; }
+constexpr bool is_four(const int& x) { return x == 4; }
+constexpr bool is_nine(const int& x) { return x == 9; }
+constexpr bool is_seven(const int& x) { return x == 7; }
+constexpr bool is_two(const int& x) { return x == 2; }
+constexpr bool eq_is_one(const EqOnly& e) { return e.x == 1; }
+constexpr bool nd_is_one(const NoDefault& n) { return n.x == 1; }
+constexpr bool pred_only_is_one(const PredOnly& p) { return p.x == 1; }
+
+int g_calls = 0;
+int g_want = 0;
+bool watch(const int& x) {
+    ++g_calls;
+    return x == g_want;
+}
+bool mark_called(const int&) {
+    std::fprintf(stderr, "called\n");
+    return true;
+}
 
 static int same_int(const int& r, const int& x) { return &r == &x ? 1 : 0; }
 
@@ -149,6 +182,101 @@ constexpr int find_nodef_i() {
 }
 static_assert(find_nodef_i() == 1);
 
+constexpr int find_if_hit_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find_if(seq, seq + 4, is_one) - seq);
+}
+static_assert(find_if_hit_i() == 2);
+constexpr int find_if_first_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find_if(seq, seq + 4, is_four) - seq);
+}
+static_assert(find_if_first_i() == 1);
+constexpr int find_if_front_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find_if(seq, seq + 4, is_nine) - seq);
+}
+static_assert(find_if_front_i() == 0);
+constexpr bool find_if_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::find_if(seq, seq + 4, is_seven) == seq + 4;
+}
+static_assert(find_if_miss());
+constexpr bool find_if_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::find_if(seq, seq, is_nine) == seq;
+}
+static_assert(find_if_empty());
+constexpr bool find_if_tie() {
+    int seq[] = {2, 2};
+    return std::find_if(seq, seq + 2, is_two) == seq;
+}
+static_assert(find_if_tie());
+static_assert(std::find_if(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one) == nullptr);
+constexpr int find_if_eq_i() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::find_if(seq, seq, eq_is_one) != seq) return -1;
+    return static_cast<int>(std::find_if(seq, seq + 3, eq_is_one) - seq);
+}
+static_assert(find_if_eq_i() == 1);
+constexpr int find_if_nodef_i() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::find_if(seq, seq, nd_is_one) != seq) return -1;
+    return static_cast<int>(std::find_if(seq, seq + 3, nd_is_one) - seq);
+}
+static_assert(find_if_nodef_i() == 1);
+constexpr int find_if_pred_i() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::find_if(seq, seq, pred_only_is_one) != seq) return -1;
+    return static_cast<int>(std::find_if(seq, seq + 3, pred_only_is_one) - seq);
+}
+static_assert(find_if_pred_i() == 1);
+
+constexpr long long count_four() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<long long>(std::count(seq, seq + 4, 4));
+}
+static_assert(count_four() == 2);
+constexpr long long count_one() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<long long>(std::count(seq, seq + 4, 1));
+}
+static_assert(count_one() == 1);
+constexpr long long count_nine() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<long long>(std::count(seq, seq + 4, 9));
+}
+static_assert(count_nine() == 1);
+constexpr long long count_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<long long>(std::count(seq, seq + 4, 7));
+}
+static_assert(count_miss() == 0);
+constexpr long long count_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<long long>(std::count(seq, seq, 9));
+}
+static_assert(count_empty() == 0);
+static_assert(std::count(static_cast<int*>(nullptr), static_cast<int*>(nullptr), 0) == 0);
+constexpr long long count_eq() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    EqOnly needle{1};
+    EqOnly miss{9};
+    if (std::count(seq, seq, needle) != 0) return -1;
+    if (std::count(seq, seq + 3, miss) != 0) return -1;
+    return static_cast<long long>(std::count(seq, seq + 3, needle));
+}
+static_assert(count_eq() == 2);
+constexpr long long count_nodef() {
+    NoDefaultEq seq[] = {NoDefaultEq(3), NoDefaultEq(1), NoDefaultEq(3)};
+    NoDefaultEq needle(1);
+    NoDefaultEq three(3);
+    if (std::count(seq, seq, needle) != 0) return -1;
+    if (std::count(seq, seq + 3, three) != 2) return -1;
+    return static_cast<long long>(std::count(seq, seq + 3, needle));
+}
+static_assert(count_nodef() == 1);
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -181,6 +309,38 @@ int main(int argc, char** argv) {
         int needle = 1;
         int* p = std::find(first, last, needle);
         std::printf("value=%d\n", *p);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-find-if") == 0) {
+        int arr_el[] = {1, 2, 3};
+        int* volatile vf = arr_el + 2;
+        int* volatile vl = arr_el;
+        int* first = vf;
+        int* last = vl;
+        int* p = std::find_if(first, last, mark_called);
+        std::printf("value=%d\n", *p);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-find-if") == 0) {
+        int arr_el[] = {1, 2, 3};
+        int* p = std::find_if(arr_el, arr_el + 3, static_cast<bool (*)(const int&)>(nullptr));
+        std::printf("value=%d\n", *p);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-find-if-empty") == 0) {
+        int arr_el[] = {1, 2, 3};
+        int* p = std::find_if(arr_el, arr_el, static_cast<bool (*)(const int&)>(nullptr));
+        std::printf("value=%d\n", p == arr_el ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-count") == 0) {
+        int arr_el[] = {1, 2, 3};
+        int* volatile vf = arr_el + 2;
+        int* volatile vl = arr_el;
+        int* first = vf;
+        int* last = vl;
+        long long n = static_cast<long long>(std::count(first, last, 1));
+        std::printf("value=%lld\n", n);
         return 0;
     }
 
@@ -280,5 +440,82 @@ int main(int argc, char** argv) {
     const NoDefaultEq* nde = std::find(ndes, ndes, ndneedle);
     std::printf("find_nodef=%d find_nodef_i=%d find_nodef_empty=%d\n", ndh->x, static_cast<int>(ndh - ndes),
                 nde == ndes ? 1 : 0);
+
+    g_calls = 0;
+    g_want = 1;
+    int* ifhit = std::find_if(seq, seq + 4, watch);
+    int ifhit_calls = g_calls;
+    g_calls = 0;
+    g_want = 4;
+    int* iffirst = std::find_if(seq, seq + 4, watch);
+    int iffirst_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    int* iffront = std::find_if(seq, seq + 4, watch);
+    int iffront_calls = g_calls;
+    g_calls = 0;
+    g_want = 7;
+    int* ifmiss = std::find_if(seq, seq + 4, watch);
+    int ifmiss_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    int* ifempty = std::find_if(seq, seq, watch);
+    int ifempty_calls = g_calls;
+    g_calls = 0;
+    g_want = 2;
+    int* iftie = std::find_if(ties, ties + 2, watch);
+    int iftie_calls = g_calls;
+    std::printf("find_if_hit=%d find_if_hit_i=%d find_if_hit_calls=%d\n", *ifhit, static_cast<int>(ifhit - seq),
+                ifhit_calls);
+    std::printf("find_if_first_i=%d find_if_first_calls=%d\n", static_cast<int>(iffirst - seq), iffirst_calls);
+    std::printf("find_if_front_i=%d find_if_front_calls=%d\n", static_cast<int>(iffront - seq), iffront_calls);
+    std::printf("find_if_miss=%d find_if_miss_calls=%d\n", ifmiss == seq + 4 ? 1 : 0, ifmiss_calls);
+    std::printf("find_if_empty=%d find_if_empty_calls=%d\n", ifempty == seq ? 1 : 0, ifempty_calls);
+    std::printf("find_if_tie=%d find_if_tie_calls=%d\n", (iftie == ties && iftie_calls == 1) ? 1 : 0, iftie_calls);
+    g_calls = 0;
+    g_want = 8;
+    int* ifone = std::find_if(one, one + 1, watch);
+    int ifone_calls = g_calls;
+    g_calls = 0;
+    g_want = 0;
+    int* ifone_miss = std::find_if(one, one + 1, watch);
+    std::printf("find_if_one=%d\n", (ifone == one && ifone_calls == 1 && ifone_miss == one + 1 && g_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    g_want = 1;
+    std::printf("find_if_null=%d\n", (std::find_if(zn, zn, watch) == nullptr && g_calls == 0) ? 1 : 0);
+    std::printf("find_if_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    g_calls = 0;
+    const EqOnly* ifeq = std::find_if(eqs, eqs + 3, eq_is_one);
+    const EqOnly* ifeq_empty = std::find_if(eqs, eqs, eq_is_one);
+    std::printf("find_if_eq_i=%d find_if_eq_empty=%d\n", static_cast<int>(ifeq - eqs), ifeq_empty == eqs ? 1 : 0);
+    const NoDefault* ifnd = std::find_if(nds, nds + 3, nd_is_one);
+    const NoDefault* ifnd_empty = std::find_if(nds, nds, nd_is_one);
+    std::printf("find_if_nodef_i=%d find_if_nodef_empty=%d\n", static_cast<int>(ifnd - nds), ifnd_empty == nds ? 1 : 0);
+    PredOnly preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    const PredOnly* ifpred = std::find_if(preds, preds + 3, pred_only_is_one);
+    const PredOnly* ifpred_empty = std::find_if(preds, preds, pred_only_is_one);
+    std::printf("find_if_pred_i=%d find_if_pred_empty=%d\n", static_cast<int>(ifpred - preds),
+                ifpred_empty == preds ? 1 : 0);
+
+    std::printf("count_four=%lld\n", static_cast<long long>(std::count(seq, seq + 4, 4)));
+    std::printf("count_one=%lld\n", static_cast<long long>(std::count(seq, seq + 4, 1)));
+    std::printf("count_nine=%lld\n", static_cast<long long>(std::count(seq, seq + 4, 9)));
+    std::printf("count_miss=%lld\n", static_cast<long long>(std::count(seq, seq + 4, 7)));
+    std::printf("count_empty=%lld\n", static_cast<long long>(std::count(seq, seq, 9)));
+    std::printf("count_tie=%lld\n", static_cast<long long>(std::count(ties, ties + 2, 2)));
+    std::printf("count_one_hit=%lld\n", static_cast<long long>(std::count(one, one + 1, 8)));
+    std::printf("count_one_miss=%lld\n", static_cast<long long>(std::count(one, one + 1, 0)));
+    std::printf("count_null=%lld\n", static_cast<long long>(std::count(zn, zn, 0)));
+    EqOnly eq_miss{9};
+    std::printf("count_eq=%lld count_eq_miss=%lld count_eq_empty=%lld\n",
+                static_cast<long long>(std::count(eqs, eqs + 3, want)),
+                static_cast<long long>(std::count(eqs, eqs + 3, eq_miss)),
+                static_cast<long long>(std::count(eqs, eqs, want)));
+    NoDefaultEq nd_three(3);
+    std::printf("count_nodef=%lld count_nodef_three=%lld count_nodef_empty=%lld\n",
+                static_cast<long long>(std::count(ndes, ndes + 3, ndneedle)),
+                static_cast<long long>(std::count(ndes, ndes + 3, nd_three)),
+                static_cast<long long>(std::count(ndes, ndes, ndneedle)));
+    std::printf("count_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
     return 0;
 }

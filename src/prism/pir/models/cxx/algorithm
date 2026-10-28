@@ -30,11 +30,33 @@
 // first element in [first, last) that compares equal with operator==, or
 // last if none. The function does not allocate.
 //
+// std::find_if takes two pointers and one function pointer,
+// bool (*)(const T&). There is no other overload. A null predicate is
+// __prism_check with class FUNC-CONTRACT and then __builtin_trap. That
+// path does not call the predicate. When last < first, __prism_check with
+// class FUNC-CONTRACT and the message "find_if: last < first", then
+// __builtin_trap. That path does not read an element and does not invent
+// a T. When first == last, the result is last. That path does not read
+// an element and does not call the predicate. Otherwise the result is a
+// pointer to the first element for which the predicate returns true, or
+// last if none. The function does not allocate.
+//
+// std::count takes two pointers and a const T&. The result is a ptrdiff_t:
+// how many elements in [first, last) compare equal with operator==. When
+// last < first, __prism_check with class FUNC-CONTRACT and then
+// __builtin_trap. That path does not read an element. When first == last,
+// the result is 0. That path does not read an element. A count that would
+// not fit in ptrdiff_t is __prism_check with class FUNC-CONTRACT and then
+// __builtin_trap. That path does not return a wrapped count. The function
+// does not allocate.
+//
 // sort, copy, fill, for_each, and every other algorithm are not
 // declared. A use of those names fails to compile and the pir stage falls
 // back to libstdc++ (extra.cxx_models). A partial header is intentional.
 //
-// This header is not a proof that a range is sorted.
+// This header is not a proof that a range is sorted. It is not PROVED
+// and it is not CLEAN. After a failed check the path traps. It does not
+// continue into a read or a fabricated success.
 #ifndef _GLIBCXX_ALGORITHM
 #define _GLIBCXX_ALGORITHM 1
 
@@ -126,6 +148,52 @@ constexpr _Tp* find(_Tp* __first, _Tp* __last, const _Tp& __value) {
         ++__first;
     }
     return __last;
+}
+
+// Function pointer only. A null predicate traps before any call. An
+// inverted range traps before any read. An empty range returns last and
+// does not call. This is not PROVED and it is not CLEAN.
+template <typename _Tp>
+constexpr _Tp* find_if(_Tp* __first, _Tp* __last, bool (*__pred)(const _Tp&)) {
+    if (__pred == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT", "find_if: null predicate");
+        __builtin_trap();
+    }
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "find_if: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __last;
+    while (__first != __last) {
+        if (__pred(*__first)) return __first;
+        ++__first;
+    }
+    return __last;
+}
+
+// Two pointers and one value. An inverted range traps without reading.
+// An empty range returns 0 and does not read. The tally is a ptrdiff_t.
+// One more match than that type can hold traps and does not wrap.
+// This is not PROVED and it is not CLEAN.
+template <_Prism_equality_comparable _Tp>
+constexpr __PTRDIFF_TYPE__ count(_Tp* __first, _Tp* __last, const _Tp& __value) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "count: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return 0;
+    __PTRDIFF_TYPE__ __n = 0;
+    while (__first != __last) {
+        if (*__first == __value) {
+            if (__n == static_cast<__PTRDIFF_TYPE__>(__PTRDIFF_MAX__)) {
+                __prism_check(0, "FUNC-CONTRACT", "count: result does not fit in ptrdiff_t");
+                __builtin_trap();
+            }
+            ++__n;
+        }
+        ++__first;
+    }
+    return __n;
 }
 
 }  // namespace std

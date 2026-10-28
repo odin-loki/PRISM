@@ -12,8 +12,16 @@
 // first. find takes two pointers and a const T&. An inverted range is
 // __prism_check then __builtin_trap and does not read or invent a T. An
 // empty range returns last and does not read. The result is the first
-// operator== match, or last. find does not allocate. sort, copy, fill, and
-// for_each are not declared.
+// operator== match, or last. find does not allocate. find_if takes two
+// pointers and bool (*)(const T&). A null predicate is __prism_check then
+// __builtin_trap and does not call. An inverted range is __prism_check
+// then __builtin_trap and does not read or invent a T. An empty range
+// returns last and does not read or call. count takes two pointers and a
+// const T&. An inverted range is __prism_check then __builtin_trap and
+// does not read. An empty range returns 0 and does not read. A tally that
+// would not fit in ptrdiff_t is __prism_check then __builtin_trap and does
+// not return a wrapped count. This is not PROVED and not CLEAN. sort,
+// copy, fill, and for_each are not declared.
 
 #include <doctest/doctest.h>
 
@@ -222,7 +230,8 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(text.find("fails to compile") != std::string::npos);
     CHECK(text.find("extern \"C\" void __prism_check(int ok, const char* cls, const char* msg);") != std::string::npos);
     CHECK(text.find("__prism_check(int ok, const char* cls, const char* msg) {") == std::string::npos);
-    CHECK(text.find("return 0") == std::string::npos);
+    CHECK(text.find("not PROVED") != std::string::npos);
+    CHECK(text.find("not CLEAN") != std::string::npos);
     for (const char* inc : {"<memory>", "<functional>", "<string>", "<iterator>", "<ranges>", "<vector>", "<compare>"})
         CHECK(text.find(inc) == std::string::npos);
     {
@@ -234,8 +243,8 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
             CHECK(line.compare(i, 8, "#include") != 0);
         }
     }
-    for (const char* name : {"sort(", "copy(", "fill(", "for_each("}) CHECK(text.find(name) == std::string::npos);
-    CHECK(text.find("find_if") == std::string::npos);
+    for (const char* name : {"sort(", "copy(", "fill(", "for_each(", "count_if", "find_if_not"})
+        CHECK(text.find(name) == std::string::npos);
 
     const auto min_at = text.find("constexpr const _Tp& min(");
     const auto max_at = text.find("constexpr const _Tp& max(", min_at);
@@ -334,7 +343,23 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(min_el_body.find("if (*__first < *__result)") != std::string::npos);
     CHECK(max_el_body.find("if (*__result < *__first)") != std::string::npos);
 
-    const std::string find_body = text.substr(find_at);
+    const auto find_if_at =
+        text.find("constexpr _Tp* find_if(_Tp* __first, _Tp* __last, bool (*__pred)(const _Tp&))");
+    const auto count_at =
+        text.find("constexpr __PTRDIFF_TYPE__ count(_Tp* __first, _Tp* __last, const _Tp& __value)");
+    REQUIRE(find_if_at != std::string::npos);
+    REQUIRE(count_at != std::string::npos);
+    CHECK(find_at < find_if_at);
+    CHECK(find_if_at < count_at);
+    CHECK(text.substr(0, count_at).find("return 0") == std::string::npos);
+    const auto find_if_sig = text.find("find_if(", find_if_at);
+    const auto count_sig = text.find("count(", count_at);
+    REQUIRE(find_if_sig != std::string::npos);
+    REQUIRE(count_sig != std::string::npos);
+    CHECK(text.find("find_if(", find_if_sig + 8) == std::string::npos);
+    CHECK(text.find("count(", count_sig + 6) == std::string::npos);
+
+    const std::string find_body = text.substr(find_at, find_if_at - find_at);
     const auto find_sig = find_body.find("find(");
     REQUIRE(find_sig != std::string::npos);
     CHECK(find_body.find("find(", find_sig + 1) == std::string::npos);
@@ -382,6 +407,140 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(find_eq < find_hit);
     CHECK(find_hit < find_bump);
     CHECK(find_bump < find_end);
+
+    const std::string find_if_body = text.substr(find_if_at, count_at - find_if_at);
+    const auto fi_brace = find_if_body.find('{');
+    REQUIRE(fi_brace != std::string::npos);
+    const std::string find_if_fn = find_if_body.substr(fi_brace);
+    const auto fi_null = find_if_fn.find("if (__pred == nullptr)");
+    const auto fi_bad = find_if_fn.find("if (__last < __first)");
+    const auto fi_empty = find_if_fn.find("if (__first == __last) return __last;");
+    REQUIRE(fi_null != std::string::npos);
+    REQUIRE(fi_bad != std::string::npos);
+    REQUIRE(fi_empty != std::string::npos);
+    CHECK(fi_null < fi_bad);
+    CHECK(fi_bad < fi_empty);
+    const std::string fi_null_body = find_if_fn.substr(fi_null, fi_bad - fi_null);
+    const auto fi_null_check = fi_null_body.find("__prism_check");
+    const auto fi_null_trap = fi_null_body.find("__builtin_trap");
+    REQUIRE(fi_null_check != std::string::npos);
+    REQUIRE(fi_null_trap != std::string::npos);
+    CHECK(fi_null_check < fi_null_trap);
+    CHECK(fi_null_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(fi_null_body.find("find_if: null predicate") != std::string::npos);
+    CHECK(fi_null_body.find("return") == std::string::npos);
+    CHECK(fi_null_body.find("*__") == std::string::npos);
+    CHECK(fi_null_body.find("__pred(") == std::string::npos);
+    const std::string fi_bad_body = find_if_fn.substr(fi_bad, fi_empty - fi_bad);
+    const auto fi_bad_check = fi_bad_body.find("__prism_check");
+    const auto fi_bad_trap = fi_bad_body.find("__builtin_trap");
+    REQUIRE(fi_bad_check != std::string::npos);
+    REQUIRE(fi_bad_trap != std::string::npos);
+    CHECK(fi_bad_check < fi_bad_trap);
+    CHECK(fi_bad_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(fi_bad_body.find("find_if: last < first") != std::string::npos);
+    CHECK(fi_bad_body.find("return") == std::string::npos);
+    CHECK(fi_bad_body.find("*__") == std::string::npos);
+    CHECK(fi_bad_body.find("__pred(") == std::string::npos);
+    CHECK(fi_bad_body.find("_Tp{") == std::string::npos);
+    CHECK(fi_bad_body.find("_Tp(") == std::string::npos);
+    CHECK(fi_bad_body.find("_Tp __") == std::string::npos);
+    CHECK(find_if_fn.substr(0, fi_empty).find("*__") == std::string::npos);
+    CHECK(find_if_fn.substr(0, fi_empty).find("__pred(") == std::string::npos);
+    const auto fi_scan = find_if_fn.find("while (__first != __last)", fi_empty);
+    REQUIRE(fi_scan != std::string::npos);
+    const std::string fi_between = find_if_fn.substr(fi_empty, fi_scan - fi_empty);
+    CHECK(fi_between.find("*__") == std::string::npos);
+    CHECK(fi_between.find("__pred(") == std::string::npos);
+    const auto fi_call = find_if_fn.find("__pred(*__first)", fi_scan);
+    REQUIRE(fi_call != std::string::npos);
+    const auto fi_hit = find_if_fn.find("return __first", fi_call);
+    REQUIRE(fi_hit != std::string::npos);
+    const auto fi_bump = find_if_fn.find("++__first", fi_hit);
+    REQUIRE(fi_bump != std::string::npos);
+    const auto fi_end = find_if_fn.find("return __last", fi_bump);
+    REQUIRE(fi_end != std::string::npos);
+    CHECK(fi_scan < fi_call);
+    CHECK(fi_call < fi_hit);
+    CHECK(fi_hit < fi_bump);
+    CHECK(fi_bump < fi_end);
+    CHECK(find_if_fn.find("find_if(", fi_call) == std::string::npos);
+    CHECK(find_if_body.find("_Tp{") == std::string::npos);
+    CHECK(find_if_body.find("_Tp(") == std::string::npos);
+    CHECK(find_if_body.find("_Tp __") == std::string::npos);
+    CHECK(find_if_body.find("new") == std::string::npos);
+    CHECK(find_if_body.find("malloc") == std::string::npos);
+    CHECK(find_if_body.find("return 0") == std::string::npos);
+
+    const std::string count_body = text.substr(count_at);
+    const auto count_brace = count_body.find('{');
+    REQUIRE(count_brace != std::string::npos);
+    const std::string count_fn = count_body.substr(count_brace);
+    const auto count_bad = count_fn.find("if (__last < __first)");
+    const auto count_empty = count_fn.find("if (__first == __last) return 0;");
+    REQUIRE(count_bad != std::string::npos);
+    REQUIRE(count_empty != std::string::npos);
+    CHECK(count_bad < count_empty);
+    const std::string count_bad_body = count_fn.substr(count_bad, count_empty - count_bad);
+    const auto count_check = count_bad_body.find("__prism_check");
+    const auto count_trap = count_bad_body.find("__builtin_trap");
+    REQUIRE(count_check != std::string::npos);
+    REQUIRE(count_trap != std::string::npos);
+    CHECK(count_check < count_trap);
+    CHECK(count_bad_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(count_bad_body.find("count: last < first") != std::string::npos);
+    CHECK(count_bad_body.find("return") == std::string::npos);
+    CHECK(count_bad_body.find("*__") == std::string::npos);
+    CHECK(count_bad_body.find("__value") == std::string::npos);
+    CHECK(count_bad_body.find("_Tp{") == std::string::npos);
+    CHECK(count_bad_body.find("_Tp(") == std::string::npos);
+    CHECK(count_bad_body.find("_Tp __") == std::string::npos);
+    CHECK(count_fn.substr(0, count_empty).find("*__") == std::string::npos);
+    CHECK(count_fn.substr(0, count_empty).find("__value") == std::string::npos);
+    const auto count_zero = count_fn.find("__n = 0", count_empty);
+    const auto count_scan = count_fn.find("while (__first != __last)", count_empty);
+    REQUIRE(count_zero != std::string::npos);
+    REQUIRE(count_scan != std::string::npos);
+    CHECK(count_empty < count_zero);
+    CHECK(count_zero < count_scan);
+    const std::string count_between = count_fn.substr(count_empty, count_scan - count_empty);
+    CHECK(count_between.find("*__") == std::string::npos);
+    CHECK(count_between.find("__value") == std::string::npos);
+    const auto count_eq = count_fn.find("if (*__first == __value)", count_scan);
+    REQUIRE(count_eq != std::string::npos);
+    const auto count_fit =
+        count_fn.find("if (__n == static_cast<__PTRDIFF_TYPE__>(__PTRDIFF_MAX__))", count_eq);
+    REQUIRE(count_fit != std::string::npos);
+    const auto count_inc = count_fn.find("++__n", count_fit);
+    REQUIRE(count_inc != std::string::npos);
+    const std::string count_fit_body = count_fn.substr(count_fit, count_inc - count_fit);
+    const auto count_fit_check = count_fit_body.find("__prism_check");
+    const auto count_fit_trap = count_fit_body.find("__builtin_trap");
+    REQUIRE(count_fit_check != std::string::npos);
+    REQUIRE(count_fit_trap != std::string::npos);
+    CHECK(count_fit_check < count_fit_trap);
+    CHECK(count_fit_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(count_fit_body.find("count: result does not fit in ptrdiff_t") != std::string::npos);
+    CHECK(count_fit_body.find("return") == std::string::npos);
+    CHECK(count_fit_body.find("*__") == std::string::npos);
+    CHECK(count_fit_body.find("++__n") == std::string::npos);
+    CHECK(count_fit_body.find("++__first") == std::string::npos);
+    const auto count_bump = count_fn.find("++__first", count_inc);
+    REQUIRE(count_bump != std::string::npos);
+    const auto count_ret = count_fn.find("return __n", count_bump);
+    REQUIRE(count_ret != std::string::npos);
+    CHECK(count_scan < count_eq);
+    CHECK(count_eq < count_fit);
+    CHECK(count_fit < count_inc);
+    CHECK(count_inc < count_bump);
+    CHECK(count_bump < count_ret);
+    CHECK(count_body.find("_Tp{") == std::string::npos);
+    CHECK(count_body.find("_Tp(") == std::string::npos);
+    CHECK(count_body.find("_Tp __") == std::string::npos);
+    CHECK(count_body.find("new") == std::string::npos);
+    CHECK(count_body.find("malloc") == std::string::npos);
+    CHECK(count_body.find("calloc") == std::string::npos);
+    CHECK(count_body.find("realloc") == std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
@@ -452,6 +611,30 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(has_line(b, "find_keep=1"));
     CHECK(has_line(b, "find_eq_i=1 find_eq_id=1 find_eq_miss=1 find_eq_empty=1"));
     CHECK(has_line(b, "find_nodef=1 find_nodef_i=1 find_nodef_empty=1"));
+    CHECK(has_line(b, "find_if_hit=1 find_if_hit_i=2 find_if_hit_calls=3"));
+    CHECK(has_line(b, "find_if_first_i=1 find_if_first_calls=2"));
+    CHECK(has_line(b, "find_if_front_i=0 find_if_front_calls=1"));
+    CHECK(has_line(b, "find_if_miss=1 find_if_miss_calls=4"));
+    CHECK(has_line(b, "find_if_empty=1 find_if_empty_calls=0"));
+    CHECK(has_line(b, "find_if_tie=1 find_if_tie_calls=1"));
+    CHECK(has_line(b, "find_if_one=1"));
+    CHECK(has_line(b, "find_if_null=1"));
+    CHECK(has_line(b, "find_if_keep=1"));
+    CHECK(has_line(b, "find_if_eq_i=1 find_if_eq_empty=1"));
+    CHECK(has_line(b, "find_if_nodef_i=1 find_if_nodef_empty=1"));
+    CHECK(has_line(b, "find_if_pred_i=1 find_if_pred_empty=1"));
+    CHECK(has_line(b, "count_four=2"));
+    CHECK(has_line(b, "count_one=1"));
+    CHECK(has_line(b, "count_nine=1"));
+    CHECK(has_line(b, "count_miss=0"));
+    CHECK(has_line(b, "count_empty=0"));
+    CHECK(has_line(b, "count_tie=2"));
+    CHECK(has_line(b, "count_one_hit=1"));
+    CHECK(has_line(b, "count_one_miss=0"));
+    CHECK(has_line(b, "count_null=0"));
+    CHECK(has_line(b, "count_eq=2 count_eq_miss=0 count_eq_empty=0"));
+    CHECK(has_line(b, "count_nodef=1 count_nodef_three=2 count_nodef_empty=0"));
+    CHECK(has_line(b, "count_keep=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "invert"}, &out, &err));
@@ -477,6 +660,35 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(find_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
     CHECK(find_both.find("find: last < first") != std::string::npos);
     CHECK(find_out.find("value=") == std::string::npos);
+
+    std::string fi_out, fi_err;
+    CHECK_FALSE(run_cmd({mod.string(), "invert-find-if"}, &fi_out, &fi_err));
+    const std::string fi_both = fi_out + fi_err;
+    CHECK(fi_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(fi_both.find("find_if: last < first") != std::string::npos);
+    CHECK(fi_both.find("called") == std::string::npos);
+    CHECK(fi_out.find("value=") == std::string::npos);
+
+    std::string null_out, null_err;
+    CHECK_FALSE(run_cmd({mod.string(), "null-find-if"}, &null_out, &null_err));
+    const std::string null_both = null_out + null_err;
+    CHECK(null_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(null_both.find("find_if: null predicate") != std::string::npos);
+    CHECK(null_out.find("value=") == std::string::npos);
+
+    std::string null_empty_out, null_empty_err;
+    CHECK_FALSE(run_cmd({mod.string(), "null-find-if-empty"}, &null_empty_out, &null_empty_err));
+    const std::string null_empty_both = null_empty_out + null_empty_err;
+    CHECK(null_empty_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(null_empty_both.find("find_if: null predicate") != std::string::npos);
+    CHECK(null_empty_out.find("value=") == std::string::npos);
+
+    std::string count_out, count_err;
+    CHECK_FALSE(run_cmd({mod.string(), "invert-count"}, &count_out, &count_err));
+    const std::string count_both = count_out + count_err;
+    CHECK(count_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(count_both.find("count: last < first") != std::string::npos);
+    CHECK(count_out.find("value=") == std::string::npos);
 
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
@@ -563,4 +775,105 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
                                     "static_assert(inverted() == 0);\n";
     std::string inverted_find_err;
     CHECK_FALSE(syntax_only(c.cxx, inverted_find, true, &inverted_find_err));
+
+    const fs::path find_if_fn = c.tmp / "find_if_fn.cpp";
+    std::ofstream(find_if_fn) << "#include <algorithm>\n"
+                                 "bool is_zero(const int& x) { return x == 0; }\n"
+                                 "int use(int* a, int n) {\n"
+                                 "  int* p = std::find_if(a, a + n, is_zero);\n"
+                                 "  if (p == a + n) return 0;\n"
+                                 "  return *p;\n"
+                                 "}\n";
+    std::string find_if_fn_err;
+    CHECK(syntax_only(c.cxx, find_if_fn, false, &find_if_fn_err));
+    CHECK(syntax_only(c.cxx, find_if_fn, true, &find_if_fn_err));
+
+    const fs::path find_if_val = c.tmp / "find_if_val.cpp";
+    std::ofstream(find_if_val) << "#include <algorithm>\n"
+                                  "bool is_zero(int x) { return x == 0; }\n"
+                                  "int use(int* a, int n) {\n"
+                                  "  return *std::find_if(a, a + n, is_zero);\n"
+                                  "}\n";
+    std::string find_if_val_err;
+    CHECK(syntax_only(c.cxx, find_if_val, false, &find_if_val_err));
+    CHECK_FALSE(syntax_only(c.cxx, find_if_val, true, &find_if_val_err));
+
+    const fs::path count_ok = c.tmp / "count_ok.cpp";
+    std::ofstream(count_ok) << "#include <algorithm>\n"
+                               "#include <cstddef>\n"
+                               "std::ptrdiff_t use(int* a, int n, const int& v) {\n"
+                               "  return std::count(a, a + n, v);\n"
+                               "}\n";
+    std::string count_ok_err;
+    CHECK(syntax_only(c.cxx, count_ok, false, &count_ok_err));
+    CHECK(syntax_only(c.cxx, count_ok, true, &count_ok_err));
+
+    const fs::path count_long = c.tmp / "count_long.cpp";
+    std::ofstream(count_long) << "#include <algorithm>\n"
+                                 "long use(int* a, int n) {\n"
+                                 "  return std::count(a, a + n, 0L);\n"
+                                 "}\n";
+    std::string count_long_err;
+    CHECK(syntax_only(c.cxx, count_long, false, &count_long_err));
+    CHECK_FALSE(syntax_only(c.cxx, count_long, true, &count_long_err));
+
+    const fs::path count_const = c.tmp / "count_const.cpp";
+    std::ofstream(count_const) << "#include <algorithm>\n"
+                                  "int use(const int* a, int n, int v) {\n"
+                                  "  return static_cast<int>(std::count(a, a + n, v));\n"
+                                  "}\n";
+    std::string count_const_err;
+    CHECK(syntax_only(c.cxx, count_const, false, &count_const_err));
+    CHECK_FALSE(syntax_only(c.cxx, count_const, true, &count_const_err));
+
+    const fs::path count_if = c.tmp / "count_if.cpp";
+    std::ofstream(count_if) << "#include <algorithm>\n"
+                               "int use(int* a, int n) {\n"
+                               "  return static_cast<int>(std::count_if(a, a + n, [](int x) { return x == 0; }));\n"
+                               "}\n";
+    std::string count_if_err;
+    CHECK(syntax_only(c.cxx, count_if, false, &count_if_err));
+    CHECK_FALSE(syntax_only(c.cxx, count_if, true, &count_if_err));
+
+    const fs::path count_empty_ok = c.tmp / "count_empty_ok.cpp";
+    std::ofstream(count_empty_ok) << "#include <algorithm>\n"
+                                     "constexpr int empty() {\n"
+                                     "  int a[] = {1, 2, 3};\n"
+                                     "  return static_cast<int>(std::count(a, a, 1));\n"
+                                     "}\n"
+                                     "static_assert(empty() == 0);\n";
+    std::string count_empty_ok_err;
+    CHECK(syntax_only(c.cxx, count_empty_ok, false, &count_empty_ok_err));
+    CHECK(syntax_only(c.cxx, count_empty_ok, true, &count_empty_ok_err));
+
+    const fs::path inverted_find_if = c.tmp / "invert_find_if_const.cpp";
+    std::ofstream(inverted_find_if) << "#include <algorithm>\n"
+                                       "constexpr bool is_one(const int& x) { return x == 1; }\n"
+                                       "constexpr int inverted() {\n"
+                                       "  int a[] = {1, 2, 3};\n"
+                                       "  return *std::find_if(a + 2, a, is_one);\n"
+                                       "}\n"
+                                       "static_assert(inverted() == 0);\n";
+    std::string inverted_find_if_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_find_if, true, &inverted_find_if_err));
+
+    const fs::path null_find_if = c.tmp / "null_find_if_const.cpp";
+    std::ofstream(null_find_if) << "#include <algorithm>\n"
+                                   "constexpr int nullp() {\n"
+                                   "  int a[] = {1, 2, 3};\n"
+                                   "  return *std::find_if(a, a + 3, static_cast<bool (*)(const int&)>(nullptr));\n"
+                                   "}\n"
+                                   "static_assert(nullp() == 0);\n";
+    std::string null_find_if_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_find_if, true, &null_find_if_err));
+
+    const fs::path inverted_count = c.tmp / "invert_count_const.cpp";
+    std::ofstream(inverted_count) << "#include <algorithm>\n"
+                                     "constexpr int inverted() {\n"
+                                     "  int a[] = {1, 2, 3};\n"
+                                     "  return static_cast<int>(std::count(a + 2, a, 1));\n"
+                                     "}\n"
+                                     "static_assert(inverted() == 0);\n";
+    std::string inverted_count_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_count, true, &inverted_count_err));
 }
