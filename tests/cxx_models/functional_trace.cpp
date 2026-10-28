@@ -7,6 +7,8 @@
 // pointer. bind, mem_fn, ref, cref, bind_front, and reference_wrapper are not
 // named: the model does not declare them. A callable that is not a function
 // pointer is not passed to std::invoke or std::not_fn.
+// std::identity returns the argument. std::equal_to, std::not_equal_to,
+// std::less, and std::greater compare with == and <.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
@@ -136,6 +138,16 @@ static bool& bit() {
     return g_bit;
 }
 
+// == and < only are enough for the model. != and > are the same results, so
+// libstdc++'s operators agree.
+struct Num {
+    int v;
+    friend constexpr bool operator==(const Num& a, const Num& b) { return a.v == b.v; }
+    friend constexpr bool operator!=(const Num& a, const Num& b) { return !(a == b); }
+    friend constexpr bool operator<(const Num& a, const Num& b) { return a.v < b.v; }
+    friend constexpr bool operator>(const Num& a, const Num& b) { return b < a; }
+};
+
 static void show() {
     {
         std::function<int(int)> empty;
@@ -225,6 +237,66 @@ static void show() {
     const auto held_null = std::not_fn(np);
     (void)held_null;
     std::printf("not hold\n");
+
+    int id_x = 7;
+    int& id_xr = std::identity{}(id_x);
+    std::printf("id lv %d x=%d\n", id_xr, id_x);
+    id_xr = 8;
+    std::printf("id same %d\n", id_x);
+    std::printf("id rv %d\n", std::identity{}(E(8)).v);
+
+    struct MoveOnly {
+        int v;
+        int* moves;
+        explicit MoveOnly(int vv, int* mm) : v(vv), moves(mm) {}
+        MoveOnly(const MoveOnly&) = delete;
+        MoveOnly(MoveOnly&& o) noexcept : v(o.v), moves(o.moves) {
+            if (moves) ++*moves;
+            o.v = -1;
+        }
+    };
+    int moves = 0;
+    MoveOnly mo(3, &moves);
+    MoveOnly& mor = std::identity{}(mo);
+    std::printf("id mo %d %d moves=%d\n", mor.v, mo.v, moves);
+
+    static_assert(std::identity{}(5) == 5);
+    static_assert(std::equal_to<int>{}(3, 3));
+    static_assert(!std::equal_to<int>{}(3, 4));
+    static_assert(!std::not_equal_to<int>{}(3, 3));
+    static_assert(std::not_equal_to<int>{}(3, 4));
+    static_assert(std::less<int>{}(1, 2));
+    static_assert(!std::less<int>{}(2, 2));
+    static_assert(std::greater<int>{}(2, 1));
+    static_assert(!std::greater<int>{}(1, 1));
+    static_assert(std::less<>()(1, 2.5));
+    static_assert(std::greater<>()(0.7, 0.5));
+    static_assert(std::not_equal_to<>()(0.5, 0.7));
+    static_assert(std::equal_to<>()(0.5, 0.5));
+    static_assert(!std::equal_to<>()(1, 2));
+
+    std::equal_to<int> eq;
+    std::equal_to<int> eq2 = eq;
+    std::printf("eq %d %d\n", static_cast<int>(eq(1, 1)), static_cast<int>(eq2(1, 2)));
+    std::not_equal_to<int> neq;
+    std::printf("ne %d %d\n", static_cast<int>(neq(1, 1)), static_cast<int>(neq(1, 2)));
+    std::less<int> lt;
+    std::printf("lt %d %d\n", static_cast<int>(lt(1, 2)), static_cast<int>(lt(2, 2)));
+    std::greater<int> gt;
+    std::greater<int> gt2 = gt;
+    std::printf("gt %d %d\n", static_cast<int>(gt(2, 1)), static_cast<int>(gt2(1, 1)));
+    std::printf("tr %d %d %d %d\n", static_cast<int>(std::less<>()(1, 2.5)),
+                static_cast<int>(std::greater<>()(0.7, 0.5)),
+                static_cast<int>(std::not_equal_to<>()(0.5, 0.7)),
+                static_cast<int>(std::equal_to<>()(1, 2)));
+    int arr[2] = {1, 2};
+    std::printf("ptr %d\n", static_cast<int>(std::less<int*>()(&arr[0], &arr[1])));
+
+    const Num n1{1};
+    const Num n2{2};
+    std::printf("obj %d %d %d %d\n", static_cast<int>(std::equal_to<Num>{}(n1, n1)),
+                static_cast<int>(std::not_equal_to<Num>{}(n1, n1)), static_cast<int>(std::less<Num>{}(n1, n2)),
+                static_cast<int>(std::greater<Num>{}(n2, n1)));
 }
 
 int main(int argc, char** argv) {

@@ -9,6 +9,9 @@
 // A null function pointer is a __prism_check and does not print a return value.
 // std::not_fn of a function pointer calls that pointer and negates the bool.
 // A null function pointer is a __prism_check and does not print true or false.
+// std::identity returns its argument. std::equal_to, std::not_equal_to,
+// std::less, and std::greater are function objects: a == b, !(a == b),
+// a < b, and b < a. They do not invent a third value.
 
 #include <doctest/doctest.h>
 
@@ -244,9 +247,17 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     const std::string text = slurp(header);
     REQUIRE_FALSE(text.empty());
     const std::string code = strip_line_comments(text);
-    CHECK(code.find("#include") == std::string::npos);
     CHECK(text.find("#include <memory>") == std::string::npos);
     CHECK(text.find("#include <type_traits>") == std::string::npos);
+    CHECK(text.find("This header does not include memory or type_traits.") != std::string::npos);
+    const auto inc1 = code.find("#include");
+    const auto inc2 = inc1 == std::string::npos ? std::string::npos : code.find("#include", inc1 + 1);
+    const auto inc3 = inc2 == std::string::npos ? std::string::npos : code.find("#include", inc2 + 1);
+    CHECK(inc1 != std::string::npos);
+    CHECK(inc2 != std::string::npos);
+    CHECK(inc3 == std::string::npos);
+    CHECK(code.find("#include <bits/stl_function.h>") != std::string::npos);
+    CHECK(code.find("#include <bits/ranges_cmp.h>") != std::string::npos);
 
     const auto call = text.find("_Res operator()(_ArgTypes... __args) const");
     const auto fn_check = text.find("__prism_check(0, \"CXX-STD-FUNCTION-NULL\"", call);
@@ -323,6 +334,48 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(code.find("not_fn") != std::string::npos);
     for (const char* name : {"bind", "mem_fn", "reference_wrapper", "bind_front", "cref", "ref("})
         CHECK(code.find(name) == std::string::npos);
+
+    CHECK(text.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    const auto proved_at = text.find("PROVED");
+    const auto clean_at = text.find("CLEAN");
+    REQUIRE(proved_at != std::string::npos);
+    REQUIRE(clean_at != std::string::npos);
+    CHECK(text.find("PROVED", proved_at + 6) == std::string::npos);
+    CHECK(text.find("CLEAN", clean_at + 5) == std::string::npos);
+    CHECK(text.find("They are not function pointers.") != std::string::npos);
+    CHECK(text.find("does not copy through a default T{}.") != std::string::npos);
+    CHECK(text.find("They do not invent a third value.") != std::string::npos);
+    CHECK(text.find("fails the template rather than") != std::string::npos);
+    CHECK(text.find("returning a stand-in.") != std::string::npos);
+
+    const auto id = text.find("struct identity {");
+    const auto id_ret = text.find("return static_cast<_Tp&&>(__t);", id);
+    const auto id_end = text.find("#endif", id);
+    REQUIRE(id != std::string::npos);
+    REQUIRE(id_ret != std::string::npos);
+    REQUIRE(id_end != std::string::npos);
+    CHECK(id_ret < id_end);
+    const std::string id_body = text.substr(id, id_end - id);
+    CHECK(id_body.find("return static_cast<_Tp&&>(__t);") != std::string::npos);
+    CHECK(id_body.find("{}") == std::string::npos);
+    CHECK(id_body.find("_Tp{}") == std::string::npos);
+    CHECK(id_body.find("T{}") == std::string::npos);
+    CHECK(code.find("struct identity") != std::string::npos);
+    for (const char* name : {"struct equal_to", "struct not_equal_to", "struct less", "struct greater"})
+        CHECK(code.find(name) != std::string::npos);
+    for (const char* ptr : {"(*identity)", "(*equal_to)", "(*not_equal_to)", "(*less)", "(*greater)"})
+        CHECK(code.find(ptr) == std::string::npos);
+    CHECK(text.find("return __a == __b;") != std::string::npos);
+    CHECK(text.find("return !(__a == __b);") != std::string::npos);
+    CHECK(text.find("return __a < __b;") != std::string::npos);
+    CHECK(text.find("return __b < __a;") != std::string::npos);
+    CHECK(text.find("return __a > __b") == std::string::npos);
+    CHECK(text.find("return __a != __b") == std::string::npos);
+    const auto cmp = text.find("struct equal_to;");
+    REQUIRE(cmp != std::string::npos);
+    const std::string cmp_body = text.substr(cmp);
+    for (const char* stand_in : {"return true", "return false", "return 0", "return {}", "return _Tp{}"})
+        CHECK(cmp_body.find(stand_in) == std::string::npos);
 }
 
 TEST_CASE("cxx functional model: setup clang++ with ASan/UBSan") {
@@ -387,6 +440,17 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_not_obj = false;
     bool saw_not_bit = false;
     bool saw_not_hold = false;
+    bool saw_id_lv = false;
+    bool saw_id_same = false;
+    bool saw_id_rv = false;
+    bool saw_id_mo = false;
+    bool saw_eq = false;
+    bool saw_ne = false;
+    bool saw_lt = false;
+    bool saw_gt = false;
+    bool saw_tr = false;
+    bool saw_ptr = false;
+    bool saw_obj = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -411,6 +475,17 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "not obj 1 0 calls=24") saw_not_obj = true;
         if (line == "not bit 1 bit=0 calls=25") saw_not_bit = true;
         if (line == "not hold") saw_not_hold = true;
+        if (line == "id lv 7 x=7") saw_id_lv = true;
+        if (line == "id same 8") saw_id_same = true;
+        if (line == "id rv 8") saw_id_rv = true;
+        if (line == "id mo 3 3 moves=0") saw_id_mo = true;
+        if (line == "eq 1 0") saw_eq = true;
+        if (line == "ne 0 1") saw_ne = true;
+        if (line == "lt 1 0") saw_lt = true;
+        if (line == "gt 1 0") saw_gt = true;
+        if (line == "tr 1 1 1 0") saw_tr = true;
+        if (line == "ptr 1") saw_ptr = true;
+        if (line == "obj 1 0 1 1") saw_obj = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -440,6 +515,17 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_not_obj);
     CHECK(saw_not_bit);
     CHECK(saw_not_hold);
+    CHECK(saw_id_lv);
+    CHECK(saw_id_same);
+    CHECK(saw_id_rv);
+    CHECK(saw_id_mo);
+    CHECK(saw_eq);
+    CHECK(saw_ne);
+    CHECK(saw_lt);
+    CHECK(saw_gt);
+    CHECK(saw_tr);
+    CHECK(saw_ptr);
+    CHECK(saw_obj);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
@@ -529,4 +615,65 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string not_ell_err;
     CHECK(syntax_only(c.cxx, not_ell, false, &not_ell_err));
     CHECK_FALSE(syntax_only(c.cxx, not_ell, true, &not_ell_err));
+
+    const fs::path cmp_ok = c.tmp / "cmp_ok.cpp";
+    std::ofstream(cmp_ok) << "#include <functional>\n"
+                             "struct ND { int v; explicit ND(int x) : v(x) {} };\n"
+                             "struct EqOnly {\n"
+                             "  int v;\n"
+                             "  friend bool operator==(const EqOnly& a, const EqOnly& b) { return a.v == b.v; }\n"
+                             "};\n"
+                             "struct LtOnly {\n"
+                             "  int v;\n"
+                             "  friend bool operator<(const LtOnly& a, const LtOnly& b) { return a.v < b.v; }\n"
+                             "};\n"
+                             "int use(int x, EqOnly e, LtOnly a, LtOnly b) {\n"
+                             "  return std::identity{}(ND(x)).v\n"
+                             "       + static_cast<int>(std::equal_to<int>{}(x, x))\n"
+                             "       + static_cast<int>(std::not_equal_to<EqOnly>{}(e, e))\n"
+                             "       + static_cast<int>(std::not_equal_to<>{}(e, e))\n"
+                             "       + static_cast<int>(std::less<LtOnly>{}(a, b))\n"
+                             "       + static_cast<int>(std::less<>{}(1, 2.5));\n"
+                             "}\n";
+    std::string cmp_ok_err;
+    CHECK(syntax_only(c.cxx, cmp_ok, false, &cmp_ok_err));
+    CHECK(syntax_only(c.cxx, cmp_ok, true, &cmp_ok_err));
+
+    // greater is b < a, so a type with < and no > still compiles here.
+    // libstdc++ greater calls operator>, so that translation unit fails there.
+    const fs::path cmp_gt = c.tmp / "cmp_gt.cpp";
+    std::ofstream(cmp_gt) << "#include <functional>\n"
+                             "struct LtOnly {\n"
+                             "  int v;\n"
+                             "  friend bool operator<(const LtOnly& a, const LtOnly& b) { return a.v < b.v; }\n"
+                             "};\n"
+                             "int use(LtOnly a, LtOnly b) {\n"
+                             "  return static_cast<int>(std::greater<LtOnly>{}(a, b))\n"
+                             "       + static_cast<int>(std::greater<>{}(a, b));\n"
+                             "}\n";
+    std::string cmp_gt_err;
+    CHECK_FALSE(syntax_only(c.cxx, cmp_gt, false, &cmp_gt_err));
+    CHECK(syntax_only(c.cxx, cmp_gt, true, &cmp_gt_err));
+
+    const fs::path no_eq = c.tmp / "no_eq.cpp";
+    std::ofstream(no_eq) << "#include <functional>\n"
+                            "struct NoEq { int v; };\n"
+                            "int use(NoEq a, NoEq b) {\n"
+                            "  return static_cast<int>(std::equal_to<NoEq>{}(a, b))\n"
+                            "       + static_cast<int>(std::not_equal_to<NoEq>{}(a, b));\n"
+                            "}\n";
+    std::string no_eq_err;
+    CHECK_FALSE(syntax_only(c.cxx, no_eq, false, &no_eq_err));
+    CHECK_FALSE(syntax_only(c.cxx, no_eq, true, &no_eq_err));
+
+    const fs::path no_lt = c.tmp / "no_lt.cpp";
+    std::ofstream(no_lt) << "#include <functional>\n"
+                            "struct NoLt { int v; };\n"
+                            "int use(NoLt a, NoLt b) {\n"
+                            "  return static_cast<int>(std::less<NoLt>{}(a, b))\n"
+                            "       + static_cast<int>(std::greater<NoLt>{}(a, b));\n"
+                            "}\n";
+    std::string no_lt_err;
+    CHECK_FALSE(syntax_only(c.cxx, no_lt, false, &no_lt_err));
+    CHECK_FALSE(syntax_only(c.cxx, no_lt, true, &no_lt_err));
 }
