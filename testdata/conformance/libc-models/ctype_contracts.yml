@@ -31,6 +31,8 @@ expected:
   ispunct_letter_false: false
   iscntrl_true: true
   iscntrl_space_false: false
+  isascii_true: true
+  isascii_nul_false: false
 expect_class:  # the violation each false harness plants
   isdigit_letter_false: "FUNC-CONTRACT"
   isspace_letter_false: "FUNC-CONTRACT"
@@ -46,3 +48,4 @@ expect_class:  # the violation each false harness plants
   isgraph_space_false: "FUNC-CONTRACT"
   ispunct_letter_false: "FUNC-CONTRACT"
   iscntrl_space_false: "FUNC-CONTRACT"
+  isascii_nul_false: "FUNC-CONTRACT"

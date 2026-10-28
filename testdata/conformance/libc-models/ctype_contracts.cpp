@@ -279,3 +279,22 @@ int iscntrl_space_false(void) {
     assert(iscntrl(0x20) != 0);
     return 0;
 }
+
+/* Nonzero for 0 through 127. EOF and every other value yield 0.
+ * This does not read a string. */
+int isascii_true(int c) {
+    assert(isascii(0) != 0);
+    assert(isascii(127) != 0);
+    assert(isascii('A') != 0);
+    assert(isascii(128) == 0);
+    assert(isascii(EOF) == 0);
+    if (c >= 0 && c <= 127) assert(isascii(c) != 0);
+    else assert(isascii(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: NUL yields 0. */
+int isascii_nul_false(void) {
+    assert(isascii(0) == 0);
+    return 0;
+}

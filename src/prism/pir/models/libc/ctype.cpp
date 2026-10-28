@@ -116,4 +116,12 @@ int iscntrl(int c) {
     return 0;
 }
 
+/* Nonzero only for 0 through 127. EOF and every other value yield 0.
+ * This does not read a string. */
+int isascii(int c) {
+    if (c == EOF) return 0;
+    if (c >= 0 && c <= 127) return 1;
+    return 0;
+}
+
 }  // extern "C"
