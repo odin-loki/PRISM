@@ -4,8 +4,8 @@
 // file, not a directory: a directory of this name would make the include fail
 // with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. std::function and std::invoke are modelled only for a
-// function-pointer target. The pointer is stored in the std::function object.
+// Partial on purpose. std::function, std::invoke, and std::not_fn are modelled
+// only for a function-pointer target. The pointer is stored in the std::function object.
 // A general callable is not placed on the heap, so there is nothing to free
 // in the destructor, in move-assignment, or when the function is empty, and
 // those operations do not call the target.
@@ -26,7 +26,7 @@
 // Not declared, so a unit that names one fails to compile against this header
 // and pir falls back to libstdc++ (extra.cxx_models). A partial header is
 // intentional:
-// bind, mem_fn, ref, cref, not_fn, bind_front, and reference_wrapper.
+// bind, mem_fn, ref, cref, bind_front, and reference_wrapper.
 // This header does not include memory or type_traits.
 #ifndef _PRISM_MODEL_FUNCTIONAL
 #define _PRISM_MODEL_FUNCTIONAL 1
@@ -116,6 +116,53 @@ _Res invoke(_Res (*__f)(_Params...) noexcept, _Args&&... __args) {
         __builtin_unreachable();
     }
     return __f(static_cast<_Args&&>(__args)...);
+}
+
+// A call result is usable as a bool when static_cast<bool> is valid.
+// void is not. The specialization keeps that constraint false without
+// forming a reference to void.
+template <typename _Tp>
+struct _Res_bool {
+    static constexpr bool value = requires(const _Tp& __r) { static_cast<bool>(__r); };
+};
+
+template <>
+struct _Res_bool<void> {
+    static constexpr bool value = false;
+};
+
+// Function-pointer target only. The null path is the check, then unreachable.
+// It does not return true or false and it does not call through null. The
+// other path calls the pointer with the forwarded arguments and negates that
+// bool. A result that is not usable as a bool has no overload.
+template <typename _Fn>
+struct _Not_fn {
+    explicit _Not_fn(_Fn __f) noexcept : _M_fn(__f) {}
+
+    template <typename... _Args>
+    bool operator()(_Args&&... __args) const {
+        if (_M_fn == nullptr) {
+            __prism_check(0, "FUNC-CONTRACT",
+                          "std::not_fn called with a null function pointer");
+            __builtin_unreachable();
+        }
+        return !static_cast<bool>(_M_fn(static_cast<_Args&&>(__args)...));
+    }
+
+private:
+    _Fn _M_fn;
+};
+
+template <typename _Res, typename... _Params>
+    requires (_Res_bool<_Res>::value)
+_Not_fn<_Res (*)(_Params...)> not_fn(_Res (*__f)(_Params...)) {
+    return _Not_fn<_Res (*)(_Params...)>{__f};
+}
+
+template <typename _Res, typename... _Params>
+    requires (_Res_bool<_Res>::value)
+_Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) {
+    return _Not_fn<_Res (*)(_Params...) noexcept>{__f};
 }
 
 }  // namespace std

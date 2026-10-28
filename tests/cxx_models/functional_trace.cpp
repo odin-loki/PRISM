@@ -3,15 +3,16 @@
 // (src/prism/pir/models/cxx/functional) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
-// The program uses std::function and std::invoke on a function pointer.
-// bind, mem_fn, ref, cref, not_fn, bind_front, and reference_wrapper are not
+// The program uses std::function, std::invoke, and std::not_fn on a function
+// pointer. bind, mem_fn, ref, cref, bind_front, and reference_wrapper are not
 // named: the model does not declare them. A callable that is not a function
-// pointer is not passed to std::invoke.
+// pointer is not passed to std::invoke or std::not_fn.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
-// std::invoke on a null function pointer. That path must __prism_check and
-// must not print a return value.
+// std::invoke on a null function pointer. argv "nullnot" calls the wrapper
+// from std::not_fn on a null function pointer. Those paths must __prism_check
+// and must not print a return value.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -76,6 +77,65 @@ static int g_slot = 9;
 
 static int& slot() { return g_slot; }
 
+static bool ready() {
+    ++g_calls;
+    return false;
+}
+
+static bool even(int x) {
+    ++g_calls;
+    return x % 2 == 0;
+}
+
+static int flag(int x) {
+    ++g_calls;
+    return x;
+}
+
+static bool bump_pos(int& x) {
+    ++g_calls;
+    x += 3;
+    return x > 0;
+}
+
+static bool take_pos(int&& x) {
+    ++g_calls;
+    return x > 0;
+}
+
+static bool both_nz(int a, int b) {
+    ++g_calls;
+    return a != 0 && b != 0;
+}
+
+static bool pos_nx(int x) noexcept {
+    ++g_calls;
+    return x > 0;
+}
+
+static int* id_ptr(int* p) {
+    ++g_calls;
+    return p;
+}
+
+// explicit operator bool: usable as a bool, and not a default-constructed result.
+struct Flag {
+    int v;
+    explicit operator bool() const { return v != 0; }
+};
+
+static Flag make_flag(int x) {
+    ++g_calls;
+    return Flag{x};
+}
+
+static bool g_bit = false;
+
+static bool& bit() {
+    ++g_calls;
+    return g_bit;
+}
+
 static void show() {
     {
         std::function<int(int)> empty;
@@ -133,6 +193,38 @@ static void show() {
     std::printf("invoke slot %d\n", invoked_slot);
     const E invoked_held = std::invoke(make_e);
     std::printf("invoke held %d\n", invoked_held.v);
+
+    std::printf("not zero %d calls=%d\n", static_cast<int>(std::not_fn(ready)()), g_calls);
+
+    const auto ne = std::not_fn(even);
+    const auto ne_copy = ne;
+    std::printf("not copy %d %d calls=%d\n", static_cast<int>(ne(2)), static_cast<int>(ne_copy(3)), g_calls);
+
+    std::printf("not flag %d %d calls=%d\n", static_cast<int>(std::not_fn(flag)(0)),
+                static_cast<int>(std::not_fn(flag)(5)), g_calls);
+
+    int m = 1;
+    const int nb = static_cast<int>(std::not_fn(bump_pos)(m));
+    std::printf("not ref %d m=%d calls=%d\n", nb, m, g_calls);
+
+    std::printf("not rv %d calls=%d\n", static_cast<int>(std::not_fn(take_pos)(8)), g_calls);
+    std::printf("not both %d calls=%d\n", static_cast<int>(std::not_fn(both_nz)(1, 0)), g_calls);
+    std::printf("not nx %d calls=%d\n", static_cast<int>(std::not_fn(pos_nx)(-3)), g_calls);
+
+    int live = 7;
+    int* zp = nullptr;
+    std::printf("not ptr %d %d calls=%d\n", static_cast<int>(std::not_fn(id_ptr)(zp)),
+                static_cast<int>(std::not_fn(id_ptr)(&live)), g_calls);
+
+    std::printf("not obj %d %d calls=%d\n", static_cast<int>(std::not_fn(make_flag)(0)),
+                static_cast<int>(std::not_fn(make_flag)(2)), g_calls);
+    std::printf("not bit %d bit=%d calls=%d\n", static_cast<int>(std::not_fn(bit)()), static_cast<int>(g_bit),
+                g_calls);
+
+    bool (*np)(int) = nullptr;
+    const auto held_null = std::not_fn(np);
+    (void)held_null;
+    std::printf("not hold\n");
 }
 
 int main(int argc, char** argv) {
@@ -144,6 +236,11 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "nullfn") == 0) {
         E (*p)() = nullptr;
         std::printf("fake=%d\n", std::invoke(p).v);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "nullnot") == 0) {
+        bool (*p)(int) = nullptr;
+        std::printf("fake=%d\n", static_cast<int>(std::not_fn(p)(0)));
         return 0;
     }
     show();

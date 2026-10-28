@@ -7,6 +7,8 @@
 // empty std::function is a __prism_check, and the model does not print a
 // made-up return value. std::invoke of a function pointer calls that pointer.
 // A null function pointer is a __prism_check and does not print a return value.
+// std::not_fn of a function pointer calls that pointer and negates the bool.
+// A null function pointer is a __prism_check and does not print true or false.
 
 #include <doctest/doctest.h>
 
@@ -190,6 +192,17 @@ bool null_invoke_is_check(const fs::path& exe) {
     return true;
 }
 
+bool null_not_fn_is_check(const fs::path& exe) {
+    std::string out, err;
+    if (run_cmd({exe.string(), "nullnot"}, &out, &err)) return false;
+    const std::string both = out + err;
+    if (both.find("CHECK FUNC-CONTRACT:") == std::string::npos) return false;
+    if (both.find("std::not_fn called with a null function pointer") == std::string::npos) return false;
+    if (both.find("bad_function_call") != std::string::npos) return false;
+    if (out.find("fake=") != std::string::npos) return false;
+    return true;
+}
+
 std::string slurp(const fs::path& p) {
     std::ifstream in(p);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -275,7 +288,40 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
         CHECK(body.find("return _Res()") == std::string::npos);
         CHECK(body.find("return 0") == std::string::npos);
     }
-    for (const char* name : {"bind", "mem_fn", "not_fn", "reference_wrapper", "bind_front", "cref", "ref("})
+
+    const auto neg = text.find("bool operator()(_Args&&... __args) const");
+    REQUIRE(neg != std::string::npos);
+    const auto neg_check = text.find("__prism_check(0, \"FUNC-CONTRACT\"", neg);
+    const auto neg_dead = text.find("__builtin_unreachable()", neg_check);
+    const auto neg_ret =
+        text.find("return !static_cast<bool>(_M_fn(static_cast<_Args&&>(__args)...));", neg_dead);
+    REQUIRE(neg_check != std::string::npos);
+    REQUIRE(neg_dead != std::string::npos);
+    REQUIRE(neg_ret != std::string::npos);
+    CHECK(neg_check < neg_dead);
+    CHECK(neg_dead < neg_ret);
+    CHECK(text.find("std::not_fn called with a null function pointer", neg_check) < neg_dead);
+    const std::string neg_null = text.substr(neg_check, neg_dead - neg_check);
+    CHECK(neg_null.find("return") == std::string::npos);
+    CHECK(neg_null.find("true") == std::string::npos);
+    CHECK(neg_null.find("false") == std::string::npos);
+    CHECK(neg_null.find("_M_fn(") == std::string::npos);
+    const auto nfn = text.find("_Not_fn<_Res (*)(_Params...)> not_fn(_Res (*__f)(_Params...))");
+    const auto nfn_nx =
+        text.find("_Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept)");
+    REQUIRE(nfn != std::string::npos);
+    REQUIRE(nfn_nx != std::string::npos);
+    CHECK(nfn < nfn_nx);
+    const auto req = text.rfind("requires (_Res_bool<_Res>::value)", nfn);
+    const auto req_nx = text.rfind("requires (_Res_bool<_Res>::value)", nfn_nx);
+    REQUIRE(req != std::string::npos);
+    REQUIRE(req_nx != std::string::npos);
+    CHECK(req < nfn);
+    CHECK(req_nx < nfn_nx);
+    CHECK(req != req_nx);
+    CHECK(text.find("struct _Res_bool<void>") != std::string::npos);
+    CHECK(code.find("not_fn") != std::string::npos);
+    for (const char* name : {"bind", "mem_fn", "reference_wrapper", "bind_front", "cref", "ref("})
         CHECK(code.find(name) == std::string::npos);
 }
 
@@ -330,6 +376,17 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_invoke_nx = false;
     bool saw_invoke_slot = false;
     bool saw_invoke_held = false;
+    bool saw_not_zero = false;
+    bool saw_not_copy = false;
+    bool saw_not_flag = false;
+    bool saw_not_ref = false;
+    bool saw_not_rv = false;
+    bool saw_not_both = false;
+    bool saw_not_nx = false;
+    bool saw_not_ptr = false;
+    bool saw_not_obj = false;
+    bool saw_not_bit = false;
+    bool saw_not_hold = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -343,6 +400,17 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "invoke nx 42 calls=11") saw_invoke_nx = true;
         if (line == "invoke slot 9") saw_invoke_slot = true;
         if (line == "invoke held 5") saw_invoke_held = true;
+        if (line == "not zero 1 calls=12") saw_not_zero = true;
+        if (line == "not copy 0 1 calls=14") saw_not_copy = true;
+        if (line == "not flag 1 0 calls=16") saw_not_flag = true;
+        if (line == "not ref 0 m=4 calls=17") saw_not_ref = true;
+        if (line == "not rv 0 calls=18") saw_not_rv = true;
+        if (line == "not both 1 calls=19") saw_not_both = true;
+        if (line == "not nx 1 calls=20") saw_not_nx = true;
+        if (line == "not ptr 1 0 calls=22") saw_not_ptr = true;
+        if (line == "not obj 1 0 calls=24") saw_not_obj = true;
+        if (line == "not bit 1 bit=0 calls=25") saw_not_bit = true;
+        if (line == "not hold") saw_not_hold = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -361,8 +429,20 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_invoke_nx);
     CHECK(saw_invoke_slot);
     CHECK(saw_invoke_held);
+    CHECK(saw_not_zero);
+    CHECK(saw_not_copy);
+    CHECK(saw_not_flag);
+    CHECK(saw_not_ref);
+    CHECK(saw_not_rv);
+    CHECK(saw_not_both);
+    CHECK(saw_not_nx);
+    CHECK(saw_not_ptr);
+    CHECK(saw_not_obj);
+    CHECK(saw_not_bit);
+    CHECK(saw_not_hold);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
+    CHECK(null_not_fn_is_check(mod));
 
     const fs::path rejected = c.tmp / "rejected.cpp";
     std::ofstream(rejected) << "#include <functional>\n"
@@ -373,7 +453,6 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
                                "int use_mem(S& s) { return std::mem_fn(&S::m)(s, 1); }\n"
                                "int use_mem_invoke(S& s) { return std::invoke(&S::m, s, 1); }\n"
                                "void use_ref(int& x) { (void)std::ref(x); }\n"
-                               "int use_not(int x) { return std::not_fn(id)(x); }\n"
                                "int use_fun() { F f; return std::invoke(f, 2); }\n"
                                "int use_fn(std::function<int(int)> f) { return std::invoke(f, 2); }\n";
     std::string rejected_err;
@@ -388,4 +467,66 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string accepted_err;
     CHECK(syntax_only(c.cxx, accepted, false, &accepted_err));
     CHECK(syntax_only(c.cxx, accepted, true, &accepted_err));
+
+    const fs::path not_ok = c.tmp / "not_fn_ok.cpp";
+    std::ofstream(not_ok) << "#include <functional>\n"
+                             "bool even(int x) { return x % 2 == 0; }\n"
+                             "bool even_nx(int x) noexcept { return x % 2 == 0; }\n"
+                             "int flag(int x) { return x; }\n"
+                             "int* idp(int* p) { return p; }\n"
+                             "bool bump(int& x) { return x > 0; }\n"
+                             "bool g_acc = false;\n"
+                             "bool& acc_bit() { return g_acc; }\n"
+                             "int use(int x, int* p) {\n"
+                             "  return static_cast<int>(std::not_fn(even)(x))\n"
+                             "       + static_cast<int>(std::not_fn(even_nx)(x))\n"
+                             "       + static_cast<int>(std::not_fn(flag)(x))\n"
+                             "       + static_cast<int>(std::not_fn(idp)(p))\n"
+                             "       + static_cast<int>(std::not_fn(bump)(x))\n"
+                             "       + static_cast<int>(std::not_fn(acc_bit)());\n"
+                             "}\n";
+    std::string not_ok_err;
+    CHECK(syntax_only(c.cxx, not_ok, false, &not_ok_err));
+    CHECK(syntax_only(c.cxx, not_ok, true, &not_ok_err));
+
+    const fs::path not_fun = c.tmp / "not_fn_fun.cpp";
+    std::ofstream(not_fun) << "#include <functional>\n"
+                              "struct F { bool operator()(int x) const { return x != 0; } };\n"
+                              "int use(int x) { return static_cast<int>(std::not_fn(F{})(x)); }\n";
+    std::string not_fun_err;
+    CHECK(syntax_only(c.cxx, not_fun, false, &not_fun_err));
+    CHECK_FALSE(syntax_only(c.cxx, not_fun, true, &not_fun_err));
+
+    const fs::path not_mem = c.tmp / "not_fn_mem.cpp";
+    std::ofstream(not_mem) << "#include <functional>\n"
+                              "struct S { bool m(int) const { return true; } };\n"
+                              "int use(S& s) { return static_cast<int>(std::not_fn(&S::m)(s, 1)); }\n";
+    std::string not_mem_err;
+    CHECK(syntax_only(c.cxx, not_mem, false, &not_mem_err));
+    CHECK_FALSE(syntax_only(c.cxx, not_mem, true, &not_mem_err));
+
+    const fs::path not_void = c.tmp / "not_fn_void.cpp";
+    std::ofstream(not_void) << "#include <functional>\n"
+                               "void mark() {}\n"
+                               "auto use() { return std::not_fn(mark); }\n";
+    std::string not_void_err;
+    CHECK(syntax_only(c.cxx, not_void, false, &not_void_err));
+    CHECK_FALSE(syntax_only(c.cxx, not_void, true, &not_void_err));
+
+    const fs::path not_e = c.tmp / "not_fn_e.cpp";
+    std::ofstream(not_e) << "#include <functional>\n"
+                            "struct E { int v; explicit E(int x) : v(x) {} };\n"
+                            "E make_e() { return E(1); }\n"
+                            "auto use() { return std::not_fn(make_e); }\n";
+    std::string not_e_err;
+    CHECK(syntax_only(c.cxx, not_e, false, &not_e_err));
+    CHECK_FALSE(syntax_only(c.cxx, not_e, true, &not_e_err));
+
+    const fs::path not_ell = c.tmp / "not_fn_ell.cpp";
+    std::ofstream(not_ell) << "#include <functional>\n"
+                              "int print(const char*, ...) { return 0; }\n"
+                              "auto use() { return std::not_fn(print); }\n";
+    std::string not_ell_err;
+    CHECK(syntax_only(c.cxx, not_ell, false, &not_ell_err));
+    CHECK_FALSE(syntax_only(c.cxx, not_ell, true, &not_ell_err));
 }
