@@ -1,0 +1,30 @@
+format_version: 1
+input_files: ctype_contracts.cpp
+language: C
+property: libc-contract
+expected:
+  isdigit_true: true
+  isdigit_letter_false: false
+  isspace_true: true
+  isspace_letter_false: false
+  isalpha_true: true
+  isalpha_digit_false: false
+  isalnum_true: true
+  isalnum_space_false: false
+  islower_true: true
+  islower_upper_false: false
+  isupper_true: true
+  isupper_lower_false: false
+  tolower_true: true
+  tolower_digit_false: false
+  toupper_true: true
+  toupper_digit_false: false
+expect_class:  # the violation each false harness plants
+  isdigit_letter_false: "FUNC-CONTRACT"
+  isspace_letter_false: "FUNC-CONTRACT"
+  isalpha_digit_false: "FUNC-CONTRACT"
+  isalnum_space_false: "FUNC-CONTRACT"
+  islower_upper_false: "FUNC-CONTRACT"
+  isupper_lower_false: "FUNC-CONTRACT"
+  tolower_digit_false: "FUNC-CONTRACT"
+  toupper_digit_false: "FUNC-CONTRACT"
