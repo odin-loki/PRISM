@@ -1,7 +1,10 @@
-// The <ranges> model is a partial stand-in: size and ssize only. An array
+// The <ranges> model is a partial stand-in: size, ssize, and empty. An array
 // size is N. An lvalue with a const size() member returns that size().
 // ssize converts that value to ptrdiff_t, and a value that does not fit is
 // a FUNC-CONTRACT check then a trap, not a wrapped negative ptrdiff_t.
+// empty of T(&)[N] is true only when N == 0, and that body does not load
+// an element. N == 0 is a second overload because T(&)[0] is rejected.
+// An lvalue with a const empty() member returns that empty().
 // A pointer has no overload, so the call fails to compile.
 //
 // tests/cxx_models/ranges_trace.cpp is compiled twice when clang++ is
@@ -280,6 +283,33 @@ TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it do
     CHECK(call < ret);
     CHECK(count_of(conv, "return ") == 1);
     CHECK(conv.find("return -") == std::string::npos);
+
+    const auto arr_empty = body_of(src, "constexpr bool empty(_Tp (&)[_Nm]) noexcept");
+    REQUIRE_FALSE(arr_empty.empty());
+    CHECK(arr_empty.find("return _Nm == 0;") != std::string::npos);
+    CHECK(arr_empty.find('*') == std::string::npos);
+    CHECK(arr_empty.find('[') == std::string::npos);
+    CHECK(arr_empty.find('.') == std::string::npos);
+    CHECK(arr_empty.find("__t") == std::string::npos);
+
+    const auto zero_empty = body_of(src, "constexpr bool empty(_Arr&) noexcept");
+    REQUIRE_FALSE(zero_empty.empty());
+    CHECK(zero_empty.find("return true;") != std::string::npos);
+    CHECK(zero_empty.find('*') == std::string::npos);
+    CHECK(zero_empty.find('[') == std::string::npos);
+    CHECK(zero_empty.find('.') == std::string::npos);
+    CHECK(zero_empty.find("__t") == std::string::npos);
+    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 1);
+
+    const auto mem_empty = body_of(src, "empty(_Tp& __t)");
+    REQUIRE_FALSE(mem_empty.empty());
+    CHECK(mem_empty.find("return static_cast<const _Tp&>(__t).empty();") != std::string::npos);
+    CHECK(mem_empty.find('*') == std::string::npos);
+    CHECK(mem_empty.find('[') == std::string::npos);
+    CHECK(count_of(src, "constexpr bool empty(_Tp (&)[_Nm]) noexcept") == 1);
+    CHECK(count_of(src, "constexpr bool empty(_Arr&) noexcept") == 1);
+    CHECK(count_of(src, "empty(_Tp& __t)") == 1);
+    CHECK(src.find("empty(_Tp*") == std::string::npos);
 }
 
 TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
@@ -326,6 +356,16 @@ TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer do
     CHECK(has_line(b, "sbox 7"));
     CHECK(has_line(b, "cbox 3"));
     CHECK(has_line(b, "scbox 3"));
+    CHECK(has_line(b, "earr 0"));
+    CHECK(has_line(b, "zempty 1"));
+    CHECK(has_line(b, "cearr 0"));
+    CHECK(has_line(b, "inner 0"));
+    CHECK(has_line(b, "outer 1"));
+    CHECK(has_line(b, "eflag 1"));
+    CHECK(has_line(b, "enflag 0"));
+    CHECK(has_line(b, "ecflag 1"));
+    CHECK(has_line(b, "eprefer 1"));
+    CHECK(has_line(b, "eptrs 0"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "huge"}, &out, &err));
@@ -337,13 +377,26 @@ TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer do
     const char* ok_src =
         "#include <ranges>\n"
         "struct Box { int n; constexpr int size() const { return n; } };\n"
+        "struct Flag { bool e; constexpr bool empty() const { return e; } };\n"
+        "struct Prefer {\n"
+        "  constexpr bool empty() const { return true; }\n"
+        "  constexpr int size() const { return 4; }\n"
+        "};\n"
         "int main() {\n"
         "  int a[4] = {};\n"
+        "  const int ca[4] = {};\n"
         "  Box b; b.n = 7;\n"
         "  const Box k{3};\n"
+        "  Flag t; t.e = true;\n"
+        "  Flag u; u.e = false;\n"
+        "  const Flag cf{true};\n"
+        "  Prefer pr;\n"
         "  if (std::ranges::size(a) != 4 || std::ranges::ssize(a) != 4) return 1;\n"
         "  if (std::ranges::size(b) != 7 || std::ranges::ssize(b) != 7) return 1;\n"
         "  if (std::ranges::size(k) != 3 || std::ranges::ssize(k) != 3) return 1;\n"
+        "  if (std::ranges::empty(a) || std::ranges::empty(ca)) return 1;\n"
+        "  if (!std::ranges::empty(t) || std::ranges::empty(u) || !std::ranges::empty(cf)) return 1;\n"
+        "  if (!std::ranges::empty(pr) || std::ranges::size(pr) != 4) return 1;\n"
         "  return 0;\n"
         "}\n";
     CHECK(compile_snippet(c.cxx, c.tmp, "ranges_ok", ok_src, true));
@@ -392,4 +445,26 @@ TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer do
         "#include <ranges>\n"
         "int* f(int* b, int* e, int v) { return std::ranges::find(b, e, v); }\n";
     CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find", find_src, true));
+
+    const char* empty_ptr_src =
+        "#include <ranges>\n"
+        "bool f(int* p) { return std::ranges::empty(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_empty_ptr", empty_ptr_src, true));
+
+    const char* empty_pbound_src =
+        "#include <ranges>\n"
+        "bool f(int (*p)[4]) { return std::ranges::empty(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_empty_pbound", empty_pbound_src, true));
+
+    const char* empty_rval_src =
+        "#include <ranges>\n"
+        "struct Flag { bool empty() const { return true; } };\n"
+        "bool f() { return std::ranges::empty(Flag{}); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_empty_rval", empty_rval_src, true));
+
+    const char* empty_mut_src =
+        "#include <ranges>\n"
+        "struct Mut { bool empty() { return true; } };\n"
+        "bool f() { Mut m; return std::ranges::empty(m); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_empty_mut", empty_mut_src, true));
 }

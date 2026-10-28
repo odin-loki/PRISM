@@ -4,21 +4,29 @@
 // that name would make the include fail with EISDIR and every such unit
 // would fall back to libstdc++.
 //
-// Only std::ranges::size and std::ranges::ssize. size of a T(&)[N] is N.
-// size of an lvalue with a const size() member is that size(). There is
-// no overload for a pointer. A pointer argument fails to compile, and pir
-// falls back to libstdc++. This stand-in does not give a pointer a length.
+// std::ranges::size, std::ranges::ssize, and std::ranges::empty.
+// size of a T(&)[N] is N. size of an lvalue with a const size() member
+// is that size(). There is no overload for a pointer. A pointer argument
+// fails to compile, and pir falls back to libstdc++. This stand-in does
+// not give a pointer a length.
 //
 // ssize is that same value converted to ptrdiff_t. A value that does not
 // fit is __prism_check with class FUNC-CONTRACT, then __builtin_trap.
 // That path does not return a wrapped negative ptrdiff_t.
 //
+// empty of a T(&)[N] is true only when N == 0. The parameter is unnamed,
+// so the element is not loaded. N == 0 does not match that parameter
+// (clang: zero-length arrays are not permitted in C++). That array is a
+// second overload: a reference whose size is 0. It returns true and does
+// not load an element. A pointer's size is not 0, so it does not match.
+// empty of an lvalue with a const empty() member returns that empty().
+// There is no pointer overload. A pointer is not a range.
+//
 // begin, end, sort, find, and views are not declared. A use fails to
 // compile against this header and pir falls back. They are not stubbed.
 // vector, memory, string, iterator, algorithm, and span are not included.
 //
-// This header is not a proof that a range is sorted or that a pointer
-// has a length.
+// This header is not a proof that a range is sorted or that a pointer has a length.
 #ifndef _GLIBCXX_RANGES
 #define _GLIBCXX_RANGES 1
 
@@ -74,6 +82,32 @@ constexpr auto size(_Tp& __t) noexcept(noexcept(static_cast<const _Tp&>(__t).siz
 template <typename _Tp>
 constexpr auto ssize(_Tp& __t) noexcept(noexcept(size(__t))) -> decltype(size(__t), std::ptrdiff_t()) {
     return _Prism_as_ptrdiff(size(__t));
+}
+
+// True only when N == 0. The parameter is unnamed, so this does not load
+// an element. N == 0 does not match this parameter.
+template <typename _Tp, std::size_t _Nm>
+constexpr bool empty(_Tp (&)[_Nm]) noexcept {
+    return _Nm == 0;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is true, not a
+// load of an element. A pointer argument has a non-zero size, so it does
+// not match. When T(&)[N] is viable it is the more specialized overload,
+// so a bound other than 0 is not taken here.
+template <typename _Arr>
+constexpr bool empty(_Arr&) noexcept
+    requires(sizeof(_Arr) == 0)
+{
+    return true;
+}
+
+// Lvalue only. The const cast selects the const empty() member. A type
+// whose empty() is not const, and a pointer, fail here and pir falls back.
+template <typename _Tp>
+constexpr auto empty(_Tp& __t) noexcept(noexcept(static_cast<const _Tp&>(__t).empty()))
+    -> decltype(static_cast<const _Tp&>(__t).empty()) {
+    return static_cast<const _Tp&>(__t).empty();
 }
 
 }  // namespace ranges
