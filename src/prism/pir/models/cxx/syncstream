@@ -12,7 +12,8 @@
 // then advances. When the offset is already the size, sputc is a
 // __prism_check: it does not write and does not wrap the offset. A null
 // pointer with a non-zero size is a __prism_check at construction. That
-// failure stores size 0, so a later sputc or sgetc does not use the pointer.
+// failure stores size 0, so a later sputc, sgetc, or sungetc does not use
+// the pointer.
 //
 // sgetc returns the unsigned char at the offset and advances by one only
 // when the offset is less than the size. When the offset is already the
@@ -20,6 +21,12 @@
 // does not read the pointer and does not return a character from the buffer.
 // -1 is the end signal after that check. A null buffer whose size was forced
 // to 0 takes that path.
+//
+// sungetc steps the offset back by one when it is greater than 0 and
+// returns the unsigned char now at that offset. When the offset is 0,
+// sungetc is a __prism_check (MEM-OOB-READ): it does not decrement and does
+// not read before the buffer. -1 is the end signal after that check. A null
+// buffer whose size was forced to 0 takes that path.
 //
 // emit and the syncstream class are omitted so a unit that names one
 // fails to compile and pir falls back to libstdc++. A flush that returns
@@ -52,7 +59,7 @@ public:
         __prism_check((__buf != nullptr || __n == 0) ? 1 : 0, "FUNC-CONTRACT",
                       "basic_syncbuf constructed with a null buffer and a non-zero size");
         // A failing check does not leave a size that sputc would write through
-        // or that sgetc would read through.
+        // or that sgetc or sungetc would read through.
         if (!(__buf != nullptr || __n == 0)) _M_size = 0;
     }
 
@@ -86,6 +93,22 @@ public:
         if (__in) {
             const unsigned char __ch = static_cast<unsigned char>(_M_buf[_M_off]);
             ++_M_off;
+            return static_cast<int>(__ch);
+        }
+        return -1;
+    }
+
+    // Steps the offset back by one when it is greater than 0 and returns
+    // the unsigned char now at that offset. When the offset is 0 the offset
+    // is not decremented and the pointer is not read. -1 is the end signal
+    // after the check, not a character from the buffer. A null buffer whose
+    // size was forced to 0 takes that path.
+    int sungetc() noexcept {
+        const int __back = (_M_off > 0) ? 1 : 0;
+        __prism_check(__back, "MEM-OOB-READ", "basic_syncbuf::sungetc would read before the caller buffer");
+        if (__back) {
+            --_M_off;
+            const unsigned char __ch = static_cast<unsigned char>(_M_buf[_M_off]);
             return static_cast<int>(__ch);
         }
         return -1;

@@ -14,6 +14,15 @@
 // argv "past" is one in-range sgetc, then a second once the offset is the size.
 // argv "forced" keeps going after the constructor check so a null pointer
 // with a non-zero size (size forced to 0) reaches sgetc and does not read.
+//
+// argv "back" is three in-range sgetc calls, then sungetc back over 'A',
+// 255, and 0. argv "before" is sungetc when the offset is still 0.
+// argv "unnull0" is sungetc on a null pointer whose size is 0.
+// argv "step" is one sputc, then sungetc of that byte, then sungetc at 0.
+// argv "unforced" keeps going after the constructor check so a null pointer
+// with a non-zero size (size forced to 0) reaches sungetc and does not read.
+// argv "stay" is sungetc at offset 0, then sputc: the offset is not
+// decremented, so the write still lands in the caller buffer.
 #include <syncstream>
 #include <cstdio>
 #include <cstdlib>
@@ -97,6 +106,57 @@ int main(int argc, char** argv) {
         std::basic_syncbuf b(nullptr, 1);
         const int g = b.sgetc();
         std::printf("forced %d\n", g);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "back") == 0) {
+        char buf[3] = {0, static_cast<char>(static_cast<unsigned char>(255)), 'A'};
+        std::basic_syncbuf b(buf, 3);
+        b.sgetc();
+        b.sgetc();
+        b.sgetc();
+        std::printf("back %d\n", b.sungetc());
+        std::printf("back %d\n", b.sungetc());
+        std::printf("back %d\n", b.sungetc());
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "before") == 0) {
+        char buf[1] = {'Z'};
+        std::basic_syncbuf b(buf, 1);
+        const int g = b.sungetc();
+        std::printf("before %d\n", g);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "unnull0") == 0) {
+        std::basic_syncbuf b(nullptr, 0);
+        const int g = b.sungetc();
+        std::printf("unread %d\n", g);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "step") == 0) {
+        char buf[1] = {};
+        std::basic_syncbuf b(buf, 1);
+        b.sputc('A');
+        const int g = b.sungetc();
+        std::printf("step %d\n", g);
+        std::fflush(stdout);
+        const int h = b.sungetc();
+        std::printf("under %d\n", h);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "unforced") == 0) {
+        keep_going = 1;
+        std::basic_syncbuf b(nullptr, 1);
+        const int g = b.sungetc();
+        std::printf("unforced %d\n", g);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "stay") == 0) {
+        keep_going = 1;
+        char buf[1] = {};
+        std::basic_syncbuf b(buf, 1);
+        const int g = b.sungetc();
+        b.sputc('A');
+        std::printf("stayed %d %d\n", g, static_cast<int>(static_cast<unsigned char>(buf[0])));
         return 0;
     }
     show();

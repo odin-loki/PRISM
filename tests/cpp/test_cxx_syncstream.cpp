@@ -4,7 +4,9 @@
 // tests/cxx_models/syncstream_trace.cpp.
 //
 // A write at the size is a __prism_check. A read at the size is a
-// __prism_check and does not load the pointer. The header does not define emit.
+// __prism_check and does not load the pointer. sungetc at offset 0 is a
+// __prism_check and does not decrement or load before the buffer. The
+// header does not define emit.
 
 #include <doctest/doctest.h>
 
@@ -222,6 +224,20 @@ bool read_then_check(const fs::path& exe, const char* arg, const char* need, con
     return true;
 }
 
+// One failing check is reported, the process still exits 0, `line` is printed,
+// and `absent` is not in stdout or stderr.
+bool one_check_then_line(const fs::path& exe, const char* arg, const char* line, const char* cls, const char* msg,
+                         const char* absent) {
+    std::string out, err;
+    if (!run_cmd({exe.string(), arg}, &out, &err)) return false;
+    if (out.find(line) == std::string::npos) return false;
+    const std::string both = out + err;
+    if (both.find(std::string("CHECK ") + cls + ":") == std::string::npos) return false;
+    if (both.find(msg) == std::string::npos) return false;
+    if (both.find(absent) != std::string::npos) return false;
+    return true;
+}
+
 // The constructor check runs, then sgetc's check, and the process still prints `line`.
 bool checks_then_line(const fs::path& exe, const char* arg, const char* line, const char* first, const char* second) {
     std::string out, err;
@@ -235,7 +251,8 @@ bool checks_then_line(const fs::path& exe, const char* arg, const char* line, co
 
 }  // namespace
 
-TEST_CASE("cxx syncstream model: a write or a read at the size is a check and emit is not defined") {
+TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a step back at offset 0 is a check, and "
+          "emit is not defined") {
     const fs::path header = syncstream_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -292,9 +309,9 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check and em
     CHECK(sputc.find("_M_off =") == std::string::npos);
     CHECK(sputc.find("++_M_off;", adv_at + 1) == std::string::npos);
 
-    const auto priv = src.find("private:", sgetc_at);
-    REQUIRE(priv != std::string::npos);
-    const std::string sgetc = src.substr(sgetc_at, priv - sgetc_at);
+    const auto sungetc_at = src.find("int sungetc(", sgetc_at);
+    REQUIRE(sungetc_at != std::string::npos);
+    const std::string sgetc = src.substr(sgetc_at, sungetc_at - sgetc_at);
     CHECK(sgetc.find("const int __in = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
     CHECK(sgetc.find("__prism_check(__in, \"MEM-OOB-READ\", \"basic_syncbuf::sgetc would read past the caller "
                      "buffer\")") != std::string::npos);
@@ -318,8 +335,36 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check and em
     CHECK(sgetc.find("_M_off =") == std::string::npos);
     CHECK(sgetc.find("++_M_off;", gadv + 1) == std::string::npos);
 
+    const auto priv = src.find("private:", sungetc_at);
+    REQUIRE(priv != std::string::npos);
+    const std::string sungetc = src.substr(sungetc_at, priv - sungetc_at);
+    CHECK(sungetc.find("const int __back = (_M_off > 0) ? 1 : 0;") != std::string::npos);
+    CHECK(sungetc.find("__prism_check(__back, \"MEM-OOB-READ\", \"basic_syncbuf::sungetc would read before the caller "
+                       "buffer\")") != std::string::npos);
+    const auto ucheck = sungetc.find("__prism_check");
+    const auto udec = sungetc.find("--_M_off;");
+    const auto uread = sungetc.find("static_cast<unsigned char>(_M_buf[_M_off])");
+    const auto uret = sungetc.find("return static_cast<int>(__ch);");
+    const auto ueof = sungetc.find("return -1;");
+    REQUIRE(ucheck != std::string::npos);
+    REQUIRE(udec != std::string::npos);
+    REQUIRE(uread != std::string::npos);
+    REQUIRE(uret != std::string::npos);
+    REQUIRE(ueof != std::string::npos);
+    CHECK(ucheck < udec);
+    CHECK(udec < uread);
+    CHECK(uread < uret);
+    CHECK(uret < ueof);
+    CHECK(sungetc.find("if (__back) {") != std::string::npos);
+    CHECK(sungetc.find("_M_buf[", sungetc.find("_M_buf[") + 1) == std::string::npos);
+    CHECK(sungetc.find("return -1;", ueof + 1) == std::string::npos);
+    CHECK(sungetc.find("_M_off =") == std::string::npos);
+    CHECK(sungetc.find("--_M_off;", udec + 1) == std::string::npos);
+    CHECK(sungetc.find("++_M_off") == std::string::npos);
+
     CHECK(defines_call(src, "sputc"));
     CHECK(defines_call(src, "sgetc"));
+    CHECK(defines_call(src, "sungetc"));
     CHECK_FALSE(defines_call(src, "emit"));
     CHECK(src.find("emit(") == std::string::npos);
     CHECK(src.find("class syncstream") == std::string::npos);
@@ -379,4 +424,19 @@ TEST_CASE("cxx syncstream model: one stored byte stays in the caller buffer") {
     CHECK(checks_then_line(mod, "forced", "forced -1",
                            "CHECK FUNC-CONTRACT: basic_syncbuf constructed with a null buffer and a non-zero size",
                            "CHECK MEM-OOB-READ: basic_syncbuf::sgetc would read past the caller buffer"));
+    auto back = run_lines(mod, "back");
+    CHECK(has_line(back, "back 65"));
+    CHECK(has_line(back, "back 255"));
+    CHECK(has_line(back, "back 0"));
+    CHECK(is_check(mod, "before", "MEM-OOB-READ", "basic_syncbuf::sungetc would read before the caller buffer",
+                   "before"));
+    CHECK(is_check(mod, "unnull0", "MEM-OOB-READ", "basic_syncbuf::sungetc would read before the caller buffer",
+                   "unread"));
+    CHECK(read_then_check(mod, "step", "step 65", "under", "MEM-OOB-READ",
+                          "basic_syncbuf::sungetc would read before the caller buffer"));
+    CHECK(checks_then_line(mod, "unforced", "unforced -1",
+                           "CHECK FUNC-CONTRACT: basic_syncbuf constructed with a null buffer and a non-zero size",
+                           "CHECK MEM-OOB-READ: basic_syncbuf::sungetc would read before the caller buffer"));
+    CHECK(one_check_then_line(mod, "stay", "stayed -1 65", "MEM-OOB-READ",
+                              "basic_syncbuf::sungetc would read before the caller buffer", "MEM-OOB-WRITE"));
 }
