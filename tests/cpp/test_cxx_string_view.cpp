@@ -4,8 +4,10 @@
 // and operator[] in range is the real character. starts_with and ends_with
 // compare at most size() characters. compare(basic_string_view) returns
 // -1, 0, or 1 from unsigned char order. substr past size() is a check, and a
-// count that would pass size() stops at size(). CMake's prism_tests source
-// list is explicit (not a glob).
+// count that would pass size() stops at size(). find and rfind return the
+// first or last index of a basic_string_view needle, or npos. An empty
+// needle does not read. CMake's prism_tests source list is explicit (not a
+// glob).
 
 #include <doctest/doctest.h>
 
@@ -288,6 +290,26 @@ TEST_CASE("cxx string_view model: view does not own, index is the character, emp
     // prefix is less. Zero-length views, including one past the end, are 0.
     CHECK(line_has(b, "cmp_empty=0 cmp_empty_a=-1 cmp_a_empty=1 cmp_aa=0 cmp_ab=-1 cmp_ba=1"));
     CHECK(line_has(b, "cmp_prefix=-1 cmp_longer=1 cmp_mid=-1 cmp_pref3=-1 cmp_high=1 cmp_zz=0 cmp_end=0"));
+    // First hit at or after pos, last hit at or before pos. npos is a miss.
+    // An empty needle does not read. A non-empty needle in an empty view
+    // does not read the null pointer. pos past size() on find does not read.
+    CHECK(line_has(b, "find_hit=0 2 2 npos"));
+    CHECK(line_has(b, "rfind_hit=2 2 0 0"));
+    CHECK(line_has(b, "find_ab=0 2 npos"));
+    CHECK(line_has(b, "rfind_ab=2 0"));
+    CHECK(line_has(b, "find_ba=1 3"));
+    CHECK(line_has(b, "find_aaa=0 1"));
+    CHECK(line_has(b, "find_pref=1 1"));
+    CHECK(line_has(b, "find_tail=2 npos 2 npos"));
+    CHECK(line_has(b, "find_miss=npos npos"));
+    CHECK(line_has(b, "find_hi=1 npos 1"));
+    CHECK(line_has(b, "find_empty=0 5 npos 0 3 5 5"));
+    CHECK(line_has(b, "find_past=npos npos npos npos"));
+    CHECK(line_has(b, "find_null=npos 0 npos npos 0 0"));
+    CHECK(line_has(b, "find_long=npos npos"));
+    CHECK(line_has(b, "find_endgap=0 2 npos 1 2"));
+    CHECK(line_has(b, "find_self=0 0"));
+    CHECK(line_has(b, "find_alive=ababa"));
 
     for (const fs::path& exe : {lib, mod}) {
         std::string err;
@@ -314,7 +336,8 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("substr, starts_with") == std::string::npos);
     CHECK(src.find("compare, find, and every other") == std::string::npos);
-    CHECK(src.find("find, and every other member that is not") != std::string::npos);
+    CHECK(src.find("find, and every other member that is not") == std::string::npos);
+    CHECK(src.find("contains, and every other member that is not") != std::string::npos);
     CHECK(src.find("compare, find, substr, and every other") == std::string::npos);
     // Pointer plus count stores the pointer and the count. It stays noexcept
     // and does not check null. The view still does not own its characters.
@@ -325,7 +348,8 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
 
     const std::string code = strip_line_comments(src);
     CHECK(count_occ(code, "compare(") == 1);
-    CHECK(code.find("find(") == std::string::npos);
+    CHECK(count_occ(code, "find(") == 2);
+    CHECK(count_occ(code, "rfind(") == 1);
     CHECK(count_occ(code, "substr(") == 1);
     CHECK(count_occ(code, "starts_with(") == 2);
     CHECK(count_occ(code, "ends_with(") == 2);
@@ -414,12 +438,73 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(cmp.find("delete") == std::string::npos);
     CHECK(cmp.find("locale") == std::string::npos);
 
+    const std::string fd = body_of(code, "size_type find(basic_string_view __x, size_type __pos = 0) const noexcept");
+    const std::string rd =
+        body_of(code, "size_type rfind(basic_string_view __x, size_type __pos = npos) const noexcept");
+    REQUIRE_FALSE(fd.empty());
+    REQUIRE_FALSE(rd.empty());
+    const auto fd_empty = fd.find("if (__x._M_len == 0)");
+    const auto fd_load = fd.find("_M_str");
+    REQUIRE(fd_empty != std::string::npos);
+    REQUIRE(fd_load != std::string::npos);
+    CHECK(fd_empty < fd_load);
+    CHECK(fd.find("if (__pos > _M_len) return npos;") < fd.find("return __pos;"));
+    CHECK(fd.find("return __pos;") < fd_load);
+    const auto fd_none = fd.find("if (_M_len == 0 || __pos > _M_len || __x._M_len > _M_len) return npos;");
+    REQUIRE(fd_none != std::string::npos);
+    CHECK(fd_none < fd_load);
+    CHECK(fd.find("const size_type __last = _M_len - __x._M_len;") < fd_load);
+    CHECK(fd.find("if (__pos > __last) return npos;") < fd_load);
+    CHECK(fd.find("if (!_Traits::eq(_M_str[__k], __x._M_str[__j])) break;") != std::string::npos);
+    CHECK(fd.find("++__j;") < fd.find("if (__j == __x._M_len) return __i;"));
+    CHECK(fd.find("if (__j == __x._M_len) return __i;") < fd.find("++__k;"));
+    CHECK(fd.find("if (__i == __last) return npos;") != std::string::npos);
+    CHECK(fd.find("++__i;") != std::string::npos);
+    CHECK(fd.find("__pos +") == std::string::npos);
+    CHECK(fd.find("__i +") == std::string::npos);
+    CHECK(fd.find("__k +") == std::string::npos);
+    CHECK(fd.find("_M_str +") == std::string::npos);
+    CHECK(fd.find("_M_str[_M_len") == std::string::npos);
+    CHECK(fd.find("static_cast<unsigned char>") == std::string::npos);
+    CHECK(fd.find("__prism_check") == std::string::npos);
+    CHECK(fd.find("new ") == std::string::npos);
+    CHECK(fd.find("delete") == std::string::npos);
+    CHECK(fd.find("locale") == std::string::npos);
+
+    const auto rd_empty = rd.find("if (__x._M_len == 0) return __pos < _M_len ? __pos : _M_len;");
+    const auto rd_load = rd.find("_M_str");
+    REQUIRE(rd_empty != std::string::npos);
+    REQUIRE(rd_load != std::string::npos);
+    CHECK(rd_empty < rd_load);
+    const auto rd_none = rd.find("if (_M_len == 0 || __x._M_len > _M_len) return npos;");
+    REQUIRE(rd_none != std::string::npos);
+    CHECK(rd_none < rd_load);
+    CHECK(rd.find("const size_type __last = _M_len - __x._M_len;") < rd_load);
+    CHECK(rd.find("__pos < __last ? __pos : __last") != std::string::npos);
+    CHECK(rd.find("if (!_Traits::eq(_M_str[__k], __x._M_str[__j])) break;") != std::string::npos);
+    CHECK(rd.find("++__j;") < rd.find("if (__j == __x._M_len) return __i;"));
+    CHECK(rd.find("if (__j == __x._M_len) return __i;") < rd.find("++__k;"));
+    CHECK(rd.find("if (__i == 0) return npos;") != std::string::npos);
+    CHECK(rd.find("--__i;") != std::string::npos);
+    CHECK(rd.find("__pos +") == std::string::npos);
+    CHECK(rd.find("__i +") == std::string::npos);
+    CHECK(rd.find("__k +") == std::string::npos);
+    CHECK(rd.find("_M_str +") == std::string::npos);
+    CHECK(rd.find("_M_str[_M_len") == std::string::npos);
+    CHECK(rd.find("static_cast<unsigned char>") == std::string::npos);
+    CHECK(rd.find("__prism_check") == std::string::npos);
+    CHECK(rd.find("new ") == std::string::npos);
+    CHECK(rd.find("delete") == std::string::npos);
+    CHECK(rd.find("locale") == std::string::npos);
+    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 2);
+
     const std::string trace = slurp(repo() / "tests" / "cxx_models" / "string_view_trace.cpp");
     CHECK(trace.find(".starts_with(") != std::string::npos);
     CHECK(trace.find(".ends_with(") != std::string::npos);
     CHECK(trace.find(".substr(") != std::string::npos);
     CHECK(trace.find(".compare(") != std::string::npos);
-    CHECK(trace.find(".find(") == std::string::npos);
+    CHECK(trace.find("v.find(") != std::string::npos);
+    CHECK(trace.find("v.rfind(") != std::string::npos);
     CHECK(trace.find("v.substr(0, 0)") != std::string::npos);
     CHECK(trace.find("empty.substr(0, 0)") != std::string::npos);
 }

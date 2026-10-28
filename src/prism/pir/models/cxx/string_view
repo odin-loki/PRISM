@@ -4,7 +4,7 @@
 // libstdc++'s. It is a non-owning view of a character sequence: a pointer and
 // a length. Nothing here allocates, and the destructor does not free.
 //
-// find, and every other member that is not
+// contains, and every other member that is not
 // defined below are omitted on purpose. A use of one of them fails to compile
 // against this header, and the pir stage lowers that translation unit again
 // with libstdc++ (extra.cxx_models records the fallback). They are not stubbed.
@@ -207,6 +207,68 @@ public:
         if (_M_str == nullptr)
             return basic_string_view(nullptr, __n);
         return basic_string_view(_M_str + __pos, __n);
+    }
+
+    // [string.view.find] find(basic_string_view, pos). The first index at
+    // or after pos where the needle matches, or npos. An empty needle
+    // returns pos when pos <= size(), and npos otherwise, and does not
+    // read. A non-empty needle in an empty view returns npos and does not
+    // read a null pointer. pos > size() returns npos without reading. The
+    // start stays at most size() - needle.size(). The window then walks one
+    // character at a time and stops on the last matched character, so no
+    // index past size() is formed and size() is not used as a subscript.
+    // Equality is char_traits::eq, the same predicate starts_with uses.
+    // This is not a locale search. Nothing is allocated. The CharT and
+    // const CharT* overloads are not declared. npos is a miss, not a
+    // contract failure. This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type find(basic_string_view __x, size_type __pos = 0) const noexcept {
+        if (__x._M_len == 0) {
+            if (__pos > _M_len) return npos;
+            return __pos;
+        }
+        if (_M_len == 0 || __pos > _M_len || __x._M_len > _M_len) return npos;
+        const size_type __last = _M_len - __x._M_len;
+        if (__pos > __last) return npos;
+        for (size_type __i = __pos;;) {
+            size_type __k = __i;
+            size_type __j = 0;
+            for (;;) {
+                if (!_Traits::eq(_M_str[__k], __x._M_str[__j])) break;
+                ++__j;
+                if (__j == __x._M_len) return __i;
+                ++__k;
+            }
+            if (__i == __last) return npos;
+            ++__i;
+        }
+    }
+
+    // [string.view.find] rfind(basic_string_view, pos). The last index at
+    // or before pos where the needle matches, or npos. pos defaults to
+    // npos, which selects the last match in the view. An empty needle
+    // returns min(pos, size()) and does not read. A non-empty needle in an
+    // empty view returns npos and does not read a null pointer. The search
+    // starts at min(pos, size() - needle.size()) and walks down to 0. The
+    // window walks one character at a time, so no index past size() is
+    // formed. Equality is char_traits::eq. This is not a locale search.
+    // Nothing is allocated. The CharT and const CharT* overloads are not
+    // declared. This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type rfind(basic_string_view __x, size_type __pos = npos) const noexcept {
+        if (__x._M_len == 0) return __pos < _M_len ? __pos : _M_len;
+        if (_M_len == 0 || __x._M_len > _M_len) return npos;
+        const size_type __last = _M_len - __x._M_len;
+        for (size_type __i = __pos < __last ? __pos : __last;;) {
+            size_type __k = __i;
+            size_type __j = 0;
+            for (;;) {
+                if (!_Traits::eq(_M_str[__k], __x._M_str[__j])) break;
+                ++__j;
+                if (__j == __x._M_len) return __i;
+                ++__k;
+            }
+            if (__i == 0) return npos;
+            --__i;
+        }
     }
 
 private:

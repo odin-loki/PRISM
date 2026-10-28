@@ -2,8 +2,9 @@
 // compiled once against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/string_view) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The traces must be identical.
-// compare(basic_string_view) is called. find is not: the model does not
-// declare it. starts_with, ends_with, and substr are. An empty needle matches.
+// compare(basic_string_view) is called. find(basic_string_view, pos) and
+// rfind(basic_string_view, pos) are called. An empty needle does not read.
+// starts_with, ends_with, and substr are. An empty needle matches.
 // A longer needle is false, and the comparison does not read past the view.
 // substr past size() is a failed check. A count of npos, or a count that would
 // pass size(), stops at size(). substr(0, 0) does not read a character.
@@ -13,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <string_view>
 
 // Host stand-ins for the PIR intrinsics the model calls. libstdc++ does not
@@ -156,6 +158,132 @@ static void orders() {
                 sgn(vhi.compare(va)), sgn(z.compare(z2)), sgn(end.compare(end2)));
 }
 
+static void put_line(const char* name, std::initializer_list<std::size_t> xs) {
+    std::fputs(name, stdout);
+    std::fputc('=', stdout);
+    bool first = true;
+    for (const std::size_t p : xs) {
+        if (!first) std::fputc(' ', stdout);
+        first = false;
+        if (p == std::string_view::npos) std::fputs("npos", stdout);
+        else std::printf("%zu", p);
+    }
+    std::fputc('\n', stdout);
+}
+
+static void searches() {
+    static constexpr char raw[] = {'a', 'b', 'a', 'b', 'a'};
+    static constexpr std::string_view cv(raw, 5);
+    static constexpr char an[] = {'a', 'b', 'a'};
+    static constexpr std::string_view cn(an, 3);
+    // One past the last character. A read of this empty needle is not a
+    // constant expression.
+    static constexpr std::string_view cempty(raw + 5, 0);
+    static constexpr char hi[] = {static_cast<char>(0x80), 'a'};
+    static constexpr std::string_view hv(hi, 2);
+    static constexpr std::string_view hn(hi, 1);
+    static constexpr char aaa[] = {'a', 'a', 'a'};
+    static constexpr std::string_view ca(aaa, 3);
+    static constexpr std::string_view caa(aaa, 2);
+    static constexpr char ab[] = {'a', 'b'};
+    static constexpr char abc[] = {'a', 'b', 'c'};
+    static_assert(cv.find(cn, 0) == 0);
+    static_assert(cv.find(cn, 1) == 2);
+    static_assert(cv.find(cn, 2) == 2);
+    static_assert(cv.find(cn, 3) == std::string_view::npos);
+    static_assert(cv.find(cn, 5) == std::string_view::npos);
+    static_assert(cv.find(cn, 6) == std::string_view::npos);
+    static_assert(cv.find(cempty, 0) == 0);
+    static_assert(cv.find(cempty, 5) == 5);
+    static_assert(cv.find(cempty, 6) == std::string_view::npos);
+    static_assert(cv.rfind(cn) == 2);
+    static_assert(cv.rfind(cn, 2) == 2);
+    static_assert(cv.rfind(cn, 1) == 0);
+    static_assert(cv.rfind(cn, 0) == 0);
+    static_assert(cv.rfind(cempty, 0) == 0);
+    static_assert(cv.rfind(cempty, 3) == 3);
+    static_assert(cv.rfind(cempty, 9) == 5);
+    static_assert(cv.rfind(cempty) == 5);
+    static_assert(cv.find(cv) == 0);
+    static_assert(cv.rfind(cv) == 0);
+    static_assert(std::string_view{}.find(cn, 0) == std::string_view::npos);
+    static_assert(std::string_view{}.find(std::string_view{}, 0) == 0);
+    static_assert(std::string_view{}.find(std::string_view{}, 1) == std::string_view::npos);
+    static_assert(std::string_view{}.rfind(cn) == std::string_view::npos);
+    static_assert(std::string_view{}.rfind(std::string_view{}, 4) == 0);
+    static_assert(std::string_view{}.rfind(std::string_view{}, 0) == 0);
+    static_assert(hv.find(hn, 0) == 0);
+    static_assert(hv.find(hn, 1) == std::string_view::npos);
+    static_assert(hv.rfind(hn) == 0);
+    static_assert(ca.find(caa, 0) == 0);
+    static_assert(ca.rfind(caa) == 1);
+    static_assert(std::string_view(ab, 2).find(std::string_view(abc, 3), 0) == std::string_view::npos);
+    static_assert(std::string_view(ab, 2).rfind(std::string_view(abc, 3)) == std::string_view::npos);
+
+    // Exact objects. A read past size() is an ASan fault, including a read
+    // of an empty needle whose pointer is one past the end, and a read of
+    // the null pointer in a default view.
+    char buf[] = {'a', 'b', 'a', 'b', 'a'};
+    std::string_view v(buf, 5);
+    char aba[] = {'a', 'b', 'a'};
+    std::string_view naba(aba, 3);
+    char abn[] = {'a', 'b'};
+    std::string_view nab(abn, 2);
+    char ba[] = {'b', 'a'};
+    std::string_view nba(ba, 2);
+    char zz[] = {'z'};
+    std::string_view nz(zz, 1);
+    char aaab[] = {'a', 'a', 'a'};
+    std::string_view va(aaab, 3);
+    char aan[] = {'a', 'a'};
+    std::string_view naa(aan, 2);
+    char aab[] = {'a', 'a', 'b'};
+    std::string_view vaab(aab, 3);
+    char ab2[] = {'a', 'b'};
+    std::string_view nab2(ab2, 2);
+    char cdh[] = {'a', 'b', 'c', 'd'};
+    std::string_view vcd(cdh, 4);
+    char cdn[] = {'c', 'd'};
+    std::string_view ncd(cdn, 2);
+    char abc3[] = {'a', 'b', 'c'};
+    std::string_view vabc(abc3, 3);
+    char abd[] = {'a', 'b', 'd'};
+    std::string_view nabd(abd, 3);
+    char hib[] = {'a', static_cast<char>(0x80), 'b'};
+    std::string_view vhi(hib, 3);
+    char oneb[] = {static_cast<char>(0x80)};
+    std::string_view nhi(oneb, 1);
+    char one[] = {'q'};
+    std::string_view vo(one, 1);
+    char exb[] = {'a', 'b'};
+    std::string_view ex(exb, 2);
+    char exlong[] = {'a', 'b', 'c'};
+    std::string_view exn(exlong, 3);
+    const auto gap = v.substr(5, 0);
+    const auto end = ex.substr(2, 0);
+    std::string_view empty;
+
+    put_line("find_hit", {v.find(naba, 0), v.find(naba, 1), v.find(naba, 2), v.find(naba, 3)});
+    put_line("rfind_hit", {v.rfind(naba), v.rfind(naba, 2), v.rfind(naba, 1), v.rfind(naba, 0)});
+    put_line("find_ab", {v.find(nab, 0), v.find(nab, 1), v.find(nab, 4)});
+    put_line("rfind_ab", {v.rfind(nab), v.rfind(nab, 1)});
+    put_line("find_ba", {v.find(nba, 0), v.rfind(nba)});
+    put_line("find_aaa", {va.find(naa, 0), va.rfind(naa)});
+    put_line("find_pref", {vaab.find(nab2, 0), vaab.rfind(nab2)});
+    put_line("find_tail", {vcd.find(ncd, 0), vcd.find(ncd, 3), vcd.rfind(ncd), vcd.rfind(ncd, 1)});
+    put_line("find_miss", {v.find(nz, 0), vabc.find(nabd, 0)});
+    put_line("find_hi", {vhi.find(nhi, 0), vhi.find(nhi, 2), vhi.rfind(nhi)});
+    put_line("find_empty", {v.find(gap, 0), v.find(gap, 5), v.find(gap, 6), v.rfind(gap, 0), v.rfind(gap, 3),
+                            v.rfind(gap, 9), v.rfind(gap)});
+    put_line("find_past", {v.find(naba, 5), v.find(naba, 6), vo.find(vo, 1), vo.find(vo, 2)});
+    put_line("find_null", {empty.find(naba, 0), empty.find(gap, 0), empty.find(gap, 1), empty.rfind(naba),
+                           empty.rfind(gap, 4), empty.rfind(gap, 0)});
+    put_line("find_long", {ex.find(exn, 0), ex.rfind(exn)});
+    put_line("find_endgap", {ex.find(end, 0), ex.find(end, 2), ex.find(end, 3), ex.rfind(end, 1), ex.rfind(end, 7)});
+    put_line("find_self", {v.find(v), v.rfind(v)});
+    std::printf("find_alive=%c%c%c%c%c\n", buf[0], buf[1], buf[2], buf[3], buf[4]);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "front") == 0) return empty_front();
     if (argc > 1 && std::strcmp(argv[1], "substr") == 0) return substr_oob();
@@ -164,5 +292,6 @@ int main(int argc, char** argv) {
     prefixes();
     slices();
     orders();
+    searches();
     return 0;
 }
