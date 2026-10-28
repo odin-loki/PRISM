@@ -23,6 +23,10 @@
 // std::logical_and, std::logical_or, and std::logical_not are function
 // objects for one type argument. Each returns that operator. A missing
 // operator fails the template. There is no stand-in boolean.
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type argument. Each returns that operator. A type that does not provide
+// the operator fails the template. There is no stand-in integer and no
+// void specialization.
 
 #include <doctest/doctest.h>
 
@@ -430,7 +434,7 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(text.find("return __a && __b;") != std::string::npos);
     CHECK(text.find("return __a || __b;") != std::string::npos);
     CHECK(text.find("return !__x;") != std::string::npos);
-    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const") == 2);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const") == 5);
     CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __x) const") == 1);
     CHECK(text.find("requires requires { __a && __b; }") != std::string::npos);
     CHECK(text.find("requires requires { __a || __b; }") != std::string::npos);
@@ -447,6 +451,32 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(text.find("return static_cast<bool>(__a && __b)") == std::string::npos);
     CHECK(text.find("return static_cast<bool>(__a || __b)") == std::string::npos);
     CHECK(text.find("return static_cast<bool>(!__x)") == std::string::npos);
+
+    for (const char* name : {"struct bit_and", "struct bit_or", "struct bit_xor"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct bit_and<void>", "struct bit_or<void>", "struct bit_xor<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("return __a & __b;") != std::string::npos);
+    CHECK(text.find("return __a | __b;") != std::string::npos);
+    CHECK(text.find("return __a ^ __b;") != std::string::npos);
+    CHECK(text.find("requires requires { __a & __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a | __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a ^ __b; }") != std::string::npos);
+    CHECK(text.find("There is no stand-in integer") != std::string::npos);
+    CHECK(text.find("Each returns that operator.") != std::string::npos);
+    CHECK(code.find("#define bit_and _Prism_libstd_bit_and") != std::string::npos);
+    CHECK(code.find("#define bit_or _Prism_libstd_bit_or") != std::string::npos);
+    CHECK(code.find("#define bit_xor _Prism_libstd_bit_xor") != std::string::npos);
+    CHECK(code.find("#undef bit_and") != std::string::npos);
+    CHECK(code.find("#undef bit_or") != std::string::npos);
+    CHECK(code.find("#undef bit_xor") != std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a & __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a | __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a ^ __b)") == std::string::npos);
+    CHECK(text.find("return 0;") == std::string::npos);
 
     struct Arm {
         const char* check;
@@ -593,6 +623,14 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_lnot = false;
     bool saw_lbool = false;
     bool saw_blog = false;
+    bool saw_band = false;
+    bool saw_bor = false;
+    bool saw_bxor = false;
+    bool saw_bbool = false;
+    bool saw_ubit = false;
+    bool saw_bobj = false;
+    bool saw_bandonly = false;
+    bool saw_bnot = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -652,6 +690,14 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "lnot 1 0") saw_lnot = true;
         if (line == "lbool 0 0 0") saw_lbool = true;
         if (line == "blog 0 1 1") saw_blog = true;
+        if (line == "band 2 1") saw_band = true;
+        if (line == "bor 7 3") saw_bor = true;
+        if (line == "bxor 5 0") saw_bxor = true;
+        if (line == "bbool 0 0 0") saw_bbool = true;
+        if (line == "ubit 2 7 5") saw_ubit = true;
+        if (line == "bobj 2 7 5") saw_bobj = true;
+        if (line == "bandonly 2") saw_bandonly = true;
+        if (line == "bnot -1") saw_bnot = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -716,6 +762,14 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_lnot);
     CHECK(saw_lbool);
     CHECK(saw_blog);
+    CHECK(saw_band);
+    CHECK(saw_bor);
+    CHECK(saw_bxor);
+    CHECK(saw_bbool);
+    CHECK(saw_ubit);
+    CHECK(saw_bobj);
+    CHECK(saw_bandonly);
+    CHECK(saw_bnot);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
@@ -1027,4 +1081,90 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string log_or_missing_err;
     CHECK_FALSE(syntax_only(c.cxx, log_or_missing, false, &log_or_missing_err));
     CHECK_FALSE(syntax_only(c.cxx, log_or_missing, true, &log_or_missing_err));
+
+    const fs::path bit_ok = c.tmp / "bit_ok.cpp";
+    std::ofstream(bit_ok) << "#include <functional>\n"
+                             "struct AndOnly {\n"
+                             "  int v;\n"
+                             "  friend AndOnly operator&(AndOnly a, AndOnly b) { return AndOnly{a.v & b.v}; }\n"
+                             "};\n"
+                             "struct Bits {\n"
+                             "  int v;\n"
+                             "  friend Bits operator&(Bits a, Bits b) { return Bits{a.v & b.v}; }\n"
+                             "  friend Bits operator|(Bits a, Bits b) { return Bits{a.v | b.v}; }\n"
+                             "  friend Bits operator^(Bits a, Bits b) { return Bits{a.v ^ b.v}; }\n"
+                             "};\n"
+                             "int use(int a, bool b, unsigned u, AndOnly x, Bits p, Bits q) {\n"
+                             "  return std::bit_and<int>{}(a, 1) + std::bit_or<int>{}(a, 1)\n"
+                             "       + std::bit_xor<int>{}(a, 1)\n"
+                             "       + static_cast<int>(std::bit_and<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::bit_or<bool>{}(b, false))\n"
+                             "       + static_cast<int>(std::bit_xor<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::bit_and<unsigned>{}(u, 1u))\n"
+                             "       + static_cast<int>(std::bit_or<unsigned>{}(u, 1u))\n"
+                             "       + static_cast<int>(std::bit_xor<unsigned>{}(u, 1u))\n"
+                             "       + std::bit_and<AndOnly>{}(x, x).v\n"
+                             "       + std::bit_and<Bits>{}(p, q).v\n"
+                             "       + std::bit_or<Bits>{}(p, q).v\n"
+                             "       + std::bit_xor<Bits>{}(p, q).v\n"
+                             "       + std::bit_not<int>{}(a)\n"
+                             "       + static_cast<int>(std::logical_and<int>{}(a, 1));\n"
+                             "}\n";
+    std::string bit_ok_err;
+    CHECK(syntax_only(c.cxx, bit_ok, false, &bit_ok_err));
+    CHECK(syntax_only(c.cxx, bit_ok, true, &bit_ok_err));
+
+    // The operator result is BitWord, not BitMask. libstdc++ returns BitMask, so .v fails there.
+    const fs::path bit_word = c.tmp / "bit_word.cpp";
+    std::ofstream(bit_word) << "#include <functional>\n"
+                               "struct BitWord { int v; };\n"
+                               "struct BitMask {\n"
+                               "  int v;\n"
+                               "  friend BitWord operator&(BitMask a, BitMask b) { return BitWord{a.v & b.v}; }\n"
+                               "  friend BitWord operator|(BitMask a, BitMask b) { return BitWord{a.v | b.v}; }\n"
+                               "  friend BitWord operator^(BitMask a, BitMask b) { return BitWord{a.v ^ b.v}; }\n"
+                               "};\n"
+                               "int use(BitMask a, BitMask b) {\n"
+                               "  return std::bit_and<BitMask>{}(a, b).v\n"
+                               "       + std::bit_or<BitMask>{}(a, b).v\n"
+                               "       + std::bit_xor<BitMask>{}(a, b).v;\n"
+                               "}\n";
+    std::string bit_word_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_word, false, &bit_word_err));
+    CHECK(syntax_only(c.cxx, bit_word, true, &bit_word_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path bit_tr = c.tmp / "bit_tr.cpp";
+    std::ofstream(bit_tr) << "#include <functional>\n"
+                             "int use(int a) {\n"
+                             "  return std::bit_and<>{}(a, 1) + std::bit_or<>{}(a, 1) + std::bit_xor<>{}(a, 1);\n"
+                             "}\n";
+    std::string bit_tr_err;
+    CHECK(syntax_only(c.cxx, bit_tr, false, &bit_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_tr, true, &bit_tr_err));
+
+    const fs::path bit_none = c.tmp / "bit_none.cpp";
+    std::ofstream(bit_none) << "#include <functional>\n"
+                               "struct NoBit { int v; };\n"
+                               "int use(NoBit a, NoBit b) {\n"
+                               "  return std::bit_and<NoBit>{}(a, b).v\n"
+                               "       + std::bit_or<NoBit>{}(a, b).v\n"
+                               "       + std::bit_xor<NoBit>{}(a, b).v;\n"
+                               "}\n";
+    std::string bit_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_none, false, &bit_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_none, true, &bit_none_err));
+
+    const fs::path bit_or_missing = c.tmp / "bit_or_missing.cpp";
+    std::ofstream(bit_or_missing) << "#include <functional>\n"
+                                     "struct AndOnly {\n"
+                                     "  int v;\n"
+                                     "  friend AndOnly operator&(AndOnly a, AndOnly b) { return AndOnly{a.v & b.v}; }\n"
+                                     "};\n"
+                                     "int use(AndOnly a, AndOnly b) {\n"
+                                     "  return std::bit_and<AndOnly>{}(a, b).v + std::bit_or<AndOnly>{}(a, b).v;\n"
+                                     "}\n";
+    std::string bit_or_missing_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, false, &bit_or_missing_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, true, &bit_or_missing_err));
 }

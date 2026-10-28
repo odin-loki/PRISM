@@ -70,6 +70,14 @@
 // std::logical_and<> and the same two are not declared.
 // This is not PROVED and not CLEAN.
 //
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type argument. They are not function pointers. bit_and returns the & of
+// its arguments. bit_or returns the | of its arguments. bit_xor returns
+// the ^ of its arguments. Each returns that operator. A type that does not
+// provide the operator fails the template. There is no stand-in integer
+// and no void specialization, so std::bit_and<> and the same two are not
+// declared.
+//
 // Not declared, so a unit that names one fails to compile against this header
 // and pir falls back to libstdc++ (extra.cxx_models). A partial header is
 // intentional:
@@ -218,8 +226,9 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 // that include so this header can define them for one type argument.
 // equal_to, not_equal_to, less, and greater are renamed the same way.
 // logical_and, logical_or, and logical_not are renamed the same way.
+// bit_and, bit_or, and bit_xor are renamed the same way.
 // identity is renamed for <bits/ranges_cmp.h> so ranges::less stays that
-// header's. The rest of <bits/stl_function.h> (bitwise functors and the
+// header's. The rest of <bits/stl_function.h> (bit_not and the
 // transparent-trait helpers) stays. If that bits header
 // was already included, the rename is skipped and the libstdc++ objects
 // stay, and this header does not define a second one.
@@ -237,6 +246,9 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 #define logical_and _Prism_libstd_logical_and
 #define logical_or _Prism_libstd_logical_or
 #define logical_not _Prism_libstd_logical_not
+#define bit_and _Prism_libstd_bit_and
+#define bit_or _Prism_libstd_bit_or
+#define bit_xor _Prism_libstd_bit_xor
 #include <bits/stl_function.h>
 #undef equal_to
 #undef not_equal_to
@@ -251,6 +263,9 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 #undef logical_and
 #undef logical_or
 #undef logical_not
+#undef bit_and
+#undef bit_or
+#undef bit_xor
 #define _PRISM_MODEL_FUNCTIONAL_CMP 1
 #endif
 
@@ -581,6 +596,36 @@ struct logical_not {
         requires requires { !__x; }
     {
         return !__x;
+    }
+};
+
+// One type argument. The call is that operator. A missing operator fails
+// the requires clause. The result is that operator. There is no stand-in
+// integer and no void specialization.
+template <typename _Tp>
+struct bit_and {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a & __b; }
+    {
+        return __a & __b;
+    }
+};
+
+template <typename _Tp>
+struct bit_or {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a | __b; }
+    {
+        return __a | __b;
+    }
+};
+
+template <typename _Tp>
+struct bit_xor {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a ^ __b; }
+    {
+        return __a ^ __b;
     }
 };
 #endif

@@ -16,6 +16,10 @@
 // objects for one type. The happy path uses the operators, so libstdc++
 // and the model print the same lines. A result that is not a bool is not
 // on this trace.
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type. The happy path uses the operators, so libstdc++ and the model
+// print the same lines. A result whose type is not the argument type is
+// not on this trace. bit_not stays the library object.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
@@ -177,6 +181,18 @@ struct BoolOp {
     friend constexpr bool operator&&(BoolOp a, BoolOp b) { return a.v && b.v; }
     friend constexpr bool operator||(BoolOp a, BoolOp b) { return a.v || b.v; }
     friend constexpr bool operator!(BoolOp a) { return !a.v; }
+};
+
+struct Bits {
+    int v;
+    friend constexpr Bits operator&(Bits a, Bits b) { return Bits{a.v & b.v}; }
+    friend constexpr Bits operator|(Bits a, Bits b) { return Bits{a.v | b.v}; }
+    friend constexpr Bits operator^(Bits a, Bits b) { return Bits{a.v ^ b.v}; }
+};
+
+struct AndBits {
+    int v;
+    friend constexpr AndBits operator&(AndBits a, AndBits b) { return AndBits{a.v & b.v}; }
 };
 
 static void show() {
@@ -369,6 +385,24 @@ static void show() {
     static_assert(std::logical_and<BoolOp>{}(BoolOp{1}, BoolOp{1}));
     static_assert(!std::logical_or<BoolOp>{}(BoolOp{0}, BoolOp{0}));
     static_assert(std::logical_not<BoolOp>{}(BoolOp{0}));
+    static_assert(std::bit_and<int>{}(6, 3) == 2);
+    static_assert(std::bit_or<int>{}(6, 3) == 7);
+    static_assert(std::bit_xor<int>{}(6, 3) == 5);
+    static_assert(std::bit_and<int>{}(7, 1) == 1);
+    static_assert(std::bit_or<int>{}(1, 2) == 3);
+    static_assert(std::bit_xor<int>{}(6, 6) == 0);
+    static_assert(std::bit_and<unsigned>{}(6u, 3u) == 2u);
+    static_assert(std::bit_or<unsigned>{}(6u, 3u) == 7u);
+    static_assert(std::bit_xor<unsigned>{}(6u, 3u) == 5u);
+    static_assert(!std::bit_and<bool>{}(true, false));
+    static_assert(!std::bit_or<bool>{}(false, false));
+    static_assert(!std::bit_xor<bool>{}(true, true));
+    static_assert(std::bit_or<bool>{}(true, false));
+    static_assert(std::bit_xor<bool>{}(true, false));
+    static_assert(std::bit_and<Bits>{}(Bits{6}, Bits{3}).v == 2);
+    static_assert(std::bit_or<Bits>{}(Bits{6}, Bits{3}).v == 7);
+    static_assert(std::bit_xor<Bits>{}(Bits{6}, Bits{3}).v == 5);
+    static_assert(std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v == 2);
 
     std::plus<int> padd;
     std::plus<int> padd2 = padd;
@@ -413,6 +447,26 @@ static void show() {
     std::printf("blog %d %d %d\n", static_cast<int>(std::logical_and<BoolOp>{}(b1, b0)),
                 static_cast<int>(std::logical_or<BoolOp>{}(b0, b1)),
                 static_cast<int>(std::logical_not<BoolOp>{}(b0)));
+    std::bit_and<int> band;
+    std::bit_and<int> band2 = band;
+    std::printf("band %d %d\n", band(6, 3), band2(7, 1));
+    std::bit_or<int> bor;
+    std::bit_or<int> bor2 = bor;
+    std::printf("bor %d %d\n", bor(6, 3), bor2(1, 2));
+    std::bit_xor<int> bxor;
+    std::bit_xor<int> bxor2 = bxor;
+    std::printf("bxor %d %d\n", bxor(6, 3), bxor2(6, 6));
+    std::printf("bbool %d %d %d\n", static_cast<int>(std::bit_and<bool>{}(true, false)),
+                static_cast<int>(std::bit_or<bool>{}(false, false)),
+                static_cast<int>(std::bit_xor<bool>{}(true, true)));
+    std::printf("ubit %u %u %u\n", std::bit_and<unsigned>{}(6u, 3u), std::bit_or<unsigned>{}(6u, 3u),
+                std::bit_xor<unsigned>{}(6u, 3u));
+    const Bits w6{6};
+    const Bits w3{3};
+    std::printf("bobj %d %d %d\n", std::bit_and<Bits>{}(w6, w3).v, std::bit_or<Bits>{}(w6, w3).v,
+                std::bit_xor<Bits>{}(w6, w3).v);
+    std::printf("bandonly %d\n", std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v);
+    std::printf("bnot %d\n", std::bit_not<int>{}(0));
 }
 
 int main(int argc, char** argv) {
