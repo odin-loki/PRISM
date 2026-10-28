@@ -4,7 +4,11 @@
 // must be identical. No heap: `oob` is operator[] at size(), which aborts in
 // the _GLIBCXX_ASSERTIONS check. operator== is the same N: N == 0 is true
 // and does not read an element, and N > 0 stops at the first mismatch.
-// operator< is the same N: N == 0 is false and does not read an element.
+// operator!= is the negation of that operator==. N == 0 compares not-equal
+// as false and does not read an element. A mismatch stops at the first
+// difference inside operator== and does not read further elements. Equal
+// arrays compare not-equal as false. operator< is the same N: N == 0 is
+// false and does not read an element.
 // N > 0 returns true at the first element that is less, false when an
 // earlier element of the left array is greater, and false when the two
 // arrays are equivalent through N. operator> is the same N: N == 0 is
@@ -34,6 +38,13 @@ static_assert(!(std::array<int, 3>{1, 2, 3} == std::array<int, 3>{0, 2, 3}));
 static_assert(!(std::array<int, 3>{1, 2, 3} == std::array<int, 3>{1, 2, 4}));
 static_assert(std::array<int, 1>{8} == std::array<int, 1>{8});
 static_assert(!(std::array<int, 1>{8} == std::array<int, 1>{9}));
+static_assert(!(std::array<int, 0>{} != std::array<int, 0>{}));
+static_assert(!(std::array<int, 3>{1, 2, 3} != std::array<int, 3>{1, 2, 3}));
+static_assert(std::array<int, 3>{1, 2, 3} != std::array<int, 3>{1, 0, 3});
+static_assert(std::array<int, 3>{1, 2, 3} != std::array<int, 3>{0, 2, 3});
+static_assert(std::array<int, 3>{1, 2, 3} != std::array<int, 3>{1, 2, 4});
+static_assert(!(std::array<int, 1>{8} != std::array<int, 1>{8}));
+static_assert(std::array<int, 1>{8} != std::array<int, 1>{9});
 static_assert(!(std::array<int, 0>{} < std::array<int, 0>{}));
 static_assert(!(std::array<int, 3>{1, 2, 3} < std::array<int, 3>{1, 2, 3}));
 static_assert(std::array<int, 3>{1, 0, 3} < std::array<int, 3>{1, 2, 3});
@@ -218,6 +229,67 @@ static void equal() {
         "eqm same=%d mid=%d head=%d tail=%d zero=%d poison=%d calls same=%d mid=%d head=%d tail=%d zero=%d poison=%d "
         "poison_reads=%d\n",
         int(ms), int(mmd), int(mhd), int(mtd), int(mzero), int(poison_eq), calls_same, calls_mid, calls_head,
+        calls_tail, calls_zero, MemEq::calls, MemEq::poison);
+}
+
+// operator!= is !(__x == __y). MemEq::operator== counts the reads inside
+// operator==. A negative value past a mismatch must not be read. N == 0
+// compares not-equal as false and does not call operator== on an element.
+static void not_equal() {
+    std::array<int, 3> a{1, 2, 3};
+    std::array<int, 3> same{1, 2, 3};
+    std::array<int, 3> mid{1, 0, 3};
+    std::array<int, 3> head{0, 2, 3};
+    std::array<int, 3> tail{1, 2, 4};
+    std::array<int, 1> one{5};
+    std::array<int, 1> one_same{5};
+    std::array<int, 1> one_diff{6};
+    const std::array<int, 2> ca{4, 5};
+    const std::array<int, 2> cb{4, 5};
+    const std::array<int, 2> cc{4, 6};
+    std::array<int, 0> z{};
+    std::array<int, 0> w{};
+    std::printf("ne same=%d mid=%d head=%d tail=%d one=%d oned=%d self=%d csame=%d cdiff=%d zero=%d\n", int(a != same),
+                int(a != mid), int(a != head), int(a != tail), int(one != one_same), int(one != one_diff), int(a != a),
+                int(ca != cb), int(ca != cc), int(z != w));
+
+    std::array<MemEq, 3> ma{MemEq(1), MemEq(2), MemEq(3)};
+    std::array<MemEq, 3> mb{MemEq(1), MemEq(2), MemEq(3)};
+    MemEq::calls = 0;
+    const bool ms = (ma != mb);
+    const int calls_same = MemEq::calls;
+
+    std::array<MemEq, 3> mm{MemEq(1), MemEq(9), MemEq(3)};
+    MemEq::calls = 0;
+    const bool mmd = (ma != mm);
+    const int calls_mid = MemEq::calls;
+
+    std::array<MemEq, 3> mh{MemEq(9), MemEq(2), MemEq(3)};
+    MemEq::calls = 0;
+    const bool mhd = (ma != mh);
+    const int calls_head = MemEq::calls;
+
+    std::array<MemEq, 3> mt{MemEq(1), MemEq(2), MemEq(9)};
+    MemEq::calls = 0;
+    const bool mtd = (ma != mt);
+    const int calls_tail = MemEq::calls;
+
+    MemEq::calls = 0;
+    MemEq::poison = 0;
+    std::array<MemEq, 0> mz{};
+    std::array<MemEq, 0> mw{};
+    const bool mzero = (mz != mw);
+    const int calls_zero = MemEq::calls;
+
+    std::array<MemEq, 3> pa{MemEq(1), MemEq(2), MemEq(-1)};
+    std::array<MemEq, 3> pb{MemEq(1), MemEq(9), MemEq(-1)};
+    MemEq::calls = 0;
+    MemEq::poison = 0;
+    const bool poison_ne = (pa != pb);
+    std::printf(
+        "nem same=%d mid=%d head=%d tail=%d zero=%d poison=%d calls same=%d mid=%d head=%d tail=%d zero=%d poison=%d "
+        "poison_reads=%d\n",
+        int(ms), int(mmd), int(mhd), int(mtd), int(mzero), int(poison_ne), calls_same, calls_mid, calls_head,
         calls_tail, calls_zero, MemEq::calls, MemEq::poison);
 }
 
@@ -652,6 +724,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "oob") return oob();
     ints();
     equal();
+    not_equal();
     less();
     greater();
     geq();

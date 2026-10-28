@@ -19,6 +19,13 @@
 //    element compares equal with operator==. A mismatch returns false and
 //    does not read past that index. No element is invented. A different N
 //    is not an overload. This is not PROVED and not CLEAN.
+//  * operator!= takes two array<T, N> of the same N. It returns the
+//    negation of operator== and does not walk elements itself. N == 0 is
+//    false and does not read an element, because operator== returns true
+//    before a read. A mismatch stops at the first difference inside
+//    operator== and does not read further elements. Equal arrays compare
+//    not-equal as false. No element is invented. A different N is not an
+//    overload. This is not PROVED and not CLEAN.
 //  * operator< takes two array<T, N> of the same N. N == 0 is false and
 //    does not read an element. N > 0 compares elements with operator< and
 //    returns true at the first element that is less. An earlier element of
@@ -238,6 +245,17 @@ constexpr bool operator==(const array<_Tp, _Nm>& __x, const array<_Tp, _Nm>& __y
         }
         return true;
     }
+}
+
+// Same N. The body is the negation of operator==. It does not walk
+// elements. N == 0 is false and does not read an element, because
+// operator== returns true before a read. A mismatch stops at the first
+// difference inside operator== and does not read further elements. Equal
+// arrays compare not-equal as false. No element is invented. A different
+// N is not an overload. This is not PROVED and not CLEAN.
+template <typename _Tp, std::size_t _Nm>
+constexpr bool operator!=(const array<_Tp, _Nm>& __x, const array<_Tp, _Nm>& __y) {
+    return !(__x == __y);
 }
 
 // Same N. N == 0 returns false and does not read an element. N > 0 compares
