@@ -1,0 +1,117 @@
+// PRISM operational model of <fstream> (docs/PIR.md "C++ library models").
+// The pir stage puts this directory first on the C++ include path, so
+// `#include <fstream>` reaches this file instead of libstdc++'s. It is a
+// file, not a directory: a directory of that name would make the include
+// fail with EISDIR and every such unit would fall back to libstdc++.
+//
+// Partial on purpose. Only std::basic_ifstream for char, and the ifstream
+// alias of that type. A default stream is not open: is_open() is false.
+// Nothing in this header sets that flag. read() and get() on a stream that
+// is not open are __prism_check with class FUNC-CONTRACT. They do not write
+// any byte and do not return a fabricated character. get() returns -1, which
+// is eof, not a character read from a file.
+//
+// There is no heap allocation. The destructor is defaulted and does not free.
+// The object holds one bool.
+//
+// open and close are not declared. A successful open would be a fake file.
+// So are ofstream, fstream, filebuf, basic_ofstream, basic_fstream,
+// basic_filebuf, and wifstream, and any constructor that takes a path or a
+// file name. exists and every other name that would report a file is there
+// are omitted the same way. peek, getline, ignore, and operator>> are
+// omitted: each one would have to invent a character. A use of an omitted
+// name fails to compile against this header, and the pir stage lowers that
+// translation unit again with libstdc++ (extra.cxx_models). They are not
+// stubbed. The traits parameter of basic_ifstream is omitted, so the
+// two-argument form fails to compile and falls back the same way.
+//
+// This header does not include the string, filesystem, memory, mutex,
+// iostream, istream, or ostream headers.
+//
+// This header is not a proof that a file exists.
+#ifndef _GLIBCXX_FSTREAM
+#define _GLIBCXX_FSTREAM 1
+
+#pragma GCC system_header
+
+#include <cstddef>
+#include <type_traits>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
+
+namespace std {
+
+template <typename _CharT>
+class basic_ifstream {
+    static_assert(is_same_v<_CharT, char>,
+                  "PRISM fstream model: only char is modelled (the pir stage falls back to libstdc++)");
+
+public:
+    using char_type = _CharT;
+
+    // A default stream is not open. No constructor here takes a file name.
+    basic_ifstream() noexcept = default;
+
+    basic_ifstream(const basic_ifstream&) = delete;
+    basic_ifstream& operator=(const basic_ifstream&) = delete;
+
+    // Does not free. There is no buffer and no file.
+    ~basic_ifstream() = default;
+
+    // False on a default stream. Nothing in this header stores true.
+    [[nodiscard]] bool is_open() const noexcept { return _M_is_open; }
+
+    // Not open: the caller buffer is left alone. There is no file to read.
+    basic_ifstream& read(char_type* __s, std::ptrdiff_t __n) {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::read on a stream that is not open");
+        (void)__s;
+        (void)__n;
+        return *this;
+    }
+
+    // eof (-1), not a character from a file.
+    int get() {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::get on a stream that is not open");
+        return -1;
+    }
+
+    // Does not store into __c.
+    basic_ifstream& get(char_type& __c) {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::get on a stream that is not open");
+        (void)__c;
+        return *this;
+    }
+
+    // Does not write __s, including a trailing NUL.
+    basic_ifstream& get(char_type* __s, std::ptrdiff_t __n) {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::get on a stream that is not open");
+        (void)__s;
+        (void)__n;
+        return *this;
+    }
+
+    // Does not write __s. The delimiter is not a character that was read.
+    basic_ifstream& get(char_type* __s, std::ptrdiff_t __n, char_type __delim) {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::get on a stream that is not open");
+        (void)__s;
+        (void)__n;
+        (void)__delim;
+        return *this;
+    }
+
+private:
+    bool _M_is_open = false;
+};
+
+using ifstream = basic_ifstream<char>;
+
+}  // namespace std
+
+#endif  // _GLIBCXX_FSTREAM
