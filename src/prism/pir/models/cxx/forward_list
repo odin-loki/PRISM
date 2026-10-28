@@ -36,6 +36,12 @@
 //    __builtin_trap, before any destroy or free. That path does not invent
 //    an element and does not return a value-initialized T. It is not
 //    PROVED and not CLEAN.
+//  * operator!= takes two forward_list<T, Alloc> of the same type. It
+//    returns !(__x == __y) and does not walk elements itself. Two empty
+//    lists compare not-equal as false and do not load a node, because
+//    operator== does not enter its loop when begin and end compare equal.
+//    A mismatch stops at the first difference inside operator==. The
+//    function does not return T{}. It is not PROVED and not CLEAN.
 //  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
 //    does not mention size() or nullptr): a dereferenceable iterator on
 //    * / ->, a non-end iterator on ++, an iterator of this list on
@@ -724,6 +730,16 @@ template <typename _Tp, typename _Alloc>
     for (; __i1 != __e1 && __i2 != __e2; ++__i1, (void)++__i2)
         if (!(*__i1 == *__i2)) return false;
     return __i1 == __e1 && __i2 == __e2;
+}
+
+// Same type. The body is the negation of operator==. It does not walk
+// elements. Two empty lists compare not-equal as false and do not load a node,
+// because operator== does not enter its loop when begin and end compare
+// equal. A mismatch stops at the first difference inside operator==.
+// The function does not return T{}. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] inline bool operator!=(const forward_list<_Tp, _Alloc>& __x, const forward_list<_Tp, _Alloc>& __y) {
+    return !(__x == __y);
 }
 
 template <typename _Tp, typename _Alloc>

@@ -4,7 +4,11 @@
 // under ASan/UBSan with _GLIBCXX_ASSERTIONS. The traces must be identical.
 // splice_after and merge are not called: the model does not declare them.
 // before_begin is the sentinel. erase_after and pop_front free the node.
+// operator!= is the negation of operator==. Two empty lists compare
+// not-equal as false and do not compare an element. A mismatch stops at
+// the first difference inside operator==.
 #include <cstdio>
+#include <cstdlib>
 #include <forward_list>
 #include <iterator>
 #include <memory>
@@ -205,6 +209,70 @@ static int uaf() {
     return *it;
 }
 
+struct Load {
+    int v;
+    static int calls;
+    static int reads;
+    explicit Load(int x) : v(x) {}
+    Load(const Load&) = default;
+    friend bool operator==(const Load& a, const Load& b) {
+        ++calls;
+        if (a.v < 0 || b.v < 0) ++reads;
+        return a.v == b.v;
+    }
+};
+int Load::calls = 0;
+int Load::reads = 0;
+
+static std::forward_list<Load> load_seq(std::initializer_list<int> xs) {
+    std::forward_list<Load> l;
+    auto p = l.before_begin();
+    for (int x : xs) p = l.insert_after(p, Load{x});
+    return l;
+}
+
+static void not_equal() {
+    std::forward_list<int> empty_a, empty_b;
+    std::forward_list<int> same{1, 2, 3};
+    std::forward_list<int> copy{1, 2, 3};
+    std::forward_list<int> head{9, 2, 3};
+    std::forward_list<int> mid{1, 9, 3};
+    std::forward_list<int> tail{1, 2, 9};
+    std::printf("ne empty=%d same=%d head=%d mid=%d tail=%d self=%d\n", int(empty_a != empty_b), int(same != copy),
+                int(same != head), int(same != mid), int(same != tail), int(same != same));
+    Load::calls = 0;
+    Load::reads = 0;
+    auto e1 = load_seq({});
+    auto e2 = load_seq({});
+    int empty_ne = int(e1 != e2);
+    int empty_calls = Load::calls;
+    auto same_l = load_seq({1, 2, 3});
+    auto same_r = load_seq({1, 2, 3});
+    Load::calls = 0;
+    int same_ne = int(same_l != same_r);
+    int same_calls = Load::calls;
+    auto head_r = load_seq({9, 2, 3});
+    Load::calls = 0;
+    int head_ne = int(same_l != head_r);
+    int head_calls = Load::calls;
+    auto mid_r = load_seq({1, 9, 3});
+    Load::calls = 0;
+    int mid_ne = int(same_l != mid_r);
+    int mid_calls = Load::calls;
+    auto tail_r = load_seq({1, 2, 9});
+    Load::calls = 0;
+    int tail_ne = int(same_l != tail_r);
+    int tail_calls = Load::calls;
+    auto poison_l = load_seq({1, 2, -1});
+    auto poison_r = load_seq({1, 9, -1});
+    Load::calls = 0;
+    Load::reads = 0;
+    int poison_ne = int(poison_l != poison_r);
+    std::printf("nel empty=%d calls=%d same=%d/%d head=%d/%d mid=%d/%d tail=%d/%d poison=%d/%d reads=%d\n", empty_ne,
+                empty_calls, same_ne, same_calls, head_ne, head_calls, mid_ne, mid_calls, tail_ne, tail_calls,
+                poison_ne, Load::calls, Load::reads);
+}
+
 static int pop_uaf() {
     std::forward_list<int> l;
     l.push_front(2);
@@ -219,5 +287,6 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "pop") return pop_uaf();
     ints();
     traced();
+    not_equal();
     return 0;
 }
