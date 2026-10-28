@@ -343,13 +343,13 @@ TEST_CASE("cxx tuple model: get<2> of a 3-tuple is the third stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path five = c.tmp / "tuple5.cpp";
-    std::ofstream(five) << "#include <tuple>\n"
-                           "int five() {\n"
-                           "  std::tuple<int, int, int, int, int> t(1, 2, 3, 4, 5);\n"
-                           "  return std::get<0>(t);\n"
-                           "}\n";
-    CHECK_FALSE(syntax_ok(c.cxx, five, true));
+    const fs::path six = c.tmp / "tuple6.cpp";
+    std::ofstream(six) << "#include <tuple>\n"
+                          "int six() {\n"
+                          "  std::tuple<int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6);\n"
+                          "  return std::get<0>(t);\n"
+                          "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, six, true));
 }
 
 TEST_CASE("cxx tuple model: get<3> of a 4-tuple is the fourth stored value") {
@@ -402,11 +402,70 @@ TEST_CASE("cxx tuple model: get<3> of a 4-tuple is the fourth stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path five = c.tmp / "tuple5_omit.cpp";
-    std::ofstream(five) << "#include <tuple>\n"
-                           "int five() {\n"
-                           "  std::tuple<int, int, int, int, int> t(1, 2, 3, 4, 5);\n"
-                           "  return std::get<0>(t);\n"
-                           "}\n";
-    CHECK_FALSE(syntax_ok(c.cxx, five, true));
+    const fs::path six = c.tmp / "tuple6_omit.cpp";
+    std::ofstream(six) << "#include <tuple>\n"
+                          "int six() {\n"
+                          "  std::tuple<int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6);\n"
+                          "  return std::get<0>(t);\n"
+                          "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, six, true));
+}
+
+TEST_CASE("cxx tuple model: get<4> of a 5-tuple is the fifth stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find("struct _Prism_tuple_get<4, tuple<_T0, _T1, _T2, _T3, _T4>>") != std::string::npos);
+    CHECK(text.find("return __t._M_4;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 5>") != std::string::npos);
+    CHECK(text.find("struct tuple_element<4, tuple<_T0, _T1, _T2, _T3, _T4>>") != std::string::npos);
+    CHECK(text.find("using type = _T4;") != std::string::npos);
+    CHECK_FALSE(default_return_stand_in(text));
+    CHECK(text.find("return {}") == std::string::npos);
+    CHECK(text.find("return T{}") == std::string::npos);
+    CHECK(text.find("return T()") == std::string::npos);
+
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const fs::path src = c.tmp / "tuple5_get4.cpp";
+    std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <tuple>\n"
+                          "int main() {\n"
+                          "  const int fifth = 17;\n"
+                          "  std::tuple<int, int, int, int, int> t(4, 5, 6, 7, fifth);\n"
+                          "  const int got = std::get<4>(t);\n"
+                          "  std::printf(\"%d\\n\", got);\n"
+                          "  return got == fifth ? 0 : 1;\n"
+                          "}\n";
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = c.tmp / "tuple5_get4";
+#ifdef _WIN32
+    out = c.tmp / "tuple5_get4.exe";
+#endif
+    std::vector<std::string> argv{c.cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    argv.push_back("-isystem");
+    argv.push_back(models.string());
+    argv.push_back(src.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    CHECK(has_line(run_lines(out), "17"));
+
+    const fs::path bad = c.tmp / "tuple5_get5.cpp";
+    std::ofstream(bad) << "#include <tuple>\n"
+                          "int bad_index() {\n"
+                          "  std::tuple<int, int, int, int, int> t(1, 2, 3, 4, 5);\n"
+                          "  return std::get<5>(t);\n"
+                          "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, bad, true));
+
+    const fs::path six = c.tmp / "tuple6_primary.cpp";
+    std::ofstream(six) << "#include <tuple>\n"
+                          "int six() {\n"
+                          "  std::tuple<int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6);\n"
+                          "  return std::get<0>(t);\n"
+                          "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, six, true));
 }
