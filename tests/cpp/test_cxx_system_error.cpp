@@ -81,3 +81,37 @@ TEST_CASE("cxx system_error: equality compares the stored int and category id") 
     CHECK(src.find("class error_condition") == std::string::npos);
     CHECK(src.find("class system_error") == std::string::npos);
 }
+
+TEST_CASE("cxx system_error: value returns the stored int and category returns the pointer") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "system_error";
+    REQUIRE(fs::is_regular_file(header));
+
+    const std::string src = slurp(header);
+    REQUIRE(!src.empty());
+
+    // value() is the stored int. It does not build a message. A default
+    // error_code stores 0. category() is the pointer stored beside the id.
+    // The default pointer is the stable system tag. A generic code stores
+    // the stable generic tag.
+    // operator== still compares the int and the category id.
+    CHECK(src.find("int value() const noexcept { return _M_value; }") != std::string::npos);
+    CHECK(src.find("const __error_category_tag* category() const noexcept { return _M_cat_ptr; }") !=
+          std::string::npos);
+    CHECK(src.find("error_code() noexcept : _M_value(0), _M_cat(2),") != std::string::npos);
+    CHECK(src.find("_M_cat_ptr(__system_category_ptr())") != std::string::npos);
+    CHECK(src.find("static const __system_category_tag object{}") != std::string::npos);
+    CHECK(src.find("_M_cat_ptr(nullptr)") == std::string::npos);
+    CHECK(src.find("_M_cat_ptr(__generic_category_ptr())") != std::string::npos);
+    CHECK(src.find("static const __generic_category_tag object{}") != std::string::npos);
+    CHECK(src.find("return &object;") != std::string::npos);
+    CHECK(src.find("return __lhs._M_value == __rhs._M_value && __lhs._M_cat == __rhs._M_cat;") !=
+          std::string::npos);
+    CHECK(src.find("_M_cat_ptr ==") == std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("message() const") == std::string::npos);
+    CHECK(src.find("int message(") == std::string::npos);
+    CHECK(src.find("string message(") == std::string::npos);
+    CHECK(src.find("Success") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("return 0") == std::string::npos);
+}

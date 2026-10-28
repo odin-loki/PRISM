@@ -1,16 +1,22 @@
 // Trace of std::error_code. Include <system_error> and use error_code
-// value(), operator bool, operator==, and operator!=. Compiled against
-// libstdc++ and against src/prism/pir/models/cxx (that directory first on
-// the include path), the lines should match.
+// value(), category(), operator bool, operator==, and operator!=. Compiled
+// against libstdc++ and against src/prism/pir/models/cxx (that directory
+// first on the include path), the lines should match.
 // tests/cpp/test_cxx_system_error.cpp checks the model text; it does not
 // shell out to this file.
 //
 // message() is not called. The model omits it so a unit that needs it fails
 // to compile and pir falls back.
 //
-// Equality uses the stored int and the stored category. A default
-// error_code (value 0, category id 2 = system_category in the model and in
-// libstdc++) is not equal to error_code(0, generic_category()). Two
+// value() is the stored int. A default error_code has value 0. category()
+// compared with == is category identity: two generic codes share a category,
+// two default codes share a category, and a default code is not a generic
+// zero. The model returns the stored pointer. libstdc++ returns a reference
+// whose == compares those objects. This trace is not PROVED and not CLEAN.
+//
+// Equality of error_code uses the stored int and the stored category. A
+// default error_code (value 0, category id 2 = system_category in the model
+// and in libstdc++) is not equal to error_code(0, generic_category()). Two
 // error_code(5, generic_category()) values are equal.
 #include <cstdio>
 #include <system_error>
@@ -33,6 +39,10 @@ int main() {
     const int eq_generic0 = (generic_zero == std::error_code(0, std::generic_category())) ? 1 : 0;
     const int eq_def = (def == def2) ? 1 : 0;
     const int neq_val = (ec == generic_zero) ? 1 : 0;
+    const int cat5 = (ec.category() == same.category()) ? 1 : 0;
+    const int cat_def = (def.category() == def2.category()) ? 1 : 0;
+    const int cat_def_generic0 = (def.category() == generic_zero.category()) ? 1 : 0;
+    const int cat_diff_val = (ec.category() == std::error_code(9, std::generic_category()).category()) ? 1 : 0;
 
     std::printf("value %d\n", value);
     std::printf("bool %d\n", engaged);
@@ -45,6 +55,10 @@ int main() {
     std::printf("eq_generic0 %d\n", eq_generic0);
     std::printf("eq_def %d\n", eq_def);
     std::printf("neq_val %d\n", neq_val);
+    std::printf("cat5 %d\n", cat5);
+    std::printf("cat_def %d\n", cat_def);
+    std::printf("cat_def_generic0 %d\n", cat_def_generic0);
+    std::printf("cat_diff_val %d\n", cat_diff_val);
 
     if (value != 5) return 1;
     if (!ec) return 2;
@@ -59,5 +73,10 @@ int main() {
     if (neq_val) return 11;
     if (generic_zero.value() != 0) return 12;
     if (generic_zero) return 13;
+    if (!cat5) return 14;
+    if (!cat_def) return 15;
+    if (cat_def_generic0) return 16;
+    if (!cat_diff_val) return 17;
+    if (def.value() != 0) return 18;
     return 0;
 }
