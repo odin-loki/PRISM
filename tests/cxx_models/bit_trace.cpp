@@ -2,12 +2,30 @@
 // against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/bit) first on the include path. countl_zero(0)
 // is the digit count. popcount of 0xA is 2. A rotate by a multiple of the
-// width returns the same bits.
+// width returns the same bits. byteswap(0) is 0. A one-byte value is
+// unchanged. A wider unsigned value reverses its own bytes.
 #include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+
+static_assert(std::byteswap(0u) == 0u);
+static_assert(std::byteswap(static_cast<unsigned char>(0x7F)) == static_cast<unsigned char>(0x7F));
+static_assert(std::byteswap(static_cast<std::uint8_t>(0)) == static_cast<std::uint8_t>(0));
+static_assert(std::byteswap(static_cast<std::uint8_t>(0xAB)) == static_cast<std::uint8_t>(0xAB));
+static_assert(std::byteswap(static_cast<std::uint16_t>(0)) == static_cast<std::uint16_t>(0));
+static_assert(std::byteswap(static_cast<std::uint16_t>(0x1234)) == static_cast<std::uint16_t>(0x3412));
+static_assert(std::byteswap(static_cast<std::uint32_t>(0)) == static_cast<std::uint32_t>(0));
+static_assert(std::byteswap(static_cast<std::uint32_t>(1)) == static_cast<std::uint32_t>(0x01000000u));
+static_assert(std::byteswap(static_cast<std::uint32_t>(0x12345678u)) == static_cast<std::uint32_t>(0x78563412u));
+static_assert(std::byteswap(static_cast<std::uint64_t>(0)) == static_cast<std::uint64_t>(0));
+static_assert(std::byteswap(static_cast<std::uint64_t>(0x0123456789ABCDEFULL)) ==
+              static_cast<std::uint64_t>(0xEFCDAB8967452301ULL));
+static_assert(std::byteswap(std::byteswap(static_cast<std::uint32_t>(0xA5A5A5A5u))) ==
+              static_cast<std::uint32_t>(0xA5A5A5A5u));
+static_assert(std::byteswap(std::byteswap(static_cast<std::uint64_t>(0x0123456789ABCDEFULL))) ==
+              static_cast<std::uint64_t>(0x0123456789ABCDEFULL));
 
 // Native stand-in for the PIR intrinsic. The overflow path of bit_ceil aborts
 // here. Values that fit do not call it.
@@ -93,6 +111,31 @@ int main() {
     std::printf("round %d %d %d\n", ru, r8, r64);
     std::printf("endian %d %d %d\n", static_cast<int>(std::endian::little), static_cast<int>(std::endian::big),
                 static_cast<int>(std::endian::native));
+    // Runtime values, so the byte moves are executed and not only folded.
+    volatile std::uint8_t b8 = 0xAB;
+    volatile std::uint16_t b16 = 0x1234;
+    volatile std::uint32_t b32 = 0x12345678u;
+    volatile std::uint32_t b1 = 1;
+    volatile std::uint64_t b64 = 0x0123456789ABCDEFULL;
+    volatile std::uint32_t z32 = 0;
+    std::printf("swap0 %x\n", static_cast<unsigned>(std::byteswap(z32)));
+    std::printf("swap8 %x\n", static_cast<unsigned>(std::byteswap(b8)));
+    std::printf("swap16 %x\n", static_cast<unsigned>(std::byteswap(b16)));
+    std::printf("swap32 %x\n", static_cast<unsigned>(std::byteswap(b32)));
+    std::printf("swap1 %x\n", static_cast<unsigned>(std::byteswap(b1)));
+    std::printf("swap64 %llx\n", static_cast<unsigned long long>(std::byteswap(b64)));
+    const int rt32 = std::byteswap(std::byteswap(b32)) == b32;
+    const int rt8 = std::byteswap(std::byteswap(b8)) == b8;
+    const int rt16 = std::byteswap(std::byteswap(b16)) == b16;
+    const int rt64 = std::byteswap(std::byteswap(b64)) == b64;
+    std::printf("swaprt %d %d %d %d\n", rt32, rt8, rt16, rt64);
+    if (std::byteswap(z32) != 0u) return 1;
+    if (std::byteswap(b8) != static_cast<std::uint8_t>(0xAB)) return 1;
+    if (std::byteswap(b16) != static_cast<std::uint16_t>(0x3412)) return 1;
+    if (std::byteswap(b32) != static_cast<std::uint32_t>(0x78563412u)) return 1;
+    if (std::byteswap(b1) != static_cast<std::uint32_t>(0x01000000u)) return 1;
+    if (std::byteswap(b64) != static_cast<std::uint64_t>(0xEFCDAB8967452301ULL)) return 1;
+    if (rt32 != 1 || rt8 != 1 || rt16 != 1 || rt64 != 1) return 1;
     if (std::countl_zero(0u) != digits) return 1;
     if (std::popcount(0xAu) != 2) return 1;
     if (cu != 1 || c8 != 1 || c64 != 1) return 1;

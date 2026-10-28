@@ -6,6 +6,8 @@
 //
 // countl_zero(0) is the digit count of unsigned. popcount(0xA) is 2. The
 // header text does not contain a count-leading-zeros builtin call on zero.
+// byteswap is declared for an unsigned value. bit_cast stays omitted. The
+// header does not call a byte-swap builtin.
 
 #include <doctest/doctest.h>
 
@@ -206,6 +208,16 @@ TEST_CASE("cxx bit model: header is a file and does not call clz on zero") {
     CHECK(text.find("namespace std") != std::string::npos);
     CHECK(text.find("__builtin_clz(0)") == std::string::npos);
     CHECK(text.find("__builtin_ctz(0)") == std::string::npos);
+    CHECK(text.find("__builtin_bswap") == std::string::npos);
+    CHECK(text.find("__builtin_bit_cast") == std::string::npos);
+    CHECK(text.find("byteswap and bit_cast are not declared") == std::string::npos);
+    CHECK(text.find("constexpr _Tp byteswap(_Tp __x)") != std::string::npos);
+    CHECK(text.find("bit_cast is not declared") != std::string::npos);
+    CHECK(text.find("bit_cast(") == std::string::npos);
+    CHECK(text.find("__cpp_lib_byteswap 202110L") != std::string::npos);
+    CHECK(text.find("sizeof(_Tp) == 1") != std::string::npos);
+    CHECK(text.find("bit_ceil: smallest power of two is not representable") != std::string::npos);
+    CHECK(text.find("if (__x == 0) return _Nd;") != std::string::npos);
     CHECK(text.find("#include <vector") == std::string::npos);
     CHECK(text.find("#include <memory") == std::string::npos);
     CHECK(text.find("#include <deque") == std::string::npos);
@@ -254,4 +266,11 @@ TEST_CASE("cxx bit model: countl_zero(0) is the width and popcount(0xA) is 2") {
     CHECK(has_line(b, "unsigned popA 2"));
     CHECK(has_line(b, "counts 1 1 1"));
     CHECK(has_line(b, "round 1 1 1"));
+    CHECK(has_line(b, "swap0 0"));
+    CHECK(has_line(b, "swap8 ab"));
+    CHECK(has_line(b, "swap16 3412"));
+    CHECK(has_line(b, "swap32 78563412"));
+    CHECK(has_line(b, "swap1 1000000"));
+    CHECK(has_line(b, "swap64 efcdab8967452301"));
+    CHECK(has_line(b, "swaprt 1 1 1 1"));
 }

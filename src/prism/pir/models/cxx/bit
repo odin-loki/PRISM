@@ -18,8 +18,13 @@
 // does not fit in the type is a precondition (FUNC-CONTRACT). That path does
 // not return 0. has_single_bit is true only when exactly one bit is set.
 //
-// byteswap and bit_cast are not declared. An omitted API fails to compile,
-// and the pir stage lowers that translation unit again with libstdc++
+// byteswap reverses the bytes of an unsigned integer. byteswap(0) is 0.
+// A one-byte type is returned unchanged. A wider value is rebuilt from its
+// low byte, so the shift distance is one byte of that type. This is not a
+// call to a byte-swap builtin of a different width.
+//
+// bit_cast is not declared. An omitted API fails to compile, and the pir
+// stage lowers that translation unit again with libstdc++
 // (extra.cxx_models). endian is the three-enumerator enum.
 //
 // This header is not a proof that a program is free of shift undefined
@@ -35,6 +40,7 @@
 #define __cpp_lib_endian 201907L
 #define __cpp_lib_bitops 201907L
 #define __cpp_lib_int_pow2 202002L
+#define __cpp_lib_byteswap 202110L
 
 // PIR intrinsic (translate.cpp). Literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -165,6 +171,31 @@ constexpr _Tp bit_ceil(_Tp __x) noexcept {
         __builtin_trap();
     }
     return static_cast<_Tp>(_Tp(1) << __w);
+}
+
+// Reverse the object-representation bytes. The shift count is one byte of
+// _Tp. A one-byte value is not shifted, and it is not passed through a
+// wider swap. Zero has no byte to move.
+template <typename _Tp>
+constexpr _Tp byteswap(_Tp __x) noexcept {
+    static_assert(is_unsigned_v<_Tp>);
+    // One byte has nothing to reverse. That branch does not shift, and it
+    // does not pass the value to a wider swap.
+    if constexpr (sizeof(_Tp) == 1) {
+        return __x;
+    } else {
+        if (__x == 0) return _Tp(0);
+        constexpr int _Cb = numeric_limits<unsigned char>::digits;
+        constexpr int _Nb = static_cast<int>(sizeof(_Tp));
+        constexpr _Tp __mask = static_cast<_Tp>(numeric_limits<unsigned char>::max());
+        _Tp __out = 0;
+        for (int __i = 0; __i < _Nb; ++__i) {
+            const _Tp __byte = static_cast<_Tp>(__x & __mask);
+            __out = static_cast<_Tp>(static_cast<_Tp>(__out << _Cb) | __byte);
+            __x >>= _Cb;
+        }
+        return __out;
+    }
 }
 
 }  // namespace std
