@@ -1,23 +1,27 @@
 /* <time.h> models (src/prism/pir/models/libc/time.cpp). time's value is
  * unknown. mktime of month 99 is not a successful calendar time.
  * difftime of a difference that fits in time_t is that difference as a
- * double. clock() and clock_gettime() are called so the function names
- * are referenced. No clock reading is asserted, and no timespec value is
- * asserted. A failed assert calls __assert_fail and is FUNC-CONTRACT.
- * This is not a calendar proof and not PROVED and not CLEAN. */
+ * double. clock(), clock_gettime(), and gmtime() are called so the
+ * function names are referenced. No clock reading is asserted, no
+ * timespec value is asserted, and no date is asserted. A failed assert
+ * calls __assert_fail and is FUNC-CONTRACT. This is not a calendar proof
+ * and not PROVED and not CLEAN. */
 #include "harness.h"
 #include <limits.h>
 #include "../../../src/prism/pir/models/libc/time.cpp"
 
-/* A null argument is allowed and stores nothing. clock() and
- * clock_gettime() are called so the function names are referenced.
- * The returns are not asserted. The timespec is not a specific time. */
+/* A null argument is allowed and stores nothing. clock(),
+ * clock_gettime(), and gmtime() are called so the function names are
+ * referenced. The returns are not asserted. The timespec is not a
+ * specific time. The tm is not a specific date. */
 int time_null_true(void) {
     time_t v = time(0);
     (void)v;
     (void)clock();
     struct timespec ts;
     (void)clock_gettime(0, &ts);
+    time_t when = 0;
+    (void)gmtime(&when);
     return 0;
 }
 
