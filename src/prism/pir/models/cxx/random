@@ -162,7 +162,13 @@ public:
 // distributions are not defined. a > b does not store the inverted pair.
 // operator() on that range does not return a value. This is not a proof of
 // uniformity.
+// libstdc++ >= 14 can pull bits/uniform_int_dist.h in through other host
+// headers (with its own default argument); do not redeclare the default then.
+#ifdef _GLIBCXX_BITS_UNIFORM_INT_DIST_H
+template <class IntType>
+#else
 template <class IntType = int>
+#endif
 class uniform_int_distribution;
 
 template <>

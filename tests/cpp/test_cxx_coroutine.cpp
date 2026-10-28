@@ -29,7 +29,12 @@
 #  endif
 // The header declares this intrinsic and does not define it. The live checks
 // below do not fail a contract; this body is only here if a call is emitted.
-extern "C" void __prism_check(int ok, const char*, const char*) {
+#if defined(_WIN32)
+#  define PRISM_TEST_WEAK
+#else
+#  define PRISM_TEST_WEAK __attribute__((weak))
+#endif
+extern "C" PRISM_TEST_WEAK void __prism_check(int ok, const char*, const char*) {
     if (!ok) std::abort();
 }
 static_assert(std::coroutine_handle<>{}.address() == nullptr, "default handle address is nullptr");
