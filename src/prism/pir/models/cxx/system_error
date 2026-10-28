@@ -14,6 +14,14 @@
 // A real category's text lookup needs the string header, which this file
 // does not include. error_code(n, generic_category()) still stores n.
 //
+// operator== is true only when the stored int and the stored category id
+// are both equal. error_code() stores category id 0. error_code(0,
+// generic_category()) stores category id 1. Those two codes compare
+// unequal. Two error_code(5, generic_category()) values compare equal.
+// The comparison reads the stored ids. It does not read a category name.
+// A zero value with a different category id is unequal. operator!= is
+// the negation of that comparison.
+//
 // message() is not declared. A unit that calls it fails to compile against
 // this header and pir falls back to libstdc++. Do not stub it with a fixed
 // string: that would hide a nonzero value.
@@ -49,11 +57,23 @@ public:
     // True only when value() is not 0.
     explicit operator bool() const noexcept { return value() != 0; }
 
+    // Both stored fields. Category id 0 and category id 1 stay distinct
+    // when the ints are equal. No category name is read.
+    friend bool operator==(const error_code& __lhs, const error_code& __rhs) noexcept {
+        return __lhs._M_value == __rhs._M_value && __lhs._M_cat == __rhs._M_cat;
+    }
+
+    // Negation of operator==.
+    friend bool operator!=(const error_code& __lhs, const error_code& __rhs) noexcept {
+        return !(__lhs == __rhs);
+    }
+
 private:
     int _M_value = 0;
     // Category id stored beside the value. 0 is the default code; 1 is
-    // generic_category(). Not returned as an error_category object.
-    [[maybe_unused]] int _M_cat = 0;
+    // generic_category(). operator== reads this id. It is not returned
+    // as an error_category object.
+    int _M_cat = 0;
 };
 
 }  // namespace std

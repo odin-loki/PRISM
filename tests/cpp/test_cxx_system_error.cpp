@@ -53,3 +53,31 @@ TEST_CASE("cxx system_error: value 5 stays 5 and the header has no Success") {
     CHECK(src.find("error_code() noexcept : _M_value(0), _M_cat(0)") != std::string::npos);
     CHECK(src.find("explicit operator bool() const noexcept { return value() != 0; }") != std::string::npos);
 }
+
+TEST_CASE("cxx system_error: equality compares the stored int and category id") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "system_error";
+    REQUIRE(fs::is_regular_file(header));
+
+    const std::string src = slurp(header);
+    REQUIRE(!src.empty());
+
+    // Two codes match only when both fields match. Category id 0 (the
+    // default code) and category id 1 (generic_category) are different,
+    // so a zero int is not enough. Names are not read.
+    CHECK(src.find("friend bool operator==(const error_code& __lhs, const error_code& __rhs) noexcept {") !=
+          std::string::npos);
+    CHECK(src.find("return __lhs._M_value == __rhs._M_value && __lhs._M_cat == __rhs._M_cat;") !=
+          std::string::npos);
+    CHECK(src.find("friend bool operator!=(const error_code& __lhs, const error_code& __rhs) noexcept {") !=
+          std::string::npos);
+    CHECK(src.find("return !(__lhs == __rhs);") != std::string::npos);
+    CHECK(src.find(".name(") == std::string::npos);
+    CHECK(src.find("strcmp") == std::string::npos);
+    CHECK(src.find("message() const") == std::string::npos);
+    CHECK(src.find("int message(") == std::string::npos);
+    CHECK(src.find("string message(") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <stdexcept>") == std::string::npos);
+    CHECK(src.find("class error_condition") == std::string::npos);
+    CHECK(src.find("class system_error") == std::string::npos);
+}
