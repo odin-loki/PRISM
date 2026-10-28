@@ -316,17 +316,31 @@ void *memccpy(void *d, const void *s, int c, size_t n) {
     return 0;
 }
 
-/* C23 7.26.2.7 strndup: at most n bytes of s, always NUL-terminated. s
- * need not be terminated within n bytes, so only n bytes are read. */
+/* strndup returns a fresh copy of at most n bytes of s, plus a trailing NUL.
+ * A null s is STR-NULL-ARG and returns a null pointer before strlen and
+ * before any allocation. That path does not read s.
+ * n == 0 does not read s. It allocates one byte, stores a NUL, and returns
+ * that pointer. Allocation failure returns a null pointer.
+ * Otherwise the copy is min(n, strlen(s)) bytes and a trailing NUL. The
+ * scan does not read s[i] for i >= n, and it does not read past the
+ * terminator.
+ * This is not a proof of the copy.
+ * This is not PROVED and not CLEAN. */
 char *strndup(const char *s, size_t n) {
     __prism_check(s != 0, "STR-NULL-ARG", "strndup() called with unchecked pointer parameter s");
-    size_t k = 0;
-    while (k < n && s[k] != 0) k++;
-    if (k + 1 == 0) return 0;
-    char *p = (char *)malloc(k + 1);
+    if (s == 0) return 0;
+    if (n == 0) {
+        char *p = (char *)malloc(1);
+        if (!p) return 0;
+        p[0] = 0;
+        return p;
+    }
+    size_t len = 0;
+    while (len < n && s[len]) ++len;
+    char *p = (char *)malloc(len + 1);
     if (!p) return 0;
-    if (k) __prism_memcpy(p, s, k, 0);
-    p[k] = 0;
+    for (size_t i = 0; i < len; ++i) p[i] = s[i];
+    p[len] = 0;
     return p;
 }
 

@@ -492,6 +492,9 @@ int strdup_true(int k, int j) {
     assert(p != s);
     assert(p[j] == s[j]);
     free(p);
+    /* Names strndup. The copy is not a scored string. */
+    char *q = strndup(s, (size_t)k);
+    if (q) free(q);
     return 0;
 }
 
