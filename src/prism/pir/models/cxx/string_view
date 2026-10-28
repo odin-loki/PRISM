@@ -4,7 +4,7 @@
 // libstdc++'s. It is a non-owning view of a character sequence: a pointer and
 // a length. Nothing here allocates, and the destructor does not free.
 //
-// compare, find, substr, and every other member that is not
+// compare, find, and every other member that is not
 // defined below are omitted on purpose. A use of one of them fails to compile
 // against this header, and the pir stage lowers that translation unit again
 // with libstdc++ (extra.cxx_models records the fallback). They are not stubbed.
@@ -62,6 +62,8 @@ public:
     using const_reference = const _CharT&;
     using size_type = size_t;
     using difference_type = ptrdiff_t;
+
+    static constexpr size_type npos = static_cast<size_type>(-1);
 
     constexpr basic_string_view() noexcept : _M_len{0}, _M_str{nullptr} {}
 
@@ -161,6 +163,24 @@ public:
     [[nodiscard]] constexpr bool ends_with(_CharT __c) const noexcept {
         if (_M_len == 0) return false;
         return _Traits::eq(_M_str[_M_len - 1], __c);
+    }
+
+    // [string.view.ops] substr. A position past size() is MEM-OOB-READ and
+    // then __builtin_trap. That path does not return a view that starts past
+    // the end. npos, or a count for which pos + count would pass size(),
+    // yields length size() - pos. The room is size() - pos, so the sum is
+    // not formed and cannot wrap. The result is a non-owning view of those
+    // characters. It does not allocate. substr(0, 0) does not read a
+    // character: the length is 0 and the pointer-plus-count constructor does
+    // not load _M_str.
+    [[nodiscard]] constexpr basic_string_view substr(size_type __pos = 0, size_type __count = npos) const {
+        if (__pos > _M_len) {
+            __prism_check(__pos <= _M_len, "MEM-OOB-READ", "std::string_view::substr position past size()");
+            __builtin_trap();
+        }
+        const size_type __room = _M_len - __pos;
+        const size_type __n = __count < __room ? __count : __room;
+        return basic_string_view(_M_str + __pos, __n);
     }
 
 private:

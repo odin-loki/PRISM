@@ -1,7 +1,7 @@
 // std::string_view operational model (src/prism/pir/models/cxx/string_view).
 // The pir stage puts the model headers first on the include path, so
 // <string_view> below is the model. Each function is one contract.
-// compare, find, and substr are not part of the model.
+// compare and find are not part of the model.
 #include <string_view>
 
 // operator[] in range is the character that was stored.

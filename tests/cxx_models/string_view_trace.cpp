@@ -2,9 +2,11 @@
 // compiled once against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/string_view) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The traces must be identical.
-// compare, find, and substr are not called: the model does not declare them.
-// starts_with and ends_with are. An empty needle matches. A longer needle is
-// false, and the comparison does not read past the view.
+// compare and find are not called: the model does not declare them.
+// starts_with, ends_with, and substr are. An empty needle matches. A longer
+// needle is false, and the comparison does not read past the view. substr
+// past size() is a failed check. A count of npos, or a count that would pass
+// size(), stops at size(). substr(0, 0) does not read a character.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -83,10 +85,46 @@ static void prefixes() {
                 int(ex.ends_with(xabs)));
 }
 
+static void slices() {
+    char buf[] = {'p', 'q', 'r', 's'};
+    std::string_view v(buf, 4);
+    std::string_view empty;
+    const auto z = v.substr(0, 0);
+    const auto mid = v.substr(1, 2);
+    const auto tail = v.substr(1, std::string_view::npos);
+    const auto one = v.substr(1);
+    const auto over = v.substr(2, static_cast<std::size_t>(-2));
+    const auto at_end = v.substr(4, 1);
+    const auto gap = v.substr(2, 0);
+    const auto whole = v.substr(0, std::string_view::npos);
+    const auto ez = empty.substr(0, 0);
+    const auto en = empty.substr(0, std::string_view::npos);
+    // Zero-length results are not indexed. That includes substr(0, 0).
+    std::printf("sub0=%zu %d %d\n", z.size(), int(z.empty()), int(z.data() == v.data()));
+    std::printf("submid=%zu %c%c %d\n", mid.size(), mid[0], mid[1], int(mid.data() == buf + 1));
+    std::printf("subnpos=%zu %zu %d\n", tail.size(), one.size(), int(tail.data() == buf + 1));
+    std::printf("subover=%zu %c%c %d\n", over.size(), over[0], over[1], int(over.data() == buf + 2));
+    std::printf("subend=%zu %d %d\n", at_end.size(), int(at_end.empty()), int(at_end.data() == buf + 4));
+    std::printf("subz=%zu %d %d\n", gap.size(), int(gap.empty()), int(gap.data() == buf + 2));
+    std::printf("suball=%zu %d %d\n", whole.size(), int(whole.data() == v.data()), int(whole.data() == buf));
+    std::printf("subempty=%zu %d %d %zu %d\n", ez.size(), int(ez.empty()), int(ez.data() == nullptr), en.size(),
+                int(en.data() == nullptr));
+    std::printf("subalive=%c%c%c%c\n", buf[0], buf[1], buf[2], buf[3]);
+}
+
+static int substr_oob() {
+    char buf[] = {'p', 'q', 'r', 's'};
+    std::string_view v(buf, 4);
+    const auto s = v.substr(5, 1);
+    return static_cast<int>(s.size());
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "front") == 0) return empty_front();
+    if (argc > 1 && std::strcmp(argv[1], "substr") == 0) return substr_oob();
     owned();
     from_cstr();
     prefixes();
+    slices();
     return 0;
 }
