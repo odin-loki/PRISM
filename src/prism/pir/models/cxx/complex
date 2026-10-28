@@ -16,8 +16,15 @@
 // that check, a square that fits is __builtin_sqrt / __builtin_sqrtf /
 // __builtin_sqrtl of the sum of the squares. This is not a scaled magnitude.
 //
+// norm(const complex<T>&) of (0, 0) is 0, including -0. For a nonzero value,
+// if the square of either part does not fit in the type (the product
+// overflowed or is non-finite), the path is __prism_check with class
+// FUNC-CONTRACT and then __builtin_trap. It does not return 0 and it does
+// not return a finite number. Only after that check, the return is the sum
+// of the squares. This is not a scaled magnitude.
+//
 // exp, log, log10, pow, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh,
-// tanh, asinh, acosh, atanh, arg, norm, polar, and proj are not declared. A
+// tanh, asinh, acosh, atanh, arg, polar, and proj are not declared. A
 // unit that names one fails to compile against this header, and the pir
 // stage lowers it again with libstdc++ (extra.cxx_models). Those uses are
 // not stubbed. The schoolbook product and quotient are not libstdc++'s
@@ -208,6 +215,26 @@ _Tp abs(const complex<_Tp>& __z) {
         static_assert(_Prism_same_type<_Tp, long double>, "complex abs is float, double, or long double");
         return __builtin_sqrtl(__sum);
     }
+}
+
+// (0, 0) is 0. A nonzero square that overflowed or is non-finite is a
+// precondition failure, then a trap: not 0, and not a finite number.
+// The sum of the squares is returned only after that check.
+template <typename _Tp>
+_Tp norm(const complex<_Tp>& __z) {
+    const _Tp __re = __z.real();
+    const _Tp __im = __z.imag();
+    if (__re == _Tp() && __im == _Tp()) return _Tp();
+    const _Tp __rr = __re * __re;
+    const _Tp __ii = __im * __im;
+    // NaN is not equal to itself. An infinite product is not equal to the
+    // difference of itself (overflow, or a non-finite part).
+    const bool __rr_fit = (__rr == __rr) && ((__rr - __rr) == _Tp());
+    const bool __ii_fit = (__ii == __ii) && ((__ii - __ii) == _Tp());
+    const bool __fit = __rr_fit && __ii_fit;
+    __prism_check(__fit ? 1 : 0, "FUNC-CONTRACT", "complex norm square does not fit");
+    if (!__fit) __builtin_trap();
+    return __rr + __ii;
 }
 
 }  // namespace std

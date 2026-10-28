@@ -4,6 +4,9 @@
 // constructed value are the values that were passed in. No heap allocation.
 // abs of (0, 0) is 0. A square that does not fit is __prism_check then
 // __builtin_trap, and that path does not return a magnitude.
+// norm of (0, 0) is 0. A square that does not fit is the same kind of
+// check and trap, and that path does not return a finite sum. A square
+// that fits returns the sum of the squares.
 
 #include <doctest/doctest.h>
 
@@ -156,7 +159,7 @@ TEST_CASE("cxx complex model: abs of (0, 0) is 0 and a fitting magnitude is the 
     CHECK(g_check.ok != 0);
 }
 
-TEST_CASE("cxx complex model: a square that does not fit traps, and arg norm polar proj stay omitted") {
+TEST_CASE("cxx complex model: a square that does not fit traps, and arg polar proj stay omitted") {
     const fs::path header = fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "complex";
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -174,7 +177,8 @@ TEST_CASE("cxx complex model: a square that does not fit traps, and arg norm pol
         }
     }
     CHECK(src.find("atanh, abs,") == std::string::npos);
-    CHECK(src.find("atanh, arg, norm, polar, and proj are not declared") != std::string::npos);
+    CHECK(src.find("atanh, arg, norm, polar") == std::string::npos);
+    CHECK(src.find("atanh, arg, polar, and proj are not declared") != std::string::npos);
     CHECK(src.find("__prism_check(!__zero, \"FUNC-CONTRACT\", \"complex division by zero\");") != std::string::npos);
     CHECK(src.find("if (__zero) return *this;") != std::string::npos);
     CHECK(count_of(src, "complex division by zero") == 1);
@@ -208,11 +212,74 @@ TEST_CASE("cxx complex model: a square that does not fit traps, and arg norm pol
     CHECK(body.find("return __ii") == std::string::npos);
     CHECK(count_of(src, "complex abs square does not fit") == 1);
 
-    for (const char* sig : {"arg(const complex", "norm(const complex", "polar(", "proj(const complex",
+    for (const char* sig : {"arg(const complex", "polar(", "proj(const complex",
                             "sinh(const complex", "cosh(const complex", "tanh(const complex",
                             "asinh(const complex", "acosh(const complex", "atanh(const complex",
                             "sqrt(const complex", "exp(const complex", "hypot("}) {
         CAPTURE(sig);
         CHECK(src.find(sig) == std::string::npos);
     }
+}
+
+TEST_CASE("cxx complex model: norm of (0, 0) is 0 and a fitting value is the sum of the squares") {
+    g_check = {};
+    CHECK(std::norm(std::complex<double>(0.0, 0.0)) == 0.0);
+    CHECK(std::norm(std::complex<double>(-0.0, -0.0)) == 0.0);
+    CHECK(g_check.n == 0);
+
+    g_check = {};
+    CHECK(std::norm(std::complex<double>(3.0, 4.0)) == 25.0);
+    CHECK(g_check.n == 1);
+    CHECK(g_check.ok != 0);
+    CHECK(std::strcmp(g_check.cls, "FUNC-CONTRACT") == 0);
+    CHECK(std::strcmp(g_check.msg, "complex norm square does not fit") == 0);
+
+    g_check = {};
+    CHECK(std::norm(std::complex<double>(-3.0, 0.0)) == 9.0);
+    CHECK(g_check.ok != 0);
+
+    g_check = {};
+    CHECK(std::norm(std::complex<double>(0.0, -5.0)) == 25.0);
+    CHECK(g_check.ok != 0);
+
+    g_check = {};
+    CHECK(std::norm(std::complex<float>(0.0f, 0.0f)) == 0.0f);
+    CHECK(g_check.n == 0);
+    CHECK(std::norm(std::complex<float>(3.0f, 4.0f)) == 25.0f);
+    CHECK(g_check.n == 1);
+    CHECK(g_check.ok != 0);
+
+    g_check = {};
+    CHECK(std::norm(std::complex<long double>(0.0L, 0.0L)) == 0.0L);
+    CHECK(g_check.n == 0);
+    CHECK(std::norm(std::complex<long double>(3.0L, 4.0L)) == 25.0L);
+    CHECK(g_check.n == 1);
+    CHECK(g_check.ok != 0);
+
+    const fs::path header = fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "complex";
+    const std::string src = slurp(header);
+    const std::string body = body_of(src, "_Tp norm(const complex<_Tp>& __z)");
+    REQUIRE_FALSE(body.empty());
+    const auto zero = body.find("if (__re == _Tp() && __im == _Tp()) return _Tp();");
+    const auto check =
+        body.find("__prism_check(__fit ? 1 : 0, \"FUNC-CONTRACT\", \"complex norm square does not fit\");");
+    const auto trap = body.find("if (!__fit) __builtin_trap();");
+    const auto sum = body.find("return __rr + __ii;");
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    REQUIRE(sum != std::string::npos);
+    CHECK(zero < check);
+    CHECK(check < trap);
+    CHECK(trap < sum);
+    if (check < trap)
+        CHECK(body.substr(check, trap - check).find("return") == std::string::npos);
+    CHECK(count_of(body, "return ") == 2);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("return __rr;") == std::string::npos);
+    CHECK(body.find("return __ii;") == std::string::npos);
+    CHECK(body.find("return __sum") == std::string::npos);
+    CHECK(body.find("__builtin_sqrt") == std::string::npos);
+    CHECK(count_of(src, "complex norm square does not fit") == 1);
+    CHECK(count_of(src, "_Tp norm(const complex<_Tp>& __z)") == 1);
 }
