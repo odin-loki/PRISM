@@ -1,7 +1,9 @@
 // The <regex> model owns a copy of the pattern characters. An empty pattern
 // stays empty. A null const char* is a FUNC-CONTRACT check and is not stored
-// as a match-all pattern. regex_match, regex_search, and regex_replace are
-// not declared: a true return would be a fake match.
+// as a match-all pattern. flags() returns the stored unsigned. It does not
+// read the pattern to decide a match, and 0 is not a claim that the pattern
+// matches. regex_match, regex_search, and regex_replace are not declared:
+// a true return would be a fake match.
 //
 // CMake's prism_tests source list is explicit (not a glob): this file is one
 // line in _prism_test_sources. The trace is tests/cxx_models/regex_trace.cpp.
@@ -206,4 +208,65 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(arr.find("while (__n < _Nm && __s[__n] != '\\0') ++__n;") != std::string::npos);
     CHECK(arr.find("if (__n != 0) _M_own(__s, __n);") != std::string::npos);
     CHECK(arr.find("\".*\"") == std::string::npos);
+
+    CHECK(src.find("It does not read the pattern to decide a match") != std::string::npos);
+    CHECK(src.find("0 is not a claim that the pattern matches") != std::string::npos);
+    CHECK(src.find("not PROVED and not CLEAN") != std::string::npos);
+    CHECK(src.find("unsigned _M_flags;") != std::string::npos);
+    CHECK(count_sub(src, "_M_flags(0)") == 3);
+    CHECK(src.find("regex() noexcept : _M_str(nullptr), _M_len(0), _M_flags(0)") != std::string::npos);
+    CHECK(src.find("explicit regex(const char* __s) : _M_str(nullptr), _M_len(0), _M_flags(0)") != std::string::npos);
+    CHECK(src.find("explicit regex(const char (&__s)[_Nm]) : _M_str(nullptr), _M_len(0), _M_flags(0)") !=
+          std::string::npos);
+    CHECK(src.find("regex(const regex& __o) : _M_str(nullptr), _M_len(0), _M_flags(__o._M_flags)") != std::string::npos);
+    CHECK(src.find("regex(regex&& __o) noexcept : _M_str(__o._M_str), _M_len(__o._M_len), _M_flags(__o._M_flags)") !=
+          std::string::npos);
+    CHECK(src.find("_M_flags(__f)") == std::string::npos);
+
+    const std::string flags_fn = body_of(src, "unsigned flags() const noexcept");
+    REQUIRE_FALSE(flags_fn.empty());
+    CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
+    CHECK(flags_fn.find("_M_str") == std::string::npos);
+    CHECK(flags_fn.find("_M_len") == std::string::npos);
+    CHECK(flags_fn.find("_M_own") == std::string::npos);
+    CHECK(flags_fn.find("_M_from_cstr") == std::string::npos);
+    CHECK(flags_fn.find("delete") == std::string::npos);
+
+    const std::string flagged = body_of(src, "regex(const char* __s, unsigned __f)");
+    REQUIRE_FALSE(flagged.empty());
+    CHECK(src.find("regex(const char* __s, unsigned __f) : _M_str(nullptr), _M_len(0) {") != std::string::npos);
+    const auto flag_null =
+        flagged.find("if (__s == nullptr) _M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\");");
+    const auto flag_store = flagged.find("_M_flags = __f;");
+    const auto flag_from = flagged.find("_M_from_cstr(__s);");
+    REQUIRE(flag_null != std::string::npos);
+    REQUIRE(flag_store != std::string::npos);
+    REQUIRE(flag_from != std::string::npos);
+    CHECK(flag_null < flag_store);
+    CHECK(flag_store < flag_from);
+    CHECK(flagged.find("_M_flags(0)") == std::string::npos);
+    CHECK(flagged.find("_M_str") == std::string::npos);
+    CHECK(flagged.find("_M_own") == std::string::npos);
+    CHECK(flagged.find("delete") == std::string::npos);
+    CHECK(flagged.find("\".*\"") == std::string::npos);
+    CHECK(from.find("_M_flags") == std::string::npos);
+
+    CHECK(moved.find("__o._M_flags = 0") != std::string::npos);
+    const auto move_copy_flag = move_as.find("_M_flags = __o._M_flags;");
+    const auto move_clear_flag = move_as.find("__o._M_flags = 0;");
+    REQUIRE(move_copy_flag != std::string::npos);
+    REQUIRE(move_clear_flag != std::string::npos);
+    CHECK(take < move_copy_flag);
+    CHECK(move_copy_flag < clear);
+    CHECK(clear < move_clear_flag);
+
+    const std::string swap_body = body_of(src, "void regex::_M_swap(regex& __o) noexcept");
+    REQUIRE_FALSE(swap_body.empty());
+    CHECK(swap_body.find("_M_flags = __o._M_flags;") != std::string::npos);
+    CHECK(swap_body.find("__o._M_flags = __f;") != std::string::npos);
+    CHECK(swap_body.find("delete") == std::string::npos);
+    CHECK(free_body.find("_M_flags") == std::string::npos);
+    const std::string own_body = body_of(src, "void regex::_M_own(const char* __s, std::size_t __n)");
+    REQUIRE_FALSE(own_body.empty());
+    CHECK(own_body.find("_M_flags") == std::string::npos);
 }

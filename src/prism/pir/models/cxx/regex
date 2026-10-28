@@ -15,6 +15,15 @@
 // empty match-all. An empty pattern stays empty: length 0, no allocation,
 // not the two characters of a match-all pattern.
 //
+// An unsigned flag is stored on the object. flags() returns that unsigned.
+// It does not read the pattern to decide a match, and 0 is not a claim
+// that the pattern matches. The default constructor and the other
+// existing constructors store 0. regex(const char*, unsigned) uses the
+// same null check as regex(const char*): a null pointer is FUNC-CONTRACT
+// then __builtin_trap, and it is not stored. The flag is stored only
+// after that check. Copy and move copy the flag.
+// This is not PROVED and not CLEAN.
+//
 // regex_match, regex_search, and regex_replace are not declared. A true
 // return from any of them would be a fake match. A use fails to compile
 // against this header and pir falls back to libstdc++ (extra.cxx_models).
@@ -44,33 +53,46 @@ namespace std {
 
 class regex {
 public:
-    regex() noexcept : _M_str(nullptr), _M_len(0) {}
+    regex() noexcept : _M_str(nullptr), _M_len(0), _M_flags(0) {}
 
     // C string. A null pointer is a contract failure, not a pattern. A
     // missing terminator inside the object is a failed read, and this does
-    // not copy past that object.
-    explicit regex(const char* __s) : _M_str(nullptr), _M_len(0) { _M_from_cstr(__s); }
+    // not copy past that object. The flag is 0.
+    explicit regex(const char* __s) : _M_str(nullptr), _M_len(0), _M_flags(0) { _M_from_cstr(__s); }
+
+    // Same null check as regex(const char*). A null pointer is
+    // FUNC-CONTRACT then __builtin_trap, and it is not stored. The flag
+    // is stored only after that check. _M_from_cstr then copies the
+    // pattern. An empty pattern stays empty.
+    regex(const char* __s, unsigned __f) : _M_str(nullptr), _M_len(0) {
+        if (__s == nullptr) _M_fail("FUNC-CONTRACT", "std::regex constructed from a null pointer");
+        _M_flags = __f;
+        _M_from_cstr(__s);
+    }
 
     // A char array that is not a string literal. The bound is the array, so
     // the copy does not read past it. The owned length stops at the first
     // NUL. An empty array stays empty. A string literal selects the
     // const char* constructor instead: that non-template is the match
     // clang chooses, and that path reads through __prism_obj_size.
+    // The flag is 0.
     template <std::size_t _Nm>
-    explicit regex(const char (&__s)[_Nm]) : _M_str(nullptr), _M_len(0) {
+    explicit regex(const char (&__s)[_Nm]) : _M_str(nullptr), _M_len(0), _M_flags(0) {
         std::size_t __n = 0;
         while (__n < _Nm && __s[__n] != '\0') ++__n;
         if (__n != 0) _M_own(__s, __n);
     }
 
-    regex(const regex& __o) : _M_str(nullptr), _M_len(0) {
+    regex(const regex& __o) : _M_str(nullptr), _M_len(0), _M_flags(__o._M_flags) {
         if (__o._M_len != 0) _M_own(__o._M_str, __o._M_len);
     }
 
     // The source keeps no pointer. Its destructor then has nothing to free.
-    regex(regex&& __o) noexcept : _M_str(__o._M_str), _M_len(__o._M_len) {
+    // The flag is copied, then the source flag is 0.
+    regex(regex&& __o) noexcept : _M_str(__o._M_str), _M_len(__o._M_len), _M_flags(__o._M_flags) {
         __o._M_str = nullptr;
         __o._M_len = 0;
+        __o._M_flags = 0;
     }
 
     regex& operator=(const regex& __o) {
@@ -88,8 +110,10 @@ public:
             _M_free();
             _M_str = __o._M_str;
             _M_len = __o._M_len;
+            _M_flags = __o._M_flags;
             __o._M_str = nullptr;
             __o._M_len = 0;
+            __o._M_flags = 0;
         }
         return *this;
     }
@@ -103,10 +127,14 @@ public:
     [[nodiscard]] bool empty() const noexcept { return _M_len == 0; }
     // Owned characters, or nullptr when the pattern is empty. Not a match.
     [[nodiscard]] const char* data() const noexcept { return _M_str; }
+    // The stored unsigned. It does not read the pattern to decide a match,
+    // and 0 is not a claim that the pattern matches.
+    [[nodiscard]] unsigned flags() const noexcept { return _M_flags; }
 
 private:
     char* _M_str;
     std::size_t _M_len;
+    unsigned _M_flags;
 
     [[noreturn]] static void _M_fail(const char* __cls, const char* __msg) noexcept;
     void _M_free() noexcept;
@@ -146,10 +174,13 @@ inline void regex::_M_own(const char* __s, std::size_t __n) {
 inline void regex::_M_swap(regex& __o) noexcept {
     char* __s = _M_str;
     const std::size_t __n = _M_len;
+    const unsigned __f = _M_flags;
     _M_str = __o._M_str;
     _M_len = __o._M_len;
+    _M_flags = __o._M_flags;
     __o._M_str = __s;
     __o._M_len = __n;
+    __o._M_flags = __f;
 }
 
 inline void regex::_M_from_cstr(const char* __s) {
