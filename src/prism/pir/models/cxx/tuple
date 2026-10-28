@@ -2,17 +2,17 @@
 // on the C++ include path, so `#include <tuple>` reaches this file instead of
 // libstdc++'s.
 //
-// Arity 0, 1, 2, 3, 4, 5, and 6. Each element is a member of the object. std::get<I>
+// Arity 0, 1, 2, 3, 4, 5, 6, and 7. Each element is a member of the object. std::get<I>
 // returns that member. An index that is not a valid compile-time index is
 // ill-formed. tuple<> has no get<0>. get<3> on a 3-tuple is ill-formed.
 // get<4> on a 4-tuple is ill-formed. get<5> on a 5-tuple is ill-formed.
-// get<6> on a 6-tuple is ill-formed.
+// get<6> on a 6-tuple is ill-formed. get<7> on a 7-tuple is ill-formed.
 // Nothing here returns a value-initialized object in place of an element the
 // tuple does not have.
 //
 // Not declared, so a use fails to compile and the pir stage lowers that
 // translation unit again with libstdc++ (extra.cxx_models): tuple_cat, apply,
-// forward_as_tuple, tie, comparison, and any arity above 6 (the primary
+// forward_as_tuple, tie, comparison, and any arity above 7 (the primary
 // template is not defined).
 #ifndef _GLIBCXX_TUPLE
 #define _GLIBCXX_TUPLE 1
@@ -154,6 +154,29 @@ public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4(), _M_5() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e, const _T5& __f) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e), _M_5(__f) {}
     constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)) {}
+    constexpr tuple(const tuple&) = default;
+    constexpr tuple(tuple&&) = default;
+    constexpr tuple& operator=(const tuple&) = default;
+    constexpr tuple& operator=(tuple&&) = default;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+class tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6> {
+    _T0 _M_0;
+    _T1 _M_1;
+    _T2 _M_2;
+    _T3 _M_3;
+    _T4 _M_4;
+    _T5 _M_5;
+    _T6 _M_6;
+
+    template <size_t _I, typename _Tup>
+    friend struct _Prism_tuple_get;
+
+public:
+    constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4(), _M_5(), _M_6() {}
+    constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e, const _T5& __f, const _T6& __g) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e), _M_5(__f), _M_6(__g) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f, _T6&& __g) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)), _M_6(static_cast<_T6&&>(__g)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -328,6 +351,62 @@ struct _Prism_tuple_get<5, tuple<_T0, _T1, _T2, _T3, _T4, _T5>> {
     static constexpr const _T5&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5>&& __t) noexcept { return static_cast<const _T5&&>(__t._M_5); }
 };
 
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<0, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T0& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_0; }
+    static constexpr const _T0& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_0; }
+    static constexpr _T0&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T0&&>(__t._M_0); }
+    static constexpr const _T0&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T0&&>(__t._M_0); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<1, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T1& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_1; }
+    static constexpr const _T1& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_1; }
+    static constexpr _T1&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T1&&>(__t._M_1); }
+    static constexpr const _T1&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T1&&>(__t._M_1); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<2, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T2& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_2; }
+    static constexpr const _T2& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_2; }
+    static constexpr _T2&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T2&&>(__t._M_2); }
+    static constexpr const _T2&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T2&&>(__t._M_2); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<3, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T3& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_3; }
+    static constexpr const _T3& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_3; }
+    static constexpr _T3&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T3&&>(__t._M_3); }
+    static constexpr const _T3&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T3&&>(__t._M_3); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<4, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T4& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_4; }
+    static constexpr const _T4& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_4; }
+    static constexpr _T4&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T4&&>(__t._M_4); }
+    static constexpr const _T4&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T4&&>(__t._M_4); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<5, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T5& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_5; }
+    static constexpr const _T5& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_5; }
+    static constexpr _T5&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T5&&>(__t._M_5); }
+    static constexpr const _T5&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T5&&>(__t._M_5); }
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct _Prism_tuple_get<6, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    static constexpr _T6& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_6; }
+    static constexpr const _T6& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept { return __t._M_6; }
+    static constexpr _T6&& get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<_T6&&>(__t._M_6); }
+    static constexpr const _T6&& get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept { return static_cast<const _T6&&>(__t._M_6); }
+};
+
 template <>
 struct tuple_size<tuple<>> : integral_constant<size_t, 0> {};
 
@@ -348,6 +427,9 @@ struct tuple_size<tuple<_T0, _T1, _T2, _T3, _T4>> : integral_constant<size_t, 5>
 
 template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5>
 struct tuple_size<tuple<_T0, _T1, _T2, _T3, _T4, _T5>> : integral_constant<size_t, 6> {};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_size<tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> : integral_constant<size_t, 7> {};
 
 template <typename _T0>
 struct tuple_element<0, tuple<_T0>> {
@@ -454,6 +536,41 @@ struct tuple_element<5, tuple<_T0, _T1, _T2, _T3, _T4, _T5>> {
     using type = _T5;
 };
 
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<0, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T0;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<1, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T1;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<2, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T2;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<3, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T3;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<4, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T4;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<5, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T5;
+};
+
+template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+struct tuple_element<6, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>> {
+    using type = _T6;
+};
+
 template <size_t _I, typename _T0>
 constexpr decltype(auto) get(tuple<_T0>& __t) noexcept {
     return _Prism_tuple_get<_I, tuple<_T0>>::get(__t);
@@ -554,6 +671,23 @@ constexpr decltype(auto) get(tuple<_T0, _T1, _T2, _T3, _T4, _T5>&& __t) noexcept
 template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5>
 constexpr decltype(auto) get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5>&& __t) noexcept {
     return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5>>::get(static_cast<const tuple<_T0, _T1, _T2, _T3, _T4, _T5>&&>(__t));
+}
+
+template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+constexpr decltype(auto) get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>>::get(__t);
+}
+template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+constexpr decltype(auto) get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>>::get(__t);
+}
+template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+constexpr decltype(auto) get(tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>>::get(static_cast<tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&&>(__t));
+}
+template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
+constexpr decltype(auto) get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&& __t) noexcept {
+    return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>>::get(static_cast<const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6>&&>(__t));
 }
 
 }  // namespace std
