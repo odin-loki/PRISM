@@ -24,11 +24,19 @@
 // and operator>= are true. Every monostate compares equal. Those operators
 // compare monostate values. They do not compare two variant objects.
 //
-// visit, swap, comparison of variant (operator==, operator<=>, and the
-// relational operators), hash, in_place constructors, and bad_variant_access
-// are not declared. operator<=> on monostate is not declared. A use of an
-// omitted API fails to compile against this header, so the pir stage falls
-// back to libstdc++.
+// operator== and operator!= compare two variant objects of the same type.
+// Two valueless variants compare equal and that path does not read a stored
+// alternative. Different indexes compare unequal and that path does not read
+// the inactive alternative. The same index compares the stored values with
+// ==. operator!= is the negation. A valueless variant is not equal to one
+// that holds a value. Two different variant types are not that operator.
+// This is not PROVED and not CLEAN.
+//
+// visit, swap, relational comparison of variant (operator<, operator<=>, and
+// the other relational operators), hash, in_place constructors, and
+// bad_variant_access are not declared. operator<=> on monostate is not
+// declared. A use of an omitted API fails to compile against this header, so
+// the pir stage falls back to libstdc++.
 #ifndef _PRISM_MODEL_VARIANT
 #define _PRISM_MODEL_VARIANT 1
 #define _GLIBCXX_VARIANT 1  // libstdc++'s <variant> include guard: never both
@@ -434,6 +442,44 @@ template <typename _T, typename... _Types>
 constexpr bool holds_alternative(const variant<_Types...>& __v) noexcept {
     static_assert(_Prism_var_count<_T, _Types...> == 1, "holds_alternative requires T exactly once");
     return __v.index() == _Prism_var_index_of<_T, _Types...>::value;
+}
+
+// Same index only. The stored values are compared with ==. A different index
+// does not read the inactive alternative. This does not construct T{}.
+template <std::size_t _I, typename... _Types>
+constexpr bool _Prism_var_eq_at(const variant<_Types...>& __a, const variant<_Types...>& __b) {
+    if constexpr (_I < sizeof...(_Types)) {
+        if (__a.index() == _I && __b.index() == _I)
+            return __a.template _M_get<_I>() == __b.template _M_get<_I>();
+        return _Prism_var_eq_at<_I + 1>(__a, __b);
+    }
+    return false;
+}
+
+// Two variant objects of the same type. Two valueless variants compare equal
+// and that path does not read a stored alternative. A valueless variant is
+// not equal to one that holds a value. Different indexes compare unequal and
+// that path does not read the inactive alternative. The same index compares
+// the stored values with ==. This is not PROVED and not CLEAN.
+template <typename... _Types>
+constexpr bool operator==(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x == __y; }) && ...)
+{
+    if (__a.valueless_by_exception() && __b.valueless_by_exception())
+        return true;
+    if (__a.valueless_by_exception() || __b.valueless_by_exception())
+        return false;
+    if (__a.index() != __b.index())
+        return false;
+    return _Prism_var_eq_at<0>(__a, __b);
+}
+
+// Negation of operator==. Same type only.
+template <typename... _Types>
+constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x == __y; }) && ...)
+{
+    return !(__a == __b);
 }
 
 template <typename _T>

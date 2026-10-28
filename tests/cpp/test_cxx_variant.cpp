@@ -8,8 +8,9 @@
 // __prism_check, and the model does not print a fake T.
 //
 // std::monostate is empty. Two monostate objects compare equal: == is true,
-// != is false, < and > are false, and <= and >= are true. visit, swap, and
-// comparison of variant stay undeclared.
+// != is false, < and > are false, and <= and >= are true. Two variant objects
+// of the same type compare with == and !=. visit, swap, and relational
+// comparison of variant stay undeclared. This is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -142,6 +143,27 @@ bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     build.push_back((tmp / kProbeExe).string());
     if (!run_cmd(build)) return false;
     return run_cmd({(tmp / kProbeExe).string()});
+}
+
+fs::path build_text(const std::string& cxx, const fs::path& tmp, const std::string& name, const std::string& src,
+                    bool with_models) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path in = tmp / (name + ".cpp");
+    std::ofstream(in) << src;
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = tmp / (name + (with_models ? ".model" : ".lib"));
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(in.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    return out;
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
@@ -331,6 +353,7 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
 
     // The comment still names the omitted APIs. A declaration would survive stripping.
     CHECK(src.find("comparison of variant") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
     const std::string code = strip_comments(src);
     CHECK(has_ident(code, "monostate"));
     for (const char* name : {"visit", "swap", "bad_variant_access", "hash", "in_place"}) {
@@ -338,8 +361,12 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
         CHECK_FALSE(has_ident(code, name));
     }
     CHECK(code.find("operator<=>") == std::string::npos);
-    CHECK(code.find("operator==(const variant") == std::string::npos);
+    CHECK(code.find("constexpr bool operator==(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
     CHECK(code.find("operator==(variant") == std::string::npos);
+    CHECK(code.find("operator!=(variant") == std::string::npos);
     for (const char* op : {"operator<", "operator>", "operator<=", "operator>="}) {
         CAPTURE(op);
         CHECK(code.find(std::string(op) + "(const variant") == std::string::npos);
@@ -361,9 +388,6 @@ TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against t
         const char* src;
     };
     const Snip snips[] = {
-        {"eq",
-         "#include <variant>\n"
-         "int use(){ std::variant<int, char> a(1), b(1); return a == b ? 1 : 0; }\n"},
         {"rel",
          "#include <variant>\n"
          "int use(){ std::variant<int, char> a(1), b(2); return a < b ? 1 : 0; }\n"},
@@ -395,6 +419,145 @@ TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against t
         CHECK(syntax_only(c.cxx, src, false, &err));
         CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
     }
+}
+
+TEST_CASE("cxx variant model: equality reads only the active alternative") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    const std::string src = slurp(header);
+    const std::string code = strip_comments(src);
+    const auto at = code.find("constexpr bool _Prism_var_eq_at(");
+    const auto eq = code.find("constexpr bool operator==(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto ne = code.find("constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    REQUIRE(at != std::string::npos);
+    REQUIRE(eq != std::string::npos);
+    REQUIRE(ne != std::string::npos);
+    REQUIRE(at < eq);
+    REQUIRE(eq < ne);
+
+    const std::string helper = code.substr(at, eq - at);
+    CHECK(helper.find("if (__a.index() == _I && __b.index() == _I)") != std::string::npos);
+    CHECK(helper.find("return __a.template _M_get<_I>() == __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(helper.find("return false;") != std::string::npos);
+    CHECK(helper.find("return true") == std::string::npos);
+    CHECK(helper.find("{}") == std::string::npos);
+    CHECK(helper.find("_M_get") < helper.find("return false;"));
+
+    const std::string eq_body = code.substr(eq, ne - eq);
+    const auto both = eq_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
+    const auto either = eq_body.find("if (__a.valueless_by_exception() || __b.valueless_by_exception())");
+    const auto diff = eq_body.find("if (__a.index() != __b.index())");
+    const auto yes = eq_body.find("return true;");
+    const auto read = eq_body.find("_Prism_var_eq_at<0>(__a, __b)");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(either != std::string::npos);
+    REQUIRE(diff != std::string::npos);
+    REQUIRE(yes != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    CHECK(both < yes);
+    CHECK(yes < either);
+    CHECK(either < diff);
+    CHECK(diff < read);
+    CHECK(eq_body.find("_M_get") == std::string::npos);
+    CHECK(eq_body.find("_M_ptr") == std::string::npos);
+    CHECK(eq_body.find("_M_storage") == std::string::npos);
+    CHECK(eq_body.find("_M_first") == std::string::npos);
+    CHECK(eq_body.find("T{}") == std::string::npos);
+    CHECK(eq_body.find("_T{}") == std::string::npos);
+    CHECK(eq_body.find("return true;") != std::string::npos);
+    int variant_eq = 0;
+    for (std::size_t i = 0; (i = code.find("operator==(const variant", i)) != std::string::npos; i += 1)
+        ++variant_eq;
+    CHECK(variant_eq == 1);
+
+    const std::string ne_body = code.substr(ne, code.find("struct variant_size", ne) - ne);
+    CHECK(ne_body.find("return !(__a == __b);") != std::string::npos);
+    CHECK(ne_body.find("_M_get") == std::string::npos);
+    CHECK(ne_body.find("return true") == std::string::npos);
+    CHECK(ne_body.find("T{}") == std::string::npos);
+
+    CHECK(code.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+}
+
+TEST_CASE("cxx variant model: same-type equality matches libstdc++ and different types do not compile") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* diff_eq =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<char> b('a'); return a == b ? 1 : 0; }\n";
+    const char* diff_ne =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<long> b(1L); return a != b ? 1 : 0; }\n";
+    for (const char* text : {diff_eq, diff_ne}) {
+        const fs::path src = c.tmp / "variant_diff_type.cpp";
+        std::ofstream(src) << text;
+        std::string err;
+        CHECK_FALSE(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
+
+    const char* same =
+        "#include <variant>\n"
+        "struct NoDef {\n"
+        "  int v;\n"
+        "  explicit NoDef(int x) : v(x) {}\n"
+        "  bool operator==(const NoDef& o) const { return v == o.v; }\n"
+        "};\n"
+        "int use(){\n"
+        "  std::variant<NoDef, char> a(NoDef(1));\n"
+        "  std::variant<NoDef, char> b(NoDef(1));\n"
+        "  std::variant<NoDef, char> d('x');\n"
+        "  return (a == b && !(a != b) && !(a == d) && (a != d)) ? 1 : 0;\n"
+        "}\n";
+    const fs::path same_src = c.tmp / "variant_same_eq.cpp";
+    std::ofstream(same_src) << same;
+    std::string err;
+    CHECK(syntax_only(c.cxx, same_src, false, &err));
+    CHECK(syntax_only(c.cxx, same_src, true, &err));
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "struct NoDef {\n"
+        "  int v;\n"
+        "  explicit NoDef(int x) : v(x) {}\n"
+        "  NoDef(const NoDef& o) : v(o.v) {}\n"
+        "  bool operator==(const NoDef& o) const {\n"
+        "    std::printf(\"call %d %d\\n\", v, o.v);\n"
+        "    return v == o.v;\n"
+        "  }\n"
+        "};\n"
+        "int main() {\n"
+        "  std::variant<int, char> ia(1), ib(1), ic(2), id('A');\n"
+        "  std::printf(\"ieq %d %d %d %d %d %d\\n\",\n"
+        "              static_cast<int>(ia == ia), static_cast<int>(ia == ib), static_cast<int>(ia == ic),\n"
+        "              static_cast<int>(ia == id), static_cast<int>(ia != ib), static_cast<int>(ia != id));\n"
+        "  std::variant<int, int> da, db, dc;\n"
+        "  da.emplace<0>(1);\n"
+        "  db.emplace<1>(1);\n"
+        "  dc.emplace<0>(1);\n"
+        "  std::printf(\"dup %d %d %d %d\\n\", static_cast<int>(da == db), static_cast<int>(da == dc),\n"
+        "              static_cast<int>(da != db), static_cast<int>(da != dc));\n"
+        "  std::variant<std::monostate, int> m1, m2, m3(4);\n"
+        "  std::printf(\"meq %d %d %d %d\\n\", static_cast<int>(m1 == m2), static_cast<int>(m1 == m3),\n"
+        "              static_cast<int>(m1 != m2), static_cast<int>(m1 != m3));\n"
+        "  std::variant<NoDef, char> a(NoDef(3)), b(NoDef(3)), cv(NoDef(4)), d('Z');\n"
+        "  const int same = a == b;\n"
+        "  const int diffv = a == cv;\n"
+        "  const int diffi = a == d;\n"
+        "  std::printf(\"nd %d %d %d\\n\", same, diffv, diffi);\n"
+        "  return 0;\n"
+        "}\n";
+    auto lib = build_text(c.cxx, c.tmp, "variant_eq", prog, false);
+    auto mod = build_text(c.cxx, c.tmp, "variant_eq", prog, true);
+    const std::vector<std::string> expect{"ieq 1 1 0 0 0 1", "dup 0 1 1 0", "meq 1 0 0 1",
+                                          "call 3 3",        "call 3 4",    "nd 1 0 0"};
+    CHECK(run_lines(lib) == expect);
+    CHECK(run_lines(mod) == expect);
 }
 
 TEST_CASE("cxx variant model: monostate ordering compiles against the model and libstdc++") {
