@@ -180,6 +180,10 @@ public:
         }
         const size_type __room = _M_len - __pos;
         const size_type __n = __count < __room ? __count : __room;
+        // An empty view stores a null pointer. Adding to that pointer is not
+        // a character, so the empty result stores null and the length.
+        if (_M_str == nullptr)
+            return basic_string_view(nullptr, __n);
         return basic_string_view(_M_str + __pos, __n);
     }
 

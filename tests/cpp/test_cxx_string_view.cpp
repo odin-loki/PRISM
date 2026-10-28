@@ -377,6 +377,8 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(sub.substr(check, trap - check).find("return") == std::string::npos);
     CHECK(sub.find("const size_type __room = _M_len - __pos;") != std::string::npos);
     CHECK(sub.find("const size_type __n = __count < __room ? __count : __room;") != std::string::npos);
+    CHECK(sub.find("if (_M_str == nullptr)") != std::string::npos);
+    CHECK(sub.find("return basic_string_view(nullptr, __n);") != std::string::npos);
     CHECK(sub.find("return basic_string_view(_M_str + __pos, __n);") != std::string::npos);
     CHECK(sub.find("_M_str[") == std::string::npos);
     CHECK(sub.find("__pos + __count") == std::string::npos);
