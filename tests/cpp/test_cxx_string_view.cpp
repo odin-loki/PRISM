@@ -1,8 +1,9 @@
 // Differential test of the std::string_view model header
 // (src/prism/pir/models/cxx/string_view). Same shape as tests/cpp/test_cxx_list.cpp.
 // The view does not own its characters, front() on an empty view is a check,
-// and operator[] in range is the real character. CMake's prism_tests source
-// list is explicit (not a glob).
+// and operator[] in range is the real character. starts_with and ends_with
+// compare at most size() characters. CMake's prism_tests source list is
+// explicit (not a glob).
 
 #include <doctest/doctest.h>
 
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifndef _WIN32
@@ -170,6 +172,49 @@ bool line_has(const std::vector<std::string>& lines, const char* needle) {
     return false;
 }
 
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Drop // comments. The header has no block comments.
+std::string strip_line_comments(std::string_view src) {
+    std::string out;
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        if (src[i] == '/' && i + 1 < src.size() && src[i + 1] == '/') {
+            while (i < src.size() && src[i] != '\n') ++i;
+            if (i < src.size()) out.push_back('\n');
+            continue;
+        }
+        out.push_back(src[i]);
+    }
+    return out;
+}
+
+std::string body_of(std::string_view src, std::string_view sig) {
+    const auto at = src.find(sig);
+    if (at == std::string_view::npos) return {};
+    const auto brace = src.find('{', at);
+    if (brace == std::string_view::npos) return {};
+    int depth = 0;
+    for (std::size_t i = brace; i < src.size(); ++i) {
+        if (src[i] == '{')
+            ++depth;
+        else if (src[i] == '}') {
+            if (--depth == 0) return std::string(src.substr(brace, i - brace + 1));
+        }
+    }
+    return {};
+}
+
+std::size_t count_occ(std::string_view src, std::string_view needle) {
+    std::size_t n = 0;
+    for (std::size_t at = 0; (at = src.find(needle, at)) != std::string_view::npos; at += needle.size()) ++n;
+    return n;
+}
+
 }  // namespace
 
 TEST_CASE("cxx string_view model: setup clang++ with ASan/UBSan") {
@@ -217,6 +262,13 @@ TEST_CASE("cxx string_view model: view does not own, index is the character, emp
     // is still those characters after the view's destructor.
     CHECK(line_has(b, "data_eq=1"));
     CHECK(line_has(b, "alive=pqrs"));
+    // Empty needle matches, including an empty view. A longer needle is false.
+    // A one-character needle is the first or last character. exact_long and
+    // suf_long share a prefix or a suffix and are still false.
+    CHECK(line_has(b, "sw_empty=1 sw_both=1 sw_pq=1 sw_px=0 sw_long=0 sw_none=0 sw_self=1"));
+    CHECK(line_has(b, "ew_empty=1 ew_both=1 ew_rs=1 ew_qr=0 ew_long=0 ew_none=0 ew_self=1"));
+    CHECK(line_has(b, "ch_sw=1 0 ch_ew=1 0 ch_empty=0 0"));
+    CHECK(line_has(b, "exact_long=0 0 suf_long=0"));
 
     for (const fs::path& exe : {lib, mod}) {
         std::string err;
@@ -226,4 +278,75 @@ TEST_CASE("cxx string_view model: view does not own, index is the character, emp
             CHECK(err.find("front()") != std::string::npos);
         }
     }
+}
+
+TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "string_view";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("substr, starts_with") == std::string::npos);
+    CHECK(src.find("compare, find, substr, and every other") != std::string::npos);
+    // Pointer plus count stores the pointer and the count. It stays noexcept
+    // and does not check null. The view still does not own its characters.
+    CHECK(src.find("constexpr basic_string_view() noexcept : _M_len{0}, _M_str{nullptr} {}") != std::string::npos);
+    CHECK(src.find("constexpr basic_string_view(const _CharT* __s, size_type __n) noexcept : _M_len{__n}, "
+                   "_M_str{__s} {}") != std::string::npos);
+    CHECK(src.find("constexpr ~basic_string_view() = default;") != std::string::npos);
+
+    const std::string code = strip_line_comments(src);
+    CHECK(code.find("compare(") == std::string::npos);
+    CHECK(code.find("substr(") == std::string::npos);
+    CHECK(code.find("find(") == std::string::npos);
+    CHECK(count_occ(code, "starts_with(") == 2);
+    CHECK(count_occ(code, "ends_with(") == 2);
+    CHECK(code.find("new ") == std::string::npos);
+    CHECK(code.find("delete") == std::string::npos);
+
+    const std::string sw = body_of(code, "bool starts_with(basic_string_view __x) const noexcept");
+    const std::string swc = body_of(code, "bool starts_with(_CharT __c) const noexcept");
+    const std::string ew = body_of(code, "bool ends_with(basic_string_view __x) const noexcept");
+    const std::string ewc = body_of(code, "bool ends_with(_CharT __c) const noexcept");
+    REQUIRE_FALSE(sw.empty());
+    REQUIRE_FALSE(swc.empty());
+    REQUIRE_FALSE(ew.empty());
+    REQUIRE_FALSE(ewc.empty());
+
+    const std::string bound = "const size_type __n = __x._M_len < _M_len ? __x._M_len : _M_len;";
+    CHECK(sw.find(bound) != std::string::npos);
+    CHECK(ew.find(bound) != std::string::npos);
+    // A compared length of 0 does not read _M_str. The loop bound is the
+    // overlap, at most size(), not the raw needle length.
+    REQUIRE(sw.find("_M_str") != std::string::npos);
+    REQUIRE(ew.find("_M_str") != std::string::npos);
+    CHECK(sw.find("if (__n != 0)") < sw.find("_M_str"));
+    CHECK(ew.find("if (__n != 0)") < ew.find("_M_str"));
+    CHECK(sw.find("for (size_type __i = 0; __i < __n; ++__i)") != std::string::npos);
+    CHECK(ew.find("for (size_type __i = 0; __i < __n; ++__i)") != std::string::npos);
+    CHECK(sw.find("__i < __x._M_len") == std::string::npos);
+    CHECK(ew.find("__i < __x._M_len") == std::string::npos);
+    CHECK(sw.find("return __x._M_len <= _M_len;") != std::string::npos);
+    CHECK(ew.find("return __x._M_len <= _M_len;") != std::string::npos);
+    CHECK(ew.find("_M_len - __n") != std::string::npos);
+    CHECK(ew.find("__x._M_len - __n") != std::string::npos);
+    CHECK(sw.find("__prism_check") == std::string::npos);
+    CHECK(ew.find("__prism_check") == std::string::npos);
+
+    REQUIRE(swc.find("_M_str") != std::string::npos);
+    REQUIRE(ewc.find("_M_str") != std::string::npos);
+    CHECK(swc.find("if (_M_len == 0) return false;") < swc.find("_M_str"));
+    CHECK(ewc.find("if (_M_len == 0) return false;") < ewc.find("_M_str"));
+    CHECK(swc.find("_M_str[0]") != std::string::npos);
+    CHECK(ewc.find("_M_str[_M_len - 1]") != std::string::npos);
+    CHECK(swc.find("__prism_check") == std::string::npos);
+    CHECK(ewc.find("__prism_check") == std::string::npos);
+
+    const std::string trace = slurp(repo() / "tests" / "cxx_models" / "string_view_trace.cpp");
+    CHECK(trace.find(".starts_with(") != std::string::npos);
+    CHECK(trace.find(".ends_with(") != std::string::npos);
+    CHECK(trace.find(".compare(") == std::string::npos);
+    CHECK(trace.find(".find(") == std::string::npos);
+    CHECK(trace.find(".substr(") == std::string::npos);
 }
