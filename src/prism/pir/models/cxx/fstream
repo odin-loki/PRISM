@@ -9,7 +9,9 @@
 // Nothing in this header sets that flag. read() and get() on a stream that
 // is not open are __prism_check with class FUNC-CONTRACT. They do not write
 // any byte and do not return a fabricated character. get() returns -1, which
-// is eof, not a character read from a file.
+// is eof, not a character read from a file. tellg() on a stream that is not
+// open is the same class of check, then __builtin_trap. The return type is
+// long. That path does not return 0 and does not return a file position.
 //
 // There is no heap allocation. The destructor is defaulted and does not free.
 // The object holds one bool.
@@ -104,6 +106,13 @@ public:
         (void)__n;
         (void)__delim;
         return *this;
+    }
+
+    // Not open: there is no file position. This path does not return.
+    long tellg() {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ifstream::tellg on a stream that is not open");
+        __builtin_trap();
     }
 
 private:

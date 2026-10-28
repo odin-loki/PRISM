@@ -1,8 +1,11 @@
 // The <fstream> model is a partial basic_ifstream for char. These checks
 // read the header text: a default stream is not open, and read or get on
 // that stream is a FUNC-CONTRACT check that does not write a byte and does
-// not return a fabricated character. The header is not included here: this
-// binary already uses the standard fstream in other translation units.
+// not return a fabricated character. tellg on that stream is the same class
+// of check, then __builtin_trap. The return type is long. That path does
+// not return 0 and does not return a file position. The header is not
+// included here: this binary already uses the standard fstream in other
+// translation units.
 
 #include <doctest/doctest.h>
 
@@ -177,5 +180,28 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(get_delim.find("__s[") == std::string::npos);
     CHECK(get_delim.find("*__s") == std::string::npos);
 
-    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 5);
+    const auto is_open = body_of(src, "bool is_open() const noexcept");
+    CHECK(is_open == "{ return _M_is_open; }");
+
+    CHECK(src.find("long tellg()") != std::string::npos);
+    CHECK(has_ident(code, "tellg"));
+    const auto tellg = body_of(src, "long tellg()");
+    REQUIRE_FALSE(tellg.empty());
+    const auto tellg_check = tellg.find("__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",");
+    const auto tellg_trap = tellg.find("__builtin_trap()");
+    REQUIRE(tellg_check != std::string::npos);
+    REQUIRE(tellg_trap != std::string::npos);
+    CHECK(tellg_check < tellg_trap);
+    CHECK(tellg.find("std::basic_ifstream::tellg on a stream that is not open") != std::string::npos);
+    CHECK(tellg.find("return") == std::string::npos);
+    CHECK(tellg.find("return 0") == std::string::npos);
+    CHECK(tellg.find("pos_type") == std::string::npos);
+    CHECK(tellg.find("streampos") == std::string::npos);
+    CHECK(tellg.find("streamoff") == std::string::npos);
+    CHECK(tellg.find("fpos") == std::string::npos);
+    CHECK(tellg.find("_M_is_open =") == std::string::npos);
+    CHECK(count_sub(src, "std::basic_ifstream::tellg on a stream that is not open") == 1);
+    CHECK(count_sub(src, "__builtin_trap()") == 1);
+
+    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 6);
 }
