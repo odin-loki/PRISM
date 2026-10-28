@@ -13,14 +13,20 @@
 // The check runs before the element is returned. The failing path does not
 // return a value-initialized T.
 //
+// sum() of an empty valarray is value_type(0). That return is before any
+// load of the buffer. A running total that does not fit in value_type is a
+// precondition failure: __prism_check, then __builtin_trap. The class is
+// INT-SIGNED-OVF when value_type is a signed integer, and FUNC-CONTRACT
+// for every other type. The failing path does not return a wrapped total.
+//
 // resize to a different length destroys and frees the previous buffer, then
 // keeps only the new one. A shrink and a grow take that same path. The old
 // pointer is not stored in the new buffer and is not left in the object.
 //
 // Omitted math operators (+ - * / % ^ & | << >> , the compound forms, the
-// comparisons, and unary + - ~ !), and sum, min, max, shift, cshift, and
-// apply, are not declared. A unit that names one fails to compile against
-// this header, so pir falls back to libstdc++. They are not stubbed. slice,
+// comparisons, and unary + - ~ !), and min, max, shift, cshift, and apply,
+// are not declared. A unit that names one fails to compile against this
+// header, so pir falls back to libstdc++. They are not stubbed. slice,
 // gslice, mask, and indirect subscript are omitted the same way. So is
 // construction from a pointer or an initializer_list. This file does not
 // include the vector, memory, or initializer_list headers, or any other
@@ -31,7 +37,9 @@
 #pragma GCC system_header
 
 #include <cstddef>
+#include <limits>
 #include <new>
+#include <type_traits>
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -104,6 +112,17 @@ public:
         return _M_data[__n];
     }
 
+    // Empty is value_type(0) and does not load the buffer. One element is
+    // that element: no addition, so it cannot overflow. A later add that
+    // does not fit takes _S_add_checked and does not return a wrapped total.
+    value_type sum() const {
+        if (_M_size == 0) return value_type(0);
+        value_type __acc = _M_data[0];
+        for (size_type __i = 1; __i < _M_size; ++__i)
+            __acc = _S_add_checked(__acc, _M_data[__i]);
+        return __acc;
+    }
+
     // A different length drops the previous block (shrink and grow). The
     // same length does not allocate. New elements are copies of __c, not
     // the old pointer. _M_release clears the old pointer out of this object
@@ -124,6 +143,47 @@ public:
 private:
     value_type* _M_data = nullptr;
     size_type _M_size = 0;
+
+    // True when __a + __b is a value of this type. Signed and unsigned tests
+    // subtract from the limit only on the side where that subtraction stays
+    // in range, so the test itself does not wrap. A non-finite floating
+    // element is already a value of the type; only a finite pair is tested.
+    // The sum used for that test is not returned.
+    static int _S_sum_fits([[maybe_unused]] value_type __a, [[maybe_unused]] value_type __b) {
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+            if (__b > 0) return __a > numeric_limits<value_type>::max() - __b ? 0 : 1;
+            if (__b < 0) return __a < numeric_limits<value_type>::min() - __b ? 0 : 1;
+            return 1;
+        } else if constexpr (is_integral_v<value_type> && !is_same_v<value_type, bool>) {
+            return __a > numeric_limits<value_type>::max() - __b ? 0 : 1;
+        } else if constexpr (is_floating_point_v<value_type>) {
+            const value_type __hi = numeric_limits<value_type>::max();
+            const value_type __lo = numeric_limits<value_type>::lowest();
+            if (!(__a <= __hi && __a >= __lo)) return 1;
+            if (!(__b <= __hi && __b >= __lo)) return 1;
+            // Finite inputs. A non-finite sum does not fit. __s is not returned.
+            const value_type __s = __a + __b;
+            if (!(__s <= __hi && __s >= __lo)) return 0;
+            return 1;
+        } else {
+            return 1;
+        }
+    }
+
+    // The class is INT-SIGNED-OVF for a signed integer and FUNC-CONTRACT
+    // otherwise. The trap is before the add, so a total that does not fit
+    // is not returned.
+    static value_type _S_add_checked(value_type __a, value_type __b) {
+        const int __ok = _S_sum_fits(__a, __b);
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>)
+            __prism_check(__ok, "INT-SIGNED-OVF", "valarray::sum does not fit in value_type");
+        else
+            __prism_check(__ok, "FUNC-CONTRACT", "valarray::sum does not fit in value_type");
+        if (!__ok) __builtin_trap();
+        value_type __r = __a;
+        __r += __b;
+        return __r;
+    }
 
     // ::operator new of n elements. n == 0 is not a call.
     static value_type* _S_alloc(size_type __n) {
