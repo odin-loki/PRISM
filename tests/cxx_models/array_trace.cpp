@@ -11,8 +11,12 @@
 // false and does not read an element. N > 0 is lexicographical
 // greater-than: false at the first element that is less, true at the first
 // element that is greater, and false when the two arrays are equivalent
-// through N. Iterators, operator<=>, std::get, and std::to_array are not
-// called.
+// through N. operator>= is the same N: N == 0 is true and does not read
+// an element. Two empty arrays are equivalent. N > 0 is lexicographical
+// greater-or-equal: false at the first element that is less, true at the
+// first element that is greater, and true when the two arrays are
+// equivalent through N. Iterators, operator<=>, std::get, and std::to_array
+// are not called.
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -47,6 +51,17 @@ static_assert(!(std::array<int, 3>{1, 9, 9} > std::array<int, 3>{2, 0, 0}));
 static_assert(std::array<int, 1>{2} > std::array<int, 1>{1});
 static_assert(!(std::array<int, 1>{1} > std::array<int, 1>{2}));
 static_assert(!(std::array<int, 1>{2} > std::array<int, 1>{2}));
+static_assert(std::array<int, 0>{} >= std::array<int, 0>{});
+static_assert(std::array<int, 3>{1, 2, 3} >= std::array<int, 3>{1, 2, 3});
+static_assert(std::array<int, 3>{1, 2, 3} >= std::array<int, 3>{1, 0, 3});
+static_assert(std::array<int, 3>{1, 2, 3} >= std::array<int, 3>{0, 2, 3});
+static_assert(std::array<int, 3>{1, 2, 4} >= std::array<int, 3>{1, 2, 3});
+static_assert(!(std::array<int, 3>{1, 2, 3} >= std::array<int, 3>{1, 2, 4}));
+static_assert(std::array<int, 3>{2, 0, 0} >= std::array<int, 3>{1, 9, 9});
+static_assert(!(std::array<int, 3>{1, 9, 9} >= std::array<int, 3>{2, 0, 0}));
+static_assert(std::array<int, 1>{2} >= std::array<int, 1>{1});
+static_assert(!(std::array<int, 1>{1} >= std::array<int, 1>{2}));
+static_assert(std::array<int, 1>{2} >= std::array<int, 1>{2});
 
 struct E {
     int v;
@@ -416,12 +431,114 @@ static void greater() {
         calls_poison, poison_reads, calls_plt, poison_lt_reads, calls_never, calls_nzero);
 }
 
+// operator>= uses operator< on the elements. A negative value past the
+// deciding element must not be read. NeverLt is never less, so two arrays
+// of it are equivalent through N and each is greater-or-equal. N == 0 is
+// true and does not read an element.
+static void geq() {
+    std::array<int, 3> a{1, 2, 3};
+    std::array<int, 3> same{1, 2, 3};
+    std::array<int, 3> mid{1, 0, 3};
+    std::array<int, 3> head{0, 2, 3};
+    std::array<int, 3> tail{1, 2, 4};
+    std::array<int, 3> early{2, 0, 0};
+    std::array<int, 3> early_r{1, 9, 9};
+    std::array<int, 1> one{5};
+    std::array<int, 1> one_hi{6};
+    std::array<int, 1> one_same{5};
+    const std::array<int, 2> ca{4, 5};
+    const std::array<int, 2> cb{4, 5};
+    const std::array<int, 2> cc{4, 6};
+    std::array<int, 0> z{};
+    std::array<int, 0> w{};
+    std::printf(
+        "ge same=%d mid=%d head=%d tail=%d lt=%d early=%d one=%d oned=%d oneeq=%d self=%d csame=%d cdiff=%d zero=%d\n",
+        int(a >= same), int(a >= mid), int(a >= head), int(tail >= a), int(a >= tail), int(early >= early_r),
+        int(one_hi >= one), int(one >= one_hi), int(one >= one_same), int(a >= a), int(ca >= cb), int(cc >= ca),
+        int(z >= w));
+
+    std::array<MemLt, 3> ma{MemLt(1), MemLt(2), MemLt(3)};
+    std::array<MemLt, 3> mb{MemLt(1), MemLt(2), MemLt(3)};
+    MemLt::calls = 0;
+    const bool ms = (ma >= mb);
+    const int calls_same = MemLt::calls;
+
+    std::array<MemLt, 3> mm{MemLt(1), MemLt(0), MemLt(3)};
+    MemLt::calls = 0;
+    const bool mmd = (ma >= mm);
+    const int calls_mid = MemLt::calls;
+
+    std::array<MemLt, 3> mh{MemLt(0), MemLt(2), MemLt(3)};
+    MemLt::calls = 0;
+    const bool mhd = (ma >= mh);
+    const int calls_head = MemLt::calls;
+
+    std::array<MemLt, 3> mt{MemLt(1), MemLt(2), MemLt(4)};
+    MemLt::calls = 0;
+    const bool mtd = (mt >= ma);
+    const int calls_tail = MemLt::calls;
+
+    std::array<MemLt, 3> ml{MemLt(1), MemLt(2), MemLt(4)};
+    MemLt::calls = 0;
+    const bool mld = (ma >= ml);
+    const int calls_lt = MemLt::calls;
+
+    std::array<MemLt, 3> me{MemLt(2), MemLt(0), MemLt(0)};
+    std::array<MemLt, 3> mer{MemLt(1), MemLt(9), MemLt(9)};
+    MemLt::calls = 0;
+    const bool med = (me >= mer);
+    const int calls_early = MemLt::calls;
+
+    MemLt::calls = 0;
+    MemLt::poison = 0;
+    std::array<MemLt, 0> mz{};
+    std::array<MemLt, 0> mw{};
+    const bool mzero = (mz >= mw);
+    const int calls_zero = MemLt::calls;
+
+    std::array<MemLt, 3> pa{MemLt(1), MemLt(9), MemLt(-1)};
+    std::array<MemLt, 3> pb{MemLt(1), MemLt(2), MemLt(-1)};
+    MemLt::calls = 0;
+    MemLt::poison = 0;
+    const bool poison_ge = (pa >= pb);
+    const int calls_poison = MemLt::calls;
+    const int poison_reads = MemLt::poison;
+
+    std::array<MemLt, 3> ga{MemLt(1), MemLt(-1), MemLt(-1)};
+    std::array<MemLt, 3> gb{MemLt(2), MemLt(0), MemLt(0)};
+    MemLt::calls = 0;
+    MemLt::poison = 0;
+    const bool poison_lt = (ga >= gb);
+    const int calls_plt = MemLt::calls;
+    const int poison_lt_reads = MemLt::poison;
+
+    std::array<NeverLt, 3> na{NeverLt(1), NeverLt(2), NeverLt(3)};
+    std::array<NeverLt, 3> nb{NeverLt(9), NeverLt(8), NeverLt(7)};
+    NeverLt::calls = 0;
+    const bool never = (na >= nb);
+    const int calls_never = NeverLt::calls;
+
+    NeverLt::calls = 0;
+    std::array<NeverLt, 0> nz{};
+    std::array<NeverLt, 0> nw{};
+    const bool never_zero = (nz >= nw);
+    const int calls_nzero = NeverLt::calls;
+
+    std::printf(
+        "gem same=%d mid=%d head=%d tail=%d lt=%d early=%d zero=%d poison=%d plt=%d never=%d nzero=%d calls same=%d "
+        "mid=%d head=%d tail=%d lt=%d early=%d zero=%d poison=%d pread=%d plt=%d plread=%d never=%d nzero=%d\n",
+        int(ms), int(mmd), int(mhd), int(mtd), int(mld), int(med), int(mzero), int(poison_ge), int(poison_lt),
+        int(never), int(never_zero), calls_same, calls_mid, calls_head, calls_tail, calls_lt, calls_early, calls_zero,
+        calls_poison, poison_reads, calls_plt, poison_lt_reads, calls_never, calls_nzero);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "oob") return oob();
     ints();
     equal();
     less();
     greater();
+    geq();
     traced();
     return 0;
 }
