@@ -109,9 +109,11 @@ TEST_CASE("ctype model: C locale ASCII ranges, EOF, and no extra class") {
     CHECK(src.find("#define EOF (-1)") != std::string::npos);
 
     const std::set<std::string> want = {"isdigit", "isspace", "isalpha", "isalnum",
-                                        "islower", "isupper", "tolower", "toupper"};
+                                        "islower", "isupper", "tolower", "toupper",
+                                        "isblank", "isxdigit", "isprint", "isgraph",
+                                        "ispunct", "iscntrl"};
     CHECK(defined_models(src) == want);
-    for (const char* banned : {"ispunct", "isxdigit", "isblank", "iscntrl", "isprint", "isgraph", "isascii", "toascii"})
+    for (const char* banned : {"isascii", "toascii"})
         CHECK(src.find(banned) == std::string::npos);
 
     CHECK(statements(src, "isdigit") == std::vector<std::string>{
@@ -156,6 +158,39 @@ TEST_CASE("ctype model: C locale ASCII ranges, EOF, and no extra class") {
                                             "if (c >= 'a' && c <= 'z') return c - 'a' + 'A';",
                                             "return c;",
                                         });
+    CHECK(statements(src, "isblank") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (c == ' ' || c == '\\t') return 1;",
+                                            "return 0;",
+                                        });
+    CHECK(statements(src, "isxdigit") == std::vector<std::string>{
+                                             "if (c == EOF) return 0;",
+                                             "if (c >= '0' && c <= '9') return 1;",
+                                             "if (c >= 'A' && c <= 'F') return 1;",
+                                             "if (c >= 'a' && c <= 'f') return 1;",
+                                             "return 0;",
+                                         });
+    CHECK(statements(src, "isprint") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (c >= 0x20 && c <= 0x7E) return 1;",
+                                            "return 0;",
+                                        });
+    CHECK(statements(src, "isgraph") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (c >= 0x21 && c <= 0x7E) return 1;",
+                                            "return 0;",
+                                        });
+    CHECK(statements(src, "ispunct") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (isgraph(c) != 0 && isdigit(c) == 0 && isalpha(c) == 0) return 1;",
+                                            "return 0;",
+                                        });
+    CHECK(statements(src, "iscntrl") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (c >= 0x00 && c <= 0x1F) return 1;",
+                                            "if (c == 0x7F) return 1;",
+                                            "return 0;",
+                                        });
 }
 
 TEST_CASE("ctype contracts: harness includes the model and calls every function") {
@@ -171,6 +206,22 @@ TEST_CASE("ctype contracts: harness includes the model and calls every function"
         CAPTURE(name);
         CHECK(cpp.find(std::string(name) + "(") != std::string::npos);
     }
+    for (const char* name : {"isblank", "isxdigit", "isprint", "isgraph", "ispunct", "iscntrl"}) {
+        CAPTURE(name);
+        CHECK(cpp.find(std::string(name) + "(") != std::string::npos);
+    }
+    CHECK(cpp.find("isblank(' ') != 0") != std::string::npos);
+    CHECK(cpp.find("isblank('\\n') != 0") != std::string::npos);
+    CHECK(cpp.find("isxdigit('F') != 0") != std::string::npos);
+    CHECK(cpp.find("isxdigit('G') != 0") != std::string::npos);
+    CHECK(cpp.find("isprint(0x20) != 0") != std::string::npos);
+    CHECK(cpp.find("isprint(0x7F) != 0") != std::string::npos);
+    CHECK(cpp.find("isgraph(0x21) != 0") != std::string::npos);
+    CHECK(cpp.find("isgraph(0x20) != 0") != std::string::npos);
+    CHECK(cpp.find("ispunct('!') != 0") != std::string::npos);
+    CHECK(cpp.find("ispunct('A') != 0") != std::string::npos);
+    CHECK(cpp.find("iscntrl(0x7F) != 0") != std::string::npos);
+    CHECK(cpp.find("iscntrl(0x20) != 0") != std::string::npos);
 }
 
 TEST_CASE("ctype contracts: yml has a true function, a false function, and expect_class") {

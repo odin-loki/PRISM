@@ -19,6 +19,18 @@ expected:
   tolower_digit_false: false
   toupper_true: true
   toupper_digit_false: false
+  isblank_true: true
+  isblank_newline_false: false
+  isxdigit_true: true
+  isxdigit_letter_false: false
+  isprint_true: true
+  isprint_del_false: false
+  isgraph_true: true
+  isgraph_space_false: false
+  ispunct_true: true
+  ispunct_letter_false: false
+  iscntrl_true: true
+  iscntrl_space_false: false
 expect_class:  # the violation each false harness plants
   isdigit_letter_false: "FUNC-CONTRACT"
   isspace_letter_false: "FUNC-CONTRACT"
@@ -28,3 +40,9 @@ expect_class:  # the violation each false harness plants
   isupper_lower_false: "FUNC-CONTRACT"
   tolower_digit_false: "FUNC-CONTRACT"
   toupper_digit_false: "FUNC-CONTRACT"
+  isblank_newline_false: "FUNC-CONTRACT"
+  isxdigit_letter_false: "FUNC-CONTRACT"
+  isprint_del_false: "FUNC-CONTRACT"
+  isgraph_space_false: "FUNC-CONTRACT"
+  ispunct_letter_false: "FUNC-CONTRACT"
+  iscntrl_space_false: "FUNC-CONTRACT"

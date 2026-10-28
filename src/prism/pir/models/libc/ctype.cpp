@@ -71,4 +71,49 @@ int toupper(int c) {
     return c;
 }
 
+/* Nonzero only for space and horizontal tab. */
+int isblank(int c) {
+    if (c == EOF) return 0;
+    if (c == ' ' || c == '\t') return 1;
+    return 0;
+}
+
+/* Nonzero only for '0'..'9', 'A'..'F', and 'a'..'f'. */
+int isxdigit(int c) {
+    if (c == EOF) return 0;
+    if (c >= '0' && c <= '9') return 1;
+    if (c >= 'A' && c <= 'F') return 1;
+    if (c >= 'a' && c <= 'f') return 1;
+    return 0;
+}
+
+/* Nonzero only for 0x20 through 0x7E. */
+int isprint(int c) {
+    if (c == EOF) return 0;
+    if (c >= 0x20 && c <= 0x7E) return 1;
+    return 0;
+}
+
+/* Nonzero only for 0x21 through 0x7E. */
+int isgraph(int c) {
+    if (c == EOF) return 0;
+    if (c >= 0x21 && c <= 0x7E) return 1;
+    return 0;
+}
+
+/* Nonzero only for a graphic character that is not a digit and not a letter. */
+int ispunct(int c) {
+    if (c == EOF) return 0;
+    if (isgraph(c) != 0 && isdigit(c) == 0 && isalpha(c) == 0) return 1;
+    return 0;
+}
+
+/* Nonzero only for 0x00 through 0x1F and 0x7F. */
+int iscntrl(int c) {
+    if (c == EOF) return 0;
+    if (c >= 0x00 && c <= 0x1F) return 1;
+    if (c == 0x7F) return 1;
+    return 0;
+}
+
 }  // extern "C"

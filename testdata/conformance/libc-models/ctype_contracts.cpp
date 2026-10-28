@@ -162,3 +162,120 @@ int toupper_digit_false(void) {
     assert(toupper('0') == 'A');
     return 0;
 }
+
+/* 7.4.1.3: nonzero only for space and horizontal tab. EOF yields 0. */
+int isblank_true(int c) {
+    assert(isblank(' ') != 0);
+    assert(isblank('\t') != 0);
+    assert(isblank('\n') == 0);
+    assert(isblank('\v') == 0);
+    assert(isblank('a') == 0);
+    assert(isblank(EOF) == 0);
+    if (c == ' ' || c == '\t') assert(isblank(c) != 0);
+    else assert(isblank(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: a newline is a blank. */
+int isblank_newline_false(void) {
+    assert(isblank('\n') != 0);
+    return 0;
+}
+
+/* 7.4.1.12: nonzero only for '0'..'9', 'A'..'F', and 'a'..'f'. */
+int isxdigit_true(int c) {
+    assert(isxdigit('0') != 0);
+    assert(isxdigit('9') != 0);
+    assert(isxdigit('A') != 0);
+    assert(isxdigit('F') != 0);
+    assert(isxdigit('a') != 0);
+    assert(isxdigit('f') != 0);
+    assert(isxdigit('G') == 0);
+    assert(isxdigit('g') == 0);
+    assert(isxdigit(EOF) == 0);
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))
+        assert(isxdigit(c) != 0);
+    else
+        assert(isxdigit(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: 'G' is a hexadecimal digit. */
+int isxdigit_letter_false(void) {
+    assert(isxdigit('G') != 0);
+    return 0;
+}
+
+/* 7.4.1.8: nonzero only for 0x20 through 0x7E. */
+int isprint_true(int c) {
+    assert(isprint(0x20) != 0);
+    assert(isprint(0x7E) != 0);
+    assert(isprint(0x1F) == 0);
+    assert(isprint(0x7F) == 0);
+    assert(isprint(EOF) == 0);
+    if (c >= 0x20 && c <= 0x7E) assert(isprint(c) != 0);
+    else assert(isprint(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: DEL is printable. */
+int isprint_del_false(void) {
+    assert(isprint(0x7F) != 0);
+    return 0;
+}
+
+/* 7.4.1.6: nonzero only for 0x21 through 0x7E. */
+int isgraph_true(int c) {
+    assert(isgraph(0x21) != 0);
+    assert(isgraph(0x7E) != 0);
+    assert(isgraph(0x20) == 0);
+    assert(isgraph(0x7F) == 0);
+    assert(isgraph(EOF) == 0);
+    if (c >= 0x21 && c <= 0x7E) assert(isgraph(c) != 0);
+    else assert(isgraph(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: space is graphic. */
+int isgraph_space_false(void) {
+    assert(isgraph(0x20) != 0);
+    return 0;
+}
+
+/* 7.4.1.9: a graphic character that is not a digit and not a letter. */
+int ispunct_true(int c) {
+    assert(ispunct('!') != 0);
+    assert(ispunct(' ') == 0);
+    assert(ispunct('0') == 0);
+    assert(ispunct('A') == 0);
+    assert(ispunct('a') == 0);
+    assert(ispunct(EOF) == 0);
+    if (isgraph(c) != 0 && isdigit(c) == 0 && isalpha(c) == 0) assert(ispunct(c) != 0);
+    else assert(ispunct(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: a letter is punctuation. */
+int ispunct_letter_false(void) {
+    assert(ispunct('A') != 0);
+    return 0;
+}
+
+/* 7.4.1.4: nonzero only for 0x00 through 0x1F and 0x7F. */
+int iscntrl_true(int c) {
+    assert(iscntrl(0x00) != 0);
+    assert(iscntrl(0x1F) != 0);
+    assert(iscntrl(0x7F) != 0);
+    assert(iscntrl(0x20) == 0);
+    assert(iscntrl('A') == 0);
+    assert(iscntrl(EOF) == 0);
+    if ((c >= 0x00 && c <= 0x1F) || c == 0x7F) assert(iscntrl(c) != 0);
+    else assert(iscntrl(c) == 0);
+    return 0;
+}
+
+/* Wrong contract: a space is a control character. */
+int iscntrl_space_false(void) {
+    assert(iscntrl(0x20) != 0);
+    return 0;
+}
