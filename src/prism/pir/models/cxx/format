@@ -4,12 +4,16 @@
 // this name would make the include fail with EISDIR and every such unit
 // would fall back to libstdc++.
 //
-// Partial. format_to_n writes one int, in decimal, into a char buffer. The
-// format string this model accepts is "{}". It writes at most n characters
-// and does not write past the buffer. n == 0 writes nothing. The returned
-// size is the full untruncated length of that integer, even when n is
-// smaller, and it is not 0 for a non-zero int. A null output pointer with
-// n > 0 is __prism_check. This header is not a proof.
+// Partial. format_to_n writes one int or one long long, in decimal, into a
+// char buffer. The format string this model accepts is "{}". Both overloads
+// share one writer. It writes at most n characters and does not write past
+// the buffer. The unwritten tail is not stored. n == 0 writes nothing. The
+// returned size is the full untruncated length of that integer, even when n
+// is smaller, and it is not 0 for a non-zero value. A null output pointer
+// with n > 0 is __prism_check: PTR-NULL-DEREF for int, FUNC-CONTRACT and
+// then __builtin_trap for long long. A long long length that does not fit
+// in size_t is __prism_check and then __builtin_trap, and nothing is
+// written. This header is not a proof. This is not PROVED and not CLEAN.
 //
 // std::format and format_to return or allocate std::string. Those names are
 // not declared. Those names fail to compile and pir falls back to libstdc++.
@@ -32,6 +36,16 @@ struct format_to_n_result {
     char* out;
     std::ptrdiff_t size;
 };
+
+// Shared by the int and long long overloads. __tmp holds the decimal text
+// of length __len. At most __n characters are stored. The unwritten tail is
+// not stored. A zero __n does not index __out.
+inline char* __prism_format_write(char* __out, std::size_t __n, const char* __tmp, std::size_t __len) {
+    // The unwritten tail is not stored.
+    const std::size_t __put = __len < __n ? __len : __n;
+    for (std::size_t __k = 0; __k < __put; ++__k) __out[__k] = __tmp[__k];
+    return __out + __put;
+}
 
 inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, int __v) {
     (void)__fmt;
@@ -63,13 +77,68 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
         (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
     __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
     if (!__fmt_ok) __builtin_trap();
-    const std::size_t __put = __len < __n ? __len : __n;
-    if (__out != nullptr) {
-        for (std::size_t __k = 0; __k < __put; ++__k) __out[__k] = __tmp[__k];
-    }
     format_to_n_result __r;
-    __r.out = __out == nullptr ? nullptr : __out + __put;
     // Full length, not the truncated count and not 0 for a non-zero int.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    if (__n == 0 || __out == nullptr) {
+        __r.out = __out;
+        return __r;
+    }
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    return __r;
+}
+
+// Decimal, same writer as int, and only for "{}". This is not PROVED and
+// not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, long long __v) {
+    const bool __neg = __v < 0;
+    // Magnitude via unsigned wrap, so LLONG_MIN is not a signed negation.
+    unsigned long long __mag =
+        __neg ? static_cast<unsigned long long>(0) - static_cast<unsigned long long>(__v)
+              : static_cast<unsigned long long>(__v);
+    char __rev[32];
+    std::size_t __nd = 0;
+    do {
+        __rev[__nd] = static_cast<char>('0' + static_cast<int>(__mag % 10ull));
+        ++__nd;
+        __mag /= 10ull;
+    } while (__mag != 0ull);
+    // Digit count plus the optional sign. The addition is not performed
+    // when it would wrap, and the output is not written on that path.
+    const std::size_t __sign = __neg ? static_cast<std::size_t>(1) : static_cast<std::size_t>(0);
+    std::size_t __len;
+    if (__nd > static_cast<std::size_t>(-1) - __sign) {
+        __prism_check(0, "FUNC-CONTRACT", "format_to_n length does not fit in size_t");
+        __builtin_trap();
+    } else {
+        __len = __nd + __sign;
+    }
+    char __tmp[32];
+    std::size_t __i = 0;
+    if (__neg) __tmp[__i++] = '-';
+    while (__nd > 0) {
+        --__nd;
+        __tmp[__i++] = __rev[__nd];
+    }
+    // Any format other than "{}" writes nothing.
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
+    // n == 0 writes nothing and does not read the output pointer.
+    if (__n == 0) {
+        format_to_n_result __r;
+        __r.out = nullptr;
+        __r.size = static_cast<std::ptrdiff_t>(__len);
+        return __r;
+    }
+    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                  "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    format_to_n_result __r;
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    // Full untruncated length, not 0 for a non-zero value.
+    // The unwritten tail was not stored.
     __r.size = static_cast<std::ptrdiff_t>(__len);
     return __r;
 }
