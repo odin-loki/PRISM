@@ -32,10 +32,23 @@
 // signed integer and FUNC-CONTRACT otherwise. That path does not return a
 // wrapped sum.
 //
+// std::adjacent_difference takes two pointers of one type and a destination
+// pointer of that type. last < first is __prism_check with class
+// FUNC-CONTRACT, then __builtin_trap. That path does not read and does not
+// write. first == last returns dest and does not read or write. A non-empty
+// range with a null dest is __prism_check with class PTR-NULL-DEREF, then
+// __builtin_trap, and does not write. If dest lies in [first, last),
+// __prism_check with class FUNC-CONTRACT, then __builtin_trap, before any
+// write. An overlapping write is not modelled. Otherwise the first element
+// is copied to dest, and each later element stores the difference from the
+// previous one. A difference that does not fit is __prism_check, then
+// __builtin_trap. The class is INT-SIGNED-OVF for a signed integer and
+// FUNC-CONTRACT for an unsigned integer. That path does not store a wrapped
+// difference. bool and a non-integer subtract with no separate range check.
+//
 // Not declared here, so naming reduce, transform_reduce, inner_product,
-// adjacent_difference, partial_sum, or exclusive_scan fails to compile
-// and the pir stage falls back to libstdc++ (extra.cxx_models). A partial
-// header is intentional.
+// partial_sum, or exclusive_scan fails to compile and the pir stage falls
+// back to libstdc++ (extra.cxx_models). A partial header is intentional.
 #ifndef _GLIBCXX_NUMERIC
 #define _GLIBCXX_NUMERIC 1
 
@@ -212,6 +225,76 @@ accumulate(_Tp* __first, _Tp* __last, _Tp __init) {
         ++__first;
     }
     return __init;
+}
+
+// [numeric.ops.adjdiff]. Two pointers of the same type, and a destination
+// pointer of that type. A class iterator does not match. last < first fails
+// the check before any read or write. An empty range returns dest before
+// any read or write. A null dest on a non-empty range fails before any
+// write. A dest in [first, last) fails before any write. An overlapping
+// write is not modelled. The first element is copied. Each later element
+// stores the difference from the previous input. The difference is formed
+// only in the else of the fit test, so a wrapped difference is not stored.
+// A signed integer uses INT-SIGNED-OVF. An unsigned integer uses
+// FUNC-CONTRACT. bool and a non-integer subtract and have no separate range
+// check. The signed maximum is an unsigned shift of all-ones, and the
+// minimum is -1 minus that maximum, so the test itself does not overflow.
+template <typename _Tp>
+constexpr _Tp*
+adjacent_difference(_Tp* __first, _Tp* __last, _Tp* __dest) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::adjacent_difference last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __dest;
+    if (__dest == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::adjacent_difference null destination");
+        __builtin_trap();
+    }
+    // Pointer equality: a dest in another array is not in [first, last).
+    _Tp* __scan = __first;
+    while (__scan != __last) {
+        if (__scan == __dest) {
+            __prism_check(0, "FUNC-CONTRACT", "std::adjacent_difference dest lies in [first, last)");
+            __builtin_trap();
+        }
+        ++__scan;
+    }
+    _Tp __prev = *__first;
+    *__dest = __prev;
+    ++__first;
+    ++__dest;
+    while (__first != __last) {
+        const _Tp __elem = *__first;
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                // -1 - max is the minimum, and that difference is representable.
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if ((__prev < static_cast<_Tp>(0) && __elem > __lim + __prev) ||
+                    (__prev > static_cast<_Tp>(0) && __elem < __min + __prev)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+                    __builtin_trap();
+                } else {
+                    *__dest = static_cast<_Tp>(__elem - __prev);
+                }
+            } else {
+                if (__elem < __prev) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::adjacent_difference difference does not fit in T");
+                    __builtin_trap();
+                } else {
+                    *__dest = static_cast<_Tp>(__elem - __prev);
+                }
+            }
+        } else {
+            *__dest = static_cast<_Tp>(__elem - __prev);
+        }
+        __prev = __elem;
+        ++__first;
+        ++__dest;
+    }
+    return __dest;
 }
 
 }  // namespace std

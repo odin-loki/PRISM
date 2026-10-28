@@ -14,6 +14,11 @@
 // inverted range does not read and does not return init. An empty range
 // returns init and does not read. A sum that does not fit is a check, then
 // a trap, and that path does not return a wrapped sum.
+// std::adjacent_difference copies the first element to dest and stores each
+// later element minus the previous one. An inverted range does not read or
+// write. An empty range returns dest and does not read or write. A null
+// dest on a non-empty range does not write. A dest in [first, last) does
+// not write. A difference that does not fit does not store a wrapped value.
 
 #include <doctest/doctest.h>
 
@@ -349,7 +354,6 @@ TEST_CASE("cxx numeric model: accumulate traps an inverted range and a sum that 
     CHECK(text.find("\nreduce(") == std::string::npos);
     CHECK(text.find("\ntransform_reduce(") == std::string::npos);
     CHECK(text.find("\ninner_product(") == std::string::npos);
-    CHECK(text.find("\nadjacent_difference(") == std::string::npos);
     CHECK(text.find("\npartial_sum(") == std::string::npos);
     CHECK(text.find("\nexclusive_scan(") == std::string::npos);
     CHECK(text.find("naming accumulate") == std::string::npos);
@@ -425,6 +429,126 @@ TEST_CASE("cxx numeric model: accumulate traps an inverted range and a sum that 
     const std::string mid_body = text.substr(mid, gcd_at - mid);
     CHECK(mid_body.find("a + b") == std::string::npos);
     CHECK(mid_body.find("a+b") == std::string::npos);
+}
+
+TEST_CASE("cxx numeric model: adjacent_difference traps before a bad range, a null dest, or a difference that does not fit") {
+    const std::string text = slurp(model_header());
+    REQUIRE_FALSE(text.empty());
+    CHECK(text.find("#include <iterator>") == std::string::npos);
+    CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("#include <vector") == std::string::npos);
+    CHECK(text.find("#include <algorithm>") == std::string::npos);
+    CHECK(text.find("\nreduce(") == std::string::npos);
+    CHECK(text.find("\ntransform_reduce(") == std::string::npos);
+    CHECK(text.find("\ninner_product(") == std::string::npos);
+    CHECK(text.find("\npartial_sum(") == std::string::npos);
+    CHECK(text.find("\nexclusive_scan(") == std::string::npos);
+    CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
+    CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
+    const auto adj_at = text.find("\nadjacent_difference(");
+    REQUIRE(adj_at != std::string::npos);
+    const std::string adj = text.substr(adj_at);
+    const auto inv = adj.find("if (__last < __first)");
+    const auto inv_check =
+        adj.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::adjacent_difference last is before first\")");
+    const auto empty = adj.find("if (__first == __last) return __dest;");
+    const auto null_if = adj.find("if (__dest == nullptr)");
+    const auto null_check =
+        adj.find("__prism_check(0, \"PTR-NULL-DEREF\", \"std::adjacent_difference null destination\")");
+    const auto over_check = adj.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"std::adjacent_difference dest lies in [first, last)\")");
+    const auto copy = adj.find("*__dest = __prev;");
+    const auto read = adj.find("*__first");
+    const auto ovf = adj.find(
+        "__prism_check(0, \"INT-SIGNED-OVF\", \"std::adjacent_difference difference does not fit in T\")");
+    const auto uovf = adj.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"std::adjacent_difference difference does not fit in T\")");
+    const auto step = adj.find("*__dest = static_cast<_Tp>(__elem - __prev);");
+    const auto step2 = step == std::string::npos
+                           ? std::string::npos
+                           : adj.find("*__dest = static_cast<_Tp>(__elem - __prev);", step + 1);
+    const auto step3 = step2 == std::string::npos
+                           ? std::string::npos
+                           : adj.find("*__dest = static_cast<_Tp>(__elem - __prev);", step2 + 1);
+    REQUIRE(inv != std::string::npos);
+    REQUIRE(inv_check != std::string::npos);
+    REQUIRE(empty != std::string::npos);
+    REQUIRE(null_if != std::string::npos);
+    REQUIRE(null_check != std::string::npos);
+    REQUIRE(over_check != std::string::npos);
+    REQUIRE(copy != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    REQUIRE(ovf != std::string::npos);
+    REQUIRE(uovf != std::string::npos);
+    REQUIRE(step != std::string::npos);
+    REQUIRE(step2 != std::string::npos);
+    REQUIRE(step3 != std::string::npos);
+    CHECK(inv < inv_check);
+    CHECK(inv_check < empty);
+    CHECK(empty < null_if);
+    CHECK(null_if < null_check);
+    CHECK(null_check < over_check);
+    CHECK(over_check < read);
+    CHECK(read < copy);
+    CHECK(copy < ovf);
+    const auto inv_trap = adj.find("__builtin_trap()", inv_check);
+    REQUIRE(inv_trap != std::string::npos);
+    CHECK(inv_trap < empty);
+    const std::string inv_arm = adj.substr(inv_check, inv_trap - inv_check);
+    CHECK(inv_arm.find("*__first") == std::string::npos);
+    CHECK(inv_arm.find("*__dest") == std::string::npos);
+    CHECK(inv_arm.find("__elem") == std::string::npos);
+    CHECK(inv_arm.find("return") == std::string::npos);
+    const auto null_trap = adj.find("__builtin_trap()", null_check);
+    REQUIRE(null_trap != std::string::npos);
+    CHECK(null_trap < over_check);
+    const std::string null_arm = adj.substr(null_check, null_trap - null_check);
+    CHECK(null_arm.find("*__dest") == std::string::npos);
+    CHECK(null_arm.find("*__first") == std::string::npos);
+    CHECK(null_arm.find("return") == std::string::npos);
+    const auto over_trap = adj.find("__builtin_trap()", over_check);
+    REQUIRE(over_trap != std::string::npos);
+    CHECK(over_trap < read);
+    const std::string over_arm = adj.substr(over_check, over_trap - over_check);
+    CHECK(over_arm.find("*__dest") == std::string::npos);
+    CHECK(over_arm.find("*__first") == std::string::npos);
+    CHECK(over_arm.find("__elem -") == std::string::npos);
+    CHECK(over_arm.find("return") == std::string::npos);
+    const auto ovf_trap = adj.find("__builtin_trap()", ovf);
+    REQUIRE(ovf_trap != std::string::npos);
+    CHECK(ovf_trap < step);
+    CHECK(step < uovf);
+    const auto ovf_else = adj.find("else", ovf_trap);
+    REQUIRE(ovf_else != std::string::npos);
+    CHECK(ovf_else < step);
+    const std::string ovf_arm = adj.substr(ovf, ovf_trap - ovf);
+    CHECK(ovf_arm.find("__elem -") == std::string::npos);
+    CHECK(ovf_arm.find("*__dest") == std::string::npos);
+    CHECK(ovf_arm.find("return") == std::string::npos);
+    const auto u_trap = adj.find("__builtin_trap()", uovf);
+    REQUIRE(u_trap != std::string::npos);
+    CHECK(u_trap < step2);
+    const auto u_else = adj.find("else", u_trap);
+    REQUIRE(u_else != std::string::npos);
+    CHECK(u_else < step2);
+    const std::string u_arm = adj.substr(uovf, u_trap - uovf);
+    CHECK(u_arm.find("__elem -") == std::string::npos);
+    CHECK(u_arm.find("*__dest") == std::string::npos);
+    CHECK(u_arm.find("return") == std::string::npos);
+    CHECK(step2 < step3);
+    CHECK(text.find("while (__un != 0)") != std::string::npos);
+    CHECK(text.find("\niota(") != std::string::npos);
+    CHECK(text.find("\naccumulate(") != std::string::npos);
+    CHECK(text.find("\nlcm(") != std::string::npos);
+    CHECK(text.find("\nmidpoint(") != std::string::npos);
+    const auto mid = text.find("midpoint(");
+    const auto gcd_at = text.find("\ngcd(", mid);
+    REQUIRE(mid != std::string::npos);
+    REQUIRE(gcd_at != std::string::npos);
+    const std::string mid_body = text.substr(mid, gcd_at - mid);
+    CHECK(mid_body.find("a + b") == std::string::npos);
+    CHECK(mid_body.find("a+b") == std::string::npos);
+    CHECK(mid_body.find("(a+b)/2") == std::string::npos);
 }
 
 TEST_CASE("cxx numeric model: setup clang++ with ASan/UBSan") {
@@ -511,6 +635,30 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
     CHECK(has_line(b, "acc_uc=" + std::to_string(UCHAR_MAX)));
     CHECK(has_line(b, "acc_f=2"));
     CHECK(has_line(b, "acc_b=1"));
+    CHECK(has_line(b, "adj=3,2,4,3 end=4"));
+    CHECK(has_line(b, "adj_empty=7 end=1"));
+    CHECK(has_line(b, "adj_neg=-1,1,1"));
+    CHECK(has_line(b, "adj_min=" + std::to_string(INT_MIN) + ",1,1"));
+    CHECK(has_line(b, "adj_near=" + std::to_string(INT_MAX - 2) + ",1,1"));
+    CHECK(has_line(b, "adj_imax=0," + std::to_string(INT_MAX)));
+    CHECK(has_line(b, "adj_imin=0," + std::to_string(INT_MIN)));
+    CHECK(has_line(b, "adj_same=" + std::to_string(INT_MAX) + ",0"));
+    CHECK(has_line(b, "adj_minsame=" + std::to_string(INT_MIN) + ",0"));
+    CHECK(has_line(b, "adj_eq=4,0,0"));
+    CHECK(has_line(b, "adj_u=1,1,2"));
+    CHECK(has_line(b, "adj_unear=" + std::to_string(UINT_MAX - 2u) + ",1,1"));
+    CHECK(has_line(b, "adj_umax=" + std::to_string(UINT_MAX)));
+    CHECK(has_line(b, "adj_usame=" + std::to_string(UINT_MAX) + ",0"));
+    CHECK(has_line(b, "adj_one=41"));
+    CHECK(has_line(b, "adj_hi=" + std::to_string(INT_MAX)));
+    CHECK(has_line(b, "adj_sc=" + std::to_string(SCHAR_MAX - 1) + ",1"));
+    CHECK(has_line(b, "adj_scn=2,-3"));
+    CHECK(has_line(b, "adj_uc=" + std::to_string(UCHAR_MAX - 1) + ",1"));
+    CHECK(has_line(b, "adj_f=0,1,2"));
+    CHECK(has_line(b, "adj_b=0,1,0"));
+    CHECK(has_line(b, "adj_tail=8,3,8,-5 end=2"));
+    CHECK(has_line(b, "adj_empty_null=1"));
+    CHECK(has_line(b, "adj_ll=1,2"));
 
     std::string zero_out;
     REQUIRE(run_cmd({mod.string(), "zero"}, &zero_out));
@@ -820,4 +968,247 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
                               "}\n"
                               "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, acc_inv, true));
+
+    std::string adj_hi;
+    REQUIRE(run_cmd({mod.string(), "adj-max1"}, &adj_hi));
+    CHECK(adj_hi.find("adj_hi=" + std::to_string(INT_MAX)) != std::string::npos);
+
+    auto expect_adj_trap = [&](const char* arg, const char* cls, const char* msg) {
+        std::string out, err;
+        CHECK_FALSE(run_cmd({mod.string(), arg}, &out, &err));
+        const std::string both = out + err;
+        CHECK(both.find(std::string("CHECK ") + cls + ":") != std::string::npos);
+        CHECK(both.find(msg) != std::string::npos);
+        CHECK(out.find("wrapped=") == std::string::npos);
+    };
+    expect_adj_trap("adj-ovf", "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-llovf", "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-minovf", "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-sc", "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-part", "INT-SIGNED-OVF", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-uovf", "FUNC-CONTRACT", "std::adjacent_difference difference does not fit in T");
+    expect_adj_trap("adj-inv", "FUNC-CONTRACT", "std::adjacent_difference last is before first");
+    expect_adj_trap("adj-null", "PTR-NULL-DEREF", "std::adjacent_difference null destination");
+    expect_adj_trap("adj-over", "FUNC-CONTRACT", "std::adjacent_difference dest lies in [first, last)");
+
+    const fs::path adj_const = c.tmp / "adj_const.cpp";
+    std::ofstream(adj_const) << "#include <numeric>\n"
+                                "#include <climits>\n"
+                                "constexpr int seq() {\n"
+                                "  int a[4] = {3, 5, 9, 12};\n"
+                                "  int d[4] = {};\n"
+                                "  int* end = std::adjacent_difference(a, a + 4, d);\n"
+                                "  return (end == d + 4 && d[0] == 3 && d[1] == 2 && d[2] == 4 && d[3] == 3) ? 1 : 0;\n"
+                                "}\n"
+                                "static_assert(seq() == 1);\n"
+                                "constexpr int empty() {\n"
+                                "  int a[1] = {4};\n"
+                                "  int d[1] = {7};\n"
+                                "  int* end = std::adjacent_difference(a, a, d);\n"
+                                "  return (end == d && d[0] == 7) ? 1 : 0;\n"
+                                "}\n"
+                                "static_assert(empty() == 1);\n"
+                                "constexpr int hi() {\n"
+                                "  int a[1] = {INT_MAX};\n"
+                                "  int d[1] = {0};\n"
+                                "  int* end = std::adjacent_difference(a, a + 1, d);\n"
+                                "  return (end == d + 1 && d[0] == INT_MAX) ? 1 : 0;\n"
+                                "}\n"
+                                "static_assert(hi() == 1);\n"
+                                "constexpr int imin() {\n"
+                                "  int a[2] = {0, INT_MIN};\n"
+                                "  int d[2] = {};\n"
+                                "  std::adjacent_difference(a, a + 2, d);\n"
+                                "  return (d[0] == 0 && d[1] == INT_MIN) ? 1 : 0;\n"
+                                "}\n"
+                                "static_assert(imin() == 1);\n";
+    CHECK(syntax_only(c.cxx, adj_const, true));
+    CHECK(syntax_only(c.cxx, adj_const, false));
+
+    const fs::path adj_bad = c.tmp / "adj_bad.cpp";
+    std::ofstream(adj_bad) << "#include <numeric>\n"
+                              "#include <climits>\n"
+                              "constexpr int bad() {\n"
+                              "  int a[2] = {-1, INT_MAX};\n"
+                              "  int d[2] = {};\n"
+                              "  std::adjacent_difference(a, a + 2, d);\n"
+                              "  return d[1];\n"
+                              "}\n"
+                              "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, adj_bad, true));
+
+    const fs::path adj_ubad = c.tmp / "adj_ubad.cpp";
+    std::ofstream(adj_ubad) << "#include <numeric>\n"
+                               "#include <climits>\n"
+                               "constexpr unsigned bad() {\n"
+                               "  unsigned a[2] = {1u, 0u};\n"
+                               "  unsigned d[2] = {};\n"
+                               "  std::adjacent_difference(a, a + 2, d);\n"
+                               "  return d[1];\n"
+                               "}\n"
+                               "constexpr unsigned v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, adj_ubad, true));
+
+    const fs::path adj_inv = c.tmp / "adj_inv.cpp";
+    std::ofstream(adj_inv) << "#include <numeric>\n"
+                              "constexpr int bad() {\n"
+                              "  int a[2] = {4, 5};\n"
+                              "  int d[2] = {7, 8};\n"
+                              "  std::adjacent_difference(a + 1, a, d);\n"
+                              "  return d[0];\n"
+                              "}\n"
+                              "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, adj_inv, true));
+
+    const fs::path adj_null = c.tmp / "adj_null.cpp";
+    std::ofstream(adj_null) << "#include <numeric>\n"
+                               "constexpr int bad() {\n"
+                               "  int a[1] = {3};\n"
+                               "  int* d = nullptr;\n"
+                               "  std::adjacent_difference(a, a + 1, d);\n"
+                               "  return 0;\n"
+                               "}\n"
+                               "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, adj_null, true));
+
+    const fs::path adj_over = c.tmp / "adj_over.cpp";
+    std::ofstream(adj_over) << "#include <numeric>\n"
+                               "constexpr int bad() {\n"
+                               "  int a[3] = {3, 5, 9};\n"
+                               "  std::adjacent_difference(a, a + 3, a + 1);\n"
+                               "  return a[1];\n"
+                               "}\n"
+                               "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, adj_over, true));
+
+    const fs::path adj_mem = c.tmp / "adj_mem.cpp";
+    std::ofstream(adj_mem) << "#include <climits>\n"
+                              "#include <cstdio>\n"
+                              "#include <cstdlib>\n"
+                              "#include <cstring>\n"
+                              "#include <numeric>\n"
+                              "static int gd[3] = {4, 5, 6};\n"
+                              "static unsigned gu[2] = {4u, 5u};\n"
+                              "static signed char gsc[2] = {4, 5};\n"
+                              "static int gs[3] = {3, 5, 9};\n"
+                              "static int mode = 0;\n"
+                              "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+                              "  if (!ok) {\n"
+                              "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");\n"
+                              "    if (mode == 1)\n"
+                              "      std::fprintf(stderr, \"mem=%u,%u\\n\", gu[0], gu[1]);\n"
+                              "    else if (mode == 3)\n"
+                              "      std::fprintf(stderr, \"mem=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                              "    else if (mode == 4)\n"
+                              "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
+                              "    else\n"
+                              "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                              "    std::fflush(stderr);\n"
+                              "    std::abort();\n"
+                              "  }\n"
+                              "}\n"
+                              "int main(int argc, char** argv) {\n"
+                              "  const char* arg = (argc > 1 && argv[1]) ? argv[1] : \"ovf\";\n"
+                              "  if (std::strcmp(arg, \"uovf\") == 0) {\n"
+                              "    mode = 1;\n"
+                              "    unsigned s[2] = {1u, 0u};\n"
+                              "    std::adjacent_difference(s, s + 2, gu);\n"
+                              "    std::printf(\"wrapped=%u,%u\\n\", gu[0], gu[1]);\n"
+                              "  } else if (std::strcmp(arg, \"sc\") == 0) {\n"
+                              "    mode = 3;\n"
+                              "    signed char s[2] = {-1, static_cast<signed char>(SCHAR_MAX)};\n"
+                              "    std::adjacent_difference(s, s + 2, gsc);\n"
+                              "    std::printf(\"wrapped=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                              "  } else if (std::strcmp(arg, \"part\") == 0) {\n"
+                              "    mode = 0;\n"
+                              "    int s[3] = {5, 8, INT_MIN};\n"
+                              "    std::adjacent_difference(s, s + 3, gd);\n"
+                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                              "  } else if (std::strcmp(arg, \"inv\") == 0) {\n"
+                              "    mode = 0;\n"
+                              "    int s[2] = {4, 5};\n"
+                              "    std::adjacent_difference(s + 1, s, gd);\n"
+                              "    std::printf(\"wrapped=%d,%d\\n\", gd[0], gd[1]);\n"
+                              "  } else if (std::strcmp(arg, \"over\") == 0) {\n"
+                              "    mode = 4;\n"
+                              "    std::adjacent_difference(gs, gs + 3, gs + 1);\n"
+                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
+                              "  } else if (std::strcmp(arg, \"null\") == 0) {\n"
+                              "    mode = 0;\n"
+                              "    int s[1] = {3};\n"
+                              "    std::adjacent_difference(s, s + 1, static_cast<int*>(nullptr));\n"
+                              "    std::printf(\"wrapped=1\\n\");\n"
+                              "  } else if (std::strcmp(arg, \"max1\") == 0) {\n"
+                              "    int d[1] = {0};\n"
+                              "    int s[1] = {INT_MAX};\n"
+                              "    int* end = std::adjacent_difference(s, s + 1, d);\n"
+                              "    std::printf(\"adj_hi=%d end=%d\\n\", d[0], static_cast<int>(end - d));\n"
+                              "    return 0;\n"
+                              "  } else if (std::strcmp(arg, \"empty\") == 0) {\n"
+                              "    int s[1] = {4};\n"
+                              "    int d[1] = {7};\n"
+                              "    int* end = std::adjacent_difference(s, s, d);\n"
+                              "    std::printf(\"empty=%d end=%d\\n\", d[0], end == d ? 1 : 0);\n"
+                              "    return 0;\n"
+                              "  } else {\n"
+                              "    mode = 0;\n"
+                              "    int s[2] = {-1, INT_MAX};\n"
+                              "    std::adjacent_difference(s, s + 2, gd);\n"
+                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                              "  }\n"
+                              "  return 0;\n"
+                              "}\n";
+#ifdef _WIN32
+    const fs::path adj_mem_exe = c.tmp / "adj_mem.exe";
+#else
+    const fs::path adj_mem_exe = c.tmp / "adj_mem";
+#endif
+    std::vector<std::string> adj_mem_build{c.cxx, "-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-g", "-O1", "-w", "-isystem",
+                                           models.string(), adj_mem.string(), "-o", adj_mem_exe.string()};
+    REQUIRE(run_cmd(adj_mem_build));
+    std::string amout, amerr;
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "ovf"}, &amout, &amerr));
+    std::string amboth = amout + amerr;
+    CHECK(amboth.find("CHECK INT-SIGNED-OVF: std::adjacent_difference difference does not fit in T") !=
+          std::string::npos);
+    CHECK(amboth.find("mem=-1,5,6") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "uovf"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK FUNC-CONTRACT: std::adjacent_difference difference does not fit in T") !=
+          std::string::npos);
+    CHECK(amboth.find("mem=1,5") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "sc"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK INT-SIGNED-OVF: std::adjacent_difference difference does not fit in T") !=
+          std::string::npos);
+    CHECK(amboth.find("mem=-1,5") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "part"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK INT-SIGNED-OVF: std::adjacent_difference difference does not fit in T") !=
+          std::string::npos);
+    CHECK(amboth.find("mem=5,3,6") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "inv"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK FUNC-CONTRACT: std::adjacent_difference last is before first") != std::string::npos);
+    CHECK(amboth.find("mem=4,5,6") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "over"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK FUNC-CONTRACT: std::adjacent_difference dest lies in [first, last)") !=
+          std::string::npos);
+    CHECK(amboth.find("mem=3,5,9") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({adj_mem_exe.string(), "null"}, &amout, &amerr));
+    amboth = amout + amerr;
+    CHECK(amboth.find("CHECK PTR-NULL-DEREF: std::adjacent_difference null destination") != std::string::npos);
+    CHECK(amout.find("wrapped=") == std::string::npos);
+    std::string amok;
+    REQUIRE(run_cmd({adj_mem_exe.string(), "max1"}, &amok));
+    CHECK(amok.find("adj_hi=" + std::to_string(INT_MAX) + " end=1") != std::string::npos);
+    REQUIRE(run_cmd({adj_mem_exe.string(), "empty"}, &amok));
+    CHECK(amok.find("empty=7 end=1") != std::string::npos);
 }
