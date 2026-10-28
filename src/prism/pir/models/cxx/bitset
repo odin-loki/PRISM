@@ -14,6 +14,10 @@
 //  * operator&= and operator&. Each result bit is the AND of the two bits
 //    at that position. The AND does not invent a 1. A padding bit of the
 //    last word does not become a bit of the result (_M_sanitize);
+//  * operator|= and operator|. Each result bit is the OR of the two bits
+//    at that position. A padding bit of the last word does not become a
+//    bit of the result (_M_sanitize). bitset<0> has no word and stays
+//    empty. The OR does not allocate;
 //  * to_ulong() when the value fits in unsigned long. That is every value
 //    of a bitset whose N is at most the width of unsigned long (32 or 64,
 //    whichever the platform gives unsigned long). A bit at or above that
@@ -29,7 +33,7 @@
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
 // libstdc++ (reported in the function's `extra.cxx_models`). String
-// constructors, to_string, operator|, operator^, operator~, and std::hash
+// constructors, to_string, operator^, operator~, and std::hash
 // are not stubbed. to_string and a string constructor need <string>.
 #ifndef _PRISM_MODEL_BITSET
 #define _PRISM_MODEL_BITSET 1
@@ -383,6 +387,26 @@ public:
     constexpr bitset operator&(const bitset& __rhs) const noexcept {
         bitset __out(*this);
         __out &= __rhs;
+        return __out;
+    }
+
+    // [bitset.members]. Each stored bit becomes the OR of the two bits at
+    // that position. A padding bit of the last word is not a bit of the
+    // result. bitset<0> has no word and stays empty. The OR does not
+    // allocate.
+    constexpr bitset& operator|=(const bitset& __rhs) noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                _M_words._M_w[__i] |= __rhs._M_words._M_w[__i];
+            _M_sanitize();
+            return *this;
+        }
+    }
+    constexpr bitset operator|(const bitset& __rhs) const noexcept {
+        bitset __out(*this);
+        __out |= __rhs;
         return __out;
     }
 

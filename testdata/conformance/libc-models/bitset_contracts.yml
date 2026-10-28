@@ -8,6 +8,7 @@ expected:
   bitset_empty_true: true
   bitset_shift_true: true
   bitset_and_true: true
+  bitset_or_true: true
   bitset_index_oob_false: false
   bitset_test_oob_false: false
   bitset_to_ulong_overflow_false: false
