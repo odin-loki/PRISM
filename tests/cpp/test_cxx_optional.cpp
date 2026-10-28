@@ -15,6 +15,11 @@
 // transform calls the function with the stored T when engaged and yields an
 // optional that holds what the function returns. A disengaged optional does
 // not call the function and yields a disengaged optional, not T{}.
+// operator== and operator< compare two optional<T>. Two disengaged optionals
+// compare equal and neither is less. A disengaged optional is less than an
+// engaged one. Two engaged optionals compare the stored values. The inactive
+// T is not read and T{} is not built. That comparison is not PROVED and not
+// CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -193,6 +198,56 @@ std::vector<std::string> run_lines(const fs::path& exe) {
     std::string line;
     while (std::getline(in, line)) lines.push_back(line);
     return lines;
+}
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string strip_comments(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '/') {
+            i += 2;
+            while (i < s.size() && s[i] != '\n') ++i;
+            continue;
+        }
+        if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) ++i;
+            if (i + 1 < s.size()) i += 2;
+            continue;
+        }
+        out.push_back(s[i]);
+        ++i;
+    }
+    return out;
+}
+
+// The function whose signature starts at sig. The next character after the
+// signature in this header is '{'.
+std::string function_body(const std::string& src, std::size_t sig) {
+    const auto brace = src.find('{', sig);
+    if (brace == std::string::npos) return {};
+    int depth = 0;
+    for (std::size_t i = brace; i < src.size(); ++i) {
+        if (src[i] == '{') ++depth;
+        else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) return src.substr(brace, i - brace + 1);
+        }
+    }
+    return {};
+}
+
+int count_of(const std::string& s, const std::string& needle) {
+    int n = 0;
+    for (std::size_t at = 0; (at = s.find(needle, at)) != std::string::npos; at += needle.size()) ++n;
+    return n;
 }
 
 bool disengaged_is_check(const fs::path& exe, const char* mode, const char* which) {
@@ -531,4 +586,245 @@ TEST_CASE("cxx optional model: transform calls the function or returns disengage
         CHECK(line != "cmove 5 -1");
         CHECK(line != "cmove -1 5");
     }
+}
+
+TEST_CASE("cxx optional model: compare is the stored value only when both are engaged") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "optional";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <functional>") == std::string::npos);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 3);
+
+    const auto cls = src.find("class optional {");
+    const auto kind = src.find("struct _Prism_optional_kind<optional<_T>>");
+    const auto eq = src.find("bool operator==(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    const auto lt = src.find("bool operator<(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    REQUIRE(cls != std::string::npos);
+    REQUIRE(kind != std::string::npos);
+    REQUIRE(eq != std::string::npos);
+    REQUIRE(lt != std::string::npos);
+    CHECK(cls < kind);
+    CHECK(kind < eq);
+    CHECK(eq < lt);
+
+    const std::string eq_body = function_body(src, eq);
+    const std::string lt_body = function_body(src, lt);
+    REQUIRE_FALSE(eq_body.empty());
+    REQUIRE_FALSE(lt_body.empty());
+    CHECK(eq_body.find("if (__x._M_engaged != __y._M_engaged) return false;") != std::string::npos);
+    CHECK(eq_body.find("if (!__x._M_engaged) return true;") != std::string::npos);
+    CHECK(eq_body.find("return __x._M_storage._M_value == __y._M_storage._M_value;") != std::string::npos);
+    CHECK(eq_body.find("if (!__x._M_engaged) return true;") < eq_body.find("_M_value"));
+    CHECK(lt_body.find("if (!__y._M_engaged) return false;") != std::string::npos);
+    CHECK(lt_body.find("if (!__x._M_engaged) return true;") != std::string::npos);
+    CHECK(lt_body.find("return __x._M_storage._M_value < __y._M_storage._M_value;") != std::string::npos);
+    const auto lt_value = lt_body.find("_M_value");
+    REQUIRE(lt_value != std::string::npos);
+    CHECK(lt_body.find("if (!__y._M_engaged) return false;") < lt_value);
+    CHECK(lt_body.find("if (!__x._M_engaged) return true;") < lt_value);
+    for (const std::string& body : {eq_body, lt_body}) {
+        CHECK(body.find("value()") == std::string::npos);
+        CHECK(body.find("operator*") == std::string::npos);
+        CHECK(body.find("_Tp{}") == std::string::npos);
+        CHECK(body.find("_Tp()") == std::string::npos);
+        CHECK(body.find("T{}") == std::string::npos);
+        CHECK(body.find("__prism_check") == std::string::npos);
+    }
+
+    const std::string code = strip_comments(src);
+    CHECK(code.find("emplace") == std::string::npos);
+    CHECK(code.find("hash") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("bool operator==(") != std::string::npos);
+    CHECK(code.find("bool operator<(") != std::string::npos);
+    CHECK(code.find("void reset() noexcept") != std::string::npos);
+    CHECK(code.find("value_or") != std::string::npos);
+    CHECK(code.find("and_then") != std::string::npos);
+    CHECK(code.find("or_else") != std::string::npos);
+    CHECK(code.find("transform") != std::string::npos);
+    CHECK(code.find("CXX-OPTIONAL-NULL") != std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <functional>") == std::string::npos);
+    CHECK(code.find("struct _Prism_optional_kind<optional<_T>>") != std::string::npos);
+}
+
+TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is less") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = c.tmp / "optional_compare.cpp";
+    // Box has no default constructor. Comparing two empty optionals must not
+    // build Box{}. operator== and operator< print, so a read of an inactive
+    // Box shows up as eq or lt before any engaged pair.
+    std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <optional>\n"
+                          "struct Box {\n"
+                          "    int v;\n"
+                          "    Box() = delete;\n"
+                          "    explicit Box(int x) : v(x) {}\n"
+                          "    bool operator==(const Box& o) const {\n"
+                          "        std::printf(\"eq %d %d\\n\", v, o.v);\n"
+                          "        return v == o.v;\n"
+                          "    }\n"
+                          "    bool operator<(const Box& o) const {\n"
+                          "        std::printf(\"lt %d %d\\n\", v, o.v);\n"
+                          "        return v < o.v;\n"
+                          "    }\n"
+                          "};\n"
+                          "int main() {\n"
+                          "    std::optional<Box> e1;\n"
+                          "    std::optional<Box> e2;\n"
+                          "    std::printf(\"ee eq=%d\\n\", static_cast<int>(e1 == e2));\n"
+                          "    std::printf(\"ee lt=%d\\n\", static_cast<int>(e1 < e2));\n"
+                          "    std::printf(\"ee rev=%d\\n\", static_cast<int>(e2 < e1));\n"
+                          "    std::optional<Box> one(Box(1));\n"
+                          "    std::printf(\"de eq=%d\\n\", static_cast<int>(e1 == one));\n"
+                          "    std::printf(\"de lt=%d\\n\", static_cast<int>(e1 < one));\n"
+                          "    std::printf(\"de rev=%d\\n\", static_cast<int>(one < e1));\n"
+                          "    std::optional<Box> one_b(Box(1));\n"
+                          "    std::printf(\"same eq=%d\\n\", static_cast<int>(one == one_b));\n"
+                          "    std::printf(\"same lt=%d\\n\", static_cast<int>(one < one_b));\n"
+                          "    std::printf(\"same rev=%d\\n\", static_cast<int>(one_b < one));\n"
+                          "    std::optional<Box> two(Box(2));\n"
+                          "    std::printf(\"ord eq=%d\\n\", static_cast<int>(one == two));\n"
+                          "    std::printf(\"ord lt=%d\\n\", static_cast<int>(one < two));\n"
+                          "    std::printf(\"ord rev=%d\\n\", static_cast<int>(two < one));\n"
+                          "    const std::optional<Box> cempty;\n"
+                          "    const std::optional<Box> ctwo(Box(2));\n"
+                          "    const std::optional<Box> ctwo_b(Box(2));\n"
+                          "    std::printf(\"cde eq=%d\\n\", static_cast<int>(cempty == ctwo));\n"
+                          "    std::printf(\"cde lt=%d\\n\", static_cast<int>(cempty < ctwo));\n"
+                          "    std::printf(\"cde rev=%d\\n\", static_cast<int>(ctwo < cempty));\n"
+                          "    std::printf(\"c22 eq=%d\\n\", static_cast<int>(ctwo == ctwo_b));\n"
+                          "    std::printf(\"c22 lt=%d\\n\", static_cast<int>(ctwo < ctwo_b));\n"
+                          "    std::printf(\"c22 rev=%d\\n\", static_cast<int>(ctwo_b < ctwo));\n"
+                          "    std::optional<int> ie;\n"
+                          "    std::optional<int> iz(0);\n"
+                          "    std::optional<int> iz2(0);\n"
+                          "    std::optional<int> i1(1);\n"
+                          "    std::optional<int> ineg(-1);\n"
+                          "    std::printf(\"iz eq=%d\\n\", static_cast<int>(ie == iz));\n"
+                          "    std::printf(\"iz lt=%d\\n\", static_cast<int>(ie < iz));\n"
+                          "    std::printf(\"iz rev=%d\\n\", static_cast<int>(iz < ie));\n"
+                          "    std::printf(\"zz eq=%d\\n\", static_cast<int>(iz == iz2));\n"
+                          "    std::printf(\"zz lt=%d\\n\", static_cast<int>(iz < iz2));\n"
+                          "    std::printf(\"zz rev=%d\\n\", static_cast<int>(iz2 < iz));\n"
+                          "    std::printf(\"01 eq=%d\\n\", static_cast<int>(iz == i1));\n"
+                          "    std::printf(\"01 lt=%d\\n\", static_cast<int>(iz < i1));\n"
+                          "    std::printf(\"01 rev=%d\\n\", static_cast<int>(i1 < iz));\n"
+                          "    std::printf(\"neg eq=%d\\n\", static_cast<int>(ineg == iz));\n"
+                          "    std::printf(\"neg lt=%d\\n\", static_cast<int>(ineg < iz));\n"
+                          "    std::printf(\"neg rev=%d\\n\", static_cast<int>(iz < ineg));\n"
+                          "    std::printf(\"ii eq=%d\\n\", static_cast<int>(ie == ie));\n"
+                          "    std::printf(\"ii lt=%d\\n\", static_cast<int>(ie < ie));\n"
+                          "    std::printf(\"ee ne=%d\\n\", static_cast<int>(e1 != e2));\n"
+                          "    std::printf(\"de ne=%d\\n\", static_cast<int>(e1 != one));\n"
+                          "    std::printf(\"same ne=%d\\n\", static_cast<int>(one != one_b));\n"
+                          "    std::printf(\"ord ne=%d\\n\", static_cast<int>(one != two));\n"
+                          "    std::printf(\"ii ne=%d\\n\", static_cast<int>(ie != ie));\n"
+                          "    std::printf(\"iz ne=%d\\n\", static_cast<int>(ie != iz));\n"
+                          "    std::printf(\"zz ne=%d\\n\", static_cast<int>(iz != iz2));\n"
+                          "    return 0;\n"
+                          "}\n";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "optional").string())) != std::string::npos);
+
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false, "compare_trace"));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true, "compare_trace"));
+    const std::vector<std::string> want{
+        "ee eq=1", "ee lt=0", "ee rev=0", "de eq=0", "de lt=1", "de rev=0", "eq 1 1", "same eq=1", "lt 1 1",
+        "same lt=0", "lt 1 1", "same rev=0", "eq 1 2", "ord eq=0", "lt 1 2", "ord lt=1", "lt 2 1", "ord rev=0",
+        "cde eq=0", "cde lt=1", "cde rev=0", "eq 2 2", "c22 eq=1", "lt 2 2", "c22 lt=0", "lt 2 2", "c22 rev=0",
+        "iz eq=0", "iz lt=1", "iz rev=0", "zz eq=1", "zz lt=0", "zz rev=0", "01 eq=0", "01 lt=1", "01 rev=0",
+        "neg eq=0", "neg lt=1", "neg rev=0", "ii eq=1", "ii lt=0", "ee ne=0", "de ne=1", "eq 1 1", "same ne=0",
+        "eq 1 2", "ord ne=1", "ii ne=0", "iz ne=1", "zz ne=0",
+    };
+    CHECK(lib == mod);
+    CHECK(mod == want);
+    for (const auto& line : mod) {
+        CHECK(line != "ee eq=0");
+        CHECK(line != "ee lt=1");
+        CHECK(line != "ee rev=1");
+        CHECK(line != "de eq=1");
+        CHECK(line != "de lt=0");
+        CHECK(line != "de rev=1");
+        CHECK(line != "same eq=0");
+        CHECK(line != "same lt=1");
+        CHECK(line != "same rev=1");
+        CHECK(line != "ord eq=1");
+        CHECK(line != "ord lt=0");
+        CHECK(line != "ord rev=1");
+        CHECK(line != "cde eq=1");
+        CHECK(line != "cde lt=0");
+        CHECK(line != "cde rev=1");
+        CHECK(line != "c22 eq=0");
+        CHECK(line != "c22 lt=1");
+        CHECK(line != "iz eq=1");
+        CHECK(line != "iz lt=0");
+        CHECK(line != "iz rev=1");
+        CHECK(line != "zz eq=0");
+        CHECK(line != "zz lt=1");
+        CHECK(line != "01 eq=1");
+        CHECK(line != "01 lt=0");
+        CHECK(line != "01 rev=1");
+        CHECK(line != "neg eq=1");
+        CHECK(line != "neg lt=0");
+        CHECK(line != "neg rev=1");
+        CHECK(line != "ii eq=0");
+        CHECK(line != "ii lt=1");
+        CHECK(line != "ee ne=1");
+        CHECK(line != "de ne=0");
+        CHECK(line != "same ne=1");
+        CHECK(line != "ord ne=0");
+        CHECK(line != "ii ne=1");
+        CHECK(line != "iz ne=0");
+        CHECK(line != "zz ne=1");
+        CHECK(line != "eq 0 0");
+        CHECK(line != "lt 0 0");
+        CHECK(line != "eq 0 1");
+        CHECK(line != "lt 0 1");
+        CHECK(line != "eq 1 0");
+        CHECK(line != "lt 0 2");
+    }
+}
+
+TEST_CASE("cxx optional model: comparison of two different types is not declared") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = c.tmp / "optional_compare_hetero.cpp";
+    std::ofstream(src) << "#include <optional>\n"
+                          "int main() {\n"
+                          "    std::optional<int> a(1);\n"
+                          "    std::optional<long> b(1L);\n"
+                          "    return (a == b || a < b) ? 0 : 1;\n"
+                          "}\n";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-w"};
+    auto compile = [&](bool with_models) {
+        std::vector<std::string> argv{c.cxx};
+        argv.insert(argv.end(), flags.begin(), flags.end());
+        if (with_models) {
+            argv.push_back("-isystem");
+            argv.push_back(models.string());
+        }
+        argv.push_back(src.string());
+        argv.push_back("-o");
+        argv.push_back((c.tmp / (with_models ? "compare_hetero.model" : "compare_hetero.lib")).string());
+        return run_cmd(argv);
+    };
+    CHECK(compile(false));
+    CHECK_FALSE(compile(true));
 }
