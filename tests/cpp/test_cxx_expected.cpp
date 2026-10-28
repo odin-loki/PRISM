@@ -12,6 +12,9 @@
 // and keeps that T. Neither path invents a default T or a default E.
 // value_or on a value returns that T. value_or on an unexpected returns the
 // argument converted to T, not a default T and not the stored E.
+// transform on a value returns an expected holding the function's result.
+// transform on an unexpected does not call the function and keeps that E.
+// It does not construct a T and does not return T{}.
 
 #include <doctest/doctest.h>
 
@@ -254,6 +257,23 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     bool saw_value_or_const_unex = false;
     bool saw_value_or_held = false;
     bool saw_value_or_none = false;
+    bool saw_transform = false;
+    bool saw_transform_unex = false;
+    bool saw_transform_src = false;
+    bool saw_transform_zero = false;
+    bool saw_transform_err0 = false;
+    bool saw_transform_const = false;
+    bool saw_transform_const_unex = false;
+    bool saw_transform_rv = false;
+    bool saw_transform_rv_unex = false;
+    bool saw_transform_cmv_val = false;
+    bool saw_transform_cmv = false;
+    bool saw_transform_not = false;
+    bool saw_xform = false;
+    bool saw_transform_val = false;
+    bool saw_transform_box = false;
+    bool saw_transform_box_unex = false;
+    bool saw_transform_r = false;
     for (const auto& line : b) {
         if (line == "engaged 1 1 42 42") saw_stored = true;
         if (line == "unex 0 0 7") saw_error = true;
@@ -284,6 +304,23 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
         if (line == "value_or_const_unex 99") saw_value_or_const_unex = true;
         if (line == "value_or_held 42") saw_value_or_held = true;
         if (line == "value_or_none 99") saw_value_or_none = true;
+        if (line == "transform 1 84") saw_transform = true;
+        if (line == "transform_unex 0 0 9") saw_transform_unex = true;
+        if (line == "transform_src 9") saw_transform_src = true;
+        if (line == "transform_zero 1 0") saw_transform_zero = true;
+        if (line == "transform_err0 0 0") saw_transform_err0 = true;
+        if (line == "transform_const 45") saw_transform_const = true;
+        if (line == "transform_const_unex 0 0 3") saw_transform_const_unex = true;
+        if (line == "transform_rv 15") saw_transform_rv = true;
+        if (line == "transform_rv_unex 0 6") saw_transform_rv_unex = true;
+        if (line == "transform_cmv_val 1 9") saw_transform_cmv_val = true;
+        if (line == "transform_cmv 0 4") saw_transform_cmv = true;
+        if (line == "transform_not 0 4") saw_transform_not = true;
+        if (line == "xform 6") saw_xform = true;
+        if (line == "transform_val 1 6") saw_transform_val = true;
+        if (line == "transform_box 42") saw_transform_box = true;
+        if (line == "transform_box_unex 0 0 9") saw_transform_box_unex = true;
+        if (line == "transform_r 0 3") saw_transform_r = true;
         CHECK(line.find("engaged 1 1 0 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "copy 0");
@@ -321,6 +358,45 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
         CHECK(line != "value_or_held 0");
         CHECK(line != "value_or_none 0");
         CHECK(line != "value_or_none 4");
+        CHECK(line != "transform 1 0");
+        CHECK(line != "transform 1 42");
+        CHECK(line != "transform_unex 0 0 0");
+        CHECK(line != "transform_unex 0 1 9");
+        CHECK(line != "transform_unex 1 0 9");
+        CHECK(line != "transform_src 0");
+        CHECK(line != "transform_zero 1 99");
+        CHECK(line != "transform_zero 0 0");
+        CHECK(line != "transform_err0 1 0");
+        CHECK(line != "transform_err0 1 99");
+        CHECK(line != "transform_err0 0 99");
+        CHECK(line != "transform_const 42");
+        CHECK(line != "transform_const 0");
+        CHECK(line != "transform_const_unex 0 0 0");
+        CHECK(line != "transform_const_unex 0 1 3");
+        CHECK(line != "transform_rv 11");
+        CHECK(line != "transform_rv 0");
+        CHECK(line != "transform_rv_unex 1 6");
+        CHECK(line != "transform_rv_unex 0 0");
+        CHECK(line != "transform_cmv_val 1 8");
+        CHECK(line != "transform_cmv_val 1 0");
+        CHECK(line != "transform_cmv 1 4");
+        CHECK(line != "transform_cmv 0 0");
+        CHECK(line != "transform_not 1 0");
+        CHECK(line != "transform_not 0 0");
+        CHECK(line != "transform_val 0");
+        CHECK(line != "transform_val 0 6");
+        CHECK(line != "transform_box 0");
+        CHECK(line != "transform_box 99");
+        CHECK(line != "transform_box_unex 0 0 0");
+        CHECK(line != "transform_box_unex 0 1 9");
+        CHECK(line != "transform_box_unex 1 0 9");
+        CHECK(line != "transform_r 0 0");
+        CHECK(line != "transform_r 1 3");
+        CHECK(line.find("skipEt") == std::string::npos);
+        CHECK(line.find("skipRv") == std::string::npos);
+        CHECK(line.find("skipCmv") == std::string::npos);
+        CHECK(line.find("skipZ") == std::string::npos);
+        CHECK(line.find("skipEr") == std::string::npos);
     }
     CHECK(saw_stored);
     CHECK(saw_error);
@@ -351,6 +427,23 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     CHECK(saw_value_or_const_unex);
     CHECK(saw_value_or_held);
     CHECK(saw_value_or_none);
+    CHECK(saw_transform);
+    CHECK(saw_transform_unex);
+    CHECK(saw_transform_src);
+    CHECK(saw_transform_zero);
+    CHECK(saw_transform_err0);
+    CHECK(saw_transform_const);
+    CHECK(saw_transform_const_unex);
+    CHECK(saw_transform_rv);
+    CHECK(saw_transform_rv_unex);
+    CHECK(saw_transform_cmv_val);
+    CHECK(saw_transform_cmv);
+    CHECK(saw_transform_not);
+    CHECK(saw_xform);
+    CHECK(saw_transform_val);
+    CHECK(saw_transform_box);
+    CHECK(saw_transform_box_unex);
+    CHECK(saw_transform_r);
 
     CHECK(failed_is_check(mod, "value", "CXX-EXPECTED-NULL", "expected::value()"));
     CHECK(failed_is_check(mod, "star", "CXX-EXPECTED-NULL", "expected::operator*"));

@@ -27,10 +27,14 @@
 // error alternative is active, value_or returns the argument converted to T.
 // It does not return T{} and it does not invent a value that was not stored
 // or passed in.
-// transform is not declared. A use of it fails to compile against this
-// header and pir falls back to libstdc++.
+// transform calls the function with the stored T when that alternative is
+// active and returns an expected that holds the function's result. When the
+// error alternative is active, transform does not call the function and
+// returns that same E through _M_from_unex. It does not construct a T and
+// it does not return T{}.
 // transform_error, emplace, swap, comparison, and expected<void, E> are not
-// declared either, so those uses fall back too.
+// declared. A use of them fails to compile against this header and pir falls
+// back to libstdc++.
 #ifndef _PRISM_MODEL_EXPECTED
 #define _PRISM_MODEL_EXPECTED 1
 #define _GLIBCXX_EXPECTED 1  // libstdc++'s <expected> include guard: never both
@@ -63,7 +67,8 @@ unexpected(_Ep) -> unexpected<_Ep>;
 template <typename _Tp, typename _Er>
 class expected {
     // Builds the error alternative without constructing T. Private so a
-    // program cannot spell it; and_then uses it to return this same E.
+    // program cannot spell it; and_then and transform use it to return this
+    // same E.
     enum class _Unex { _Tag };
 
     template <typename, typename>
@@ -235,6 +240,44 @@ public:
             return static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex));
         using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex)));
         return _Ret(static_cast<const _Tp&&>(_M_storage._M_val));
+    }
+
+    // Holds T: call with that T and return an expected that holds the
+    // function's result. Holds E: do not call, and do not construct a T.
+    // The result holds this same E, through _M_from_unex. T{} is not
+    // returned. The decltype is unevaluated, so the inactive alternative
+    // is not read.
+    template <typename _Fn>
+    auto transform(_Fn&& __f) & {
+        using _Up = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        using _Ret = expected<_Up, _Er>;
+        if (_M_has)
+            return _Ret(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        return _Ret::_M_from_unex(_M_storage._M_unex);
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) const& {
+        using _Up = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        using _Ret = expected<_Up, _Er>;
+        if (_M_has)
+            return _Ret(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        return _Ret::_M_from_unex(_M_storage._M_unex);
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) && {
+        using _Up = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_val)));
+        using _Ret = expected<_Up, _Er>;
+        if (_M_has)
+            return _Ret(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_val)));
+        return _Ret::_M_from_unex(static_cast<_Er&&>(_M_storage._M_unex));
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) const&& {
+        using _Up = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_val)));
+        using _Ret = expected<_Up, _Er>;
+        if (_M_has)
+            return _Ret(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_val)));
+        return _Ret::_M_from_unex(static_cast<const _Er&&>(_M_storage._M_unex));
     }
 };
 

@@ -9,7 +9,10 @@
 // On a value it does not call the function; the result holds that stored T.
 // value_or returns the stored T when that alternative is active, and the
 // argument converted to T when an E is stored. It does not return T{}.
-// transform is not called: the model does not declare it.
+// transform calls the function with the stored T and returns an expected
+// that holds the function's result. On an unexpected it does not call the
+// function; the result holds that same E and does not construct a T or
+// return T{}.
 //
 // argv "value" calls value() on an unexpected. argv "star" calls operator* on
 // an unexpected. argv "error" calls error() on a success value. The model must
@@ -59,6 +62,7 @@ struct Box {
 
 static void show_monadic();
 static void show_value_or();
+static void show_transform();
 
 static void show() {
     std::expected<int, int> def;
@@ -89,6 +93,7 @@ static void show() {
 
     show_monadic();
     show_value_or();
+    show_transform();
 }
 
 // and_then / or_else. Lines are the contract: a value calls and_then and does
@@ -223,6 +228,104 @@ static void show_value_or() {
     std::printf("value_or_held %d\n", held.value_or(99).v);
     std::expected<Box, int> none(std::unexpected<int>(4));
     std::printf("value_or_none %d\n", none.value_or(99).v);
+}
+
+// transform. A stored T is passed to the function; the result holds what the
+// function returns. An unexpected does not call the function and holds that
+// same E. E and Box have no default constructor, so a T{} on those paths
+// would not compile. A skipped call prints skipEt / skipRv / skipCmv /
+// skipZ / skipEr.
+static void show_transform() {
+    std::expected<int, int> ok(42);
+    auto doubled = ok.transform([](int v) { return v * 2; });
+    std::printf("transform %d %d\n", static_cast<int>(doubled.has_value()), doubled.value());
+
+    int xcalls = 0;
+    std::expected<int, int> bad(std::unexpected<int>(9));
+    auto skipped = bad.transform([&](int v) {
+        ++xcalls;
+        return v;
+    });
+    std::printf("transform_unex %d %d %d\n", xcalls, static_cast<int>(skipped.has_value()),
+                skipped.error());
+    std::printf("transform_src %d\n", bad.error());
+
+    std::expected<int, int> zero(0);
+    auto z = zero.transform([](int v) { return v; });
+    std::printf("transform_zero %d %d\n", static_cast<int>(z.has_value()), z.value());
+
+    std::expected<int, int> zerr(std::unexpected<int>(0));
+    auto zt = zerr.transform([](int v) {
+        std::printf("skipZ %d\n", v);
+        return 99;
+    });
+    std::printf("transform_err0 %d %d\n", static_cast<int>(zt.has_value()), zt.error());
+
+    const std::expected<int, int> cok(42);
+    auto ca = cok.transform([](int v) { return v + 3; });
+    std::printf("transform_const %d\n", ca.value());
+
+    int cucalls = 0;
+    const std::expected<int, int> cbad(std::unexpected<int>(3));
+    auto cu = cbad.transform([&](int v) {
+        ++cucalls;
+        return v;
+    });
+    std::printf("transform_const_unex %d %d %d\n", cucalls, static_cast<int>(cu.has_value()),
+                cu.error());
+
+    auto rv = std::expected<int, int>(11).transform([](int v) { return v + 4; });
+    std::printf("transform_rv %d\n", rv.value());
+
+    auto rve = std::expected<int, int>(std::unexpected<int>(6)).transform([](int v) {
+        std::printf("skipRv %d\n", v);
+        return v;
+    });
+    std::printf("transform_rv_unex %d %d\n", static_cast<int>(rve.has_value()), rve.error());
+
+    const std::expected<int, int> cok2(8);
+    auto cmvo = static_cast<const std::expected<int, int>&&>(cok2).transform(
+        [](int v) { return v + 1; });
+    std::printf("transform_cmv_val %d %d\n", static_cast<int>(cmvo.has_value()), cmvo.value());
+
+    const std::expected<int, int> cok_unex(std::unexpected<int>(4));
+    auto cmv = static_cast<const std::expected<int, int>&&>(cok_unex).transform([](int v) {
+        std::printf("skipCmv %d\n", v);
+        return v;
+    });
+    std::printf("transform_cmv %d %d\n", static_cast<int>(cmv.has_value()), cmv.error());
+
+    std::expected<E, int> no_t(std::unexpected<int>(4));
+    auto nt = no_t.transform([](const E& x) {
+        std::printf("skipEt %d\n", x.v);
+        return x.v;
+    });
+    std::printf("transform_not %d %d\n", static_cast<int>(nt.has_value()), nt.error());
+
+    std::expected<E, int> held_m(E(6));
+    auto ht = held_m.transform([](const E& x) {
+        std::printf("xform %d\n", x.v);
+        return x.v;
+    });
+    std::printf("transform_val %d %d\n", static_cast<int>(ht.has_value()), ht.value());
+
+    auto box = ok.transform([](int v) { return Box(v); });
+    std::printf("transform_box %d\n", box.value().v);
+
+    int bcalls = 0;
+    auto bnone = bad.transform([&](int v) {
+        ++bcalls;
+        return Box(v);
+    });
+    std::printf("transform_box_unex %d %d %d\n", bcalls, static_cast<int>(bnone.has_value()),
+                bnone.error());
+
+    std::expected<int, R> unex_r(std::unexpected<R>(R(3)));
+    auto ar = unex_r.transform([](int v) {
+        std::printf("skipEr %d\n", v);
+        return v + 1;
+    });
+    std::printf("transform_r %d %d\n", static_cast<int>(ar.has_value()), ar.error().v);
 }
 
 int main(int argc, char** argv) {
