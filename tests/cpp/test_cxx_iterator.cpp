@@ -10,8 +10,13 @@
 // std::next is the pointer overloads only. next(p) returns p + 1.
 // next(p, 0) returns p and does not add. next(p, n) for n > 0 returns
 // p + n. n < 0 is __prism_check then __builtin_trap and does not form
-// p + n. prev, advance, and reverse_iterator stay omitted. This is not
-// a proof that the pointer addresses an array.
+// p + n. This is not a proof that the pointer addresses an array.
+//
+// std::prev is the pointer overloads only. prev(p) returns p - 1.
+// prev(p, 0) returns p and does not subtract. prev(p, n) for n > 0
+// returns p - n. n < 0 is __prism_check then __builtin_trap and does not
+// form p - n. advance and reverse_iterator stay omitted. This is not a
+// proof that the pointer addresses an array.
 //
 // This case reads the header as text. It does not `#include` the model:
 // doctest already pulls in the platform library, and defining
@@ -121,6 +126,8 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const std::string distance_sig = "constexpr std::ptrdiff_t distance(_Tp* __first, _Tp* __last) noexcept";
     const std::string next_sig = "constexpr _Tp* next(_Tp* __p) noexcept";
     const std::string next_n_sig = "constexpr _Tp* next(_Tp* __p, std::ptrdiff_t __n) noexcept";
+    const std::string prev_sig = "constexpr _Tp* prev(_Tp* __p) noexcept";
+    const std::string prev_n_sig = "constexpr _Tp* prev(_Tp* __p, std::ptrdiff_t __n) noexcept";
     CHECK(count_occ(code, begin_sig) == 1);
     CHECK(count_occ(code, end_sig) == 1);
     CHECK(count_occ(code, zero_begin_sig) == 1);
@@ -128,18 +135,21 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(count_occ(code, distance_sig) == 1);
     CHECK(count_occ(code, next_sig) == 1);
     CHECK(count_occ(code, next_n_sig) == 1);
+    CHECK(count_occ(code, prev_sig) == 1);
+    CHECK(count_occ(code, prev_n_sig) == 1);
     CHECK(count_occ(code, "begin(") == 2);
     CHECK(count_occ(code, "end(") == 2);
     CHECK(count_occ(code, "distance(") == 1);
     CHECK(count_occ(code, "next(") == 2);
+    CHECK(count_occ(code, "prev(") == 2);
     CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 2);
     // begin and end return _Tp*. distance and _Prism_pointer_diff take four
     // _Tp* parameters. The two next overloads add two _Tp* returns and two
-    // _Tp* parameters. The check declaration adds two const char*. No other
-    // star: these functions do not dereference.
-    CHECK(count_occ(code, "*") == 12);
+    // _Tp* parameters. The two prev overloads add two more of each. The
+    // check declaration adds two const char*. No other star: these
+    // functions do not dereference.
+    CHECK(count_occ(code, "*") == 16);
     CHECK(code.find("reverse_iterator") == std::string::npos);
-    CHECK(code.find("prev") == std::string::npos);
     CHECK(code.find("advance") == std::string::npos);
     CHECK(code.find("input_iterator_tag") == std::string::npos);
     CHECK(code.find("random_access_iterator_tag") == std::string::npos);
@@ -147,6 +157,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::distance subtraction does not fit in ptrdiff_t\")") ==
           1);
     CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::next offset is negative\")") == 1);
+    CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::prev offset is negative\")") == 1);
 
     const auto begin_body = body_of(code, begin_sig);
     const auto end_body = body_of(code, end_sig);
@@ -246,4 +257,43 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(next_n_body.find("return __p + 0") == std::string::npos);
     CHECK(next_n_body.find("__prism_check") == std::string::npos);
     CHECK(next_n_body.find('*') == std::string::npos);
+
+    const auto prev_neg = body_of(code, "void _Prism_prev_negative()");
+    REQUIRE_FALSE(prev_neg.empty());
+    const auto prev_check = prev_neg.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::prev offset is negative\")");
+    const auto prev_trap = prev_neg.find("__builtin_trap()");
+    REQUIRE(prev_check != std::string::npos);
+    REQUIRE(prev_trap != std::string::npos);
+    CHECK(prev_check < prev_trap);
+    CHECK(prev_neg.find("return") == std::string::npos);
+    CHECK(prev_neg.find("__p -") == std::string::npos);
+    CHECK(prev_neg.find("__p-") == std::string::npos);
+    // FUNC-CONTRACT is the only hyphen. The helper does not form p - n.
+    CHECK(count_occ(prev_neg, "-") == 1);
+    CHECK(prev_neg.find(" - ") == std::string::npos);
+
+    const auto prev_body = body_of(code, prev_sig);
+    REQUIRE(prev_body.find("return __p - 1;") != std::string::npos);
+    CHECK(count_occ(prev_body, "-") == 1);
+    CHECK(prev_body.find("__prism_check") == std::string::npos);
+    CHECK(prev_body.find("__n") == std::string::npos);
+    CHECK(prev_body.find('*') == std::string::npos);
+
+    const auto prev_n_body = body_of(code, prev_n_sig);
+    REQUIRE_FALSE(prev_n_body.empty());
+    const auto prev_call_neg = prev_n_body.find("_Prism_prev_negative()");
+    const auto prev_zero_ret = prev_n_body.find("return __p;");
+    const auto prev_pos_ret = prev_n_body.find("return __p - __n;");
+    REQUIRE(prev_call_neg != std::string::npos);
+    REQUIRE(prev_zero_ret != std::string::npos);
+    REQUIRE(prev_pos_ret != std::string::npos);
+    CHECK(prev_n_body.find("__n < 0") != std::string::npos);
+    CHECK(prev_n_body.find("__n < 0") < prev_call_neg);
+    CHECK(prev_call_neg < prev_zero_ret);
+    CHECK(prev_zero_ret < prev_pos_ret);
+    CHECK(count_occ(prev_n_body, "-") == 1);
+    CHECK(prev_n_body.substr(0, prev_pos_ret).find('-') == std::string::npos);
+    CHECK(prev_n_body.find("return __p - 0") == std::string::npos);
+    CHECK(prev_n_body.find("__prism_check") == std::string::npos);
+    CHECK(prev_n_body.find('*') == std::string::npos);
 }
