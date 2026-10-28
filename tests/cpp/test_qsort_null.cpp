@@ -262,9 +262,36 @@ TEST_CASE("stdlib model: qsort leaves rand and the other bodies unchanged") {
         "    __prism_free(p, PRISM_HEAP);\n"
         "    return q;\n"
         "}",
-        "int abs(int x) { return x < 0 ? -x : x; }",
-        "long labs(long x) { return x < 0 ? -x : x; }",
-        "long long llabs(long long x) { return x < 0 ? -x : x; }",
+        "int abs(int x) {\n"
+        "    if (x == INT_MIN) {\n"
+        "        __prism_check(0, \"FUNC-CONTRACT\", \"abs(INT_MIN) is undefined\");\n"
+        "        __builtin_trap();\n"
+        "    } else if (x < 0) {\n"
+        "        return -x;\n"
+        "    } else {\n"
+        "        return x;\n"
+        "    }\n"
+        "}",
+        "long labs(long x) {\n"
+        "    if (x == LONG_MIN) {\n"
+        "        __prism_check(0, \"FUNC-CONTRACT\", \"labs(LONG_MIN) is undefined\");\n"
+        "        __builtin_trap();\n"
+        "    } else if (x < 0) {\n"
+        "        return -x;\n"
+        "    } else {\n"
+        "        return x;\n"
+        "    }\n"
+        "}",
+        "long long llabs(long long x) {\n"
+        "    if (x == LLONG_MIN) {\n"
+        "        __prism_check(0, \"FUNC-CONTRACT\", \"llabs(LLONG_MIN) is undefined\");\n"
+        "        __builtin_trap();\n"
+        "    } else if (x < 0) {\n"
+        "        return -x;\n"
+        "    } else {\n"
+        "        return x;\n"
+        "    }\n"
+        "}",
         "int atoi(const char *s) {\n"
         "    __prism_check(s != 0, \"STR-NULL-ARG\", \"atoi() called with unchecked pointer parameter s\");\n"
         "    (void)strlen(s);\n"

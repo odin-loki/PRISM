@@ -6,6 +6,7 @@
  * operator new never returns NULL (it throws; the throwing path leaves the
  * function and is not followed). */
 #include "prism_model.h"
+#include <limits.h>
 
 extern "C" {
 
@@ -48,10 +49,42 @@ void *realloc(void *p, size_t n) {
     return q;
 }
 
-/* abs(INT_MIN) is undefined: the negation below is a checked `sub nsw`. */
-int abs(int x) { return x < 0 ? -x : x; }
-long labs(long x) { return x < 0 ? -x : x; }
-long long llabs(long long x) { return x < 0 ? -x : x; }
+/* abs(INT_MIN), labs(LONG_MIN), and llabs(LLONG_MIN) are undefined.
+ * The minimum is __prism_check with class FUNC-CONTRACT, then
+ * __builtin_trap. It is not negated and it is not returned as a positive
+ * or as zero. A negative value that is not the minimum returns the
+ * negation. Zero stays zero. A positive value stays that value.
+ * abs, labs, and llabs are not PROVED and not CLEAN. */
+int abs(int x) {
+    if (x == INT_MIN) {
+        __prism_check(0, "FUNC-CONTRACT", "abs(INT_MIN) is undefined");
+        __builtin_trap();
+    } else if (x < 0) {
+        return -x;
+    } else {
+        return x;
+    }
+}
+long labs(long x) {
+    if (x == LONG_MIN) {
+        __prism_check(0, "FUNC-CONTRACT", "labs(LONG_MIN) is undefined");
+        __builtin_trap();
+    } else if (x < 0) {
+        return -x;
+    } else {
+        return x;
+    }
+}
+long long llabs(long long x) {
+    if (x == LLONG_MIN) {
+        __prism_check(0, "FUNC-CONTRACT", "llabs(LLONG_MIN) is undefined");
+        __builtin_trap();
+    } else if (x < 0) {
+        return -x;
+    } else {
+        return x;
+    }
+}
 
 size_t strlen(const char *s);
 
