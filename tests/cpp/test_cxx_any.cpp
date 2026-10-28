@@ -4,9 +4,12 @@
 //
 // An empty any_cast is a __prism_check. A stored int any_casts back to that
 // int. The model does not invent a value for a failed cast. make_any<T>
-// returns an any that owns one T from the in_place constructor. Without a
-// libstdc++ clang++ that can run ASan/UBSan the runtime cases report NOTRUN.
-// The source checks do not need that compiler.
+// returns an any that owns one T from the in_place constructor. type() on
+// an empty any is typeid(void) and does not load a holder. type() on an
+// any that holds T is that T's type_info. It does not throw and it does
+// not return a default T. Without a libstdc++ clang++ that can run
+// ASan/UBSan the runtime cases report NOTRUN. The source checks do not
+// need that compiler.
 
 #include <doctest/doctest.h>
 
@@ -240,8 +243,53 @@ TEST_CASE("cxx any model: empty any_cast is a check and does not invent a value"
     CHECK(made.find("__prism_check") == std::string::npos);
     CHECK(made.find("throw") == std::string::npos);
     CHECK(src.find("* make_any\n") == std::string::npos);
-    CHECK(src.find("* type()") != std::string::npos);
+    CHECK(src.find("* type()") == std::string::npos);
     CHECK(src.find("* comparison") != std::string::npos);
+}
+
+TEST_CASE("cxx any model: type() is the stored type and empty is typeid(void)") {
+    const std::string src = slurp(model_header());
+    CHECK(src.find("#include <typeinfo>") != std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("* type()") == std::string::npos);
+    CHECK(src.find("* comparison") != std::string::npos);
+    CHECK(src.find("return T{}") == std::string::npos);
+
+    const auto stored = src.find("&typeid(_Tp)");
+    REQUIRE(stored != std::string::npos);
+    CHECK(src.find("&typeid(_Tp)", stored + 1) == std::string::npos);
+    CHECK(src.find("const type_info* _M_type") != std::string::npos);
+    CHECK(src.find("_Prism_any_holder(&_Prism_any_tag<_Tp>::id, &typeid(_Tp))") != std::string::npos);
+
+    const auto ty = src.find("const type_info& type() const noexcept");
+    REQUIRE(ty != std::string::npos);
+    const auto ty_end = src.find("// Qualified std::any_cast", ty);
+    REQUIRE(ty_end != std::string::npos);
+    const std::string body = src.substr(ty, ty_end - ty);
+    const auto void_at = body.find("if (_M_ptr == nullptr) return typeid(void);");
+    const auto load_at = body.find("_M_ptr->_M_type");
+    CHECK(void_at != std::string::npos);
+    CHECK(load_at != std::string::npos);
+    CHECK(void_at < load_at);
+    CHECK(body.find("return *_M_ptr->_M_type;") != std::string::npos);
+    CHECK(body.find("throw") == std::string::npos);
+    CHECK(body.find("__prism_check") == std::string::npos);
+    CHECK(body.find("typeid(_Tp)") == std::string::npos);
+    CHECK(body.find("typeid(int)") == std::string::npos);
+    CHECK(body.find("return T{}") == std::string::npos);
+    CHECK(body.find("return _Tp{}") == std::string::npos);
+    CHECK(body.find("_M_value") == std::string::npos);
+
+    // reset still only deletes the holder. That delete clears the stored type.
+    const auto reset_at = src.find("void reset() noexcept");
+    REQUIRE(reset_at != std::string::npos);
+    const auto reset_end = src.find("void swap(", reset_at);
+    REQUIRE(reset_end != std::string::npos);
+    const std::string reset = src.substr(reset_at, reset_end - reset_at);
+    CHECK(reset.find("delete _M_ptr;") != std::string::npos);
+    CHECK(reset.find("_M_ptr = nullptr;") != std::string::npos);
+    CHECK(reset.find("_M_type") == std::string::npos);
+    CHECK(reset.find("typeid") == std::string::npos);
 }
 
 TEST_CASE("cxx any model: setup clang++ with ASan/UBSan") {
@@ -286,4 +334,6 @@ TEST_CASE("cxx any model: stored int round-trips and a bad any_cast is a check")
     CHECK(run_cmd({mod.string(), "e"}));
     CHECK(run_cmd({mod.string(), "w"}));
     CHECK(run_cmd({mod.string(), "i"}));
+    CHECK(run_cmd({lib.string(), "t"}));
+    CHECK(run_cmd({mod.string(), "t"}));
 }
