@@ -19,6 +19,18 @@
 // convert a period, do not add, and do not sleep. A different period is
 // not an overload. This is not PROVED and not CLEAN.
 //
+// duration::zero() returns a duration whose count is 0. It does not add
+// and does not sleep. duration::min() is the most negative count the
+// representation can store. duration::max() is the most positive count.
+// min() is not 0 and max() is not 0. They do not read another duration.
+// A duration multiplied by a scalar of the same representation is that
+// product. A product that does not fit is __prism_check then
+// __builtin_trap. That path does not return a wrapped count and does not
+// return a zero duration as a stand-in. Zero times any count is zero and
+// does not overflow. A duration times a duration is not an overload, and
+// a different period is not an overload. operator*= is not declared.
+// This is not PROVED and not CLEAN.
+//
 // Clocks, time_point conversions that call the OS, and sleep_for /
 // sleep_until are not declared. A sleep that returns immediately would be
 // a fake wait. Omitted names fail to compile against this header and pir
@@ -67,6 +79,17 @@ public:
 
     // The stored count. A zero duration stays zero.
     constexpr rep count() const noexcept { return _M_count; }
+
+    // Count 0. Does not add, does not sleep, and does not read another duration.
+    static constexpr duration zero() noexcept { return duration(static_cast<_Rep>(0)); }
+
+    // Most negative count this representation can store. Not 0.
+    // Does not read another duration.
+    static constexpr duration min() noexcept { return duration(static_cast<_Rep>(__duration_rep_min)); }
+
+    // Most positive count this representation can store. Not 0.
+    // Does not read another duration.
+    static constexpr duration max() noexcept { return duration(static_cast<_Rep>(__duration_rep_max)); }
 
     // Same duration type. A different period is not declared, so that
     // compound assignment fails to compile and pir still falls back.
@@ -220,6 +243,88 @@ template <typename _Rep, typename _Period>
 constexpr bool operator>=(const duration<_Rep, _Period>& __a,
                           const duration<_Rep, _Period>& __b) noexcept {
     return __a.count() >= __b.count();
+}
+
+// Duration multiplied by a scalar of the same representation.
+// The scalar type is that same rep. A duration times a duration is not an
+// overload, and a different period is not an overload. Zero times any count
+// is zero: that product is returned before the check, and the multiply is
+// not evaluated. It does not overflow. A product that does not fit is
+// __prism_check then __builtin_trap. That path does not return a wrapped
+// count and does not return a zero duration as a stand-in.
+// This is not PROVED and not CLEAN.
+
+// Magnitude as unsigned long long. The most negative count is not negated:
+// v + 1 is representable for every negative v, and the magnitude is
+// -(v + 1) + 1.
+inline unsigned long long __duration_uabs(long long __v) noexcept {
+    if (__v >= 0) return static_cast<unsigned long long>(__v);
+    return static_cast<unsigned long long>(-(__v + 1)) + 1ull;
+}
+
+// True when the product of the two counts is representable as a signed
+// 64-bit count. Zero times any count fits: the product is 0 and this test
+// does not overflow. The unsigned product is formed only after the
+// magnitudes are known to fit in unsigned long long, and that magnitude
+// is then compared with the signed limit. A failing result does not yield
+// a wrapped count.
+inline int __duration_mul_fits(long long __a, long long __b) noexcept {
+    if (__a == 0 || __b == 0) return 1;
+    const int __neg = ((__a < 0) != (__b < 0)) ? 1 : 0;
+    const unsigned long long __ua = __duration_uabs(__a);
+    const unsigned long long __ub = __duration_uabs(__b);
+    if (__ua > static_cast<unsigned long long>(-1) / __ub) return 0;
+    const unsigned long long __product = __ua * __ub;
+    const unsigned long long __max = static_cast<unsigned long long>(__duration_rep_max);
+    if (__neg) return __product <= __max + 1ull ? 1 : 0;
+    return __product <= __max ? 1 : 0;
+}
+
+// Signed product of a pair __duration_mul_fits has already accepted, or of
+// a zero factor. The magnitude is multiplied in unsigned long long. A
+// negative product is the two's-complement conversion of that magnitude,
+// so the most negative count is not a signed negation. Zero is 0.
+inline long long __duration_product(long long __a, long long __b) noexcept {
+    if (__a == 0 || __b == 0) return 0;
+    const int __neg = ((__a < 0) != (__b < 0)) ? 1 : 0;
+    const unsigned long long __product = __duration_uabs(__a) * __duration_uabs(__b);
+    if (__neg) return static_cast<long long>(0ull - __product);
+    return static_cast<long long>(__product);
+}
+
+// Same representation. Both orders call this. A product that does not fit
+// is the check and then __builtin_trap. The fitting product is the else,
+// so a wrapped count is not returned, and a zero duration is not returned
+// in its place.
+template <typename _Rep, typename _Period>
+duration<_Rep, _Period> __duration_mul(const duration<_Rep, _Period>& __d, const _Rep& __s) {
+    const long long __x = static_cast<long long>(__d.count());
+    const long long __y = static_cast<long long>(__s);
+    // Zero times any count is zero. This return is the product. It is not
+    // a stand-in for a product that does not fit, and the multiply is not
+    // evaluated.
+    if (__x == 0 || __y == 0)
+        return duration<_Rep, _Period>(static_cast<_Rep>(0));
+    const int __ok = __duration_mul_fits(__x, __y);
+    __prism_check(__ok, "INT-SIGNED-OVF",
+                  "std::chrono::duration multiplication overflows the representation");
+    if (!__ok) {
+        __builtin_trap();
+    } else {
+        return duration<_Rep, _Period>(static_cast<_Rep>(__duration_product(__x, __y)));
+    }
+}
+
+template <typename _Rep, typename _Period, typename _Scalar>
+    requires __duration_same_type<_Scalar, _Rep>
+duration<_Rep, _Period> operator*(const duration<_Rep, _Period>& __d, const _Scalar& __s) {
+    return __duration_mul(__d, __s);
+}
+
+template <typename _Rep, typename _Period, typename _Scalar>
+    requires __duration_same_type<_Scalar, _Rep>
+duration<_Rep, _Period> operator*(const _Scalar& __s, const duration<_Rep, _Period>& __d) {
+    return __duration_mul(__d, __s);
 }
 
 }  // namespace std::chrono

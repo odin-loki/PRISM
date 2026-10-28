@@ -7,7 +7,12 @@
 // returns that count. A different period is not declared. Same-type
 // operator==, operator!=, operator<, operator>, operator<=, and operator>=
 // compare the stored counts. They do not convert a period, do not add, and
-// do not sleep. A different period is not an overload. Sleep stays
+// do not sleep. A different period is not an overload. duration::zero() is
+// a count of 0. duration::min() is the most negative count and
+// duration::max() is the most positive count. They do not read another
+// duration. A same-rep scalar product that does not fit is __prism_check
+// then __builtin_trap. That path does not return a wrapped count and does
+// not return a zero duration. Zero times any count is zero. Sleep stays
 // absent. This is not PROVED and not CLEAN. This case does not compile the
 // header.
 
@@ -163,7 +168,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(text.find("#include <compare>") == std::string::npos);
     CHECK(text.find("operator<=>") == std::string::npos);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 2);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 4);
     CHECK(text.find("A different period is not an overload.") != std::string::npos);
     const auto note = text.find("Count comparison. Same duration type only.");
     const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");
@@ -172,7 +177,9 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(note < ops);
     const auto tmpl = text.rfind("template <typename _Rep, typename _Period>", ops);
     REQUIRE(tmpl != std::string::npos);
-    const auto cmp_end = text.find("}  // namespace std::chrono", ops);
+    // operator* follows the six comparisons. The slice stops before it so
+    // the product check is not treated as a comparison.
+    const auto cmp_end = text.find("// Duration multiplied by a scalar of the same representation.", ops);
     REQUIRE(cmp_end != std::string::npos);
     const std::string cmp = text.substr(tmpl, cmp_end - tmpl);
     CHECK(count_of(cmp, "template <typename _Rep, typename _Period>") == 6);
@@ -207,4 +214,98 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(cmp.find('/') == std::string::npos);
     CHECK(cmp.find("sleep_for(") == std::string::npos);
     CHECK(cmp.find("sleep_until(") == std::string::npos);
+    CHECK(cmp.find("__duration_mul") == std::string::npos);
+    CHECK(cmp.find("__builtin_trap") == std::string::npos);
+
+    // zero, min, and max are static. They do not read a duration, do not
+    // add, and do not sleep. min and max are the representation limits.
+    const auto zfn = text.find(
+        "static constexpr duration zero() noexcept { return duration(static_cast<_Rep>(0)); }");
+    const auto minfn = text.find(
+        "static constexpr duration min() noexcept { return duration(static_cast<_Rep>(__duration_rep_min)); }");
+    const auto maxfn = text.find(
+        "static constexpr duration max() noexcept { return duration(static_cast<_Rep>(__duration_rep_max)); }");
+    REQUIRE(zfn != std::string::npos);
+    REQUIRE(minfn != std::string::npos);
+    REQUIRE(maxfn != std::string::npos);
+    CHECK(zfn < ops);
+    CHECK(minfn < ops);
+    CHECK(maxfn < ops);
+    CHECK(text.find("static constexpr duration min() noexcept { return duration(static_cast<_Rep>(0)); }") ==
+          std::string::npos);
+    CHECK(text.find("static constexpr duration max() noexcept { return duration(static_cast<_Rep>(0)); }") ==
+          std::string::npos);
+    CHECK(text.find("inline constexpr long long __duration_rep_max = 9223372036854775807LL;") != std::string::npos);
+    CHECK(text.find("inline constexpr long long __duration_rep_min = -9223372036854775807LL - 1;") !=
+          std::string::npos);
+    const std::string limits =
+        slice_between(text, "static constexpr duration zero()", "duration& operator+=(const duration& __d);");
+    CHECK(count_of(limits, "static constexpr duration ") == 3);
+    CHECK(limits.find("count()") == std::string::npos);
+    CHECK(limits.find("__prism_check") == std::string::npos);
+    CHECK(limits.find("__builtin_trap") == std::string::npos);
+    CHECK(limits.find("sleep_for(") == std::string::npos);
+    CHECK(limits.find("sleep_until(") == std::string::npos);
+    CHECK(limits.find("operator+") == std::string::npos);
+    CHECK(limits.find('+') == std::string::npos);
+    CHECK(limits.find(" - ") == std::string::npos);
+    CHECK(limits.find("const duration") == std::string::npos);
+
+    // Same-rep multiply. Zero returns before the check. A product that does
+    // not fit traps and does not return a zero duration or a wrapped count.
+    const auto mul_note = text.find("// Duration multiplied by a scalar of the same representation.");
+    REQUIRE(mul_note != std::string::npos);
+    CHECK(mul_note > ops);
+    const auto mul_end = text.find("}  // namespace std::chrono", mul_note);
+    REQUIRE(mul_end != std::string::npos);
+    const std::string mul = text.substr(mul_note, mul_end - mul_note);
+    CHECK(mul.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(mul.find("if (!__ok) return duration<_Rep, _Period>(0);") == std::string::npos);
+    CHECK(mul.find("__x * __y") == std::string::npos);
+    CHECK(mul.find("__a * __b") == std::string::npos);
+    CHECK(mul.find("operator*=(") == std::string::npos);
+    CHECK(mul.find("_Period2") == std::string::npos);
+    CHECK(mul.find("_Rep2") == std::string::npos);
+    CHECK(mul.find("sleep_for(") == std::string::npos);
+    CHECK(mul.find("sleep_until(") == std::string::npos);
+    CHECK(mul.find("#include") == std::string::npos);
+    CHECK(count_of(mul, "requires __duration_same_type<_Scalar, _Rep>") == 2);
+    CHECK(count_of(mul, "return __duration_mul(__d, __s);") == 2);
+    CHECK(mul.find("operator*(const duration<_Rep, _Period>& __d, const _Scalar& __s)") != std::string::npos);
+    CHECK(mul.find("operator*(const _Scalar& __s, const duration<_Rep, _Period>& __d)") != std::string::npos);
+    CHECK(mul.find("constexpr duration<_Rep, _Period> operator*") == std::string::npos);
+    const std::string mul_fn = slice_between(
+        text, "duration<_Rep, _Period> __duration_mul(const duration<_Rep, _Period>& __d, const _Rep& __s)",
+        "template <typename _Rep, typename _Period, typename _Scalar>");
+    const auto zero_ret = mul_fn.find("return duration<_Rep, _Period>(static_cast<_Rep>(0));");
+    const auto check = mul_fn.find("__prism_check(__ok, \"INT-SIGNED-OVF\",");
+    const auto msg = mul_fn.find("std::chrono::duration multiplication overflows the representation");
+    const auto trap = mul_fn.find("__builtin_trap();");
+    const auto prod =
+        mul_fn.find("return duration<_Rep, _Period>(static_cast<_Rep>(__duration_product(__x, __y)));");
+    REQUIRE(zero_ret != std::string::npos);
+    REQUIRE(check != std::string::npos);
+    REQUIRE(msg != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    REQUIRE(prod != std::string::npos);
+    CHECK(zero_ret < check);
+    CHECK(check < msg);
+    CHECK(msg < trap);
+    CHECK(trap < prod);
+    const auto bad = mul_fn.find("if (!__ok) {");
+    const auto else_at = mul_fn.find("} else {", bad);
+    REQUIRE(bad != std::string::npos);
+    REQUIRE(else_at != std::string::npos);
+    const std::string arm = mul_fn.substr(bad, else_at - bad);
+    CHECK(arm.find("__builtin_trap();") != std::string::npos);
+    CHECK(arm.find("return") == std::string::npos);
+    CHECK(arm.find("duration(0)") == std::string::npos);
+    CHECK(arm.find("__duration_product") == std::string::npos);
+    const std::string kept = mul_fn.substr(else_at);
+    CHECK(kept.find("__duration_product(__x, __y)") != std::string::npos);
+    CHECK(kept.find("__builtin_trap") == std::string::npos);
+    CHECK(text.find("#include <ratio>") == std::string::npos);
+    CHECK(text.find("#include <compare>") == std::string::npos);
+    CHECK(text.find("operator*=(") == std::string::npos);
+    CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
 }
