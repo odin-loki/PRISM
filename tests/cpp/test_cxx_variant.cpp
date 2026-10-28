@@ -6,9 +6,13 @@
 // The stored alternative is the one that was emplaced. std::get_if on an
 // inactive alternative is nullptr. std::get on an inactive alternative is a
 // __prism_check, and the model does not print a fake T.
+//
+// std::monostate is empty. Two monostate objects compare equal, and != is
+// false. visit, swap, and comparison of variant stay undeclared.
 
 #include <doctest/doctest.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -167,6 +171,57 @@ std::vector<std::string> run_lines(const fs::path& exe) {
     return lines;
 }
 
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Comments name the omitted APIs. A declaration is what remains.
+std::string strip_comments(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/') {
+            i += 2;
+            while (i < s.size() && s[i] != '\n') ++i;
+            continue;
+        }
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) ++i;
+            if (i + 1 < s.size()) i += 2;
+            continue;
+        }
+        out.push_back(s[i]);
+        ++i;
+    }
+    return out;
+}
+
+bool has_ident(const std::string& s, const char* id) {
+    const std::string name(id);
+    for (std::size_t i = 0; (i = s.find(name, i)) != std::string::npos; i += name.size()) {
+        const bool left = i == 0 || !(std::isalnum(static_cast<unsigned char>(s[i - 1])) || s[i - 1] == '_');
+        const std::size_t j = i + name.size();
+        const bool right = j >= s.size() || !(std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_');
+        if (left && right) return true;
+    }
+    return false;
+}
+
+bool syntax_only(const std::string& cxx, const fs::path& src, bool with_models, std::string* err) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    std::vector<std::string> argv{cxx, "-std=c++23", "-fsyntax-only", "-w"};
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(src.string());
+    return run_cmd(argv, nullptr, err);
+}
+
 bool inactive_get_is_check(const fs::path& exe, const char* mode) {
     std::string out, err;
     if (run_cmd({exe.string(), mode}, &out, &err)) return false;
@@ -221,16 +276,109 @@ TEST_CASE("cxx variant model: stored value is the emplaced alternative and inact
     bool saw_stored = false;
     bool saw_null = false;
     bool saw_ptr = false;
+    bool saw_mono = false;
+    bool saw_mono_var = false;
     for (const auto& line : b) {
         if (line.find("stored=42") != std::string::npos) saw_stored = true;
         if (line.find("inactive_null=1") != std::string::npos) saw_null = true;
         if (line.find("active_ptr=42") != std::string::npos) saw_ptr = true;
+        if (line == "mono eq=1 ne=0") saw_mono = true;
+        if (line == "mono_var index=0 holds=1 geteq=1 getne=0 valueless=0") saw_mono_var = true;
         CHECK(line.find("stored=0") == std::string::npos);
+        CHECK(line != "mono eq=0 ne=1");
+        CHECK(line != "mono eq=0 ne=0");
+        CHECK(line != "mono eq=1 ne=1");
+        CHECK(line.find("geteq=0") == std::string::npos);
+        CHECK(line.find("getne=1") == std::string::npos);
+        CHECK(line.find("valueless=1") == std::string::npos);
     }
     CHECK(saw_stored);
     CHECK(saw_null);
     CHECK(saw_ptr);
+    CHECK(saw_mono);
+    CHECK(saw_mono_var);
 
     CHECK(inactive_get_is_check(mod, "bad"));
     CHECK(inactive_get_is_check(mod, "badi"));
+}
+
+TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are comments") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <compare>") == std::string::npos);
+    CHECK(src.find("struct monostate {};") != std::string::npos);
+    CHECK(src.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(src.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("constexpr bool valueless_by_exception() const noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("\"CXX-VARIANT-GET\"") != std::string::npos);
+    CHECK(src.find("std::get on an inactive variant alternative") != std::string::npos);
+    CHECK(src.find("return __v.template _M_get<_I>();") != std::string::npos);
+    CHECK(src.find("return T{}") == std::string::npos);
+    CHECK(src.find("return _T{}") == std::string::npos);
+    CHECK(src.find("::operator new") == std::string::npos);
+    CHECK(src.find("malloc") == std::string::npos);
+
+    // The comment still names the omitted APIs. A declaration would survive stripping.
+    CHECK(src.find("comparison of variant") != std::string::npos);
+    const std::string code = strip_comments(src);
+    CHECK(has_ident(code, "monostate"));
+    for (const char* name : {"visit", "swap", "bad_variant_access", "hash", "in_place"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("operator==(const variant") == std::string::npos);
+    CHECK(code.find("operator==(variant") == std::string::npos);
+    CHECK(code.find("operator<(monostate") == std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <compare>") == std::string::npos);
+}
+
+TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against the model") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    struct Snip {
+        const char* name;
+        const char* src;
+    };
+    const Snip snips[] = {
+        {"eq",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(1); return a == b ? 1 : 0; }\n"},
+        {"rel",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(2); return a < b ? 1 : 0; }\n"},
+        {"cmp",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(1); return (a <=> b) == 0 ? 1 : 0; }\n"},
+        {"swap",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(2); a.swap(b); return std::get<int>(a); }\n"},
+        {"visit",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1);\n"
+         "  return std::visit([](auto x){ return static_cast<int>(x); }, a); }\n"},
+        {"bad",
+         "#include <variant>\n"
+         "int use(){ std::bad_variant_access ex; (void)ex; return 0; }\n"},
+        {"hash",
+         "#include <variant>\n"
+         "int use(){ return static_cast<int>(std::hash<std::monostate>{}(std::monostate{})); }\n"},
+        {"lt",
+         "#include <variant>\n"
+         "int use(){ std::monostate a, b; return a < b ? 1 : 0; }\n"},
+    };
+    for (const auto& snip : snips) {
+        CAPTURE(snip.name);
+        const fs::path src = c.tmp / (std::string("omit_") + snip.name + ".cpp");
+        std::ofstream(src) << snip.src;
+        std::string err;
+        CHECK(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
 }

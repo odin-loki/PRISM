@@ -19,10 +19,15 @@
 // std::get_if returns nullptr when the alternative is inactive, and a pointer
 // to the live object when it is active. holds_alternative is the index test.
 //
-// visit, comparison (operator==, operator<=>, and the relational operators),
-// hash, monostate, swap, in_place constructors, and bad_variant_access are
-// not declared. A use of an omitted API fails to compile against this header,
-// so the pir stage falls back to libstdc++.
+// std::monostate is an empty type. operator== of two monostate objects is
+// true. operator!= is false. Those operators compare monostate values. They
+// do not compare two variant objects.
+//
+// visit, swap, comparison of variant (operator==, operator<=>, and the
+// relational operators), hash, in_place constructors, and bad_variant_access
+// are not declared. operator<=> and the relational operators on monostate
+// are not declared either. A use of an omitted API fails to compile against
+// this header, so the pir stage falls back to libstdc++.
 #ifndef _PRISM_MODEL_VARIANT
 #define _PRISM_MODEL_VARIANT 1
 #define _GLIBCXX_VARIANT 1  // libstdc++'s <variant> include guard: never both
@@ -174,6 +179,12 @@ template <typename _T>
 void _Prism_var_end(_T* __p) noexcept {
     __p->~_T();
 }
+
+// Empty type. Two values compare equal. Not a comparison of variant objects.
+struct monostate {};
+
+constexpr bool operator==(monostate, monostate) noexcept { return true; }
+constexpr bool operator!=(monostate, monostate) noexcept { return false; }
 
 inline constexpr std::size_t variant_npos = static_cast<std::size_t>(-1);
 

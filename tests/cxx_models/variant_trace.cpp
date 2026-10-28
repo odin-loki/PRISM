@@ -3,14 +3,20 @@
 // (src/prism/pir/models/cxx/variant) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
-// visit and comparison are not called: the model does not declare them.
+// visit, swap, and comparison of variant are not called: the model does not
+// declare them. Two std::monostate values compare equal (!= is false).
 //
 // argv "bad" / "badi" call std::get<T> / std::get<I> on an inactive alternative.
 // The model must __prism_check and must not print a value.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 #include <variant>
+
+static_assert(std::is_empty_v<std::monostate>);
+static_assert(std::monostate{} == std::monostate{});
+static_assert(!(std::monostate{} != std::monostate{}));
 
 // Native stand-in for the PIR intrinsic. A failing check aborts before the
 // caller can print a returned T. A passing check returns.
@@ -85,6 +91,18 @@ static void show() {
         std::printf(" as=%d", std::get<E>(e).v);
     }
     std::printf("\n");
+
+    std::monostate ma;
+    std::monostate mb;
+    std::printf("mono eq=%d ne=%d\n", static_cast<int>(ma == mb), static_cast<int>(ma != mb));
+    {
+        std::variant<std::monostate, int> mv;
+        std::printf("mono_var index=%zu holds=%d geteq=%d getne=%d valueless=%d\n", mv.index(),
+                    static_cast<int>(std::holds_alternative<std::monostate>(mv)),
+                    static_cast<int>(std::get<std::monostate>(mv) == ma),
+                    static_cast<int>(std::get<std::monostate>(mv) != mb),
+                    static_cast<int>(mv.valueless_by_exception()));
+    }
 }
 
 int main(int argc, char** argv) {
