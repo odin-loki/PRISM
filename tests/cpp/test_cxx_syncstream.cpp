@@ -336,12 +336,19 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(ncheck < ntrap);
     CHECK(ntrap < nzero);
     CHECK(nzero < nroom);
-    CHECK(nroom < nbound);
+    const auto nnull = sputn.find("__prism_check(__s != nullptr ? 1 : 0, \"PTR-NULL-DEREF\",");
+    const std::string null_trap = "if (__s == nullptr) __builtin_trap();";
+    const auto nnull_trap = sputn.find(null_trap);
+    REQUIRE(nnull != std::string::npos);
+    REQUIRE(nnull_trap != std::string::npos);
+    CHECK(nroom < nnull);
+    CHECK(nnull < nnull_trap);
+    CHECK(nnull_trap < nbound);
     CHECK(nbound < nwrite);
     CHECK(nwrite < nret);
     CHECK(sputn.find("__s[", nwrite + store_line.size()) == std::string::npos);
     CHECK(sputn.find("_M_buf[", nwrite + store_line.size()) == std::string::npos);
-    CHECK(sputn.find("__builtin_trap()", ntrap + trap_line.size()) == std::string::npos);
+    CHECK(sputn.find("__builtin_trap()", nnull_trap + null_trap.size()) == std::string::npos);
     CHECK(sputn.find("return __n;") == std::string::npos);
     CHECK(sputn.find("++_M_off;", sputn.find("++_M_off;") + 1) == std::string::npos);
 

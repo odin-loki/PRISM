@@ -96,12 +96,17 @@ public:
     // written. A count of 0 returns 0 and does not read the source. A
     // positive count does not write past the buffer and does not flush.
     // A null buffer whose size was forced to 0 stores nothing.
+    // A null source with a positive count that would store a character is
+    // PTR-NULL-DEREF and does not write.
     ptrdiff_t sputn(const char* __s, ptrdiff_t __n) noexcept {
         __prism_check((__n >= 0) ? 1 : 0, "FUNC-CONTRACT",
                       "basic_syncbuf::sputn count is negative");
         if (__n < 0) __builtin_trap();
         if (__n == 0) return 0;
         if (_M_off >= _M_size) return 0;
+        __prism_check(__s != nullptr ? 1 : 0, "PTR-NULL-DEREF",
+                      "basic_syncbuf::sputn null source");
+        if (__s == nullptr) __builtin_trap();
         ptrdiff_t __stored = 0;
         while (__stored < __n && _M_off < _M_size) {
             _M_buf[_M_off] = __s[__stored];
