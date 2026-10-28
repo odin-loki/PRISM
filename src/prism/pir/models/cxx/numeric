@@ -60,8 +60,21 @@
 // integer. That path does not store a wrapped sum. bool and a non-integer
 // add with no separate range check.
 //
-// Not declared here, so naming reduce, transform_reduce, inner_product, or
-// exclusive_scan fails to compile and the pir stage falls back to libstdc++
+// std::inner_product takes two pointers of one type, a second pointer of
+// that type, and an initial value of that type. last < first is
+// __prism_check with class FUNC-CONTRACT, then __builtin_trap. That path
+// does not read. first == last returns init and does not read, even when
+// the second pointer is null. A non-empty range with a null second pointer
+// is __prism_check with class PTR-NULL-DEREF, then __builtin_trap, before
+// any read. Otherwise each step multiplies one pair and adds that product
+// to the accumulator. A product or a sum that does not fit is
+// __prism_check, then __builtin_trap, before a wrapped value is stored.
+// The class is INT-SIGNED-OVF for a signed integer and FUNC-CONTRACT for
+// an unsigned integer. bool and a non-integer use the operators and have
+// no separate range check.
+//
+// Not declared here, so naming reduce, transform_reduce, or exclusive_scan
+// fails to compile and the pir stage falls back to libstdc++
 // (extra.cxx_models). A partial header is intentional.
 #ifndef _GLIBCXX_NUMERIC
 #define _GLIBCXX_NUMERIC 1
@@ -381,6 +394,83 @@ partial_sum(_Tp* __first, _Tp* __last, _Tp* __dest) {
         ++__dest;
     }
     return __dest;
+}
+
+// [inner.product]. Two pointers of the same type, a second pointer of that
+// type, and an initial value of that type. A value of a different type does
+// not match this overload. Pointers of different types do not match. last <
+// first fails the check before any read and does not return init. An empty
+// range returns init before any read, even when the second pointer is null.
+// A null second pointer on a non-empty range fails before any read. Each
+// step multiplies one pair and adds that product to the accumulator. The
+// product is formed only in the else of the fit test, and the sum is formed
+// only in the else of its fit test, so a wrapped value is not stored. A
+// signed integer uses INT-SIGNED-OVF. An unsigned integer uses
+// FUNC-CONTRACT. bool and a non-integer use the operators and have no
+// separate range check. The signed maximum is an unsigned shift of all-ones,
+// and the minimum is -1 minus that maximum, so the test itself does not
+// overflow. The product test divides only by a nonzero value and does not
+// divide the signed minimum by -1.
+template <typename _Tp>
+constexpr _Tp
+inner_product(_Tp* __first1, _Tp* __last1, _Tp* __first2, _Tp __init) {
+    if (__last1 < __first1) {
+        __prism_check(0, "FUNC-CONTRACT", "std::inner_product last is before first");
+        __builtin_trap();
+    }
+    if (__first1 == __last1) return __init;
+    if (__first2 == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::inner_product null second range");
+        __builtin_trap();
+    }
+    while (__first1 != __last1) {
+        const _Tp __a = *__first1;
+        const _Tp __b = *__first2;
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                // -1 - max is the minimum, and that difference is representable.
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if ((__a == __min && __b == static_cast<_Tp>(-1)) ||
+                    (__b == __min && __a == static_cast<_Tp>(-1)) ||
+                    (__a > static_cast<_Tp>(0) && __b > static_cast<_Tp>(0) && __a > __lim / __b) ||
+                    (__a > static_cast<_Tp>(0) && __b < static_cast<_Tp>(0) && __b < __min / __a) ||
+                    (__a < static_cast<_Tp>(0) && __b > static_cast<_Tp>(0) && __a < __min / __b) ||
+                    (__a < static_cast<_Tp>(0) && __b < static_cast<_Tp>(0) && __a < __lim / __b)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::inner_product result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    const _Tp __prod = static_cast<_Tp>(__a * __b);
+                    if ((__prod > static_cast<_Tp>(0) && __init > __lim - __prod) ||
+                        (__prod < static_cast<_Tp>(0) && __init < __min - __prod)) {
+                        __prism_check(0, "INT-SIGNED-OVF", "std::inner_product result does not fit in T");
+                        __builtin_trap();
+                    } else {
+                        __init = static_cast<_Tp>(__init + __prod);
+                    }
+                }
+            } else {
+                if (__b != static_cast<_Tp>(0) && __a > static_cast<_Tp>(-1) / __b) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::inner_product result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    const _Tp __prod = static_cast<_Tp>(__a * __b);
+                    if (__init > static_cast<_Tp>(-1) - __prod) {
+                        __prism_check(0, "FUNC-CONTRACT", "std::inner_product result does not fit in T");
+                        __builtin_trap();
+                    } else {
+                        __init = static_cast<_Tp>(__init + __prod);
+                    }
+                }
+            }
+        } else {
+            __init = static_cast<_Tp>(__init + (__a * __b));
+        }
+        ++__first1;
+        ++__first2;
+    }
+    return __init;
 }
 
 }  // namespace std
