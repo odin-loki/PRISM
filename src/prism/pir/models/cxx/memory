@@ -14,8 +14,9 @@
 //  * unique_ptr<T[]> is the same pair for array new and array delete. reset
 //    frees the previous array with one array-delete expression.
 //  * get() on an empty unique_ptr is nullptr. operator* and operator-> on an
-//    empty unique_ptr fail the precondition through __prism_check. They do
-//    not invent an object to return.
+//    empty unique_ptr are a PTR-NULL-DEREF check, then __builtin_trap, before
+//    the stored pointer is dereferenced. They do not invent an element and
+//    do not return T{}.
 //  * make_unique<T>(args...) allocates with new T(...) and returns a
 //    unique_ptr that owns that object. It does not take an allocator.
 //  * make_unique<T[]>(n) value-initializes n elements with new T[n]() and
@@ -128,14 +129,19 @@ public:
     pointer get() const noexcept { return _M_ptr; }
     explicit operator bool() const noexcept { return _M_ptr != nullptr; }
 
+    // An empty unique_ptr is a PTR-NULL-DEREF check, then __builtin_trap,
+    // before the stored pointer is dereferenced. That path does not invent
+    // an element and does not return T{}. This is not PROVED and not CLEAN.
     element_type& operator*() const {
         __prism_check(_M_ptr != nullptr, "PTR-NULL-DEREF",
-                      "unique_ptr::operator* on an empty unique_ptr");
+                      "std::unique_ptr::operator* null pointer");
+        if (_M_ptr == nullptr) __builtin_trap();
         return *_M_ptr;
     }
     pointer operator->() const {
         __prism_check(_M_ptr != nullptr, "PTR-NULL-DEREF",
-                      "unique_ptr::operator-> on an empty unique_ptr");
+                      "std::unique_ptr::operator-> null pointer");
+        if (_M_ptr == nullptr) __builtin_trap();
         return _M_ptr;
     }
 

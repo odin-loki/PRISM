@@ -822,6 +822,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_string_view.cpp
     tests/cpp/test_cxx_expected.cpp
     tests/cpp/test_cxx_memory.cpp
+    tests/cpp/test_cxx_memory_deref.cpp
     tests/cpp/test_cxx_complex.cpp
     tests/cpp/test_cxx_tuple.cpp
     tests/cpp/test_cxx_any.cpp
