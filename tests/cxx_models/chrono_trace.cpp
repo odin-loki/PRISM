@@ -13,6 +13,9 @@
 // that product. Zero times any count is zero. `mul_ovf` multiplies the
 // maximum count by 2. `mul_min_ovf` multiplies the minimum count by -1.
 // The model must __prism_check and must not print a wrapped count.
+// Unary operator- returns the negated count. Zero stays zero. `neg_ovf`
+// negates the minimum count. The model must __prism_check and must not
+// print a wrapped count. That path does not return a zero duration.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -129,6 +132,11 @@ int main(int argc, char** argv) {
     std::printf("mul_near=%lld\n", static_cast<long long>((dur(4611686018427387903LL) * 2LL).count()));
     std::printf("mul_edge=%lld\n", static_cast<long long>((dur(-4611686018427387904LL) * 2LL).count()));
     std::printf("mul_edge_left=%lld\n", static_cast<long long>((2LL * dur(-4611686018427387904LL)).count()));
+    std::printf("neg_zero=%lld\n", static_cast<long long>((-dur(0)).count()));
+    std::printf("neg_pos=%lld\n", static_cast<long long>((-dur(5)).count()));
+    std::printf("neg_neg=%lld\n", static_cast<long long>((-dur(-5)).count()));
+    std::printf("neg_max=%lld\n", static_cast<long long>((-dur::max()).count()));
+    std::printf("neg_min1=%lld\n", static_cast<long long>((-dur(-9223372036854775807LL)).count()));
     if (argc > 1 && std::strcmp(argv[1], "ovf") == 0) {
         std::chrono::duration<long long> hi(9223372036854775807LL);
         std::chrono::duration<long long> one(1);
@@ -165,6 +173,11 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "mul_min_left_ovf") == 0) {
         const auto n = (-1LL * std::chrono::duration<long long>::min()).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "neg_ovf") == 0) {
+        const auto n = (-std::chrono::duration<long long>::min()).count();
         std::printf("wrapped=%lld\n", static_cast<long long>(n));
         return 0;
     }
