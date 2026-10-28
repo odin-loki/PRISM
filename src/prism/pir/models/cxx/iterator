@@ -14,9 +14,15 @@
 // the empty array is a second overload: a reference whose size is 0. begin
 // and end then return the same pointer. Neither overload dereferences it.
 //
-// A pointer argument is not an overload. It does not match T (&)[N], and
-// its size is not 0, so the call fails to compile against this header and
-// pir falls back to libstdc++. That argument is not stubbed.
+// A pointer argument is not an overload of begin or end. It does not match
+// T (&)[N], and its size is not 0, so the call fails to compile against
+// this header and pir falls back to libstdc++. That argument is not stubbed.
+//
+// std::distance is only the overload for two pointers of the same type.
+// The result is the element count from the first to the second. A count
+// that does not fit in ptrdiff_t is __prism_check with class FUNC-CONTRACT,
+// then __builtin_trap. That path does not return a wrapped ptrdiff_t.
+// This is not a proof that the two pointers address the same array.
 //
 // std::next, std::prev, std::advance, and reverse_iterator are not declared.
 // The rest of this header is omitted the same way (iterator traits, tags,
@@ -27,15 +33,54 @@
 // This is not a proof that an iterator stays in range. There is no check
 // on a later increment or on a dereference of the returned pointer.
 //
-// This file includes <cstddef> and no other standard header.
+// This file includes <cstddef> and <cstdint>. It does not include <memory>
+// or <ranges>.
 #ifndef _GLIBCXX_ITERATOR
 #define _GLIBCXX_ITERATOR 1
 
 #pragma GCC system_header
 
 #include <cstddef>
+#include <cstdint>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 namespace std {
+
+// The failing path never returns. A wrapping subtraction of the two
+// addresses is not produced here.
+[[noreturn]] inline void _Prism_distance_does_not_fit() noexcept {
+    __prism_check(0, "FUNC-CONTRACT", "std::distance subtraction does not fit in ptrdiff_t");
+    __builtin_trap();
+}
+
+// Element count from __first to __last. The address gap is an unsigned
+// magnitude, then divided by sizeof(_Tp). A magnitude outside
+// [PTRDIFF_MIN, PTRDIFF_MAX] takes the check above. This is not a proof
+// that the two pointers address the same array.
+template <typename _Tp>
+std::ptrdiff_t _Prism_pointer_diff(_Tp* __first, _Tp* __last) noexcept {
+    static_assert(sizeof(_Tp) != 0, "distance requires a complete object type");
+    const auto __uf = reinterpret_cast<std::uintptr_t>(__first);
+    const auto __ul = reinterpret_cast<std::uintptr_t>(__last);
+    const bool __neg = __ul < __uf;
+    const std::uintptr_t __bytes = __neg ? (__uf - __ul) : (__ul - __uf);
+    const std::uintptr_t __n = __bytes / static_cast<std::uintptr_t>(sizeof(_Tp));
+    const std::uintptr_t __max = static_cast<std::uintptr_t>(PTRDIFF_MAX);
+    if (__neg) {
+        // PTRDIFF_MIN is representable. Its magnitude is one past PTRDIFF_MAX.
+        // A larger magnitude would be a wrapped bit pattern. Do not return it.
+        if (__n > __max) {
+            if (__n != __max + 1) _Prism_distance_does_not_fit();
+            return PTRDIFF_MIN;
+        }
+        return static_cast<std::ptrdiff_t>(0) - static_cast<std::ptrdiff_t>(__n);
+    }
+    if (__n > __max) _Prism_distance_does_not_fit();
+    return static_cast<std::ptrdiff_t>(__n);
+}
 
 // Pointer to the first element. The bound is at least 1: N == 0 does not
 // match this parameter.
@@ -67,6 +112,20 @@ constexpr auto end(_Arr& __arr) noexcept -> decltype(__arr + 0)
     requires(sizeof(_Arr) == 0)
 {
     return __arr + 0;
+}
+
+// Two pointers only. A class iterator does not match, so the call fails
+// to compile and pir falls back. Constant evaluation uses the subtraction:
+// a count that does not fit in ptrdiff_t is not a constant expression, so
+// that return is not a wrapped value. At run time the count is the unsigned
+// distance, and a value that does not fit is the check, not a wrapped result.
+// This is not a proof that the two pointers address the same array.
+template <typename _Tp>
+constexpr std::ptrdiff_t distance(_Tp* __first, _Tp* __last) noexcept {
+    if consteval {
+        return __last - __first;
+    }
+    return _Prism_pointer_diff(__first, __last);
 }
 
 }  // namespace std
