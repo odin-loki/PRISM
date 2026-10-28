@@ -1,11 +1,12 @@
-// The <fstream> model is a partial basic_ifstream for char. These checks
-// read the header text: a default stream is not open, and read or get on
-// that stream is a FUNC-CONTRACT check that does not write a byte and does
-// not return a fabricated character. tellg on that stream is the same class
-// of check, then __builtin_trap. The return type is long. That path does
-// not return 0 and does not return a file position. The header is not
-// included here: this binary already uses the standard fstream in other
-// translation units.
+// The <fstream> model is a partial basic_ifstream for char, plus
+// basic_ofstream::tellp. These checks read the header text: a default stream
+// is not open, and read or get on that stream is a FUNC-CONTRACT check that
+// does not write a byte and does not return a fabricated character. tellg on
+// that stream is the same class of check, then __builtin_trap. tellp on a
+// basic_ofstream that is not open is the same class of check, then
+// __builtin_trap. The return type of each is long. That path does not return
+// 0 and does not return a file position. The header is not included here:
+// this binary already uses the standard fstream in other translation units.
 
 #include <doctest/doctest.h>
 
@@ -136,14 +137,15 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(src.find("not a proof that a file exists") != std::string::npos);
 
     const std::string code = strip_comments_and_strings(src);
-    for (const char* name : {"open", "close", "ofstream", "fstream", "basic_ofstream", "basic_fstream", "basic_filebuf",
-                             "filebuf", "wifstream", "exists", "peek", "getline", "ignore"}) {
+    for (const char* name : {"open", "close", "ofstream", "fstream", "basic_fstream", "basic_filebuf",
+                             "filebuf", "wifstream", "exists", "peek", "getline", "ignore", "write", "put", "seekp"}) {
         CAPTURE(name);
         CHECK_FALSE(has_ident(code, name));
     }
     CHECK(has_ident(code, "ifstream"));
     CHECK(has_ident(code, "is_open"));
     CHECK(has_ident(code, "basic_ifstream"));
+    CHECK(has_ident(code, "basic_ofstream"));
 
     const auto read = body_of(src, "basic_ifstream& read(");
     REQUIRE_FALSE(read.empty());
@@ -200,8 +202,38 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(tellg.find("streamoff") == std::string::npos);
     CHECK(tellg.find("fpos") == std::string::npos);
     CHECK(tellg.find("_M_is_open =") == std::string::npos);
+    CHECK(tellg.find("tellp") == std::string::npos);
     CHECK(count_sub(src, "std::basic_ifstream::tellg on a stream that is not open") == 1);
-    CHECK(count_sub(src, "__builtin_trap()") == 1);
+    CHECK(count_sub(tellg, "__builtin_trap()") == 1);
+    CHECK(count_sub(src, "long tellg()") == 1);
+    CHECK(count_sub(src, "~basic_ifstream() = default;") == 1);
+    CHECK(count_sub(src, "bool is_open() const noexcept") == 1);
 
-    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 6);
+    CHECK(src.find("long tellp()") != std::string::npos);
+    CHECK(src.find("class basic_ofstream {") != std::string::npos);
+    CHECK(src.find("basic_ofstream() noexcept = default;") != std::string::npos);
+    CHECK(src.find("~basic_ofstream() = default;") != std::string::npos);
+    CHECK(src.find("using ofstream") == std::string::npos);
+    CHECK(has_ident(code, "tellp"));
+    const auto tellp = body_of(src, "long tellp()");
+    REQUIRE_FALSE(tellp.empty());
+    const auto tellp_check = tellp.find("__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",");
+    const auto tellp_trap = tellp.find("__builtin_trap()");
+    REQUIRE(tellp_check != std::string::npos);
+    REQUIRE(tellp_trap != std::string::npos);
+    CHECK(tellp_check < tellp_trap);
+    CHECK(tellp.find("std::basic_ofstream::tellp on a stream that is not open") != std::string::npos);
+    CHECK(tellp.find("return") == std::string::npos);
+    CHECK(tellp.find("return 0") == std::string::npos);
+    CHECK(tellp.find("pos_type") == std::string::npos);
+    CHECK(tellp.find("streampos") == std::string::npos);
+    CHECK(tellp.find("streamoff") == std::string::npos);
+    CHECK(tellp.find("fpos") == std::string::npos);
+    CHECK(tellp.find("_M_is_open =") == std::string::npos);
+    CHECK(tellp.find("tellg") == std::string::npos);
+    CHECK(count_sub(src, "std::basic_ofstream::tellp on a stream that is not open") == 1);
+    CHECK(count_sub(src, "bool _M_is_open = false;") == 2);
+    CHECK(count_sub(src, "__builtin_trap()") == 2);
+
+    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 7);
 }

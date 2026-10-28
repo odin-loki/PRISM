@@ -4,28 +4,35 @@
 // file, not a directory: a directory of that name would make the include
 // fail with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. Only std::basic_ifstream for char, and the ifstream
-// alias of that type. A default stream is not open: is_open() is false.
-// Nothing in this header sets that flag. read() and get() on a stream that
-// is not open are __prism_check with class FUNC-CONTRACT. They do not write
-// any byte and do not return a fabricated character. get() returns -1, which
-// is eof, not a character read from a file. tellg() on a stream that is not
-// open is the same class of check, then __builtin_trap. The return type is
-// long. That path does not return 0 and does not return a file position.
+// Partial on purpose. std::basic_ifstream for char, and the ifstream alias
+// of that type. std::basic_ofstream for char, with tellp() only. A default
+// basic_ifstream is not open: is_open() is false. A default basic_ofstream
+// is not open. Nothing in this header sets either open flag true. read() and
+// get() on a stream that is not open are __prism_check with class
+// FUNC-CONTRACT. They do not write any byte and do not return a
+// fabricated character. get() returns -1, which is eof, not a character read
+// from a file. tellg() on a stream that is not open is the same class of
+// check, then __builtin_trap. The return type is long. That path does not
+// return 0 and does not return a file position. tellp() on a basic_ofstream
+// that is not open is the same class of check, then __builtin_trap. The
+// return type is long. That path does not return 0 and does not return a
+// file position.
 //
 // There is no heap allocation. The destructor is defaulted and does not free.
-// The object holds one bool.
+// Each object holds one bool.
 //
 // open and close are not declared. A successful open would be a fake file.
-// So are ofstream, fstream, filebuf, basic_ofstream, basic_fstream,
-// basic_filebuf, and wifstream, and any constructor that takes a path or a
-// file name. exists and every other name that would report a file is there
-// are omitted the same way. peek, getline, ignore, and operator>> are
-// omitted: each one would have to invent a character. A use of an omitted
-// name fails to compile against this header, and the pir stage lowers that
-// translation unit again with libstdc++ (extra.cxx_models). They are not
-// stubbed. The traits parameter of basic_ifstream is omitted, so the
-// two-argument form fails to compile and falls back the same way.
+// So are ofstream, fstream, filebuf, basic_fstream, basic_filebuf, and
+// wifstream, and any constructor that takes a path or a file name. exists
+// and every other name that would report a file is there are omitted the
+// same way. peek, getline, ignore, and operator>> are omitted: each one
+// would have to invent a character. write, put, and seekp are omitted: a
+// modelled write would be a fake file. A use of an omitted name fails to
+// compile against this header, and the pir stage lowers that translation
+// unit again with libstdc++ (extra.cxx_models). They are not stubbed. The
+// traits parameter of basic_ifstream is omitted, so the two-argument form
+// fails to compile and falls back the same way. The traits parameter of
+// basic_ofstream is omitted the same way.
 //
 // This header does not include the string, filesystem, memory, mutex,
 // iostream, istream, or ostream headers.
@@ -120,6 +127,34 @@ private:
 };
 
 using ifstream = basic_ifstream<char>;
+
+// tellp only. No open, no close, no write. A default stream is not open.
+// Nothing in this header stores true in the open flag.
+template <typename _CharT>
+class basic_ofstream {
+    static_assert(is_same_v<_CharT, char>,
+                  "PRISM fstream model: only char is modelled (the pir stage falls back to libstdc++)");
+
+public:
+    // A default stream is not open. No constructor here takes a file name.
+    basic_ofstream() noexcept = default;
+
+    basic_ofstream(const basic_ofstream&) = delete;
+    basic_ofstream& operator=(const basic_ofstream&) = delete;
+
+    // Does not free. There is no buffer and no file.
+    ~basic_ofstream() = default;
+
+    // Not open: there is no file position. This path does not return.
+    long tellp() {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ofstream::tellp on a stream that is not open");
+        __builtin_trap();
+    }
+
+private:
+    bool _M_is_open = false;
+};
 
 }  // namespace std
 
