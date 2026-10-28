@@ -22,7 +22,15 @@
 // the minimum or the maximum element in [first, last). Equal elements keep
 // the first.
 //
-// sort, find, copy, fill, for_each, and every other algorithm are not
+// std::find takes two pointers, first and last, and a const T& value.
+// There is no other overload. When last < first, __prism_check with class
+// FUNC-CONTRACT and then __builtin_trap. That path does not read an element
+// and does not invent a T. When first == last, the result is last. That
+// path does not read an element. Otherwise the result is a pointer to the
+// first element in [first, last) that compares equal with operator==, or
+// last if none. The function does not allocate.
+//
+// sort, copy, fill, for_each, and every other algorithm are not
 // declared. A use of those names fails to compile and the pir stage falls
 // back to libstdc++ (extra.cxx_models). A partial header is intentional.
 //
@@ -98,6 +106,26 @@ constexpr _Tp* max_element(_Tp* __first, _Tp* __last) {
         ++__first;
     }
     return __result;
+}
+
+template <typename _Tp>
+concept _Prism_equality_comparable = requires(const _Tp& __x, const _Tp& __y) { __x == __y; };
+
+// Two pointers and one value. An inverted range traps without reading and
+// without inventing a T. An empty range returns last and does not read.
+// operator== picks the first match. Nothing is allocated.
+template <_Prism_equality_comparable _Tp>
+constexpr _Tp* find(_Tp* __first, _Tp* __last, const _Tp& __value) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "find: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __last;
+    while (__first != __last) {
+        if (*__first == __value) return __first;
+        ++__first;
+    }
+    return __last;
 }
 
 }  // namespace std

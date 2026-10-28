@@ -1,7 +1,7 @@
 // Names <algorithm> so the C++ model-header conformance case sees this
 // include. The scored checks are
 // testdata/conformance/prism/cxx/cxx_algorithm_true.cpp and
-// cxx_algorithm_false.cpp. sort, find, copy, fill, and for_each are not
+// cxx_algorithm_false.cpp. sort, copy, fill, and for_each are not
 // called: this header does not declare them. min of the extreme ints is
 // not 0. An inverted clamp is a precondition, not a value this header
 // returns.

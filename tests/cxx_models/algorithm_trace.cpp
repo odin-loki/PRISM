@@ -5,11 +5,13 @@
 // first. clamp of a valid range returns lo, hi, or v. min of the two
 // extreme ints is the lower one, not 0. min_element and max_element take
 // two pointers. An empty range returns last and does not read an element.
-// Equal elements keep the first. sort, find, copy, fill, and for_each are
-// not called.
+// Equal elements keep the first. find takes two pointers and a const T&.
+// An empty range returns last and does not read. The result is the first
+// operator== match, or last. sort, copy, fill, and for_each are not called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
-// "invert-max" call min_element and max_element with last < first. The
-// model must __prism_check and must not print a value.
+// "invert-max" call min_element and max_element with last < first.
+// argv "invert-find" calls find with last < first. The model must
+// __prism_check and must not print a value.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -37,6 +39,20 @@ struct NoDefault {
     constexpr explicit NoDefault(int v) : x(v) {}
     NoDefault() = delete;
     friend constexpr bool operator<(const NoDefault& p, const NoDefault& q) { return p.x < q.x; }
+};
+
+// Equality only. find does not require operator<.
+struct EqOnly {
+    int x;
+    friend constexpr bool operator==(const EqOnly& p, const EqOnly& q) { return p.x == q.x; }
+};
+
+// No default constructor: find must not invent a T.
+struct NoDefaultEq {
+    int x;
+    constexpr explicit NoDefaultEq(int v) : x(v) {}
+    NoDefaultEq() = delete;
+    friend constexpr bool operator==(const NoDefaultEq& p, const NoDefaultEq& q) { return p.x == q.x; }
 };
 
 static int same_int(const int& r, const int& x) { return &r == &x ? 1 : 0; }
@@ -83,6 +99,56 @@ constexpr Ord kOrd[] = {Ord{2}, Ord{2}, Ord{1}};
 static_assert(std::min_element(kOrd, kOrd + 3)->x == 1);
 static_assert(std::max_element(kOrd, kOrd + 3) == kOrd);
 
+// Local arrays are non-const, so T is the element type. A constexpr array
+// decays to const T* and does not match this overload.
+constexpr int find_hit_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find(seq, seq + 4, 1) - seq);
+}
+static_assert(find_hit_i() == 2);
+constexpr int find_first_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find(seq, seq + 4, 4) - seq);
+}
+static_assert(find_first_i() == 1);
+constexpr int find_front_i() {
+    int seq[] = {9, 4, 1, 4};
+    return static_cast<int>(std::find(seq, seq + 4, 9) - seq);
+}
+static_assert(find_front_i() == 0);
+constexpr bool find_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::find(seq, seq + 4, 7) == seq + 4;
+}
+static_assert(find_miss());
+constexpr bool find_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::find(seq, seq, 9) == seq;
+}
+static_assert(find_empty());
+constexpr bool find_tie() {
+    int seq[] = {2, 2};
+    return std::find(seq, seq + 2, 2) == seq;
+}
+static_assert(find_tie());
+static_assert(std::find(static_cast<int*>(nullptr), static_cast<int*>(nullptr), 0) == nullptr);
+constexpr int find_eq_i() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    EqOnly needle{1};
+    EqOnly miss{3};
+    if (std::find(seq, seq + 3, miss) != seq + 3) return -1;
+    if (std::find(seq, seq, needle) != seq) return -1;
+    return static_cast<int>(std::find(seq, seq + 3, needle) - seq);
+}
+static_assert(find_eq_i() == 1);
+constexpr int find_nodef_i() {
+    NoDefaultEq seq[] = {NoDefaultEq(3), NoDefaultEq(1), NoDefaultEq(3)};
+    NoDefaultEq needle(1);
+    if (std::find(seq, seq, needle) != seq) return -1;
+    return std::find(seq, seq + 3, needle)->x;
+}
+static_assert(find_nodef_i() == 1);
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -103,6 +169,17 @@ int main(int argc, char** argv) {
         int* last = vl;
         int* p = std::strcmp(argv[1], "invert-min") == 0 ? std::min_element(first, last)
                                                          : std::max_element(first, last);
+        std::printf("value=%d\n", *p);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-find") == 0) {
+        int arr_el[] = {1, 2, 3};
+        int* volatile vf = arr_el + 2;
+        int* volatile vl = arr_el;
+        int* first = vf;
+        int* last = vl;
+        int needle = 1;
+        int* p = std::find(first, last, needle);
         std::printf("value=%d\n", *p);
         return 0;
     }
@@ -170,5 +247,38 @@ int main(int argc, char** argv) {
     const NoDefault* ndempty_max = std::max_element(nds, nds);
     std::printf("el_nodef_min=%d el_nodef_max_i=%d el_nodef_empty=%d\n", ndmin->x, static_cast<int>(ndmax - nds),
                 (ndempty == nds && ndempty_max == nds) ? 1 : 0);
+
+    int* fhit = std::find(seq, seq + 4, 1);
+    int* ffirst = std::find(seq, seq + 4, 4);
+    int* ffront = std::find(seq, seq + 4, 9);
+    int* fmiss = std::find(seq, seq + 4, 7);
+    int* fempty = std::find(seq, seq, 9);
+    const int kept[] = {9, 4, 1, 4};
+    std::printf("find_hit=%d find_hit_i=%d\n", *fhit, static_cast<int>(fhit - seq));
+    std::printf("find_first_i=%d\n", static_cast<int>(ffirst - seq));
+    std::printf("find_front_i=%d\n", static_cast<int>(ffront - seq));
+    std::printf("find_miss=%d\n", fmiss == seq + 4 ? 1 : 0);
+    std::printf("find_empty=%d\n", fempty == seq ? 1 : 0);
+    int one_find[] = {8};
+    std::printf("find_one=%d\n", (std::find(one_find, one_find + 1, 8) == one_find &&
+                                  std::find(one_find, one_find + 1, 0) == one_find + 1)
+                                     ? 1
+                                     : 0);
+    std::printf("find_null=%d\n", std::find(zn, zn, 0) == nullptr ? 1 : 0);
+    std::printf("find_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    EqOnly eqs[] = {{2}, {1}, {1}};
+    EqOnly want{1};
+    EqOnly miss{9};
+    const EqOnly* eh = std::find(eqs, eqs + 3, want);
+    const EqOnly* em = std::find(eqs, eqs + 3, miss);
+    const EqOnly* ee = std::find(eqs, eqs, want);
+    std::printf("find_eq_i=%d find_eq_id=%d find_eq_miss=%d find_eq_empty=%d\n", static_cast<int>(eh - eqs),
+                eh != &want ? 1 : 0, em == eqs + 3 ? 1 : 0, ee == eqs ? 1 : 0);
+    NoDefaultEq ndes[] = {NoDefaultEq(3), NoDefaultEq(1), NoDefaultEq(3)};
+    NoDefaultEq ndneedle(1);
+    const NoDefaultEq* ndh = std::find(ndes, ndes + 3, ndneedle);
+    const NoDefaultEq* nde = std::find(ndes, ndes, ndneedle);
+    std::printf("find_nodef=%d find_nodef_i=%d find_nodef_empty=%d\n", ndh->x, static_cast<int>(ndh - ndes),
+                nde == ndes ? 1 : 0);
     return 0;
 }
