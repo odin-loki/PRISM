@@ -3,7 +3,8 @@
 // CMake's prism_tests source list is explicit (not a glob).
 //
 // An empty any_cast is a __prism_check. A stored int any_casts back to that
-// int. The model does not invent a value for a failed cast. Without a
+// int. The model does not invent a value for a failed cast. make_any<T>
+// returns an any that owns one T from the in_place constructor. Without a
 // libstdc++ clang++ that can run ASan/UBSan the runtime cases report NOTRUN.
 // The source checks do not need that compiler.
 
@@ -222,6 +223,25 @@ TEST_CASE("cxx any model: empty any_cast is a check and does not invent a value"
     CHECK(body.find("_M_value") != std::string::npos);
     CHECK(body.find("__prism_check") == std::string::npos);
     CHECK(body.find("throw bad_any_cast") == std::string::npos);
+
+    // make_any is the in_place constructor. It is not an omitted bullet, and
+    // it does not invent a T or a stand-in of another type.
+    const auto mk = src.find("make_any(_Args&&... __args)");
+    REQUIRE(mk != std::string::npos);
+    const auto mk_end = src.find("template <typename _ValueType>", mk);
+    REQUIRE(mk_end != std::string::npos);
+    const std::string made = src.substr(mk, mk_end - mk);
+    CHECK(made.find("is_constructible_v<any, in_place_type_t<_Tp>, _Args...>") != std::string::npos);
+    CHECK(made.find("return any(in_place_type<_Tp>, std::forward<_Args>(__args)...);") != std::string::npos);
+    CHECK(made.find("return T{}") == std::string::npos);
+    CHECK(made.find("return _Tp{}") == std::string::npos);
+    CHECK(made.find("return any{}") == std::string::npos);
+    CHECK(made.find("return any()") == std::string::npos);
+    CHECK(made.find("__prism_check") == std::string::npos);
+    CHECK(made.find("throw") == std::string::npos);
+    CHECK(src.find("* make_any\n") == std::string::npos);
+    CHECK(src.find("* type()") != std::string::npos);
+    CHECK(src.find("* comparison") != std::string::npos);
 }
 
 TEST_CASE("cxx any model: setup clang++ with ASan/UBSan") {

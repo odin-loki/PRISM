@@ -16,6 +16,11 @@
 // pointer to a temporary T. The type that was stored yields a pointer to
 // that object.
 //
+// make_any<T>(args...) constructs one T from those arguments and returns
+// an any that owns it. Construction is any's in_place constructor, which
+// stores a heap T. An empty argument list value-initializes that T. It
+// does not default-construct a different type.
+//
 // The contained object is always on the heap (one allocation). reset, copy
 // and move assignment, and the destructor end that object's lifetime and
 // free the allocation. A move steals the pointer and leaves the source
@@ -29,10 +34,10 @@
 // Omitted APIs are not declared. A unit that names one fails to compile
 // against this header, so pir falls back to libstdc++ (extra.cxx_models).
 // They are not stubbed:
-//   * make_any
 //   * type()
 //   * comparison
 //   * the initializer_list emplace / in_place overloads
+//   * the initializer_list overload of make_any
 #ifndef _PRISM_MODEL_ANY
 #define _PRISM_MODEL_ANY 1
 #define _GLIBCXX_ANY 1  // libstdc++'s <any> include guard: never both
@@ -212,6 +217,14 @@ public:
 };
 
 inline void swap(any& __x, any& __y) noexcept { __x.swap(__y); }
+
+// One T, in the heap holder from the in_place constructor. An empty pack
+// value-initializes that T. This does not build a stand-in of another type.
+template <typename _Tp, typename... _Args>
+enable_if_t<is_constructible_v<any, in_place_type_t<_Tp>, _Args...>, any>
+make_any(_Args&&... __args) {
+    return any(in_place_type<_Tp>, std::forward<_Args>(__args)...);
+}
 
 template <typename _ValueType>
 _ValueType any_cast(const any& __any) {

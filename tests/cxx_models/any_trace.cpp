@@ -1,9 +1,11 @@
 // Differential trace of std::any (tests/cpp/test_cxx_any.cpp): compiled once
 // against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/any) first on the include path, both under
-// ASan/UBSan. The no-argument trace must match. make_any, type(), and
-// comparison are not called: the model does not declare them. Pointer
-// any_cast is called. A null any*, an empty any, and a wrong type are null.
+// ASan/UBSan. The no-argument trace must match. make_any<T>(args...) builds
+// one T and the any owns it. An empty argument list value-initializes that
+// T. type() and comparison are not called: the model does not declare them.
+// Pointer any_cast is called. A null any*, an empty any, and a wrong type
+// are null.
 // The matching type addresses the stored int, so a write through that
 // pointer is the value the next any_cast reads.
 //
@@ -34,6 +36,27 @@ struct Big {
         return *this;
     }
     ~Big() { std::printf(" d%d", v); }
+};
+
+// Larger than a pointer. Default construction is the value-initialized T.
+struct Zero {
+    int v;
+    char pad[24];
+    Zero() : v(0), pad{} { std::printf(" z"); }
+    Zero(const Zero& o) : v(o.v), pad{} { std::printf(" zc%d", v); }
+    Zero(Zero&& o) noexcept : v(o.v), pad{} { std::printf(" zm%d", v); }
+    ~Zero() { std::printf(" zd%d", v); }
+};
+
+// Two arguments, no default constructor. Both arguments are the real T.
+struct Two {
+    int a;
+    int b;
+    char pad[24];
+    Two(int x, int y) : a(x), b(y), pad{} { std::printf(" t%d,%d", a, b); }
+    Two(const Two& o) : a(o.a), b(o.b), pad{} { std::printf(" tc%d,%d", a, b); }
+    Two(Two&& o) noexcept : a(o.a), b(o.b), pad{} { std::printf(" tm%d,%d", a, b); }
+    ~Two() { std::printf(" td%d,%d", a, b); }
 };
 
 static void nl(const char* what) { std::printf("%s\n", what); }
@@ -94,6 +117,19 @@ static int happy() {
             if (p) *p = 9;
             std::printf("mut %d\n", std::any_cast<int>(held));
         }
+        std::any made_z = std::make_any<Zero>();
+        nl(" after make0");
+        std::printf("make0 %d %d\n", made_z.has_value() ? 1 : 0, std::any_cast<Zero&>(made_z).v);
+        std::any made_b = std::make_any<Big>(7);
+        nl(" after make");
+        std::printf("made %d\n", std::any_cast<Big&>(made_b).v);
+        std::any made_i = std::make_any<int>();
+        std::printf("madei %d %d\n", made_i.has_value() ? 1 : 0, std::any_cast<int>(made_i));
+        std::any made_n = std::make_any<int>(8);
+        std::printf("maden %d\n", std::any_cast<int>(made_n));
+        std::any made_two = std::make_any<Two>(1, 2);
+        nl(" after maketwo");
+        std::printf("two %d %d\n", std::any_cast<Two&>(made_two).a, std::any_cast<Two&>(made_two).b);
         nl(" leaving");
     }
     nl("done");
