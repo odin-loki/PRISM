@@ -20,8 +20,16 @@
 // const T&. An inverted range is __prism_check then __builtin_trap and
 // does not read. An empty range returns 0 and does not read. A tally that
 // would not fit in ptrdiff_t is __prism_check then __builtin_trap and does
-// not return a wrapped count. This is not PROVED and not CLEAN. sort,
-// copy, fill, and for_each are not declared.
+// not return a wrapped count. all_of, any_of, and none_of take two
+// pointers and any callable. A null function-pointer predicate is
+// __prism_check then __builtin_trap and does not call. An inverted range is __prism_check
+// then __builtin_trap and does not read. An empty range does not read and
+// does not call: all_of returns true, any_of returns false, none_of
+// returns true. all_of returns false at the first element for which the
+// predicate is false, else true. any_of returns true at the first element
+// for which it is true, else false. none_of returns false at the first
+// element for which it is true, else true. This is not PROVED and not
+// CLEAN. sort, copy, fill, and for_each are not declared.
 
 #include <doctest/doctest.h>
 
@@ -480,7 +488,33 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(find_if_body.find("malloc") == std::string::npos);
     CHECK(find_if_body.find("return 0") == std::string::npos);
 
-    const std::string count_body = text.substr(count_at);
+    const auto all_of_at =
+        text.find("constexpr bool all_of(_Tp* __first, _Tp* __last, _Pred __pred)");
+    const auto any_of_at = text.find(
+        "constexpr bool any_of(_Tp* __first, _Tp* __last, _Pred __pred)", all_of_at);
+    const auto none_of_at = text.find(
+        "constexpr bool none_of(_Tp* __first, _Tp* __last, _Pred __pred)", any_of_at);
+    REQUIRE(all_of_at != std::string::npos);
+    REQUIRE(any_of_at != std::string::npos);
+    REQUIRE(none_of_at != std::string::npos);
+    CHECK(count_at < all_of_at);
+    CHECK(all_of_at < any_of_at);
+    CHECK(any_of_at < none_of_at);
+    const auto all_sig = text.find("all_of(", all_of_at);
+    const auto any_sig = text.find("any_of(", any_of_at);
+    const auto none_sig = text.find("none_of(", none_of_at);
+    REQUIRE(all_sig != std::string::npos);
+    REQUIRE(any_sig != std::string::npos);
+    REQUIRE(none_sig != std::string::npos);
+    CHECK(text.find("all_of(", all_sig + 7) == std::string::npos);
+    CHECK(text.find("any_of(", any_sig + 7) == std::string::npos);
+    CHECK(text.find("none_of(", none_sig + 8) == std::string::npos);
+    const std::string count_body = text.substr(count_at, all_of_at - count_at);
+    const std::string all_body = text.substr(all_of_at, any_of_at - all_of_at);
+    const std::string any_body = text.substr(any_of_at, none_of_at - any_of_at);
+    const auto after_none_at = text.find("constexpr _Tp* find_if_not(", none_of_at);
+    REQUIRE(after_none_at != std::string::npos);
+    const std::string none_body = text.substr(none_of_at, after_none_at - none_of_at);
     const auto count_brace = count_body.find('{');
     REQUIRE(count_brace != std::string::npos);
     const std::string count_fn = count_body.substr(count_brace);
@@ -549,6 +583,78 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(count_body.find("malloc") == std::string::npos);
     CHECK(count_body.find("calloc") == std::string::npos);
     CHECK(count_body.find("realloc") == std::string::npos);
+
+    const auto check_quant = [](const std::string& body, const char* null_msg, const char* range_msg,
+                                const char* empty_ret, const char* decide, const char* final_ret) {
+        const auto brace = body.find('{');
+        REQUIRE(brace != std::string::npos);
+        const std::string fn = body.substr(brace);
+        const auto null_if = fn.find("if (__pred == nullptr)");
+        const auto bad = fn.find("if (__last < __first)");
+        const std::string empty_stmt = std::string("if (__first == __last) return ") + empty_ret + ";";
+        const auto empty = fn.find(empty_stmt);
+        REQUIRE(null_if != std::string::npos);
+        REQUIRE(bad != std::string::npos);
+        REQUIRE(empty != std::string::npos);
+        CHECK(null_if < bad);
+        CHECK(bad < empty);
+        const std::string null_body = fn.substr(null_if, bad - null_if);
+        const auto null_check = null_body.find("__prism_check");
+        const auto null_trap = null_body.find("__builtin_trap");
+        REQUIRE(null_check != std::string::npos);
+        REQUIRE(null_trap != std::string::npos);
+        CHECK(null_check < null_trap);
+        CHECK(null_body.find("FUNC-CONTRACT") != std::string::npos);
+        CHECK(null_body.find(null_msg) != std::string::npos);
+        CHECK(null_body.find("return") == std::string::npos);
+        CHECK(null_body.find("*__") == std::string::npos);
+        CHECK(null_body.find("__pred(") == std::string::npos);
+        const std::string bad_body = fn.substr(bad, empty - bad);
+        const auto bad_check = bad_body.find("__prism_check");
+        const auto bad_trap = bad_body.find("__builtin_trap");
+        REQUIRE(bad_check != std::string::npos);
+        REQUIRE(bad_trap != std::string::npos);
+        CHECK(bad_check < bad_trap);
+        CHECK(bad_body.find("FUNC-CONTRACT") != std::string::npos);
+        CHECK(bad_body.find(range_msg) != std::string::npos);
+        CHECK(bad_body.find("return") == std::string::npos);
+        CHECK(bad_body.find("*__") == std::string::npos);
+        CHECK(bad_body.find("__pred(") == std::string::npos);
+        CHECK(bad_body.find("_Tp{") == std::string::npos);
+        CHECK(bad_body.find("_Tp(") == std::string::npos);
+        CHECK(bad_body.find("_Tp __") == std::string::npos);
+        CHECK(fn.substr(0, empty).find("*__") == std::string::npos);
+        CHECK(fn.substr(0, empty).find("__pred(") == std::string::npos);
+        const auto scan = fn.find("while (__first != __last)", empty);
+        REQUIRE(scan != std::string::npos);
+        const std::string between = fn.substr(empty, scan - empty);
+        CHECK(between.find("*__") == std::string::npos);
+        CHECK(between.find("__pred(") == std::string::npos);
+        const auto decided = fn.find(decide, scan);
+        REQUIRE(decided != std::string::npos);
+        const auto bump = fn.find("++__first", decided);
+        REQUIRE(bump != std::string::npos);
+        const std::string final_stmt = std::string("return ") + final_ret;
+        const auto end = fn.find(final_stmt, bump);
+        REQUIRE(end != std::string::npos);
+        CHECK(scan < decided);
+        CHECK(decided < bump);
+        CHECK(bump < end);
+        CHECK(body.find("_Tp{") == std::string::npos);
+        CHECK(body.find("_Tp(") == std::string::npos);
+        CHECK(body.find("_Tp __") == std::string::npos);
+        CHECK(body.find("new") == std::string::npos);
+        CHECK(body.find("malloc") == std::string::npos);
+        CHECK(body.find("return 0") == std::string::npos);
+    };
+    check_quant(all_body, "all_of: null predicate", "all_of: last < first", "true",
+                "if (!__pred(*__first)) return false;", "true");
+    check_quant(any_body, "any_of: null predicate", "any_of: last < first", "false",
+                "if (__pred(*__first)) return true;", "false");
+    check_quant(none_body, "none_of: null predicate", "none_of: last < first", "true",
+                "if (__pred(*__first)) return false;", "true");
+    CHECK(any_body.find("!__pred") == std::string::npos);
+    CHECK(none_body.find("!__pred") == std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
@@ -643,6 +749,37 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(has_line(b, "count_eq=2 count_eq_miss=0 count_eq_empty=0"));
     CHECK(has_line(b, "count_nodef=1 count_nodef_three=2 count_nodef_empty=0"));
     CHECK(has_line(b, "count_keep=1"));
+    CHECK(has_line(b, "all_of_all=1 all_of_all_calls=4"));
+    CHECK(has_line(b, "all_of_front=0 all_of_front_calls=1"));
+    CHECK(has_line(b, "all_of_mid=0 all_of_mid_calls=2"));
+    CHECK(has_line(b, "all_of_empty=1 all_of_empty_calls=0"));
+    CHECK(has_line(b, "all_of_one=1"));
+    CHECK(has_line(b, "all_of_null=1 all_of_null_calls=0"));
+    CHECK(has_line(b, "all_of_keep=1"));
+    CHECK(has_line(b, "all_of_eq=0 all_of_eq_empty=1"));
+    CHECK(has_line(b, "all_of_nodef=0 all_of_nodef_empty=1"));
+    CHECK(has_line(b, "all_of_pred=0 all_of_pred_empty=1"));
+    CHECK(has_line(b, "any_of_hit=1 any_of_hit_calls=3"));
+    CHECK(has_line(b, "any_of_front=1 any_of_front_calls=1"));
+    CHECK(has_line(b, "any_of_miss=0 any_of_miss_calls=4"));
+    CHECK(has_line(b, "any_of_empty=0 any_of_empty_calls=0"));
+    CHECK(has_line(b, "any_of_tie=1 any_of_tie_calls=1"));
+    CHECK(has_line(b, "any_of_one=1"));
+    CHECK(has_line(b, "any_of_null=0 any_of_null_calls=0"));
+    CHECK(has_line(b, "any_of_keep=1"));
+    CHECK(has_line(b, "any_of_eq=1 any_of_eq_empty=0"));
+    CHECK(has_line(b, "any_of_nodef=1 any_of_nodef_empty=0"));
+    CHECK(has_line(b, "any_of_pred=1 any_of_pred_empty=0"));
+    CHECK(has_line(b, "none_of_miss=1 none_of_miss_calls=4"));
+    CHECK(has_line(b, "none_of_front=0 none_of_front_calls=1"));
+    CHECK(has_line(b, "none_of_mid=0 none_of_mid_calls=3"));
+    CHECK(has_line(b, "none_of_empty=1 none_of_empty_calls=0"));
+    CHECK(has_line(b, "none_of_one=1"));
+    CHECK(has_line(b, "none_of_null=1 none_of_null_calls=0"));
+    CHECK(has_line(b, "none_of_keep=1"));
+    CHECK(has_line(b, "none_of_eq=0 none_of_eq_empty=1"));
+    CHECK(has_line(b, "none_of_nodef=0 none_of_nodef_empty=1"));
+    CHECK(has_line(b, "none_of_pred=0 none_of_pred_empty=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "invert"}, &out, &err));
@@ -697,6 +834,25 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(count_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
     CHECK(count_both.find("count: last < first") != std::string::npos);
     CHECK(count_out.find("value=") == std::string::npos);
+
+    const auto expect_contract = [&](const char* arg, const char* msg, bool no_called) {
+        std::string o, e;
+        CHECK_FALSE(run_cmd({mod.string(), arg}, &o, &e));
+        const std::string both = o + e;
+        CHECK(both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+        CHECK(both.find(msg) != std::string::npos);
+        CHECK(o.find("value=") == std::string::npos);
+        if (no_called) CHECK(both.find("called") == std::string::npos);
+    };
+    expect_contract("invert-all-of", "all_of: last < first", true);
+    expect_contract("invert-any-of", "any_of: last < first", true);
+    expect_contract("invert-none-of", "none_of: last < first", true);
+    expect_contract("null-all-of", "all_of: null predicate", false);
+    expect_contract("null-all-of-empty", "all_of: null predicate", false);
+    expect_contract("null-any-of", "any_of: null predicate", false);
+    expect_contract("null-any-of-empty", "any_of: null predicate", false);
+    expect_contract("null-none-of", "none_of: null predicate", false);
+    expect_contract("null-none-of-empty", "none_of: null predicate", false);
 
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
@@ -884,4 +1040,115 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
                                      "static_assert(inverted() == 0);\n";
     std::string inverted_count_err;
     CHECK_FALSE(syntax_only(c.cxx, inverted_count, true, &inverted_count_err));
+
+    const fs::path quant_fn = c.tmp / "quant_fn.cpp";
+    std::ofstream(quant_fn) << "#include <algorithm>\n"
+                               "bool is_one(const int& x) { return x == 1; }\n"
+                               "bool use(int* a, int n) {\n"
+                               "  return std::all_of(a, a + n, is_one) && std::any_of(a, a + n, is_one) &&\n"
+                               "         std::none_of(a, a + n, is_one);\n"
+                               "}\n";
+    std::string quant_fn_err;
+    CHECK(syntax_only(c.cxx, quant_fn, false, &quant_fn_err));
+    CHECK(syntax_only(c.cxx, quant_fn, true, &quant_fn_err));
+
+    const fs::path quant_lambda = c.tmp / "quant_lambda.cpp";
+    std::ofstream(quant_lambda) << "#include <algorithm>\n"
+                                   "bool use(int* a, int n) {\n"
+                                   "  return std::all_of(a, a + n, [](int x) { return x == 0; }) &&\n"
+                                   "         std::any_of(a, a + n, [](int x) { return x == 0; }) &&\n"
+                                   "         std::none_of(a, a + n, [](int x) { return x == 0; });\n"
+                                   "}\n";
+    std::string quant_lambda_err;
+    CHECK(syntax_only(c.cxx, quant_lambda, false, &quant_lambda_err));
+    // Any callable is accepted (one overload, _Pred); only a null pointer traps.
+    CHECK(syntax_only(c.cxx, quant_lambda, true, &quant_lambda_err));
+
+    const fs::path quant_val = c.tmp / "quant_val.cpp";
+    std::ofstream(quant_val) << "#include <algorithm>\n"
+                                "bool is_zero(int x) { return x == 0; }\n"
+                                "bool use(int* a, int n) {\n"
+                                "  return std::all_of(a, a + n, is_zero) && std::any_of(a, a + n, is_zero) &&\n"
+                                "         std::none_of(a, a + n, is_zero);\n"
+                                "}\n";
+    std::string quant_val_err;
+    CHECK(syntax_only(c.cxx, quant_val, false, &quant_val_err));
+    // Any callable is accepted (one overload, _Pred); only a null pointer traps.
+    CHECK(syntax_only(c.cxx, quant_val, true, &quant_val_err));
+
+    const fs::path quant_empty_ok = c.tmp / "quant_empty_ok.cpp";
+    std::ofstream(quant_empty_ok) << "#include <algorithm>\n"
+                                     "constexpr bool is_one(const int& x) { return x == 1; }\n"
+                                     "constexpr bool checks() {\n"
+                                     "  int a[] = {1, 2, 3};\n"
+                                     "  return std::all_of(a, a, is_one) && !std::any_of(a, a, is_one) &&\n"
+                                     "         std::none_of(a, a, is_one);\n"
+                                     "}\n"
+                                     "static_assert(checks());\n";
+    std::string quant_empty_ok_err;
+    CHECK(syntax_only(c.cxx, quant_empty_ok, false, &quant_empty_ok_err));
+    CHECK(syntax_only(c.cxx, quant_empty_ok, true, &quant_empty_ok_err));
+
+    const fs::path inverted_all = c.tmp / "invert_all_const.cpp";
+    std::ofstream(inverted_all) << "#include <algorithm>\n"
+                                   "constexpr bool is_one(const int& x) { return x == 1; }\n"
+                                   "constexpr bool inverted() {\n"
+                                   "  int a[] = {1, 2, 3};\n"
+                                   "  return std::all_of(a + 2, a, is_one);\n"
+                                   "}\n"
+                                   "static_assert(inverted());\n";
+    std::string inverted_all_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_all, true, &inverted_all_err));
+
+    const fs::path inverted_any = c.tmp / "invert_any_const.cpp";
+    std::ofstream(inverted_any) << "#include <algorithm>\n"
+                                   "constexpr bool is_one(const int& x) { return x == 1; }\n"
+                                   "constexpr bool inverted() {\n"
+                                   "  int a[] = {1, 2, 3};\n"
+                                   "  return std::any_of(a + 2, a, is_one);\n"
+                                   "}\n"
+                                   "static_assert(!inverted());\n";
+    std::string inverted_any_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_any, true, &inverted_any_err));
+
+    const fs::path inverted_none = c.tmp / "invert_none_const.cpp";
+    std::ofstream(inverted_none) << "#include <algorithm>\n"
+                                    "constexpr bool is_one(const int& x) { return x == 1; }\n"
+                                    "constexpr bool inverted() {\n"
+                                    "  int a[] = {1, 2, 3};\n"
+                                    "  return std::none_of(a + 2, a, is_one);\n"
+                                    "}\n"
+                                    "static_assert(inverted());\n";
+    std::string inverted_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_none, true, &inverted_none_err));
+
+    const fs::path null_all = c.tmp / "null_all_const.cpp";
+    std::ofstream(null_all) << "#include <algorithm>\n"
+                               "constexpr bool nullp() {\n"
+                               "  int a[] = {1, 2, 3};\n"
+                               "  return std::all_of(a, a + 3, static_cast<bool (*)(const int&)>(nullptr));\n"
+                               "}\n"
+                               "static_assert(nullp());\n";
+    std::string null_all_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_all, true, &null_all_err));
+
+    const fs::path null_any = c.tmp / "null_any_const.cpp";
+    std::ofstream(null_any) << "#include <algorithm>\n"
+                               "constexpr bool nullp() {\n"
+                               "  int a[] = {1, 2, 3};\n"
+                               "  return std::any_of(a, a + 3, static_cast<bool (*)(const int&)>(nullptr));\n"
+                               "}\n"
+                               "static_assert(!nullp());\n";
+    std::string null_any_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_any, true, &null_any_err));
+
+    const fs::path null_none = c.tmp / "null_none_const.cpp";
+    std::ofstream(null_none) << "#include <algorithm>\n"
+                                "constexpr bool nullp() {\n"
+                                "  int a[] = {1, 2, 3};\n"
+                                "  return std::none_of(a, a + 3, static_cast<bool (*)(const int&)>(nullptr));\n"
+                                "}\n"
+                                "static_assert(nullp());\n";
+    std::string null_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_none, true, &null_none_err));
 }

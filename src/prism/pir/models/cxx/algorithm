@@ -50,13 +50,30 @@
 // __builtin_trap. That path does not return a wrapped count. The function
 // does not allocate.
 //
-// The C++11 predicates over two pointers and any callable predicate:
-// all_of, any_of, none_of, find_if_not, copy_if, is_partitioned,
-// partition_point, minmax, minmax_element, is_heap, is_heap_until. An
-// inverted range is __prism_check FUNC-CONTRACT then __builtin_trap, as
-// above. Empty ranges follow [alg.all.of]: all_of and none_of are true,
-// any_of is false. minmax_element returns the first smallest and the last
-// largest.
+// std::all_of, std::any_of, and std::none_of each take two pointers and
+// one callable predicate. There is one overload of each name. When the
+// predicate is a pointer (a function pointer) and it is null, the call is
+// __prism_check with class FUNC-CONTRACT and the message
+// "all_of: null predicate" (and the same shape for any_of and none_of),
+// then __builtin_trap. That path does not call the predicate. A callable
+// that is not a pointer (a lambda, a function object) has no null state
+// and is not checked for one. When last < first, __prism_check with class
+// FUNC-CONTRACT and the message "all_of: last < first" (same shape for the
+// others), then __builtin_trap. That path does not read an element. When
+// first == last, the function does not read and does not call: all_of
+// returns true, any_of returns false, and none_of returns true
+// ([alg.all.of]). Otherwise all_of returns false at the first element for
+// which the predicate is false, else true. any_of returns true at the
+// first element for which it is true, else false. none_of returns false
+// at the first element for which it is true, else true. The functions do
+// not allocate.
+//
+// The other C++11 predicates over two pointers and any callable
+// predicate: find_if_not, copy_if, is_partitioned, partition_point,
+// minmax, minmax_element, is_heap, is_heap_until. An inverted range is
+// __prism_check FUNC-CONTRACT then __builtin_trap, as above. A null
+// predicate is not checked by these. minmax_element returns the first
+// smallest and the last largest.
 //
 // sort, copy, fill, for_each, and every other algorithm are not
 // declared. A use of those names fails to compile and the pir stage falls
@@ -212,25 +229,73 @@ constexpr __PTRDIFF_TYPE__ count(_Tp* __first, _Tp* __last, const _Tp& __value) 
         __builtin_trap();                                                      \
     }
 
+// Any callable. A null function pointer traps before any call. An
+// inverted range traps before any read. An empty range does not call and
+// returns true. Otherwise false at the first element for which the
+// predicate is false, else true. This is not PROVED and it is not CLEAN.
 template <typename _Tp, typename _Pred>
 constexpr bool all_of(_Tp* __first, _Tp* __last, _Pred __pred) {
-    _PRISM_RANGE_CHECK(__first, __last, "all_of")
-    for (; __first != __last; ++__first)
+    if constexpr (__is_pointer(_Pred)) {
+        if (__pred == nullptr) {
+            __prism_check(0, "FUNC-CONTRACT", "all_of: null predicate");
+            __builtin_trap();
+        }
+    }
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "all_of: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return true;
+    while (__first != __last) {
         if (!__pred(*__first)) return false;
+        ++__first;
+    }
     return true;
 }
+// Any callable. A null function pointer traps before any call. An
+// inverted range traps before any read. An empty range does not call and
+// returns false. Otherwise true at the first element for which the
+// predicate is true, else false. This is not PROVED and it is not CLEAN.
 template <typename _Tp, typename _Pred>
 constexpr bool any_of(_Tp* __first, _Tp* __last, _Pred __pred) {
-    _PRISM_RANGE_CHECK(__first, __last, "any_of")
-    for (; __first != __last; ++__first)
+    if constexpr (__is_pointer(_Pred)) {
+        if (__pred == nullptr) {
+            __prism_check(0, "FUNC-CONTRACT", "any_of: null predicate");
+            __builtin_trap();
+        }
+    }
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "any_of: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return false;
+    while (__first != __last) {
         if (__pred(*__first)) return true;
+        ++__first;
+    }
     return false;
 }
+// Any callable. A null function pointer traps before any call. An
+// inverted range traps before any read. An empty range does not call and
+// returns true. Otherwise false at the first element for which the
+// predicate is true, else true. This is not PROVED and it is not CLEAN.
 template <typename _Tp, typename _Pred>
 constexpr bool none_of(_Tp* __first, _Tp* __last, _Pred __pred) {
-    _PRISM_RANGE_CHECK(__first, __last, "none_of")
-    for (; __first != __last; ++__first)
+    if constexpr (__is_pointer(_Pred)) {
+        if (__pred == nullptr) {
+            __prism_check(0, "FUNC-CONTRACT", "none_of: null predicate");
+            __builtin_trap();
+        }
+    }
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "none_of: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return true;
+    while (__first != __last) {
         if (__pred(*__first)) return false;
+        ++__first;
+    }
     return true;
 }
 template <typename _Tp, typename _Pred>

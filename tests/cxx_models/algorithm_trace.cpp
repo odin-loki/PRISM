@@ -10,14 +10,21 @@
 // operator== match, or last. find_if takes two pointers and
 // bool (*)(const T&). An empty range returns last and does not call the
 // predicate. count returns how many elements compare equal. An empty range
-// returns 0 and does not read. sort, copy, fill, and for_each are not called.
+// returns 0 and does not read. all_of, any_of, and none_of take two
+// pointers and bool (*)(const T&). An empty range does not call: all_of
+// returns true, any_of returns false, none_of returns true. sort, copy,
+// fill, and for_each are not called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
 // argv "invert-find" calls find with last < first. argv "invert-find-if"
 // calls find_if with last < first and must not call the predicate.
 // argv "null-find-if" and "null-find-if-empty" pass a null predicate.
-// argv "invert-count" calls count with last < first. The model must
-// __prism_check and must not print a value. This is not PROVED and not CLEAN.
+// argv "invert-count" calls count with last < first. argv "invert-all-of",
+// "invert-any-of", and "invert-none-of" call those functions with
+// last < first and must not call the predicate. argv "null-all-of",
+// "null-any-of", "null-none-of", and the "-empty" forms pass a null
+// predicate. The model must __prism_check and must not print a value.
+// This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -82,6 +89,14 @@ int g_want = 0;
 bool watch(const int& x) {
     ++g_calls;
     return x == g_want;
+}
+bool watch_true(const int&) {
+    ++g_calls;
+    return true;
+}
+bool watch_false(const int&) {
+    ++g_calls;
+    return false;
 }
 bool mark_called(const int&) {
     std::fprintf(stderr, "called\n");
@@ -277,6 +292,141 @@ constexpr long long count_nodef() {
 }
 static_assert(count_nodef() == 1);
 
+constexpr bool all_of_all() {
+    int seq[] = {1, 1, 1};
+    return std::all_of(seq, seq + 3, is_one);
+}
+static_assert(all_of_all());
+constexpr bool all_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::all_of(seq, seq + 4, is_four);
+}
+static_assert(!all_of_front());
+constexpr bool all_of_mid() {
+    int seq[] = {9, 9, 1, 4};
+    return std::all_of(seq, seq + 4, is_nine);
+}
+static_assert(!all_of_mid());
+constexpr bool all_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::all_of(seq, seq, is_nine);
+}
+static_assert(all_of_empty());
+constexpr bool all_of_one_true() {
+    int seq[] = {1};
+    return std::all_of(seq, seq + 1, is_one);
+}
+static_assert(all_of_one_true());
+constexpr bool all_of_one_false() {
+    int seq[] = {8};
+    return std::all_of(seq, seq + 1, is_one);
+}
+static_assert(!all_of_one_false());
+static_assert(std::all_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool all_of_eq_empty() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::all_of(seq, seq + 3, eq_is_one)) return false;
+    return std::all_of(seq, seq, eq_is_one);
+}
+static_assert(all_of_eq_empty());
+constexpr bool all_of_nodef_empty() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::all_of(seq, seq + 3, nd_is_one)) return false;
+    return std::all_of(seq, seq, nd_is_one);
+}
+static_assert(all_of_nodef_empty());
+constexpr bool all_of_pred_empty() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::all_of(seq, seq + 3, pred_only_is_one)) return false;
+    return std::all_of(seq, seq, pred_only_is_one);
+}
+static_assert(all_of_pred_empty());
+
+constexpr bool any_of_hit() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_one);
+}
+static_assert(any_of_hit());
+constexpr bool any_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_nine);
+}
+static_assert(any_of_front());
+constexpr bool any_of_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_seven);
+}
+static_assert(!any_of_miss());
+constexpr bool any_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq, is_nine);
+}
+static_assert(!any_of_empty());
+constexpr bool any_of_tie() {
+    int seq[] = {2, 2};
+    return std::any_of(seq, seq + 2, is_two);
+}
+static_assert(any_of_tie());
+static_assert(!std::any_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool any_of_eq() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::any_of(seq, seq, eq_is_one)) return false;
+    return std::any_of(seq, seq + 3, eq_is_one);
+}
+static_assert(any_of_eq());
+constexpr bool any_of_nodef() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::any_of(seq, seq, nd_is_one)) return false;
+    return std::any_of(seq, seq + 3, nd_is_one);
+}
+static_assert(any_of_nodef());
+constexpr bool any_of_pred() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::any_of(seq, seq, pred_only_is_one)) return false;
+    return std::any_of(seq, seq + 3, pred_only_is_one);
+}
+static_assert(any_of_pred());
+
+constexpr bool none_of_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_seven);
+}
+static_assert(none_of_miss());
+constexpr bool none_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_nine);
+}
+static_assert(!none_of_front());
+constexpr bool none_of_mid() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_one);
+}
+static_assert(!none_of_mid());
+constexpr bool none_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq, is_nine);
+}
+static_assert(none_of_empty());
+static_assert(std::none_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool none_of_eq_empty() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::none_of(seq, seq + 3, eq_is_one)) return false;
+    return std::none_of(seq, seq, eq_is_one);
+}
+static_assert(none_of_eq_empty());
+constexpr bool none_of_nodef_empty() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::none_of(seq, seq + 3, nd_is_one)) return false;
+    return std::none_of(seq, seq, nd_is_one);
+}
+static_assert(none_of_nodef_empty());
+constexpr bool none_of_pred_empty() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::none_of(seq, seq + 3, pred_only_is_one)) return false;
+    return std::none_of(seq, seq, pred_only_is_one);
+}
+static_assert(none_of_pred_empty());
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -341,6 +491,40 @@ int main(int argc, char** argv) {
         int* last = vl;
         long long n = static_cast<long long>(std::count(first, last, 1));
         std::printf("value=%lld\n", n);
+        return 0;
+    }
+    if (argc > 1 && (std::strcmp(argv[1], "invert-all-of") == 0 || std::strcmp(argv[1], "invert-any-of") == 0 ||
+                     std::strcmp(argv[1], "invert-none-of") == 0)) {
+        int arr_el[] = {1, 2, 3};
+        int* volatile vf = arr_el + 2;
+        int* volatile vl = arr_el;
+        int* first = vf;
+        int* last = vl;
+        bool r = false;
+        if (std::strcmp(argv[1], "invert-all-of") == 0) r = std::all_of(first, last, mark_called);
+        else if (std::strcmp(argv[1], "invert-any-of") == 0) r = std::any_of(first, last, mark_called);
+        else r = std::none_of(first, last, mark_called);
+        std::printf("value=%d\n", r ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && (std::strcmp(argv[1], "null-all-of") == 0 || std::strcmp(argv[1], "null-all-of-empty") == 0 ||
+                     std::strcmp(argv[1], "null-any-of") == 0 || std::strcmp(argv[1], "null-any-of-empty") == 0 ||
+                     std::strcmp(argv[1], "null-none-of") == 0 || std::strcmp(argv[1], "null-none-of-empty") == 0)) {
+        int arr_el[] = {1, 2, 3};
+        const bool empty = std::strcmp(argv[1], "null-all-of-empty") == 0 ||
+                           std::strcmp(argv[1], "null-any-of-empty") == 0 ||
+                           std::strcmp(argv[1], "null-none-of-empty") == 0;
+        int* first = arr_el;
+        int* last = empty ? arr_el : arr_el + 3;
+        auto pred = static_cast<bool (*)(const int&)>(nullptr);
+        bool r = false;
+        if (std::strcmp(argv[1], "null-all-of") == 0 || std::strcmp(argv[1], "null-all-of-empty") == 0)
+            r = std::all_of(first, last, pred);
+        else if (std::strcmp(argv[1], "null-any-of") == 0 || std::strcmp(argv[1], "null-any-of-empty") == 0)
+            r = std::any_of(first, last, pred);
+        else
+            r = std::none_of(first, last, pred);
+        std::printf("value=%d\n", r ? 1 : 0);
         return 0;
     }
 
@@ -517,5 +701,125 @@ int main(int argc, char** argv) {
                 static_cast<long long>(std::count(ndes, ndes + 3, nd_three)),
                 static_cast<long long>(std::count(ndes, ndes, ndneedle)));
     std::printf("count_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+
+    g_calls = 0;
+    const bool ao_all = std::all_of(seq, seq + 4, watch_true);
+    const int ao_all_calls = g_calls;
+    g_calls = 0;
+    const bool ao_front = std::all_of(seq, seq + 4, watch_false);
+    const int ao_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ao_mid = std::all_of(seq, seq + 4, watch);
+    const int ao_mid_calls = g_calls;
+    g_calls = 0;
+    const bool ao_empty = std::all_of(seq, seq, watch_true);
+    const int ao_empty_calls = g_calls;
+    std::printf("all_of_all=%d all_of_all_calls=%d\n", ao_all ? 1 : 0, ao_all_calls);
+    std::printf("all_of_front=%d all_of_front_calls=%d\n", ao_front ? 1 : 0, ao_front_calls);
+    std::printf("all_of_mid=%d all_of_mid_calls=%d\n", ao_mid ? 1 : 0, ao_mid_calls);
+    std::printf("all_of_empty=%d all_of_empty_calls=%d\n", ao_empty ? 1 : 0, ao_empty_calls);
+    g_calls = 0;
+    const bool ao_one_t = std::all_of(one, one + 1, watch_true);
+    const int ao_one_t_calls = g_calls;
+    g_calls = 0;
+    const bool ao_one_f = std::all_of(one, one + 1, watch_false);
+    const int ao_one_f_calls = g_calls;
+    std::printf("all_of_one=%d\n", (ao_one_t && ao_one_t_calls == 1 && !ao_one_f && ao_one_f_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    const bool ao_null = std::all_of(zn, zn, watch_true);
+    std::printf("all_of_null=%d all_of_null_calls=%d\n", ao_null ? 1 : 0, g_calls);
+    std::printf("all_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("all_of_eq=%d all_of_eq_empty=%d\n", std::all_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::all_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("all_of_nodef=%d all_of_nodef_empty=%d\n", std::all_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::all_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("all_of_pred=%d all_of_pred_empty=%d\n", std::all_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::all_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    g_calls = 0;
+    g_want = 1;
+    const bool ay_hit = std::any_of(seq, seq + 4, watch);
+    const int ay_hit_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ay_front = std::any_of(seq, seq + 4, watch);
+    const int ay_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 7;
+    const bool ay_miss = std::any_of(seq, seq + 4, watch);
+    const int ay_miss_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ay_empty = std::any_of(seq, seq, watch);
+    const int ay_empty_calls = g_calls;
+    g_calls = 0;
+    g_want = 2;
+    const bool ay_tie = std::any_of(ties, ties + 2, watch);
+    const int ay_tie_calls = g_calls;
+    std::printf("any_of_hit=%d any_of_hit_calls=%d\n", ay_hit ? 1 : 0, ay_hit_calls);
+    std::printf("any_of_front=%d any_of_front_calls=%d\n", ay_front ? 1 : 0, ay_front_calls);
+    std::printf("any_of_miss=%d any_of_miss_calls=%d\n", ay_miss ? 1 : 0, ay_miss_calls);
+    std::printf("any_of_empty=%d any_of_empty_calls=%d\n", ay_empty ? 1 : 0, ay_empty_calls);
+    std::printf("any_of_tie=%d any_of_tie_calls=%d\n", ay_tie ? 1 : 0, ay_tie_calls);
+    g_calls = 0;
+    g_want = 8;
+    const bool ay_one = std::any_of(one, one + 1, watch);
+    const int ay_one_calls = g_calls;
+    g_calls = 0;
+    g_want = 0;
+    const bool ay_one_miss = std::any_of(one, one + 1, watch);
+    std::printf("any_of_one=%d\n", (ay_one && ay_one_calls == 1 && !ay_one_miss && g_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    g_want = 1;
+    const bool ay_null = std::any_of(zn, zn, watch);
+    std::printf("any_of_null=%d any_of_null_calls=%d\n", ay_null ? 1 : 0, g_calls);
+    std::printf("any_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("any_of_eq=%d any_of_eq_empty=%d\n", std::any_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::any_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("any_of_nodef=%d any_of_nodef_empty=%d\n", std::any_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::any_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("any_of_pred=%d any_of_pred_empty=%d\n", std::any_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::any_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    g_calls = 0;
+    g_want = 7;
+    const bool no_miss = std::none_of(seq, seq + 4, watch);
+    const int no_miss_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool no_front = std::none_of(seq, seq + 4, watch);
+    const int no_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 1;
+    const bool no_mid = std::none_of(seq, seq + 4, watch);
+    const int no_mid_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool no_empty = std::none_of(seq, seq, watch);
+    const int no_empty_calls = g_calls;
+    std::printf("none_of_miss=%d none_of_miss_calls=%d\n", no_miss ? 1 : 0, no_miss_calls);
+    std::printf("none_of_front=%d none_of_front_calls=%d\n", no_front ? 1 : 0, no_front_calls);
+    std::printf("none_of_mid=%d none_of_mid_calls=%d\n", no_mid ? 1 : 0, no_mid_calls);
+    std::printf("none_of_empty=%d none_of_empty_calls=%d\n", no_empty ? 1 : 0, no_empty_calls);
+    g_calls = 0;
+    g_want = 0;
+    const bool no_one = std::none_of(one, one + 1, watch);
+    const int no_one_calls = g_calls;
+    g_calls = 0;
+    g_want = 8;
+    const bool no_one_hit = std::none_of(one, one + 1, watch);
+    std::printf("none_of_one=%d\n", (no_one && no_one_calls == 1 && !no_one_hit && g_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    g_want = 1;
+    const bool no_null = std::none_of(zn, zn, watch);
+    std::printf("none_of_null=%d none_of_null_calls=%d\n", no_null ? 1 : 0, g_calls);
+    std::printf("none_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("none_of_eq=%d none_of_eq_empty=%d\n", std::none_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::none_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("none_of_nodef=%d none_of_nodef_empty=%d\n", std::none_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::none_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("none_of_pred=%d none_of_pred_empty=%d\n", std::none_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::none_of(preds, preds, pred_only_is_one) ? 1 : 0);
     return 0;
 }
