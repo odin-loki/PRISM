@@ -140,6 +140,30 @@ static void empty6() {
     std::printf("e6 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
+static void rank7() {
+    int g[40320];
+    for (int i = 0; i < 40320; ++i) g[i] = i + 1;
+    std::mdspan<int, 7> m(g, 2, 3, 4, 5, 6, 7, 8);
+    std::printf("r7 %zu %zu %zu %zu %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2),
+                m.extent(3), m.extent(4), m.extent(5), m.extent(6), m(0, 0, 0, 0, 0, 0, 0), m(1, 2, 3, 4, 5, 6, 7));
+}
+
+// The other six extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero7() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, 7> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+                          static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+                          static_cast<std::size_t>(0));
+    std::printf("z7 %zu\n", m.size());
+}
+
+static void empty7() {
+    std::mdspan<int, 7> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0);
+    std::printf("e7 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
 static int oob() {
     int a[4] = {1, 2, 3, 4};
     std::mdspan<int> m(a, 4);
@@ -257,6 +281,33 @@ static int ovf6() {
     return static_cast<int>(m.size());
 }
 
+// which 0/1/2/3/4/5/6 is one past extent 0/1/2/3/4/5/6. The other indices are in range.
+static int oob7(int which) {
+    int g[40320] = {};
+    std::mdspan<int, 7> m(g, 2, 3, 4, 5, 6, 7, 8);
+    if (which == 0) return m(2, 0, 0, 0, 0, 0, 0);
+    if (which == 1) return m(0, 3, 0, 0, 0, 0, 0);
+    if (which == 2) return m(0, 0, 4, 0, 0, 0, 0);
+    if (which == 3) return m(0, 0, 0, 5, 0, 0, 0);
+    if (which == 4) return m(0, 0, 0, 0, 6, 0, 0);
+    if (which == 5) return m(0, 0, 0, 0, 0, 7, 0);
+    return m(0, 0, 0, 0, 0, 0, 8);
+}
+
+static int null7() {
+    std::mdspan<int, 7> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf7() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, 7> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+                          static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+                          static_cast<std::size_t>(2));
+    return static_cast<int>(m.size());
+}
+
 int main(int argc, char** argv) {
     const std::string arg = argc > 1 ? argv[1] : "";
     if (arg == "oob") return oob();
@@ -289,6 +340,15 @@ int main(int argc, char** argv) {
     if (arg == "oob6n") return oob6(5);
     if (arg == "null6") return null6();
     if (arg == "ovf6") return ovf6();
+    if (arg == "oob7") return oob7(0);
+    if (arg == "oob7j") return oob7(1);
+    if (arg == "oob7k") return oob7(2);
+    if (arg == "oob7l") return oob7(3);
+    if (arg == "oob7m") return oob7(4);
+    if (arg == "oob7n") return oob7(5);
+    if (arg == "oob7p") return oob7(6);
+    if (arg == "null7") return null7();
+    if (arg == "ovf7") return ovf7();
     in_range();
     not_own();
     empty();
@@ -305,5 +365,8 @@ int main(int argc, char** argv) {
     rank6();
     zero6();
     empty6();
+    rank7();
+    zero7();
+    empty7();
     return 0;
 }

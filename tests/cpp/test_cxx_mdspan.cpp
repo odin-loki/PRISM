@@ -216,7 +216,7 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("submdspan(") == std::string::npos);
     CHECK(src.find("class mdarray") == std::string::npos);
     CHECK(src.find("template <typename _Tp, typename _Extents") == std::string::npos);
-    // Ranks 1, 2, 3, 4, 5, and 6. Any other rank stays the incomplete primary.
+    // Ranks 1, 2, 3, 4, 5, 6, and 7. Any other rank stays the incomplete primary.
     CHECK(src.find("class mdspan;") != std::string::npos);
     CHECK(src.find("class mdspan {") == std::string::npos);
     CHECK(src.find("class mdspan<_Tp, 1>") != std::string::npos);
@@ -225,15 +225,16 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("class mdspan<_Tp, 4>") != std::string::npos);
     CHECK(src.find("class mdspan<_Tp, 5>") != std::string::npos);
     CHECK(src.find("class mdspan<_Tp, 6>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 7>") == std::string::npos);
-    CHECK(count_of(src, "~mdspan() = default") == 6);
+    CHECK(src.find("class mdspan<_Tp, 7>") != std::string::npos);
+    CHECK(src.find("class mdspan<_Tp, 8>") == std::string::npos);
+    CHECK(count_of(src, "~mdspan() = default") == 7);
     // The class name in the header comment is unquoted. The checks are quoted.
-    CHECK(count_of(src, "\"PTR-NULL-DEREF\"") == 6);
+    CHECK(count_of(src, "\"PTR-NULL-DEREF\"") == 7);
     CHECK(src.find("null data pointer with a non-zero extent") != std::string::npos);
     // Rank 2's product is still a check, and the stored size is that product
-    // only when it fits. Rank 3, rank 4, rank 5, and rank 6 store _M_size from
-    // __prod after the fit check. None of them stores a wrapped multi-factor
-    // product.
+    // only when it fits. Rank 3, rank 4, rank 5, rank 6, and rank 7 store
+    // _M_size from __prod after the fit check. None of them stores a wrapped
+    // multi-factor product.
     CHECK(src.find("const bool __fits = __e1 == 0 || __e0 <= static_cast<size_type>(-1) / __e1;") !=
           std::string::npos);
     CHECK(src.find("if (__fits) _M_size = __e0 * __e1;") != std::string::npos);
@@ -243,18 +244,24 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
           std::string::npos);
     CHECK(src.find("const bool __zero = __e0 == 0 || __e1 == 0 || __e2 == 0 || __e3 == 0 || __e4 == 0 || __e5 == 0;") !=
           std::string::npos);
-    CHECK(count_of(src, "if (__fits) _M_size = __prod;") == 4);
+    CHECK(src.find("const bool __zero = __e0 == 0 || __e1 == 0 || __e2 == 0 || __e3 == 0 || __e4 == 0 || __e5 == 0 || "
+                   "__e6 == 0;") != std::string::npos);
+    CHECK(count_of(src, "if (__fits) _M_size = __prod;") == 5);
     CHECK(src.find("_M_size = __e0 * __e1 * __e2") == std::string::npos);
     CHECK(src.find("_M_size = __e0 * __e1 * __e2 * __e3") == std::string::npos);
     CHECK(src.find("_M_size = __e0 * __e1 * __e2 * __e3 * __e4") == std::string::npos);
     CHECK(src.find("_M_size = __e0 * __e1 * __e2 * __e3 * __e4 * __e5") == std::string::npos);
-    CHECK(count_of(src, "std::mdspan extents product overflows") == 5);
+    CHECK(src.find("_M_size = __e0 * __e1 * __e2 * __e3 * __e4 * __e5 * __e6") == std::string::npos);
+    CHECK(count_of(src, "std::mdspan extents product overflows") == 6);
     CHECK(src.find("__i < _M_e0 && __j < _M_e1,") != std::string::npos);
     CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2,") != std::string::npos);
     CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3,") != std::string::npos);
     CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3 && __m < _M_e4,") != std::string::npos);
     CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3 && __m < _M_e4 && __n < _M_e5,") !=
           std::string::npos);
+    CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3 && __m < _M_e4 && __n < _M_e5 &&") !=
+          std::string::npos);
+    CHECK(src.find("__p < _M_e6,") != std::string::npos);
     CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 3>;") != std::string::npos);
     CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 4>;") !=
           std::string::npos);
@@ -262,9 +269,11 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
           std::string::npos);
     CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> "
                    "mdspan<_Tp, 6>;") != std::string::npos);
+    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, "
+                   "std::size_t) -> mdspan<_Tp, 7>;") != std::string::npos);
 
     std::size_t from = 0;
-    for (int n = 0; n < 6; ++n) {
+    for (int n = 0; n < 7; ++n) {
         const auto op = src.find("reference operator()", from);
         REQUIRE(op != std::string::npos);
         const auto ret = src.find("return _M_ptr[", op);
@@ -287,6 +296,7 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("return _M_e3;") != std::string::npos);
     CHECK(src.find("return _M_e4;") != std::string::npos);
     CHECK(src.find("return _M_e5;") != std::string::npos);
+    CHECK(src.find("return _M_e6;") != std::string::npos);
     CHECK(src.find("__i * _M_e1 * _M_e2 * _M_e3 + __j * _M_e2 * _M_e3 + __k * _M_e3 + __l") != std::string::npos);
     CHECK(src.find("__i * _M_e1 * _M_e2 * _M_e3 * _M_e4 + __j * _M_e2 * _M_e3 * _M_e4 + __k * _M_e3 * _M_e4 +") !=
           std::string::npos);
@@ -294,6 +304,10 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("__i * _M_e1 * _M_e2 * _M_e3 * _M_e4 * _M_e5 + __j * _M_e2 * _M_e3 * _M_e4 * _M_e5 +") !=
           std::string::npos);
     CHECK(src.find("__k * _M_e3 * _M_e4 * _M_e5 + __l * _M_e4 * _M_e5 + __m * _M_e5 + __n") != std::string::npos);
+    CHECK(src.find("__i * _M_e1 * _M_e2 * _M_e3 * _M_e4 * _M_e5 * _M_e6 +") != std::string::npos);
+    CHECK(src.find("__j * _M_e2 * _M_e3 * _M_e4 * _M_e5 * _M_e6 +") != std::string::npos);
+    CHECK(src.find("__k * _M_e3 * _M_e4 * _M_e5 * _M_e6 + __l * _M_e4 * _M_e5 * _M_e6 +") != std::string::npos);
+    CHECK(src.find("__m * _M_e5 * _M_e6 + __n * _M_e6 + __p") != std::string::npos);
 }
 
 TEST_CASE("cxx mdspan model: in-range call reads the real element and the view does not own") {
@@ -352,6 +366,12 @@ TEST_CASE("cxx mdspan model: in-range call reads the real element and the view d
     CHECK(ok.out.find("r6 5040 2 3 4 5 6 7 1 5040\n") != std::string::npos);
     CHECK(ok.out.find("z6 0\n") != std::string::npos);
     CHECK(ok.out.find("e6 0 1\n") != std::string::npos);
+    // Rank 7: 2*3*4*5*6*7*8 = 40320, (1, 2, 3, 4, 5, 6, 7) is the last real
+    // element. A zero extent keeps size() at 0 even when the other six
+    // would overflow. All-zero extents may be a null pointer.
+    CHECK(ok.out.find("r7 40320 2 3 4 5 6 7 8 1 40320\n") != std::string::npos);
+    CHECK(ok.out.find("z7 0\n") != std::string::npos);
+    CHECK(ok.out.find("e7 0 1\n") != std::string::npos);
 
     const Proc oob = run_proc({exe.string(), "oob"});
     REQUIRE(oob.ran);
@@ -458,22 +478,42 @@ TEST_CASE("cxx mdspan model: in-range call reads the real element and the view d
     CHECK(ovf6.err.find("CHECK MEM-OOB-READ") != std::string::npos);
     CHECK(ovf6.err.find("extents product overflows") != std::string::npos);
 
-    // Rank other than 1, 2, 3, 4, 5, and 6 is the incomplete primary template.
-    const fs::path rank7 = c.tmp / "rank7.cpp";
-    std::ofstream(rank7) << "#include <mdspan>\n"
-                            "int rank7() {\n"
+    for (const char* mode : {"oob7", "oob7j", "oob7k", "oob7l", "oob7m", "oob7n", "oob7p"}) {
+        const Proc past = run_proc({exe.string(), mode});
+        REQUIRE(past.ran);
+        CHECK(past.rc != 0);
+        CHECK(past.err.find("CHECK MEM-OOB-READ") != std::string::npos);
+        CHECK(past.err.find("outside the extents") != std::string::npos);
+    }
+
+    const Proc null7 = run_proc({exe.string(), "null7"});
+    REQUIRE(null7.ran);
+    CHECK(null7.rc != 0);
+    CHECK(null7.err.find("CHECK PTR-NULL-DEREF") != std::string::npos);
+    CHECK(null7.err.find("non-zero extent") != std::string::npos);
+
+    const Proc ovf7 = run_proc({exe.string(), "ovf7"});
+    REQUIRE(ovf7.ran);
+    CHECK(ovf7.rc != 0);
+    CHECK(ovf7.err.find("CHECK MEM-OOB-READ") != std::string::npos);
+    CHECK(ovf7.err.find("extents product overflows") != std::string::npos);
+
+    // Rank other than 1, 2, 3, 4, 5, 6, and 7 is the incomplete primary template.
+    const fs::path rank8 = c.tmp / "rank8.cpp";
+    std::ofstream(rank8) << "#include <mdspan>\n"
+                            "int rank8() {\n"
                             "  int a[1] = {1};\n"
-                            "  std::mdspan<int, 7> m(a, 1, 1, 1, 1, 1, 1, 1);\n"
-                            "  return m(0, 0, 0, 0, 0, 0, 0);\n"
+                            "  std::mdspan<int, 8> m(a, 1, 1, 1, 1, 1, 1, 1, 1);\n"
+                            "  return m(0, 0, 0, 0, 0, 0, 0, 0);\n"
                             "}\n";
     std::vector<std::string> bad{c.cxx};
     bad.insert(bad.end(), flags().begin(), flags().end());
     bad.push_back("-isystem");
     bad.push_back((repo() / "src" / "prism" / "pir" / "models" / "cxx").string());
-    bad.push_back(rank7.string());
+    bad.push_back(rank8.string());
     bad.push_back("-c");
     bad.push_back("-o");
-    bad.push_back((c.tmp / "rank7.o").string());
+    bad.push_back((c.tmp / "rank8.o").string());
     CHECK_FALSE(run_ok(bad));
 
     const fs::path standard_sig = c.tmp / "standard_sig.cpp";
