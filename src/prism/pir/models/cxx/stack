@@ -17,10 +17,10 @@
 // destroy or free and before a node is read. pop is void: that path does
 // not invent an element and does not return T{}. It is not PROVED and not
 // CLEAN.
-// empty top() is still __glibcxx_requires_nonempty(), i.e.
-// __glibcxx_assert(!this->empty()). The condition text does not mention
-// size(), so PIR classifies it FUNC-CONTRACT. An empty top does not return
-// a stand-in zero.
+// empty top() is __prism_check with class FUNC-CONTRACT and the message
+// "std::stack::top on an empty stack", then __builtin_trap, before any
+// node is loaded. That path does not invent an element and does not return
+// T{}. It is not PROVED and not CLEAN.
 //
 // Element order matches libstdc++ 13's deque adaptor: construction and
 // destruction run bottom to top, copy-assign assigns the common prefix then
@@ -206,12 +206,19 @@ public:
     [[nodiscard]] bool empty() const { return _M_top == nullptr; }
     [[nodiscard]] size_type size() const { return _M_size; }
 
+    // Empty: FUNC-CONTRACT, then trap, before the node is loaded. empty()
+    // only compares _M_top with nullptr. This path does not invent an
+    // element and does not return T{}. This is not PROVED and not CLEAN.
     [[nodiscard]] reference top() {
-        __glibcxx_requires_nonempty();
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::stack::top on an empty stack");
+        if (this->empty()) __builtin_trap();
         return *_M_top->_M_valptr();
     }
     [[nodiscard]] const_reference top() const {
-        __glibcxx_requires_nonempty();
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::stack::top on an empty stack");
+        if (this->empty()) __builtin_trap();
         return *_M_top->_M_valptr();
     }
 
