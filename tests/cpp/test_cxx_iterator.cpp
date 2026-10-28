@@ -15,8 +15,14 @@
 // std::prev is the pointer overloads only. prev(p) returns p - 1.
 // prev(p, 0) returns p and does not subtract. prev(p, n) for n > 0
 // returns p - n. n < 0 is __prism_check then __builtin_trap and does not
-// form p - n. advance and reverse_iterator stay omitted. This is not a
-// proof that the pointer addresses an array.
+// form p - n. This is not a proof that the pointer addresses an array.
+//
+// std::advance is the pointer overload only. advance(p, 0) leaves p
+// unchanged and does not add or subtract. advance(p, n) for n > 0 sets p
+// to p + n. advance(p, n) for n < 0 sets p to p + n, a backward step, and
+// does not trap. It does not call next or prev. reverse_iterator stays
+// omitted. This is not PROVED and not CLEAN. This is not a proof that the
+// pointer addresses an array.
 //
 // This case reads the header as text. It does not `#include` the model:
 // doctest already pulls in the platform library, and defining
@@ -110,6 +116,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(src.find("#include <string>") == std::string::npos);
     CHECK(src.find("#include <algorithm>") == std::string::npos);
     CHECK(src.find("#include <ranges>") == std::string::npos);
+    CHECK(src.find("#include <cmath>") == std::string::npos);
     CHECK(src.find("/*") == std::string::npos);
     CHECK(src.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
     CHECK(count_occ(src, "extern \"C\" void __prism_check(int, const char*, const char*);") == 1);
@@ -128,6 +135,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const std::string next_n_sig = "constexpr _Tp* next(_Tp* __p, std::ptrdiff_t __n) noexcept";
     const std::string prev_sig = "constexpr _Tp* prev(_Tp* __p) noexcept";
     const std::string prev_n_sig = "constexpr _Tp* prev(_Tp* __p, std::ptrdiff_t __n) noexcept";
+    const std::string advance_sig = "constexpr void advance(_Tp*& __p, std::ptrdiff_t __n) noexcept";
     CHECK(count_occ(code, begin_sig) == 1);
     CHECK(count_occ(code, end_sig) == 1);
     CHECK(count_occ(code, zero_begin_sig) == 1);
@@ -137,20 +145,23 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(count_occ(code, next_n_sig) == 1);
     CHECK(count_occ(code, prev_sig) == 1);
     CHECK(count_occ(code, prev_n_sig) == 1);
+    CHECK(count_occ(code, advance_sig) == 1);
     CHECK(count_occ(code, "begin(") == 2);
     CHECK(count_occ(code, "end(") == 2);
     CHECK(count_occ(code, "distance(") == 1);
     CHECK(count_occ(code, "next(") == 2);
     CHECK(count_occ(code, "prev(") == 2);
+    CHECK(count_occ(code, "advance(") == 1);
     CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 2);
     // begin and end return _Tp*. distance and _Prism_pointer_diff take four
     // _Tp* parameters. The two next overloads add two _Tp* returns and two
-    // _Tp* parameters. The two prev overloads add two more of each. The
-    // check declaration adds two const char*. No other star: these
-    // functions do not dereference.
-    CHECK(count_occ(code, "*") == 16);
+    // _Tp* parameters. The two prev overloads add two more of each.
+    // advance takes one _Tp*&. The check declaration adds two const char*.
+    // No other star: these functions do not dereference.
+    CHECK(count_occ(code, "*") == 17);
     CHECK(code.find("reverse_iterator") == std::string::npos);
-    CHECK(code.find("advance") == std::string::npos);
+    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 2);
+    CHECK(count_occ(src, "a backward step") == 2);
     CHECK(code.find("input_iterator_tag") == std::string::npos);
     CHECK(code.find("random_access_iterator_tag") == std::string::npos);
     CHECK(code.find("_Container") == std::string::npos);
@@ -296,4 +307,47 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(prev_n_body.find("return __p - 0") == std::string::npos);
     CHECK(prev_n_body.find("__prism_check") == std::string::npos);
     CHECK(prev_n_body.find('*') == std::string::npos);
+
+    const auto advance_body = body_of(code, advance_sig);
+    REQUIRE_FALSE(advance_body.empty());
+    const auto adv_zero = advance_body.find("__n == 0");
+    const auto adv_ret = advance_body.find("return;");
+    const auto adv_pos = advance_body.find("__n > 0");
+    const auto adv_neg = advance_body.find("__n < 0");
+    const auto adv_add = advance_body.find("__p = __p + __n;");
+    REQUIRE(adv_zero != std::string::npos);
+    REQUIRE(adv_ret != std::string::npos);
+    REQUIRE(adv_pos != std::string::npos);
+    REQUIRE(adv_neg != std::string::npos);
+    REQUIRE(adv_add != std::string::npos);
+    const auto adv_add2 = advance_body.find("__p = __p + __n;", adv_add + 1);
+    REQUIRE(adv_add2 != std::string::npos);
+    CHECK(adv_zero < adv_ret);
+    CHECK(adv_ret < adv_pos);
+    CHECK(adv_pos < adv_add);
+    CHECK(adv_add < adv_neg);
+    CHECK(adv_neg < adv_add2);
+    CHECK(count_occ(advance_body, "__p = __p + __n;") == 2);
+    CHECK(count_occ(advance_body, "+") == 2);
+    CHECK(count_occ(advance_body, "-") == 0);
+    const auto zero_slice = advance_body.substr(adv_zero, adv_pos - adv_zero);
+    CHECK(zero_slice.find("return;") != std::string::npos);
+    CHECK(zero_slice.find('+') == std::string::npos);
+    CHECK(zero_slice.find('-') == std::string::npos);
+    const auto pos_slice = advance_body.substr(adv_pos, adv_neg - adv_pos);
+    CHECK(count_occ(pos_slice, "__p = __p + __n;") == 1);
+    CHECK(count_occ(pos_slice, "+") == 1);
+    CHECK(pos_slice.find('-') == std::string::npos);
+    const auto neg_slice = advance_body.substr(adv_neg);
+    CHECK(count_occ(neg_slice, "__p = __p + __n;") == 1);
+    CHECK(count_occ(neg_slice, "+") == 1);
+    CHECK(neg_slice.find('-') == std::string::npos);
+    CHECK(neg_slice.find("__prism_check") == std::string::npos);
+    CHECK(neg_slice.find("__builtin_trap") == std::string::npos);
+    CHECK(advance_body.find("next") == std::string::npos);
+    CHECK(advance_body.find("prev") == std::string::npos);
+    CHECK(advance_body.find("__prism_check") == std::string::npos);
+    CHECK(advance_body.find("__builtin_trap") == std::string::npos);
+    CHECK(advance_body.find('*') == std::string::npos);
+    CHECK(advance_body.find("return __p") == std::string::npos);
 }
