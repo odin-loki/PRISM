@@ -19,7 +19,11 @@
 // std::bit_and, std::bit_or, and std::bit_xor are function objects for one
 // type. The happy path uses the operators, so libstdc++ and the model
 // print the same lines. A result whose type is not the argument type is
-// not on this trace. bit_not stays the library object.
+// not on this trace.
+// std::bit_not is a function object for one type. The happy path uses ~,
+// so libstdc++ and the model print the same lines. A result whose type
+// is not the argument type is not on this trace. bool is not on this
+// trace.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
@@ -193,6 +197,16 @@ struct Bits {
 struct AndBits {
     int v;
     friend constexpr AndBits operator&(AndBits a, AndBits b) { return AndBits{a.v & b.v}; }
+};
+
+struct NotBits {
+    int v;
+    friend constexpr NotBits operator~(NotBits a) { return NotBits{~a.v}; }
+};
+
+struct NotOnly {
+    int v;
+    friend constexpr NotOnly operator~(NotOnly a) { return NotOnly{~a.v}; }
 };
 
 static void show() {
@@ -403,6 +417,12 @@ static void show() {
     static_assert(std::bit_or<Bits>{}(Bits{6}, Bits{3}).v == 7);
     static_assert(std::bit_xor<Bits>{}(Bits{6}, Bits{3}).v == 5);
     static_assert(std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v == 2);
+    static_assert(std::bit_not<int>{}(0) == -1);
+    static_assert(std::bit_not<int>{}(1) == -2);
+    static_assert(std::bit_not<int>{}(-1) == 0);
+    static_assert(std::bit_not<unsigned>{}(0u) == ~0u);
+    static_assert(std::bit_not<NotBits>{}(NotBits{6}).v == ~6);
+    static_assert(std::bit_not<NotOnly>{}(NotOnly{0}).v == ~0);
 
     std::plus<int> padd;
     std::plus<int> padd2 = padd;
@@ -467,6 +487,12 @@ static void show() {
                 std::bit_xor<Bits>{}(w6, w3).v);
     std::printf("bandonly %d\n", std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v);
     std::printf("bnot %d\n", std::bit_not<int>{}(0));
+    std::bit_not<int> bnotf;
+    std::bit_not<int> bnotf2 = bnotf;
+    std::printf("bnotc %d %d\n", bnotf(1), bnotf2(-1));
+    std::printf("unot %u\n", std::bit_not<unsigned>{}(0u));
+    std::printf("bnotobj %d\n", std::bit_not<NotBits>{}(NotBits{6}).v);
+    std::printf("bnotonly %d\n", std::bit_not<NotOnly>{}(NotOnly{0}).v);
 }
 
 int main(int argc, char** argv) {

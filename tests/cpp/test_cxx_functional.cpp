@@ -27,6 +27,9 @@
 // type argument. Each returns that operator. A type that does not provide
 // the operator fails the template. There is no stand-in integer and no
 // void specialization.
+// std::bit_not is a function object for one type argument. It returns the
+// ~ of its argument. A type that does not provide the operator fails the
+// template. There is no stand-in integer and no void specialization.
 
 #include <doctest/doctest.h>
 
@@ -435,7 +438,7 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(text.find("return __a || __b;") != std::string::npos);
     CHECK(text.find("return !__x;") != std::string::npos);
     CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const") == 5);
-    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __x) const") == 1);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __x) const") == 2);
     CHECK(text.find("requires requires { __a && __b; }") != std::string::npos);
     CHECK(text.find("requires requires { __a || __b; }") != std::string::npos);
     CHECK(text.find("requires requires { !__x; }") != std::string::npos);
@@ -477,6 +480,20 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(text.find("return static_cast<int>(__a | __b)") == std::string::npos);
     CHECK(text.find("return static_cast<int>(__a ^ __b)") == std::string::npos);
     CHECK(text.find("return 0;") == std::string::npos);
+
+    CHECK(count_occ(code, "struct bit_not") == 1);
+    CHECK(code.find("(*bit_not)") == std::string::npos);
+    CHECK(code.find("struct bit_not<void>") == std::string::npos);
+    CHECK(code.find("bit_not<>") == std::string::npos);
+    CHECK(code.find("bit_not<void>") == std::string::npos);
+    CHECK(text.find("return ~__x;") != std::string::npos);
+    CHECK(text.find("requires requires { ~__x; }") != std::string::npos);
+    CHECK(text.find("std::bit_not<> is not declared") != std::string::npos);
+    CHECK(text.find("A missing operator~ fails") != std::string::npos);
+    CHECK(code.find("#define bit_not _Prism_libstd_bit_not") != std::string::npos);
+    CHECK(code.find("#undef bit_not") != std::string::npos);
+    CHECK(text.find("return static_cast<_Tp>(~__x)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(~__x)") == std::string::npos);
 
     struct Arm {
         const char* check;
@@ -631,6 +648,10 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_bobj = false;
     bool saw_bandonly = false;
     bool saw_bnot = false;
+    bool saw_bnotc = false;
+    bool saw_unot = false;
+    bool saw_bnotobj = false;
+    bool saw_bnotonly = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -698,6 +719,10 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "bobj 2 7 5") saw_bobj = true;
         if (line == "bandonly 2") saw_bandonly = true;
         if (line == "bnot -1") saw_bnot = true;
+        if (line == "bnotc -2 0") saw_bnotc = true;
+        if (line == "unot 4294967295") saw_unot = true;
+        if (line == "bnotobj -7") saw_bnotobj = true;
+        if (line == "bnotonly -1") saw_bnotonly = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -770,6 +795,10 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_bobj);
     CHECK(saw_bandonly);
     CHECK(saw_bnot);
+    CHECK(saw_bnotc);
+    CHECK(saw_unot);
+    CHECK(saw_bnotobj);
+    CHECK(saw_bnotonly);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
@@ -1167,4 +1196,61 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string bit_or_missing_err;
     CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, false, &bit_or_missing_err));
     CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, true, &bit_or_missing_err));
+
+    const fs::path bnot_ok = c.tmp / "bnot_ok.cpp";
+    std::ofstream(bnot_ok) << "#include <functional>\n"
+                              "struct NotOnly {\n"
+                              "  int v;\n"
+                              "  friend NotOnly operator~(NotOnly a) { return NotOnly{~a.v}; }\n"
+                              "};\n"
+                              "struct NotBits {\n"
+                              "  int v;\n"
+                              "  friend NotBits operator~(NotBits a) { return NotBits{~a.v}; }\n"
+                              "};\n"
+                              "int use(int a, bool b, unsigned u, NotOnly x, NotBits p) {\n"
+                              "  return std::bit_not<int>{}(a)\n"
+                              "       + static_cast<int>(std::bit_not<bool>{}(b))\n"
+                              "       + static_cast<int>(std::bit_not<unsigned>{}(u))\n"
+                              "       + std::bit_not<NotOnly>{}(x).v\n"
+                              "       + std::bit_not<NotBits>{}(p).v\n"
+                              "       + std::bit_and<int>{}(a, 1);\n"
+                              "}\n";
+    std::string bnot_ok_err;
+    CHECK(syntax_only(c.cxx, bnot_ok, false, &bnot_ok_err));
+    CHECK(syntax_only(c.cxx, bnot_ok, true, &bnot_ok_err));
+
+    // The operator result is BitWord, not BitMask. libstdc++ returns BitMask, so .v fails there.
+    const fs::path bnot_word = c.tmp / "bnot_word.cpp";
+    std::ofstream(bnot_word) << "#include <functional>\n"
+                                "struct BitWord { int v; };\n"
+                                "struct BitMask {\n"
+                                "  int v;\n"
+                                "  friend BitWord operator~(BitMask a) { return BitWord{~a.v}; }\n"
+                                "};\n"
+                                "int use(BitMask a) {\n"
+                                "  return std::bit_not<BitMask>{}(a).v;\n"
+                                "}\n";
+    std::string bnot_word_err;
+    CHECK_FALSE(syntax_only(c.cxx, bnot_word, false, &bnot_word_err));
+    CHECK(syntax_only(c.cxx, bnot_word, true, &bnot_word_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path bnot_tr = c.tmp / "bnot_tr.cpp";
+    std::ofstream(bnot_tr) << "#include <functional>\n"
+                              "int use(int a) {\n"
+                              "  return std::bit_not<>{}(a);\n"
+                              "}\n";
+    std::string bnot_tr_err;
+    CHECK(syntax_only(c.cxx, bnot_tr, false, &bnot_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, bnot_tr, true, &bnot_tr_err));
+
+    const fs::path bnot_none = c.tmp / "bnot_none.cpp";
+    std::ofstream(bnot_none) << "#include <functional>\n"
+                                "struct NoTilde { int v; };\n"
+                                "int use(NoTilde a) {\n"
+                                "  return std::bit_not<NoTilde>{}(a).v;\n"
+                                "}\n";
+    std::string bnot_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, bnot_none, false, &bnot_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, bnot_none, true, &bnot_none_err));
 }
