@@ -1,11 +1,14 @@
-// The <ranges> model is a partial stand-in: size, ssize, and empty. An array
-// size is N. An lvalue with a const size() member returns that size().
-// ssize converts that value to ptrdiff_t, and a value that does not fit is
-// a FUNC-CONTRACT check then a trap, not a wrapped negative ptrdiff_t.
-// empty of T(&)[N] is true only when N == 0, and that body does not load
-// an element. N == 0 is a second overload because T(&)[0] is rejected.
-// An lvalue with a const empty() member returns that empty().
-// A pointer has no overload, so the call fails to compile.
+// The <ranges> model is a partial stand-in: size, ssize, empty, begin, and
+// end. An array size is N. An lvalue with a const size() member returns
+// that size(). ssize converts that value to ptrdiff_t, and a value that
+// does not fit is a FUNC-CONTRACT check then a trap, not a wrapped
+// negative ptrdiff_t. empty of T(&)[N] is true only when N == 0, and that
+// body does not load an element. N == 0 is a second overload because
+// T(&)[0] is rejected. An lvalue with a const empty() member returns that
+// empty(). begin of T(&)[N] is a pointer to the first element and does not
+// load it. end is one past the last and does not load it. N == 0 returns
+// the same pointer from both. A pointer has no overload, so the call fails
+// to compile. This is not a proof that an iterator stays in range.
 //
 // tests/cxx_models/ranges_trace.cpp is compiled twice when clang++ is
 // usable: once against libstdc++ and once with this header first.
@@ -232,7 +235,7 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
 
 }  // namespace
 
-TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it does not fit") {
+TEST_CASE("cxx ranges model: size, empty, begin, and end; ssize traps when it does not fit") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -245,6 +248,7 @@ TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it do
     CHECK(src.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
     CHECK(src.find("This header is not a proof that a range is sorted or that a pointer has a length.") !=
           std::string::npos);
+    CHECK(src.find("This is not a proof that an iterator stays in range.") != std::string::npos);
     CHECK(src.find("constexpr std::size_t size(_Tp (&)[_Nm]) noexcept") != std::string::npos);
     CHECK(src.find("return _Nm;") != std::string::npos);
     CHECK(src.find("size(_Tp& __t)") != std::string::npos);
@@ -254,12 +258,16 @@ TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it do
     CHECK(src.find("_Tp&&") == std::string::npos);
     CHECK(src.find("size(_Tp*") == std::string::npos);
     CHECK(src.find("ssize(_Tp*") == std::string::npos);
-    CHECK(src.find("_Tp*") == std::string::npos);
+    CHECK(src.find("empty(_Tp*") == std::string::npos);
+    CHECK(src.find("begin(_Tp*") == std::string::npos);
+    CHECK(src.find("end(_Tp*") == std::string::npos);
+    CHECK(src.find("(_Tp*") == std::string::npos);
+    CHECK(count_of(src, "_Tp*") == 2);
     for (const char* inc : {"memory", "vector", "string", "iterator", "algorithm", "span"}) {
         CAPTURE(inc);
         CHECK(src.find(std::string("#include <") + inc + ">") == std::string::npos);
     }
-    for (const char* name : {"begin(", "end(", "sort(", "find(", "view_interface", "namespace views"}) {
+    for (const char* name : {"sort(", "find(", "view_interface", "namespace views"}) {
         CAPTURE(name);
         CHECK(src.find(name) == std::string::npos);
     }
@@ -299,7 +307,7 @@ TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it do
     CHECK(zero_empty.find('[') == std::string::npos);
     CHECK(zero_empty.find('.') == std::string::npos);
     CHECK(zero_empty.find("__t") == std::string::npos);
-    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 1);
+    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 3);
 
     const auto mem_empty = body_of(src, "empty(_Tp& __t)");
     REQUIRE_FALSE(mem_empty.empty());
@@ -310,6 +318,44 @@ TEST_CASE("cxx ranges model: size is N or a const size(), ssize traps when it do
     CHECK(count_of(src, "constexpr bool empty(_Arr&) noexcept") == 1);
     CHECK(count_of(src, "empty(_Tp& __t)") == 1);
     CHECK(src.find("empty(_Tp*") == std::string::npos);
+
+    const auto arr_begin = body_of(src, "constexpr _Tp* begin(_Tp (&__a)[_Nm]) noexcept");
+    REQUIRE_FALSE(arr_begin.empty());
+    CHECK(arr_begin.find("return __a;") != std::string::npos);
+    CHECK(arr_begin.find('*') == std::string::npos);
+    CHECK(arr_begin.find('[') == std::string::npos);
+    CHECK(arr_begin.find('.') == std::string::npos);
+    CHECK(arr_begin.find('+') == std::string::npos);
+
+    const auto arr_end = body_of(src, "constexpr _Tp* end(_Tp (&__a)[_Nm]) noexcept");
+    REQUIRE_FALSE(arr_end.empty());
+    CHECK(arr_end.find("return __a + _Nm;") != std::string::npos);
+    CHECK(arr_end.find('*') == std::string::npos);
+    CHECK(arr_end.find('[') == std::string::npos);
+    CHECK(arr_end.find('.') == std::string::npos);
+
+    const auto zero_begin = body_of(src, "constexpr auto begin(_Arr& __a) noexcept");
+    REQUIRE_FALSE(zero_begin.empty());
+    CHECK(zero_begin.find("return __a;") != std::string::npos);
+    CHECK(zero_begin.find('*') == std::string::npos);
+    CHECK(zero_begin.find('[') == std::string::npos);
+    CHECK(zero_begin.find('.') == std::string::npos);
+    CHECK(zero_begin.find('+') == std::string::npos);
+
+    const auto zero_end = body_of(src, "constexpr auto end(_Arr& __a) noexcept");
+    REQUIRE_FALSE(zero_end.empty());
+    CHECK(zero_end.find("return __a + 0;") != std::string::npos);
+    CHECK(zero_end.find('*') == std::string::npos);
+    CHECK(zero_end.find('[') == std::string::npos);
+    CHECK(zero_end.find('.') == std::string::npos);
+
+    CHECK(count_of(src, "constexpr _Tp* begin(_Tp (&__a)[_Nm]) noexcept") == 1);
+    CHECK(count_of(src, "constexpr _Tp* end(_Tp (&__a)[_Nm]) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto begin(_Arr& __a) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto end(_Arr& __a) noexcept") == 1);
+    CHECK(count_of(src, "return __a;") == 2);
+    CHECK(count_of(src, "return __a + _Nm;") == 1);
+    CHECK(count_of(src, "return __a + 0;") == 1);
 }
 
 TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
@@ -329,7 +375,7 @@ TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
     if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
-TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer does not compile") {
+TEST_CASE("cxx ranges model: array size, empty, begin, and end match libstdc++, a pointer does not compile") {
     auto& c = ctx();
     if (!c.ok) return;
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -366,6 +412,17 @@ TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer do
     CHECK(has_line(b, "ecflag 1"));
     CHECK(has_line(b, "eprefer 1"));
     CHECK(has_line(b, "eptrs 0"));
+    CHECK(has_line(b, "bdist 4"));
+    CHECK(has_line(b, "bfirst 9"));
+    CHECK(has_line(b, "blast 6"));
+    CHECK(has_line(b, "zsame 1"));
+    CHECK(has_line(b, "cbdist 4"));
+    CHECK(has_line(b, "cbfirst 2"));
+    CHECK(has_line(b, "cblast 5"));
+    CHECK(has_line(b, "bpdist 2"));
+    CHECK(has_line(b, "bpsame 1"));
+    CHECK(has_line(b, "isame 1"));
+    CHECK(has_line(b, "osame 1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "huge"}, &out, &err));
@@ -428,13 +485,37 @@ TEST_CASE("cxx ranges model: array and member size match libstdc++, a pointer do
 
     const char* begin_src =
         "#include <ranges>\n"
-        "int* f(int (&a)[4]) { return std::ranges::begin(a); }\n";
-    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_begin", begin_src, true));
+        "int* f(int (&a)[4]) { return std::ranges::begin(a); }\n"
+        "int* g(int (&a)[4]) { return std::ranges::end(a); }\n"
+        "const int* h(const int (&a)[4]) { return std::ranges::begin(a); }\n"
+        "const int* i(const int (&a)[4]) { return std::ranges::end(a); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_begin", begin_src, true));
 
-    const char* end_src =
+    const char* begin_ptr_src =
         "#include <ranges>\n"
-        "int* f(int (&a)[4]) { return std::ranges::end(a); }\n";
-    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_end", end_src, true));
+        "int* f(int* p) { return std::ranges::begin(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_begin_ptr", begin_ptr_src, true));
+
+    const char* end_ptr_src =
+        "#include <ranges>\n"
+        "int* f(int* p) { return std::ranges::end(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_end_ptr", end_ptr_src, true));
+
+    const char* begin_pbound_src =
+        "#include <ranges>\n"
+        "int* f(int (*p)[4]) { return std::ranges::begin(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_begin_pbound", begin_pbound_src, true));
+
+    const char* end_pbound_src =
+        "#include <ranges>\n"
+        "int* f(int (*p)[4]) { return std::ranges::end(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_end_pbound", end_pbound_src, true));
+
+    const char* begin_mem_src =
+        "#include <ranges>\n"
+        "struct Has { int* begin() const; int* end() const; };\n"
+        "int* f(Has& h) { return std::ranges::begin(h); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_begin_mem", begin_mem_src, true));
 
     const char* sort_src =
         "#include <ranges>\n"

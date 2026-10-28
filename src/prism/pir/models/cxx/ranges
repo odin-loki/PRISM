@@ -4,7 +4,8 @@
 // that name would make the include fail with EISDIR and every such unit
 // would fall back to libstdc++.
 //
-// std::ranges::size, std::ranges::ssize, and std::ranges::empty.
+// std::ranges::size, std::ranges::ssize, std::ranges::empty,
+// std::ranges::begin, and std::ranges::end.
 // size of a T(&)[N] is N. size of an lvalue with a const size() member
 // is that size(). There is no overload for a pointer. A pointer argument
 // fails to compile, and pir falls back to libstdc++. This stand-in does
@@ -22,11 +23,20 @@
 // empty of an lvalue with a const empty() member returns that empty().
 // There is no pointer overload. A pointer is not a range.
 //
-// begin, end, sort, find, and views are not declared. A use fails to
-// compile against this header and pir falls back. They are not stubbed.
-// vector, memory, string, iterator, algorithm, and span are not included.
+// begin of a T(&)[N] is a pointer to the first element. The return is
+// array-to-pointer decay, not a load. end is a pointer one past the last.
+// The addition is the bound, and it does not load an element. N == 0 does
+// not match that parameter, for the same reason as empty. That array is a
+// second overload: a reference whose size is 0. begin and end then return
+// the same pointer. Neither loads it. A pointer argument's size is not 0,
+// so it does not match. There is no pointer overload.
 //
-// This header is not a proof that a range is sorted or that a pointer has a length.
+// sort, find, and views are not declared. A use fails to compile against
+// this header and pir falls back. They are not stubbed. vector, memory,
+// string, iterator, algorithm, and span are not included.
+//
+// This is not a proof that an iterator stays in range. This header is not
+// a proof that a range is sorted or that a pointer has a length.
 #ifndef _GLIBCXX_RANGES
 #define _GLIBCXX_RANGES 1
 
@@ -108,6 +118,39 @@ template <typename _Tp>
 constexpr auto empty(_Tp& __t) noexcept(noexcept(static_cast<const _Tp&>(__t).empty()))
     -> decltype(static_cast<const _Tp&>(__t).empty()) {
     return static_cast<const _Tp&>(__t).empty();
+}
+
+// Pointer to the first element. The bound is at least 1: N == 0 does not
+// match this parameter. The return is array-to-pointer decay, not a load.
+template <typename _Tp, std::size_t _Nm>
+constexpr _Tp* begin(_Tp (&__a)[_Nm]) noexcept {
+    return __a;
+}
+
+// One past the last element. The addition is the bound. N == 0 does not
+// match this parameter. The addition does not load an element.
+template <typename _Tp, std::size_t _Nm>
+constexpr _Tp* end(_Tp (&__a)[_Nm]) noexcept {
+    return __a + _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. A pointer argument has a non-zero size, so it does
+// not match. When T(&)[N] is viable it is the more specialized overload,
+// so a bound other than 0 is not taken here.
+template <typename _Arr>
+constexpr auto begin(_Arr& __a) noexcept -> decltype(__a + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __a;
+}
+
+// Same pointer as begin. Adding zero does not load an element.
+template <typename _Arr>
+constexpr auto end(_Arr& __a) noexcept -> decltype(__a + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __a + 0;
 }
 
 }  // namespace ranges

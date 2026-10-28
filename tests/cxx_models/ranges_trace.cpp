@@ -1,11 +1,16 @@
-// Trace of std::ranges::size, std::ranges::ssize, and std::ranges::empty.
-// `#include <ranges>` is the model when its directory is first on the include
-// path, and libstdc++ otherwise. An array's size is N. An lvalue with a
-// const size() member returns that size(). ssize of a value that fits is
-// that value as ptrdiff_t. argv "huge" asks ssize of a size that does not
-// fit. The model must __prism_check and must not print a wrapped negative
-// value. empty of T(&)[N] is true only when N == 0, and it does not load an
-// element. An lvalue with a const empty() member returns that empty().
+// Trace of std::ranges::size, std::ranges::ssize, std::ranges::empty,
+// std::ranges::begin, and std::ranges::end. `#include <ranges>` is the model
+// when its directory is first on the include path, and libstdc++ otherwise.
+// An array's size is N. An lvalue with a const size() member returns that
+// size(). ssize of a value that fits is that value as ptrdiff_t. argv "huge"
+// asks ssize of a size that does not fit. The model must __prism_check and
+// must not print a wrapped negative value. empty of T(&)[N] is true only
+// when N == 0, and it does not load an element. An lvalue with a const
+// empty() member returns that empty(). begin of T(&)[N] is a pointer to the
+// first element and does not load it. end is one past the last and does not
+// load it. N == 0 returns the same pointer from both. A pointer argument is
+// not called: it is not an overload. This is not a proof that an iterator
+// stays in range.
 #include <ranges>
 
 #include <cstdint>
@@ -45,9 +50,13 @@ struct Prefer {
     constexpr int size() const { return 4; }
 };
 
-constexpr int ak[4] = {};
+constexpr int ak[4] = {1, 2, 3, 4};
 static_assert(std::ranges::size(ak) == 4);
 static_assert(std::ranges::ssize(ak) == 4);
+static_assert(std::ranges::begin(ak) == ak);
+static_assert(std::ranges::end(ak) == ak + 4);
+static_assert(*std::ranges::begin(ak) == 1);
+static_assert(*(std::ranges::end(ak) - 1) == 4);
 
 constexpr Count ck{3};
 static_assert(std::ranges::size(ck) == 3);
@@ -56,6 +65,7 @@ static_assert(std::ranges::ssize(ck) == 3);
 static_assert(!std::ranges::empty(ak));
 constexpr int zk[0] = {};
 static_assert(std::ranges::empty(zk));
+static_assert(std::ranges::begin(zk) == std::ranges::end(zk));
 constexpr Flag fk{true};
 constexpr Flag fn{false};
 static_assert(std::ranges::empty(fk));
@@ -63,6 +73,25 @@ static_assert(!std::ranges::empty(fn));
 constexpr Prefer pk{};
 static_assert(std::ranges::empty(pk));
 static_assert(std::ranges::size(pk) == 4);
+
+template <class T>
+constexpr bool prism_ranges_begin = requires(T& r) { std::ranges::begin(r); };
+
+template <class T>
+constexpr bool prism_ranges_end = requires(T& r) { std::ranges::end(r); };
+
+static_assert(prism_ranges_begin<int[4]>);
+static_assert(prism_ranges_end<int[4]>);
+static_assert(prism_ranges_begin<int[0]>);
+static_assert(prism_ranges_end<int[0]>);
+static_assert(!prism_ranges_begin<int*>);
+static_assert(!prism_ranges_end<int*>);
+static_assert(!prism_ranges_begin<const int*>);
+static_assert(!prism_ranges_end<const int*>);
+static_assert(!prism_ranges_begin<int (*)[4]>);
+static_assert(!prism_ranges_end<int (*)[4]>);
+static_assert(!prism_ranges_begin<Count>);
+static_assert(!prism_ranges_end<Count>);
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "huge") == 0) {
@@ -73,7 +102,7 @@ int main(int argc, char** argv) {
         std::printf("wrapped=%lld\n", static_cast<long long>(s));
         return s < 0 ? 2 : 0;
     }
-    int a[4] = {};
+    int a[4] = {9, 0, 0, 6};
     Count c;
     c.n = 7;
     const Count k{3};
@@ -86,7 +115,7 @@ int main(int argc, char** argv) {
     std::printf("earr %d\n", std::ranges::empty(a) ? 1 : 0);
     int z[0] = {};
     std::printf("zempty %d\n", std::ranges::empty(z) ? 1 : 0);
-    const int ca[4] = {};
+    const int ca[4] = {2, 0, 0, 5};
     std::printf("cearr %d\n", std::ranges::empty(ca) ? 1 : 0);
     int inner[4][0] = {};
     int outer[0][4] = {};
@@ -104,5 +133,16 @@ int main(int argc, char** argv) {
     std::printf("eprefer %d\n", std::ranges::empty(pr) ? 1 : 0);
     int* ps[2] = {};
     std::printf("eptrs %d\n", std::ranges::empty(ps) ? 1 : 0);
+    std::printf("bdist %d\n", std::ranges::end(a) - std::ranges::begin(a) == 4 ? 4 : -1);
+    std::printf("bfirst %d\n", *std::ranges::begin(a) == 9 ? 9 : -1);
+    std::printf("blast %d\n", *(std::ranges::end(a) - 1) == 6 ? 6 : -1);
+    std::printf("zsame %d\n", std::ranges::begin(z) == std::ranges::end(z) ? 1 : 0);
+    std::printf("cbdist %d\n", std::ranges::end(ca) - std::ranges::begin(ca) == 4 ? 4 : -1);
+    std::printf("cbfirst %d\n", *std::ranges::begin(ca) == 2 ? 2 : -1);
+    std::printf("cblast %d\n", *(std::ranges::end(ca) - 1) == 5 ? 5 : -1);
+    std::printf("bpdist %d\n", std::ranges::end(ps) - std::ranges::begin(ps) == 2 ? 2 : -1);
+    std::printf("bpsame %d\n", std::ranges::begin(ps) == ps ? 1 : 0);
+    std::printf("isame %d\n", std::ranges::begin(inner) == inner ? 1 : 0);
+    std::printf("osame %d\n", std::ranges::begin(outer) == std::ranges::end(outer) ? 1 : 0);
     return 0;
 }
