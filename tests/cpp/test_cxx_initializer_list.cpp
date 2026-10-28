@@ -164,6 +164,24 @@ fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_model
     return out;
 }
 
+// libstdc++ initializer_list has size() and no empty(), so this trace is
+// compiled only with the model directory on the include path.
+fs::path build_size_trace(const std::string& cxx, const fs::path& tmp) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = tmp / "ilist_size.model";
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    argv.push_back("-isystem");
+    argv.push_back(models.string());
+    argv.push_back((repo() / "tests" / "cxx_models" / "initializer_list_size_trace.cpp").string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    return out;
+}
+
 std::vector<std::string> run_lines(const fs::path& exe) {
     std::string stdout_text;
     REQUIRE(run_cmd({exe.string()}, &stdout_text));
@@ -185,6 +203,42 @@ std::string slurp(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+std::string body_of(const std::string& src, const std::string& sig) {
+    const auto at = src.find(sig);
+    if (at == std::string::npos) return {};
+    const auto brace = src.find('{', at);
+    if (brace == std::string::npos) return {};
+    int depth = 0;
+    for (std::size_t i = brace; i < src.size(); ++i) {
+        if (src[i] == '{')
+            ++depth;
+        else if (src[i] == '}') {
+            if (--depth == 0) return src.substr(brace, i - brace + 1);
+        }
+    }
+    return {};
+}
+
+std::string slice_between(const std::string& src, const std::string& a, const std::string& b) {
+    const auto i = src.find(a);
+    if (i == std::string::npos) return {};
+    const auto j = src.find(b, i + a.size());
+    if (j == std::string::npos) return {};
+    return src.substr(i, j - i);
+}
+
+int count_of(const std::string& s, const std::string& needle) {
+    int n = 0;
+    for (std::size_t at = 0; (at = s.find(needle, at)) != std::string::npos; at += needle.size()) ++n;
+    return n;
+}
+
+bool loads_element(const std::string& body) {
+    return body.find("_M_array") != std::string::npos || body.find('*') != std::string::npos ||
+           body.find('[') != std::string::npos || body.find("->") != std::string::npos ||
+           body.find("begin") != std::string::npos || body.find("end") != std::string::npos;
+}
+
 }  // namespace
 
 TEST_CASE("cxx initializer_list model: header is a file and the destructor does not free") {
@@ -202,6 +256,8 @@ TEST_CASE("cxx initializer_list model: header is a file and the destructor does 
     CHECK(text.find("#include <span") == std::string::npos);
     CHECK(text.find("#include <string") == std::string::npos);
     CHECK(text.find("#include <optional") == std::string::npos);
+    CHECK(text.find("#include <memory") == std::string::npos);
+    CHECK(text.find("#include <algorithm") == std::string::npos);
     const auto dtor = text.find("~initializer_list");
     REQUIRE(dtor != std::string::npos);
     const auto semi = text.find(';', dtor);
@@ -253,4 +309,52 @@ TEST_CASE("cxx initializer_list model: empty size is 0 and the destructor does n
     CHECK(has_line(b, "still=6"));
     CHECK(has_line(b, "walk=60"));
     CHECK(has_line(b, "empty_walk=0"));
+}
+
+TEST_CASE("cxx initializer_list model: size is the stored length and empty does not load") {
+    const std::string text = slurp(model_header());
+    REQUIRE_FALSE(text.empty());
+    CHECK(text.find("operator[]") == std::string::npos);
+    CHECK(text.find("#include <memory") == std::string::npos);
+    CHECK(text.find("#include <algorithm") == std::string::npos);
+    CHECK(text.find("constexpr initializer_list() noexcept : _M_array(nullptr), _M_len(0)") != std::string::npos);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 3);
+    CHECK(count_of(text, "A zero-length list has size 0.") == 2);
+    CHECK(count_of(text, "constexpr size_type size() const noexcept { return _M_len; }") == 1);
+    CHECK(count_of(text, "constexpr bool empty() const noexcept { return size() == 0; }") == 1);
+
+    const std::string size_note = slice_between(text, "Stored length.", "constexpr size_type size()");
+    REQUIRE_FALSE(size_note.empty());
+    CHECK(size_note.find("Does not load an element.") != std::string::npos);
+    CHECK(size_note.find("A zero-length list has size 0.") != std::string::npos);
+    CHECK(size_note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(size_note.find("_M_array") == std::string::npos);
+
+    const std::string empty_note = slice_between(text, "size() == 0. Does not load an element.", "constexpr bool empty()");
+    REQUIRE_FALSE(empty_note.empty());
+    CHECK(empty_note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(empty_note.find("_M_array") == std::string::npos);
+    CHECK(empty_note.find("_M_len") == std::string::npos);
+
+    const std::string size_body = body_of(text, "constexpr size_type size() const noexcept");
+    const std::string empty_body = body_of(text, "constexpr bool empty() const noexcept");
+    REQUIRE_FALSE(size_body.empty());
+    REQUIRE_FALSE(empty_body.empty());
+    CHECK(size_body.find("return _M_len;") != std::string::npos);
+    CHECK(empty_body.find("return size() == 0;") != std::string::npos);
+    CHECK(empty_body.find("_M_len") == std::string::npos);
+    CHECK_FALSE(loads_element(size_body));
+    CHECK_FALSE(loads_element(empty_body));
+}
+
+TEST_CASE("cxx initializer_list model: zero length is empty and size does not load") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    auto mod = build_size_trace(c.cxx, c.tmp);
+    auto lines = run_lines(mod);
+    CHECK(has_line(lines, "zero size=0 empty=1"));
+    CHECK(has_line(lines, "braced size=0 empty=1"));
+    CHECK(has_line(lines, "three size=3 empty=0"));
+    CHECK(has_line(lines, "none size=0 empty=1 copies=0 reads=0"));
+    CHECK(has_line(lines, "after size=3 empty=0 copies=0 reads=0"));
 }
