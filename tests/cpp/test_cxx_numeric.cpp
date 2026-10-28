@@ -5,6 +5,8 @@
 //
 // Midpoint of a large positive pair is not negative. gcd(0, 0) is 0.
 // The header text does not use the expression a + b as the midpoint.
+// lcm(0, x), lcm(x, 0), and lcm(0, 0) are 0. A product that does not fit
+// is __prism_check then __builtin_trap, and that path does not return.
 
 #include <doctest/doctest.h>
 
@@ -135,6 +137,8 @@ bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
                             "  if (std::midpoint(2, 4) != 3) return 1;\n"
                             "  if (std::gcd(0, 0) != 0) return 2;\n"
                             "  if (std::midpoint(INT_MAX, INT_MAX) != INT_MAX) return 3;\n"
+                            "  if (std::lcm(0, 0) != 0 || std::lcm(0, 15) != 0 || std::lcm(15, 0) != 0) return 4;\n"
+                            "  if (std::lcm(12, 18) != 36 || std::lcm(-4, 6) != 12) return 5;\n"
                             "  return 0;\n"
                             "}\n";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -182,6 +186,17 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
     return false;
 }
 
+bool syntax_only(const std::string& cxx, const fs::path& src, bool with_models) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    std::vector<std::string> argv{cxx, "-std=c++23", "-fsyntax-only", "-w"};
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(src.string());
+    return run_cmd(argv);
+}
+
 std::string slurp(const fs::path& p) {
     std::ifstream in(p);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -204,7 +219,35 @@ TEST_CASE("cxx numeric model: header is a file and midpoint does not add the arg
     CHECK(text.find("__a + __b") == std::string::npos);
     CHECK(text.find("__a+__b") == std::string::npos);
     CHECK(text.find("#include <vector") == std::string::npos);
-    CHECK(text.find("lcm(") == std::string::npos);
+    CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("lcm is not declared") == std::string::npos);
+    CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
+    CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
+    const auto lcm_at = text.find("\nlcm(");
+    REQUIRE(lcm_at != std::string::npos);
+    const std::string lcm_body = text.substr(lcm_at);
+    const auto zero_ret = lcm_body.find("if (__um == 0 || __un == 0) return static_cast<_Ct>(0);");
+    const auto quot = lcm_body.find("const _Up __q = __um / __g;");
+    const auto check = lcm_body.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"std::lcm product does not fit in the return type\")");
+    const auto trap = lcm_body.find("__builtin_trap()");
+    const auto prod = lcm_body.find("return static_cast<_Ct>(__q * __un);");
+    REQUIRE(zero_ret != std::string::npos);
+    REQUIRE(quot != std::string::npos);
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    REQUIRE(prod != std::string::npos);
+    CHECK(lcm_body.find("gcd(__um, __un)") != std::string::npos);
+    CHECK(zero_ret < quot);
+    CHECK(quot < check);
+    CHECK(check < trap);
+    CHECK(trap < prod);
+    const std::string arm = lcm_body.substr(check, trap - check);
+    CHECK(arm.find("__q * __un") == std::string::npos);
+    CHECK(arm.find("static_cast<_Ct>(0)") == std::string::npos);
+    CHECK(arm.find("return 0") == std::string::npos);
+    const std::string after_trap = lcm_body.substr(trap, prod - trap);
+    CHECK(after_trap.find("return") == std::string::npos);
     const auto mid = text.find("midpoint(");
     REQUIRE(mid != std::string::npos);
     const auto gcd_at = text.find("\ngcd(", mid);
@@ -260,4 +303,47 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
     CHECK(has_line(b, "gcd=6"));
     CHECK(has_line(b, "gcd0=15"));
     CHECK(has_line(b, "gcd_neg=2"));
+    CHECK(has_line(b, "lcm00=0"));
+    CHECK(has_line(b, "lcm0=0"));
+    CHECK(has_line(b, "lcm_x0=0"));
+    CHECK(has_line(b, "lcm=36"));
+    CHECK(has_line(b, "lcm_neg=12"));
+    CHECK(has_line(b, "lcm_both=12"));
+    CHECK(has_line(b, "lcm_max=" + std::to_string(INT_MAX)));
+    CHECK(has_line(b, "lcm_ll=" + std::to_string(static_cast<long long>(INT_MAX) * 2)));
+    CHECK(has_line(b, "lcm_u=36"));
+    CHECK(has_line(b, "lcm_mix=24"));
+
+    std::string zero_out;
+    REQUIRE(run_cmd({mod.string(), "zero"}, &zero_out));
+    CHECK(zero_out.find("zero_min=0 min_zero=0 zero_zero=0") != std::string::npos);
+
+    std::string out, err;
+    CHECK_FALSE(run_cmd({mod.string(), "overflow"}, &out, &err));
+    const std::string both = out + err;
+    CHECK(both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(both.find("std::lcm product does not fit in the return type") != std::string::npos);
+    CHECK(out.find("wrapped=") == std::string::npos);
+
+    const fs::path overflow_const = c.tmp / "lcm_overflow_const.cpp";
+    std::ofstream(overflow_const) << "#include <numeric>\n"
+                                    "#include <climits>\n"
+                                    "int main() {\n"
+                                    "  constexpr int v = std::lcm(INT_MAX, 2);\n"
+                                    "  return v;\n"
+                                    "}\n";
+    CHECK_FALSE(syntax_only(c.cxx, overflow_const, true));
+
+    const fs::path fits_const = c.tmp / "lcm_fits_const.cpp";
+    std::ofstream(fits_const) << "#include <numeric>\n"
+                                "#include <climits>\n"
+                                "static_assert(std::lcm(0, 0) == 0);\n"
+                                "static_assert(std::lcm(0, 15) == 0);\n"
+                                "static_assert(std::lcm(15, 0) == 0);\n"
+                                "static_assert(std::lcm(12, 18) == 36);\n"
+                                "static_assert(std::lcm(-4, 6) == 12);\n"
+                                "static_assert(std::lcm(INT_MAX, 1) == INT_MAX);\n"
+                                "static_assert(std::lcm(INT_MAX, 2LL) == static_cast<long long>(INT_MAX) * 2);\n";
+    CHECK(syntax_only(c.cxx, fits_const, true));
+    CHECK(syntax_only(c.cxx, fits_const, false));
 }

@@ -9,9 +9,11 @@
 //
 // std::gcd is the Euclidean algorithm on the absolute values. gcd(0, 0) is 0.
 //
-// lcm is not declared. A product that does not fit the return type is a
-// precondition of the standard algorithm. This header does not report a
-// wrapped product as a successful result.
+// std::lcm(0, x), std::lcm(x, 0), and std::lcm(0, 0) are 0. Otherwise the
+// value is |m| / gcd(|m|, |n|) * |n|, formed in the unsigned common type.
+// A product that does not fit in the return type is __prism_check with class
+// FUNC-CONTRACT, then __builtin_trap. That path does not return a wrapped
+// product and does not return 0.
 //
 // Not declared here, so naming accumulate, reduce, transform_reduce,
 // inner_product, adjacent_difference, partial_sum, iota, or exclusive_scan
@@ -23,6 +25,10 @@
 #pragma GCC system_header
 
 #include <type_traits>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 namespace std {
 
@@ -69,6 +75,32 @@ gcd(_Mn __m, _Nn __n) noexcept {
         __un = __r;
     }
     return static_cast<_Ct>(__um);
+}
+
+// [numeric.ops.lcm]. A zero magnitude is 0, including both zero, before any
+// product. Otherwise the value is |m| / gcd(|m|, |n|) * |n| in the unsigned
+// common type. A product that does not fit in the return type is not a
+// result: __prism_check, then __builtin_trap. That path does not return a
+// wrapped product and does not return 0 for a nonzero pair.
+template <typename _Mn, typename _Nn>
+constexpr enable_if_t<is_integral_v<_Mn> && is_integral_v<_Nn> && !is_same_v<remove_cv_t<_Mn>, bool> &&
+                          !is_same_v<remove_cv_t<_Nn>, bool>,
+                      common_type_t<_Mn, _Nn>>
+lcm(_Mn __m, _Nn __n) noexcept {
+    using _Ct = common_type_t<_Mn, _Nn>;
+    using _Up = make_unsigned_t<_Ct>;
+    const _Up __um = _Prism_numeric_absu<_Up>(__m);
+    const _Up __un = _Prism_numeric_absu<_Up>(__n);
+    if (__um == 0 || __un == 0) return static_cast<_Ct>(0);
+    const _Up __g = gcd(__um, __un);
+    // Both magnitudes are nonzero, so this quotient is at least 1.
+    const _Up __q = __um / __g;
+    const _Up __lim = is_signed_v<_Ct> ? static_cast<_Up>(static_cast<_Up>(-1) >> 1) : static_cast<_Up>(-1);
+    if (__un > __lim / __q) {
+        __prism_check(0, "FUNC-CONTRACT", "std::lcm product does not fit in the return type");
+        __builtin_trap();
+    }
+    return static_cast<_Ct>(__q * __un);
 }
 
 }  // namespace std
