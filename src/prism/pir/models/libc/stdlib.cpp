@@ -165,6 +165,40 @@ long strtol(const char *s, char **end, int base) {
     }
     return __VERIFIER_nondet_long();
 }
+/* A null s is STR-NULL-ARG, then 0. That path does not call strlen,
+ * does not write *end, and does not scan.
+ * A non-null s follows strtol: strlen, and if end is non-null a pointer
+ * into the string. The offset is nondet and assumed <= the length.
+ * The value is unknown. This is not a conversion proof.
+ * strtoll and strtoull are not PROVED and not CLEAN.
+ * strtoull's result is an unsigned nondet, not a cast of strtol or strtoll. */
+long long __VERIFIER_nondet_longlong(void);
+unsigned long long __VERIFIER_nondet_ulonglong(void);
+
+long long strtoll(const char *s, char **end, int base) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strtoll() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    size_t n = strlen(s);
+    (void)base;
+    if (end) {
+        size_t k = __VERIFIER_nondet_ulong();
+        __prism_assume(k <= n);
+        *end = (char *)s + k;
+    }
+    return __VERIFIER_nondet_longlong();
+}
+unsigned long long strtoull(const char *s, char **end, int base) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strtoull() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    size_t n = strlen(s);
+    (void)base;
+    if (end) {
+        size_t k = __VERIFIER_nondet_ulong();
+        __prism_assume(k <= n);
+        *end = (char *)s + k;
+    }
+    return __VERIFIER_nondet_ulonglong();
+}
 unsigned long strtoul(const char *s, char **end, int base) {
     return (unsigned long)strtol(s, end, base);
 }

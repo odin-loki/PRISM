@@ -804,6 +804,7 @@ if(PRISM_TESTS)
     tests/cpp/test_qsort_null.cpp
     tests/cpp/test_abs_min.cpp
     tests/cpp/test_div.cpp
+    tests/cpp/test_strtoll.cpp
     tests/cpp/test_time_model.cpp
     tests/cpp/test_ctype.cpp
     tests/cpp/test_ffs.cpp

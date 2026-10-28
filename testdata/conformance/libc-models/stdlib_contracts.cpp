@@ -320,6 +320,9 @@ int strtol_true(int k) {
     (void)atoi(s);
     (void)atol(s);
     (void)strtoul(s, 0, 0);
+    /* Names strtoll and strtoull. The value is not a parsed numeral. */
+    (void)strtoll(s, 0, 10);
+    (void)strtoull(s, 0, 10);
     return 0;
 }
 
