@@ -28,8 +28,13 @@
 // function is not called and or_else returns an optional that holds the
 // stored T. It does not invent a different T.
 //
-// emplace, transform, comparison, and hash are not declared. A use of them
-// fails to compile against this header and pir falls back to libstdc++.
+// transform, when the optional is engaged, calls the function with the stored
+// T and returns an optional that holds what the function returns. When it is
+// disengaged, the function is not called and transform returns a disengaged
+// optional. It does not return T{} and it does not invent a value.
+//
+// emplace, comparison, and hash are not declared. A use of them fails to
+// compile against this header and pir falls back to libstdc++.
 // nullopt, in_place, swap, make_optional, and assignment from T are not
 // declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_OPTIONAL
@@ -56,6 +61,43 @@ struct _Prism_optional_kind {
 // one.
 template <typename _Ret, typename _Val>
 struct _Prism_or_else_ret {
+    static constexpr bool value = false;
+};
+
+// transform's U is remove_cv of the function result. A reference is unchanged
+// so the object check rejects it. cv on the object type itself is removed.
+template <typename _T>
+struct _Prism_remove_cv {
+    using type = _T;
+};
+template <typename _T>
+struct _Prism_remove_cv<const _T> {
+    using type = typename _Prism_remove_cv<_T>::type;
+};
+template <typename _T>
+struct _Prism_remove_cv<volatile _T> {
+    using type = typename _Prism_remove_cv<_T>::type;
+};
+template <typename _T>
+struct _Prism_remove_cv<const volatile _T> {
+    using type = typename _Prism_remove_cv<_T>::type;
+};
+
+// True when transform can store the result. Void and references cannot.
+template <typename _T>
+struct _Prism_transform_object {
+    static constexpr bool value = true;
+};
+template <>
+struct _Prism_transform_object<void> {
+    static constexpr bool value = false;
+};
+template <typename _T>
+struct _Prism_transform_object<_T&> {
+    static constexpr bool value = false;
+};
+template <typename _T>
+struct _Prism_transform_object<_T&&> {
     static constexpr bool value = false;
 };
 
@@ -213,6 +255,51 @@ public:
                       "optional::or_else requires the function to return optional<T>");
         if (_M_engaged) return optional<_Tp>(static_cast<const _Tp&&>(_M_storage._M_value));
         return static_cast<_Fn&&>(__f)();
+    }
+
+    // Engaged: call __f with the stored T and return an optional that holds
+    // what __f returns. The call is direct. This header does not include
+    // <functional> or <memory>. The & overload passes an lvalue, const& a
+    // const lvalue, && an rvalue, and const&& a const rvalue. Disengaged: do
+    // not call __f and do not read the inactive T. The result is a disengaged
+    // optional of that result type, not T{} and not a value-initialized
+    // result. decltype does not call __f. value() is not used: a disengaged
+    // transform is not a CXX-OPTIONAL-NULL check.
+    template <typename _Fn>
+    auto transform(_Fn&& __f) & {
+        using _Raw = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&>(_M_storage._M_value)));
+        using _Up = typename _Prism_remove_cv<_Raw>::type;
+        static_assert(_Prism_transform_object<_Up>::value,
+                      "optional::transform requires the function to return an object");
+        if (!_M_engaged) return optional<_Up>();
+        return optional<_Up>(static_cast<_Fn&&>(__f)(static_cast<_Tp&>(_M_storage._M_value)));
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) const& {
+        using _Raw = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&>(_M_storage._M_value)));
+        using _Up = typename _Prism_remove_cv<_Raw>::type;
+        static_assert(_Prism_transform_object<_Up>::value,
+                      "optional::transform requires the function to return an object");
+        if (!_M_engaged) return optional<_Up>();
+        return optional<_Up>(static_cast<_Fn&&>(__f)(static_cast<const _Tp&>(_M_storage._M_value)));
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) && {
+        using _Raw = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_value)));
+        using _Up = typename _Prism_remove_cv<_Raw>::type;
+        static_assert(_Prism_transform_object<_Up>::value,
+                      "optional::transform requires the function to return an object");
+        if (!_M_engaged) return optional<_Up>();
+        return optional<_Up>(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_value)));
+    }
+    template <typename _Fn>
+    auto transform(_Fn&& __f) const&& {
+        using _Raw = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_value)));
+        using _Up = typename _Prism_remove_cv<_Raw>::type;
+        static_assert(_Prism_transform_object<_Up>::value,
+                      "optional::transform requires the function to return an object");
+        if (!_M_engaged) return optional<_Up>();
+        return optional<_Up>(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_value)));
     }
 };
 

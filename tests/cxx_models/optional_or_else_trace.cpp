@@ -8,7 +8,8 @@
 // optional. Engaged or_else does not call the function and returns an optional
 // that holds the stored T. It does not invent a different T.
 //
-// transform and emplace are not called: the model does not declare them.
+// emplace is not called: the model does not declare it.
+// transform is declared; this trace does not call it.
 #include <cstdio>
 #include <cstdlib>
 #include <optional>

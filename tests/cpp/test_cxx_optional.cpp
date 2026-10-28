@@ -12,6 +12,9 @@
 // or_else calls the function when disengaged and returns that optional. An
 // engaged optional does not call the function and yields an optional that
 // holds the stored T.
+// transform calls the function with the stored T when engaged and yields an
+// optional that holds what the function returns. A disengaged optional does
+// not call the function and yields a disengaged optional, not T{}.
 
 #include <doctest/doctest.h>
 
@@ -445,5 +448,87 @@ TEST_CASE("cxx optional model: or_else calls the function or keeps the stored T"
         CHECK(line != "moved 0 -1");
         CHECK(line != "cmove 5 -1");
         CHECK(line != "cmove 0 5");
+    }
+}
+
+TEST_CASE("cxx optional model: transform calls the function or returns disengaged") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = repo() / "tests" / "cxx_models" / "optional_transform_trace.cpp";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "optional").string())) != std::string::npos);
+
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false, "transform_trace"));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true, "transform_trace"));
+    const std::vector<std::string> want{
+        "engaged 1 43", "empty 0",    "calls 1",  "zeroIn 1 1", "calls2 1", "zero 1 0",    "zeroE 0",
+        "nullp 1 1",    "nullpE 0",   "to_box 42", "held 1 42", "none 0",   "cv 43",       "cvE 0",
+        "wrap 1 1 43",  "wrapE 0",    "chain 1 44", "chainE 0", "calls3 2", "cat-lv",      "lv 1",
+        "cat-clv",      "clv 3",      "cat-rv",    "rv 2",      "cat-crv",  "crv 4",       "elv 0",
+        "eclv 0",       "erv 0",      "ecrv 0",    "box 1 43 42", "boxE 0", "moved 42 -1", "cmove 5 5",
+    };
+    CHECK(lib == mod);
+    CHECK(mod == want);
+    for (const auto& line : mod) {
+        CHECK(line.find("bad") == std::string::npos);
+        CHECK(line != "engaged 1 42");
+        CHECK(line != "engaged 1 0");
+        CHECK(line != "engaged 0 0");
+        CHECK(line != "empty 1");
+        CHECK(line != "calls 0");
+        CHECK(line != "calls 2");
+        CHECK(line != "zeroIn 1 0");
+        CHECK(line != "zeroIn 0 0");
+        CHECK(line != "calls2 0");
+        CHECK(line != "zero 1 42");
+        CHECK(line != "zero 0 0");
+        CHECK(line != "zeroE 1");
+        CHECK(line != "nullp 1 0");
+        CHECK(line != "nullp 0 1");
+        CHECK(line != "nullpE 1");
+        CHECK(line != "to_box 0");
+        CHECK(line != "held 1 0");
+        CHECK(line != "held 0 0");
+        CHECK(line != "none 1");
+        CHECK(line != "cv 42");
+        CHECK(line != "cv 0");
+        CHECK(line != "cvE 1");
+        CHECK(line != "wrap 1 1 42");
+        CHECK(line != "wrap 1 0 0");
+        CHECK(line != "wrapE 1");
+        CHECK(line != "chain 1 42");
+        CHECK(line != "chain 1 43");
+        CHECK(line != "chain 1 0");
+        CHECK(line != "chainE 1");
+        CHECK(line != "calls3 0");
+        CHECK(line != "calls3 1");
+        CHECK(line != "calls3 4");
+        CHECK(line != "lv 42");
+        CHECK(line != "clv 42");
+        CHECK(line != "rv 42");
+        CHECK(line != "crv 42");
+        CHECK(line != "elv 1");
+        CHECK(line != "eclv 1");
+        CHECK(line != "erv 1");
+        CHECK(line != "ecrv 1");
+        CHECK(line != "box 1 42 42");
+        CHECK(line != "box 1 43 -1");
+        CHECK(line != "box 1 0 42");
+        CHECK(line != "boxE 1");
+        CHECK(line != "moved 42 42");
+        CHECK(line != "moved -1 -1");
+        CHECK(line != "moved 0 -1");
+        CHECK(line != "cmove 5 -1");
+        CHECK(line != "cmove -1 5");
     }
 }
