@@ -156,6 +156,28 @@ int strncasecmp(const char *a, const char *b, size_t n) {
     return 0;
 }
 
+/* strcoll compares the unsigned bytes of a and b.
+ * This is not a locale collation and it does not call setlocale.
+ * It stops at the first difference or the first NUL.
+ * It does not read past that NUL.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strcoll(const char *a, const char *b) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strcoll() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strcoll() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    size_t i = 0;
+    for (;;) {
+        const unsigned char ca = uc(a, i);
+        const unsigned char cb = uc(b, i);
+        if (ca != cb) return ca > cb ? 1 : -1;
+        if (!ca) return 0;
+        ++i;
+    }
+}
+
 char *strchr(const char *s, int c) {
     __prism_check(s != 0, "STR-NULL-ARG", "strchr() called with unchecked pointer parameter s");
     const unsigned char *us = (const unsigned char *)s;

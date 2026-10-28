@@ -160,6 +160,8 @@ int strcmp_true(int ka, int kb, int j) {
     assert(sign(r) == sign((int)(unsigned char)a[m] - (int)(unsigned char)b[m]));
     /* Names strcasecmp. The comparison is not a scored comparison. */
     (void)strcasecmp(a, b);
+    /* Names strcoll. This does not assert a locale order. */
+    (void)strcoll(a, b);
     return 0;
 }
 

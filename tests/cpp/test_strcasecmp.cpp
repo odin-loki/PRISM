@@ -52,9 +52,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("strcasecmp model: null returns before a read, ASCII fold, stop at difference or NUL") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 9);
-    CHECK(count_of(src, "PROVED") == 9);
-    CHECK(count_of(src, "CLEAN") == 9);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 10);
+    CHECK(count_of(src, "PROVED") == 10);
+    CHECK(count_of(src, "CLEAN") == 10);
 
     const auto strncmp_at = src.find("int strncmp(const char *a, const char *b, size_t n) {");
     const auto strcasecmp_at = src.find("int strcasecmp(const char *a, const char *b) {");

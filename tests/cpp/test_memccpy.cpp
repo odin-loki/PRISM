@@ -52,9 +52,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("memccpy model: null returns before access, n == 0 does not read, copy stops at c") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 9);
-    CHECK(count_of(src, "PROVED") == 9);
-    CHECK(count_of(src, "CLEAN") == 9);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 10);
+    CHECK(count_of(src, "PROVED") == 10);
+    CHECK(count_of(src, "CLEAN") == 10);
 
     const auto memrchr_at = src.find("void *memrchr(const void *s, int c, size_t n) {");
     const auto memccpy_at = src.find("void *memccpy(void *d, const void *s, int c, size_t n) {");
