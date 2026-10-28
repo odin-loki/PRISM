@@ -6,7 +6,9 @@
 // Header text: a negative sqrt is a __prism_check before any value.
 // With clang++, fabs(-2) is 2. isfinite(0) is true, isnan(0) is false, and
 // signbit of a negative value is true. Those four classify; they are not a
-// proof of a numeric identity.
+// proof of a numeric identity. copysign(0, negative) is a negative zero.
+// fmin of a NaN and a number is the number. Two NaNs from fmin or fmax are
+// a NaN. Those three are not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -183,6 +185,29 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
     return false;
 }
 
+std::size_t count_of(const std::string& s, const std::string& needle) {
+    std::size_t n = 0;
+    for (std::size_t at = 0; (at = s.find(needle, at)) != std::string::npos; at += needle.size()) ++n;
+    return n;
+}
+
+std::string brace_body(const std::string& src, const std::string& sig) {
+    const auto at = src.find(sig);
+    if (at == std::string::npos) return {};
+    const auto open = src.find('{', at);
+    if (open == std::string::npos) return {};
+    int depth = 0;
+    for (std::size_t i = open; i < src.size(); ++i) {
+        if (src[i] == '{') {
+            ++depth;
+        } else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) return src.substr(open, i - open + 1);
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced") {
@@ -271,6 +296,52 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
     const std::string fb = src.substr(fabs, fabs_end - fabs);
     CHECK(fb.find("return __builtin_fabs(__x)") != std::string::npos);
     CHECK(fb.find("return 0") == std::string::npos);
+
+    CHECK(src.find("copysign, fmin, and fmax are not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(count_of(src, "PROVED") == 1);
+    CHECK(count_of(src, "CLEAN") == 1);
+    CHECK(src.find("negative zero, not a positive") != std::string::npos);
+    CHECK(src.find("Zero is not a stand-in") != std::string::npos);
+    CHECK(src.find("copysign(int") == std::string::npos);
+    CHECK(src.find("fmin(int") == std::string::npos);
+    CHECK(src.find("fmax(int") == std::string::npos);
+    CHECK(src.find("int copysign(") == std::string::npos);
+    CHECK(src.find("int fmin(") == std::string::npos);
+    CHECK(src.find("int fmax(") == std::string::npos);
+
+    for (const char* sig : {"constexpr double copysign(double __x, double __y)",
+                            "constexpr float copysign(float __x, float __y)",
+                            "constexpr long double copysign(long double __x, long double __y)"}) {
+        const std::string fn_body = brace_body(src, sig);
+        REQUIRE_FALSE(fn_body.empty());
+        CHECK(fn_body.find("fabs(__x)") != std::string::npos);
+        CHECK(fn_body.find("if (signbit(__y)) return -__m;") != std::string::npos);
+        CHECK(fn_body.find("return __m;") != std::string::npos);
+        CHECK(fn_body.find("return 0") == std::string::npos);
+        CHECK(fn_body.find("0.0") == std::string::npos);
+    }
+    for (const char* sig : {"constexpr double fmin(double __x, double __y)",
+                            "constexpr float fmin(float __x, float __y)",
+                            "constexpr long double fmin(long double __x, long double __y)"}) {
+        const std::string fn_body = brace_body(src, sig);
+        REQUIRE_FALSE(fn_body.empty());
+        CHECK(fn_body.find("if (isnan(__x)) return __y;") != std::string::npos);
+        CHECK(fn_body.find("if (isnan(__y)) return __x;") != std::string::npos);
+        CHECK(fn_body.find("return __x < __y ? __x : __y;") != std::string::npos);
+        CHECK(fn_body.find("return 0") == std::string::npos);
+        CHECK(fn_body.find("0.0") == std::string::npos);
+    }
+    for (const char* sig : {"constexpr double fmax(double __x, double __y)",
+                            "constexpr float fmax(float __x, float __y)",
+                            "constexpr long double fmax(long double __x, long double __y)"}) {
+        const std::string fn_body = brace_body(src, sig);
+        REQUIRE_FALSE(fn_body.empty());
+        CHECK(fn_body.find("if (isnan(__x)) return __y;") != std::string::npos);
+        CHECK(fn_body.find("if (isnan(__y)) return __x;") != std::string::npos);
+        CHECK(fn_body.find("return __x > __y ? __x : __y;") != std::string::npos);
+        CHECK(fn_body.find("return 0") == std::string::npos);
+        CHECK(fn_body.find("0.0") == std::string::npos);
+    }
 }
 
 TEST_CASE("cxx cmath model: setup clang++ with ASan/UBSan") {
@@ -328,6 +399,32 @@ TEST_CASE("cxx cmath model: fabs(-2) is 2 when the model header is included") {
     CHECK(has_line(b, "sgn2=1"));
     CHECK(has_line(b, "sgnf=1"));
     CHECK(has_line(b, "sgnl=1"));
+    CHECK(has_line(b, "cp25=1"));
+    CHECK(has_line(b, "cpn=1"));
+    CHECK(has_line(b, "cp0=1"));
+    CHECK(has_line(b, "cp0p=1"));
+    CHECK(has_line(b, "cpmag=1"));
+    CHECK(has_line(b, "cp0f=1"));
+    CHECK(has_line(b, "cpnf=1"));
+    CHECK(has_line(b, "cp0l=1"));
+    CHECK(has_line(b, "cpnl=1"));
+    CHECK(has_line(b, "fmin13=1"));
+    CHECK(has_line(b, "fmax13=1"));
+    CHECK(has_line(b, "fminn=1"));
+    CHECK(has_line(b, "fminnan=1"));
+    CHECK(has_line(b, "fminnan2=1"));
+    CHECK(has_line(b, "fmaxnan=1"));
+    CHECK(has_line(b, "fmaxnan2=1"));
+    CHECK(has_line(b, "fminnn=1"));
+    CHECK(has_line(b, "fmaxnn=1"));
+    CHECK(has_line(b, "fminf=1"));
+    CHECK(has_line(b, "fmaxf=1"));
+    CHECK(has_line(b, "fminnf=1"));
+    CHECK(has_line(b, "fmaxnnf=1"));
+    CHECK(has_line(b, "fminl=1"));
+    CHECK(has_line(b, "fmaxl=1"));
+    CHECK(has_line(b, "fminnl=1"));
+    CHECK(has_line(b, "fmaxnnl=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "neg"}, &out, &err));

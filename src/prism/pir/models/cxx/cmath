@@ -9,6 +9,15 @@
 // isfinite, isinf, isnan, and signbit are declared. They classify a value.
 // They are not a proof of a numeric identity.
 //
+// copysign, fmin, and fmax are declared for float, double, and long double.
+// copysign copies the sign bit of the second argument onto the magnitude of
+// the first. copysign(0, negative) is a negative zero, not a positive
+// stand-in. It does not change the magnitude. fmin returns the smaller
+// argument and fmax returns the larger. If one argument is NaN, the other
+// is returned. If both are NaN, a NaN is returned. Zero is not a stand-in
+// for that NaN. An integer argument is not an overload. copysign, fmin,
+// and fmax are not PROVED and not CLEAN.
+//
 // sin, cos, tan, exp, log, and pow are not declared, and neither is the
 // rest of <cmath>. A use of them fails to compile against this header and
 // pir falls back to libstdc++. A partial header is intentional.
@@ -29,12 +38,16 @@
 // std::isfinite(x) into a name in namespace std. The guard stops that
 // include from defining the macros. This file does not include <math.h>,
 // so sin, cos, tan, exp, log, and pow stay undeclared. If <math.h> was
-// already included, the undefs drop the macros.
+// already included, the undefs drop the macros. copysign, fmin, and fmax
+// are cleared the same way when a macro of that name is present.
 #define _MATH_H 1
 #undef isfinite
 #undef isinf
 #undef isnan
 #undef signbit
+#undef copysign
+#undef fmin
+#undef fmax
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -104,6 +117,67 @@ constexpr bool isnan(long double __x) { return __builtin_isnan(__x); }
 constexpr bool signbit(double __x) { return __builtin_signbit(__x); }
 constexpr bool signbit(float __x) { return __builtin_signbitf(__x); }
 constexpr bool signbit(long double __x) { return __builtin_signbitl(__x); }
+
+// Magnitude of __x, sign bit of __y. Negating that magnitude is a negative
+// zero when the magnitude is zero, not a positive stand-in. The value bits
+// of the magnitude are the fabs result.
+constexpr double copysign(double __x, double __y) {
+    const double __m = fabs(__x);
+    if (signbit(__y)) return -__m;
+    return __m;
+}
+
+constexpr float copysign(float __x, float __y) {
+    const float __m = fabs(__x);
+    if (signbit(__y)) return -__m;
+    return __m;
+}
+
+constexpr long double copysign(long double __x, long double __y) {
+    const long double __m = fabs(__x);
+    if (signbit(__y)) return -__m;
+    return __m;
+}
+
+// Smaller argument. A NaN is missing data: the other argument is returned.
+// Two NaNs return a NaN. The result is not a zero written in place of a NaN.
+constexpr double fmin(double __x, double __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x < __y ? __x : __y;
+}
+
+constexpr float fmin(float __x, float __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x < __y ? __x : __y;
+}
+
+constexpr long double fmin(long double __x, long double __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x < __y ? __x : __y;
+}
+
+// Larger argument. Same NaN rule as fmin: one NaN returns the other, and
+// two NaNs return a NaN rather than zero.
+constexpr double fmax(double __x, double __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x > __y ? __x : __y;
+}
+
+constexpr float fmax(float __x, float __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x > __y ? __x : __y;
+}
+
+constexpr long double fmax(long double __x, long double __y) {
+    if (isnan(__x)) return __y;
+    if (isnan(__y)) return __x;
+    return __x > __y ? __x : __y;
+}
 
 }  // namespace std
 
