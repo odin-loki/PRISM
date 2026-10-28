@@ -1,7 +1,9 @@
 // The <flat_set> model stores one heap node per key. These checks read the
 // header text: a second insert of a key that is already present returns
-// before any new node and before size grows, and erase is where the node
-// is freed (the delete expression is in erase, not in a helper).
+// before any new node and before size grows, erase is where the node is
+// freed (the delete expression is in erase, not in a helper), and contains
+// returns false for a missing key and true for a present key without
+// allocating.
 
 #include <doctest/doctest.h>
 
@@ -89,12 +91,28 @@ TEST_CASE("cxx flat_set model: duplicate insert does not grow size; erase delete
     CHECK(src.find("size_type size() const noexcept { return _M_size; }") != std::string::npos);
     CHECK(src.find("iterator begin() const noexcept { return iterator(_M_head); }") != std::string::npos);
     CHECK(src.find("iterator end() const noexcept { return iterator(nullptr); }") != std::string::npos);
+    CHECK(count_sub(src, "flat_set iterator dereference at end") == 2);
 
     const auto found = body_of(src, "_Node* _M_find_node(const key_type& __x) const");
     REQUIRE(!found.empty());
     CHECK(found.find("new ") == std::string::npos);
     CHECK(found.find("return nullptr;") != std::string::npos);
-    CHECK(src.find("bool contains(const key_type& __x) const { return find(__x) != end(); }") != std::string::npos);
+
+    // A missing key returns false and a present key returns true. The body
+    // does not allocate, and it does not go through end().
+    const auto has = body_of(src, "bool contains(const key_type& __x) const");
+    REQUIRE(!has.empty());
+    CHECK(has.find("_M_find_node") != std::string::npos);
+    CHECK(has.find("new ") == std::string::npos);
+    CHECK(has.find("delete ") == std::string::npos);
+    CHECK(has.find("_M_key =") == std::string::npos);
+    CHECK(has.find("end()") == std::string::npos);
+    const auto miss = has.find("return false;");
+    const auto hit = has.find("return true;");
+    REQUIRE(miss != std::string::npos);
+    REQUIRE(hit != std::string::npos);
+    CHECK(miss < hit);
+    CHECK(has.substr(0, miss).find("new ") == std::string::npos);
 
     // The free is in erase. A missing key returns before that delete.
     const auto er_key = body_of(src, "size_type erase(const key_type& __x)");

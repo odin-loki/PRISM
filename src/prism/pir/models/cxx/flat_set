@@ -13,7 +13,8 @@
 //    node and it does not write a different key over the one that is stored.
 //  * find of a missing key is the end iterator. It does not allocate a node
 //    and it does not return an iterator to a fabricated key. contains of a
-//    missing key is false.
+//    missing key is false and does not allocate. contains of a present key
+//    is true and does not allocate. Neither path builds an end iterator.
 //  * erase of a present key unlinks that node, destroys it, and frees it
 //    with delete. erase of a missing key returns 0 and frees nothing.
 //    clear and the destructor free the remaining nodes by calling erase, so
@@ -233,7 +234,14 @@ public:
     value_compare value_comp() const { return _M_comp; }
 
     iterator find(const key_type& __x) const { return iterator(_M_find_node(__x)); }
-    bool contains(const key_type& __x) const { return find(__x) != end(); }
+    // Missing: false, no node. Present: true, no node. The lookup does not
+    // allocate and does not build an end iterator.
+    bool contains(const key_type& __x) const {
+        _Node* __n = _M_find_node(__x);
+        if (__n == nullptr)
+            return false;
+        return true;
+    }
     size_type count(const key_type& __x) const { return contains(__x) ? 1 : 0; }
 
     iterator lower_bound(const key_type& __x) const {
