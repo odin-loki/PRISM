@@ -13,17 +13,28 @@
 //
 // This header is not a proof of a program that merely names a ratio.
 //
+// ratio_equal and ratio_less cross-multiply the reduced numerator and
+// denominator. The product is formed only after a wide (uintmax_t) check
+// that it fits in intmax_t. When it does not, the comparison calls
+// __prism_check with class FUNC-CONTRACT and then __builtin_trap. That
+// path does not return a boolean and does not return false. ratio_equal
+// is true only when the reduced ratios are the same.
+//
 // Not declared, so a unit that names one fails to compile against this
 // header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
-// ratio comparisons (ratio_equal, ratio_less, and the other four), and the
-// SI prefixes whose literals this stand-in does not check (atto, femto,
-// pico, tera, peta, exa). <chrono> is not included.
+// ratio_not_equal, ratio_less_equal, ratio_greater, ratio_greater_equal,
+// and the SI prefixes whose literals this stand-in does not check (atto,
+// femto, pico, tera, peta, exa). <chrono> and <compare> are not included.
 #ifndef _GLIBCXX_RATIO
 #define _GLIBCXX_RATIO 1
 
 #pragma GCC system_header
 
 #include <cstdint>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 namespace std {
 
@@ -47,6 +58,17 @@ constexpr bool _Prism_mul_fits(intmax_t a, intmax_t b) noexcept {
     const uintmax_t product = ua * ub;
     if (negative) return product <= static_cast<uintmax_t>(INTMAX_MAX) + 1;
     return product <= static_cast<uintmax_t>(INTMAX_MAX);
+}
+
+// Signed product of a value the wide check has already accepted. The
+// magnitude is multiplied in uintmax_t, so this is not a wrapped intmax_t.
+// The caller does not use this when _Prism_mul_fits is false.
+constexpr intmax_t _Prism_cross_product(intmax_t a, intmax_t b) noexcept {
+    if (a == 0 || b == 0) return 0;
+    const bool negative = (a < 0) != (b < 0);
+    const uintmax_t product = _Prism_uabs(a) * _Prism_uabs(b);
+    if (negative) return -static_cast<intmax_t>(product);
+    return static_cast<intmax_t>(product);
 }
 
 // True when a + b is representable as intmax_t. INTMAX_MIN is separate
@@ -173,6 +195,38 @@ using ratio_add = typename _Prism_ratio_add<_R1, _R2>::type;
 
 template <class _R1, class _R2>
 using ratio_subtract = ratio_add<_R1, ratio<-_R2::num, _R2::den>>;
+
+// Cross-multiply n1/d1 ? n2/d2 as (n1*d2) ? (n2*d1). equal is the same
+// reduced ratio. less is the strict order. The denominators stored by
+// ratio are positive.
+enum class _Prism_ratio_rel { _S_equal, _S_less };
+
+template <intmax_t _N1, intmax_t _D1, intmax_t _N2, intmax_t _D2, _Prism_ratio_rel _Rel>
+constexpr bool _Prism_ratio_compare() noexcept {
+    if (!_Prism_mul_fits(_N1, _D2) || !_Prism_mul_fits(_N2, _D1)) {
+        __prism_check(0, "FUNC-CONTRACT", "ratio comparison cross product does not fit in intmax_t");
+        // No boolean from a cross product that does not fit.
+        __builtin_trap();
+    } else {
+        const intmax_t _Left = _Prism_cross_product(_N1, _D2);
+        const intmax_t _Right = _Prism_cross_product(_N2, _D1);
+        // Equal cross products of reduced ratios are the same ratio.
+        if constexpr (_Rel == _Prism_ratio_rel::_S_less) return _Left < _Right;
+        else return _Left == _Right;
+    }
+}
+
+template <class _R1, class _R2>
+struct ratio_equal {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R1::num, _R1::den, _R2::num, _R2::den, _Prism_ratio_rel::_S_equal>();
+};
+
+template <class _R1, class _R2>
+struct ratio_less {
+    static constexpr bool value =
+        _Prism_ratio_compare<_R1::num, _R1::den, _R2::num, _R2::den, _Prism_ratio_rel::_S_less>();
+};
 
 // Aliases of ratio<...>. The prefixes whose magnitude this header does not
 // check are not declared.

@@ -1,7 +1,9 @@
 // Direct checks of the std::ratio model (src/prism/pir/models/cxx/ratio).
 // Included by path, the same way tests/cpp/test_cxx_iostream.cpp includes its
 // header. ratio<2,4> reduces. A zero denominator is a static_assert in the
-// header text. An overflowing product is not stored as a value.
+// header text. An overflowing product is not stored as a value. ratio_equal
+// is true only for the same reduced ratio. ratio_less cross-multiplies.
+// An overflowing cross product is a contract check, not a false result.
 
 #include "../../src/prism/pir/models/cxx/ratio"
 
@@ -24,6 +26,22 @@ static_assert(std::ratio_divide<std::ratio<1, 2>, std::ratio<2, 3>>::num == 3, "
 static_assert(std::ratio_divide<std::ratio<1, 2>, std::ratio<2, 3>>::den == 4, "(1/2)/(2/3)");
 static_assert(std::milli::num == 1 && std::milli::den == 1000, "milli is an alias");
 static_assert(std::kilo::num == 1000 && std::kilo::den == 1, "kilo is an alias");
+static_assert(std::ratio_equal<std::ratio<2, 4>, std::ratio<1, 2>>::value, "2/4 equals 1/2");
+static_assert(std::ratio_equal<std::ratio<1, -2>, std::ratio<-1, 2>>::value, "sign-normalized equality");
+static_assert(std::ratio_equal<std::ratio<0, 1>, std::ratio<0, 5>>::value, "0/5 reduces to 0/1");
+static_assert(!std::ratio_equal<std::ratio<1, 2>, std::ratio<1, 3>>::value, "1/2 is not 1/3");
+static_assert(!std::ratio_equal<std::ratio<1, -2>, std::ratio<1, 2>>::value, "negative is not the positive");
+static_assert(std::ratio_less<std::ratio<1, 3>, std::ratio<1, 2>>::value, "1/3 < 1/2");
+static_assert(std::ratio_less<std::ratio<-1, 2>, std::ratio<-1, 3>>::value, "-1/2 < -1/3");
+static_assert(std::ratio_less<std::ratio<1, -2>, std::ratio<1, 3>>::value, "-1/2 < 1/3");
+static_assert(!std::ratio_less<std::ratio<1, 2>, std::ratio<2, 4>>::value, "equal ratios are not less");
+static_assert(!std::ratio_less<std::ratio<1, 2>, std::ratio<1, 3>>::value, "1/2 is not < 1/3");
+static_assert(std::ratio_equal<std::ratio<INTMAX_MAX, 1>, std::ratio<INTMAX_MAX, 1>>::value,
+              "a product that fits stays equal");
+static_assert(std::ratio_less<std::ratio<INTMAX_MAX / 2, 2>, std::ratio<INTMAX_MAX / 2, 1>>::value,
+              "wide cross product that fits");
+static_assert(!std::ratio_less<std::ratio<INTMAX_MAX / 2, 1>, std::ratio<INTMAX_MAX / 2, 2>>::value,
+              "wide cross product that fits, the other way");
 
 TEST_CASE("cxx ratio model: ratio<2,4> reduces to 1/2") {
     CHECK(std::ratio<2, 4>::num == 1);
@@ -58,4 +76,28 @@ TEST_CASE("cxx ratio model: zero denominator is ill-formed and overflow is not a
     CHECK(text.find("__builtin_mul_overflow") == std::string::npos);
     CHECK(text.find("__builtin_add_overflow") == std::string::npos);
     CHECK(text.find("#include <chrono>") == std::string::npos);
+    CHECK(text.find("#include <compare>") == std::string::npos);
+    CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
+    CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
+    CHECK(text.find("struct ratio_not_equal") == std::string::npos);
+    CHECK(text.find("struct ratio_less_equal") == std::string::npos);
+    CHECK(text.find("struct ratio_greater") == std::string::npos);
+
+    const auto arm = text.find("if (!_Prism_mul_fits(_N1, _D2) || !_Prism_mul_fits(_N2, _D1))");
+    REQUIRE(arm != std::string::npos);
+    const auto arm_end = text.find("const intmax_t _Left", arm);
+    REQUIRE(arm_end != std::string::npos);
+    const std::string arm_body = text.substr(arm, arm_end - arm);
+    const auto check = arm_body.find("__prism_check");
+    const auto trap = arm_body.find("__builtin_trap");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    CHECK(check < trap);
+    CHECK(arm_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(arm_body.find("ratio comparison cross product does not fit in intmax_t") != std::string::npos);
+    CHECK(arm_body.find("return") == std::string::npos);
+    CHECK(arm_body.find("false") == std::string::npos);
+    const std::string after = text.substr(arm_end);
+    CHECK(after.find("return _Left == _Right") != std::string::npos);
+    CHECK(after.find("return _Left < _Right") != std::string::npos);
 }
