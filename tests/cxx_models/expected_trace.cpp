@@ -13,6 +13,10 @@
 // that holds the function's result. On an unexpected it does not call the
 // function; the result holds that same E and does not construct a T or
 // return T{}.
+// transform_error calls the function with the stored E and returns an
+// expected that holds the function's result as the error. On a value it
+// does not call the function; the result holds that same T and does not
+// construct an E or return E{} or T{}.
 //
 // argv "value" calls value() on an unexpected. argv "star" calls operator* on
 // an unexpected. argv "error" calls error() on a success value. The model must
@@ -63,6 +67,7 @@ struct Box {
 static void show_monadic();
 static void show_value_or();
 static void show_transform();
+static void show_transform_error();
 
 static void show() {
     std::expected<int, int> def;
@@ -94,6 +99,7 @@ static void show() {
     show_monadic();
     show_value_or();
     show_transform();
+    show_transform_error();
 }
 
 // and_then / or_else. Lines are the contract: a value calls and_then and does
@@ -326,6 +332,135 @@ static void show_transform() {
         return v + 1;
     });
     std::printf("transform_r %d %d\n", static_cast<int>(ar.has_value()), ar.error().v);
+}
+
+// Passed the stored E in the value category of that overload. The four
+// results differ, so a cast to the wrong category cannot match every line.
+struct ErrCat {
+    int operator()(int& e) const { return e + 10; }
+    int operator()(const int& e) const { return e + 20; }
+    int operator()(int&& e) const { return e + 30; }
+    int operator()(const int&& e) const { return e + 40; }
+};
+
+// transform_error. An unexpected is passed to the function; the result holds
+// what the function returns, as the error. A value does not call the function
+// and holds that same T. Box and R have no default constructor, so E{} or T{}
+// on those paths would not compile. A skipped call prints skipZt / skipTeC /
+// skipRvT / skipCmvT / skipBox / callTe.
+static void show_transform_error() {
+    std::expected<int, int> bad(std::unexpected<int>(9));
+    auto mapped = bad.transform_error([](int e) { return e * 2; });
+    std::printf("transform_error %d %d\n", static_cast<int>(mapped.has_value()), mapped.error());
+    std::printf("transform_error_src_err %d\n", bad.error());
+
+    int vcalls = 0;
+    std::expected<int, int> ok(42);
+    auto kept = ok.transform_error([&](int e) {
+        ++vcalls;
+        return e;
+    });
+    std::printf("transform_error_val %d %d %d\n", vcalls, static_cast<int>(kept.has_value()),
+                kept.value());
+    std::printf("transform_error_src %d\n", ok.value());
+
+    std::expected<int, int> zero(0);
+    auto z = zero.transform_error([](int e) {
+        std::printf("skipZt %d\n", e);
+        return 99;
+    });
+    std::printf("transform_error_zero %d %d\n", static_cast<int>(z.has_value()), z.value());
+
+    std::expected<int, int> zerr(std::unexpected<int>(0));
+    auto zt = zerr.transform_error([](int e) { return e + 99; });
+    std::printf("transform_error_err0 %d %d\n", static_cast<int>(zt.has_value()), zt.error());
+
+    std::expected<int, int> five(std::unexpected<int>(5));
+    auto zf = five.transform_error([](int) { return 0; });
+    std::printf("transform_error_zero_err %d %d\n", static_cast<int>(zf.has_value()), zf.error());
+
+    const std::expected<int, int> cok(42);
+    auto cval = cok.transform_error([](int e) {
+        std::printf("skipTeC %d\n", e);
+        return e;
+    });
+    std::printf("transform_error_const_val %d\n", cval.value());
+
+    const std::expected<int, int> cbad(std::unexpected<int>(3));
+    auto cu = cbad.transform_error([](int e) { return e + 7; });
+    std::printf("transform_error_const %d %d\n", static_cast<int>(cu.has_value()), cu.error());
+
+    auto rv = std::expected<int, int>(11).transform_error([](int e) {
+        std::printf("skipRvT %d\n", e);
+        return e;
+    });
+    std::printf("transform_error_rv_val %d\n", rv.value());
+
+    auto rve = std::expected<int, int>(std::unexpected<int>(6)).transform_error(
+        [](int e) { return e + 1; });
+    std::printf("transform_error_rv %d %d\n", static_cast<int>(rve.has_value()), rve.error());
+
+    const std::expected<int, int> cok2(8);
+    auto cmvo = static_cast<const std::expected<int, int>&&>(cok2).transform_error([](int e) {
+        std::printf("skipCmvT %d\n", e);
+        return e;
+    });
+    std::printf("transform_error_cmv_val %d %d\n", static_cast<int>(cmvo.has_value()), cmvo.value());
+
+    const std::expected<int, int> cok_unex(std::unexpected<int>(4));
+    auto cmv = static_cast<const std::expected<int, int>&&>(cok_unex).transform_error(
+        [](int e) { return e + 1; });
+    std::printf("transform_error_cmv %d %d\n", static_cast<int>(cmv.has_value()), cmv.error());
+
+    std::expected<Box, int> none(std::unexpected<int>(4));
+    auto nt = none.transform_error([](int e) { return e + 5; });
+    std::printf("transform_error_not %d %d\n", static_cast<int>(nt.has_value()), nt.error());
+
+    std::expected<Box, int> held(Box(6));
+    auto ht = held.transform_error([](int e) {
+        std::printf("skipBox %d\n", e);
+        return e + 1;
+    });
+    std::printf("transform_error_held %d %d\n", static_cast<int>(ht.has_value()), ht.value().v);
+
+    auto box = bad.transform_error([](int e) { return Box(e); });
+    std::printf("transform_error_box %d\n", box.error().v);
+
+    int bcalls = 0;
+    auto bval = ok.transform_error([&](int e) {
+        ++bcalls;
+        return Box(e);
+    });
+    std::printf("transform_error_box_val %d %d\n", bcalls, bval.value());
+
+    std::expected<int, R> unex_r(std::unexpected<R>(R(3)));
+    auto ar = unex_r.transform_error([](const R& r) {
+        std::printf("terr %d\n", r.v);
+        return r.v + 1;
+    });
+    std::printf("transform_error_r %d %d\n", static_cast<int>(ar.has_value()), ar.error());
+
+    std::expected<int, R> no_e(42);
+    auto ne = no_e.transform_error([](const R& r) {
+        std::printf("callTe %d\n", r.v);
+        return R(r.v);
+    });
+    std::printf("transform_error_kept %d %d\n", static_cast<int>(ne.has_value()), ne.value());
+
+    std::expected<int, int> cat(std::unexpected<int>(1));
+    auto cl = cat.transform_error(ErrCat{});
+    std::printf("transform_error_cat %d\n", cl.error());
+
+    const std::expected<int, int> ccat(std::unexpected<int>(1));
+    auto cc = ccat.transform_error(ErrCat{});
+    std::printf("transform_error_cat_const %d\n", cc.error());
+
+    auto cr = std::expected<int, int>(std::unexpected<int>(1)).transform_error(ErrCat{});
+    std::printf("transform_error_cat_rv %d\n", cr.error());
+
+    const std::expected<int, int> ccmv(std::unexpected<int>(1));
+    auto cm = static_cast<const std::expected<int, int>&&>(ccmv).transform_error(ErrCat{});
+    std::printf("transform_error_cat_cmv %d\n", cm.error());
 }
 
 int main(int argc, char** argv) {

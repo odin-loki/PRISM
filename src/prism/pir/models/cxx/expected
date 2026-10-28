@@ -32,9 +32,14 @@
 // error alternative is active, transform does not call the function and
 // returns that same E through _M_from_unex. It does not construct a T and
 // it does not return T{}.
-// transform_error, emplace, swap, comparison, and expected<void, E> are not
-// declared. A use of them fails to compile against this header and pir falls
-// back to libstdc++.
+// transform_error calls the function with the stored E when that alternative
+// is active and returns an expected that holds the function's result as the
+// error, through unexpected. When a T is stored, transform_error does not
+// call the function and returns that stored T. It does not construct an E
+// and it does not return E{} or T{}.
+// emplace, swap, comparison, and expected<void, E> are not declared. A use
+// of them fails to compile against this header and pir falls back to
+// libstdc++.
 #ifndef _PRISM_MODEL_EXPECTED
 #define _PRISM_MODEL_EXPECTED 1
 #define _GLIBCXX_EXPECTED 1  // libstdc++'s <expected> include guard: never both
@@ -278,6 +283,46 @@ public:
         if (_M_has)
             return _Ret(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_val)));
         return _Ret::_M_from_unex(static_cast<const _Er&&>(_M_storage._M_unex));
+    }
+
+    // Holds E: call with that E and return an expected that holds the
+    // function's result as the error, through unexpected. Holds T: do not
+    // call, and do not construct an E. The result holds this same T.
+    // E{} and T{} are not returned. The decltype is unevaluated, so the
+    // inactive alternative is not read.
+    template <typename _Fn>
+    auto transform_error(_Fn&& __f) & {
+        using _Gp = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_unex));
+        using _Ret = expected<_Tp, _Gp>;
+        if (!_M_has)
+            return _Ret(unexpected<_Gp>(static_cast<_Fn&&>(__f)(_M_storage._M_unex)));
+        return _Ret(_M_storage._M_val);
+    }
+    template <typename _Fn>
+    auto transform_error(_Fn&& __f) const& {
+        using _Gp = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_unex));
+        using _Ret = expected<_Tp, _Gp>;
+        if (!_M_has)
+            return _Ret(unexpected<_Gp>(static_cast<_Fn&&>(__f)(_M_storage._M_unex)));
+        return _Ret(_M_storage._M_val);
+    }
+    template <typename _Fn>
+    auto transform_error(_Fn&& __f) && {
+        using _Gp = decltype(static_cast<_Fn&&>(__f)(static_cast<_Er&&>(_M_storage._M_unex)));
+        using _Ret = expected<_Tp, _Gp>;
+        if (!_M_has)
+            return _Ret(unexpected<_Gp>(
+                static_cast<_Fn&&>(__f)(static_cast<_Er&&>(_M_storage._M_unex))));
+        return _Ret(static_cast<_Tp&&>(_M_storage._M_val));
+    }
+    template <typename _Fn>
+    auto transform_error(_Fn&& __f) const&& {
+        using _Gp = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex)));
+        using _Ret = expected<_Tp, _Gp>;
+        if (!_M_has)
+            return _Ret(unexpected<_Gp>(
+                static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex))));
+        return _Ret(static_cast<const _Tp&&>(_M_storage._M_val));
     }
 };
 
