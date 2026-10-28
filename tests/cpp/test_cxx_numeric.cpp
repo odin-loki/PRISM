@@ -10,6 +10,10 @@
 // std::iota writes value, value + 1, ... into [first, last). An inverted
 // range and a next value that does not fit are checks, then a trap, and
 // that path does not store a wrapped value.
+// std::accumulate returns init plus each element of [first, last). An
+// inverted range does not read and does not return init. An empty range
+// returns init and does not read. A sum that does not fit is a check, then
+// a trap, and that path does not return a wrapped sum.
 
 #include <doctest/doctest.h>
 
@@ -335,6 +339,94 @@ TEST_CASE("cxx numeric model: iota traps an inverted range and a next value that
     CHECK(text.find("while (__un != 0)") != std::string::npos);
 }
 
+TEST_CASE("cxx numeric model: accumulate traps an inverted range and a sum that does not fit") {
+    const std::string text = slurp(model_header());
+    REQUIRE_FALSE(text.empty());
+    CHECK(text.find("#include <iterator>") == std::string::npos);
+    CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("#include <vector") == std::string::npos);
+    CHECK(text.find("#include <algorithm>") == std::string::npos);
+    CHECK(text.find("\nreduce(") == std::string::npos);
+    CHECK(text.find("\ntransform_reduce(") == std::string::npos);
+    CHECK(text.find("\ninner_product(") == std::string::npos);
+    CHECK(text.find("\nadjacent_difference(") == std::string::npos);
+    CHECK(text.find("\npartial_sum(") == std::string::npos);
+    CHECK(text.find("\nexclusive_scan(") == std::string::npos);
+    CHECK(text.find("naming accumulate") == std::string::npos);
+    CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
+    CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
+    const auto acc_at = text.find("\naccumulate(");
+    REQUIRE(acc_at != std::string::npos);
+    const std::string acc = text.substr(acc_at);
+    const auto inv = acc.find("if (__last < __first)");
+    const auto inv_check =
+        acc.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::accumulate last is before first\")");
+    const auto empty = acc.find("if (__first == __last) return __init;");
+    const auto read = acc.find("*__first");
+    const auto ovf =
+        acc.find("__prism_check(0, \"INT-SIGNED-OVF\", \"std::accumulate sum does not fit in T\")");
+    const auto uovf =
+        acc.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::accumulate sum does not fit in T\")");
+    const auto step = acc.find("__init = static_cast<_Tp>(__init + __elem);");
+    const auto step2 = step == std::string::npos
+                           ? std::string::npos
+                           : acc.find("__init = static_cast<_Tp>(__init + __elem);", step + 1);
+    REQUIRE(inv != std::string::npos);
+    REQUIRE(inv_check != std::string::npos);
+    REQUIRE(empty != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    REQUIRE(ovf != std::string::npos);
+    REQUIRE(uovf != std::string::npos);
+    REQUIRE(step != std::string::npos);
+    REQUIRE(step2 != std::string::npos);
+    CHECK(inv < inv_check);
+    CHECK(inv_check < empty);
+    CHECK(empty < read);
+    CHECK(read < ovf);
+    CHECK(ovf < uovf);
+    const auto inv_trap = acc.find("__builtin_trap()", inv_check);
+    REQUIRE(inv_trap != std::string::npos);
+    CHECK(inv_trap < empty);
+    const std::string inv_arm = acc.substr(inv_check, inv_trap - inv_check);
+    CHECK(inv_arm.find("*__first") == std::string::npos);
+    CHECK(inv_arm.find("__elem") == std::string::npos);
+    CHECK(inv_arm.find("__init +") == std::string::npos);
+    CHECK(inv_arm.find("return") == std::string::npos);
+    const auto ovf_trap = acc.find("__builtin_trap()", ovf);
+    REQUIRE(ovf_trap != std::string::npos);
+    CHECK(ovf_trap < step);
+    CHECK(step < uovf);
+    const auto ovf_else = acc.find("else", ovf_trap);
+    REQUIRE(ovf_else != std::string::npos);
+    CHECK(ovf_else < step);
+    const std::string ovf_arm = acc.substr(ovf, ovf_trap - ovf);
+    CHECK(ovf_arm.find("__init +") == std::string::npos);
+    CHECK(ovf_arm.find("return") == std::string::npos);
+    const auto u_trap = acc.find("__builtin_trap()", uovf);
+    REQUIRE(u_trap != std::string::npos);
+    CHECK(u_trap < step2);
+    const auto u_else = acc.find("else", u_trap);
+    REQUIRE(u_else != std::string::npos);
+    CHECK(u_else < step2);
+    const std::string u_arm = acc.substr(uovf, u_trap - uovf);
+    CHECK(u_arm.find("__init +") == std::string::npos);
+    CHECK(u_arm.find("return") == std::string::npos);
+    const auto advance = acc.find("++__first");
+    REQUIRE(advance != std::string::npos);
+    CHECK(step2 < advance);
+    CHECK(text.find("while (__un != 0)") != std::string::npos);
+    CHECK(text.find("\niota(") != std::string::npos);
+    CHECK(text.find("\nlcm(") != std::string::npos);
+    CHECK(text.find("\nmidpoint(") != std::string::npos);
+    const auto mid = text.find("midpoint(");
+    const auto gcd_at = text.find("\ngcd(", mid);
+    REQUIRE(mid != std::string::npos);
+    REQUIRE(gcd_at != std::string::npos);
+    const std::string mid_body = text.substr(mid, gcd_at - mid);
+    CHECK(mid_body.find("a + b") == std::string::npos);
+    CHECK(mid_body.find("a+b") == std::string::npos);
+}
+
 TEST_CASE("cxx numeric model: setup clang++ with ASan/UBSan") {
     auto& c = ctx();
     if (c.tmp.empty()) {
@@ -403,6 +495,22 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
     CHECK(has_line(b, "iota_sc=" + std::to_string(SCHAR_MAX - 2) + "," + std::to_string(SCHAR_MAX - 1)));
     CHECK(has_line(b, "iota_uc=" + std::to_string(UCHAR_MAX - 1) + "," + std::to_string(UCHAR_MAX)));
     CHECK(has_line(b, "iota_f=0,1,2"));
+    CHECK(has_line(b, "acc=10"));
+    CHECK(has_line(b, "acc_empty=3,7"));
+    CHECK(has_line(b, "acc_neg=0"));
+    CHECK(has_line(b, "acc_min=" + std::to_string(INT_MIN + 2)));
+    CHECK(has_line(b, "acc_near=" + std::to_string(INT_MAX)));
+    CHECK(has_line(b, "acc_hi=" + std::to_string(INT_MAX)));
+    CHECK(has_line(b, "acc_imin=" + std::to_string(INT_MIN)));
+    CHECK(has_line(b, "acc_u=6"));
+    CHECK(has_line(b, "acc_unear=" + std::to_string(UINT_MAX)));
+    CHECK(has_line(b, "acc_umax=" + std::to_string(UINT_MAX)));
+    CHECK(has_line(b, "acc_uzero=" + std::to_string(UINT_MAX)));
+    CHECK(has_line(b, "acc_one=41"));
+    CHECK(has_line(b, "acc_sc=" + std::to_string(SCHAR_MAX)));
+    CHECK(has_line(b, "acc_uc=" + std::to_string(UCHAR_MAX)));
+    CHECK(has_line(b, "acc_f=2"));
+    CHECK(has_line(b, "acc_b=1"));
 
     std::string zero_out;
     REQUIRE(run_cmd({mod.string(), "zero"}, &zero_out));
@@ -632,4 +740,84 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
                                "}\n"
                                "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, iota_inv, true));
+
+    std::string aout;
+    REQUIRE(run_cmd({mod.string(), "acc-max1"}, &aout));
+    CHECK(aout.find("acc_hi=" + std::to_string(INT_MAX)) != std::string::npos);
+
+    auto expect_acc_trap = [&](const char* arg, const char* cls, const char* msg) {
+        std::string out, err;
+        CHECK_FALSE(run_cmd({mod.string(), arg}, &out, &err));
+        const std::string both = out + err;
+        CHECK(both.find(std::string("CHECK ") + cls + ":") != std::string::npos);
+        CHECK(both.find(msg) != std::string::npos);
+        CHECK(out.find("wrapped=") == std::string::npos);
+    };
+    expect_acc_trap("acc-ovf", "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-llovf", "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-minovf", "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-sc", "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-part", "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-uovf", "FUNC-CONTRACT", "std::accumulate sum does not fit in T");
+    expect_acc_trap("acc-inv", "FUNC-CONTRACT", "std::accumulate last is before first");
+
+    const fs::path acc_const = c.tmp / "acc_const.cpp";
+    std::ofstream(acc_const) << "#include <numeric>\n"
+                                "#include <climits>\n"
+                                "constexpr int seq() {\n"
+                                "  int a[4] = {1, 2, 3, 4};\n"
+                                "  return std::accumulate(a, a + 4, 0);\n"
+                                "}\n"
+                                "static_assert(seq() == 10);\n"
+                                "constexpr int empty() {\n"
+                                "  int a[1] = {7};\n"
+                                "  return std::accumulate(a, a, 3);\n"
+                                "}\n"
+                                "static_assert(empty() == 3);\n"
+                                "constexpr int hi() {\n"
+                                "  int a[1] = {0};\n"
+                                "  return std::accumulate(a, a + 1, INT_MAX);\n"
+                                "}\n"
+                                "static_assert(hi() == INT_MAX);\n"
+                                "constexpr int near() {\n"
+                                "  int a[2] = {1, 1};\n"
+                                "  return std::accumulate(a, a + 2, INT_MAX - 2);\n"
+                                "}\n"
+                                "static_assert(near() == INT_MAX);\n"
+                                "constexpr int imin() {\n"
+                                "  int a[1] = {INT_MIN};\n"
+                                "  return std::accumulate(a, a + 1, 0);\n"
+                                "}\n"
+                                "static_assert(imin() == INT_MIN);\n";
+    CHECK(syntax_only(c.cxx, acc_const, true));
+    CHECK(syntax_only(c.cxx, acc_const, false));
+
+    const fs::path acc_bad = c.tmp / "acc_bad.cpp";
+    std::ofstream(acc_bad) << "#include <numeric>\n"
+                              "#include <climits>\n"
+                              "constexpr int bad() {\n"
+                              "  int a[1] = {1};\n"
+                              "  return std::accumulate(a, a + 1, INT_MAX);\n"
+                              "}\n"
+                              "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, acc_bad, true));
+
+    const fs::path acc_ubad = c.tmp / "acc_ubad.cpp";
+    std::ofstream(acc_ubad) << "#include <numeric>\n"
+                               "#include <climits>\n"
+                               "constexpr unsigned bad() {\n"
+                               "  unsigned a[1] = {1u};\n"
+                               "  return std::accumulate(a, a + 1, UINT_MAX);\n"
+                               "}\n"
+                               "constexpr unsigned v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, acc_ubad, true));
+
+    const fs::path acc_inv = c.tmp / "acc_inv.cpp";
+    std::ofstream(acc_inv) << "#include <numeric>\n"
+                              "constexpr int bad() {\n"
+                              "  int a[2] = {4, 5};\n"
+                              "  return std::accumulate(a + 1, a, 0);\n"
+                              "}\n"
+                              "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, acc_inv, true));
 }

@@ -23,10 +23,19 @@
 // __builtin_trap. The class is INT-SIGNED-OVF for a signed integer and
 // FUNC-CONTRACT otherwise. That path does not store a wrapped value.
 //
-// Not declared here, so naming accumulate, reduce, transform_reduce,
-// inner_product, adjacent_difference, partial_sum, or exclusive_scan
-// fails to compile and the pir stage falls back to libstdc++
-// (extra.cxx_models). A partial header is intentional.
+// std::accumulate takes two pointers of one type and an initial value of
+// that type. last < first is __prism_check with class FUNC-CONTRACT, then
+// __builtin_trap. That path does not read and does not return a wrapped
+// init. first == last returns init and does not read. Otherwise the result
+// is init plus each element in order. A sum that does not fit is
+// __prism_check, then __builtin_trap. The class is INT-SIGNED-OVF for a
+// signed integer and FUNC-CONTRACT otherwise. That path does not return a
+// wrapped sum.
+//
+// Not declared here, so naming reduce, transform_reduce, inner_product,
+// adjacent_difference, partial_sum, or exclusive_scan fails to compile
+// and the pir stage falls back to libstdc++ (extra.cxx_models). A partial
+// header is intentional.
 #ifndef _GLIBCXX_NUMERIC
 #define _GLIBCXX_NUMERIC 1
 
@@ -153,6 +162,56 @@ iota(_Tp* __first, _Tp* __last, _Tp __value) {
             ++__value;
         }
     }
+}
+
+// [accumulate]. Two pointers of the same type, and an initial value of that
+// type. A value of a different type does not match this overload. last <
+// first fails the check before any read and does not return init. An empty
+// range returns init before any read. The next sum is formed only when
+// another element remains, and only in the else of the fit test, so a
+// wrapped sum is not returned. A signed integer uses INT-SIGNED-OVF. An
+// unsigned integer uses FUNC-CONTRACT. bool and a non-integer add with no
+// separate range check. The signed maximum is an unsigned shift of all-ones,
+// and the minimum is -1 minus that maximum, so the test itself does not
+// overflow. The unsigned limit is the maximum value of T.
+template <typename _Tp>
+constexpr _Tp
+accumulate(_Tp* __first, _Tp* __last, _Tp __init) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::accumulate last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __init;
+    while (__first != __last) {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                // -1 - max is the minimum, and that difference is representable.
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                const _Tp __elem = *__first;
+                if ((__elem > static_cast<_Tp>(0) && __init > __lim - __elem) ||
+                    (__elem < static_cast<_Tp>(0) && __init < __min - __elem)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::accumulate sum does not fit in T");
+                    __builtin_trap();
+                } else {
+                    __init = static_cast<_Tp>(__init + __elem);
+                }
+            } else {
+                const _Tp __elem = *__first;
+                if (__init > static_cast<_Tp>(-1) - __elem) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::accumulate sum does not fit in T");
+                    __builtin_trap();
+                } else {
+                    __init = static_cast<_Tp>(__init + __elem);
+                }
+            }
+        } else {
+            __init = static_cast<_Tp>(__init + *__first);
+        }
+        ++__first;
+    }
+    return __init;
 }
 
 }  // namespace std

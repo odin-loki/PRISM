@@ -7,8 +7,12 @@
 // that does not fit: the model must __prism_check and must not print a
 // wrapped value or 0. argv "iota-ovf", "iota-llovf", "iota-uovf", and
 // "iota-inv" are checks, not a wrapped store. argv "iota-max1" stores one
-// maximum value and writes nothing further. accumulate and the other
-// omitted algorithms are not called.
+// maximum value and writes nothing further. argv "acc-ovf", "acc-llovf",
+// "acc-minovf", and "acc-sc" are signed sums that do not fit. argv
+// "acc-uovf" is an unsigned sum that does not fit. argv "acc-part" overflows
+// on the second element. argv "acc-inv" is an inverted range. Those paths
+// are checks, not a wrapped return. argv "acc-max1" adds zero to INT_MAX.
+// reduce and the other omitted algorithms are not called.
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -100,6 +104,56 @@ constexpr bool prism_iota_f() {
 }
 static_assert(prism_iota_f());
 
+constexpr bool prism_acc_seq() {
+    int a[4] = {1, 2, 3, 4};
+    return std::accumulate(a, a + 4, 0) == 10;
+}
+static_assert(prism_acc_seq());
+
+constexpr bool prism_acc_empty() {
+    int a[1] = {7};
+    return std::accumulate(a, a, 3) == 3 && a[0] == 7;
+}
+static_assert(prism_acc_empty());
+
+constexpr bool prism_acc_neg() {
+    int a[3] = {-1, 0, 1};
+    return std::accumulate(a, a + 3, 0) == 0;
+}
+static_assert(prism_acc_neg());
+
+constexpr bool prism_acc_sc() {
+    signed char a[2] = {1, 1};
+    return std::accumulate(a, a + 2, static_cast<signed char>(SCHAR_MAX - 2)) ==
+           static_cast<signed char>(SCHAR_MAX);
+}
+static_assert(prism_acc_sc());
+
+constexpr bool prism_acc_uc() {
+    unsigned char a[2] = {1, 0};
+    return std::accumulate(a, a + 2, static_cast<unsigned char>(UCHAR_MAX - 1)) ==
+           static_cast<unsigned char>(UCHAR_MAX);
+}
+static_assert(prism_acc_uc());
+
+constexpr bool prism_acc_f() {
+    float a[3] = {0.0f, 1.0f, 1.0f};
+    return std::accumulate(a, a + 3, 0.0f) == 2.0f;
+}
+static_assert(prism_acc_f());
+
+constexpr bool prism_acc_hi() {
+    int a[1] = {0};
+    return std::accumulate(a, a + 1, INT_MAX) == INT_MAX;
+}
+static_assert(prism_acc_hi());
+
+constexpr bool prism_acc_imin() {
+    int a[1] = {INT_MIN};
+    return std::accumulate(a, a + 1, 0) == INT_MIN;
+}
+static_assert(prism_acc_imin());
+
 static bool arg_is(int argc, char** argv, const char* want) {
     if (argc < 2 || argv[1] == nullptr) return false;
     return std::strcmp(argv[1], want) == 0;
@@ -164,6 +218,60 @@ int main(int argc, char** argv) {
         std::printf("iota_hi=%d\n", a[0]);
         return 0;
     }
+    if (arg_is(argc, argv, "acc-ovf")) {
+        int a[1] = {1};
+        volatile int s = INT_MAX;
+        const int r = std::accumulate(a, a + 1, s);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-llovf")) {
+        long long a[1] = {1};
+        volatile long long s = LLONG_MAX;
+        const long long r = std::accumulate(a, a + 1, s);
+        std::printf("wrapped=%lld\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-uovf")) {
+        unsigned a[1] = {1u};
+        volatile unsigned s = UINT_MAX;
+        const unsigned r = std::accumulate(a, a + 1, s);
+        std::printf("wrapped=%u\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-minovf")) {
+        int a[1] = {-1};
+        volatile int s = INT_MIN;
+        const int r = std::accumulate(a, a + 1, s);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-sc")) {
+        signed char a[1] = {1};
+        volatile signed char s = static_cast<signed char>(SCHAR_MAX);
+        const signed char r = std::accumulate(a, a + 1, s);
+        std::printf("wrapped=%d\n", static_cast<int>(r));
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-part")) {
+        int a[2] = {INT_MAX, 1};
+        const int r = std::accumulate(a, a + 2, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-inv")) {
+        int a[2] = {4, 5};
+        const int r = std::accumulate(a + 1, a, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "acc-max1")) {
+        int a[1] = {0};
+        volatile int s = INT_MAX;
+        const int r = std::accumulate(a, a + 1, s);
+        std::printf("acc_hi=%d\n", r);
+        return 0;
+    }
     const int hi = std::midpoint(INT_MAX, INT_MAX);
     const int near = std::midpoint(INT_MAX - 2, INT_MAX);
     std::printf("hi_neg=%d hi_zero=%d hi_eq=%d\n", hi < 0, hi == 0, hi == INT_MAX);
@@ -220,5 +328,39 @@ int main(int argc, char** argv) {
     std::iota(iota_f, iota_f + 3, 0.0f);
     std::printf("iota_f=%d,%d,%d\n", static_cast<int>(iota_f[0]), static_cast<int>(iota_f[1]),
                 static_cast<int>(iota_f[2]));
+    int acc_seq[4] = {1, 2, 3, 4};
+    std::printf("acc=%d\n", std::accumulate(acc_seq, acc_seq + 4, 0));
+    int acc_empty[1] = {7};
+    std::printf("acc_empty=%d,%d\n", std::accumulate(acc_empty, acc_empty, 3), acc_empty[0]);
+    int acc_neg[3] = {-1, 0, 1};
+    std::printf("acc_neg=%d\n", std::accumulate(acc_neg, acc_neg + 3, 0));
+    int acc_min[3] = {INT_MIN, 1, 1};
+    std::printf("acc_min=%d\n", std::accumulate(acc_min, acc_min + 3, 0));
+    int acc_near[2] = {1, 1};
+    std::printf("acc_near=%d\n", std::accumulate(acc_near, acc_near + 2, INT_MAX - 2));
+    int acc_hi_slot[1] = {0};
+    std::printf("acc_hi=%d\n", std::accumulate(acc_hi_slot, acc_hi_slot + 1, INT_MAX));
+    int acc_imin[1] = {INT_MIN};
+    std::printf("acc_imin=%d\n", std::accumulate(acc_imin, acc_imin + 1, 0));
+    unsigned acc_u[3] = {1u, 2u, 3u};
+    std::printf("acc_u=%u\n", std::accumulate(acc_u, acc_u + 3, 0u));
+    unsigned acc_unear[2] = {1u, 1u};
+    std::printf("acc_unear=%u\n", std::accumulate(acc_unear, acc_unear + 2, UINT_MAX - 2u));
+    unsigned acc_umax[1] = {UINT_MAX};
+    std::printf("acc_umax=%u\n", std::accumulate(acc_umax, acc_umax + 1, 0u));
+    unsigned acc_uzero[1] = {0u};
+    std::printf("acc_uzero=%u\n", std::accumulate(acc_uzero, acc_uzero + 1, UINT_MAX));
+    int acc_one[1] = {1};
+    std::printf("acc_one=%d\n", std::accumulate(acc_one, acc_one + 1, 40));
+    signed char acc_sc[2] = {1, 1};
+    std::printf("acc_sc=%d\n", static_cast<int>(std::accumulate(
+                                   acc_sc, acc_sc + 2, static_cast<signed char>(SCHAR_MAX - 2))));
+    unsigned char acc_uc[2] = {1, 0};
+    std::printf("acc_uc=%u\n", static_cast<unsigned>(std::accumulate(
+                                   acc_uc, acc_uc + 2, static_cast<unsigned char>(UCHAR_MAX - 1))));
+    float acc_f[3] = {0.0f, 1.0f, 1.0f};
+    std::printf("acc_f=%d\n", static_cast<int>(std::accumulate(acc_f, acc_f + 3, 0.0f)));
+    bool acc_b[2] = {true, true};
+    std::printf("acc_b=%d\n", std::accumulate(acc_b, acc_b + 2, false) ? 1 : 0);
     return 0;
 }
