@@ -6,5 +6,8 @@ expected:
   time_null_true: true
   time_store_true: true
   mktime_month99_false: false
+  difftime_fit_true: true
+  difftime_nofit_false: false
 expect_class:  # the violation each false harness plants
   mktime_month99_false: "FUNC-CONTRACT"
+  difftime_nofit_false: "FUNC-CONTRACT"

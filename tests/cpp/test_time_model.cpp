@@ -1,5 +1,6 @@
-// time and mktime models. Reads time.cpp as text. Does not compile the model.
+// time, mktime, and difftime models. Reads time.cpp as text. Does not compile the model.
 // docs/finish-notes/time.md
+// docs/finish-notes/difftime.md
 
 #include <doctest/doctest.h>
 
@@ -132,4 +133,64 @@ TEST_CASE("mktime model: month 99 is not a successful calendar time") {
     CHECK(after.find("__prism_assume(0)") != std::string::npos);
     CHECK(after.find("return 0") == std::string::npos);
     CHECK(after.find("return (time_t)-1") != std::string::npos);
+}
+
+TEST_CASE("difftime model: a difference that fits is a double, and one that does not traps") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    const auto at = src.find("double difftime(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("not a calendar proof") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "double difftime(");
+    REQUIRE(!body.empty());
+    CHECK(body.find("__builtin_sub_overflow(time1, time0, &diff)") != std::string::npos);
+    CHECK(body.find("time1 - time0") == std::string::npos);
+    CHECK(body.find("tm_") == std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("return 0.0") == std::string::npos);
+
+    const auto cond = body.find("if (__builtin_sub_overflow(time1, time0, &diff))");
+    REQUIRE(cond != std::string::npos);
+    const auto arm = brace_block_after(body, cond);
+    REQUIRE(!arm.empty());
+    const auto check = arm.find("__prism_check(0, \"FUNC-CONTRACT\", \"difftime() difference does not fit in time_t\")");
+    const auto trap = arm.find("__builtin_trap()");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    CHECK(check < trap);
+    CHECK(arm.find("return") == std::string::npos);
+
+    const auto ret = body.find("return (double)diff");
+    REQUIRE(ret != std::string::npos);
+    CHECK(body.find("__builtin_trap()") < ret);
+
+    const auto mktime_body = function_body(src, "time_t mktime(");
+    REQUIRE(!mktime_body.empty());
+    const auto nullg = mktime_body.find("if (tp == 0)");
+    REQUIRE(nullg != std::string::npos);
+    CHECK(nullg < mktime_body.find("tp->tm_mon"));
+}
+
+TEST_CASE("difftime harness: fitting difference is true and a zero stand-in is FUNC-CONTRACT") {
+    const auto cpp = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.cpp");
+    const auto yml = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.yml");
+    REQUIRE(!cpp.empty());
+    REQUIRE(!yml.empty());
+    CHECK(cpp.find("#include \"../../../src/prism/pir/models/libc/time.cpp\"") != std::string::npos);
+    CHECK(cpp.find("int difftime_fit_true(") != std::string::npos);
+    CHECK(cpp.find("assert(difftime((time_t)5, (time_t)3) == 2.0)") != std::string::npos);
+    CHECK(cpp.find("assert(difftime((time_t)3, (time_t)5) == -2.0)") != std::string::npos);
+    CHECK(cpp.find("assert(difftime((time_t)4, (time_t)4) == 0.0)") != std::string::npos);
+    CHECK(cpp.find("int difftime_nofit_false(") != std::string::npos);
+    CHECK(cpp.find("assert(difftime((time_t)LONG_MAX, (time_t)LONG_MIN) == 0.0)") != std::string::npos);
+    CHECK(yml.find("difftime_fit_true: true") != std::string::npos);
+    CHECK(yml.find("difftime_nofit_false: false") != std::string::npos);
+    CHECK(yml.find("difftime_nofit_false: \"FUNC-CONTRACT\"") != std::string::npos);
+    CHECK(yml.find("mktime_month99_false: \"FUNC-CONTRACT\"") != std::string::npos);
 }
