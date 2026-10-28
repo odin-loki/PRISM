@@ -8,6 +8,12 @@
 // basic_regex is this regex. basic_regex::swap exchanges the pattern
 // pointer, the length, and the flags. It does not read a character. Two
 // empty patterns stay empty. Self-swap keeps the same block.
+// basic_regex operator== and operator!= compare two patterns. Two empty
+// patterns compare equal and do not read a character. A null pattern
+// pointer with length 0 is empty and is not loaded. Different lengths
+// compare unequal before a character is read. The same length compares
+// the stored characters. operator!= is the negation. Flags are not
+// compared. This is not PROVED and not CLEAN.
 //
 // regex_match, regex_search, and regex_replace are not called.
 //
@@ -126,6 +132,10 @@ int main(int argc, char** argv) {
     static_assert(noexcept(std::declval<std::basic_regex&>().swap(std::declval<std::basic_regex&>())));
     static_assert(std::is_void_v<decltype(std::declval<std::basic_regex&>().swap(std::declval<std::basic_regex&>()))>);
     static_assert(noexcept(std::swap(std::declval<std::basic_regex&>(), std::declval<std::basic_regex&>())));
+    static_assert(noexcept(std::declval<const std::basic_regex&>() == std::declval<const std::basic_regex&>()));
+    static_assert(noexcept(std::declval<const std::basic_regex&>() != std::declval<const std::basic_regex&>()));
+    static_assert(std::is_same_v<bool, decltype(std::declval<const std::basic_regex&>() ==
+                                                std::declval<const std::basic_regex&>())>);
 
     std::basic_regex swap_a(p, 4u);
     std::regex swap_b(".*", 3u);
@@ -266,5 +276,52 @@ int main(int argc, char** argv) {
     if (query_ok("q_swap_a", swap_a) || query_ok("q_swap_empty", swap_e1) || query_ok("q_both", both_a) ||
         query_ok("q_self", swap_self) || query_ok("q_hole", swap_hole) || query_ok("q_std_self", std_self))
         return 1;
+
+    const int eq_empty = (empty == def) ? 1 : 0;
+    const int ne_empty = (empty != def) ? 1 : 0;
+    const int eq_empty_flag = (flag_empty == def) ? 1 : 0;
+    const int ne_empty_flag = (flag_empty != def) ? 1 : 0;
+    const int eq_ptr_empty = (ptr_empty == empty && ptr_empty == flag_empty_copy) ? 1 : 0;
+    const int eq_ab = (from_ptr == from_arr && from_ptr == copy && copy == moved && from_ptr == flag_zero) ? 1 : 0;
+    const int ne_ab = (from_ptr != from_arr) ? 1 : 0;
+    const int eq_self = (from_ptr == from_ptr && !(from_ptr != from_ptr)) ? 1 : 0;
+    const int eq_len = (from_ptr == grouped) ? 1 : 0;
+    const int ne_len = (from_ptr != grouped && empty != from_ptr && from_ptr != empty) ? 1 : 0;
+    const int eq_empty_full = (empty == from_ptr) ? 1 : 0;
+    const int eq_star = (written == star && !(written != star)) ? 1 : 0;
+    std::regex first_diff("xb");
+    std::regex second_diff("ax");
+    const int ne_first = (from_ptr != first_diff && !(from_ptr == first_diff)) ? 1 : 0;
+    const int ne_second = (from_ptr != second_diff && !(from_ptr == second_diff)) ? 1 : 0;
+    const int eq_moved_empty = (lit == def && lit == empty) ? 1 : 0;
+
+    std::printf("eq_empty=%d\n", eq_empty);
+    std::printf("ne_empty=%d\n", ne_empty);
+    std::printf("eq_empty_flag=%d\n", eq_empty_flag);
+    std::printf("ne_empty_flag=%d\n", ne_empty_flag);
+    std::printf("eq_ptr_empty=%d\n", eq_ptr_empty);
+    std::printf("eq_ab=%d\n", eq_ab);
+    std::printf("ne_ab=%d\n", ne_ab);
+    std::printf("eq_self=%d\n", eq_self);
+    std::printf("eq_len=%d\n", eq_len);
+    std::printf("ne_len=%d\n", ne_len);
+    std::printf("eq_empty_full=%d\n", eq_empty_full);
+    std::printf("eq_star=%d\n", eq_star);
+    std::printf("ne_first=%d\n", ne_first);
+    std::printf("ne_second=%d\n", ne_second);
+    std::printf("eq_moved_empty=%d\n", eq_moved_empty);
+
+    if (!eq_empty || ne_empty) return fail("eq_empty");
+    if (!eq_empty_flag || ne_empty_flag) return fail("eq_empty_flag");
+    if (!eq_ptr_empty) return fail("eq_ptr_empty");
+    if (!eq_ab || ne_ab) return fail("eq_ab");
+    if (!eq_self) return fail("eq_self");
+    if (eq_len || !ne_len || eq_empty_full) return fail("eq_len");
+    if (!eq_star) return fail("eq_star");
+    if (!ne_first || !ne_second) return fail("ne_chars");
+    if (!eq_moved_empty) return fail("eq_moved_empty");
+    if (empty.data() != nullptr || def.data() != nullptr || flag_empty.data() != nullptr) return fail("empty_still_null");
+    if (from_ptr.size() != 2 || from_ptr.data()[0] != 'a' || from_ptr.data()[1] != 'b') return fail("ab_unchanged");
+    if (grouped.size() != 3 || grouped.data()[0] != '(') return fail("grouped_unchanged");
     return 0;
 }

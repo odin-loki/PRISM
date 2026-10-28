@@ -7,6 +7,12 @@
 // matches. basic_regex is this regex. basic_regex::swap exchanges the
 // pattern pointer, the length, and the flags. It does not read a character.
 // Two empty patterns stay empty. Self-swap does not free the pattern.
+// basic_regex operator== and operator!= compare two patterns. Two empty
+// patterns compare equal and do not read a character. A null pattern
+// pointer with length 0 is empty and is not loaded. Different lengths
+// compare unequal before a character is read. The same length compares
+// the stored characters. operator!= is the negation. This is not PROVED
+// and not CLEAN.
 // regex_match, regex_search, and regex_replace are not declared:
 // a true return would be a fake match.
 //
@@ -337,4 +343,115 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(empty_fn.find("return size() == 0;") != std::string::npos);
     CHECK(marks.find("return 0;") != std::string::npos);
     CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
+}
+
+TEST_CASE("cxx regex model: equality does not read a character of an empty pattern") {
+    const fs::path header = model_header();
+    REQUIRE(fs::is_regular_file(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    const std::string code = strip_comments(src);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    for (const char* name : {"regex_match", "regex_search", "regex_replace"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+
+    CHECK(src.find("bool operator==(const regex& __y) const noexcept;") != std::string::npos);
+    CHECK(src.find("bool operator!=(const regex& __y) const noexcept;") != std::string::npos);
+    CHECK(src.find("inline bool basic_regex::operator==(const basic_regex& __y) const noexcept") != std::string::npos);
+    CHECK(src.find("inline bool basic_regex::operator!=(const basic_regex& __y) const noexcept") != std::string::npos);
+
+    const std::string eq = body_of(src, "basic_regex::operator==(const basic_regex& __y) const noexcept");
+    REQUIRE_FALSE(eq.empty());
+    const auto both_empty = eq.find("if (_M_len == 0 && __y._M_len == 0) return true;");
+    REQUIRE(both_empty != std::string::npos);
+    const auto empty_ret = eq.find("return true;");
+    REQUIRE(empty_ret != std::string::npos);
+    CHECK(both_empty == empty_ret - std::string("if (_M_len == 0 && __y._M_len == 0) ").size());
+    const auto empty_prefix = eq.substr(0, empty_ret);
+    CHECK(empty_prefix.find("_M_str") == std::string::npos);
+    CHECK(empty_prefix.find("_M_flags") == std::string::npos);
+    CHECK(empty_prefix.find("[") == std::string::npos);
+    CHECK(empty_prefix.find("data()") == std::string::npos);
+
+    const auto lens = eq.find("if (_M_len != __y._M_len) return false;");
+    REQUIRE(lens != std::string::npos);
+    const auto len_ret = eq.find("return false;");
+    REQUIRE(len_ret != std::string::npos);
+    CHECK(empty_ret < lens);
+    CHECK(lens < len_ret);
+    const auto len_prefix = eq.substr(0, len_ret);
+    CHECK(len_prefix.find("_M_str") == std::string::npos);
+    CHECK(len_prefix.find("_M_flags") == std::string::npos);
+    CHECK(len_prefix.find("[") == std::string::npos);
+    CHECK(len_prefix.find("data()") == std::string::npos);
+
+    const auto chars = eq.find("if (_M_str[__i] != __y._M_str[__i]) return false;");
+    const auto scan = eq.find("for (std::size_t __i = 0; __i < _M_len; ++__i)");
+    REQUIRE(chars != std::string::npos);
+    REQUIRE(scan != std::string::npos);
+    CHECK(len_ret < scan);
+    CHECK(scan < chars);
+    CHECK(eq.find("_M_flags") == std::string::npos);
+    CHECK(eq.find("delete") == std::string::npos);
+    CHECK(eq.find("_M_free") == std::string::npos);
+    CHECK(eq.find("_M_own") == std::string::npos);
+    CHECK(eq.find("_M_from_cstr") == std::string::npos);
+    CHECK(eq.find("__prism_check") == std::string::npos);
+    CHECK(eq.find("__builtin_trap") == std::string::npos);
+    CHECK(eq.find("__prism_obj_size") == std::string::npos);
+    CHECK(eq.find("flags()") == std::string::npos);
+    CHECK(eq.find("return true;", empty_ret + 1) != std::string::npos);
+
+    const std::string ne = body_of(src, "basic_regex::operator!=(const basic_regex& __y) const noexcept");
+    REQUIRE_FALSE(ne.empty());
+    CHECK(ne.find("return !(*this == __y);") != std::string::npos);
+    CHECK(ne.find("_M_str") == std::string::npos);
+    CHECK(ne.find("_M_len") == std::string::npos);
+    CHECK(ne.find("_M_flags") == std::string::npos);
+    CHECK(ne.find("delete") == std::string::npos);
+    CHECK(ne.find("_M_free") == std::string::npos);
+    CHECK(ne.find("__prism_check") == std::string::npos);
+    CHECK(ne.find("return true") == std::string::npos);
+    CHECK(ne.find("return false") == std::string::npos);
+
+    const auto sig = src.find("inline bool basic_regex::operator==(const basic_regex& __y) const noexcept");
+    REQUIRE(sig != std::string::npos);
+    const auto note_from = src.rfind("Two empty patterns compare equal", sig);
+    REQUIRE(note_from != std::string::npos);
+    const auto note = src.substr(note_from, sig - note_from);
+    CHECK(note.find("do not read a character") != std::string::npos);
+    CHECK(note.find("is not loaded") != std::string::npos);
+    CHECK(note.find("before a character is read") != std::string::npos);
+    CHECK(note.find("stored characters") != std::string::npos);
+    CHECK(note.find("operator!= is the negation") != std::string::npos);
+    CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+
+    const std::string empty_fn = body_of(src, "bool empty() const noexcept");
+    CHECK(empty_fn.find("return size() == 0;") != std::string::npos);
+    CHECK(empty_fn.find("operator==") == std::string::npos);
+    CHECK(empty_fn.find("operator!=") == std::string::npos);
+    const std::string marks = body_of(src, "unsigned mark_count() const noexcept");
+    CHECK(marks.find("return 0;") != std::string::npos);
+    CHECK(marks.find("operator==") == std::string::npos);
+    const std::string flags_fn = body_of(src, "unsigned flags() const noexcept");
+    CHECK(flags_fn.find("return _M_flags;") != std::string::npos);
+    CHECK(flags_fn.find("operator==") == std::string::npos);
+    CHECK(src.find("[[nodiscard]] std::size_t size() const noexcept { return _M_len; }") != std::string::npos);
+    const std::string swap_pub = body_of(src, "void basic_regex::swap(basic_regex& __o) noexcept");
+    CHECK(swap_pub.find("if (this == &__o) return;") != std::string::npos);
+    CHECK(swap_pub.find("operator==") == std::string::npos);
+    CHECK(swap_pub.find("_M_str[") == std::string::npos);
+    const std::string from = body_of(src, "void regex::_M_from_cstr(const char* __s)");
+    CHECK(from.find("_M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\")") != std::string::npos);
+    const std::string flagged = body_of(src, "regex(const char* __s, unsigned __f)");
+    const auto flag_null =
+        flagged.find("if (__s == nullptr) _M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\");");
+    const auto flag_store = flagged.find("_M_flags = __f;");
+    REQUIRE(flag_null != std::string::npos);
+    REQUIRE(flag_store != std::string::npos);
+    CHECK(flag_null < flag_store);
+    CHECK(flagged.find("operator==") == std::string::npos);
+    CHECK(count_sub(code, "::operator delete(") == 1);
 }

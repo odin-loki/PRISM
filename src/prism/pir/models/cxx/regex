@@ -29,6 +29,12 @@
 // basic_regex is this regex. basic_regex::swap exchanges the pattern
 // pointer, the length, and the flags. It does not read a character. Two
 // empty patterns stay empty. Self-swap does not free the pattern.
+// basic_regex operator== and operator!= compare two patterns. Two empty
+// patterns compare equal and do not read a character. A null pattern
+// pointer with length 0 is empty and is not loaded. Different lengths
+// compare unequal before a character is read. The same length compares
+// the stored characters. operator!= is the negation. Equality does not
+// decide a match.
 // This is not PROVED and not CLEAN.
 //
 // regex_search and regex_match run a real matcher (__prism_re_*, below):
@@ -291,6 +297,11 @@ public:
     // not free the pattern. This is not a match.
     void swap(regex& __o) noexcept;
 
+    // Pattern equality. Two empty patterns compare equal. A null pattern
+    // pointer with length 0 is not loaded. Defined below. Not a match.
+    bool operator==(const regex& __y) const noexcept;
+    bool operator!=(const regex& __y) const noexcept;
+
 private:
     char* _M_str;
     std::size_t _M_len;
@@ -349,6 +360,23 @@ inline void basic_regex::swap(basic_regex& __o) noexcept {
 }
 
 inline void swap(basic_regex& __a, basic_regex& __b) noexcept { __a.swap(__b); }
+
+// Two empty patterns compare equal and do not read a character. A null
+// pattern pointer with length 0 is empty and is not loaded. Different
+// lengths compare unequal before a character is read. The same length
+// compares the stored characters. operator!= is the negation.
+// This is not PROVED and not CLEAN.
+inline bool basic_regex::operator==(const basic_regex& __y) const noexcept {
+    if (_M_len == 0 && __y._M_len == 0) return true;
+    if (_M_len != __y._M_len) return false;
+    for (std::size_t __i = 0; __i < _M_len; ++__i) {
+        if (_M_str[__i] != __y._M_str[__i]) return false;
+    }
+    return true;
+}
+
+// Negation of operator==. This body does not read a character.
+inline bool basic_regex::operator!=(const basic_regex& __y) const noexcept { return !(*this == __y); }
 
 inline void regex::_M_from_cstr(const char* __s) {
     // Null is not a pattern. Do not store ".*" and do not store an empty
