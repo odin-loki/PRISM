@@ -817,6 +817,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_list.cpp
     tests/cpp/test_cxx_span.cpp
+    tests/cpp/test_cxx_bitset.cpp
     tests/cpp/test_cxx_optional.cpp
     tests/cpp/test_cxx_initializer_list.cpp
     tests/cpp/test_cxx_string_view.cpp

@@ -1,9 +1,10 @@
 // Differential trace of std::bitset (compiled once against libstdc++ and once
 // with PRISM's model header src/prism/pir/models/cxx/bitset first on the
 // include path), both under ASan/UBSan with _GLIBCXX_ASSERTIONS. The traces
-// must be identical. operator[] at an index >= N is not called: libstdc++
-// reads a padding bit, and the model treats that index as a precondition
-// and does not return one. Shifts are part of the trace: a count of 0 is
+// must be identical. In-range operator[] reads that bit on both sides.
+// operator[] at an index >= N is not called: libstdc++ reads a padding
+// bit, and the model checks MEM-OOB-READ then traps before any word is
+// read and does not return a bit. Shifts are part of the trace: a count of 0 is
 // unchanged, a count >= N is all zeros, and bits shifted in are 0. AND is
 // part of the trace: a result bit is set only when both sides have it, and
 // padding in the last word is not a bit of the result. OR is part of the
@@ -16,8 +17,19 @@
 // padding.
 #include <bitset>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
+
+// Host stub for the model intrinsic. A passing check returns. libstdc++ does
+// not call it. In-range operator[] does not call it.
+extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
+    if (!ok) {
+        std::fprintf(stderr, "CHECK %s: %s\n", cls, msg);
+        std::fflush(stderr);
+        std::abort();
+    }
+}
 
 static_assert((std::bitset<8>(0xA5ull) << 0) == std::bitset<8>(0xA5ull));
 static_assert((std::bitset<8>(0xA5ull) >> 0) == std::bitset<8>(0xA5ull));
@@ -81,6 +93,24 @@ static_assert((~std::bitset<3>(0xFFull)).count() == 0);
 static_assert((~std::bitset<0>()).none());
 static_assert((~std::bitset<0>()).all());
 static_assert((~std::bitset<0>()).count() == 0);
+static_assert(std::bitset<8>(0xA5ull)[0]);
+static_assert(!std::bitset<8>(0xA5ull)[1]);
+static_assert(std::bitset<8>(0xA5ull)[2]);
+static_assert(!std::bitset<8>(0xA5ull)[3]);
+static_assert(!std::bitset<8>(0xA5ull)[4]);
+static_assert(std::bitset<8>(0xA5ull)[5]);
+static_assert(!std::bitset<8>(0xA5ull)[6]);
+static_assert(std::bitset<8>(0xA5ull)[7]);
+
+constexpr bool index_assign_ok() {
+    std::bitset<8> b;
+    b[0] = true;
+    b[3] = false;
+    b[2] = true;
+    return static_cast<bool>(b[0]) && !static_cast<bool>(b[1]) && static_cast<bool>(b[2]) && !static_cast<bool>(b[3]) &&
+           b.count() == 2;
+}
+static_assert(index_assign_ok());
 
 constexpr bool and_assign_ok() {
     std::bitset<8> a(0xA5ull);
