@@ -19,18 +19,25 @@
 // INT-SIGNED-OVF when value_type is a signed integer, and FUNC-CONTRACT
 // for every other type. The failing path does not return a wrapped total.
 //
+// min() of an empty valarray is a precondition failure (__prism_check,
+// FUNC-CONTRACT, then __builtin_trap). max() is the same failure. The
+// failing path does not return a value-initialized T and does not load the
+// buffer. A non-empty valarray returns the smallest stored element from
+// min() and the largest from max(). The comparison is operator<. Equal
+// elements may be either occurrence; this loop keeps the earlier one.
+//
 // resize to a different length destroys and frees the previous buffer, then
 // keeps only the new one. A shrink and a grow take that same path. The old
 // pointer is not stored in the new buffer and is not left in the object.
 //
 // Omitted math operators (+ - * / % ^ & | << >> , the compound forms, the
-// comparisons, and unary + - ~ !), and min, max, shift, cshift, and apply,
-// are not declared. A unit that names one fails to compile against this
-// header, so pir falls back to libstdc++. They are not stubbed. slice,
-// gslice, mask, and indirect subscript are omitted the same way. So is
-// construction from a pointer or an initializer_list. This file does not
-// include the vector, memory, or initializer_list headers, or any other
-// container header.
+// comparisons, and unary + - ~ !), and shift, cshift, and apply, are not
+// declared. A unit that names one fails to compile against this header, so
+// pir falls back to libstdc++. They are not stubbed. slice, gslice, mask,
+// and indirect subscript are omitted the same way. So is construction from
+// a pointer or an initializer_list. This file does not include the vector,
+// memory, algorithm, or initializer_list headers, or any other container
+// header.
 #ifndef _GLIBCXX_VALARRAY
 #define _GLIBCXX_VALARRAY 1
 
@@ -121,6 +128,28 @@ public:
         for (size_type __i = 1; __i < _M_size; ++__i)
             __acc = _S_add_checked(__acc, _M_data[__i]);
         return __acc;
+    }
+
+    // Empty is FUNC-CONTRACT then trap, before any load. That path does not
+    // return a value-initialized T. Otherwise the smallest stored element.
+    // operator< keeps the earlier element when two compare equal.
+    value_type min() const {
+        __prism_check(_M_size > 0, "FUNC-CONTRACT", "valarray::min of an empty valarray");
+        if (_M_size == 0) __builtin_trap();
+        value_type __best = _M_data[0];
+        for (size_type __i = 1; __i < _M_size; ++__i)
+            if (_M_data[__i] < __best) __best = _M_data[__i];
+        return __best;
+    }
+
+    // Same empty failure as min(). Otherwise the largest stored element.
+    value_type max() const {
+        __prism_check(_M_size > 0, "FUNC-CONTRACT", "valarray::max of an empty valarray");
+        if (_M_size == 0) __builtin_trap();
+        value_type __best = _M_data[0];
+        for (size_type __i = 1; __i < _M_size; ++__i)
+            if (__best < _M_data[__i]) __best = _M_data[__i];
+        return __best;
     }
 
     // A different length drops the previous block (shrink and grow). The

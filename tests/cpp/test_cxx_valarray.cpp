@@ -2,6 +2,8 @@
 // index before it returns an element. A default valarray has size 0.
 // sum() of an empty valarray is 0 and does not load the buffer. A total
 // that does not fit is a check and a trap, not a wrapped result.
+// min() and max() of an empty valarray are a check and a trap, not a
+// value-initialized T. A non-empty valarray returns a stored extreme.
 //
 // tests/cpp/test_cxx_list.cpp compiles a separate program that includes
 // <list>. This header has no libstdc++ private headers, so the same kind of
@@ -74,6 +76,7 @@ TEST_CASE("cxx valarray model: operator[] checks the index and a default valarra
     REQUIRE(src.find("class valarray") != std::string::npos);
     CHECK(src.find("#include <vector>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
     CHECK(src.find("#include <initializer_list>") == std::string::npos);
     CHECK(src.find("::operator new") != std::string::npos);
     CHECK(src.find("::operator delete(") != std::string::npos);
@@ -129,13 +132,12 @@ TEST_CASE("cxx valarray model: sum of an empty valarray is 0 and a total that do
     REQUIRE(src.find("class valarray") != std::string::npos);
     CHECK(src.find("#include <vector>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
     CHECK(src.find("::operator new(__n * sizeof(value_type))") != std::string::npos);
     CHECK(src.find("valarray allocation byte count overflows") != std::string::npos);
     CHECK(src.find("operator+") == std::string::npos);
     CHECK(src.find("slice_array") == std::string::npos);
     CHECK(src.find("gslice_array") == std::string::npos);
-    CHECK(src.find("value_type min(") == std::string::npos);
-    CHECK(src.find("value_type max(") == std::string::npos);
     CHECK(src.find("shift(") == std::string::npos);
     CHECK(src.find("cshift(") == std::string::npos);
     CHECK(src.find("apply(") == std::string::npos);
@@ -236,4 +238,164 @@ TEST_CASE("cxx valarray model: sum of an empty valarray is 0 and a total that do
     d[0] = 1.5;
     d[1] = -0.5;
     CHECK(d.sum() == 1.0);
+}
+
+// Empty min/max is the check then the trap in the header text. Calling it
+// here would abort the process. The trace covers that path.
+namespace {
+
+void require_extreme(const std::string& src, std::string_view sig, std::string_view check_call,
+                     std::string_view compare) {
+    const auto body = body_of(src, sig);
+    REQUIRE(!body.empty());
+    const auto check = body.find(check_call);
+    const auto trap = body.find("if (_M_size == 0) __builtin_trap();");
+    const auto load = body.find("_M_data");
+    const auto ret = body.find("return __best;");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    REQUIRE(load != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(check < trap);
+    CHECK(trap < load);
+    CHECK(load < ret);
+    CHECK(body.find(compare) != std::string::npos);
+    CHECK(body.find("return {}") == std::string::npos);
+    CHECK(body.find("return value_type{}") == std::string::npos);
+    CHECK(body.find("return value_type()") == std::string::npos);
+    CHECK(body.find("return value_type(0)") == std::string::npos);
+    CHECK(body.find("return _Tp{}") == std::string::npos);
+    CHECK(body.find("return _Tp()") == std::string::npos);
+    CHECK(body.find("return T{}") == std::string::npos);
+}
+
+struct ValarrayTag {
+    int key;
+    int id;
+    ValarrayTag() = delete;
+    ValarrayTag(int k, int i) : key(k), id(i) {}
+    bool operator<(const ValarrayTag& o) const { return key < o.key; }
+};
+
+}  // namespace
+
+TEST_CASE("cxx valarray model: min and max return a stored extreme and an empty valarray traps") {
+    const std::string src = slurp(header_path());
+    REQUIRE(src.find("class valarray") != std::string::npos);
+    CHECK(src.find("value_type min() const") != std::string::npos);
+    CHECK(src.find("value_type max() const") != std::string::npos);
+    CHECK(src.find("#include <vector>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("min_element") == std::string::npos);
+    CHECK(src.find("max_element") == std::string::npos);
+    CHECK(src.find("::operator new(__n * sizeof(value_type))") != std::string::npos);
+    CHECK(src.find("valarray allocation byte count overflows") != std::string::npos);
+    CHECK(src.find("operator+") == std::string::npos);
+    CHECK(src.find("slice_array") == std::string::npos);
+    CHECK(src.find("gslice_array") == std::string::npos);
+    CHECK(src.find("shift(") == std::string::npos);
+    CHECK(src.find("cshift(") == std::string::npos);
+    CHECK(src.find("apply(") == std::string::npos);
+
+    require_extreme(src, "value_type min() const",
+                    "__prism_check(_M_size > 0, \"FUNC-CONTRACT\", \"valarray::min of an empty valarray\")",
+                    "_M_data[__i] < __best");
+    require_extreme(src, "value_type max() const",
+                    "__prism_check(_M_size > 0, \"FUNC-CONTRACT\", \"valarray::max of an empty valarray\")",
+                    "__best < _M_data[__i]");
+
+    const auto sum = body_of(src, "value_type sum() const");
+    REQUIRE(!sum.empty());
+    const auto zero = sum.find("if (_M_size == 0) return value_type(0);");
+    const auto load = sum.find("_M_data");
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(load != std::string::npos);
+    CHECK(zero < load);
+
+    for (std::size_t n = 0; n < 2; ++n) {
+        const auto body = body_of(src, "operator[](size_type __n)", n);
+        REQUIRE(!body.empty());
+        CHECK(body.find("MEM-OOB-READ") != std::string::npos);
+        CHECK(body.find("return _Tp") == std::string::npos);
+        CHECK(body.find("return {}") == std::string::npos);
+        CHECK(body.find("return value_type") == std::string::npos);
+    }
+
+    std::valarray<int> one;
+    one.resize(1, 7);
+    CHECK(one.min() == 7);
+    CHECK(one.max() == 7);
+    CHECK(one.sum() == 7);
+
+    std::valarray<int> span;
+    span.resize(4, 0);
+    span[0] = 4;
+    span[1] = -2;
+    span[2] = 9;
+    span[3] = 3;
+    CHECK(span.min() == -2);
+    CHECK(span.max() == 9);
+    CHECK(span.sum() == 14);
+
+    std::valarray<int> ties;
+    ties.resize(3, 5);
+    ties[2] = 1;
+    CHECK(ties.min() == 1);
+    CHECK(ties.max() == 5);
+
+    std::valarray<int> ends;
+    ends.resize(3, 0);
+    ends[1] = 2;
+    ends[2] = -4;
+    CHECK(ends.min() == -4);
+    CHECK(ends.max() == 2);
+
+    std::valarray<int> lo;
+    lo.resize(1, std::numeric_limits<int>::min());
+    CHECK(lo.min() == std::numeric_limits<int>::min());
+    CHECK(lo.max() == std::numeric_limits<int>::min());
+    std::valarray<int> hi;
+    hi.resize(2, 0);
+    hi[0] = std::numeric_limits<int>::max();
+    hi[1] = std::numeric_limits<int>::min();
+    CHECK(hi.min() == std::numeric_limits<int>::min());
+    CHECK(hi.max() == std::numeric_limits<int>::max());
+    CHECK(hi.sum() == -1);
+
+    std::valarray<long long> wide;
+    wide.resize(2, 0);
+    wide[0] = std::numeric_limits<long long>::max();
+    wide[1] = std::numeric_limits<long long>::min();
+    CHECK(wide.min() == std::numeric_limits<long long>::min());
+    CHECK(wide.max() == std::numeric_limits<long long>::max());
+
+    std::valarray<unsigned> u;
+    u.resize(3, 1);
+    u[1] = 0;
+    u[2] = 9;
+    CHECK(u.min() == 0u);
+    CHECK(u.max() == 9u);
+
+    std::valarray<double> d;
+    d.resize(3, 1.5);
+    d[1] = -0.25;
+    CHECK(d.min() == -0.25);
+    CHECK(d.max() == 1.5);
+
+    std::valarray<bool> b;
+    b.resize(2, true);
+    b[1] = false;
+    CHECK(b.min() == false);
+    CHECK(b.max() == true);
+
+    std::valarray<ValarrayTag> tags(ValarrayTag(2, 1), 3);
+    tags[1] = ValarrayTag(2, 2);
+    tags[2] = ValarrayTag(0, 3);
+    const ValarrayTag tmin = tags.min();
+    const ValarrayTag tmax = tags.max();
+    CHECK(tmin.key == 0);
+    CHECK(tmin.id == 3);
+    CHECK(tmax.key == 2);
+    CHECK((tmax.id == 1 || tmax.id == 2));
 }
