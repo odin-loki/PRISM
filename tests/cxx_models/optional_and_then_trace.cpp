@@ -8,8 +8,8 @@
 // returns. Disengaged and_then does not call the function and returns a
 // disengaged optional. It does not return T{}.
 //
-// transform, or_else, and emplace are not called: the model does not declare
-// them.
+// transform and emplace are not called: the model does not declare them.
+// or_else is declared; this trace does not call it.
 #include <cstdio>
 #include <cstdlib>
 #include <optional>

@@ -9,6 +9,9 @@
 // and_then calls the function with the stored T when engaged and returns that
 // result. A disengaged optional does not call the function and yields a
 // disengaged optional.
+// or_else calls the function when disengaged and returns that optional. An
+// engaged optional does not call the function and yields an optional that
+// holds the stored T.
 
 #include <doctest/doctest.h>
 
@@ -373,5 +376,74 @@ TEST_CASE("cxx optional model: and_then calls the function or returns disengaged
         CHECK(line != "eclv 1");
         CHECK(line != "erv 1");
         CHECK(line != "ecrv 1");
+    }
+}
+
+TEST_CASE("cxx optional model: or_else calls the function or keeps the stored T") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = repo() / "tests" / "cxx_models" / "optional_or_else_trace.cpp";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "optional").string())) != std::string::npos);
+
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false, "or_else_trace"));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true, "or_else_trace"));
+    const std::vector<std::string> want{
+        "engaged 1 42", "empty 1 7",     "calls 1",     "zero 1 0",  "gotzero",   "zeroE 1 0", "calls2 0",
+        "kept 1 42",    "make_empty",    "cleared 0",   "calls3 1",  "chain 1 7", "chainE 1 42", "calls4 1",
+        "call-lv",      "lv 1",          "call-clv",    "clv 3",     "call-rv",   "rv 2",      "call-crv",
+        "crv 4",        "keep-lv 42",    "keep-clv 42", "keep-rv 42", "keep-crv 42", "box 1 42 42", "makebox",
+        "boxE 1 9",     "boxnone 0",     "moved 42 -1", "cmove 5 5",
+    };
+    CHECK(lib == mod);
+    CHECK(mod == want);
+    for (const auto& line : mod) {
+        CHECK(line.find("bad") == std::string::npos);
+        CHECK(line != "second");
+        CHECK(line != "engaged 1 7");
+        CHECK(line != "engaged 1 0");
+        CHECK(line != "engaged 0 0");
+        CHECK(line != "empty 0");
+        CHECK(line != "empty 1 0");
+        CHECK(line != "empty 1 42");
+        CHECK(line != "calls 0");
+        CHECK(line != "calls 2");
+        CHECK(line != "zero 1 7");
+        CHECK(line != "zero 0 0");
+        CHECK(line != "zeroE 0");
+        CHECK(line != "calls2 1");
+        CHECK(line != "kept 0 0");
+        CHECK(line != "kept 1 0");
+        CHECK(line != "cleared 1");
+        CHECK(line != "calls3 0");
+        CHECK(line != "calls3 2");
+        CHECK(line != "chain 1 8");
+        CHECK(line != "chain 1 0");
+        CHECK(line != "chainE 1 7");
+        CHECK(line != "chainE 1 0");
+        CHECK(line != "calls4 0");
+        CHECK(line != "calls4 2");
+        CHECK(line != "keep-lv 1");
+        CHECK(line != "keep-clv 3");
+        CHECK(line != "keep-rv 2");
+        CHECK(line != "keep-crv 4");
+        CHECK(line != "box 1 0 42");
+        CHECK(line != "box 1 42 -1");
+        CHECK(line != "boxE 1 0");
+        CHECK(line != "boxnone 1");
+        CHECK(line != "moved 42 42");
+        CHECK(line != "moved 0 -1");
+        CHECK(line != "cmove 5 -1");
+        CHECK(line != "cmove 0 5");
     }
 }

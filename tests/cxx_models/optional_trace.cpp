@@ -3,9 +3,9 @@
 // (src/prism/pir/models/cxx/optional) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
-// emplace, transform, or_else, comparison, and hash are not called: the model
-// does not declare them. value_or and and_then are declared; this trace does
-// not call them.
+// emplace, transform, comparison, and hash are not called: the model does
+// not declare them. value_or, and_then, and or_else are declared; this trace
+// does not call them.
 //
 // argv "empty" / "star" / "arrow" call value(), operator*, or operator-> on an
 // empty optional. The model must __prism_check and must not print a value.

@@ -23,10 +23,15 @@
 // function is not called and and_then returns a disengaged optional. It does
 // not return T{}.
 //
-// emplace, transform, or_else, comparison, and hash are not declared. A use
-// of them fails to compile against this header and pir falls back to
-// libstdc++. nullopt, in_place, swap, make_optional, and assignment from T
-// are not declared either, so those uses fall back too.
+// or_else, when the optional is disengaged, calls the function with no
+// arguments and returns what that function returns. When it is engaged, the
+// function is not called and or_else returns an optional that holds the
+// stored T. It does not invent a different T.
+//
+// emplace, transform, comparison, and hash are not declared. A use of them
+// fails to compile against this header and pir falls back to libstdc++.
+// nullopt, in_place, swap, make_optional, and assignment from T are not
+// declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_OPTIONAL
 #define _PRISM_MODEL_OPTIONAL 1
 #define _GLIBCXX_OPTIONAL 1  // libstdc++'s <optional> include guard: never both
@@ -43,6 +48,14 @@ namespace std {
 // the disengaged path value-initializes that type and must not build T{}.
 template <typename _T>
 struct _Prism_optional_kind {
+    static constexpr bool value = false;
+};
+
+// True only for optional<Val> of this same Val. or_else's engaged path
+// constructs that optional from the stored T and must not build a different
+// one.
+template <typename _Ret, typename _Val>
+struct _Prism_or_else_ret {
     static constexpr bool value = false;
 };
 
@@ -163,10 +176,53 @@ public:
         if (!_M_engaged) return _M_empty_result<_Ret>();
         return static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_value));
     }
+
+    // Disengaged: call __f with no arguments and return that optional.
+    // Engaged: do not call __f. Return an optional that holds this stored T,
+    // copied on &, const&, and const&&, moved on &&. That is this T, not a
+    // value-initialized one and not a different type. decltype does not call
+    // __f. The inactive T is not read. value() is not used.
+    template <typename _Fn>
+    optional<_Tp> or_else(_Fn&& __f) & {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)());
+        static_assert(_Prism_or_else_ret<_Ret, _Tp>::value,
+                      "optional::or_else requires the function to return optional<T>");
+        if (_M_engaged) return optional<_Tp>(_M_storage._M_value);
+        return static_cast<_Fn&&>(__f)();
+    }
+    template <typename _Fn>
+    optional<_Tp> or_else(_Fn&& __f) const& {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)());
+        static_assert(_Prism_or_else_ret<_Ret, _Tp>::value,
+                      "optional::or_else requires the function to return optional<T>");
+        if (_M_engaged) return optional<_Tp>(_M_storage._M_value);
+        return static_cast<_Fn&&>(__f)();
+    }
+    template <typename _Fn>
+    optional<_Tp> or_else(_Fn&& __f) && {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)());
+        static_assert(_Prism_or_else_ret<_Ret, _Tp>::value,
+                      "optional::or_else requires the function to return optional<T>");
+        if (_M_engaged) return optional<_Tp>(static_cast<_Tp&&>(_M_storage._M_value));
+        return static_cast<_Fn&&>(__f)();
+    }
+    template <typename _Fn>
+    optional<_Tp> or_else(_Fn&& __f) const&& {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)());
+        static_assert(_Prism_or_else_ret<_Ret, _Tp>::value,
+                      "optional::or_else requires the function to return optional<T>");
+        if (_M_engaged) return optional<_Tp>(static_cast<const _Tp&&>(_M_storage._M_value));
+        return static_cast<_Fn&&>(__f)();
+    }
 };
 
 template <typename _T>
 struct _Prism_optional_kind<optional<_T>> {
+    static constexpr bool value = true;
+};
+
+template <typename _Val>
+struct _Prism_or_else_ret<optional<_Val>, _Val> {
     static constexpr bool value = true;
 };
 
