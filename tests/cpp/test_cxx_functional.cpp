@@ -12,6 +12,14 @@
 // std::identity returns its argument. std::equal_to, std::not_equal_to,
 // std::less, and std::greater are function objects: a == b, !(a == b),
 // a < b, and b < a. They do not invent a third value.
+// std::plus, std::minus, std::multiplies, std::divides, std::modulus, and
+// std::negate are function objects for one type argument. A signed plus,
+// minus, or multiplies that does not fit is INT-SIGNED-OVF then a trap,
+// and that path does not print a wrapped result. An unsigned one of those
+// three that does not fit is FUNC-CONTRACT then a trap. A zero divides or
+// modulus is FUNC-CONTRACT then a trap and does not print a quotient.
+// Signed divides of the minimum by -1 is that same class then a trap.
+// negate of the most negative signed value is INT-SIGNED-OVF then a trap.
 
 #include <doctest/doctest.h>
 
@@ -209,6 +217,23 @@ bool null_not_fn_is_check(const fs::path& exe) {
     return true;
 }
 
+bool arith_trap(const fs::path& exe, const char* arg, const char* cls, const char* msg) {
+    std::string out, err;
+    if (run_cmd({exe.string(), arg}, &out, &err)) return false;
+    const std::string both = out + err;
+    if (both.find(std::string("CHECK ") + cls + ":") == std::string::npos) return false;
+    if (both.find(msg) == std::string::npos) return false;
+    if (out.find("fake=") != std::string::npos) return false;
+    if (both.find("runtime error") != std::string::npos) return false;
+    return true;
+}
+
+std::size_t count_occ(const std::string& s, const std::string& n) {
+    std::size_t c = 0;
+    for (std::size_t at = 0; (at = s.find(n, at)) != std::string::npos; at += n.size()) ++c;
+    return c;
+}
+
 std::string slurp(const fs::path& p) {
     std::ifstream in(p);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -379,6 +404,65 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     const std::string cmp_body = text.substr(cmp);
     for (const char* stand_in : {"return true", "return false", "return 0", "return {}", "return _Tp{}"})
         CHECK(cmp_body.find(stand_in) == std::string::npos);
+
+    for (const char* name : {"struct plus", "struct minus", "struct multiplies", "struct divides", "struct modulus",
+                             "struct negate"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct plus<void>", "struct minus<void>", "struct multiplies<void>",
+                             "struct divides<void>", "struct modulus<void>", "struct negate<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("for one type argument.") != std::string::npos);
+    CHECK(text.find("There is no transparent call") != std::string::npos);
+
+    struct Arm {
+        const char* check;
+        const char* result;
+    };
+    const Arm arms[] = {
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::plus result does not fit in T\")",
+         "return static_cast<_Tp>(__a + __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::plus result does not fit in T\")",
+         "return static_cast<_Tp>(__a + __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::minus result does not fit in T\")",
+         "return static_cast<_Tp>(__a - __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::minus result does not fit in T\")",
+         "return static_cast<_Tp>(__a - __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::multiplies result does not fit in T\")",
+         "return static_cast<_Tp>(__a * __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::multiplies result does not fit in T\")",
+         "return static_cast<_Tp>(__a * __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::divides divisor is zero\")",
+         "return static_cast<_Tp>(__a / __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::divides of the minimum by -1\")",
+         "return static_cast<_Tp>(__a / __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus divisor is zero\")",
+         "return static_cast<_Tp>(__a % __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus of the minimum by -1\")",
+         "return static_cast<_Tp>(__a % __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::negate of the most negative value\")",
+         "return static_cast<_Tp>(-__x);"},
+    };
+    for (const Arm& arm : arms) {
+        std::size_t seen = 0;
+        for (std::size_t check = 0; (check = text.find(arm.check, check)) != std::string::npos; ++seen) {
+            const auto trap = text.find("__builtin_trap()", check);
+            const auto ret = text.find(arm.result, trap);
+            REQUIRE(trap != std::string::npos);
+            REQUIRE(ret != std::string::npos);
+            CHECK(check < trap);
+            CHECK(trap < ret);
+            const std::string between = text.substr(check, trap - check);
+            CHECK(between.find("return") == std::string::npos);
+            CHECK(between.find(arm.result) == std::string::npos);
+            check = trap + 1;
+        }
+        CHECK(seen >= 1);
+    }
+    CHECK(count_occ(text, "__prism_check(0, \"FUNC-CONTRACT\", \"std::divides divisor is zero\")") == 2);
+    CHECK(count_occ(text, "__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus divisor is zero\")") == 2);
 }
 
 TEST_CASE("cxx functional model: setup clang++ with ASan/UBSan") {
@@ -454,6 +538,25 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_tr = false;
     bool saw_ptr = false;
     bool saw_obj = false;
+    bool saw_add = false;
+    bool saw_sub = false;
+    bool saw_mul = false;
+    bool saw_div = false;
+    bool saw_divn = false;
+    bool saw_neg = false;
+    bool saw_uadd = false;
+    bool saw_usub = false;
+    bool saw_umul = false;
+    bool saw_udiv = false;
+    bool saw_uneg = false;
+    bool saw_ll = false;
+    bool saw_sc = false;
+    bool saw_fp = false;
+    bool saw_bdiv = false;
+    bool saw_objadd = false;
+    bool saw_quot = false;
+    bool saw_bit = false;
+    bool saw_land = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -489,6 +592,25 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "tr 1 1 1 0") saw_tr = true;
         if (line == "ptr 1") saw_ptr = true;
         if (line == "obj 1 0 1 1") saw_obj = true;
+        if (line == "add 5 -5") saw_add = true;
+        if (line == "sub 1") saw_sub = true;
+        if (line == "mul -12") saw_mul = true;
+        if (line == "div 3 1") saw_div = true;
+        if (line == "divn -3 -1") saw_divn = true;
+        if (line == "neg -4 4 0") saw_neg = true;
+        if (line == "uadd 5") saw_uadd = true;
+        if (line == "usub 3") saw_usub = true;
+        if (line == "umul 6") saw_umul = true;
+        if (line == "udiv 3 1") saw_udiv = true;
+        if (line == "uneg 0 4294967295") saw_uneg = true;
+        if (line == "ll 42") saw_ll = true;
+        if (line == "sc 5") saw_sc = true;
+        if (line == "fp 4.0") saw_fp = true;
+        if (line == "bdiv 1") saw_bdiv = true;
+        if (line == "objadd 5") saw_objadd = true;
+        if (line == "quot 3 1") saw_quot = true;
+        if (line == "bit 2") saw_bit = true;
+        if (line == "land 0") saw_land = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -529,9 +651,53 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_tr);
     CHECK(saw_ptr);
     CHECK(saw_obj);
+    CHECK(saw_add);
+    CHECK(saw_sub);
+    CHECK(saw_mul);
+    CHECK(saw_div);
+    CHECK(saw_divn);
+    CHECK(saw_neg);
+    CHECK(saw_uadd);
+    CHECK(saw_usub);
+    CHECK(saw_umul);
+    CHECK(saw_udiv);
+    CHECK(saw_uneg);
+    CHECK(saw_ll);
+    CHECK(saw_sc);
+    CHECK(saw_fp);
+    CHECK(saw_bdiv);
+    CHECK(saw_objadd);
+    CHECK(saw_quot);
+    CHECK(saw_bit);
+    CHECK(saw_land);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
+    CHECK(arith_trap(mod, "plus-ovf", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-min", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-uovf", "FUNC-CONTRACT", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-ll", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-sc", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-ovf", "INT-SIGNED-OVF", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-pos", "INT-SIGNED-OVF", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-uovf", "FUNC-CONTRACT", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-min", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-max", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-neg", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-uovf", "FUNC-CONTRACT", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-sc", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "div-zero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-min", "FUNC-CONTRACT", "std::divides of the minimum by -1"));
+    CHECK(arith_trap(mod, "div-sc", "FUNC-CONTRACT", "std::divides of the minimum by -1"));
+    CHECK(arith_trap(mod, "div-uzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-fzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-bzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "mod-zero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "mod-min", "FUNC-CONTRACT", "std::modulus of the minimum by -1"));
+    CHECK(arith_trap(mod, "mod-uzero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "mod-bzero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "neg-min", "INT-SIGNED-OVF", "std::negate of the most negative value"));
+    CHECK(arith_trap(mod, "neg-sc", "INT-SIGNED-OVF", "std::negate of the most negative value"));
 
     const fs::path rejected = c.tmp / "rejected.cpp";
     std::ofstream(rejected) << "#include <functional>\n"
@@ -679,4 +845,55 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string no_lt_err;
     CHECK_FALSE(syntax_only(c.cxx, no_lt, false, &no_lt_err));
     CHECK_FALSE(syntax_only(c.cxx, no_lt, true, &no_lt_err));
+
+    const fs::path arith_ok = c.tmp / "arith_ok.cpp";
+    std::ofstream(arith_ok) << "#include <functional>\n"
+                               "struct Sum { int v; friend Sum operator+(Sum a, Sum b) { return Sum{a.v + b.v}; } };\n"
+                               "struct Quot {\n"
+                               "  int v;\n"
+                               "  friend Quot operator/(Quot a, Quot b) { return Quot{a.v / b.v}; }\n"
+                               "  friend Quot operator%(Quot a, Quot b) { return Quot{a.v % b.v}; }\n"
+                               "};\n"
+                               "int use(int a, int b, unsigned u, Sum s, Quot q) {\n"
+                               "  return std::plus<int>{}(a, b) + std::minus<int>{}(a, b)\n"
+                               "       + std::multiplies<int>{}(a, b) + std::divides<int>{}(a, b)\n"
+                               "       + std::modulus<int>{}(a, b) + std::negate<int>{}(a)\n"
+                               "       + static_cast<int>(std::plus<unsigned>{}(u, 1u))\n"
+                               "       + std::plus<Sum>{}(s, s).v + std::divides<Quot>{}(q, q).v\n"
+                               "       + std::modulus<Quot>{}(q, q).v + std::bit_and<int>{}(a, b);\n"
+                               "}\n";
+    std::string arith_ok_err;
+    CHECK(syntax_only(c.cxx, arith_ok, false, &arith_ok_err));
+    CHECK(syntax_only(c.cxx, arith_ok, true, &arith_ok_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path arith_tr = c.tmp / "arith_tr.cpp";
+    std::ofstream(arith_tr) << "#include <functional>\n"
+                               "int use(int a, double b) {\n"
+                               "  return std::plus<>{}(a, a) + static_cast<int>(std::negate<>{}(b));\n"
+                               "}\n";
+    std::string arith_tr_err;
+    CHECK(syntax_only(c.cxx, arith_tr, false, &arith_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, arith_tr, true, &arith_tr_err));
+
+    const fs::path no_add = c.tmp / "no_add.cpp";
+    std::ofstream(no_add) << "#include <functional>\n"
+                             "struct NoAdd { int v; };\n"
+                             "int use(NoAdd a, NoAdd b) { return std::plus<NoAdd>{}(a, b).v; }\n";
+    std::string no_add_err;
+    CHECK_FALSE(syntax_only(c.cxx, no_add, false, &no_add_err));
+    CHECK_FALSE(syntax_only(c.cxx, no_add, true, &no_add_err));
+
+    const fs::path add_only = c.tmp / "add_only.cpp";
+    std::ofstream(add_only) << "#include <functional>\n"
+                               "struct AddOnly {\n"
+                               "  int v;\n"
+                               "  friend AddOnly operator+(AddOnly a, AddOnly b) { return AddOnly{a.v + b.v}; }\n"
+                               "};\n"
+                               "int use(AddOnly a, AddOnly b) {\n"
+                               "  return std::plus<AddOnly>{}(a, b).v + std::minus<AddOnly>{}(a, b).v;\n"
+                               "}\n";
+    std::string add_only_err;
+    CHECK_FALSE(syntax_only(c.cxx, add_only, false, &add_only_err));
+    CHECK_FALSE(syntax_only(c.cxx, add_only, true, &add_only_err));
 }
