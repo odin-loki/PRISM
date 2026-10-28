@@ -13,7 +13,11 @@
 //    (libstdc++ <format>, reached from <memory>, turns a basic_string
 //    lvalue into a span). A temporary does not bind, so it is not viewed;
 //  * copy and copy-assignment of the view (the elements stay where they are);
-//  * data(), size(), empty();
+//  * data(), size(), size_bytes(), empty(). size_bytes() is
+//    size() * sizeof(element_type). An empty span is 0 and does not read
+//    an element. sizeof(element_type) == 0 is a check and a trap, not a 0
+//    result. A product that does not fit in size_t is a check and a trap,
+//    not a wrapped byte count;
 //  * operator[] when the index is in range, returning that element;
 //  * front() and back() when the view is non-empty, returning that element;
 //  * subspan(offset, count) and subspan(offset) (the tail) when the slice
@@ -37,6 +41,12 @@
 //    MEM-OOB-READ. That path returns a span at the viewed pointer with
 //    length 0: it does not start before the buffer and it does not extend
 //    past size().
+//  * size_bytes() when sizeof(element_type) == 0 is __prism_check with
+//    class FUNC-CONTRACT, then __builtin_trap. That is not a 0 result.
+//    size_bytes() when size() * sizeof(element_type) does not fit in
+//    size_t is __prism_check with class MEM-OOB-READ, then __builtin_trap.
+//    That path does not return a wrapped byte count. An empty span's
+//    size_bytes() is 0 and does not read an element.
 //
 // What this header does not declare is not silently different. A use of an
 // omitted API fails to compile against this file, and the pir stage lowers
@@ -46,7 +56,7 @@
 //  * std::span<T, N> and std::dynamic_extent (this template takes one
 //    argument; static-extent span is not declared);
 //  * deduction guides (std::span s = ... does not deduce a static extent);
-//  * size_bytes, and the template first/subspan;
+//  * the template first/subspan;
 //  * a constructor from an iterator pair, or from an rvalue range;
 //  * as_bytes / as_writable_bytes;
 //  * a converting constructor from span<U>.
@@ -107,6 +117,27 @@ public:
     constexpr ~span() noexcept = default;
 
     [[nodiscard]] constexpr size_type size() const noexcept { return _M_len; }
+    // size() * sizeof(element_type). An empty span is 0 and does not read an
+    // element. A zero element size is a check and a trap, not a 0 result.
+    // A product that does not fit in size_t is a check and a trap, not a
+    // wrapped byte count.
+    [[nodiscard]] constexpr size_type size_bytes() const noexcept {
+        // Discarded when the element has a size, so the division below is
+        // not instantiated for a zero-size element.
+        if constexpr (sizeof(element_type) == 0) {
+            __prism_check(0, "FUNC-CONTRACT", "std::span::size_bytes element size is zero");
+            __builtin_trap();
+        } else if (size() == 0) {
+            // Empty: 0 bytes. This does not read an element.
+            return 0;
+        } else if (size() > (static_cast<size_type>(-1) / sizeof(element_type))) {
+            __prism_check(0, "MEM-OOB-READ",
+                          "std::span::size_bytes size times element size does not fit in size_t");
+            __builtin_trap();
+        } else {
+            return size() * sizeof(element_type);
+        }
+    }
     [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
     [[nodiscard]] constexpr pointer data() const noexcept { return _M_ptr; }
 

@@ -1,8 +1,10 @@
 // Harness for std::span (tests/cpp/test_cxx_span.cpp): compiled once against
 // libstdc++ and once with PRISM's model header (src/prism/pir/models/cxx/span)
 // first on the include path. Touches size, empty, an in-range index, last(2),
-// and last(0). The view does not own: `kept` is still the same int after the
-// span dies. last(0) prints a size and does not read an element.
+// last(0), and size_bytes(). The view does not own: `kept` is still the same
+// int after the span dies. last(0) prints a size and does not read an element.
+// size_bytes() of the 4-int span is 4 * sizeof(int). size_bytes() of an empty
+// span, including last(0), is 0 and does not read an element.
 #include <cstdio>
 #include <cstdlib>
 #include <span>
@@ -38,5 +40,8 @@ int main() {
     std::printf("last0=%zu %d\n", z.size(), z.data() == s.data() + s.size() ? 1 : 0);
     std::span<int> ze = none.last(0);
     std::printf("none_last=%zu\n", ze.size());
+    std::printf("bytes=%zu\n", s.size_bytes());
+    std::printf("none_bytes=%zu\n", none.size_bytes());
+    std::printf("last0_bytes=%zu\n", z.size_bytes());
     return 0;
 }

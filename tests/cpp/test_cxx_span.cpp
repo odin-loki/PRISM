@@ -255,7 +255,7 @@ TEST_CASE("cxx span model: valid index reads the element and the view does not o
     auto a = run_lines(lib);
     auto b = run_lines(mod);
     CHECK(a == b);
-    REQUIRE(b.size() >= 10);
+    REQUIRE(b.size() >= 13);
     CHECK(b[0] == "size=4");
     CHECK(b[1] == "empty=0");
     CHECK(b[2] == "at2=30");
@@ -263,14 +263,17 @@ TEST_CASE("cxx span model: valid index reads the element and the view does not o
     CHECK(b[7] == "last2=2 30 40 1");
     CHECK(b[8] == "last0=0 1");
     CHECK(b[9] == "none_last=0");
+    CHECK(b[10] == "bytes=" + std::to_string(static_cast<unsigned long long>(4) * sizeof(int)));
+    CHECK(b[11] == "none_bytes=0");
+    CHECK(b[12] == "last0_bytes=0");
 }
 
 TEST_CASE("cxx span model: last past size is a check and a null nonzero size stays one") {
     const std::string src = slurp(span_header());
     CHECK(src.find("#include <memory>") == std::string::npos);
-    CHECK(src.find("size_bytes(") == std::string::npos);
     CHECK(src.find("~span() noexcept = default") != std::string::npos);
-    CHECK(src.find("size_bytes, and the template first/subspan") != std::string::npos);
+    CHECK(src.find("size_bytes, and the template first/subspan") == std::string::npos);
+    CHECK(src.find("the template first/subspan") != std::string::npos);
 
     const auto ctor = src.find("span(pointer __p, size_type __n) noexcept");
     REQUIRE(ctor != std::string::npos);
@@ -373,4 +376,145 @@ TEST_CASE("cxx span model: last past size and a null nonzero span abort in the c
     std::string zout;
     REQUIRE(run_cmd({exe.string(), "z"}, &zout));
     CHECK(zout.find("z=0\n") != std::string::npos);
+}
+
+TEST_CASE("cxx span model: size_bytes is size times the element size") {
+    const std::string src = slurp(span_header());
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("size_bytes, and the template first/subspan") == std::string::npos);
+    CHECK(src.find("the template first/subspan") != std::string::npos);
+    CHECK(src.find("~span() noexcept = default") != std::string::npos);
+
+    const auto fn = src.find("size_bytes() const noexcept");
+    REQUIRE(fn != std::string::npos);
+    const auto fn_end = src.find("empty() const noexcept", fn);
+    REQUIRE(fn_end != std::string::npos);
+    const std::string body = src.substr(fn, fn_end - fn);
+
+    const auto zero = body.find("sizeof(element_type) == 0");
+    const auto zero_check =
+        body.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::span::size_bytes element size is zero\")");
+    const auto zero_trap = body.find("__builtin_trap()");
+    const auto empty_if = body.find("size() == 0");
+    const auto empty_ret = body.find("return 0;", empty_if == std::string::npos ? 0 : empty_if);
+    const auto over = body.find("size() > (static_cast<size_type>(-1) / sizeof(element_type))");
+    const auto over_check = body.find("__prism_check(0, \"MEM-OOB-READ\",");
+    const auto over_msg =
+        body.find("std::span::size_bytes size times element size does not fit in size_t");
+    REQUIRE(zero_trap != std::string::npos);
+    const auto over_trap = body.find("__builtin_trap()", zero_trap + std::string("__builtin_trap()").size());
+    const auto prod = body.find("return size() * sizeof(element_type);");
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(zero_check != std::string::npos);
+    REQUIRE(empty_if != std::string::npos);
+    REQUIRE(empty_ret != std::string::npos);
+    REQUIRE(over != std::string::npos);
+    REQUIRE(over_check != std::string::npos);
+    REQUIRE(over_msg != std::string::npos);
+    REQUIRE(over_trap != std::string::npos);
+    REQUIRE(prod != std::string::npos);
+    CHECK(zero < zero_check);
+    CHECK(zero_check < zero_trap);
+    CHECK(zero_trap < empty_if);
+    CHECK(empty_if < empty_ret);
+    CHECK(empty_ret < over);
+    CHECK(over < over_check);
+    CHECK(over_check < over_msg);
+    CHECK(over_msg < over_trap);
+    CHECK(over_trap < prod);
+    CHECK(body.substr(zero_check, zero_trap - zero_check).find("return") == std::string::npos);
+    CHECK(body.substr(over_check, over_trap - over_check).find("return") == std::string::npos);
+    CHECK(body.find("return *") == std::string::npos);
+    CHECK(body.find("*_M_ptr") == std::string::npos);
+    CHECK(body.find("operator[]") == std::string::npos);
+    CHECK(body.find("_M_ptr[") == std::string::npos);
+}
+
+TEST_CASE("cxx span model: size_bytes of an empty span is 0 and a product that does not fit traps") {
+    auto& c = ctx();
+    if (!c.ok) {
+        MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+        return;
+    }
+    const fs::path src = c.tmp / "span_size_bytes.cpp";
+    {
+        std::ofstream out(src);
+        out << "#include <span>\n#include <cstddef>\n#include <cstdio>\n#include <cstdlib>\n"
+               "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+               "  if (!ok) {\n"
+               "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls, msg);\n"
+               "    std::fflush(stderr);\n"
+               "    std::abort();\n"
+               "  }\n"
+               "}\n"
+               "int main(int argc, char** argv) {\n"
+               "  if (argc > 1 && argv[1][0] == 'e') {\n"
+               "    int* p = nullptr;\n"
+               "    std::span<int> s(p, 0);\n"
+               "    std::printf(\"empty_bytes=%zu\\n\", s.size_bytes());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (argc > 1 && argv[1][0] == 'f') {\n"
+               "    int one = 1;\n"
+               "    const std::size_t n = static_cast<std::size_t>(-1) / sizeof(int);\n"
+               "    std::span<int> s(&one, n);\n"
+               "    std::printf(\"fit=%zu\\n\", s.size_bytes());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (argc > 1 && argv[1][0] == 'z') {\n"
+               "    struct Z { int a[0]; };\n"
+               "    static_assert(sizeof(Z) == 0);\n"
+               "    Z z{};\n"
+               "    std::span<Z> empty(&z, 0);\n"
+               "    std::printf(\"zero_empty=%zu\\n\", empty.size_bytes());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  int one = 1;\n"
+               "  const std::size_t n = static_cast<std::size_t>(-1) / sizeof(int) + 1;\n"
+               "  std::span<int> s(&one, n);\n"
+               "  std::printf(\"wrapped=%zu\\n\", s.size_bytes());\n"
+               "  return 0;\n"
+               "}\n";
+    }
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+#ifdef _WIN32
+    const fs::path exe = c.tmp / "span_size_bytes.exe";
+#else
+    const fs::path exe = c.tmp / "span_size_bytes";
+#endif
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> build{c.cxx};
+    build.insert(build.end(), flags.begin(), flags.end());
+    build.push_back("-isystem");
+    build.push_back(models.string());
+    build.push_back(src.string());
+    build.push_back("-o");
+    build.push_back(exe.string());
+    REQUIRE(run_cmd(build));
+
+    std::string empty_out;
+    REQUIRE(run_cmd({exe.string(), "e"}, &empty_out));
+    CHECK(empty_out.find("empty_bytes=0\n") != std::string::npos);
+
+    const auto nfit = static_cast<std::size_t>(-1) / sizeof(int);
+    const auto fit_bytes = static_cast<unsigned long long>(nfit) * sizeof(int);
+    std::string fit_out;
+    REQUIRE(run_cmd({exe.string(), "f"}, &fit_out));
+    CHECK(fit_out.find("fit=" + std::to_string(fit_bytes) + "\n") != std::string::npos);
+    CHECK(fit_out.find("wrapped=") == std::string::npos);
+
+    std::string out;
+    std::string err;
+    CHECK_FALSE(run_cmd({exe.string()}, &out, &err));
+    CHECK(out.find("wrapped=") == std::string::npos);
+    CHECK(err.find("CHECK MEM-OOB-READ") != std::string::npos);
+    CHECK(err.find("std::span::size_bytes size times element size does not fit in size_t") != std::string::npos);
+
+    std::string zero_out;
+    std::string zero_err;
+    CHECK_FALSE(run_cmd({exe.string(), "z"}, &zero_out, &zero_err));
+    CHECK(zero_out.find("zero_empty=") == std::string::npos);
+    CHECK(zero_err.find("CHECK FUNC-CONTRACT") != std::string::npos);
+    CHECK(zero_err.find("std::span::size_bytes element size is zero") != std::string::npos);
 }
