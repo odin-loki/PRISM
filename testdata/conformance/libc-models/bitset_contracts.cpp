@@ -10,7 +10,7 @@
 #include <stdexcept>
 
 // set / reset / flip / test / operator[] / count / size / all / any / none /
-// to_ulong on a value that fits in unsigned long.
+// to_ulong on a value that fits in unsigned long. Shifts are bitset_shift_true.
 int bitset_ops_true(int x) {
     std::bitset<8> b;
     assert(b.size() == 8);
@@ -56,10 +56,144 @@ int bitset_empty_true(int) {
     b.set();
     b.flip();
     b.reset();
+    b <<= 0;
+    b >>= 1;
+    assert((b << 4) == b);
+    assert((b >> 0) == b);
     assert(!b.any());
+    assert(b.all());
+    assert(b.count() == 0);
+    assert(b.to_ulong() == 0u);
     bool threw = false;
     try {
         (void)b.test(0);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    assert(threw);
+    return 0;
+}
+
+// Shifts. A count of 0 leaves the bits unchanged. A count >= N yields every
+// bit 0. Bits shifted in are 0. The original is unchanged by << and >>.
+// test() at N still throws after a shift; it does not read a padding bit.
+int bitset_shift_true(int) {
+    std::bitset<8> b(0xA5u);
+    assert((b << 0) == b);
+    assert((b >> 0) == b);
+    b <<= 0;
+    assert(b == std::bitset<8>(0xA5u));
+    assert((b << 1) == std::bitset<8>(0x4Au));
+    assert((b >> 1) == std::bitset<8>(0x52u));
+    assert(b == std::bitset<8>(0xA5u));
+    assert((std::bitset<8>(1u) << 7) == std::bitset<8>(0x80u));
+    assert((std::bitset<8>(0x80u) >> 7) == std::bitset<8>(1u));
+    b <<= 8;
+    assert(b.none());
+    b = std::bitset<8>(0xFFu);
+    b >>= 9;
+    assert(b.none());
+    b = std::bitset<8>(0xFFu);
+    b <<= std::numeric_limits<std::size_t>::max();
+    assert(b.none());
+    assert((std::bitset<8>(0xA5u) >> std::numeric_limits<std::size_t>::max()).none());
+
+    std::bitset<3> n(0x7u);
+    n <<= 1;
+    assert(n == std::bitset<3>(0x6u));
+    assert(n.to_ulong() == 6u);
+    assert(n.count() == 2);
+    assert(!n.test(0));
+    assert(n.test(1));
+    assert(n.test(2));
+    n >>= 1;
+    assert(n == std::bitset<3>(0x3u));
+    assert(n.to_ulong() == 3u);
+    assert(n.count() == 2);
+    assert((std::bitset<3>(0x7u) >> 1) == std::bitset<3>(0x3u));
+
+    std::bitset<4> filled;
+    filled.set();
+    filled <<= 1;
+    assert(!filled.all());
+    assert(filled.count() == 3);
+    assert(!filled.test(0));
+    assert(filled.test(3));
+
+    std::bitset<70> w;
+    w.set(0);
+    w.set(63);
+    w.set(69);
+    const auto held = w;
+    w <<= 1;
+    assert(!w.test(0));
+    assert(w.test(1));
+    assert(!w.test(63));
+    assert(w.test(64));
+    assert(!w.test(69));
+    assert(w.count() == 2);
+    assert(held.test(0) && held.test(63) && held.test(69));
+    assert((held << 1) == w);
+    w >>= 1;
+    // Bit 69 was shifted off the top, so the round trip does not restore it.
+    assert(w.test(0));
+    assert(w.test(63));
+    assert(!w.test(64));
+    assert(!w.test(69));
+    assert(w.count() == 2);
+
+    std::bitset<70> across;
+    across.set(0);
+    across.set(4);
+    const auto across_src = across;
+    across <<= 65;
+    assert(!across.test(0));
+    assert(across.test(65));
+    assert(across.test(69));
+    assert(across.count() == 2);
+    assert(across_src.test(0) && across_src.test(4));
+    across >>= 65;
+    assert(across == across_src);
+
+    std::bitset<70> words;
+    words.set(0);
+    words.set(31);
+    words <<= 32;
+    assert(words.test(32));
+    assert(words.test(63));
+    assert(!words.test(0));
+    assert(words.count() == 2);
+    words >>= 32;
+    assert(words.test(0));
+    assert(words.test(31));
+    assert(words.count() == 2);
+
+    std::bitset<70> aligned;
+    aligned.set(0);
+    aligned.set(5);
+    aligned <<= 64;
+    assert(aligned.test(64));
+    assert(aligned.test(69));
+    assert(!aligned.test(0));
+    assert(!aligned.test(5));
+    assert(aligned.count() == 2);
+    aligned >>= 64;
+    assert(aligned.test(0));
+    assert(aligned.test(5));
+    assert(!aligned.test(64));
+    assert(aligned.count() == 2);
+
+    std::bitset<70> top;
+    top.set(69);
+    top <<= 1;
+    assert(top.none());
+    top.set(0);
+    top >>= 70;
+    assert(top.none());
+
+    bool threw = false;
+    try {
+        (void)(std::bitset<4>(0xFu) << 1).test(4);
     } catch (const std::out_of_range&) {
         threw = true;
     }

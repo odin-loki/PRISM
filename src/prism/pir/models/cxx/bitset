@@ -7,6 +7,10 @@
 //    libstdc++ uses). There is no heap allocation. bitset<0> stores nothing;
 //  * set, reset, flip (the whole set and one position), test, operator[],
 //    count, size, all, any, none;
+//  * operator<<=, operator>>=, operator<<, and operator>>. A shift of 0
+//    leaves the bits unchanged. A shift of N or more yields every bit 0.
+//    New bits shifted in are 0. The shift reads and writes only the stored
+//    words, and a padding bit of the last word does not become a bit;
 //  * to_ulong() when the value fits in unsigned long. That is every value
 //    of a bitset whose N is at most the width of unsigned long (32 or 64,
 //    whichever the platform gives unsigned long). A bit at or above that
@@ -22,8 +26,8 @@
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
 // libstdc++ (reported in the function's `extra.cxx_models`). String
-// constructors, to_string, shifts, bitwise operators, and std::hash are not
-// stubbed.
+// constructors, to_string, bitwise operators, and std::hash are not stubbed.
+// to_string and a string constructor need <string>.
 #ifndef _PRISM_MODEL_BITSET
 #define _PRISM_MODEL_BITSET 1
 #define _GLIBCXX_BITSET 1  // libstdc++'s <bitset> include guard: never both
@@ -86,6 +90,50 @@ class bitset {
             const unsigned long __mask = ~(~static_cast<unsigned long>(0) << (_Nb % _S_bpw));
             _M_words._M_w[_S_nwords - 1] &= __mask;
         }
+    }
+
+    // __pos is in 1 .. _Nb-1, so the word count of the shift is < _S_nwords
+    // and every index below stays inside the stored words. High to low, so a
+    // source word is still the old value when it is read.
+    constexpr void _M_shift_left(size_t __pos) noexcept {
+        const size_t __wshift = __pos / _S_bpw;
+        const size_t __offset = __pos % _S_bpw;
+        if (__offset == 0) {
+            for (size_t __n = _S_nwords; __n > __wshift; --__n)
+                _M_words._M_w[__n - 1] = _M_words._M_w[__n - 1 - __wshift];
+        } else {
+            const size_t __sub = _S_bpw - __offset;
+            for (size_t __n = _S_nwords; __n > __wshift + 1; --__n) {
+                const size_t __i = __n - 1;
+                _M_words._M_w[__i] = (_M_words._M_w[__i - __wshift] << __offset) |
+                                     (_M_words._M_w[__i - __wshift - 1] >> __sub);
+            }
+            _M_words._M_w[__wshift] = _M_words._M_w[0] << __offset;
+        }
+        for (size_t __i = 0; __i < __wshift; ++__i) _M_words._M_w[__i] = 0;
+        _M_sanitize();
+    }
+
+    // Same bound as _M_shift_left. Padding in the last word is cleared first:
+    // a right shift would otherwise move it into a bit the set owns. Low to
+    // high, so a source word is still the old value when it is read.
+    constexpr void _M_shift_right(size_t __pos) noexcept {
+        _M_sanitize();
+        const size_t __wshift = __pos / _S_bpw;
+        const size_t __offset = __pos % _S_bpw;
+        const size_t __limit = _S_nwords - __wshift - 1;
+        if (__offset == 0) {
+            for (size_t __n = 0; __n <= __limit; ++__n)
+                _M_words._M_w[__n] = _M_words._M_w[__n + __wshift];
+        } else {
+            const size_t __sub = _S_bpw - __offset;
+            for (size_t __n = 0; __n < __limit; ++__n)
+                _M_words._M_w[__n] = (_M_words._M_w[__n + __wshift] >> __offset) |
+                                     (_M_words._M_w[__n + __wshift + 1] << __sub);
+            _M_words._M_w[__limit] = _M_words._M_w[_S_nwords - 1] >> __offset;
+        }
+        for (size_t __n = __limit + 1; __n < _S_nwords; ++__n) _M_words._M_w[__n] = 0;
+        _M_sanitize();
     }
 
     constexpr bool _M_unchecked_test(size_t __position) const noexcept {
@@ -276,6 +324,43 @@ public:
             return static_cast<unsigned long long>(_M_words._M_w[0]) +
                    (static_cast<unsigned long long>(_M_words._M_w[1]) << (__CHAR_BIT__ * sizeof(unsigned long)));
         }
+    }
+
+    // [bitset.members]. A count of 0 leaves every bit where it is. A count
+    // >= N clears the set. Bits shifted in are 0. bitset<0> stays empty.
+    constexpr bitset& operator<<=(size_t __position) noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else if (__position == 0) {
+            return *this;
+        } else if (__position >= _Nb) {
+            return reset();
+        } else {
+            _M_shift_left(__position);
+            return *this;
+        }
+    }
+    constexpr bitset& operator>>=(size_t __position) noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else if (__position == 0) {
+            return *this;
+        } else if (__position >= _Nb) {
+            return reset();
+        } else {
+            _M_shift_right(__position);
+            return *this;
+        }
+    }
+    constexpr bitset operator<<(size_t __position) const noexcept {
+        bitset __out(*this);
+        __out <<= __position;
+        return __out;
+    }
+    constexpr bitset operator>>(size_t __position) const noexcept {
+        bitset __out(*this);
+        __out >>= __position;
+        return __out;
     }
 
     constexpr bool operator==(const bitset& __rhs) const noexcept {
