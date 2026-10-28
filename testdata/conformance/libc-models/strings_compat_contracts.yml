@@ -5,5 +5,7 @@ property: libc-contract
 expected:
   ffs_least_true: true
   ffs_zero_false: false
+  ffsll_zero_false: false
 expect_class:  # the violation each false harness plants
   ffs_zero_false: "FUNC-CONTRACT"
+  ffsll_zero_false: "FUNC-CONTRACT"

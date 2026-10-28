@@ -1,5 +1,5 @@
-// ffs and ffsl models. Reads the model and the contract harness as text.
-// Does not compile them. docs/finish-notes/ffs.md
+// ffs, ffsl, and ffsll models. Reads the model and the contract harness as text.
+// Does not compile them. docs/finish-notes/ffs.md docs/finish-notes/ffsll.md
 
 #include <doctest/doctest.h>
 
@@ -126,20 +126,29 @@ TEST_CASE("ffs model: zero is zero and the least set bit is one plus its index")
     CHECK(src.find("The result is one plus the index of the least set bit, and it is never a wrapped negative.") !=
           std::string::npos);
     CHECK(src.find("ffsl follows the same rule on long.") != std::string::npos);
+    CHECK(src.find("ffsll(0) is 0. ffsll(1) is 1. ffsll(2) is 2. ffsll(8) is 4.") != std::string::npos);
+    CHECK(src.find("The argument is converted to unsigned long long before the scan. Do not negate it.") !=
+          std::string::npos);
+    CHECK(src.find("A value with only the high bit set returns 64.") != std::string::npos);
     CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
     CHECK(count_of(src, "PROVED") == 1);
     CHECK(count_of(src, "CLEAN") == 1);
-    CHECK(defined_models(src) == std::set<std::string>{"ffs", "ffsl"});
-    for (const char* banned : {"strcasecmp", "locale", "ffsll"}) CHECK(src.find(banned) == std::string::npos);
+    CHECK(defined_models(src) == std::set<std::string>{"ffs", "ffsl", "ffsll"});
+    for (const char* banned : {"strcasecmp", "locale"}) CHECK(src.find(banned) == std::string::npos);
 
     const auto ffs_body = function_body(src, "int ffs(int i) {");
     const auto ffsl_body = function_body(src, "int ffsl(long i) {");
+    const auto ffsll_body = function_body(src, "int ffsll(long long i) {");
     REQUIRE(!ffs_body.empty());
     REQUIRE(!ffsl_body.empty());
+    REQUIRE(!ffsll_body.empty());
     CHECK(ffs_body.find('-') == std::string::npos);
     CHECK(ffsl_body.find('-') == std::string::npos);
+    CHECK(ffsll_body.find('-') == std::string::npos);
     CHECK(ffs_body.find("never a wrapped negative") != std::string::npos);
     CHECK(ffsl_body.find("never a wrapped negative") != std::string::npos);
+    CHECK(ffsll_body.find("never a wrapped negative") != std::string::npos);
+    CHECK(ffsll_body.find("unsigned long long") != std::string::npos);
 
     CHECK(statements(src, "int ffs(int i) {") == std::vector<std::string>{
                                                      "unsigned int x = (unsigned int)i;",
@@ -161,9 +170,19 @@ TEST_CASE("ffs model: zero is zero and the least set bit is one plus its index")
                                                        "}",
                                                        "return bit + 1;",
                                                    });
+    CHECK(statements(src, "int ffsll(long long i) {") == std::vector<std::string>{
+                                                             "unsigned long long x = (unsigned long long)i;",
+                                                             "if (x == 0ull) return 0;",
+                                                             "int bit = 0;",
+                                                             "while (bit < 63 && (x & 1ull) == 0ull) {",
+                                                             "x >>= 1;",
+                                                             "bit += 1;",
+                                                             "}",
+                                                             "return bit + 1;",
+                                                         });
 }
 
-TEST_CASE("ffs contracts: harness includes the model and calls ffs and ffsl") {
+TEST_CASE("ffs contracts: harness includes the model and calls ffs, ffsl, and ffsll") {
     const auto cpp = slurp(repo() / "testdata" / "conformance" / "libc-models" / "strings_compat_contracts.cpp");
     REQUIRE(!cpp.empty());
     CHECK(cpp.find("#include \"../../../src/prism/pir/models/libc/strings_compat.cpp\"") != std::string::npos);
@@ -173,10 +192,16 @@ TEST_CASE("ffs contracts: harness includes the model and calls ffs and ffsl") {
     CHECK(cpp.find("assert(ffs(2) == 2);") != std::string::npos);
     CHECK(cpp.find("assert(ffs(8) == 4);") != std::string::npos);
     CHECK(cpp.find("assert(ffs(0) == 1);") != std::string::npos);
+    CHECK(cpp.find("assert(ffsll(0LL) == 0);") != std::string::npos);
+    CHECK(cpp.find("assert(ffsll(1LL) == 1);") != std::string::npos);
+    CHECK(cpp.find("assert(ffsll(2LL) == 2);") != std::string::npos);
+    CHECK(cpp.find("assert(ffsll(8LL) == 4);") != std::string::npos);
+    CHECK(cpp.find("assert(ffsll(0LL) == 1);") != std::string::npos);
     CHECK(cpp.find("ffsl(") != std::string::npos);
+    CHECK(cpp.find("ffsll(") != std::string::npos);
     CHECK(cpp.find("ffs(") != std::string::npos);
     CHECK(cpp.find("__assert_fail") != std::string::npos);
-    for (const char* banned : {"strcasecmp", "locale", "ffsll"}) CHECK(cpp.find(banned) == std::string::npos);
+    for (const char* banned : {"strcasecmp", "locale"}) CHECK(cpp.find(banned) == std::string::npos);
 }
 
 TEST_CASE("ffs contracts: yml has a true function, a false function, and expect_class") {
