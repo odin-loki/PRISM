@@ -352,6 +352,9 @@ int memcpy_true(int n, int j) {
     void *r = memcpy(d, s, (size_t)n);
     assert(r == d);
     assert(d[j] == (j < n ? s[j] : d0[j]));
+    /* Names memccpy. The copy is not a scored copy. */
+    char extra[N + 1];
+    (void)memccpy(extra, s, 'a', (size_t)n);
     return 0;
 }
 

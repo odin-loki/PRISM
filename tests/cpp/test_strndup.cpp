@@ -52,9 +52,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("strndup model: null returns before allocation, n == 0 does not read s") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 6);
-    CHECK(count_of(src, "PROVED") == 6);
-    CHECK(count_of(src, "CLEAN") == 6);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 7);
+    CHECK(count_of(src, "PROVED") == 7);
+    CHECK(count_of(src, "CLEAN") == 7);
 
     const auto strdup_at = src.find("char *strdup(const char *s) {");
     const auto strndup_at = src.find("char *strndup(const char *s, size_t n) {");

@@ -289,6 +289,33 @@ void *memrchr(const void *s, int c, size_t n) {
     return 0;
 }
 
+/* memccpy copies bytes from s into d until c is copied, or n bytes are
+ * copied, whichever comes first. The stop byte is (unsigned char)(c & 0xff),
+ * the same conversion memchr uses.
+ * n == 0 returns a null pointer and does not read d or s.
+ * A null d or a null s with n > 0 is STR-NULL-ARG and returns a null
+ * pointer before any read or write.
+ * The copy does not read or write index i for i >= n.
+ * If c is copied, the return is a pointer to the next byte of d.
+ * If c is not found, the return is a null pointer.
+ * This is not a proof of the copy.
+ * This is not PROVED and not CLEAN. */
+void *memccpy(void *d, const void *s, int c, size_t n) {
+    if (n == 0) return 0;
+    __prism_check(d != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter d");
+    if (d == 0) return 0;
+    __prism_check(s != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    unsigned char *dd = (unsigned char *)d;
+    const unsigned char *ss = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    for (size_t i = 0; i < n; ++i) {
+        dd[i] = ss[i];
+        if (dd[i] == want) return (void *)(dd + i + 1);
+    }
+    return 0;
+}
+
 void *malloc(size_t n);
 
 char *strdup(const char *s) {
@@ -298,22 +325,6 @@ char *strdup(const char *s) {
     if (!p) return 0;
     __prism_memcpy(p, s, n + 1, 0);
     return p;
-}
-
-
-/* C23 7.26.2.2 memccpy: copy up to n bytes, stopping after the first c. */
-void *memccpy(void *d, const void *s, int c, size_t n) {
-    if (n == 0) return 0;
-    __prism_check(d != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter d");
-    __prism_check(s != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter s");
-    unsigned char *x = (unsigned char *)d;
-    const unsigned char *y = (const unsigned char *)s;
-    const unsigned char want = (unsigned char)(c & 0xff);
-    for (size_t i = 0; i < n; i++) {
-        x[i] = y[i];
-        if (y[i] == want) return x + i + 1;
-    }
-    return 0;
 }
 
 /* strndup returns a fresh copy of at most n bytes of s, plus a trailing NUL.
