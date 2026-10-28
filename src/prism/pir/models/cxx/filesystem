@@ -20,6 +20,12 @@
 // lexically_normal is not implemented. Dropping ".." would invent a path the
 // caller did not write.
 //
+// compare() orders two paths by the characters each one stores. The result
+// is an int less than, equal to, or greater than 0. An empty path compares
+// equal to an empty path. The shorter stored sequence is less when one is a
+// prefix of the other. It does not ask the operating system whether a file
+// exists, and it does not drop "..".
+//
 // exists, file_size, status, is_regular_file, is_directory, current_path, and
 // absolute are not declared. Those names ask the operating system whether a
 // file is there. A stub that returns true is a fake file. A use of an omitted
@@ -106,6 +112,10 @@ public:
     [[nodiscard]] path extension() const;
     [[nodiscard]] path stem() const;
     [[nodiscard]] path parent_path() const;
+
+    // Stored characters only. Negative, zero, or positive. An empty path
+    // compares equal to an empty path.
+    [[nodiscard]] int compare(const path& __p) const noexcept;
 
     path& operator/=(const path& __p);
 
@@ -244,6 +254,24 @@ inline path path::stem() const {
     // leading-dot name. Otherwise the stem is that filename without it.
     if (__ext._M_len == 0 || __ext._M_len >= __file._M_len) return __file;
     return __file._M_slice(0, __file._M_len - __ext._M_len);
+}
+
+inline int path::compare(const path& __p) const noexcept {
+    // Two empty paths store no characters. They compare equal. Neither
+    // pointer is read.
+    if (_M_len == 0 && __p._M_len == 0) return 0;
+    const std::size_t __n = _M_len < __p._M_len ? _M_len : __p._M_len;
+    for (std::size_t __i = 0; __i < __n; ++__i) {
+        const unsigned char __a = static_cast<unsigned char>(_M_str[__i]);
+        const unsigned char __b = static_cast<unsigned char>(__p._M_str[__i]);
+        if (__a < __b) return -1;
+        if (__a > __b) return 1;
+    }
+    // One stored sequence is a prefix of the other. The shorter one is less.
+    // Two dots stay two characters; they are not removed.
+    if (_M_len < __p._M_len) return -1;
+    if (_M_len > __p._M_len) return 1;
+    return 0;
 }
 
 inline path path::parent_path() const {

@@ -163,3 +163,34 @@ TEST_CASE("cxx filesystem model: empty filename is empty and exists is not defin
     CHECK(stem.find("extension()") != std::string::npos);
     CHECK(stem.find("::operator delete(") == std::string::npos);
 }
+
+TEST_CASE("cxx filesystem model: compare orders stored characters") {
+    const std::string src = slurp(model_header());
+    REQUIRE_FALSE(src.empty());
+    const std::string code = strip_comments(src);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+
+    const std::string cmp = body_of(src, "int path::compare(const path&");
+    REQUIRE_FALSE(cmp.empty());
+    CHECK(cmp.find("if (_M_len == 0 && __p._M_len == 0) return 0;") != std::string::npos);
+    CHECK(cmp.find("_M_str") != std::string::npos);
+    CHECK(cmp.find("return -1") != std::string::npos);
+    CHECK(cmp.find("return 1") != std::string::npos);
+    CHECK(cmp.find("::operator delete(") == std::string::npos);
+    CHECK(cmp.find("__prism_check") == std::string::npos);
+    CHECK(cmp.find("exists") == std::string::npos);
+    CHECK(cmp.find("stat(") == std::string::npos);
+    CHECK(cmp.find("\"..\"") == std::string::npos);
+    CHECK(cmp.find("lexically_normal") == std::string::npos);
+
+    // filename, stem, and the length checks stay as they were.
+    const std::string filename = body_of(src, "path path::filename() const");
+    CHECK(filename.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string stem = body_of(src, "path path::stem() const");
+    CHECK(stem.find("if (_M_len == 0) return path();") != std::string::npos);
+    CHECK(src.find("std::filesystem::path length does not fit") != std::string::npos);
+    CHECK(src.find("__builtin_trap()") != std::string::npos);
+}

@@ -39,6 +39,17 @@ int main() {
     const int stem_hidden = eq(std::filesystem::path(".txt").stem(), ".txt");
     const int stem_keep = eq(std::filesystem::path("a/..").stem(), "..");
     const int stem_multi = eq(std::filesystem::path("a/b.tar.txt").stem(), "b.tar");
+    const int cmp_empty = empty.compare(empty) == 0;
+    const int cmp_empty_a = empty.compare(std::filesystem::path("a")) < 0;
+    const int cmp_a_empty = std::filesystem::path("a").compare(empty) > 0;
+    const int cmp_aa = std::filesystem::path("a").compare(std::filesystem::path("a")) == 0;
+    const int cmp_ab = std::filesystem::path("a").compare(std::filesystem::path("b")) < 0;
+    const int cmp_ba = std::filesystem::path("b").compare(std::filesystem::path("a")) > 0;
+    const int cmp_prefix = std::filesystem::path("a").compare(std::filesystem::path("ab")) < 0;
+    const int cmp_longer = std::filesystem::path("ab").compare(std::filesystem::path("a")) > 0;
+    const int cmp_dotdot = std::filesystem::path("a/..").compare(std::filesystem::path("a/..")) == 0;
+    const int cmp_keep = std::filesystem::path("a/..").compare(std::filesystem::path(".")) != 0;
+    const int cmp_dots = std::filesystem::path("..").compare(std::filesystem::path("..")) == 0;
     std::printf("empty_fn_empty=%d\n", empty_fn_empty);
     std::printf("empty_fn_dot=%d\n", empty_fn_dot);
     std::printf("fn_b=%d\n", fn_b);
@@ -56,9 +67,21 @@ int main() {
     std::printf("stem_hidden=%d\n", stem_hidden);
     std::printf("stem_keep=%d\n", stem_keep);
     std::printf("stem_multi=%d\n", stem_multi);
+    std::printf("cmp_empty=%d\n", cmp_empty);
+    std::printf("cmp_empty_a=%d\n", cmp_empty_a);
+    std::printf("cmp_a_empty=%d\n", cmp_a_empty);
+    std::printf("cmp_aa=%d\n", cmp_aa);
+    std::printf("cmp_ab=%d\n", cmp_ab);
+    std::printf("cmp_ba=%d\n", cmp_ba);
+    std::printf("cmp_prefix=%d\n", cmp_prefix);
+    std::printf("cmp_longer=%d\n", cmp_longer);
+    std::printf("cmp_dotdot=%d\n", cmp_dotdot);
+    std::printf("cmp_keep=%d\n", cmp_keep);
+    std::printf("cmp_dots=%d\n", cmp_dots);
     if (!empty_fn_empty || empty_fn_dot || !fn_b || !ext || !parent || !join || !dotdot || !keep || !stem_empty ||
         stem_empty_dot || !stem_txt || !stem_b || !stem_dot || !stem_dotdot || !stem_hidden || !stem_keep ||
-        !stem_multi)
+        !stem_multi || !cmp_empty || !cmp_empty_a || !cmp_a_empty || !cmp_aa || !cmp_ab || !cmp_ba || !cmp_prefix ||
+        !cmp_longer || !cmp_dotdot || !cmp_keep || !cmp_dots)
         return 1;
     return 0;
 }

@@ -45,3 +45,22 @@ int fs_stem_true(int) {
     assert(std::filesystem::path("a/b.tar.txt").stem() == "b.tar");
     return 0;
 }
+
+// compare orders the characters the path stored. An empty path compares
+// equal to an empty path. ".." stays in that sequence; compare does not
+// drop it and does not ask whether a file exists.
+int fs_compare_true(int) {
+    const std::filesystem::path e;
+    assert(e.compare(e) == 0);
+    assert(e.compare(std::filesystem::path("a")) < 0);
+    assert(std::filesystem::path("a").compare(e) > 0);
+    assert(std::filesystem::path("a").compare(std::filesystem::path("a")) == 0);
+    assert(std::filesystem::path("a").compare(std::filesystem::path("b")) < 0);
+    assert(std::filesystem::path("b").compare(std::filesystem::path("a")) > 0);
+    assert(std::filesystem::path("a").compare(std::filesystem::path("ab")) < 0);
+    assert(std::filesystem::path("ab").compare(std::filesystem::path("a")) > 0);
+    assert(std::filesystem::path("a/..").compare(std::filesystem::path("a/..")) == 0);
+    assert(std::filesystem::path("a/..").compare(std::filesystem::path(".")) != 0);
+    assert(std::filesystem::path("..").compare(std::filesystem::path("..")) == 0);
+    return 0;
+}
