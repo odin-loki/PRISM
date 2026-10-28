@@ -1,7 +1,8 @@
 // Trace of std::basic_spanbuf. Includes <spanstream>. One character is written
 // into the caller's buffer. After the spanbuf is destroyed that byte is still
 // there: the model does not own it. A write at size is a check and is not
-// this path.
+// this path. A separate spanbuf reads the first byte and advances. A read at
+// size, including size 0, is a check and is not this path.
 #include <cstdio>
 #include <cstdlib>
 #include <spanstream>
@@ -21,5 +22,8 @@ int main() {
         b.sputc('A');
     }
     std::printf("byte=%c\n", buf[0]);
+    char in[1] = {'B'};
+    std::basic_spanbuf<char> r(in, 1);
+    std::printf("got=%d\n", r.sgetc());
     return 0;
 }

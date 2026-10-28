@@ -3,7 +3,7 @@
 // `#include <spanstream>` reaches this file instead of libstdc++'s.
 //
 // Partial on purpose. Only std::basic_spanbuf for char is modelled. It stores
-// a char pointer, a size, and a write offset. It does not allocate. The
+// a char pointer, a size, and an offset. It does not allocate. The
 // destructor is defaulted and does not free. The characters belong to the
 // caller.
 //
@@ -12,6 +12,14 @@
 // of 0, sputc is a precondition failure (__prism_check) and does not write.
 // A null pointer with a non-zero size is a check at construction. That size
 // is kept: the pointer is not turned into an empty buffer.
+//
+// sgetc reads one character only when the offset is less than the size, then
+// advances the offset. The result is that byte as an unsigned char, so 255
+// is not an end signal. When the offset is already the size, including a
+// size of 0, sgetc is a precondition failure (__prism_check, MEM-OOB-READ)
+// and does not read the pointer. It then returns -1, char_traits-style EOF,
+// only as that end signal. A null pointer with size 0 is that same end:
+// the pointer is not read.
 //
 // Omitted names are not declared here. A use of one fails to compile against
 // this header, and the pir stage falls back to libstdc++ (extra.cxx_models).
@@ -70,6 +78,22 @@ public:
             _M_ptr[_M_off] = __c;
             ++_M_off;
             return static_cast<int>(static_cast<unsigned char>(__c));
+        }
+        return -1;
+    }
+
+    // One character when the offset is still inside the caller buffer, then
+    // the offset advances. The result is that byte as unsigned char (0..255).
+    // At the size, including a size of 0, this is a precondition failure and
+    // the pointer is not read. -1 is char_traits-style EOF, only that end
+    // signal, and only after the check. A null pointer with size 0 takes
+    // this end path and is not read.
+    int sgetc() {
+        __prism_check(_M_off < _M_size, "MEM-OOB-READ", "std::basic_spanbuf::sgetc read at size");
+        if (_M_off < _M_size) {
+            const int __r = static_cast<int>(static_cast<unsigned char>(_M_ptr[_M_off]));
+            ++_M_off;
+            return __r;
         }
         return -1;
     }

@@ -28,3 +28,28 @@ int spanbuf_null_false(int) {
     std::basic_spanbuf<char> b(p, 1);
     return static_cast<int>(b.size());
 }
+
+// One character read from a 4-byte caller buffer. The result is the unsigned
+// value of that byte and the offset advances.
+int spanbuf_getc_true(int) {
+    char buf[4] = {'A', 'B', 'C', 'D'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return b.sgetc();
+}
+
+// sgetc when the size is already 0: the offset is the size, so this is a
+// MEM-OOB-READ check and the pointer is not read. -1 is only the end signal
+// after that check.
+int spanbuf_getc_size0_false(int) {
+    char buf[4] = {'A', 'B', 'C', 'D'};
+    std::basic_spanbuf<char> b(buf, 0);
+    return b.sgetc();
+}
+
+// A null pointer with size 0 is empty. sgetc does not read it. The offset is
+// already the size, so this is the same MEM-OOB-READ check.
+int spanbuf_getc_null0_false(int) {
+    char* p = nullptr;
+    std::basic_spanbuf<char> b(p, 0);
+    return b.sgetc();
+}
