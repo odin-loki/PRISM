@@ -14,6 +14,12 @@
 // one. That body reads the existing size. It does not allocate, insert,
 // erase, or construct a mapped value, and it does not call operator[] or
 // at(). The comment states that this is not PROVED and not CLEAN.
+// clear() calls the existing _M_clear. It does not allocate, does not
+// insert, and does not construct a mapped value. An empty map does not
+// call ::operator delete. After clear(), empty() is true and size() is 0.
+// The comment states that this is not PROVED and not CLEAN. _M_clear still
+// destroys each node, releases it with ::operator delete, and sets
+// _M_size to 0. That delete stays inside the walk of a non-null head.
 
 #include <doctest/doctest.h>
 
@@ -113,7 +119,9 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(src.find("find, contains, count") == std::string::npos);
     // count used to be listed with the names that are not declared.
     CHECK(src.find("find, count, clear") == std::string::npos);
-    CHECK(src.find("iterators, find, clear,") != std::string::npos);
+    // clear used to be listed with the names that are not declared.
+    CHECK(src.find("iterators, find, clear,") == std::string::npos);
+    CHECK(src.find("iterators, find, swap,") != std::string::npos);
 
     // Lookup only. The const finder returns nullptr for a miss and does not
     // allocate, insert, or touch size. contains is that result as a bool.
@@ -267,7 +275,82 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(emp_note.find("_M_link") == std::string::npos);
     CHECK(emp_note.find("mapped_type{}") == std::string::npos);
 
+    // clear() is the existing _M_clear. The body does not allocate, insert,
+    // or construct a mapped value. An empty map does not reach
+    // ::operator delete: that call stays inside the non-null head walk.
+    // After clear(), _M_size is 0, so empty() is true and size() is 0.
+    const std::string clr = "void clear() noexcept { _M_clear(); }";
+    const auto clr_at = src.find(clr);
+    REQUIRE(clr_at != std::string::npos);
+    CHECK(src.find(clr, clr_at + 1) == std::string::npos);
+    const auto clr_pub = src.rfind("public:", clr_at);
+    const auto mclear_at = src.find("void _M_clear() noexcept");
+    REQUIRE(clr_pub != std::string::npos);
+    REQUIRE(mclear_at != std::string::npos);
+    CHECK(mclear_at < clr_pub);
+    CHECK(clr_pub < clr_at);
+    const auto emp_fn = src.find("bool empty() const noexcept { return _M_size == 0; }");
+    REQUIRE(emp_fn != std::string::npos);
+    CHECK(clr_at < emp_fn);
+
+    const std::string clr_body = slice_from(src, "void clear() noexcept", "True when there are no nodes");
+    REQUIRE_FALSE(clr_body.empty());
+    CHECK(clr_body.find("_M_clear()") != std::string::npos);
+    CHECK(clr_body.find("::operator new") == std::string::npos);
+    CHECK(clr_body.find("_M_make") == std::string::npos);
+    CHECK(clr_body.find("_M_link") == std::string::npos);
+    CHECK(clr_body.find("_M_emplace_args") == std::string::npos);
+    CHECK(clr_body.find("::operator delete") == std::string::npos);
+    CHECK(clr_body.find("mapped_type{}") == std::string::npos);
+    CHECK(clr_body.find("mapped_type(") == std::string::npos);
+    CHECK(clr_body.find("_M_mapped") == std::string::npos);
+    CHECK(clr_body.find("operator[]") == std::string::npos);
+    CHECK(clr_body.find("at(") == std::string::npos);
+    CHECK(clr_body.find("erase(") == std::string::npos);
+    CHECK(clr_body.find("try_emplace") == std::string::npos);
+    CHECK(clr_body.find("contains(") == std::string::npos);
+    CHECK(clr_body.find("while") == std::string::npos);
+
+    const std::string clr_note = slice_from(src, "Calls the existing _M_clear.", "void clear() noexcept");
+    REQUIRE_FALSE(clr_note.empty());
+    CHECK(clr_note.find("does not allocate") != std::string::npos);
+    CHECK(clr_note.find("does not insert") != std::string::npos);
+    CHECK(clr_note.find("does not construct a mapped value") != std::string::npos);
+    CHECK(clr_note.find("An empty map does not call ::operator delete") != std::string::npos);
+    CHECK(clr_note.find("empty() is true") != std::string::npos);
+    CHECK(clr_note.find("size() is 0") != std::string::npos);
+    CHECK(clr_note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(clr_note.find("::operator new") == std::string::npos);
+    CHECK(clr_note.find("_M_make") == std::string::npos);
+    CHECK(clr_note.find("_M_link") == std::string::npos);
+    CHECK(clr_note.find("mapped_type{}") == std::string::npos);
+
+    // _M_clear's body is the walk that already existed. Each node is
+    // destroyed and released, then the size is 0. The delete is not
+    // reached when the head is null.
+    const std::string mclear = slice_from(src, "void _M_clear() noexcept {", "flat_map() noexcept");
+    REQUIRE_FALSE(mclear.empty());
+    const auto walk = mclear.find("while (_M_head != nullptr)");
+    const auto destroyed = mclear.find("__n->~_Node()");
+    const auto deleted = mclear.find("::operator delete(__n)");
+    const auto zero = mclear.find("_M_size = 0");
+    REQUIRE(walk != std::string::npos);
+    REQUIRE(destroyed != std::string::npos);
+    REQUIRE(deleted != std::string::npos);
+    REQUIRE(zero != std::string::npos);
+    CHECK(walk < destroyed);
+    CHECK(destroyed < deleted);
+    CHECK(deleted < zero);
+    CHECK(mclear.find("::operator delete", deleted + 1) == std::string::npos);
+    CHECK(mclear.find("::operator new") == std::string::npos);
+    CHECK(mclear.find("_M_make") == std::string::npos);
+    CHECK(mclear.find("_M_link") == std::string::npos);
+    CHECK(mclear.find("_M_emplace_args") == std::string::npos);
+    CHECK(mclear.find("mapped_type{}") == std::string::npos);
+    CHECK(mclear.find("mapped_type(") == std::string::npos);
+
     const std::string omitted = slice_from(src, "Not stubbed:", "template takes Key");
     REQUIRE_FALSE(omitted.empty());
     CHECK(omitted.find("empty") == std::string::npos);
+    CHECK(omitted.find("clear") == std::string::npos);
 }
