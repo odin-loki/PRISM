@@ -33,6 +33,11 @@
 // is_relative() is the opposite of is_absolute(). Neither walks the
 // filesystem.
 //
+// has_root_directory() is a character test. An empty path has no root
+// directory, and that answer returns before the pointer is loaded. A path
+// whose first character is '/' has a root directory. Every other non-empty
+// path does not. It does not walk the filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -150,13 +155,16 @@ public:
     // Opposite of is_absolute. An empty path is relative. No filesystem walk.
     [[nodiscard]] bool is_relative() const noexcept;
 
+    // Stored characters only. An empty path has no root directory, and that
+    // answer does not load the pointer. The first character '/' has one.
+    [[nodiscard]] bool has_root_directory() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool has_root_directory() const noexcept { return is_absolute(); }
     [[nodiscard]] bool has_filename() const { return !filename().empty(); }
     [[nodiscard]] bool has_extension() const { return !extension().empty(); }
     [[nodiscard]] bool has_stem() const { return !stem().empty(); }
@@ -339,6 +347,13 @@ inline bool path::is_relative() const noexcept {
     // Opposite of is_absolute. An empty path is relative. This does not
     // walk the filesystem.
     return !is_absolute();
+}
+
+inline bool path::has_root_directory() const noexcept {
+    // An empty path stores no characters. It has no root directory. The
+    // pointer is not loaded.
+    if (_M_len == 0) return false;
+    return _M_str[0] == '/';
 }
 
 inline path& path::replace_extension(const path& __rep) {

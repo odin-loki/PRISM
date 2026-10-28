@@ -5,6 +5,8 @@
 // and absolute are not called: the model does not declare them.
 // is_absolute and is_relative read one stored character. An empty path is
 // relative. A leading '/' is absolute. ".." is not removed.
+// has_root_directory reads one stored character. An empty path has no root
+// directory. A leading '/' has one. ".." is not removed.
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
@@ -95,6 +97,18 @@ int main() {
     const int rel_bslash = std::filesystem::path("\\a").is_relative();
     const int abs_unc = std::filesystem::path("//net/share").is_absolute();
     const int rel_unc = std::filesystem::path("//net/share").is_relative();
+    const int root_empty = empty.has_root_directory();
+    const int root_root = std::filesystem::path("/").has_root_directory();
+    const int root_slash = std::filesystem::path("/a").has_root_directory();
+    const int root_rel = std::filesystem::path("a").has_root_directory();
+    const int root_nested = std::filesystem::path("a/b").has_root_directory();
+    const int root_dotdot = std::filesystem::path("a/../b").has_root_directory();
+    const int root_root_dotdot = std::filesystem::path("/a/../b").has_root_directory();
+    const int root_blank = std::filesystem::path("").has_root_directory();
+    const int root_drive = std::filesystem::path("C:/a").has_root_directory();
+    const int root_bslash = std::filesystem::path("\\a").has_root_directory();
+    const int root_unc = std::filesystem::path("//net/share").has_root_directory();
+    const int root_net = std::filesystem::path("//net").has_root_directory();
     std::printf("empty_fn_empty=%d\n", empty_fn_empty);
     std::printf("empty_fn_dot=%d\n", empty_fn_dot);
     std::printf("fn_b=%d\n", fn_b);
@@ -154,6 +168,18 @@ int main() {
     std::printf("rel_bslash=%d\n", rel_bslash);
     std::printf("abs_unc=%d\n", abs_unc);
     std::printf("rel_unc=%d\n", rel_unc);
+    std::printf("root_empty=%d\n", root_empty);
+    std::printf("root_root=%d\n", root_root);
+    std::printf("root_slash=%d\n", root_slash);
+    std::printf("root_rel=%d\n", root_rel);
+    std::printf("root_nested=%d\n", root_nested);
+    std::printf("root_dotdot=%d\n", root_dotdot);
+    std::printf("root_root_dotdot=%d\n", root_root_dotdot);
+    std::printf("root_blank=%d\n", root_blank);
+    std::printf("root_drive=%d\n", root_drive);
+    std::printf("root_bslash=%d\n", root_bslash);
+    std::printf("root_unc=%d\n", root_unc);
+    std::printf("root_net=%d\n", root_net);
     if (!empty_fn_empty || empty_fn_dot || !fn_b || !ext || !parent || !join || !dotdot || !keep || !stem_empty ||
         stem_empty_dot || !stem_txt || !stem_b || !stem_dot || !stem_dotdot || !stem_hidden || !stem_keep ||
         !stem_multi || !cmp_empty || !cmp_empty_a || !cmp_a_empty || !cmp_aa || !cmp_ab || !cmp_ba || !cmp_prefix ||
@@ -161,7 +187,9 @@ int main() {
         !repl_dots_md || !repl_keep_dots || !repl_empty_path || !repl_multi || !repl_hidden || abs_empty ||
         !rel_empty || !abs_root || rel_root || !abs_slash || rel_slash || abs_rel || !rel_rel || abs_nested ||
         !rel_nested || abs_dotdot || !rel_dotdot || !abs_root_dotdot || rel_root_dotdot || abs_blank ||
-        !rel_blank || abs_drive || !rel_drive || abs_bslash || !rel_bslash || !abs_unc || rel_unc)
+        !rel_blank || abs_drive || !rel_drive || abs_bslash || !rel_bslash || !abs_unc || rel_unc || root_empty ||
+        !root_root || !root_slash || root_rel || root_nested || root_dotdot || !root_root_dotdot || root_blank ||
+        root_drive || root_bslash || !root_unc || !root_net)
         return 1;
     return 0;
 }
