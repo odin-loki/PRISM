@@ -8,26 +8,31 @@
 //
 //  * mdspan<T> (rank 1) is constructed from T* and one extent. mdspan<T, 2>
 //    is constructed from T* and two extents. mdspan<T, 3> is constructed
-//    from T* and three extents. Each index is checked.
+//    from T* and three extents. mdspan<T, 4> is constructed from T* and
+//    four extents. Each index is checked.
 //    A null data pointer with a non-zero extent is a precondition
 //    (__prism_check, PTR-NULL-DEREF). An empty extent may be a null pointer;
-//  * operator()(i) / operator()(i, j) / operator()(i, j, k) outside those
-//    extents is a precondition (__prism_check, MEM-OOB-READ). The in-range
-//    call returns the element at that offset in the caller's array;
+//  * operator()(i) / operator()(i, j) / operator()(i, j, k) /
+//    operator()(i, j, k, l) outside those extents is a precondition
+//    (__prism_check, MEM-OOB-READ). The in-range call returns the element
+//    at that offset in the caller's array;
 //  * size() and extent(0) report the extent that was stored. Rank 2's
 //    size() is the product of the two extents when that product fits in
 //    size_t (no wrapped product). Rank 3's size() is the product of the
 //    three extents when that product fits; otherwise the product is a check
-//    and size() stays 0. extent(0) is the first extent, extent(1) the
-//    second, extent(2) the third.
+//    and size() stays 0. Rank 4's size() is the product of the four extents
+//    when that product fits; otherwise the product is a check and size()
+//    stays 0. extent(0) is the first extent, extent(1) the second,
+//    extent(2) the third, extent(3) the fourth.
 //
 // Not declared, so a unit that names one fails to compile against this
 // header and the pir stage lowers it again with libstdc++ (extra.cxx_models).
 // They are not stubbed: submdspan, mdarray, layout_left, layout_right,
 // layout_stride, extents, dextents, default_accessor, operator[] (the
-// standard spelling), iterators, and any rank other than 1, 2, or 3. The
+// standard spelling), iterators, and any rank other than 1, 2, 3, or 4. The
 // standard template argument list (Extents, LayoutPolicy, AccessorPolicy)
-// is not this mdspan<T> / mdspan<T, 2> / mdspan<T, 3>. This header is not a proof.
+// is not this mdspan<T> / mdspan<T, 2> / mdspan<T, 3> / mdspan<T, 4>. This
+// header is not a proof.
 #ifndef _GLIBCXX_MDSPAN
 #define _GLIBCXX_MDSPAN 1
 
@@ -205,6 +210,79 @@ private:
 };
 
 template <typename _Tp>
+class mdspan<_Tp, 4> {
+public:
+    using element_type = _Tp;
+    using index_type = std::size_t;
+    using size_type = std::size_t;
+    using data_handle_type = _Tp*;
+    using pointer = _Tp*;
+    using reference = _Tp&;
+
+    static constexpr std::size_t rank() noexcept { return 4; }
+
+    // Contiguous row-major packing of the caller's array. All four extents
+    // are stored. A zero extent makes the product 0, which fits, even when
+    // the other three would overflow each other. Otherwise each step is
+    // multiplied only when it fits in size_t. A product that does not fit
+    // is a precondition, and size() stays 0 on that path (not a wrapped count).
+    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3)
+        : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_e3(__e3), _M_size(0) {
+        __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0 && __e2 == 0 && __e3 == 0),
+                      "PTR-NULL-DEREF",
+                      "std::mdspan null data pointer with a non-zero extent");
+        const bool __zero = __e0 == 0 || __e1 == 0 || __e2 == 0 || __e3 == 0;
+        bool __fits = __zero;
+        size_type __prod = 0;
+        if (!__zero && __e0 <= static_cast<size_type>(-1) / __e1) {
+            const size_type __e01 = __e0 * __e1;
+            if (__e01 <= static_cast<size_type>(-1) / __e2) {
+                const size_type __e012 = __e01 * __e2;
+                if (__e012 <= static_cast<size_type>(-1) / __e3) {
+                    __prod = __e012 * __e3;
+                    __fits = true;
+                }
+            }
+        }
+        __prism_check(__fits, "MEM-OOB-READ", "std::mdspan extents product overflows");
+        if (__fits) _M_size = __prod;
+    }
+
+    // Non-owning. Destroying the view does not free _M_ptr.
+    ~mdspan() = default;
+
+    size_type size() const noexcept { return _M_size; }
+
+    // extent(0) is the first extent, not the product.
+    size_type extent(size_type __r) const {
+        __prism_check(__r < 4, "FUNC-CONTRACT", "std::mdspan::extent index is outside the rank");
+        if (__r == 0) return _M_e0;
+        if (__r == 1) return _M_e1;
+        if (__r == 2) return _M_e2;
+        return _M_e3;
+    }
+
+    pointer data() const noexcept { return _M_ptr; }
+
+    // Each index is checked. The address is i * extent(1) * extent(2) *
+    // extent(3) + j * extent(2) * extent(3) + k * extent(3) + l in the
+    // caller's array, not a padding element.
+    reference operator()(size_type __i, size_type __j, size_type __k, size_type __l) const {
+        __prism_check(__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3, "MEM-OOB-READ",
+                      "std::mdspan::operator() index is outside the extents");
+        return _M_ptr[__i * _M_e1 * _M_e2 * _M_e3 + __j * _M_e2 * _M_e3 + __k * _M_e3 + __l];
+    }
+
+private:
+    _Tp* _M_ptr;
+    size_type _M_e0;
+    size_type _M_e1;
+    size_type _M_e2;
+    size_type _M_e3;
+    size_type _M_size;
+};
+
+template <typename _Tp>
 mdspan(_Tp*, std::size_t) -> mdspan<_Tp, 1>;
 
 template <typename _Tp>
@@ -212,6 +290,9 @@ mdspan(_Tp*, std::size_t, std::size_t) -> mdspan<_Tp, 2>;
 
 template <typename _Tp>
 mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 3>;
+
+template <typename _Tp>
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 4>;
 
 }  // namespace std
 
