@@ -6,6 +6,11 @@
 //
 // This header is not a proof that a coroutine runs.
 //
+// operator== is address() == address(). operator!= negates that comparison.
+// Two default handles compare equal. A default handle is not equal to
+// from_address of a non-null pointer. Comparing two handles does not resume
+// a frame. This is not a proof that a coroutine ran.
+//
 // Partial std::coroutine_handle<void> only. A default handle stores nullptr.
 // address() of that handle is nullptr. from_address(nullptr) is a null
 // handle. resume(), destroy(), and done() on a null handle are
@@ -59,6 +64,17 @@ struct coroutine_handle<void> {
 
     // False when the stored address is nullptr. This is not done().
     constexpr explicit operator bool() const noexcept { return _M_fr_ptr != nullptr; }
+
+    // Equality is address() == address(). Two default handles compare equal.
+    // A default handle is not equal to from_address of a non-null pointer.
+    // This is not a proof that a coroutine ran.
+    friend constexpr bool operator==(coroutine_handle __a, coroutine_handle __b) noexcept {
+        return __a.address() == __b.address();
+    }
+
+    friend constexpr bool operator!=(coroutine_handle __a, coroutine_handle __b) noexcept {
+        return !(__a == __b);
+    }
 
     // Null: failed check, then trap. No frame is resumed. No value comes back.
     [[noreturn]] void resume() const {

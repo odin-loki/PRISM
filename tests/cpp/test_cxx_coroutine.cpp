@@ -1,8 +1,11 @@
 // The <coroutine> model is a partial std::coroutine_handle<void>. A default
 // handle stores nullptr. resume, destroy, and done on a null handle are a
 // FUNC-CONTRACT check and then a trap. They are not called from this
-// process: a trap would abort the test binary. The header is read as text.
-// Where the compiler accepts the builtins, the null address is also checked
+// process: a trap would abort the test binary. Equality is address() ==
+// address(). Two default handles compare equal. A default handle is not
+// equal to from_address of a non-null pointer. That comparison is not a
+// proof that a coroutine ran. The header is read as text. Where the compiler
+// accepts the builtins, the null address and the comparisons are also checked
 // by including the model by path (`#include <coroutine>` here would be the
 // platform header).
 
@@ -33,6 +36,21 @@ static_assert(std::coroutine_handle<>{}.address() == nullptr, "default handle ad
 static_assert(std::coroutine_handle<>::from_address(nullptr).address() == nullptr,
               "from_address(nullptr) is a null handle");
 static_assert(!std::coroutine_handle<>{}, "a default handle is not a live coroutine");
+static_assert(std::coroutine_handle<>{} == std::coroutine_handle<>{}, "two default handles compare equal");
+static_assert(!(std::coroutine_handle<>{} != std::coroutine_handle<>{}),
+              "two default handles are not unequal");
+static_assert(std::coroutine_handle<>{} == std::coroutine_handle<>::from_address(nullptr),
+              "from_address(nullptr) equals a default handle");
+static int prism_coroutine_object = 0;
+static_assert(!(std::coroutine_handle<>{} ==
+                std::coroutine_handle<>::from_address(static_cast<void*>(&prism_coroutine_object))),
+              "a default handle is not equal to from_address of a non-null pointer");
+static_assert(std::coroutine_handle<>{} !=
+                  std::coroutine_handle<>::from_address(static_cast<void*>(&prism_coroutine_object)),
+              "a default handle is not equal to from_address of a non-null pointer");
+static_assert(std::coroutine_handle<>::from_address(static_cast<void*>(&prism_coroutine_object)) ==
+                  std::coroutine_handle<>::from_address(static_cast<void*>(&prism_coroutine_object)),
+              "from_address of the same pointer compares equal");
 #endif
 
 namespace fs = std::filesystem;
@@ -85,6 +103,11 @@ TEST_CASE("cxx coroutine model: null resume, destroy, and done are checks then t
     CHECK(src.find("promise_type") == std::string::npos);
     CHECK(src.find("co_await") == std::string::npos);
     CHECK(src.find("noop_coroutine") == std::string::npos);
+    CHECK(src.find("suspend_always") == std::string::npos);
+    CHECK(src.find("suspend_never") == std::string::npos);
+    CHECK(src.find("operator<=>") == std::string::npos);
+    CHECK(src.find("#include <compare>") == std::string::npos);
+    CHECK(src.find("not a proof that a coroutine ran") != std::string::npos);
     CHECK(src.find("__builtin_coro_resume") == std::string::npos);
     CHECK(src.find("__builtin_coro_destroy") == std::string::npos);
     CHECK(src.find("__builtin_coro_done") == std::string::npos);
@@ -110,10 +133,24 @@ TEST_CASE("cxx coroutine model: null resume, destroy, and done are checks then t
         CHECK(body.find("_M_fr_ptr != nullptr ? 1 : 0") != std::string::npos);
         CHECK(body.find("return") == std::string::npos);
         CHECK(body.find("new") == std::string::npos);
+        CHECK(body.find("operator==") == std::string::npos);
+        CHECK(body.find("operator!=") == std::string::npos);
     }
     const auto done = body_of(src, "bool done() const");
     CHECK(done.find("return true") == std::string::npos);
     CHECK(done.find("true") == std::string::npos);
+
+    const auto eq = body_of(src, "operator==(coroutine_handle __a, coroutine_handle __b)");
+    REQUIRE(!eq.empty());
+    CHECK(eq.find("return __a.address() == __b.address();") != std::string::npos);
+    CHECK(eq.find("__prism_check") == std::string::npos);
+    CHECK(eq.find("__builtin_trap") == std::string::npos);
+    CHECK(eq.find("return true") == std::string::npos);
+    const auto ne = body_of(src, "operator!=(coroutine_handle __a, coroutine_handle __b)");
+    REQUIRE(!ne.empty());
+    CHECK(ne.find("return !(__a == __b);") != std::string::npos);
+    CHECK(ne.find("__prism_check") == std::string::npos);
+    CHECK(ne.find("__builtin_trap") == std::string::npos);
 }
 
 #if !defined(_MSC_VER) || defined(__clang__)
@@ -127,5 +164,25 @@ TEST_CASE("cxx coroutine model: a default handle and from_address(nullptr) are n
     int object = 0;
     const std::coroutine_handle<> stored = std::coroutine_handle<>::from_address(&object);
     CHECK(stored.address() == &object);
+    CHECK_FALSE(h == stored);
+    CHECK(h != stored);
+    const std::coroutine_handle<> again = std::coroutine_handle<>::from_address(&object);
+    CHECK(stored == again);
+    CHECK_FALSE(stored != again);
+    int other = 0;
+    const std::coroutine_handle<> different = std::coroutine_handle<>::from_address(&other);
+    CHECK_FALSE(stored == different);
+    CHECK(stored != different);
+}
+
+TEST_CASE("cxx coroutine model: two default handles compare equal") {
+    const std::coroutine_handle<> a;
+    const std::coroutine_handle<> b;
+    CHECK(a == b);
+    CHECK_FALSE(a != b);
+    const std::coroutine_handle<> n = std::coroutine_handle<>::from_address(nullptr);
+    CHECK(a == n);
+    CHECK_FALSE(a != n);
+    CHECK(a.address() == b.address());
 }
 #endif

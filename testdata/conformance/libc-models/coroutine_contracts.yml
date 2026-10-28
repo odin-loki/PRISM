@@ -5,6 +5,8 @@ property: libc-contract
 expected:
   coroutine_null_address_true: true
   coroutine_from_address_true: true
+  coroutine_equal_defaults_true: true
+  coroutine_equal_address_true: true
   coroutine_resume_null_false: false
   coroutine_destroy_null_false: false
   coroutine_done_null_false: false
