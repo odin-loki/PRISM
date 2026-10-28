@@ -20,6 +20,11 @@
 // `div_zero` and `div_min_zero` divide by zero. `div_ovf` divides the
 // minimum count by -1. The model must __prism_check and must not print a
 // quotient. Those paths do not return a zero duration.
+// std::chrono::abs returns the magnitude. Zero stays zero. A positive
+// count stays that count. A negative count that is not the minimum is the
+// negation. `abs_ovf` takes the minimum count. The model must
+// __prism_check and must not print a wrapped count. That path does not
+// return a zero duration and does not form the negation.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -159,6 +164,14 @@ int main(int argc, char** argv) {
     std::printf("div_min_min=%lld\n", static_cast<long long>((lim_min / lim_min.count()).count()));
     std::printf("div_max_min=%lld\n", static_cast<long long>((lim_max / lim_min.count()).count()));
     std::printf("div_min_max=%lld\n", static_cast<long long>((lim_min / lim_max.count()).count()));
+    std::printf("abs_zero=%lld\n", static_cast<long long>(std::chrono::abs(dur(0)).count()));
+    std::printf("abs_pos=%lld\n", static_cast<long long>(std::chrono::abs(dur(5)).count()));
+    std::printf("abs_neg=%lld\n", static_cast<long long>(std::chrono::abs(dur(-5)).count()));
+    std::printf("abs_one=%lld\n", static_cast<long long>(std::chrono::abs(dur(1)).count()));
+    std::printf("abs_m1=%lld\n", static_cast<long long>(std::chrono::abs(dur(-1)).count()));
+    std::printf("abs_max=%lld\n", static_cast<long long>(std::chrono::abs(dur::max()).count()));
+    std::printf("abs_min1=%lld\n",
+                static_cast<long long>(std::chrono::abs(dur(-9223372036854775807LL)).count()));
     if (argc > 1 && std::strcmp(argv[1], "ovf") == 0) {
         std::chrono::duration<long long> hi(9223372036854775807LL);
         std::chrono::duration<long long> one(1);
@@ -215,6 +228,11 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "div_ovf") == 0) {
         const auto n = (std::chrono::duration<long long>::min() / -1LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "abs_ovf") == 0) {
+        const auto n = std::chrono::abs(std::chrono::duration<long long>::min()).count();
         std::printf("wrapped=%lld\n", static_cast<long long>(n));
         return 0;
     }
