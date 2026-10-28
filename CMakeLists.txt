@@ -852,6 +852,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_valarray.cpp
     tests/cpp/test_cxx_syncstream.cpp
     tests/cpp/test_cxx_memory_resource.cpp
+    tests/cpp/test_cxx_memory_resource_dealloc.cpp
     tests/cpp/test_cxx_flat_set.cpp
     tests/cpp/test_cxx_filesystem.cpp
     tests/cpp/test_cxx_condition_variable.cpp

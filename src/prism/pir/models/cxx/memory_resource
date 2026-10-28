@@ -16,8 +16,13 @@
 // outside the caller buffer.
 //
 // A null upstream buffer with a non-zero size is a check at construction.
-// deallocate of a pointer this resource did not hand out is a check.
-// deallocate does not free the caller buffer.
+// deallocate(nullptr, 0) is a no-op: it does not free and it does not crash.
+// deallocate(nullptr, n) for n > 0 is __prism_check with class PTR-NULL-DEREF
+// ("memory_resource::deallocate null pointer"), then __builtin_trap, before
+// any free. deallocate of any other pointer this resource did not hand out
+// is a check. deallocate does not free the caller buffer. A failed allocate
+// returns nullptr before that pointer is recorded, so a null result is not a
+// handed-out object. This model is not PROVED and not CLEAN.
 //
 // src/prism/pir/models/cxx/memory is a unique_ptr model. It does not provide
 // allocator, and this header does not include it. polymorphic_allocator,
@@ -99,17 +104,26 @@ public:
         return __p;
     }
 
-    // Not a pointer allocate returned: a check. Does not free the caller buffer
-    // and does not rewind the bump cursor.
+    // nullptr with a size of 0 returns. That path does not free and does not
+    // crash. nullptr with a size above 0 is PTR-NULL-DEREF
+    // ("memory_resource::deallocate null pointer"), then __builtin_trap,
+    // before any free. Any other pointer this resource did not hand out is a
+    // check. Does not free the caller buffer and does not rewind the bump
+    // cursor. This is not PROVED and not CLEAN.
     void deallocate(void* __p, size_t __bytes, size_t __alignment) {
-        (void)__bytes;
-        (void)__alignment;
-        bool __handed = false;
-        for (size_t __i = 0; __i < _M_nhand; ++__i) {
-            if (_M_hand[__i] == __p) __handed = true;
+        if (__p == nullptr && __bytes == 0) return;
+        if (__p == nullptr && __bytes > 0) {
+            __prism_check(0, "PTR-NULL-DEREF", "memory_resource::deallocate null pointer");
+            __builtin_trap();
+        } else {
+            (void)__alignment;
+            bool __handed = false;
+            for (size_t __i = 0; __i < _M_nhand; ++__i) {
+                if (_M_hand[__i] == __p) __handed = true;
+            }
+            __prism_check(__handed ? 1 : 0, "MEM-INVALID-FREE",
+                          "monotonic_buffer_resource::deallocate pointer was not handed out by this resource");
         }
-        __prism_check(__handed ? 1 : 0, "MEM-INVALID-FREE",
-                      "monotonic_buffer_resource::deallocate pointer was not handed out by this resource");
     }
 
     // Uses the caller buffer again from the start. Does not free it.
