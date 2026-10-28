@@ -199,6 +199,17 @@ unsigned long long strtoull(const char *s, char **end, int base) {
     }
     return __VERIFIER_nondet_ulonglong();
 }
+/* A null s is STR-NULL-ARG, then 0, before strlen.
+ * That path does not call strlen.
+ * A non-null s may call strlen so the end is inside the string.
+ * The result is __VERIFIER_nondet_longlong(), not a parsed numeral.
+ * This is not PROVED and not CLEAN. */
+long long atoll(const char *s) {
+    __prism_check(s != 0, "STR-NULL-ARG", "atoll() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    (void)strlen(s);
+    return __VERIFIER_nondet_longlong();
+}
 unsigned long strtoul(const char *s, char **end, int base) {
     return (unsigned long)strtol(s, end, base);
 }
