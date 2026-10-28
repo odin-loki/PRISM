@@ -4,10 +4,13 @@
 // empty flat_map: the model throws and must not print a default mapped
 // value. "uaf" keeps a reference and erases that key (the node is freed).
 // "contains" looks up a missing key, then a present key and another
-// missing key. Those lookups must not change size. "try_emplace" inserts
-// a missing key by constructing the mapped object in the new node, and a
-// second call with that key must not allocate, must not construct another
-// mapped object, and must not overwrite the stored value.
+// missing key. Those lookups must not change size. "count" returns 0 for a
+// missing key and 1 for a present key. Those calls use find: they must not
+// allocate, insert, overwrite the mapped object, or construct a mapped
+// value for a missing key. "try_emplace" inserts a missing key by
+// constructing the mapped object in the new node, and a second call with
+// that key must not allocate, must not construct another mapped object,
+// and must not overwrite the stored value.
 #include <flat_map>
 #include <cstdio>
 #include <cstring>
@@ -109,6 +112,76 @@ static void lookup() {
     const auto size2 = m.size();
     std::printf("empty contains=%d copies=%d size=%zu inserted=%zu hit=%d missing=%d copies=%d size=%zu at=%d\n",
                 miss0, copies0, size0, size1, hit, miss, copies1, size2, m.at(4));
+}
+
+static int mapped_activity() {
+    return CountMapped::from_int + CountMapped::defaults + CountMapped::copies + CountMapped::moves +
+           CountMapped::assigns;
+}
+
+static void count_trace() {
+    CountKey::copies = 0;
+    CountKey::moves = 0;
+    CountMapped::from_int = 0;
+    CountMapped::defaults = 0;
+    CountMapped::copies = 0;
+    CountMapped::moves = 0;
+    CountMapped::assigns = 0;
+
+    std::flat_map<CountKey, CountMapped> m;
+    const int empty_count = static_cast<int>(m.count(4));
+    const int empty_copies = CountKey::copies;
+    const int empty_moves = CountKey::moves;
+    const int empty_mapped = mapped_activity();
+    const auto empty_size = m.size();
+
+    m[4] = CountMapped(8);
+    const int index_key_copies = CountKey::copies;
+    const int index_key_moves = CountKey::moves;
+    const int index_defaults = CountMapped::defaults;
+    const int index_from = CountMapped::from_int;
+    const int index_mapped_moves = CountMapped::moves;
+    const int index_assigns = CountMapped::assigns;
+    const auto index_size = m.size();
+    const int index_value = m.at(4).v;
+
+    const int copies_before = CountKey::copies;
+    const int moves_before = CountKey::moves;
+    const int from_before = CountMapped::from_int;
+    const int defaults_before = CountMapped::defaults;
+    const int mapped_copies_before = CountMapped::copies;
+    const int mapped_moves_before = CountMapped::moves;
+    const int assigns_before = CountMapped::assigns;
+    const int hit = static_cast<int>(m.count(4));
+    const int miss = static_cast<int>(m.count(5));
+    const int copies_delta = CountKey::copies - copies_before;
+    const int moves_delta = CountKey::moves - moves_before;
+    const int from_delta = CountMapped::from_int - from_before;
+    const int defaults_delta = CountMapped::defaults - defaults_before;
+    const int mapped_copies_delta = CountMapped::copies - mapped_copies_before;
+    const int mapped_moves_delta = CountMapped::moves - mapped_moves_before;
+    const int assigns_delta = CountMapped::assigns - assigns_before;
+    const int value_after = m.at(4).v;
+    const auto size_after = m.size();
+    const char* missing_at = "present";
+    try {
+        const int v = m.at(5).v;
+        static_cast<void>(v);
+    } catch (const std::out_of_range&) {
+        missing_at = "threw";
+    }
+
+    std::printf("empty count=%d key_copies=%d key_moves=%d mapped=%d size=%zu\n", empty_count, empty_copies,
+                empty_moves, empty_mapped, empty_size);
+    std::printf(
+        "index key_copies=%d key_moves=%d defaults=%d from_int=%d mapped_moves=%d assigns=%d size=%zu value=%d\n",
+        index_key_copies, index_key_moves, index_defaults, index_from, index_mapped_moves, index_assigns, index_size,
+        index_value);
+    std::printf(
+        "count hit=%d missing=%d key_copies=%d key_moves=%d from_int=%d defaults=%d mapped_copies=%d "
+        "mapped_moves=%d assigns=%d value=%d size=%zu missing_at=%s\n",
+        hit, miss, copies_delta, moves_delta, from_delta, defaults_delta, mapped_copies_delta, mapped_moves_delta,
+        assigns_delta, value_after, size_after, missing_at);
 }
 
 static void try_emplace_trace() {
@@ -217,6 +290,10 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "uaf") == 0) return uaf();
     if (argc > 1 && std::strcmp(argv[1], "contains") == 0) {
         lookup();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "count") == 0) {
+        count_trace();
         return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "try_emplace") == 0) {

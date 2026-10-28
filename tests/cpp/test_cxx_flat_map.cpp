@@ -3,7 +3,10 @@
 // run pir. A missing at() is a throw (or a __prism_check) and not a default
 // mapped value. erase is described as freeing the node. contains is a
 // lookup: a missing key is false, a present key is true, and that body
-// does not allocate, insert, or change size. try_emplace on a present key
+// does not allocate, insert, or change size. count returns 1 when the key
+// is present and 0 when it is missing. That body is the existing find: it
+// does not allocate, insert, or overwrite the mapped object, and a missing
+// key does not construct a mapped value. try_emplace on a present key
 // returns false before it allocates or overwrites the mapped object. On a
 // missing key the mapped object is constructed from the arguments in the
 // new node, and that construction is not reached until the key is absent.
@@ -104,7 +107,9 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
 
     // contains used to be listed with the names that are not declared.
     CHECK(src.find("find, contains, count") == std::string::npos);
-    CHECK(src.find("find, count, clear") != std::string::npos);
+    // count used to be listed with the names that are not declared.
+    CHECK(src.find("find, count, clear") == std::string::npos);
+    CHECK(src.find("iterators, find, clear,") != std::string::npos);
 
     // Lookup only. The const finder returns nullptr for a miss and does not
     // allocate, insert, or touch size. contains is that result as a bool.
@@ -130,6 +135,36 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(note.find("_M_make") == std::string::npos);
     CHECK(note.find("_M_link") == std::string::npos);
     CHECK(note.find("_M_size") == std::string::npos);
+
+    // count is the existing finder as 1 or 0. The body does not allocate,
+    // insert, overwrite the mapped object, or construct a mapped value.
+    const std::string cnt =
+        "size_type count(const key_type& __k) const { return _M_find(__k) != nullptr ? 1 : 0; }";
+    const auto cnt_at = src.find(cnt);
+    REQUIRE(cnt_at != std::string::npos);
+    const std::string cnt_body =
+        slice_from(src, "size_type count(const key_type&", "bool try_emplace(const key_type&");
+    REQUIRE_FALSE(cnt_body.empty());
+    CHECK(cnt_body.find("_M_find(__k)") != std::string::npos);
+    CHECK(cnt_body.find("!= nullptr ? 1 : 0") != std::string::npos);
+    CHECK(cnt_body.find("::operator new") == std::string::npos);
+    CHECK(cnt_body.find("_M_make") == std::string::npos);
+    CHECK(cnt_body.find("_M_link") == std::string::npos);
+    CHECK(cnt_body.find("_M_emplace_args") == std::string::npos);
+    CHECK(cnt_body.find("_M_size") == std::string::npos);
+    CHECK(cnt_body.find("mapped_type{}") == std::string::npos);
+    CHECK(cnt_body.find("mapped_type(") == std::string::npos);
+    CHECK(cnt_body.find("_M_mapped") == std::string::npos);
+    CHECK(cnt_body.find("return {}") == std::string::npos);
+    const auto cnt_note_at = cnt_at > 280 ? cnt_at - 280 : 0;
+    const std::string cnt_note = src.substr(cnt_note_at, cnt_at - cnt_note_at);
+    CHECK(cnt_note.find("returns 0") != std::string::npos);
+    CHECK(cnt_note.find("does not construct a mapped value") != std::string::npos);
+    CHECK(cnt_note.find("returns 1") != std::string::npos);
+    CHECK(cnt_note.find("existing _M_find") != std::string::npos);
+    CHECK(cnt_note.find("does not allocate") != std::string::npos);
+    CHECK(cnt_note.find("does not insert") != std::string::npos);
+    CHECK(cnt_note.find("does not overwrite the mapped object") != std::string::npos);
 
     // try_emplace used to be listed with the names that are not declared.
     CHECK(src.find("insert ranges, try_emplace,") == std::string::npos);

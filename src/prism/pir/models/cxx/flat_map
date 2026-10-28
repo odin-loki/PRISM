@@ -12,7 +12,10 @@
 // at() or operator[] is a use-after-free. erase of a missing key frees
 // nothing. contains(key) returns false when the key is missing and true
 // when it is present. It does not allocate, does not insert, and does not
-// change size. try_emplace(key, args...) on a key that is already present
+// change size. count(key) returns 1 when the key is present and 0 when it
+// is missing. It uses the existing find. It does not allocate, does not
+// insert, and does not overwrite the mapped object. A missing key does not
+// construct a mapped value. try_emplace(key, args...) on a key that is already present
 // returns false: it does not allocate and it does not overwrite the stored
 // mapped object. On a missing key it constructs the mapped object from
 // those arguments in a new node and returns true. That mapped object is
@@ -23,7 +26,7 @@
 // insert ranges and the rest are not declared. Omitted names
 // fail to compile against this header and pir falls back to libstdc++
 // (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
-// erase(iterator), iterators, find, count, clear,
+// erase(iterator), iterators, find, clear,
 // swap, the Compare / KeyContainer / MappedContainer parameters (this
 // template takes Key and T only), and any allocator other than the
 // ::operator new / ::operator delete pair above.
@@ -183,6 +186,11 @@ public:
     // Missing key returns false. A present key returns true. Neither path
     // allocates, inserts a node, or changes size: this is _M_find only.
     bool contains(const key_type& __k) const { return _M_find(__k) != nullptr; }
+
+    // A missing key returns 0 and does not construct a mapped value.
+    // A present key returns 1. This uses the existing _M_find.
+    // It does not allocate, does not insert, and does not overwrite the mapped object.
+    size_type count(const key_type& __k) const { return _M_find(__k) != nullptr ? 1 : 0; }
 
     // Present key: return false. Do not allocate and do not overwrite the
     // stored mapped object. Missing key: construct the mapped object from
