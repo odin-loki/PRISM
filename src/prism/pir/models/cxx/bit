@@ -5,9 +5,13 @@
 // libstdc++.
 //
 // Partial stand-in. countl_zero(0) and countr_zero(0) return the number of
-// digits of the unsigned type. countl_one of an all-ones value is that same
-// width. popcount is the number of one bits. A zero argument takes that
-// width path directly, so the result is the digit count.
+// digits of the unsigned type. That zero path does not call a count-leading
+// builtin. countl_one(0) and countr_one(0) are 0. countl_one of a value
+// whose high bit is set counts that run of leading ones. An all-ones value
+// returns the full width from countl_one and from countr_one. A countr_one
+// argument whose low bit is clear returns 0 and does not scan off the width.
+// popcount is the number of one bits. A zero argument of countl_zero or
+// countr_zero takes the width path directly, so the result is the digit count.
 //
 // rotl and rotr reduce the count modulo the width. A multiple of the width,
 // including a zero count, is returned unchanged: that path does not shift by
@@ -28,7 +32,8 @@
 // (extra.cxx_models). endian is the three-enumerator enum.
 //
 // This header is not a proof that a program is free of shift undefined
-// behavior. No container header is included.
+// behavior. countl_one and countr_one are not PROVED and not CLEAN. No
+// container header is included.
 #ifndef _GLIBCXX_BIT
 #define _GLIBCXX_BIT 1
 
@@ -71,9 +76,19 @@ constexpr int countl_zero(_Tp __x) noexcept {
 template <typename _Tp>
 constexpr int countl_one(_Tp __x) noexcept {
     static_assert(is_unsigned_v<_Tp>);
-    // Complement inside _Tp, so an all-ones value becomes zero and the count
-    // is the number of digits, not the width of a promoted int.
-    return countl_zero(static_cast<_Tp>(~__x));
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    // Zero's high bit is clear, so the run is empty. Return 0 before any
+    // shift. This path does not call a count-leading builtin on 0.
+    if (__x == 0) return 0;
+    int __n = 0;
+    // The index stays in [0, digits). A set high bit starts the run. The
+    // first clear bit ends it. An all-ones value never clears a bit, so the
+    // count is the full width, and that path does not call countl_zero(0).
+    for (int __i = _Nd - 1; __i >= 0; --__i) {
+        if (((__x >> __i) & _Tp(1)) == 0) return __n;
+        ++__n;
+    }
+    return _Nd;
 }
 
 template <typename _Tp>
@@ -92,7 +107,19 @@ constexpr int countr_zero(_Tp __x) noexcept {
 template <typename _Tp>
 constexpr int countr_one(_Tp __x) noexcept {
     static_assert(is_unsigned_v<_Tp>);
-    return countr_zero(static_cast<_Tp>(~__x));
+    constexpr int _Nd = numeric_limits<_Tp>::digits;
+    // Zero has no trailing one. Return 0 before any shift.
+    if (__x == 0) return 0;
+    // A clear low bit is an empty run. Return 0 and do not scan off the width.
+    if ((__x & _Tp(1)) == 0) return 0;
+    int __n = 0;
+    // The shift count stays in [0, digits). All ones never clears a bit, so
+    // the count is the full width.
+    for (int __i = 0; __i < _Nd; ++__i) {
+        if (((__x >> __i) & _Tp(1)) == 0) return __n;
+        ++__n;
+    }
+    return _Nd;
 }
 
 template <typename _Tp>

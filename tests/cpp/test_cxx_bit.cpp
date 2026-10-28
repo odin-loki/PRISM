@@ -6,6 +6,7 @@
 //
 // countl_zero(0) is the digit count of unsigned. popcount(0xA) is 2. The
 // header text does not contain a count-leading-zeros builtin call on zero.
+// countl_one(0) and countr_one(0) are 0. Each of those names is one template.
 // byteswap is declared for an unsigned value. bit_cast stays omitted. The
 // header does not call a byte-swap builtin.
 
@@ -137,6 +138,11 @@ bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     std::ofstream(probe) << "#include <bit>\n#include <limits>\n"
                             "int main() {\n"
                             "  return std::countl_zero(0u) == std::numeric_limits<unsigned>::digits &&\n"
+                            "         std::countl_one(0u) == 0 &&\n"
+                            "         std::countr_one(0u) == 0 &&\n"
+                            "         std::countr_one(2u) == 0 &&\n"
+                            "         std::countl_one(~0u) == std::numeric_limits<unsigned>::digits &&\n"
+                            "         std::countr_one(~0u) == std::numeric_limits<unsigned>::digits &&\n"
                             "         std::popcount(0xAu) == 2 ? 0 : 1;\n"
                             "}\n";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -198,6 +204,16 @@ std::string slurp(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+int occurrences(const std::string& text, const std::string& needle) {
+    int n = 0;
+    std::size_t p = 0;
+    while ((p = text.find(needle, p)) != std::string::npos) {
+        ++n;
+        p += needle.size();
+    }
+    return n;
+}
+
 }  // namespace
 
 TEST_CASE("cxx bit model: header is a file and does not call clz on zero") {
@@ -211,6 +227,18 @@ TEST_CASE("cxx bit model: header is a file and does not call clz on zero") {
     CHECK(text.find("namespace std") != std::string::npos);
     CHECK(text.find("__builtin_clz(0)") == std::string::npos);
     CHECK(text.find("__builtin_ctz(0)") == std::string::npos);
+    CHECK(text.find("__builtin_clz") == std::string::npos);
+    CHECK(text.find("__builtin_ctz") == std::string::npos);
+    CHECK(occurrences(text, "constexpr int countl_zero(") == 1);
+    CHECK(occurrences(text, "constexpr int countr_zero(") == 1);
+    CHECK(occurrences(text, "constexpr int countl_one(") == 1);
+    CHECK(occurrences(text, "constexpr int countr_one(") == 1);
+    CHECK(occurrences(text, "if (__x == 0) return _Nd;") == 2);
+    CHECK(occurrences(text, "if (__x == 0) return 0;") == 2);
+    CHECK(text.find("if ((__x & _Tp(1)) == 0) return 0;") != std::string::npos);
+    CHECK(text.find("for (int __i = 0; __i < _Nd; ++__i)") != std::string::npos);
+    CHECK(text.find("do not scan off the width") != std::string::npos);
+    CHECK(text.find("not PROVED and not CLEAN") != std::string::npos);
     CHECK(text.find("__builtin_bswap") == std::string::npos);
     CHECK(text.find("__builtin_bit_cast") == std::string::npos);
     CHECK(text.find("byteswap and bit_cast are not declared") == std::string::npos);
@@ -276,4 +304,9 @@ TEST_CASE("cxx bit model: countl_zero(0) is the width and popcount(0xA) is 2") {
     CHECK(has_line(b, "swap1 1000000"));
     CHECK(has_line(b, "swap64 efcdab8967452301"));
     CHECK(has_line(b, "swaprt 1 1 1 1"));
+    CHECK(has_line(b, "ones u8 clo0 0 clohi 1 clorun 4 cloall 8 cro0 0 crolow 0 crohi 0 crorun 4 croall 8"));
+    CHECK(has_line(b, "ones u16 clo0 0 clohi 1 clorun 4 cloall 16 cro0 0 crolow 0 crohi 0 crorun 4 croall 16"));
+    CHECK(has_line(b, "ones u32 clo0 0 clohi 1 clorun 4 cloall 32 cro0 0 crolow 0 crohi 0 crorun 4 croall 32"));
+    CHECK(has_line(b, "ones unsigned clo0 0 clohi 1 clorun 4 cloall 32 cro0 0 crolow 0 crohi 0 crorun 4 croall 32"));
+    CHECK(has_line(b, "ones u64 clo0 0 clohi 1 clorun 4 cloall 64 cro0 0 crolow 0 crohi 0 crorun 4 croall 64"));
 }
