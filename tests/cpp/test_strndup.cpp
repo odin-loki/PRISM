@@ -77,6 +77,8 @@ TEST_CASE("strndup model: null returns before allocation, n == 0 does not read s
     CHECK(note.find("min(n, strlen(s))") != std::string::npos);
     CHECK(note.find("does not read s[i] for i >= n") != std::string::npos);
     CHECK(note.find("does not read past the terminator") != std::string::npos);
+    CHECK(note.find("SIZE_MAX has no room for the trailing") != std::string::npos);
+    CHECK(note.find("does not call malloc") != std::string::npos);
     CHECK(note.find("This is not a proof of the copy.") != std::string::npos);
     CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
 
@@ -122,6 +124,14 @@ TEST_CASE("strndup model: null returns before allocation, n == 0 does not read s
     REQUIRE(term != std::string::npos);
     CHECK(zero_end < scan);
     CHECK(scan < alloc);
+    const auto fit = body.find(
+        "__prism_check(0, \"MEM-OOB-WRITE\", \"strndup length does not fit in size_t\");", scan);
+    REQUIRE(fit != std::string::npos);
+    const auto trap = body.find("__builtin_trap();", fit);
+    REQUIRE(trap != std::string::npos);
+    CHECK(scan < fit);
+    CHECK(fit < trap);
+    CHECK(trap < alloc);
     CHECK(alloc < fail);
     CHECK(fail < copy);
     CHECK(copy < term);

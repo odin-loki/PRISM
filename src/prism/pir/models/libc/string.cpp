@@ -323,7 +323,9 @@ void *memccpy(void *d, const void *s, int c, size_t n) {
  * that pointer. Allocation failure returns a null pointer.
  * Otherwise the copy is min(n, strlen(s)) bytes and a trailing NUL. The
  * scan does not read s[i] for i >= n, and it does not read past the
- * terminator.
+ * terminator. A copy length of SIZE_MAX has no room for the trailing
+ * NUL: that path is MEM-OOB-WRITE and __builtin_trap, and it does not
+ * call malloc.
  * This is not a proof of the copy.
  * This is not PROVED and not CLEAN. */
 char *strndup(const char *s, size_t n) {
@@ -337,6 +339,10 @@ char *strndup(const char *s, size_t n) {
     }
     size_t len = 0;
     while (len < n && s[len]) ++len;
+    if (len == ~(size_t)0) {
+        __prism_check(0, "MEM-OOB-WRITE", "strndup length does not fit in size_t");
+        __builtin_trap();
+    }
     char *p = (char *)malloc(len + 1);
     if (!p) return 0;
     for (size_t i = 0; i < len; ++i) p[i] = s[i];
