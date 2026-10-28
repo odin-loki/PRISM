@@ -2,7 +2,7 @@
 // The pir stage puts this directory first on the C++ include path, so
 // `#include <memory>` reaches this file instead of libstdc++'s.
 //
-// Partial on purpose. Only std::unique_ptr is modelled:
+// Partial on purpose. std::unique_ptr and std::make_unique are modelled:
 //
 //  * unique_ptr<T> owns one T. That object was allocated with ::operator new.
 //    reset stores the new pointer, then destroys the previous object and
@@ -16,13 +16,21 @@
 //  * get() on an empty unique_ptr is nullptr. operator* and operator-> on an
 //    empty unique_ptr fail the precondition through __prism_check. They do
 //    not invent an object to return.
+//  * make_unique<T>(args...) allocates with new T(...) and returns a
+//    unique_ptr that owns that object. It does not take an allocator.
+//  * make_unique<T[]>(n) value-initializes n elements with new T[n]() and
+//    returns a unique_ptr that frees them with array delete. n == 0 does
+//    not invent an element. If n > SIZE_MAX/sizeof(T) or sizeof(T) == 0,
+//    __prism_check reports MEM-OOB-WRITE and __builtin_trap runs before the
+//    allocation. That path does not allocate a wrapped count.
 //
 // shared_ptr, weak_ptr, allocator, pointer_traits, and uninitialized_* are
 // not declared. A use of those names fails to compile against this header
 // and the pir stage lowers that translation unit again with libstdc++.
-// A partial header is intentional. make_unique, custom deleters, and
-// unique_ptr for a bounded array are not declared or are a static_assert,
-// so those units fall back the same way.
+// A partial header is intentional. make_unique_for_overwrite, custom
+// deleters, and unique_ptr for a bounded array are not declared or are a
+// static_assert, so those units fall back the same way. make_unique<T[N]>
+// has no overload, so that unit falls back too.
 #ifndef _GLIBCXX_MEMORY
 #define _GLIBCXX_MEMORY 1  // libstdc++'s <memory> include guard: never both
 
@@ -30,6 +38,7 @@
 
 #include <bits/c++config.h>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 #include <type_traits>
 
@@ -211,6 +220,40 @@ void swap(unique_ptr<_Tp, _Dp>& __x, unique_ptr<_Tp, _Dp>& __y) noexcept {
 template <typename _Tp, typename _Dp>
 bool operator==(const unique_ptr<_Tp, _Dp>& __x, nullptr_t) noexcept {
     return !__x;
+}
+
+// Selects make_unique's return type. A missing nested type is a substitution
+// failure, so the call falls back to libstdc++. This is not an allocator.
+template <typename _Tp>
+struct _Prism_make_uniq {
+    using single = unique_ptr<_Tp>;
+};
+
+template <typename _Tp>
+struct _Prism_make_uniq<_Tp[]> {
+    using array = unique_ptr<_Tp[]>;
+};
+
+// Known bound: no nested type. make_unique<T[N]> does not match, and
+// unique_ptr<T[N]> is not instantiated from here.
+template <typename _Tp, size_t _Nm>
+struct _Prism_make_uniq<_Tp[_Nm]> {};
+
+template <typename _Tp, typename... _Args>
+typename _Prism_make_uniq<_Tp>::single make_unique(_Args&&... __args) {
+    return unique_ptr<_Tp>(new _Tp(static_cast<_Args&&>(__args)...));
+}
+
+template <typename _Tp>
+typename _Prism_make_uniq<_Tp>::array make_unique(size_t __n) {
+    using _Elem = remove_extent_t<_Tp>;
+    // A count of 0 is that same element count. A product that does not fit
+    // is a check and a trap, and is not turned into a wrapped count.
+    if (sizeof(_Elem) == 0 || __n > (SIZE_MAX / sizeof(_Elem))) {
+        __prism_check(0, "MEM-OOB-WRITE", "make_unique array allocation byte count overflows");
+        __builtin_trap();
+    }
+    return unique_ptr<_Tp>(new _Elem[__n]());
 }
 
 _GLIBCXX_END_NAMESPACE_VERSION

@@ -1,10 +1,14 @@
-// Trace of std::unique_ptr. Include <memory> and use only unique_ptr from it.
-// Compiled against libstdc++ and against src/prism/pir/models/cxx (that
-// directory first on the include path), both under ASan/UBSan, the lines
-// should match. tests/cpp/test_cxx_memory.cpp checks the model text; it does
-// not shell out to this file.
+// Trace of std::unique_ptr and std::make_unique. Include <memory> and use
+// those two from it. Compiled against libstdc++ and against
+// src/prism/pir/models/cxx (that directory first on the include path), both
+// under ASan/UBSan, the lines should match. argv "huge" asks for an array
+// count that does not fit in the byte size. The model must __prism_check
+// and must not print a wrapped element. tests/cpp/test_cxx_memory.cpp checks
+// the model text; it does not shell out to this file.
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <utility>
 
@@ -23,7 +27,19 @@ struct E {
     ~E() { std::printf(" d%d", v); }
 };
 
-int main() {
+struct Z {
+    int v;
+    Z() : v(0) { std::printf(" z"); }
+    ~Z() { std::printf(" Z"); }
+};
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "huge") == 0) {
+        auto a = std::make_unique<int[]>(SIZE_MAX);
+        std::printf("wrapped=%d\n", a[0]);
+        return 0;
+    }
+
     std::unique_ptr<int> empty;
     std::printf("empty %d\n", empty.get() == nullptr ? 1 : 0);
 
@@ -74,5 +90,32 @@ int main() {
         b.reset();
         std::printf("arr-reset empty=%d\n", b.get() == nullptr ? 1 : 0);
     }
+
+    {
+        auto p = std::make_unique<int>(11);
+        std::printf("mk %d\n", *p);
+    }
+    {
+        auto z = std::make_unique<int>();
+        std::printf("mk0 %d\n", *z);
+    }
+    {
+        auto e = std::make_unique<E>(12);
+        std::printf(" mkE %d\n", e->v);
+    }
+    std::printf("\n");
+    {
+        auto a = std::make_unique<int[]>(3);
+        std::printf("mkarr %d %d %d\n", a[0], a[1], a[2]);
+    }
+    {
+        auto none = std::make_unique<Z[]>(0);
+        std::printf("mkzero empty=%d\n", none.get() == nullptr ? 1 : 0);
+    }
+    {
+        auto two = std::make_unique<Z[]>(2);
+        std::printf(" mktwo %d %d\n", two[0].v, two[1].v);
+    }
+    std::printf("\n");
     return 0;
 }
