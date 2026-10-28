@@ -1,0 +1,132 @@
+// time and mktime models. Reads time.cpp as text. Does not compile the model.
+// docs/finish-notes/time.md
+
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <string_view>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::string s{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+    return s;
+}
+
+std::string function_body(std::string_view src, std::string_view sig) {
+    const auto at = src.find(sig);
+    if (at == std::string_view::npos) return {};
+    const auto open = src.find('{', at);
+    if (open == std::string_view::npos) return {};
+    int depth = 0;
+    for (std::size_t i = open; i < src.size(); ++i) {
+        if (src[i] == '{') {
+            ++depth;
+        } else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) return std::string(src.substr(open, i - open + 1));
+        }
+    }
+    return {};
+}
+
+std::string brace_block_after(std::string_view src, std::size_t at) {
+    const auto open = src.find('{', at);
+    if (open == std::string_view::npos) return {};
+    int depth = 0;
+    for (std::size_t i = open; i < src.size(); ++i) {
+        if (src[i] == '{')
+            ++depth;
+        else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) return std::string(src.substr(open, i + 1 - open));
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST_CASE("time model: nondet value, null stores nothing") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    const auto at = src.find("time_t time(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("time is not PROVED and not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "time_t time(");
+    REQUIRE(!body.empty());
+    CHECK(body.find("__VERIFIER_nondet_long") != std::string::npos);
+    const auto guard = body.find("if (t != 0)");
+    REQUIRE(guard != std::string::npos);
+    CHECK(body.substr(0, guard).find("*t") == std::string::npos);
+    const auto arm = brace_block_after(body, guard);
+    REQUIRE(!arm.empty());
+    CHECK(arm.find("*t = v") != std::string::npos);
+    CHECK(body.find("return v") != std::string::npos);
+    CHECK(src.find("strftime") == std::string::npos);
+    CHECK(src.find("clock") == std::string::npos);
+}
+
+TEST_CASE("mktime model: month 99 is not a successful calendar time") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    const auto at = src.find("time_t mktime(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("not normalized into a later year") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "time_t mktime(");
+    REQUIRE(!body.empty());
+    const auto cond = body.find("if (mon < 0 || mon > 11 || mday < 1 || mday > 31)");
+    REQUIRE(cond != std::string::npos);
+    CHECK(body.find("tp->tm_mon") != std::string::npos);
+    CHECK(body.find("tp->tm_mday") != std::string::npos);
+    CHECK(body.find("tm_sec") == std::string::npos);
+    CHECK(body.find("tm_min") == std::string::npos);
+    CHECK(body.find("tm_hour") == std::string::npos);
+    CHECK(body.find("tm_year") == std::string::npos);
+    CHECK(body.find("tm_wday") == std::string::npos);
+    CHECK(body.find("tm_yday") == std::string::npos);
+    CHECK(body.find("tm_isdst") == std::string::npos);
+    CHECK(body.find("1970") == std::string::npos);
+    CHECK(body.find("86400") == std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("/ 12") == std::string::npos);
+
+    const auto arm = brace_block_after(body, cond);
+    REQUIRE(!arm.empty());
+    const auto check = arm.find("__prism_check(");
+    const auto ret = arm.find("return (time_t)-1");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(check < ret);
+    CHECK(arm.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(arm.find("return 0") == std::string::npos);
+    CHECK(arm.find("tm_") == std::string::npos);
+
+    const auto arm_at = body.find('{', cond);
+    REQUIRE(arm_at != std::string::npos);
+    const auto after = body.substr(arm_at + arm.size());
+    CHECK(after.find("__prism_assume(0)") != std::string::npos);
+    CHECK(after.find("return 0") == std::string::npos);
+    CHECK(after.find("return (time_t)-1") != std::string::npos);
+}
