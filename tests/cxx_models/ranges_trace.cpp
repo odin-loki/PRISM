@@ -1,16 +1,19 @@
 // Trace of std::ranges::size, std::ranges::ssize, std::ranges::empty,
-// std::ranges::begin, and std::ranges::end. `#include <ranges>` is the model
-// when its directory is first on the include path, and libstdc++ otherwise.
-// An array's size is N. An lvalue with a const size() member returns that
-// size(). ssize of a value that fits is that value as ptrdiff_t. argv "huge"
-// asks ssize of a size that does not fit. The model must __prism_check and
-// must not print a wrapped negative value. empty of T(&)[N] is true only
-// when N == 0, and it does not load an element. An lvalue with a const
-// empty() member returns that empty(). begin of T(&)[N] is a pointer to the
-// first element and does not load it. end is one past the last and does not
-// load it. N == 0 returns the same pointer from both. A pointer argument is
-// not called: it is not an overload. This is not a proof that an iterator
-// stays in range.
+// std::ranges::begin, std::ranges::end, and std::ranges::data. `#include
+// <ranges>` is the model when its directory is first on the include path,
+// and libstdc++ otherwise. An array's size is N. An lvalue with a const
+// size() member returns that size(). ssize of a value that fits is that
+// value as ptrdiff_t. argv "huge" asks ssize of a size that does not fit.
+// The model must __prism_check and must not print a wrapped negative value.
+// empty of T(&)[N] is true only when N == 0, and it does not load an
+// element. An lvalue with a const empty() member returns that empty().
+// begin of T(&)[N] is a pointer to the first element and does not load it.
+// end is one past the last and does not load it. N == 0 returns the same
+// pointer from both. data of T(&)[N] is that same first-element pointer by
+// array-to-pointer decay and does not load it. N == 0 returns the decayed
+// pointer and does not load it. A pointer argument is not called: it is not
+// an overload. This is not a proof that an iterator stays in range or that
+// a pointer has a length.
 #include <ranges>
 
 #include <cstdint>
@@ -57,6 +60,9 @@ static_assert(std::ranges::begin(ak) == ak);
 static_assert(std::ranges::end(ak) == ak + 4);
 static_assert(*std::ranges::begin(ak) == 1);
 static_assert(*(std::ranges::end(ak) - 1) == 4);
+static_assert(std::ranges::data(ak) == ak);
+static_assert(std::ranges::data(ak) == std::ranges::begin(ak));
+static_assert(*std::ranges::data(ak) == 1);
 
 constexpr Count ck{3};
 static_assert(std::ranges::size(ck) == 3);
@@ -66,6 +72,8 @@ static_assert(!std::ranges::empty(ak));
 constexpr int zk[0] = {};
 static_assert(std::ranges::empty(zk));
 static_assert(std::ranges::begin(zk) == std::ranges::end(zk));
+static_assert(std::ranges::data(zk) == zk);
+static_assert(std::ranges::data(zk) == std::ranges::begin(zk));
 constexpr Flag fk{true};
 constexpr Flag fn{false};
 static_assert(std::ranges::empty(fk));
@@ -80,18 +88,28 @@ constexpr bool prism_ranges_begin = requires(T& r) { std::ranges::begin(r); };
 template <class T>
 constexpr bool prism_ranges_end = requires(T& r) { std::ranges::end(r); };
 
+template <class T>
+constexpr bool prism_ranges_data = requires(T& r) { std::ranges::data(r); };
+
 static_assert(prism_ranges_begin<int[4]>);
 static_assert(prism_ranges_end<int[4]>);
+static_assert(prism_ranges_data<int[4]>);
+static_assert(prism_ranges_data<const int[4]>);
 static_assert(prism_ranges_begin<int[0]>);
 static_assert(prism_ranges_end<int[0]>);
+static_assert(prism_ranges_data<int[0]>);
 static_assert(!prism_ranges_begin<int*>);
 static_assert(!prism_ranges_end<int*>);
+static_assert(!prism_ranges_data<int*>);
 static_assert(!prism_ranges_begin<const int*>);
 static_assert(!prism_ranges_end<const int*>);
+static_assert(!prism_ranges_data<const int*>);
 static_assert(!prism_ranges_begin<int (*)[4]>);
 static_assert(!prism_ranges_end<int (*)[4]>);
+static_assert(!prism_ranges_data<int (*)[4]>);
 static_assert(!prism_ranges_begin<Count>);
 static_assert(!prism_ranges_end<Count>);
+static_assert(!prism_ranges_data<Count>);
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "huge") == 0) {
@@ -144,5 +162,16 @@ int main(int argc, char** argv) {
     std::printf("bpsame %d\n", std::ranges::begin(ps) == ps ? 1 : 0);
     std::printf("isame %d\n", std::ranges::begin(inner) == inner ? 1 : 0);
     std::printf("osame %d\n", std::ranges::begin(outer) == std::ranges::end(outer) ? 1 : 0);
+    std::printf("dfirst %d\n", *std::ranges::data(a) == 9 ? 9 : -1);
+    std::printf("dsame %d\n",
+                std::ranges::data(a) == a && std::ranges::data(a) == std::ranges::begin(a) ? 1 : 0);
+    std::printf("cdfirst %d\n", *std::ranges::data(ca) == 2 ? 2 : -1);
+    std::printf("cdsame %d\n", std::ranges::data(ca) == ca ? 1 : 0);
+    std::printf("zdata %d\n",
+                std::ranges::data(z) == z && std::ranges::data(z) == std::ranges::begin(z) ? 1 : 0);
+    std::printf("dpsame %d\n", std::ranges::data(ps) == ps ? 1 : 0);
+    std::printf("idsame %d\n", std::ranges::data(inner) == inner ? 1 : 0);
+    std::printf("odsame %d\n",
+                std::ranges::data(outer) == outer && std::ranges::data(outer) == std::ranges::begin(outer) ? 1 : 0);
     return 0;
 }
