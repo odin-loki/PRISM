@@ -18,10 +18,15 @@
 // disengaged, value_or returns the argument, converted to T. It does not
 // return T{} and it does not invent a value that was not passed in.
 //
-// emplace, transform, and_then, or_else (and, or), comparison, and hash are
-// not declared. A use of them fails to compile against this header and pir
-// falls back to libstdc++. nullopt, in_place, swap, make_optional, and
-// assignment from T are not declared either, so those uses fall back too.
+// and_then, when the optional is engaged, calls the function with the stored
+// T and returns what that function returns. When it is disengaged, the
+// function is not called and and_then returns a disengaged optional. It does
+// not return T{}.
+//
+// emplace, transform, or_else, comparison, and hash are not declared. A use
+// of them fails to compile against this header and pir falls back to
+// libstdc++. nullopt, in_place, swap, make_optional, and assignment from T
+// are not declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_OPTIONAL
 #define _PRISM_MODEL_OPTIONAL 1
 #define _GLIBCXX_OPTIONAL 1  // libstdc++'s <optional> include guard: never both
@@ -33,6 +38,13 @@
 extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 
 namespace std {
+
+// True only for optional<U>. and_then's function must return an optional;
+// the disengaged path value-initializes that type and must not build T{}.
+template <typename _T>
+struct _Prism_optional_kind {
+    static constexpr bool value = false;
+};
 
 template <typename _Tp>
 class optional {
@@ -112,6 +124,50 @@ public:
         if (_M_engaged) return static_cast<_Tp&&>(_M_storage._M_value);
         return static_cast<_Tp>(static_cast<_Up&&>(__u));
     }
+
+private:
+    // Value-initializing the function's optional return type. Not T{}.
+    template <typename _Ret>
+    static _Ret _M_empty_result() {
+        static_assert(_Prism_optional_kind<_Ret>::value,
+                      "optional::and_then requires the function to return an optional");
+        return _Ret();
+    }
+
+public:
+    // Engaged: call __f with the stored T and return that result. The call is
+    // direct. Disengaged: do not call __f and do not read the inactive T.
+    // decltype does not call __f. value() is not used: a disengaged and_then
+    // is not a CXX-OPTIONAL-NULL check.
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) & {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&>(_M_storage._M_value)));
+        if (!_M_engaged) return _M_empty_result<_Ret>();
+        return static_cast<_Fn&&>(__f)(static_cast<_Tp&>(_M_storage._M_value));
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) const& {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&>(_M_storage._M_value)));
+        if (!_M_engaged) return _M_empty_result<_Ret>();
+        return static_cast<_Fn&&>(__f)(static_cast<const _Tp&>(_M_storage._M_value));
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) && {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_value)));
+        if (!_M_engaged) return _M_empty_result<_Ret>();
+        return static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_value));
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) const&& {
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_value)));
+        if (!_M_engaged) return _M_empty_result<_Ret>();
+        return static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_value));
+    }
+};
+
+template <typename _T>
+struct _Prism_optional_kind<optional<_T>> {
+    static constexpr bool value = true;
 };
 
 }  // namespace std
