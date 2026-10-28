@@ -4,7 +4,7 @@
 // libstdc++'s. It is a non-owning view of a character sequence: a pointer and
 // a length. Nothing here allocates, and the destructor does not free.
 //
-// compare, find, and every other member that is not
+// find, and every other member that is not
 // defined below are omitted on purpose. A use of one of them fails to compile
 // against this header, and the pir stage lowers that translation unit again
 // with libstdc++ (extra.cxx_models records the fallback). They are not stubbed.
@@ -163,6 +163,28 @@ public:
     [[nodiscard]] constexpr bool ends_with(_CharT __c) const noexcept {
         if (_M_len == 0) return false;
         return _Traits::eq(_M_str[_M_len - 1], __c);
+    }
+
+    // [string.view.ops] compare(basic_string_view). Reads min(size(),
+    // other.size()) characters, each as an unsigned char. A difference
+    // returns -1 or 1. When one view is a prefix of the other, the shorter
+    // one is less. Two empty views return 0 and do not read either pointer.
+    // A compared length of 0 does not read _M_str. Nothing is read past
+    // either view. This does not allocate. It is not a locale collation.
+    [[nodiscard]] constexpr int compare(basic_string_view __x) const noexcept {
+        if (_M_len == 0 && __x._M_len == 0) return 0;
+        const size_type __n = __x._M_len < _M_len ? __x._M_len : _M_len;
+        if (__n != 0) {
+            for (size_type __i = 0; __i < __n; ++__i) {
+                const unsigned char __a = static_cast<unsigned char>(_M_str[__i]);
+                const unsigned char __b = static_cast<unsigned char>(__x._M_str[__i]);
+                if (__a < __b) return -1;
+                if (__a > __b) return 1;
+            }
+        }
+        if (_M_len < __x._M_len) return -1;
+        if (_M_len > __x._M_len) return 1;
+        return 0;
     }
 
     // [string.view.ops] substr. A position past size() is MEM-OOB-READ and

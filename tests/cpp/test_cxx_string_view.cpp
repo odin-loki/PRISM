@@ -2,7 +2,8 @@
 // (src/prism/pir/models/cxx/string_view). Same shape as tests/cpp/test_cxx_list.cpp.
 // The view does not own its characters, front() on an empty view is a check,
 // and operator[] in range is the real character. starts_with and ends_with
-// compare at most size() characters. substr past size() is a check, and a
+// compare at most size() characters. compare(basic_string_view) returns
+// -1, 0, or 1 from unsigned char order. substr past size() is a check, and a
 // count that would pass size() stops at size(). CMake's prism_tests source
 // list is explicit (not a glob).
 
@@ -282,6 +283,11 @@ TEST_CASE("cxx string_view model: view does not own, index is the character, emp
     CHECK(line_has(b, "suball=4 1 1"));
     CHECK(line_has(b, "subempty=0 1 1 0 1"));
     CHECK(line_has(b, "subalive=pqrs"));
+    // Signs, so a libstdc++ magnitude other than -1 or 1 still matches.
+    // Empty against empty is 0. A high byte is greater than 'a'. A proper
+    // prefix is less. Zero-length views, including one past the end, are 0.
+    CHECK(line_has(b, "cmp_empty=0 cmp_empty_a=-1 cmp_a_empty=1 cmp_aa=0 cmp_ab=-1 cmp_ba=1"));
+    CHECK(line_has(b, "cmp_prefix=-1 cmp_longer=1 cmp_mid=-1 cmp_pref3=-1 cmp_high=1 cmp_zz=0 cmp_end=0"));
 
     for (const fs::path& exe : {lib, mod}) {
         std::string err;
@@ -307,7 +313,8 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(src.find("#include <string>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("substr, starts_with") == std::string::npos);
-    CHECK(src.find("compare, find, and every other") != std::string::npos);
+    CHECK(src.find("compare, find, and every other") == std::string::npos);
+    CHECK(src.find("find, and every other member that is not") != std::string::npos);
     CHECK(src.find("compare, find, substr, and every other") == std::string::npos);
     // Pointer plus count stores the pointer and the count. It stays noexcept
     // and does not check null. The view still does not own its characters.
@@ -317,7 +324,7 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(src.find("constexpr ~basic_string_view() = default;") != std::string::npos);
 
     const std::string code = strip_line_comments(src);
-    CHECK(code.find("compare(") == std::string::npos);
+    CHECK(count_occ(code, "compare(") == 1);
     CHECK(code.find("find(") == std::string::npos);
     CHECK(count_occ(code, "substr(") == 1);
     CHECK(count_occ(code, "starts_with(") == 2);
@@ -387,11 +394,31 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(sub.find("delete") == std::string::npos);
     CHECK(code.find("static constexpr size_type npos = static_cast<size_type>(-1);") != std::string::npos);
 
+    const std::string cmp = body_of(code, "int compare(basic_string_view __x) const noexcept");
+    REQUIRE_FALSE(cmp.empty());
+    const auto empty_eq = cmp.find("if (_M_len == 0 && __x._M_len == 0) return 0;");
+    REQUIRE(empty_eq != std::string::npos);
+    REQUIRE(cmp.find("_M_str") != std::string::npos);
+    CHECK(empty_eq < cmp.find("_M_str"));
+    CHECK(cmp.find("if (__n != 0)") < cmp.find("_M_str"));
+    CHECK(cmp.find("const size_type __n = __x._M_len < _M_len ? __x._M_len : _M_len;") != std::string::npos);
+    CHECK(cmp.find("static_cast<unsigned char>(_M_str[__i])") != std::string::npos);
+    CHECK(cmp.find("static_cast<unsigned char>(__x._M_str[__i])") != std::string::npos);
+    CHECK(cmp.find("for (size_type __i = 0; __i < __n; ++__i)") != std::string::npos);
+    CHECK(cmp.find("if (__a < __b) return -1;") != std::string::npos);
+    CHECK(cmp.find("if (__a > __b) return 1;") != std::string::npos);
+    CHECK(cmp.find("if (_M_len < __x._M_len) return -1;") != std::string::npos);
+    CHECK(cmp.find("if (_M_len > __x._M_len) return 1;") != std::string::npos);
+    CHECK(cmp.find("__prism_check") == std::string::npos);
+    CHECK(cmp.find("new ") == std::string::npos);
+    CHECK(cmp.find("delete") == std::string::npos);
+    CHECK(cmp.find("locale") == std::string::npos);
+
     const std::string trace = slurp(repo() / "tests" / "cxx_models" / "string_view_trace.cpp");
     CHECK(trace.find(".starts_with(") != std::string::npos);
     CHECK(trace.find(".ends_with(") != std::string::npos);
     CHECK(trace.find(".substr(") != std::string::npos);
-    CHECK(trace.find(".compare(") == std::string::npos);
+    CHECK(trace.find(".compare(") != std::string::npos);
     CHECK(trace.find(".find(") == std::string::npos);
     CHECK(trace.find("v.substr(0, 0)") != std::string::npos);
     CHECK(trace.find("empty.substr(0, 0)") != std::string::npos);

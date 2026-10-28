@@ -2,11 +2,14 @@
 // compiled once against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/string_view) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The traces must be identical.
-// compare and find are not called: the model does not declare them.
-// starts_with, ends_with, and substr are. An empty needle matches. A longer
-// needle is false, and the comparison does not read past the view. substr
-// past size() is a failed check. A count of npos, or a count that would pass
-// size(), stops at size(). substr(0, 0) does not read a character.
+// compare(basic_string_view) is called. find is not: the model does not
+// declare it. starts_with, ends_with, and substr are. An empty needle matches.
+// A longer needle is false, and the comparison does not read past the view.
+// substr past size() is a failed check. A count of npos, or a count that would
+// pass size(), stops at size(). substr(0, 0) does not read a character.
+// Two empty views compare equal. The printed compare values are signs, so a
+// libstdc++ magnitude other than -1 or 1 still matches. A high byte is ordered
+// as unsigned char. A proper prefix is less. A zero-length view is not read.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -119,6 +122,40 @@ static int substr_oob() {
     return static_cast<int>(s.size());
 }
 
+static int sgn(int v) { return (v > 0) - (v < 0); }
+
+static void orders() {
+    std::string_view empty;
+    std::string_view empty2;
+    // Exact objects. A read past size() is an ASan fault.
+    char a[] = {'a'};
+    char b[] = {'b'};
+    char ab[] = {'a', 'b'};
+    char ac[] = {'a', 'c'};
+    char abc[] = {'a', 'b', 'c'};
+    char hi[] = {static_cast<char>(0x80)};
+    std::string_view va(a, 1);
+    std::string_view vb(b, 1);
+    std::string_view vab(ab, 2);
+    std::string_view vac(ac, 2);
+    std::string_view vabc(abc, 3);
+    std::string_view vhi(hi, 1);
+    // Length 0, different characters behind the pointers. A read would order
+    // 'a' against 'b' instead of returning 0.
+    const auto z = va.substr(0, 0);
+    const auto z2 = vb.substr(0, 0);
+    // Length 0, one past the last character. A read is past the object.
+    const auto end = vab.substr(2, 0);
+    const auto end2 = vab.substr(2, 0);
+
+    std::printf("cmp_empty=%d cmp_empty_a=%d cmp_a_empty=%d cmp_aa=%d cmp_ab=%d cmp_ba=%d\n",
+                sgn(empty.compare(empty2)), sgn(empty.compare(va)), sgn(va.compare(empty)), sgn(va.compare(va)),
+                sgn(va.compare(vb)), sgn(vb.compare(va)));
+    std::printf("cmp_prefix=%d cmp_longer=%d cmp_mid=%d cmp_pref3=%d cmp_high=%d cmp_zz=%d cmp_end=%d\n",
+                sgn(va.compare(vab)), sgn(vab.compare(va)), sgn(vab.compare(vac)), sgn(va.compare(vabc)),
+                sgn(vhi.compare(va)), sgn(z.compare(z2)), sgn(end.compare(end2)));
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "front") == 0) return empty_front();
     if (argc > 1 && std::strcmp(argv[1], "substr") == 0) return substr_oob();
@@ -126,5 +163,6 @@ int main(int argc, char** argv) {
     from_cstr();
     prefixes();
     slices();
+    orders();
     return 0;
 }
