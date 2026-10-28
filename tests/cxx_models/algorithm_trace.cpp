@@ -12,8 +12,11 @@
 // predicate. count returns how many elements compare equal. An empty range
 // returns 0 and does not read. all_of, any_of, and none_of take two
 // pointers and bool (*)(const T&). An empty range does not call: all_of
-// returns true, any_of returns false, none_of returns true. sort, copy,
-// fill, and for_each are not called.
+// returns true, any_of returns false, none_of returns true. fill takes two
+// pointers and a const T&. An empty range does not write, even when the
+// pointer is null. Each element in [first, last) becomes the value. The
+// element at last is left unchanged. sort, copy, and for_each are not
+// called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
 // argv "invert-find" calls find with last < first. argv "invert-find-if"
@@ -23,8 +26,10 @@
 // "invert-any-of", and "invert-none-of" call those functions with
 // last < first and must not call the predicate. argv "null-all-of",
 // "null-any-of", "null-none-of", and the "-empty" forms pass a null
-// predicate. The model must __prism_check and must not print a value.
-// This is not PROVED and not CLEAN.
+// predicate. argv "invert-fill" calls fill with last < first and must not
+// assign. argv "null-fill" calls fill with a null first and a non-empty
+// range and must not assign. The model must __prism_check and must not
+// print a value. This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -73,6 +78,16 @@ struct PredOnly {
     int x;
     constexpr explicit PredOnly(int v) : x(v) {}
     PredOnly() = delete;
+};
+
+// Assignment is the write fill must not perform on a rejected range.
+struct FillSlot {
+    int x;
+    FillSlot& operator=(const FillSlot& other) {
+        std::fprintf(stderr, "wrote\n");
+        x = other.x;
+        return *this;
+    }
 };
 
 constexpr bool is_one(const int& x) { return x == 1; }
@@ -427,6 +442,45 @@ constexpr bool none_of_pred_empty() {
 }
 static_assert(none_of_pred_empty());
 
+constexpr int fill_sum() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq + 4, 7);
+    return seq[0] + seq[1] + seq[2] + seq[3];
+}
+static_assert(fill_sum() == 28);
+constexpr int fill_tail() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq + 3, 7);
+    return seq[0] + seq[1] * 10 + seq[2] * 100 + seq[3] * 1000;
+}
+static_assert(fill_tail() == 4777);
+constexpr bool fill_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq, 0);
+    return seq[0] == 9 && seq[1] == 4 && seq[2] == 1 && seq[3] == 4;
+}
+static_assert(fill_empty_keeps());
+constexpr bool fill_null_empty() {
+    std::fill(static_cast<int*>(nullptr), static_cast<int*>(nullptr), 0);
+    return true;
+}
+static_assert(fill_null_empty());
+constexpr int fill_one_v() {
+    int seq[] = {8};
+    std::fill(seq, seq + 1, 3);
+    return seq[0];
+}
+static_assert(fill_one_v() == 3);
+constexpr int fill_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly value(9);
+    std::fill(seq, seq + 3, value);
+    PredOnly empty[] = {PredOnly(4), PredOnly(5)};
+    std::fill(empty, empty, PredOnly(8));
+    return seq[0].x + seq[1].x + seq[2].x + empty[0].x + empty[1].x;
+}
+static_assert(fill_pred_v() == 36);
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -525,6 +579,27 @@ int main(int argc, char** argv) {
         else
             r = std::none_of(first, last, pred);
         std::printf("value=%d\n", r ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-fill") == 0) {
+        FillSlot arr_el[3] = {{1}, {2}, {3}};
+        FillSlot* volatile vf = arr_el + 2;
+        FillSlot* volatile vl = arr_el;
+        FillSlot* first = vf;
+        FillSlot* last = vl;
+        FillSlot value{9};
+        std::fill(first, last, value);
+        std::printf("value=%d\n", arr_el[0].x);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-fill") == 0) {
+        unsigned long volatile raw_first = 0;
+        unsigned long volatile raw_last = sizeof(FillSlot);
+        FillSlot* first = reinterpret_cast<FillSlot*>(raw_first);
+        FillSlot* last = reinterpret_cast<FillSlot*>(raw_last);
+        FillSlot value{9};
+        std::fill(first, last, value);
+        std::printf("value=%d\n", value.x);
         return 0;
     }
 
@@ -821,5 +896,27 @@ int main(int argc, char** argv) {
                 std::none_of(nds, nds, nd_is_one) ? 1 : 0);
     std::printf("none_of_pred=%d none_of_pred_empty=%d\n", std::none_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
                 std::none_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    int fill_all[] = {9, 4, 1, 4};
+    std::fill(fill_all, fill_all + 4, 7);
+    std::printf("fill_all=%d,%d,%d,%d\n", fill_all[0], fill_all[1], fill_all[2], fill_all[3]);
+    int fill_span[] = {9, 4, 1, 4};
+    std::fill(fill_span, fill_span + 3, 7);
+    std::printf("fill_span=%d,%d,%d,%d\n", fill_span[0], fill_span[1], fill_span[2], fill_span[3]);
+    int fill_emp[] = {9, 4, 1, 4};
+    std::fill(fill_emp, fill_emp, 0);
+    std::printf("fill_empty=%d,%d,%d,%d\n", fill_emp[0], fill_emp[1], fill_emp[2], fill_emp[3]);
+    int fill_one_a[] = {8};
+    std::fill(fill_one_a, fill_one_a + 1, 3);
+    std::printf("fill_one=%d\n", fill_one_a[0]);
+    std::fill(zn, zn, 0);
+    std::printf("fill_null=%d\n", 1);
+    PredOnly fill_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly fill_value(9);
+    std::fill(fill_preds, fill_preds + 3, fill_value);
+    PredOnly fill_preds_empty[] = {PredOnly(4), PredOnly(5)};
+    std::fill(fill_preds_empty, fill_preds_empty, PredOnly(8));
+    std::printf("fill_pred=%d,%d,%d fill_pred_empty=%d,%d\n", fill_preds[0].x, fill_preds[1].x, fill_preds[2].x,
+                fill_preds_empty[0].x, fill_preds_empty[1].x);
     return 0;
 }

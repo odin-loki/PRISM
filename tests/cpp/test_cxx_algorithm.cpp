@@ -28,8 +28,13 @@
 // returns true. all_of returns false at the first element for which the
 // predicate is false, else true. any_of returns true at the first element
 // for which it is true, else false. none_of returns false at the first
-// element for which it is true, else true. This is not PROVED and not
-// CLEAN. sort, copy, fill, and for_each are not declared.
+// element for which it is true, else true. fill takes two pointers and a
+// const T&. An inverted range is __prism_check then __builtin_trap and
+// does not write. An empty range returns and does not write, even when
+// the pointer is null. A null first on a non-empty range is __prism_check
+// then __builtin_trap and does not write. Each element in [first, last)
+// becomes the value. fill does not write at last. This is not PROVED and
+// not CLEAN. sort, copy, and for_each are not declared.
 
 #include <doctest/doctest.h>
 
@@ -255,7 +260,7 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
             if (line.compare(i, 8, "#include") == 0) CHECK(line.find("<bits/stl_pair.h>") != std::string::npos);
         }
     }
-    for (const char* name : {"sort(", " copy(", "fill(", "for_each(", "count_if"})
+    for (const char* name : {"sort(", " copy(", "for_each(", "count_if", "fill_n"})
         CHECK(text.find(name) == std::string::npos);
 
     for (const char* name : {"all_of(", "any_of(", "none_of(", "find_if_not(", "copy_if(", "is_partitioned(",
@@ -503,12 +508,19 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     const auto all_sig = text.find("all_of(", all_of_at);
     const auto any_sig = text.find("any_of(", any_of_at);
     const auto none_sig = text.find("none_of(", none_of_at);
+    const auto fill_at =
+        text.find("constexpr void fill(_Tp* __first, _Tp* __last, const _Tp& __value)");
     REQUIRE(all_sig != std::string::npos);
     REQUIRE(any_sig != std::string::npos);
     REQUIRE(none_sig != std::string::npos);
+    REQUIRE(fill_at != std::string::npos);
     CHECK(text.find("all_of(", all_sig + 7) == std::string::npos);
     CHECK(text.find("any_of(", any_sig + 7) == std::string::npos);
     CHECK(text.find("none_of(", none_sig + 8) == std::string::npos);
+    CHECK(none_of_at < fill_at);
+    const auto fill_sig = text.find("fill(", fill_at);
+    REQUIRE(fill_sig != std::string::npos);
+    CHECK(text.find("fill(", fill_sig + 5) == std::string::npos);
     const std::string count_body = text.substr(count_at, all_of_at - count_at);
     const std::string all_body = text.substr(all_of_at, any_of_at - all_of_at);
     const std::string any_body = text.substr(any_of_at, none_of_at - any_of_at);
@@ -655,6 +667,63 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
                 "if (__pred(*__first)) return false;", "true");
     CHECK(any_body.find("!__pred") == std::string::npos);
     CHECK(none_body.find("!__pred") == std::string::npos);
+
+    const std::string fill_body = text.substr(fill_at);
+    const auto fill_brace = fill_body.find('{');
+    REQUIRE(fill_brace != std::string::npos);
+    const std::string fill_fn = fill_body.substr(fill_brace);
+    const auto fill_bad = fill_fn.find("if (__last < __first)");
+    const auto fill_empty = fill_fn.find("if (__first == __last) return;");
+    const auto fill_null = fill_fn.find("if (__first == nullptr)");
+    const auto fill_scan = fill_fn.find("while (__first != __last)");
+    REQUIRE(fill_bad != std::string::npos);
+    REQUIRE(fill_empty != std::string::npos);
+    REQUIRE(fill_null != std::string::npos);
+    REQUIRE(fill_scan != std::string::npos);
+    CHECK(fill_bad < fill_empty);
+    CHECK(fill_empty < fill_null);
+    CHECK(fill_null < fill_scan);
+    const std::string fill_bad_body = fill_fn.substr(fill_bad, fill_empty - fill_bad);
+    const auto fill_bad_check = fill_bad_body.find("__prism_check");
+    const auto fill_bad_trap = fill_bad_body.find("__builtin_trap");
+    REQUIRE(fill_bad_check != std::string::npos);
+    REQUIRE(fill_bad_trap != std::string::npos);
+    CHECK(fill_bad_check < fill_bad_trap);
+    CHECK(fill_bad_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(fill_bad_body.find("std::fill last is before first") != std::string::npos);
+    CHECK(fill_bad_body.find("return") == std::string::npos);
+    CHECK(fill_bad_body.find("*__") == std::string::npos);
+    CHECK(fill_bad_body.find("__value") == std::string::npos);
+    const std::string fill_null_body = fill_fn.substr(fill_null, fill_scan - fill_null);
+    const auto fill_null_check = fill_null_body.find("__prism_check");
+    const auto fill_null_trap = fill_null_body.find("__builtin_trap");
+    REQUIRE(fill_null_check != std::string::npos);
+    REQUIRE(fill_null_trap != std::string::npos);
+    CHECK(fill_null_check < fill_null_trap);
+    CHECK(fill_null_body.find("PTR-NULL-DEREF") != std::string::npos);
+    CHECK(fill_null_body.find("std::fill null destination") != std::string::npos);
+    CHECK(fill_null_body.find("return") == std::string::npos);
+    CHECK(fill_null_body.find("*__") == std::string::npos);
+    CHECK(fill_null_body.find("__value") == std::string::npos);
+    CHECK(fill_fn.substr(0, fill_scan).find("*__") == std::string::npos);
+    CHECK(fill_fn.substr(0, fill_scan).find("__value") == std::string::npos);
+    const auto fill_store = fill_fn.find("*__first = __value", fill_scan);
+    REQUIRE(fill_store != std::string::npos);
+    const auto fill_bump = fill_fn.find("++__first", fill_store);
+    REQUIRE(fill_bump != std::string::npos);
+    CHECK(fill_scan < fill_store);
+    CHECK(fill_store < fill_bump);
+    CHECK(fill_fn.find("*__first = __value", fill_bump) == std::string::npos);
+    const auto fill_end = fill_body.find("\n}  // namespace std");
+    REQUIRE(fill_end != std::string::npos);
+    const std::string fill_only = fill_body.substr(0, fill_end);
+    CHECK(fill_only.find("<=") == std::string::npos);
+    CHECK(fill_only.find("_Tp{") == std::string::npos);
+    CHECK(fill_only.find("_Tp(") == std::string::npos);
+    CHECK(fill_only.find("_Tp __") == std::string::npos);
+    CHECK(fill_only.find("new") == std::string::npos);
+    CHECK(fill_only.find("malloc") == std::string::npos);
+    CHECK(fill_only.find("return 0") == std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
@@ -780,6 +849,12 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(has_line(b, "none_of_eq=0 none_of_eq_empty=1"));
     CHECK(has_line(b, "none_of_nodef=0 none_of_nodef_empty=1"));
     CHECK(has_line(b, "none_of_pred=0 none_of_pred_empty=1"));
+    CHECK(has_line(b, "fill_all=7,7,7,7"));
+    CHECK(has_line(b, "fill_span=7,7,7,4"));
+    CHECK(has_line(b, "fill_empty=9,4,1,4"));
+    CHECK(has_line(b, "fill_one=3"));
+    CHECK(has_line(b, "fill_null=1"));
+    CHECK(has_line(b, "fill_pred=9,9,9 fill_pred_empty=4,5"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "invert"}, &out, &err));
@@ -854,12 +929,28 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     expect_contract("null-none-of", "none_of: null predicate", false);
     expect_contract("null-none-of-empty", "none_of: null predicate", false);
 
+    std::string fill_out, fill_err;
+    CHECK_FALSE(run_cmd({mod.string(), "invert-fill"}, &fill_out, &fill_err));
+    const std::string fill_both = fill_out + fill_err;
+    CHECK(fill_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(fill_both.find("std::fill last is before first") != std::string::npos);
+    CHECK(fill_both.find("wrote") == std::string::npos);
+    CHECK(fill_out.find("value=") == std::string::npos);
+
+    std::string null_fill_out, null_fill_err;
+    CHECK_FALSE(run_cmd({mod.string(), "null-fill"}, &null_fill_out, &null_fill_err));
+    const std::string null_fill_both = null_fill_out + null_fill_err;
+    CHECK(null_fill_both.find("CHECK PTR-NULL-DEREF:") != std::string::npos);
+    CHECK(null_fill_both.find("std::fill null destination") != std::string::npos);
+    CHECK(null_fill_both.find("wrote") == std::string::npos);
+    CHECK(null_fill_both.find("AddressSanitizer") == std::string::npos);
+    CHECK(null_fill_out.find("value=") == std::string::npos);
+
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
                               "int use(int* a, int n) {\n"
                               "  std::sort(a, a + n);\n"
                               "  std::copy(a, a + n, a);\n"
-                              "  std::fill(a, a + n, 0);\n"
                               "  std::for_each(a, a + n, [](int) {});\n"
                               "  return a[0];\n"
                               "}\n";
@@ -1151,4 +1242,73 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
                                 "static_assert(nullp());\n";
     std::string null_none_err;
     CHECK_FALSE(syntax_only(c.cxx, null_none, true, &null_none_err));
+
+    const fs::path fill_ok = c.tmp / "fill_ok.cpp";
+    std::ofstream(fill_ok) << "#include <algorithm>\n"
+                              "void use(int* a, int n, const int& v) {\n"
+                              "  std::fill(a, a + n, v);\n"
+                              "}\n";
+    std::string fill_ok_err;
+    CHECK(syntax_only(c.cxx, fill_ok, false, &fill_ok_err));
+    CHECK(syntax_only(c.cxx, fill_ok, true, &fill_ok_err));
+
+    const fs::path fill_long = c.tmp / "fill_long.cpp";
+    std::ofstream(fill_long) << "#include <algorithm>\n"
+                                "void use(int* a, int n) {\n"
+                                "  std::fill(a, a + n, 0L);\n"
+                                "}\n";
+    std::string fill_long_err;
+    CHECK(syntax_only(c.cxx, fill_long, false, &fill_long_err));
+    CHECK_FALSE(syntax_only(c.cxx, fill_long, true, &fill_long_err));
+
+    const fs::path fill_n = c.tmp / "fill_n.cpp";
+    std::ofstream(fill_n) << "#include <algorithm>\n"
+                             "int* use(int* a, int n) {\n"
+                             "  return std::fill_n(a, n, 0);\n"
+                             "}\n";
+    std::string fill_n_err;
+    CHECK(syntax_only(c.cxx, fill_n, false, &fill_n_err));
+    CHECK_FALSE(syntax_only(c.cxx, fill_n, true, &fill_n_err));
+
+    const fs::path fill_empty_ok = c.tmp / "fill_empty_ok.cpp";
+    std::ofstream(fill_empty_ok) << "#include <algorithm>\n"
+                                    "constexpr int empty() {\n"
+                                    "  int a[] = {1, 2, 3};\n"
+                                    "  std::fill(a, a, 0);\n"
+                                    "  return a[0];\n"
+                                    "}\n"
+                                    "static_assert(empty() == 1);\n"
+                                    "constexpr int empty_null() {\n"
+                                    "  std::fill(static_cast<int*>(nullptr), static_cast<int*>(nullptr), 0);\n"
+                                    "  return 1;\n"
+                                    "}\n"
+                                    "static_assert(empty_null() == 1);\n";
+    std::string fill_empty_ok_err;
+    CHECK(syntax_only(c.cxx, fill_empty_ok, false, &fill_empty_ok_err));
+    CHECK(syntax_only(c.cxx, fill_empty_ok, true, &fill_empty_ok_err));
+
+    const fs::path inverted_fill = c.tmp / "invert_fill_const.cpp";
+    std::ofstream(inverted_fill) << "#include <algorithm>\n"
+                                    "constexpr int inverted() {\n"
+                                    "  int a[] = {1, 2, 3};\n"
+                                    "  std::fill(a + 2, a, 0);\n"
+                                    "  return a[0];\n"
+                                    "}\n"
+                                    "static_assert(inverted() == 1);\n";
+    std::string inverted_fill_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_fill, true, &inverted_fill_err));
+    CHECK(inverted_fill_err.find("__prism_check") != std::string::npos);
+
+    const fs::path null_fill_const = c.tmp / "null_fill_const.cpp";
+    std::ofstream(null_fill_const) << "#include <algorithm>\n"
+                                      "constexpr int null_dest() {\n"
+                                      "  int a[] = {1, 2, 3};\n"
+                                      "  int* first = nullptr;\n"
+                                      "  int* last = a + 1;\n"
+                                      "  std::fill(first, last, 0);\n"
+                                      "  return a[0];\n"
+                                      "}\n"
+                                      "static_assert(null_dest() == 1);\n";
+    std::string null_fill_const_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_fill_const, true, &null_fill_const_err));
 }

@@ -75,13 +75,23 @@
 // predicate is not checked by these. minmax_element returns the first
 // smallest and the last largest.
 //
-// sort, copy, fill, for_each, and every other algorithm are not
-// declared. A use of those names fails to compile and the pir stage falls
-// back to libstdc++ (extra.cxx_models). A partial header is intentional.
+// std::fill takes two pointers and a const T&. There is no other overload.
+// When last < first, __prism_check with class FUNC-CONTRACT and the message
+// "std::fill last is before first", then __builtin_trap. That path does not
+// write. When first == last, the function returns. That path does not write,
+// even when the pointer is null. A null first on a non-empty range is
+// __prism_check with class PTR-NULL-DEREF and the message
+// "std::fill null destination", then __builtin_trap. That path does not
+// write. Otherwise each element in [first, last) is assigned the value.
+// The element at last is not written. The function does not allocate.
+//
+// sort, copy, for_each, and every other algorithm are not declared. A
+// use of those names fails to compile and the pir stage falls back to
+// libstdc++ (extra.cxx_models). A partial header is intentional.
 //
 // This header is not a proof that a range is sorted. It is not PROVED
 // and it is not CLEAN. After a failed check the path traps. It does not
-// continue into a read or a fabricated success.
+// continue into a read, a write, or a fabricated success.
 #ifndef _GLIBCXX_ALGORITHM
 #define _GLIBCXX_ALGORITHM 1
 
@@ -359,6 +369,28 @@ constexpr bool is_heap(_Tp* __first, _Tp* __last) {
 }
 
 #undef _PRISM_RANGE_CHECK
+
+// Two pointers and one value. An inverted range traps before any write.
+// An empty range returns and does not write, even when first is null.
+// A null first on a non-empty range traps before any write. Otherwise
+// each element in [first, last) is assigned the value. last is not
+// written. This is not PROVED and it is not CLEAN.
+template <typename _Tp>
+constexpr void fill(_Tp* __first, _Tp* __last, const _Tp& __value) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::fill last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return;
+    if (__first == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::fill null destination");
+        __builtin_trap();
+    }
+    while (__first != __last) {
+        *__first = __value;
+        ++__first;
+    }
+}
 
 }  // namespace std
 
