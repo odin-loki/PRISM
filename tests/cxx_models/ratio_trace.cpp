@@ -3,7 +3,8 @@
 // the reduced numerator and denominator, and comparisons whose cross
 // products fit in intmax_t. A zero denominator and a product that does not
 // fit in intmax_t are ill-formed, so this program does not name them. A
-// comparison whose cross product does not fit is not a boolean here.
+// comparison whose cross product does not fit is not a boolean here. A
+// difference that does not fit is not named here either.
 #include <ratio>
 #include <cstdio>
 
@@ -21,6 +22,12 @@ int main() {
          (std::ratio_add<std::ratio<1, 2>, std::ratio<1, 3>>::den));
     show("sub", (std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 3>>::num),
          (std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 3>>::den));
+    show("sub_neg", (std::ratio_subtract<std::ratio<1, 3>, std::ratio<1, 2>>::num),
+         (std::ratio_subtract<std::ratio<1, 3>, std::ratio<1, 2>>::den));
+    show("sub_zero", (std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 2>>::num),
+         (std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 2>>::den));
+    show("sub_back", (std::ratio_subtract<std::ratio<1, 2>, std::ratio<-1, 3>>::num),
+         (std::ratio_subtract<std::ratio<1, 2>, std::ratio<-1, 3>>::den));
     show("mul", (std::ratio_multiply<std::ratio<1, 2>, std::ratio<2, 3>>::num),
          (std::ratio_multiply<std::ratio<1, 2>, std::ratio<2, 3>>::den));
     show("div", (std::ratio_divide<std::ratio<1, 2>, std::ratio<2, 3>>::num),

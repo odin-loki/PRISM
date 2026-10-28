@@ -7,6 +7,9 @@
 // with the ratios swapped. ratio_less_equal is not greater, and
 // ratio_greater_equal is not less. An overflowing cross product is a
 // contract check. It is not a true result and it is not a false result.
+// ratio_subtract is the reduced difference. A product or sum that does not
+// fit is a contract check, then a trap, before a ratio is formed. That path
+// is not ratio<0, 1>.
 
 #include "../../src/prism/pir/models/cxx/ratio"
 
@@ -23,6 +26,30 @@ static_assert(std::ratio_add<std::ratio<1, 2>, std::ratio<1, 3>>::num == 5, "1/2
 static_assert(std::ratio_add<std::ratio<1, 2>, std::ratio<1, 3>>::den == 6, "1/2+1/3");
 static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 3>>::num == 1, "1/2-1/3");
 static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 3>>::den == 6, "1/2-1/3");
+static_assert(std::ratio_subtract<std::ratio<1, 3>, std::ratio<1, 2>>::num == -1, "1/3-1/2");
+static_assert(std::ratio_subtract<std::ratio<1, 3>, std::ratio<1, 2>>::den == 6, "1/3-1/2");
+static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 2>>::num == 0, "1/2-1/2");
+static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<1, 2>>::den == 1, "1/2-1/2");
+static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<-1, 3>>::num == 5, "1/2-(-1/3)");
+static_assert(std::ratio_subtract<std::ratio<1, 2>, std::ratio<-1, 3>>::den == 6, "1/2-(-1/3)");
+static_assert(std::ratio_subtract<std::ratio<2, 4>, std::ratio<1, 6>>::num == 1, "(2/4)-(1/6) reduces");
+static_assert(std::ratio_subtract<std::ratio<2, 4>, std::ratio<1, 6>>::den == 3, "(2/4)-(1/6) reduces");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 1>, std::ratio<1, 1>>::num == INTMAX_MAX - 1,
+              "INTMAX_MAX/1 - 1/1 fits");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 1>, std::ratio<1, 1>>::den == 1,
+              "INTMAX_MAX/1 - 1/1 fits");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 1>, std::ratio<INTMAX_MAX, 1>>::num == 0,
+              "equal ratios differ by zero");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 1>, std::ratio<INTMAX_MAX, 1>>::den == 1,
+              "equal ratios differ by zero");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 2>, std::ratio<1, 2>>::num == INTMAX_MAX / 2,
+              "wide difference that fits");
+static_assert(std::ratio_subtract<std::ratio<INTMAX_MAX, 2>, std::ratio<1, 2>>::den == 1,
+              "wide difference that fits");
+static_assert(std::ratio_subtract<std::ratio<1, INTMAX_MAX>, std::ratio<1, INTMAX_MAX>>::num == 0,
+              "equal unit fractions differ by zero");
+static_assert(std::ratio_subtract<std::ratio<1, INTMAX_MAX>, std::ratio<1, INTMAX_MAX>>::den == 1,
+              "equal unit fractions differ by zero");
 static_assert(std::ratio_multiply<std::ratio<1, 2>, std::ratio<2, 3>>::num == 1, "1/2*2/3");
 static_assert(std::ratio_multiply<std::ratio<1, 2>, std::ratio<2, 3>>::den == 3, "1/2*2/3");
 static_assert(std::ratio_divide<std::ratio<1, 2>, std::ratio<2, 3>>::num == 3, "(1/2)/(2/3)");
@@ -206,4 +233,102 @@ TEST_CASE("cxx ratio model: zero denominator is ill-formed and overflow is not a
     REQUIRE(products != std::string::npos);
     CHECK(products < neg_eq);
     CHECK(products < neg_lt);
+}
+
+TEST_CASE("cxx ratio model: ratio_subtract traps when the difference does not fit") {
+    const std::string path = std::string(PRISM_SOURCE_DIR) + "/src/prism/pir/models/cxx/ratio";
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+
+    const auto fn = text.find("constexpr _Prism_ratio_nd _Prism_ratio_difference()");
+    REQUIRE(fn != std::string::npos);
+    const auto fn_end = text.find("struct _Prism_ratio_subtract", fn);
+    REQUIRE(fn_end != std::string::npos);
+    const std::string body = text.substr(fn, fn_end - fn);
+    CHECK(body.find("static_assert(_D1 != 0, \"denominator cannot be zero\")") != std::string::npos);
+    CHECK(body.find("static_assert(_D2 != 0, \"denominator cannot be zero\")") != std::string::npos);
+    CHECK(body.find("ratio<0, 1>") == std::string::npos);
+    CHECK(body.find("ratio<0,1>") == std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("_Prism_mul_fits") != std::string::npos);
+    CHECK(body.find("_Prism_add_fits") != std::string::npos);
+
+    const auto prod = body.find("if (!_Products)");
+    REQUIRE(prod != std::string::npos);
+    const auto prod_else = body.find("} else {", prod);
+    REQUIRE(prod_else != std::string::npos);
+    const std::string prod_arm = body.substr(prod, prod_else - prod);
+    const auto prod_check = prod_arm.find("__prism_check");
+    const auto prod_trap = prod_arm.find("__builtin_trap");
+    REQUIRE(prod_check != std::string::npos);
+    REQUIRE(prod_trap != std::string::npos);
+    CHECK(prod_check < prod_trap);
+    CHECK(prod_arm.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(prod_arm.find("ratio difference does not fit in intmax_t") != std::string::npos);
+    CHECK(prod_arm.find("return") == std::string::npos);
+    CHECK(prod_arm.find("ratio<") == std::string::npos);
+
+    const auto sum = body.find("if (!_Prism_add_fits(_Left, _Right))");
+    REQUIRE(sum != std::string::npos);
+    CHECK(prod_else < sum);
+    const auto sum_else = body.find("} else {", sum);
+    REQUIRE(sum_else != std::string::npos);
+    const std::string sum_arm = body.substr(sum, sum_else - sum);
+    const auto sum_check = sum_arm.find("__prism_check");
+    const auto sum_trap = sum_arm.find("__builtin_trap");
+    REQUIRE(sum_check != std::string::npos);
+    REQUIRE(sum_trap != std::string::npos);
+    CHECK(sum_check < sum_trap);
+    CHECK(sum_arm.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(sum_arm.find("ratio difference does not fit in intmax_t") != std::string::npos);
+    CHECK(sum_arm.find("return") == std::string::npos);
+    CHECK(sum_arm.find("ratio<") == std::string::npos);
+    CHECK(sum_arm.find("_Left + _Right") == std::string::npos);
+
+    const auto ret = body.find("return {_Left + _Right, _Prism_cross_product(_D1, _D2g)};");
+    REQUIRE(ret != std::string::npos);
+    CHECK(sum_else < ret);
+
+    CHECK(text.find("using type = ratio<_S_diff.num, _S_diff.den>;") != std::string::npos);
+    CHECK(text.find("using ratio_subtract = typename _Prism_ratio_subtract<_R1::num, _R1::den, _R2::num, "
+                    "_R2::den>::type;") != std::string::npos);
+    CHECK(text.find("using ratio_subtract = ratio_add<_R1, ratio<-_R2::num, _R2::den>>;") == std::string::npos);
+    CHECK(text.find("not PROVED and not CLEAN") != std::string::npos);
+    CHECK(text.find("#include <compare>") == std::string::npos);
+
+    const auto add = text.find("struct _Prism_ratio_add");
+    REQUIRE(add != std::string::npos);
+    const auto add_end = text.find("using ratio_multiply", add);
+    REQUIRE(add_end != std::string::npos);
+    const std::string add_body = text.substr(add, add_end - add);
+    CHECK(add_body.find("__builtin_trap") == std::string::npos);
+    CHECK(add_body.find("__prism_check") == std::string::npos);
+    CHECK(add_body.find("_Prism_add<") != std::string::npos);
+    CHECK(add_body.find("_Prism_mul<") != std::string::npos);
+
+    const auto mul = text.find("struct _Prism_ratio_multiply");
+    REQUIRE(mul != std::string::npos);
+    const auto mul_end = text.find("struct _Prism_ratio_add", mul);
+    REQUIRE(mul_end != std::string::npos);
+    const std::string mul_body = text.substr(mul, mul_end - mul);
+    CHECK(mul_body.find("__builtin_trap") == std::string::npos);
+    CHECK(mul_body.find("__prism_check") == std::string::npos);
+
+    CHECK(text.find("using ratio_multiply = typename _Prism_ratio_multiply<_R1, _R2>::type;") != std::string::npos);
+    CHECK(text.find("using ratio_divide = ratio_multiply<_R1, ratio<_R2::den, _R2::num>>;") != std::string::npos);
+    CHECK(text.find("using ratio_add = typename _Prism_ratio_add<_R1, _R2>::type;") != std::string::npos);
+
+    const auto eq = text.find("struct ratio_equal {");
+    const auto lt = text.find("struct ratio_less {");
+    REQUIRE(eq != std::string::npos);
+    REQUIRE(lt != std::string::npos);
+    const auto eq_end = text.find("};", eq);
+    const auto lt_end = text.find("};", lt);
+    REQUIRE(eq_end != std::string::npos);
+    REQUIRE(lt_end != std::string::npos);
+    CHECK(text.substr(eq, eq_end - eq).find("__builtin_trap") == std::string::npos);
+    CHECK(text.substr(lt, lt_end - lt).find("__builtin_trap") == std::string::npos);
 }

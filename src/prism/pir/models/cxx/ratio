@@ -28,6 +28,13 @@
 // inside the fitting arm. An overflowing cross product still traps in
 // _Prism_ratio_compare and does not return a boolean.
 //
+// ratio_subtract is the reduced difference. It scales the numerators the
+// same way ratio_add does, then negates the second numerator. A product or
+// that sum that does not fit in intmax_t calls __prism_check with class
+// FUNC-CONTRACT and then __builtin_trap, before a ratio is formed. That
+// path does not return ratio<0, 1>. It is not PROVED and not CLEAN. A zero
+// denominator stays a static_assert. It is not stored as 0/1.
+//
 // Not declared, so a unit that names one fails to compile against this
 // header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
 // the SI prefixes whose literals this stand-in does not check (atto, femto,
@@ -200,8 +207,53 @@ using ratio_divide = ratio_multiply<_R1, ratio<_R2::den, _R2::num>>;
 template <class _R1, class _R2>
 using ratio_add = typename _Prism_ratio_add<_R1, _R2>::type;
 
+// Reduced parts of a difference. The ratio is formed only from these, and
+// only after the products and the sum have been accepted.
+struct _Prism_ratio_nd {
+    intmax_t num;
+    intmax_t den;
+};
+
+// n1/d1 - n2/d2. The fit tests are the ones ratio_add uses (_Prism_mul_fits
+// and _Prism_add_fits). A failing test calls __prism_check and then
+// __builtin_trap before any ratio is formed. The trap path does not return
+// ratio<0, 1>. It is not PROVED and not CLEAN. A zero denominator is a
+// static_assert, not 0/1.
+template <intmax_t _N1, intmax_t _D1, intmax_t _N2, intmax_t _D2>
+constexpr _Prism_ratio_nd _Prism_ratio_difference() noexcept {
+    static_assert(_D1 != 0, "denominator cannot be zero");
+    static_assert(_D2 != 0, "denominator cannot be zero");
+    const intmax_t _G = _Prism_gcd(_D1, _D2);
+    const intmax_t _D2g = _D2 / _G;
+    const intmax_t _D1g = _D1 / _G;
+    // -INTMAX_MIN is not an intmax_t. The negation is not evaluated unless
+    // the numerator is representable. The products are formed only in the
+    // else, after _Prism_mul_fits has accepted them.
+    const bool _Products = _N2 != INTMAX_MIN && _Prism_mul_fits(_N1, _D2g) &&
+                           _Prism_mul_fits(-_N2, _D1g) && _Prism_mul_fits(_D1, _D2g);
+    if (!_Products) {
+        __prism_check(0, "FUNC-CONTRACT", "ratio difference does not fit in intmax_t");
+        __builtin_trap();
+    } else {
+        const intmax_t _Left = _Prism_cross_product(_N1, _D2g);
+        const intmax_t _Right = _Prism_cross_product(-_N2, _D1g);
+        if (!_Prism_add_fits(_Left, _Right)) {
+            __prism_check(0, "FUNC-CONTRACT", "ratio difference does not fit in intmax_t");
+            __builtin_trap();
+        } else {
+            return {_Left + _Right, _Prism_cross_product(_D1, _D2g)};
+        }
+    }
+}
+
+template <intmax_t _N1, intmax_t _D1, intmax_t _N2, intmax_t _D2>
+struct _Prism_ratio_subtract {
+    static constexpr _Prism_ratio_nd _S_diff = _Prism_ratio_difference<_N1, _D1, _N2, _D2>();
+    using type = ratio<_S_diff.num, _S_diff.den>;
+};
+
 template <class _R1, class _R2>
-using ratio_subtract = ratio_add<_R1, ratio<-_R2::num, _R2::den>>;
+using ratio_subtract = typename _Prism_ratio_subtract<_R1::num, _R1::den, _R2::num, _R2::den>::type;
 
 // Cross-multiply n1/d1 ? n2/d2 as (n1*d2) ? (n2*d1). equal is the same
 // reduced ratio. less is the strict order. not_equal is the opposite of
