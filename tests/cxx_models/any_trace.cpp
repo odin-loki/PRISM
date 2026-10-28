@@ -1,9 +1,11 @@
 // Differential trace of std::any (tests/cpp/test_cxx_any.cpp): compiled once
 // against libstdc++ and once with PRISM's model header
 // (src/prism/pir/models/cxx/any) first on the include path, both under
-// ASan/UBSan. The no-argument trace must match. make_any, any_cast to a
-// pointer, type(), and comparison are not called: the model does not declare
-// them.
+// ASan/UBSan. The no-argument trace must match. make_any, type(), and
+// comparison are not called: the model does not declare them. Pointer
+// any_cast is called. A null any*, an empty any, and a wrong type are null.
+// The matching type addresses the stored int, so a write through that
+// pointer is the value the next any_cast reads.
 //
 // __prism_check is the model's precondition intrinsic. libstdc++ never calls
 // it. The definition is a no-op on success so the happy-path stdout matches;
@@ -73,6 +75,25 @@ static int happy() {
         std::any self(Big(6));
         self = std::move(self);
         std::printf("self %d %d\n", self.has_value() ? 1 : 0, std::any_cast<Big&>(self).v);
+        {
+            std::any held(42);
+            int* p = std::any_cast<int>(&held);
+            const int* cp = std::any_cast<const int>(&held);
+            const std::any* ch = &held;
+            const int* cfrom = std::any_cast<int>(ch);
+            std::any empty;
+            std::any dbl(1.5);
+            int* miss_empty = std::any_cast<int>(&empty);
+            int* miss_type = std::any_cast<int>(&dbl);
+            int* miss_null = std::any_cast<int>(static_cast<std::any*>(nullptr));
+            const int* miss_cnull = std::any_cast<int>(static_cast<const std::any*>(nullptr));
+            const double* miss_cd = std::any_cast<double>(ch);
+            std::printf("ptr %d %d %d\n", p ? *p : -1, cp ? *cp : -1, cfrom ? *cfrom : -1);
+            std::printf("miss %d %d %d %d %d\n", miss_empty ? 1 : 0, miss_type ? 1 : 0, miss_null ? 1 : 0,
+                        miss_cnull ? 1 : 0, miss_cd ? 1 : 0);
+            if (p) *p = 9;
+            std::printf("mut %d\n", std::any_cast<int>(held));
+        }
         nl(" leaving");
     }
     nl("done");

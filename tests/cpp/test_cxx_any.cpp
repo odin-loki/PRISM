@@ -194,6 +194,34 @@ TEST_CASE("cxx any model: empty any_cast is a check and does not invent a value"
     CHECK(src.find("reinterpret_cast") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <variant>") == std::string::npos);
+    // Pointer overloads are declared. The old omission note is gone.
+    CHECK(src.find("any_cast pointer overloads") == std::string::npos);
+    CHECK(src.find("const _ValueType* any_cast(const any* __any)") != std::string::npos);
+    CHECK(src.find("__any.template _M_target<_Up>()") != std::string::npos);
+    const auto ptr_at = src.find("_ValueType* any_cast(any* __any)");
+    REQUIRE(ptr_at != std::string::npos);
+    const auto ptr_end = src.find("_GLIBCXX_END_NAMESPACE_VERSION", ptr_at);
+    REQUIRE(ptr_end != std::string::npos);
+    const std::string ptrs = src.substr(ptr_at, ptr_end - ptr_at);
+    CHECK(ptrs.find("return nullptr") != std::string::npos);
+    CHECK(ptrs.find("_M_target_ptr") != std::string::npos);
+    CHECK(ptrs.find("_M_target<") == std::string::npos);
+    CHECK(ptrs.find("__prism_check") == std::string::npos);
+    CHECK(ptrs.find("throw bad_any_cast") == std::string::npos);
+    CHECK(ptrs.find("return &") == std::string::npos);
+    const auto helper = src.find("_M_target_ptr() const noexcept");
+    REQUIRE(helper != std::string::npos);
+    const auto helper_end = src.find("public:", helper);
+    REQUIRE(helper_end != std::string::npos);
+    const std::string body = src.substr(helper, helper_end - helper);
+    const auto null_at = body.find("if (_M_ptr == nullptr) return nullptr;");
+    const auto tag_at = body.find("_M_tag");
+    CHECK(null_at != std::string::npos);
+    CHECK(tag_at != std::string::npos);
+    CHECK(null_at < tag_at);
+    CHECK(body.find("_M_value") != std::string::npos);
+    CHECK(body.find("__prism_check") == std::string::npos);
+    CHECK(body.find("throw bad_any_cast") == std::string::npos);
 }
 
 TEST_CASE("cxx any model: setup clang++ with ASan/UBSan") {

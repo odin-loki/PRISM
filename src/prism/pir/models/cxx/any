@@ -4,11 +4,17 @@
 // a directory of this name would make the include fail with EISDIR and the
 // unit would fall back to libstdc++.
 //
-// An empty any holds no object. any_cast<T> on an empty any, or on an any
-// that holds a different type, is a failed precondition (__prism_check,
-// FUNC-CONTRACT). That path throws std::bad_any_cast. It does not return
-// T{} and it does not read another type's bytes as T. The cast that
-// matches the type that was stored returns that object.
+// An empty any holds no object. The value any_cast<T> on an empty any, or
+// on an any that holds a different type, is a failed precondition
+// (__prism_check, FUNC-CONTRACT). That path throws std::bad_any_cast. It
+// does not return a default T and it does not read another type's bytes as
+// T. The cast that matches the type that was stored returns that object.
+//
+// any_cast<T>(any*) returns T*. any_cast<T>(const any*) returns const T*.
+// A null any pointer returns a null pointer. An empty any or a different
+// type returns nullptr. Those overloads do not throw and do not return a
+// pointer to a temporary T. The type that was stored yields a pointer to
+// that object.
 //
 // The contained object is always on the heap (one allocation). reset, copy
 // and move assignment, and the destructor end that object's lifetime and
@@ -24,8 +30,6 @@
 // against this header, so pir falls back to libstdc++ (extra.cxx_models).
 // They are not stubbed:
 //   * make_any
-//   * any_cast pointer overloads (a null result is not a contained object,
-//     and a pointer at a different type's bytes would be a reinterpret)
 //   * type()
 //   * comparison
 //   * the initializer_list emplace / in_place overloads
@@ -109,6 +113,16 @@ class any {
         return const_cast<_Up*>(static_cast<const any*>(this)->template _M_target<_Up>());
     }
 
+    // Pointer any_cast only. Empty and a different tag are nullptr: no check,
+    // no throw, and no address of another type's object. The address is the
+    // stored member, not a temporary.
+    template <typename _Up>
+    const _Up* _M_target_ptr() const noexcept {
+        if (_M_ptr == nullptr) return nullptr;
+        if (_M_ptr->_M_tag != static_cast<const void*>(&_Prism_any_tag<_Up>::id)) return nullptr;
+        return &static_cast<const _Prism_any_holder_impl<_Up>*>(_M_ptr)->_M_value;
+    }
+
 public:
     constexpr any() noexcept = default;
 
@@ -183,13 +197,18 @@ public:
     bool has_value() const noexcept { return _M_ptr != nullptr; }
 
     // Qualified std::any_cast must be declared in namespace std. The friend
-    // declarations are what let those overloads read _M_target.
+    // declarations are what let those overloads read _M_target and
+    // _M_target_ptr.
     template <typename _ValueType>
     friend _ValueType any_cast(const any&);
     template <typename _ValueType>
     friend _ValueType any_cast(any&);
     template <typename _ValueType>
     friend _ValueType any_cast(any&&);
+    template <typename _ValueType>
+    friend _ValueType* any_cast(any*) noexcept;
+    template <typename _ValueType>
+    friend const _ValueType* any_cast(const any*) noexcept;
 };
 
 inline void swap(any& __x, any& __y) noexcept { __x.swap(__y); }
@@ -225,6 +244,24 @@ _ValueType any_cast(any&& __any) {
                   "any_cast result must be constructible from an rvalue");
     _Up* __p = __any.template _M_target<_Up>();
     return static_cast<_ValueType>(std::move(*__p));
+}
+
+// A null any* is a null T*. Empty and a different type are nullptr. No throw,
+// and the pointer is the stored object rather than a temporary T.
+template <typename _ValueType>
+_ValueType* any_cast(any* __any) noexcept {
+    if (__any == nullptr) return nullptr;
+    using _Up = remove_cv_t<_ValueType>;
+    const _Up* __p = static_cast<const any*>(__any)->template _M_target_ptr<_Up>();
+    return const_cast<_ValueType*>(__p);
+}
+
+template <typename _ValueType>
+const _ValueType* any_cast(const any* __any) noexcept {
+    if (__any == nullptr) return nullptr;
+    using _Up = remove_cv_t<_ValueType>;
+    const _Up* __p = __any->template _M_target_ptr<_Up>();
+    return static_cast<const _ValueType*>(__p);
 }
 
 _GLIBCXX_END_NAMESPACE_VERSION
