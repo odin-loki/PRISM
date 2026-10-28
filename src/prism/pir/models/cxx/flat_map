@@ -5,7 +5,11 @@
 // fail with EISDIR and every such unit would fall back to libstdc++.
 //
 // Each key/value pair is one heap node from ::operator new. size() is the
-// number of those nodes. operator[] on a missing key inserts a node.
+// number of those nodes. empty() is true when there are no nodes and false
+// when there is at least one. It reads the existing size. It does not
+// allocate, insert, erase, or construct a mapped value, and it does not
+// call operator[] or at(). This is not PROVED and not CLEAN. operator[]
+// on a missing key inserts a node.
 // at(key) when the key is absent, including on an empty container, throws
 // std::out_of_range and does not return a default mapped T. erase of a
 // present key destroys that node and frees it, so a reference saved from
@@ -228,6 +232,12 @@ public:
 
     // The number of nodes.
     size_type size() const noexcept { return _M_size; }
+
+    // True when there are no nodes. False when there is at least one.
+    // Uses the existing size. It does not allocate, insert, erase, or
+    // construct a mapped value. It does not call operator[] or at().
+    // This is not PROVED and not CLEAN.
+    bool empty() const noexcept { return _M_size == 0; }
 };
 
 _GLIBCXX_END_NAMESPACE_VERSION

@@ -10,6 +10,10 @@
 // returns false before it allocates or overwrites the mapped object. On a
 // missing key the mapped object is constructed from the arguments in the
 // new node, and that construction is not reached until the key is absent.
+// empty() is true when there are no nodes and false when there is at least
+// one. That body reads the existing size. It does not allocate, insert,
+// erase, or construct a mapped value, and it does not call operator[] or
+// at(). The comment states that this is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -223,4 +227,47 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
         slice_from(src, "_Node(_Node* __next, _Uk&& __k, _Args&&... __args)", "_Node* _M_head");
     REQUIRE_FALSE(ctor.empty());
     CHECK(ctor.find("_M_mapped(static_cast<_Args&&>(__args)...)") != std::string::npos);
+
+    // empty() is the existing node count. No nodes is true. At least one
+    // node is false. The body does not allocate, insert, erase, construct a
+    // mapped value, or call operator[] or at().
+    const std::string emp =
+        "bool empty() const noexcept { return _M_size == 0; }";
+    const auto emp_at = src.find(emp);
+    REQUIRE(emp_at != std::string::npos);
+    const std::string emp_body = slice_from(src, "bool empty() const noexcept", "_GLIBCXX_END_NAMESPACE_VERSION");
+    REQUIRE_FALSE(emp_body.empty());
+    CHECK(emp_body.find("return _M_size == 0") != std::string::npos);
+    CHECK(emp_body.find("::operator new") == std::string::npos);
+    CHECK(emp_body.find("_M_make") == std::string::npos);
+    CHECK(emp_body.find("_M_link") == std::string::npos);
+    CHECK(emp_body.find("_M_emplace_args") == std::string::npos);
+    CHECK(emp_body.find("::operator delete") == std::string::npos);
+    CHECK(emp_body.find("mapped_type{}") == std::string::npos);
+    CHECK(emp_body.find("mapped_type(") == std::string::npos);
+    CHECK(emp_body.find("_M_mapped") == std::string::npos);
+    CHECK(emp_body.find("operator[]") == std::string::npos);
+    CHECK(emp_body.find("at(") == std::string::npos);
+    CHECK(emp_body.find("erase(") == std::string::npos);
+    CHECK(emp_body.find("try_emplace") == std::string::npos);
+    CHECK(emp_body.find("contains(") == std::string::npos);
+    const std::string emp_note = slice_from(src, "True when there are no nodes", "bool empty() const noexcept");
+    REQUIRE_FALSE(emp_note.empty());
+    CHECK(emp_note.find("False when there is at least one") != std::string::npos);
+    CHECK(emp_note.find("existing size") != std::string::npos);
+    CHECK(emp_note.find("does not allocate") != std::string::npos);
+    CHECK(emp_note.find("insert") != std::string::npos);
+    CHECK(emp_note.find("erase") != std::string::npos);
+    CHECK(emp_note.find("construct a mapped value") != std::string::npos);
+    CHECK(emp_note.find("operator[]") != std::string::npos);
+    CHECK(emp_note.find("at()") != std::string::npos);
+    CHECK(emp_note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(emp_note.find("::operator new") == std::string::npos);
+    CHECK(emp_note.find("_M_make") == std::string::npos);
+    CHECK(emp_note.find("_M_link") == std::string::npos);
+    CHECK(emp_note.find("mapped_type{}") == std::string::npos);
+
+    const std::string omitted = slice_from(src, "Not stubbed:", "template takes Key");
+    REQUIRE_FALSE(omitted.empty());
+    CHECK(omitted.find("empty") == std::string::npos);
 }

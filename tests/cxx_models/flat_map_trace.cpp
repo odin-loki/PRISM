@@ -10,7 +10,10 @@
 // value for a missing key. "try_emplace" inserts a missing key by
 // constructing the mapped object in the new node, and a second call with
 // that key must not allocate, must not construct another mapped object,
-// and must not overwrite the stored value.
+// and must not overwrite the stored value. "empty" is true when there are
+// no nodes and false when there is at least one. Those calls read the
+// existing size: they must not allocate, insert, erase, construct a mapped
+// value, or call operator[] or at(). This trace is not PROVED and not CLEAN.
 #include <flat_map>
 #include <cstdio>
 #include <cstring>
@@ -274,6 +277,78 @@ static void try_emplace_trace() {
                 plain_new, plain.at(3), erased_missing, erased_present, saw, plain.size());
 }
 
+static void empty_trace() {
+    CountKey::copies = 0;
+    CountKey::moves = 0;
+    CountMapped::from_int = 0;
+    CountMapped::defaults = 0;
+    CountMapped::copies = 0;
+    CountMapped::moves = 0;
+    CountMapped::assigns = 0;
+
+    std::flat_map<CountKey, CountMapped> m;
+    const int none = m.empty() ? 1 : 0;
+    const int none_copies = CountKey::copies;
+    const int none_moves = CountKey::moves;
+    const int none_mapped = mapped_activity();
+    const auto none_size = m.size();
+
+    m[4] = CountMapped(8);
+    const int copies_before = CountKey::copies;
+    const int moves_before = CountKey::moves;
+    const int from_before = CountMapped::from_int;
+    const int defaults_before = CountMapped::defaults;
+    const int mapped_copies_before = CountMapped::copies;
+    const int mapped_moves_before = CountMapped::moves;
+    const int assigns_before = CountMapped::assigns;
+    const int some = m.empty() ? 1 : 0;
+    const int copies_delta = CountKey::copies - copies_before;
+    const int moves_delta = CountKey::moves - moves_before;
+    const int from_delta = CountMapped::from_int - from_before;
+    const int defaults_delta = CountMapped::defaults - defaults_before;
+    const int mapped_copies_delta = CountMapped::copies - mapped_copies_before;
+    const int mapped_moves_delta = CountMapped::moves - mapped_moves_before;
+    const int assigns_delta = CountMapped::assigns - assigns_before;
+    const auto some_size = m.size();
+    const int value = m.at(4).v;
+
+    const int erased = static_cast<int>(m.erase(4));
+    const int after_copies = CountKey::copies;
+    const int after_moves = CountKey::moves;
+    const int after_mapped = mapped_activity();
+    const int again = m.empty() ? 1 : 0;
+    const int erase_copies = CountKey::copies - after_copies;
+    const int erase_moves = CountKey::moves - after_moves;
+    const int erase_mapped = mapped_activity() - after_mapped;
+    const auto again_size = m.size();
+    const char* missing_at = "present";
+    try {
+        const int v = m.at(4).v;
+        static_cast<void>(v);
+    } catch (const std::out_of_range&) {
+        missing_at = "threw";
+    }
+
+    std::flat_map<int, int> plain;
+    const int plain_none = plain.empty() ? 1 : 0;
+    plain[1] = 5;
+    const std::flat_map<int, int>& held = plain;
+    const int plain_some = held.empty() ? 1 : 0;
+    plain.erase(1);
+    const int plain_again = plain.empty() ? 1 : 0;
+
+    std::printf("none empty=%d key_copies=%d key_moves=%d mapped=%d size=%zu\n", none, none_copies, none_moves,
+                none_mapped, none_size);
+    std::printf(
+        "some empty=%d key_copies=%d key_moves=%d from_int=%d defaults=%d mapped_copies=%d mapped_moves=%d "
+        "assigns=%d size=%zu value=%d\n",
+        some, copies_delta, moves_delta, from_delta, defaults_delta, mapped_copies_delta, mapped_moves_delta,
+        assigns_delta, some_size, value);
+    std::printf("erased empty=%d erased=%d key_copies=%d key_moves=%d mapped=%d size=%zu missing_at=%s\n", again,
+                erased, erase_copies, erase_moves, erase_mapped, again_size, missing_at);
+    std::printf("plain none=%d some=%d again=%d size=%zu\n", plain_none, plain_some, plain_again, plain.size());
+}
+
 static int uaf() {
     std::flat_map<int, int> m;
     m[1] = 5;
@@ -298,6 +373,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "try_emplace") == 0) {
         try_emplace_trace();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "empty") == 0) {
+        empty_trace();
         return 0;
     }
     show();
