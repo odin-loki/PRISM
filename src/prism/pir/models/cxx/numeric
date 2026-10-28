@@ -15,8 +15,16 @@
 // FUNC-CONTRACT, then __builtin_trap. That path does not return a wrapped
 // product and does not return 0.
 //
+// std::iota takes two pointers of one type and a starting value of that
+// type. last < first is __prism_check with class FUNC-CONTRACT, then
+// __builtin_trap, and stores nothing. first == last writes nothing.
+// Otherwise the range receives value, value + 1, and so on. A next value
+// that does not fit in the element type is __prism_check, then
+// __builtin_trap. The class is INT-SIGNED-OVF for a signed integer and
+// FUNC-CONTRACT otherwise. That path does not store a wrapped value.
+//
 // Not declared here, so naming accumulate, reduce, transform_reduce,
-// inner_product, adjacent_difference, partial_sum, iota, or exclusive_scan
+// inner_product, adjacent_difference, partial_sum, or exclusive_scan
 // fails to compile and the pir stage falls back to libstdc++
 // (extra.cxx_models). A partial header is intentional.
 #ifndef _GLIBCXX_NUMERIC
@@ -101,6 +109,50 @@ lcm(_Mn __m, _Nn __n) noexcept {
         __builtin_trap();
     }
     return static_cast<_Ct>(__q * __un);
+}
+
+// [numeric.iota]. Two pointers of the same type, and a starting value of
+// that type. A value of a different type does not match this overload.
+// last < first fails the check before any store. An empty range returns
+// before any store. The next value is formed only when another element
+// remains, and only in the else of the fit test, so a wrapped value is
+// not stored. A signed integer uses INT-SIGNED-OVF. An unsigned integer
+// uses FUNC-CONTRACT. bool and a non-integer use ++ and have no separate
+// range check.
+template <typename _Tp>
+constexpr void
+iota(_Tp* __first, _Tp* __last, _Tp __value) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::iota last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return;
+    while (__first != __last) {
+        *__first = __value;
+        ++__first;
+        if (__first == __last) return;
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                if (__value == __lim) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::iota next value does not fit in T");
+                    __builtin_trap();
+                } else {
+                    __value = static_cast<_Tp>(__value + static_cast<_Tp>(1));
+                }
+            } else {
+                if (__value == static_cast<_Tp>(-1)) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::iota next value does not fit in T");
+                    __builtin_trap();
+                } else {
+                    __value = static_cast<_Tp>(__value + static_cast<_Tp>(1));
+                }
+            }
+        } else {
+            ++__value;
+        }
+    }
 }
 
 }  // namespace std

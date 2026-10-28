@@ -7,6 +7,9 @@
 // The header text does not use the expression a + b as the midpoint.
 // lcm(0, x), lcm(x, 0), and lcm(0, 0) are 0. A product that does not fit
 // is __prism_check then __builtin_trap, and that path does not return.
+// std::iota writes value, value + 1, ... into [first, last). An inverted
+// range and a next value that does not fit are checks, then a trap, and
+// that path does not store a wrapped value.
 
 #include <doctest/doctest.h>
 
@@ -220,6 +223,10 @@ TEST_CASE("cxx numeric model: header is a file and midpoint does not add the arg
     CHECK(text.find("__a+__b") == std::string::npos);
     CHECK(text.find("#include <vector") == std::string::npos);
     CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("#include <iterator>") == std::string::npos);
+    CHECK(text.find("(a+b)/2") == std::string::npos);
+    CHECK(text.find("(a + b) / 2") == std::string::npos);
+    CHECK(text.find("partial_sum, iota,") == std::string::npos);
     CHECK(text.find("lcm is not declared") == std::string::npos);
     CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
     CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
@@ -256,6 +263,76 @@ TEST_CASE("cxx numeric model: header is a file and midpoint does not add the arg
     CHECK(body.find("a + b") == std::string::npos);
     CHECK(body.find(" + ") != std::string::npos);
     CHECK(body.find("make_unsigned_t") != std::string::npos);
+}
+
+TEST_CASE("cxx numeric model: iota traps an inverted range and a next value that does not fit") {
+    const std::string text = slurp(model_header());
+    REQUIRE_FALSE(text.empty());
+    CHECK(text.find("#include <iterator>") == std::string::npos);
+    CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("#include <vector") == std::string::npos);
+    CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
+    CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
+    const auto iota_at = text.find("\niota(");
+    REQUIRE(iota_at != std::string::npos);
+    const std::string iota = text.substr(iota_at);
+    const auto inv = iota.find("if (__last < __first)");
+    const auto inv_check =
+        iota.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::iota last is before first\")");
+    const auto empty = iota.find("if (__first == __last) return;");
+    const auto store = iota.find("*__first = __value;");
+    const auto ovf =
+        iota.find("__prism_check(0, \"INT-SIGNED-OVF\", \"std::iota next value does not fit in T\")");
+    const auto uovf =
+        iota.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::iota next value does not fit in T\")");
+    const auto step = iota.find("__value = static_cast<_Tp>(__value + static_cast<_Tp>(1));");
+    const auto step2 =
+        step == std::string::npos
+            ? std::string::npos
+            : iota.find("__value = static_cast<_Tp>(__value + static_cast<_Tp>(1));", step + 1);
+    REQUIRE(inv != std::string::npos);
+    REQUIRE(inv_check != std::string::npos);
+    REQUIRE(empty != std::string::npos);
+    REQUIRE(store != std::string::npos);
+    REQUIRE(ovf != std::string::npos);
+    REQUIRE(uovf != std::string::npos);
+    REQUIRE(step != std::string::npos);
+    REQUIRE(step2 != std::string::npos);
+    CHECK(inv < inv_check);
+    CHECK(inv_check < empty);
+    CHECK(empty < store);
+    CHECK(store < ovf);
+    CHECK(ovf < uovf);
+    const auto inv_trap = iota.find("__builtin_trap()", inv_check);
+    REQUIRE(inv_trap != std::string::npos);
+    CHECK(inv_trap < empty);
+    const std::string inv_arm = iota.substr(inv_check, inv_trap - inv_check);
+    CHECK(inv_arm.find("*__first") == std::string::npos);
+    CHECK(inv_arm.find("__value +") == std::string::npos);
+    CHECK(inv_arm.find("return") == std::string::npos);
+    const auto ovf_trap = iota.find("__builtin_trap()", ovf);
+    REQUIRE(ovf_trap != std::string::npos);
+    CHECK(ovf_trap < step);
+    CHECK(step < uovf);
+    const std::string ovf_arm = iota.substr(ovf, ovf_trap - ovf);
+    CHECK(ovf_arm.find("__value +") == std::string::npos);
+    CHECK(ovf_arm.find("*__first") == std::string::npos);
+    const auto u_trap = iota.find("__builtin_trap()", uovf);
+    REQUIRE(u_trap != std::string::npos);
+    CHECK(u_trap < step2);
+    const std::string u_arm = iota.substr(uovf, u_trap - uovf);
+    CHECK(u_arm.find("__value +") == std::string::npos);
+    CHECK(u_arm.find("*__first") == std::string::npos);
+    CHECK(iota.find("++__value;") != std::string::npos);
+    const auto mid = text.find("midpoint(");
+    const auto gcd_at = text.find("\ngcd(", mid);
+    REQUIRE(mid != std::string::npos);
+    REQUIRE(gcd_at != std::string::npos);
+    const std::string mid_body = text.substr(mid, gcd_at - mid);
+    CHECK(mid_body.find("a + b") == std::string::npos);
+    CHECK(mid_body.find("a+b") == std::string::npos);
+    CHECK(text.find("\ngcd(") != std::string::npos);
+    CHECK(text.find("while (__un != 0)") != std::string::npos);
 }
 
 TEST_CASE("cxx numeric model: setup clang++ with ASan/UBSan") {
@@ -313,6 +390,19 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
     CHECK(has_line(b, "lcm_ll=" + std::to_string(static_cast<long long>(INT_MAX) * 2)));
     CHECK(has_line(b, "lcm_u=36"));
     CHECK(has_line(b, "lcm_mix=24"));
+    CHECK(has_line(b, "iota=0,1,2,3"));
+    CHECK(has_line(b, "iota_empty=7"));
+    CHECK(has_line(b, "iota_neg=-1,0,1"));
+    CHECK(has_line(b, "iota_min=" + std::to_string(INT_MIN) + "," + std::to_string(INT_MIN + 1) + "," +
+                          std::to_string(INT_MIN + 2)));
+    CHECK(has_line(b, "iota_near=" + std::to_string(INT_MAX - 2) + "," + std::to_string(INT_MAX - 1)));
+    CHECK(has_line(b, "iota_u=1,2,3"));
+    CHECK(has_line(b, "iota_unear=" + std::to_string(UINT_MAX - 2u) + "," + std::to_string(UINT_MAX - 1u)));
+    CHECK(has_line(b, "iota_umax=" + std::to_string(UINT_MAX)));
+    CHECK(has_line(b, "iota_one=41"));
+    CHECK(has_line(b, "iota_sc=" + std::to_string(SCHAR_MAX - 2) + "," + std::to_string(SCHAR_MAX - 1)));
+    CHECK(has_line(b, "iota_uc=" + std::to_string(UCHAR_MAX - 1) + "," + std::to_string(UCHAR_MAX)));
+    CHECK(has_line(b, "iota_f=0,1,2"));
 
     std::string zero_out;
     REQUIRE(run_cmd({mod.string(), "zero"}, &zero_out));
@@ -346,4 +436,200 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
                                 "static_assert(std::lcm(INT_MAX, 2LL) == static_cast<long long>(INT_MAX) * 2);\n";
     CHECK(syntax_only(c.cxx, fits_const, true));
     CHECK(syntax_only(c.cxx, fits_const, false));
+
+    std::string hi_out;
+    REQUIRE(run_cmd({mod.string(), "iota-max1"}, &hi_out));
+    CHECK(hi_out.find("iota_hi=" + std::to_string(INT_MAX)) != std::string::npos);
+
+    std::string iout, ierr;
+    CHECK_FALSE(run_cmd({mod.string(), "iota-ovf"}, &iout, &ierr));
+    std::string iboth = iout + ierr;
+    CHECK(iboth.find("CHECK INT-SIGNED-OVF:") != std::string::npos);
+    CHECK(iboth.find("std::iota next value does not fit in T") != std::string::npos);
+    CHECK(iout.find("wrapped=") == std::string::npos);
+
+    CHECK_FALSE(run_cmd({mod.string(), "iota-llovf"}, &iout, &ierr));
+    iboth = iout + ierr;
+    CHECK(iboth.find("CHECK INT-SIGNED-OVF:") != std::string::npos);
+    CHECK(iboth.find("std::iota next value does not fit in T") != std::string::npos);
+    CHECK(iout.find("wrapped=") == std::string::npos);
+
+    CHECK_FALSE(run_cmd({mod.string(), "iota-uovf"}, &iout, &ierr));
+    iboth = iout + ierr;
+    CHECK(iboth.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(iboth.find("std::iota next value does not fit in T") != std::string::npos);
+    CHECK(iout.find("wrapped=") == std::string::npos);
+
+    CHECK_FALSE(run_cmd({mod.string(), "iota-inv"}, &iout, &ierr));
+    iboth = iout + ierr;
+    CHECK(iboth.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(iboth.find("std::iota last is before first") != std::string::npos);
+    CHECK(iout.find("wrapped=") == std::string::npos);
+
+    const fs::path iota_mem = c.tmp / "iota_mem.cpp";
+    std::ofstream(iota_mem) << "#include <climits>\n"
+                               "#include <cstdio>\n"
+                               "#include <cstdlib>\n"
+                               "#include <cstring>\n"
+                               "#include <numeric>\n"
+                               "static int gs[2] = {4, 5};\n"
+                               "static unsigned gu[2] = {4u, 5u};\n"
+                               "static long long gll[2] = {4, 5};\n"
+                               "static signed char gsc[2] = {1, 1};\n"
+                               "static int mode = 0;\n"
+                               "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+                               "  if (!ok) {\n"
+                               "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");\n"
+                               "    if (mode == 1)\n"
+                               "      std::fprintf(stderr, \"mem=%u,%u\\n\", gu[0], gu[1]);\n"
+                               "    else if (mode == 2)\n"
+                               "      std::fprintf(stderr, \"mem=%lld,%lld\\n\", gll[0], gll[1]);\n"
+                               "    else if (mode == 3)\n"
+                               "      std::fprintf(stderr, \"mem=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                               "    else\n"
+                               "      std::fprintf(stderr, \"mem=%d,%d\\n\", gs[0], gs[1]);\n"
+                               "    std::fflush(stderr);\n"
+                               "    std::abort();\n"
+                               "  }\n"
+                               "}\n"
+                               "int main(int argc, char** argv) {\n"
+                               "  const char* arg = (argc > 1 && argv[1]) ? argv[1] : \"ovf\";\n"
+                               "  if (std::strcmp(arg, \"uovf\") == 0) {\n"
+                               "    mode = 1;\n"
+                               "    volatile unsigned s = UINT_MAX;\n"
+                               "    std::iota(gu, gu + 2, s);\n"
+                               "    std::printf(\"wrapped=%u,%u\\n\", gu[0], gu[1]);\n"
+                               "  } else if (std::strcmp(arg, \"ll\") == 0) {\n"
+                               "    mode = 2;\n"
+                               "    volatile long long s = LLONG_MAX;\n"
+                               "    std::iota(gll, gll + 2, s);\n"
+                               "    std::printf(\"wrapped=%lld,%lld\\n\", gll[0], gll[1]);\n"
+                               "  } else if (std::strcmp(arg, \"sc\") == 0) {\n"
+                               "    mode = 3;\n"
+                               "    volatile signed char s = static_cast<signed char>(SCHAR_MAX);\n"
+                               "    std::iota(gsc, gsc + 2, s);\n"
+                               "    std::printf(\"wrapped=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                               "  } else if (std::strcmp(arg, \"inv\") == 0) {\n"
+                               "    mode = 0;\n"
+                               "    std::iota(gs + 1, gs, 0);\n"
+                               "    std::printf(\"wrapped=%d,%d\\n\", gs[0], gs[1]);\n"
+                               "  } else if (std::strcmp(arg, \"max1\") == 0) {\n"
+                               "    volatile int s = INT_MAX;\n"
+                               "    std::iota(gs, gs + 1, s);\n"
+                               "    std::printf(\"iota_hi=%d\\n\", gs[0]);\n"
+                               "    return 0;\n"
+                               "  } else if (std::strcmp(arg, \"empty\") == 0) {\n"
+                               "    int e[1] = {7};\n"
+                               "    std::iota(e, e, 1);\n"
+                               "    std::printf(\"empty=%d\\n\", e[0]);\n"
+                               "    return 0;\n"
+                               "  } else if (std::strcmp(arg, \"scok\") == 0) {\n"
+                               "    signed char a[2] = {};\n"
+                               "    std::iota(a, a + 2, static_cast<signed char>(SCHAR_MAX - 1));\n"
+                               "    std::printf(\"scok=%d,%d\\n\", static_cast<int>(a[0]), static_cast<int>(a[1]));\n"
+                               "    return 0;\n"
+                               "  } else {\n"
+                               "    mode = 0;\n"
+                               "    volatile int s = INT_MAX;\n"
+                               "    std::iota(gs, gs + 2, s);\n"
+                               "    std::printf(\"wrapped=%d,%d\\n\", gs[0], gs[1]);\n"
+                               "  }\n"
+                               "  return 0;\n"
+                               "}\n";
+#ifdef _WIN32
+    const fs::path iota_mem_exe_out = c.tmp / "iota_mem.exe";
+#else
+    const fs::path iota_mem_exe_out = c.tmp / "iota_mem";
+#endif
+    std::vector<std::string> mem_build{c.cxx, "-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-g", "-O1", "-w", "-isystem",
+                                       models.string(), iota_mem.string(), "-o", iota_mem_exe_out.string()};
+    REQUIRE(run_cmd(mem_build));
+    std::string mout, merr;
+    CHECK_FALSE(run_cmd({iota_mem_exe_out.string(), "ovf"}, &mout, &merr));
+    std::string mboth = mout + merr;
+    CHECK(mboth.find("CHECK INT-SIGNED-OVF: std::iota next value does not fit in T") != std::string::npos);
+    CHECK(mboth.find("mem=" + std::to_string(INT_MAX) + ",5") != std::string::npos);
+    CHECK(mout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({iota_mem_exe_out.string(), "uovf"}, &mout, &merr));
+    mboth = mout + merr;
+    CHECK(mboth.find("CHECK FUNC-CONTRACT: std::iota next value does not fit in T") != std::string::npos);
+    CHECK(mboth.find("mem=" + std::to_string(UINT_MAX) + ",5") != std::string::npos);
+    CHECK(mout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({iota_mem_exe_out.string(), "ll"}, &mout, &merr));
+    mboth = mout + merr;
+    CHECK(mboth.find("CHECK INT-SIGNED-OVF: std::iota next value does not fit in T") != std::string::npos);
+    CHECK(mboth.find("mem=" + std::to_string(LLONG_MAX) + ",5") != std::string::npos);
+    CHECK(mout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({iota_mem_exe_out.string(), "sc"}, &mout, &merr));
+    mboth = mout + merr;
+    CHECK(mboth.find("CHECK INT-SIGNED-OVF: std::iota next value does not fit in T") != std::string::npos);
+    CHECK(mboth.find("mem=" + std::to_string(SCHAR_MAX) + ",1") != std::string::npos);
+    CHECK(mout.find("wrapped=") == std::string::npos);
+    CHECK_FALSE(run_cmd({iota_mem_exe_out.string(), "inv"}, &mout, &merr));
+    mboth = mout + merr;
+    CHECK(mboth.find("CHECK FUNC-CONTRACT: std::iota last is before first") != std::string::npos);
+    CHECK(mboth.find("mem=4,5") != std::string::npos);
+    CHECK(mout.find("wrapped=") == std::string::npos);
+    std::string mok;
+    REQUIRE(run_cmd({iota_mem_exe_out.string(), "max1"}, &mok));
+    CHECK(mok.find("iota_hi=" + std::to_string(INT_MAX)) != std::string::npos);
+    REQUIRE(run_cmd({iota_mem_exe_out.string(), "empty"}, &mok));
+    CHECK(mok.find("empty=7") != std::string::npos);
+    REQUIRE(run_cmd({iota_mem_exe_out.string(), "scok"}, &mok));
+    CHECK(mok.find("scok=" + std::to_string(SCHAR_MAX - 1) + "," + std::to_string(SCHAR_MAX)) != std::string::npos);
+
+    const fs::path iota_const = c.tmp / "iota_const.cpp";
+    std::ofstream(iota_const) << "#include <numeric>\n"
+                                 "#include <climits>\n"
+                                 "constexpr int hi() {\n"
+                                 "  int a[1] = {0};\n"
+                                 "  std::iota(a, a + 1, INT_MAX);\n"
+                                 "  return a[0];\n"
+                                 "}\n"
+                                 "static_assert(hi() == INT_MAX);\n"
+                                 "constexpr int near() {\n"
+                                 "  int a[2] = {};\n"
+                                 "  std::iota(a, a + 2, INT_MAX - 1);\n"
+                                 "  return (a[0] == INT_MAX - 1 && a[1] == INT_MAX) ? 1 : 0;\n"
+                                 "}\n"
+                                 "static_assert(near() == 1);\n"
+                                 "constexpr int empty() {\n"
+                                 "  int a[1] = {7};\n"
+                                 "  std::iota(a, a, 3);\n"
+                                 "  return a[0];\n"
+                                 "}\n"
+                                 "static_assert(empty() == 7);\n";
+    CHECK(syntax_only(c.cxx, iota_const, true));
+
+    const fs::path iota_bad = c.tmp / "iota_bad.cpp";
+    std::ofstream(iota_bad) << "#include <numeric>\n"
+                               "#include <climits>\n"
+                               "constexpr int bad() {\n"
+                               "  int a[2] = {};\n"
+                               "  std::iota(a, a + 2, INT_MAX);\n"
+                               "  return a[1];\n"
+                               "}\n"
+                               "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, iota_bad, true));
+
+    const fs::path iota_ubad = c.tmp / "iota_ubad.cpp";
+    std::ofstream(iota_ubad) << "#include <numeric>\n"
+                                "#include <climits>\n"
+                                "constexpr unsigned bad() {\n"
+                                "  unsigned a[2] = {};\n"
+                                "  std::iota(a, a + 2, UINT_MAX);\n"
+                                "  return a[1];\n"
+                                "}\n"
+                                "constexpr unsigned v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, iota_ubad, true));
+
+    const fs::path iota_inv = c.tmp / "iota_inv.cpp";
+    std::ofstream(iota_inv) << "#include <numeric>\n"
+                               "constexpr int bad() {\n"
+                               "  int a[2] = {4, 5};\n"
+                               "  std::iota(a + 1, a, 0);\n"
+                               "  return a[0];\n"
+                               "}\n"
+                               "constexpr int v = bad();\n";
+    CHECK_FALSE(syntax_only(c.cxx, iota_inv, true));
 }
