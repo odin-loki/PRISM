@@ -1,7 +1,7 @@
 // The <typeindex> model stores the type_info address it was constructed
 // from. operator== calls type_info::operator==. hash_code() and name()
-// forward to that object. Comparing type_index is not a proof of a
-// program's behavior.
+// forward to that object. std::hash<type_index> returns hash_code().
+// Comparing type_index is not a proof of a program's behavior.
 //
 // CMake's prism_tests source list is explicit (not a glob). The header
 // is included by path here (`#include <typeindex>` would be the platform
@@ -61,18 +61,21 @@ TEST_CASE("cxx typeindex stores the type_info and compares with type_info::opera
     CHECK(src.find("#include <compare>") == std::string::npos);
 
     // The constructor stores the address. operator== uses type_info::operator==
-    // on the two objects. hash_code() and name() forward. No stand-in name,
-    // and no hash specialization.
+    // on the two objects. hash_code() and name() forward. std::hash<type_index>
+    // returns that hash_code. No stand-in name.
     CHECK(src.find("const type_info* _M_target") != std::string::npos);
     CHECK(src.find("type_index(const type_info& __rhs) noexcept : _M_target(&__rhs)") != std::string::npos);
     CHECK(src.find("return *_M_target == *__rhs._M_target;") != std::string::npos);
     CHECK(src.find("return _M_target->hash_code();") != std::string::npos);
     CHECK(src.find("return _M_target->name();") != std::string::npos);
     CHECK(src.find("return _M_target->before(*__rhs._M_target);") != std::string::npos);
+    CHECK(src.find("template<typename _Tp>") != std::string::npos);
+    CHECK(src.find("struct hash;") != std::string::npos);
+    CHECK(src.find("struct hash<type_index>") != std::string::npos);
+    CHECK(src.find("size_t operator()(const type_index& __ti) const noexcept { return __ti.hash_code(); }") !=
+          std::string::npos);
     CHECK(src.find("unknown") == std::string::npos);
     CHECK(src.find("\"main\"") == std::string::npos);
-    CHECK(src.find("struct hash") == std::string::npos);
-    CHECK(src.find("hash<type_index>") == std::string::npos);
     CHECK(src.find("return 0") == std::string::npos);
     CHECK(src.find("strcmp") == std::string::npos);
 
@@ -96,4 +99,14 @@ TEST_CASE("cxx typeindex stores the type_info and compares with type_info::opera
     const int lt = (a < c) ? 1 : 0;
     const int before = typeid(int).before(typeid(double)) ? 1 : 0;
     CHECK(lt == before);
+
+    // std::hash forwards hash_code(). Equal type_index objects share that
+    // hash. The value is not taken from name().
+    const std::hash<std::type_index> hasher;
+    CHECK(hasher(a) == a.hash_code());
+    CHECK(hasher(b) == b.hash_code());
+    CHECK(hasher(c) == c.hash_code());
+    CHECK(hasher(a) == hasher(b));
+    CHECK(hasher(a) == typeid(int).hash_code());
+    CHECK(hasher(c) == typeid(double).hash_code());
 }

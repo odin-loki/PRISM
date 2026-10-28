@@ -11,10 +11,11 @@
 // equal. hash_code() returns type_info::hash_code(). name() returns
 // type_info::name(), the pointer that object already has.
 //
-// std::hash is not declared. A specialization that returned a
-// constant would hide type_info::hash_code(). <functional> is not
-// included, so a unit that names std::hash fails to compile and pir
-// falls back to libstdc++. operator<=> is omitted the same way:
+// std::hash<type_index>::operator() returns type_index::hash_code().
+// It is not a constant and it does not hash name(). Two type_index
+// objects that compare equal have the same hash because they forward
+// the same hash_code. <functional> is not included: the primary
+// template is only declared. operator<=> is omitted the same way:
 // <compare> is not included. <string> and <memory> are not included.
 //
 // Ordering calls type_info::before. Comparing two type_index values
@@ -60,6 +61,18 @@ public:
 
 private:
     const type_info* _M_target;
+};
+
+// operator() returns type_index::hash_code(). Not a constant, and not
+// a hash of name(). Two type_index objects that compare equal share
+// that hash_code, so they share this hash. The primary template is
+// only declared: this header does not include <functional>.
+template<typename _Tp>
+struct hash;
+
+template<>
+struct hash<type_index> {
+    size_t operator()(const type_index& __ti) const noexcept { return __ti.hash_code(); }
 };
 
 }  // namespace std
