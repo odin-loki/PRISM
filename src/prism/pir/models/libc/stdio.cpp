@@ -81,8 +81,14 @@ size_t fread(void *p, size_t size, size_t nmemb, FILE *f) {
 
 size_t fwrite(const void *p, size_t size, size_t nmemb, FILE *f) {
     prism_file_ok(f);
-    size_t t;
-    __prism_check(!__builtin_mul_overflow(size, nmemb, &t), "MEM-OOB-READ", "fwrite size * nmemb overflows");
+    /* Overflow of size * nmemb is not a short write. */
+    size_t t = 0;
+    int ovf = __builtin_mul_overflow(size, nmemb, &t);
+    if (ovf) {
+        __prism_check(0, "MEM-OOB-READ", "fwrite size * nmemb overflows");
+        __prism_assume(0);
+        return 0;
+    }
     __prism_read_range(p, t);
     size_t k = __VERIFIER_nondet_ulong();
     __prism_assume(k <= nmemb);

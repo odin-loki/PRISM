@@ -1,5 +1,6 @@
-// stdio buffer models: a null fgets buffer and an overflowing fread are checks.
-// Reads stdio.cpp as text. Does not compile the model.
+// stdio buffer models: a null fgets buffer, an overflowing fread, and an
+// overflowing fwrite are checks. Reads stdio.cpp as text. Does not compile
+// the model.
 
 #include <doctest/doctest.h>
 
@@ -84,6 +85,35 @@ TEST_CASE("stdio buffer: fread overflow is a check and does not return 0") {
     CHECK(arm.find("__prism_check(") != std::string::npos);
     CHECK(arm.find("MEM-OOB-WRITE") != std::string::npos || arm.find("MEM-OOB-READ") != std::string::npos);
     CHECK(arm.find("return 0") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: fwrite overflow does not read and is not a count") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    REQUIRE(!src.empty());
+    const auto body = function_body(src, "size_t fwrite(", "int fgetc(");
+    REQUIRE(!body.empty());
+    const auto mul = body.find("__builtin_mul_overflow");
+    REQUIRE(mul != std::string::npos);
+    const auto arm = brace_block_after(body, mul);
+    REQUIRE(!arm.empty());
+    const auto check = arm.find("__prism_check(");
+    REQUIRE(check != std::string::npos);
+    CHECK(arm.find("MEM-OOB-READ") != std::string::npos);
+    CHECK(check_message(arm, check) == "fwrite size * nmemb overflows");
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return 0") != std::string::npos);
+    CHECK(arm.find("__prism_read_range") == std::string::npos);
+    CHECK(arm.find("return k") == std::string::npos);
+
+    const auto arm_at = body.find(arm, mul);
+    REQUIRE(arm_at != std::string::npos);
+    const auto cond = body.substr(mul, arm_at - mul);
+    CHECK(cond.find("size == 0") == std::string::npos);
+    CHECK(cond.find("nmemb == 0") == std::string::npos);
+    const auto rest = body.substr(arm_at + arm.size());
+    CHECK(rest.find("__prism_assume(0)") == std::string::npos);
+    CHECK(rest.find("__prism_read_range(p, t)") != std::string::npos);
+    CHECK(rest.find("return k") != std::string::npos);
 }
 
 TEST_CASE("stdio buffer: fopen message still names fopen") {
