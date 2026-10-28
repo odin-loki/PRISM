@@ -3,7 +3,8 @@
 // a glob): this file is one line in _prism_test_sources. The trace is
 // tests/cxx_models/syncstream_trace.cpp.
 //
-// A write at the size is a __prism_check. The header does not define emit.
+// A write at the size is a __prism_check. A read at the size is a
+// __prism_check and does not load the pointer. The header does not define emit.
 
 #include <doctest/doctest.h>
 
@@ -180,9 +181,11 @@ fs::path build_prog(const std::string& cxx, const fs::path& tmp) {
     return out;
 }
 
-std::vector<std::string> run_lines(const fs::path& exe) {
+std::vector<std::string> run_lines(const fs::path& exe, const char* arg = nullptr) {
     std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
+    std::vector<std::string> cmd{exe.string()};
+    if (arg != nullptr) cmd.push_back(arg);
+    REQUIRE(run_cmd(cmd, &stdout_text));
     std::vector<std::string> lines;
     std::istringstream in(stdout_text);
     std::string line;
@@ -206,9 +209,33 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
     return false;
 }
 
+// One in-range sgetc prints `need`, then the next call is a check and does not print `banned`.
+bool read_then_check(const fs::path& exe, const char* arg, const char* need, const char* banned, const char* cls,
+                     const char* msg) {
+    std::string out, err;
+    if (run_cmd({exe.string(), arg}, &out, &err)) return false;
+    if (out.find(need) == std::string::npos) return false;
+    if (out.find(banned) != std::string::npos) return false;
+    const std::string both = out + err;
+    if (both.find(std::string("CHECK ") + cls + ":") == std::string::npos) return false;
+    if (both.find(msg) == std::string::npos) return false;
+    return true;
+}
+
+// The constructor check runs, then sgetc's check, and the process still prints `line`.
+bool checks_then_line(const fs::path& exe, const char* arg, const char* line, const char* first, const char* second) {
+    std::string out, err;
+    if (!run_cmd({exe.string(), arg}, &out, &err)) return false;
+    if (out.find(line) == std::string::npos) return false;
+    const auto a = err.find(first);
+    const auto b = err.find(second);
+    if (a == std::string::npos || b == std::string::npos) return false;
+    return a < b;
+}
+
 }  // namespace
 
-TEST_CASE("cxx syncstream model: a write at the size is a check and emit is not defined") {
+TEST_CASE("cxx syncstream model: a write or a read at the size is a check and emit is not defined") {
     const fs::path header = syncstream_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -241,14 +268,15 @@ TEST_CASE("cxx syncstream model: a write at the size is a check and emit is not 
     REQUIRE(ctor != std::string::npos);
     const auto sputc_at = src.find("void sputc(", ctor);
     REQUIRE(sputc_at != std::string::npos);
+    const auto sgetc_at = src.find("int sgetc(", sputc_at);
+    REQUIRE(sgetc_at != std::string::npos);
     const std::string ctor_body = src.substr(ctor, sputc_at - ctor);
     CHECK(ctor_body.find("__prism_check((__buf != nullptr || __n == 0) ? 1 : 0, \"FUNC-CONTRACT\",") !=
           std::string::npos);
     CHECK(ctor_body.find("basic_syncbuf constructed with a null buffer and a non-zero size") != std::string::npos);
+    CHECK(ctor_body.find("if (!(__buf != nullptr || __n == 0)) _M_size = 0;") != std::string::npos);
 
-    const auto priv = src.find("private:", sputc_at);
-    REQUIRE(priv != std::string::npos);
-    const std::string sputc = src.substr(sputc_at, priv - sputc_at);
+    const std::string sputc = src.substr(sputc_at, sgetc_at - sputc_at);
     CHECK(sputc.find("const int __ok = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
     CHECK(sputc.find("__prism_check(__ok, \"MEM-OOB-WRITE\", \"basic_syncbuf::sputc would write past the caller "
                      "buffer\")") != std::string::npos);
@@ -264,7 +292,34 @@ TEST_CASE("cxx syncstream model: a write at the size is a check and emit is not 
     CHECK(sputc.find("_M_off =") == std::string::npos);
     CHECK(sputc.find("++_M_off;", adv_at + 1) == std::string::npos);
 
+    const auto priv = src.find("private:", sgetc_at);
+    REQUIRE(priv != std::string::npos);
+    const std::string sgetc = src.substr(sgetc_at, priv - sgetc_at);
+    CHECK(sgetc.find("const int __in = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
+    CHECK(sgetc.find("__prism_check(__in, \"MEM-OOB-READ\", \"basic_syncbuf::sgetc would read past the caller "
+                     "buffer\")") != std::string::npos);
+    const auto gcheck = sgetc.find("__prism_check");
+    const auto gread = sgetc.find("static_cast<unsigned char>(_M_buf[_M_off])");
+    const auto gadv = sgetc.find("++_M_off;");
+    const auto gret = sgetc.find("return static_cast<int>(__ch);");
+    const auto geof = sgetc.find("return -1;");
+    REQUIRE(gcheck != std::string::npos);
+    REQUIRE(gread != std::string::npos);
+    REQUIRE(gadv != std::string::npos);
+    REQUIRE(gret != std::string::npos);
+    REQUIRE(geof != std::string::npos);
+    CHECK(gcheck < gread);
+    CHECK(gread < gadv);
+    CHECK(gadv < gret);
+    CHECK(gret < geof);
+    CHECK(sgetc.find("if (__in) {") != std::string::npos);
+    CHECK(sgetc.find("_M_buf[", sgetc.find("_M_buf[") + 1) == std::string::npos);
+    CHECK(sgetc.find("return -1;", geof + 1) == std::string::npos);
+    CHECK(sgetc.find("_M_off =") == std::string::npos);
+    CHECK(sgetc.find("++_M_off;", gadv + 1) == std::string::npos);
+
     CHECK(defines_call(src, "sputc"));
+    CHECK(defines_call(src, "sgetc"));
     CHECK_FALSE(defines_call(src, "emit"));
     CHECK(src.find("emit(") == std::string::npos);
     CHECK(src.find("class syncstream") == std::string::npos);
@@ -313,4 +368,15 @@ TEST_CASE("cxx syncstream model: one stored byte stays in the caller buffer") {
     CHECK(is_check(mod, "wrap", "MEM-OOB-WRITE", "basic_syncbuf::sputc would write past the caller buffer", "wrapped"));
     CHECK(is_check(mod, "null", "FUNC-CONTRACT", "basic_syncbuf constructed with a null buffer and a non-zero size",
                    "constructed"));
+    auto got = run_lines(mod, "get");
+    CHECK(has_line(got, "got 0"));
+    CHECK(has_line(got, "got 255"));
+    CHECK(has_line(got, "got 65"));
+    CHECK(is_check(mod, "empty", "MEM-OOB-READ", "basic_syncbuf::sgetc would read past the caller buffer", "got"));
+    CHECK(is_check(mod, "null0", "MEM-OOB-READ", "basic_syncbuf::sgetc would read past the caller buffer", "read"));
+    CHECK(read_then_check(mod, "past", "once 65", "past", "MEM-OOB-READ",
+                          "basic_syncbuf::sgetc would read past the caller buffer"));
+    CHECK(checks_then_line(mod, "forced", "forced -1",
+                           "CHECK FUNC-CONTRACT: basic_syncbuf constructed with a null buffer and a non-zero size",
+                           "CHECK MEM-OOB-READ: basic_syncbuf::sgetc would read past the caller buffer"));
 }

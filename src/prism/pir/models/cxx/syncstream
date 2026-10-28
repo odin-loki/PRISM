@@ -4,14 +4,22 @@
 // this name would make the include fail with EISDIR and every such unit
 // would fall back to libstdc++.
 //
-// basic_syncbuf stores a caller char pointer, a size, and a write offset.
+// basic_syncbuf stores a caller char pointer, a size, and an offset.
 // Nothing is allocated. The destructor does not free the caller buffer and
 // does not pretend the bytes were emitted to a stream.
 //
 // sputc writes one character only when the offset is less than the size,
 // then advances. When the offset is already the size, sputc is a
 // __prism_check: it does not write and does not wrap the offset. A null
-// pointer with a non-zero size is a __prism_check at construction.
+// pointer with a non-zero size is a __prism_check at construction. That
+// failure stores size 0, so a later sputc or sgetc does not use the pointer.
+//
+// sgetc returns the unsigned char at the offset and advances by one only
+// when the offset is less than the size. When the offset is already the
+// size, including a size of 0, sgetc is a __prism_check (MEM-OOB-READ): it
+// does not read the pointer and does not return a character from the buffer.
+// -1 is the end signal after that check. A null buffer whose size was forced
+// to 0 takes that path.
 //
 // emit and the syncstream class are omitted so a unit that names one
 // fails to compile and pir falls back to libstdc++. A flush that returns
@@ -43,7 +51,8 @@ public:
     explicit basic_syncbuf(char* __buf, size_t __n) noexcept : _M_buf(__buf), _M_size(__n), _M_off(0) {
         __prism_check((__buf != nullptr || __n == 0) ? 1 : 0, "FUNC-CONTRACT",
                       "basic_syncbuf constructed with a null buffer and a non-zero size");
-        // A failing check does not leave a size that sputc would write through.
+        // A failing check does not leave a size that sputc would write through
+        // or that sgetc would read through.
         if (!(__buf != nullptr || __n == 0)) _M_size = 0;
     }
 
@@ -64,6 +73,22 @@ public:
             _M_buf[_M_off] = __c;
             ++_M_off;
         }
+    }
+
+    // Returns the unsigned char at the offset and advances by one when the
+    // offset is less than the size. When the offset is already the size,
+    // including a size of 0, the pointer is not read. -1 is the end signal
+    // after the check, not a character from the buffer. A null buffer whose
+    // size was forced to 0 takes that path.
+    int sgetc() noexcept {
+        const int __in = (_M_off < _M_size) ? 1 : 0;
+        __prism_check(__in, "MEM-OOB-READ", "basic_syncbuf::sgetc would read past the caller buffer");
+        if (__in) {
+            const unsigned char __ch = static_cast<unsigned char>(_M_buf[_M_off]);
+            ++_M_off;
+            return static_cast<int>(__ch);
+        }
+        return -1;
     }
 
 private:
