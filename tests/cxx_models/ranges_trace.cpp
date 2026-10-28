@@ -1,25 +1,27 @@
 // Trace of std::ranges::size, std::ranges::ssize, std::ranges::empty,
 // std::ranges::begin, std::ranges::end, std::ranges::data,
-// std::ranges::cbegin, std::ranges::cend, and std::ranges::cdata. `#include
-// <ranges>` is the model when its directory is first on the include path,
-// and libstdc++ otherwise. An array's size is N. An lvalue with a const
-// size() member returns that size(). ssize of a value that fits is that
-// value as ptrdiff_t. argv "huge" asks ssize of a size that does not fit.
-// The model must __prism_check and must not print a wrapped negative value.
-// empty of T(&)[N] is true only when N == 0, and it does not load an
-// element. An lvalue with a const empty() member returns that empty().
-// begin of T(&)[N] is a pointer to the first element and does not load it.
-// end is one past the last and does not load it. N == 0 returns the same
-// pointer from both. data of T(&)[N] is that same first-element pointer by
-// array-to-pointer decay and does not load it. N == 0 returns the decayed
-// pointer and does not load it. cbegin, cend, and cdata of T(&)[N] with
-// N >= 1 are const T* by that same decay. cbegin is the first element and
-// does not load it. cend is one past the last and does not load it. cdata
-// is the decayed pointer and does not load it. N == 0 does not match that
-// parameter. A second overload returns the decayed pointer and does not
-// load it. A pointer argument is not called: it is not an overload. This
-// is not a proof that an iterator stays in range or that a pointer has a
-// length.
+// std::ranges::cbegin, std::ranges::cend, std::ranges::cdata, and
+// std::ranges::distance. `#include <ranges>` is the model when its directory
+// is first on the include path, and libstdc++ otherwise. An array's size is
+// N. An lvalue with a const size() member returns that size(). ssize of a
+// value that fits is that value as ptrdiff_t. argv "huge" asks ssize of a
+// size that does not fit. The model must __prism_check and must not print a
+// wrapped negative value. empty of T(&)[N] is true only when N == 0, and it
+// does not load an element. An lvalue with a const empty() member returns
+// that empty(). begin of T(&)[N] is a pointer to the first element and does
+// not load it. end is one past the last and does not load it. N == 0 returns
+// the same pointer from both. data of T(&)[N] is that same first-element
+// pointer by array-to-pointer decay and does not load it. N == 0 returns the
+// decayed pointer and does not load it. cbegin, cend, and cdata of T(&)[N]
+// with N >= 1 are const T* by that same decay. cbegin is the first element
+// and does not load it. cend is one past the last and does not load it.
+// cdata is the decayed pointer and does not load it. N == 0 does not match
+// that parameter. A second overload returns the decayed pointer and does not
+// load it. distance of T(&)[N] with N >= 1 is the bound as ptrdiff_t and
+// does not load an element. N == 0 returns 0 and does not load an element.
+// A pointer argument is not called: it is not an overload, and it is not
+// given a length. This is not a proof that an iterator stays in range or
+// that a pointer has a length. This is not PROVED and not CLEAN.
 #include <ranges>
 
 #include <cstdint>
@@ -77,6 +79,8 @@ static_assert(std::ranges::cbegin(ak) == std::ranges::begin(ak));
 static_assert(std::ranges::cdata(ak) == ak);
 static_assert(std::ranges::cdata(ak) == std::ranges::cbegin(ak));
 static_assert(*std::ranges::cdata(ak) == 1);
+static_assert(std::ranges::distance(ak) == 4);
+static_assert(std::ranges::distance(ak) == std::ranges::ssize(ak));
 
 constexpr Count ck{3};
 static_assert(std::ranges::size(ck) == 3);
@@ -91,6 +95,7 @@ static_assert(std::ranges::data(zk) == std::ranges::begin(zk));
 static_assert(std::ranges::cbegin(zk) == std::ranges::cend(zk));
 static_assert(std::ranges::cdata(zk) == zk);
 static_assert(std::ranges::cdata(zk) == std::ranges::cbegin(zk));
+static_assert(std::ranges::distance(zk) == 0);
 constexpr Flag fk{true};
 constexpr Flag fn{false};
 static_assert(std::ranges::empty(fk));
@@ -117,6 +122,9 @@ constexpr bool prism_ranges_cend = requires(T& r) { std::ranges::cend(r); };
 template <class T>
 constexpr bool prism_ranges_cdata = requires(T& r) { std::ranges::cdata(r); };
 
+template <class T>
+constexpr bool prism_ranges_distance = requires(T& r) { std::ranges::distance(r); };
+
 template <class A, class B>
 constexpr bool prism_same = false;
 template <class A>
@@ -134,6 +142,9 @@ static_assert(prism_same<decltype(std::ranges::cdata(prism_lref<const int[4]>())
 static_assert(prism_same<decltype(std::ranges::cbegin(prism_lref<int[0]>())), const int*>);
 static_assert(prism_same<decltype(std::ranges::cend(prism_lref<int[0]>())), const int*>);
 static_assert(prism_same<decltype(std::ranges::cdata(prism_lref<int[0]>())), const int*>);
+static_assert(prism_same<decltype(std::ranges::distance(prism_lref<int[4]>())), std::ptrdiff_t>);
+static_assert(prism_same<decltype(std::ranges::distance(prism_lref<const int[4]>())), std::ptrdiff_t>);
+static_assert(prism_same<decltype(std::ranges::distance(prism_lref<int[0]>())), std::ptrdiff_t>);
 
 static_assert(prism_ranges_begin<int[4]>);
 static_assert(prism_ranges_end<int[4]>);
@@ -173,6 +184,13 @@ static_assert(!prism_ranges_cdata<int (*)[4]>);
 static_assert(!prism_ranges_cbegin<Count>);
 static_assert(!prism_ranges_cend<Count>);
 static_assert(!prism_ranges_cdata<Count>);
+static_assert(prism_ranges_distance<int[4]>);
+static_assert(prism_ranges_distance<const int[4]>);
+static_assert(prism_ranges_distance<int[0]>);
+static_assert(!prism_ranges_distance<int*>);
+static_assert(!prism_ranges_distance<const int*>);
+static_assert(!prism_ranges_distance<int (*)[4]>);
+static_assert(!prism_ranges_distance<Count>);
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "huge") == 0) {
@@ -259,5 +277,11 @@ int main(int argc, char** argv) {
     std::printf("kidsame %d\n", std::ranges::cdata(inner) == inner ? 1 : 0);
     std::printf("kodsame %d\n",
                 std::ranges::cdata(outer) == outer && std::ranges::cdata(outer) == std::ranges::cbegin(outer) ? 1 : 0);
+    std::printf("dist %d\n", std::ranges::distance(a) == 4 ? 4 : -1);
+    std::printf("zdist %d\n", std::ranges::distance(z) == 0 ? 0 : -1);
+    std::printf("cdist %d\n", std::ranges::distance(ca) == 4 ? 4 : -1);
+    std::printf("idist %d\n", std::ranges::distance(inner) == 4 ? 4 : -1);
+    std::printf("odist %d\n", std::ranges::distance(outer) == 0 ? 0 : -1);
+    std::printf("pdist %d\n", std::ranges::distance(ps) == 2 ? 2 : -1);
     return 0;
 }

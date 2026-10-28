@@ -1,8 +1,8 @@
 // The <ranges> model is a partial stand-in: size, ssize, empty, begin, end,
-// data, cbegin, cend, and cdata. An array size is N. An lvalue with a const
-// size() member returns that size(). ssize converts that value to
-// ptrdiff_t, and a value that does not fit is a FUNC-CONTRACT check then a
-// trap, not a wrapped negative ptrdiff_t. empty of T(&)[N] is true only
+// data, cbegin, cend, cdata, and distance. An array size is N. An lvalue
+// with a const size() member returns that size(). ssize converts that value
+// to ptrdiff_t, and a value that does not fit is a FUNC-CONTRACT check then
+// a trap, not a wrapped negative ptrdiff_t. empty of T(&)[N] is true only
 // when N == 0, and that body does not load an element. N == 0 is a second
 // overload because T(&)[0] is rejected. An lvalue with a const empty()
 // member returns that empty(). begin of T(&)[N] is a pointer to the first
@@ -15,9 +15,12 @@
 // last and does not load it. cdata is the decayed pointer and does not load
 // it. N == 0 does not match that parameter. A second overload constrained
 // with sizeof of the array equal to 0 returns the decayed pointer and does
-// not load it. A pointer has no overload, so the call fails to compile.
-// This is not a proof that an iterator stays in range or that a pointer has
-// a length.
+// not load it. distance of T(&)[N] with N >= 1 is the bound converted to
+// ptrdiff_t and does not load an element. A bound that does not fit is a
+// FUNC-CONTRACT check then a trap, not a wrapped negative ptrdiff_t.
+// N == 0 returns 0 and does not load an element. A pointer has no overload,
+// so the call fails to compile. This is not a proof that an iterator stays
+// in range or that a pointer has a length. This is not PROVED and not CLEAN.
 //
 // tests/cxx_models/ranges_trace.cpp is compiled twice when clang++ is
 // usable: once against libstdc++ and once with this header first.
@@ -244,7 +247,7 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
 
 }  // namespace
 
-TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cdata; ssize traps when it does not fit") {
+TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata, and distance; ssize and distance trap when they do not fit") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -258,6 +261,10 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cd
     CHECK(src.find("This header is not a proof that a range is sorted or that a pointer has a length.") !=
           std::string::npos);
     CHECK(src.find("This is not a proof that an iterator stays in range.") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 1);
+    CHECK(count_of(src, "PROVED") == 1);
+    CHECK(count_of(src, "CLEAN") == 1);
     CHECK(src.find("constexpr std::size_t size(_Tp (&)[_Nm]) noexcept") != std::string::npos);
     CHECK(src.find("return _Nm;") != std::string::npos);
     CHECK(src.find("size(_Tp& __t)") != std::string::npos);
@@ -274,6 +281,7 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cd
     CHECK(src.find("cbegin(_Tp*") == std::string::npos);
     CHECK(src.find("cend(_Tp*") == std::string::npos);
     CHECK(src.find("cdata(_Tp*") == std::string::npos);
+    CHECK(src.find("distance(_Tp*") == std::string::npos);
     CHECK(src.find("(_Tp*") == std::string::npos);
     // begin, end, and data return _Tp*. cbegin, cend, and cdata return
     // const _Tp*, and that spelling also contains the substring _Tp*.
@@ -297,6 +305,17 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cd
     CHECK(check < builtin);
     CHECK(trap.find("return") == std::string::npos);
     CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"ranges::ssize size does not fit in ptrdiff_t\")") == 1);
+
+    const auto dist_trap = body_of(src, "void _Prism_ranges_distance_does_not_fit()");
+    REQUIRE_FALSE(dist_trap.empty());
+    const auto dist_check =
+        dist_trap.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::distance does not fit in ptrdiff_t\")");
+    const auto dist_builtin = dist_trap.find("__builtin_trap()");
+    REQUIRE(dist_check != std::string::npos);
+    REQUIRE(dist_builtin != std::string::npos);
+    CHECK(dist_check < dist_builtin);
+    CHECK(dist_trap.find("return") == std::string::npos);
+    CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::distance does not fit in ptrdiff_t\")") == 1);
 
     const auto conv = body_of(src, "constexpr std::ptrdiff_t _Prism_as_ptrdiff(_Sz __n) noexcept");
     REQUIRE_FALSE(conv.empty());
@@ -323,8 +342,8 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cd
     CHECK(zero_empty.find('[') == std::string::npos);
     CHECK(zero_empty.find('.') == std::string::npos);
     CHECK(zero_empty.find("__t") == std::string::npos);
-    // empty, begin, end, data, cbegin, cend, and cdata.
-    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 7);
+    // empty, begin, end, data, cbegin, cend, cdata, and distance.
+    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 8);
 
     const auto mem_empty = body_of(src, "empty(_Tp& __t)");
     REQUIRE_FALSE(mem_empty.empty());
@@ -453,6 +472,36 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, and cd
     CHECK(count_of(src, "return __a;") == 9);
     CHECK(count_of(src, "return __a + _Nm;") == 2);
     CHECK(count_of(src, "return __a + 0;") == 1);
+
+    const auto arr_dist = body_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept");
+    REQUIRE_FALSE(arr_dist.empty());
+    const auto dist_call = arr_dist.find("_Prism_ranges_distance_does_not_fit()");
+    const auto dist_ret = arr_dist.find("return static_cast<std::ptrdiff_t>(_Nm);");
+    REQUIRE(dist_call != std::string::npos);
+    REQUIRE(dist_ret != std::string::npos);
+    CHECK(dist_call < dist_ret);
+    CHECK(count_of(arr_dist, "return ") == 1);
+    CHECK(arr_dist.find("return -") == std::string::npos);
+    CHECK(arr_dist.find('*') == std::string::npos);
+    CHECK(arr_dist.find('[') == std::string::npos);
+    CHECK(arr_dist.find('.') == std::string::npos);
+    CHECK(arr_dist.find('+') == std::string::npos);
+    CHECK(arr_dist.find("__a") == std::string::npos);
+    CHECK(arr_dist.find("__t") == std::string::npos);
+
+    const auto zero_dist = body_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept");
+    REQUIRE_FALSE(zero_dist.empty());
+    CHECK(zero_dist.find("return 0;") != std::string::npos);
+    CHECK(count_of(zero_dist, "return ") == 1);
+    CHECK(zero_dist.find('*') == std::string::npos);
+    CHECK(zero_dist.find('[') == std::string::npos);
+    CHECK(zero_dist.find('.') == std::string::npos);
+    CHECK(zero_dist.find('+') == std::string::npos);
+    CHECK(zero_dist.find("__a") == std::string::npos);
+    CHECK(zero_dist.find("__t") == std::string::npos);
+    CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept") == 1);
+    CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept") == 1);
+    CHECK(src.find(".distance()") == std::string::npos);
 }
 
 TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
@@ -472,7 +521,7 @@ TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
     if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
-TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, and cdata match libstdc++, a pointer does not compile") {
+TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, and distance match libstdc++, a pointer does not compile") {
     auto& c = ctx();
     if (!c.ok) return;
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -548,6 +597,12 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "kdpsame 1"));
     CHECK(has_line(b, "kidsame 1"));
     CHECK(has_line(b, "kodsame 1"));
+    CHECK(has_line(b, "dist 4"));
+    CHECK(has_line(b, "zdist 0"));
+    CHECK(has_line(b, "cdist 4"));
+    CHECK(has_line(b, "idist 4"));
+    CHECK(has_line(b, "odist 0"));
+    CHECK(has_line(b, "pdist 2"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "huge"}, &out, &err));
@@ -743,6 +798,40 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
         "struct Has { const int* data() const; };\n"
         "const int* f(Has& h) { return std::ranges::cdata(h); }\n";
     CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_cdata_mem", cdata_mem_src, true));
+
+    const char* dist_src =
+        "#include <ranges>\n"
+        "#include <type_traits>\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::distance(std::declval<int (&)[4]>())), std::ptrdiff_t>);\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::distance(std::declval<const int (&)[4]>())), "
+        "std::ptrdiff_t>);\n"
+        "constexpr int ak[4] = {1, 2, 3, 4};\n"
+        "static_assert(std::ranges::distance(ak) == 4);\n"
+        "std::ptrdiff_t f(int (&a)[4]) { return std::ranges::distance(a); }\n"
+        "std::ptrdiff_t g(const int (&a)[4]) { return std::ranges::distance(a); }\n"
+        "std::ptrdiff_t h(int* (&a)[2]) { return std::ranges::distance(a); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_dist", dist_src, true));
+
+    const char* dist_ptr_src =
+        "#include <ranges>\n"
+        "std::ptrdiff_t f(int* p) { return std::ranges::distance(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_dist_ptr", dist_ptr_src, true));
+
+    const char* dist_pbound_src =
+        "#include <ranges>\n"
+        "std::ptrdiff_t f(int (*p)[4]) { return std::ranges::distance(p); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_dist_pbound", dist_pbound_src, true));
+
+    const char* dist_pair_src =
+        "#include <ranges>\n"
+        "std::ptrdiff_t f(int* b, int* e) { return std::ranges::distance(b, e); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_dist_pair", dist_pair_src, true));
+
+    const char* dist_mem_src =
+        "#include <ranges>\n"
+        "struct Has { int size() const { return 4; } };\n"
+        "std::ptrdiff_t f(Has& h) { return std::ranges::distance(h); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_dist_mem", dist_mem_src, true));
 
     const char* sort_src =
         "#include <ranges>\n"
