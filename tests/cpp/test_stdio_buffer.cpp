@@ -1,5 +1,6 @@
 // stdio buffer models: a null fgets buffer, an overflowing fread, and an
 // overflowing fwrite are checks. feof and ferror on a null FILE return 0.
+// ftell on a null FILE returns -1. That is not a proof of the file position.
 // Reads stdio.cpp as text. Does not compile the model.
 
 #include <doctest/doctest.h>
@@ -183,4 +184,51 @@ TEST_CASE("stdio buffer: feof and ferror null file returns 0 and is not a proof"
     CHECK(ferror_body.find("return 1") == std::string::npos);
     CHECK(feof_body.find("__prism_havoc_bytes") == std::string::npos);
     CHECK(ferror_body.find("__prism_havoc_bytes") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: ftell null file returns -1 and is not a proof") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    REQUIRE(!src.empty());
+
+    const auto ftell_at = src.find("long ftell(");
+    const auto ferror_at = src.find("int ferror(");
+    REQUIRE(ftell_at != std::string::npos);
+    REQUIRE(ferror_at != std::string::npos);
+    REQUIRE(ferror_at < ftell_at);
+
+    const auto note_at = src.rfind("/*", ftell_at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, ftell_at - note_at);
+    CHECK(note.find("not a proof of the file position") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "long ftell(", "}  // extern");
+    REQUIRE(!body.empty());
+    const auto ok = body.find("prism_file_ok(f)");
+    REQUIRE(ok != std::string::npos);
+    const auto null_if = body.find("if (f == 0)", ok);
+    REQUIRE(null_if != std::string::npos);
+    const auto arm = brace_block_after(body, null_if);
+    REQUIRE(!arm.empty());
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return -1") != std::string::npos);
+    CHECK(arm.find("return 0") == std::string::npos);
+    CHECK(arm.find("__VERIFIER_nondet_long") == std::string::npos);
+    CHECK(arm.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(arm.find("__prism_read_range") == std::string::npos);
+
+    const auto arm_at = body.find(arm, null_if);
+    REQUIRE(arm_at != std::string::npos);
+    const auto rest = body.substr(arm_at + arm.size());
+    CHECK(rest.find("return __VERIFIER_nondet_long()") != std::string::npos);
+    CHECK(rest.find("return 0") == std::string::npos);
+    CHECK(rest.find("return -1") == std::string::npos);
+    CHECK(rest.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(rest.find("__prism_read_range") == std::string::npos);
+    CHECK(body.find("fseek(") == std::string::npos);
+    CHECK(body.find("rewind(") == std::string::npos);
+    CHECK(body.find("snprintf(") == std::string::npos);
+    CHECK(body.find("sprintf(") == std::string::npos);
+    CHECK(body.find("printf(") == std::string::npos);
 }

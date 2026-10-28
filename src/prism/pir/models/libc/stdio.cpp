@@ -150,4 +150,15 @@ static int prism_file_flag(FILE *f) {
 int feof(FILE *f) { return prism_file_flag(f); }
 int ferror(FILE *f) { return prism_file_flag(f); }
 
+/* This is not a proof of the file position.
+ * ftell is not PROVED and not CLEAN. */
+long ftell(FILE *f) {
+    prism_file_ok(f);
+    if (f == 0) {
+        __prism_assume(0);
+        return -1;
+    }
+    return __VERIFIER_nondet_long();
+}
+
 }  // extern "C"
