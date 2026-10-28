@@ -1,16 +1,19 @@
 /* <time.h> models (src/prism/pir/models/libc/time.cpp). time's value is
  * unknown. mktime of month 99 is not a successful calendar time.
  * difftime of a difference that fits in time_t is that difference as a
- * double. A failed assert calls __assert_fail and is FUNC-CONTRACT.
- * This is not a calendar proof and not PROVED and not CLEAN. */
+ * double. clock() is called so the function name is referenced. No
+ * clock reading is asserted. A failed assert calls __assert_fail and is
+ * FUNC-CONTRACT. This is not a calendar proof and not PROVED and not CLEAN. */
 #include "harness.h"
 #include <limits.h>
 #include "../../../src/prism/pir/models/libc/time.cpp"
 
-/* A null argument is allowed and stores nothing. */
+/* A null argument is allowed and stores nothing. clock() is called so
+ * the function name is referenced. The return is not asserted. */
 int time_null_true(void) {
     time_t v = time(0);
     (void)v;
+    (void)clock();
     return 0;
 }
 

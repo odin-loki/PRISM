@@ -1,9 +1,11 @@
-/* <time.h> time, mktime, and difftime (docs/PIR.md "Library models").
+/* <time.h> time, mktime, difftime, and clock (docs/PIR.md "Library models").
  * The calendar value is unknown. An out-of-range month is not rolled into
- * a later year, and no epoch is computed. difftime is not a calendar proof. */
+ * a later year, and no epoch is computed. difftime is not a calendar proof.
+ * clock is not a proof of elapsed processor time. */
 #include "prism_model.h"
 
 typedef long time_t;
+typedef long clock_t;
 
 struct tm {
     int tm_sec;
@@ -61,6 +63,14 @@ double difftime(time_t time1, time_t time0) {
     } else {
         return (double)diff;
     }
+}
+
+/* clock() returns a nondet clock_t. It does not return a constant.
+ * It does not read a struct tm. It is not a proof of elapsed processor
+ * time. clock is not PROVED and not CLEAN. */
+clock_t clock(void) {
+    clock_t v = __VERIFIER_nondet_long();
+    return v;
 }
 
 }  // extern "C"

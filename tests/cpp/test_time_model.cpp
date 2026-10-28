@@ -1,6 +1,7 @@
-// time, mktime, and difftime models. Reads time.cpp as text. Does not compile the model.
+// time, mktime, difftime, and clock models. Reads time.cpp as text. Does not compile the model.
 // docs/finish-notes/time.md
 // docs/finish-notes/difftime.md
+// docs/finish-notes/clock.md
 
 #include <doctest/doctest.h>
 
@@ -80,7 +81,6 @@ TEST_CASE("time model: nondet value, null stores nothing") {
     CHECK(arm.find("*t = v") != std::string::npos);
     CHECK(body.find("return v") != std::string::npos);
     CHECK(src.find("strftime") == std::string::npos);
-    CHECK(src.find("clock") == std::string::npos);
 }
 
 TEST_CASE("mktime model: month 99 is not a successful calendar time") {
@@ -193,4 +193,49 @@ TEST_CASE("difftime harness: fitting difference is true and a zero stand-in is F
     CHECK(yml.find("difftime_nofit_false: false") != std::string::npos);
     CHECK(yml.find("difftime_nofit_false: \"FUNC-CONTRACT\"") != std::string::npos);
     CHECK(yml.find("mktime_month99_false: \"FUNC-CONTRACT\"") != std::string::npos);
+}
+
+TEST_CASE("clock model: nondet clock_t does not mention tm_mon") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    CHECK(src.find("typedef long clock_t;") != std::string::npos);
+    const auto at = src.find("clock_t clock(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("nondet clock_t") != std::string::npos);
+    CHECK(note.find("does not return a constant") != std::string::npos);
+    CHECK(note.find("does not read a struct tm") != std::string::npos);
+    CHECK(note.find("not a proof of elapsed processor time") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+    CHECK(note.find("tm_mon") == std::string::npos);
+
+    const auto body = function_body(src, "clock_t clock(");
+    REQUIRE(!body.empty());
+    CHECK(body.find("__VERIFIER_nondet_long") != std::string::npos);
+    CHECK(body.find("return v") != std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("tm_mon") == std::string::npos);
+    CHECK(body.find("tm_") == std::string::npos);
+
+    const auto mktime_body = function_body(src, "time_t mktime(");
+    REQUIRE(!mktime_body.empty());
+    const auto nullg = mktime_body.find("if (tp == 0)");
+    REQUIRE(nullg != std::string::npos);
+    CHECK(nullg < mktime_body.find("tp->tm_mon"));
+
+    const auto difftime_body = function_body(src, "double difftime(");
+    REQUIRE(!difftime_body.empty());
+    CHECK(difftime_body.find("__builtin_sub_overflow(time1, time0, &diff)") != std::string::npos);
+    CHECK(difftime_body.find("__builtin_trap()") != std::string::npos);
+    CHECK(difftime_body.find("return 0") == std::string::npos);
+
+    const auto cpp = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.cpp");
+    const auto yml = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.yml");
+    REQUIRE(!cpp.empty());
+    REQUIRE(!yml.empty());
+    CHECK(cpp.find("clock(") != std::string::npos);
+    CHECK(yml.find("clock") == std::string::npos);
 }
