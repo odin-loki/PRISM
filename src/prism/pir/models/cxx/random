@@ -19,21 +19,46 @@
 // entropy. random_device is not a proof. A program that only calls it is
 // not PROVED and not CLEAN.
 //
+// uniform_int_distribution<int> stores the bounds a and b. a > b is
+// __prism_check with class FUNC-CONTRACT and message
+// "uniform_int_distribution range is inverted", then __builtin_trap.
+// That path does not store the inverted pair, and operator() does not
+// return a value. a == b returns a and does not call __VERIFIER_nondet_uint.
+// Otherwise the span is b - a + 1. A span that does not fit in an unsigned
+// 32-bit count is FUNC-CONTRACT, then __builtin_trap, and does not return
+// a wrapped value. Otherwise the result is a + (nondet % span), and that
+// value is inside [a, b]. This is not a proof of uniformity. It is not
+// PROVED and not CLEAN.
+//
 // Omitted names are not declared. A unit that names one fails to compile
 // against this header and pir falls back to libstdc++ (extra.cxx_models):
-// uniform_int_distribution, shuffle, the other engines (mt19937, ranlux,
-// knuth_b, default_random_engine), and the rest of <random>.
-// This header does not include <vector>, <functional>, or <memory>.
+// shuffle, every other distribution (uniform_real_distribution,
+// bernoulli_distribution, normal_distribution), the other engines (mt19937,
+// ranlux, knuth_b, default_random_engine), and the rest of <random>.
+// uniform_int_distribution is only the int specialization. This header does
+// not include <vector>, <functional>, or <memory>.
 #ifndef _GLIBCXX_RANDOM
 #define _GLIBCXX_RANDOM 1
 
 #pragma GCC system_header
 
+#include <climits>
 #include <cstdint>
 
 // C linkage so the call stays __VERIFIER_nondet_uint (not a mangled name).
 // The body is not a constant, and it is not zero on every call.
 extern "C" unsigned int __VERIFIER_nondet_uint(void);
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
+
+// cl does not provide __builtin_trap. clang, which the pir stage uses, does.
+// The stand-in is abort, so a failed contract still does not return.
+#if defined(_MSC_VER) && !defined(__clang__)
+extern "C" __declspec(noreturn) void abort(void);
+__declspec(noreturn) inline void __builtin_trap() { abort(); }
+#endif
 
 namespace std {
 
@@ -131,6 +156,70 @@ public:
     // random_device is not a proof. A program that only calls it is
     // not PROVED and not CLEAN.
     result_type operator()() { return __VERIFIER_nondet_uint(); }
+};
+
+// Only the int specialization. uniform_int_distribution<long> and the other
+// distributions are not defined. a > b does not store the inverted pair.
+// operator() on that range does not return a value. This is not a proof of
+// uniformity.
+template <class IntType = int>
+class uniform_int_distribution;
+
+template <>
+class uniform_int_distribution<int> {
+public:
+    using result_type = int;
+
+    // Stores a and b. The default upper bound is the maximum int, matching
+    // the standard default. a > b is a contract failure: the check runs,
+    // then __builtin_trap, and the inverted pair is not stored.
+    explicit uniform_int_distribution(int a = 0, int b = INT_MAX) {
+        if (a > b) {
+            __prism_check(0, "FUNC-CONTRACT", "uniform_int_distribution range is inverted");
+            __builtin_trap();
+        } else {
+            _M_a = a;
+            _M_b = b;
+        }
+    }
+
+    result_type a() const { return _M_a; }
+    result_type b() const { return _M_b; }
+    result_type min() const { return _M_a; }
+    result_type max() const { return _M_b; }
+
+    // a == b returns a and does not call __VERIFIER_nondet_uint. Otherwise
+    // the span is b - a + 1. A span that does not fit in an unsigned 32-bit
+    // count is FUNC-CONTRACT, then __builtin_trap, and does not return a
+    // wrapped value. Otherwise the result is a + (nondet % span). That value
+    // is inside [a, b]. This is not a proof of uniformity. It is not PROVED
+    // and not CLEAN. The engine is not the source of the value.
+    template <class URNG>
+    result_type operator()(URNG&) {
+        if (_M_a > _M_b) {
+            __prism_check(0, "FUNC-CONTRACT", "uniform_int_distribution range is inverted");
+            __builtin_trap();
+        } else if (_M_a == _M_b) {
+            return _M_a;
+        } else {
+            const unsigned long long span =
+                static_cast<unsigned long long>(static_cast<long long>(_M_b) - static_cast<long long>(_M_a)) +
+                1ull;
+            if (span > 0xffffffffull) {
+                __prism_check(0, "FUNC-CONTRACT",
+                              "uniform_int_distribution span does not fit in an unsigned 32-bit count");
+                __builtin_trap();
+            } else {
+                const unsigned long long pick =
+                    static_cast<unsigned long long>(__VERIFIER_nondet_uint()) % span;
+                return static_cast<int>(static_cast<long long>(_M_a) + static_cast<long long>(pick));
+            }
+        }
+    }
+
+private:
+    result_type _M_a;
+    result_type _M_b;
 };
 
 }  // namespace std
