@@ -12,12 +12,18 @@
 // at() or operator[] is a use-after-free. erase of a missing key frees
 // nothing. contains(key) returns false when the key is missing and true
 // when it is present. It does not allocate, does not insert, and does not
-// change size.
+// change size. try_emplace(key, args...) on a key that is already present
+// returns false: it does not allocate and it does not overwrite the stored
+// mapped object. On a missing key it constructs the mapped object from
+// those arguments in a new node and returns true. That mapped object is
+// not constructed until the key is known to be absent. This header has no
+// insert and no iterators, so try_emplace returns bool: false when the key
+// was already present, true when a node was inserted.
 //
-// insert ranges, try_emplace, and the rest are not declared. Omitted names
+// insert ranges and the rest are not declared. Omitted names
 // fail to compile against this header and pir falls back to libstdc++
 // (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
-// try_emplace, erase(iterator), iterators, find, count, clear,
+// erase(iterator), iterators, find, count, clear,
 // swap, the Compare / KeyContainer / MappedContainer parameters (this
 // template takes Key and T only), and any allocator other than the
 // ::operator new / ::operator delete pair above.
@@ -49,6 +55,14 @@ private:
         _Node* _M_next;
         key_type _M_key;
         mapped_type _M_mapped;
+
+        // The mapped member is constructed from the argument pack in this
+        // node's storage. A single mapped value (operator[]) is one
+        // argument; try_emplace passes the caller's arguments through.
+        template <typename _Uk, typename... _Args>
+        _Node(_Node* __next, _Uk&& __k, _Args&&... __args)
+            : _M_next(__next), _M_key(static_cast<_Uk&&>(__k)),
+              _M_mapped(static_cast<_Args&&>(__args)...) {}
     };
 
     _Node* _M_head = nullptr;
@@ -73,6 +87,19 @@ private:
         try {
             return ::new (static_cast<void*>(__raw))
                 _Node{nullptr, static_cast<_Uk&&>(__k), static_cast<_Uv&&>(__v)};
+        } catch (...) {
+            ::operator delete(__raw);
+            throw;
+        }
+    }
+    // Allocate one node and construct its mapped object from the arguments.
+    // The caller has already seen that the key is absent.
+    template <typename _Uk, typename... _Args>
+    _Node* _M_emplace_args(_Uk&& __k, _Args&&... __args) {
+        void* __raw = ::operator new(sizeof(_Node));
+        try {
+            return ::new (static_cast<void*>(__raw))
+                _Node{nullptr, static_cast<_Uk&&>(__k), static_cast<_Args&&>(__args)...};
         } catch (...) {
             ::operator delete(__raw);
             throw;
@@ -156,6 +183,23 @@ public:
     // Missing key returns false. A present key returns true. Neither path
     // allocates, inserts a node, or changes size: this is _M_find only.
     bool contains(const key_type& __k) const { return _M_find(__k) != nullptr; }
+
+    // Present key: return false. Do not allocate and do not overwrite the
+    // stored mapped object. Missing key: construct the mapped object from
+    // the arguments in a new node, then return true. That construction is
+    // not done until the key is known to be absent.
+    template <typename... _Args>
+    bool try_emplace(const key_type& __k, _Args&&... __args) {
+        if (_M_find(__k) != nullptr) return false;
+        _M_link(_M_emplace_args(__k, static_cast<_Args&&>(__args)...));
+        return true;
+    }
+    template <typename... _Args>
+    bool try_emplace(key_type&& __k, _Args&&... __args) {
+        if (_M_find(__k) != nullptr) return false;
+        _M_link(_M_emplace_args(static_cast<key_type&&>(__k), static_cast<_Args&&>(__args)...));
+        return true;
+    }
 
     size_type erase(const key_type& __k) {
         for (_Node** __pp = &_M_head; *__pp != nullptr; __pp = &(*__pp)->_M_next) {
