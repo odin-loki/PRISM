@@ -3,9 +3,11 @@
 // `#include <memory_resource>` reaches this file instead of libstdc++'s.
 // A directory of this name would make that include fail with EISDIR.
 //
-// Partial on purpose. Only std::pmr::monotonic_buffer_resource over a caller
+// Partial on purpose. std::pmr::monotonic_buffer_resource over a caller
 // buffer is modelled: one pointer and one size. It does not allocate an
 // upstream buffer. The destructor does not free that buffer.
+// std::pmr::memory_resource declares is_equal. That comparison is object
+// identity and does not allocate or free.
 //
 // allocate(n, align) returns a pointer inside the remaining buffer only when
 // n bytes fit, including the padding alignment needs. The caller buffer is
@@ -23,6 +25,12 @@
 // is a check. deallocate does not free the caller buffer. A failed allocate
 // returns nullptr before that pointer is recorded, so a null result is not a
 // handed-out object. This model is not PROVED and not CLEAN.
+//
+// memory_resource::is_equal returns true for the same object and false for
+// a different object. Neither path allocates or frees. It does not call
+// allocate or deallocate. do_is_equal is not declared. is_equal is not a
+// member of monotonic_buffer_resource, so a call there fails to compile and
+// the pir stage falls back to libstdc++. This is not PROVED and not CLEAN.
 //
 // src/prism/pir/models/cxx/memory is a unique_ptr model. It does not provide
 // allocator, and this header does not include it. polymorphic_allocator,
@@ -44,6 +52,16 @@ extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
 
 namespace std {
 namespace pmr {
+
+class memory_resource {
+public:
+    // The same object compares equal. A different object compares unequal.
+    // Neither path allocates or frees. This is not PROVED and not CLEAN.
+    bool is_equal(const memory_resource& __other) const noexcept {
+        if (this == &__other) return true;
+        return false;
+    }
+};
 
 class monotonic_buffer_resource {
     // Handed-out pointers, so deallocate can tell a foreign pointer from one
