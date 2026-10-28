@@ -15,7 +15,11 @@
 // returns true, any_of returns false, none_of returns true. fill takes two
 // pointers and a const T&. An empty range does not write, even when the
 // pointer is null. Each element in [first, last) becomes the value. The
-// element at last is left unchanged. sort, copy, and for_each are not
+// element at last is left unchanged. copy takes two pointers and a
+// destination pointer. An empty range returns dest and does not read or
+// write, even when dest is null. Each element in [first, last) is copied.
+// The element at last is left unchanged. The result is one past the last
+// element written. sort, copy_n, copy_backward, and for_each are not
 // called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
@@ -28,8 +32,12 @@
 // "null-any-of", "null-none-of", and the "-empty" forms pass a null
 // predicate. argv "invert-fill" calls fill with last < first and must not
 // assign. argv "null-fill" calls fill with a null first and a non-empty
-// range and must not assign. The model must __prism_check and must not
-// print a value. This is not PROVED and not CLEAN.
+// range and must not assign. argv "invert-copy" calls copy with last < first
+// and must not read or write. argv "null-copy" calls copy with a null dest
+// and a non-empty range and must not write. argv "overlap-copy" and
+// "overlap-copy-first" call copy with dest inside [first, last) and must
+// not read or write. The model must __prism_check and must not print a
+// value. This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -87,6 +95,21 @@ struct FillSlot {
         std::fprintf(stderr, "wrote\n");
         x = other.x;
         return *this;
+    }
+};
+
+// Assignment is the write copy must not perform on a rejected range.
+// Equality of elements is the read the overlap scan must not perform.
+struct CopySlot {
+    int x;
+    CopySlot& operator=(const CopySlot& other) {
+        std::fprintf(stderr, "wrote\n");
+        x = other.x;
+        return *this;
+    }
+    friend bool operator==(const CopySlot& a, const CopySlot& b) {
+        std::fprintf(stderr, "read\n");
+        return a.x == b.x;
     }
 };
 
@@ -481,6 +504,64 @@ constexpr int fill_pred_v() {
 }
 static_assert(fill_pred_v() == 36);
 
+constexpr int copy_sum() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {0, 0, 0, 0};
+    int* end = std::copy(seq, seq + 4, out);
+    if (end != out + 4) return -1;
+    if (seq[0] != 9 || seq[3] != 4) return -1;
+    return out[0] + out[1] + out[2] + out[3];
+}
+static_assert(copy_sum() == 18);
+constexpr int copy_tail() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 8, 8, 8};
+    int* end = std::copy(seq, seq + 3, out);
+    if (end != out + 3) return -1;
+    if (seq[3] != 4 || out[3] != 8) return -1;
+    return out[0] * 1000 + out[1] * 100 + out[2] * 10 + out[3];
+}
+static_assert(copy_tail() == 9418);
+constexpr bool copy_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy(seq, seq, out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5 && seq[0] == 9;
+}
+static_assert(copy_empty_keeps());
+constexpr bool copy_null_empty() {
+    int* end = std::copy(static_cast<int*>(nullptr), static_cast<int*>(nullptr), static_cast<int*>(nullptr));
+    return end == nullptr;
+}
+static_assert(copy_null_empty());
+constexpr int copy_one_v() {
+    int seq[] = {8};
+    int out[] = {0};
+    int* end = std::copy(seq, seq + 1, out);
+    return (end == out + 1 && out[0] == 8 && seq[0] == 8) ? 8 : 0;
+}
+static_assert(copy_one_v() == 8);
+constexpr int copy_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly out[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    PredOnly* end = std::copy(seq, seq + 3, out);
+    PredOnly empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly empty_dst[] = {PredOnly(4), PredOnly(5)};
+    PredOnly* end_empty = std::copy(empty_src, empty_src, empty_dst);
+    if (end != out + 3 || end_empty != empty_dst) return -1;
+    if (empty_dst[0].x != 4 || empty_dst[1].x != 5) return -1;
+    if (seq[0].x != 3 || seq[1].x != 1 || seq[2].x != 3) return -1;
+    if (out[3].x != 5) return -1;
+    return out[0].x + out[1].x + out[2].x + out[3].x;
+}
+static_assert(copy_pred_v() == 12);
+constexpr bool copy_adjacent() {
+    int seq[] = {1, 2, 3, 0, 0, 0};
+    int* end = std::copy(seq, seq + 3, seq + 3);
+    return end == seq + 6 && seq[0] == 1 && seq[1] == 2 && seq[2] == 3 && seq[3] == 1 && seq[4] == 2 && seq[5] == 3;
+}
+static_assert(copy_adjacent());
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -600,6 +681,39 @@ int main(int argc, char** argv) {
         FillSlot value{9};
         std::fill(first, last, value);
         std::printf("value=%d\n", value.x);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-copy") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        CopySlot dst[3] = {{7}, {7}, {7}};
+        CopySlot* volatile vf = src + 2;
+        CopySlot* volatile vl = src;
+        CopySlot* first = vf;
+        CopySlot* last = vl;
+        CopySlot* end = std::copy(first, last, dst);
+        std::printf("value=%d\n", end == dst ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        unsigned long volatile raw_dest = 0;
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy(src, src + 3, dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "overlap-copy") == 0) {
+        CopySlot arr[4] = {{1}, {2}, {3}, {4}};
+        CopySlot* volatile vd = arr + 2;
+        CopySlot* dest = vd;
+        CopySlot* end = std::copy(arr, arr + 3, dest);
+        std::printf("value=%d\n", static_cast<int>(end - arr));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "overlap-copy-first") == 0) {
+        CopySlot arr[3] = {{1}, {2}, {3}};
+        CopySlot* end = std::copy(arr, arr + 3, arr);
+        std::printf("value=%d\n", end == arr ? arr[0].x : -1);
         return 0;
     }
 
@@ -918,5 +1032,39 @@ int main(int argc, char** argv) {
     std::fill(fill_preds_empty, fill_preds_empty, PredOnly(8));
     std::printf("fill_pred=%d,%d,%d fill_pred_empty=%d,%d\n", fill_preds[0].x, fill_preds[1].x, fill_preds[2].x,
                 fill_preds_empty[0].x, fill_preds_empty[1].x);
+
+    int copy_src[] = {9, 4, 1, 4};
+    int copy_dst[] = {0, 0, 0, 0};
+    int* copy_end = std::copy(copy_src, copy_src + 4, copy_dst);
+    std::printf("copy_all=%d,%d,%d,%d end=%d src=%d,%d,%d,%d\n", copy_dst[0], copy_dst[1], copy_dst[2], copy_dst[3],
+                copy_end == copy_dst + 4 ? 1 : 0, copy_src[0], copy_src[1], copy_src[2], copy_src[3]);
+    int copy_span_src[] = {9, 4, 1, 4};
+    int copy_span_dst[] = {8, 8, 8, 8};
+    int* copy_span_end = std::copy(copy_span_src, copy_span_src + 3, copy_span_dst);
+    std::printf("copy_span=%d,%d,%d,%d end=%d\n", copy_span_dst[0], copy_span_dst[1], copy_span_dst[2],
+                copy_span_dst[3], copy_span_end == copy_span_dst + 3 ? 1 : 0);
+    int copy_emp_src[] = {9, 4, 1, 4};
+    int copy_emp_dst[] = {8, 7, 6, 5};
+    int* copy_emp_end = std::copy(copy_emp_src, copy_emp_src, copy_emp_dst);
+    std::printf("copy_empty=%d,%d,%d,%d end=%d\n", copy_emp_dst[0], copy_emp_dst[1], copy_emp_dst[2], copy_emp_dst[3],
+                copy_emp_end == copy_emp_dst ? 1 : 0);
+    int copy_one_src[] = {8};
+    int copy_one_dst[] = {0};
+    int* copy_one_end = std::copy(copy_one_src, copy_one_src + 1, copy_one_dst);
+    std::printf("copy_one=%d end=%d\n", copy_one_dst[0], copy_one_end == copy_one_dst + 1 ? 1 : 0);
+    int* copy_null_end = std::copy(zn, zn, zn);
+    std::printf("copy_null=%d\n", copy_null_end == nullptr ? 1 : 0);
+    PredOnly copy_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly copy_pred_dst[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    std::copy(copy_preds, copy_preds + 3, copy_pred_dst);
+    PredOnly copy_pred_empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly copy_pred_empty_dst[] = {PredOnly(4), PredOnly(5)};
+    std::copy(copy_pred_empty_src, copy_pred_empty_src, copy_pred_empty_dst);
+    std::printf("copy_pred=%d,%d,%d,%d copy_pred_empty=%d,%d\n", copy_pred_dst[0].x, copy_pred_dst[1].x,
+                copy_pred_dst[2].x, copy_pred_dst[3].x, copy_pred_empty_dst[0].x, copy_pred_empty_dst[1].x);
+    int copy_adj[] = {1, 2, 3, 0, 0, 0};
+    int* copy_adj_end = std::copy(copy_adj, copy_adj + 3, copy_adj + 3);
+    std::printf("copy_adj=%d,%d,%d,%d,%d,%d end=%d\n", copy_adj[0], copy_adj[1], copy_adj[2], copy_adj[3], copy_adj[4],
+                copy_adj[5], copy_adj_end == copy_adj + 6 ? 1 : 0);
     return 0;
 }
