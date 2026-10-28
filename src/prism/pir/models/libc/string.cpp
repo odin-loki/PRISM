@@ -168,6 +168,53 @@ size_t strcspn(const char *s, const char *accept) {
     return n;
 }
 
+/* strstr returns a pointer to the first match of needle in s, or a null
+ * pointer when there is none.
+ * An empty needle returns s and does not scan s.
+ * It does not read past the terminator of either string.
+ * A null s or a null needle is STR-NULL-ARG and returns a null pointer
+ * without a scan.
+ * This is not PROVED and not CLEAN. */
+char *strstr(const char *s, const char *needle) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strstr() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    __prism_check(needle != 0, "STR-NULL-ARG", "strstr() called with unchecked pointer parameter needle");
+    if (needle == 0) return 0;
+    if (!uc(needle, 0)) return (char *)s;
+    size_t i = 0;
+    while (uc(s, i)) {
+        size_t j = 0;
+        while (uc(needle, j) != 0 && uc(s, i + j) != 0 && uc(s, i + j) == uc(needle, j)) ++j;
+        if (!uc(needle, j)) return (char *)(s + i);
+        if (!uc(s, i + j)) return 0;
+        ++i;
+    }
+    return 0;
+}
+
+/* strpbrk returns a pointer to the first byte of s that occurs in accept,
+ * or a null pointer when none does.
+ * An empty accept returns a null pointer.
+ * It does not read past the terminator of either string.
+ * A null s or a null accept is STR-NULL-ARG and returns a null pointer
+ * without a scan.
+ * This is not PROVED and not CLEAN. */
+char *strpbrk(const char *s, const char *accept) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strpbrk() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    __prism_check(accept != 0, "STR-NULL-ARG", "strpbrk() called with unchecked pointer parameter accept");
+    if (accept == 0) return 0;
+    if (!uc(accept, 0)) return 0;
+    size_t i = 0;
+    while (uc(s, i)) {
+        size_t j = 0;
+        while (uc(accept, j) != 0 && uc(accept, j) != uc(s, i)) ++j;
+        if (uc(accept, j)) return (char *)(s + i);
+        ++i;
+    }
+    return 0;
+}
+
 /* requires: n bytes of d writable and of s readable; no overlap (checked) */
 void *memcpy(void *d, const void *s, size_t n) {
     if (n == 0) return d;

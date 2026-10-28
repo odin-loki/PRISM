@@ -797,6 +797,7 @@ if(PRISM_TESTS)
     tests/cpp/test_libc_messages.cpp
     tests/cpp/test_string_null.cpp
     tests/cpp/test_strspn.cpp
+    tests/cpp/test_strstr.cpp
     tests/cpp/test_stdio_buffer.cpp
     tests/cpp/test_rand_unseeded.cpp
     tests/cpp/test_qsort_null.cpp
