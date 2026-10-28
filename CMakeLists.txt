@@ -842,6 +842,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_flat_map.cpp
     tests/cpp/test_cxx_random.cpp
     tests/cpp/test_cxx_charconv.cpp
+    tests/cpp/test_cxx_charconv_ne.cpp
     tests/cpp/test_cxx_chrono.cpp
     tests/cpp/test_cxx_format.cpp
     tests/cpp/test_cxx_future.cpp

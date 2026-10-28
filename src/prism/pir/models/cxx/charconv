@@ -80,6 +80,14 @@ struct from_chars_result {
     friend constexpr bool operator==(const from_chars_result& __a, const from_chars_result& __b) noexcept {
         return __a.ptr == __b.ptr && __a.ec == __b.ec;
     }
+    // Negation of operator==. The body calls that operator.
+    // The body does not compare ptr or ec again.
+    // It does not dereference ptr.
+    // A null ptr compares by address only.
+    // Returns bool, not from_chars_result.
+    friend constexpr bool operator!=(const from_chars_result& __a, const from_chars_result& __b) noexcept {
+        return !(__a == __b);
+    }
 };
 
 struct to_chars_result {
@@ -87,6 +95,14 @@ struct to_chars_result {
     errc ec;
     friend constexpr bool operator==(const to_chars_result& __a, const to_chars_result& __b) noexcept {
         return __a.ptr == __b.ptr && __a.ec == __b.ec;
+    }
+    // Negation of operator==. The body calls that operator.
+    // The body does not compare ptr or ec again.
+    // It does not dereference ptr.
+    // A null ptr compares by address only.
+    // Returns bool, not to_chars_result.
+    friend constexpr bool operator!=(const to_chars_result& __a, const to_chars_result& __b) noexcept {
+        return !(__a == __b);
     }
 };
 
