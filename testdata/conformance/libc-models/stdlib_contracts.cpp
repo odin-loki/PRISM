@@ -327,6 +327,8 @@ int strtol_true(int k) {
     (void)atoll(s);
     /* Names strtod. The value is not a parsed numeral. */
     (void)strtod(s, 0);
+    /* Names strtof. The value is not a parsed numeral. */
+    (void)strtof(s, 0);
     return 0;
 }
 
