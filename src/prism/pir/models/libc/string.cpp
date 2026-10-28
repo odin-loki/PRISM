@@ -120,6 +120,54 @@ char *strrchr(const char *s, int c) {
     }
 }
 
+/* strspn returns how many leading characters of s are in accept.
+ * It does not read past the terminator of either string.
+ * An empty s returns 0. An empty accept returns 0.
+ * A null s or a null accept is STR-NULL-ARG and returns 0 without a scan.
+ * This is not PROVED and not CLEAN. */
+size_t strspn(const char *s, const char *accept) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strspn() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    __prism_check(accept != 0, "STR-NULL-ARG", "strspn() called with unchecked pointer parameter accept");
+    if (accept == 0) return 0;
+    if (!uc(accept, 0)) return 0;
+    if (!uc(s, 0)) return 0;
+    size_t n = 0;
+    while (uc(s, n)) {
+        size_t j = 0;
+        while (uc(accept, j) != 0 && uc(accept, j) != uc(s, n)) ++j;
+        if (!uc(accept, j)) return n;
+        ++n;
+    }
+    return n;
+}
+
+/* strcspn returns how many leading characters of s are not in accept.
+ * An empty accept returns the length of s, and that length does not read past s.
+ * The first character that is in accept stops the scan.
+ * A null s or a null accept is STR-NULL-ARG and returns 0 without a scan.
+ * This is not PROVED and not CLEAN. */
+size_t strcspn(const char *s, const char *accept) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strcspn() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    __prism_check(accept != 0, "STR-NULL-ARG", "strcspn() called with unchecked pointer parameter accept");
+    if (accept == 0) return 0;
+    if (!uc(accept, 0)) {
+        size_t n = 0;
+        while (uc(s, n)) ++n;
+        return n;
+    }
+    if (!uc(s, 0)) return 0;
+    size_t n = 0;
+    while (uc(s, n)) {
+        size_t j = 0;
+        while (uc(accept, j) != 0 && uc(accept, j) != uc(s, n)) ++j;
+        if (uc(accept, j)) return n;
+        ++n;
+    }
+    return n;
+}
+
 /* requires: n bytes of d writable and of s readable; no overlap (checked) */
 void *memcpy(void *d, const void *s, size_t n) {
     if (n == 0) return d;

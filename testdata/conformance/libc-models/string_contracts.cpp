@@ -242,6 +242,56 @@ int strrchr_first_false(void) {
     return 0;
 }
 
+/* 7.24.5.6: leading bytes of s that occur in accept. An empty s or an empty
+ * accept is 0. The scan stops at the first byte that is absent from accept. */
+int strspn_true(int k) {
+    char s[N];
+    char empty_s[1] = {0};
+    char empty_a[1] = {0};
+    char abc[4] = {'a', 'b', 'c', 0};
+    char ab[3] = {'a', 'b', 0};
+    if (k < 0 || k >= N) return 0;
+    MAKE_STR(s, N, k);
+    assert(strspn(s, empty_a) == 0);
+    assert(strspn(empty_s, s) == 0);
+    assert(strspn(abc, ab) == 2);
+    assert(strspn(abc, abc) == 3);
+    return 0;
+}
+
+/* Wrong contract: a byte that is not in accept still counts in the span. */
+int strspn_absent_false(void) {
+    char s[4] = {'a', 'x', 'a', 0};
+    char accept[2] = {'a', 0};
+    assert(strspn(s, accept) == 3);
+    return 0;
+}
+
+/* 7.24.5.3: leading bytes of s that do not occur in accept. An empty accept
+ * is the length of s. The first byte that occurs in accept stops the scan. */
+int strcspn_true(int k) {
+    char s[N];
+    char empty_s[1] = {0};
+    char empty_a[1] = {0};
+    char abc[4] = {'a', 'b', 'c', 0};
+    char stop[2] = {'b', 0};
+    if (k < 0 || k >= N) return 0;
+    MAKE_STR(s, N, k);
+    assert(strcspn(s, empty_a) == (size_t)k);
+    assert(strcspn(empty_s, s) == 0);
+    assert(strcspn(abc, stop) == 1);
+    assert(strcspn(abc, abc) == 0);
+    return 0;
+}
+
+/* Wrong contract: the first byte that is in accept does not stop the scan. */
+int strcspn_stop_false(void) {
+    char s[4] = {'a', 'b', 'c', 0};
+    char accept[2] = {'b', 0};
+    assert(strcspn(s, accept) == 3);
+    return 0;
+}
+
 /* 7.24.2.1: memcpy copies n bytes; the rest of d is untouched. */
 int memcpy_true(int n, int j) {
     char s[N], d[N], d0[N];

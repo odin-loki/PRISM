@@ -24,6 +24,10 @@ expected:
   strchr_nul_false: false
   strrchr_true: true
   strrchr_first_false: false
+  strspn_true: true
+  strspn_absent_false: false
+  strcspn_true: true
+  strcspn_stop_false: false
   memcpy_true: true
   memcpy_overlap_false: false
   memmove_true: true
@@ -48,6 +52,8 @@ expect_class:  # the violation each false harness plants
   strncmp_prefix_false: "FUNC-CONTRACT"
   strchr_nul_false: "FUNC-CONTRACT"
   strrchr_first_false: "FUNC-CONTRACT"
+  strspn_absent_false: "FUNC-CONTRACT"
+  strcspn_stop_false: "FUNC-CONTRACT"
   memcpy_overlap_false: "MEM-OVERLAP"
   memmove_oob_false: "MEM-OOB-READ|MEM-OOB-WRITE"
   memset_int_false: "FUNC-CONTRACT"
