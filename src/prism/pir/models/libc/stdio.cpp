@@ -135,4 +135,19 @@ int fflush(FILE *f) {
     return prism_eof_or(0);
 }
 
+/* This is not a proof that the stream is at end of file
+ * and not a proof that the stream has an error.
+ * feof and ferror are not PROVED and not CLEAN. */
+static int prism_file_flag(FILE *f) {
+    prism_file_ok(f);
+    if (f == 0) {
+        __prism_assume(0);
+        return 0;
+    }
+    return __VERIFIER_nondet_int() ? 1 : 0;
+}
+
+int feof(FILE *f) { return prism_file_flag(f); }
+int ferror(FILE *f) { return prism_file_flag(f); }
+
 }  // extern "C"

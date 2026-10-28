@@ -1,6 +1,6 @@
 // stdio buffer models: a null fgets buffer, an overflowing fread, and an
-// overflowing fwrite are checks. Reads stdio.cpp as text. Does not compile
-// the model.
+// overflowing fwrite are checks. feof and ferror on a null FILE return 0.
+// Reads stdio.cpp as text. Does not compile the model.
 
 #include <doctest/doctest.h>
 
@@ -131,4 +131,56 @@ TEST_CASE("stdio buffer: fopen message still names fopen") {
         at = check + std::string("__prism_check(").size();
     }
     CHECK(found == 2);
+}
+
+TEST_CASE("stdio buffer: feof and ferror null file returns 0 and is not a proof") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    REQUIRE(!src.empty());
+
+    const auto feof_at = src.find("int feof(");
+    const auto ferror_at = src.find("int ferror(");
+    REQUIRE(feof_at != std::string::npos);
+    REQUIRE(ferror_at != std::string::npos);
+    REQUIRE(feof_at < ferror_at);
+
+    const auto note_at = src.rfind("/*", feof_at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, feof_at - note_at);
+    CHECK(note.find("not a proof that the stream is at end of file") != std::string::npos);
+    CHECK(note.find("not a proof that the stream has an error") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto flag = function_body(src, "static int prism_file_flag(", "int feof(");
+    REQUIRE(!flag.empty());
+    const auto ok = flag.find("prism_file_ok(f)");
+    REQUIRE(ok != std::string::npos);
+    const auto null_if = flag.find("if (f == 0)", ok);
+    REQUIRE(null_if != std::string::npos);
+    const auto arm = brace_block_after(flag, null_if);
+    REQUIRE(!arm.empty());
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return 0") != std::string::npos);
+    CHECK(arm.find("return 1") == std::string::npos);
+    CHECK(arm.find("__VERIFIER_nondet_int") == std::string::npos);
+    CHECK(arm.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(arm.find("__prism_read_range") == std::string::npos);
+
+    const auto arm_at = flag.find(arm, null_if);
+    REQUIRE(arm_at != std::string::npos);
+    const auto rest = flag.substr(arm_at + arm.size());
+    CHECK(rest.find("return __VERIFIER_nondet_int() ? 1 : 0") != std::string::npos);
+    CHECK(rest.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(rest.find("__prism_read_range") == std::string::npos);
+
+    const auto feof_body = function_body(src, "int feof(", "int ferror(");
+    const auto ferror_body = function_body(src, "int ferror(", "}  // extern");
+    REQUIRE(!feof_body.empty());
+    REQUIRE(!ferror_body.empty());
+    CHECK(feof_body.find("return prism_file_flag(f)") != std::string::npos);
+    CHECK(ferror_body.find("return prism_file_flag(f)") != std::string::npos);
+    CHECK(feof_body.find("return 1") == std::string::npos);
+    CHECK(ferror_body.find("return 1") == std::string::npos);
+    CHECK(feof_body.find("__prism_havoc_bytes") == std::string::npos);
+    CHECK(ferror_body.find("__prism_havoc_bytes") == std::string::npos);
 }
