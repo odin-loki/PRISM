@@ -14,6 +14,11 @@
 // check and update the stored count. A sum or difference that does not
 // fit stores 0. It does not store a wrapped negative.
 //
+// operator==, operator!=, operator<, operator>, operator<=, and operator>=
+// compare the stored counts of two durations of the same type. They do not
+// convert a period, do not add, and do not sleep. A different period is
+// not an overload. This is not PROVED and not CLEAN.
+//
 // Clocks, time_point conversions that call the OS, and sleep_for /
 // sleep_until are not declared. A sleep that returns immediately would be
 // a fake wait. Omitted names fail to compile against this header and pir
@@ -175,6 +180,46 @@ duration<_Rep, _Period>& duration<_Rep, _Period>::operator-=(const duration<_Rep
     }
     _M_count = static_cast<_Rep>(__x - __y);
     return *this;
+}
+
+// Count comparison. Same duration type only. The stored counts are
+// compared. A different period is not an overload. These operators do not
+// convert a period, do not add, and do not sleep.
+// This is not PROVED and not CLEAN.
+template <typename _Rep, typename _Period>
+constexpr bool operator==(const duration<_Rep, _Period>& __a,
+                          const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() == __b.count();
+}
+
+template <typename _Rep, typename _Period>
+constexpr bool operator!=(const duration<_Rep, _Period>& __a,
+                          const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() != __b.count();
+}
+
+template <typename _Rep, typename _Period>
+constexpr bool operator<(const duration<_Rep, _Period>& __a,
+                         const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() < __b.count();
+}
+
+template <typename _Rep, typename _Period>
+constexpr bool operator>(const duration<_Rep, _Period>& __a,
+                         const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() > __b.count();
+}
+
+template <typename _Rep, typename _Period>
+constexpr bool operator<=(const duration<_Rep, _Period>& __a,
+                          const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() <= __b.count();
+}
+
+template <typename _Rep, typename _Period>
+constexpr bool operator>=(const duration<_Rep, _Period>& __a,
+                          const duration<_Rep, _Period>& __b) noexcept {
+    return __a.count() >= __b.count();
 }
 
 }  // namespace std::chrono

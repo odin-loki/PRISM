@@ -4,8 +4,12 @@
 // without that check, and the overflow path does not hand back a negative
 // wrapped count. Same-type operator+= and operator-= use that check and
 // store 0. They do not store a wrapped negative. Same-period duration_cast
-// returns that count. A different period is not declared. Sleep stays
-// absent. This case does not compile the header.
+// returns that count. A different period is not declared. Same-type
+// operator==, operator!=, operator<, operator>, operator<=, and operator>=
+// compare the stored counts. They do not convert a period, do not add, and
+// do not sleep. A different period is not an overload. Sleep stays
+// absent. This is not PROVED and not CLEAN. This case does not compile the
+// header.
 
 #include <doctest/doctest.h>
 
@@ -27,6 +31,16 @@ std::string slice_between(const std::string& text, const std::string& begin, con
     const auto j = text.find(end, i + begin.size());
     REQUIRE(j != std::string::npos);
     return text.substr(i, j - i);
+}
+
+int count_of(const std::string& body, const std::string& needle) {
+    int n = 0;
+    std::size_t pos = 0;
+    while ((pos = body.find(needle, pos)) != std::string::npos) {
+        ++n;
+        pos += needle.size();
+    }
+    return n;
 }
 
 // A wrapping sum is an arithmetic return that sits ahead of __prism_check,
@@ -98,8 +112,8 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(text.find("duration& operator-=(const duration& __d);") != std::string::npos);
     const std::string add_eq =
         slice_between(text, "duration<_Rep, _Period>::operator+=", "duration<_Rep, _Period>::operator-=");
-    const std::string sub_eq =
-        slice_between(text, "duration<_Rep, _Period>::operator-=", "}  // namespace std::chrono");
+    const std::string sub_eq = slice_between(text, "duration<_Rep, _Period>::operator-=",
+                                             "Count comparison. Same duration type only.");
     auto expect_stored = [](const std::string& body, const std::string& fits, const std::string& store) {
         const auto check = body.find("__prism_check");
         REQUIRE(check != std::string::npos);
@@ -142,4 +156,55 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(text.find("still falls back") != std::string::npos);
     CHECK(text.find("sleep_for(") == std::string::npos);
     CHECK(text.find("sleep_until(") == std::string::npos);
+
+    // Same-type comparisons read the stored counts. They do not add, do not
+    // convert a period, and do not sleep. A different period is not an
+    // overload. The result is not PROVED and not CLEAN.
+    CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
+    CHECK(text.find("#include <compare>") == std::string::npos);
+    CHECK(text.find("operator<=>") == std::string::npos);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 2);
+    CHECK(text.find("A different period is not an overload.") != std::string::npos);
+    const auto note = text.find("Count comparison. Same duration type only.");
+    const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");
+    REQUIRE(note != std::string::npos);
+    REQUIRE(ops != std::string::npos);
+    CHECK(note < ops);
+    const auto tmpl = text.rfind("template <typename _Rep, typename _Period>", ops);
+    REQUIRE(tmpl != std::string::npos);
+    const auto cmp_end = text.find("}  // namespace std::chrono", ops);
+    REQUIRE(cmp_end != std::string::npos);
+    const std::string cmp = text.substr(tmpl, cmp_end - tmpl);
+    CHECK(count_of(cmp, "template <typename _Rep, typename _Period>") == 6);
+    CHECK(count_of(cmp, "constexpr bool operator") == 6);
+    CHECK(count_of(cmp, "const duration<_Rep, _Period>& __a,") == 6);
+    CHECK(count_of(cmp, "const duration<_Rep, _Period>& __b) noexcept") == 6);
+    CHECK(cmp.find("return __a.count() == __b.count();") != std::string::npos);
+    CHECK(cmp.find("return __a.count() != __b.count();") != std::string::npos);
+    CHECK(cmp.find("return __a.count() < __b.count();") != std::string::npos);
+    CHECK(cmp.find("return __a.count() > __b.count();") != std::string::npos);
+    CHECK(cmp.find("return __a.count() <= __b.count();") != std::string::npos);
+    CHECK(cmp.find("return __a.count() >= __b.count();") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator!=(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator<(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator>(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator<=(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("constexpr bool operator>=(const duration<_Rep, _Period>& __a,") != std::string::npos);
+    CHECK(cmp.find("_Rep2") == std::string::npos);
+    CHECK(cmp.find("_Period2") == std::string::npos);
+    CHECK(cmp.find("common_type") == std::string::npos);
+    CHECK(cmp.find("__prism_check") == std::string::npos);
+    CHECK(cmp.find("__duration_add_fits") == std::string::npos);
+    CHECK(cmp.find("__duration_sub_fits") == std::string::npos);
+    CHECK(cmp.find("duration_cast") == std::string::npos);
+    CHECK(cmp.find("static_cast") == std::string::npos);
+    CHECK(cmp.find("operator+") == std::string::npos);
+    CHECK(cmp.find("operator-") == std::string::npos);
+    CHECK(cmp.find('#') == std::string::npos);
+    CHECK(cmp.find('+') == std::string::npos);
+    CHECK(cmp.find(" - ") == std::string::npos);
+    CHECK(cmp.find('/') == std::string::npos);
+    CHECK(cmp.find("sleep_for(") == std::string::npos);
+    CHECK(cmp.find("sleep_until(") == std::string::npos);
 }
