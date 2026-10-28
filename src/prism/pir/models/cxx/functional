@@ -4,11 +4,11 @@
 // file, not a directory: a directory of this name would make the include fail
 // with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. Only std::function for a function-pointer target is
-// modelled. The pointer is stored in the object. A general callable is not
-// placed on the heap, so there is nothing to free in the destructor, in
-// move-assignment, or when the function is empty, and those operations do not
-// call the target.
+// Partial on purpose. std::function and std::invoke are modelled only for a
+// function-pointer target. The pointer is stored in the std::function object.
+// A general callable is not placed on the heap, so there is nothing to free
+// in the destructor, in move-assignment, or when the function is empty, and
+// those operations do not call the target.
 //
 // An empty std::function has no target. operator bool is false. operator()
 // on an empty function is a precondition failure (__prism_check,
@@ -17,10 +17,17 @@
 // call that pointer. A move copies the pointer, leaves the source empty, and
 // does not call the target.
 //
+// std::invoke calls a non-variadic function pointer, noexcept or not, with
+// the forwarded arguments. A null function pointer is a precondition failure
+// (__prism_check, FUNC-CONTRACT), then __builtin_unreachable. That path does
+// not return a default result and does not call through the null pointer.
+// Any other target has no overload, so that call fails to compile here.
+//
 // Not declared, so a unit that names one fails to compile against this header
 // and pir falls back to libstdc++ (extra.cxx_models). A partial header is
 // intentional:
-// bind, mem_fn, ref, cref, invoke, not_fn, bind_front, and reference_wrapper.
+// bind, mem_fn, ref, cref, not_fn, bind_front, and reference_wrapper.
+// This header does not include memory or type_traits.
 #ifndef _PRISM_MODEL_FUNCTIONAL
 #define _PRISM_MODEL_FUNCTIONAL 1
 #define _GLIBCXX_FUNCTIONAL 1  // libstdc++'s <functional> include guard: never both
@@ -87,6 +94,29 @@ public:
         return _M_fn(__args...);
     }
 };
+
+// Function-pointer target only. The null path is the check, then unreachable.
+// It does not return a default _Res and it does not call through null. The
+// other path calls the pointer with the forwarded arguments.
+template <typename _Res, typename... _Params, typename... _Args>
+_Res invoke(_Res (*__f)(_Params...), _Args&&... __args) {
+    if (__f == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT",
+                      "std::invoke called with a null function pointer");
+        __builtin_unreachable();
+    }
+    return __f(static_cast<_Args&&>(__args)...);
+}
+
+template <typename _Res, typename... _Params, typename... _Args>
+_Res invoke(_Res (*__f)(_Params...) noexcept, _Args&&... __args) {
+    if (__f == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT",
+                      "std::invoke called with a null function pointer");
+        __builtin_unreachable();
+    }
+    return __f(static_cast<_Args&&>(__args)...);
+}
 
 }  // namespace std
 
