@@ -26,6 +26,14 @@
 // prefix of the other. It does not ask the operating system whether a file
 // exists, and it does not drop "..".
 //
+// replace_extension() rewrites the stored characters. An empty path stays
+// empty and its pointer is not read; the replacement is not written. An
+// empty replacement removes a trailing extension and does not leave a dot.
+// A replacement that does not begin with '.' gains one dot in front of it.
+// "a/b.txt" replaced with ".md" is "a/b.md". "a/b.txt" replaced with an
+// empty extension is "a/b". ".." stays a parent directory and is not an
+// extension. A length that does not fit is a check, not a wrapped size.
+//
 // exists, file_size, status, is_regular_file, is_directory, current_path, and
 // absolute are not declared. Those names ask the operating system whether a
 // file is there. A stub that returns true is a fake file. A use of an omitted
@@ -116,6 +124,9 @@ public:
     // Stored characters only. Negative, zero, or positive. An empty path
     // compares equal to an empty path.
     [[nodiscard]] int compare(const path& __p) const noexcept;
+
+    // Stored characters only. An empty path stays empty.
+    path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
@@ -272,6 +283,59 @@ inline int path::compare(const path& __p) const noexcept {
     if (_M_len < __p._M_len) return -1;
     if (_M_len > __p._M_len) return 1;
     return 0;
+}
+
+inline path& path::replace_extension(const path& __rep) {
+    // An empty path stores no characters. Stay empty and do not load the
+    // pointer. The replacement is not written onto an empty path.
+    if (_M_len == 0) return *this;
+
+    // ".." is a parent directory. extension() does not treat it as a suffix.
+    const path __ext = extension();
+    std::size_t __keep = _M_len;
+    if (__ext._M_len != 0 && __ext._M_len <= _M_len) __keep = _M_len - __ext._M_len;
+
+    // A replacement that is *this is read after that suffix is removed.
+    const bool __self = &__rep == this;
+    const bool __has = __self ? __keep != 0 : (__rep._M_len != 0 && __rep._M_str != nullptr);
+    const char* __src = __self ? _M_str : __rep._M_str;
+    const std::size_t __rn = __self ? __keep : (__has ? __rep._M_len : 0);
+    // An empty replacement removes a trailing extension and does not leave a
+    // dot. A replacement that does not start with '.' gains one dot before it.
+    const std::size_t __dot = (__has && __src[0] != '.') ? 1 : 0;
+    if (!__has) {
+        if (__keep == _M_len) return *this;
+        if (__keep == 0) {
+            _M_free();
+            return *this;
+        }
+        _M_own(_M_str, __keep);
+        return *this;
+    }
+
+    // The owned length plus a NUL must fit. A wrapped sum is not a length.
+    if (__dot > static_cast<std::size_t>(-1) - __rn ||
+        __keep > static_cast<std::size_t>(-1) - (__dot + __rn)) {
+        __prism_check(0, "MEM-OOB-WRITE", "std::filesystem::path replace_extension length does not fit");
+        __builtin_trap();
+    }
+    const std::size_t __n = __keep + __dot + __rn;
+    if (__n == static_cast<std::size_t>(-1)) {
+        __prism_check(0, "MEM-OOB-WRITE", "std::filesystem::path replace_extension length does not fit");
+        __builtin_trap();
+    }
+    path __next;
+    char* __buf = static_cast<char*>(::operator new(__n + 1));
+    std::size_t __w = 0;
+    for (std::size_t __i = 0; __i < __keep; ++__i) __buf[__w++] = _M_str[__i];
+    if (__dot != 0) __buf[__w++] = '.';
+    for (std::size_t __i = 0; __i < __rn; ++__i) __buf[__w++] = __src[__i];
+    __buf[__w] = '\0';
+    __next._M_str = __buf;
+    __next._M_len = __w;
+    // __next's destructor frees the previous copy once, through _M_free.
+    _M_swap(__next);
+    return *this;
 }
 
 inline path path::parent_path() const {

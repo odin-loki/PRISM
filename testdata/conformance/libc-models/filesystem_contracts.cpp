@@ -64,3 +64,25 @@ int fs_compare_true(int) {
     assert(std::filesystem::path("..").compare(std::filesystem::path("..")) == 0);
     return 0;
 }
+
+// replace_extension rewrites stored characters. An empty replacement removes
+// a trailing extension and does not leave a dot. A replacement that does not
+// start with '.' gains one dot. ".." is a parent directory, not an extension.
+int fs_replace_ext_true(int) {
+    std::filesystem::path e;
+    e.replace_extension();
+    assert(e.empty());
+    std::filesystem::path md("a/b.txt");
+    assert(md.replace_extension(".md") == "a/b.md");
+    std::filesystem::path gone("a/b.txt");
+    assert(gone.replace_extension() == "a/b");
+    std::filesystem::path nodot("a/b.txt");
+    assert(nodot.replace_extension("md") == "a/b.md");
+    std::filesystem::path dots("..");
+    assert(dots.replace_extension() == "..");
+    std::filesystem::path dots_md("..");
+    assert(dots_md.replace_extension(".md") == "...md");
+    std::filesystem::path keep("a/b.txt");
+    assert(keep.replace_extension("..") == "a/b..");
+    return 0;
+}

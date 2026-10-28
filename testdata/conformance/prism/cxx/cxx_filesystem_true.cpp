@@ -2,8 +2,9 @@
 // filename of a/b is b. filename of an empty path is empty, not a dot.
 // stem of a/b.txt is b. stem of an empty path is empty, not a dot.
 // stem of .txt is .txt. compare orders the stored characters. An empty path
-// compares equal to an empty path. ".." stays "..". The path owns the
-// characters; the destructor frees that copy.
+// compares equal to an empty path. replace_extension of a/b.txt with .md is
+// a/b.md, and an empty replacement leaves a/b. ".." stays "..". The path owns
+// the characters; the destructor frees that copy.
 #include <filesystem>
 int cxx_filesystem_true(int) {
     const std::filesystem::path p("a/b");
@@ -28,5 +29,16 @@ int cxx_filesystem_true(int) {
     if (!(std::filesystem::path("a/..").compare(std::filesystem::path("a/..")) == 0)) return 1;
     if (std::filesystem::path("a/..").compare(std::filesystem::path(".")) == 0) return 1;
     if (!(std::filesystem::path("..").compare(std::filesystem::path("..")) == 0)) return 1;
+    std::filesystem::path empty_rep;
+    empty_rep.replace_extension();
+    if (!empty_rep.empty()) return 1;
+    std::filesystem::path md("a/b.txt");
+    if (!(md.replace_extension(".md") == "a/b.md")) return 1;
+    std::filesystem::path gone("a/b.txt");
+    if (!(gone.replace_extension() == "a/b")) return 1;
+    std::filesystem::path nodot("a/b.txt");
+    if (!(nodot.replace_extension("md") == "a/b.md")) return 1;
+    std::filesystem::path dots("..");
+    if (!(dots.replace_extension() == "..")) return 1;
     return 0;
 }

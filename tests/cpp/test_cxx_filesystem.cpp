@@ -194,3 +194,57 @@ TEST_CASE("cxx filesystem model: compare orders stored characters") {
     CHECK(src.find("std::filesystem::path length does not fit") != std::string::npos);
     CHECK(src.find("__builtin_trap()") != std::string::npos);
 }
+
+TEST_CASE("cxx filesystem model: replace_extension rewrites stored characters") {
+    const std::string src = slurp(model_header());
+    REQUIRE_FALSE(src.empty());
+    const std::string code = strip_comments(src);
+    CHECK(count_sub(code, "::operator delete(") == 1);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    for (const char* name : {"exists", "lexically_normal", "lexically_relative"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+
+    CHECK(src.find("path& replace_extension(const path& __rep = path());") != std::string::npos);
+    const std::string repl = body_of(src, "path& path::replace_extension(");
+    REQUIRE_FALSE(repl.empty());
+    const auto early = repl.find("if (_M_len == 0) return *this;");
+    REQUIRE(early != std::string::npos);
+    const auto rep_at = repl.find("__rep");
+    const auto str_at = repl.find("_M_str");
+    REQUIRE(rep_at != std::string::npos);
+    REQUIRE(str_at != std::string::npos);
+    CHECK(early < rep_at);
+    CHECK(early < str_at);
+    CHECK(repl.find("extension()") != std::string::npos);
+    CHECK(repl.find("\"..\"") != std::string::npos);
+    CHECK(repl.find("!= '.'") != std::string::npos);
+    CHECK(repl.find("__prism_check") != std::string::npos);
+    CHECK(repl.find("__builtin_trap()") != std::string::npos);
+    CHECK(repl.find("replace_extension length does not fit") != std::string::npos);
+    CHECK(repl.find("::operator delete(") == std::string::npos);
+    CHECK(repl.find("exists") == std::string::npos);
+    CHECK(repl.find("lexically_normal") == std::string::npos);
+    CHECK(repl.find("lexically_relative") == std::string::npos);
+    CHECK(repl.find("stat(") == std::string::npos);
+
+    // compare, stem, filename, extension, parent_path, and operator/ stay.
+    const std::string cmp = body_of(src, "int path::compare(const path&");
+    CHECK(cmp.find("if (_M_len == 0 && __p._M_len == 0) return 0;") != std::string::npos);
+    const std::string stem = body_of(src, "path path::stem() const");
+    CHECK(stem.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string filename = body_of(src, "path path::filename() const");
+    CHECK(filename.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string ext = body_of(src, "path path::extension() const");
+    CHECK(ext.find("if (__n == 2 && _M_str[__b] == '.' && _M_str[__b + 1] == '.') return path();") !=
+          std::string::npos);
+    const std::string parent = body_of(src, "path path::parent_path() const");
+    CHECK(parent.find("if (_M_len == 0) return path();") != std::string::npos);
+    const std::string join = body_of(src, "path& path::operator/=(const path& __p)");
+    CHECK(join.find("'/'" ) != std::string::npos);
+    const std::string slash = body_of(src, "path operator/(const path&");
+    CHECK(slash.find("/=") != std::string::npos);
+}
