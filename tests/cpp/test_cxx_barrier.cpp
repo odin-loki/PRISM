@@ -1,7 +1,9 @@
 // The std::barrier model header is one file,
 // src/prism/pir/models/cxx/barrier. arrive past the remaining count is a
-// __prism_check. The header does not define wait(: a blocking wait that
-// returns immediately would be a fake synchronization success.
+// __prism_check. A negative constructor count is not stored. max() returns
+// PTRDIFF_MAX and does not wait. The header does not define wait(: a
+// blocking wait that returns immediately would be a fake synchronization
+// success.
 
 #include <doctest/doctest.h>
 
@@ -74,4 +76,46 @@ TEST_CASE("cxx barrier: arrive past the count is a check") {
 TEST_CASE("cxx barrier: the header does not define wait(") {
     const std::string code = strip_comments(slurp(barrier_header()));
     CHECK(code.find("wait(") == std::string::npos);
+    CHECK(code.find("arrive_and_wait") == std::string::npos);
+    CHECK(code.find("void arrive(") != std::string::npos);
+    CHECK(code.find("void arrive_and_drop(") != std::string::npos);
+}
+
+TEST_CASE("cxx barrier: a negative count is not stored and max does not wait") {
+    const std::string src = slurp(barrier_header());
+    const auto ctor = src.find("explicit barrier(");
+    REQUIRE(ctor != std::string::npos);
+    const auto mx = src.find("static constexpr ptrdiff_t max() noexcept", ctor);
+    REQUIRE(mx != std::string::npos);
+    const auto arrive = src.find("void arrive(", mx);
+    REQUIRE(arrive != std::string::npos);
+    const std::string ctor_span = src.substr(ctor, mx - ctor);
+    CHECK(ctor_span.find(": _M_expected(0)") != std::string::npos);
+    CHECK(ctor_span.find("_M_expected(__expected)") == std::string::npos);
+    CHECK(ctor_span.find("barrier constructed with a negative count") != std::string::npos);
+    const auto check_at = ctor_span.find("__prism_check");
+    const auto store_at = ctor_span.find("_M_expected = __expected");
+    REQUIRE(check_at != std::string::npos);
+    REQUIRE(store_at != std::string::npos);
+    CHECK(check_at < store_at);
+    CHECK(ctor_span.find("if (__ok)") != std::string::npos);
+    CHECK(ctor_span.find("if (__ok)") < store_at);
+
+    CHECK(mx < arrive);
+    const auto mx_end = src.find('}', mx);
+    REQUIRE(mx_end != std::string::npos);
+    const std::string max_fn = src.substr(mx, mx_end - mx);
+    CHECK(max_fn.find("return PTRDIFF_MAX;") != std::string::npos);
+    CHECK(max_fn.find("_M_expected") == std::string::npos);
+    CHECK(max_fn.find("-=") == std::string::npos);
+    CHECK(max_fn.find("arrive") == std::string::npos);
+    CHECK(max_fn.find("wait") == std::string::npos);
+    CHECK(src.find("max() is modelled") != std::string::npos);
+    CHECK(src.find("does not change any barrier") != std::string::npos);
+    CHECK(src.find("wait and arrive_and_wait stay omitted") != std::string::npos);
+    CHECK(src.find("#include <cstdint>") != std::string::npos);
+    CHECK(src.find("#include <atomic>") == std::string::npos);
+    CHECK(src.find("#include <latch>") == std::string::npos);
+    CHECK(src.find("#include <semaphore>") == std::string::npos);
+    CHECK(src.find("#include <thread>") == std::string::npos);
 }
