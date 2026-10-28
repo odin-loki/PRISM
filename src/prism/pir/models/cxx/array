@@ -13,13 +13,18 @@
 //    a stand-in T, and data() is nullptr (libstdc++'s empty _Type converts
 //    to a null pointer; this model does not store that stand-in either);
 //  * fill assigns in index order. swap exchanges elements through std::swap.
-//    Neither allocates.
+//    Neither allocates;
+//  * operator== takes two array<T, N> of the same N. N == 0 is true and
+//    does not read an element. N > 0 is true only when every corresponding
+//    element compares equal with operator==. A mismatch returns false and
+//    does not read past that index. No element is invented. A different N
+//    is not an overload. This is not PROVED and not CLEAN.
 //
 // Not declared here, so a unit that names one fails to compile against this
 // header and the pir stage lowers it again with libstdc++ (extra.cxx_models):
-// iterators and reverse iterators, operator== / operator<=>, std::get,
-// tuple_size, tuple_element, and std::to_array. Model code is inlined with
-// the unit. This header is not a proof.
+// iterators and reverse iterators, operator<=>, std::get, tuple_size,
+// tuple_element, and std::to_array. Model code is inlined with the unit.
+// This header is not a proof.
 #ifndef _PRISM_MODEL_ARRAY
 #define _PRISM_MODEL_ARRAY 1
 #define _GLIBCXX_ARRAY 1  // libstdc++'s <array> include guard: never both
@@ -186,6 +191,22 @@ array(_Tp, _Up...) -> array<enable_if_t<(is_same_v<_Tp, _Up> && ...), _Tp>, 1 + 
 template <typename _Tp, std::size_t _Nm>
 constexpr void swap(array<_Tp, _Nm>& __x, array<_Tp, _Nm>& __y) noexcept(noexcept(__x.swap(__y))) {
     __x.swap(__y);
+}
+
+// Same N. N == 0 returns true and does not read an element. N > 0 compares
+// corresponding elements with operator== and returns false at the first
+// mismatch, so a later index is not read. No element is invented.
+// This is not PROVED and not CLEAN.
+template <typename _Tp, std::size_t _Nm>
+constexpr bool operator==(const array<_Tp, _Nm>& __x, const array<_Tp, _Nm>& __y) {
+    if constexpr (_Nm == 0) {
+        return true;
+    } else {
+        for (std::size_t __i = 0; __i < _Nm; ++__i) {
+            if (!(__x._M_elems[__i] == __y._M_elems[__i])) return false;
+        }
+        return true;
+    }
 }
 
 }  // namespace std

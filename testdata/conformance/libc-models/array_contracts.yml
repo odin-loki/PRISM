@@ -12,9 +12,13 @@ expected:
   array_front_empty_false: false
   array_back_empty_false: false
   array_order_false: false
+  array_equal_true: true
+  array_equal_empty_true: true
+  array_equal_mismatch_false: false
 expect_class:  # the violation each false harness plants
   array_index_oob_false: "MEM-OOB-READ"
   array_at_nothrow_false: "FUNC-CONTRACT"
   array_front_empty_false: "FUNC-CONTRACT"
   array_back_empty_false: "FUNC-CONTRACT"
   array_order_false: "FUNC-CONTRACT"
+  array_equal_mismatch_false: "FUNC-CONTRACT"

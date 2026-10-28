@@ -4,8 +4,11 @@
 // "model: array"); see docs/PIR.md "C++ library models". Each function is
 // one contract; `_false` ones must fail for the class their yml names. The
 // elements are the array object: there is no heap. N == 0 has no element.
-// Iterators, comparisons, std::get, and std::to_array are not part of the
-// model.
+// operator== is two arrays of the same N. N == 0 is true and does not read
+// an element. N > 0 is true only when every corresponding element compares
+// equal with operator==. A mismatch is false.
+// This is not PROVED and not CLEAN. Iterators, operator<=>, std::get, and
+// std::to_array are not part of the model.
 #include <array>
 #include <cassert>
 #include <stdexcept>
@@ -106,5 +109,41 @@ int array_back_empty_false(int c) {
 int array_order_false(int a, int b) {
     std::array<int, 2> x{a, b};
     assert(x.front() == b);
+    return 0;
+}
+
+// [array.syn] operator== is true only when every corresponding element is.
+int array_equal_true(int x) {
+    std::array<int, 3> a{1, 2, x};
+    std::array<int, 3> same{1, 2, x};
+    assert(a == same);
+    std::array<int, 3> head{0, 2, x};
+    assert(!(a == head));
+    std::array<int, 3> mid{1, 0, x};
+    assert(!(a == mid));
+    std::array<int, 3> tail{1, 2, 7};
+    assert((a == tail) == (x == 7));
+    std::array<int, 1> one{x};
+    std::array<int, 1> one_same{x};
+    assert(one == one_same);
+    std::array<int, 1> other{x == 0 ? 1 : 0};
+    assert(!(one == other));
+    return 0;
+}
+
+// array<T, 0> compared with array<T, 0> is true. No element is read.
+int array_equal_empty_true(int c) {
+    std::array<int, 0> z{};
+    std::array<int, 0> w{};
+    assert(z == w);
+    if (c) assert(z == w);
+    return 0;
+}
+
+// A wrong contract: a mismatch at index 0 still compares equal.
+int array_equal_mismatch_false(int x) {
+    std::array<int, 2> a{1, x};
+    std::array<int, 2> b{0, x};
+    assert(a == b);
     return 0;
 }
