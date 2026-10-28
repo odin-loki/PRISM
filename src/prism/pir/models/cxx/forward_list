@@ -27,10 +27,14 @@
 //    constructs elements. A throwing comparator is libstdc++'s basic
 //    guarantee (the chain may be mid-merge); this model does not invent a
 //    rollback;
+//  * empty front() is __prism_check with class FUNC-CONTRACT and the
+//    message "std::forward_list::front on an empty list", then
+//    __builtin_trap, before any node is loaded. That path does not return
+//    a value-initialized T. It is not PROVED and not CLEAN.
 //  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
-//    does not mention size() or nullptr): !this->empty() on front and
-//    pop_front, a dereferenceable iterator on * / ->, a non-end iterator
-//    on ++, an iterator of this list on insert_after / erase_after, and a
+//    does not mention size() or nullptr): !this->empty() on pop_front, a
+//    dereferenceable iterator on * / ->, a non-end iterator on ++, an
+//    iterator of this list on insert_after / erase_after, and a
 //    dereferenceable successor on erase_after of one element.
 //
 // splice_after is not declared. Every overload takes another forward_list
@@ -66,6 +70,10 @@
 #include <utility>
 #include <bits/memory_resource.h>
 #include <debug/assertions.h>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 #define __cpp_lib_list_remove_return_type 201806L
 #define __cpp_lib_erase_if 202002L
@@ -560,12 +568,18 @@ public:
         return size_type(-1) / sizeof(_Prism_fwd_lib_node<value_type>);
     }
 
+    // Empty: FUNC-CONTRACT, then trap, before the node is loaded. That path
+    // does not return a value-initialized T. This is not PROVED and not CLEAN.
     reference front() {
-        __glibcxx_assert(!this->empty());
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::forward_list::front on an empty list");
+        if (this->empty()) __builtin_trap();
         return *_S_val(_M_head._M_next);
     }
     const_reference front() const {
-        __glibcxx_assert(!this->empty());
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::forward_list::front on an empty list");
+        if (this->empty()) __builtin_trap();
         return *_S_val(_M_head._M_next);
     }
 
