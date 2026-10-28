@@ -7,7 +7,8 @@
 // Modelled, for a dynamic extent only:
 //  * default construction (an empty view);
 //  * construction from a pointer plus a length, and from a C array
-//    (the array is not copied);
+//    (the array is not copied). A null pointer with a non-zero length is
+//    a check; that length is kept, and no array is allocated in its place;
 //  * construction from an lvalue that already has data() and size()
 //    (libstdc++ <format>, reached from <memory>, turns a basic_string
 //    lvalue into a span). A temporary does not bind, so it is not viewed;
@@ -17,9 +18,11 @@
 //  * front() and back() when the view is non-empty, returning that element;
 //  * subspan(offset, count) and subspan(offset) (the tail) when the slice
 //    sits inside size();
-//  * first(count) for the same reason, and begin()/end() iterators that
-//    point at the viewed elements (a class type, because <format> calls
-//    iterator::operator->). Stepping an iterator does not allocate.
+//  * first(count) and last(count) when the count fits in size(), and
+//    begin()/end() iterators that point at the viewed elements (a class
+//    type, because <format> calls iterator::operator->). Stepping an
+//    iterator does not allocate. last(0) is an empty span and does not
+//    read an element;
 //
 // Preconditions use __glibcxx_assert, the same call <vector> and <list> use
 // (_GLIBCXX_ASSERTIONS, on for every C++ unit). The failing path does not
@@ -29,7 +32,11 @@
 //  * front() and back() on an empty span (!this->empty(), FUNC-CONTRACT)
 //    do not return a fabricated _Tp;
 //  * subspan or first that would run past size() is the same kind of
-//    precondition failure, not a span of invented elements.
+//    precondition failure, not a span of invented elements;
+//  * last(count) with count > size() is __prism_check with class
+//    MEM-OOB-READ. That path returns a span at the viewed pointer with
+//    length 0: it does not start before the buffer and it does not extend
+//    past size().
 //
 // What this header does not declare is not silently different. A use of an
 // omitted API fails to compile against this file, and the pir stage lowers
@@ -39,7 +46,7 @@
 //  * std::span<T, N> and std::dynamic_extent (this template takes one
 //    argument; static-extent span is not declared);
 //  * deduction guides (std::span s = ... does not deduce a static extent);
-//  * last, size_bytes, and the template first/subspan;
+//  * size_bytes, and the template first/subspan;
 //  * a constructor from an iterator pair, or from an rvalue range;
 //  * as_bytes / as_writable_bytes;
 //  * a converting constructor from span<U>.
@@ -54,6 +61,11 @@
 #include <cstddef>
 #include <bits/stl_iterator_base_types.h>
 #include <debug/assertions.h>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the encoder treats the call as a check, and a host test supplies
+// a stub.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
@@ -71,7 +83,13 @@ public:
     using const_reference = const _Tp&;
 
     constexpr span() noexcept : _M_ptr(nullptr), _M_len(0) {}
-    constexpr span(pointer __p, size_type __n) noexcept : _M_ptr(__p), _M_len(__n) {}
+    // Stores __p and __n. A null pointer with a non-zero size is a check.
+    // The length stays __n: this is not rewritten into an empty view.
+    constexpr span(pointer __p, size_type __n) noexcept : _M_ptr(__p), _M_len(__n) {
+        if (__p == nullptr && __n != 0)
+            __prism_check(0, "PTR-NULL-DEREF",
+                          "std::span constructed from a null pointer with a non-zero size");
+    }
     template <size_t _Nm>
     constexpr span(_Tp (&__arr)[_Nm]) noexcept : _M_ptr(__arr), _M_len(_Nm) {}
     // Lvalue only. data() and size() are the viewed sequence; nothing is copied.
@@ -119,6 +137,23 @@ public:
     [[nodiscard]] constexpr span first(size_type __count) const noexcept {
         __glibcxx_assert(__count <= this->size());
         return span(_M_ptr, __count);
+    }
+    // The last __count elements. A count past size() is MEM-OOB-READ. The
+    // span returned on that path starts at _M_ptr and has length 0, so it
+    // does not start before the buffer and does not extend past size().
+    // last(0) is an empty span and does not read an element. A null pointer
+    // is not stepped; a non-zero size on that pointer stays a check.
+    [[nodiscard]] constexpr span last(size_type __count) const noexcept {
+        __prism_check(__count <= this->size(), "MEM-OOB-READ",
+                      "std::span::last count exceeds size()");
+        if (__count > this->size()) return span(_M_ptr, 0);
+        if (_M_ptr == nullptr) {
+            if (this->size() != 0)
+                __prism_check(0, "PTR-NULL-DEREF",
+                              "std::span null pointer with a non-zero size");
+            return span(nullptr, 0);
+        }
+        return span(_M_ptr + (this->size() - __count), __count);
     }
 
     // Points at a viewed element. Not a raw pointer: <format> calls operator->.

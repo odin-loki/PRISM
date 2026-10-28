@@ -255,9 +255,122 @@ TEST_CASE("cxx span model: valid index reads the element and the view does not o
     auto a = run_lines(lib);
     auto b = run_lines(mod);
     CHECK(a == b);
-    REQUIRE(b.size() >= 7);
+    REQUIRE(b.size() >= 10);
     CHECK(b[0] == "size=4");
     CHECK(b[1] == "empty=0");
     CHECK(b[2] == "at2=30");
     CHECK(b[6] == "kept=5");
+    CHECK(b[7] == "last2=2 30 40 1");
+    CHECK(b[8] == "last0=0 1");
+    CHECK(b[9] == "none_last=0");
+}
+
+TEST_CASE("cxx span model: last past size is a check and a null nonzero size stays one") {
+    const std::string src = slurp(span_header());
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("size_bytes(") == std::string::npos);
+    CHECK(src.find("~span() noexcept = default") != std::string::npos);
+    CHECK(src.find("size_bytes, and the template first/subspan") != std::string::npos);
+
+    const auto ctor = src.find("span(pointer __p, size_type __n) noexcept");
+    REQUIRE(ctor != std::string::npos);
+    const auto ctor_end = src.find("template <size_t _Nm>", ctor);
+    REQUIRE(ctor_end != std::string::npos);
+    const auto ctor_body = src.substr(ctor, ctor_end - ctor);
+    CHECK(ctor_body.find("_M_len(__n)") != std::string::npos);
+    CHECK(ctor_body.find("_M_len(0)") == std::string::npos);
+    CHECK(ctor_body.find("__p == nullptr && __n != 0") != std::string::npos);
+    CHECK(ctor_body.find("__prism_check(0, \"PTR-NULL-DEREF\",") != std::string::npos);
+
+    const auto last = src.find("span last(size_type __count) const noexcept");
+    REQUIRE(last != std::string::npos);
+    const auto last_end = src.find("struct iterator", last);
+    REQUIRE(last_end != std::string::npos);
+    const auto body = src.substr(last, last_end - last);
+    const auto check = body.find("__prism_check(__count <= this->size(), \"MEM-OOB-READ\",");
+    REQUIRE(check != std::string::npos);
+    const auto bad = body.find("if (__count > this->size())");
+    REQUIRE(bad != std::string::npos);
+    const auto bad_ret = body.find("return span(_M_ptr, 0);");
+    REQUIRE(bad_ret != std::string::npos);
+    const auto good = body.find("return span(_M_ptr + (this->size() - __count), __count);");
+    REQUIRE(good != std::string::npos);
+    CHECK(check < bad);
+    CHECK(bad < bad_ret);
+    CHECK(bad_ret < good);
+    CHECK(body.find("return *") == std::string::npos);
+    CHECK(body.find("operator[]") == std::string::npos);
+    CHECK(src.find("__glibcxx_assert(__count <= this->size())") != std::string::npos);
+    CHECK(src.find("return span(_M_ptr, __count);") != std::string::npos);
+    CHECK(src.find("__glibcxx_assert(__offset <= this->size())") != std::string::npos);
+    CHECK(src.find("__glibcxx_assert(__offset <= this->size() && __count <= this->size() - __offset)") !=
+          std::string::npos);
+}
+
+TEST_CASE("cxx span model: last past size and a null nonzero span abort in the check") {
+    auto& c = ctx();
+    if (!c.ok) {
+        MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+        return;
+    }
+    const fs::path src = c.tmp / "span_last_fail.cpp";
+    {
+        std::ofstream out(src);
+        out << "#include <span>\n#include <cstdio>\n#include <cstdlib>\n"
+               "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+               "  if (!ok) {\n"
+               "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls, msg);\n"
+               "    std::fflush(stderr);\n"
+               "    std::abort();\n"
+               "  }\n"
+               "}\n"
+               "int main(int argc, char** argv) {\n"
+               "  int a[4] = {10, 20, 30, 40};\n"
+               "  std::span<int> s(a);\n"
+               "  if (argc > 1 && argv[1][0] == 'n') {\n"
+               "    int* p = nullptr;\n"
+               "    std::span<int> bad(p, 1);\n"
+               "    std::printf(\"size=%zu\\n\", bad.size());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (argc > 1 && argv[1][0] == 'z') {\n"
+               "    std::span<int> e = s.last(0);\n"
+               "    std::printf(\"z=%zu\\n\", e.size());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  std::span<int> t = s.last(5);\n"
+               "  std::printf(\"size=%zu\\n\", t.size());\n"
+               "  return 0;\n"
+               "}\n";
+    }
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+#ifdef _WIN32
+    const fs::path exe = c.tmp / "span_last_fail.exe";
+#else
+    const fs::path exe = c.tmp / "span_last_fail";
+#endif
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> build{c.cxx};
+    build.insert(build.end(), flags.begin(), flags.end());
+    build.push_back("-isystem");
+    build.push_back(models.string());
+    build.push_back(src.string());
+    build.push_back("-o");
+    build.push_back(exe.string());
+    REQUIRE(run_cmd(build));
+
+    std::string err;
+    CHECK_FALSE(run_cmd({exe.string()}, nullptr, &err));
+    CHECK(err.find("CHECK MEM-OOB-READ") != std::string::npos);
+    CHECK(err.find("std::span::last count exceeds size()") != std::string::npos);
+
+    std::string nerr;
+    CHECK_FALSE(run_cmd({exe.string(), "n"}, nullptr, &nerr));
+    CHECK(nerr.find("CHECK PTR-NULL-DEREF") != std::string::npos);
+    CHECK(nerr.find("null pointer with a non-zero size") != std::string::npos);
+
+    std::string zout;
+    REQUIRE(run_cmd({exe.string(), "z"}, &zout));
+    CHECK(zout.find("z=0\n") != std::string::npos);
 }
