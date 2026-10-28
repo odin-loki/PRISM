@@ -4,7 +4,8 @@
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
 // visit, swap, and comparison of variant are not called: the model does not
-// declare them. Two std::monostate values compare equal (!= is false).
+// declare them. Two std::monostate values compare equal: !=, <, and > are
+// false, and <= and >= are true.
 //
 // argv "bad" / "badi" call std::get<T> / std::get<I> on an inactive alternative.
 // The model must __prism_check and must not print a value.
@@ -17,6 +18,10 @@
 static_assert(std::is_empty_v<std::monostate>);
 static_assert(std::monostate{} == std::monostate{});
 static_assert(!(std::monostate{} != std::monostate{}));
+static_assert(!(std::monostate{} < std::monostate{}));
+static_assert(!(std::monostate{} > std::monostate{}));
+static_assert(std::monostate{} <= std::monostate{});
+static_assert(std::monostate{} >= std::monostate{});
 
 // Native stand-in for the PIR intrinsic. A failing check aborts before the
 // caller can print a returned T. A passing check returns.
@@ -94,7 +99,9 @@ static void show() {
 
     std::monostate ma;
     std::monostate mb;
-    std::printf("mono eq=%d ne=%d\n", static_cast<int>(ma == mb), static_cast<int>(ma != mb));
+    std::printf("mono eq=%d ne=%d lt=%d gt=%d le=%d ge=%d\n", static_cast<int>(ma == mb), static_cast<int>(ma != mb),
+                static_cast<int>(ma < mb), static_cast<int>(ma > mb), static_cast<int>(ma <= mb),
+                static_cast<int>(ma >= mb));
     {
         std::variant<std::monostate, int> mv;
         std::printf("mono_var index=%zu holds=%d geteq=%d getne=%d valueless=%d\n", mv.index(),

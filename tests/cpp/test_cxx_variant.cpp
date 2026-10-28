@@ -7,8 +7,9 @@
 // inactive alternative is nullptr. std::get on an inactive alternative is a
 // __prism_check, and the model does not print a fake T.
 //
-// std::monostate is empty. Two monostate objects compare equal, and != is
-// false. visit, swap, and comparison of variant stay undeclared.
+// std::monostate is empty. Two monostate objects compare equal: == is true,
+// != is false, < and > are false, and <= and >= are true. visit, swap, and
+// comparison of variant stay undeclared.
 
 #include <doctest/doctest.h>
 
@@ -282,12 +283,13 @@ TEST_CASE("cxx variant model: stored value is the emplaced alternative and inact
         if (line.find("stored=42") != std::string::npos) saw_stored = true;
         if (line.find("inactive_null=1") != std::string::npos) saw_null = true;
         if (line.find("active_ptr=42") != std::string::npos) saw_ptr = true;
-        if (line == "mono eq=1 ne=0") saw_mono = true;
+        if (line == "mono eq=1 ne=0 lt=0 gt=0 le=1 ge=1") saw_mono = true;
         if (line == "mono_var index=0 holds=1 geteq=1 getne=0 valueless=0") saw_mono_var = true;
         CHECK(line.find("stored=0") == std::string::npos);
-        CHECK(line != "mono eq=0 ne=1");
-        CHECK(line != "mono eq=0 ne=0");
-        CHECK(line != "mono eq=1 ne=1");
+        CHECK(line != "mono eq=0 ne=1 lt=0 gt=0 le=1 ge=1");
+        CHECK(line != "mono eq=0 ne=0 lt=0 gt=0 le=1 ge=1");
+        CHECK(line != "mono eq=1 ne=1 lt=0 gt=0 le=1 ge=1");
+        CHECK(line != "mono eq=1 ne=0 lt=1 gt=1 le=0 ge=0");
         CHECK(line.find("geteq=0") == std::string::npos);
         CHECK(line.find("getne=1") == std::string::npos);
         CHECK(line.find("valueless=1") == std::string::npos);
@@ -314,6 +316,10 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
     CHECK(src.find("struct monostate {};") != std::string::npos);
     CHECK(src.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
     CHECK(src.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(src.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(src.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
     CHECK(src.find("constexpr bool valueless_by_exception() const noexcept { return false; }") != std::string::npos);
     CHECK(src.find("\"CXX-VARIANT-GET\"") != std::string::npos);
     CHECK(src.find("std::get on an inactive variant alternative") != std::string::npos);
@@ -334,7 +340,15 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
     CHECK(code.find("operator<=>") == std::string::npos);
     CHECK(code.find("operator==(const variant") == std::string::npos);
     CHECK(code.find("operator==(variant") == std::string::npos);
-    CHECK(code.find("operator<(monostate") == std::string::npos);
+    for (const char* op : {"operator<", "operator>", "operator<=", "operator>="}) {
+        CAPTURE(op);
+        CHECK(code.find(std::string(op) + "(const variant") == std::string::npos);
+        CHECK(code.find(std::string(op) + "(variant") == std::string::npos);
+    }
+    CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
     CHECK(code.find("#include <memory>") == std::string::npos);
     CHECK(code.find("#include <compare>") == std::string::npos);
 }
@@ -369,9 +383,9 @@ TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against t
         {"hash",
          "#include <variant>\n"
          "int use(){ return static_cast<int>(std::hash<std::monostate>{}(std::monostate{})); }\n"},
-        {"lt",
+        {"mono_cmp",
          "#include <variant>\n"
-         "int use(){ std::monostate a, b; return a < b ? 1 : 0; }\n"},
+         "int use(){ std::monostate a, b; return (a <=> b) == 0 ? 1 : 0; }\n"},
     };
     for (const auto& snip : snips) {
         CAPTURE(snip.name);
@@ -381,4 +395,16 @@ TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against t
         CHECK(syntax_only(c.cxx, src, false, &err));
         CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
     }
+}
+
+TEST_CASE("cxx variant model: monostate ordering compiles against the model and libstdc++") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path src = c.tmp / "mono_order.cpp";
+    std::ofstream(src) << "#include <variant>\n"
+                          "int use(){ std::monostate a, b;\n"
+                          "  return (a < b || a > b || !(a <= b) || !(a >= b)) ? 1 : 0; }\n";
+    std::string err;
+    CHECK(syntax_only(c.cxx, src, false, &err));
+    CHECK(syntax_only(c.cxx, src, true, &err));
 }
