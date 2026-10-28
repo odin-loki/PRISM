@@ -26,18 +26,29 @@
 // min() and the largest from max(). The comparison is operator<. Equal
 // elements may be either occurrence; this loop keeps the earlier one.
 //
+// operator+ and operator- of two valarrays require equal sizes. Different
+// sizes are a precondition failure (__prism_check, FUNC-CONTRACT, then
+// __builtin_trap) before any element is loaded. That path does not return
+// a partial array. Two empty valarrays return an empty valarray and do not
+// read either buffer. Otherwise each result element is the sum or the
+// difference. An element that does not fit in value_type is a precondition
+// failure: __prism_check, then __builtin_trap, before that element is
+// stored. The class is INT-SIGNED-OVF when value_type is a signed integer,
+// and FUNC-CONTRACT for every other type. The failing path does not store
+// a wrapped element and does not return a value-initialized T.
+//
 // resize to a different length destroys and frees the previous buffer, then
 // keeps only the new one. A shrink and a grow take that same path. The old
 // pointer is not stored in the new buffer and is not left in the object.
 //
-// Omitted math operators (+ - * / % ^ & | << >> , the compound forms, the
-// comparisons, and unary + - ~ !), and shift, cshift, and apply, are not
-// declared. A unit that names one fails to compile against this header, so
-// pir falls back to libstdc++. They are not stubbed. slice, gslice, mask,
-// and indirect subscript are omitted the same way. So is construction from
-// a pointer or an initializer_list. This file does not include the vector,
-// memory, algorithm, or initializer_list headers, or any other container
-// header.
+// Omitted math operators (the scalar overloads of + and -, * / % ^ & | <<
+// >> , the compound forms, the comparisons, and unary + - ~ !), and shift,
+// cshift, and apply, are not declared. A unit that names one fails to
+// compile against this header, so pir falls back to libstdc++. They are
+// not stubbed. slice, gslice, mask, and indirect subscript are omitted the
+// same way. So is construction from a pointer or an initializer_list. This
+// file does not include the vector, memory, algorithm, or initializer_list
+// headers, or any other container header.
 #ifndef _GLIBCXX_VALARRAY
 #define _GLIBCXX_VALARRAY 1
 
@@ -152,6 +163,41 @@ public:
         return __best;
     }
 
+    // Equal sizes. A mismatch is FUNC-CONTRACT then trap, before any load,
+    // and does not return a partial array. Two empty valarrays return an
+    // empty valarray and do not read. Each stored element is the checked sum.
+    friend valarray operator+(const valarray& __x, const valarray& __y) {
+        __prism_check(__x._M_size == __y._M_size, "FUNC-CONTRACT",
+                      "valarray::operator+ sizes differ");
+        if (__x._M_size != __y._M_size) __builtin_trap();
+        if (__x._M_size == 0) return valarray();
+        valarray __r;
+        __r._M_data = _S_alloc(__x._M_size);
+        for (size_type __i = 0; __i < __x._M_size; ++__i) {
+            const value_type __e = _S_add_elem(__x._M_data[__i], __y._M_data[__i]);
+            ::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);
+        }
+        __r._M_size = __x._M_size;
+        return __r;
+    }
+
+    // Same size contract as addition. Each stored element is the checked
+    // difference. A difference that does not fit is not stored.
+    friend valarray operator-(const valarray& __x, const valarray& __y) {
+        __prism_check(__x._M_size == __y._M_size, "FUNC-CONTRACT",
+                      "valarray::operator- sizes differ");
+        if (__x._M_size != __y._M_size) __builtin_trap();
+        if (__x._M_size == 0) return valarray();
+        valarray __r;
+        __r._M_data = _S_alloc(__x._M_size);
+        for (size_type __i = 0; __i < __x._M_size; ++__i) {
+            const value_type __e = _S_sub_elem(__x._M_data[__i], __y._M_data[__i]);
+            ::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);
+        }
+        __r._M_size = __x._M_size;
+        return __r;
+    }
+
     // A different length drops the previous block (shrink and grow). The
     // same length does not allocate. New elements are copies of __c, not
     // the old pointer. _M_release clears the old pointer out of this object
@@ -211,6 +257,57 @@ private:
         if (!__ok) __builtin_trap();
         value_type __r = __a;
         __r += __b;
+        return __r;
+    }
+
+    // True when __a - __b is a value of this type. Signed and unsigned tests
+    // stay in range, so the test itself does not wrap. A non-finite floating
+    // element is already a value of the type; only a finite pair is tested.
+    // The difference used for that test is not returned.
+    static int _S_diff_fits([[maybe_unused]] value_type __a, [[maybe_unused]] value_type __b) {
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+            if (__b > 0) return __a < numeric_limits<value_type>::min() + __b ? 0 : 1;
+            if (__b < 0) return __a > numeric_limits<value_type>::max() + __b ? 0 : 1;
+            return 1;
+        } else if constexpr (is_integral_v<value_type> && !is_same_v<value_type, bool>) {
+            return __a < __b ? 0 : 1;
+        } else if constexpr (is_floating_point_v<value_type>) {
+            const value_type __hi = numeric_limits<value_type>::max();
+            const value_type __lo = numeric_limits<value_type>::lowest();
+            if (!(__a <= __hi && __a >= __lo)) return 1;
+            if (!(__b <= __hi && __b >= __lo)) return 1;
+            // Finite inputs. A non-finite difference does not fit. __d is not returned.
+            const value_type __d = __a - __b;
+            if (!(__d <= __hi && __d >= __lo)) return 0;
+            return 1;
+        } else {
+            return 1;
+        }
+    }
+
+    // The class is INT-SIGNED-OVF for a signed integer and FUNC-CONTRACT
+    // otherwise. The trap is before the sum, so an element that does not fit
+    // is not returned and is not stored by the caller.
+    static value_type _S_add_elem(value_type __a, value_type __b) {
+        const int __ok = _S_sum_fits(__a, __b);
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>)
+            __prism_check(__ok, "INT-SIGNED-OVF", "valarray::operator+ does not fit in value_type");
+        else
+            __prism_check(__ok, "FUNC-CONTRACT", "valarray::operator+ does not fit in value_type");
+        if (!__ok) __builtin_trap();
+        const value_type __r = __a + __b;
+        return __r;
+    }
+
+    // Same classes as _S_add_elem. The trap is before the difference.
+    static value_type _S_sub_elem(value_type __a, value_type __b) {
+        const int __ok = _S_diff_fits(__a, __b);
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>)
+            __prism_check(__ok, "INT-SIGNED-OVF", "valarray::operator- does not fit in value_type");
+        else
+            __prism_check(__ok, "FUNC-CONTRACT", "valarray::operator- does not fit in value_type");
+        if (!__ok) __builtin_trap();
+        const value_type __r = __a - __b;
         return __r;
     }
 
