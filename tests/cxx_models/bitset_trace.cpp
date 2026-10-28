@@ -8,7 +8,12 @@
 // part of the trace: a result bit is set only when both sides have it, and
 // padding in the last word is not a bit of the result. OR is part of the
 // trace: a result bit is set when either side has it, padding in the last
-// word is not a bit of the result, and bitset<0> stays empty.
+// word is not a bit of the result, and bitset<0> stays empty. XOR is part of
+// the trace: each result bit is the XOR of the two bits, padding in the last
+// word is not a bit of the result, and bitset<0> stays empty. Unary
+// complement flips each stored bit and then clears padding, so a padding bit
+// does not become a bit. Neither operation allocates or invents a 1 from
+// padding.
 #include <bitset>
 #include <cstdio>
 #include <limits>
@@ -52,6 +57,30 @@ static_assert((std::bitset<3>(0xFFull) | std::bitset<3>(0xAAull)).count() == 3);
 static_assert((std::bitset<0>() | std::bitset<0>()).none());
 static_assert((std::bitset<0>() | std::bitset<0>()).all());
 static_assert((std::bitset<0>() | std::bitset<0>()).count() == 0);
+static_assert((std::bitset<8>(0xA5ull) ^ std::bitset<8>(0xF0ull)) == std::bitset<8>(0x55ull));
+static_assert((std::bitset<8>(0xA5ull) ^ std::bitset<8>(0x5Aull)) == std::bitset<8>(0xFFull));
+static_assert((std::bitset<8>(0xA5ull) ^ std::bitset<8>(0xA5ull)).none());
+static_assert((std::bitset<8>(0xA5ull) ^ std::bitset<8>()) == std::bitset<8>(0xA5ull));
+static_assert((std::bitset<3>(0x7ull) ^ std::bitset<3>(0x7ull)).to_ulong() == 0ull);
+static_assert((std::bitset<3>(0x7ull) ^ std::bitset<3>(0x7ull)).count() == 0);
+static_assert((std::bitset<3>(0xFFull) ^ std::bitset<3>(0xAAull)).to_ulong() == 5ull);
+static_assert((std::bitset<3>(0xFFull) ^ std::bitset<3>(0xAAull)).count() == 2);
+static_assert((std::bitset<0>() ^ std::bitset<0>()).none());
+static_assert((std::bitset<0>() ^ std::bitset<0>()).all());
+static_assert((std::bitset<0>() ^ std::bitset<0>()).count() == 0);
+static_assert((~std::bitset<8>(0xA5ull)) == std::bitset<8>(0x5Aull));
+static_assert((~std::bitset<8>(0xFFull)).none());
+static_assert((~std::bitset<8>()).all());
+static_assert((~(~std::bitset<8>(0xA5ull))) == std::bitset<8>(0xA5ull));
+static_assert((~std::bitset<3>(0x7ull)).to_ulong() == 0ull);
+static_assert((~std::bitset<3>(0x7ull)).count() == 0);
+static_assert((~std::bitset<3>(0ull)).to_ulong() == 7ull);
+static_assert((~std::bitset<3>(0ull)).count() == 3);
+static_assert((~std::bitset<3>(0xFFull)).to_ulong() == 0ull);
+static_assert((~std::bitset<3>(0xFFull)).count() == 0);
+static_assert((~std::bitset<0>()).none());
+static_assert((~std::bitset<0>()).all());
+static_assert((~std::bitset<0>()).count() == 0);
 
 constexpr bool and_assign_ok() {
     std::bitset<8> a(0xA5ull);
@@ -68,6 +97,24 @@ constexpr bool or_assign_ok() {
     return a == std::bitset<8>(0xF5ull) && b == std::bitset<8>(0xF0ull) && (a | a) == a;
 }
 static_assert(or_assign_ok());
+
+constexpr bool xor_assign_ok() {
+    std::bitset<8> a(0xA5ull);
+    std::bitset<8> b(0xF0ull);
+    a ^= b;
+    return a == std::bitset<8>(0x55ull) && b == std::bitset<8>(0xF0ull) && (a ^ a).none();
+}
+static_assert(xor_assign_ok());
+
+constexpr bool complement_ok() {
+    std::bitset<8> a(0xA5ull);
+    const auto n = ~a;
+    std::bitset<3> full(0x7ull);
+    const auto cleared = ~full;
+    return n == std::bitset<8>(0x5Aull) && a == std::bitset<8>(0xA5ull) && (~n) == a && cleared.to_ulong() == 0ull &&
+           cleared.count() == 0 && (~std::bitset<3>()).to_ulong() == 7ull;
+}
+static_assert(complement_ok());
 
 constexpr bool wide_and_ok() {
     std::bitset<70> a;
@@ -98,6 +145,37 @@ constexpr bool wide_or_ok() {
            a.test(63) && a.test(69) && !a.test(64) && a.count() == 3;
 }
 static_assert(wide_or_ok());
+
+constexpr bool wide_xor_ok() {
+    std::bitset<70> a;
+    a.set(0);
+    a.set(63);
+    a.set(69);
+    std::bitset<70> b;
+    b.set(63);
+    b.set(64);
+    b.set(69);
+    const auto r = a ^ b;
+    return r.test(0) && !r.test(63) && r.test(64) && !r.test(69) && !r.test(1) && r.count() == 2 && a.test(0) &&
+           a.test(63) && a.test(69) && !a.test(64) && a.count() == 3 && (r ^ b) == a;
+}
+static_assert(wide_xor_ok());
+
+constexpr bool wide_not_ok() {
+    std::bitset<70> a;
+    a.set(0);
+    a.set(63);
+    a.set(69);
+    const auto n = ~a;
+    std::bitset<96> empty;
+    const auto filled = ~empty;
+    std::bitset<96> all;
+    all.set();
+    const auto cleared = ~all;
+    return !n.test(0) && n.test(1) && !n.test(63) && n.test(64) && !n.test(69) && n.count() == 67 && (~n) == a &&
+           a.count() == 3 && filled.all() && filled.count() == 96 && cleared.none() && cleared.count() == 0;
+}
+static_assert(wide_not_ok());
 
 constexpr bool wide_shift_ok() {
     std::bitset<70> w;
@@ -350,6 +428,88 @@ static void ors() {
     }
 }
 
+static void xors() {
+    std::bitset<8> a(0xA5ull);
+    std::bitset<8> b(0xF0ull);
+    show("xor", a ^ b);
+    show("xor-lhs", a);
+    show("xor-rhs", b);
+    a ^= b;
+    show("xoreq", a);
+    show("xoreq-rhs", b);
+    show("xor0", std::bitset<8>(0xA5ull) ^ std::bitset<8>());
+    std::bitset<8> ones;
+    ones.set();
+    show("xorid", std::bitset<8>(0xA5ull) ^ ones);
+    show("xorself", std::bitset<8>(0xA5ull) ^ std::bitset<8>(0xA5ull));
+    show("not", ~std::bitset<8>(0xA5ull));
+    show("not-src", std::bitset<8>(0xA5ull));
+    show("notnot", ~(~std::bitset<8>(0xA5ull)));
+    show("not0", ~std::bitset<8>());
+    show("notall", ~ones);
+
+    std::bitset<3> n(0x7ull);
+    n ^= std::bitset<3>(0x5ull);
+    std::printf("n3xor ul=%lu count=%zu all=%d\n", n.to_ulong(), n.count(), int(n.all()));
+    std::bitset<3> full;
+    full.set();
+    full ^= full;
+    std::printf("n3xorall ul=%lu count=%zu all=%d\n", full.to_ulong(), full.count(), int(full.all()));
+    const auto masked = std::bitset<3>(0xFFull) ^ std::bitset<3>(0xAAull);
+    std::printf("n3mask ul=%lu count=%zu\n", masked.to_ulong(), masked.count());
+    const auto n3not = ~std::bitset<3>(0x7ull);
+    std::printf("n3not ul=%lu count=%zu none=%d\n", n3not.to_ulong(), n3not.count(), int(n3not.none()));
+    const auto n3not0 = ~std::bitset<3>();
+    std::printf("n3not0 ul=%lu count=%zu all=%d\n", n3not0.to_ulong(), n3not0.count(), int(n3not0.all()));
+    const auto n3notpad = ~std::bitset<3>(0xFFull);
+    std::printf("n3notpad ul=%lu count=%zu\n", n3notpad.to_ulong(), n3notpad.count());
+
+    std::bitset<70> w;
+    w.set(0);
+    w.set(63);
+    w.set(69);
+    std::bitset<70> v;
+    v.set(63);
+    v.set(64);
+    v.set(69);
+    const auto r = w ^ v;
+    std::printf("wxor count=%zu t0=%d t63=%d t64=%d t69=%d lhs=%zu\n", r.count(), int(r.test(0)), int(r.test(63)),
+                int(r.test(64)), int(r.test(69)), w.count());
+    w ^= v;
+    std::printf("wxoreq count=%zu eq=%d rhs=%zu\n", w.count(), int(w == r), v.count());
+
+    std::bitset<70> src;
+    src.set(0);
+    src.set(63);
+    src.set(69);
+    const auto cn = ~src;
+    std::printf("wnot count=%zu t0=%d t1=%d t63=%d t64=%d t69=%d src=%zu\n", cn.count(), int(cn.test(0)),
+                int(cn.test(1)), int(cn.test(63)), int(cn.test(64)), int(cn.test(69)), src.count());
+    std::printf("wnot2 eq=%d\n", int((~cn) == src));
+
+    std::bitset<96> span;
+    span.set();
+    const auto xself = span ^ span;
+    const auto nspan = ~span;
+    const auto nzero = ~std::bitset<96>();
+    std::printf("w96 count=%zu all=%d zero=%d notc=%zu notall=%d\n", xself.count(),
+                int((span ^ std::bitset<96>()).all()), int(xself.none()), nspan.count(),
+                int(nzero.all() && nzero.count() == 96));
+
+    try {
+        (void)(std::bitset<4>(0xFull) ^ std::bitset<4>(0xAu)).test(4);
+        std::printf("xor-test4 missed\n");
+    } catch (const std::out_of_range& e) {
+        std::printf("xor-test4: [%s]\n", e.what());
+    }
+    try {
+        (void)(~std::bitset<4>(0xFull)).test(4);
+        std::printf("not-test4 missed\n");
+    } catch (const std::out_of_range& e) {
+        std::printf("not-test4: [%s]\n", e.what());
+    }
+}
+
 static void throws() {
     try {
         (void)std::bitset<4>().test(4);
@@ -406,10 +566,15 @@ static void empty() {
     const auto z3 = z & z;
     z |= z;
     const auto z4 = z | z;
+    z ^= z;
+    const auto z5 = z ^ z;
+    const auto z6 = ~z;
     std::printf("empty-after any %d\n", int(z.any()));
     std::printf("empty-shift any %d all %d count %zu eq %d\n", int(z2.any()), int(z2.all()), z2.count(), int(z2 == z));
     std::printf("empty-and any %d all %d count %zu eq %d\n", int(z3.any()), int(z3.all()), z3.count(), int(z3 == z));
     std::printf("empty-or any %d all %d count %zu eq %d\n", int(z4.any()), int(z4.all()), z4.count(), int(z4 == z));
+    std::printf("empty-xor any %d all %d count %zu eq %d\n", int(z5.any()), int(z5.all()), z5.count(), int(z5 == z));
+    std::printf("empty-not any %d all %d count %zu eq %d\n", int(z6.any()), int(z6.all()), z6.count(), int(z6 == z));
     std::printf("ul digits %d\n", std::numeric_limits<unsigned long>::digits);
 }
 
@@ -418,6 +583,7 @@ int main() {
     shifts();
     ands();
     ors();
+    xors();
     throws();
     empty();
     return 0;

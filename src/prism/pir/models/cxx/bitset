@@ -18,6 +18,13 @@
 //    at that position. A padding bit of the last word does not become a
 //    bit of the result (_M_sanitize). bitset<0> has no word and stays
 //    empty. The OR does not allocate;
+//  * operator^= and operator^. Each result bit is the XOR of the two bits
+//    at that position, then _M_sanitize so a padding bit is not a result
+//    bit. bitset<0> has no word and stays empty. The XOR does not allocate
+//    and does not invent a 1 from padding;
+//  * unary operator~. Each stored bit is flipped, then _M_sanitize, so
+//    padding does not become a bit. bitset<0> has no word and stays empty.
+//    The complement does not allocate and does not invent a 1 from padding;
 //  * to_ulong() when the value fits in unsigned long. That is every value
 //    of a bitset whose N is at most the width of unsigned long (32 or 64,
 //    whichever the platform gives unsigned long). A bit at or above that
@@ -33,8 +40,8 @@
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
 // libstdc++ (reported in the function's `extra.cxx_models`). String
-// constructors, to_string, operator^, operator~, and std::hash
-// are not stubbed. to_string and a string constructor need <string>.
+// constructors, to_string, and std::hash are not stubbed. to_string and a
+// string constructor need <string>. There is no binary operator~.
 #ifndef _PRISM_MODEL_BITSET
 #define _PRISM_MODEL_BITSET 1
 #define _GLIBCXX_BITSET 1  // libstdc++'s <bitset> include guard: never both
@@ -408,6 +415,42 @@ public:
         bitset __out(*this);
         __out |= __rhs;
         return __out;
+    }
+
+    // [bitset.members]. Each result bit is the XOR of the two bits at that
+    // position, then _M_sanitize so a padding bit is not a result bit.
+    // bitset<0> has no word and stays empty. The XOR does not allocate and
+    // does not invent a 1 from padding.
+    constexpr bitset& operator^=(const bitset& __rhs) noexcept {
+        if constexpr (_Nb == 0) {
+            return *this;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                _M_words._M_w[__i] ^= __rhs._M_words._M_w[__i];
+            _M_sanitize();
+            return *this;
+        }
+    }
+    constexpr bitset operator^(const bitset& __rhs) const noexcept {
+        bitset __out(*this);
+        __out ^= __rhs;
+        return __out;
+    }
+
+    // [bitset.members]. Unary complement. Each stored bit is flipped, then
+    // _M_sanitize, so a padding bit does not become a bit. bitset<0> has no
+    // word and stays empty. The complement does not allocate and does not
+    // invent a 1 from padding. This is not a binary operator.
+    constexpr bitset operator~() const noexcept {
+        bitset __out(*this);
+        if constexpr (_Nb == 0) {
+            return __out;
+        } else {
+            for (size_t __i = 0; __i < _S_nwords; ++__i)
+                __out._M_words._M_w[__i] = ~__out._M_words._M_w[__i];
+            __out._M_sanitize();
+            return __out;
+        }
     }
 
     constexpr bool operator==(const bitset& __rhs) const noexcept {

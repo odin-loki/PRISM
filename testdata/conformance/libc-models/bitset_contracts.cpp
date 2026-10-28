@@ -11,7 +11,8 @@
 
 // set / reset / flip / test / operator[] / count / size / all / any / none /
 // to_ulong on a value that fits in unsigned long. Shifts are bitset_shift_true.
-// AND is bitset_and_true. OR is bitset_or_true.
+// AND is bitset_and_true. OR is bitset_or_true. XOR and unary complement are
+// bitset_xor_true.
 int bitset_ops_true(int x) {
     std::bitset<8> b;
     assert(b.size() == 8);
@@ -45,8 +46,8 @@ int bitset_ops_true(int x) {
     return 0;
 }
 
-// bitset<0> stores nothing: any() is false, and test(0) throws. AND and OR
-// of the empty set stay empty.
+// bitset<0> stores nothing: any() is false, and test(0) throws. AND, OR, XOR,
+// and complement of the empty set stay empty.
 int bitset_empty_true(int) {
     std::bitset<0> b;
     assert(b.size() == 0);
@@ -66,6 +67,14 @@ int bitset_empty_true(int) {
     assert((b & b) == b);
     b |= b;
     assert((b | b) == b);
+    b ^= b;
+    assert((b ^ b) == b);
+    const auto flipped = ~b;
+    assert(flipped == b);
+    assert(!flipped.any());
+    assert(flipped.all());
+    assert(flipped.count() == 0);
+    assert(flipped.to_ulong() == 0u);
     assert(!b.any());
     assert(b.all());
     assert(b.count() == 0);
@@ -414,6 +423,172 @@ int bitset_or_true(int) {
     bool threw = false;
     try {
         (void)(std::bitset<4>(0xFu) | std::bitset<4>(0xAu)).test(4);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    assert(threw);
+    return 0;
+}
+
+// XOR and unary complement. Each XOR result bit is the XOR of the two bits
+// at that position. operator^ leaves both operands unchanged. Unary
+// operator~ flips each stored bit and leaves the operand unchanged. Padding
+// in the last word is not a bit: bitset<3> of all ones complemented is
+// to_ulong() == 0 and count() == 0, and the complement of an empty
+// bitset<3> is to_ulong() == 7 and count() == 3. test() at N still throws
+// after either operation; it does not read a padding bit. Neither operation
+// allocates or invents a 1 from padding.
+int bitset_xor_true(int) {
+    std::bitset<8> a(0xA5u);
+    std::bitset<8> b(0xF0u);
+    assert((a ^ b) == std::bitset<8>(0x55u));
+    assert(a == std::bitset<8>(0xA5u));
+    assert(b == std::bitset<8>(0xF0u));
+    assert((a ^ a).none());
+    assert((a ^ std::bitset<8>()) == a);
+    std::bitset<8> ones;
+    ones.set();
+    assert((a ^ ones) == ~a);
+    assert((b ^ a) == (a ^ b));
+    assert((~a) == std::bitset<8>(0x5Au));
+    assert((~(~a)) == a);
+    assert(a == std::bitset<8>(0xA5u));
+    assert((~ones).none());
+    assert((~std::bitset<8>()).all());
+    assert((~std::bitset<8>()).count() == 8);
+    a ^= b;
+    assert(a == std::bitset<8>(0x55u));
+    assert(b == std::bitset<8>(0xF0u));
+    a ^= a;
+    assert(a.none());
+    assert(a.count() == 0);
+
+    std::bitset<8> lhs;
+    lhs.set(0);
+    lhs.set(2);
+    lhs.set(7);
+    std::bitset<8> rhs;
+    rhs.set(2);
+    rhs.set(3);
+    rhs.set(7);
+    const auto diff = lhs ^ rhs;
+    assert(diff.test(0));
+    assert(!diff.test(2));
+    assert(diff.test(3));
+    assert(!diff.test(7));
+    assert(!diff.test(1));
+    assert(diff.count() == 2);
+    assert(lhs.test(0) && lhs.test(2) && lhs.test(7) && !lhs.test(3) && lhs.count() == 3);
+    assert((diff ^ rhs) == lhs);
+    const auto flipped = ~lhs;
+    assert(!flipped.test(0));
+    assert(flipped.test(1));
+    assert(!flipped.test(2));
+    assert(flipped.test(3));
+    assert(!flipped.test(7));
+    assert(flipped.count() == 5);
+    assert((~flipped) == lhs);
+    assert(lhs.count() == 3);
+
+    std::bitset<3> n(0x1u);
+    n ^= std::bitset<3>(0x4u);
+    assert(n == std::bitset<3>(0x5u));
+    assert(n.to_ulong() == 5u);
+    assert(n.count() == 2);
+    assert(!n.test(1));
+    std::bitset<3> wide_in(0xFFu);
+    std::bitset<3> other(0xAAu);
+    const auto narrow = wide_in ^ other;
+    assert(narrow == std::bitset<3>(0x5u));
+    assert(narrow.to_ulong() == 5u);
+    assert(narrow.count() == 2);
+    std::bitset<3> filled;
+    filled.set();
+    filled ^= filled;
+    assert(filled.to_ulong() == 0u);
+    assert(filled.count() == 0);
+    assert(filled.none());
+    assert(!filled.all());
+    const auto comp = ~std::bitset<3>(0x7u);
+    assert(comp.to_ulong() == 0u);
+    assert(comp.count() == 0);
+    assert(comp.none());
+    const auto comp0 = ~std::bitset<3>();
+    assert(comp0.to_ulong() == 7u);
+    assert(comp0.count() == 3);
+    assert(comp0.all());
+    const auto comp_pad = ~std::bitset<3>(0xFFu);
+    assert(comp_pad.to_ulong() == 0u);
+    assert(comp_pad.count() == 0);
+    assert((filled ^ std::bitset<3>()) == filled);
+    assert((std::bitset<3>(0x5u) ^ ~std::bitset<3>(0x5u)).to_ulong() == 7u);
+    assert((std::bitset<3>(0x5u) ^ ~std::bitset<3>(0x5u)).count() == 3);
+
+    std::bitset<70> w;
+    w.set(0);
+    w.set(63);
+    w.set(69);
+    std::bitset<70> v;
+    v.set(63);
+    v.set(64);
+    v.set(69);
+    const auto held = w;
+    const auto r = w ^ v;
+    assert(r.test(0));
+    assert(!r.test(63));
+    assert(r.test(64));
+    assert(!r.test(69));
+    assert(!r.test(1));
+    assert(r.count() == 2);
+    assert(w == held);
+    assert(w.count() == 3);
+    w ^= v;
+    assert(w == r);
+    assert(v.test(63) && v.test(64) && v.test(69) && !v.test(0) && v.count() == 3);
+    const auto wn = ~held;
+    assert(!wn.test(0));
+    assert(wn.test(1));
+    assert(!wn.test(63));
+    assert(wn.test(64));
+    assert(!wn.test(69));
+    assert(wn.count() == 67);
+    assert((~wn) == held);
+    assert(held.count() == 3);
+
+    std::bitset<96> full;
+    full.set();
+    assert((full ^ full).count() == 0);
+    assert((full ^ full).none());
+    assert((full ^ std::bitset<96>()) == full);
+    assert((full ^ std::bitset<96>()).count() == 96);
+    assert((full ^ std::bitset<96>()).all());
+    assert((~full).none());
+    assert((~full).count() == 0);
+    assert((~std::bitset<96>()).all());
+    assert((~std::bitset<96>()).count() == 96);
+    assert((~(~full)) == full);
+
+    std::bitset<0> z;
+    z ^= z;
+    assert((z ^ z) == z);
+    assert((~z) == z);
+    assert(!z.any());
+    assert(z.all());
+    assert(z.count() == 0);
+    assert(z.to_ulong() == 0u);
+    assert((~z).count() == 0);
+    assert((~z).to_ulong() == 0u);
+
+    bool threw = false;
+    try {
+        (void)(std::bitset<4>(0xFu) ^ std::bitset<4>(0xAu)).test(4);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    assert(threw);
+    threw = false;
+    try {
+        (void)(~std::bitset<4>(0xFu)).test(4);
     } catch (const std::out_of_range&) {
         threw = true;
     }
