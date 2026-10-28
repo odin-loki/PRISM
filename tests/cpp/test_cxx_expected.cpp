@@ -10,6 +10,8 @@
 // does not call the function and keeps that E. or_else on an unexpected
 // returns the function's expected; on a value it does not call the function
 // and keeps that T. Neither path invents a default T or a default E.
+// value_or on a value returns that T. value_or on an unexpected returns the
+// argument converted to T, not a default T and not the stored E.
 
 #include <doctest/doctest.h>
 
@@ -243,6 +245,15 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     bool saw_or_else_rv_val = false;
     bool saw_and_then_cmv = false;
     bool saw_or_else_cmv = false;
+    bool saw_value_or = false;
+    bool saw_value_or_unex = false;
+    bool saw_value_or_rv = false;
+    bool saw_value_or_rv_unex = false;
+    bool saw_value_or_zero = false;
+    bool saw_value_or_const = false;
+    bool saw_value_or_const_unex = false;
+    bool saw_value_or_held = false;
+    bool saw_value_or_none = false;
     for (const auto& line : b) {
         if (line == "engaged 1 1 42 42") saw_stored = true;
         if (line == "unex 0 0 7") saw_error = true;
@@ -264,6 +275,15 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
         if (line == "or_else_rv_val 1 8") saw_or_else_rv_val = true;
         if (line == "and_then_cmv 0 4") saw_and_then_cmv = true;
         if (line == "or_else_cmv 1 8") saw_or_else_cmv = true;
+        if (line == "value_or 42") saw_value_or = true;
+        if (line == "value_or_unex 99") saw_value_or_unex = true;
+        if (line == "value_or_rv 42") saw_value_or_rv = true;
+        if (line == "value_or_rv_unex 99") saw_value_or_rv_unex = true;
+        if (line == "value_or_zero 0") saw_value_or_zero = true;
+        if (line == "value_or_const 42") saw_value_or_const = true;
+        if (line == "value_or_const_unex 99") saw_value_or_const_unex = true;
+        if (line == "value_or_held 42") saw_value_or_held = true;
+        if (line == "value_or_none 99") saw_value_or_none = true;
         CHECK(line.find("engaged 1 1 0 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "copy 0");
@@ -284,6 +304,23 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
         CHECK(line.find("callOr") == std::string::npos);
         CHECK(line.find("callCmv") == std::string::npos);
         CHECK(line.find("callCOr") == std::string::npos);
+        CHECK(line != "value_or 99");
+        CHECK(line != "value_or 0");
+        CHECK(line != "value_or_unex 0");
+        CHECK(line != "value_or_unex 9");
+        CHECK(line != "value_or_rv 99");
+        CHECK(line != "value_or_rv 0");
+        CHECK(line != "value_or_rv_unex 0");
+        CHECK(line != "value_or_rv_unex 7");
+        CHECK(line != "value_or_zero 99");
+        CHECK(line != "value_or_const 99");
+        CHECK(line != "value_or_const 0");
+        CHECK(line != "value_or_const_unex 0");
+        CHECK(line != "value_or_const_unex 3");
+        CHECK(line != "value_or_held 99");
+        CHECK(line != "value_or_held 0");
+        CHECK(line != "value_or_none 0");
+        CHECK(line != "value_or_none 4");
     }
     CHECK(saw_stored);
     CHECK(saw_error);
@@ -305,6 +342,15 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     CHECK(saw_or_else_rv_val);
     CHECK(saw_and_then_cmv);
     CHECK(saw_or_else_cmv);
+    CHECK(saw_value_or);
+    CHECK(saw_value_or_unex);
+    CHECK(saw_value_or_rv);
+    CHECK(saw_value_or_rv_unex);
+    CHECK(saw_value_or_zero);
+    CHECK(saw_value_or_const);
+    CHECK(saw_value_or_const_unex);
+    CHECK(saw_value_or_held);
+    CHECK(saw_value_or_none);
 
     CHECK(failed_is_check(mod, "value", "CXX-EXPECTED-NULL", "expected::value()"));
     CHECK(failed_is_check(mod, "star", "CXX-EXPECTED-NULL", "expected::operator*"));

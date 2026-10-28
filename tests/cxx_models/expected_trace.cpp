@@ -7,7 +7,9 @@
 // On an unexpected it does not call the function; the result holds that same
 // E and does not invent a T. or_else calls the function with the stored E.
 // On a value it does not call the function; the result holds that stored T.
-// transform and value_or are not called: the model does not declare them.
+// value_or returns the stored T when that alternative is active, and the
+// argument converted to T when an E is stored. It does not return T{}.
+// transform is not called: the model does not declare it.
 //
 // argv "value" calls value() on an unexpected. argv "star" calls operator* on
 // an unexpected. argv "error" calls error() on a success value. The model must
@@ -48,7 +50,15 @@ struct R {
     ~R() { std::printf("ed%d\n", v); }
 };
 
+// No default constructor: value_or(99) has to convert 99. T{} would not compile.
+struct Box {
+    int v;
+    Box() = delete;
+    Box(int x) : v(x) {}
+};
+
 static void show_monadic();
+static void show_value_or();
 
 static void show() {
     std::expected<int, int> def;
@@ -78,6 +88,7 @@ static void show() {
     std::printf("err %d\n", err.error().v);
 
     show_monadic();
+    show_value_or();
 }
 
 // and_then / or_else. Lines are the contract: a value calls and_then and does
@@ -184,6 +195,34 @@ static void show_monadic() {
         return std::expected<int, int>(std::unexpected<int>(e));
     });
     std::printf("or_else_cmv %d %d\n", static_cast<int>(cmvo.has_value()), cmvo.value());
+}
+
+// value_or. A stored T is that T, including 0. An unexpected is the argument
+// converted to T (99), not the stored E and not a value-initialized T. Box
+// has no default constructor, so T{} would not compile.
+static void show_value_or() {
+    std::expected<int, int> ok(42);
+    std::printf("value_or %d\n", ok.value_or(99));
+
+    std::expected<int, int> bad(std::unexpected<int>(9));
+    std::printf("value_or_unex %d\n", bad.value_or(99));
+
+    std::printf("value_or_rv %d\n", std::expected<int, int>(42).value_or(99));
+    std::printf("value_or_rv_unex %d\n",
+                std::expected<int, int>(std::unexpected<int>(7)).value_or(99));
+
+    std::expected<int, int> zero(0);
+    std::printf("value_or_zero %d\n", zero.value_or(99));
+
+    const std::expected<int, int> cok(42);
+    std::printf("value_or_const %d\n", cok.value_or(99));
+    const std::expected<int, int> cbad(std::unexpected<int>(3));
+    std::printf("value_or_const_unex %d\n", cbad.value_or(99));
+
+    std::expected<Box, int> held(Box(42));
+    std::printf("value_or_held %d\n", held.value_or(99).v);
+    std::expected<Box, int> none(std::unexpected<int>(4));
+    std::printf("value_or_none %d\n", none.value_or(99).v);
 }
 
 int main(int argc, char** argv) {

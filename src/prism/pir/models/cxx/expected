@@ -23,8 +23,12 @@
 // active and returns what the function returns. When a T is stored, or_else
 // does not call the function and returns that stored T inside the expected.
 // It does not invent an E.
-// transform and value_or are not declared. A use of them fails to compile
-// against this header and pir falls back to libstdc++.
+// value_or returns the stored T when that alternative is active. When the
+// error alternative is active, value_or returns the argument converted to T.
+// It does not return T{} and it does not invent a value that was not stored
+// or passed in.
+// transform is not declared. A use of it fails to compile against this
+// header and pir falls back to libstdc++.
 // transform_error, emplace, swap, comparison, and expected<void, E> are not
 // declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_EXPECTED
@@ -155,6 +159,19 @@ public:
         __prism_check(_M_has ? 0 : 1, "CXX-EXPECTED-ERROR",
                       "expected::error() requires !has_value()");
         return _M_storage._M_unex;
+    }
+
+    // Holds T: that T (copied on const&, moved on &&). Holds E: the argument
+    // converted to T. The inactive alternative is not read. T{} is not built.
+    template <typename _Up>
+    _Tp value_or(_Up&& __u) const& {
+        if (_M_has) return _M_storage._M_val;
+        return static_cast<_Tp>(static_cast<_Up&&>(__u));
+    }
+    template <typename _Up>
+    _Tp value_or(_Up&& __u) && {
+        if (_M_has) return static_cast<_Tp&&>(_M_storage._M_val);
+        return static_cast<_Tp>(static_cast<_Up&&>(__u));
     }
 
     // Holds T: call with that T and return the function's expected. Holds E:
