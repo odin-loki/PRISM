@@ -1,9 +1,10 @@
-// time, mktime, difftime, clock, clock_gettime, and gmtime models. Reads time.cpp as text. Does not compile the model.
+// time, mktime, difftime, clock, clock_gettime, gmtime, and localtime models. Reads time.cpp as text. Does not compile the model.
 // docs/finish-notes/time.md
 // docs/finish-notes/difftime.md
 // docs/finish-notes/clock.md
 // docs/finish-notes/clock-gettime.md
 // docs/finish-notes/gmtime.md
+// docs/finish-notes/localtime.md
 
 #include <doctest/doctest.h>
 
@@ -419,5 +420,117 @@ TEST_CASE("gmtime model: null time_t returns 0 before any tm field is written") 
     CHECK(cpp.find("gmtime(") != std::string::npos);
     CHECK(cpp.find("(void)gmtime(&when)") != std::string::npos);
     CHECK(yml.find("gmtime") == std::string::npos);
+    CHECK(yml.find("1970") == std::string::npos);
+}
+
+TEST_CASE("localtime model: null time_t returns 0 before any tm field is written") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    const auto at = src.find("struct tm *localtime(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("not a proof of the local calendar and not a proof of a timezone") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "struct tm *localtime(");
+    REQUIRE(!body.empty());
+    const auto nullg = body.find("if (timer == 0)");
+    REQUIRE(nullg != std::string::npos);
+    const auto arm = brace_block_after(body, nullg);
+    REQUIRE(!arm.empty());
+    const auto check = arm.find("__prism_check(0, \"PTR-NULL-DEREF\", \"localtime null time_t\")");
+    const auto ret = arm.find("return 0");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(check < ret);
+    CHECK(arm.find("tm_") == std::string::npos);
+    CHECK(arm.find("storage") == std::string::npos);
+
+    const auto ret_at = body.find("return 0");
+    const auto nondet = body.find("__VERIFIER_nondet_int");
+    const auto sec = body.find("storage.tm_sec = sec");
+    const auto minute = body.find("storage.tm_min = min");
+    const auto hour = body.find("storage.tm_hour = hour");
+    const auto mday_store = body.find("storage.tm_mday = mday");
+    const auto mon_store = body.find("storage.tm_mon = mon");
+    const auto year = body.find("storage.tm_year = year");
+    const auto wday = body.find("storage.tm_wday = wday");
+    const auto yday = body.find("storage.tm_yday = yday");
+    const auto isdst = body.find("storage.tm_isdst = isdst");
+    REQUIRE(ret_at != std::string::npos);
+    REQUIRE(nondet != std::string::npos);
+    REQUIRE(sec != std::string::npos);
+    REQUIRE(minute != std::string::npos);
+    REQUIRE(hour != std::string::npos);
+    REQUIRE(mday_store != std::string::npos);
+    REQUIRE(mon_store != std::string::npos);
+    REQUIRE(year != std::string::npos);
+    REQUIRE(wday != std::string::npos);
+    REQUIRE(yday != std::string::npos);
+    REQUIRE(isdst != std::string::npos);
+    CHECK(nullg < ret_at);
+    CHECK(ret_at < nondet);
+    CHECK(nondet < sec);
+    CHECK(sec < minute);
+    CHECK(minute < hour);
+    CHECK(hour < mday_store);
+    CHECK(mday_store < mon_store);
+    CHECK(mon_store < year);
+    CHECK(year < wday);
+    CHECK(wday < yday);
+    CHECK(yday < isdst);
+    CHECK(body.find("__prism_assume") == std::string::npos);
+    CHECK(body.find("1970") == std::string::npos);
+    CHECK(body.find("86400") == std::string::npos);
+    CHECK(body.find("*timer") == std::string::npos);
+    CHECK(body.find("timezone") == std::string::npos);
+    CHECK(body.find("tzset") == std::string::npos);
+    CHECK(body.find("tm_gmtoff") == std::string::npos);
+    CHECK(body.find("tm_zone") == std::string::npos);
+    const auto ok = body.find("return &storage");
+    REQUIRE(ok != std::string::npos);
+    CHECK(isdst < ok);
+
+    const auto mktime_body = function_body(src, "time_t mktime(");
+    REQUIRE(!mktime_body.empty());
+    const auto mnull = mktime_body.find("if (tp == 0)");
+    REQUIRE(mnull != std::string::npos);
+    CHECK(mnull < mktime_body.find("tp->tm_mon"));
+
+    const auto time_body = function_body(src, "time_t time(");
+    const auto difftime_body = function_body(src, "double difftime(");
+    const auto clock_body = function_body(src, "clock_t clock(");
+    const auto clock_gettime_body = function_body(src, "int clock_gettime(");
+    const auto gmtime_body = function_body(src, "struct tm *gmtime(");
+    REQUIRE(!time_body.empty());
+    REQUIRE(!difftime_body.empty());
+    REQUIRE(!clock_body.empty());
+    REQUIRE(!clock_gettime_body.empty());
+    REQUIRE(!gmtime_body.empty());
+    CHECK(time_body.find("if (t != 0)") != std::string::npos);
+    CHECK(time_body.find("return v") != std::string::npos);
+    CHECK(difftime_body.find("__builtin_sub_overflow(time1, time0, &diff)") != std::string::npos);
+    CHECK(difftime_body.find("__builtin_trap()") != std::string::npos);
+    CHECK(clock_body.find("return v") != std::string::npos);
+    CHECK(clock_body.find("tm_mon") == std::string::npos);
+    CHECK(clock_gettime_body.find("__prism_check(0, \"PTR-NULL-DEREF\", \"clock_gettime null timespec\")") !=
+          std::string::npos);
+    CHECK(clock_gettime_body.find("__prism_assume(nsec >= 0 && nsec <= 999999999)") != std::string::npos);
+    CHECK(gmtime_body.find("__prism_check(0, \"PTR-NULL-DEREF\", \"gmtime null time_t\")") != std::string::npos);
+    CHECK(gmtime_body.find("__prism_assume(mon >= 0 && mon <= 11)") != std::string::npos);
+    CHECK(gmtime_body.find("__prism_assume(mday >= 1 && mday <= 31)") != std::string::npos);
+    CHECK(gmtime_body.find("localtime") == std::string::npos);
+
+    const auto cpp = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.cpp");
+    const auto yml = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.yml");
+    REQUIRE(!cpp.empty());
+    REQUIRE(!yml.empty());
+    CHECK(cpp.find("localtime(") != std::string::npos);
+    CHECK(cpp.find("(void)localtime(&when)") != std::string::npos);
+    CHECK(cpp.find("1970") == std::string::npos);
+    CHECK(yml.find("localtime") == std::string::npos);
     CHECK(yml.find("1970") == std::string::npos);
 }

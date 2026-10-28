@@ -1,9 +1,10 @@
-/* <time.h> time, mktime, difftime, clock, clock_gettime, and gmtime
+/* <time.h> time, mktime, difftime, clock, clock_gettime, gmtime, and localtime
  * (docs/PIR.md "Library models").
  * The calendar value is unknown. An out-of-range month is not rolled into
  * a later year, and no epoch is computed. difftime is not a calendar proof.
  * clock is not a proof of elapsed processor time. clock_gettime is not a
- * proof of the current time. gmtime is not a proof of the calendar time. */
+ * proof of the current time. gmtime is not a proof of the calendar time.
+ * localtime is not a proof of the local calendar and not a proof of a timezone. */
 #include "prism_model.h"
 
 typedef long time_t;
@@ -121,6 +122,39 @@ struct tm *gmtime(const time_t *timer) {
     int isdst = __VERIFIER_nondet_int();
     __prism_assume(mon >= 0 && mon <= 11);
     __prism_assume(mday >= 1 && mday <= 31);
+    storage.tm_sec = sec;
+    storage.tm_min = min;
+    storage.tm_hour = hour;
+    storage.tm_mday = mday;
+    storage.tm_mon = mon;
+    storage.tm_year = year;
+    storage.tm_wday = wday;
+    storage.tm_yday = yday;
+    storage.tm_isdst = isdst;
+    return &storage;
+}
+
+/* A null time_t * is PTR-NULL-DEREF "localtime null time_t" and returns 0
+ * before any field is written. A live time_t * returns a pointer to
+ * static storage. Each field is nondet. The time_t value is not read and
+ * not converted.
+ * This is not a proof of the local calendar and not a proof of a timezone.
+ * localtime is not PROVED and not CLEAN. */
+struct tm *localtime(const time_t *timer) {
+    if (timer == 0) {
+        __prism_check(0, "PTR-NULL-DEREF", "localtime null time_t");
+        return 0;
+    }
+    static struct tm storage;
+    int sec = __VERIFIER_nondet_int();
+    int min = __VERIFIER_nondet_int();
+    int hour = __VERIFIER_nondet_int();
+    int mday = __VERIFIER_nondet_int();
+    int mon = __VERIFIER_nondet_int();
+    int year = __VERIFIER_nondet_int();
+    int wday = __VERIFIER_nondet_int();
+    int yday = __VERIFIER_nondet_int();
+    int isdst = __VERIFIER_nondet_int();
     storage.tm_sec = sec;
     storage.tm_min = min;
     storage.tm_hour = hour;
