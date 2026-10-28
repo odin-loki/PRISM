@@ -264,7 +264,8 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     const auto zero_ret = lbody.find("return __r;", zero);
     REQUIRE(zero_ret != std::string::npos);
     const std::string zero_arm = lbody.substr(zero, zero_ret - zero);
-    CHECK(zero_arm.find("__out") == std::string::npos);
+    CHECK(zero_arm.find("__r.out = __out;") != std::string::npos);
+    CHECK(zero_arm.find("__out[") == std::string::npos);
     CHECK(zero_arm.find("__prism_format_write") == std::string::npos);
     CHECK(zero_arm.find("__r.size = static_cast<std::ptrdiff_t>(__len);") != std::string::npos);
 

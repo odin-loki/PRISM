@@ -128,7 +128,9 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     // n == 0 writes nothing and does not read the output pointer.
     if (__n == 0) {
         format_to_n_result __r;
-        __r.out = nullptr;
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
         __r.size = static_cast<std::ptrdiff_t>(__len);
         return __r;
     }
