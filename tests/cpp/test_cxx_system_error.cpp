@@ -115,3 +115,55 @@ TEST_CASE("cxx system_error: value returns the stored int and category returns t
     CHECK(src.find("#include <string>") == std::string::npos);
     CHECK(src.find("return 0") == std::string::npos);
 }
+
+// Number of "void clear() noexcept" in the header: one definition only.
+static int count_sub_clear(const std::string& src) {
+    int n = 0;
+    for (auto p = src.find("void clear() noexcept"); p != std::string::npos;
+         p = src.find("void clear() noexcept", p + 1))
+        ++n;
+    return n;
+}
+
+TEST_CASE("cxx system_error: clear sets value 0 and the system category") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "system_error";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+
+    const std::string src = slurp(header);
+    REQUIRE(!src.empty());
+
+    // clear() writes 0 into the stored int, 2 (system_category) into the
+    // category id, and the stable system pointer into the category pointer,
+    // as the default constructor does. It does not build a message.
+    // value() and category() stay the stored-field readers. operator==
+    // still compares the int and the category id.
+    const auto clr = src.find("void clear() noexcept {");
+    REQUIRE(clr != std::string::npos);
+    const auto clr_end = src.find("// The int passed to the constructor.", clr);
+    REQUIRE(clr_end != std::string::npos);
+    const std::string body = src.substr(clr, clr_end - clr);
+    CHECK(body.find("_M_value = 0;") != std::string::npos);
+    CHECK(body.find("_M_cat = 2;") != std::string::npos);
+    CHECK(body.find("_M_cat_ptr = __system_category_ptr();") != std::string::npos);
+    CHECK(body.find("nullptr") == std::string::npos);
+    CHECK(count_sub_clear(src) == 1);
+    CHECK(body.find("message") == std::string::npos);
+    CHECK(body.find("return") == std::string::npos);
+    CHECK(body.find(".name(") == std::string::npos);
+    CHECK(body.find("Success") == std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("int value() const noexcept { return _M_value; }") != std::string::npos);
+    CHECK(src.find("const __error_category_tag* category() const noexcept { return _M_cat_ptr; }") !=
+          std::string::npos);
+    CHECK(src.find("explicit operator bool() const noexcept { return value() != 0; }") != std::string::npos);
+    CHECK(src.find("return __lhs._M_value == __rhs._M_value && __lhs._M_cat == __rhs._M_cat;") !=
+          std::string::npos);
+    CHECK(src.find("_M_cat_ptr ==") == std::string::npos);
+    CHECK(src.find("message() const") == std::string::npos);
+    CHECK(src.find("int message(") == std::string::npos);
+    CHECK(src.find("string message(") == std::string::npos);
+    CHECK(src.find("Success") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("return 0") == std::string::npos);
+}

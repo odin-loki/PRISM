@@ -33,6 +33,13 @@
 // different category id is unequal. operator!= is the negation of that
 // comparison.
 //
+// clear() sets the stored value to 0, category id 2 and the stable system
+// category pointer, the same fields the default constructor stores
+// ([syserr.errcode.modifiers]: system_category()). It does not build a
+// message. After clear(), value() is 0 and operator bool is false, and a
+// cleared code compares equal to a default code. operator== is unchanged.
+// This is not PROVED and not CLEAN.
+//
 // message() is not declared. A unit that calls it fails to compile against
 // this header and pir falls back to libstdc++. Do not stub it with a fixed
 // string: that would hide a nonzero value.
@@ -110,7 +117,15 @@ public:
     }
 
     // clear(): value 0 with system_category ([syserr.errcode.modifiers]).
-    void clear() noexcept { _M_value = 0; _M_cat = 2; _M_cat_ptr = __system_category_ptr(); }
+    // Stores the same three fields the default constructor stores, so
+    // operator== still compares the stored int and that id. It does not
+    // read a category name. Does not build a message. After clear(),
+    // value() is 0 and operator bool is false. This is not PROVED and not CLEAN.
+    void clear() noexcept {
+        _M_value = 0;
+        _M_cat = 2;
+        _M_cat_ptr = __system_category_ptr();
+    }
 
     // The int passed to the constructor. Not a constant 0. Does not build
     // a message. This is not PROVED and not CLEAN.
