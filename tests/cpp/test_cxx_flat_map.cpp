@@ -1,7 +1,9 @@
 // The std::flat_map model header (src/prism/pir/models/cxx/flat_map) is a
 // file. This test reads that file. It does not compile it and it does not
 // run pir. A missing at() is a throw (or a __prism_check) and not a default
-// mapped value. erase is described as freeing the node.
+// mapped value. erase is described as freeing the node. contains is a
+// lookup: a missing key is false, a present key is true, and that body
+// does not allocate, insert, or change size.
 
 #include <doctest/doctest.h>
 
@@ -45,6 +47,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std") != std::string::npos);
     CHECK(src.find("#include <map>") == std::string::npos);
+    CHECK(src.find("#include <set>") == std::string::npos);
     CHECK(src.find("#include <vector>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <initializer_list>") == std::string::npos);
@@ -53,7 +56,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
 
     // Both at() overloads. The miss throws (or is a check) and the only
     // value returned is the mapped object stored in a node.
-    const std::string at = slice_from(src, "mapped_type& at(const key_type&", "size_type erase(");
+    const std::string at = slice_from(src, "mapped_type& at(const key_type&", "bool contains(");
     REQUIRE_FALSE(at.empty());
     CHECK(at.find("at(const key_type& __k) const") != std::string::npos);
     const bool miss = at.find("__throw_out_of_range_fmt") != std::string::npos ||
@@ -74,6 +77,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     const std::string index = slice_from(src, "mapped_type& operator[](const key_type&", "mapped_type& at(");
     REQUIRE_FALSE(index.empty());
     CHECK(index.find("_M_link(_M_make(") != std::string::npos);
+    CHECK(index.find("mapped_type{}") != std::string::npos);
     CHECK(src.find("::operator new") != std::string::npos);
 
     // erase of a present key is described as freeing the node. A missing
@@ -94,4 +98,33 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(er.find("::operator delete", freed + 1) == std::string::npos);
 
     CHECK(src.find("size() const noexcept { return _M_size; }") != std::string::npos);
+
+    // contains used to be listed with the names that are not declared.
+    CHECK(src.find("find, contains, count") == std::string::npos);
+    CHECK(src.find("find, count, clear") != std::string::npos);
+
+    // Lookup only. The const finder returns nullptr for a miss and does not
+    // allocate, insert, or touch size. contains is that result as a bool.
+    const std::string finder =
+        slice_from(src, "const _Node* _M_find(const key_type& __k) const noexcept {", "template <typename _Uk");
+    REQUIRE_FALSE(finder.empty());
+    CHECK(finder.find("return nullptr") != std::string::npos);
+    CHECK(finder.find("::operator new") == std::string::npos);
+    CHECK(finder.find("_M_make") == std::string::npos);
+    CHECK(finder.find("_M_link") == std::string::npos);
+    CHECK(finder.find("_M_size") == std::string::npos);
+
+    const std::string has =
+        "bool contains(const key_type& __k) const { return _M_find(__k) != nullptr; }";
+    const auto has_at = src.find(has);
+    REQUIRE(has_at != std::string::npos);
+    const auto note_at = has_at > 240 ? has_at - 240 : 0;
+    const std::string note = src.substr(note_at, has_at - note_at);
+    CHECK(note.find("Missing key returns false") != std::string::npos);
+    CHECK(note.find("present key returns true") != std::string::npos);
+    CHECK(note.find("allocates, inserts a node, or changes size") != std::string::npos);
+    CHECK(note.find("::operator new") == std::string::npos);
+    CHECK(note.find("_M_make") == std::string::npos);
+    CHECK(note.find("_M_link") == std::string::npos);
+    CHECK(note.find("_M_size") == std::string::npos);
 }

@@ -10,12 +10,14 @@
 // std::out_of_range and does not return a default mapped T. erase of a
 // present key destroys that node and frees it, so a reference saved from
 // at() or operator[] is a use-after-free. erase of a missing key frees
-// nothing.
+// nothing. contains(key) returns false when the key is missing and true
+// when it is present. It does not allocate, does not insert, and does not
+// change size.
 //
 // insert ranges, try_emplace, and the rest are not declared. Omitted names
 // fail to compile against this header and pir falls back to libstdc++
 // (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
-// try_emplace, erase(iterator), iterators, find, contains, count, clear,
+// try_emplace, erase(iterator), iterators, find, count, clear,
 // swap, the Compare / KeyContainer / MappedContainer parameters (this
 // template takes Key and T only), and any allocator other than the
 // ::operator new / ::operator delete pair above.
@@ -150,6 +152,10 @@ public:
         if (const _Node* __n = _M_find(__k)) return __n->_M_mapped;
         __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
     }
+
+    // Missing key returns false. A present key returns true. Neither path
+    // allocates, inserts a node, or changes size: this is _M_find only.
+    bool contains(const key_type& __k) const { return _M_find(__k) != nullptr; }
 
     size_type erase(const key_type& __k) {
         for (_Node** __pp = &_M_head; *__pp != nullptr; __pp = &(*__pp)->_M_next) {
