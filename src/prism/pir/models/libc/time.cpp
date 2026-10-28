@@ -1,11 +1,14 @@
-/* <time.h> time, mktime, difftime, and clock (docs/PIR.md "Library models").
+/* <time.h> time, mktime, difftime, clock, and clock_gettime
+ * (docs/PIR.md "Library models").
  * The calendar value is unknown. An out-of-range month is not rolled into
  * a later year, and no epoch is computed. difftime is not a calendar proof.
- * clock is not a proof of elapsed processor time. */
+ * clock is not a proof of elapsed processor time. clock_gettime is not a
+ * proof of the current time. */
 #include "prism_model.h"
 
 typedef long time_t;
 typedef long clock_t;
+typedef int clockid_t;
 
 struct tm {
     int tm_sec;
@@ -17,6 +20,11 @@ struct tm {
     int tm_wday;
     int tm_yday;
     int tm_isdst;
+};
+
+struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
 };
 
 extern "C" {
@@ -71,6 +79,23 @@ double difftime(time_t time1, time_t time0) {
 clock_t clock(void) {
     clock_t v = __VERIFIER_nondet_long();
     return v;
+}
+
+/* A null timespec is PTR-NULL-DEREF and returns -1 before any store.
+ * A live timespec gets tv_sec from __VERIFIER_nondet_long and tv_nsec in
+ * 0..999999999. That is not a proof of the current time. The 0 return is
+ * the success status, not a time. clock_gettime is not PROVED and not CLEAN. */
+int clock_gettime(clockid_t clock_id, struct timespec *tp) {
+    if (tp == 0) {
+        __prism_check(0, "PTR-NULL-DEREF", "clock_gettime null timespec");
+        return -1;
+    }
+    (void)clock_id;
+    tp->tv_sec = __VERIFIER_nondet_long();
+    long nsec = __VERIFIER_nondet_long();
+    __prism_assume(nsec >= 0 && nsec <= 999999999);
+    tp->tv_nsec = nsec;
+    return 0;
 }
 
 }  // extern "C"

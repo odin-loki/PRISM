@@ -1,7 +1,8 @@
-// time, mktime, difftime, and clock models. Reads time.cpp as text. Does not compile the model.
+// time, mktime, difftime, clock, and clock_gettime models. Reads time.cpp as text. Does not compile the model.
 // docs/finish-notes/time.md
 // docs/finish-notes/difftime.md
 // docs/finish-notes/clock.md
+// docs/finish-notes/clock-gettime.md
 
 #include <doctest/doctest.h>
 
@@ -239,5 +240,78 @@ TEST_CASE("clock model: nondet clock_t does not mention tm_mon") {
     REQUIRE(!cpp.empty());
     REQUIRE(!yml.empty());
     CHECK(cpp.find("clock(") != std::string::npos);
+    CHECK(yml.find("clock") == std::string::npos);
+}
+
+TEST_CASE("clock_gettime model: null timespec returns -1 before any store") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    REQUIRE(!src.empty());
+    const auto at = src.find("int clock_gettime(");
+    REQUIRE(at != std::string::npos);
+    const auto note_at = src.rfind("/*", at);
+    REQUIRE(note_at != std::string::npos);
+    const auto note = src.substr(note_at, at - note_at);
+    CHECK(note.find("not a proof of the current time") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+
+    const auto body = function_body(src, "int clock_gettime(");
+    REQUIRE(!body.empty());
+    const auto nullg = body.find("if (tp == 0)");
+    REQUIRE(nullg != std::string::npos);
+    const auto arm = brace_block_after(body, nullg);
+    REQUIRE(!arm.empty());
+    const auto check = arm.find("__prism_check(0, \"PTR-NULL-DEREF\", \"clock_gettime null timespec\")");
+    const auto ret = arm.find("return -1");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(check < ret);
+    CHECK(arm.find("tv_sec") == std::string::npos);
+    CHECK(arm.find("tv_nsec") == std::string::npos);
+    CHECK(arm.find("tp->") == std::string::npos);
+
+    const auto ret_at = body.find("return -1");
+    const auto sec = body.find("tp->tv_sec = __VERIFIER_nondet_long()");
+    const auto nsec = body.find("long nsec = __VERIFIER_nondet_long()");
+    const auto assume = body.find("__prism_assume(nsec >= 0 && nsec <= 999999999)");
+    const auto nstore = body.find("tp->tv_nsec = nsec");
+    REQUIRE(ret_at != std::string::npos);
+    REQUIRE(sec != std::string::npos);
+    REQUIRE(nsec != std::string::npos);
+    REQUIRE(assume != std::string::npos);
+    REQUIRE(nstore != std::string::npos);
+    CHECK(nullg < ret_at);
+    CHECK(ret_at < sec);
+    CHECK(sec < nsec);
+    CHECK(nsec < assume);
+    CHECK(assume < nstore);
+    const auto ok = body.find("return 0");
+    REQUIRE(ok != std::string::npos);
+    CHECK(nstore < ok);
+
+    const auto mktime_body = function_body(src, "time_t mktime(");
+    REQUIRE(!mktime_body.empty());
+    const auto mnull = mktime_body.find("if (tp == 0)");
+    REQUIRE(mnull != std::string::npos);
+    CHECK(mnull < mktime_body.find("tp->tm_mon"));
+
+    const auto time_body = function_body(src, "time_t time(");
+    const auto difftime_body = function_body(src, "double difftime(");
+    const auto clock_body = function_body(src, "clock_t clock(");
+    REQUIRE(!time_body.empty());
+    REQUIRE(!difftime_body.empty());
+    REQUIRE(!clock_body.empty());
+    CHECK(time_body.find("if (t != 0)") != std::string::npos);
+    CHECK(difftime_body.find("__builtin_sub_overflow(time1, time0, &diff)") != std::string::npos);
+    CHECK(clock_body.find("return v") != std::string::npos);
+    CHECK(clock_body.find("tv_nsec") == std::string::npos);
+
+    const auto cpp = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.cpp");
+    const auto yml = slurp(repo() / "testdata" / "conformance" / "libc-models" / "time_contracts.yml");
+    REQUIRE(!cpp.empty());
+    REQUIRE(!yml.empty());
+    CHECK(cpp.find("clock_gettime(") != std::string::npos);
+    CHECK(cpp.find("clock(") != std::string::npos);
+    CHECK(yml.find("clock_gettime") == std::string::npos);
     CHECK(yml.find("clock") == std::string::npos);
 }
