@@ -14,8 +14,12 @@
 // Clocks, time_point conversions that call the OS, and sleep_for /
 // sleep_until are not declared. A sleep that returns immediately would be
 // a fake wait. Omitted names fail to compile against this header and pir
-// falls back to libstdc++. That includes period conversion, duration_cast,
-// the calendar typedefs, and compound assignment.
+// falls back to libstdc++. That includes period conversion, the calendar
+// typedefs, and compound assignment. duration_cast is declared only when
+// the source and target period are the same type, this header's
+// __duration_period (num 1, den 1). The result count is that count. It
+// does not truncate and does not wrap. A cast to a different period is
+// not declared, so that use fails to compile and pir still falls back.
 #ifndef _GLIBCXX_CHRONO
 #define _GLIBCXX_CHRONO 1
 
@@ -55,6 +59,26 @@ public:
     // The stored count. A zero duration stays zero.
     constexpr rep count() const noexcept { return _M_count; }
 };
+
+// True when both types are the same type. Used so duration_cast exists
+// only for __duration_period (num 1, den 1) and the same rep. A different
+// period does not match, so that cast is not declared.
+template <typename _A, typename _B>
+inline constexpr bool __duration_same_type = false;
+
+template <typename _A>
+inline constexpr bool __duration_same_type<_A, _A> = true;
+
+// Same period and the same rep. The count is copied. There is no ratio
+// multiply and no division, so the count is not truncated and not wrapped.
+// A different target period fails the constraint: the cast is not declared,
+// the use fails to compile, and pir still falls back.
+template <typename _ToDur, typename _Rep>
+    requires __duration_same_type<typename _ToDur::period, __duration_period> &&
+             __duration_same_type<typename _ToDur::rep, _Rep>
+constexpr _ToDur duration_cast(const duration<_Rep, __duration_period>& __d) noexcept {
+    return _ToDur(__d.count());
+}
 
 // True when __a + __b is representable. The limit arithmetic stays in range
 // on the branch that reaches it, so the test itself does not wrap.

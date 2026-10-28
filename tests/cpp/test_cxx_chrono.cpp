@@ -2,7 +2,9 @@
 // text. Addition and subtraction that overflow the signed 64-bit count call
 // __prism_check. The header does not return a wrapping `a + b` as the sum
 // without that check, and the overflow path does not hand back a negative
-// wrapped count. This case does not compile the header.
+// wrapped count. Same-period duration_cast returns that count. A different
+// period is not declared. Sleep stays absent. This case does not compile
+// the header.
 
 #include <doctest/doctest.h>
 
@@ -82,4 +84,26 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     expect_checked(sub, "return duration<_Rep, _Period>(static_cast<_Rep>(__x - __y));");
     CHECK(add.find("INT-SIGNED-OVF") != std::string::npos);
     CHECK(sub.find("INT-SIGNED-OVF") != std::string::npos);
+
+    // Same-period cast exists. Sleep stays absent (checked above). The cast
+    // copies the count. It does not divide, wrap, or static_cast.
+    const auto cast_at = text.find("template <typename _ToDur, typename _Rep>");
+    REQUIRE(cast_at != std::string::npos);
+    const auto cast_end = text.find("\n// True when __a + __b", cast_at);
+    REQUIRE(cast_end != std::string::npos);
+    const std::string cast = text.substr(cast_at, cast_end - cast_at);
+    CHECK(cast.find("const duration<_Rep, __duration_period>& __d") != std::string::npos);
+    CHECK(cast.find("__duration_same_type<typename _ToDur::period, __duration_period>") != std::string::npos);
+    CHECK(cast.find("__duration_same_type<typename _ToDur::rep, _Rep>") != std::string::npos);
+    CHECK(cast.find("return _ToDur(__d.count());") != std::string::npos);
+    CHECK(cast.find("static_cast") == std::string::npos);
+    CHECK(cast.find('/') == std::string::npos);
+    CHECK(cast.find('%') == std::string::npos);
+    CHECK(cast.find('+') == std::string::npos);
+    CHECK(cast.find(" - ") == std::string::npos);
+    CHECK(text.find("inline constexpr bool __duration_same_type<_A, _A> = true;") != std::string::npos);
+    CHECK(text.find("A cast to a different period") != std::string::npos);
+    CHECK(text.find("still falls back") != std::string::npos);
+    CHECK(text.find("sleep_for(") == std::string::npos);
+    CHECK(text.find("sleep_until(") == std::string::npos);
 }

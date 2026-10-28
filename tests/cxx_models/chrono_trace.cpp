@@ -1,8 +1,9 @@
 // Trace of the partial <chrono> model (src/prism/pir/models/cxx/chrono).
 // Compile with that directory as -isystem so this include is the model.
-// Clocks and sleep are not called: they are not declared. `ovf` adds the
-// maximum signed 64-bit count to 1; the model must __prism_check and must
-// not print a wrapped negative count.
+// Clocks and sleep are not called: they are not declared. A same-period
+// duration_cast keeps the count. A different period is not named: that
+// cast is not declared. `ovf` adds the maximum signed 64-bit count to 1;
+// the model must __prism_check and must not print a wrapped negative count.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +25,8 @@ int main(int argc, char** argv) {
     std::chrono::duration<long long> b(3);
     std::printf("zero=%lld\n", static_cast<long long>(zero.count()));
     std::printf("sum=%lld\n", static_cast<long long>((a + b).count()));
+    const auto same = std::chrono::duration_cast<std::chrono::duration<long long>>(a);
+    std::printf("cast=%lld\n", static_cast<long long>(same.count()));
     std::chrono::duration<long long> d(5);
     std::chrono::duration<long long> e(1);
     std::printf("diff=%lld\n", static_cast<long long>((d - e).count()));
