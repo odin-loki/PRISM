@@ -16,10 +16,13 @@
 // return 0 and does not return a file position. tellp() on a basic_ofstream
 // that is not open is the same class of check, then __builtin_trap. The
 // return type is long. That path does not return 0 and does not return a
-// file position.
+// file position. gcount() returns 0. The return type is std::ptrdiff_t, which
+// is libstdc++ std::streamsize. This header does not include <ios>. Nothing
+// in this header reads a file, so that 0 is not a character count taken from
+// a file. gcount() does not change the open flag.
 //
 // There is no heap allocation. The destructor is defaulted and does not free.
-// Each object holds one bool.
+// Each object holds one bool. gcount() does not store a character count.
 //
 // open and close are not declared. A successful open would be a fake file.
 // So are ofstream, fstream, filebuf, basic_fstream, basic_filebuf, and
@@ -121,6 +124,11 @@ public:
                       "std::basic_ifstream::tellg on a stream that is not open");
         __builtin_trap();
     }
+
+    // Nothing in this header reads a file, so the extraction count is 0.
+    // That 0 is not a character count taken from a file. The open flag is
+    // left unchanged.
+    std::ptrdiff_t gcount() const { return 0; }
 
 private:
     bool _M_is_open = false;

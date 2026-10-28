@@ -5,8 +5,11 @@
 // that stream is the same class of check, then __builtin_trap. tellp on a
 // basic_ofstream that is not open is the same class of check, then
 // __builtin_trap. The return type of each is long. That path does not return
-// 0 and does not return a file position. The header is not included here:
-// this binary already uses the standard fstream in other translation units.
+// 0 and does not return a file position. gcount returns 0. Nothing in the
+// header reads a file, so that 0 is not a character count from a file, and
+// gcount does not change the open flag. See docs/finish-notes/fstream-gcount.md.
+// The header is not included here: this binary already uses the standard
+// fstream in other translation units.
 
 #include <doctest/doctest.h>
 
@@ -202,6 +205,7 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(tellg.find("streamoff") == std::string::npos);
     CHECK(tellg.find("fpos") == std::string::npos);
     CHECK(tellg.find("_M_is_open =") == std::string::npos);
+    CHECK(tellg.find("gcount") == std::string::npos);
     CHECK(tellg.find("tellp") == std::string::npos);
     CHECK(count_sub(src, "std::basic_ifstream::tellg on a stream that is not open") == 1);
     CHECK(count_sub(tellg, "__builtin_trap()") == 1);
@@ -230,10 +234,25 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(tellp.find("streamoff") == std::string::npos);
     CHECK(tellp.find("fpos") == std::string::npos);
     CHECK(tellp.find("_M_is_open =") == std::string::npos);
+    CHECK(tellp.find("gcount") == std::string::npos);
     CHECK(tellp.find("tellg") == std::string::npos);
     CHECK(count_sub(src, "std::basic_ofstream::tellp on a stream that is not open") == 1);
     CHECK(count_sub(src, "bool _M_is_open = false;") == 2);
     CHECK(count_sub(src, "__builtin_trap()") == 2);
+
+    const auto gcount_at = src.find("std::ptrdiff_t gcount() const");
+    CHECK(gcount_at != std::string::npos);
+    CHECK(gcount_at < src.find("class basic_ofstream"));
+    CHECK(has_ident(code, "gcount"));
+    const auto gcount = body_of(src, "std::ptrdiff_t gcount() const");
+    CHECK(gcount == "{ return 0; }");
+    CHECK(gcount.find("_M_is_open") == std::string::npos);
+    CHECK(gcount.find("__prism_check") == std::string::npos);
+    CHECK(gcount.find("__builtin_trap") == std::string::npos);
+    CHECK(gcount.find("fopen") == std::string::npos);
+    CHECK(gcount.find("fread") == std::string::npos);
+    CHECK(count_sub(src, "std::ptrdiff_t gcount() const") == 1);
+    CHECK(count_sub(gcount, "return") == 1);
 
     CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 7);
 }
