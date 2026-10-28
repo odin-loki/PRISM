@@ -1,7 +1,8 @@
 // Trace of std::stacktrace. `#include <stacktrace>` is the model when its
-// directory is first on the include path. A default trace has size 0.
-// current() has size 0 or 1. argv "oob" indexes an empty trace and must not
-// print a frame.
+// directory is first on the include path. A default trace has size 0 and
+// empty() is true. current() has size 0 or 1, and empty() is that size == 0.
+// empty() does not read a frame. argv "oob" indexes an empty trace and must
+// not print a frame.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,10 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "oob") == 0) {
         std::stacktrace empty;
+        if (!empty.empty()) {
+            std::printf("frame skip\n");
+            return 0;
+        }
         const void* ip = empty[0].native_handle();
         std::printf("frame %p\n", ip);
         return 0;
@@ -26,14 +31,18 @@ int main(int argc, char** argv) {
 
     std::stacktrace empty;
     std::printf("empty %zu\n", empty.size());
+    std::printf("eflag %d\n", empty.empty() ? 1 : 0);
 
     std::stacktrace cur = std::stacktrace::current();
     std::printf("current %zu\n", cur.size());
+    std::printf("cflag %d\n", cur.empty() ? 1 : 0);
     if (cur.size() == 1) {
         const void* ip = cur[0].native_handle();
         std::printf("frame %d\n", ip != nullptr ? 1 : 0);
     }
     if (empty.size() != 0) return 1;
+    if (!empty.empty()) return 4;
+    if (cur.empty() != (cur.size() == 0)) return 5;
     if (cur.size() > 1) return 2;
     if (cur.size() == 1 && cur[0].native_handle() == nullptr) return 3;
     return 0;

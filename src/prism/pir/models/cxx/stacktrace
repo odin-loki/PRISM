@@ -13,6 +13,10 @@
 // not stored. When the builtin does not exist, current() is empty and
 // size() is 0. size() is 0 or 1.
 //
+// empty() is true only when size() is 0. It does not read the stored
+// entry and it does not build a frame. An empty current() is empty. A
+// current() that stored one address is not empty.
+//
 // The entry does not carry a function name or a source line. Those
 // queries are not declared, so this file cannot invent them.
 //
@@ -83,7 +87,9 @@ public:
     // 0 when current() stored nothing. 1 when it stored the return address.
     size_type size() const noexcept { return _M_size; }
 
-    bool empty() const noexcept { return _M_size == 0; }
+    // True only when size() is 0. The body does not read _M_frame and does
+    // not build an entry.
+    bool empty() const noexcept { return size() == 0; }
 
     // Index >= size() fails the check, then traps. That path does not
     // return a frame. An empty trace has no stored address to hand back.

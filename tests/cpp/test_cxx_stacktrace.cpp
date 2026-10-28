@@ -1,6 +1,7 @@
 // The <stacktrace> model is one extensionless file. current() stores at most
-// one return address. operator[] checks the index and traps instead of
-// returning a frame. CMake's prism_tests source list is explicit (not a glob).
+// one return address. empty() is size() == 0 and does not read a frame.
+// operator[] checks the index and traps instead of returning a frame.
+// CMake's prism_tests source list is explicit (not a glob).
 
 #include <doctest/doctest.h>
 
@@ -105,6 +106,17 @@ TEST_CASE("cxx stacktrace model: one return address, and an index past size trap
     CHECK(src.find("size_type _M_size = 0;") != std::string::npos);
     CHECK(src.find("basic_stacktrace() noexcept = default;") != std::string::npos);
 
+    const auto empty_fn = body_of(src, "bool empty() const noexcept");
+    REQUIRE_FALSE(empty_fn.empty());
+    CHECK(empty_fn.find("return size() == 0;") != std::string::npos);
+    CHECK(empty_fn.find("_M_frame") == std::string::npos);
+    CHECK(empty_fn.find("_M_size") == std::string::npos);
+    CHECK(empty_fn.find("stacktrace_entry") == std::string::npos);
+    CHECK(empty_fn.find("native_handle") == std::string::npos);
+    CHECK(empty_fn.find("__builtin") == std::string::npos);
+    CHECK(empty_fn.find("basic_stacktrace") == std::string::npos);
+    CHECK(empty_fn.find("[") == std::string::npos);
+
     const auto index = body_of(src, "const_reference operator[](size_type __n) const");
     REQUIRE_FALSE(index.empty());
     const auto check = index.find("__prism_check");
@@ -130,17 +142,22 @@ TEST_CASE("cxx stacktrace: a default trace is empty and current() keeps at most 
     CHECK(empty.empty());
 
     const std::stacktrace cur = std::stacktrace::current();
-    CHECK(cur.size() == 0 || cur.size() == 1);
+    const bool no_frame = cur.size() == 0;
+    CHECK(cur.size() <= 1);
+    CHECK(cur.empty() == no_frame);
 #if defined(__has_builtin) && __has_builtin(__builtin_return_address)
     CHECK(cur.size() == 1);
+    CHECK_FALSE(cur.empty());
     REQUIRE(cur.size() == 1);
     CHECK(cur[0].native_handle() != nullptr);
 #elif defined(__GNUC__)
     CHECK(cur.size() == 1);
+    CHECK_FALSE(cur.empty());
     REQUIRE(cur.size() == 1);
     CHECK(cur[0].native_handle() != nullptr);
 #else
     CHECK(cur.size() == 0);
+    CHECK(cur.empty());
 #endif
 }
 #endif
