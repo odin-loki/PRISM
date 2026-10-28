@@ -801,6 +801,7 @@ if(PRISM_TESTS)
     tests/cpp/test_qsort_null.cpp
     tests/cpp/test_time_model.cpp
     tests/cpp/test_ctype.cpp
+    tests/cpp/test_ffs.cpp
     # C11 header: the test reads the shim comment as text and does not compile it.
     tests/cpp/test_stdatomic_shim.cpp
     tests/cpp/test_string_shim.cpp
