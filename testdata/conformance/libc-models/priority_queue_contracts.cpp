@@ -4,7 +4,8 @@
 // `extra.cxx_models` says "model: priority_queue"); see docs/PIR.md "C++
 // library models". Each function is one contract; `_false` ones must fail
 // for the class their yml names. At most 4 elements (size-bounded proofs).
-// emplace, swap, and the range constructors are not part of the model.
+// swap and the range constructors are not part of the model. emplace
+// constructs in a new node and returns void.
 #include <cassert>
 #include <priority_queue>
 
@@ -17,13 +18,13 @@ struct PqMin {
     bool operator()(int a, int b) const { return a > b; }
 };
 
-// push / size / empty: the top is the greatest of the pushed values.
+// push, emplace, size, and empty: the top is the greatest of the inserted values.
 int priority_queue_push_true(int x) {
     std::priority_queue<int> q;
     assert(q.empty());
     assert(q.size() == 0);
     q.push(1);
-    q.push(x);
+    q.emplace(x);
     q.push(0);
     assert(!q.empty());
     assert(q.size() == 3);

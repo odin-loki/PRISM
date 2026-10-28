@@ -7,11 +7,13 @@
 // element under the comparator (std::less by default). Equal keys are not
 // ordered by identity. Sift swaps node pointers, so a traced element is
 // move-constructed into its node once and destroyed on pop; it is not
-// move-assigned along the heap. `uaf` uses the reference from top() after
-// pop, which frees that node.
+// move-assigned along the heap. emplace constructs in the new node and
+// returns void. `uaf` uses the reference from top() after pop, which frees
+// that node.
 #include <cstdio>
 #include <priority_queue>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 struct IntSeq {
@@ -64,6 +66,21 @@ static void ints() {
     }
     std::printf("\n");
 
+    std::priority_queue<int> em;
+    static_assert(std::is_void_v<decltype(em.emplace(0))>);
+    em.emplace(3);
+    em.emplace(1);
+    em.emplace(4);
+    const int& kept = em.top();
+    em.emplace(9);
+    std::printf("emplace kept=%d top=%d size=%zu\n", kept, em.top(), em.size());
+    std::printf("emplace");
+    while (!em.empty()) {
+        std::printf(" %d", em.top());
+        em.pop();
+    }
+    std::printf("\n");
+
     std::priority_queue<int> eq;
     eq.push(2);
     eq.push(2);
@@ -92,6 +109,18 @@ static void traced() {
         q.push(E(1));
         q.push(E(3));
         q.push(E(2));
+        std::printf("\n");
+        while (!q.empty()) {
+            std::printf(" top%d", q.top().v);
+            q.pop();
+        }
+        std::printf("\n");
+    }
+    {
+        std::priority_queue<E> q;
+        q.emplace(4);
+        q.emplace(6);
+        q.emplace(5);
         std::printf("\n");
         while (!q.empty()) {
             std::printf(" top%d", q.top().v);
