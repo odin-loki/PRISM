@@ -295,11 +295,12 @@ inline path& path::replace_extension(const path& __rep) {
     std::size_t __keep = _M_len;
     if (__ext._M_len != 0 && __ext._M_len <= _M_len) __keep = _M_len - __ext._M_len;
 
-    // A replacement that is *this is read after that suffix is removed.
+    // A replacement that is *this is the whole original path, copied before
+    // the old buffer is released. The stem length is not that replacement.
     const bool __self = &__rep == this;
-    const bool __has = __self ? __keep != 0 : (__rep._M_len != 0 && __rep._M_str != nullptr);
+    const bool __has = __self ? _M_len != 0 : (__rep._M_len != 0 && __rep._M_str != nullptr);
     const char* __src = __self ? _M_str : __rep._M_str;
-    const std::size_t __rn = __self ? __keep : (__has ? __rep._M_len : 0);
+    const std::size_t __rn = __self ? _M_len : (__has ? __rep._M_len : 0);
     // An empty replacement removes a trailing extension and does not leave a
     // dot. A replacement that does not start with '.' gains one dot before it.
     const std::size_t __dot = (__has && __src[0] != '.') ? 1 : 0;

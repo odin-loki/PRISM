@@ -225,6 +225,7 @@ TEST_CASE("cxx filesystem model: replace_extension rewrites stored characters") 
     CHECK(repl.find("__prism_check") != std::string::npos);
     CHECK(repl.find("__builtin_trap()") != std::string::npos);
     CHECK(repl.find("replace_extension length does not fit") != std::string::npos);
+    CHECK(repl.find("const std::size_t __rn = __self ? _M_len :") != std::string::npos);
     CHECK(repl.find("::operator delete(") == std::string::npos);
     CHECK(repl.find("exists") == std::string::npos);
     CHECK(repl.find("lexically_normal") == std::string::npos);
