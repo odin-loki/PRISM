@@ -60,6 +60,14 @@
 // negate of the most negative signed value is __prism_check with class
 // INT-SIGNED-OVF, then __builtin_trap. That path does not negate it.
 // Unsigned negate is the built-in negation.
+//
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type argument. They are not function pointers.
+// logical_and returns the && of its arguments. logical_or returns the ||
+// of its arguments. logical_not returns the ! of its argument. The result
+// is that operator. A missing operator fails the template.
+// There is no stand-in boolean and no void specialization, so
+// std::logical_and<> and the same two are not declared.
 // This is not PROVED and not CLEAN.
 //
 // Not declared, so a unit that names one fails to compile against this header
@@ -209,9 +217,10 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 // plus, minus, multiplies, divides, modulus, and negate are renamed for
 // that include so this header can define them for one type argument.
 // equal_to, not_equal_to, less, and greater are renamed the same way.
+// logical_and, logical_or, and logical_not are renamed the same way.
 // identity is renamed for <bits/ranges_cmp.h> so ranges::less stays that
-// header's. The rest of <bits/stl_function.h> (logical and bitwise
-// functors, and the transparent-trait helpers) stays. If that bits header
+// header's. The rest of <bits/stl_function.h> (bitwise functors and the
+// transparent-trait helpers) stays. If that bits header
 // was already included, the rename is skipped and the libstdc++ objects
 // stay, and this header does not define a second one.
 #ifndef _STL_FUNCTION_H
@@ -225,6 +234,9 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 #define divides _Prism_libstd_divides
 #define modulus _Prism_libstd_modulus
 #define negate _Prism_libstd_negate
+#define logical_and _Prism_libstd_logical_and
+#define logical_or _Prism_libstd_logical_or
+#define logical_not _Prism_libstd_logical_not
 #include <bits/stl_function.h>
 #undef equal_to
 #undef not_equal_to
@@ -236,6 +248,9 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 #undef divides
 #undef modulus
 #undef negate
+#undef logical_and
+#undef logical_or
+#undef logical_not
 #define _PRISM_MODEL_FUNCTIONAL_CMP 1
 #endif
 
@@ -536,6 +551,36 @@ struct negate {
         } else {
             return -__x;
         }
+    }
+};
+
+// One type argument. The call is that operator. A missing operator fails
+// the requires clause. The result is that operator. There is no stand-in
+// boolean and no void specialization.
+template <typename _Tp>
+struct logical_and {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a && __b; }
+    {
+        return __a && __b;
+    }
+};
+
+template <typename _Tp>
+struct logical_or {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a || __b; }
+    {
+        return __a || __b;
+    }
+};
+
+template <typename _Tp>
+struct logical_not {
+    constexpr decltype(auto) operator()(const _Tp& __x) const
+        requires requires { !__x; }
+    {
+        return !__x;
     }
 };
 #endif

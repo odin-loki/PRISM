@@ -12,6 +12,10 @@
 // std::plus, std::minus, std::multiplies, std::divides, std::modulus, and
 // std::negate are function objects for one type. The happy path uses values
 // that fit, so libstdc++ and the model print the same lines.
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type. The happy path uses the operators, so libstdc++
+// and the model print the same lines. A result that is not a bool is not
+// on this trace.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
@@ -166,6 +170,13 @@ struct Quot {
     int v;
     friend constexpr Quot operator/(Quot a, Quot b) { return Quot{a.v / b.v}; }
     friend constexpr Quot operator%(Quot a, Quot b) { return Quot{a.v % b.v}; }
+};
+
+struct BoolOp {
+    int v;
+    friend constexpr bool operator&&(BoolOp a, BoolOp b) { return a.v && b.v; }
+    friend constexpr bool operator||(BoolOp a, BoolOp b) { return a.v || b.v; }
+    friend constexpr bool operator!(BoolOp a) { return !a.v; }
 };
 
 static void show() {
@@ -346,6 +357,18 @@ static void show() {
                   static_cast<signed char>(-128));
     static_assert(std::divides<bool>{}(true, true) == true);
     static_assert(std::plus<Sum>{}(Sum{2}, Sum{3}).v == 5);
+    static_assert(std::logical_and<int>{}(1, 1));
+    static_assert(!std::logical_and<int>{}(1, 0));
+    static_assert(std::logical_or<int>{}(0, 1));
+    static_assert(!std::logical_or<int>{}(0, 0));
+    static_assert(std::logical_not<int>{}(0));
+    static_assert(!std::logical_not<int>{}(1));
+    static_assert(std::logical_and<bool>{}(true, true));
+    static_assert(!std::logical_or<bool>{}(false, false));
+    static_assert(!std::logical_not<bool>{}(true));
+    static_assert(std::logical_and<BoolOp>{}(BoolOp{1}, BoolOp{1}));
+    static_assert(!std::logical_or<BoolOp>{}(BoolOp{0}, BoolOp{0}));
+    static_assert(std::logical_not<BoolOp>{}(BoolOp{0}));
 
     std::plus<int> padd;
     std::plus<int> padd2 = padd;
@@ -373,6 +396,23 @@ static void show() {
     std::printf("quot %d %d\n", std::divides<Quot>{}(q1, q2).v, std::modulus<Quot>{}(q1, q2).v);
     std::printf("bit %d\n", std::bit_and<int>{}(6, 3));
     std::printf("land %d\n", static_cast<int>(std::logical_and<int>{}(1, 0)));
+    std::logical_and<int> landf;
+    std::logical_and<int> landf2 = landf;
+    std::printf("landc %d %d\n", static_cast<int>(landf(1, 0)), static_cast<int>(landf2(1, 1)));
+    std::logical_or<int> lorf;
+    std::logical_or<int> lorf2 = lorf;
+    std::printf("lor %d %d\n", static_cast<int>(lorf(0, 1)), static_cast<int>(lorf2(0, 0)));
+    std::logical_not<int> lnotf;
+    std::logical_not<int> lnotf2 = lnotf;
+    std::printf("lnot %d %d\n", static_cast<int>(lnotf(0)), static_cast<int>(lnotf2(1)));
+    std::printf("lbool %d %d %d\n", static_cast<int>(std::logical_and<bool>{}(true, false)),
+                static_cast<int>(std::logical_or<bool>{}(false, false)),
+                static_cast<int>(std::logical_not<bool>{}(true)));
+    const BoolOp b1{1};
+    const BoolOp b0{0};
+    std::printf("blog %d %d %d\n", static_cast<int>(std::logical_and<BoolOp>{}(b1, b0)),
+                static_cast<int>(std::logical_or<BoolOp>{}(b0, b1)),
+                static_cast<int>(std::logical_not<BoolOp>{}(b0)));
 }
 
 int main(int argc, char** argv) {

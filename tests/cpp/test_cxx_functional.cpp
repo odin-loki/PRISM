@@ -20,6 +20,9 @@
 // modulus is FUNC-CONTRACT then a trap and does not print a quotient.
 // Signed divides of the minimum by -1 is that same class then a trap.
 // negate of the most negative signed value is INT-SIGNED-OVF then a trap.
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type argument. Each returns that operator. A missing
+// operator fails the template. There is no stand-in boolean.
 
 #include <doctest/doctest.h>
 
@@ -417,6 +420,34 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     CHECK(text.find("for one type argument.") != std::string::npos);
     CHECK(text.find("There is no transparent call") != std::string::npos);
 
+    for (const char* name : {"struct logical_and", "struct logical_or", "struct logical_not"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct logical_and<void>", "struct logical_or<void>", "struct logical_not<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("return __a && __b;") != std::string::npos);
+    CHECK(text.find("return __a || __b;") != std::string::npos);
+    CHECK(text.find("return !__x;") != std::string::npos);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const") == 2);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __x) const") == 1);
+    CHECK(text.find("requires requires { __a && __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a || __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { !__x; }") != std::string::npos);
+    CHECK(text.find("The result is that operator.") != std::string::npos);
+    CHECK(text.find("A missing operator fails the template.") != std::string::npos);
+    CHECK(text.find("There is no stand-in boolean") != std::string::npos);
+    CHECK(code.find("#define logical_and _Prism_libstd_logical_and") != std::string::npos);
+    CHECK(code.find("#define logical_or _Prism_libstd_logical_or") != std::string::npos);
+    CHECK(code.find("#define logical_not _Prism_libstd_logical_not") != std::string::npos);
+    CHECK(code.find("#undef logical_and") != std::string::npos);
+    CHECK(code.find("#undef logical_or") != std::string::npos);
+    CHECK(code.find("#undef logical_not") != std::string::npos);
+    CHECK(text.find("return static_cast<bool>(__a && __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<bool>(__a || __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<bool>(!__x)") == std::string::npos);
+
     struct Arm {
         const char* check;
         const char* result;
@@ -557,6 +588,11 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_quot = false;
     bool saw_bit = false;
     bool saw_land = false;
+    bool saw_landc = false;
+    bool saw_lor = false;
+    bool saw_lnot = false;
+    bool saw_lbool = false;
+    bool saw_blog = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -611,6 +647,11 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "quot 3 1") saw_quot = true;
         if (line == "bit 2") saw_bit = true;
         if (line == "land 0") saw_land = true;
+        if (line == "landc 0 1") saw_landc = true;
+        if (line == "lor 1 0") saw_lor = true;
+        if (line == "lnot 1 0") saw_lnot = true;
+        if (line == "lbool 0 0 0") saw_lbool = true;
+        if (line == "blog 0 1 1") saw_blog = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -670,6 +711,11 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_quot);
     CHECK(saw_bit);
     CHECK(saw_land);
+    CHECK(saw_landc);
+    CHECK(saw_lor);
+    CHECK(saw_lnot);
+    CHECK(saw_lbool);
+    CHECK(saw_blog);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
@@ -896,4 +942,89 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string add_only_err;
     CHECK_FALSE(syntax_only(c.cxx, add_only, false, &add_only_err));
     CHECK_FALSE(syntax_only(c.cxx, add_only, true, &add_only_err));
+
+    const fs::path log_ok = c.tmp / "log_ok.cpp";
+    std::ofstream(log_ok) << "#include <functional>\n"
+                             "struct AndOnly {\n"
+                             "  int v;\n"
+                             "  friend bool operator&&(AndOnly a, AndOnly b) { return a.v && b.v; }\n"
+                             "};\n"
+                             "struct BoolOp {\n"
+                             "  int v;\n"
+                             "  friend bool operator&&(BoolOp a, BoolOp b) { return a.v && b.v; }\n"
+                             "  friend bool operator||(BoolOp a, BoolOp b) { return a.v || b.v; }\n"
+                             "  friend bool operator!(BoolOp a) { return !a.v; }\n"
+                             "};\n"
+                             "int use(int a, bool b, AndOnly x, BoolOp p, BoolOp q) {\n"
+                             "  return static_cast<int>(std::logical_and<int>{}(a, 1))\n"
+                             "       + static_cast<int>(std::logical_or<int>{}(a, 0))\n"
+                             "       + static_cast<int>(std::logical_not<int>{}(a))\n"
+                             "       + static_cast<int>(std::logical_and<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::logical_or<bool>{}(b, false))\n"
+                             "       + static_cast<int>(std::logical_not<bool>{}(b))\n"
+                             "       + static_cast<int>(std::logical_and<AndOnly>{}(x, x))\n"
+                             "       + static_cast<int>(std::logical_and<BoolOp>{}(p, q))\n"
+                             "       + static_cast<int>(std::logical_or<BoolOp>{}(p, q))\n"
+                             "       + static_cast<int>(std::logical_not<BoolOp>{}(p))\n"
+                             "       + std::bit_and<int>{}(a, 1);\n"
+                             "}\n";
+    std::string log_ok_err;
+    CHECK(syntax_only(c.cxx, log_ok, false, &log_ok_err));
+    CHECK(syntax_only(c.cxx, log_ok, true, &log_ok_err));
+
+    // The operator result is Gate, not a bool. libstdc++ returns bool, so .v fails there.
+    const fs::path log_gate = c.tmp / "log_gate.cpp";
+    std::ofstream(log_gate) << "#include <functional>\n"
+                               "struct Gate {\n"
+                               "  int v;\n"
+                               "  friend Gate operator&&(Gate a, Gate b) { return Gate{a.v && b.v}; }\n"
+                               "  friend Gate operator||(Gate a, Gate b) { return Gate{a.v || b.v}; }\n"
+                               "  friend Gate operator!(Gate a) { return Gate{!a.v}; }\n"
+                               "};\n"
+                               "int use(Gate a, Gate b) {\n"
+                               "  return std::logical_and<Gate>{}(a, b).v\n"
+                               "       + std::logical_or<Gate>{}(a, b).v\n"
+                               "       + std::logical_not<Gate>{}(a).v;\n"
+                               "}\n";
+    std::string log_gate_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_gate, false, &log_gate_err));
+    CHECK(syntax_only(c.cxx, log_gate, true, &log_gate_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path log_tr = c.tmp / "log_tr.cpp";
+    std::ofstream(log_tr) << "#include <functional>\n"
+                             "int use(int a, bool b) {\n"
+                             "  return static_cast<int>(std::logical_and<>{}(a, 0))\n"
+                             "       + static_cast<int>(std::logical_or<>{}(a, 1))\n"
+                             "       + static_cast<int>(std::logical_not<>{}(b));\n"
+                             "}\n";
+    std::string log_tr_err;
+    CHECK(syntax_only(c.cxx, log_tr, false, &log_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_tr, true, &log_tr_err));
+
+    const fs::path log_none = c.tmp / "log_none.cpp";
+    std::ofstream(log_none) << "#include <functional>\n"
+                               "struct NoLog { int v; };\n"
+                               "int use(NoLog a, NoLog b) {\n"
+                               "  return static_cast<int>(std::logical_and<NoLog>{}(a, b))\n"
+                               "       + static_cast<int>(std::logical_or<NoLog>{}(a, b))\n"
+                               "       + static_cast<int>(std::logical_not<NoLog>{}(a));\n"
+                               "}\n";
+    std::string log_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_none, false, &log_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_none, true, &log_none_err));
+
+    const fs::path log_or_missing = c.tmp / "log_or_missing.cpp";
+    std::ofstream(log_or_missing) << "#include <functional>\n"
+                                     "struct AndOnly {\n"
+                                     "  int v;\n"
+                                     "  friend bool operator&&(AndOnly a, AndOnly b) { return a.v && b.v; }\n"
+                                     "};\n"
+                                     "int use(AndOnly a, AndOnly b) {\n"
+                                     "  return static_cast<int>(std::logical_and<AndOnly>{}(a, b))\n"
+                                     "       + static_cast<int>(std::logical_or<AndOnly>{}(a, b));\n"
+                                     "}\n";
+    std::string log_or_missing_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_or_missing, false, &log_or_missing_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_or_missing, true, &log_or_missing_err));
 }
