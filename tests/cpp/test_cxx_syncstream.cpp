@@ -5,8 +5,10 @@
 //
 // A write at the size is a __prism_check. A read at the size is a
 // __prism_check and does not load the pointer. sungetc at offset 0 is a
-// __prism_check and does not decrement or load before the buffer. The
-// header does not define emit.
+// __prism_check and does not decrement or load before the buffer. sputn
+// with a negative count is a __prism_check then __builtin_trap and does
+// not write. A count of 0 returns 0 and does not read. A positive count
+// stores only into the remaining buffer. The header does not define emit.
 
 #include <doctest/doctest.h>
 
@@ -251,8 +253,8 @@ bool checks_then_line(const fs::path& exe, const char* arg, const char* line, co
 
 }  // namespace
 
-TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a step back at offset 0 is a check, and "
-          "emit is not defined") {
+TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a step back at offset 0 is a check, "
+          "sputn stores only the remaining bytes, and emit is not defined") {
     const fs::path header = syncstream_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -269,6 +271,7 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(src.find("#include <span>") == std::string::npos);
     CHECK(src.find("#include <sstream>") == std::string::npos);
     CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <ostream>") == std::string::npos);
     CHECK(src.find("#include <spanstream>") == std::string::npos);
     CHECK(src.find("#include <mutex>") == std::string::npos);
@@ -285,7 +288,9 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     REQUIRE(ctor != std::string::npos);
     const auto sputc_at = src.find("void sputc(", ctor);
     REQUIRE(sputc_at != std::string::npos);
-    const auto sgetc_at = src.find("int sgetc(", sputc_at);
+    const auto sputn_at = src.find("ptrdiff_t sputn(", sputc_at);
+    REQUIRE(sputn_at != std::string::npos);
+    const auto sgetc_at = src.find("int sgetc(", sputn_at);
     REQUIRE(sgetc_at != std::string::npos);
     const std::string ctor_body = src.substr(ctor, sputc_at - ctor);
     CHECK(ctor_body.find("__prism_check((__buf != nullptr || __n == 0) ? 1 : 0, \"FUNC-CONTRACT\",") !=
@@ -293,7 +298,7 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(ctor_body.find("basic_syncbuf constructed with a null buffer and a non-zero size") != std::string::npos);
     CHECK(ctor_body.find("if (!(__buf != nullptr || __n == 0)) _M_size = 0;") != std::string::npos);
 
-    const std::string sputc = src.substr(sputc_at, sgetc_at - sputc_at);
+    const std::string sputc = src.substr(sputc_at, sputn_at - sputc_at);
     CHECK(sputc.find("const int __ok = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
     CHECK(sputc.find("__prism_check(__ok, \"MEM-OOB-WRITE\", \"basic_syncbuf::sputc would write past the caller "
                      "buffer\")") != std::string::npos);
@@ -308,6 +313,37 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(sputc.find("if (__ok) {") != std::string::npos);
     CHECK(sputc.find("_M_off =") == std::string::npos);
     CHECK(sputc.find("++_M_off;", adv_at + 1) == std::string::npos);
+
+    const std::string sputn = src.substr(sputn_at, sgetc_at - sputn_at);
+    CHECK(sputn.find("__prism_check((__n >= 0) ? 1 : 0, \"FUNC-CONTRACT\",") != std::string::npos);
+    CHECK(sputn.find("basic_syncbuf::sputn count is negative") != std::string::npos);
+    const auto ncheck = sputn.find("__prism_check");
+    const std::string trap_line = "if (__n < 0) __builtin_trap();";
+    const auto ntrap = sputn.find(trap_line);
+    const auto nzero = sputn.find("if (__n == 0) return 0;");
+    const auto nroom = sputn.find("if (_M_off >= _M_size) return 0;");
+    const auto nbound = sputn.find("while (__stored < __n && _M_off < _M_size)");
+    const std::string store_line = "_M_buf[_M_off] = __s[__stored];";
+    const auto nwrite = sputn.find(store_line);
+    const auto nret = sputn.find("return __stored;");
+    REQUIRE(ncheck != std::string::npos);
+    REQUIRE(ntrap != std::string::npos);
+    REQUIRE(nzero != std::string::npos);
+    REQUIRE(nroom != std::string::npos);
+    REQUIRE(nbound != std::string::npos);
+    REQUIRE(nwrite != std::string::npos);
+    REQUIRE(nret != std::string::npos);
+    CHECK(ncheck < ntrap);
+    CHECK(ntrap < nzero);
+    CHECK(nzero < nroom);
+    CHECK(nroom < nbound);
+    CHECK(nbound < nwrite);
+    CHECK(nwrite < nret);
+    CHECK(sputn.find("__s[", nwrite + store_line.size()) == std::string::npos);
+    CHECK(sputn.find("_M_buf[", nwrite + store_line.size()) == std::string::npos);
+    CHECK(sputn.find("__builtin_trap()", ntrap + trap_line.size()) == std::string::npos);
+    CHECK(sputn.find("return __n;") == std::string::npos);
+    CHECK(sputn.find("++_M_off;", sputn.find("++_M_off;") + 1) == std::string::npos);
 
     const auto sungetc_at = src.find("int sungetc(", sgetc_at);
     REQUIRE(sungetc_at != std::string::npos);
@@ -363,6 +399,7 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(sungetc.find("++_M_off") == std::string::npos);
 
     CHECK(defines_call(src, "sputc"));
+    CHECK(defines_call(src, "sputn"));
     CHECK(defines_call(src, "sgetc"));
     CHECK(defines_call(src, "sungetc"));
     CHECK_FALSE(defines_call(src, "emit"));
@@ -439,4 +476,23 @@ TEST_CASE("cxx syncstream model: one stored byte stays in the caller buffer") {
                            "CHECK MEM-OOB-READ: basic_syncbuf::sungetc would read before the caller buffer"));
     CHECK(one_check_then_line(mod, "stay", "stayed -1 65", "MEM-OOB-READ",
                               "basic_syncbuf::sungetc would read before the caller buffer", "MEM-OOB-WRITE"));
+    auto put = run_lines(mod, "put");
+    CHECK(has_line(put, "put 3"));
+    CHECK(has_line(put, "keptn 65 98 67 0"));
+    auto zero = run_lines(mod, "zero");
+    CHECK(has_line(zero, "zero 0 90"));
+    auto room = run_lines(mod, "room");
+    CHECK(has_line(room, "room 2 65 66"));
+    auto noroom = run_lines(mod, "noroom");
+    CHECK(has_line(noroom, "noroom 0 65"));
+    auto emptyn = run_lines(mod, "emptyn");
+    CHECK(has_line(emptyn, "emptyn 0 90"));
+    auto rest = run_lines(mod, "rest");
+    CHECK(has_line(rest, "rest 3 65 66 67 68"));
+    CHECK(is_check(mod, "neg", "FUNC-CONTRACT", "basic_syncbuf::sputn count is negative", "stored"));
+    CHECK(is_check(mod, "neggo", "FUNC-CONTRACT", "basic_syncbuf::sputn count is negative", "stored"));
+    CHECK(read_then_check(mod, "after", "filled 2", "extra", "MEM-OOB-WRITE",
+                          "basic_syncbuf::sputc would write past the caller buffer"));
+    CHECK(one_check_then_line(mod, "putforced", "putforced 0", "FUNC-CONTRACT",
+                              "basic_syncbuf constructed with a null buffer and a non-zero size", "MEM-OOB-WRITE"));
 }
