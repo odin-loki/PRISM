@@ -42,6 +42,8 @@ expected:
   memcmp_nul_false: false
   memchr_true: true
   memchr_oob_false: false
+  memrchr_true: true
+  memrchr_first_false: false
   strdup_true: true
   strdup_null_false: false
 expect_class:  # the violation each false harness plants
@@ -65,4 +67,5 @@ expect_class:  # the violation each false harness plants
   memset_int_false: "FUNC-CONTRACT"
   memcmp_nul_false: "FUNC-CONTRACT"
   memchr_oob_false: "MEM-OOB-READ"
+  memrchr_first_false: "FUNC-CONTRACT"
   strdup_null_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"

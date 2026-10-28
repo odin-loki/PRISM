@@ -260,6 +260,27 @@ void *memchr(const void *s, int c, size_t n) {
     return 0;
 }
 
+/* memrchr returns a pointer to the last of the n bytes at s whose unsigned
+ * value equals (unsigned char)(c & 0xff), or a null pointer when none does.
+ * n == 0 returns a null pointer and does not read.
+ * A null s with n > 0 is STR-NULL-ARG and returns a null pointer. That path
+ * does not index s.
+ * The scan reads only those n bytes, from the last byte backward.
+ * This is not PROVED and not CLEAN. */
+void *memrchr(const void *s, int c, size_t n) {
+    if (n == 0) return 0;
+    __prism_check(s != 0, "STR-NULL-ARG", "memrchr() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    const unsigned char *x = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    size_t i = n;
+    while (i > 0) {
+        --i;
+        if (x[i] == want) return (void *)(x + i);
+    }
+    return 0;
+}
+
 void *malloc(size_t n);
 
 char *strdup(const char *s) {

@@ -451,6 +451,37 @@ int memchr_oob_false(int n) {
     return memchr(s, 2, (size_t)n) != 0;
 }
 
+/* POSIX memrchr: the last byte equal to (unsigned char)c among n bytes.
+ * n == 0 returns a null pointer and does not read. */
+int memrchr_true(int c, int n, int j) {
+    char s[N];
+    char dup[4] = {'a', 'b', 'a', 'c'};
+    if (n < 0 || n > N) return 0;
+    MAKE_BYTES(s, N);
+    assert(memrchr(s, c, 0) == 0);
+    assert(memrchr(dup, 'a', 4) == dup + 2);
+    assert(memrchr(dup, 'c', 4) == dup + 3);
+    assert(memrchr(dup, 'z', 4) == 0);
+    if (n == 0 || j < 0 || j >= n) return 0;
+    char *r = (char *)memrchr(s, c, (size_t)n);
+    if (r) {
+        long i = r - s;
+        assert(i >= 0 && i < n);
+        assert((unsigned char)*r == (unsigned char)c);
+        if (j > i) assert((unsigned char)s[j] != (unsigned char)c);
+    } else {
+        assert((unsigned char)s[j] != (unsigned char)c);
+    }
+    return 0;
+}
+
+/* Wrong contract: memrchr returns the first match. */
+int memrchr_first_false(void) {
+    char s[4] = {'a', 'b', 'a', 'c'};
+    assert(memrchr(s, 'a', 4) == s);
+    return 0;
+}
+
 /* POSIX strdup: NULL (allocation failure) or a fresh copy. */
 int strdup_true(int k, int j) {
     char s[N];
