@@ -855,6 +855,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_filesystem.cpp
     tests/cpp/test_cxx_condition_variable.cpp
     tests/cpp/test_cxx_stacktrace.cpp
+    tests/cpp/test_cxx_stack.cpp
     tests/cpp/test_cxx_typeindex.cpp
     tests/cpp/test_cxx_algorithm.cpp
     tests/cpp/test_cxx_coroutine.cpp
