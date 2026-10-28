@@ -32,6 +32,10 @@ time_t time(time_t *t) {
  * day returns (time_t)-1 and is not a successful calendar time of 0.
  * No epoch is computed. mktime is not PROVED and not CLEAN. */
 time_t mktime(struct tm *tp) {
+    if (tp == 0) {
+        __prism_check(0, "PTR-NULL-DEREF", "mktime() called with a null pointer");
+        return (time_t)-1;
+    }
     int mon = tp->tm_mon;
     int mday = tp->tm_mday;
     if (mon < 0 || mon > 11 || mday < 1 || mday > 31) {

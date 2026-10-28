@@ -96,6 +96,9 @@ TEST_CASE("mktime model: month 99 is not a successful calendar time") {
 
     const auto body = function_body(src, "time_t mktime(");
     REQUIRE(!body.empty());
+    const auto nullg = body.find("if (tp == 0)");
+    REQUIRE(nullg != std::string::npos);
+    CHECK(nullg < body.find("tp->tm_mon"));
     const auto cond = body.find("if (mon < 0 || mon > 11 || mday < 1 || mday > 31)");
     REQUIRE(cond != std::string::npos);
     CHECK(body.find("tp->tm_mon") != std::string::npos);
