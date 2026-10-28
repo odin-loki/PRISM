@@ -1,7 +1,8 @@
 // The <spanstream> model is a partial basic_spanbuf. These checks read the
 // header text: sputc at the size is a __prism_check and does not write,
-// sgetc at the size is a __prism_check and does not read, and the destructor
-// is defaulted or does not call free.
+// sgetc at the size is a __prism_check and does not read, sungetc at offset
+// 0 is a __prism_check and does not read before the buffer, and the
+// destructor is defaulted or does not call free.
 
 #include <doctest/doctest.h>
 
@@ -129,4 +130,60 @@ TEST_CASE("cxx spanstream model: sgetc at size is a read check and does not load
     const auto in_range = sgetc.substr(guard, eof - guard);
     CHECK(in_range.find("return -1") == std::string::npos);
     CHECK(in_range.find("++_M_off") != std::string::npos);
+}
+
+TEST_CASE("cxx spanstream model: sungetc at offset 0 is a read check and does not load") {
+    const auto header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "spanstream";
+    const auto src = slurp(header);
+    REQUIRE(!src.empty());
+
+    const auto sungetc = body_of(src, "int sungetc(");
+    REQUIRE(!sungetc.empty());
+    CHECK(sungetc.find("MEM-OOB-READ") != std::string::npos);
+    CHECK(sungetc.find("MEM-OOB-WRITE") == std::string::npos);
+    CHECK(sungetc.find("std::basic_spanbuf::sungetc read before the buffer") != std::string::npos);
+    CHECK(sungetc.find("_M_off > 0") != std::string::npos);
+    CHECK(sungetc.find("_M_off < _M_size") == std::string::npos);
+
+    const auto check = sungetc.find("__prism_check");
+    const auto guard = sungetc.find("if (_M_off > 0)");
+    const auto dec = sungetc.find("--_M_off");
+    const std::string load_expr = "static_cast<int>(static_cast<unsigned char>(_M_ptr[_M_off]))";
+    const auto load = sungetc.find(load_expr);
+    const auto eof = sungetc.find("return -1;");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(guard != std::string::npos);
+    REQUIRE(dec != std::string::npos);
+    REQUIRE(load != std::string::npos);
+    REQUIRE(eof != std::string::npos);
+    CHECK(check < guard);
+    CHECK(guard < dec);
+    CHECK(dec < load);
+    CHECK(load < eof);
+    const auto ptr = sungetc.find("_M_ptr");
+    REQUIRE(ptr != std::string::npos);
+    CHECK(ptr > dec);
+    CHECK(ptr >= load);
+    CHECK(ptr < load + load_expr.size());
+    CHECK(sungetc.find("_M_ptr", load + load_expr.size()) == std::string::npos);
+    CHECK(sungetc.find("--_M_off", dec + 1) == std::string::npos);
+    CHECK(sungetc.find("++_M_off") == std::string::npos);
+    CHECK(sungetc.find("_M_off -") == std::string::npos);
+    CHECK(sungetc.find("_M_off-") == std::string::npos);
+    CHECK(sungetc.find("return -1;", eof + 1) == std::string::npos);
+    CHECK(sungetc.find("_M_ptr[_M_off] =") == std::string::npos);
+    CHECK(sungetc.substr(eof).find("_M_ptr") == std::string::npos);
+    CHECK(sungetc.substr(eof).find("--_M_off") == std::string::npos);
+
+    const auto before = sungetc.substr(0, guard);
+    CHECK(before.find("__prism_check") != std::string::npos);
+    CHECK(before.find("--_M_off") == std::string::npos);
+    CHECK(before.find("_M_off =") == std::string::npos);
+    CHECK(before.find("_M_ptr") == std::string::npos);
+    CHECK(before.find("return -1") == std::string::npos);
+
+    const auto in_range = sungetc.substr(guard, eof - guard);
+    CHECK(in_range.find("return -1") == std::string::npos);
+    CHECK(in_range.find("--_M_off") != std::string::npos);
+    CHECK(in_range.find(load_expr) != std::string::npos);
 }

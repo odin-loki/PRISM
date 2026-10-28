@@ -21,6 +21,13 @@
 // only as that end signal. A null pointer with size 0 is that same end:
 // the pointer is not read.
 //
+// sungetc steps the offset back one when it is greater than 0, then returns
+// the unsigned char at the new offset, so 255 is not an end signal. When the
+// offset is already 0, sungetc is a precondition failure (__prism_check,
+// MEM-OOB-READ) and does not decrement and does not read before the buffer.
+// It then returns -1 only after that check. A null pointer with size 0 takes
+// that same offset-0 path and is not read.
+//
 // Omitted names are not declared here. A use of one fails to compile against
 // this header, and the pir stage falls back to libstdc++ (extra.cxx_models).
 // They are omitted because declaring them would include the span or sstream
@@ -93,6 +100,22 @@ public:
         if (_M_off < _M_size) {
             const int __r = static_cast<int>(static_cast<unsigned char>(_M_ptr[_M_off]));
             ++_M_off;
+            return __r;
+        }
+        return -1;
+    }
+
+    // One character back when the offset is greater than 0: the offset moves
+    // back one, then that byte is returned as unsigned char (0..255). When
+    // the offset is already 0, this is a precondition failure and the pointer
+    // is not read. The offset is not decremented. -1 is char_traits-style
+    // EOF, only that end signal, and only after the check. A null pointer
+    // with size 0 takes this path and is not read.
+    int sungetc() {
+        __prism_check(_M_off > 0, "MEM-OOB-READ", "std::basic_spanbuf::sungetc read before the buffer");
+        if (_M_off > 0) {
+            --_M_off;
+            const int __r = static_cast<int>(static_cast<unsigned char>(_M_ptr[_M_off]));
             return __r;
         }
         return -1;

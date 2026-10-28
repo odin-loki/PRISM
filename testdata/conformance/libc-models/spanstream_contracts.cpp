@@ -53,3 +53,29 @@ int spanbuf_getc_null0_false(int) {
     std::basic_spanbuf<char> b(p, 0);
     return b.sgetc();
 }
+
+// After one sgetc, sungetc steps the offset back and returns that same byte
+// as an unsigned char. 255 is 255, not the end signal.
+int spanbuf_sungetc_true(int) {
+    char buf[4] = {static_cast<char>(static_cast<unsigned char>(255)), 'B', 'C', 'D'};
+    std::basic_spanbuf<char> b(buf, 4);
+    b.sgetc();
+    return b.sungetc();
+}
+
+// sungetc when the offset is already 0. The buffer has bytes, and this still
+// does not read before them and does not decrement. -1 is only the end
+// signal after the MEM-OOB-READ check.
+int spanbuf_sungetc_off0_false(int) {
+    char buf[4] = {'A', 'B', 'C', 'D'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return b.sungetc();
+}
+
+// A null pointer with size 0 starts at offset 0. sungetc takes that path and
+// does not read the pointer.
+int spanbuf_sungetc_null0_false(int) {
+    char* p = nullptr;
+    std::basic_spanbuf<char> b(p, 0);
+    return b.sungetc();
+}
