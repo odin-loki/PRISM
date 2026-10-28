@@ -3,8 +3,11 @@
 // (src/prism/pir/models/cxx/expected) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
-// and_then, or_else, transform, and value_or are not called: the model does
-// not declare them.
+// and_then calls the function with the stored T and returns what it returns.
+// On an unexpected it does not call the function; the result holds that same
+// E and does not invent a T. or_else calls the function with the stored E.
+// On a value it does not call the function; the result holds that stored T.
+// transform and value_or are not called: the model does not declare them.
 //
 // argv "value" calls value() on an unexpected. argv "star" calls operator* on
 // an unexpected. argv "error" calls error() on a success value. The model must
@@ -45,6 +48,8 @@ struct R {
     ~R() { std::printf("ed%d\n", v); }
 };
 
+static void show_monadic();
+
 static void show() {
     std::expected<int, int> def;
     std::printf("def %d %d\n", static_cast<int>(def.has_value()), def.value());
@@ -71,6 +76,114 @@ static void show() {
 
     std::expected<int, R> err(std::unexpected<R>(R(9)));
     std::printf("err %d\n", err.error().v);
+
+    show_monadic();
+}
+
+// and_then / or_else. Lines are the contract: a value calls and_then and does
+// not call or_else; an unexpected calls or_else and does not call and_then.
+// E and R have no default constructor, so inventing a T or an E would not
+// compile (and a call that should be skipped prints callT / callR).
+static void show_monadic() {
+    std::expected<int, int> ok(42);
+    auto doubled = ok.and_then([](int v) { return std::expected<int, int>(v * 2); });
+    std::printf("and_then %d %d\n", static_cast<int>(doubled.has_value()), doubled.value());
+
+    int and_calls = 0;
+    std::expected<int, int> bad(std::unexpected<int>(9));
+    auto skipped = bad.and_then([&](int v) {
+        ++and_calls;
+        return std::expected<int, int>(v);
+    });
+    std::printf("and_then_unex %d %d %d\n", and_calls, static_cast<int>(skipped.has_value()),
+                skipped.error());
+
+    int or_calls = 0;
+    auto kept = ok.or_else([&](int e) {
+        ++or_calls;
+        return std::expected<int, int>(std::unexpected<int>(e));
+    });
+    std::printf("or_else %d %d %d\n", or_calls, static_cast<int>(kept.has_value()), kept.value());
+
+    auto recovered = bad.or_else([](int e) { return std::expected<int, int>(e + 2); });
+    std::printf("or_else_unex %d %d\n", static_cast<int>(recovered.has_value()), recovered.value());
+
+    std::expected<E, int> no_t(std::unexpected<int>(4));
+    auto nt = no_t.and_then([](const E& x) {
+        std::printf("callT %d\n", x.v);
+        return std::expected<E, int>(x);
+    });
+    std::printf("and_then_not %d %d\n", static_cast<int>(nt.has_value()), nt.error());
+
+    std::expected<int, R> no_e(42);
+    auto ne = no_e.or_else([](const R& r) {
+        std::printf("callR %d\n", r.v);
+        return std::expected<int, R>(std::unexpected<R>(r));
+    });
+    std::printf("or_else_not %d %d\n", static_cast<int>(ne.has_value()), ne.value());
+
+    std::expected<E, int> held_m(E(6));
+    auto ht = held_m.and_then([](const E& x) {
+        std::printf("got %d\n", x.v);
+        return std::expected<int, int>(x.v);
+    });
+    std::printf("and_then_val %d\n", ht.value());
+
+    std::expected<E, int> ok_e(E(2));
+    auto oe = ok_e.or_else([](int err) {
+        std::printf("callEo %d\n", err);
+        return std::expected<E, int>(std::unexpected<int>(err));
+    });
+    std::printf("or_else_e %d %d\n", static_cast<int>(oe.has_value()), oe.value().v);
+
+    std::expected<int, R> unex_r(std::unexpected<R>(R(3)));
+    auto ar = unex_r.and_then([](int v) {
+        std::printf("callRu %d\n", v);
+        return std::expected<int, R>(v);
+    });
+    std::printf("and_then_r %d %d\n", static_cast<int>(ar.has_value()), ar.error().v);
+
+    const std::expected<int, int> cok(42);
+    auto ca = cok.and_then([](int v) { return std::expected<int, int>(v + 3); });
+    std::printf("and_then_const %d\n", ca.value());
+
+    const std::expected<int, int> cbad(std::unexpected<int>(2));
+    auto co = cbad.or_else([](int e) { return std::expected<int, int>(e + 8); });
+    std::printf("or_else_const %d\n", co.value());
+
+    auto rv = std::expected<int, int>(11).and_then(
+        [](int v) { return std::expected<int, int>(v + 4); });
+    std::printf("and_then_rv %d\n", rv.value());
+
+    auto rvb = std::expected<int, int>(std::unexpected<int>(6)).or_else(
+        [](int e) { return std::expected<int, int>(e + 1); });
+    std::printf("or_else_rv %d\n", rvb.value());
+
+    auto rve = std::expected<int, int>(std::unexpected<int>(6)).and_then([](int v) {
+        std::printf("callRv %d\n", v);
+        return std::expected<int, int>(v);
+    });
+    std::printf("and_then_rv_unex %d %d\n", static_cast<int>(rve.has_value()), rve.error());
+
+    auto rvo = std::expected<int, int>(8).or_else([](int e) {
+        std::printf("callOr %d\n", e);
+        return std::expected<int, int>(std::unexpected<int>(e));
+    });
+    std::printf("or_else_rv_val %d %d\n", static_cast<int>(rvo.has_value()), rvo.value());
+
+    const std::expected<int, int> cok_unex(std::unexpected<int>(4));
+    auto cmv = static_cast<const std::expected<int, int>&&>(cok_unex).and_then([](int v) {
+        std::printf("callCmv %d\n", v);
+        return std::expected<int, int>(v);
+    });
+    std::printf("and_then_cmv %d %d\n", static_cast<int>(cmv.has_value()), cmv.error());
+
+    const std::expected<int, int> cok2(8);
+    auto cmvo = static_cast<const std::expected<int, int>&&>(cok2).or_else([](int e) {
+        std::printf("callCOr %d\n", e);
+        return std::expected<int, int>(std::unexpected<int>(e));
+    });
+    std::printf("or_else_cmv %d %d\n", static_cast<int>(cmvo.has_value()), cmvo.value());
 }
 
 int main(int argc, char** argv) {

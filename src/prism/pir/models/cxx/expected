@@ -15,8 +15,16 @@
 // The other call is a precondition failure (__prism_check). It does not
 // return a default T or a default E and it does not invent a value.
 //
-// and_then, or_else, transform, and value_or are not declared. A use of them
-// fails to compile against this header and pir falls back to libstdc++.
+// and_then calls the function with the stored T when that alternative is
+// active and returns what the function returns. When the error alternative
+// is active, and_then does not call the function and returns an expected
+// that holds that same E. It does not invent a T.
+// or_else calls the function with the stored E when that alternative is
+// active and returns what the function returns. When a T is stored, or_else
+// does not call the function and returns that stored T inside the expected.
+// It does not invent an E.
+// transform and value_or are not declared. A use of them fails to compile
+// against this header and pir falls back to libstdc++.
 // transform_error, emplace, swap, comparison, and expected<void, E> are not
 // declared either, so those uses fall back too.
 #ifndef _PRISM_MODEL_EXPECTED
@@ -50,6 +58,13 @@ unexpected(_Ep) -> unexpected<_Ep>;
 
 template <typename _Tp, typename _Er>
 class expected {
+    // Builds the error alternative without constructing T. Private so a
+    // program cannot spell it; and_then uses it to return this same E.
+    enum class _Unex { _Tag };
+
+    template <typename, typename>
+    friend class expected;
+
     // T and E share this union, inside the expected object. Exactly one is
     // alive. ~_Storage does not destroy it and does not free anything; the
     // expected destructor ends the active alternative's lifetime.
@@ -61,11 +76,20 @@ class expected {
         _Storage(_Tp&& __v) : _M_val(static_cast<_Tp&&>(__v)) {}
         _Storage(const unexpected<_Er>& __u) : _M_unex(__u.error()) {}
         _Storage(unexpected<_Er>&& __u) : _M_unex(static_cast<_Er&&>(__u.error())) {}
+        _Storage(_Unex, const _Er& __e) : _M_unex(__e) {}
+        _Storage(_Unex, _Er&& __e) : _M_unex(static_cast<_Er&&>(__e)) {}
         ~_Storage() {}
     };
 
     bool _M_has = false;
     _Storage _M_storage;
+
+    expected(_Unex, const _Er& __e) : _M_has(false), _M_storage(_Unex::_Tag, __e) {}
+    expected(_Unex, _Er&& __e) : _M_has(false), _M_storage(_Unex::_Tag, static_cast<_Er&&>(__e)) {}
+
+    // One E, placed in the result. T is not constructed.
+    static expected _M_from_unex(const _Er& __e) { return expected(_Unex::_Tag, __e); }
+    static expected _M_from_unex(_Er&& __e) { return expected(_Unex::_Tag, static_cast<_Er&&>(__e)); }
 
 public:
     using value_type = _Tp;
@@ -131,6 +155,69 @@ public:
         __prism_check(_M_has ? 0 : 1, "CXX-EXPECTED-ERROR",
                       "expected::error() requires !has_value()");
         return _M_storage._M_unex;
+    }
+
+    // Holds T: call with that T and return the function's expected. Holds E:
+    // do not call, and do not construct a T. The result holds this same E.
+    // The decltype is unevaluated, so the inactive alternative is not read.
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) & {
+        if (_M_has)
+            return static_cast<_Fn&&>(__f)(_M_storage._M_val);
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        return _Ret::_M_from_unex(_M_storage._M_unex);
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) const& {
+        if (_M_has)
+            return static_cast<_Fn&&>(__f)(_M_storage._M_val);
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_val));
+        return _Ret::_M_from_unex(_M_storage._M_unex);
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) && {
+        if (_M_has)
+            return static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_val));
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<_Tp&&>(_M_storage._M_val)));
+        return _Ret::_M_from_unex(static_cast<_Er&&>(_M_storage._M_unex));
+    }
+    template <typename _Fn>
+    auto and_then(_Fn&& __f) const&& {
+        if (_M_has)
+            return static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_val));
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Tp&&>(_M_storage._M_val)));
+        return _Ret::_M_from_unex(static_cast<const _Er&&>(_M_storage._M_unex));
+    }
+
+    // Holds E: call with that E and return the function's expected. Holds T:
+    // do not call, and do not construct an E. The result holds this stored T.
+    template <typename _Fn>
+    auto or_else(_Fn&& __f) & {
+        if (!_M_has)
+            return static_cast<_Fn&&>(__f)(_M_storage._M_unex);
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_unex));
+        return _Ret(_M_storage._M_val);
+    }
+    template <typename _Fn>
+    auto or_else(_Fn&& __f) const& {
+        if (!_M_has)
+            return static_cast<_Fn&&>(__f)(_M_storage._M_unex);
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(_M_storage._M_unex));
+        return _Ret(_M_storage._M_val);
+    }
+    template <typename _Fn>
+    auto or_else(_Fn&& __f) && {
+        if (!_M_has)
+            return static_cast<_Fn&&>(__f)(static_cast<_Er&&>(_M_storage._M_unex));
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<_Er&&>(_M_storage._M_unex)));
+        return _Ret(static_cast<_Tp&&>(_M_storage._M_val));
+    }
+    template <typename _Fn>
+    auto or_else(_Fn&& __f) const&& {
+        if (!_M_has)
+            return static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex));
+        using _Ret = decltype(static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex)));
+        return _Ret(static_cast<const _Tp&&>(_M_storage._M_val));
     }
 };
 

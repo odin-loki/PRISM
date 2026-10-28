@@ -6,6 +6,10 @@
 // A success value() is the stored T. value() / operator* on an unexpected are
 // a __prism_check, and the model does not print a fake T. error() on a success
 // value is a __prism_check, and the model does not print a fake E.
+// and_then on a value returns the function's expected; on an unexpected it
+// does not call the function and keeps that E. or_else on an unexpected
+// returns the function's expected; on a value it does not call the function
+// and keeps that T. Neither path invents a default T or a default E.
 
 #include <doctest/doctest.h>
 
@@ -221,17 +225,86 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     CHECK(a == b);
     bool saw_stored = false;
     bool saw_error = false;
+    bool saw_and_then = false;
+    bool saw_and_then_unex = false;
+    bool saw_or_else = false;
+    bool saw_or_else_unex = false;
+    bool saw_and_then_not = false;
+    bool saw_or_else_not = false;
+    bool saw_got = false;
+    bool saw_and_then_val = false;
+    bool saw_or_else_e = false;
+    bool saw_and_then_r = false;
+    bool saw_and_then_const = false;
+    bool saw_or_else_const = false;
+    bool saw_and_then_rv = false;
+    bool saw_or_else_rv = false;
+    bool saw_and_then_rv_unex = false;
+    bool saw_or_else_rv_val = false;
+    bool saw_and_then_cmv = false;
+    bool saw_or_else_cmv = false;
     for (const auto& line : b) {
         if (line == "engaged 1 1 42 42") saw_stored = true;
         if (line == "unex 0 0 7") saw_error = true;
+        if (line == "and_then 1 84") saw_and_then = true;
+        if (line == "and_then_unex 0 0 9") saw_and_then_unex = true;
+        if (line == "or_else 0 1 42") saw_or_else = true;
+        if (line == "or_else_unex 1 11") saw_or_else_unex = true;
+        if (line == "and_then_not 0 4") saw_and_then_not = true;
+        if (line == "or_else_not 1 42") saw_or_else_not = true;
+        if (line == "got 6") saw_got = true;
+        if (line == "and_then_val 6") saw_and_then_val = true;
+        if (line == "or_else_e 1 2") saw_or_else_e = true;
+        if (line == "and_then_r 0 3") saw_and_then_r = true;
+        if (line == "and_then_const 45") saw_and_then_const = true;
+        if (line == "or_else_const 10") saw_or_else_const = true;
+        if (line == "and_then_rv 15") saw_and_then_rv = true;
+        if (line == "or_else_rv 7") saw_or_else_rv = true;
+        if (line == "and_then_rv_unex 0 6") saw_and_then_rv_unex = true;
+        if (line == "or_else_rv_val 1 8") saw_or_else_rv_val = true;
+        if (line == "and_then_cmv 0 4") saw_and_then_cmv = true;
+        if (line == "or_else_cmv 1 8") saw_or_else_cmv = true;
         CHECK(line.find("engaged 1 1 0 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "copy 0");
         CHECK(line != "err 0");
         CHECK(line != "unex 0 0 0");
+        CHECK(line != "and_then 1 0");
+        CHECK(line != "and_then_val 0");
+        CHECK(line != "or_else 0 1 0");
+        CHECK(line != "or_else_unex 1 0");
+        CHECK(line != "and_then_unex 0 0 0");
+        CHECK(line != "or_else_e 1 0");
+        CHECK(line != "and_then_r 0 0");
+        CHECK(line.find("callT") == std::string::npos);
+        CHECK(line.find("callR") == std::string::npos);
+        CHECK(line.find("callEo") == std::string::npos);
+        CHECK(line.find("callRu") == std::string::npos);
+        CHECK(line.find("callRv") == std::string::npos);
+        CHECK(line.find("callOr") == std::string::npos);
+        CHECK(line.find("callCmv") == std::string::npos);
+        CHECK(line.find("callCOr") == std::string::npos);
     }
     CHECK(saw_stored);
     CHECK(saw_error);
+    CHECK(saw_and_then);
+    CHECK(saw_and_then_unex);
+    CHECK(saw_or_else);
+    CHECK(saw_or_else_unex);
+    CHECK(saw_and_then_not);
+    CHECK(saw_or_else_not);
+    CHECK(saw_got);
+    CHECK(saw_and_then_val);
+    CHECK(saw_or_else_e);
+    CHECK(saw_and_then_r);
+    CHECK(saw_and_then_const);
+    CHECK(saw_or_else_const);
+    CHECK(saw_and_then_rv);
+    CHECK(saw_or_else_rv);
+    CHECK(saw_and_then_rv_unex);
+    CHECK(saw_or_else_rv_val);
+    CHECK(saw_and_then_cmv);
+    CHECK(saw_or_else_cmv);
 
     CHECK(failed_is_check(mod, "value", "CXX-EXPECTED-NULL", "expected::value()"));
     CHECK(failed_is_check(mod, "star", "CXX-EXPECTED-NULL", "expected::operator*"));
