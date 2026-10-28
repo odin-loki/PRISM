@@ -19,8 +19,11 @@
 // destination pointer. An empty range returns dest and does not read or
 // write, even when dest is null. Each element in [first, last) is copied.
 // The element at last is left unchanged. The result is one past the last
-// element written. sort, copy_n, copy_backward, and for_each are not
-// called.
+// element written. copy_n takes one pointer, a std::size_t count, and a
+// destination pointer. n == 0 returns dest and does not read or write,
+// even when dest or the source is null. Otherwise n elements are copied.
+// The element one past the last written element is left unchanged. sort,
+// copy_backward, and for_each are not called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
 // argv "invert-find" calls find with last < first. argv "invert-find-if"
@@ -36,8 +39,12 @@
 // and must not read or write. argv "null-copy" calls copy with a null dest
 // and a non-empty range and must not write. argv "overlap-copy" and
 // "overlap-copy-first" call copy with dest inside [first, last) and must
-// not read or write. The model must __prism_check and must not print a
-// value. This is not PROVED and not CLEAN.
+// not read or write. argv "null-copy-n-source" calls copy_n with a null
+// source and n > 0 and must not read. argv "null-copy-n-dest" calls
+// copy_n with a null dest and n > 0 and must not write. argv
+// "null-copy-n-both" calls copy_n with both pointers null and n > 0 and
+// reports the null source. The model must __prism_check and must not
+// print a value. This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -562,6 +569,76 @@ constexpr bool copy_adjacent() {
 }
 static_assert(copy_adjacent());
 
+constexpr int copy_n_sum() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {0, 0, 0, 0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(4), out);
+    if (end != out + 4) return -1;
+    if (seq[0] != 9 || seq[3] != 4) return -1;
+    return out[0] + out[1] + out[2] + out[3];
+}
+static_assert(copy_n_sum() == 18);
+constexpr int copy_n_tail() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 8, 8, 8};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(3), out);
+    if (end != out + 3) return -1;
+    if (seq[3] != 4 || out[3] != 8) return -1;
+    return out[0] * 1000 + out[1] * 100 + out[2] * 10 + out[3];
+}
+static_assert(copy_n_tail() == 9418);
+constexpr bool copy_n_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(0), out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5 && seq[0] == 9;
+}
+static_assert(copy_n_empty_keeps());
+constexpr bool copy_n_null_empty() {
+    int* end = std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    return end == nullptr;
+}
+static_assert(copy_n_null_empty());
+constexpr bool copy_n_null_source_empty() {
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5;
+}
+static_assert(copy_n_null_source_empty());
+constexpr bool copy_n_null_dest_empty() {
+    int seq[] = {9, 4, 1, 4};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    return end == nullptr && seq[0] == 9 && seq[1] == 4 && seq[2] == 1 && seq[3] == 4;
+}
+static_assert(copy_n_null_dest_empty());
+constexpr int copy_n_one_v() {
+    int seq[] = {8};
+    int out[] = {0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(1), out);
+    return (end == out + 1 && out[0] == 8 && seq[0] == 8) ? 8 : 0;
+}
+static_assert(copy_n_one_v() == 8);
+constexpr int copy_n_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly out[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    PredOnly* end = std::copy_n(seq, static_cast<std::size_t>(3), out);
+    PredOnly empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly empty_dst[] = {PredOnly(4), PredOnly(5)};
+    PredOnly* end_empty = std::copy_n(empty_src, static_cast<std::size_t>(0), empty_dst);
+    if (end != out + 3 || end_empty != empty_dst) return -1;
+    if (empty_dst[0].x != 4 || empty_dst[1].x != 5) return -1;
+    if (seq[0].x != 3 || seq[1].x != 1 || seq[2].x != 3) return -1;
+    if (out[3].x != 5) return -1;
+    return out[0].x + out[1].x + out[2].x + out[3].x;
+}
+static_assert(copy_n_pred_v() == 12);
+constexpr bool copy_n_adjacent() {
+    int seq[] = {1, 2, 3, 0, 0, 0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(3), seq + 3);
+    return end == seq + 6 && seq[0] == 1 && seq[1] == 2 && seq[2] == 3 && seq[3] == 1 && seq[4] == 2 && seq[5] == 3;
+}
+static_assert(copy_n_adjacent());
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -714,6 +791,31 @@ int main(int argc, char** argv) {
         CopySlot arr[3] = {{1}, {2}, {3}};
         CopySlot* end = std::copy(arr, arr + 3, arr);
         std::printf("value=%d\n", end == arr ? arr[0].x : -1);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-source") == 0) {
+        CopySlot dst[3] = {{7}, {7}, {7}};
+        unsigned long volatile raw_first = 0;
+        CopySlot* first = reinterpret_cast<CopySlot*>(raw_first);
+        CopySlot* end = std::copy_n(first, static_cast<std::size_t>(3), dst);
+        std::printf("value=%d\n", end == dst ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-dest") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        unsigned long volatile raw_dest = 0;
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy_n(src, static_cast<std::size_t>(3), dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-both") == 0) {
+        unsigned long volatile raw_first = 0;
+        unsigned long volatile raw_dest = 0;
+        CopySlot* first = reinterpret_cast<CopySlot*>(raw_first);
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy_n(first, static_cast<std::size_t>(3), dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
         return 0;
     }
 
@@ -1066,5 +1168,51 @@ int main(int argc, char** argv) {
     int* copy_adj_end = std::copy(copy_adj, copy_adj + 3, copy_adj + 3);
     std::printf("copy_adj=%d,%d,%d,%d,%d,%d end=%d\n", copy_adj[0], copy_adj[1], copy_adj[2], copy_adj[3], copy_adj[4],
                 copy_adj[5], copy_adj_end == copy_adj + 6 ? 1 : 0);
+
+    int copy_n_src[] = {9, 4, 1, 4};
+    int copy_n_dst[] = {0, 0, 0, 0};
+    int* copy_n_end = std::copy_n(copy_n_src, static_cast<std::size_t>(4), copy_n_dst);
+    std::printf("copy_n_all=%d,%d,%d,%d end=%d src=%d,%d,%d,%d\n", copy_n_dst[0], copy_n_dst[1], copy_n_dst[2],
+                copy_n_dst[3], copy_n_end == copy_n_dst + 4 ? 1 : 0, copy_n_src[0], copy_n_src[1], copy_n_src[2],
+                copy_n_src[3]);
+    int copy_n_span_src[] = {9, 4, 1, 4};
+    int copy_n_span_dst[] = {8, 8, 8, 8};
+    int* copy_n_span_end = std::copy_n(copy_n_span_src, static_cast<std::size_t>(3), copy_n_span_dst);
+    std::printf("copy_n_span=%d,%d,%d,%d end=%d\n", copy_n_span_dst[0], copy_n_span_dst[1], copy_n_span_dst[2],
+                copy_n_span_dst[3], copy_n_span_end == copy_n_span_dst + 3 ? 1 : 0);
+    int copy_n_emp_src[] = {9, 4, 1, 4};
+    int copy_n_emp_dst[] = {8, 7, 6, 5};
+    int* copy_n_emp_end = std::copy_n(copy_n_emp_src, static_cast<std::size_t>(0), copy_n_emp_dst);
+    std::printf("copy_n_empty=%d,%d,%d,%d end=%d\n", copy_n_emp_dst[0], copy_n_emp_dst[1], copy_n_emp_dst[2],
+                copy_n_emp_dst[3], copy_n_emp_end == copy_n_emp_dst ? 1 : 0);
+    int copy_n_one_src[] = {8};
+    int copy_n_one_dst[] = {0};
+    int* copy_n_one_end = std::copy_n(copy_n_one_src, static_cast<std::size_t>(1), copy_n_one_dst);
+    std::printf("copy_n_one=%d end=%d\n", copy_n_one_dst[0], copy_n_one_end == copy_n_one_dst + 1 ? 1 : 0);
+    int* copy_n_null_end =
+        std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    std::printf("copy_n_null=%d\n", copy_n_null_end == nullptr ? 1 : 0);
+    int copy_n_null_src_dst[] = {8, 7, 6, 5};
+    int* copy_n_null_src_end =
+        std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), copy_n_null_src_dst);
+    std::printf("copy_n_null_src=%d,%d,%d,%d end=%d\n", copy_n_null_src_dst[0], copy_n_null_src_dst[1],
+                copy_n_null_src_dst[2], copy_n_null_src_dst[3], copy_n_null_src_end == copy_n_null_src_dst ? 1 : 0);
+    int copy_n_null_dst_src[] = {9, 4, 1, 4};
+    int* copy_n_null_dst_end =
+        std::copy_n(copy_n_null_dst_src, static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    std::printf("copy_n_null_dst=%d src=%d,%d,%d,%d\n", copy_n_null_dst_end == nullptr ? 1 : 0, copy_n_null_dst_src[0],
+                copy_n_null_dst_src[1], copy_n_null_dst_src[2], copy_n_null_dst_src[3]);
+    PredOnly copy_n_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly copy_n_pred_dst[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    std::copy_n(copy_n_preds, static_cast<std::size_t>(3), copy_n_pred_dst);
+    PredOnly copy_n_pred_empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly copy_n_pred_empty_dst[] = {PredOnly(4), PredOnly(5)};
+    std::copy_n(copy_n_pred_empty_src, static_cast<std::size_t>(0), copy_n_pred_empty_dst);
+    std::printf("copy_n_pred=%d,%d,%d,%d copy_n_pred_empty=%d,%d\n", copy_n_pred_dst[0].x, copy_n_pred_dst[1].x,
+                copy_n_pred_dst[2].x, copy_n_pred_dst[3].x, copy_n_pred_empty_dst[0].x, copy_n_pred_empty_dst[1].x);
+    int copy_n_adj[] = {1, 2, 3, 0, 0, 0};
+    int* copy_n_adj_end = std::copy_n(copy_n_adj, static_cast<std::size_t>(3), copy_n_adj + 3);
+    std::printf("copy_n_adj=%d,%d,%d,%d,%d,%d end=%d\n", copy_n_adj[0], copy_n_adj[1], copy_n_adj[2], copy_n_adj[3],
+                copy_n_adj[4], copy_n_adj[5], copy_n_adj_end == copy_n_adj + 6 ? 1 : 0);
     return 0;
 }

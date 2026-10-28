@@ -101,10 +101,22 @@
 // The element at last is not written. The result is the destination one
 // past the last element written. The function does not allocate.
 //
-// sort, copy_n, copy_backward, for_each, and every other algorithm are
-// not declared. A use of those names fails to compile and the pir stage
-// falls back to libstdc++ (extra.cxx_models). A partial header is
-// intentional.
+// std::copy_n takes one pointer, a count of type std::size_t, and a
+// destination pointer. There is no other overload. When n == 0, the result
+// is dest. That path does not read and does not write, even when dest or
+// the source is null. A null source with n > 0 is __prism_check with class
+// PTR-NULL-DEREF and the message "std::copy_n null source", then
+// __builtin_trap. That path does not read. A null dest with n > 0 is
+// __prism_check with class PTR-NULL-DEREF and the message
+// "std::copy_n null destination", then __builtin_trap. That path does not
+// write. Otherwise n elements are assigned through the destination, in
+// order. The element one past the last element written is not written.
+// The result is the destination one past the last element written. The
+// function does not allocate.
+//
+// sort, copy_backward, for_each, and every other algorithm are not
+// declared. A use of those names fails to compile and the pir stage falls
+// back to libstdc++ (extra.cxx_models). A partial header is intentional.
 //
 // This header is not a proof that a range is sorted. It is not PROVED
 // and it is not CLEAN. After a failed check the path traps. It does not
@@ -121,6 +133,11 @@
 extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 
 namespace std {
+
+// Same typedef as bits/c++config.h. This header includes nothing. The count
+// parameter of copy_n is this std::size_t. A later header may repeat the
+// typedef for the same type.
+typedef __SIZE_TYPE__ size_t;
 
 template <typename _Tp>
 concept _Prism_less_than_comparable = requires(const _Tp& __x, const _Tp& __y) { __x < __y; };
@@ -440,6 +457,32 @@ constexpr _Tp* copy(_Tp* __first, _Tp* __last, _Tp* __dest) {
         *__out = *__first;
         ++__first;
         ++__out;
+    }
+    return __out;
+}
+
+// One pointer, a std::size_t count, and one destination. n == 0 returns
+// dest and does not read or write, even when either pointer is null. A
+// null source with n > 0 traps before any read. A null dest with n > 0
+// traps before any write. Otherwise n elements are copied. The next
+// element is not written. This is not PROVED and it is not CLEAN.
+template <typename _Tp>
+constexpr _Tp* copy_n(_Tp* __first, std::size_t __n, _Tp* __dest) {
+    if (__n == 0) return __dest;
+    if (__first == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::copy_n null source");
+        __builtin_trap();
+    }
+    if (__dest == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::copy_n null destination");
+        __builtin_trap();
+    }
+    _Tp* __out = __dest;
+    while (__n != 0) {
+        *__out = *__first;
+        ++__first;
+        ++__out;
+        --__n;
     }
     return __out;
 }
