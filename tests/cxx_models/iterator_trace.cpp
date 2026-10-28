@@ -1,4 +1,4 @@
-// Trace of std::begin / std::end and std::distance on pointers.
+// Trace of std::begin / std::end, std::distance, and std::next on pointers.
 // `#include <iterator>` is the model when its directory is first on the
 // include path, and libstdc++ otherwise. begin is a pointer to the first
 // element. end is one past the last. distance of those two pointers is the
@@ -6,7 +6,10 @@
 // dereference them. A pointer argument is not an overload of begin.
 // argv "huge" asks distance of two char* whose count does not fit in
 // ptrdiff_t. The model must __prism_check and must not print a wrapped
-// value. This is not a proof that the two pointers address the same array,
+// value. argv "neg" asks next(p, n) with n < 0. The model must
+// __prism_check and must not print a moved pointer. next(p) is p + 1.
+// next(p, 0) is p. next(p, n) for n > 0 is p + n. prev and advance are
+// not declared. This is not a proof that the pointer addresses an array,
 // and it is not a proof that an iterator stays in range.
 #include <cstdint>
 #include <cstdio>
@@ -30,9 +33,37 @@ static_assert(prism_accepts_distance<const int*>);
 struct NotAPointer {};
 static_assert(!prism_accepts_distance<NotAPointer>);
 
+template <class T>
+constexpr bool prism_accepts_next = requires(T p) { std::next(p); };
+
+static_assert(prism_accepts_next<int*>);
+static_assert(prism_accepts_next<const int*>);
+static_assert(!prism_accepts_next<NotAPointer>);
+
+template <class T>
+constexpr bool prism_accepts_next_n = requires(T p, std::ptrdiff_t n) { std::next(p, n); };
+
+static_assert(prism_accepts_next_n<int*>);
+static_assert(prism_accepts_next_n<const int*>);
+static_assert(!prism_accepts_next_n<NotAPointer>);
+
+template <class T, class U>
+constexpr bool prism_accepts_next_nu = requires(T p, U n) { std::next(p, n); };
+
+static_assert(prism_accepts_next_nu<int*, std::ptrdiff_t>);
+static_assert(prism_accepts_next_nu<const int*, int>);
+static_assert(!prism_accepts_next_nu<int*, NotAPointer>);
+static_assert(!prism_accepts_next_nu<NotAPointer, std::ptrdiff_t>);
+
 constexpr int ak[3] = {4, 5, 6};
 static_assert(std::distance(std::begin(ak), std::end(ak)) == 3);
 static_assert(std::distance(std::end(ak), std::begin(ak)) == -3);
+static_assert(std::next(std::begin(ak)) == ak + 1);
+static_assert(std::next(std::begin(ak), 0) == std::begin(ak));
+static_assert(std::next(std::begin(ak), 1) == ak + 1);
+static_assert(std::next(std::begin(ak), 2) == ak + 2);
+static_assert(std::next(std::begin(ak), 3) == std::end(ak));
+static_assert(std::next(std::end(ak), 0) == std::end(ak));
 
 // The model declares this PIR intrinsic and does not define it. libstdc++
 // <iterator> does not call it on a count that fits. A failing check aborts
@@ -57,6 +88,15 @@ int main(int argc, char** argv) {
         return d < 0 ? 2 : 0;
     }
 
+    if (argc > 1 && std::strcmp(argv[1], "neg") == 0) {
+        int a[3] = {4, 5, 6};
+        int* p = a;
+        volatile std::ptrdiff_t n = -1;
+        int* q = std::next(p, n);
+        std::printf("moved=%p\n", static_cast<void*>(q));
+        return 0;
+    }
+
     int a[3] = {4, 5, 6};
     int* b = std::begin(a);
     int* e = std::end(a);
@@ -79,9 +119,21 @@ int main(int argc, char** argv) {
     int** pb = std::begin(ps);
     int** pe = std::end(ps);
     std::printf("ptrs %td %d\n", std::distance(pb, pe), **pb);
+    std::printf("next %d %d %d %d\n", *std::next(b), std::next(b, 0) == b ? 1 : 0, *std::next(b, 2),
+                std::next(b, 3) == e ? 1 : 0);
+    std::printf("next0 %d\n", std::next(nb, 0) == nb ? 1 : 0);
+    std::printf("nextc %d\n", *std::next(cb));
+    volatile std::ptrdiff_t step0 = 0;
+    volatile std::ptrdiff_t step2 = 2;
+    std::printf("nextrt %d %d\n", std::next(b, step0) == b ? 1 : 0, *std::next(b, step2));
 
+    const bool next_ok = (std::next(b) == b + 1) && (std::next(b, 1) == b + 1) && (std::next(b, 0) == b) &&
+                         (std::next(b, 2) == b + 2) && (std::next(b, 3) == e) && (std::next(nb, 0) == nb) &&
+                         (std::next(cb) == cb + 1) && (std::next(cb, 0) == cb) && (*std::next(b) == 5) &&
+                         (*std::next(b, 2) == 6) && (*std::next(cb) == 9) && (std::next(b, step0) == b) &&
+                         (std::next(b, step2) == b + 2);
     const bool ok = (std::distance(b, e) == 3) && (std::distance(e, b) == -3) && (*b == 4) && (*(e - 1) == 6) &&
                     (nb == ne) && (std::distance(nb, ne) == 0) && (std::distance(cb, ce) == 2) && (*cb == 8) &&
-                    (std::distance(pb, pe) == 2) && (**pb == 1);
+                    (std::distance(pb, pe) == 2) && (**pb == 1) && next_ok;
     return ok ? 0 : 1;
 }
