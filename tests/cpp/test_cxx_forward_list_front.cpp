@@ -143,18 +143,22 @@ TEST_CASE("cxx forward_list model: empty front traps before a node load") {
     CHECK(src.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
     CHECK(count_sub(src, "extern \"C\" void __prism_check(int, const char*, const char*);") == 1);
     CHECK(src.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
-    CHECK(count_sub(src, "__prism_check(!this->empty() ? 1 : 0, \"FUNC-CONTRACT\",") == 2);
-    CHECK(count_sub(src, "__builtin_trap()") == 2);
+    CHECK(count_sub(src, "__prism_check(!this->empty() ? 1 : 0, \"FUNC-CONTRACT\",") == 3);
+    CHECK(count_sub(src, "__builtin_trap()") == 3);
 
     require_front(src, "reference front()");
     require_front(src, "const_reference front() const");
 
     const auto pop = body_of(src, "void pop_front()");
     REQUIRE_FALSE(pop.empty());
-    CHECK(pop.find("__glibcxx_assert(!this->empty());") != std::string::npos);
-    CHECK(pop.find("_M_erase_after(&_M_head);") != std::string::npos);
-    CHECK(pop.find("__prism_check") == std::string::npos);
-    CHECK(pop.find("__builtin_trap") == std::string::npos);
+    const auto pop_trap = pop.find("if (this->empty()) __builtin_trap();");
+    const auto pop_erase = pop.find("_M_erase_after(&_M_head);");
+    CHECK(pop.find("__prism_check(!this->empty() ? 1 : 0, \"FUNC-CONTRACT\",") != std::string::npos);
+    CHECK(pop.find("std::forward_list::pop_front on an empty list") != std::string::npos);
+    REQUIRE(pop_trap != std::string::npos);
+    REQUIRE(pop_erase != std::string::npos);
+    CHECK(pop_trap < pop_erase);
+    CHECK(pop.find("__glibcxx_assert") == std::string::npos);
     CHECK(pop.find("_S_val") == std::string::npos);
 
     require_untouched(src, "void push_front(const value_type& __x)");
