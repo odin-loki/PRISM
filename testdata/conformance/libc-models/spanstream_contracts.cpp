@@ -79,3 +79,43 @@ int spanbuf_sungetc_null0_false(int) {
     std::basic_spanbuf<char> b(p, 0);
     return b.sungetc();
 }
+
+// Two characters into a 4-byte caller buffer. The return is how many were
+// stored.
+int spanbuf_sputn_true(int) {
+    char buf[4] = {};
+    char src[2] = {'A', 'B'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return static_cast<int>(b.sputn(src, 2));
+}
+
+// Six characters into four slots. Four are stored. The return is 4, not 6,
+// and the write does not pass the buffer.
+int spanbuf_sputn_clip_true(int) {
+    char buf[4] = {};
+    char src[6] = {'A', 'B', 'C', 'D', 'E', 'F'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return static_cast<int>(b.sputn(src, 6));
+}
+
+// Count 0 returns 0. The buffer is not written. A null source is not read.
+int spanbuf_sputn_zero_true(int) {
+    char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return static_cast<int>(b.sputn(nullptr, 0));
+}
+
+// Negative count: FUNC-CONTRACT, then trap. The buffer is not written.
+int spanbuf_sputn_neg_false(int) {
+    char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+    char src[1] = {'A'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return static_cast<int>(b.sputn(src, -1));
+}
+
+// Null source and a positive count: PTR-NULL-DEREF, then trap. No write.
+int spanbuf_sputn_null_false(int) {
+    char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+    std::basic_spanbuf<char> b(buf, 4);
+    return static_cast<int>(b.sputn(nullptr, 2));
+}

@@ -28,6 +28,12 @@
 // It then returns -1 only after that check. A null pointer with size 0 takes
 // that same offset-0 path and is not read.
 //
+// sputn writes min(count, remaining space) characters from a caller source
+// and returns how many were stored. It does not write past the buffer. A
+// negative count, a null source with a positive count, and a product of the
+// count and the element size that does not fit are checks and then
+// __builtin_trap. A count of 0 returns 0 and does not read or write.
+//
 // Omitted names are not declared here. A use of one fails to compile against
 // this header, and the pir stage falls back to libstdc++ (extra.cxx_models).
 // They are omitted because declaring them would include the span or sstream
@@ -119,6 +125,44 @@ public:
             return __r;
         }
         return -1;
+    }
+
+    // Writes min(__n, remaining) characters and returns how many were stored.
+    // A negative count is FUNC-CONTRACT, then __builtin_trap, and does not
+    // write. A null source with a positive count is PTR-NULL-DEREF, then
+    // __builtin_trap, and does not write. A count of 0 returns 0 and does not
+    // read or write. The product of the count and the element size is formed
+    // only when it fits; otherwise that is FUNC-CONTRACT, then __builtin_trap,
+    // and the length is not a wrapped product. The unwritten tail is not
+    // stored. sputn is not PROVED and not CLEAN.
+    std::ptrdiff_t sputn(const char* __s, std::ptrdiff_t __n) {
+        if (__n < 0) {
+            __prism_check(0, "FUNC-CONTRACT", "std::basic_spanbuf::sputn negative count");
+            __builtin_trap();
+        } else if (__n == 0) {
+            return 0;
+        } else if (__s == nullptr) {
+            __prism_check(0, "PTR-NULL-DEREF", "std::basic_spanbuf::sputn null source");
+            __builtin_trap();
+        } else if (static_cast<size_t>(__n) > (static_cast<size_t>(-1) / sizeof(_CharT))) {
+            // The product does not fit. Do not form a wrapped length.
+            __prism_check(0, "FUNC-CONTRACT",
+                          "std::basic_spanbuf::sputn count times element size does not fit");
+            __builtin_trap();
+        } else {
+            // Fits. For char the element size is 1, so this is the character
+            // count. It is not a wrapped value.
+            const size_t __bytes = static_cast<size_t>(__n) * sizeof(_CharT);
+            const size_t __room = _M_off < _M_size ? _M_size - _M_off : 0;
+            // min(count, remaining). Characters past __stored are not stored,
+            // and the return is not the requested count.
+            const size_t __stored = __bytes < __room ? __bytes : __room;
+            for (size_t __i = 0; __i < __stored; ++__i) {
+                _M_ptr[_M_off] = __s[__i];
+                ++_M_off;
+            }
+            return static_cast<std::ptrdiff_t>(__stored);
+        }
     }
 
 private:

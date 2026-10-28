@@ -1,7 +1,8 @@
 // The <spanstream> model is a partial basic_spanbuf. These checks read the
 // header text: sputc at the size is a __prism_check and does not write,
 // sgetc at the size is a __prism_check and does not read, sungetc at offset
-// 0 is a __prism_check and does not read before the buffer, and the
+// 0 is a __prism_check and does not read before the buffer, sputn stores
+// min(count, remaining) and traps on a bad count without writing, and the
 // destructor is defaulted or does not call free.
 
 #include <doctest/doctest.h>
@@ -186,4 +187,124 @@ TEST_CASE("cxx spanstream model: sungetc at offset 0 is a read check and does no
     CHECK(in_range.find("return -1") == std::string::npos);
     CHECK(in_range.find("--_M_off") != std::string::npos);
     CHECK(in_range.find(load_expr) != std::string::npos);
+}
+
+TEST_CASE("cxx spanstream model: sputn stores min(count, room) and traps on a bad count") {
+    const auto header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "spanstream";
+    const auto src = slurp(header);
+    REQUIRE(!src.empty());
+    CHECK(src.find("sputn is not PROVED and not CLEAN") != std::string::npos);
+
+    const auto sputc = body_of(src, "int sputc(");
+    const auto sgetc = body_of(src, "int sgetc(");
+    const auto sungetc = body_of(src, "int sungetc(");
+    REQUIRE(!sputc.empty());
+    REQUIRE(!sgetc.empty());
+    REQUIRE(!sungetc.empty());
+    CHECK(sputc.find("sputn") == std::string::npos);
+    CHECK(sgetc.find("sputn") == std::string::npos);
+    CHECK(sungetc.find("sputn") == std::string::npos);
+    CHECK(sputc.find("__builtin_trap") == std::string::npos);
+    CHECK(sgetc.find("__builtin_trap") == std::string::npos);
+    CHECK(sungetc.find("__builtin_trap") == std::string::npos);
+
+    const auto sputn = body_of(src, "std::ptrdiff_t sputn(");
+    REQUIRE(!sputn.empty());
+    CHECK(sputn.find("MEM-OOB-WRITE") == std::string::npos);
+    CHECK(sputn.find("MEM-OOB-READ") == std::string::npos);
+
+    const auto neg = sputn.find("if (__n < 0)");
+    const auto zero = sputn.find("} else if (__n == 0)");
+    const auto nullp = sputn.find("} else if (__s == nullptr)");
+    const auto fit = sputn.find("} else if (static_cast<size_t>(__n) > (static_cast<size_t>(-1) / sizeof(_CharT)))");
+    const auto ok = sputn.find("} else {");
+    REQUIRE(neg != std::string::npos);
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(nullp != std::string::npos);
+    REQUIRE(fit != std::string::npos);
+    REQUIRE(ok != std::string::npos);
+    CHECK(neg < zero);
+    CHECK(zero < nullp);
+    CHECK(nullp < fit);
+    CHECK(fit < ok);
+
+    const auto neg_check = sputn.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"std::basic_spanbuf::sputn negative count\")");
+    const auto neg_trap = sputn.find("__builtin_trap()", neg_check);
+    REQUIRE(neg_check != std::string::npos);
+    REQUIRE(neg_trap != std::string::npos);
+    CHECK(neg < neg_check);
+    CHECK(neg_check < neg_trap);
+    CHECK(neg_trap < zero);
+    const auto neg_arm = sputn.substr(neg, zero - neg);
+    CHECK(neg_arm.find("_M_ptr") == std::string::npos);
+    CHECK(neg_arm.find("__s[") == std::string::npos);
+    CHECK(neg_arm.find("return") == std::string::npos);
+    CHECK(neg_arm.find("* sizeof") == std::string::npos);
+
+    const auto zero_arm = sputn.substr(zero, nullp - zero);
+    CHECK(zero_arm.find("return 0;") != std::string::npos);
+    CHECK(zero_arm.find("_M_ptr") == std::string::npos);
+    CHECK(zero_arm.find("__s[") == std::string::npos);
+    CHECK(zero_arm.find("__builtin_trap") == std::string::npos);
+
+    const auto null_check =
+        sputn.find("__prism_check(0, \"PTR-NULL-DEREF\", \"std::basic_spanbuf::sputn null source\")");
+    const auto null_trap = sputn.find("__builtin_trap()", null_check);
+    REQUIRE(null_check != std::string::npos);
+    REQUIRE(null_trap != std::string::npos);
+    CHECK(nullp < null_check);
+    CHECK(null_check < null_trap);
+    CHECK(null_trap < fit);
+    const auto null_arm = sputn.substr(nullp, fit - nullp);
+    CHECK(null_arm.find("_M_ptr") == std::string::npos);
+    CHECK(null_arm.find("__s[") == std::string::npos);
+    CHECK(null_arm.find("return") == std::string::npos);
+
+    const auto fit_check = sputn.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"std::basic_spanbuf::sputn count times element size does not fit\")");
+    const auto fit_trap = sputn.find("__builtin_trap()", fit_check);
+    REQUIRE(fit_check != std::string::npos);
+    REQUIRE(fit_trap != std::string::npos);
+    CHECK(fit < fit_check);
+    CHECK(fit_check < fit_trap);
+    CHECK(fit_trap < ok);
+    const auto fit_arm = sputn.substr(fit, ok - fit);
+    CHECK(fit_arm.find("_M_ptr") == std::string::npos);
+    CHECK(fit_arm.find("__s[") == std::string::npos);
+    CHECK(fit_arm.find("return") == std::string::npos);
+    CHECK(fit_arm.find("* sizeof") == std::string::npos);
+    CHECK(fit_arm.find("wrapped length") != std::string::npos);
+
+    const auto prod = sputn.find("const size_t __bytes = static_cast<size_t>(__n) * sizeof(_CharT);");
+    const auto room = sputn.find("const size_t __room = _M_off < _M_size ? _M_size - _M_off : 0;");
+    const auto stored = sputn.find("const size_t __stored = __bytes < __room ? __bytes : __room;");
+    const auto loop = sputn.find("for (size_t __i = 0; __i < __stored; ++__i)");
+    const auto store = sputn.find("_M_ptr[_M_off] = __s[__i];");
+    const auto adv = sputn.find("++_M_off;");
+    const auto ret = sputn.find("return static_cast<std::ptrdiff_t>(__stored);");
+    REQUIRE(prod != std::string::npos);
+    REQUIRE(room != std::string::npos);
+    REQUIRE(stored != std::string::npos);
+    REQUIRE(loop != std::string::npos);
+    REQUIRE(store != std::string::npos);
+    REQUIRE(adv != std::string::npos);
+    REQUIRE(ret != std::string::npos);
+    CHECK(ok < prod);
+    CHECK(prod < room);
+    CHECK(room < stored);
+    CHECK(stored < loop);
+    CHECK(loop < store);
+    CHECK(store < adv);
+    CHECK(adv < ret);
+    CHECK(sputn.find("__i < __bytes") == std::string::npos);
+    CHECK(sputn.find("__i < __n") == std::string::npos);
+    CHECK(sputn.find("_M_off +=") == std::string::npos);
+    CHECK(sputn.find("return __n") == std::string::npos);
+    CHECK(sputn.find("return static_cast<std::ptrdiff_t>(__n)") == std::string::npos);
+    CHECK(sputn.find("return static_cast<std::ptrdiff_t>(__bytes)") == std::string::npos);
+    CHECK(sputn.find("_M_ptr", ret) == std::string::npos);
+    const auto prod_end = sputn.find(';', prod);
+    REQUIRE(prod_end != std::string::npos);
+    CHECK(sputn.find("* sizeof", prod_end + 1) == std::string::npos);
 }

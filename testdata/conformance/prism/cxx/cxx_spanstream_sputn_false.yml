@@ -1,0 +1,12 @@
+format_version: 1
+input_files: cxx_spanstream_sputn_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_spanstream_sputn_false: false
+witness:
+  cxx_spanstream_sputn_false: [0]
+# The failing path does not write, so a sanitizer replay stays clean.
+# libstdc++ has no caller-buffer constructor for this task.
+sanitizer_blind:
+  - cxx_spanstream_sputn_false

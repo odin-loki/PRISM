@@ -14,6 +14,13 @@
 // argv "forced" keeps going after the constructor check so a null pointer
 // with a non-zero size (the size is kept) reaches sungetc at offset 0 and
 // does not read.
+// argv "exact" is sputn of two characters into a 4-byte buffer.
+// argv "zero" is sputn of count 0, including a null source: it returns 0
+// and does not write.
+// argv "full" fills one byte with sputc, then sputn of two characters
+// returns 0 and leaves that byte.
+// argv "neg" is a negative sputn count. argv "null" is a null source with
+// a positive count. Neither writes.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -76,6 +83,45 @@ int main(int argc, char** argv) {
         std::printf("forced=%d size=%zu\n", g, b.size());
         return 0;
     }
+    if (argc > 1 && std::strcmp(argv[1], "exact") == 0) {
+        char buf[4] = {};
+        char src[2] = {'A', 'B'};
+        std::basic_spanbuf<char> b(buf, 4);
+        const int n = static_cast<int>(b.sputn(src, 2));
+        std::printf("exact=%d %c%c\n", n, buf[0], buf[1]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "zero") == 0) {
+        char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+        std::basic_spanbuf<char> b(buf, 4);
+        const int n = static_cast<int>(b.sputn(nullptr, 0));
+        std::printf("zero=%d %c\n", n, buf[0]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "full") == 0) {
+        char buf[1] = {'Q'};
+        char src[2] = {'A', 'B'};
+        std::basic_spanbuf<char> b(buf, 1);
+        b.sputc('Z');
+        const int n = static_cast<int>(b.sputn(src, 2));
+        std::printf("full=%d %c\n", n, buf[0]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "neg") == 0) {
+        char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+        char src[1] = {'A'};
+        std::basic_spanbuf<char> b(buf, 4);
+        const int n = static_cast<int>(b.sputn(src, -1));
+        std::printf("neg=%d %c\n", n, buf[0]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null") == 0) {
+        char buf[4] = {'Z', 'Z', 'Z', 'Z'};
+        std::basic_spanbuf<char> b(buf, 4);
+        const int n = static_cast<int>(b.sputn(nullptr, 3));
+        std::printf("null=%d %c\n", n, buf[0]);
+        return 0;
+    }
     char buf[4] = {};
     {
         std::basic_spanbuf<char> b(buf, 4);
@@ -86,5 +132,10 @@ int main(int argc, char** argv) {
     std::basic_spanbuf<char> r(in, 1);
     std::printf("got=%d\n", r.sgetc());
     std::printf("back=%d\n", r.sungetc());
+    char out[4] = {'x', 'x', 'x', 'x'};
+    char src[6] = {'A', 'B', 'C', 'D', 'E', 'F'};
+    std::basic_spanbuf<char> w(out, 4);
+    const int n = static_cast<int>(w.sputn(src, 6));
+    std::printf("n=%d clip=%c%c%c%c\n", n, out[0], out[1], out[2], out[3]);
     return 0;
 }
