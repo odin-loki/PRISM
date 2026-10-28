@@ -180,6 +180,8 @@ int strncmp_true(int ka, int kb, int n, int j) {
     if (n == 0) assert(r == 0);
     if (r == 0 && j >= 0 && j < n && j <= ka) assert(a[j] == b[j]);
     assert(sign(strncmp(b, a, (size_t)n)) == -sign(r));
+    /* Names strncasecmp. The comparison is not a scored comparison. */
+    (void)strncasecmp(a, b, (size_t)n);
     return 0;
 }
 

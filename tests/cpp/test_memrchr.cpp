@@ -77,9 +77,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("memrchr model: last byte, zero length returns a null pointer, null does not index") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 8);
-    CHECK(count_of(src, "PROVED") == 8);
-    CHECK(count_of(src, "CLEAN") == 8);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 9);
+    CHECK(count_of(src, "PROVED") == 9);
+    CHECK(count_of(src, "CLEAN") == 9);
 
     const auto memchr_at = src.find("void *memchr(");
     const auto memrchr_at = src.find("void *memrchr(");

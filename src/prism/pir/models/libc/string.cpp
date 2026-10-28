@@ -123,6 +123,39 @@ int strcasecmp(const char *a, const char *b) {
     }
 }
 
+/* strncasecmp compares at most n bytes of a and b, folding only ASCII A-Z into a-z.
+ * This is not a locale comparison.
+ * It stops at the first difference, the first NUL, or n bytes.
+ * It does not read the byte at index n.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * n == 0 returns 0 and does not read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strncasecmp(const char *a, const char *b, size_t n) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strncasecmp() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strncasecmp() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    if (n == 0) return 0;
+    size_t i = 0;
+    while (i + 1 < n) {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (!ca || ca != cb) break;
+        ++i;
+    }
+    {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb) return ca > cb ? 1 : -1;
+    }
+    return 0;
+}
+
 char *strchr(const char *s, int c) {
     __prism_check(s != 0, "STR-NULL-ARG", "strchr() called with unchecked pointer parameter s");
     const unsigned char *us = (const unsigned char *)s;

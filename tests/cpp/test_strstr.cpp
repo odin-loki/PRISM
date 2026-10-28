@@ -77,9 +77,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("strstr model: first match, empty needle, null returns a null pointer without a scan") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 8);
-    CHECK(count_of(src, "PROVED") == 8);
-    CHECK(count_of(src, "CLEAN") == 8);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 9);
+    CHECK(count_of(src, "PROVED") == 9);
+    CHECK(count_of(src, "CLEAN") == 9);
 
     const auto strcspn_at = src.find("size_t strcspn(");
     const auto strstr_at = src.find("char *strstr(");

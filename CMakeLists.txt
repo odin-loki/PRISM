@@ -790,6 +790,7 @@ if(PRISM_TESTS)
     tests/cpp/test_strndup.cpp
     tests/cpp/test_memccpy.cpp
     tests/cpp/test_strcasecmp.cpp
+    tests/cpp/test_strncasecmp.cpp
     tests/cpp/test_stdio_buffer.cpp
     tests/cpp/test_rand_unseeded.cpp
     tests/cpp/test_qsort_null.cpp
