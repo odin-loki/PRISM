@@ -357,7 +357,6 @@ TEST_CASE("cxx numeric model: accumulate traps an inverted range and a sum that 
     CHECK(text.find("\nreduce(") == std::string::npos);
     CHECK(text.find("\ntransform_reduce(") == std::string::npos);
     CHECK(text.find("\ninner_product(") == std::string::npos);
-    CHECK(text.find("\npartial_sum(") == std::string::npos);
     CHECK(text.find("\nexclusive_scan(") == std::string::npos);
     CHECK(text.find("naming accumulate") == std::string::npos);
     CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
@@ -444,7 +443,6 @@ TEST_CASE("cxx numeric model: adjacent_difference traps before a bad range, a nu
     CHECK(text.find("\nreduce(") == std::string::npos);
     CHECK(text.find("\ntransform_reduce(") == std::string::npos);
     CHECK(text.find("\ninner_product(") == std::string::npos);
-    CHECK(text.find("\npartial_sum(") == std::string::npos);
     CHECK(text.find("\nexclusive_scan(") == std::string::npos);
     CHECK(text.find("extern \"C\" void __prism_check(int, const char*, const char*);") != std::string::npos);
     CHECK(text.find("__prism_check(int, const char*, const char*) {") == std::string::npos);

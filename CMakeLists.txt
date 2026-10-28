@@ -834,6 +834,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_cmath.cpp
     tests/cpp/test_cxx_bit.cpp
     tests/cpp/test_cxx_numeric.cpp
+    tests/cpp/test_cxx_numeric_partial_sum.cpp
     tests/cpp/test_cxx_semaphore.cpp
     tests/cpp/test_cxx_variant.cpp
     tests/cpp/test_cxx_functional.cpp
