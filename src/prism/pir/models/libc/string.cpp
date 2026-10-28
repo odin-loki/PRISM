@@ -99,6 +99,30 @@ int strncmp(const char *a, const char *b, size_t n) {
     return 0;
 }
 
+/* strcasecmp compares the bytes of a and b, folding only ASCII A-Z into a-z.
+ * This is not a locale comparison.
+ * It stops at the first difference or the first NUL.
+ * It does not read past that byte.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strcasecmp(const char *a, const char *b) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strcasecmp() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strcasecmp() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    size_t i = 0;
+    for (;;) {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb) return ca > cb ? 1 : -1;
+        if (!ca) return 0;
+        ++i;
+    }
+}
+
 char *strchr(const char *s, int c) {
     __prism_check(s != 0, "STR-NULL-ARG", "strchr() called with unchecked pointer parameter s");
     const unsigned char *us = (const unsigned char *)s;

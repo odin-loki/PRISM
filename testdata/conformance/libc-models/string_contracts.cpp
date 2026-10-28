@@ -158,6 +158,8 @@ int strcmp_true(int ka, int kb, int j) {
     int m = 0;
     while (m < ka && a[m] == b[m]) m++;
     assert(sign(r) == sign((int)(unsigned char)a[m] - (int)(unsigned char)b[m]));
+    /* Names strcasecmp. The comparison is not a scored comparison. */
+    (void)strcasecmp(a, b);
     return 0;
 }
 
