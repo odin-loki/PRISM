@@ -5,8 +5,11 @@
 //
 // min and max return one of the two arguments. Equal arguments return the
 // first. An inverted clamp is __prism_check then __builtin_trap, and that
-// path does not return v. min of the extreme ints is not 0. sort, find,
-// copy, fill, and for_each are not declared.
+// path does not return v. min of the extreme ints is not 0.
+// min_element and max_element take two pointers. An inverted range is
+// __prism_check then __builtin_trap and does not return a pointer. An empty
+// range returns last and does not read an element. Equal elements keep the
+// first. sort, find, copy, fill, and for_each are not declared.
 
 #include <doctest/doctest.h>
 
@@ -278,6 +281,46 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     REQUIRE(ret_v != std::string::npos);
     CHECK(ret_lo < ret_hi);
     CHECK(ret_hi < ret_v);
+
+    const auto min_el_at = text.find("constexpr _Tp* min_element(_Tp* __first, _Tp* __last)");
+    const auto max_el_at = text.find("constexpr _Tp* max_element(_Tp* __first, _Tp* __last)", min_el_at);
+    REQUIRE(min_el_at != std::string::npos);
+    REQUIRE(max_el_at != std::string::npos);
+    CHECK(min_el_at > clamp_at);
+    CHECK(text.find("min_element(_Tp* __first, _Tp* __last,") == std::string::npos);
+    CHECK(text.find("max_element(_Tp* __first, _Tp* __last,") == std::string::npos);
+    const std::string min_el_body = text.substr(min_el_at, max_el_at - min_el_at);
+    const std::string max_el_body = text.substr(max_el_at);
+    const auto check_range = [](const std::string& body, const char* msg) {
+        const auto bad = body.find("if (__last < __first)");
+        const auto empty = body.find("if (__first == __last) return __last;");
+        REQUIRE(bad != std::string::npos);
+        REQUIRE(empty != std::string::npos);
+        CHECK(bad < empty);
+        const std::string bad_body = body.substr(bad, empty - bad);
+        const auto check = bad_body.find("__prism_check");
+        const auto trap = bad_body.find("__builtin_trap");
+        REQUIRE(check != std::string::npos);
+        REQUIRE(trap != std::string::npos);
+        CHECK(check < trap);
+        CHECK(bad_body.find("FUNC-CONTRACT") != std::string::npos);
+        CHECK(bad_body.find(msg) != std::string::npos);
+        CHECK(bad_body.find("return") == std::string::npos);
+        CHECK(bad_body.find("*__") == std::string::npos);
+        const std::string before_read = body.substr(0, empty);
+        CHECK(before_read.find("*__") == std::string::npos);
+        CHECK(body.find("_Tp{") == std::string::npos);
+        CHECK(body.find("_Tp(") == std::string::npos);
+        CHECK(body.find("_Tp __") == std::string::npos);
+        CHECK(body.find("<=") == std::string::npos);
+        const auto scan = body.find("while (__first != __last)", empty);
+        REQUIRE(scan != std::string::npos);
+        CHECK(body.find("*__", scan) != std::string::npos);
+    };
+    check_range(min_el_body, "min_element: last < first");
+    check_range(max_el_body, "max_element: last < first");
+    CHECK(min_el_body.find("if (*__first < *__result)") != std::string::npos);
+    CHECK(max_el_body.find("if (*__result < *__first)") != std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
@@ -330,6 +373,14 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(has_line(b, "clamp_inside_zero=1"));
     CHECK(has_line(b, "ord_eq_first=1 ord_max=2"));
     CHECK(has_line(b, "ptr_eq_first=1"));
+    CHECK(has_line(b, "el_min=1 el_min_i=2"));
+    CHECK(has_line(b, "el_max=9 el_max_i=0"));
+    CHECK(has_line(b, "el_empty=1"));
+    CHECK(has_line(b, "el_tie=1"));
+    CHECK(has_line(b, "el_one=1"));
+    CHECK(has_line(b, "el_null=1"));
+    CHECK(has_line(b, "el_ord_min=1 el_ord_max_i=0"));
+    CHECK(has_line(b, "el_nodef_min=1 el_nodef_max_i=0 el_nodef_empty=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "invert"}, &out, &err));
@@ -337,6 +388,17 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
     CHECK(both.find("clamp: hi < lo") != std::string::npos);
     CHECK(out.find("value=") == std::string::npos);
+
+    for (const char* arg : {"invert-min", "invert-max"}) {
+        std::string el_out, el_err;
+        CHECK_FALSE(run_cmd({mod.string(), arg}, &el_out, &el_err));
+        const std::string el_both = el_out + el_err;
+        const char* el_msg =
+            std::string(arg) == "invert-min" ? "min_element: last < first" : "max_element: last < first";
+        CHECK(el_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+        CHECK(el_both.find(el_msg) != std::string::npos);
+        CHECK(el_out.find("value=") == std::string::npos);
+    }
 
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
@@ -352,9 +414,28 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(syntax_only(c.cxx, omitted, false, &omitted_err));
     CHECK_FALSE(syntax_only(c.cxx, omitted, true, &omitted_err));
 
+    const fs::path comp = c.tmp / "comp.cpp";
+    std::ofstream(comp) << "#include <algorithm>\n"
+                           "int use(int* a, int n) {\n"
+                           "  auto less = [](int x, int y) { return x < y; };\n"
+                           "  return *std::min_element(a, a + n, less) +\n"
+                           "         *std::max_element(a, a + n, less);\n"
+                           "}\n";
+    std::string comp_err;
+    CHECK(syntax_only(c.cxx, comp, false, &comp_err));
+    CHECK_FALSE(syntax_only(c.cxx, comp, true, &comp_err));
+
     const fs::path inverted = c.tmp / "invert_const.cpp";
     std::ofstream(inverted) << "#include <algorithm>\n"
                                "static_assert(std::clamp(0, 2, 1) == 0);\n";
     std::string inverted_err;
     CHECK_FALSE(syntax_only(c.cxx, inverted, true, &inverted_err));
+
+    const fs::path inverted_el = c.tmp / "invert_el_const.cpp";
+    std::ofstream(inverted_el) << "#include <algorithm>\n"
+                                  "constexpr int a[] = {1, 2, 3};\n"
+                                  "static_assert(std::min_element(a + 2, a) == a);\n"
+                                  "static_assert(std::max_element(a + 2, a) == a);\n";
+    std::string inverted_el_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_el, true, &inverted_el_err));
 }

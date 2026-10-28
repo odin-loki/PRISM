@@ -14,6 +14,14 @@
 // and then __builtin_trap. That path does not return v. When the range is
 // valid, the result is lo if v < lo, hi if hi < v, otherwise v.
 //
+// std::min_element and std::max_element take two pointers, first and last.
+// There is no comparator. When last < first, __prism_check with class
+// FUNC-CONTRACT and then __builtin_trap. That path does not return a
+// pointer. When first == last, the result is last. That path does not read
+// an element and does not invent a T. Otherwise the result is a pointer to
+// the minimum or the maximum element in [first, last). Equal elements keep
+// the first.
+//
 // sort, find, copy, fill, for_each, and every other algorithm are not
 // declared. A use of those names fails to compile and the pir stage falls
 // back to libstdc++ (extra.cxx_models). A partial header is intentional.
@@ -56,6 +64,40 @@ constexpr const _Tp& clamp(const _Tp& __v, const _Tp& __lo, const _Tp& __hi) {
     if (__v < __lo) return __lo;
     if (__hi < __v) return __hi;
     return __v;
+}
+
+// Two pointers only. An inverted range traps. An empty range returns last
+// and does not read an element. Equal elements keep the earlier pointer.
+template <_Prism_less_than_comparable _Tp>
+constexpr _Tp* min_element(_Tp* __first, _Tp* __last) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "min_element: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __last;
+    _Tp* __result = __first;
+    ++__first;
+    while (__first != __last) {
+        if (*__first < *__result) __result = __first;
+        ++__first;
+    }
+    return __result;
+}
+
+template <_Prism_less_than_comparable _Tp>
+constexpr _Tp* max_element(_Tp* __first, _Tp* __last) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "max_element: last < first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __last;
+    _Tp* __result = __first;
+    ++__first;
+    while (__first != __last) {
+        if (*__result < *__first) __result = __first;
+        ++__first;
+    }
+    return __result;
 }
 
 }  // namespace std
