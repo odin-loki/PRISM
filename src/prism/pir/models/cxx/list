@@ -31,6 +31,14 @@
 //    insert/erase, and a dereferenceable one on erase of a single element.
 //    libstdc++'s own <list> does not spell these out (front() is *begin());
 //    they are the standard's preconditions, checked the way <vector> is.
+//  * operator!= takes two list<T, Alloc> of the same type. It returns
+//    !(__x == __y) and does not walk elements or call begin(), end(), or
+//    size(). Two empty lists compare not-equal as false. operator==
+//    compares the stored sizes first and returns false before begin() when
+//    the sizes differ. When both sizes are 0, its loop does not load an
+//    element because begin and end compare equal. A mismatch of equal
+//    length stops at the first difference inside operator==. The function
+//    does not return T{}. It is not PROVED and not CLEAN.
 //
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
@@ -765,6 +773,18 @@ template <typename _Tp, typename _Alloc>
     for (auto __e = __x.end(); __i1 != __e; ++__i1, (void)++__i2)
         if (!(*__i1 == *__i2)) return false;
     return true;
+}
+
+// Same type. The body is the negation of operator==. It does not walk
+// elements and it does not call begin(), end(), or size(). Two empty lists
+// compare not-equal as false. operator== compares the stored sizes first.
+// A size mismatch returns false before begin(). When both sizes are 0, its
+// loop does not load an element because begin and end compare equal. A
+// mismatch of equal length stops at the first difference inside operator==.
+// The function does not return T{}. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] inline bool operator!=(const list<_Tp, _Alloc>& __x, const list<_Tp, _Alloc>& __y) {
+    return !(__x == __y);
 }
 
 template <typename _Tp, typename _Alloc>
