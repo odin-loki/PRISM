@@ -14,9 +14,11 @@
 // max() is modelled: it returns PTRDIFF_MAX. It does not wait and it does
 // not change any barrier.
 //
-// arrive(n) subtracts n only when n is not greater than the remaining count.
-// An arrive that would pass below zero is __prism_check. The count is not
-// wrapped.
+// arrive(n) does not wait. A negative n is FUNC-CONTRACT, then
+// __builtin_trap, and the count does not increase. n == 0 changes nothing
+// and does not trap. n greater than the remaining expected count is
+// FUNC-CONTRACT, then __builtin_trap, and the count does not wrap.
+// Otherwise arrive subtracts n. arrive is not PROVED and not CLEAN.
 //
 // wait and arrive_and_wait stay omitted. A blocking wait that returns
 // immediately would be a fake synchronization success. Those names are
@@ -66,16 +68,23 @@ public:
     // does not change any barrier. This is not a concurrency proof.
     static constexpr ptrdiff_t max() noexcept { return PTRDIFF_MAX; }
 
-    // Subtract __n only when it is positive and not greater than the remaining
-    // count. A non-positive __n would raise the count or be a no-op the
-    // standard rejects. __n > _M_expected would pass below zero. The stored
-    // count is left unchanged on that path, so it does not wrap.
+    // Does not wait. arrive is not PROVED and not CLEAN.
     void arrive(ptrdiff_t __n = 1) {
-        const int __ok = (__n > 0 && __n <= _M_expected) ? 1 : 0;
-        __prism_check(__ok, "CXX-BARRIER-ARRIVE",
-                      "barrier::arrive past the expected count");
-        if (__ok)
+        // arrive is not PROVED and not CLEAN.
+        // A negative update would increase the count. Leave the count alone.
+        if (__n < 0) {
+            __prism_check(0, "FUNC-CONTRACT", "barrier::arrive called with a negative count");
+            __builtin_trap();
+        } else if (__n == 0) {
+            // n == 0 changes nothing.
+            return;
+        } else if (__n > _M_expected) {
+            // Greater than the remaining expected count. The stored count is left unchanged.
+            __prism_check(0, "FUNC-CONTRACT", "barrier::arrive count exceeds the expected count");
+            __builtin_trap();
+        } else {
             _M_expected -= __n;
+        }
     }
 
     // One less expected arrival. Does not wait. Already zero is a check,

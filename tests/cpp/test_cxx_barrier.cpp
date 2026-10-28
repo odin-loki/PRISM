@@ -1,6 +1,9 @@
 // The std::barrier model header is one file,
-// src/prism/pir/models/cxx/barrier. arrive past the remaining count is a
-// __prism_check. A negative constructor count is not stored. max() returns
+// src/prism/pir/models/cxx/barrier. A negative arrive is FUNC-CONTRACT, then
+// __builtin_trap, and the count does not increase. arrive(0) changes nothing
+// and does not trap. arrive past the remaining count is FUNC-CONTRACT, then
+// __builtin_trap, and the count does not wrap. arrive is not PROVED and not
+// CLEAN. A negative constructor count is not stored. max() returns
 // PTRDIFF_MAX and does not wait. The header does not define wait(: a
 // blocking wait that returns immediately would be a fake synchronization
 // success.
@@ -51,7 +54,7 @@ std::string strip_comments(const std::string& s) {
 
 }  // namespace
 
-TEST_CASE("cxx barrier: arrive past the count is a check") {
+TEST_CASE("cxx barrier: arrive splits a negative count, zero, and past the count") {
     const fs::path header = barrier_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -60,13 +63,75 @@ TEST_CASE("cxx barrier: arrive past the count is a check") {
     REQUIRE(arrive != std::string::npos);
     const auto drop = src.find("void arrive_and_drop(", arrive);
     REQUIRE(drop != std::string::npos);
-    const std::string body = src.substr(arrive, drop - arrive);
-    CHECK(body.find("__prism_check") != std::string::npos);
-    CHECK(body.find("__n > 0") != std::string::npos);
-    CHECK(body.find("__n <= _M_expected") != std::string::npos);
-    CHECK(body.find("barrier::arrive past the expected count") != std::string::npos);
-    CHECK(body.find("if (__ok)") != std::string::npos);
-    CHECK(body.find("_M_expected -= __n") != std::string::npos);
+    const auto arrive_end = src.rfind('}', drop);
+    REQUIRE(arrive_end != std::string::npos);
+    REQUIRE(arrive_end > arrive);
+    const std::string body = src.substr(arrive, arrive_end - arrive);
+
+    CHECK(src.find("arrive is not PROVED and not CLEAN") != std::string::npos);
+    CHECK(body.find("arrive is not PROVED and not CLEAN") != std::string::npos);
+    CHECK(body.find("wait") == std::string::npos);
+    CHECK(body.find("__ok") == std::string::npos);
+    CHECK(body.find("barrier::arrive past the expected count") == std::string::npos);
+    CHECK(body.find("CXX-BARRIER-ARRIVE") == std::string::npos);
+    CHECK(src.find("barrier::arrive past the expected count") == std::string::npos);
+    CHECK(src.find("CXX-BARRIER-ARRIVE") == std::string::npos);
+
+    const auto neg = body.find("if (__n < 0)");
+    const auto zero = body.find("} else if (__n == 0)");
+    const auto over = body.find("} else if (__n > _M_expected)");
+    const auto ok = body.find("} else {");
+    REQUIRE(neg != std::string::npos);
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(over != std::string::npos);
+    REQUIRE(ok != std::string::npos);
+    CHECK(neg < zero);
+    CHECK(zero < over);
+    CHECK(over < ok);
+
+    const auto neg_check = body.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"barrier::arrive called with a negative count\")");
+    const auto neg_trap = body.find("__builtin_trap()", neg_check);
+    REQUIRE(neg_check != std::string::npos);
+    REQUIRE(neg_trap != std::string::npos);
+    CHECK(neg < neg_check);
+    CHECK(neg_check < neg_trap);
+    CHECK(neg_trap < zero);
+    const std::string neg_arm = body.substr(neg, zero - neg);
+    CHECK(neg_arm.find("_M_expected") == std::string::npos);
+    CHECK(neg_arm.find("-=") == std::string::npos);
+    CHECK(neg_arm.find("+=") == std::string::npos);
+    CHECK(neg_arm.find("return") == std::string::npos);
+
+    const std::string zero_arm = body.substr(zero, over - zero);
+    CHECK(zero_arm.find("return;") != std::string::npos);
+    CHECK(zero_arm.find("n == 0 changes nothing") != std::string::npos);
+    CHECK(zero_arm.find("_M_expected") == std::string::npos);
+    CHECK(zero_arm.find("__builtin_trap") == std::string::npos);
+    CHECK(zero_arm.find("__prism_check") == std::string::npos);
+
+    const auto over_check = body.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"barrier::arrive count exceeds the expected count\")");
+    const auto over_trap = body.find("__builtin_trap()", over_check);
+    REQUIRE(over_check != std::string::npos);
+    REQUIRE(over_trap != std::string::npos);
+    CHECK(over < over_check);
+    CHECK(over_check < over_trap);
+    CHECK(over_trap < ok);
+    const auto over_body = body.find('{', over);
+    REQUIRE(over_body != std::string::npos);
+    const std::string over_arm = body.substr(over_body, ok - over_body);
+    CHECK(over_arm.find("_M_expected") == std::string::npos);
+    CHECK(over_arm.find("-=") == std::string::npos);
+    CHECK(over_arm.find("+=") == std::string::npos);
+    CHECK(over_arm.find("return") == std::string::npos);
+
+    const auto sub_at = body.find("_M_expected -= __n;");
+    REQUIRE(sub_at != std::string::npos);
+    CHECK(ok < sub_at);
+    CHECK(body.find("_M_expected -=", sub_at + 1) == std::string::npos);
+    CHECK(body.find("_M_expected +=") == std::string::npos);
+
     CHECK(src.find("#include <atomic>") == std::string::npos);
     CHECK(src.find("#include <latch>") == std::string::npos);
     CHECK(src.find("#include <semaphore>") == std::string::npos);
