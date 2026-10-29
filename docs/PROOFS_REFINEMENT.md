@@ -1034,6 +1034,12 @@ std::terminate done: exporter `L terminate` (call right before
 before it via ehCallX, then `check 1 terminate CXX-TERMINATE; stop`.
 Fixtures cxx_terminate_call, cxx_terminate_neg (inlined call before
 terminate refused); doctest "std::terminate only right before unreachable".
+Re-measure (b49996efa): outside 884 -> 761, all mismatch=0; the 123
+`__clang_call_terminate` helpers now agree-reject (pointer parameter, Law 6,
+same as C++), so the proved count is unchanged (28/252/433/212; user
+std::terminate calls rarely occur in these trees). concurrency 0/0/6/37,
+esbmc-cpp 8/20/101/57, libc-models 6/246/35/155, prism 203/230/146/150,
+sv-comp 32/180/0/362.
 Next candidate: pointer operand @global (96; .str, typeinfo, vtables).
 
 ## What remains
