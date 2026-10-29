@@ -1269,6 +1269,35 @@ void nx() noexcept {
 void tnew() {
     throw new int(1); // expect: CXX-THROW-NEW
 }
+#include <algorithm>
+#include <bit>
+#include <numeric>
+int tok_gcd_bad(int x, int y) {
+    int a[8] = {};
+    int g = std::gcd(x, y);
+    return a[g]; // expect: CXX-GCD
+}
+int tok_gcd_ok(int x, int y) {
+    int a[8] = {};
+    int g = std::gcd(x, y);
+    if (g >= 8)
+        return 0;
+    return a[g];
+}
+int tok_clamp_direct(int x) {
+    std::vector<int> v(4);
+    return v[std::clamp(x, 0, 9)]; // expect: CXX-CLAMP
+}
+int tok_bitwidth_bad(unsigned x) {
+    int a[8] = {};
+    int w = std::bit_width(x);
+    return a[w]; // expect: CXX-BIT-WIDTH
+}
+int tok_rotl_unused(unsigned x) {
+    int a[8] = {};
+    unsigned r = std::rotl(x, 3);
+    return a[0] + static_cast<int>(r);
+}
 )";
 
 }  // namespace

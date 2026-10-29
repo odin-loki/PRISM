@@ -4897,6 +4897,93 @@ void capacity_first_checks(const json& body, Checker& ck, Ctx& cx) {
     });
 }
 
+// CXX index-token family (regex cxx_index_token_scan): the result of a
+// numeric std function used as an array index without a range check, either
+// directly (`a[std::gcd(x, y)]`) or through a local it was assigned to.
+struct IndexTokenRule {
+    const char* cls;
+    std::vector<std::string> fns;
+    const char* what;
+};
+
+const std::vector<IndexTokenRule>& index_token_rules() {
+    static const std::vector<IndexTokenRule> r{
+        {"CXX-BYTESWAP", {"byteswap"}, "CXX-BYTESWAP"},
+        {"CXX-ROTL", {"rotl", "rotr"}, "std::rotl/rotr"},
+        {"CXX-BIT-WIDTH", {"bit_width"}, "CXX-BIT-WIDTH"},
+        {"CXX-MIDPOINT", {"midpoint"}, "CXX-MIDPOINT"},
+        {"CXX-COUNTL-ZERO", {"countl_zero", "countl_one", "countr_zero", "countr_one"}, "CXX-COUNTL-ZERO"},
+        {"CXX-GCD", {"gcd"}, "CXX-GCD"},
+        {"CXX-LCM", {"lcm"}, "CXX-LCM"},
+        {"CXX-CLAMP", {"clamp"}, "CXX-CLAMP"},
+        {"CXX-TRANSFORM-REDUCE", {"transform_reduce"}, "CXX-TRANSFORM-REDUCE"},
+        {"CXX-REDUCE", {"reduce"}, "CXX-REDUCE"},
+        {"CXX-ADD-SAT", {"add_sat", "sub_sat", "mul_sat", "div_sat", "saturate_cast"}, "CXX-ADD-SAT"},
+    };
+    return r;
+}
+
+void index_token_checks(const json& body, Checker& ck, Ctx& cx) {
+    const auto base = begin_of(body);
+    auto rule_of = [](const json& e) -> const IndexTokenRule* {
+        const auto& c = strip_all(strip_parens(e));
+        if (!is_call_kind(kind(c))) return nullptr;
+        auto cn = callee_name(c);
+        for (auto& r : index_token_rules())
+            if (std::find(r.fns.begin(), r.fns.end(), cn) != r.fns.end()) return &r;
+        return nullptr;
+    };
+    std::map<std::string, const IndexTokenRule*> tainted;  // var id -> rule
+    std::set<std::string> bounded;                         // var ids compared with < <= > >=
+    std::vector<const json*> subs;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl" && n_children(n) > 0) {
+            if (auto* r = rule_of(child(n, n_children(n) - 1))) tainted[std::string(str_field(n, "id"))] = r;
+        } else if (k == "BinaryOperator" && n_children(n) == 2) {
+            auto op = str_field(n, "opcode");
+            if (op == "=") {
+                auto id = ref_id(child(n, 0));
+                if (auto* r = rule_of(child(n, 1)); r && !id.empty()) tainted[id] = r;
+            } else if (op == "<" || op == "<=" || op == ">" || op == ">=") {
+                for (int i = 0; i < 2; ++i)
+                    if (auto id = ref_id(child(n, i)); !id.empty()) bounded.insert(id);
+            }
+        } else if (k == "ArraySubscriptExpr" && n_children(n) == 2) {
+            subs.push_back(&n);
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) == 3) {
+            const auto& op = strip_all(child(n, 0));
+            if (kind(op) == "DeclRefExpr" && str_field(ref_decl(op), "name") == "operator[]") subs.push_back(&n);
+        }
+    });
+    std::sort(subs.begin(), subs.end(), [](auto* a, auto* b) { return begin_of(*a).offset < begin_of(*b).offset; });
+    std::set<std::string> reported;
+    for (auto* n : subs) {
+        const auto p = begin_of(*n);
+        if (!same_file_pos(p, base) || p.macro) continue;
+        const bool op_call = kind(*n) == "CXXOperatorCallExpr";
+        const json& cont = child(*n, op_call ? 1 : 0);
+        const json& idx = child(*n, op_call ? 2 : 1);
+        const IndexTokenRule* r = rule_of(idx);
+        std::string what;
+        if (!r) {
+            auto id = ref_id(idx);
+            auto it = tainted.find(id);
+            if (id.empty() || it == tainted.end() || bounded.contains(id)) continue;
+            r = it->second;
+            what = std::string(str_field(ref_decl(strip_all(idx)), "name"));
+        }
+        if (!reported.insert(r->cls).second) continue;
+        std::string cname = member_chain(cont);
+        if (cname.empty()) cname = "container";
+        std::string msg = what.empty()
+                              ? std::string(r->what) + " result used as an array index without a range check"
+                              : cname + "[" + what + "] indexes with " + r->what + " without a range check";
+        (void)cx;
+        ck.add(*n, r->cls, msg);
+    }
+}
+
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
 // first later index, deref, `->`, free() or return of p, unless p is
 // assigned in between.
@@ -5418,6 +5505,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     onesided_index_checks(f, *body, w.ck);
     api_assign_checks(*body, w.ck);
     capacity_first_checks(*body, w.ck, cx);
+    index_token_checks(*body, w.ck, cx);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
