@@ -1288,11 +1288,15 @@ struct Checker {
     std::optional<long long> local_wchar_array_size(const json& n) const {
         const auto* v = local_var(n);
         if (!v || kind(*v) != "VarDecl" || !automatic(v)) return std::nullopt;
-        auto t = type_of(*v);
+        // The spelled type: wchar_t is a typedef in C, so the desugared type
+        // (libclang's canonical spelling) reads int[N].
+        std::string t;
+        if (auto it = v->find("type"); it != v->end() && it->is_object()) t = str_field(*it, "qualType");
         auto lb = t.find('['), rb = t.find(']');
         if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1) return std::nullopt;
         auto elem = t.substr(0, lb);
         while (!elem.empty() && elem.back() == ' ') elem.pop_back();
+        if (elem.starts_with("const ")) elem.erase(0, 6);
         if (elem != "wchar_t") return std::nullopt;
         try {
             return std::stoll(t.substr(lb + 1, rb - lb - 1));
@@ -1798,11 +1802,11 @@ struct Checker {
         }
         // glibc's <alloca.h> defines alloca(size) as __builtin_alloca(size): that expansion is the call.
         if (one_of(name, {"alloca", "__builtin_alloca"}) && !args.empty() &&
-            (!in_macro(c) || name == "__builtin_alloca")) {
+            (!in_macro(c) || (n_children(c) && str_field(ref_decl(strip_all(child(c, 0))), "name") == "__builtin_alloca"))) {
             const auto& sz = strip_all(*args[0]);
             if (!int_value(sz) && !constant_expr(sz)) {
                 auto szt = arg_text(*args[0]);
-                add(c, "MEM-ALLOCA", name + "(" + szt + ") size is not a constant");
+                add(c, "MEM-ALLOCA", name + "(" + szt + ") size is not a constant", /*allow_macro=*/true);
             }
         }
         if (one_of(name, {"sprintf", "vsprintf"}) && !args.empty()) {
