@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // std::filesystem::path operational model (src/prism/pir/models/cxx/filesystem).
 // The pir stage puts the model headers first on the include path, so
 // <filesystem> below is the model. Each function is one contract.

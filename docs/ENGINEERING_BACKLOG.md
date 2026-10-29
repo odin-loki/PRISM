@@ -105,3 +105,10 @@ Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 Eight Composer 2.5 passes informed this backlog: libc/stdlib contracts, astlint
 `STR-UNBOUNDED-COPY`, certified budgets, SV-COMP, pir-vs-bmc retirement gates,
 Lean refinement D118/D136, CPP port appendix vs status block, `vector_insert` value sets.
+
+## prism_tests failures not caused by work/libc-models (2026-10-29)
+
+Full run under `/workspace/bin/prism-run` (prlimit --as=4 GB): 15 failed cases.
+Four were caused by this branch and are fixed: the libc contract-harness test (true-only ymls now carry a `no-false-twin:` line), the per-function harness test (`_Hash_bytes` moved to the `<typeindex>` model), the deps SBOM drift string (z3 `memory_manager.cpp`), and the regex model source test (`_M_fail` inlined).
+- **Environmental (ASan cannot reserve its shadow memory under an address-space cap):** cxx format model setup, certified (combined proof split), label self-check, fuse PRISM_AFL, ai9 lean best-first, ai-assist regress (sanitizer half). All of these pass when run without prlimit.
+- **Pre-existing:** the 6 astlint cases (libclang resource dir), and ai-assist regress `test_ai_assist.cpp:433`. That check runs a cmake+ctest build of the generated tests and fails without prlimit too. No ai/ files changed on this branch.

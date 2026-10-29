@@ -294,16 +294,3 @@ char *strdup(const char *s) {
 
 }  // extern "C"
 
-/* libstdc++'s byte hash behind std::type_info::hash_code and std::hash of
-   strings (libsupc++ hash_bytes.cc). Its value is unspecified by the
-   standard; only "equal bytes give equal hashes" is relied on, which any
-   deterministic function of (bytes, seed) gives: FNV-1a here. */
-namespace std {
-size_t _Hash_bytes(const void *p, size_t n, size_t seed) {
-    __prism_check(p != 0 || n == 0, "STR-NULL-ARG", "_Hash_bytes() called with a null pointer");
-    const unsigned char *b = (const unsigned char *)p;
-    size_t h = seed ^ (size_t)14695981039346656037ull;
-    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * (size_t)1099511628211ull;
-    return h;
-}
-}  // namespace std
