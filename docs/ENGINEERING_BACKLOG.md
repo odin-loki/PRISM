@@ -90,6 +90,17 @@ Houdini): its BOUNDED is a time limit, not a missing template. Next: the
 same run for strcat/strncat (still searching at 180 s; may need a
 `MemEq`/`MemFrame` template), and decide whether the deadline should follow
 the function budget instead of `--timeout`.
+**Done (19dea0882):** with a function budget the Houdini deadline is what is
+left of it (capped by the run's Houdini budget); 6 x `--timeout` only without
+one. `strcat_any_true` alone at a 600 s budget: BOUNDED, Houdini reaches its
+fixpoint (5 rounds, 44 inductive) and the final cut-program query is solver
+*unknown* at the budget (359 properties). The templates the libc worker named
+already exist: `MemEq` at a scope offset (`d[k + x] == s[x]`, x < i) and
+`MemFrame` (bytes below the offset keep their entry values), with offsets
+from 64-bit scope variables in written addresses (`k = strlen(d)`). Next:
+dump the 44 survivors (`pir_invariants` is only written on a proof; add it
+to the BOUNDED row too) to see whether those two survive; if they do, the gap
+is the final query (Z3 on the quantified instances), not a template.
 
 **Gate 2026-10-29 18:40 (pf6):** hard conflicts **0**, superset gaps **9**,
 agreement 3463/4650: 6 `clang rejects the unit` (lint snippets ill-formed even
