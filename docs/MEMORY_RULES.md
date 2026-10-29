@@ -91,3 +91,11 @@
 - unbounded_string now finishes. unordered_map_contracts: all 8 functions "never reported" by harness/pir (whole file lost: per-function budget 600s x 8 > file timeout). Next: lower budget for that file or profile umap_insert_true.
 - peak tree RSS 4000MB vs budget 3400 (+18%, includes prism-qa). Overshoot still open.
 - Full log: /tmp/mf/conf6.keep
+
+## Handoff 2026-10-30 06:00 AEDT (umap)
+- fe579ccde: prism_hash_table.h zeroes buckets with memset (the 13-bucket loop exceeded unwind 4/8).
+- Single-file qa run with it (/tmp/mf/um1, binary /tmp/mf/prism-umap): unordered_map_contracts still
+  "missing" (all 8 x 3 stages, 900 s file timeout). Not fixed yet. Profiling pir alone with
+  PRISM_FUNCTION_BUDGET=60: /tmp/mf/up1.log.
+- cxx_unordered_map_{true,false} pir: memory-budget UNKNOWN at 432/579 MB RSS of 2550 (false trip? same
+  pattern as vector_insert 765 MB in conf4): investigate.
