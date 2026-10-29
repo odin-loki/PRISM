@@ -2088,6 +2088,11 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             }
             r.extra["houdini_rounds"] = std::to_string(h.rounds);
             r.extra["houdini_candidates"] = std::to_string(h.candidates);
+            if (h.final_s >= 0) {
+                char fb[32];
+                std::snprintf(fb, sizeof fb, "%.2f", h.final_s);
+                r.extra["houdini_final_budget"] = fb;
+            }
             if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
             if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
             if (!h.proved) {
