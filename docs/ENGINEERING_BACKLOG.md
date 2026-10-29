@@ -185,3 +185,16 @@ Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 Eight Composer 2.5 passes informed this backlog: libc/stdlib contracts, astlint
 `STR-UNBOUNDED-COPY`, certified budgets, SV-COMP, pir-vs-bmc retirement gates,
 Lean refinement D118/D136, CPP port appendix vs status block, `vector_insert` value sets.
+
+**Handoff 2026-10-29 23:20 (pir-bmc):** db219d691 keeps 30% of the function
+budget for Houdini's final query (`PRISM_HOUDINI_FINAL_RESERVE`) and has each
+final/optimistic property group assume only the invariants of loops encoded
+before it. The pir/repolint/Houdini doctest subset passes (88/88). The full
+prism_tests run before it had 8 failed cases (233 assertions), names not
+captured: possibly from box OOM or a broken prism-run at the time, not yet
+confirmed. A rerun is logging to /workspace/logs/pirbmc-tests-db219.log. Still
+to do: the strcat_any_true 1200 s rerun
+(/workspace/logs/one6_strcat1200.log; attempt 1 was OOM-killed by the box,
+retrying), strncat_any_true at 600 s (its attempt failed because prism-run
+was being edited, rc=2; rerun it with /workspace/logs/run_strcat5.sh
+strncat_any_true), and the pir-vs-bmc gate (0 hard conflicts required).
