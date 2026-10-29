@@ -1042,6 +1042,18 @@ esbmc-cpp 8/20/101/57, libc-models 6/246/35/155, prism 203/230/146/150,
 sv-comp 32/180/0/362.
 Next candidate: pointer operand @global (96; .str, typeinfo, vtables).
 
+### Globals named by inlined callees (bca67906e, 676b3bead)
+All 96 "pointer operand @global" outsides were globals named only inside an
+inlined callee (MemTr::global allocated them lazily, mid-numbering, so the
+export refused them). Now `pirmem::entry_globals` also collects the globals
+of the transitively callable functions (DFS, call order), so C++ allocates
+them in the prologue like the function's own; the exporter writes them as
+`L glob` lines and passes every entry global to every inlined callee as extra
+`@name 64` parameters (after its own, before `__prism.oom`), each call passing
+`%@name` — the same rewrite as the oom flag, no Lean change. thread_local
+globals stay outside. Fixture `callee_global`, doctest "lean export passes
+globals to inlined callees, not thread_local ones". Re-measure: pending.
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
