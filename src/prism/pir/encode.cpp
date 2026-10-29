@@ -1444,8 +1444,21 @@ static std::atomic<uint64_t> g_z3_cap_mb{0};
 static bool z3_exhausted() {
     if (g_z3_oom.load()) return true;
     const uint64_t cap = g_z3_cap_mb.load();
-    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100) g_z3_oom.store(true);
-    return g_z3_oom.load();
+    // over the soft cap now (not sticky: a finished function frees its context)
+    return cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100;
+}
+
+// Z3's own memory_max_size is the hard stop, but past it Z3 is not reliably
+// recoverable (priority_queue_contracts.cpp under a 4 GB RLIMIT_AS: SIGSEGV in
+// th_rewriter from Z3_simplify, about one run in two). So the cap is enforced
+// before every query: at the soft cap (g_z3_cap_mb) the query is not asked
+// (an out-of-memory z3::exception, mapped to UNKNOWN like Z3's own), and Z3's
+// hard limit is twice that, so one query has room to finish.
+static void z3_mem_guard() {
+    const uint64_t cap = g_z3_cap_mb.load();
+    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) {
+        throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached before a query");
+    }
 }
 
 static void cap_z3_memory_once() {
@@ -1470,7 +1483,7 @@ static void cap_z3_memory_once() {
             }
         }
         g_z3_cap_mb.store(mb);
-        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb, 1u << 30)));
+        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(2 * mb, 1u << 30)));
     });
 }
 
@@ -1481,7 +1494,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
         // Z3's allocator fails every later request (a new context is null)
         Verdict v;
         v.status = std::string(laws::UNKNOWN);
-        v.message = "not checked: an earlier function's encoder ran out of memory (PRISM_PIR_MEM_MB) in this process";
+        v.message = "not checked: the encoder's memory (Z3, all contexts of this process) is over PRISM_PIR_MEM_MB, or an earlier function ran Z3 out of memory";
         return v;
     }
     CheckOptions opt = opt_in;
@@ -1616,7 +1629,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             }
             // (after the cap: a test's delay here stands for a slow query)
             if (opt.debug_before_query) opt.debug_before_query(label);
-            const auto& r = bk.add(label, solver::solve(c, vc, o));
+            z3_mem_guard();
+const auto& r = bk.add(label, solver::solve(c, vc, o));
             if (capped && r.kind != solver::SolveResult::Sat && r.kind != solver::SolveResult::Unsat &&
                 fn_budget->exhausted()) {
                 fn_budget_cut.push_back(label);
@@ -1727,7 +1741,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     }
                     const auto l0 = static_cast<std::ptrdiff_t>(lo), l1 = static_cast<std::ptrdiff_t>(hi);
                     std::vector<z3::expr> part(all.begin() + l0, all.begin() + l1);
-                    auto cr = solver::solve(c, base && any_of(c, part), budgeted(ko));
+                    z3_mem_guard();
+auto cr = solver::solve(c, base && any_of(c, part), budgeted(ko));
                     const std::string cr_note = cr.note;
                     const auto cr_kind = cr.kind;
                     if (cr_kind == solver::SolveResult::Unsat && cr.certified) {
@@ -1780,7 +1795,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                     out_of_budget(i);
                     return;
                 }
-                const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budgeted(ko)));
+                z3_mem_guard();
+const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budgeted(ko)));
                 if (!(r.kind == solver::SolveResult::Unsat && r.certified)) break;
             }
             vr.extra["certificate_solver"] = cbook.summary();
@@ -2271,8 +2287,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
         // memory_max_size (cap_z3_memory_once): no proof, and not a crash
-        const bool oom = m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
-        if (oom) g_z3_oom.store(true);
+        const bool soft = m.find("soft memory cap") != std::string::npos;
+        const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
+        if (oom && !soft) g_z3_oom.store(true);  // past Z3's own limit Z3 stays unusable
         v.status = std::string(oom ? laws::UNKNOWN : laws::ERROR);
         v.message = oom ? "encoder ran out of memory (PRISM_PIR_MEM_MB); no proof" : std::string("z3: ") + m;
         return v;
