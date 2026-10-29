@@ -101,6 +101,15 @@ from 64-bit scope variables in written addresses (`k = strlen(d)`). Next:
 dump the 44 survivors (`pir_invariants` is only written on a proof; add it
 to the BOUNDED row too) to see whether those two survive; if they do, the gap
 is the final query (Z3 on the quantified instances), not a template.
+**Survivors (b64e21f2a, `PRISM_PIR_DUMP_INVARIANTS=1` -> extra
+`pir_invariants_surviving` on a non-proof):** `strcat_any_true` at 600 s keeps
+43 inductive invariants over its 4 loops, among them the copy
+`forall x < i: d[k + x] == s[x]` and the frame `forall x < k + entry(i):
+d[x] == d[x] at loop entry` (k = the inlined strlen result). Both needed
+templates survive, so the gap is the final cut-program query (solver unknown
+when the 600 s function budget is spent), not a template. `houdini_final_budget`
+now records how many seconds that query got; next: rerun at 1200 s, then
+slice the final query (per property, only invariants of loops that reach it).
 
 **Gate 2026-10-29 18:40 (pf6):** hard conflicts **0**, superset gaps **9**,
 agreement 3463/4650: 6 `clang rejects the unit` (lint snippets ill-formed even
