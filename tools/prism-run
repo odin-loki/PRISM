@@ -1,0 +1,43 @@
+#!/bin/bash
+# prism-run CMD...: box-safety wrapper for heavy PRISM runs (see /workspace/logs/MEMORY_RULES.md)
+# - at most $PRISM_RUN_SLOTS (default 2) heavy runs box-wide (flock semaphore)
+# - memory budget from MemAvailable at slot acquisition: PRISM_MEM_BUDGET_MB exported to PRISM
+#   (its in-process budget), RSS watchdog kills the tree at 1.25x budget; no RLIMIT_AS (ASan reserves TBs of address space;
+#   address space is not memory). Opt in with PRISM_RUN_AS=1 for a 4x --as backstop.
+# - oom_score_adj=800 so if the kernel must kill, it kills this run, not an agent session
+set -u
+SLOTS=${PRISM_RUN_SLOTS:-2}; LOCKDIR=/tmp/prism-run-locks; mkdir -p $LOCKDIR
+exec 9>/dev/null
+while :; do
+  for i in $(seq 0 $((SLOTS-1))); do
+    exec 9>$LOCKDIR/slot$i
+    if flock -n 9; then SLOT=$i; break 2; fi
+  done
+  sleep 2
+done
+avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+cg=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+[ "$cg" != max ] && [ -n "$cg" ] && { cgm=$((cg/1048576)); [ $cgm -lt $avail ] && avail=$cgm; }
+budget=${PRISM_MEM_BUDGET_MB:-$(( avail * 6 / 10 / SLOTS ))}
+[ $budget -gt 6000 ] && [ -z "${PRISM_MEM_BUDGET_MB:-}" ] && budget=6000
+[ $budget -lt 512 ] && budget=512
+export PRISM_MEM_BUDGET_MB=$budget
+kill_at=$(( budget * 5 / 4 ))
+echo "prism-run: slot $SLOT/$SLOTS, MemAvailable ${avail}MB, budget ${budget}MB, kill at ${kill_at}MB RSS" >&2
+if [ "${PRISM_RUN_AS:-0}" = 1 ]; then
+  setsid prlimit --as=$(( budget * 4 * 1048576 )) -- "$@" 9>&- &
+else
+  setsid "$@" 9>&- &
+fi
+pid=$!
+echo 800 > /proc/$pid/oom_score_adj 2>/dev/null
+peak=0
+while kill -0 $pid 2>/dev/null; do
+  r=$(ps -o rss= -g $pid 2>/dev/null | awk '{s+=$1} END{print int(s/1024)}')
+  [ "${r:-0}" -gt $peak ] && peak=$r
+  if [ "${r:-0}" -gt $kill_at ]; then echo "prism-run: RSS ${r}MB over ${kill_at}MB: killed (reported, not silent)" >&2; kill -9 -$pid; fi
+  sleep 0.5
+done
+wait $pid; rc=$?
+echo "prism-run: exit $rc, peak tree RSS ${peak}MB (budget ${budget}MB)" >&2
+exit $rc

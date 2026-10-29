@@ -1,0 +1,14 @@
+#!/bin/bash
+# rsscap MB cmd...: run cmd, kill process group if total RSS of tree exceeds MB; print peak tree RSS
+cap=$1; shift
+setsid "$@" & pid=$!
+peak=0
+while kill -0 $pid 2>/dev/null; do
+  r=$(ps -o rss= -g $(ps -o pgid= $pid | tr -d ' ') 2>/dev/null | awk '{s+=$1} END{print int(s/1024)}')
+  [ -n "$r" ] && [ "$r" -gt "$peak" ] && peak=$r
+  if [ -n "$r" ] && [ "$r" -gt "$cap" ]; then echo "rsscap: killing at ${r}MB" >&2; kill -9 -$pid; fi
+  sleep 0.5
+done
+wait $pid; rc=$?
+echo "rsscap: peak_tree_rss_mb=$peak rc=$rc" >&2
+exit $rc
