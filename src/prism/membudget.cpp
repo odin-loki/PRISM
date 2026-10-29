@@ -187,7 +187,13 @@ bool g_thread = false;
 
 void watchdog() {
     for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // 20 ms near the limit (from 60% of budget): a Z3 query or an encoder
+        // burst grows hundreds of MB between 50 ms samples (~30% overshoot).
+        {
+            const uint64_t b = budget_mb();
+            const bool near = b > 0 && rss_mb() >= b * 3 / 5;
+            std::this_thread::sleep_for(std::chrono::milliseconds(near ? 20 : 50));
+        }
         {
             std::lock_guard<std::mutex> lk(g_wmu);
             if (g_watches.empty()) continue;
