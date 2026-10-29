@@ -419,6 +419,7 @@ exporter:
 | `assert`/`reach_error` noreturn blocks + unreachable LLVM blocks (511404056) | 1 039 | 396 | 243 | 1 981 | **0** | 1 435 |
 | `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | 419 | 245 | 1 956 | 0 | 1 458 |
 | `invoke` as call + `br`, stubbed landing pads (65d994197) | 1 039 | **479** | 266 | 1 875 | **0** | **1 518** |
+| `ptrtoint`/`psub`, `std::__throw_*` without handlers (64b4cdd34) | 1 039 | **491** | 267 | 1 869 | **0** | **1 530** |
 
 Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
 387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
@@ -459,6 +460,16 @@ inlined function was only 11. The two that moved:
   `std::__throw_bad_array_new_length` 29), indirect calls 30, `ptrtoint` 27,
   float/double 42, `pthread_mutex_lock` 20, `alloca` in an inlined function 18,
   `pthread_create` 17, `mtx_lock` 15, constant-GEP operands 14.
+* **Pointer difference and library throws (d02bdb7f5, 64b4cdd34).** `sub` of two
+  `ptrtoint`s is `SInst.psub` (ub on different objects, mirroring the
+  `PTR-COMPARE` check); a bare `ptrtoint` is a copy. `std::__throw_*` with no
+  arguments, when no `invoke` can be on the stack (`under_invoke`), is
+  `L throw <typeinfo>`: `XBlock.thr` makes the LLVM run stuck there (no claim),
+  `segOK` checks only the prefix, and `runFrame` mirrors `Tr::raise` exactly
+  (Extern alloc of 96 bytes, three header stores via `Tr::at`, `type_id` in
+  first-use order, `CXX-UNCAUGHT` when the top is `main` / a global init, stop,
+  fresh block). Fixtures `ptr_sub`, `std_throw`. 479 → **491** agree-ext.
+  pthread/mtx stay outside because `translate.cpp` itself leaves them UNENCODED.
 * **Unreachable LLVM blocks.** `Tr::run_frame` translates only
   `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
   `xSucc` (XTranslate) mirror it, `runFrame` skips the dead blocks (their
