@@ -13,7 +13,7 @@
 //
 // Not declared, so a use fails to compile and the pir stage lowers that
 // translation unit again with libstdc++ (extra.cxx_models): tuple_cat, apply,
-// forward_as_tuple, tie, comparison, and any arity above 8 (the primary
+// tie, comparison, and any arity above 8 (the primary
 // template is not defined).
 #ifndef _GLIBCXX_TUPLE
 #define _GLIBCXX_TUPLE 1
@@ -22,6 +22,9 @@
 
 #include <cstddef>
 #include <bits/utility.h>
+#if defined(__GLIBCXX__)
+#include <bits/stl_pair.h>  // pair's piecewise constructor is defined below
+#endif
 
 namespace std {
 
@@ -838,6 +841,34 @@ template <size_t _I, typename _T0, typename _T1, typename _T2, typename _T3, typ
 constexpr decltype(auto) get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>&& __t) noexcept {
     return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>>::get(static_cast<const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>&&>(__t));
 }
+
+// forward_as_tuple(args...) is a tuple of references to the arguments, as
+// libstdc++ does; the map and unordered_map models use it for piecewise
+// emplacement. Arity is bounded by the tuple specializations above.
+template <typename... _Args>
+constexpr tuple<_Args&&...> forward_as_tuple(_Args&&... __args) noexcept {
+    return tuple<_Args&&...>(static_cast<_Args&&>(__args)...);
+}
+
+#if defined(__GLIBCXX__)
+// libstdc++ declares pair's piecewise constructor in bits/stl_pair.h and
+// defines it in <tuple>. With this header standing in for <tuple>, these are
+// those definitions (same bodies): first and second are built from the
+// forwarded tuple elements. The map and unordered_map models emplace with them.
+template <class _T1, class _T2>
+template <typename... _Args1, typename... _Args2>
+inline constexpr pair<_T1, _T2>::pair(piecewise_construct_t, tuple<_Args1...> __first,
+                                      tuple<_Args2...> __second)
+    : pair(__first, __second, typename _Build_index_tuple<sizeof...(_Args1)>::__type(),
+           typename _Build_index_tuple<sizeof...(_Args2)>::__type()) {}
+
+template <class _T1, class _T2>
+template <typename... _Args1, size_t... _Indexes1, typename... _Args2, size_t... _Indexes2>
+inline constexpr pair<_T1, _T2>::pair(tuple<_Args1...>& __tuple1, tuple<_Args2...>& __tuple2,
+                                      _Index_tuple<_Indexes1...>, _Index_tuple<_Indexes2...>)
+    : first(static_cast<_Args1&&>(std::get<_Indexes1>(__tuple1))...),
+      second(static_cast<_Args2&&>(std::get<_Indexes2>(__tuple2))...) {}
+#endif
 
 // libstdc++ 13 and later reach bits/uses_allocator_args.h from <string>
 // (std::pmr), and its template bodies name std::make_tuple, std::apply and
