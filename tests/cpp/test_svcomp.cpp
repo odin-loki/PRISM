@@ -822,6 +822,39 @@ TEST_CASE("svcomp replay: --allow-exec with a fake compiler decides replayed / n
 }
 #endif
 
+TEST_CASE("svcomp fuzz_replay: Law 9, scope, and sanitizer-confirmed answers only") {
+    TempDir d;
+    auto ovf = d.write("f.c", "extern int __VERIFIER_nondet_int(void);\n"
+                              "int main(void) { int x = __VERIFIER_nondet_int();\n"
+                              "  if (x > 2147483000) { x = x + 1000; }\n  return 0; }\n");
+    // Law 9: nothing compiled or run without --allow-exec
+    CHECK(fuzz_replay(ovf, "no-overflow", false, d.path / "w0")["replay"] == "notrun");
+    CHECK_FALSE(fs::exists(d.path / "w0" / "fuzz.bin"));
+    CHECK(fuzz_replay(ovf, "valid-memsafety", true, d.path / "w1")["replay"] == "unsupported");
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: fuzz_replay with a real compiler + UBSan");
+        return;
+    }
+    auto r = fuzz_replay(ovf, "no-overflow", true, d.path / "w2", "LP64", 30.0, 50);
+    INFO(r.dump());
+    CHECK(r["replay"] == "replayed");
+    CHECK(r["line"] == 3);
+    CHECK(r.contains("fuzz_seed"));
+    // a safe program is never refuted
+    auto safe = d.write("s.c", "extern int __VERIFIER_nondet_int(void);\n"
+                               "int main(void) { int x = __VERIFIER_nondet_int();\n"
+                               "  if (x < 1000 && x > -1000) x = x * 2;\n  return 0; }\n");
+    CHECK(fuzz_replay(safe, "no-overflow", true, d.path / "w3", "LP64", 10.0, 30)["replay"] == "not-replayed");
+    // assume-filtered inputs end the run cleanly
+    auto as = d.write("a.c", "extern int __VERIFIER_nondet_int(void); extern void __VERIFIER_assume(int);\n"
+                             "int main(void) { int x = __VERIFIER_nondet_int(); __VERIFIER_assume(x < 10);\n"
+                             "  x = x + 1;\n  return 0; }\n");
+    CHECK(fuzz_replay(as, "no-overflow", true, d.path / "w4", "LP64", 10.0, 30)["replay"] == "not-replayed");
+    auto ur = d.write("u.c", "extern int __VERIFIER_nondet_int(void); void reach_error();\n"
+                             "int main(void) { if (__VERIFIER_nondet_int() == 7) reach_error();\n  return 0; }\n");
+    CHECK(fuzz_replay(ur, "unreach-call", true, d.path / "w5", "LP64", 30.0, 200)["replay"] == "replayed");
+}
+
 TEST_CASE("svcomp replay: sanitizer runs decide replayed / not-replayed") {
     if (!svcomp_exec_portable()) {
         MESSAGE("NOTRUN: SV-COMP replay with a real compiler + UBSan: the stub is POSIX C and MSVC-target "

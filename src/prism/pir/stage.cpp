@@ -22,6 +22,8 @@
 #include "stage_mem.hpp"
 
 #include <algorithm>
+#include <map>
+#include <unistd.h>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -1112,11 +1114,7 @@ namespace {
 // or alignment, declares no pointer (no pointer difference, no
 // pointer-integer conversion), and is not C++. int, short, char, long
 // long, arrays and string literals are the same width on both.
-bool ilp32_neutral(const fs::path& p) {
-    if (is_cxx(p)) return false;
-    std::ifstream in(p, std::ios::binary);
-    if (!in) return false;
-    std::string t((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+bool ilp32_neutral_text(std::string t) {
     // The SV-COMP preamble's prototype of __assert_fail (only called with
     // string literals by reach_error) is the one pointer declaration allowed.
     static Regex assert_proto("extern\\s+void\\s+__assert_fail\\s*\\([^;]*;");
@@ -1136,14 +1134,113 @@ bool ilp32_neutral(const fs::path& p) {
     // already refuses both, keeping the rule simple.
     return true;
 }
+
+std::string read_all(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+bool ilp32_neutral(const fs::path& p) { return !is_cxx(p) && ilp32_neutral_text(read_all(p)); }
+
+// Under ILP32, plain `long` / `unsigned long` are 32 bits like int /
+// unsigned int, and in pointer-free code the usual arithmetic conversions
+// give the same width and signedness either way (long vs unsigned int ->
+// unsigned long, 32 bits, as int vs unsigned int -> unsigned int). So the
+// unit with every standalone `long` spelled `int` (and the L / UL literal
+// suffixes dropped) computes exactly what the ILP32 program computes,
+// overflow included. `long long` and `long double` are not touched (a unit
+// with `long double` is refused). Same line structure: findings keep their
+// locations. nullopt when the rewritten unit is still not neutral.
+std::optional<std::string> ilp32_long_as_int(const fs::path& p) {
+    if (is_cxx(p)) return std::nullopt;
+    std::string t = read_all(p);
+    static Regex ldouble("\\blong\\s+double\\b");
+    if (ldouble.search(t)) return std::nullopt;
+    std::string out;
+    out.reserve(t.size());
+    auto word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    std::size_t i = 0;
+    while (i < t.size()) {
+        char c = t[i];
+        // skip string / char literals and comments untouched
+        if (c == '"' || c == '\'') {
+            std::size_t j = i + 1;
+            while (j < t.size() && t[j] != c) j += (t[j] == '\\') ? 2 : 1;
+            out.append(t, i, std::min(j + 1, t.size()) - i);
+            i = j + 1;
+            continue;
+        }
+        if (c == '/' && i + 1 < t.size() && (t[i + 1] == '/' || t[i + 1] == '*')) {
+            std::size_t j = t[i + 1] == '/' ? t.find('\n', i) : t.find("*/", i + 2);
+            j = j == std::string::npos ? t.size() : (t[i + 1] == '/' ? j : j + 2);
+            out.append(t, i, j - i);
+            i = j;
+            continue;
+        }
+        if (word(c) && (i == 0 || !word(t[i - 1]))) {
+            std::size_t j = i;
+            while (j < t.size() && word(t[j])) ++j;
+            std::string w = t.substr(i, j - i);
+            if (w == "long") {
+                // `long long`: copy both words
+                std::size_t k = j;
+                while (k < t.size() && std::isspace(static_cast<unsigned char>(t[k]))) ++k;
+                std::size_t e = k;
+                while (e < t.size() && word(t[e])) ++e;
+                if (t.compare(k, e - k, "long") == 0 && e - k == 4) {
+                    out.append(t, i, e - i);
+                    i = e;
+                    continue;
+                }
+                // preceding `long` was handled above, so this is a standalone long
+                out += "int";
+                i = j;
+                continue;
+            }
+            if (std::isdigit(static_cast<unsigned char>(w[0])) && w.find_first_of(".xXeE") == std::string::npos) {
+                // decimal literal suffix: drop a single L (keep U, keep LL)
+                std::size_t d = 0;
+                while (d < w.size() && std::isdigit(static_cast<unsigned char>(w[d]))) ++d;
+                std::string suf = w.substr(d), up;
+                for (char ch : suf) up += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                if (up == "L") w = w.substr(0, d);
+                else if (up == "UL" || up == "LU") w = w.substr(0, d) + "U";
+            }
+            out += w;
+            i = j;
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    if (out == t || !ilp32_neutral_text(out)) return std::nullopt;
+    return out;
+}
 }  // namespace
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
     // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task
     // here, unless every unit is data-model neutral (ilp32_neutral): then
     // its LP64 IR computes exactly what the ILP32 program does.
-    if (is_ilp32(cfg.data_model) && !std::all_of(sources.begin(), sources.end(), [](const fs::path& p) {
-            return !is_unit(p) || ilp32_neutral(p);
+    // ILP32 units that are neutral once plain `long` is spelled `int`
+    // (ilp32_long_as_int) are analysed from that rewritten copy.
+    std::map<fs::path, fs::path> ilp32_copy;
+    if (is_ilp32(cfg.data_model)) {
+        for (auto& p : sources) {
+            if (!is_unit(p) || ilp32_neutral(p)) continue;
+            auto rw = ilp32_long_as_int(p);
+            if (!rw) continue;
+            std::error_code ec;
+            fs::path dir = fs::temp_directory_path(ec) / ("prism-pir-ilp32-" + std::to_string(::getpid()));
+            fs::create_directories(dir, ec);
+            fs::path cp = dir / p.filename();
+            std::ofstream o(cp, std::ios::binary);
+            o << *rw;
+            if (o) ilp32_copy[p] = cp;
+        }
+    }
+    if (is_ilp32(cfg.data_model) && !std::all_of(sources.begin(), sources.end(), [&](const fs::path& p) {
+            return !is_unit(p) || ilp32_neutral(p) || ilp32_copy.count(p);
         })) {
         Finding f;
         f.stage = "pir";
@@ -1154,7 +1251,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     }
     std::vector<Unit> units;
     for (auto& p : sources)
-        if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});
+        if (is_unit(p)) units.push_back(Unit{ilp32_copy.count(p) ? ilp32_copy.at(p) : p, rel_of(p, cfg.root)});
     if (!z3_available()) {
         Finding f;
         f.stage = "pir";
