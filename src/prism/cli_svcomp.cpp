@@ -200,7 +200,8 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         std::error_code rm;
         fs::remove_all(fd, rm);
         if (get_str(r, "replay") == "replayed") {
-            json f = json::object();
+            // a finding of main carrying the run's nondet values (witness waypoints)
+            json f = {{"function", "main"}, {"stage", "fuzz"}, {"extra", {{"nondet", get_str(r, "nondet")}}}};
             if (has(r, "line")) f["line"] = r.at("line");
             dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
         }

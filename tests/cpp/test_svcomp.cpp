@@ -840,6 +840,8 @@ TEST_CASE("svcomp fuzz_replay: Law 9, scope, and sanitizer-confirmed answers onl
     CHECK(r["replay"] == "replayed");
     CHECK(r["line"] == 3);
     CHECK(r.contains("fuzz_seed"));
+    // the run's nondet values, in call order, for the witness waypoints
+    CHECK(r["nondet"].get<std::string>().starts_with("__VERIFIER_nondet_int="));
     // a safe program is never refuted
     auto safe = d.write("s.c", "extern int __VERIFIER_nondet_int(void);\n"
                                "int main(void) { int x = __VERIFIER_nondet_int();\n"

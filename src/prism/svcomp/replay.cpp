@@ -294,8 +294,15 @@ std::string fuzz_stub_source(const std::string& source) {
         auto it = nondet_types().find(suffix);
         if (it == nondet_types().end()) throw std::invalid_argument("unsupported nondet type " + name);
         const auto& ctype = it->second;
-        // integer conversion from long long is implementation-defined (modular), not UB
-        out.push_back(ctype + " " + name + "(void) { return (" + ctype + ")prism_take(); }");
+        // integer conversion from long long is implementation-defined (modular), not UB.
+        // Each value is logged (first 1000) for the witness's nondet waypoints.
+        std::string fmt, arg;
+        if (ctype == "float" || ctype == "double") fmt = "%.17g", arg = "(double)v";
+        else if (ctype.starts_with("unsigned") || ctype == "_Bool") fmt = "%llu", arg = "(unsigned long long)v";
+        else fmt = "%lld", arg = "(long long)v";
+        out.push_back(ctype + " " + name + "(void) { " + ctype + " v = (" + ctype +
+                      ")prism_take(); if (prism_n <= 1000) fprintf(stderr, \"PRISM-FUZZ-NONDET " + name + " " + fmt +
+                      "\\n\", " + arg + "); return v; }");
     }
     if (source.find("__VERIFIER_assume") != std::string::npos && !defines(source, "__VERIFIER_assume"))
         out.emplace_back("void __VERIFIER_assume(int c) { if (!c) _exit(0); }");
@@ -357,6 +364,10 @@ json fuzz_replay(const fs::path& src, const std::string& prop, bool allow_exec, 
         if (p.timeout) continue;
         json rec = {{"exit", p.rc}, {"fuzz_seed", seed}};
         if (classify_run(prop, p.err, p.rc, rec)) {
+            static const Regex nd(R"(^PRISM-FUZZ-NONDET (\S+) (\S+)$)", true);
+            std::string trace;
+            for (const auto& m : nd.finditer(p.err)) trace += (trace.empty() ? "" : ", ") + m.group(1) + "=" + m.group(2);
+            rec["nondet"] = trace;
             rec["detail"] = get_str(rec, "detail") + " (fuzz seed " + std::to_string(seed) + ")";
             return rec;
         }
