@@ -56,3 +56,11 @@
   conf4 (/tmp/mf/conf4, log /workspace/logs/memfix-conf4.log, PRISM_MEM_BUDGET_MB=3400 --jobs 1)
   vs lm-conf5 175/202, 0 wrong. Peaks for unbounded_string / vector_insert not yet measured.
   test_pir_refinement "memory checks in XTranslate.lean" fails after the libc-models merge (not memfix).
+
+- conf4 (build-mf2, PRISM_MEM_BUDGET_MB=3400 --jobs 1, 2026-10-30 ~00:55): 172/202, 0 wrong, no
+  process killed (old: 26 exit -9). Peak tree 3938 MB. vs lm-conf5 175: lm-only regex_owns,
+  stacktrace_current_bound, typeindex_same_type (UNENCODED here: check whether lm-conf5's build had
+  uncommitted code) and vector_insert_true (memory budget at 765 MB RSS of 2550 after 232 s, though
+  standalone it proves in 5 s at 208 MB: investigate the trip). memfix-only: priority_queue_push_true.
+  Remaining misses: 14 unbounded_string + 6 unordered_map TIMEOUT (300 s file limit).
+- prism-run: up to 4 jobs; budget <= 1 GB bypasses slots and queue order.
