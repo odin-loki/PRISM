@@ -3497,12 +3497,15 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
             if (left.size() == todo.size()) break;  // no progress: fall back to single checks
             todo = std::move(left);
         }
+        int retries_left = 4;
         for (int i : todo) {
             z3::solver s(enc->ctx);
             s.set("timeout", timeout_ms);
             s.add(enc->props[static_cast<size_t>(i)].cond);
             auto r = s.check();
-            if (r == z3::unknown) {
+            // bounded: at most 4 retries per program check, 1.5 s each
+            if (r == z3::unknown && retries_left > 0) {
+                --retries_left;
                 // Retry once with equality solving and sum-of-monomials
                 // normalisation (equisatisfiable rewrites): non-linear
                 // counter identities such as 2*s == i*(i-1) across i++ close
@@ -3513,7 +3516,7 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
                                z3::tactic(enc->ctx, "solve-eqs") & z3::tactic(enc->ctx, "ctx-simplify") &
                                z3::with(z3::tactic(enc->ctx, "simplify"), som) & z3::tactic(enc->ctx, "smt");
                 z3::solver s2 = t.mk_solver();
-                s2.set("timeout", timeout_ms);
+                s2.set("timeout", std::min(timeout_ms, 1500u));
                 s2.add(enc->props[static_cast<size_t>(i)].cond);
                 r = s2.check();
                 if (r == z3::sat) models[i] = model_text(s2.get_model());
