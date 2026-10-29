@@ -1025,6 +1025,17 @@ Peak RSS 20-173MB per subdir. libc-models 240 -> 442 is not memory: harness.h
 #includes model sources by repo-relative path, so the out-of-tree copies
 (lcper, lcskip) lost those units (ctype in tree: 28 agree-ext; copied: 0).
 
+Outside tally (5 subdirs, before d/terminate): call @_ZSt9terminatev 123
+(all the `__clang_call_terminate` helper), pointer operand @global 96,
+inlined fn returning a pointer with stack objects 48, type {ptr,iN} 40,
+indirect call 25, gep operand / constant-bound gep 19+19, float/double 30.
+std::terminate done: exporter `L terminate` (call right before
+`unreachable`, not invoke); Lean: thr block (LLVM stuck), begin/end_catch
+before it via ehCallX, then `check 1 terminate CXX-TERMINATE; stop`.
+Fixtures cxx_terminate_call, cxx_terminate_neg (inlined call before
+terminate refused); doctest "std::terminate only right before unreachable".
+Next candidate: pointer operand @global (96; .str, typeinfo, vtables).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
