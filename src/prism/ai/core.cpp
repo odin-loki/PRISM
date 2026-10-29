@@ -311,6 +311,8 @@ bool tokenize_expr(const std::string& s, std::vector<std::string>& out, std::str
             std::size_t j = i;
             while (j < s.size() && std::isdigit(static_cast<unsigned char>(s[j]))) ++j;
             if (j - i > 10) return (why = "integer literal too long", false);
+            // integer suffixes (1ULL, 4294967296U): C's own widening, no new names
+            for (int k = 0; k < 3 && j < s.size() && std::strchr("uUlL", s[j]); ++k) ++j;
             if (j < s.size() && (std::isalpha(static_cast<unsigned char>(s[j])) || s[j] == '_'))
                 return (why = "malformed literal", false);
             out.push_back(s.substr(i, j - i));

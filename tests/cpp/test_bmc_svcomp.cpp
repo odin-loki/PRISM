@@ -902,3 +902,10 @@ TEST_CASE("bmc: a phase-guarded parity (x < K || x % 2 == 0) proves; an odd seco
     CHECK(b["main"].status != kProved);
     CHECK(b["main"].status != std::string(prism::laws::PROVED));
 }
+
+TEST_CASE("ai: invariant candidates accept C integer suffixes, not malformed ones") {
+    CHECK(prism::ai::valid_c_bool_expr("2 * sn == (i + 0ULL) * (i + 0ULL - 1)", {"sn", "i"}));
+    CHECK(prism::ai::valid_c_bool_expr("i <= 4294967295U", {"i"}));
+    CHECK_FALSE(prism::ai::valid_c_bool_expr("i + 0ULLL <= n", {"i", "n"}));
+    CHECK_FALSE(prism::ai::valid_c_bool_expr("i + 0x <= n", {"i", "n"}));
+}
