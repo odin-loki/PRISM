@@ -510,6 +510,12 @@ struct Ctx {
         Pos subscript{};
     };
     std::vector<SibParam> sib_params;
+    // LOCK-ORDER: the first two distinct locks each function acquires.
+    struct LockOrd {
+        std::string file, fn, first, second;
+        Pos at{};
+    };
+    std::vector<LockOrd> lock_ords;
 
     FileCtx* file(const std::string* canon) {
         if (!canon || !files.wanted(*canon)) return nullptr;
@@ -2574,7 +2580,6 @@ void walk_for_locks(const json& n, std::vector<const json*>& calls, std::vector<
 }
 
 void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
-    (void)fn;
     std::vector<const json*> calls, returns;
     walk_for_locks(body, calls, returns);
     std::map<LockKey, std::vector<int>> acquire_lines, release_lines;
@@ -2606,6 +2611,19 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
     std::stable_sort(seq.begin(), seq.end(), [](const Ev& a, const Ev& b) {
         return begin_of(*a.at).offset < begin_of(*b.at).offset;
     });
+    {
+        std::vector<std::string> order;
+        Pos first{};
+        for (auto& e : seq) {
+            if (e.release || !unlock_of(e.key.first) || e.key.second.empty()) continue;
+            if (std::find(order.begin(), order.end(), e.key.second) != order.end()) continue;
+            if (order.empty()) first = begin_of(*e.at);
+            order.push_back(e.key.second);
+            if (order.size() == 2) break;
+        }
+        if (order.size() == 2 && first.file)
+            cx.lock_ords.push_back({*first.file, fn.name, order[0], order[1], first});
+    }
     std::map<LockKey, std::optional<bool>> held;
     LeaveReplay<std::map<LockKey, std::optional<bool>>> replay{leaving_blocks(body), 0, {}};
     for (auto& e : seq) {
@@ -5186,6 +5204,23 @@ void sibling_params(const json& f, const json& body, const std::string& fname, C
     for (auto& [_, sp] : ps) cx.sib_params.push_back(std::move(sp));
 }
 
+void lock_order_report(Ctx& cx) {
+    std::set<std::pair<std::string, std::string>> reported;  // (file, fn)
+    for (std::size_t i = 0; i < cx.lock_ords.size(); ++i) {
+        for (std::size_t j = i + 1; j < cx.lock_ords.size(); ++j) {
+            auto& a = cx.lock_ords[i];
+            auto& b = cx.lock_ords[j];
+            if (a.file != b.file || a.first != b.second || a.second != b.first) continue;
+            for (auto* o : {&a, &b}) {
+                if (!reported.insert({o->file, o->fn}).second) continue;
+                cx.add_at(o->at, o->fn, "LOCK-ORDER",
+                          "locks " + o->first + " then " + o->second +
+                              "; another function locks them in the opposite order");
+            }
+        }
+    }
+}
+
 void sibling_report(Ctx& cx) {
     std::map<std::pair<std::string, std::string>, std::vector<const Ctx::SibParam*>> by;  // (file, name)
     for (auto& sp : cx.sib_params) by[{sp.file, sp.name}].push_back(&sp);
@@ -5314,6 +5349,7 @@ FileResult analyze_unit(Unit& u, const FileSet& files) {
         walk_decl(d, cx, tparams);
     }
     sibling_report(cx);
+    lock_order_report(cx);
     // One row per (file, line, class): lambda bodies appear twice in the dump,
     // and nested blocks are flow-checked with and without their outer block.
     std::set<std::tuple<std::string, int, std::string>> seen;

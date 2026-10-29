@@ -757,6 +757,30 @@ void lock_init_ok(void) {
     pthread_mutex_init(&m, 0);
     pthread_mutex_lock(&m);
 }
+void order_ab(int *la, int *lb) {
+    prism_mtx_lock(la); // expect: LOCK-ORDER
+    prism_mtx_lock(lb);
+    prism_mtx_unlock(lb);
+    prism_mtx_unlock(la);
+}
+void order_ab_same(int *la, int *lb) {
+    prism_mtx_lock(la); // expect: LOCK-ORDER
+    prism_mtx_lock(lb);
+    prism_mtx_unlock(lb);
+    prism_mtx_unlock(la);
+}
+void order_ab_only(int *la, int *lc) {
+    prism_mtx_lock(la);
+    prism_mtx_lock(lc);
+    prism_mtx_unlock(lc);
+    prism_mtx_unlock(la);
+}
+void order_ba(int *la, int *lb) {
+    prism_mtx_lock(lb); // expect: LOCK-ORDER
+    prism_mtx_lock(la);
+    prism_mtx_unlock(la);
+    prism_mtx_unlock(lb);
+}
 struct ast_item { char *name; };
 size_t str_null_member_plant(struct ast_item *it) {
     return strlen(it->name); // expect: STR-NULL-MEMBER
