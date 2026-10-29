@@ -95,6 +95,11 @@ PRISM_API std::string stub_source(const std::string& source, const std::vector<N
 PRISM_API json replay(const std::filesystem::path& src, const std::string& prop, bool allow_exec,
                       const std::optional<std::vector<Num>>& nondet_values, const std::filesystem::path& work,
                       std::string_view data_model = "LP64", double timeout_s = 10.0);
+// Seeded random inputs, compiled once with the property's sanitizer; returns
+// "replayed" only when a run shows the violation (same check as replay).
+PRISM_API json fuzz_replay(const std::filesystem::path& src, const std::string& prop, bool allow_exec,
+                           const std::filesystem::path& work, std::string_view data_model = "LP64",
+                           double budget_s = 60.0, int max_seeds = 400);
 
 // ---------------------------------------------------------------- waypoints
 using LineCol = std::pair<long, long>;

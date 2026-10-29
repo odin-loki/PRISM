@@ -192,6 +192,19 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
         dec = std::move(d2);
     }
+    // Fuzzing fallback: a refutation only when a seeded run shows the
+    // violation under the same sanitizer check as replay. Never a proof.
+    if (dec.answer == "unknown" && opt.allow_exec && (prop == "no-overflow" || prop == "unreach-call")) {
+        fs::path fd = make_temp_dir(opt.out, "prism-fuzz-");
+        json r = fuzz_replay(task, prop, true, fd, dm);
+        std::error_code rm;
+        fs::remove_all(fd, rm);
+        if (get_str(r, "replay") == "replayed") {
+            json f = json::object();
+            if (has(r, "line")) f["line"] = r.at("line");
+            dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
+        }
+    }
     oc.decision = dec;
     Decision& d = oc.decision;
     WitnessMeta meta;

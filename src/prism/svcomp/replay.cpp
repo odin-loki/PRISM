@@ -10,6 +10,7 @@
 #include "prism/sandbox.hpp"
 #include "prism/wide_int.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -78,6 +79,58 @@ std::optional<double> parse_float(const std::string& t) {
     double d = std::strtod(c.c_str(), &end);
     if (end == c.c_str() || *end != '\0') return std::nullopt;
     return d;
+}
+
+// The run shows the property's violation (UBSan overflow report, reach_error
+// abort, ASan invalid deref/free): fills rec and returns true.
+bool classify_run(const std::string& prop, const std::string& err, int rc, json& rec) {
+    if (prop == "no-overflow") {
+        static const Regex ubsan(
+            R"(^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?P<col>\d+): runtime error: (?P<msg>.*)$)", true);
+        static const Regex overflow_msg(
+            R"(^(signed integer overflow|negation of .* cannot be represented|division of .* cannot be represented)"
+            R"(|left shift of \d+ by \d+ places cannot be represented))");
+        for (const auto& m : ubsan.finditer(err)) {
+            if (overflow_msg.match_prefix(m.named("msg"))) {
+                rec["replay"] = "replayed";
+                rec["detail"] = "UBSan: " + m.named("msg");
+                rec["line"] = parse_ll(m.named("line")).value_or(0);
+                rec["column"] = parse_ll(m.named("col")).value_or(0);
+                return true;
+            }
+        }
+    } else if (prop == "unreach-call") {
+        if (err.find("reach_error") != std::string::npos && rc != 0) {
+            // The assertion message names reach_error's own line, not the call
+            // site; the witness target comes from reach_error_call_site().
+            rec["replay"] = "replayed";
+            rec["detail"] = "reach_error() was called and the program aborted";
+            return true;
+        }
+    } else if (prop == "valid-memsafety") {
+        static const Regex asan(R"(ERROR: AddressSanitizer: (?P<kind>[\w-]+))");
+        static const Regex frame(R"(#\d+ 0x[0-9a-f]+ in \S+ (?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+))");
+        static const std::set<std::string> deref = {"heap-buffer-overflow",  "stack-buffer-overflow",
+                                                    "global-buffer-overflow", "SEGV",
+                                                    "heap-use-after-free",   "stack-use-after-return",
+                                                    "stack-use-after-scope", "stack-buffer-underflow"};
+        static const std::set<std::string> frees = {"attempting", "bad-free", "double-free"};
+        if (auto am = asan.search_match(err)) {
+            std::string kind = am->named("kind");
+            std::string sub = deref.contains(kind) ? "valid-deref" : frees.contains(kind) ? "valid-free" : "";
+            if (!sub.empty()) {
+                rec["replay"] = "replayed";
+                rec["detail"] = "ASan: " + kind;
+                rec["subproperty"] = sub;
+                if (auto fm = frame.search_match(err)) {
+                    rec["line"] = parse_ll(fm->named("line")).value_or(0);
+                    rec["column"] = parse_ll(fm->named("col")).value_or(0);
+                }
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -203,56 +256,112 @@ json replay(const fs::path& src, const std::string& prop, bool allow_exec,
     if (p.timeout) return json{{"replay", "not-replayed"}, {"why", "program did not finish in " + float_repr(timeout_s) + "s"}};
     const std::string& err = p.err;
     json rec = {{"exit", p.rc}, {"sandbox", jailed ? "bwrap+rlimits" : "rlimits only (no bwrap)"}};
-    if (prop == "no-overflow") {
-        static const Regex ubsan(
-            R"(^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?P<col>\d+): runtime error: (?P<msg>.*)$)", true);
-        static const Regex overflow_msg(
-            R"(^(signed integer overflow|negation of .* cannot be represented|division of .* cannot be represented)"
-            R"(|left shift of \d+ by \d+ places cannot be represented))");
-        for (const auto& m : ubsan.finditer(err)) {
-            if (overflow_msg.match_prefix(m.named("msg"))) {
-                rec["replay"] = "replayed";
-                rec["detail"] = "UBSan: " + m.named("msg");
-                rec["line"] = parse_ll(m.named("line")).value_or(0);
-                rec["column"] = parse_ll(m.named("col")).value_or(0);
-                return rec;
-            }
-        }
-    } else if (prop == "unreach-call") {
-        if (err.find("reach_error") != std::string::npos && p.rc != 0) {
-            // The assertion message names reach_error's own line, not the call
-            // site; the witness target comes from reach_error_call_site().
-            rec["replay"] = "replayed";
-            rec["detail"] = "reach_error() was called and the program aborted";
-            return rec;
-        }
-    } else if (prop == "valid-memsafety") {
-        static const Regex asan(R"(ERROR: AddressSanitizer: (?P<kind>[\w-]+))");
-        static const Regex frame(R"(#\d+ 0x[0-9a-f]+ in \S+ (?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+))");
-        static const std::set<std::string> deref = {"heap-buffer-overflow",  "stack-buffer-overflow",
-                                                    "global-buffer-overflow", "SEGV",
-                                                    "heap-use-after-free",   "stack-use-after-return",
-                                                    "stack-use-after-scope", "stack-buffer-underflow"};
-        static const std::set<std::string> frees = {"attempting", "bad-free", "double-free"};
-        if (auto am = asan.search_match(err)) {
-            std::string kind = am->named("kind");
-            std::string sub = deref.contains(kind) ? "valid-deref" : frees.contains(kind) ? "valid-free" : "";
-            if (!sub.empty()) {
-                rec["replay"] = "replayed";
-                rec["detail"] = "ASan: " + kind;
-                rec["subproperty"] = sub;
-                if (auto fm = frame.search_match(err)) {
-                    rec["line"] = parse_ll(fm->named("line")).value_or(0);
-                    rec["column"] = parse_ll(fm->named("col")).value_or(0);
-                }
-                return rec;
-            }
-        }
-    }
+    if (classify_run(prop, err, p.rc, rec)) return rec;
     std::string tail = err.size() > 300 ? err.substr(err.size() - 300) : err;
     rec["replay"] = "not-replayed";
     rec["why"] = "the program ran without the violation: " + strip(tail);
     return rec;
+}
+
+namespace {
+
+// Seeded input generator for fuzz_replay: every nondet call draws from a
+// xorshift stream seeded by PRISM_FUZZ_SEED. Odd seeds draw mostly small
+// values (loop counters), even seeds mix in type extremes.
+std::string fuzz_stub_source(const std::string& source) {
+    std::vector<std::string> out = {
+        "#include <stdio.h>",
+        "#include <stdlib.h>",
+        "#include <unistd.h>",
+        "static unsigned long long prism_s = 88172645463325252ULL; static unsigned long prism_n; static int prism_mode;",
+        "__attribute__((constructor)) static void prism_init(void) { const char* e = getenv(\"PRISM_FUZZ_SEED\");",
+        "  unsigned long long k = e ? strtoull(e, 0, 10) : 1; prism_mode = (int)(k % 2);",
+        "  prism_s ^= (k + 1) * 0x9E3779B97F4A7C15ULL; if (!prism_s) prism_s = 1; }",
+        "static unsigned long long prism_rnd(void) { prism_s ^= prism_s << 13; prism_s ^= prism_s >> 7; prism_s ^= prism_s << 17; return prism_s; }",
+        "static long long prism_take(void) {",
+        "  if (++prism_n > 1000000UL) { fprintf(stderr, \"PRISM-NONDET-EXHAUSTED\\n\"); _exit(0); }",
+        "  unsigned long long r = prism_rnd(); unsigned c = (unsigned)(r % 16); long long v = (long long)(r >> 8);",
+        "  if (prism_mode == 1 || c < 6) return (long long)(v % 21) - 4;",
+        "  switch (c) { case 6: return 2147483647LL; case 7: return -2147483647LL - 1; case 8: return 4294967295LL;",
+        "    case 9: return 9223372036854775807LL; case 10: return -9223372036854775807LL - 1; case 11: return 2147483646LL;",
+        "    case 12: return (long long)(v % 1001); default: return v; } }",
+    };
+    std::set<std::string> suffixes;
+    for (const auto& m : nondet_call().finditer(source)) suffixes.insert(m.group(1));
+    for (const auto& suffix : suffixes) {
+        std::string name = "__VERIFIER_nondet_" + suffix;
+        if (defines(source, name)) continue;
+        auto it = nondet_types().find(suffix);
+        if (it == nondet_types().end()) throw std::invalid_argument("unsupported nondet type " + name);
+        const auto& ctype = it->second;
+        // integer conversion from long long is implementation-defined (modular), not UB
+        out.push_back(ctype + " " + name + "(void) { return (" + ctype + ")prism_take(); }");
+    }
+    if (source.find("__VERIFIER_assume") != std::string::npos && !defines(source, "__VERIFIER_assume"))
+        out.emplace_back("void __VERIFIER_assume(int c) { if (!c) _exit(0); }");
+    if (source.find("reach_error") != std::string::npos && !defines(source, "reach_error"))
+        out.emplace_back("void reach_error(void) { fprintf(stderr, \"PRISM-REACH-ERROR reach_error\\n\"); abort(); }");
+    std::string text;
+    for (const auto& l : out) text += l + "\n";
+    return text;
+}
+
+}  // namespace
+
+json fuzz_replay(const fs::path& src, const std::string& prop, bool allow_exec, const fs::path& work_in,
+                 std::string_view data_model, double budget_s, int max_seeds) {
+    if (!allow_exec) return json{{"replay", "notrun"}, {"why", "fuzzing executes task code (Law 9)"}};
+    if (prop != "no-overflow" && prop != "unreach-call")
+        return json{{"replay", "unsupported"}, {"why", "fuzzing covers no-overflow and unreach-call"}};
+    const std::string text = read_text(src);
+    auto cc = Config{}.which({"clang", "gcc", "cc"});
+    if (!cc) return json{{"replay", "notrun"}, {"why", "no C compiler (clang/gcc) on PATH"}};
+    std::error_code ec;
+    fs::path work = fs::absolute(work_in);
+    fs::create_directories(work, ec);
+    const fs::path stubs = work / "prism_fuzz_stubs.c";
+    try {
+        write_text(stubs, fuzz_stub_source(text));
+    } catch (const std::invalid_argument& e) {
+        return json{{"replay", "unsupported"}, {"why", e.what()}};
+    }
+    const fs::path csrc = work / (src.stem().string() + ".c");
+    fs::copy_file(src, csrc, fs::copy_options::overwrite_existing, ec);
+    const fs::path exe = work / "fuzz.bin";
+    std::vector<std::string> argv = {cc->string(), "-g", "-O0", "-w", "-std=gnu11"};
+    if (is_ilp32(data_model)) {
+#ifndef _WIN32
+        argv.push_back("-m32");
+#else
+        return json{{"replay", "notrun"}, {"why", "ILP32 fuzzing needs -m32"}};
+#endif
+    }
+    if (prop == "no-overflow") {
+        argv.emplace_back("-fsanitize=signed-integer-overflow,shift-base");
+        argv.emplace_back("-fno-sanitize-recover=all");
+    }
+    argv.insert(argv.end(), {csrc.string(), stubs.string(), "-o", exe.string()});
+    auto build = stages_detail::run_argv(argv, "", 120.0);
+    if (build.rc != 0 || build.timeout)
+        return json{{"replay", "not-replayed"}, {"why", "fuzz build failed"}};
+    detail::set_env("UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1");
+    const auto t0 = std::chrono::steady_clock::now();
+    int runs = 0;
+    for (int seed = 1; seed <= max_seeds; ++seed) {
+        double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (used > budget_s) break;
+        detail::set_env("PRISM_FUZZ_SEED", std::to_string(seed).c_str());
+        auto run_argv = sandbox::wrap_argv({exe.string()}, work);
+        auto p = stages_detail::run_argv(run_argv, "", 2.0, sandbox::limits_for(2.0, true));
+        ++runs;
+        if (p.timeout) continue;
+        json rec = {{"exit", p.rc}, {"fuzz_seed", seed}};
+        if (classify_run(prop, p.err, p.rc, rec)) {
+            rec["detail"] = get_str(rec, "detail") + " (fuzz seed " + std::to_string(seed) + ")";
+            return rec;
+        }
+    }
+    return json{{"replay", "not-replayed"}, {"why", "no violation in " + std::to_string(runs) + " fuzz runs"}};
 }
 
 }  // namespace prism::svcomp
