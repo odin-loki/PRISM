@@ -21,6 +21,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prism/regex.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -442,6 +444,73 @@ bool has_pointer_decl(const std::string& body) {
 
 }  // namespace
 
+// CIL / cfa-reducer loops: `L:; if (c) { B goto L; } else { E }` is exactly
+// `while (c) { B } { E }` when L is named nowhere else (one label, one goto)
+// and B has no jump of its own (break/continue/goto/switch would change
+// meaning inside a while). Anything else is left alone. Returns the number of
+// loops rewritten.
+int goto_loops_to_while(std::string& s) {
+    int done = 0;
+    for (int guard = 0; guard < 64; ++guard) {
+        Walker w(s);
+        bool changed = false;
+        static const prism::Regex lab(R"(([A-Za-z_]\w*)\s*:\s*;)");
+        for (std::size_t from = 0; from < s.size() && !changed;) {
+            auto m = lab.search_match(s, from);
+            if (!m) break;
+            std::size_t a = static_cast<std::size_t>(m->spans[0].first), after_lab = static_cast<std::size_t>(m->spans[0].second);
+            from = after_lab;
+            std::string L = m->group(1);
+            if (L == "default") continue;
+            std::size_t q = a;
+            while (q > 0 && std::isspace(static_cast<unsigned char>(s[q - 1]))) --q;
+            if (q > 0 && s[q - 1] != ';' && s[q - 1] != '{' && s[q - 1] != '}') continue;
+            if (q > 0 && (std::isalnum(static_cast<unsigned char>(s[a - 1])) || s[a - 1] == '_')) continue;
+            auto i = w.skip_ws(after_lab);
+            if (w.word_at(i) != "if") continue;
+            auto p = w.skip_ws(i + 2);
+            if (p >= s.size() || s[p] != '(') continue;
+            auto pe = w.match(p);
+            if (pe == std::string::npos) continue;
+            auto t = w.skip_ws(pe);
+            if (t >= s.size() || s[t] != '{') continue;
+            auto te = w.match(t);
+            if (te == std::string::npos) continue;
+            std::string inner = s.substr(t + 1, te - t - 2);
+            static const prism::Regex tail(R"(goto\s+([A-Za-z_]\w*)\s*;\s*\z)");
+            auto gm = tail.search_match(inner, 0);
+            if (!gm || gm->group(1) != L) continue;
+            std::string B = inner.substr(0, static_cast<std::size_t>(gm->spans[0].first));
+            int uses = 0;
+            for (auto& tk : lex(s)) uses += tk.t == L;
+            if (uses != 2) continue;
+            bool bad = false;
+            for (auto& tk : lex(B))
+                bad |= tk.t == "break" || tk.t == "continue" || tk.t == "goto" || tk.t == "switch" ||
+                       tk.t == "case" || tk.t == "default";
+            if (bad) continue;
+            std::string cond = s.substr(p + 1, pe - p - 2);
+            std::size_t end = te;
+            std::string E;
+            auto el = w.skip_ws(te);
+            if (w.word_at(el) == "else") {
+                auto eb = w.skip_ws(el + 4);
+                if (eb >= s.size() || s[eb] != '{') continue;
+                auto ee = w.match(eb);
+                if (ee == std::string::npos) continue;
+                E = s.substr(eb, ee - eb);
+                end = ee;
+            }
+            std::string rep = "while (" + cond + ") {" + B + "}\n" + E;
+            s = s.substr(0, a) + rep + s.substr(end);
+            changed = true;
+            ++done;
+        }
+        if (!changed) break;
+    }
+    return done;
+}
+
 std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, std::string* why) {
     auto say = [&](std::string m) -> std::optional<std::vector<LoopCut>> {
         if (why) *why = std::move(m);
@@ -833,8 +902,17 @@ Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const Hou
 
 }  // namespace
 
-Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int unwind) {
+Finding strengthen_bounded(const FunctionInfo& fn0, const Finding& bounded, int unwind) {
     Finding rec = bounded;
+    // goto-built loops (CIL, cfa-reducer) become while loops first; the
+    // rewritten body is equivalent, but its offsets no longer map onto the
+    // source, so loop positions are reported unknown (body_line = 0).
+    FunctionInfo fn = fn0;
+    if (int n = goto_loops_to_while(fn.body); n > 0) {
+        fn.body_line = 0;
+        fn.body_col = 0;
+        rec.extra["goto_loops_rewritten"] = std::to_string(n);
+    }
     std::string why;
     auto loops = loop_cuts(fn, &why);
     if (!loops) {

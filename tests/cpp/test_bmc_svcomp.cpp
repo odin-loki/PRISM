@@ -827,3 +827,51 @@ TEST_CASE("bmc: Houdini carries loop 1's invariants into loop 2 (half), and a wr
     CHECK(bad["main"].status != kProved);
     CHECK(bad["main"].status != std::string(prism::laws::PROVED));
 }
+
+namespace {
+const char* kGotoGauss = R"(extern int __VERIFIER_nondet_int(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+int main(void) {
+  int n; int sum; int i;
+  n = __VERIFIER_nondet_int();
+  if (!(1 <= n)) { return 0; } else {
+  if (!(n <= 1000)) { return 0; } else {
+  sum = 0;
+  i = 1;
+  label_67:;
+  if (i <= n) {
+    sum = sum + i;
+    i = i + 1;
+    goto label_67;
+  } else {
+    int c;
+    c = (2 * sum) == (n * (n + 1));
+    if (c == 0) { reach_error(); return 0; }
+    return 0;
+  }
+  } }
+}
+)";
+}  // namespace
+
+TEST_CASE("bmc: a goto-built loop (cfa-reducer shape) is rewritten to while and proved; a wrong one stays open") {
+    auto ok = bmc_run("goto_gauss.c", kGotoGauss);
+    REQUIRE(ok.count("main"));
+    CHECK_MESSAGE(ok["main"].status == kProved, ok["main"].message, " ", ok["main"].extra["invariants_attempt"]);
+    // rewritten loops carry no source position (line 0)
+    CHECK(ok["main"].extra["invariant_loops"].find("\"line\":0") != std::string::npos);
+    std::string bad = kGotoGauss;
+    bad.replace(bad.find("(n + 1)"), 7, "(n - 1)");
+    auto b = bmc_run("goto_gauss_bad.c", bad);
+    REQUIRE(b.count("main"));
+    CHECK(b["main"].status != kProved);
+    CHECK(b["main"].status != std::string(prism::laws::PROVED));
+    // A second jump to the label (here from the else arm) is not a while loop: no rewrite.
+    std::string two = kGotoGauss;
+    two.replace(two.find("return 0;\n  }\n  } }"), 9, "goto label_67;");
+    auto t = bmc_run("goto_gauss_two.c", two);
+    REQUIRE(t.count("main"));
+    CHECK(t["main"].extra["invariant_loops"].find("\"line\":0") == std::string::npos);
+    CHECK(t["main"].status != kProved);
+}
