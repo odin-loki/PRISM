@@ -1041,3 +1041,15 @@ via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
   `revive` statement of `llvm.lifetime.start` (finding 7) in the Lean model,
   so those functions come back into the fragment; `undef` outside
   `freeze`/`store` (finding 4); `llvm.assume` (finding 8).
+
+### Catch code joining phis (1d6447234)
+- Exporter keeps phi incomings from landing-pad blocks (`live || padset`).
+- Lean: a live phi incoming from a translated region block uses its PIR tail;
+  after the phi loop each region block's `IInfo.blks` entry is set to `[tail]`
+  so `validB` (segOK s=0, `I.tails`) recomputes the same phis; no proof change.
+  An incoming from an untranslated block (pad no throw reached) is refused.
+- Fixture fixtures/cxx_catch_phi (source /workspace/eh/catch_phi.cpp): agree-ext=4.
+- Next: dtors in `__cxa_end_catch` (C++ type_dtor loop; exporter must emit the
+  dtor map), then rethrow invoke / terminate.lpad (`__clang_call_terminate`).
+- Re-measure queued: /workspace/eh/rm_{concurrency,esbmc-cpp,libc-models,prism,sv-comp}.log;
+  list_contracts still queued: /workspace/eh/lc.log.
