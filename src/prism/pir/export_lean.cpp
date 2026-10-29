@@ -19,6 +19,7 @@
 #include "translate_mem.hpp"
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
@@ -1165,6 +1166,24 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) top_file = it->second.file;
         std::vector<Callee> callees;
         llvm_side(l, m, f, opt, top_file, callees, true, false);
+        // Tr::type_dtor: __cxa_end_catch inlines the thrown classes' destructors
+        bool ends = false;
+        for (auto& g : m.functions)
+            for (auto& x : g.blocks)
+                for (auto& in : x.insts)
+                    if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_end_catch") ends = true;
+        if (ends)
+            for (auto& g : m.functions)
+                for (auto& x : g.blocks)
+                    for (auto& in : x.insts)
+                        if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_throw" &&
+                            in.ops.size() >= 3 && in.ops[2].v.kind == ir::Value::Global) {
+                            const std::string& d = in.ops[2].v.name;
+                            const ir::Function* df = m.find(d);
+                            if (!df || df->blocks.empty() || !plain_name(d)) continue;
+                            if (std::ranges::none_of(callees, [&](const Callee& c) { return c.name == d; }))
+                                callees.push_back({d, foreign_callee(m, d, top_file)});
+                        }
         // every function the calls reach, once, in order of first call
         for (std::size_t i = 0; i < callees.size(); ++i) {
             const Callee c = callees.at(i);
@@ -1185,15 +1204,29 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
                             ts.insert(std_throw_ti(in.callee));
                     }
             // Tr::type_dtor: a thrown class with a destructor (__cxa_end_catch would call it)
-            bool dtor = false;
+            // (emplace: the first __cxa_throw of a type names its destructor)
+            std::map<std::string, std::string> tdt;
             for (auto& g : m.functions)
                 for (auto& x : g.blocks)
                     for (auto& in : x.insts)
                         if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_throw" &&
-                            in.ops.size() >= 3 && in.ops[1].v.kind == ir::Value::Global &&
-                            in.ops[2].v.kind == ir::Value::Global)
-                            dtor = true;
-            if (dtor) o << "L thrdtor\n";
+                            in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Global)
+                            tdt.emplace(in.ops[1].v.name, in.ops.size() >= 3 && in.ops[2].v.kind == ir::Value::Global
+                                                              ? in.ops[2].v.name : "");
+            bool dtor = false, plain = true;
+            for (auto& [t, d] : tdt)
+                if (!d.empty()) {
+                    dtor = true;
+                    plain = plain && plain_name(t) && plain_name(d);
+                }
+            // `L thrdtor T D ...` (the map in order); a bare `L thrdtor`: not exported
+            if (dtor) {
+                o << "L thrdtor";
+                if (plain)
+                    for (auto& [t, d] : tdt)
+                        if (!d.empty()) o << " " << t << " " << d;
+                o << "\n";
+            }
             if (std::ranges::all_of(ts, [](const std::string& t) { return plain_name(t); })) {
                 o << "L thrown";
                 for (auto& t : ts) o << " " << t;

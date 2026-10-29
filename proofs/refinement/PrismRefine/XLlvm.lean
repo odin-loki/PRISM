@@ -274,6 +274,8 @@ structure XFunc where
   thrown : Option (List String) := none
   /-- `L thrdtor`: some `__cxa_throw` passes a destructor (translator only) -/
   thrDtor : Bool := false
+  /-- `Tr::type_dtor` (the entries with a destructor; empty: not exported) -/
+  dtors : List (String × String) := []
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/

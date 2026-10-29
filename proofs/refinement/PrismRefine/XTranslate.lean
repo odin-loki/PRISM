@@ -1046,6 +1046,10 @@ structure TS where
   thrown : Option (List String) := none
   /-- `Tr::type_dtor` has a destructor (`L thrdtor`) -/
   thrDtor : Bool := false
+  dtors : List (String × String) := []
+  /-- `__cxa_end_catch` left its `eh.destroy` block for the destructor loop:
+  (destroy, done, type id, payload, exception) -/
+  pendD : Option (Nat × Nat × Arg × Arg × Arg) := none
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -1439,7 +1443,9 @@ def ehCallX (stack : List String) (c : Ctx) (cur : Nat) (cl : CallI) : TM (Optio
     return some cur
   if cl.f == "__cxa_end_catch" then
     if !cl.args.isEmpty || cl.dst.isSome then throw "outside fragment: __cxa_end_catch arity"
-    if (← get).thrDtor then throw "outside fragment: __cxa_end_catch with a thrown class that has a destructor"
+    let st0 ← get
+    if st0.thrDtor && st0.dtors.isEmpty then
+      throw "outside fragment: __cxa_end_catch with destructors not exported"
     let (s1, D) ← ldX S 64
     let (s2, ok) ← asgX 1 (.cmp .ne) [D, c64 0]
     let cur ← softGuardX cur (s1 ++ s2) ok
@@ -1462,8 +1468,13 @@ def ehCallX (stack : List String) (c : Ctx) (cur : Nat) (cl : CallI) : TM (Optio
     let ss := g1 ++ l1 ++ g2 ++ l2 ++ a1 ++ a2 ++ a3 ++ a4 ++ w1 ++ a5 ++ a6 ++ a7 ++ w2 ++ a8
     setBlock cur fun q => { q with stmts := q.stmts ++ ss, term := .br Is1 destroy dn }
     -- `thrown_types()`, the type id, the payload (no destructor: none is called)
-    let (l3, _) ← ldX E 64
-    let (g3, _) ← atX E 32
+    let (l3, T) ← ldX E 64
+    let (g3, P) ← atX E 32
+    if st0.thrDtor then
+      -- `type_dtor`: the destructor loop is run by the caller (`runFrame`)
+      setBlock destroy fun q => { q with stmts := q.stmts ++ l3 ++ g3 }
+      modify fun s => { s with pendD := some (destroy, dn, T, P, E) }
+      return some dn
     setBlock destroy fun q => { q with stmts := q.stmts ++ l3 ++ g3 ++ [.free E], term := .jmp dn }
     return some dn
   if cl.f == "__cxa_rethrow" then
@@ -1523,6 +1534,48 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     -- (phi incomings from untranslated blocks are dropped in `resolve_phis` below)
     if G.blocks.zipIdx.any (fun (B, b) => B.stub && live.contains b) then
       throw "outside fragment: a block the exporter stubbed is reachable"
+    -- `Tr::call` of a defined function `cl` at PIR block `cur` (the statements
+    -- `s1` before it): the callee is inlined; returns the continuation block
+    let callAt : IInfo → Nat → Bool → Nat → Nat → CallI → List PStmt → TM Nat := fun I b region cur k cl s1 => do
+      let k1 := (← get).vars.size
+      let G' ← match M.find cl.f with
+        | some G' => pure G'
+        | none => throw s!"UNENCODED: call @{cl.f}"
+      if stack.contains cl.f then throw s!"UNENCODED: recursive call @{cl.f}"
+      if stack.length > depth then throw s!"UNENCODED: call depth > {depth} (@{cl.f})"
+      if !(G'.retw == 0 || okW G'.retw) then throw s!"UNENCODED: call @{cl.f} returning i{G'.retw}"
+      if cl.args.length != G'.params.length then throw s!"UNENCODED: call @{cl.f} arity"
+      if !(G'.params.all fun p => okW p.2) then throw s!"UNENCODED: call @{cl.f} parameter"
+      let (s2, t2, As) ← liftE (trArgsX (I.ctx (← curVars)) k1
+        ((cl.args.zip G'.params).map fun ((o, w), (_, wp)) => (o, w, wp)))
+      pushTemps t2
+      let cb ← newBlock
+      let rv? ← if G'.retw == 0 then pure none else do
+        if cl.rw != G'.retw then throw s!"outside fragment: call @{cl.f} result width"
+        let rv ← match cl.dst with
+          | some d => liftE (dstX (I.ctx (← curVars)) d cl.rw)
+          | none => newVar G'.retw
+        let uv ← newVar ((G'.retw + 7) / 8)
+        pure (some (rv, uv))
+      if G'.retw == 0 && cl.dst.isSome then throw s!"outside fragment: void call @{cl.f} with a result"
+      let lo' := (← get).vars.size
+      let κ ← enterFrame G' (G'.params.map Prod.fst |>.zip As) lo' (some cb)
+      let Iκ ← getInst κ
+      setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
+      if !region then recordSeg ι b cb k (some κ)
+      if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
+      modify fun s => { s with hs := if cl.inv then (ι, cl.pad, s.fr.length) :: s.hs else s.hs,
+                               fr := s.fr ++ [κ] }
+      let sites ← runFrame M depth fuel (stack ++ [cl.f]) κ
+      modify fun s => { s with hs := if cl.inv then s.hs.tail else s.hs, fr := s.fr.dropLast }
+      match rv? with
+      | some (rv, uv) =>
+        if !sites.isEmpty then
+          setBlock cb fun pb => { pb with phis :=
+            [{ dst := uv, inc := sites.map fun (q, _) => (q, .c ((G'.retw + 7) / 8) 0) },
+             { dst := rv, inc := sites }] }
+      | none => pure ()
+      pure cb
     -- `translate_block`: block `b` (`region` marks a landing-pad region
     -- block); its last PIR block and returned value
     let trB : Nat → XBlock → Bool → TM (Nat × Option Arg) := fun b B region => do
@@ -1540,49 +1593,31 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         if region && ehCallee cl.f && (M.find cl.f).isNone then
           setBlock cur fun pb => { pb with stmts := pb.stmts ++ s1 }
           match ← ehCallX stack (I.ctx (← curVars)) cur cl with
-          | some c' => cur := c'; continue
+          | some c' =>
+            cur := c'
+            if let some (destroy, dn, T, P, E) := (← get).pendD then
+              modify fun s => { s with pendD := none }
+              -- `type_dtor`: the destructor of the thrown type, on the payload
+              let mut dc := destroy
+              for (t, d) in (← get).dtors do
+                let yes ← newBlock
+                let no ← newBlock
+                let tid ← typeId t
+                let (a, Cd) ← asgX 1 (.cmp .eq) [T, c64 tid]
+                setBlock dc fun q => { q with stmts := q.stmts ++ a, term := .br Cd yes no }
+                let Io ← getInst ι
+                let I' := { Io with env := ("__prism.eh.obj", P) :: Io.env, hi := max Io.hi (← get).vars.size }
+                let dcl : CallI := { dst := none, rw := 0, f := d, args := [(.reg "__prism.eh.obj", 64)] }
+                let cb ← tryCatch (callAt I' b true yes (← get).vars.size dcl [])
+                  fun e => throw s!"outside fragment: exception object destructor @{d}: {e}"
+                setBlock cb fun q => { q with term := .jmp no }
+                dc := no
+              setBlock dc fun q => { q with stmts := q.stmts ++ [.free E], term := .jmp dn }
+            continue
           | none =>
             setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
             return (cur, none)
-        let k1 := (← get).vars.size
-        let G' ← match M.find cl.f with
-          | some G' => pure G'
-          | none => throw s!"UNENCODED: call @{cl.f}"
-        if stack.contains cl.f then throw s!"UNENCODED: recursive call @{cl.f}"
-        if stack.length > depth then throw s!"UNENCODED: call depth > {depth} (@{cl.f})"
-        if !(G'.retw == 0 || okW G'.retw) then throw s!"UNENCODED: call @{cl.f} returning i{G'.retw}"
-        if cl.args.length != G'.params.length then throw s!"UNENCODED: call @{cl.f} arity"
-        if !(G'.params.all fun p => okW p.2) then throw s!"UNENCODED: call @{cl.f} parameter"
-        let (s2, t2, As) ← liftE (trArgsX (I.ctx (← curVars)) k1
-          ((cl.args.zip G'.params).map fun ((o, w), (_, wp)) => (o, w, wp)))
-        pushTemps t2
-        let cb ← newBlock
-        let rv? ← if G'.retw == 0 then pure none else do
-          if cl.rw != G'.retw then throw s!"outside fragment: call @{cl.f} result width"
-          let rv ← match cl.dst with
-            | some d => liftE (dstX (I.ctx (← curVars)) d cl.rw)
-            | none => newVar G'.retw
-          let uv ← newVar ((G'.retw + 7) / 8)
-          pure (some (rv, uv))
-        if G'.retw == 0 && cl.dst.isSome then throw s!"outside fragment: void call @{cl.f} with a result"
-        let lo' := (← get).vars.size
-        let κ ← enterFrame G' (G'.params.map Prod.fst |>.zip As) lo' (some cb)
-        let Iκ ← getInst κ
-        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
-        if !region then recordSeg ι b cb k (some κ)
-        if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
-        modify fun s => { s with hs := if cl.inv then (ι, cl.pad, s.fr.length) :: s.hs else s.hs,
-                                 fr := s.fr ++ [κ] }
-        let sites ← runFrame M depth fuel (stack ++ [cl.f]) κ
-        modify fun s => { s with hs := if cl.inv then s.hs.tail else s.hs, fr := s.fr.dropLast }
-        match rv? with
-        | some (rv, uv) =>
-          if !sites.isEmpty then
-            setBlock cb fun pb => { pb with phis :=
-              [{ dst := uv, inc := sites.map fun (q, _) => (q, .c ((G'.retw + 7) / 8) 0) },
-               { dst := rv, inc := sites }] }
-        | none => pure ()
-        cur := cb
+        cur ← callAt I b region cur k cl s1
       -- the last segment
       let I ← getInst ι
       let k := (← get).vars.size
@@ -1692,7 +1727,7 @@ def translateX (M : XMod) (depth : Nat) (F : XFunc) : Except String (PFunc × Li
       let v ← newVar w
       penv := penv ++ [(p, .v v w)]
     let ι ← enterFrame F penv 0 none
-    modify fun s => { s with fr := [ι], thrown := F.thrown, thrDtor := F.thrDtor }
+    modify fun s => { s with fr := [ι], thrown := F.thrown, thrDtor := F.thrDtor, dtors := F.dtors }
     let _ ← runFrame M depth (depth + 2) [F.name] ι
   let ((), s) ← go.run { vars := #[], blocks := #[], insts := #[] }
   pure ({ vars := s.vars.toList, params := List.range' 0 np, retw := F.retw, blocks := s.blocks.toList },

@@ -346,11 +346,17 @@ structure XPF where
   dead : Bool := false
   thrown : Option (List String) := none
   thrDtor : Bool := false
+  dtors : List (String × String) := []
+
+/-- `L thrdtor T D ...`: the (type, destructor) pairs. -/
+def dtorPairs : List String → List (String × String)
+  | t :: d :: r => (t, d) :: dtorPairs r
+  | _ => []
 
 def XPF.close (f : XPF) : Except String XFunc := do
   if f.cur.isSome then throw s!"{f.name}: last block has no terminator"
   pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse,
-         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr, thrown := f.thrown, thrDtor := f.thrDtor }
+         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr, thrown := f.thrown, thrDtor := f.thrDtor, dtors := f.dtors }
 
 /-- Parse the `L ...` lines of a record in the extended syntax: the analysed
 function, then an `L fn NAME` section per function its calls reach. -/
@@ -435,7 +441,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .ovf (← reg? d) (← ovfK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }
     | "thrown" :: ts => f := { f with thrown := some ts }
-    | ["thrdtor"] => f := { f with thrDtor := true }
+    | "thrdtor" :: xs => f := { f with thrDtor := true, dtors := dtorPairs xs }
     | "lpad" :: d :: cu :: _ :: cls =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .lpad (← reg? d) (cu == "1") cls :: is) }
