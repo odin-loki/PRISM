@@ -1044,6 +1044,8 @@ structure TS where
   lps : List (Nat × Nat × List (Nat × Arg)) := []
   /-- `thrown_types()` (module-wide, sorted) -/
   thrown : Option (List String) := none
+  /-- `Tr::type_dtor` has a destructor (`L thrdtor`) -/
+  thrDtor : Bool := false
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -1353,6 +1355,137 @@ def trInsvX (ι : Nat) (d : String) (w0 w1 : Nat) (ag : Option String) (v : Opnd
     | _ => throw "outside fragment: insertvalue operand"
   pure (sb ++ [.assign a0 .copy [if idx == 0 then V else B0], .assign a1 .copy [if idx == 1 then V else B1]])
 
+/-! ### The caught-exception stack (`Tr::eh_call`: `__cxa_begin_catch`,
+`__cxa_end_catch`, `__cxa_rethrow`, `llvm.eh.typeid.for`), region code only -/
+
+/-- `Tr::assign`: a fresh variable of width `w`. -/
+def asgX (w : Nat) (op : POp) (as : List Arg) : TM (List PStmt × Arg) := do
+  let d ← newVar w
+  pure ([.assign d op as], .v d w)
+
+/-- `MemTr::gep(slot, i64, {D}, inbounds)`: `slot + 8 * D` with its checks. -/
+def slotGepX (S D : Arg) : TM (List PStmt × Arg) := do
+  let i ← newVar 64
+  let k := (← get).vars.size
+  let g ← liftE (gLoop k { s := [], ts := [], cst := 0, var := none } [(.first (.const 0) 64 8, D)])
+  let (st, ts) := gEnd k i S true g
+  pushTemps ts
+  pure (st, .v i 64)
+
+/-- `Tr::caught_slot()`: the object the entry block's `L glob %__prism.caught`
+allocated (the eager prologue allocation of the analysed function). -/
+def caughtSlotX : TM Arg := do
+  let I0 ← getInst 0
+  match look I0.env "__prism.caught" with
+  | some (.v i 64) => pure (.v i 64)
+  | _ => throw "outside fragment: caught-exception stack not exported"
+
+/-- `soft_guard ok`: `br ok eh.ok eh.unmodelled`, a soft stop in the second;
+the statements `ss` and the branch end `cur`; returns `eh.ok`. -/
+def softGuardX (cur : Nat) (ss : List PStmt) (ok : Arg) : TM Nat := do
+  let yes ← newBlock
+  let no ← newBlock
+  setBlock cur fun q => { q with stmts := q.stmts ++ ss, term := .br ok yes no }
+  softStop no
+  pure yes
+
+/-- `Tr::eh_call` on a caught-exception-stack call `cl` in region code at PIR
+block `cur` (its earlier statements already there); `some b`: the block the
+rest of the LLVM block continues in, `none`: the call does not return. -/
+def ehCallX (stack : List String) (c : Ctx) (cur : Nat) (cl : CallI) : TM (Option Nat) := do
+  if cl.inv then throw s!"outside fragment: invoke of @{cl.f}"
+  if cl.f.startsWith "llvm.eh.typeid.for:" then
+    let t := (cl.f.drop "llvm.eh.typeid.for:".length).toString
+    let some d := cl.dst | throw "outside fragment: llvm.eh.typeid.for without a result"
+    let i ← liftE (dstX c d 32)
+    let tid ← typeId t
+    setBlock cur fun q => { q with stmts := q.stmts ++ [.assign i .copy [.c 32 (tid % 2 ^ 32)]] }
+    return some cur
+  let S ← caughtSlotX
+  if cl.f == "__cxa_begin_catch" then
+    let [(o, 64)] := cl.args | throw "outside fragment: __cxa_begin_catch arity"
+    let k := (← get).vars.size
+    let (s0, t0, As) ← liftE (trArgsX c k [(o, 64, 64)])
+    pushTemps t0
+    let [E] := As | throw "internal: begin_catch argument"
+    let (s1, D) ← ldX S 64
+    let (s2, ok) ← asgX 1 (.cmp .ult) [D, c64 8]
+    let cur ← softGuardX cur (s0 ++ s1 ++ s2) ok
+    let (g1, Cp) ← atX E 8
+    let (l1, C) ← ldX Cp 64
+    let (a1, Ng) ← asgX 1 (.cmp .slt) [C, c64 0]
+    let (a2, Sb) ← asgX 64 (.bin .sub) [c64 0, C]
+    let (a3, Ab) ← asgX 64 .select [Ng, Sb, C]
+    let (a4, Ad) ← asgX 64 (.bin .add) [Ab, c64 1]
+    let w1 ← stX Cp Ad
+    let (g2, Te) ← slotGepX S D
+    let (l2, Top) ← ldX Te 64
+    let (a5, Pu) ← asgX 1 (.cmp .ne) [Top, E]
+    let (a6, Z) ← asgX 64 (.cast .zext) [Pu]
+    let (a7, Nd) ← asgX 64 (.bin .add) [D, Z]
+    let (g3, Ep) ← slotGepX S Nd
+    let w2 ← stX Ep E
+    let w3 ← stX S Nd
+    let (g4, P16) ← atX E 16
+    let (l3, R) ← ldX P16 64
+    let r ← match cl.dst with
+      | some d => do
+        if cl.rw != 64 then throw "outside fragment: __cxa_begin_catch result width"
+        let i ← liftE (dstX c d 64)
+        pure [PStmt.assign i .copy [R]]
+      | none => pure []
+    setBlock cur fun q => { q with stmts := q.stmts ++ g1 ++ l1 ++ a1 ++ a2 ++ a3 ++ a4 ++ w1 ++ g2 ++ l2 ++
+      a5 ++ a6 ++ a7 ++ g3 ++ w2 ++ w3 ++ g4 ++ l3 ++ r }
+    return some cur
+  if cl.f == "__cxa_end_catch" then
+    if !cl.args.isEmpty || cl.dst.isSome then throw "outside fragment: __cxa_end_catch arity"
+    if (← get).thrDtor then throw "outside fragment: __cxa_end_catch with a thrown class that has a destructor"
+    let (s1, D) ← ldX S 64
+    let (s2, ok) ← asgX 1 (.cmp .ne) [D, c64 0]
+    let cur ← softGuardX cur (s1 ++ s2) ok
+    let (g1, Ep) ← slotGepX S D
+    let (l1, E) ← ldX Ep 64
+    let (g2, Cp) ← atX E 8
+    let (l2, C) ← ldX Cp 64
+    let (a1, Ng) ← asgX 1 (.cmp .slt) [C, c64 0]
+    let (a2, Ad) ← asgX 64 (.bin .add) [C, c64 1]
+    let (a3, Sb) ← asgX 64 (.bin .sub) [C, c64 1]
+    let (a4, Nc) ← asgX 64 .select [Ng, Ad, Sb]
+    let w1 ← stX Cp Nc
+    let (a5, Gn) ← asgX 1 (.cmp .eq) [Nc, c64 0]
+    let (a6, Z) ← asgX 64 (.cast .zext) [Gn]
+    let (a7, Nd) ← asgX 64 (.bin .sub) [D, Z]
+    let w2 ← stX S Nd
+    let destroy ← newBlock
+    let dn ← newBlock
+    let (a8, Is1) ← asgX 1 (.cmp .eq) [C, c64 1]
+    let ss := g1 ++ l1 ++ g2 ++ l2 ++ a1 ++ a2 ++ a3 ++ a4 ++ w1 ++ a5 ++ a6 ++ a7 ++ w2 ++ a8
+    setBlock cur fun q => { q with stmts := q.stmts ++ ss, term := .br Is1 destroy dn }
+    -- `thrown_types()`, the type id, the payload (no destructor: none is called)
+    let (l3, _) ← ldX E 64
+    let (g3, _) ← atX E 32
+    setBlock destroy fun q => { q with stmts := q.stmts ++ l3 ++ g3 ++ [.free E], term := .jmp dn }
+    return some dn
+  if cl.f == "__cxa_rethrow" then
+    if !cl.args.isEmpty || cl.dst.isSome then throw "outside fragment: __cxa_rethrow arity"
+    let (s1, D) ← ldX S 64
+    let (s2, Z0) ← asgX 1 (.cmp .eq) [D, c64 0]
+    let (g1, Ep) ← slotGepX S D
+    let (l1, E) ← ldX Ep 64
+    let (g2, Cp) ← atX E 8
+    let (l2, C) ← ldX Cp 64
+    let (a1, Ng) ← asgX 64 (.bin .sub) [c64 0, C]
+    let w1 ← stX Cp Ng
+    setBlock cur fun q => { q with stmts := q.stmts ++ s1 ++ s2 ++ [.check Z0 "terminate" "CXX-TERMINATE"] ++
+      g1 ++ l1 ++ g2 ++ l2 ++ a1 ++ w1 }
+    raiseUnknownX stack cur E
+    return none
+  throw s!"UNENCODED: call @{cl.f}"
+
+/-- The calls `ehCallX` translates. -/
+def ehCallee (f : String) : Bool :=
+  f == "__cxa_begin_catch" || f == "__cxa_end_catch" || f == "__cxa_rethrow" || f.startsWith "llvm.eh.typeid.for:"
+
 /-- Instructions of a landing-pad region block (`Tr::inst`, with
 `landingpad` and `insertvalue`). -/
 def trRegionInsts (ι : Nat) (is : List SInst) : TM (List PStmt) := do
@@ -1400,6 +1533,13 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           let (s1, t1) ← liftE (trSInstsX (I.ctx (← curVars)) k is)
           pushTemps t1
           pure s1
+        if region && ehCallee cl.f && (M.find cl.f).isNone then
+          setBlock cur fun pb => { pb with stmts := pb.stmts ++ s1 }
+          match ← ehCallX stack (I.ctx (← curVars)) cur cl with
+          | some c' => cur := c'; continue
+          | none =>
+            setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
+            return (cur, none)
         let k1 := (← get).vars.size
         let G' ← match M.find cl.f with
           | some G' => pure G'
@@ -1424,7 +1564,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let lo' := (← get).vars.size
         let κ ← enterFrame G' (G'.params.map Prod.fst |>.zip As) lo' (some cb)
         let Iκ ← getInst κ
-        setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
+        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
         if !region then recordSeg ι b cb k (some κ)
         if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
         modify fun s => { s with hs := if cl.inv then (ι, cl.pad, s.fr.length) :: s.hs else s.hs,
@@ -1453,7 +1593,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let E ← match look I.env (pairReg r 0) with
           | some (.v e _) => pure (Arg.v e 64)
           | _ => throw "outside fragment: resume of a non-pair"
-        setBlock cur fun pb => { pb with stmts := s1 ++
+        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++
           (if u0 then [.check (.c 1 1) "undef" "UB-POISON"] else []), term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         raiseUnknownX stack cur E
@@ -1463,7 +1603,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let (s0, t0, _) ← liftE (trArgsX (I.ctx (← curVars)) k1 (B.thrA.map fun (o, w) => (o, w, w)))
         pushTemps t0
         let (s2, E) ← throwObjX B.thrT
-        setBlock cur fun pb => { pb with stmts := s1 ++ s0 ++ s2, term := .stop }
+        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++ s0 ++ s2, term := .stop }
         dispatchX stack cur E B.thrT
         let _ ← newBlock
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
@@ -1474,7 +1614,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         | _ => pure ()
       let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo k1 B.nr B.term)
       pushTemps t2
-      setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := T }
+      setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 ++ s2, term := T }
       -- the first temporary of the last segment
       setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
       pure (cur, A?)
@@ -1543,7 +1683,7 @@ def translateX (M : XMod) (depth : Nat) (F : XFunc) : Except String (PFunc × Li
       let v ← newVar w
       penv := penv ++ [(p, .v v w)]
     let ι ← enterFrame F penv 0 none
-    modify fun s => { s with fr := [ι], thrown := F.thrown }
+    modify fun s => { s with fr := [ι], thrown := F.thrown, thrDtor := F.thrDtor }
     let _ ← runFrame M depth (depth + 2) [F.name] ι
   let ((), s) ← go.run { vars := #[], blocks := #[], insts := #[] }
   pure ({ vars := s.vars.toList, params := List.range' 0 np, retw := F.retw, blocks := s.blocks.toList },
