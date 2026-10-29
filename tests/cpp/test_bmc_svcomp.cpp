@@ -875,3 +875,30 @@ TEST_CASE("bmc: a goto-built loop (cfa-reducer shape) is rewritten to while and 
     CHECK(t["main"].extra["invariant_loops"].find("\"line\":0") == std::string::npos);
     CHECK(t["main"].status != kProved);
 }
+
+namespace {
+const char* kPhases = R"(extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); } }
+int main(void) {
+  unsigned int x = 0;
+  while (x < 0x0fffffff) {
+    if (x < 0xfff0) { x++; } else { x += 2; }
+  }
+  __VERIFIER_assert(!(x % 2));
+  return 0;
+}
+)";
+}  // namespace
+
+TEST_CASE("bmc: a phase-guarded parity (x < K || x % 2 == 0) proves; an odd second-phase step does not") {
+    auto ok = bmc_run("phases.c", kPhases);
+    REQUIRE(ok.count("main"));
+    CHECK_MESSAGE(ok["main"].status == kProved, ok["main"].message);
+    std::string bad = kPhases;
+    bad.replace(bad.find("x += 2"), 6, "x += 3");
+    auto b = bmc_run("phases_bad.c", bad);
+    REQUIRE(b.count("main"));
+    CHECK(b["main"].status != kProved);
+    CHECK(b["main"].status != std::string(prism::laws::PROVED));
+}

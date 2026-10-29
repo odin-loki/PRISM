@@ -689,6 +689,14 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
     for (auto& x : L.modified)
         for (long long c : {2LL, 3LL, 4LL})
             for (long long r = 0; r < c; ++r) push(x + " % " + std::to_string(c) + " == " + std::to_string(r));
+    // (7b) phase guards: a parity that only holds once x passes a constant
+    //      threshold of the body (phases_1-1: x++ below 0xfff0, x += 2 above).
+    for (auto& x : L.modified)
+        for (auto k : L.constants) {
+            if (k <= 0) continue;
+            for (long long r = 0; r < 2; ++r)
+                push(x + " < " + std::to_string(k) + " || " + x + " % 2 == " + std::to_string(r));
+        }
     // (8) non-linear and three-variable shapes (gauss_sum, count_by_k, half).
     //     They are checked by Houdini in the same bit-vector semantics in which
     //     they are assumed, so a wrapping product cannot make a proof unsound;
