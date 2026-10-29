@@ -293,7 +293,10 @@ private:
 
     _Node** _M_allocate_buckets(size_type __n) {
         _Node** __p = static_cast<_Node**>(::operator new(__n * sizeof(_Node*)));
-        for (size_type __i = 0; __i < __n; ++__i) __p[__i] = nullptr;
+        // one memset, not a loop: the first insert allocates 13 buckets, more
+        // iterations than the PIR unwind (4, then 8), so the loop form never
+        // proved its unwinding assertion and blew up trying (unordered_map_contracts)
+        __builtin_memset(static_cast<void*>(__p), 0, __n * sizeof(_Node*));
         return __p;
     }
 
