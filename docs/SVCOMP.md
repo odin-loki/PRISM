@@ -248,7 +248,7 @@ The witnesses were not validated in this run, so these are unvalidated upper bou
 | property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown/error |
 |---|---|---|---|---|---|---|---|
 | no-overflow | 117 (75 / 42) | **118** | 192 | 38 | 42 | **0** | 37 |
-| unreach-call | 127 (98 / 29) | **127** | 225 | 52 | 23 | **0** | 52 |
+| unreach-call | 127 (98 / 29) | **130** | 225 | 53 | 24 | **0** | 50 |
 
 no-overflow is 118 on the latest rescore (`--jobs 2`, under a 4 GB address-space cap; fuzz witnesses now carry nondet values). unreach-call is 127 on the same rescore (was 125; 3 tasks hit the per-task timeout at `--jobs 2`). no-overflow went from 114 before that, from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
 from 36 on the earlier baseline. One `true` answer (`bitvector/gcd_3`) dropped to unknown
@@ -794,4 +794,4 @@ none relaxes what counts as a proof or a refutation.
 
 ### goto into a block (bmc)
 
-bmc now encodes a forward goto into a block that comes later in the text, which is how CIL writes a `switch` (`goto L; ... if (0) { L: ... }`). The jump stays unencoded (NEEDS-HARNESS) in three cases: it would enter a loop-body pass or switch arm from outside, it would enter a block past a declaration, or it would skip a declaration in a block the goto and the label share. The `s3_*` tasks now get past the goto. They are still unknown because of other gaps: an unbounded state-machine loop, calls to bounded callees, `void *` casts and uninit reads. Rescore with this change: no-overflow 118/192, 0 incorrect, unchanged.
+bmc now encodes a forward goto into a block that comes later in the text, which is how CIL writes a `switch` (`goto L; ... if (0) { L: ... }`). The jump stays unencoded (NEEDS-HARNESS) in three cases: it would enter a loop-body pass or switch arm from outside, it would enter a block past a declaration, or it would skip a declaration in a block the goto and the label share. The `s3_*` tasks now get past the goto. They are still unknown because of other gaps: an unbounded state-machine loop, calls to bounded callees, `void *` casts and uninit reads. Rescore with this change: no-overflow 118/192, 0 incorrect, unchanged. unreach-call (goto plus `(void *)0` as 0, `--jobs 2`, 2026-10-30): **130**/225 (53 true, 24 false, 0 incorrect, 50 unknown), was 127.
