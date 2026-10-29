@@ -2600,7 +2600,7 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
         return begin_of(*a.at).offset < begin_of(*b.at).offset;
     });
     std::map<LockKey, std::optional<bool>> held;
-    LeaveReplay<std::map<LockKey, std::optional<bool>>> replay{leaving_blocks(body)};
+    LeaveReplay<std::map<LockKey, std::optional<bool>>> replay{leaving_blocks(body), 0, {}};
     for (auto& e : seq) {
         replay.at(begin_of(*e.at).offset, held);
         if (e.release) {
@@ -4027,127 +4027,11 @@ struct Walker {
     }
 };
 
-// Regex lints from checkers_core, on the same padded body the regex stage
-// uses (comments blanked, string literals blanked, leading newlines so body
-// index i is file line span.first + i). Findings attach to the AST node that
-// begins on that line, so macros and dependent templates are dropped.
-std::string rx_esc(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() * 2);
-    for (unsigned char c : s) {
-        if (std::isalnum(c) || c == '_') out.push_back(static_cast<char>(c));
-        else {
-            out.push_back('\\');
-            out.push_back(static_cast<char>(c));
-        }
-    }
-    return out;
-}
-
 std::string rx_strip(std::string_view s) {
     std::size_t a = 0, b = s.size();
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
     while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
     return std::string(s.substr(a, b - a));
-}
-
-std::string rx_squeeze(std::string_view s) {
-    std::string out;
-    bool sp = false;
-    for (char c : s) {
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            if (!sp && !out.empty()) out.push_back(' ');
-            sp = true;
-        } else {
-            out.push_back(c);
-            sp = false;
-        }
-    }
-    return out;
-}
-
-std::vector<std::string> rx_split(std::string_view body) {
-    std::vector<std::string> out;
-    if (body.empty()) return out;
-    std::size_t i = 0;
-    while (true) {
-        auto n = body.find('\n', i);
-        if (n == std::string_view::npos) {
-            out.emplace_back(body.substr(i));
-            break;
-        }
-        out.emplace_back(body.substr(i, n - i));
-        i = n + 1;
-        if (i == body.size()) break;
-    }
-    return out;
-}
-
-std::string rx_join(const std::vector<std::string>& v, std::size_t a, std::size_t b) {
-    std::string s;
-    if (b > v.size()) b = v.size();
-    for (std::size_t i = a; i < b; ++i) {
-        if (i > a) s.push_back('\n');
-        s += v.at(i);
-    }
-    return s;
-}
-
-int rx_nl(std::string_view s) { return static_cast<int>(std::count(s.begin(), s.end(), '\n')); }
-
-bool rx_full(const prism::Regex& re, std::string_view s) {
-    auto m = re.search_match(s);
-    return m && !m->spans.empty() && m->spans[0].first == 0 && m->spans[0].second == static_cast<int>(s.size());
-}
-
-std::vector<std::string> rx_split_args(std::string_view inner) {
-    std::vector<std::string> args;
-    int depth = 0;
-    std::string cur;
-    bool in_str = false, esc = false;
-    for (char ch : inner) {
-        if (in_str) {
-            cur.push_back(ch);
-            if (esc) esc = false;
-            else if (ch == '\\') esc = true;
-            else if (ch == '"') in_str = false;
-            continue;
-        }
-        if (ch == '"') {
-            in_str = true;
-            cur.push_back(ch);
-        } else if (ch == '(') {
-            ++depth;
-            cur.push_back(ch);
-        } else if (ch == ')') {
-            --depth;
-            cur.push_back(ch);
-        } else if (ch == ',' && depth == 0) {
-            args.push_back(rx_strip(cur));
-            cur.clear();
-        } else {
-            cur.push_back(ch);
-        }
-    }
-    auto tail = rx_strip(cur);
-    if (!tail.empty()) args.push_back(std::move(tail));
-    return args;
-}
-
-std::optional<std::vector<std::string>> rx_call_args(std::string_view line, std::string_view fn) {
-    prism::Regex re(std::string("\\b") + std::string(fn) + "\\s*\\(");
-    auto m = re.search_match(line);
-    if (!m || m->spans.empty()) return std::nullopt;
-    auto start = static_cast<std::size_t>(m->spans[0].second);
-    int depth = 1;
-    std::size_t i = start;
-    while (i < line.size() && depth > 0) {
-        if (line[i] == '(') ++depth;
-        else if (line[i] == ')') --depth;
-        ++i;
-    }
-    if (depth != 0) return std::nullopt;
-    return rx_split_args(line.substr(start, i - 1 - start));
 }
 
 const std::unordered_set<std::string>& rx_signed_words() {
@@ -4158,98 +4042,11 @@ const std::unordered_set<std::string>& rx_signed_words() {
     return w;
 }
 
-const std::unordered_set<std::string>& rx_kw() {
-    static const std::unordered_set<std::string> w = {
-        "if", "for", "while", "switch", "return", "sizeof", "typeof", "else", "do", "case", "default",
-    };
-    return w;
-}
-
 const prism::Regex& rx_unsigned_ty() {
     static const prism::Regex re(R"(unsigned|size_t|uint|u_int|u_char|u_short|u_long)");
     return re;
 }
 
-struct RxFn {
-    std::string body;
-    std::vector<std::string> lines;
-    std::vector<std::pair<std::string, std::string>> params;
-    int span_first = 0;
-    int span_second = 0;
-    bool pointer = false;
-};
-
-std::unordered_set<std::string> rx_signed_names(const RxFn& fn) {
-    static prism::Regex words(R"([A-Za-z_]\w*)");
-    static prism::Regex loc(
-        R"(\b(?:signed\s+)?(?:int|short|long|char|ssize_t|ptrdiff_t|int\d+_t|intmax_t|intptr_t|off_t|pid_t)\s+([A-Za-z_]\w*)\s*;)");
-    std::unordered_set<std::string> names;
-    for (auto& [typ, name] : fn.params) {
-        if (name.empty() || typ.find('*') != std::string::npos || typ.find('[') != std::string::npos) continue;
-        if (rx_unsigned_ty().search(typ)) continue;
-        for (auto& m : words.finditer(typ))
-            if (rx_signed_words().contains(m.text)) names.insert(name);
-    }
-    for (auto& m : loc.finditer(fn.body)) names.insert(m.group(1));
-    return names;
-}
-
-bool rx_has_floor(std::string_view name, std::string_view text) {
-    auto v = rx_esc(name);
-    prism::Regex re("\\b" + v + "\\s*(?:<\\s*0|>=\\s*0|>\\s*-\\s*1|==\\s*-\\s*1|!=\\s*-\\s*1|<=\\s*-\\s*1)" +
-                    "|0\\s*(?:>|<=|<|>=)\\s*\\b" + v + "\\b|-\\s*1\\s*(?:<|>=|==|!=)\\s*\\b" + v + "\\b" +
-                    "|\\(\\s*(?:unsigned|u_int|u_long|size_t|uint\\d+_t)\\s*\\)\\s*\\(?\\s*\\b" + v + "\\b");
-    return re.search(text);
-}
-
-bool rx_pinned(std::string_view name, std::string_view text) {
-    auto v = rx_esc(name);
-    prism::Regex re("\\b" + v + "\\s*=\\s*(?:0|[1-9]\\d*)\\s*[;,)]|\\bfor\\s*\\(\\s*(?:[A-Za-z_]\\w*\\s+)?" + v +
-                    "\\s*=");
-    return re.search(text);
-}
-
-bool rx_if_guard(std::string_view name, std::string_view body) {
-    auto v = rx_esc(name);
-    if (prism::Regex("\\bif\\s*\\(\\s*!\\s*" + v + "\\b").search(body)) return true;
-    return prism::Regex("\\bif\\s*\\(\\s*" + v + "\\b").search(body);
-}
-
-bool rx_index_arith(std::string_view p, std::string_view n, std::string_view text) {
-    auto pe = rx_esc(p), ne = rx_esc(n);
-    if (prism::Regex("\\*\\s*\\(\\s*" + pe + "\\s*\\+\\s*" + ne + "\\s*\\)").search(text)) return true;
-    return prism::Regex("\\b" + pe + "\\s*\\[\\s*" + ne + "\\s*\\]").search(text);
-}
-
-std::string rx_unwrap(std::string expr) {
-    auto t = rx_strip(expr);
-    while (t.starts_with('(') && t.ends_with(')')) {
-        auto inner = rx_strip(t.substr(1, t.size() - 2));
-        if (static_cast<int>(std::count(inner.begin(), inner.end(), '(')) !=
-            static_cast<int>(std::count(inner.begin(), inner.end(), ')')))
-            break;
-        t = inner;
-    }
-    return t;
-}
-
-std::pair<std::optional<std::string>, std::optional<std::string>> rx_bare_sizeof(std::string_view expr) {
-    static prism::Regex st(R"(^sizeof\s*\(\s*(?:struct\s+)?([A-Za-z_]\w*)\s*\)$)");
-    static prism::Regex star(R"(^sizeof\s*(?:\(\s*\*\s*([A-Za-z_]\w*)\s*\)|\*\s*([A-Za-z_]\w*))$)");
-    auto t = rx_unwrap(std::string(expr));
-    if (t.find('+') != std::string::npos) return {std::nullopt, std::nullopt};
-    if (rx_full(st, t)) {
-        auto m = st.search_match(t);
-        return {std::string("struct"), m->group(1)};
-    }
-    if (rx_full(star, t)) {
-        auto m = star.search_match(t);
-        auto id = m->group(1);
-        if (id.empty()) id = m->group(2);
-        return {std::string("star"), id};
-    }
-    return {std::nullopt, std::nullopt};
-}
 
 std::unordered_set<std::string> rx_flex_tags(std::string_view text) {
     static prism::Regex def(R"(\b(?:struct|class)\s+(?P<tag>[A-Za-z_]\w*)\s*\{(?P<body>[^{}]*)\})");
@@ -4269,41 +4066,6 @@ std::unordered_set<std::string> rx_flex_tags(std::string_view text) {
         if (!decls.empty() && tail.search(decls.back())) tags.insert(m.named("tag"));
     }
     return tags;
-}
-
-std::string rx_re_sub(const prism::Regex& re, std::string_view repl, const std::string& s) {
-    std::string out;
-    std::size_t off = 0;
-    for (auto& m : re.finditer(s)) {
-        auto a = static_cast<std::size_t>(std::max(0, m.spans[0].first));
-        out.append(s, off, a - off);
-        out.append(repl);
-        off = static_cast<std::size_t>(std::max(0, m.spans[0].second));
-    }
-    out.append(s, off, std::string::npos);
-    return out;
-}
-
-void rx_anchors(const json& n, Ctx& cx, std::map<int, const json*>& at) {
-    if (!n.is_object()) {
-        if (n.is_array())
-            for (auto& c : n) rx_anchors(c, cx, at);
-        return;
-    }
-    Pos p = begin_of(n);
-    if (!p.macro && p.offset >= 0) {
-        int ln = cx.line_of(p);
-        if (ln > 0) at.emplace(ln, &n);
-    }
-    for (auto& c : inner(n)) rx_anchors(c, cx, at);
-}
-
-void rx_add(Checker& ck, const std::map<int, const json*>& at, int line, std::string_view cls,
-            const std::string& msg) {
-    if (line <= 0) return;
-    auto it = at.find(line);
-    if (it == at.end() || !it->second) return;
-    ck.add(*it->second, cls, msg);
 }
 
 // ---------------------------------------------------------------- RES-FD-LEAK / CONC-TOCTOU / CONC-ATOMICITY
@@ -4487,6 +4249,248 @@ void vla_checks(const json& body, Checker& ck) {
             return;
         }
     });
+}
+
+namespace {
+
+// The leftmost operand of an `if` condition, through `!`: `if (v ...)`.
+bool if_guards(const json& cond0, const std::string& id) {
+    const json* c = &strip_all(cond0);
+    while (true) {
+        const auto& k = kind(*c);
+        if (k == "DeclRefExpr") return ref_id(*c) == id;
+        if ((k == "UnaryOperator" || k == "BinaryOperator") && n_children(*c) >= 1) {
+            c = &strip_all(child(*c, 0));
+            continue;
+        }
+        return false;
+    }
+}
+
+bool word_in(std::string_view t, const std::unordered_set<std::string>& words) {
+    static prism::Regex w(R"([A-Za-z_]\w*)");
+    for (auto& m : w.finditer(t))
+        if (words.contains(m.text)) return true;
+    return false;
+}
+
+bool signed_int_type(std::string_view t) {
+    if (t.find('*') != std::string_view::npos || t.find('[') != std::string_view::npos) return false;
+    if (rx_unsigned_ty().search(t)) return false;
+    return word_in(t, rx_signed_words());
+}
+
+}  // namespace
+
+// MEM-PTR-ARITH: p[n] or *(p + n) with p a pointer parameter and n an
+// integer parameter, unless both have an `if` guard in the function.
+void ptr_arith_checks(const json& f, const json& body, Checker& ck) {
+    static const std::unordered_set<std::string> ints = {"int", "long", "short", "unsigned", "size_t", "uint"};
+    std::map<std::string, std::string> ptrs, nums;  // id -> name
+    for (auto& c : inner(f)) {
+        if (kind(c) != "ParmVarDecl" || str_field(c, "name").empty()) continue;
+        auto t = std::string(qual_type(c));
+        if (t.find('*') != std::string::npos || t.find('[') != std::string::npos) {
+            ptrs[str_field(c, "id")] = str_field(c, "name");
+        } else {
+            auto lo = t;
+            for (auto& ch : lo) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (word_in(lo, ints)) nums[str_field(c, "id")] = str_field(c, "name");
+        }
+    }
+    if (ptrs.empty() || nums.empty()) return;
+    const auto base = begin_of(body);
+    std::set<std::string> guarded;
+    std::vector<std::tuple<long long, const json*, std::string, std::string>> hits;  // off, node, p id, n id
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "IfStmt") {
+            for (auto& c : inner(n)) {
+                if (kind(c) == "DeclStmt" || kind(c) == "VarDecl") continue;
+                for (auto& [id, _] : ptrs)
+                    if (if_guards(c, id)) guarded.insert(id);
+                for (auto& [id, _] : nums)
+                    if (if_guards(c, id)) guarded.insert(id);
+                break;
+            }
+            return;
+        }
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        std::string pid, nid;
+        if (k == "ArraySubscriptExpr" && n_children(n) == 2) {
+            pid = ref_id(child(n, 0));
+            nid = ref_id(child(n, 1));
+        } else if (k == "UnaryOperator" && str_field(n, "opcode") == "*" && n_children(n) == 1) {
+            const auto& a = strip_all(child(n, 0));
+            if (kind(a) == "BinaryOperator" && str_field(a, "opcode") == "+" && n_children(a) == 2) {
+                pid = ref_id(child(a, 0));
+                nid = ref_id(child(a, 1));
+            }
+        }
+        if (ptrs.contains(pid) && nums.contains(nid)) hits.emplace_back(p.offset, &n, pid, nid);
+    });
+    std::sort(hits.begin(), hits.end(), [](auto& a, auto& b) { return std::get<0>(a) < std::get<0>(b); });
+    for (auto& [off, n, pid, nid] : hits) {
+        if (guarded.contains(pid) && guarded.contains(nid)) continue;
+        const auto& pn = ptrs[pid];
+        const auto& nn = nums[nid];
+        ck.add(*n, "MEM-PTR-ARITH", pn + "[" + nn + "] or *(" + pn + "+" + nn + ") without guard on " + pn + " or " + nn);
+        return;
+    }
+}
+
+// INFOLEAK-PAD: memcpy(dst, &s, sizeof ...) of a local struct that was
+// neither initialised nor memset to zero.
+void infoleak_pad_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    std::map<std::string, std::string> structs;  // id -> name
+    std::set<std::string> zeroed;
+    std::vector<std::pair<const json*, std::string>> copies;
+    auto addr_of = [](const json& e) -> std::string {
+        const auto& s = strip_all(e);
+        if (kind(s) == "UnaryOperator" && str_field(s, "opcode") == "&" && n_children(s) == 1)
+            return ref_id(child(s, 0));
+        return ref_id(s);
+    };
+    auto has_sizeof = [](const json& e) {
+        bool found = false;
+        collect_nodes(e, [&](const json& x, const json*) {
+            if (kind(x) == "UnaryExprOrTypeTraitExpr") found = true;
+        });
+        return found;
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl") {
+            const auto sc = str_field(n, "storageClass");
+            if (sc == "static" || sc == "extern" || n_children(n) > 0) return;
+            auto t = std::string(qual_type(n));
+            if (t.starts_with("struct ") && t.find('*') == std::string::npos && t.find('[') == std::string::npos)
+                structs[str_field(n, "id")] = str_field(n, "name");
+            return;
+        }
+        if (!is_call_kind(k)) return;
+        auto cn = callee_name(n);
+        auto a = call_args(n);
+        if (cn == "memset" && a.size() == 3 && is_zero_literal(*a[1])) {
+            auto id = addr_of(*a[0]);
+            if (!id.empty()) zeroed.insert(id);
+        } else if (cn == "memcpy" && a.size() == 3) {
+            const auto& src = strip_all(*a[1]);
+            if (kind(src) != "UnaryOperator" || str_field(src, "opcode") != "&" || !has_sizeof(*a[2])) return;
+            auto p = begin_of(n);
+            if (!same_file_pos(p, base) || p.macro) return;
+            auto id = ref_id(child(src, 0));
+            if (!id.empty()) copies.emplace_back(&n, id);
+        }
+    });
+    std::set<std::string> seen;
+    for (auto& [n, id] : copies) {
+        if (!structs.contains(id) || zeroed.contains(id) || !seen.insert(id).second) continue;
+        ck.add(*n, "INFOLEAK-PAD", "memcpy copies local struct " + structs[id] + " without zeroing padding first");
+    }
+}
+
+// MEM-FLEX-ARRAY: malloc/realloc/calloc sized by a bare sizeof of a struct
+// that ends in a flexible array member (or of *p, p pointing to one).
+void flex_array_checks(const json& body, Checker& ck, Ctx& cx) {
+    const auto base = begin_of(body);
+    auto* fc = cx.file(base.file);
+    if (!fc) return;
+    std::string text;
+    for (auto& l : fc->lines) text += l + "\n";
+    auto tags = rx_flex_tags(text);
+    if (tags.empty()) return;
+    static prism::Regex type_form(R"(^sizeof\s*\(\s*(?:struct|class)\s+([A-Za-z_]\w*)\s*\))");
+    static prism::Regex tag_of(R"(^(?:const\s+|volatile\s+)*(?:struct|class)\s+([A-Za-z_]\w*)$)");
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (!is_call_kind(kind(n))) return;
+        auto cn = callee_name(n);
+        auto a = call_args(n);
+        const json* size = nullptr;
+        if (cn == "malloc" && a.size() >= 1) size = a[0];
+        else if ((cn == "realloc" || cn == "calloc") && a.size() >= 2) size = a[1];
+        if (!size) return;
+        auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        const auto& sz = strip_all(*size);
+        if (kind(sz) != "UnaryExprOrTypeTraitExpr") return;
+        std::string tag;
+        if (n_children(sz) >= 1) {
+            auto t = std::string(qual_type(strip_all(child(sz, 0))));
+            if (auto m = tag_of.search_match(t)) tag = m->group(1);
+        }
+        if (tag.empty())
+            if (auto m = tag_of.search_match(sz.contains("argType") ? str_field(sz["argType"], "qualType") : std::string())) tag = m->group(1);
+        if (tag.empty())
+            if (auto m = type_form.search_match(strip_ws(std::string(cx.text_of(sz))))) tag = m->group(1);
+        if (tag.empty() || !tags.contains(tag)) return;
+        ck.add(n, "MEM-FLEX-ARRAY", cn + "() sizes struct " + tag + " at the header; flexible array needs extra bytes");
+    });
+}
+
+// MEM-ONESIDED-INDEX: `if (i > n)` / `if (i >= n)` on a signed i that also
+// indexes an array, with no floor test (i < 0, i >= 0, -1 compares, an
+// unsigned cast) and no constant or loop-init assignment.
+void onesided_index_checks(const json& f, const json& body, Checker& ck) {
+    std::map<std::string, std::string> signed_vars;
+    for (auto& c : inner(f))
+        if (kind(c) == "ParmVarDecl" && !str_field(c, "name").empty() && signed_int_type(qual_type(c)))
+            signed_vars[str_field(c, "id")] = str_field(c, "name");
+    std::set<std::string> floored, pinned, indexed;
+    std::vector<std::pair<const json*, std::string>> tests;
+    auto neg1 = [](const json& e) {
+        auto v = int_value(e);
+        return v && (*v == 0 || *v == -1);
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl" && signed_int_type(qual_type(n))) {
+            if (n_children(n) == 0) signed_vars[str_field(n, "id")] = str_field(n, "name");
+            else if (int_value(last_child(n))) pinned.insert(str_field(n, "id"));
+            if (n_children(n) > 0) signed_vars[str_field(n, "id")] = str_field(n, "name");
+        } else if (k == "ForStmt" && n_children(n) >= 1) {
+            const auto& init = child(n, 0);
+            collect_nodes(init, [&](const json& x, const json*) {
+                if (kind(x) == "VarDecl") pinned.insert(str_field(x, "id"));
+                if (kind(x) == "BinaryOperator" && str_field(x, "opcode") == "=")
+                    if (auto id = ref_id(child(x, 0)); !id.empty()) pinned.insert(id);
+            });
+        } else if (k == "BinaryOperator" && n_children(n) == 2) {
+            const auto op = str_field(n, "opcode");
+            const auto& l = child(n, 0);
+            const auto& r = child(n, 1);
+            if (op == "=" && int_value(r) && *int_value(r) >= 0) {
+                if (auto id = ref_id(l); !id.empty()) pinned.insert(id);
+            } else if (one_of(op, {"<", ">=", ">", "==", "!=", "<="})) {
+                if (auto id = ref_id(l); !id.empty() && neg1(r)) floored.insert(id);
+                if (auto id = ref_id(r); !id.empty() && neg1(l)) floored.insert(id);
+            }
+        } else if (is_explicit_cast(k) && n_children(n) >= 1) {
+            auto t = std::string(qual_type(n));
+            if (rx_unsigned_ty().search(t))
+                if (auto id = ref_id(child(n, 0)); !id.empty()) floored.insert(id);
+        } else if (k == "ArraySubscriptExpr" && n_children(n) == 2) {
+            if (auto id = ref_id(child(n, 1)); !id.empty()) indexed.insert(id);
+        } else if (k == "IfStmt") {
+            for (auto& c : inner(n)) {
+                if (kind(c) == "DeclStmt" || kind(c) == "VarDecl") continue;
+                const auto& s = strip_all(c);
+                if (kind(s) == "BinaryOperator" && one_of(str_field(s, "opcode"), {">", ">="}) &&
+                    kind(strip_all(child(s, 1))) == "DeclRefExpr")
+                    if (auto id = ref_id(child(s, 0)); !id.empty()) tests.emplace_back(&n, id);
+                break;
+            }
+        }
+    });
+    std::set<std::string> seen;
+    for (auto& [n, id] : tests) {
+        if (!signed_vars.contains(id) || floored.contains(id) || pinned.contains(id) || !indexed.contains(id)) continue;
+        if (!seen.insert(id).second) continue;
+        const auto& nm = signed_vars[id];
+        ck.add(*n, "MEM-ONESIDED-INDEX", nm + " is a signed index bounded above only; no " + nm + " < 0 test");
+    }
 }
 
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
@@ -4860,206 +4864,6 @@ void conc_atomicity_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
         ck.add(*at, "CONC-ATOMICITY", "global '" + g + "' incremented without mutex protection");
 }
 
-void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx& cx) {
-    const json* compound = &body_node;
-    if (kind(body_node) != "CompoundStmt") {
-        compound = nullptr;
-        for (auto& c : inner(body_node))
-            if (kind(c) == "CompoundStmt") {
-                compound = &c;
-                break;
-            }
-        if (!compound) return;
-    }
-    Pos cb = begin_of(*compound);
-    if (cb.macro || cb.offset < 0 || !cb.file) return;
-    auto* fc = cx.file(cb.file);
-    if (!fc) return;
-    Pos ce = end_of(*compound);
-    Pos fb = begin_of(decl);
-    int span_first = cx.line_of(fb.file ? fb : cb);
-    int span_second = ce.offset >= 0 ? cx.line_of(ce) : span_first;
-    if (span_first <= 0) return;
-    auto from = static_cast<std::size_t>(cb.offset + 1);
-    auto to = static_cast<std::size_t>(std::min<long long>(ce.offset, static_cast<long long>(fc->text.size())));
-    if (ce.offset < cb.offset || from > fc->text.size() || to < from) return;
-    auto bodies = strip_comments_keep_lines(fc->text, false);
-    if (to > bodies.size()) to = bodies.size();
-    if (from > bodies.size()) return;
-    std::string interior = bodies.substr(from, to - from);
-    int head = span_first - 1;
-    int lim = std::min(static_cast<int>(fc->lines.size()), span_second);
-    for (int j = std::max(head, 0); j < lim; ++j) {
-        if (fc->lines.at(static_cast<std::size_t>(j)).find('{') == std::string::npos) continue;
-        if (j > head) interior = std::string(static_cast<std::size_t>(j - head), '\n') + interior;
-        break;
-    }
-    if (interior.find('"') != std::string::npos) interior = strip_comments_keep_lines(interior, true);
-    RxFn fn;
-    fn.body = std::move(interior);
-    fn.lines = rx_split(fn.body);
-    fn.span_first = span_first;
-    fn.span_second = span_second;
-    for (auto& c : inner(decl)) {
-        if (kind(c) != "ParmVarDecl") continue;
-        auto name = std::string(str_field(c, "name"));
-        std::string typ(qual_type(c));
-        auto src = cx.text_of(c);
-        if (src.find('[') != std::string_view::npos && typ.find('[') == std::string::npos) typ.push_back('[');
-        if (src.find('*') != std::string_view::npos && typ.find('*') == std::string::npos) typ.push_back('*');
-        if (typ.find('*') != std::string::npos || typ.find('[') != std::string::npos) fn.pointer = true;
-        fn.params.emplace_back(std::move(typ), std::move(name));
-    }
-    std::map<int, const json*> at;
-    rx_anchors(decl, cx, at);
-    auto chunk_lines = [&]() {
-        std::vector<std::string> chunk;
-        if (fn.span_first < 1) return chunk;
-        auto a = static_cast<std::size_t>(fn.span_first - 1);
-        auto b = static_cast<std::size_t>(std::max(fn.span_second, 0));
-        if (b > fc->lines.size()) b = fc->lines.size();
-        if (a >= fc->lines.size() || a >= b) return chunk;
-        return std::vector<std::string>(fc->lines.begin() + static_cast<std::ptrdiff_t>(a),
-                                        fc->lines.begin() + static_cast<std::ptrdiff_t>(b));
-    };
-    auto chunk = chunk_lines();
-    auto chunk_text = rx_join(chunk, 0, chunk.size());
-
-    // MEM-PTR-ARITH: pointer param indexed by an integer param, unless both
-    // have an `if` guard.
-    if (fn.pointer) {
-        std::vector<std::string> ptrs;
-        std::vector<std::pair<std::string, std::string>> ints;
-        static prism::Regex ity(R"((?i)\b(?:int|long|short|unsigned|size_t|uint)\b)");
-        for (auto& [typ, name] : fn.params) {
-            if (name.empty()) continue;
-            if (typ.find('*') != std::string::npos) ptrs.push_back(name);
-            else if (typ.find('[') == std::string::npos && ity.search(typ))
-                ints.emplace_back(name, typ);
-        }
-        bool reported = false;
-        for (auto& p : ptrs) {
-            if (reported) break;
-            for (auto& [n, _] : ints) {
-                if (!rx_index_arith(p, n, fn.body)) continue;
-                if (rx_if_guard(p, fn.body) && rx_if_guard(n, fn.body)) continue;
-                auto pe = rx_esc(p), ne = rx_esc(n);
-                prism::Regex a("\\*\\s*\\(\\s*" + pe + "\\s*\\+\\s*" + ne + "\\s*\\)");
-                prism::Regex b("\\b" + pe + "\\s*\\[\\s*" + ne + "\\s*\\]");
-                for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-                    auto& ln = fn.lines.at(static_cast<std::size_t>(i));
-                    if (!(a.search(ln) || b.search(ln))) continue;
-                    rx_add(ck, at, fn.span_first + i, "MEM-PTR-ARITH",
-                           p + "[" + n + "] or *(" + p + "+" + n + ") without guard on " + p + " or " + n);
-                    reported = true;
-                    break;
-                }
-                if (reported) break;
-            }
-        }
-    }
-
-    // MEM-FLEX-ARRAY
-    {
-        std::string file_text = rx_join(fc->lines, 0, fc->lines.size());
-        auto tags = rx_flex_tags(file_text);
-        if (!tags.empty()) {
-            static prism::Regex fam_ptr(R"(\bstruct\s+(?P<tag>[A-Za-z_]\w*)\s*\*+\s*(?P<name>[A-Za-z_]\w*))");
-            static prism::Regex kw(R"(\b(?:const|volatile|struct|class)\b)");
-            std::map<std::string, std::string> ptrs;
-            for (auto& [typ, name] : fn.params) {
-                if (name.empty() || typ.find('*') == std::string::npos) continue;
-                auto t = rx_re_sub(kw, " ", typ);
-                for (char& c : t)
-                    if (c == '*') c = ' ';
-                auto tag = rx_squeeze(t);
-                if (tags.contains(tag)) ptrs[name] = tag;
-            }
-            for (auto& m : fam_ptr.finditer(fn.body))
-                if (tags.contains(m.named("tag"))) ptrs[m.named("name")] = m.named("tag");
-            std::unordered_set<int> seen;
-            for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-                for (auto* fname : {"malloc", "realloc", "calloc"}) {
-                    auto args = rx_call_args(fn.lines.at(static_cast<std::size_t>(i)), fname);
-                    if (!args) continue;
-                    std::string size, alloc = fname;
-                    if (alloc == "malloc" && !args->empty()) size = (*args)[0];
-                    else if (alloc == "realloc" && args->size() >= 2)
-                        size = (*args)[1];
-                    else if (alloc == "calloc" && args->size() >= 2)
-                        size = (*args)[1];
-                    else
-                        continue;
-                    auto [sk, ident] = rx_bare_sizeof(size);
-                    std::string tag;
-                    if (sk && *sk == "struct" && ident && tags.contains(*ident)) tag = *ident;
-                    else if (sk && *sk == "star" && ident && ptrs.contains(*ident)) tag = ptrs[*ident];
-                    if (tag.empty() || seen.contains(i)) continue;
-                    seen.insert(i);
-                    rx_add(ck, at, fn.span_first + i, "MEM-FLEX-ARRAY",
-                           alloc + "() sizes struct " + tag + " at the header; flexible array needs extra bytes");
-                    break;
-                }
-            }
-        }
-    }
-
-    // INFOLEAK-PAD
-    {
-        static prism::Regex memcpy_addr(R"(memcpy\s*\([^,]+,\s*&\s*(?P<var>[A-Za-z_]\w*)\s*,\s*sizeof)");
-        static prism::Regex structs_re(
-            R"re((?m)^\s*(?P<static>static\s+)?struct\s+\w+\s+(?P<name>[A-Za-z_]\w*)\s*(?P<zero>=\s*\{0\})?\s*;)re",
-            true);
-        std::unordered_set<std::string> params, structs;
-        for (auto& [typ, name] : fn.params) {
-            (void)typ;
-            if (!name.empty()) params.insert(name);
-        }
-        for (auto& m : structs_re.finditer(fn.body)) {
-            if (!m.named("static").empty() || !m.named("zero").empty()) continue;
-            auto name = m.named("name");
-            if (!params.contains(name) && !rx_kw().contains(name)) structs.insert(name);
-        }
-        if (!structs.empty()) {
-            std::set<std::pair<std::string, int>> seen;
-            for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-                auto m = memcpy_addr.search_match(chunk.at(static_cast<std::size_t>(i)));
-                if (!m) continue;
-                auto var = m->named("var");
-                if (!structs.contains(var)) continue;
-                auto v = rx_esc(var);
-                if (prism::Regex("memset\\s*\\(\\s*&?\\s*" + v + "\\s*,\\s*0\\b").search(fn.body)) continue;
-                if (prism::Regex("struct\\s+\\w+\\s+" + v + "\\s*=\\s*\\{0\\}").search(fn.body)) continue;
-                auto key = std::pair{var, i};
-                if (seen.contains(key)) continue;
-                seen.insert(key);
-                rx_add(ck, at, fn.span_first + i, "INFOLEAK-PAD",
-                       "memcpy copies local struct " + var + " without zeroing padding first");
-            }
-        }
-    }
-
-    // MEM-ONESIDED-INDEX
-    {
-        auto signed_n = rx_signed_names(fn);
-        if (!signed_n.empty()) {
-            static prism::Regex onesided(
-                R"(\bif\s*\(\s*(?P<i>[A-Za-z_]\w*)\s*(?:>|>=)\s*(?P<n>[A-Za-z_]\w*)\s*\))");
-            std::unordered_set<std::string> seen;
-            for (auto& m : onesided.finditer(chunk_text)) {
-                auto i = m.named("i");
-                if (!signed_n.contains(i) || seen.contains(i)) continue;
-                if (rx_has_floor(i, chunk_text) || rx_pinned(i, chunk_text)) continue;
-                if (!prism::Regex("\\[\\s*" + rx_esc(i) + "\\s*\\]").search(chunk_text)) continue;
-                seen.insert(i);
-                int line = fn.span_first + rx_nl(chunk_text.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first))));
-                rx_add(ck, at, line, "MEM-ONESIDED-INDEX",
-                       i + " is a signed index bounded above only; no " + i + " < 0 test");
-            }
-        }
-    }
-}
-
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -5094,12 +4898,15 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     conc_toctou_checks(*body, w.ck, cx);
     vla_checks(*body, w.ck);
     realloc_zero_checks(*body, w.ck);
+    ptr_arith_checks(f, *body, w.ck);
+    infoleak_pad_checks(*body, w.ck);
+    flex_array_checks(*body, w.ck, cx);
+    onesided_index_checks(f, *body, w.ck);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
     clz_zero_checks(*body, w.ck, cx);
     unvalidated_input_checks(*body, w.ck);
     conc_atomicity_checks(*body, fn, w.ck, cx);
-    core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;
     for (auto& id : fn.order) {
         auto& v = fn.vars[id];
