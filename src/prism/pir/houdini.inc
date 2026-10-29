@@ -132,7 +132,9 @@ std::vector<char> pointer_vars(const Function& fn) {
 
 class Houdini {
 public:
-    // timeout_s: the solver time per query; the whole search gets 6 times that
+    // timeout_s: the solver time per query. With a function budget (hard_s
+    // >= 0) the whole search gets what is left of it (search_s, the run's
+    // Houdini budget, caps it further); without one, 6 times timeout_s
     // (search_s < 6 * timeout_s when the run's budget has less left).
     // hard_s >= 0: a hard cap (what is left of the function budget) that no
     // query passes, the final query and the per-query minimums included; the
@@ -143,7 +145,7 @@ public:
         : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
           deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), hard_s_(hard_s),
           env_(std::move(env)) {
-        if (hard_s_ >= 0) deadline_ = std::min(deadline_, hard_s_);
+        if (hard_s_ >= 0) deadline_ = search_s >= 0 ? std::min(search_s, hard_s_) : hard_s_;
     }
 
     HoudiniOut run();
