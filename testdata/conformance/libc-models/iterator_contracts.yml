@@ -1,0 +1,6 @@
+format_version: 1
+input_files: iterator_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  iterator_array_true: true
