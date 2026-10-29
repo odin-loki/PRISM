@@ -305,6 +305,10 @@ int conformance_main(const std::vector<std::string>& argv) {
             uint64_t per = std::max<uint64_t>(kFloorMb, avail / static_cast<uint64_t>(jobs));
             if (mem_limit > 0) per = std::min<uint64_t>(per, static_cast<uint64_t>(mem_limit) * 3 / 4);
             per = std::max<uint64_t>(per, std::min<uint64_t>(kFloorMb, mem_limit > 0 ? static_cast<uint64_t>(mem_limit) : kFloorMb));
+            // Under prism-run the tree is killed at 1.25x its budget, and one PRISM run can
+            // overshoot its own budget by ~30% before the stop lands (libc conf4: 3883 MB tree
+            // with 3000 MB): give each run 3/4 of its share.
+            if (std::getenv("PRISM_MEM_BUDGET_MB")) per = std::max<uint64_t>(512, avail * 3 / 4 / static_cast<uint64_t>(jobs));
 #ifdef _WIN32
             _putenv_s("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str());
 #else
