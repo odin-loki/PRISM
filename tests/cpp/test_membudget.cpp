@@ -12,6 +12,9 @@
 
 #include <string>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace {
 
@@ -76,4 +79,17 @@ TEST_CASE("membudget: over the budget a function is UNKNOWN with the reason, lat
     CHECK(pp::check_function(*ok.fn, 4, 30.0).status == prism::laws::PROVED);
     CHECK(pp::check_function(*divz.fn, 4, 30.0).status == prism::laws::FAILED);
     CHECK_FALSE(pp::z3_hard_oom());
+}
+
+TEST_CASE("membudget: the watchdog stops a registered computation over the budget") {
+#ifndef __linux__
+    return;
+#endif
+    std::atomic<bool> stopped{false};
+    Restore r;
+    prism::membudget::Watch w([&] { stopped.store(true); });
+    mb::set_budget_mb_for_test(1);
+    for (int i = 0; i < 50 && !stopped.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(stopped.load());
+    CHECK(w.fired());
 }

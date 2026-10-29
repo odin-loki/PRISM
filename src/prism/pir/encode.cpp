@@ -1131,6 +1131,7 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
                            const EncodeOptions& eo) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn, g, k + 1, eo);
         e.step_loop = 0;
         e.step_fp = fp;
@@ -1499,12 +1500,25 @@ static void cap_z3_memory_once() {
     });
 }
 
+static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in);
 Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     // this function's contexts and encoder state are gone when it returns:
     // hand the heap back so the next function's RSS check starts clean
     struct Trim {
         ~Trim() { membudget::release_free_memory(); }
     } trim;
+    const uint64_t trips0 = membudget::trips();
+    Verdict mv = check_function_mem(fn, opt_in);
+    if (membudget::trips() != trips0 && mv.status != std::string(laws::PROVED) &&
+        mv.status != std::string(laws::FAILED)) {
+        // a query was interrupted by the memory watchdog: say so (Law 7)
+        mv.status = std::string(laws::UNKNOWN);
+        mv.message = membudget::over_message("while solving (query interrupted)");
+    }
+    return mv;
+}
+
+static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
     cap_z3_memory_once();
     if (std::getenv("PRISM_PIR_MEM_TRACE"))
@@ -1636,6 +1650,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     };
     try {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         // The shared options `so` are never changed: each query gets its own
         // copy, its timeout capped by what is left of the function budget
         // (certification copies `so`, so its timeouts do not depend on it).
@@ -2345,6 +2360,7 @@ std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo)
     if (!g.unencoded.empty()) return out;
     try {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn, g, std::max(1, unwind), eo);
         e.build();
         for (auto& p : e.props) {

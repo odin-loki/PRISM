@@ -7,6 +7,9 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <chrono>
+#include <map>
+#include <thread>
 
 #ifdef __linux__
 #include <malloc.h>
@@ -119,9 +122,75 @@ uint64_t rss_mb() {
 #endif
 }
 
+bool system_low() {
+#ifdef __linux__
+    static const uint64_t reserve = [] {
+        const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
+        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{400};
+    }();
+    if (reserve == 0) return false;
+    const uint64_t avail = meminfo_mb("MemAvailable:");
+    return avail > 0 && avail < reserve;
+#else
+    return false;
+#endif
+}
+
 bool over_budget() {
     const uint64_t b = budget_mb();
-    return b > 0 && rss_mb() >= b;
+    return (b > 0 && rss_mb() >= b) || system_low();
+}
+
+namespace {
+struct Reg {
+    std::function<void()> stop;
+    bool fired = false;
+};
+std::mutex g_wmu;
+std::map<unsigned long, Reg> g_watches;
+unsigned long g_next = 1;
+std::atomic<uint64_t> g_trips{0};
+bool g_thread = false;
+
+void watchdog() {
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            std::lock_guard<std::mutex> lk(g_wmu);
+            if (g_watches.empty()) continue;
+        }
+        if (!over_budget()) continue;
+        g_trips.fetch_add(1);
+        std::lock_guard<std::mutex> lk(g_wmu);
+        for (auto& [id, r] : g_watches) {
+            r.fired = true;
+            if (r.stop) r.stop();
+        }
+    }
+}
+}  // namespace
+
+Watch::Watch(std::function<void()> stop) {
+    std::lock_guard<std::mutex> lk(g_wmu);
+    id_ = g_next++;
+    g_watches[id_] = Reg{std::move(stop), false};
+    if (!g_thread) {
+        g_thread = true;
+        std::thread(watchdog).detach();
+    }
+}
+
+Watch::~Watch() {
+    std::lock_guard<std::mutex> lk(g_wmu);
+    g_watches.erase(id_);
+}
+
+uint64_t trips() { return g_trips.load(); }
+
+bool Watch::fired() const {
+    std::lock_guard<std::mutex> lk(g_wmu);
+    auto it = g_watches.find(id_);
+    return it != g_watches.end() && it->second.fired;
 }
 
 bool over_budget_sampled(unsigned every) {
@@ -140,6 +209,9 @@ void release_free_memory() {
 }
 
 std::string over_message(const char* where) {
+    if (system_low())
+        return std::string("machine memory low (MemAvailable ") + std::to_string(meminfo_mb("MemAvailable:")) +
+               " MB, PRISM_MEM_RESERVE_MB) " + where + "; stopped by the memory budget watchdog; no proof";
     return std::string("memory budget reached ") + where + " (process RSS " + std::to_string(rss_mb()) + " MB, budget " +
            std::to_string(budget_mb()) + " MB from " + (g_test.load() ? std::string("a test") : budget_source()) +
            "; PRISM_MEM_BUDGET_MB); no proof";

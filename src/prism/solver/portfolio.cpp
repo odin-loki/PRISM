@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
 #include "prism/solver_certs.hpp"
 #include "internal.hpp"
@@ -258,6 +259,7 @@ private:
 struct Jobs {
     Board board;
     std::deque<std::unique_ptr<z3::context>> ctxs;  // private contexts
+    std::deque<prism::membudget::Watch> watches;    // memory watchdog: interrupts each context
     std::deque<z3::expr> exprs;                     // the formula translated into each
     std::deque<std::atomic<bool>> done;             // one per thread, raised last
     std::shared_ptr<const Cnf> cnf;
@@ -944,7 +946,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
     auto new_ctx = [&]() -> z3::context& {
         J->ctxs.push_back(std::make_unique<z3::context>());
-        return *J->ctxs.back();
+        z3::context* zc = J->ctxs.back().get();
+        J->watches.emplace_back([zc] { Z3_interrupt(*zc); });
+        return *zc;
     };
     // The formula in context zc, kept in Jobs (a job thread only refers to it).
     auto translated = [&](z3::context& zc) -> const z3::expr& {
