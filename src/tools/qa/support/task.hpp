@@ -65,6 +65,7 @@ struct Task {
     std::string std;  // whole-program tasks (esbmc-cpp): language standard of the native self-check
     bool deterministic = false;  // whole program whose one run is its only behaviour
     int unwind = 0;              // per-task --unwind (0: the run's default)
+    int query_timeout = 0;       // per-task PRISM --timeout (yml prism_timeout; 0: PRISM's default)
     // per-task time budget in seconds for one PRISM run (0: the run's
     // --timeout); never lowers the run's budget
     double timeout = 0.0;

@@ -1089,6 +1089,8 @@ HoudiniOut Houdini::run() {
                     std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
                                  r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
+                if (houdini_trace() && live.size() == 1 && r != z3::unsat)
+                    std::fprintf(stderr, "houdini   goal: %s\n", text(cands[live[0]]).c_str());
                 if (r == z3::unsat) return;
                 if (r == z3::sat) {
                     auto& m = *qm;

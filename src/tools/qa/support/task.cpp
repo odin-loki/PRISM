@@ -232,6 +232,8 @@ std::optional<Task> load_task(const fs::path& yml, const fs::path& root) {
         if (const auto* d = data.get("deterministic")) t.deterministic = d->truthy_label();
         if (const auto* u = data.get("unwind"); !falsy(u))
             t.unwind = static_cast<int>(prism::i128_to_i64(node_int(*u, yml)));
+        if (const auto* q = data.get("prism_timeout"); !falsy(q))
+            t.query_timeout = static_cast<int>(prism::i128_to_i64(node_int(*q, yml)));
         if (const auto* to = data.get("timeout"); !falsy(to)) t.timeout = std::strtod(to->text.c_str(), nullptr);
         if (const auto* c = data.get("expect_class"); !falsy(c)) {
             if (!c->is_map()) throw yaml::Error(yml.string() + ": `expect_class` is not a mapping");
