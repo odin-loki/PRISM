@@ -1286,7 +1286,7 @@ int tok_gcd_ok(int x, int y) {
 }
 int tok_clamp_direct(int x) {
     std::vector<int> v(4);
-    return v[std::clamp(x, 0, 9)]; // expect: CXX-CLAMP
+    return v[std::clamp(x, 0, 9)]; // expect: CXX-CLAMP, CXX-VECTOR-INDEX
 }
 int tok_bitwidth_bad(unsigned x) {
     int a[8] = {};
@@ -1330,17 +1330,17 @@ int cont_pq_ok() {
 int view_take_bad(const std::vector<int> &v, int i) {
     auto t = v | std::views::take(2);
     (void)t;
-    return v[i]; // expect: CXX-TAKE
+    return v[i]; // expect: CXX-TAKE, CXX-VECTOR-INDEX
 }
 int view_take_ok(const std::vector<int> &v, int i) {
     auto t = v | std::views::take(2);
     (void)t;
     if (i < 0 || i >= 2)
         return 0;
-    return v[i];
+    return v[i]; // expect: CXX-VECTOR-INDEX
 }
 int view_none(const std::vector<int> &v, int i) {
-    return v[i];
+    return v[i]; // expect: CXX-VECTOR-INDEX
 }
 #include <deque>
 #include <stack>
@@ -1434,6 +1434,75 @@ int task_ok() {
 int auto_ptr_bad() {
     std::auto_ptr<int> p(new int(1)); // expect: CXX-AUTO-PTR
     return *p;
+}
+#include <optional>
+#include <variant>
+#include <vector>
+#include <string>
+void may_throw();
+void catch_all_bad() {
+    try {
+        may_throw();
+    } catch (...) { // expect: CXX-CATCH-ALL
+    }
+}
+void catch_all_ok() {
+    try {
+        may_throw();
+    } catch (...) {
+        throw;
+    }
+}
+void thread_body() {}
+void thread_bad() {
+    std::thread th(thread_body); // expect: CXX-STD-THREAD
+}
+void thread_ok() {
+    std::thread th(thread_body);
+    th.join();
+}
+std::optional<int> maybe_int();
+int optional_bad() {
+    std::optional<int> o = maybe_int();
+    return *o; // expect: CXX-OPTIONAL-NULL
+}
+int optional_ok() {
+    std::optional<int> o = maybe_int();
+    if (o.has_value())
+        return *o;
+    return 0;
+}
+int variant_bad(std::variant<int, float> v) {
+    return std::get<int>(v); // expect: CXX-VARIANT-GET
+}
+int variant_ok(std::variant<int, float> v) {
+    if (std::holds_alternative<int>(v))
+        return std::get<int>(v);
+    return 0;
+}
+int vec_index_bad(const std::vector<int> &v, unsigned k) {
+    return v[k]; // expect: CXX-VECTOR-INDEX
+}
+int vec_index_ok(const std::vector<int> &v, unsigned k) {
+    if (k < v.size())
+        return v[k];
+    return 0;
+}
+struct DynBase {
+    virtual ~DynBase() = default;
+};
+struct DynDerived : DynBase {
+    int x = 0;
+};
+int dyn_bad(DynBase *b) {
+    DynDerived *d = dynamic_cast<DynDerived *>(b);
+    return d->x; // expect: CXX-DYNAMIC-CAST-NULL
+}
+int dyn_ok(DynBase *b) {
+    DynDerived *d = dynamic_cast<DynDerived *>(b);
+    if (d)
+        return d->x;
+    return 0;
 }
 )";
 
