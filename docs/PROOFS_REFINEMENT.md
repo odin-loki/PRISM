@@ -483,7 +483,7 @@ fragment is written as `L unsupported <why>`. Pointer values are written with wi
 `L retptr` marks the analysed function as returning a pointer (the
 stack-escape check), a harness-bound pointer parameter is an `L glob` line
 at the start of the entry block and an unbound one `L ptrparam`; the model
-intrinsics are `L halloc`, `L hfree`, `L vassume` and `L nondet`, and
+intrinsics are `L halloc`, `L hfree`, `L hobjsz`, `L hhavoc` (`__prism_havoc_bytes`, proved in `XHavoc.lean`), `L vassume` and `L nondet`, and
 `__prism_alloc_failed()` is written as the one-byte store it is into the flag
 object `%__prism.oom` (an `L glob` after the entry globals, passed to the
 inlined functions that can reach it as an extra last argument — the

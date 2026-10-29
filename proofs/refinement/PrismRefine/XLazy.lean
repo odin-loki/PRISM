@@ -162,6 +162,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     | ub => exact .inl rfl
     | stuck => rfl
   | hfree p kd kill => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
+  | hhavoc p n => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | hobjsz d p =>
     simp only [sSInst, lSInst, lower_lift]
     cases sHobjszV R t p with
@@ -270,6 +271,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
     all_goals cases h
   | hfree p kd kill => exact lMem_mono h hc
+  | hhavoc p n => exact lMem_mono h hc
   | hobjsz d p =>
     simp only [lSInst] at h
     split at h

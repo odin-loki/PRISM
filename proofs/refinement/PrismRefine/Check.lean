@@ -461,6 +461,9 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))
       f := { f with cur := some (bn, ps, sg, .hobjsz dst (← opnd? p) :: is) }
+    | ["hhavoc", p, n] =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .hhavoc (← opnd? p) (← opnd? n) :: is) }
     | ["retptr"] => f := { f with retPtr := true }
     | ["memcpy", d, sp, n, lw, mv, so] =>
       let (bn, ps, sg, is) ← inBlock

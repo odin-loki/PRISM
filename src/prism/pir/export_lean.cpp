@@ -386,7 +386,7 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
         return;
     }
     if (n == "__prism_havoc_bytes") {
-        // MemTr::write_havoc (D136 stdio models): Lean `hhavoc` not in the fragment yet
+        // MemTr::write_havoc (D136 stdio models): Lean `hhavoc` (XHavoc.lean, proved)
         if (in.ops.size() != 2 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
             throw Unsupported{"call @" + n + " arity"};
         if (vw(in.ops[1].ty) != 64) throw Unsupported{"call @" + n + " type"};

@@ -28,6 +28,7 @@ import PrismRefine.XValid
 import PrismRefine.XMemSim
 import PrismRefine.XMemOps
 import PrismRefine.XHeap
+import PrismRefine.XHavoc
 
 namespace PrismRefine
 
@@ -1556,6 +1557,37 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       rw [e]
       exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
         rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+    · simp only [ite_true, Res.bind, SimX]
+      exact hm.1 hb
+  | hhavoc p n =>
+    simp only [trSInstX] at h
+    obtain ⟨⟨sp, tp, D⟩, hp, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sn, tn, N⟩, hn, h⟩ := Except.bind_ok h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    have hN := need_ok hu1
+    simp only [Bool.and_eq_true, beq_iff_eq] at hN
+    obtain ⟨hNw, hNc⟩ := hN
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    simp only [sSInst, sHavoc, Res.bind_assoc, List.append_assoc]
+    refine opndX_sim hR hp hk _ _ ?_
+    intro pv _ htp hDv hDb _
+    subst htp
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hn hT ⊢
+    refine opndX_sim hR hn hk _ _ ?_
+    intro v _ htn hNv hNb _
+    subst htn
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+    have hm := havoc_run P ω σ t k D N hNc hDb hNb hNw hT
+    simp only [hDv, hNv] at hm
+    cases hb : (v % 2 ^ 64 != 0 && accessBad t.mem (pv % 2 ^ 64) (v % 2 ^ 64) true 1)
+    · by_cases hlt : v % 2 ^ 64 < 2 ^ 47
+      · obtain ⟨σ', e, ag⟩ := hm.2 hb hlt
+        simp only [Bool.false_eq_true, ite_false, hlt, ite_true, Res.bind]
+        rw [e]
+        exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
+          rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+      · simp only [Bool.false_eq_true, ite_false, hlt, Res.bind, SimX]
     · simp only [ite_true, Res.bind, SimX]
       exact hm.1 hb
   | memset d b len lw =>

@@ -487,6 +487,19 @@ def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
   | .c _ _ => ([], [])
   | N => ([.assign k1 (.cmp .ult) [N, c64 (2 ^ 47)], .assume (.v k1 1)], [1])
 
+/-- `MemTr::write_havoc` (`__prism_havoc_bytes`, D136) of `N` bytes at `D`,
+temporaries from `g`: the guard `N ≠ 0`, the write checks under it, the size
+check of `MemTr::alloc`, a fresh `extern` object of arbitrary bytes, the copy
+and the end of the object's lifetime. -/
+def havocCore (g : Nat) (D N : Arg) : List PStmt :=
+  let a := g + 1 + (accTG true).length
+  let o := a + (hallocSz a N).2.length
+  [.assign g (.cmp .ne) [N, c64 0]] ++ (accChkG (g + 1) g D N true ++ ((hallocSz a N).1 ++
+    [.alloc o N 7 2 16, .memcpy D (.v o 64) N, .free (.v o 64)]))
+
+def havocT (g : Nat) (N : Arg) : List Nat :=
+  [1] ++ accTG true ++ (hallocSz (g + 1 + (accTG true).length) N).2 ++ [64]
+
 /-- `MemTr::obj_size_remaining`: bytes from `p` to the end of its object. -/
 def hobjszCore (k : Nat) (P : Arg) : List PStmt :=
   [.assign k .objSize [P],
@@ -656,6 +669,13 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       need (look c.sh d).isNone "outside fragment: result with a shadow"
       pure (sp ++ hobjszCore j P ++ [.assign i .copy [.v (j + 4) 64]], tp ++ hobjszT)
     | none => pure (sp ++ hobjszCore j P, tp ++ hobjszT)
+  | .hhavoc p n => do
+    let (sp, tp, D) ← trOpndX c 64 true k p
+    let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
+    need (N.width == 64 && (match N with | .c _ b => decide (b < 2 ^ 47) | .v _ _ => true))
+      "UNENCODED: allocation larger than 2^47 bytes"
+    let g := k + tp.length + tn.length
+    pure (sp ++ sn ++ havocCore g D N, tp ++ tn ++ havocT g N)
   | .memset d b len lw => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -853,7 +873,7 @@ where
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]
-    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. => []
+    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

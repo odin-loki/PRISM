@@ -77,10 +77,11 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
 
-1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
-2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
-   `__prism_havoc_bytes` (`export_lean.cpp`; checker still `outside` until Lean
-   `hhavoc` + `MemTr::write_havoc`). Remaining: `PRISM_FILEK` in `hfree`, `L
+1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
+2. **D136 (partial)** — stdio / FILE models: `__prism_havoc_bytes` is **proved**
+   (2026-10-29, branch `work/proofs`): Lean `SInst.hhavoc` / `sHavoc` / `havocW`,
+   `translateX` mirrors `MemTr::write_havoc` (`havocCore`), `havoc_run` +
+   `trSInstX` sim case in `XRefine` (no sorry, audited). Remaining: `PRISM_FILEK` in `hfree`, `L
    hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
 3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
 

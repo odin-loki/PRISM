@@ -159,6 +159,12 @@ inductive SInst where
   of its object (`MemTr::obj_size_remaining`; 0 when the offset is past the
   size). -/
   | hobjsz (dst : Option String) (p : Opnd)
+  /-- `call void @__prism_havoc_bytes(ptr p, i64 n)` (`MemTr::write_havoc`, the
+  stdio models' input, D136): undefined unless the `n` bytes at `p` may be
+  written (`n ≠ 0`); then they receive arbitrary bytes — the model copies them
+  from a fresh `extern` object of arbitrary contents, whose lifetime then
+  ends. PRISM's model has no object of `2^47` bytes or more (stuck). -/
+  | hhavoc (p n : Opnd)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -483,6 +489,21 @@ def sMemset (R : SRegs) (W : World) (d b len : Opnd) (lw : Nat) : Res World :=
     if n != 0 && accessBad W.mem (dv % 2 ^ 64) n true 1 then .ub
     else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) n }
 
+/-- The world after `__prism_havoc_bytes` of `n` bytes at `d`: a fresh
+`extern` (kind 7) object of arbitrary bytes (`init = 2`), copied to `d`, then
+released (`MemTr::write_havoc`). -/
+def havocW (ω : Nat → Nat) (W : World) (d n : Nat) : World :=
+  let W1 := (W.allocW ω n 7 16 2).1
+  let q := (W.allocW ω n 7 16 2).2 % 2 ^ 64
+  let W2 := { W1 with mem := W1.mem.copy d q n }
+  { W2 with mem := W2.mem.free q }
+
+def sHavoc (ω : Nat → Nat) (R : SRegs) (W : World) (p n : Opnd) : Res World :=
+  (sOpnd R 64 p).bind fun pv => (sOpnd R 64 n).bind fun v =>
+    if (v % 2 ^ 64 != 0 && accessBad W.mem (pv % 2 ^ 64) (v % 2 ^ 64) true 1) then .ub
+    else if v % 2 ^ 64 < 2 ^ 47 then .ok (havocW ω W (pv % 2 ^ 64) (v % 2 ^ 64))
+    else .stuck
+
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
 def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × World)
   | .i x => (sInst R x).bind fun R' => .ok (R', W.adv x.draws)
@@ -521,6 +542,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .hfree p kd kill => (sFree R W p kd kill).bind fun W' => .ok (R, W')
   | .hobjsz d p => (sHobjszV R W p).bind fun v => .ok (R.setOpt d v, W)
+  | .hhavoc p n => (sHavoc ω R W p n).bind fun W' => .ok (R, W')
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -735,6 +757,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ok v => .ok (⟨(match d with | some d => S.R.set d (.val v) | none => S.R), S.c⟩, W)
     | .ub => .ub
     | .stuck => .stuck
+  | .hhavoc p n => lMem S (sHavoc ω (lower S.R) W p n)
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)
