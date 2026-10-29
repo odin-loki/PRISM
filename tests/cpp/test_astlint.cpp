@@ -1326,6 +1326,22 @@ int cont_pq_ok() {
         return 0;
     return q.top();
 }
+#include <ranges>
+int view_take_bad(const std::vector<int> &v, int i) {
+    auto t = v | std::views::take(2);
+    (void)t;
+    return v[i]; // expect: CXX-TAKE
+}
+int view_take_ok(const std::vector<int> &v, int i) {
+    auto t = v | std::views::take(2);
+    (void)t;
+    if (i < 0 || i >= 2)
+        return 0;
+    return v[i];
+}
+int view_none(const std::vector<int> &v, int i) {
+    return v[i];
+}
 )";
 
 }  // namespace

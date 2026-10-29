@@ -33,6 +33,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -5069,6 +5070,92 @@ void container_method_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// CXX token-subscript family (regex cxx_token_subscript_unguarded): a
+// function that uses a C++20/23 view or trait also subscripts with a literal
+// past 3 or with a variable that is never compared against a bound.
+struct TokenSubRule {
+    const char* cls;
+    std::shared_ptr<Regex> token;
+    const char* msg;
+};
+
+const std::vector<TokenSubRule>& token_sub_rules() {
+    static const std::vector<TokenSubRule> r{
+        {"CXX-NONTYPE", std::make_shared<Regex>(R"re(\bnontype\b)re"), "std::nontype used as an unguarded index or to bypass a bound"},
+        {"CXX-LAYOUT-COMPATIBLE", std::make_shared<Regex>(R"re(\bis_layout_compatible\b)re"), "is_layout_compatible recast pointer indexed without a size guard"},
+        {"CXX-PTR-INTERCONVERTIBLE", std::make_shared<Regex>(R"re(\bis_pointer_interconvertible_(?:with_class|base_of)\b)re"), "pointer-interconvertible recast pointer indexed without a size guard"},
+        {"CXX-CORRESPONDING-MEMBER", std::make_shared<Regex>(R"re(\bis_corresponding_member\b)re"), "is_corresponding_member recast pointer indexed without a size guard"},
+        {"CXX-ENUMERATE", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*enumerate\b|\benumerate_view\b))re"), "enumerate view indexed without a size guard"},
+        {"CXX-CARTESIAN-PRODUCT", std::make_shared<Regex>(R"re(\bcartesian_product\b)re"), "cartesian_product view indexed without a size guard"},
+        {"CXX-CHUNK", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*chunk\b|\bchunk_by\b|\bchunk_view\b))re"), "chunk view indexed without a size guard"},
+        {"CXX-SLIDE", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*slide\b|\bslide_view\b))re"), "slide view indexed without a size guard"},
+        {"CXX-ADJACENT", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*adjacent\b|\badjacent_transform\b|\badjacent_view\b))re"), "adjacent view indexed without a size guard"},
+        {"CXX-JOIN-WITH", std::make_shared<Regex>(R"re(\bjoin_with(?:_view)?\b)re"), "join_with view indexed without a size guard"},
+        {"CXX-ZIP-TRANSFORM", std::make_shared<Regex>(R"re(\bzip_transform(?:_view)?\b)re"), "zip_transform view indexed without a size guard"},
+        {"CXX-AS-RVALUE", std::make_shared<Regex>(R"re(\bas_rvalue(?:_view)?\b)re"), "as_rvalue view indexed without a size guard"},
+        {"CXX-FROM-RANGE", std::make_shared<Regex>(R"re(\bfrom_range\b)re"), "from_range container indexed without a size guard"},
+        {"CXX-SCOPED-ENUM", std::make_shared<Regex>(R"re(\bis_scoped_enum\b)re"), "is_scoped_enum recast indexed without a size guard"},
+        {"CXX-STRIDE", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*stride\b|\bstride_view\b))re"), "stride view indexed without a size guard"},
+        {"CXX-REPEAT", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*repeat\b|\brepeat_view\b))re"), "repeat view indexed without a size guard"},
+        {"CXX-TAKE", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*take\b|\btake_view\b))re"), "take view indexed without a size guard"},
+        {"CXX-DROP", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*drop\b|\bdrop_view\b))re"), "drop view indexed without a size guard"},
+        {"CXX-FILTER", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*filter\b|\bfilter_view\b))re"), "filter view indexed without a size guard"},
+        {"CXX-TRANSFORM-VIEW", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*transform\b|\btransform_view\b))re"), "transform view indexed without a size guard"},
+        {"CXX-ELEMENTS", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*elements\b|\belements_view\b))re"), "elements view indexed without a size guard"},
+        {"CXX-IOTA", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*iota\b|\biota_view\b))re"), "iota view indexed without a size guard"},
+        {"CXX-TAKE-WHILE", std::make_shared<Regex>(R"re(\btake_while(?:_view)?\b)re"), "take_while view indexed without a size guard"},
+        {"CXX-DROP-WHILE", std::make_shared<Regex>(R"re(\bdrop_while(?:_view)?\b)re"), "drop_while view indexed without a size guard"},
+        {"CXX-KEYS", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*keys\b|\bkeys_view\b))re"), "keys view indexed without a size guard"},
+        {"CXX-VALUES", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*values\b|\bvalues_view\b))re"), "values view indexed without a size guard"},
+        {"CXX-REVERSE-VIEW", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*reverse\b|\breverse_view\b))re"), "reverse view indexed without a size guard"},
+        {"CXX-COUNTED", std::make_shared<Regex>(R"re((?:(?:std\s*::\s*)?views\s*::\s*counted\b|\bcounted_view\b))re"), "counted view indexed without a size guard"},
+    };
+    return r;
+}
+
+void token_subscript_checks(const json& body, Checker& ck, Ctx& cx) {
+    const auto base = begin_of(body);
+    std::string text(cx.text_of(body));
+    std::vector<const TokenSubRule*> live;
+    for (auto& r : token_sub_rules())
+        if (r.token->search(text)) live.push_back(&r);
+    if (live.empty()) return;
+    std::set<std::string> bounded;
+    std::vector<std::pair<const json*, const json*>> subs;  // node, index
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "BinaryOperator" && n_children(n) == 2) {
+            auto op = str_field(n, "opcode");
+            if (op == "<" || op == "<=" || op == ">" || op == ">=")
+                for (int i = 0; i < 2; ++i)
+                    if (auto id = ref_id(child(n, i)); !id.empty()) bounded.insert(id);
+        } else if (k == "ArraySubscriptExpr" && n_children(n) == 2) {
+            subs.emplace_back(&n, &child(n, 1));
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) == 3) {
+            const auto& op = strip_all(child(n, 0));
+            if (kind(op) == "DeclRefExpr" && str_field(ref_decl(op), "name") == "operator[]")
+                subs.emplace_back(&n, &child(n, 2));
+        }
+    });
+    std::sort(subs.begin(), subs.end(),
+              [](auto& a, auto& b) { return begin_of(*a.first).offset < begin_of(*b.first).offset; });
+    for (auto& [n, idx] : subs) {
+        const auto p = begin_of(*n);
+        if (!same_file_pos(p, base) || p.macro) continue;
+        const auto& i = strip_all(*idx);
+        bool bad = false;
+        if (kind(i) == "IntegerLiteral") {
+            auto v = int_value(i);
+            bad = !v || *v >= 4;
+        } else if (auto id = ref_id(i); !id.empty()) {
+            bad = !bounded.contains(id);
+        }
+        if (!bad) continue;
+        for (auto* r : live) ck.add(*n, r->cls, r->msg);
+        return;
+    }
+}
+
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
 // first later index, deref, `->`, free() or return of p, unless p is
 // assigned in between.
@@ -5592,6 +5679,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     capacity_first_checks(*body, w.ck, cx);
     index_token_checks(*body, w.ck, cx);
     container_method_checks(*body, fn, w.ck);
+    token_subscript_checks(*body, w.ck, cx);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
