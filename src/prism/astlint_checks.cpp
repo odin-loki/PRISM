@@ -5994,6 +5994,198 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Third batch: borrowed raw pointers used after their owner is invalidated
+// (CXX-UNIQUE-RESET, CXX-SHARED-PTR-GET, CXX-STRING-DATA), get() after
+// release() (CXX-UNIQUE-RELEASE), .value() without a test
+// (CXX-OPTIONAL-VALUE), an rvalue-reference parameter copied into
+// push_back (CXX-FORWARDING-REF) and bit_cast of an object pointer
+// (CXX-BIT-CAST). Straight-line by source offset, like the regex rules.
+bool byte_pointee(std::string t) {
+    auto star = t.rfind('*');
+    if (star == std::string::npos) return false;
+    t = t.substr(0, star);
+    for (std::string_view q : {"const ", "volatile "})
+        for (auto p = t.find(q); p != std::string::npos; p = t.find(q)) t.erase(p, q.size());
+    while (!t.empty() && t.back() == ' ') t.pop_back();
+    return t == "void" || t == "char" || t == "signed char" || t == "unsigned char" || t == "std::byte";
+}
+
+void cxx_borrow_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::map<std::string, std::string> tname, vname;
+    std::map<std::string, std::string> ptype;  // param id -> qualType
+    for (auto& [id, d] : fn.locals) {
+        auto qt = std::string(qual_type(*d));
+        tname[id] = template_name(qt);
+        if (tname[id].empty()) tname[id] = record_name(qt);
+        if (tname[id].starts_with("std::")) tname[id].erase(0, 5);
+        vname[id] = std::string(str_field(*d, "name"));
+        if (kind(*d) == "ParmVarDecl") ptype[id] = qt;
+    }
+    struct MCall {
+        const json* n;
+        std::string obj, name;
+    };
+    std::vector<MCall> mcalls;
+    std::vector<std::tuple<std::string, std::string, long long>> borrows;  // raw id, owner id, offset
+    std::vector<std::pair<std::string, long long>> nulled;                   // owner = nullptr
+    std::vector<std::pair<std::string, long long>> raw_assign;               // raw = ...
+    std::vector<std::pair<std::string, const json*>> refs;                   // DeclRefExpr uses
+    std::vector<std::pair<std::string, long long>> mutate_ops;               // s += ...
+    std::vector<const json*> calls;
+    std::set<std::string> bool_tested;
+    auto borrow_of = [&](const json& e) -> std::pair<std::string, std::string> {
+        const auto& c = strip_all(e);
+        if (kind(c) != "CXXMemberCallExpr" || n_children(c) == 0) return {};
+        const auto& me = strip_all(child(c, 0));
+        if (kind(me) != "MemberExpr" || n_children(me) != 1) return {};
+        return {std::string(str_field(me, "name")), ref_id(child(me, 0))};
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl") {
+            auto id = std::string(str_field(n, "id"));
+            auto qt = std::string(qual_type(n));
+            tname[id] = template_name(qt);
+            if (tname[id].empty()) tname[id] = record_name(qt);
+            if (tname[id].starts_with("std::")) tname[id].erase(0, 5);
+            vname[id] = std::string(str_field(n, "name"));
+            if (n_children(n) > 0) {
+                auto [m, o] = borrow_of(child(n, n_children(n) - 1));
+                if (!o.empty() && (m == "get" || m == "c_str" || m == "data")) borrows.emplace_back(id, o, off(n));
+            }
+        } else if (k == "BinaryOperator" && n_children(n) == 2 && str_field(n, "opcode") == "=") {
+            auto lid = ref_id(child(n, 0));
+            if (!lid.empty()) {
+                raw_assign.emplace_back(lid, off(n));
+                auto [m, o] = borrow_of(child(n, 1));
+                if (!o.empty() && (m == "get" || m == "c_str" || m == "data")) borrows.emplace_back(lid, o, off(n));
+            }
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) == 3) {
+            auto on = std::string(str_field(ref_decl(strip_all(child(n, 0))), "name"));
+            auto lid = ref_id(child(n, 1));
+            const json* rhs = &strip_all(child(n, 2));
+            while ((kind(*rhs) == "CXXConstructExpr" || kind(*rhs) == "CXXFunctionalCastExpr") && n_children(*rhs) == 1)
+                rhs = &strip_all(child(*rhs, 0));
+            if (on == "operator=" && is_null_ptr_expr(*rhs)) nulled.emplace_back(lid, off(n));
+            if (on == "operator+=") mutate_ops.emplace_back(lid, off(n));
+        } else if (k == "CXXMemberCallExpr" && n_children(n) > 0) {
+            const auto& me = strip_all(child(n, 0));
+            if (kind(me) == "MemberExpr" && n_children(me) == 1)
+                mcalls.push_back({&n, ref_id(child(me, 0)), std::string(str_field(me, "name"))});
+        } else if (k == "DeclRefExpr") {
+            refs.emplace_back(std::string(str_field(ref_decl(n), "id")), &n);
+        } else if (k == "CallExpr") {
+            calls.push_back(&n);
+        } else if (k == "ImplicitCastExpr" && n_children(n) == 1) {
+            auto c2 = str_field(n, "castKind");
+            if (c2 == "UserDefinedConversion")
+                if (auto id = ref_id(child(n, 0)); !id.empty()) bool_tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(n, "opcode") == "!" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) bool_tested.insert(id);
+        }
+    });
+    for (auto& m : mcalls)
+        if (m.name == "operator bool" || m.name == "has_value") bool_tested.insert(m.obj);
+    // Borrow -> invalidate -> use.
+    std::set<std::string> rep;
+    for (auto& [raw, owner, boff] : borrows) {
+        const auto& tn = tname[owner];
+        const char* cls = tn == "unique_ptr" ? "CXX-UNIQUE-RESET"
+                          : tn == "shared_ptr" ? "CXX-SHARED-PTR-GET"
+                          : (tn == "basic_string" || tn == "string") ? "CXX-STRING-DATA"
+                                                                       : nullptr;
+        if (!cls || rep.contains(cls)) continue;
+        const bool str = std::string_view(cls) == "CXX-STRING-DATA";
+        long long inv = -1;
+        for (auto& m : mcalls) {
+            if (m.obj != owner || off(*m.n) <= boff) continue;
+            const bool hit = str ? one_of(m.name, {"clear", "append", "assign"}) : m.name == "reset";
+            if (hit && (inv < 0 || off(*m.n) < inv)) inv = off(*m.n);
+        }
+        for (auto& [o, at] : str ? mutate_ops : nulled)
+            if (o == owner && at > boff && (inv < 0 || at < inv)) inv = at;
+        if (inv < 0) continue;
+        long long reassigned = -1;
+        for (auto& [r, at] : raw_assign)
+            if (r == raw && at > inv && (reassigned < 0 || at < reassigned)) reassigned = at;
+        const json* use = nullptr;
+        for (auto& [id, n] : refs) {
+            if (id != raw || off(*n) <= inv || (reassigned >= 0 && off(*n) >= reassigned)) continue;
+            if (!use || off(*n) < off(*use)) use = n;
+        }
+        if (!use || !ok_pos(*use)) continue;
+        rep.insert(cls);
+        std::string what = str ? ".c_str()/data() used after mutation" : ".get() used after reset";
+        ck.add(*use, cls, vname[raw] + " from " + vname[owner] + what);
+    }
+    // CXX-UNIQUE-RELEASE: up.get() after up.release().
+    {
+        const json* hit = nullptr;
+        std::string up;
+        for (auto& r : mcalls) {
+            if (r.name != "release" || tname[r.obj] != "unique_ptr") continue;
+            for (auto& g : mcalls)
+                if (g.obj == r.obj && g.name == "get" && off(*g.n) > off(*r.n) && (!hit || off(*g.n) < off(*hit))) {
+                    hit = g.n;
+                    up = vname[r.obj];
+                }
+        }
+        if (hit && ok_pos(*hit)) ck.add(*hit, "CXX-UNIQUE-RELEASE", up + ".get() used after release()");
+    }
+    // CXX-OPTIONAL-VALUE: x.value() on an optional/expected never tested.
+    {
+        const json* hit = nullptr;
+        std::string nm;
+        for (auto& m : mcalls) {
+            if (m.name != "value" || bool_tested.contains(m.obj)) continue;
+            auto tn = tname[m.obj];
+            if (tn != "optional" && tn != "expected") continue;
+            if (!hit || off(*m.n) < off(*hit)) {
+                hit = m.n;
+                nm = vname[m.obj];
+            }
+        }
+        if (hit && ok_pos(*hit)) ck.add(*hit, "CXX-OPTIONAL-VALUE", nm + ".value() without has_value()");
+    }
+    // CXX-FORWARDING-REF: an rvalue-reference parameter passed to push_back
+    // with no std::move / std::forward of it in the function.
+    {
+        std::set<std::string> moved;
+        for (auto* c : calls) {
+            auto cn = callee_name(*c);
+            if ((cn == "move" || cn == "forward") && n_children(*c) == 2)
+                if (auto id = ref_id(child(*c, 1)); !id.empty()) moved.insert(id);
+        }
+        for (auto& m : mcalls) {
+            if (m.name != "push_back" || n_children(*m.n) != 2) continue;
+            auto aid = ref_id(child(*m.n, 1));
+            auto it = ptype.find(aid);
+            if (aid.empty() || it == ptype.end() || it->second.find("&&") == std::string::npos) continue;
+            if (moved.contains(aid) || !ok_pos(*m.n)) continue;
+            ck.add(*m.n, "CXX-FORWARDING-REF",
+                   vname[aid] + " is T&& but push_back copies it without std::forward/std::move");
+            break;
+        }
+    }
+    // CXX-BIT-CAST: std::bit_cast to or from an object pointer.
+    for (auto* c : calls) {
+        if (callee_name(*c) != "bit_cast" || n_children(*c) != 2 || !ok_pos(*c)) continue;
+        auto tt = type_of(*c);
+        auto st = type_of(strip_all(child(*c, 1)));
+        const bool tobj = is_pointer_type(tt) && !byte_pointee(tt);
+        const bool sobj = is_pointer_type(st) && !byte_pointee(st);
+        if (!tobj && !sobj) continue;
+        ck.add(*c, "CXX-BIT-CAST", "bit_cast type-puns an object pointer");
+        break;
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6040,6 +6232,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     sub_no_size_checks(*body, fn, w.ck);
     cxx_call_rule_checks(*body, fn, w.ck);
     cxx_value_rule_checks(*body, fn, w.ck);
+    cxx_borrow_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

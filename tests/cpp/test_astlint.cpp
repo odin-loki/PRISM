@@ -1504,6 +1504,66 @@ int dyn_ok(DynBase *b) {
         return d->x;
     return 0;
 }
+#include <bit>
+#include <cstdint>
+int unique_reset_bad() {
+    std::unique_ptr<int> up(new int(1));
+    int *raw = up.get();
+    up.reset();
+    return *raw; // expect: CXX-UNIQUE-RESET
+}
+int unique_reset_ok() {
+    std::unique_ptr<int> up(new int(1));
+    int *raw = up.get();
+    int v = *raw;
+    up.reset();
+    return v;
+}
+int shared_get_bad() {
+    std::shared_ptr<int> sp = std::make_shared<int>(1);
+    int *raw = sp.get();
+    sp = nullptr;
+    return *raw; // expect: CXX-SHARED-PTR-GET
+}
+char string_data_bad() {
+    std::string s = "abc";
+    const char *raw = s.c_str();
+    s += "defghijklmnopqrstuvwxyz";
+    return raw[0]; // expect: CXX-STRING-DATA
+}
+char string_data_ok() {
+    std::string s = "abc";
+    const char *raw = s.c_str();
+    char c = raw[0];
+    s.clear();
+    return c;
+}
+int unique_release_bad() {
+    std::unique_ptr<int> up(new int(1));
+    int *p = up.release();
+    delete p;
+    return up.get() != nullptr; // expect: CXX-UNIQUE-RELEASE
+}
+int optional_value_bad() {
+    std::optional<int> o = maybe_int();
+    return o.value(); // expect: CXX-OPTIONAL-VALUE
+}
+int optional_value_ok() {
+    std::optional<int> o = maybe_int();
+    return o.has_value() ? o.value() : 0;
+}
+void fwd_ref_bad(std::vector<std::string> &out, std::string &&s) {
+    out.push_back(s); // expect: CXX-FORWARDING-REF
+}
+void fwd_ref_ok(std::vector<std::string> &out, std::string &&s) {
+    out.push_back(std::move(s));
+}
+std::uintptr_t bit_cast_ok(char *p) {
+    return std::bit_cast<std::uintptr_t>(p);
+}
+float *bit_cast_bad(int *p) {
+    return std::bit_cast<float *>(p); // expect: CXX-BIT-CAST
+}
 )";
 
 }  // namespace
