@@ -1396,7 +1396,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let κ ← enterFrame G' (G'.params.map Prod.fst |>.zip As) lo' (some cb)
         let Iκ ← getInst κ
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
-        recordSeg ι b cb k (some κ)
+        if !region then recordSeg ι b cb k (some κ)
         if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
         modify fun s => { s with hs := if cl.inv then (ι, cl.pad, s.fr.length) :: s.hs else s.hs,
                                  fr := s.fr ++ [κ] }
