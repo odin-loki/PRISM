@@ -970,6 +970,9 @@ struct Lowered {
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
     std::vector<std::string> include_flags;
+    // threads for this unit's function checks: run_pir's jobs left over when
+    // there are fewer units than jobs (one big unit is not checked serially)
+    int fn_jobs = 1;
 };
 
 struct Analyzed {
@@ -1104,6 +1107,11 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             if (fs::path(sp.file).filename().string() == unit_name && sp.line > 0) starts.push_back(sp.line);
         std::sort(starts.begin(), starts.end());
     }
+    struct Pending {
+        std::size_t rec;  // index into recs
+        TranslateOptions fopt;
+    };
+    std::vector<Pending> pending;
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
@@ -1170,11 +1178,36 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        // one function budget for the check and the policy's re-checks of this row
-        auto copt = check_options(cfg, budget);
-        if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
-        auto v = check_function(fn, copt);
-        pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
+        rec.fn = std::move(tr.fn);
+        pending.push_back({recs.size(), std::move(fopt)});
+        recs.push_back(std::move(rec));
+    }
+    // Check phase: each pending function on its own (its own Function, solver
+    // contexts and function budget; the module, unit and config are read
+    // only), on low.fn_jobs threads. Results are applied below in the
+    // original order, so the report does not depend on the thread count.
+    std::vector<Verdict> verdicts(pending.size());
+    std::vector<std::exception_ptr> errs(pending.size());
+    parallel_for(low.fn_jobs, pending, [&](std::size_t k, const Pending& pd) {
+        try {
+            auto& rec = recs[pd.rec];
+            // one function budget for the check and the policy's re-checks of this row
+            auto copt = check_options(cfg, budget);
+            if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+            auto v = check_function(*rec.fn, copt);
+            pirmem::apply_memory_policy(rec.f, v, *rec.fn, mod, *rec.irf, pd.fopt, cfg, copt);
+            verdicts[k] = std::move(v);
+        } catch (...) {
+            errs[k] = std::current_exception();
+        }
+    });
+    for (auto& e : errs)
+        if (e) std::rethrow_exception(e);
+    for (std::size_t pk = 0; pk < pending.size(); ++pk) {
+        auto& rec = recs[pending[pk].rec];
+        auto& f = rec.f;
+        auto& v = verdicts[pk];
+        auto& fn = *rec.fn;
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
         f.message = v.message;
@@ -1205,11 +1238,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             rec.cex.clear();
             f.counterexample.clear();
             f.extra.erase("cex");
-            rec.fn.reset();
             break;
         }
-        rec.fn = std::move(tr.fn);
-        recs.push_back(std::move(rec));
     }
     // Folded UB that no instruction carries: the function cannot be proved.
     for (std::size_t k = 0; k < folded.size(); ++k) {
@@ -1314,8 +1344,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // ~10 GB on testdata/ and was OOM-killed (pir-vs-bmc gate, 2026-10-29).
     std::vector<std::vector<Finding>> per(units.size());
     const auto budget = houdini_budget(cfg);
+    const int fn_jobs = std::max(1, clamp_jobs(cfg.jobs) / static_cast<int>(units.size()));
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         Lowered l;
+        l.fn_jobs = fn_jobs;
         try {
             // The unit's include path: its compile_commands.json entry (its
             // -std= only picks the C++ shift rules; PRISM's language level stays), else the scan root and
