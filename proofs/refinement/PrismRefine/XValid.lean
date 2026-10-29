@@ -43,6 +43,21 @@ def nodupNat : List Nat → Bool
 /-- The continuation phis of the call `cl` (in segment `s - 1`): none, or
 `_retu` (a temporary) then the result variable. -/
 def contOK (c : Ctx) (cl : CallI) (phis : List PPhi) : Bool :=
+  match cl.pw with
+  | some (w0, w1) =>
+    -- a scalar pair: the two field variables, in order
+    match phis with
+    | [] => true
+    | [q0, q1] =>
+      q0.dst != q1.dst &&
+      (match cl.dst with
+       | some d => (match dstX c (pairReg d 0) w0, dstX c (pairReg d 1) w1 with
+                    | .ok i0, .ok i1 => i0 == q0.dst && i1 == q1.dst
+                    | _, _ => false) &&
+                   (look c.sh (pairReg d 0)).isNone && (look c.sh (pairReg d 1)).isNone
+       | none => decide (c.hi ≤ q0.dst) && decide (c.hi ≤ q1.dst))
+    | _ => false
+  | none =>
   match phis with
   | [] => true
   | [pu, pr] =>
@@ -70,7 +85,9 @@ def callOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) (c : 
       decide (M.find cl.f = some J.fn) &&
       cl.args.length == J.fn.params.length &&
       (J.fn.retw == 0) == (cl.rw == 0) && (cl.rw == 0 || cl.rw == J.fn.retw) &&
-      (J.fn.retw != 0 || cl.dst.isNone) &&
+      (J.fn.retw != 0 || cl.pw.isSome || cl.dst.isNone) &&
+      cl.pw == J.fn.pret.map (fun (w0, w1, _, _) => (w0, w1)) &&
+      (J.fn.pret.isNone || J.fn.retw == 0) &&
       match trArgsX c (k + t1.length) ((cl.args.zip J.fn.params).map fun ((o, w), (_, wp)) => (o, w, wp)) with
       | .error _ => false
       | .ok (s2, t2, As) =>
@@ -92,7 +109,7 @@ def termOK (P : PFunc) (I : IInfo) (c : Ctx) (k : Nat) (s1 : List PStmt) (t1 : L
   | .ok (s2, t2, T, A?) =>
     tempsOKB P (k + t1.length) t2 &&
     PB.stmts == s1 ++ s2 && PB.term == T &&
-    match I.retTo, A? with
+    (match I.retTo, A? with
     | some cb, some A =>
       match P.blocks[cb]? with
       | some CB =>
@@ -100,7 +117,17 @@ def termOK (P : PFunc) (I : IInfo) (c : Ctx) (k : Nat) (s1 : List PStmt) (t1 : L
         | [pu, pr] => pickInc pb pr.inc == some A && (pickInc pb pu.inc).isSome
         | _ => false
       | none => false
-    | _, _ => true
+    | _, _ => true) &&
+    -- a returned pair: the continuation phis take its two fields
+    (match I.fn.pret, I.retTo, nr, t with
+     | some _, some cb, none, .ret (some (.reg x)) =>
+       match pairArgsX c x, P.blocks[cb]? with
+       | .ok (A0, A1), some CB =>
+         match CB.phis with
+         | [q0, q1] => pickInc pb q0.inc == some A0 && pickInc pb q1.inc == some A1
+         | _ => false
+       | _, _ => false
+     | _, _, _, _ => true)
 
 /-- Segment `s` of LLVM block `b` of instance `I`. -/
 def segOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) : Bool :=

@@ -918,6 +918,18 @@ def freeStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) : Except String (List P
   if retTo.isSome then (escArgsX c G.escNames).map (·.map .free)
   else .ok []
 
+/-- `escStmts` for one field of a returned pair (`p`: a pointer field). -/
+def escP (G : XFunc) (c : Ctx) (p : Bool) (j : Nat) (A : Arg) : Except String (List PStmt × List Nat) :=
+  if p then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
+
+/-- The two fields of a returned pair register `x` (no shadows). -/
+def pairArgsX (c : Ctx) (x : String) : Except String (Arg × Arg) :=
+  match look c.env (pairReg x 0), look c.env (pairReg x 1) with
+  | some a0, some a1 =>
+    if (c.shOf (pairReg x 0)).isNone && (c.shOf (pairReg x 1)).isNone then .ok (a0, a1)
+    else .error "outside fragment: a returned pair field with a shadow"
+  | _, _ => .error "outside fragment: a returned pair without its fields"
+
 /-- The terminator; `retTo` is the continuation block of an inlined
 instance (its `ret` jumps there), `none` for the analysed function.  Also
 returns the `Arg` of a returned value (the continuation phi's entry). -/
@@ -935,12 +947,21 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
     need (G.retw == 0) "outside fragment: ret void in a function returning a value"
     let sf ← freeStmts G c retTo
     pure (sf, [], (match retTo with | some cb => .jmp cb | none => .ret none), none)
-  | .ret (some o) => do
-    need (G.retw != 0) "outside fragment: ret value in a void function"
-    let (s, tw, A) ← trOpndX c G.retw true k o
-    let (se, te) ← escStmts G c retTo (k + tw.length) A
-    let sf ← freeStmts G c retTo
-    pure (s ++ se ++ sf, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
+  | .ret (some o) =>
+    match G.pret, retTo, o with
+    | some (_, _, p0, p1), some cb, .reg x => do
+      let (A0, A1) ← pairArgsX c x
+      let (s0, t0) ← escP G c p0 k A0
+      let (s1, t1) ← escP G c p1 (k + t0.length) A1
+      let sf ← freeStmts G c retTo
+      pure (s0 ++ s1 ++ sf, t0 ++ t1, .jmp cb, none)
+    | some _, _, _ => .error "UNENCODED: return of a scalar pair from the analysed function"
+    | none, _, _ => do
+      need (G.retw != 0) "outside fragment: ret value in a void function"
+      let (s, tw, A) ← trOpndX c G.retw true k o
+      let (se, te) ← escStmts G c retTo (k + tw.length) A
+      let sf ← freeStmts G c retTo
+      pure (s ++ se ++ sf, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
   | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop, none)
 
 /-- The terminator of a block, or the failing check of a noreturn failure
@@ -1590,7 +1611,25 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           | none => newVar G'.retw
         let uv ← newVar ((G'.retw + 7) / 8)
         pure (some (rv, uv))
-      if G'.retw == 0 && cl.dst.isSome then throw s!"outside fragment: void call @{cl.f} with a result"
+      -- a scalar pair: the two field variables (`pairReg d 0/1`, or temporaries)
+      let pv? ← match G'.pret with
+        | none => pure none
+        | some (w0, w1, _, _) => do
+          if cl.pw != some (w0, w1) then throw s!"outside fragment: call @{cl.f} pair widths"
+          match cl.dst with
+          | some d =>
+            let c := I.ctx (← curVars)
+            let i0 ← liftE (dstX c (pairReg d 0) w0)
+            let i1 ← liftE (dstX c (pairReg d 1) w1)
+            if (look c.sh (pairReg d 0)).isSome || (look c.sh (pairReg d 1)).isSome then
+              throw "outside fragment: pair result with a shadow"
+            pure (some (i0, i1))
+          | none => do
+            let i0 ← newVar w0
+            let i1 ← newVar w1
+            pure (some (i0, i1))
+      if G'.pret.isNone && cl.pw.isSome then throw s!"outside fragment: call @{cl.f} pair result"
+      if G'.retw == 0 && G'.pret.isNone && cl.dst.isSome then throw s!"outside fragment: void call @{cl.f} with a result"
       let lo' := (← get).vars.size
       let κ ← enterFrame G' (G'.params.map Prod.fst |>.zip As) lo' (some cb)
       let Iκ ← getInst κ
@@ -1607,6 +1646,14 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           setBlock cb fun pb => { pb with phis :=
             [{ dst := uv, inc := sites.map fun (q, _) => (q, .c ((G'.retw + 7) / 8) 0) },
              { dst := rv, inc := sites }] }
+      | none => pure ()
+      match pv? with
+      | some (i0, i1) =>
+        -- `sites` holds each returning block twice: field 0, then field 1
+        if !sites.isEmpty then
+          let ev := (sites.zipIdx.filter (·.2 % 2 == 0)).map (·.1)
+          let od := (sites.zipIdx.filter (·.2 % 2 == 1)).map (·.1)
+          setBlock cb fun pb => { pb with phis := [{ dst := i0, inc := ev }, { dst := i1, inc := od }] }
       | none => pure ()
       pure cb
     -- `translate_block`: block `b` (`region` marks a landing-pad region
@@ -1772,7 +1819,12 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
       let (q, A?) ← trB b B false
       match A? with
       | some A => if I.retTo.isSome then rets := rets ++ [(q, A)]
-      | none => pure ()
+      | none =>
+        match G.pret, I.retTo, B.nr, B.thr, B.term with
+        | some _, some _, none, false, .ret (some (.reg x)) =>
+          let (A0, A1) ← liftE (pairArgsX (I.ctx (← curVars)) x)
+          rets := rets ++ [(q, A0), (q, A1)]
+        | _, _, _, _, _ => pure ()
       tails := tails.set b q
     -- `eh_pass`: the landing pads a throw reached, with the code after them
     let mut done : List Nat := []

@@ -224,6 +224,9 @@ structure CallI where
   /-- the landing pad label of that `invoke` (translator only; `""`: not
   exported, a throw dispatching to it is refused) -/
   pad : String := ""
+  /-- the callee returns a two-field scalar pair (`{ ptr, i8 }` …) of these
+  field widths (`rw = 0`): the result's fields are `pairReg dst 0/1` -/
+  pw : Option (Nat × Nat) := none
   deriving DecidableEq, Repr, Inhabited
 
 /-- A block split at its calls: phis, then segments each ending in a call,
@@ -281,6 +284,10 @@ structure XFunc where
   /-- the analysed function returns a pointer (checked for pointing into its
   own stack objects, `MemTr::stack_escape_check`) -/
   retPtr : Bool := false
+  /-- the function returns a two-field scalar pair: the field widths and
+  which fields are pointers (`retw = 0`; only an inlined callee's `ret` of
+  such a pair has a semantics: the analysed function's is stuck) -/
+  pret : Option (Nat × Nat × Bool × Bool) := none
   /-- `Tr::thrown_types` (translator only, analysed function): every exception
   type the module throws, sorted; `none`: not exported -/
   thrown : Option (List String) := none
@@ -685,6 +692,41 @@ def Res.step {α : Type} : Res α → (α → Step) → Step
   | .ub, _ => .ub
   | .stuck, _ => .stuck
 
+/-- A returned scalar pair travels as one number, `2^v0 * (2 v1 + 1)`
+(`unpk` recovers both fields exactly). -/
+def packP (v0 v1 : Nat) : Nat := 2 ^ v0 * (2 * v1 + 1)
+
+def unpk (n : Nat) : Nat × Nat :=
+  if h : n = 0 then (0, 0)
+  else if n % 2 = 1 then (0, n / 2)
+  else ((unpk (n / 2)).1 + 1, (unpk (n / 2)).2)
+termination_by n
+decreasing_by omega
+
+theorem packP_pos (v0 v1 : Nat) : 0 < packP v0 v1 :=
+  Nat.mul_pos (Nat.two_pow_pos _) (by omega)
+
+theorem unpk_packP (v1 : Nat) : ∀ v0, unpk (packP v0 v1) = (v0, v1)
+  | 0 => by
+    have h1 : 2 * v1 + 1 ≠ 0 := by omega
+    have h2 : (2 * v1 + 1) % 2 = 1 := by omega
+    have h3 : (2 * v1 + 1) / 2 = v1 := by omega
+    rw [unpk]; simp only [packP, Nat.pow_zero, Nat.one_mul, h1, h2, h3, dite_false, ite_true]
+  | v0 + 1 => by
+    have hp := packP_pos v0 v1
+    have e : packP (v0 + 1) v1 = 2 * packP v0 v1 := by
+      simp only [packP, Nat.pow_succ]; rw [Nat.mul_comm (2 ^ v0) 2, Nat.mul_assoc]
+    have h1 : 2 * packP v0 v1 ≠ 0 := by omega
+    have h2 : ¬ (2 * packP v0 v1 % 2 = 1) := by omega
+    have h3 : 2 * packP v0 v1 / 2 = packP v0 v1 := by omega
+    rw [unpk, e]; simp only [h1, h2, h3, dite_false, ite_false, unpk_packP v1 v0]
+
+/-- The result `d` of a call: one register, or a pair's two fields. -/
+def setRet (R : SRegs) (pw : Option (Nat × Nat)) (d : String) (v : Nat) : SRegs :=
+  match pw with
+  | some _ => (R.set (pairReg d 0) (unpk v).1).set (pairReg d 1) (unpk v).2
+  | none => R.set d v
+
 /-- Registers on entry to the current segment: the phis (segment 0) or the
 result of the call that ended the previous segment. -/
 def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
@@ -695,7 +737,7 @@ def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
       match c.dst with
       | some d =>
         match fr.pend with
-        | some v => .ok (fr.R.set d v)
+        | some v => .ok (setRet fr.R c.pw d v)
         | none => .stuck
       | none => .ok fr.R
     | none => .stuck
@@ -704,6 +746,11 @@ def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
 def retTo : List Frame → Option Nat → World → Step
   | [], v, _ => .ret v
   | c :: cs, v, t => .next ({ c with pend := v } :: cs) t
+
+/-- A returned pointer `v` (when `p`) points into one of `F`'s own stack
+objects (C17 6.2.4p2: dangling once they end). -/
+def escBad (R : SRegs) (F : XFunc) (p : Bool) (v : Nat) : Res Bool :=
+  if p then (escHit R v F.escNames).bind fun hit => .ok (hit && ptrObj (v % 2 ^ 64) != 0) else .ok false
 
 /-- The stack objects `ns` of a returning callee end (LangRef: `alloca`
 memory is released when the function returns; `Tr::call`'s `end_lifetime`). -/
@@ -743,7 +790,21 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         | some j => .next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t
         | none => .stuck
     | .ret none => retFree fr.F R rest none t
-    | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
+    | .ret (some o) =>
+      match fr.F.pret with
+      | some (w0, w1, p0, p1) =>
+        -- an inlined callee returning a scalar pair: each pointer field gets
+        -- the stack-escape check (translate.cpp's `ret_pair` return)
+        match o, rest with
+        | .reg x, _ :: _ =>
+          (sOpnd R w0 (.reg (pairReg x 0))).step fun v0 =>
+          (sOpnd R w1 (.reg (pairReg x 1))).step fun v1 =>
+          (escBad R fr.F p0 v0).step fun b0 => if b0 then .ub else
+          (escBad R fr.F p1 v1).step fun b1 => if b1 then .ub else
+          retFree fr.F R rest (some (packP v0 v1)) t
+        | _, _ => .stuck
+      | none =>
+      (sOpnd R fr.F.retw o).step fun v =>
       -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
       -- into one of its own stack objects returns a dangling pointer
       -- (an inlined callee too: `MemTr::stack_escape_check` before its objects end)
@@ -928,6 +989,11 @@ def Res.lstep {α : Type} : Res α → (α → LStep) → LStep
   | .ub, _ => .ub
   | .stuck, _ => .stuck
 
+def lSetRet (R : LRegs) (pw : Option (Nat × Nat)) (d : String) (v : Nat) : LRegs :=
+  match pw with
+  | some _ => (R.set (pairReg d 0) (.val (unpk v).1)).set (pairReg d 1) (.val (unpk v).2)
+  | none => R.set d (.val v)
+
 def lEnter (fr : LFrame) (B : XBlock) (c : Bool) : Res LSt :=
   if fr.seg = 0 then
     (lPhis fr.F.shape fr.R fr.prev B.phis).bind fun (upd, c1) => .ok ⟨fr.R.setAll upd, c || c1⟩
@@ -937,7 +1003,7 @@ def lEnter (fr : LFrame) (B : XBlock) (c : Bool) : Res LSt :=
       match cl.dst with
       | some d =>
         match fr.pend with
-        | some v => .ok ⟨fr.R.set d (.val v), c⟩
+        | some v => .ok ⟨lSetRet fr.R cl.pw d v, c⟩
         | none => .stuck
       | none => .ok ⟨fr.R, c⟩
     | none => .stuck
@@ -983,6 +1049,27 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       | .stuck => .stuck
     | .ret none => lRetFree fr.F S.R rest none t S.c
     | .ret (some o) =>
+      match fr.F.pret with
+      | some (w0, w1, p0, p1) =>
+        match o, rest with
+        | .reg x, _ :: _ =>
+          match lOpnd S.R w0 (.reg (pairReg x 0)) with
+          | .ok (.val v0, c0) =>
+            match lOpnd S.R w1 (.reg (pairReg x 1)) with
+            | .ok (.val v1, c1) =>
+              (escBad (lower S.R) fr.F p0 v0).lstep fun b0 => if b0 then .ub else
+              (escBad (lower S.R) fr.F p1 v1).lstep fun b1 => if b1 then .ub else
+              lRetFree fr.F S.R rest (some (packP v0 v1)) t (S.c || c0 || c1)
+            | .ok (.poison, _) => .ub
+            | .ok (.ind, _) => .ub
+            | .ub => .ub
+            | .stuck => .stuck
+          | .ok (.poison, _) => .ub
+          | .ok (.ind, _) => .ub
+          | .ub => .ub
+          | .stuck => .stuck
+        | _, _ => .stuck
+      | none =>
       match lOpnd S.R fr.F.retw o with
       | .ok (.val v, cv) =>
         if fr.F.retPtr then

@@ -390,7 +390,10 @@ theorem enter_lift (fr : Frame) (B : XBlock) : SLE (sEnter fr B) (lEnter (liftFr
       | some d =>
         cases fr.pend with
         | none => rfl
-        | some v => simp [SLE, lift_set]
+        | some v =>
+          cases c.pw with
+          | none => simp [SLE, setRet, lSetRet, lift_set]
+          | some _ => simp [SLE, setRet, lSetRet, lift_set]
 
 theorem lEnter_mono {fr : LFrame} {B : XBlock} {S : LSt} (h : lEnter fr B true = .ok S) : S.c = true := by
   unfold lEnter at h
@@ -529,6 +532,21 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · rw [hc]; exact lRetFree_bad _ _ _ _ _
     · split
+      · split
+        · split
+          · split
+            · rw [hc, Bool.true_or, Bool.true_or]
+              exact lstep_bad _ _ (fun b0 => by
+                split
+                · exact .inl rfl
+                · exact lstep_bad _ _ (fun b1 => by
+                    split
+                    · exact .inl rfl
+                    · exact lRetFree_bad _ _ _ _ _))
+            all_goals first | exact .inl rfl | exact .inr (.inl rfl)
+          all_goals first | exact .inl rfl | exact .inr (.inl rfl)
+        · exact .inr (.inl rfl)
+      split
       · simp only [hc, Bool.true_or]
         split
         · exact lstep_bad _ _ (fun hit => by
@@ -621,6 +639,55 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
         | nil => rfl
         | cons c cs => exact retFree_lift _ _ c cs none t
       | some o =>
+        simp only
+        cases hpr : fr.F.pret with
+        | some pt =>
+          obtain ⟨w0, w1, p0, p1⟩ := pt
+          simp only
+          cases o with
+          | reg x =>
+            cases rest with
+            | nil => rfl
+            | cons c cs =>
+              simp only [List.map_cons]
+              have h0 := opnd_lift R w0 (.reg (pairReg x 0))
+              have h1 := opnd_lift R w1 (.reg (pairReg x 1))
+              cases hs0 : sOpnd R w0 (.reg (pairReg x 0)) with
+              | ok v0 =>
+                rw [hs0] at h0; simp only [OpRel] at h0
+                simp only [Res.step, h0]
+                cases hs1 : sOpnd R w1 (.reg (pairReg x 1)) with
+                | ok v1 =>
+                  rw [hs1] at h1; simp only [OpRel] at h1
+                  simp only [h1, lower_lift, Bool.or_false]
+                  cases escBad R fr.F p0 v0 with
+                  | ok b0 =>
+                    cases b0 with
+                    | true => exact .inl rfl
+                    | false =>
+                      simp only [Res.lstep, Bool.false_eq_true, ite_false]
+                      cases escBad R fr.F p1 v1 with
+                      | ok b1 =>
+                        cases b1 with
+                        | true => exact .inl rfl
+                        | false =>
+                          simp only [Res.lstep, Bool.false_eq_true, ite_false]
+                          exact retFree_lift _ _ c cs _ t
+                      | ub => exact .inl rfl
+                      | stuck => rfl
+                  | ub => exact .inl rfl
+                  | stuck => rfl
+                | stuck => rw [hs1] at h1; simp only [OpRel] at h1; simp [Res.step, h1, SLStep]
+                | ub =>
+                  rw [hs1] at h1; simp only [OpRel] at h1
+                  rcases h1 with h1 | h1 <;> simp [Res.step, h1, SLStep]
+              | stuck => rw [hs0] at h0; simp only [OpRel] at h0; simp [Res.step, h0, SLStep]
+              | ub =>
+                rw [hs0] at h0; simp only [OpRel] at h0
+                rcases h0 with h0 | h0 <;> simp [Res.step, h0, SLStep]
+          | const _ => rfl
+          | poison => rfl
+        | none =>
         simp only
         have h := opnd_lift R fr.F.retw o
         cases hs : sOpnd R fr.F.retw o with
