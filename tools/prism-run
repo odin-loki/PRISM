@@ -51,7 +51,7 @@ while :; do
 done
 export PRISM_MEM_BUDGET_MB=$budget
 echo "prism-run: admitted after ${waited}s, MemAvailable $(memavail)MB, budget ${budget}MB" >&2
-echo 100 > /proc/$$/oom_score_adj 2>/dev/null  # children start at 100
+{ echo 100 > /proc/$$/oom_score_adj; } 2>/dev/null  # children start at 100
 if [ "${PRISM_RUN_AS:-0}" = 1 ]; then setsid prlimit --as=$(( budget * 4 * 1048576 )) -- "$@" &
 else setsid "$@" & fi
 pid=$!
@@ -60,7 +60,7 @@ peak=0
 while kill -0 $pid 2>/dev/null; do
   r=$(treerss $pid); r=${r:-0}; [ $r -gt $peak ] && peak=$r
   adj=$(( r * 500 / budget )); [ $adj -lt 100 ] && adj=100; [ $adj -gt 1000 ] && adj=1000
-  for p in $(treepids $pid); do echo $adj > /proc/$p/oom_score_adj 2>/dev/null; done
+  for p in $(treepids $pid); do { echo $adj > /proc/$p/oom_score_adj; } 2>/dev/null; done
   kill_at=$(( budget * 5 / 4 )); [ $(memavail) -lt 1024 ] && kill_at=$budget
   if [ $r -gt $kill_at ]; then echo "prism-run: RSS ${r}MB over ${kill_at}MB (MemAvailable $(memavail)MB): killed (reported, not silent)" >&2; kill -9 -$pid $(treepids $pid) 2>/dev/null; fi
   sleep 0.5
