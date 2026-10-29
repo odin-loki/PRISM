@@ -481,6 +481,33 @@ def freeChk (j : Nat) (P : Arg) (kd : Nat) : List PStmt :=
 
 def freeT : List Nat := [64, 1, 8, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
+/-- `MemTr::dealloc` of a `FILE` (kind 8, `fclose`): one MEM-INVALID-FREE check
+for another kind instead of the two allocator checks. -/
+def freeChkF (j : Nat) (P : Arg) : List PStmt :=
+  [.assign j (.bin .lshr) [P, c64 48], .assign (j + 1) (.cmp .ne) [.v j 64, c64 0],
+   .assign (j + 2) .objKind [P], .assign (j + 3) .objLive [P],
+   .assign (j + 4) (.cmp .eq) [.v (j + 2) 8, .c 8 0], .assign (j + 5) (.bin .and) [.v (j + 1) 1, .v (j + 4) 1],
+   .check (.v (j + 5) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 6) (.cmp .ne) [.v (j + 2) 8, .c 8 0], .assign (j + 7) (.bin .and) [.v (j + 1) 1, .v (j + 6) 1],
+   .assign (j + 8) (.bin .and) [P, c64 (2 ^ 48 - 1)], .assign (j + 9) (.cmp .ne) [.v (j + 8) 64, c64 0],
+   .assign (j + 10) (.bin .and) [.v (j + 7) 1, .v (j + 9) 1],
+   .check (.v (j + 10) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 11) (.cmp .eq) [.v (j + 2) 8, .c 8 2], .assign (j + 12) (.cmp .eq) [.v (j + 2) 8, .c 8 5],
+   .assign (j + 13) (.cmp .eq) [.v (j + 2) 8, .c 8 6], .assign (j + 14) (.bin .or) [.v (j + 12) 1, .v (j + 13) 1],
+   .assign (j + 15) (.bin .or) [.v (j + 11) 1, .v (j + 14) 1],
+   .assign (j + 16) (.cmp .ne) [.v (j + 2) 8, .c 8 8], .assign (j + 17) (.bin .and) [.v (j + 7) 1, .v (j + 16) 1],
+   .check (.v (j + 17) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 18) (.cmp .eq) [.v (j + 2) 8, .c 8 8], .assign (j + 19) (.cmp .eq) [.v (j + 3) 1, .c 1 0],
+   .assign (j + 20) (.bin .and) [.v (j + 18) 1, .v (j + 19) 1],
+   .assign (j + 21) (.bin .and) [.v (j + 7) 1, .v (j + 20) 1],
+   .check (.v (j + 21) 1) "double-free" "MEM-DOUBLE-FREE"]
+
+def freeTF : List Nat := [64, 1, 8, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+def freeChkK (j : Nat) (P : Arg) (kd : Nat) : List PStmt := if kd = 8 then freeChkF j P else freeChk j P kd
+
+def freeTK (kd : Nat) : List Nat := if kd = 8 then freeTF else freeT
+
 /-- The size check of `MemTr::alloc`: a variable size below `2^47` is
 assumed (a constant one is checked by the translator). -/
 def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
@@ -657,9 +684,9 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       pure (sn ++ r.1 ++ [.alloc i N kd ini 16], tn ++ r.2)
     | none => pure (sn ++ r.1 ++ [.alloc (k + tn.length + r.2.length) N kd ini 16], tn ++ r.2 ++ [64])
   | .hfree p kd kill => do
-    need (kd != 8 && decide (kd < 256)) "outside fragment: release kind"
+    need (decide (kd < 256)) "outside fragment: release kind"
     let (sp, tp, P) ← trOpndX c 64 true k p
-    pure (sp ++ freeChk (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeT)
+    pure (sp ++ freeChkK (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeTK kd)
   | .hobjsz d p => do
     let (sp, tp, P) ← trOpndX c 64 false k p
     let j := k + tp.length
@@ -669,6 +696,19 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       need (look c.sh d).isNone "outside fragment: result with a shadow"
       pure (sp ++ hobjszCore j P ++ [.assign i .copy [.v (j + 4) 64]], tp ++ hobjszT)
     | none => pure (sp ++ hobjszCore j P, tp ++ hobjszT)
+  | .hread p n => do
+    let (sp, tp, D) ← trOpndX c 64 true k p
+    let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
+    need (N.width == 64) "outside fragment: length width"
+    let g := k + tp.length + tn.length
+    pure (sp ++ sn ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false),
+      tp ++ tn ++ ([1] ++ accTG false))
+  | .vcheck a w cls => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w true k a
+    need (A.width == w) "outside fragment: check operand width"
+    let j := k + ta.length
+    pure (sa ++ [.assign j (.cmp .eq) [A, .c w 0], .check (.v j 1) "model" cls], ta ++ [1])
   | .hhavoc p n => do
     let (sp, tp, D) ← trOpndX c 64 true k p
     let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
@@ -873,7 +913,7 @@ where
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]
-    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. => []
+    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .vcheck .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

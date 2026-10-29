@@ -93,6 +93,9 @@ open PrismRefine
 -- the libc models' heap: __prism_alloc / __prism_free, nondet values, assumptions
 #print axioms freeChk_run
 #print axioms havoc_run
+#print axioms hread_run
+#print axioms freeChkF_run
+#print axioms freeChkK_run
 #print axioms havocTail_run
 -- Part 8.2 "Floating point" (stretch): IEEE binary formats, correctly rounded addition
 #print axioms PrismRefine.Float.roundU_repr

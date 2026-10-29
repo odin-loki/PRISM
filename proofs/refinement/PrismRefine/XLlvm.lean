@@ -165,6 +165,12 @@ inductive SInst where
   from a fresh `extern` object of arbitrary contents, whose lifetime then
   ends. PRISM's model has no object of `2^47` bytes or more (stuck). -/
   | hhavoc (p n : Opnd)
+  /-- `call void @__prism_read_range(ptr p, i64 n)` (`MemTr::read_range`):
+  undefined unless the `n` bytes at `p` may be read (`n ≠ 0`); no effect. -/
+  | hread (p n : Opnd)
+  /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
+  class `cls` (literal strings): undefined (the property fails) when `a` is 0. -/
+  | vcheck (a : Opnd) (w : Nat) (cls : String)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -504,6 +510,14 @@ def sHavoc (ω : Nat → Nat) (R : SRegs) (W : World) (p n : Opnd) : Res World :
     else if v % 2 ^ 64 < 2 ^ 47 then .ok (havocW ω W (pv % 2 ^ 64) (v % 2 ^ 64))
     else .stuck
 
+def sHread (R : SRegs) (W : World) (p n : Opnd) : Res World :=
+  (sOpnd R 64 p).bind fun pv => (sOpnd R 64 n).bind fun v =>
+    if (v % 2 ^ 64 != 0 && accessBad W.mem (pv % 2 ^ 64) (v % 2 ^ 64) false 1) then .ub else .ok W
+
+/-- `__prism_check`: UB when the value is 0. -/
+def sVcheck (R : SRegs) (w : Nat) (a : Opnd) : Res Unit :=
+  (sOpnd R w a).bind fun v => if v % 2 ^ w != 0 then .ok () else .ub
+
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
 def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × World)
   | .i x => (sInst R x).bind fun R' => .ok (R', W.adv x.draws)
@@ -543,6 +557,8 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .hfree p kd kill => (sFree R W p kd kill).bind fun W' => .ok (R, W')
   | .hobjsz d p => (sHobjszV R W p).bind fun v => .ok (R.setOpt d v, W)
   | .hhavoc p n => (sHavoc ω R W p n).bind fun W' => .ok (R, W')
+  | .hread p n => (sHread R W p n).bind fun W' => .ok (R, W')
+  | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -758,6 +774,12 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ub => .ub
     | .stuck => .stuck
   | .hhavoc p n => lMem S (sHavoc ω (lower S.R) W p n)
+  | .hread p n => lMem S (sHread (lower S.R) W p n)
+  | .vcheck a w _ =>
+    match sVcheck (lower S.R) w a with
+    | .ok _ => .ok (S, W)
+    | .ub => .ub
+    | .stuck => .stuck
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

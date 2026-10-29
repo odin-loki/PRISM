@@ -14,6 +14,40 @@ namespace PrismRefine
 
 open PrismSem
 
+/-- `MemTr::read_range` (`__prism_read_range`): the guard `N ≠ 0` and the read
+checks under it fail exactly when the read is bad; otherwise only temporaries
+are written. -/
+theorem hread_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (g : Nat) (D N : Arg)
+    (hD : D.below g) (hN : N.below g) (hNw : N.width = 64)
+    (hT : TempsOK P g ([1] ++ accTG false)) :
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) false 1) = true →
+      xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false) = .fail) ∧
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) false 1) = false →
+      ∃ σ', xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false) = .ok σ' t ∧
+        ∀ i, i < g → σ' i = σ i) := by
+  generalize hn : N.get σ % 2 ^ 64 = n
+  have wg : P.wd g = 1 := by simpa using wd_of hT 0 (by simp)
+  have hT1 : TempsOK P (g + 1) (accTG false) := TempsOK.cast hT.right (by simp)
+  simp only [List.singleton_append]
+  rw [xStmts_assign]
+  have e2 : evalOpM t.mem σ (.cmp .ne) (P.wd g) [N, c64 0] % 2 ^ P.wd g = (n != 0).toNat := by
+    simp only [evalOpM, evalOp, wg, icmpVal_eq', hNw, pred_ne, c64_get, Nat.zero_mod, boolToNat_mod1, hn]
+    cases h : (n != 0) <;> simp_all
+  rw [e2]
+  generalize hσ2 : σ.set g (n != 0).toNat = σ2
+  have ag2 : ∀ i, i < g → σ2 i = σ i := fun i hi => by rw [← hσ2]; exact Store.set_other _ _ (by omega)
+  have hNv2 : N.get σ2 % 2 ^ 64 = n := by rw [Arg.get_agree ag2 hN, hn]
+  have hDv2 : D.get σ2 = D.get σ := Arg.get_agree ag2 hD
+  have hg2 : σ2 g = (n != 0).toNat := by rw [← hσ2]; simp [set_apply]
+  have hb2 : ∀ {A : Arg}, A.below g → A.below (g + 1) := fun h => Arg.below_mono (by omega) h
+  have c1 := accChkG_run P ω σ2 t (g + 1) g D N (hb2 hD) (hb2 hN) (by omega) false hT1 hNv2 hg2
+  rw [hDv2] at c1
+  cases hb1 : (n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n false 1)
+  · obtain ⟨σ3, e3, ag3⟩ := c1.2 hb1
+    refine ⟨fun h => by simp at h, fun _ => ⟨σ3, e3, fun i hi => ?_⟩⟩
+    rw [ag3 i (by omega), ag2 i hi]
+  · exact ⟨fun _ => c1.1 hb1, fun h => by simp at h⟩
+
 /-- The last three statements: allocate, copy, release. -/
 theorem havocTail_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (o : Nat) (D N : Arg)
     (hD : D.below o) (hN : N.below o) (hwo : P.wd o = 64) :
