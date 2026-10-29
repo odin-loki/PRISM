@@ -5891,6 +5891,7 @@ TEST_CASE("pir: lean export of std::terminate only right before unreachable") {
 static const char* kLeanCalleeGlobIr = R"IR(
 @k = internal constant [2 x i32] [i32 7, i32 9], align 4
 @m = internal global i32 3, align 4
+@t = internal thread_local global i32 3, align 4
 define internal i32 @rd(i32 %i) {
 entry:
   %p = getelementptr inbounds i32, ptr @k, i32 1
@@ -5900,6 +5901,12 @@ entry:
 define internal i32 @wr(i32 %i) {
 entry:
   %v = load i32, ptr @m, align 4
+  store i32 %i, ptr @m, align 4
+  ret i32 %v
+}
+define internal i32 @tl(i32 %i) {
+entry:
+  %v = load i32, ptr @t, align 4
   ret i32 %v
 }
 define i32 @ok(i32 %x) {
@@ -5907,18 +5914,23 @@ entry:
   %r = call i32 @rd(i32 %x)
   ret i32 %r
 }
-define i32 @bad(i32 %x) {
+define i32 @mut(i32 %x) {
 entry:
   %r = call i32 @wr(i32 %x)
   ret i32 %r
 }
+define i32 @bad(i32 %x) {
+entry:
+  %r = call i32 @tl(i32 %x)
+  ret i32 %r
+}
 )IR";
 
-TEST_CASE("pir: lean export passes read-only globals to inlined callees, not mutable ones") {
+TEST_CASE("pir: lean export passes globals to inlined callees, not thread_local ones") {
     namespace fs = std::filesystem;
     auto m = prism::pir::ir::parse_module(kLeanCalleeGlobIr);
     prism::pir::TranslateOptions opt;
-    for (const char* name : {"ok", "bad"}) {
+    for (const char* name : {"ok", "mut", "bad"}) {
         fs::path dir = fs::temp_directory_path() / "prism-lean-export-cglob";
         fs::remove_all(dir);
         tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
@@ -5930,11 +5942,17 @@ TEST_CASE("pir: lean export passes read-only globals to inlined callees, not mut
         std::ifstream in(dir / "unit.pirl");
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         INFO(name << "\n" << text);
-        bool good = std::string(name) == "ok";
-        CHECK((text.find("L glob %@k ") != std::string::npos) == good);
-        CHECK((text.find(" @k 64") != std::string::npos) == good);
-        CHECK((text.find(" %@k 64") != std::string::npos) == good);
-        CHECK((text.find("L unsupported pointer operand @m") != std::string::npos) == !good);
+        const std::string n = name;
+        if (n == "ok") {
+            CHECK(text.find("L glob %@k ") != std::string::npos);
+            CHECK(text.find(" @k 64") != std::string::npos);
+            CHECK(text.find(" %@k 64") != std::string::npos);
+        }
+        if (n == "mut") {
+            CHECK(text.find("L glob %@m ") != std::string::npos);
+            CHECK(text.find("L store 32 %i %@m 4") != std::string::npos);
+        }
+        CHECK((text.find("L unsupported") != std::string::npos) == (n == "bad"));
         in.close();
         fs::remove_all(dir);
     }

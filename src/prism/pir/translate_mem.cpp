@@ -362,7 +362,7 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
             for (auto& o : in.ops) see(o);
             for (auto& [o, _] : in.incoming) see(o);
         }
-    // then the read-only globals the functions it may inline name (depth
+    // then the globals the functions it may inline name (depth
     // first, in call order): allocated at entry too rather than when an
     // inlined body first names them (MemTr::global), so the Lean export can
     // pass them to the inlined callees as extra parameters
@@ -384,8 +384,7 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
             for (auto& in : bl.insts) {
                 auto ro = [&](const ir::Operand& o) {
                     if (o.v.kind != ir::Value::Global) return;
-                    const auto* gl = m.find_global(o.v.name);
-                    if (gl && gl->is_const && !gl->external) see(o);
+                    see(o);
                 };
                 for (auto& o : in.ops) ro(o);
                 for (auto& [o, _] : in.incoming) ro(o);

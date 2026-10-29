@@ -311,28 +311,45 @@ P check v40:1 uninit UNINIT-READ
 P ret v7:8
 end
 func _Z12bump_outsidei
-L unsupported pointer operand @_ZL7counter
+L depth 12
+L thrown
+L params 1 x 32
+L ret 32
+L block entry
+L glob %@_ZL7counter 4 4 3 2 0
+L uninit %__prism_uninit.4 32
+L call %call 32 _ZL4bumpv 1 %@_ZL7counter 64
+L bin %add add nsw 32 %call %x
+L ret %add
+L fn _ZL4bumpv
+L params 1 @_ZL7counter 64
+L ret 32
+L block entry
+L load %i 32 %@_ZL7counter 4
+L bin %inc add nsw 32 %i #1
+L store 32 %inc %@_ZL7counter 4
+L ret %inc
 status ok
-P vars 59 32 32 32 32 4 32 32 64 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 1
+P vars 59 32 64 32 32 32 4 32 32 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 1
 P params 1 0
 P retw 32
 P block
-P alloc 7 c64:4 3 2 4
-P havoc 1
+P alloc 1 c64:4 3 2 4
+P havoc 2
 P jmp 2
 P block
-P phi 4 1 2 c4:0
-P phi 2 1 2 v6:32
-P assign 58 sadd.ovf 2 v2:32 v0:32
+P phi 5 1 2 c4:0
+P phi 3 1 2 v7:32
+P assign 58 sadd.ovf 2 v3:32 v0:32
 P check v58:1 ovf+ INT-SIGNED-OVF
-P assign 3 add 2 v2:32 v0:32
-P ret v3:32
+P assign 4 add 2 v3:32 v0:32
+P ret v4:32
 P block
-P assign 8 lshr 2 v7:64 c64:48
-P assign 9 and 2 v7:64 c64:281474976710655
-P assign 10 obj.kind 1 v7:64
-P assign 11 obj.live 1 v7:64
-P assign 12 obj.size 1 v7:64
+P assign 8 lshr 2 v1:64 c64:48
+P assign 9 and 2 v1:64 c64:281474976710655
+P assign 10 obj.kind 1 v1:64
+P assign 11 obj.live 1 v1:64
+P assign 12 obj.size 1 v1:64
 P assign 13 eq 2 v8:64 c64:0
 P check v13:1 null PTR-NULL-DEREF
 P assign 14 ne 2 v8:64 c64:0
@@ -350,22 +367,22 @@ P assign 23 or 2 v21:1 v22:1
 P assign 24 and 2 v11:1 v23:1
 P check v24:1 oob-read MEM-OOB-READ
 P assign 25 and 2 v9:64 c64:3
-P assign 26 obj.align 1 v7:64
+P assign 26 obj.align 1 v1:64
 P assign 27 ne 2 v25:64 c64:0
 P assign 28 ult 2 v26:64 c64:4
 P assign 29 or 2 v27:1 v28:1
 P assign 30 and 2 v11:1 v29:1
 P check v30:1 align MEM-MISALIGNED
-P load 5 31 -1 v7:64 0
+P load 6 31 -1 v1:64 0
 P check v31:1 uninit UNINIT-READ
-P assign 32 sadd.ovf 2 v5:32 c32:1
+P assign 32 sadd.ovf 2 v6:32 c32:1
 P check v32:1 ovf+ INT-SIGNED-OVF
-P assign 6 add 2 v5:32 c32:1
-P assign 33 lshr 2 v7:64 c64:48
-P assign 34 and 2 v7:64 c64:281474976710655
-P assign 35 obj.kind 1 v7:64
-P assign 36 obj.live 1 v7:64
-P assign 37 obj.size 1 v7:64
+P assign 7 add 2 v6:32 c32:1
+P assign 33 lshr 2 v1:64 c64:48
+P assign 34 and 2 v1:64 c64:281474976710655
+P assign 35 obj.kind 1 v1:64
+P assign 36 obj.live 1 v1:64
+P assign 37 obj.size 1 v1:64
 P assign 38 eq 2 v33:64 c64:0
 P check v38:1 null PTR-NULL-DEREF
 P assign 39 ne 2 v33:64 c64:0
@@ -383,7 +400,7 @@ P assign 48 or 2 v46:1 v47:1
 P assign 49 and 2 v36:1 v48:1
 P check v49:1 oob-write MEM-OOB-WRITE
 P assign 50 and 2 v34:64 c64:3
-P assign 51 obj.align 1 v7:64
+P assign 51 obj.align 1 v1:64
 P assign 52 ne 2 v50:64 c64:0
 P assign 53 ult 2 v51:64 c64:4
 P assign 54 or 2 v52:1 v53:1
@@ -392,7 +409,7 @@ P check v55:1 align MEM-MISALIGNED
 P assign 56 eq 2 v35:8 c8:4
 P assign 57 and 2 v36:1 v56:1
 P check v57:1 write-const MEM-WRITE-CONST
-P store v7:64 v6:32 c1:1 0
+P store v1:64 v7:32 c1:1 0
 P jmp 1
 end
 func _ZL4bumpv
