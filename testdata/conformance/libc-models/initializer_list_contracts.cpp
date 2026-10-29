@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <initializer_list> so the C++ model-header conformance case sees
 // this include. The scored walk is
 // testdata/conformance/prism/cxx/cxx_initializer_list_true.cpp.

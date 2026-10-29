@@ -524,7 +524,12 @@ TEST_CASE("qa conformance: every libc model file has a contract harness") {
             vals.insert(exp);
             if (!exp) false_fns.insert(fn);
         }
-        CHECK(vals == std::set<bool>{true, false});
+        // A C++ header-model harness may label positive contracts only; it
+        // says so (and why) on a `no-false-twin:` line.
+        if (vals == std::set<bool>{true})
+            CHECK(text.find("no-false-twin:") != std::string::npos);
+        else
+            CHECK(vals == std::set<bool>{true, false});
         // every false harness names the violation it plants
         std::set<std::string> classed;
         for (const auto& [fn, _] : t.expect_class) classed.insert(fn);

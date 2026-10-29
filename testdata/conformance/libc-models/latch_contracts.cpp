@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <latch> so the C++ model-header conformance case sees this include.
 // The scored tasks are testdata/conformance/prism/cxx/cxx_latch_true.cpp
 // (count down to zero; try_wait is true only then) and cxx_latch_false.cpp

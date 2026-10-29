@@ -1212,6 +1212,16 @@ struct Tr final : pirmem::TrApi {
                 emit_assign(cur, result_var(fr, in), starts(n, "llvm.ctpop.") ? Op::Ctpop : Op::Bswap, {a});
                 return;
             }
+            if (n == "llvm.returnaddress" || n == "llvm.frameaddress.p0") {
+                // a code / frame address: any address outside every modelled
+                // object (object id 0, any offset; null for an outer frame is
+                // offset 0). Not a pointer into the program's data, so it does
+                // not alias a local (no stack escape) and a dereference is
+                // checked like a wild pointer.
+                Arg h = havoc(cur, kPtrW, false, true);
+                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(kPtrW, (uint64_t{1} << 48) - 1)});
+                return;
+            }
             if (starts(n, "llvm.is.constant.")) {
                 // __builtin_constant_p: false is always a correct answer (LLVM's
                 // lower-constant-intrinsics folds what it cannot prove to false;

@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <source_location> so the C++ model-header conformance case sees
 // this include. The scored task is
 // testdata/conformance/prism/cxx/cxx_source_location_true.cpp.

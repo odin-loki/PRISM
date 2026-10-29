@@ -20,7 +20,8 @@ def TailX (P : PFunc) (C : List IInfo) : Nat → List Frame → Store → Nat �
   | ι, fr :: rest, σ, lo => ∃ ι' I', C[ι']? = some I' ∧ fr.F = I'.fn ∧ 0 < fr.seg ∧
       (I'.kids[fr.cur]?).bind (·[fr.seg - 1]?) = some ι ∧ fr.pend = none ∧
       (∃ cb, (I'.blks[fr.cur]?).bind (·[fr.seg]?) = some cb ∧ ∀ J, C[ι]? = some J → J.retTo = some cb) ∧
-      RelX (I'.ctx P.vars) fr.R σ ∧ I'.hi ≤ lo ∧ TailX P C ι' rest σ I'.lo
+      RelX (I'.ctx P.vars) fr.R σ ∧ I'.hi ≤ lo ∧ (xLive I'.fn).contains fr.cur = true ∧
+      TailX P C ι' rest σ I'.lo
 
 /-- What the PIR block needs on entry: the predecessor for the phis
 (segment 0), or the continuation phis' entry for the returned value. -/
@@ -35,15 +36,15 @@ def InvX (P : PFunc) (C : List IInfo) (st : List Frame) (prevP : Option Nat) (cu
   ∃ fr rest ι I, st = fr :: rest ∧ C[ι]? = some I ∧ fr.F = I.fn ∧
     RelX (I.ctx P.vars) fr.R σ ∧
     (I.blks[fr.cur]?).bind (·[fr.seg]?) = some curP ∧
-    EntryX P I fr prevP curP σ ∧ TailX P C ι rest σ I.lo
+    EntryX P I fr prevP curP σ ∧ TailX P C ι rest σ I.lo ∧ (xLive I.fn).contains fr.cur = true
 
 theorem TailX.agree {M : XMod} {P : PFunc} {C : List IInfo}
     (hVF : ∀ (ι : Nat) (I : IInfo), C[ι]? = some I → InstFacts M P C I) :
     ∀ {ι : Nat} {rest : List Frame} {σ σ' : Store} {lo : Nat}, TailX P C ι rest σ lo →
     (∀ j, j < lo → σ' j = σ j) → TailX P C ι rest σ' lo
   | _, [], _, _, _, h, _ => h
-  | _, _ :: _, _, _, _, ⟨ι', I', hI', hF, hs, hk, hp, hcb, hR, hhi, ht⟩, ha =>
-    ⟨ι', I', hI', hF, hs, hk, hp, hcb, RelX.agree (hVF _ _ hI').ctx hR hhi ha, hhi,
+  | _, _ :: _, _, _, _, ⟨ι', I', hI', hF, hs, hk, hp, hcb, hR, hhi, hL, ht⟩, ha =>
+    ⟨ι', I', hI', hF, hs, hk, hp, hcb, RelX.agree (hVF _ _ hI').ctx hR hhi ha, hhi, hL,
       TailX.agree hVF ht (fun j hj => ha j (by have := (hVF _ _ hI').lohi; omega))⟩
 
 /-! ## Helpers -/
@@ -356,21 +357,43 @@ theorem trArgsX_length {c : Ctx} : ∀ {k : Nat} {args3 : List (Opnd × Nat × N
     obtain ⟨_, _, rfl⟩ := h
     simp [trArgsX_length h2]
 
+theorem freeStmts_cases {G : XFunc} {c : Ctx} {r : Option Nat} {sf : List PStmt}
+    (h : freeStmts G c r = .ok sf) :
+    (r = none → sf = []) ∧ (r.isSome → ∃ As, escArgsX c G.escNames = .ok As ∧ sf = As.map PStmt.free) := by
+  unfold freeStmts at h
+  cases r with
+  | none => simp only [Option.isSome_none, Bool.false_eq_true, ite_false, Except.ok.injEq] at h; exact ⟨fun _ => h.symm, by simp⟩
+  | some cb =>
+    refine ⟨by simp, fun _ => ?_⟩
+    simp only [Option.isSome_some, ite_true] at h
+    split at h
+    · cases h
+    · cases he : escArgsX c G.escNames with
+      | error e => rw [he] at h; cases h
+      | ok As => rw [he] at h; simp only [Except.map, Except.ok.injEq] at h; exact ⟨As, rfl, h.symm⟩
+
+theorem xStmts_frees (P : PFunc) (ω : Nat → Nat) (σ : Store) : ∀ (t : World) (As : List Arg) (r : List PStmt),
+    xStmts P ω σ t (As.map PStmt.free ++ r) = xStmts P ω σ (freeW σ t As) r
+  | _, [], _ => rfl
+  | t, a :: as, r => by
+    simp only [List.map_cons, List.cons_append, xStmts, freeW]
+    exact xStmts_frees P ω σ _ as r
+
 theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat → Nat}
     (hVF : ValidFacts M F P C) {st : List Frame} {prevP : Option Nat} {curP : Nat} {σ : Store}
     (hinv : InvX P C st prevP curP σ) (t : World)
     (K : List Frame → World → Out) (Kp : World → Option Nat → Nat → Store → POut)
     (hK : ∀ st' t' prevP' curP' σ', InvX P C st' prevP' curP' σ' → OSim (K st' t') (Kp t' prevP' curP' σ')) :
     OSim ((sStep M ω t st).out K) (pVisit P ω t prevP curP σ Kp) := by
-  obtain ⟨fr, rest, ι, I, rfl, hI, hfF, hR, hcur, hE, hT⟩ := hinv
+  obtain ⟨fr, rest, ι, I, rfl, hI, hfF, hR, hcur, hE, hT, hL⟩ := hinv
   have hIF := hVF.inst ι I hI
   have hctx := hIF.ctx
   obtain ⟨bl, hbl, hs'⟩ : ∃ bl, I.blks[fr.cur]? = some bl ∧ bl[fr.seg]? = some curP := by
     cases h : I.blks[fr.cur]? with
     | none => rw [h] at hcur; simp at hcur
     | some bl => rw [h] at hcur; exact ⟨bl, rfl, hcur⟩
-  obtain ⟨B, hB, hlen, hsle, hseg⟩ := hIF.seg fr.cur bl fr.seg curP hbl hs'
-  obtain ⟨k, PB, s1, t1, _, hPB, hhk, hins, hT1, hph0, hphc, hcall, hterm⟩ := segOK_spec hseg hB hcur
+  obtain ⟨B, hB, hlen, hsle, hseg⟩ := hIF.seg fr.cur bl fr.seg curP hL hbl hs'
+  obtain ⟨k, PB, s1, t1, _, hPB, hhk, hins, hT1, hph0, hphc, hcall, hterm, hthrow⟩ := segOK_spec hseg hB hcur
   have hBf : fr.F.blocks[fr.cur]? = some B := by rw [hfF]; exact hB
   have hen := enter_sim hIF hfF hPB hR hE hph0 hphc
   simp only [sStep, hBf, pVisit, hPB, Res.step_out]
@@ -407,8 +430,8 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
       obtain ⟨cb, hcb⟩ : ∃ cb, bl[fr.seg + 1]? = some cb :=
         ⟨bl[fr.seg + 1], List.getElem?_eq_getElem (by omega)⟩
       refine ⟨_, _, κ, J, rfl, hJ, rfl, bindArgs_rel J.fn.params As vs hpar hAV, by simp [hb0],
-        ⟨fun _ p hp => by simp at hp, fun h => by simp at h⟩, ?_⟩
-      refine ⟨ι, I, hI, hfF, by simp, by simpa using hκ, rfl, ⟨cb, by simp [hbl, hcb], ?_⟩, hR', hhi,
+        ⟨fun _ p hp => by simp at hp, fun h => by simp at h⟩, ?_, (hVF.inst κ J hJ).live0⟩
+      refine ⟨ι, I, hI, hfF, by simp, by simpa using hκ, rfl, ⟨cb, by simp [hbl, hcb], ?_⟩, hR', hhi, hL,
         hTa σ' ha'⟩
       intro J' hJ'
       rw [hJ] at hJ'; cases hJ'
@@ -419,24 +442,43 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
       have hseq : fr.seg = B.segs.length := by
         have := List.getElem?_eq_none_iff.mp hsg; omega
       have hcurT : I.tails[fr.cur]? = some curP := tails_of hbl hlen (by rw [← hseq]; exact hs')
-      obtain ⟨s2, t2, T, A?, htr, hT2, hst, hterm', hretA⟩ := termOK_spec (hterm hsg)
+      cases hth : B.thr
+      case true =>
+        obtain ⟨s2, hst⟩ := hthrow hsg hth
+        rw [hst, xStmts_append, XPRes.then_run, hBi]
+        rw [hBi] at hins
+        refine SimX.out (sinstsX_sim hctx B.last R0 _ k t s1 t1 hR0 ha0 hhk hins hT1) ?_
+        intro R t' σ' _ _
+        simp only [sEnd, hsg, hth, ite_true, Step.out, OSim]
+      obtain ⟨s2, t2, T, A?, htr, hT2, hst, hterm', hretA⟩ := termOK_spec (hterm hsg hth)
       rw [hst, xStmts_append, XPRes.then_run, hterm', hBi]
       rw [hBi] at hins
       refine SimX.out (sinstsX_sim hctx B.last R0 _ k t s1 t1 hR0 ha0 hhk hins hT1) ?_
       intro R t' σ' hR' ha'
       simp only [sEnd, hsg]
       -- a jump within the instance
-      have hgo : ∀ tn j', targetX I.fn I.heads tn = .ok j' →
+      have hgo : ∀ tn j', (∀ x, lookupBlock I.fn.shape tn = some x → x ∈ xSucc I.fn B) →
+          targetX I.fn I.heads tn = .ok j' →
           OSim ((match lookupBlock fr.F.shape tn with
             | some j => Step.next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t'
             | none => Step.stuck).out K) (Kp t' (some curP) j' σ') := by
-        intro tn j' hj
+        intro tn j' hsx hj
         obtain ⟨jb, hlk, hjb⟩ := targetX_spec hIF hj
+        have hLj := hIF.closed fr.cur B hL hB jb (hsx jb hlk)
         rw [hfF, hlk]
         apply hK
-        refine ⟨_, rest, ι, I, rfl, hI, rfl, hR', hjb, ⟨fun _ p hp => ?_, fun h => by simp at h⟩, hTa σ' ha'⟩
+        refine ⟨_, rest, ι, I, rfl, hI, rfl, hR', hjb, ⟨fun _ p hp => ?_, fun h => by simp at h⟩, hTa σ' ha', hLj⟩
         simp only [Option.some.injEq] at hp; subst hp
         exact ⟨curP, hcurT, rfl⟩
+      cases hnr : B.nr
+      case some pc =>
+        obtain ⟨p, cl⟩ := pc
+        simp only [trTermN, hnr, Except.ok.injEq, Prod.mk.injEq] at htr
+        obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
+        simp only [hth, Bool.false_eq_true, ite_false, hnr]
+        rfl
+      simp only [trTermN, hnr] at htr
+      simp only [hth, Bool.false_eq_true, ite_false, hnr]
       cases htm : B.term with
       | br tn =>
         rw [htm] at htr
@@ -445,7 +487,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
         simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
         obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
         simp only [xStmts, XPRes.run, pTerm]
-        exact hgo tn j' hj'
+        exact hgo tn j' (fun x hx => by simp [xSucc, htm, hx]) hj'
       | cbr cnd tn fn =>
         rw [htm] at htr
         simp only [trTermX] at htr
@@ -460,41 +502,50 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
         intro v _ _ hCv _
         simp only [xStmts, XPRes.run, pTerm, hCv]
         cases truthN v
-        · simp only [Bool.false_eq_true, ite_false]; exact hgo fn fj hfj
-        · simp only [ite_true]; exact hgo tn tj htj
+        · simp only [Bool.false_eq_true, ite_false]; exact hgo fn fj (fun x hx => by simp [xSucc, htm, hx]) hfj
+        · simp only [ite_true]; exact hgo tn tj (fun x hx => by simp [xSucc, htm, hx]) htj
       | ret o =>
         rw [htm] at htr
         cases o with
         | none =>
           simp only [trTermX] at htr
           obtain ⟨_, _, htr⟩ := Except.bind_ok htr
+          obtain ⟨sf, hsf, htr⟩ := Except.bind_ok htr
           simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
           obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
-          simp only [xStmts, XPRes.run]
           cases rest with
           | nil =>
             simp only [TailX] at hT; subst hT
             obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
             rw [hC0] at hI; cases hI
-            simp only [hr0, pTerm, retTo, Step.out]
+            rw [(freeStmts_cases hsf).1 hr0]
+            simp only [xStmts, XPRes.run, hr0, pTerm, retFree, Step.out]
             rfl
           | cons c cs =>
-            obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hT'⟩ := hT
-            simp only [hret I hI, pTerm, retTo, Step.out]
+            obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hcL, hT'⟩ := hT
+            obtain ⟨As, hAs, rfl⟩ := (freeStmts_cases hsf).2 (by simp [hret I hI])
+            rw [← List.append_nil (As.map PStmt.free), xStmts_frees]
+            simp only [retFree]
+            rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
+            · simp only [hfF, hst]; trivial
+            simp only [hfF, hok, Res.step, xStmts, XPRes.run, hret I hI, pTerm, retTo, Step.out]
             apply hK
             refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb, ⟨fun h => by simp at h; omega, fun _ v hv => by simp at hv⟩,
-              TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega))⟩
+              TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
+              hcL⟩
             exact RelX.agree (hVF.inst _ _ hI').ctx hcR hhi' (fun j hj => ha' j (by simpa [IInfo.ctx] using hj))
         | some o =>
           simp only [trTermX] at htr
           obtain ⟨_, _, htr⟩ := Except.bind_ok htr
           obtain ⟨⟨so, tw, A⟩, ho, htr⟩ := Except.bind_ok htr
           obtain ⟨⟨se, te⟩, hse, htr⟩ := Except.bind_ok htr
+          obtain ⟨sf, hsf, htr⟩ := Except.bind_ok htr
           simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
           obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
           simp only [Res.step_out, hfF]
           have hk2 : I.hi ≤ k + t1.length := Nat.le_trans hhk (Nat.le_add_right k t1.length)
-          refine opndX_osim hR' ho hk2 t' se _ _ ?_
+          rw [List.append_assoc]
+          refine opndX_osim hR' ho hk2 t' (se ++ sf) _ _ ?_
           intro v _ htw hAv hAb
           subst htw
           cases rest with
@@ -502,6 +553,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
             simp only [TailX] at hT; subst hT
             obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
             rw [hC0] at hI; cases hI
+            rw [(freeStmts_cases hsf).1 hr0, List.append_nil]
             simp only [escStmts, hr0, Option.isNone_none, Bool.true_and, List.isEmpty_nil,
               List.length_nil, Nat.add_zero] at hse ⊢
             cases hp : I.fn.retPtr with
@@ -542,17 +594,22 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
                     Step.out]
                   rw [Arg.get_agree hag hAb, hAv]; rfl
           | cons c cs =>
-            obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hT'⟩ := hT
+            obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hcL, hT'⟩ := hT
             simp only [escStmts, hret I hI, Option.isNone_some, Bool.false_and, Bool.false_eq_true, ite_false,
               Except.ok.injEq, Prod.mk.injEq] at hse
             obtain ⟨rfl, rfl⟩ := hse
             obtain ⟨CB, pu, pr, u, hCB, hph, hpa, hpu⟩ := hretA cb A (hret I hI) rfl
-            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, xStmts, XPRes.run,
-              hret I hI, pTerm, retTo, Step.out]
+            obtain ⟨As, hAs, rfl⟩ := (freeStmts_cases hsf).2 (by simp [hret I hI])
+            rw [List.nil_append, ← List.append_nil (As.map PStmt.free), xStmts_frees]
+            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, retFree]
+            rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
+            · simp only [hfF, hst]; trivial
+            simp only [hfF, hok, Res.step, xStmts, XPRes.run, hret I hI, pTerm, retTo, Step.out]
             apply hK
             refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb,
               ⟨fun h => by simp at h; omega, fun _ v' hv' => ?_⟩,
-              TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega))⟩
+              TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
+              hcL⟩
             · exact RelX.agree (hVF.inst _ _ hI').ctx hcR hhi' (fun j hj => ha' j (by simpa [IInfo.ctx] using hj))
             · simp only [Option.some.injEq] at hv'; subst hv'
               exact ⟨CB, pu, pr, curP, A, u, hCB, hph, rfl, hpa, hAv, hpu⟩
@@ -585,7 +642,10 @@ theorem translateX_exact {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo}
   obtain ⟨I0, hC0, hF0, _, ⟨r0, hb0⟩, htp⟩ := hVF.top
   apply run_simX hVF
   refine ⟨initFrame F args, [], 0, I0, rfl, hC0, hF0.symm, ?_, by simp [initFrame, hb0],
-    ⟨fun _ p hp => by simp [initFrame] at hp, fun h => by simp [initFrame] at h⟩, rfl⟩
+    ⟨fun _ p hp => by simp [initFrame] at hp, fun h => by simp [initFrame] at h⟩, rfl, ?_⟩
+  case refine_2 =>
+    have := (hVF.inst 0 I0 hC0).live0
+    simpa [initFrame] using this
   -- the parameters
   intro m x hm
   simp only [initFrame] at hm

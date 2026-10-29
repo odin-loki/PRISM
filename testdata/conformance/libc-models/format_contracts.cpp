@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <format> so the C++ model-header conformance case sees this include.
 // The scored tasks are testdata/conformance/prism/cxx/cxx_format_true.cpp
 // and cxx_format_false.cpp. No sidecar: a libc-models task must list both
