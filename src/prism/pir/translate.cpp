@@ -1325,6 +1325,19 @@ struct Tr final : pirmem::TrApi {
                 out.nondet = true;
                 return;
             }
+            // C23 `static_assert(e[, msg])` in a unit lowered as C17 (no
+            // <assert.h> macro): clang sees a call to an undeclared function.
+            // Its operand is the constant expression C23 6.7.11 requires to be
+            // nonzero; failing it is a constraint violation, checked here (a
+            // constant true operand proves, anything else is reported).
+            if (n == "static_assert" && !in.ops.empty()) {
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(c.width, 0)), "static_assert", "FUNC-CONTRACT",
+                      "static_assert operand can be zero", line);
+                int dst = result_var(fr, in);
+                if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+                return;
+            }
             if (n == "__VERIFIER_assume") {
                 Arg c = arg(0);
                 assume(cur, p2(cur, Op::Ne, c, Arg::c(c.width, 0)));
