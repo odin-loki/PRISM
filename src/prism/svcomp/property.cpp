@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <vector>
 #include <set>
 
 namespace prism::svcomp {
@@ -160,7 +161,80 @@ std::optional<std::string> neutralize_error_calls(const std::string& src) {
         i = e;
     }
     if (!changed) return std::nullopt;
-    return "extern void exit(int); " + out;
+    std::string prefix = "extern void exit(int); ";
+    // A __VERIFIER_assert whose body is now only `if (!(c)) { [ERROR:] {exit(0); ...} } [return;]`
+    // ends the run on a false condition and does nothing else: every call is
+    // `assume(c)`. Calls are renamed to __VERIFIER_assume (same length, so
+    // positions are kept), which both engines model as "continue only if c".
+    // Only when the task never names __VERIFIER_assume itself.
+    if (out.find("__VERIFIER_assume") == std::string::npos) {
+        static const std::string kA = "__VERIFIER_assert";
+        std::vector<std::size_t> uses;
+        std::size_t def_body = std::string::npos, def_end = 0;
+        for (std::size_t k = out.find(kA); k != std::string::npos; k = out.find(kA, k + 1)) {
+            if ((k > 0 && ident(out[k - 1])) || (k + kA.size() < out.size() && ident(out[k + kA.size()]))) continue;
+            uses.push_back(k);
+            std::size_t c = out.find(')', k);
+            if (c == std::string::npos) continue;
+            std::size_t n = c + 1;
+            while (n < out.size() && std::isspace(static_cast<unsigned char>(out[n]))) ++n;
+            if (n < out.size() && out[n] == '{') {
+                if (def_body != std::string::npos) { def_body = std::string::npos - 1; break; }  // two definitions
+                int depth = 0;
+                std::size_t e = n;
+                for (; e < out.size(); ++e) {
+                    if (out[e] == '{') ++depth;
+                    if (out[e] == '}' && --depth == 0) break;
+                }
+                def_body = n;
+                def_end = e;
+                // parameter name: last identifier before ')'
+                std::size_t pe = c;
+                while (pe > k && !ident(out[pe - 1])) --pe;
+                std::size_t pb = pe;
+                while (pb > k && ident(out[pb - 1])) --pb;
+                std::string param = out.substr(pb, pe - pb);
+                std::string b;
+                for (std::size_t z = n; z <= e && z < out.size(); ++z)
+                    if (!std::isspace(static_cast<unsigned char>(out[z]))) b += out[z];
+                bool ok = false;
+                for (const std::string& h : {"{if(!(" + param + ")){", "{if(!" + param + "){"})
+                    if (b.rfind(h, 0) == 0) {
+                        std::string x = b.substr(h.size());
+                        for (const std::string& tail : {std::string("}}"), std::string("}return;}")})
+                            if (x.size() >= tail.size() && x.compare(x.size() - tail.size(), tail.size(), tail) == 0) {
+                                std::string mid = x.substr(0, x.size() - tail.size());
+                                bool exits = false, only = true;
+                                for (std::size_t z = 0; z < mid.size() && only;) {
+                                    bool hit = false;
+                                    for (const std::string tok : {"{", "}", "ERROR:", "exit(0);"})
+                                        if (mid.compare(z, tok.size(), tok) == 0) {
+                                            exits = exits || tok == "exit(0);";
+                                            z += tok.size();
+                                            hit = true;
+                                            break;
+                                        }
+                                    only = hit;
+                                }
+                                ok = ok || (only && exits);
+                            }
+                    }
+                if (!ok) { def_body = std::string::npos - 1; break; }
+            }
+        }
+        if (def_body != std::string::npos && def_body != std::string::npos - 1) {
+            for (std::size_t k : uses) {
+                std::size_t c = out.find(')', k);
+                std::size_t n = c + 1;
+                while (n < out.size() && std::isspace(static_cast<unsigned char>(out[n]))) ++n;
+                if (n == def_body) continue;  // the definition header
+                if (k > def_body && k < def_end) continue;
+                out.replace(k, kA.size(), "__VERIFIER_assume");
+            }
+            prefix += "extern void __VERIFIER_assume(int); ";
+        }
+    }
+    return prefix + out;
 }
 
 bool width_dependent_code(const std::string& source) {

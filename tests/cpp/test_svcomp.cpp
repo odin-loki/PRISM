@@ -1365,3 +1365,25 @@ TEST_CASE("svcomp solve no-overflow: a reachable reach_error() does not block th
         CHECK(oc.decision.answer != "true");
     }
 }
+
+TEST_CASE("svcomp neutralize_error_calls: a canonical __VERIFIER_assert becomes an assume; any other body is kept") {
+    const std::string ok = "void reach_error() { }\nvoid __VERIFIER_assert(int cond) {\n  if (!(cond)) {\n    ERROR: {reach_error();abort();}\n  }\n  return;\n}\n"
+                           "int main() { __VERIFIER_assert(1 > 0); return 0; }\n";
+    auto out = prism::svcomp::neutralize_error_calls(ok);
+    REQUIRE(out.has_value());
+    CHECK(out->find("void __VERIFIER_assert(int cond) {") != std::string::npos);
+    CHECK(out->find("__VERIFIER_assume(1 > 0);") != std::string::npos);
+    CHECK(out->find("extern void __VERIFIER_assume(int); ") != std::string::npos);
+    CHECK(out->size() == ok.size() + std::string("extern void exit(int); extern void __VERIFIER_assume(int); ").size() +
+                             2 * (std::string("exit(0)").size()) - std::string("reach_error()abort()").size());
+    // the body does more than end the run: calls stay asserts
+    const std::string other = "int g;\nvoid __VERIFIER_assert(int cond) { g++; if (!(cond)) { abort(); } }\n"
+                              "int main() { __VERIFIER_assert(g == 0); return 0; }\n";
+    auto o2 = prism::svcomp::neutralize_error_calls(other);
+    REQUIRE(o2.has_value());
+    CHECK(o2->find("__VERIFIER_assume") == std::string::npos);
+    // the task names __VERIFIER_assume itself: no rename
+    auto o3 = prism::svcomp::neutralize_error_calls("void __VERIFIER_assume(int c);\n" + ok);
+    REQUIRE(o3.has_value());
+    CHECK(o3->find("__VERIFIER_assume(1 > 0)") == std::string::npos);
+}
