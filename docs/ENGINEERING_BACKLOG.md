@@ -17,8 +17,8 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
-| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
-| `vector_insert_true` timeout | **In progress:** `PRISM_INDEX_LE3` + `seed_vs_bin` + `materialize_vs`; direct `pir` ~61 min failed (no output); `prism-qa conformance --stages pir` still **Law 7** (no findings, ~96 s) — raise mem limit / disable solver cache / debug OOM | `memory.cpp`, `encode.cpp`, `vector_insert.cpp` |
+| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still BOUNDED: Houdini runs out of time (348 candidates, 4 loops; 3 rounds in 1200 s with `--timeout 200`) — needs cheaper step queries / fewer candidates | `houdini.inc`, `unbounded_string_contracts.cpp` |
+| `vector_insert_true` timeout | **Done:** `peel_ite` (dead same-condition ites, single-arg `or`/`and`), merged-set operand retry, `kVsMax` 64 → PROVED at unwind 8 in ~24 s / 1.5 GB; UAF twin FAILED MEM-UAF. Encoder OOM is now Law 7 UNKNOWN (`PRISM_PIR_MEM_MB`, default 60% of RAM) | `memory.cpp`, `encode.cpp`, `test_pir_mem.cpp` |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
 
