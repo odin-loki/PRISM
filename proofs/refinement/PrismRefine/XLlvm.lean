@@ -663,6 +663,17 @@ def retTo : List Frame → Option Nat → World → Step
   | [], v, _ => .ret v
   | c :: cs, v, t => .next ({ c with pend := v } :: cs) t
 
+/-- The stack objects `ns` of a returning callee end (LangRef: `alloca`
+memory is released when the function returns; `Tr::call`'s `end_lifetime`). -/
+def freeAll (R : SRegs) (W : World) : List String → Res World
+  | [] => .ok W
+  | a :: t => (sOpnd R 64 (.reg a)).bind fun pa => freeAll R { W with mem := W.mem.free (pa % 2 ^ 64) } t
+
+/-- Return from frame `F`: a callee's own stack objects end first. -/
+def retFree (F : XFunc) (R : SRegs) : List Frame → Option Nat → World → Step
+  | [], v, _ => .ret v
+  | c :: cs, v, t => (freeAll R t F.escNames).step fun t' => retTo (c :: cs) v t'
+
 def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : World) : Step :=
   match B.segs[fr.seg]? with
   | some (_, c) =>
@@ -689,14 +700,14 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         match lookupBlock fr.F.shape (if truthN v then tn else fn) with
         | some j => .next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t
         | none => .stuck
-    | .ret none => retTo rest none t
+    | .ret none => retFree fr.F R rest none t
     | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
       -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
       -- into one of its own stack objects returns a dangling pointer
       if rest.isEmpty && fr.F.retPtr then
         (escHit R v fr.F.escNames).step fun hit =>
           if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retTo rest (some v) t
-      else retTo rest (some v) t
+      else retFree fr.F R rest (some v) t
     | .unreachable => .ub
 
 /-- One step: the current segment of the top frame. -/
@@ -890,6 +901,10 @@ def lRetTo : List LFrame → Option Nat → World → Bool → LStep
   | [], v, _, c => .ret v c
   | f :: fs, v, t, c => .next ({ f with pend := v } :: fs) t c
 
+def lRetFree (F : XFunc) (R : LRegs) : List LFrame → Option Nat → World → Bool → LStep
+  | [], v, _, c => .ret v c
+  | f :: fs, v, t, c => (freeAll (lower R) t F.escNames).lstep fun t' => lRetTo (f :: fs) v t' c
+
 def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World) : LStep :=
   match B.segs[fr.seg]? with
   | some (_, cl) =>
@@ -921,14 +936,14 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       | .ok (.ind, _) => .ub
       | .ub => .ub
       | .stuck => .stuck
-    | .ret none => lRetTo rest none t S.c
+    | .ret none => lRetFree fr.F S.R rest none t S.c
     | .ret (some o) =>
       match lOpnd S.R fr.F.retw o with
       | .ok (.val v, cv) =>
         if rest.isEmpty && fr.F.retPtr then
           (escHit (lower S.R) v fr.F.escNames).lstep fun hit =>
             if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetTo rest (some v) t (S.c || cv)
-        else lRetTo rest (some v) t (S.c || cv)
+        else lRetFree fr.F S.R rest (some v) t (S.c || cv)
       | .ok (.poison, _) => .ub
       | .ok (.ind, _) => .ub
       | .ub => .ub

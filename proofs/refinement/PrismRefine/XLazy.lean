@@ -471,6 +471,21 @@ theorem lstep_bad {α : Type} (r : Res α) (f : α → LStep) (hf : ∀ a, (f a)
   | ub => exact .inl rfl
   | stuck => exact .inr (.inl rfl)
 
+theorem lRetFree_bad (F : XFunc) (R : LRegs) (rest : List LFrame) (v : Option Nat) (t : World) :
+    (lRetFree F R rest v t true).badish := by
+  cases rest with
+  | nil => exact .inr (.inr (.inr ⟨v, rfl⟩))
+  | cons f fs => exact lstep_bad _ _ (fun _ => lRetTo_bad _ _ _)
+
+/-- A callee's return: the strict and the lazy runs free the same objects. -/
+theorem retFree_lift (F : XFunc) (R : SRegs) (c : Frame) (cs : List Frame) (v : Option Nat) (t : World) :
+    SLStep (retFree F R (c :: cs) v t) (lRetFree F (lift R) ((c :: cs).map liftFr) v t false) := by
+  simp only [retFree, List.map_cons, lRetFree, lower_lift]
+  cases freeAll R t F.escNames with
+  | ok t' => simp [Res.step, Res.lstep, retTo, lRetTo, SLStep, liftFr]
+  | ub => exact .inl rfl
+  | stuck => rfl
+
 theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World)
     (hc : S.c = true) : (lEnd M fr rest B S t).badish := by
   unfold lEnd
@@ -502,7 +517,7 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
         · exact .inr (.inr (.inl ⟨_, t, by rw [hc]⟩))
         · exact .inr (.inl rfl)
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
-    · rw [hc]; exact lRetTo_bad _ _ _
+    · rw [hc]; exact lRetFree_bad _ _ _ _ _
     · split
       · simp only [hc, Bool.true_or]
         split
@@ -510,7 +525,7 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
             split
             · exact .inl rfl
             · exact lRetTo_bad _ _ _)
-        · exact lRetTo_bad _ _ _
+        · exact lRetFree_bad _ _ _ _ _
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · exact .inl rfl
 
@@ -594,7 +609,7 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
         simp only
         cases rest with
         | nil => rfl
-        | cons c cs => simp [retTo, lRetTo, SLStep, liftFr]
+        | cons c cs => exact retFree_lift _ _ c cs none t
       | some o =>
         simp only
         have h := opnd_lift R fr.F.retw o
@@ -615,7 +630,9 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
               | ub => exact .inl rfl
               | stuck => rfl
             | false => rfl
-          | cons c cs => simp [retTo, lRetTo, SLStep, liftFr]
+          | cons c cs =>
+            simp only [List.map_cons, List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false]
+            exact retFree_lift _ _ c cs (some v) t
         | stuck => rw [hs] at h; simp only [OpRel] at h; simp [Res.step, h, SLStep]
         | ub =>
           rw [hs] at h; simp only [OpRel] at h

@@ -357,6 +357,28 @@ theorem trArgsX_length {c : Ctx} : ∀ {k : Nat} {args3 : List (Opnd × Nat × N
     obtain ⟨_, _, rfl⟩ := h
     simp [trArgsX_length h2]
 
+theorem freeStmts_cases {G : XFunc} {c : Ctx} {r : Option Nat} {sf : List PStmt}
+    (h : freeStmts G c r = .ok sf) :
+    (r = none → sf = []) ∧ (r.isSome → ∃ As, escArgsX c G.escNames = .ok As ∧ sf = As.map PStmt.free) := by
+  unfold freeStmts at h
+  cases r with
+  | none => simp only [Option.isSome_none, Bool.false_eq_true, ite_false, Except.ok.injEq] at h; exact ⟨fun _ => h.symm, by simp⟩
+  | some cb =>
+    refine ⟨by simp, fun _ => ?_⟩
+    simp only [Option.isSome_some, ite_true] at h
+    split at h
+    · cases h
+    · cases he : escArgsX c G.escNames with
+      | error e => rw [he] at h; cases h
+      | ok As => rw [he] at h; simp only [Except.map, Except.ok.injEq] at h; exact ⟨As, rfl, h.symm⟩
+
+theorem xStmts_frees (P : PFunc) (ω : Nat → Nat) (σ : Store) : ∀ (t : World) (As : List Arg) (r : List PStmt),
+    xStmts P ω σ t (As.map PStmt.free ++ r) = xStmts P ω σ (freeW σ t As) r
+  | _, [], _ => rfl
+  | t, a :: as, r => by
+    simp only [List.map_cons, List.cons_append, xStmts, freeW]
+    exact xStmts_frees P ω σ _ as r
+
 theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat → Nat}
     (hVF : ValidFacts M F P C) {st : List Frame} {prevP : Option Nat} {curP : Nat} {σ : Store}
     (hinv : InvX P C st prevP curP σ) (t : World)
@@ -488,19 +510,25 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
         | none =>
           simp only [trTermX] at htr
           obtain ⟨_, _, htr⟩ := Except.bind_ok htr
+          obtain ⟨sf, hsf, htr⟩ := Except.bind_ok htr
           simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
           obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
-          simp only [xStmts, XPRes.run]
           cases rest with
           | nil =>
             simp only [TailX] at hT; subst hT
             obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
             rw [hC0] at hI; cases hI
-            simp only [hr0, pTerm, retTo, Step.out]
+            rw [(freeStmts_cases hsf).1 hr0]
+            simp only [xStmts, XPRes.run, hr0, pTerm, retFree, Step.out]
             rfl
           | cons c cs =>
             obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hcL, hT'⟩ := hT
-            simp only [hret I hI, pTerm, retTo, Step.out]
+            obtain ⟨As, hAs, rfl⟩ := (freeStmts_cases hsf).2 (by simp [hret I hI])
+            rw [← List.append_nil (As.map PStmt.free), xStmts_frees]
+            simp only [retFree]
+            rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
+            · simp only [hfF, hst]; trivial
+            simp only [hfF, hok, Res.step, xStmts, XPRes.run, hret I hI, pTerm, retTo, Step.out]
             apply hK
             refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb, ⟨fun h => by simp at h; omega, fun _ v hv => by simp at hv⟩,
               TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
@@ -511,11 +539,13 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
           obtain ⟨_, _, htr⟩ := Except.bind_ok htr
           obtain ⟨⟨so, tw, A⟩, ho, htr⟩ := Except.bind_ok htr
           obtain ⟨⟨se, te⟩, hse, htr⟩ := Except.bind_ok htr
+          obtain ⟨sf, hsf, htr⟩ := Except.bind_ok htr
           simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
           obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
           simp only [Res.step_out, hfF]
           have hk2 : I.hi ≤ k + t1.length := Nat.le_trans hhk (Nat.le_add_right k t1.length)
-          refine opndX_osim hR' ho hk2 t' se _ _ ?_
+          rw [List.append_assoc]
+          refine opndX_osim hR' ho hk2 t' (se ++ sf) _ _ ?_
           intro v _ htw hAv hAb
           subst htw
           cases rest with
@@ -523,6 +553,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
             simp only [TailX] at hT; subst hT
             obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
             rw [hC0] at hI; cases hI
+            rw [(freeStmts_cases hsf).1 hr0, List.append_nil]
             simp only [escStmts, hr0, Option.isNone_none, Bool.true_and, List.isEmpty_nil,
               List.length_nil, Nat.add_zero] at hse ⊢
             cases hp : I.fn.retPtr with
@@ -568,8 +599,12 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
               Except.ok.injEq, Prod.mk.injEq] at hse
             obtain ⟨rfl, rfl⟩ := hse
             obtain ⟨CB, pu, pr, u, hCB, hph, hpa, hpu⟩ := hretA cb A (hret I hI) rfl
-            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, xStmts, XPRes.run,
-              hret I hI, pTerm, retTo, Step.out]
+            obtain ⟨As, hAs, rfl⟩ := (freeStmts_cases hsf).2 (by simp [hret I hI])
+            rw [List.nil_append, ← List.append_nil (As.map PStmt.free), xStmts_frees]
+            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, retFree]
+            rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
+            · simp only [hfF, hst]; trivial
+            simp only [hfF, hok, Res.step, xStmts, XPRes.run, hret I hI, pTerm, retTo, Step.out]
             apply hK
             refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb,
               ⟨fun h => by simp at h; omega, fun _ v' hv' => ?_⟩,

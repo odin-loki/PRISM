@@ -1023,7 +1023,6 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       exact ⟨_, rfl, RelX.set hR hl hu hsh _, agree_set ha0 hlo _⟩
   | alloca d size al =>
     simp only [trSInstX] at h
-    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
     obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
     obtain ⟨di, hdi, h⟩ := Except.bind_ok h
     obtain ⟨u3, hu3, h⟩ := Except.bind_ok h

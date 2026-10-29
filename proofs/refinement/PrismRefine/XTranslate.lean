@@ -564,7 +564,6 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     pure (sa ++ [.assign i .copy [A.setW w]], ta)
   | .alloca d size al => do
-    need (!c.inlined) "outside fragment: alloca in an inlined function"
     need (decide (size < 2 ^ 47)) "UNENCODED: stack object larger than 2^47 bytes"
     let i ← dstX c d 64
     need (look c.sh d).isNone "outside fragment: result with a shadow"
@@ -909,6 +908,15 @@ def escStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) (j : Nat) (A : Arg) :
     Except String (List PStmt × List Nat) :=
   if retTo.isNone && G.retPtr then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
 
+/-- `Tr::call`'s `end_lifetime` of an inlined callee's own stack objects at
+its `ret` (`Frame::allocas`); a callee returning a pointer next to them would
+need `stack_escape_check` (outside the fragment). -/
+def freeStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) : Except String (List PStmt) :=
+  if retTo.isSome then
+    if G.retPtr && !G.escNames.isEmpty then .error "outside fragment: inlined function returning a pointer with stack objects"
+    else (escArgsX c G.escNames).map (·.map .free)
+  else .ok []
+
 /-- The terminator; `retTo` is the continuation block of an inlined
 instance (its `ret` jumps there), `none` for the analysed function.  Also
 returns the `Arg` of a returned value (the continuation phi's entry). -/
@@ -924,12 +932,14 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
     pure (s, tw, .br C tj fj, none)
   | .ret none => do
     need (G.retw == 0) "outside fragment: ret void in a function returning a value"
-    pure ([], [], (match retTo with | some cb => .jmp cb | none => .ret none), none)
+    let sf ← freeStmts G c retTo
+    pure (sf, [], (match retTo with | some cb => .jmp cb | none => .ret none), none)
   | .ret (some o) => do
     need (G.retw != 0) "outside fragment: ret value in a void function"
     let (s, tw, A) ← trOpndX c G.retw true k o
     let (se, te) ← escStmts G c retTo (k + tw.length) A
-    pure (s ++ se, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
+    let sf ← freeStmts G c retTo
+    pure (s ++ se ++ sf, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
   | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop, none)
 
 /-- The terminator of a block, or the failing check of a noreturn failure
@@ -1110,6 +1120,10 @@ def xDeadInc (G : XFunc) (live : List Nat) : Bool :=
     | some j => !live.contains j
     | none => false
 
+/-- The number of `alloca`s of `G`. -/
+def xAllocas (G : XFunc) : Nat :=
+  (G.blocks.flatMap fun B => (B.segs.flatMap (·.1)) ++ B.last).countP (·.allocaDst?.isSome)
+
 /-- `Tr::enter_frame`: blocks, result variables, shadow variables of a new
 instance whose parameters are bound to `penv`.  Returns the instance index. -/
 def enterFrame (G : XFunc) (penv : List (String × Arg)) (lo : Nat) (retTo : Option Nat) : TM Nat := do
@@ -1126,6 +1140,10 @@ def enterFrame (G : XFunc) (penv : List (String × Arg)) (lo : Nat) (retTo : Opt
     sh := sh ++ [(d, .v v 1)]
   if !nodupB (env.map Prod.fst) then throw "outside fragment: duplicate SSA name"
   if !nodupB (G.blocks.map XBlock.name) then throw "outside fragment: duplicate block name"
+  -- `Frame::allocas`: an inlined callee's stack objects end at its return,
+  -- those of the entry block before its first call (the others would stay)
+  if retTo.isSome && xAllocas G != G.escNames.length then
+    throw "outside fragment: alloca in an inlined function outside its entry block"
   let hi := (← get).vars.size
   let I : IInfo := { fn := G, env := env, sh := sh, lo := lo, hi := hi, retTo := retTo,
                      blks := heads.map fun h => [h], ks := G.blocks.map fun _ => [],
