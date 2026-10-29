@@ -931,6 +931,22 @@ exported). NOT yet covered, so every catch pad is still refused at
    refuse when any thrown type has a dtor), `llvm.eh.typeid.for` (constant
    `type_id`), `__cxa_rethrow`. The exporter must emit these calls as
    dedicated lines (now `call` to an unknown function).
+   FINDING (blocks step 1 as written): the extended simulation runs LLVM
+   and PIR on the SAME world (`SimX`: `p = .ok σ' t'` with the LLVM `t'`).
+   `L glob` works because the LLVM side has the same `.glob` SInst
+   (`globAlloc`), so both worlds allocate in lockstep. A PIR-only prologue
+   alloc (the caught slot) would shift every later object id and oracle
+   draw, which breaks `RelX` for all later pointers; proving it needs a
+   renaming relation between the worlds (an XMemSim rewrite). Cheaper
+   options: (a) make the LLVM side allocate it too: the exporter emits
+   `L glob %__prism.caught 72 ...` first in the entry block (after the other
+   globs, as `emit_entry_globals` then `caught_slot` order in the
+   prologue) and `.glob` already has its proof; this needs the C++
+   translator to allocate the slot eagerly under the same static condition
+   the exporter uses (e.g. "the export closure calls __cxa_begin_catch /
+   end_catch / rethrow"), since `caught_slot()` is lazy today (first
+   use, var number mid-stream). Changing translate.cpp affects product
+   output: needs sign-off. (b) the renaming relation. Recommend (a).
 3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
    list_contracts.
 Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
