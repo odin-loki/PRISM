@@ -3182,6 +3182,64 @@ struct Flow {
         for (auto& c : inner(n)) forget_tested(c);
     }
 
+    // Variables a loop may change from one iteration to the next: every reference that is not a
+    // plain rvalue read (assigned, ++/--, address taken, bound to a reference, member call base),
+    // and the operand of free / realloc / delete / std::move. Lambdas count as writes of whatever
+    // they name.
+    static void loop_writes(const json& n, std::set<std::string>& w, std::vector<const json*>& parents) {
+        if (!n.is_object()) {
+            if (n.is_array())
+                for (auto& c : n) loop_writes(c, w, parents);
+            return;
+        }
+        if (kind(n) == "DeclRefExpr") {
+            const auto& id = str_field(ref_decl(n), "id");
+            const json* p = parents.empty() ? nullptr : parents.back();
+            bool read = p && kind(*p) == "ImplicitCastExpr" && str_field(*p, "castKind") == "LValueToRValue";
+            if (read) {
+                for (auto it = parents.rbegin(); it != parents.rend(); ++it) {
+                    const auto& pk = kind(**it);
+                    if (is_implicit_wrapper(pk) || pk == "ParenExpr") continue;
+                    if (pk == "CXXDeleteExpr") read = false;
+                    else if (is_call_kind(pk) &&
+                             one_of(callee_name(**it), {"free", "cfree", "realloc", "reallocarray", "move", "forward"}))
+                        read = false;
+                    break;
+                }
+            }
+            if (!read) w.insert(id);
+        }
+        parents.push_back(&n);
+        for (auto& c : inner(n)) loop_writes(c, w, parents);
+        parents.pop_back();
+    }
+
+    // One iteration of a loop body. Variables the loop never changes keep their state inside the
+    // body (the same on every iteration, so a hit there is a hit on the first one); the others
+    // are forgotten. `cond` is the controlling expression of a while / for (a pointer it tests is
+    // non-null in the body); `extra` are the other parts that run each iteration. After the loop
+    // every variable named in `after_havoc` is forgotten, as before this walk.
+    void loop(const json& body, const json* cond, const std::vector<const json*>& extra,
+              const std::vector<const json*>& after_havoc) {
+        std::set<std::string> w;
+        std::vector<const json*> parents;
+        loop_writes(body, w, parents);
+        if (cond) loop_writes(*cond, w, parents);
+        for (auto* e : extra)
+            if (e) loop_writes(*e, w, parents);
+        auto after = st;
+        st.swap(after);
+        for (auto* h : after_havoc)
+            if (h) havoc(*h);
+        st.swap(after);
+        for (auto& id : w) st.erase(id);
+        if (cond) forget_tested(*cond);
+        stopped = false;
+        if (body.is_object() && !body.empty()) stmt(body);
+        st = std::move(after);
+        stopped = false;
+    }
+
     // Statements of one block, in order.
     void block(const json& b) {
         for (auto& s : inner(b)) {
@@ -3256,7 +3314,7 @@ struct Flow {
             branches(s, i);
             return;
         }
-        if (k == "SwitchStmt" || k == "WhileStmt") {
+        if (k == "SwitchStmt") {
             std::size_t i = 0;
             if (flag(s, "hasInit")) stmt(child(s, i++));
             if (flag(s, "hasVar")) stmt(child(s, i++));
@@ -3264,11 +3322,39 @@ struct Flow {
             for (std::size_t j = i + 1; j < n_children(s); ++j) havoc(child(s, j));
             return;
         }
+        if (k == "WhileStmt") {
+            std::size_t i = 0;
+            if (flag(s, "hasVar")) stmt(child(s, i++));
+            if (n_children(s) < i + 2) {
+                havoc(s);
+                return;
+            }
+            eval(child(s, i), Ctx2::Branch);
+            if (stopped) return;
+            loop(child(s, i + 1), &child(s, i), {i ? &child(s, 0) : nullptr}, {&child(s, i + 1)});
+            return;
+        }
         if (k == "ForStmt" && n_children(s) == 5) {
             stmt(child(s, 0));
+            if (stopped) return;
             eval(child(s, 2), Ctx2::Branch);
-            havoc(child(s, 3));
-            havoc(child(s, 4));
+            if (stopped) return;
+            const auto& c = child(s, 2);
+            loop(child(s, 4), c.is_object() && !c.empty() ? &c : nullptr, {&child(s, 1), &child(s, 3)},
+                 {&child(s, 3), &child(s, 4)});
+            return;
+        }
+        if (k == "DoStmt" && n_children(s) == 2) {
+            // The body runs once before the condition is tested.
+            loop(child(s, 0), nullptr, {&child(s, 1)}, {&s});
+            return;
+        }
+        if (k == "CXXForRangeStmt" && n_children(s) >= 2) {
+            // Every child before the body (range / begin / end declarations, the loop variable)
+            // runs each iteration as far as this walk knows: what it names is not carried in.
+            std::vector<const json*> head;
+            for (std::size_t j = 0; j + 1 < n_children(s); ++j) head.push_back(&child(s, j));
+            loop(last_child(s), nullptr, head, {&s});
             return;
         }
         if (k == "BreakStmt" || k == "ContinueStmt" || k == "GotoStmt" || k == "IndirectGotoStmt") {

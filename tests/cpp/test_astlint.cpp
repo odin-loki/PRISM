@@ -3292,3 +3292,104 @@ int both_arms_leave_ok(int c) {
 TEST_CASE("astlint: flow checks follow if arms and join the paths that leave them") {
     check_marks("flow_branch.c", kFlowBranchC);
 }
+
+// Loop bodies keep the pre-loop state of the variables the loop never changes; the ones it
+// writes, frees, moves or takes the address of are forgotten for the whole body.
+const std::string kFlowLoopC = R"(#include <stdlib.h>
+int g(int);
+void h(int *);
+int uaf_in_while(int n) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    int s = 0;
+    while (n-- > 0) {
+        s += *p; // expect: MEM-UAF
+    }
+    return s;
+}
+int uaf_in_for_single_stmt(int n) {
+    int *p = malloc(4 * sizeof *p);
+    if (!p) return 0;
+    free(p);
+    int s = 0;
+    for (int i = 0; i < n; i++)
+        s += p[i]; // expect: MEM-UAF
+    return s;
+}
+int unchecked_in_for(int n) {
+    int *p = malloc(8 * sizeof *p);
+    for (int i = 0; i < 8; i++) {
+        p[i] = n; // expect: PTR-UNCHECKED-ALLOC
+    }
+    free(p);
+    return 0;
+}
+int uninit_in_do(int n) {
+    int x;
+    int s = 0;
+    do {
+        s += x; // expect: UNINIT-READ
+    } while (--n > 0);
+    return s;
+}
+int written_in_loop_ok(int n) {
+    int x;
+    int s = 0;
+    for (int i = 0; i < n; i++) {
+        if (i > 0) s += x;
+        x = i;
+    }
+    return s;
+}
+int address_taken_in_loop_ok(int n) {
+    int x;
+    int s = 0;
+    while (n-- > 0) {
+        h(&x);
+        s += x;
+    }
+    return s;
+}
+int freed_in_loop_ok(int n) {
+    int *p = 0;
+    for (int i = 0; i < n; i++) {
+        if (p) free(p);
+        p = malloc(sizeof *p);
+        if (!p) return 0;
+        *p = i;
+    }
+    if (p) free(p);
+    return 0;
+}
+int tested_in_condition_ok(int n) {
+    int *p = malloc(sizeof *p);
+    while (p && n-- > 0) {
+        *p = n;
+    }
+    free(p);
+    return 0;
+}
+int guarded_in_body_ok(int n) {
+    int *p = malloc(sizeof *p);
+    for (int i = 0; i < n; i++) {
+        if (!p) break;
+        *p = i;
+    }
+    free(p);
+    return 0;
+}
+int reassigned_in_cond_ok(int *a) {
+    int *p = 0;
+    int s = 0;
+    while ((p = a) != 0) {
+        s += *p;
+        a = 0;
+    }
+    return s;
+}
+)";
+
+TEST_CASE("astlint: flow checks carry the pre-loop state into loop bodies") {
+    check_marks("flow_loop.c", kFlowLoopC);
+}
