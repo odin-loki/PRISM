@@ -906,19 +906,16 @@ def escChk (j : Nat) (RET : Arg) : List Arg → List PStmt × List Nat
        .check (.v (m + 1) 1) "stack-escape" "MEM-STACK-ESCAPE"],
      [64] ++ r.2.1 ++ [1, 1])
 
-/-- The stack-escape check of a returned pointer: only the analysed
-function's (`retTo = none`) own objects. -/
-def escStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) (j : Nat) (A : Arg) :
+/-- The stack-escape check of a returned pointer against the returning
+function's own objects (the analysed function or an inlined callee). -/
+def escStmts (G : XFunc) (c : Ctx) (_retTo : Option Nat) (j : Nat) (A : Arg) :
     Except String (List PStmt × List Nat) :=
-  if retTo.isNone && G.retPtr then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
+  if G.retPtr then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
 
 /-- `Tr::call`'s `end_lifetime` of an inlined callee's own stack objects at
-its `ret` (`Frame::allocas`); a callee returning a pointer next to them would
-need `stack_escape_check` (outside the fragment). -/
+its `ret` (`Frame::allocas`), after `escStmts`. -/
 def freeStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) : Except String (List PStmt) :=
-  if retTo.isSome then
-    if G.retPtr && !G.escNames.isEmpty then .error "outside fragment: inlined function returning a pointer with stack objects"
-    else (escArgsX c G.escNames).map (·.map .free)
+  if retTo.isSome then (escArgsX c G.escNames).map (·.map .free)
   else .ok []
 
 /-- The terminator; `retTo` is the continuation block of an inlined

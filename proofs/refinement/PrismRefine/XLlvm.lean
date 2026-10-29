@@ -746,9 +746,10 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
     | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
       -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
       -- into one of its own stack objects returns a dangling pointer
-      if rest.isEmpty && fr.F.retPtr then
+      -- (an inlined callee too: `MemTr::stack_escape_check` before its objects end)
+      if fr.F.retPtr then
         (escHit R v fr.F.escNames).step fun hit =>
-          if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retTo rest (some v) t
+          if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retFree fr.F R rest (some v) t
       else retFree fr.F R rest (some v) t
     | .unreachable => .ub
 
@@ -984,9 +985,9 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
     | .ret (some o) =>
       match lOpnd S.R fr.F.retw o with
       | .ok (.val v, cv) =>
-        if rest.isEmpty && fr.F.retPtr then
+        if fr.F.retPtr then
           (escHit (lower S.R) v fr.F.escNames).lstep fun hit =>
-            if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetTo rest (some v) t (S.c || cv)
+            if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetFree fr.F S.R rest (some v) t (S.c || cv)
         else lRetFree fr.F S.R rest (some v) t (S.c || cv)
       | .ok (.poison, _) => .ub
       | .ok (.ind, _) => .ub

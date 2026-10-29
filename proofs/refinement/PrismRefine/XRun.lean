@@ -366,11 +366,9 @@ theorem freeStmts_cases {G : XFunc} {c : Ctx} {r : Option Nat} {sf : List PStmt}
   | some cb =>
     refine ⟨by simp, fun _ => ?_⟩
     simp only [Option.isSome_some, ite_true] at h
-    split at h
-    · cases h
-    · cases he : escArgsX c G.escNames with
-      | error e => rw [he] at h; cases h
-      | ok As => rw [he] at h; simp only [Except.map, Except.ok.injEq] at h; exact ⟨As, rfl, h.symm⟩
+    cases he : escArgsX c G.escNames with
+    | error e => rw [he] at h; cases h
+    | ok As => rw [he] at h; simp only [Except.map, Except.ok.injEq] at h; exact ⟨As, rfl, h.symm⟩
 
 theorem xStmts_frees (P : PFunc) (ω : Nat → Nat) (σ : Store) : ∀ (t : World) (As : List Arg) (r : List PStmt),
     xStmts P ω σ t (As.map PStmt.free ++ r) = xStmts P ω σ (freeW σ t As) r
@@ -378,6 +376,14 @@ theorem xStmts_frees (P : PFunc) (ω : Nat → Nat) (σ : Store) : ∀ (t : Worl
   | t, a :: as, r => by
     simp only [List.map_cons, List.cons_append, xStmts, freeW]
     exact xStmts_frees P ω σ _ as r
+
+theorem freeW_agree {k : Nat} {σ σ' : Store} (ha : ∀ i, i < k → σ' i = σ i) :
+    ∀ (t : World) (As : List Arg), (∀ a ∈ As, a.below k) → freeW σ' t As = freeW σ t As
+  | _, [], _ => rfl
+  | t, a :: as, h => by
+    simp only [freeW]
+    rw [Arg.get_agree ha (h a (by simp))]
+    exact freeW_agree ha _ as (fun b hb => h b (by simp [hb]))
 
 theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat → Nat}
     (hVF : ValidFacts M F P C) {st : List Frame} {prevP : Option Nat} {curP : Nat} {σ : Store}
@@ -582,7 +588,6 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
               rcases escHit_ok hR' v I.fn.escNames As hAs with hst | hok
               · rw [hst]; trivial
               · rw [hok]
-                simp only [Res.out]
                 rw [hAv] at hrun
                 cases hb : (As.any (fun a => ptrObj (v % 2 ^ 64) == ptrObj (a.get σ' % 2 ^ 64)) &&
                     ptrObj (v % 2 ^ 64) != 0) with
@@ -595,24 +600,62 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
                   rw [Arg.get_agree hag hAb, hAv]; rfl
           | cons c cs =>
             obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hcL, hT'⟩ := hT
-            simp only [escStmts, hret I hI, Option.isNone_some, Bool.false_and, Bool.false_eq_true, ite_false,
-              Except.ok.injEq, Prod.mk.injEq] at hse
-            obtain ⟨rfl, rfl⟩ := hse
             obtain ⟨CB, pu, pr, u, hCB, hph, hpa, hpu⟩ := hretA cb A (hret I hI) rfl
             obtain ⟨As, hAs, rfl⟩ := (freeStmts_cases hsf).2 (by simp [hret I hI])
-            rw [List.nil_append, ← List.append_nil (As.map PStmt.free), xStmts_frees]
-            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, retFree]
-            rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
-            · simp only [hfF, hst]; trivial
-            simp only [hfF, hok, Res.step, xStmts, XPRes.run, hret I hI, pTerm, retTo, Step.out]
-            apply hK
-            refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb,
-              ⟨fun h => by simp at h; omega, fun _ v' hv' => ?_⟩,
-              TailX.agree hVF.inst hT' (fun j hj => ha' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
-              hcL⟩
-            · exact RelX.agree (hVF.inst _ _ hI').ctx hcR hhi' (fun j hj => ha' j (by simpa [IInfo.ctx] using hj))
-            · simp only [Option.some.injEq] at hv'; subst hv'
-              exact ⟨CB, pu, pr, curP, A, u, hCB, hph, rfl, hpa, hAv, hpu⟩
+            simp only [List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false, hret I hI]
+            have hAsb : ∀ a ∈ As, a.below (k + t1.length) :=
+              fun a ha => Arg.below_mono hk2 (escArgsX_below hAs a ha)
+            -- the callee's objects end, then the continuation (from a store
+            -- agreeing below the escape check's temporaries)
+            have hfin : ∀ σ'', (∀ j, j < k + t1.length → σ'' j = σ' j) →
+                OSim ((retFree I.fn R (c :: cs) (some v) t').out K)
+                  ((xStmts P ω σ'' t' (List.map PStmt.free As)).run fun σ' t' =>
+                    pTerm σ' (fun j σ'' => Kp t' (some curP) j σ'') (PTerm.jmp cb)) := by
+              intro σ'' hag
+              rw [← List.append_nil (As.map PStmt.free), xStmts_frees, freeW_agree hag t' As hAsb]
+              simp only [retFree]
+              rcases freeAll_ok hR' I.fn.escNames As t' hAs with hst | hok
+              · simp only [hst]; trivial
+              simp only [hok, Res.step, xStmts, XPRes.run, pTerm, retTo, Step.out]
+              apply hK
+              have hlo := hIF.lohi
+              have hag' : ∀ j, j < (I.ctx P.vars).lo → σ'' j = σ j := fun j hj =>
+                (hag j (by simp only [IInfo.ctx] at hj; omega)).trans (ha' j hj)
+              refine ⟨_, cs, ι', I', rfl, hI', hcF, ?_, hcb,
+                ⟨fun h => by simp at h; omega, fun _ v' hv' => ?_⟩,
+                TailX.agree hVF.inst hT' (fun j hj => hag' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
+                hcL⟩
+              · exact RelX.agree (hVF.inst _ _ hI').ctx hcR hhi' (fun j hj => hag' j (by simpa [IInfo.ctx] using hj))
+              · simp only [Option.some.injEq] at hv'; subst hv'
+                exact ⟨CB, pu, pr, curP, A, u, hCB, hph, rfl, hpa, (Arg.get_agree hag hAb).trans hAv, hpu⟩
+            cases hp : I.fn.retPtr with
+            | false =>
+              simp only [escStmts, hp, Bool.false_eq_true, ite_false, Except.ok.injEq, Prod.mk.injEq] at hse
+              obtain ⟨rfl, rfl⟩ := hse
+              simp only [Bool.false_eq_true, ite_false, List.nil_append]
+              exact hfin σ' (fun _ _ => rfl)
+            | true =>
+              simp only [escStmts, hp, ite_true, List.length_nil, Nat.add_zero] at hse
+              rw [hAs] at hse
+              simp only [Except.map, Except.ok.injEq] at hse
+              have hTe : TempsOK P (k + t1.length) (escChk (k + t1.length) A As).2 := by
+                rw [hse]; simpa using hT2
+              have hrun := escChk_run P ω σ' t' (k + t1.length) A As hAsb hTe
+              rw [hse] at hrun
+              rw [xStmts_append, XPRes.then_run]
+              simp only [ite_true]
+              rcases escHit_ok hR' v I.fn.escNames As hAs with hst | hok
+              · rw [hst]; trivial
+              · rw [hok]
+                rw [hAv] at hrun
+                cases hb : (As.any (fun a => ptrObj (v % 2 ^ 64) == ptrObj (a.get σ' % 2 ^ 64)) &&
+                    ptrObj (v % 2 ^ 64) != 0) with
+                | true =>
+                  simp only [Res.step, hb, ite_true, Step.out, XPRes.run, hrun.1 hb, OSim]
+                | false =>
+                  obtain ⟨σ'', e, hag⟩ := hrun.2 hb
+                  simp only [Res.step, hb, Bool.false_eq_true, ite_false, e, XPRes.run]
+                  exact hfin σ'' hag
       | unreachable =>
         rw [htm] at htr
         simp only [trTermX, Except.ok.injEq, Prod.mk.injEq] at htr

@@ -1,0 +1,626 @@
+func _Z1fi
+L depth 12
+L thrown
+L params 1 n 32
+L ret 32
+L block entry
+L glob %@__const._Z1fi.a 8 4 4 1 2 0 32 1 4 32 2
+L uninit %__prism_uninit.0 32
+L alloca %a 8 4
+L uninit %__prism_uninit.1 64
+L memcpy %a %@__const._Z1fi.a #8 64 0
+L gep %arraydecay 1 %a 2 f #0 64 8 a #0 64 4 2 0
+L call %call 64 _ZL4pickPii 3 %arraydecay 64 %n 32 %@__const._Z1fi.a 64
+L load %i 32 %call 4
+L ret %i
+L fn _ZL4pickPii
+L params 3 p 64 n 32 @__const._Z1fi.a 64
+L ret 64
+L retptr
+L block entry
+L uninit %__prism_uninit.2 64
+L uninit %__prism_uninit.3 32
+L alloca %loc 8 4
+L gep %arrayinit.begin 1 %loc 2 f #0 64 8 a #0 64 4 2 3
+L store 32 %n %arrayinit.begin 4
+L gep %arrayinit.element 1 %arrayinit.begin 1 f #1 64 4
+L store 32 %n %arrayinit.element 4
+L gep %arrayidx 1 %loc 2 f #0 64 8 a #0 64 4 2 1
+L load %i 32 %arrayidx 4
+L icmp %cmp sgt 32 %i #0
+L cbr %cmp cond.true cond.false
+L block cond.true
+L br cond.end
+L block cond.false
+L gep %add.ptr 1 %p 1 f #1 64 4
+L br cond.end
+L block cond.end
+L phi %cond 64 2 %p cond.true %add.ptr cond.false
+L ret %cond
+status ok
+P vars 212 32 64 32 64 64 64 64 32 64 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 1 1 1 64 1 1 1 1 1 64 64 64 1 64 1 64 64 1 1 1 1 1 1 1 8 64 32 64 64 64 64 32 1 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1
+P params 1 0
+P retw 32
+P block
+P alloc 1 c64:8 4 1 4
+P store v1:64 c32:1 c1:1 0
+P assign 8 add 2 v1:64 c64:4
+P store v8:64 c32:2 c1:1 0
+P havoc 2
+P alloc 3 c64:8 1 0 4
+P havoc 4
+P assign 9 ne 2 c64:8 c64:0
+P assign 10 lshr 2 v3:64 c64:48
+P assign 11 and 2 v3:64 c64:281474976710655
+P assign 12 obj.kind 1 v3:64
+P assign 13 obj.live 1 v3:64
+P assign 14 obj.size 1 v3:64
+P assign 15 eq 2 v10:64 c64:0
+P assign 16 and 2 v9:1 v15:1
+P check v16:1 null PTR-NULL-DEREF
+P assign 17 ne 2 v10:64 c64:0
+P assign 18 eq 2 v12:8 c8:0
+P assign 19 and 2 v17:1 v18:1
+P assign 20 and 2 v9:1 v19:1
+P check v20:1 wild PTR-INVALID-DEREF
+P assign 21 ne 2 v12:8 c8:0
+P assign 22 eq 2 v13:1 c1:0
+P assign 23 and 2 v21:1 v22:1
+P assign 24 and 2 v9:1 v23:1
+P check v24:1 uaf MEM-UAF
+P assign 25 add 2 v11:64 c64:8
+P assign 26 ugt 2 v25:64 v14:64
+P assign 27 uadd.ovf 2 v11:64 c64:8
+P assign 28 or 2 v26:1 v27:1
+P assign 29 and 2 v13:1 v28:1
+P assign 30 and 2 v9:1 v29:1
+P check v30:1 oob-write MEM-OOB-WRITE
+P assign 31 eq 2 v12:8 c8:4
+P assign 32 and 2 v13:1 v31:1
+P assign 33 and 2 v9:1 v32:1
+P check v33:1 write-const MEM-WRITE-CONST
+P assign 34 lshr 2 v1:64 c64:48
+P assign 35 and 2 v1:64 c64:281474976710655
+P assign 36 obj.kind 1 v1:64
+P assign 37 obj.live 1 v1:64
+P assign 38 obj.size 1 v1:64
+P assign 39 eq 2 v34:64 c64:0
+P assign 40 and 2 v9:1 v39:1
+P check v40:1 null PTR-NULL-DEREF
+P assign 41 ne 2 v34:64 c64:0
+P assign 42 eq 2 v36:8 c8:0
+P assign 43 and 2 v41:1 v42:1
+P assign 44 and 2 v9:1 v43:1
+P check v44:1 wild PTR-INVALID-DEREF
+P assign 45 ne 2 v36:8 c8:0
+P assign 46 eq 2 v37:1 c1:0
+P assign 47 and 2 v45:1 v46:1
+P assign 48 and 2 v9:1 v47:1
+P check v48:1 uaf MEM-UAF
+P assign 49 add 2 v35:64 c64:8
+P assign 50 ugt 2 v49:64 v38:64
+P assign 51 uadd.ovf 2 v35:64 c64:8
+P assign 52 or 2 v50:1 v51:1
+P assign 53 and 2 v37:1 v52:1
+P assign 54 and 2 v9:1 v53:1
+P check v54:1 oob-read MEM-OOB-READ
+P assign 55 and 2 v3:64 c64:281474976710655
+P assign 56 and 2 v1:64 c64:281474976710655
+P assign 57 add 2 v56:64 c64:8
+P assign 58 ult 2 v55:64 v57:64
+P assign 59 add 2 v55:64 c64:8
+P assign 60 ult 2 v56:64 v59:64
+P assign 61 lshr 2 v3:64 c64:48
+P assign 62 lshr 2 v1:64 c64:48
+P assign 63 eq 2 v61:64 v62:64
+P assign 64 and 2 v58:1 v60:1
+P assign 65 and 2 v63:1 v64:1
+P assign 66 ne 2 v55:64 v56:64
+P assign 67 and 2 v66:1 v65:1
+P assign 68 and 2 v9:1 v67:1
+P check v68:1 overlap MEM-OVERLAP
+P memcpy v3:64 v1:64 c64:8
+P assign 69 ugt 2 c64:0 c64:2
+P check v69:1 ptr-arith MEM-PTR-ARITH
+P assign 5 copy 1 v3:64
+P jmp 2
+P block
+P phi 70 1 5 c8:0
+P phi 6 1 5 v80:64
+P assign 188 lshr 2 v6:64 c64:48
+P assign 189 and 2 v6:64 c64:281474976710655
+P assign 190 obj.kind 1 v6:64
+P assign 191 obj.live 1 v6:64
+P assign 192 obj.size 1 v6:64
+P assign 193 eq 2 v188:64 c64:0
+P check v193:1 null PTR-NULL-DEREF
+P assign 194 ne 2 v188:64 c64:0
+P assign 195 eq 2 v190:8 c8:0
+P assign 196 and 2 v194:1 v195:1
+P check v196:1 wild PTR-INVALID-DEREF
+P assign 197 ne 2 v190:8 c8:0
+P assign 198 eq 2 v191:1 c1:0
+P assign 199 and 2 v197:1 v198:1
+P check v199:1 uaf MEM-UAF
+P assign 200 add 2 v189:64 c64:4
+P assign 201 ugt 2 v200:64 v192:64
+P assign 202 uadd.ovf 2 v189:64 c64:4
+P assign 203 or 2 v201:1 v202:1
+P assign 204 and 2 v191:1 v203:1
+P check v204:1 oob-read MEM-OOB-READ
+P assign 205 and 2 v189:64 c64:3
+P assign 206 obj.align 1 v6:64
+P assign 207 ne 2 v205:64 c64:0
+P assign 208 ult 2 v206:64 c64:4
+P assign 209 or 2 v207:1 v208:1
+P assign 210 and 2 v191:1 v209:1
+P check v210:1 align MEM-MISALIGNED
+P load 7 211 -1 v6:64 0
+P check v211:1 uninit UNINIT-READ
+P ret v7:32
+P block
+P havoc 71
+P havoc 72
+P alloc 73 c64:8 1 0 4
+P assign 81 uge 2 c64:0 c64:2
+P check v81:1 ptr-arith MEM-PTR-ARITH
+P assign 74 copy 1 v73:64
+P assign 82 lshr 2 v74:64 c64:48
+P assign 83 and 2 v74:64 c64:281474976710655
+P assign 84 obj.kind 1 v74:64
+P assign 85 obj.live 1 v74:64
+P assign 86 obj.size 1 v74:64
+P assign 87 eq 2 v82:64 c64:0
+P check v87:1 null PTR-NULL-DEREF
+P assign 88 ne 2 v82:64 c64:0
+P assign 89 eq 2 v84:8 c8:0
+P assign 90 and 2 v88:1 v89:1
+P check v90:1 wild PTR-INVALID-DEREF
+P assign 91 ne 2 v84:8 c8:0
+P assign 92 eq 2 v85:1 c1:0
+P assign 93 and 2 v91:1 v92:1
+P check v93:1 uaf MEM-UAF
+P assign 94 add 2 v83:64 c64:4
+P assign 95 ugt 2 v94:64 v86:64
+P assign 96 uadd.ovf 2 v83:64 c64:4
+P assign 97 or 2 v95:1 v96:1
+P assign 98 and 2 v85:1 v97:1
+P check v98:1 oob-write MEM-OOB-WRITE
+P assign 99 and 2 v83:64 c64:3
+P assign 100 obj.align 1 v74:64
+P assign 101 ne 2 v99:64 c64:0
+P assign 102 ult 2 v100:64 c64:4
+P assign 103 or 2 v101:1 v102:1
+P assign 104 and 2 v85:1 v103:1
+P check v104:1 align MEM-MISALIGNED
+P assign 105 eq 2 v84:8 c8:4
+P assign 106 and 2 v85:1 v105:1
+P check v106:1 write-const MEM-WRITE-CONST
+P store v74:64 v0:32 c1:1 0
+P assign 75 add 2 v74:64 c64:4
+P assign 107 lshr 2 v74:64 c64:48
+P assign 108 lshr 2 v75:64 c64:48
+P assign 109 eq 2 v107:64 c64:0
+P assign 110 ne 2 c64:4 c64:0
+P assign 111 and 2 v109:1 v110:1
+P check v111:1 ptr-arith MEM-PTR-ARITH
+P assign 112 obj.kind 1 v74:64
+P assign 113 obj.size 1 v74:64
+P assign 114 ne 2 v108:64 v107:64
+P assign 115 and 2 v75:64 c64:281474976710655
+P assign 116 ugt 2 v115:64 v113:64
+P assign 117 or 2 v114:1 v116:1
+P assign 118 ne 2 v112:8 c8:0
+P assign 119 and 2 v118:1 v117:1
+P check v119:1 ptr-arith MEM-PTR-ARITH
+P assign 120 lshr 2 v75:64 c64:48
+P assign 121 and 2 v75:64 c64:281474976710655
+P assign 122 obj.kind 1 v75:64
+P assign 123 obj.live 1 v75:64
+P assign 124 obj.size 1 v75:64
+P assign 125 eq 2 v120:64 c64:0
+P check v125:1 null PTR-NULL-DEREF
+P assign 126 ne 2 v120:64 c64:0
+P assign 127 eq 2 v122:8 c8:0
+P assign 128 and 2 v126:1 v127:1
+P check v128:1 wild PTR-INVALID-DEREF
+P assign 129 ne 2 v122:8 c8:0
+P assign 130 eq 2 v123:1 c1:0
+P assign 131 and 2 v129:1 v130:1
+P check v131:1 uaf MEM-UAF
+P assign 132 add 2 v121:64 c64:4
+P assign 133 ugt 2 v132:64 v124:64
+P assign 134 uadd.ovf 2 v121:64 c64:4
+P assign 135 or 2 v133:1 v134:1
+P assign 136 and 2 v123:1 v135:1
+P check v136:1 oob-write MEM-OOB-WRITE
+P assign 137 and 2 v121:64 c64:3
+P assign 138 obj.align 1 v75:64
+P assign 139 ne 2 v137:64 c64:0
+P assign 140 ult 2 v138:64 c64:4
+P assign 141 or 2 v139:1 v140:1
+P assign 142 and 2 v123:1 v141:1
+P check v142:1 align MEM-MISALIGNED
+P assign 143 eq 2 v122:8 c8:4
+P assign 144 and 2 v123:1 v143:1
+P check v144:1 write-const MEM-WRITE-CONST
+P store v75:64 v0:32 c1:1 0
+P assign 145 uge 2 c64:0 c64:2
+P check v145:1 oob-read MEM-OOB-READ
+P assign 76 copy 1 v73:64
+P assign 146 lshr 2 v76:64 c64:48
+P assign 147 and 2 v76:64 c64:281474976710655
+P assign 148 obj.kind 1 v76:64
+P assign 149 obj.live 1 v76:64
+P assign 150 obj.size 1 v76:64
+P assign 151 eq 2 v146:64 c64:0
+P check v151:1 null PTR-NULL-DEREF
+P assign 152 ne 2 v146:64 c64:0
+P assign 153 eq 2 v148:8 c8:0
+P assign 154 and 2 v152:1 v153:1
+P check v154:1 wild PTR-INVALID-DEREF
+P assign 155 ne 2 v148:8 c8:0
+P assign 156 eq 2 v149:1 c1:0
+P assign 157 and 2 v155:1 v156:1
+P check v157:1 uaf MEM-UAF
+P assign 158 add 2 v147:64 c64:4
+P assign 159 ugt 2 v158:64 v150:64
+P assign 160 uadd.ovf 2 v147:64 c64:4
+P assign 161 or 2 v159:1 v160:1
+P assign 162 and 2 v149:1 v161:1
+P check v162:1 oob-read MEM-OOB-READ
+P assign 163 and 2 v147:64 c64:3
+P assign 164 obj.align 1 v76:64
+P assign 165 ne 2 v163:64 c64:0
+P assign 166 ult 2 v164:64 c64:4
+P assign 167 or 2 v165:1 v166:1
+P assign 168 and 2 v149:1 v167:1
+P check v168:1 align MEM-MISALIGNED
+P load 77 169 -1 v76:64 0
+P check v169:1 uninit UNINIT-READ
+P assign 78 sgt 2 v77:32 c32:0
+P br v78:1 3 4
+P block
+P jmp 5
+P block
+P assign 79 add 2 v5:64 c64:4
+P assign 170 lshr 2 v5:64 c64:48
+P assign 171 lshr 2 v79:64 c64:48
+P assign 172 eq 2 v170:64 c64:0
+P assign 173 ne 2 c64:4 c64:0
+P assign 174 and 2 v172:1 v173:1
+P check v174:1 ptr-arith MEM-PTR-ARITH
+P assign 175 obj.kind 1 v5:64
+P assign 176 obj.size 1 v5:64
+P assign 177 ne 2 v171:64 v170:64
+P assign 178 and 2 v79:64 c64:281474976710655
+P assign 179 ugt 2 v178:64 v176:64
+P assign 180 or 2 v177:1 v179:1
+P assign 181 ne 2 v175:8 c8:0
+P assign 182 and 2 v181:1 v180:1
+P check v182:1 ptr-arith MEM-PTR-ARITH
+P jmp 5
+P block
+P phi 80 2 3 v5:64 4 v79:64
+P assign 183 lshr 2 v80:64 c64:48
+P assign 184 lshr 2 v73:64 c64:48
+P assign 185 eq 2 v183:64 v184:64
+P assign 186 ne 2 v183:64 c64:0
+P assign 187 and 2 v185:1 v186:1
+P check v187:1 stack-escape MEM-STACK-ESCAPE
+P free v73:64
+P jmp 1
+end
+func _ZL4pickPii
+L thrown
+L params 1 n 32
+L ret 64
+L retptr
+L block entry
+L ptrparam %p
+L uninit %__prism_uninit.2 64
+L uninit %__prism_uninit.3 32
+L alloca %loc 8 4
+L gep %arrayinit.begin 1 %loc 2 f #0 64 8 a #0 64 4 2 3
+L store 32 %n %arrayinit.begin 4
+L gep %arrayinit.element 1 %arrayinit.begin 1 f #1 64 4
+L store 32 %n %arrayinit.element 4
+L gep %arrayidx 1 %loc 2 f #0 64 8 a #0 64 4 2 1
+L load %i 32 %arrayidx 4
+L icmp %cmp sgt 32 %i #0
+L cbr %cmp cond.true cond.false
+L block cond.true
+L br cond.end
+L block cond.false
+L gep %add.ptr 1 %p 1 f #1 64 4
+L br cond.end
+L block cond.end
+L phi %cond 64 2 %p cond.true %add.ptr cond.false
+L ret %cond
+status unencoded pointer parameter: unguarded model checking reports missing preconditions, not defects (Law 6)
+end
+func _Z1gi
+L depth 12
+L thrown
+L params 1 n 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.4 32
+L uninit %__prism_uninit.5 64
+L call %call 64 _ZL3badi 1 %n 32
+L icmp %tobool ne 64 %call #0
+L cast %i zext 0 1 64 %tobool
+L select %cond 32 %tobool #1 #0
+L ret %cond
+L fn _ZL3badi
+L params 1 n 32
+L ret 64
+L retptr
+L block entry
+L uninit %__prism_uninit.6 32
+L alloca %loc 8 4
+L gep %arrayinit.begin 1 %loc 2 f #0 64 8 a #0 64 4 2 3
+L store 32 %n %arrayinit.begin 4
+L gep %arrayinit.element 1 %arrayinit.begin 1 f #1 64 4
+L store 32 %n %arrayinit.element 4
+L icmp %cmp sgt 32 %n #0
+L cbr %cmp cond.true cond.false
+L block cond.true
+L gep %arraydecay 1 %loc 2 f #0 64 8 a #0 64 4 2 0
+L br cond.end
+L block cond.false
+L br cond.end
+L block cond.end
+L phi %cond 64 2 %arraydecay cond.true #0 cond.false
+L ret %cond
+status ok
+P vars 85 32 32 64 64 1 64 32 8 32 64 64 64 1 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 1 64 64 1 1 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P havoc 2
+P jmp 2
+P block
+P phi 7 1 5 c8:0
+P phi 3 1 5 v14:64
+P assign 4 ne 2 v3:64 c64:0
+P assign 5 zext 1 v4:1
+P assign 6 select 3 v4:1 c32:1 c32:0
+P ret v6:32
+P block
+P havoc 8
+P alloc 9 c64:8 1 0 4
+P assign 15 uge 2 c64:0 c64:2
+P check v15:1 ptr-arith MEM-PTR-ARITH
+P assign 10 copy 1 v9:64
+P assign 16 lshr 2 v10:64 c64:48
+P assign 17 and 2 v10:64 c64:281474976710655
+P assign 18 obj.kind 1 v10:64
+P assign 19 obj.live 1 v10:64
+P assign 20 obj.size 1 v10:64
+P assign 21 eq 2 v16:64 c64:0
+P check v21:1 null PTR-NULL-DEREF
+P assign 22 ne 2 v16:64 c64:0
+P assign 23 eq 2 v18:8 c8:0
+P assign 24 and 2 v22:1 v23:1
+P check v24:1 wild PTR-INVALID-DEREF
+P assign 25 ne 2 v18:8 c8:0
+P assign 26 eq 2 v19:1 c1:0
+P assign 27 and 2 v25:1 v26:1
+P check v27:1 uaf MEM-UAF
+P assign 28 add 2 v17:64 c64:4
+P assign 29 ugt 2 v28:64 v20:64
+P assign 30 uadd.ovf 2 v17:64 c64:4
+P assign 31 or 2 v29:1 v30:1
+P assign 32 and 2 v19:1 v31:1
+P check v32:1 oob-write MEM-OOB-WRITE
+P assign 33 and 2 v17:64 c64:3
+P assign 34 obj.align 1 v10:64
+P assign 35 ne 2 v33:64 c64:0
+P assign 36 ult 2 v34:64 c64:4
+P assign 37 or 2 v35:1 v36:1
+P assign 38 and 2 v19:1 v37:1
+P check v38:1 align MEM-MISALIGNED
+P assign 39 eq 2 v18:8 c8:4
+P assign 40 and 2 v19:1 v39:1
+P check v40:1 write-const MEM-WRITE-CONST
+P store v10:64 v0:32 c1:1 0
+P assign 11 add 2 v10:64 c64:4
+P assign 41 lshr 2 v10:64 c64:48
+P assign 42 lshr 2 v11:64 c64:48
+P assign 43 eq 2 v41:64 c64:0
+P assign 44 ne 2 c64:4 c64:0
+P assign 45 and 2 v43:1 v44:1
+P check v45:1 ptr-arith MEM-PTR-ARITH
+P assign 46 obj.kind 1 v10:64
+P assign 47 obj.size 1 v10:64
+P assign 48 ne 2 v42:64 v41:64
+P assign 49 and 2 v11:64 c64:281474976710655
+P assign 50 ugt 2 v49:64 v47:64
+P assign 51 or 2 v48:1 v50:1
+P assign 52 ne 2 v46:8 c8:0
+P assign 53 and 2 v52:1 v51:1
+P check v53:1 ptr-arith MEM-PTR-ARITH
+P assign 54 lshr 2 v11:64 c64:48
+P assign 55 and 2 v11:64 c64:281474976710655
+P assign 56 obj.kind 1 v11:64
+P assign 57 obj.live 1 v11:64
+P assign 58 obj.size 1 v11:64
+P assign 59 eq 2 v54:64 c64:0
+P check v59:1 null PTR-NULL-DEREF
+P assign 60 ne 2 v54:64 c64:0
+P assign 61 eq 2 v56:8 c8:0
+P assign 62 and 2 v60:1 v61:1
+P check v62:1 wild PTR-INVALID-DEREF
+P assign 63 ne 2 v56:8 c8:0
+P assign 64 eq 2 v57:1 c1:0
+P assign 65 and 2 v63:1 v64:1
+P check v65:1 uaf MEM-UAF
+P assign 66 add 2 v55:64 c64:4
+P assign 67 ugt 2 v66:64 v58:64
+P assign 68 uadd.ovf 2 v55:64 c64:4
+P assign 69 or 2 v67:1 v68:1
+P assign 70 and 2 v57:1 v69:1
+P check v70:1 oob-write MEM-OOB-WRITE
+P assign 71 and 2 v55:64 c64:3
+P assign 72 obj.align 1 v11:64
+P assign 73 ne 2 v71:64 c64:0
+P assign 74 ult 2 v72:64 c64:4
+P assign 75 or 2 v73:1 v74:1
+P assign 76 and 2 v57:1 v75:1
+P check v76:1 align MEM-MISALIGNED
+P assign 77 eq 2 v56:8 c8:4
+P assign 78 and 2 v57:1 v77:1
+P check v78:1 write-const MEM-WRITE-CONST
+P store v11:64 v0:32 c1:1 0
+P assign 12 sgt 2 v0:32 c32:0
+P br v12:1 3 4
+P block
+P assign 79 ugt 2 c64:0 c64:2
+P check v79:1 ptr-arith MEM-PTR-ARITH
+P assign 13 copy 1 v9:64
+P jmp 5
+P block
+P jmp 5
+P block
+P phi 14 2 3 v13:64 4 c64:0
+P assign 80 lshr 2 v14:64 c64:48
+P assign 81 lshr 2 v9:64 c64:48
+P assign 82 eq 2 v80:64 v81:64
+P assign 83 ne 2 v80:64 c64:0
+P assign 84 and 2 v82:1 v83:1
+P free v9:64
+P jmp 1
+end
+func _ZL3badi
+L thrown
+L params 1 n 32
+L ret 64
+L retptr
+L block entry
+L uninit %__prism_uninit.6 32
+L alloca %loc 8 4
+L gep %arrayinit.begin 1 %loc 2 f #0 64 8 a #0 64 4 2 3
+L store 32 %n %arrayinit.begin 4
+L gep %arrayinit.element 1 %arrayinit.begin 1 f #1 64 4
+L store 32 %n %arrayinit.element 4
+L icmp %cmp sgt 32 %n #0
+L cbr %cmp cond.true cond.false
+L block cond.true
+L gep %arraydecay 1 %loc 2 f #0 64 8 a #0 64 4 2 0
+L br cond.end
+L block cond.false
+L br cond.end
+L block cond.end
+L phi %cond 64 2 %arraydecay cond.true #0 cond.false
+L ret %cond
+status ok
+P vars 78 32 32 64 64 64 1 64 64 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 64 64 1 1 1 8 64 1 64 1 1 1 1 64 64 8 1 64 1 1 1 1 1 1 1 64 1 1 1 1 64 64 1 1 1 1 1 1 1 64 64 1 1 1
+P params 1 0
+P retw 64
+P block
+P havoc 1
+P alloc 2 c64:8 1 0 4
+P assign 8 uge 2 c64:0 c64:2
+P check v8:1 ptr-arith MEM-PTR-ARITH
+P assign 3 copy 1 v2:64
+P assign 9 lshr 2 v3:64 c64:48
+P assign 10 and 2 v3:64 c64:281474976710655
+P assign 11 obj.kind 1 v3:64
+P assign 12 obj.live 1 v3:64
+P assign 13 obj.size 1 v3:64
+P assign 14 eq 2 v9:64 c64:0
+P check v14:1 null PTR-NULL-DEREF
+P assign 15 ne 2 v9:64 c64:0
+P assign 16 eq 2 v11:8 c8:0
+P assign 17 and 2 v15:1 v16:1
+P check v17:1 wild PTR-INVALID-DEREF
+P assign 18 ne 2 v11:8 c8:0
+P assign 19 eq 2 v12:1 c1:0
+P assign 20 and 2 v18:1 v19:1
+P check v20:1 uaf MEM-UAF
+P assign 21 add 2 v10:64 c64:4
+P assign 22 ugt 2 v21:64 v13:64
+P assign 23 uadd.ovf 2 v10:64 c64:4
+P assign 24 or 2 v22:1 v23:1
+P assign 25 and 2 v12:1 v24:1
+P check v25:1 oob-write MEM-OOB-WRITE
+P assign 26 and 2 v10:64 c64:3
+P assign 27 obj.align 1 v3:64
+P assign 28 ne 2 v26:64 c64:0
+P assign 29 ult 2 v27:64 c64:4
+P assign 30 or 2 v28:1 v29:1
+P assign 31 and 2 v12:1 v30:1
+P check v31:1 align MEM-MISALIGNED
+P assign 32 eq 2 v11:8 c8:4
+P assign 33 and 2 v12:1 v32:1
+P check v33:1 write-const MEM-WRITE-CONST
+P store v3:64 v0:32 c1:1 0
+P assign 4 add 2 v3:64 c64:4
+P assign 34 lshr 2 v3:64 c64:48
+P assign 35 lshr 2 v4:64 c64:48
+P assign 36 eq 2 v34:64 c64:0
+P assign 37 ne 2 c64:4 c64:0
+P assign 38 and 2 v36:1 v37:1
+P check v38:1 ptr-arith MEM-PTR-ARITH
+P assign 39 obj.kind 1 v3:64
+P assign 40 obj.size 1 v3:64
+P assign 41 ne 2 v35:64 v34:64
+P assign 42 and 2 v4:64 c64:281474976710655
+P assign 43 ugt 2 v42:64 v40:64
+P assign 44 or 2 v41:1 v43:1
+P assign 45 ne 2 v39:8 c8:0
+P assign 46 and 2 v45:1 v44:1
+P check v46:1 ptr-arith MEM-PTR-ARITH
+P assign 47 lshr 2 v4:64 c64:48
+P assign 48 and 2 v4:64 c64:281474976710655
+P assign 49 obj.kind 1 v4:64
+P assign 50 obj.live 1 v4:64
+P assign 51 obj.size 1 v4:64
+P assign 52 eq 2 v47:64 c64:0
+P check v52:1 null PTR-NULL-DEREF
+P assign 53 ne 2 v47:64 c64:0
+P assign 54 eq 2 v49:8 c8:0
+P assign 55 and 2 v53:1 v54:1
+P check v55:1 wild PTR-INVALID-DEREF
+P assign 56 ne 2 v49:8 c8:0
+P assign 57 eq 2 v50:1 c1:0
+P assign 58 and 2 v56:1 v57:1
+P check v58:1 uaf MEM-UAF
+P assign 59 add 2 v48:64 c64:4
+P assign 60 ugt 2 v59:64 v51:64
+P assign 61 uadd.ovf 2 v48:64 c64:4
+P assign 62 or 2 v60:1 v61:1
+P assign 63 and 2 v50:1 v62:1
+P check v63:1 oob-write MEM-OOB-WRITE
+P assign 64 and 2 v48:64 c64:3
+P assign 65 obj.align 1 v4:64
+P assign 66 ne 2 v64:64 c64:0
+P assign 67 ult 2 v65:64 c64:4
+P assign 68 or 2 v66:1 v67:1
+P assign 69 and 2 v50:1 v68:1
+P check v69:1 align MEM-MISALIGNED
+P assign 70 eq 2 v49:8 c8:4
+P assign 71 and 2 v50:1 v70:1
+P check v71:1 write-const MEM-WRITE-CONST
+P store v4:64 v0:32 c1:1 0
+P assign 5 sgt 2 v0:32 c32:0
+P br v5:1 1 2
+P block
+P assign 72 ugt 2 c64:0 c64:2
+P check v72:1 ptr-arith MEM-PTR-ARITH
+P assign 6 copy 1 v2:64
+P jmp 3
+P block
+P jmp 3
+P block
+P phi 7 2 1 v6:64 2 c64:0
+P assign 73 lshr 2 v7:64 c64:48
+P assign 74 lshr 2 v2:64 c64:48
+P assign 75 eq 2 v73:64 v74:64
+P assign 76 ne 2 v73:64 c64:0
+P assign 77 and 2 v75:1 v76:1
+P check v77:1 stack-escape MEM-STACK-ESCAPE
+P ret v7:64
+end

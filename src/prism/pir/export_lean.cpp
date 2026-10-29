@@ -752,7 +752,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     if (oom && !top) b << " " << kOom << " 64";
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
     // translate.cpp's return of a pointer: MemTr::stack_escape_check against
-    // the function's own stack objects (the Lean XFunc.escNames; a callee: outside)
+    // the function's own stack objects (the Lean XFunc.escNames; also for an inlined callee)
     if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
     g_entry = top ? &eg : &g_top_eg;
     struct Reset {
