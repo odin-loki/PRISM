@@ -1,6 +1,6 @@
 #!/bin/bash
 # prism-run CMD...: box-safety wrapper for heavy PRISM runs (docs/MEMORY_RULES.md)
-# - FIFO admission box-wide: a job waits its turn (ticket order) and starts only when
+# - admission box-wide in ticket order (first fit, aged head gets priority after 600 s); starts only when
 #   at most $PRISM_RUN_SLOTS (default 2) jobs run AND
 #   MemAvailable - sum(running jobs' remaining headroom: budget - current RSS) >= budget + reserve
 #   (reserve $PRISM_RUN_RESERVE_MB, default 1536), always, even with no other job registered
@@ -35,17 +35,25 @@ while :; do
   exec 8>$D/admit.lock; flock 8
   for f in $D/queue/*; do p=${f##*-}; kill -0 $p 2>/dev/null || rm -f $f; done
   for f in $D/running/*; do [ -e "$f" ] && { kill -0 ${f##*/} 2>/dev/null || rm -f $f; }; done
-  head=$(ls $D/queue | sort | head -1)
-  if [ "$head" = "$ticket" ]; then
-    n=0; headroom=0
-    for f in $D/running/*; do
-      [ -e "$f" ] || continue; read b g < $f; n=$((n+1))
-      r=$(treerss ${g:-0}); h=$(( b - ${r:-0} )); [ $h -gt 0 ] && headroom=$((headroom+h))
-    done
-    free=$(( $(memavail) - headroom ))
-    if [ $n -lt $SLOTS ] && [ $free -ge $((budget+RESERVE)) ]; then
-      echo "$budget 0" > $D/running/$$; rm -f $D/queue/$ticket; admitted=1
-    fi
+  [ -e $D/queue/$ticket ] || echo $budget > $D/queue/$ticket
+  n=0; headroom=0
+  for f in $D/running/*; do
+    [ -e "$f" ] || continue; read b g < $f; n=$((n+1))
+    r=$(treerss ${g:-0}); h=$(( b - ${r:-0} )); [ $h -gt 0 ] && headroom=$((headroom+h))
+  done
+  free=$(( $(memavail) - headroom ))
+  # First fit in ticket order: an older ticket that fits now goes first; one that does not fit
+  # does not block younger ones, until it has waited $PRISM_RUN_HOL_S (600) s: then everyone
+  # younger holds off so memory drains for it (no starvation, no head-of-line deadlock).
+  mine=0; now=$(date +%s)
+  for t in $(ls $D/queue | sort); do
+    [ "$t" = "$ticket" ] && { mine=1; break; }
+    tb=$(cat $D/queue/$t 2>/dev/null || echo 0)
+    [ $free -ge $((tb+RESERVE)) ] && break
+    [ $(( now - ${t%%-*} / 1000000000 )) -ge ${PRISM_RUN_HOL_S:-600} ] && break
+  done
+  if [ $mine = 1 ] && [ $n -lt $SLOTS ] && [ $free -ge $((budget+RESERVE)) ]; then
+    echo "$budget 0" > $D/running/$$; rm -f $D/queue/$ticket; admitted=1
   fi
   flock -u 8; exec 8>&-
   [ $admitted = 1 ] && break
