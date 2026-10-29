@@ -1254,9 +1254,13 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         else
             cxx_models_error = "libstdc++ (the PRISM C++ model headers could not be written)";
     }
-    std::vector<Lowered> low(units.size());
+    // One pass per unit (lower, analyse, validate), freeing the unit's IR and
+    // records before the next: holding every unit's IR for the whole run took
+    // ~10 GB on testdata/ and was OOM-killed (pir-vs-bmc gate, 2026-10-29).
+    std::vector<std::vector<Finding>> per(units.size());
+    const auto budget = houdini_budget(cfg);
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
-        auto& l = low.at(i);
+        Lowered l;
         try {
             // The unit's include path: its compile_commands.json entry (without
             // -std=, PRISM's language level stays), else the scan root and
@@ -1278,29 +1282,23 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             l.ir.reset();
             l.err = std::string("internal error: ") + ex.what();
         }
-    });
-    std::vector<Analyzed> an(units.size());
-    const auto budget = houdini_budget(cfg);
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
+        Analyzed a;
         try {
-            an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
+            a = run_unit(u, fe, cfg, l, models, budget);
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
             f.strength = std::string(laws::STRENGTH_SOME);
             f.message = std::string("pir internal error: ") + ex.what();
-            an.at(i).recs.clear();
-            an.at(i).out = {f};
+            a.recs.clear();
+            a.out = {f};
         }
-    });
-    std::vector<std::vector<Finding>> per(units.size());
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit&) {
-        auto& a = an.at(i);
-        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
-        per.at(i) = std::move(a.out);
-        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
-        if (!low.at(i).cxx_models.empty())
-            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+        if (l.ir && !a.recs.empty()) validate(a.recs, *l.ir, fe, cfg);
+        auto& v = per.at(i);
+        v = std::move(a.out);
+        for (auto& r : a.recs) v.push_back(std::move(r.f));
+        if (!l.cxx_models.empty())
+            for (auto& f : v) f.extra["cxx_models"] = l.cxx_models;
     });
     std::vector<Finding> out;
     if (!models.error.empty()) {
