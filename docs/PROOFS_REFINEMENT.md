@@ -988,6 +988,19 @@ LLVM side stays `.stuck` (thr), so no proof change. Fixtures cxx_uthrow
 Re-measure: final binaries in /workspace/eh/final (REV); libc-models per
 file at 700MB in /workspace/eh/lcper.log.
 
+Negative export tests (90e8fea64, test_main "user throw only in clang's
+exact pattern"): thrown pointer not the allocation, non-constant typeinfo.
+Checker speed (3dc99bf64): `xLive` was a layered list fixpoint (cubic) and
+dominated translateX/validB on large sv-comp reducers (apache-get-tag
+p+lhb: 150 s); now a linear BFS in the same order (proofs only use
+`xLiveClosed`, which checks it): 0.16 s; all 174 sv-comp pairs in 22 s.
+libc-models per file at 700MB (/workspace/eh/lcper.log): killed
+priority_queue_contracts (1006MB), sstream_contracts (939MB),
+unordered_map_contracts (983MB): skipped in the final measure
+(/workspace/eh/lcskip). Per-file exit 2 (ctype, expected, ratio, stdio, ...)
+is the per-file copy losing `harness.h`, not a product issue.
+Final measure: /workspace/eh/final5.sh -> /workspace/eh/fin_<subdir>.log.
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
