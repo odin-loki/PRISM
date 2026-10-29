@@ -1053,3 +1053,23 @@ via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
   dtor map), then rethrow invoke / terminate.lpad (`__clang_call_terminate`).
 - Re-measure queued: /workspace/eh/rm_{concurrency,esbmc-cpp,libc-models,prism,sv-comp}.log;
   list_contracts still queued: /workspace/eh/lc.log.
+
+### Destructors, rethrow invoke, terminate pad (a711b71d4, 36662af06)
+- Exporter: `L thrdtor T D ...` (Tr::type_dtor, first `__cxa_throw` per type,
+  entries with a destructor; bare `L thrdtor` = not exported -> Lean refuses
+  `__cxa_end_catch`). When the module has `__cxa_end_catch`, the destructors
+  are added as `L fn` callees. `__clang_call_terminate` in pads -> `L call`.
+- Lean: `ehCallX` end_catch leaves `eh.destroy` in `pendD`; `runFrame.trB` runs
+  the type_dtor loop (type-id compare, inline the destructor via `callAt` on a
+  temp env entry `__prism.eh.obj` = payload, then `free E`, `jmp eh.done`).
+  A destructor that fails is refused (C++ snap/restore does not roll back
+  vars, so a soft stop is not mirrored). The generic inlined call is now the
+  closure `callAt`.
+- `invoke` of an eh call pushes its pad on `hs` around the call (and the dtor
+  loop); `__clang_call_terminate`: `check 1 terminate CXX-THROW-NOEXCEPT`, stop.
+- Fixtures: cxx_catch_dtor (agree-ext 4), cxx_rethrow, cxx_terminate; cxx_catch
+  now agree-ext 4 (f_rethrow accepted).
+- list_contracts (lc2.log): outside=8, all "inlined function returning a
+  pointer with stack objects" (not EH) + __clang_call_terminate (calls std::terminate).
+- Known: user `throw` (`__cxa_allocate_exception`/`__cxa_throw`) is still
+  outside; that is the next big EH gap.
