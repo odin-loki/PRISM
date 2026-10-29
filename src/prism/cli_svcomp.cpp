@@ -159,6 +159,17 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         oc.decision = Decision{"error", "cannot copy " + task.string() + ": " + ec.message(), std::nullopt, json::object()};
         return oc;
     }
+    if (prop == "no-overflow") {
+        // reach_error()/abort() end the execution; for no-overflow they are
+        // exit(0), so a proof of main need not show them unreachable.
+        // Replay, fuzzing and the witness use the original task.
+        std::ifstream tin(task, std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(tin)), std::istreambuf_iterator<char>());
+        if (auto rew = neutralize_error_calls(text)) {
+            std::ofstream tout(task_c, std::ios::binary | std::ios::trunc);
+            tout << *rew;
+        }
+    }
     std::string error;
     const auto t_start = std::chrono::steady_clock::now();
     auto since = [](std::chrono::steady_clock::time_point t) {

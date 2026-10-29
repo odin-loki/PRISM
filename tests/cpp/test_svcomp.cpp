@@ -1313,3 +1313,55 @@ TEST_CASE("svcomp fuzz_replay: a loop longer than the 2 s run limit gets one lon
     CHECK(rb["replay"] == "replayed");
     CHECK(fuzz_replay(d.write("lo.c", ok), "unreach-call", true, d.path / "wo", "LP64", 60.0, 50)["replay"] == "not-replayed");
 }
+
+TEST_CASE("svcomp neutralize_error_calls: call statements only, definitions and declarations kept") {
+    const std::string src = "void reach_error();\nvoid reach_error() { __assert_fail(\"0\", \"f\", 3, \"g\"); }\n"
+                            "void f(int c) { if (!c) { ERROR: {reach_error();abort();} } }\n"
+                            "int main() { const char* s = \"abort();\"; if (0) abort(); else abort (); }\n";
+    auto out = prism::svcomp::neutralize_error_calls(src);
+    REQUIRE(out.has_value());
+    CHECK(out->find("void reach_error();") != std::string::npos);
+    CHECK(out->find("void reach_error() {") != std::string::npos);
+    CHECK(out->find("{exit(0);exit(0);}") != std::string::npos);
+    CHECK(out->find("\"abort();\"") != std::string::npos);
+    CHECK(out->find("if (0) exit(0); else exit(0);") != std::string::npos);
+    CHECK(out->rfind("extern void exit(int); ", 0) == 0);
+    CHECK(std::count(out->begin(), out->end(), '\n') == std::count(src.begin(), src.end(), '\n'));
+    // nothing to rewrite, or a task-defined exit(): no rewrite
+    CHECK_FALSE(prism::svcomp::neutralize_error_calls("int main() { return 0; }").has_value());
+    CHECK_FALSE(prism::svcomp::neutralize_error_calls("void exit(int s) { }\nint main() { abort(); }").has_value());
+}
+
+TEST_CASE("svcomp solve no-overflow: a reachable reach_error() does not block the proof; an overflow is still found") {
+    if (!svcomp_exec_portable() || !cc_with_ubsan()) {
+        MESSAGE("NOTRUN: needs POSIX engines and a C compiler with UBSan");
+        return;
+    }
+    TempDir d;
+    SolveOptions opt;
+    opt.allow_exec = true;
+    const std::string head = "extern void abort(void);\nextern void __assert_fail(const char*, const char*, unsigned int, const char*);\n"
+                             "void reach_error() { __assert_fail(\"0\", \"t.c\", 3, \"reach_error\"); }\n"
+                             "void __VERIFIER_assert(int cond) { if (!(cond)) { ERROR: {reach_error();abort();} } }\n";
+    SUBCASE("proving: the assert fails, no overflow") {
+        auto t = d.path / "ok.c";
+        std::ofstream(t) << head << "int main(void) { int A[64] = {0}; int i; for (i = 0; i < 64; i++) A[i] = i;\n"
+                                    "  __VERIFIER_assert(A[3] != 3); return 0; }\n";
+        opt.out = d.path / "o1";
+        opt.witness = d.path / "w1.yml";
+        auto oc = solve(t, props_dir() / "no-overflow.prp", opt);
+        INFO(oc.decision.reason);
+        CHECK(oc.decision.answer == "true");
+    }
+    SUBCASE("must-fail: an overflow before the error call") {
+        auto t = d.path / "bad.c";
+        std::ofstream(t) << head << "extern int __VERIFIER_nondet_int(void);\n"
+                                    "int main(void) { int x = __VERIFIER_nondet_int(); int y = x + 1;\n"
+                                    "  __VERIFIER_assert(y != 0); return y; }\n";
+        opt.out = d.path / "o2";
+        opt.witness = d.path / "w2.yml";
+        auto oc = solve(t, props_dir() / "no-overflow.prp", opt);
+        INFO(oc.decision.reason);
+        CHECK(oc.decision.answer != "true");
+    }
+}

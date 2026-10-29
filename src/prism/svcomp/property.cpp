@@ -2,6 +2,8 @@
 #include "internal.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <optional>
 #include <set>
 
 namespace prism::svcomp {
@@ -87,6 +89,78 @@ std::string parse_property(const std::string& prp_text) {
 
 bool supported_property(const std::string& prop) {
     return prop == "no-overflow" || prop == "unreach-call" || prop == "valid-memsafety";
+}
+
+std::optional<std::string> neutralize_error_calls(const std::string& src) {
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    auto skip_ws = [&](std::size_t i) {
+        while (i < src.size() && std::isspace(static_cast<unsigned char>(src[i]))) ++i;
+        return i;
+    };
+    // the identifier ending just before position i (after spaces), or the punctuation char
+    auto prev_token = [&](std::size_t i) -> std::string {
+        while (i > 0 && std::isspace(static_cast<unsigned char>(src[i - 1]))) --i;
+        if (i == 0) return ";";
+        if (!ident(src[i - 1])) return std::string(1, src[i - 1]);
+        std::size_t b = i;
+        while (b > 0 && ident(src[b - 1])) --b;
+        return src.substr(b, i - b);
+    };
+    std::string out;
+    out.reserve(src.size());
+    bool changed = false;
+    std::size_t i = 0;
+    while (i < src.size()) {
+        if (src[i] == '"' || src[i] == '\'') {  // literals copied as is
+            char q = src[i];
+            std::size_t j = i + 1;
+            while (j < src.size() && src[j] != q) j += src[j] == '\\' ? 2 : 1;
+            j = std::min(j + 1, src.size());
+            out.append(src, i, j - i);
+            i = j;
+            continue;
+        }
+        if (!ident(src[i]) || (i > 0 && ident(src[i - 1]))) {
+            out += src[i++];
+            continue;
+        }
+        std::size_t e = i;
+        while (e < src.size() && ident(src[e])) ++e;
+        const std::string name = src.substr(i, e - i);
+        if (name == "exit") {
+            // a definition of exit(): do not rewrite anything
+            std::size_t p = skip_ws(e);
+            if (p < src.size() && src[p] == '(') {
+                std::size_t c = src.find(')', p);
+                if (c != std::string::npos) {
+                    std::size_t n = skip_ws(c + 1);
+                    if (n < src.size() && src[n] == '{') return std::nullopt;
+                }
+            }
+        }
+        if (name == "reach_error" || name == "__VERIFIER_error" || name == "abort") {
+            std::size_t p = skip_ws(e);
+            std::size_t q = p < src.size() && src[p] == '(' ? skip_ws(p + 1) : std::string::npos;
+            if (q != std::string::npos && q < src.size() && src[q] == ')') {
+                std::size_t n = skip_ws(q + 1);
+                const std::string prev = prev_token(i);
+                // a call statement: `;` follows and a statement boundary precedes
+                bool stmt = n < src.size() && src[n] == ';' &&
+                            (prev == ";" || prev == "{" || prev == "}" || prev == ")" || prev == ":" ||
+                             prev == "else" || prev == "do");
+                if (stmt) {
+                    out += "exit(0)";
+                    changed = true;
+                    i = q + 1;
+                    continue;
+                }
+            }
+        }
+        out.append(src, i, e - i);
+        i = e;
+    }
+    if (!changed) return std::nullopt;
+    return "extern void exit(int); " + out;
 }
 
 bool width_dependent_code(const std::string& source) {
