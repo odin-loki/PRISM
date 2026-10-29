@@ -8786,6 +8786,131 @@ void throw_spec_check(const json& f, Ctx& cx) {
     cx.add_at(p, std::string(str_field(f, "name")), "CXX-THROW-SPEC", "dynamic exception specification");
 }
 
+// The comment lines just above a function (at most the last three), as the
+// regex comment_preamble reads them: blank lines are skipped, the first code
+// line stops the walk.
+std::string comment_preamble_of(const json& f, Ctx& cx) {
+    const auto p = begin_of(f);
+    auto* fc = cx.file(p.file);
+    if (!fc || p.macro) return {};
+    const int line = cx.line_of(p);  // 1-based
+    auto raw = [&](int i) {          // 0-based
+        auto b = fc->starts.at(static_cast<std::size_t>(i));
+        auto e = static_cast<std::size_t>(i) + 1 < fc->starts.size() ? fc->starts.at(static_cast<std::size_t>(i) + 1)
+                                                                      : fc->text.size();
+        return strip_ws(fc->text.substr(b, e - b));
+    };
+    std::vector<std::string> kept;
+    bool in_block = false;
+    for (int i = line - 2; i >= 0 && i < static_cast<int>(fc->starts.size()); --i) {
+        auto s = raw(i);
+        if (in_block) {
+            kept.push_back(s);
+            if (s.find("/*") != std::string::npos) in_block = false;
+            continue;
+        }
+        if (s.empty()) continue;
+        if (s.starts_with("//")) {
+            kept.push_back(s);
+            continue;
+        }
+        if (s.ends_with("*/") || s.starts_with("/*") || s.starts_with("*")) {
+            kept.push_back(s);
+            if (!(s.find("/*") != std::string::npos)) in_block = true;
+            continue;
+        }
+        break;
+    }
+    std::reverse(kept.begin(), kept.end());
+    if (kept.size() > 3) kept.erase(kept.begin(), kept.end() - 3);
+    std::string out;
+    for (auto& k : kept) out += k + "\n";
+    return out;
+}
+
+// API-PRECONDITION / INTENT: the contract a comment above the function states
+// (`requires n > 0`, `returns x+1`) against what the body does with the named
+// parameter / returned variable.
+void comment_contract_checks(const json& f, const json& body, const Fn& fn, Ctx& cx, Checker& ck) {
+    if (fn.ret.empty() || fn.ret == "void" || is_pointer_type(fn.ret)) return;
+    auto pre = comment_preamble_of(f, cx);
+    if (pre.empty()) return;
+    std::map<std::string, std::string> params;  // name -> id
+    for (auto& c : inner(f))
+        if (kind(c) == "ParmVarDecl" && !str_field(c, "name").empty())
+            params[std::string(str_field(c, "name"))] = std::string(str_field(c, "id"));
+    std::set<std::string> cond_ids, bumped;
+    std::vector<const json*> rets;
+    auto mark = [&](const json& c) {
+        collect_nodes(c, [&](const json& x, const json*) {
+            if (auto id = ref_id(x); !id.empty()) cond_ids.insert(id);
+        });
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (one_of(k, {"IfStmt", "WhileStmt", "DoStmt", "ForStmt", "SwitchStmt", "ConditionalOperator"})) {
+            for (auto& c : inner(n)) {
+                if (kind(c) == "DeclStmt" || kind(c) == "VarDecl" || kind(c) == "NullStmt") continue;
+                if (k == "DoStmt") {
+                    mark(last_child(n));
+                    break;
+                }
+                mark(c);
+                if (k != "ForStmt") break;
+            }
+        } else if (k == "BinaryOperator" && n_children(n) == 2) {
+            auto op = str_field(n, "opcode");
+            if (one_of(op, {"<", ">", "<=", ">=", "==", "!=", "&&", "||"})) mark(n);
+            if (op == "+" || op == "-")
+                for (int i = 0; i < 2; ++i)
+                    if (auto id = ref_id(child(n, i)); !id.empty()) bumped.insert(id);
+            if (op == "=")
+                if (auto id = ref_id(child(n, 0)); !id.empty()) bumped.insert(id);
+        } else if (k == "CompoundAssignOperator" && n_children(n) == 2) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) bumped.insert(id);
+        } else if (k == "UnaryOperator" && n_children(n) == 1) {
+            auto op = str_field(n, "opcode");
+            if (op == "!") mark(n);
+            if (one_of(op, {"++", "--"}))
+                if (auto id = ref_id(child(n, 0)); !id.empty()) bumped.insert(id);
+        } else if (is_call_kind(k) && one_of(callee_name(n), {"assert", "__assert_fail", "__builtin_expect"})) {
+            mark(n);
+        } else if (k == "ReturnStmt" && n_children(n) == 1) {
+            rets.push_back(&n);
+        }
+    });
+    static prism::Regex precond[] = {
+        prism::Regex(R"((?i)requires\s+(\w+)\s*>\s*0)"),
+        prism::Regex(R"((?i)(\w+)\s+must\s+be\s+positive)"),
+        prism::Regex(R"((?i)(\w+)\s+is\s+positive)"),
+        prism::Regex(R"((?i)(\w+)\s*>\s*0)"),
+    };
+    for (auto& r : precond) {
+        auto m = r.search_match(pre);
+        if (!m) continue;
+        auto var = m->group(1);
+        auto it = params.find(var);
+        if (it != params.end() && !cond_ids.contains(it->second))
+            cx.add_at(begin_of(f), fn.name, "API-PRECONDITION",
+                      "comment requires " + var + ">0 but " + fn.name + "() never guards " + var);
+        break;
+    }
+    static prism::Regex intent(
+        R"((?i)returns\s+\w+\s*\+\s*1|return\s+\w+\s*\+\s*1|result\s+is\s+\w+\s*\+\s*1|adds\s+one|increment)");
+    if (intent.search(pre))
+        for (auto* r : rets) {
+            const auto& e = strip_all(child(*r, 0));
+            if (kind(e) != "DeclRefExpr") continue;
+            auto id = ref_id(e);
+            if (bumped.contains(id)) continue;
+            const auto p = begin_of(*r);
+            if (p.macro) continue;
+            auto v = decl_name(e);
+            ck.add(*r, "INTENT", "comment claims increment but " + fn.name + "() returns " + v + " unchanged");
+            break;
+        }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -8850,6 +8975,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     clz_zero_checks(*body, w.ck, cx);
     unvalidated_input_checks(*body, w.ck);
     conc_atomicity_checks(*body, fn, w.ck, cx);
+    if (fn.tparams.empty()) comment_contract_checks(f, *body, fn, cx, w.ck);
     if (fn.opaque) return;
     for (auto& id : fn.order) {
         auto& v = fn.vars[id];

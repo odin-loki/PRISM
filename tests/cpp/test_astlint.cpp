@@ -2969,6 +2969,60 @@ TEST_CASE("astlint: ported regex classes, batch 14 (CXX-ATOMIC-FENCE, CXX-ENDIAN
     }
 }
 
+// Batch 15: the comment-contract rules (API-PRECONDITION, INTENT).
+const char* kPortedC15 = R"(#include <assert.h>
+/* requires n > 0 */
+int precond_bad(int n) { // expect: API-PRECONDITION
+    return 100 / n;
+}
+/* requires n > 0 */
+int precond_ok(int n) {
+    if (n <= 0)
+        return 0;
+    return 100 / n;
+}
+// count must be positive
+int precond_assert_ok(int count) {
+    assert(count > 0);
+    return 10 / count;
+}
+/* requires k > 0 */
+int precond_not_param_ok(int n) {
+    return n;
+}
+/* returns x+1 */
+int intent_bad(int x) {
+    return x; // expect: INTENT
+}
+/* returns x+1 */
+int intent_ok(int x) {
+    return x + 1;
+}
+// increments the counter and returns it
+int intent_bumped_ok(int c) {
+    c++;
+    return c;
+}
+/* returns x+1 */
+int intent_expr_ok(int x) {
+    int y = x;
+    return y + 1;
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 15 (API-PRECONDITION, INTENT)") {
+    check_marks("ported15.c", kPortedC15);
+    auto clang = find_clang();
+    if (!clang) return;
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("api_precond.c", "API-PRECONDITION", "precond_bad", clang, b) == std::set<int>{2});
+        CHECK(planted_ast_lines("api_precond.c", "API-PRECONDITION", "precond_ok", clang, b).empty());
+        CHECK(planted_ast_lines("intent.c", "INTENT", "intent_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("intent.c", "INTENT", "intent_ok", clang, b).empty());
+    }
+}
+
 TEST_CASE("astlint: project headers, nested enums and non-dependent template code are checked") {
     const std::string hdr = R"(#pragma once
 struct Shape {
