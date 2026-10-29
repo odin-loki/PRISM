@@ -144,6 +144,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
   | memset d b len lw => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | glob d size al kd ini st => simp [sSInst, lSInst, SLX, lift_set]
   | pcmp d p a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | psub d fl a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
   | nondet d w => simp [sSInst, lSInst, SLX, lift_set]
   | vassume a w =>
     simp only [sSInst, lSInst, lower_lift]
@@ -277,6 +278,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
   | glob d size al kd ini st =>
     simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
   | pcmp d p a b => exact lOne_mono h hc
+  | psub d fl a b => exact lOne_mono h hc
   | nondet d w => simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
   | vassume a w =>
     simp only [lSInst] at h

@@ -136,6 +136,12 @@ inductive SInst where
   object; the value is the comparison of the 64-bit pointers (as LLVM compares
   addresses).  Pointer `eq`/`ne` is the integer `icmp` at width 64. -/
   | pcmp (dst : String) (p : Pred) (a b : Opnd)
+  /-- `%dst = sub i64 a, b` of two `ptrtoint` results (`Tr::binop`'s
+  `MemTr::ptr_sub_check`): PRISM's rule is C's (C17 6.5.6p9), the two
+  pointers must point into the same object; the value is the subtraction of
+  the 64-bit pointers (`ptrtoint` of a 64-bit pointer is the pointer, as
+  `Tr::inst` copies it). -/
+  | psub (dst : String) (fl : LFlags) (a b : Opnd)
   /-- `%dst = call iw @__VERIFIER_nondet_*()` (or `nondet_*`, not defined in
   the module): an arbitrary value, drawn from the oracle. -/
   | nondet (dst : String) (w : Nat)
@@ -404,6 +410,12 @@ def sPcmpV (R : SRegs) (p : Pred) (a b : Opnd) : Res Nat :=
   (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
     if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then .ok (icmpVal p 64 x y) else .ub
 
+def sPsubV (R : SRegs) (fl : LFlags) (a b : Opnd) : Res Nat :=
+  (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
+    if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then
+      (if binPoison .sub fl 64 x y then .ub else .ok (binVal .sub 64 x y))
+    else .ub
+
 /-- Whether pointer `v` points into the object of one of the registers `ns`
 (each a use; a missing register: stuck). -/
 def escHit (R : SRegs) (v : Nat) : List String → Res Bool
@@ -579,6 +591,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .glob d size al kd ini st =>
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
   | .pcmp d p a b => (sPcmpV R p a b).bind fun v => .ok (R.set d v, W)
+  | .psub d fl a b => (sPsubV R fl a b).bind fun v => .ok (R.set d v, W)
   | .nondet d w => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
   | .vassume a w => (sVassume R w a).bind fun _ => .ok (R, W)
   | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
@@ -788,6 +801,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
   -- pointers into different objects: C UB (not LLVM poison), flagged like a C array bound
   | .pcmp d p a b => lOne S W d (sPcmpV (lower S.R) p a b)
+  | .psub d fl a b => lOne S W d (sPsubV (lower S.R) fl a b)
   | .nondet d w => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c⟩, W.adv 1)
   -- a poison or indeterminate argument of these calls is a use of it: UB
   | .vassume a w =>

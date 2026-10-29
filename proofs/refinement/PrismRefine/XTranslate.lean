@@ -673,6 +673,20 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
             .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-cmp" "PTR-COMPARE",
             .assign i (.cmp (uPred p)) [A, B]],
           ta ++ tb ++ [64, 64, 1])
+  | .psub d fl a b => do
+    need (flagsOk .sub fl) "outside fragment: flags"
+    let (sa, ta, A) ← trOpndX c 64 false k a
+    let (sb, tb, B) ← trOpndX c 64 false (k + ta.length) b
+    let j := k + ta.length + tb.length
+    -- `Tr::binop`: the operands, `MemTr::ptr_sub_check` (`obj(x) != obj(y)`,
+    -- PTR-COMPARE), the flag checks, then the subtraction
+    let (sc, tc) := emitAll (j + 3) (checks .sub fl 64 A B)
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sb ++ [.assign j (.bin .lshr) [A, c64 48], .assign (j + 1) (.bin .lshr) [B, c64 48],
+            .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-sub" "PTR-COMPARE"] ++
+            sc ++ [.assign i (.bin .sub) [A, B]],
+          ta ++ tb ++ [64, 64, 1] ++ tc)
   | .nondet d w => do
     need (okW w) "UNENCODED: width"
     let i ← dstX c d w
@@ -950,6 +964,7 @@ where
     | .xv d w _ _ => [(d, w)]
     | .glob d _ _ _ _ _ => [(d, 64)]
     | .pcmp d _ _ _ => [(d, 1)]
+    | .psub d _ _ _ => [(d, 64)]
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]

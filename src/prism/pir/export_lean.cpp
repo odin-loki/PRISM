@@ -616,6 +616,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
     const pirmem::Layout lay(m);
+    // Tr::is_ptrtoint: a register the function defines by ptrtoint
+    auto is_ptrtoint = [&](const ir::Operand& o) {
+        if (o.v.kind != ir::Value::Local) return false;
+        const auto* d = def_of(f, o.v.name);
+        return d != nullptr && d->op == "ptrtoint";
+    };
     // the hidden allocation-failed flag (translate.cpp: preassigned when the
     // analysed function can reach __prism_alloc_failed): an object after the
     // entry globals, passed to every inlined function that can reach it as an
@@ -774,6 +780,21 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << inc.size();
                 for (auto& [v, pred] : inc) b << " " << opnd(v) << " " << name(pred);
                 b << "\n";
+            } else if (op == "sub" && in.ops.size() == 2 && !in.result.empty() && is_ptrtoint(in.ops[0]) &&
+                       is_ptrtoint(in.ops[1])) {
+                // Tr::binop: MemTr::ptr_sub_check (same object), then the subtraction
+                if (in.ty.kind != ir::Type::Int || in.ty.bits != 64) throw Unsupported{"sub of ptrtoint width"};
+                std::string fl;
+                for (auto f2 : {"nsw", "nuw"})
+                    if (has(in, f2)) fl += (fl.empty() ? "" : ",") + std::string(f2);
+                b << "L psub %" << name(in.result) << " " << word(fl) << " " << opnd(in.ops[0]) << " "
+                  << opnd(in.ops[1]) << "\n";
+            } else if (op == "ptrtoint") {
+                // Tr::inst: a copy of the 64-bit pointer (every use is a sub of two ptrtoint values there)
+                if (in.result.empty() || in.ops.size() != 1 || in.ty.kind != ir::Type::Int || in.ty.bits != 64 ||
+                    in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+                    throw Unsupported{"ptrtoint shape"};
+                b << "L ptrtoint %" << name(in.result) << " " << opnd(in.ops[0]) << "\n";
             } else if (bins.count(op)) {
                 std::string fl;
                 for (auto f2 : {"nsw", "nuw", "exact", "disjoint"})
