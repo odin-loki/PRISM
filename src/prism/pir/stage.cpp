@@ -7,6 +7,7 @@
 
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
+#include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
@@ -914,6 +915,7 @@ struct Lowered {
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
+    std::vector<std::string> include_flags;
 };
 
 struct Analyzed {
@@ -922,8 +924,76 @@ struct Analyzed {
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
 };
 
-Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
-                  const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
+static std::string format_params(const FunctionInfo& fn) {
+    if (!fn.params.empty()) {
+        std::string s;
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            if (i) s += ", ";
+            s += fn.params[i].first;
+            if (!fn.params[i].second.empty()) s += " " + fn.params[i].second;
+        }
+        return s;
+    }
+    if (!fn.signature.empty()) {
+        auto p = fn.signature.find('(');
+        auto q = fn.signature.rfind(')');
+        if (p != std::string::npos && q != std::string::npos && q > p) return fn.signature.substr(p + 1, q - p - 1);
+    }
+    return "void";
+}
+
+// When a unit does not compile (typically a planted *_bad function), retry on a
+// slice that keeps only *_ok helpers so pir can match the hand bmc encoder on
+// the safe twin (roadmap 2.8 superset gate).
+static std::optional<fs::path> write_ok_recovery_tu(const Unit& u, const std::vector<FunctionInfo>& fns, TmpDir& td) {
+    std::ostringstream src;
+    bool any = false;
+    for (const auto& line : split_lines(read_file(u.path))) {
+        auto t = line;
+        while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+        if (t.starts_with("#include") || t.starts_with("#pragma once")) src << line << '\n';
+    }
+    src << "\n";
+    for (const auto& fn : fns) {
+        if (fn.name.size() < 4 || !fn.name.ends_with("_ok")) continue;
+        any = true;
+        if (fn.is_static) src << "static ";
+        src << fn.return_type << ' ' << fn.name << '(' << format_params(fn) << ") {\n" << fn.body << "\n}\n";
+    }
+    if (!any) return std::nullopt;
+    auto out = td.path / ("prism_ok_" + u.path.filename().string());
+    std::ofstream ofs(out, std::ios::binary);
+    if (!ofs) return std::nullopt;
+    ofs << src.str();
+    return out;
+}
+
+Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low, const ModelLibrary& models,
+                  const std::shared_ptr<HoudiniBudget>& budget);
+
+static std::optional<Analyzed> try_ok_recovery(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
+                                               const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
+    std::vector<FunctionInfo> fns;
+    try {
+        fns = extract_functions(u.path, u.rel);
+    } catch (...) {
+        return std::nullopt;
+    }
+    TmpDir td;
+    auto slice = write_ok_recovery_tu(u, fns, td);
+    if (!slice) return std::nullopt;
+    Lowered rec;
+    rec.include_flags = low.include_flags;
+    rec.ir = lower_to_ir(fe, *slice, std::max(10.0, cfg.timeout), rec.err, &rec.folded, &rec.sshl, &rec.cxx_models,
+                         rec.include_flags);
+    if (!rec.ir) return std::nullopt;
+    Unit ru = u;
+    ru.path = *slice;
+    return run_unit(ru, fe, cfg, rec, models, budget);
+}
+
+Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low, const ModelLibrary& models,
+                  const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -931,6 +1001,18 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     const auto& folded = low.folded;
     const auto& sshl = low.sshl;
     if (!ir) {
+        if (auto recovered = try_ok_recovery(u, fe, cfg, low, models, budget)) {
+            recovered->out.push_back([&] {
+                auto f = base_finding(u);
+                f.status = std::string(laws::ERROR);
+                f.strength = std::string(laws::STRENGTH_SOME);
+                f.message = "clang front end failed on full unit (recovered *_ok slice only): " + low.err;
+                f.extra["frontend"] = fe.version;
+                f.extra["ok_recovery"] = "true";
+                return f;
+            }());
+            return std::move(*recovered);
+        }
         auto f = base_finding(u);
         f.status = std::string(laws::ERROR);
         f.strength = std::string(laws::STRENGTH_SOME);
@@ -1189,6 +1271,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
+            l.include_flags = inc;
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
