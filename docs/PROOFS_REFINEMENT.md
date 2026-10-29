@@ -451,7 +451,7 @@ remaining causes (kept `.pirl`s of the last run): `invoke` 225,
 `__cxa_begin_catch` 61, `__cxa_allocate_exception` 24, indirect calls 22,
 `float`/`double` 21/20, `pthread_mutex_lock` 20, `pthread_create` 17,
 `mtx_lock` 15, constant-GEP pointer operands 14, `alloca` in an inlined
-function 13, `printf` 12; 415 `agree-reject` are pointer parameters (Law 6).
+function 13, `printf` 12 (counts over kept `.pirl` files, which repeat inlined callees). The `agree-reject` verdicts are unguarded pointer parameters (Law 6).
 
 Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
 trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
