@@ -3,6 +3,7 @@
 // "Memory model"; the Lean counterpart is proofs/semantics/PrismSem/Memory.lean
 // (semantics) and MemEncode.lean (read-over-write encoding).
 
+#include "prism/membudget.hpp"
 #include "memory.hpp"
 
 #include "prism/laws.hpp"
@@ -103,6 +104,16 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
     return r & mask_w(w);
 }
 }  // namespace
+
+// Law 7: one load can build millions of read-over-write terms (a symbolic
+// address against a long write log, nested once per copy). The process RSS
+// is checked every few thousand steps against the memory budget; past it the
+// function ends with a reported UNKNOWN (encode.cpp maps this exception) and
+// its context, with everything built here, is freed.
+static void mem_guard() {
+    if (membudget::over_budget_sampled(4096))
+        throw z3::exception("soft memory cap (memory budget) reached while encoding memory");
+}
 
 // Raw value sets: the options are kept apart even when two have the same
 // value, so terms built the same way (the bytes of one read-over-write
@@ -224,6 +235,7 @@ std::optional<SymMem::Vs> SymMem::shallow_vs(const z3::expr& e, int depth) const
     std::unordered_map<unsigned, std::optional<Vs>> seen;
     auto rec = [&](auto& self, const z3::expr& cur, int depth) -> std::optional<Vs> {
         if (auto it = seen.find(cur.id()); it != seen.end()) return it->second;
+        mem_guard();
         auto store = [&](std::optional<Vs> r) {
             seen.emplace(cur.id(), r);
             return r;
@@ -803,6 +815,7 @@ std::optional<std::vector<std::tuple<z3::expr, uint64_t, uint64_t>>> SymMem::cop
 z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool use_prov) {
     auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
+    mem_guard();
     keep_.push_back(addr_in);
     // Value sets: an address with several possible constants reads each of
     // them (under its guard); one constant is read as that numeral, so the
@@ -911,6 +924,7 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     // the same address expression reads the same value (no new constraints)
     auto key = std::make_pair(e.havoc, addr.id());
     if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
+    mem_guard();
     auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
     auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
     uint64_t x1 = 0, x2 = 0;
