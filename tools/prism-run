@@ -71,6 +71,7 @@ pid=$!
 echo "$budget $pid" > $D/running/$$
 peak=0
 while kill -0 $pid 2>/dev/null; do
+  [ -e $D/running/$$ ] || echo "$budget $pid" > $D/running/$$  # re-register if removed
   r=$(treerss $pid); r=${r:-0}; [ $r -gt $peak ] && peak=$r
   adj=$(( r * 500 / budget )); [ $adj -lt 100 ] && adj=100; [ $adj -gt 1000 ] && adj=1000
   for p in $(treepids $pid); do { echo $adj > /proc/$p/oom_score_adj; } 2>/dev/null; done
