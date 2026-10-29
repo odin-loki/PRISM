@@ -2740,6 +2740,156 @@ TEST_CASE("astlint: ported regex classes on C++, batch 12 (planted + guards, bot
     check_marks("ported12.cpp", kPortedCxx12);
 }
 
+// Batch 13: the security / lifetime rules that were still regex-only.
+const char* kPortedC13 = R"(#include <unistd.h>
+#include <stdio.h>
+void exec_bad(char *cmd, char **argv) {
+    execv(cmd, argv); // expect: API-EXEC
+}
+void execvp_bad(const char *prog, char **argv) {
+    execvp(prog, argv); // expect: API-EXEC
+}
+void exec_ok(char **argv) {
+    execv("/bin/true", argv);
+}
+int pipe_bad(void) {
+    int fds[2];
+    pipe(fds); // expect: API-PIPE
+    return fds[0];
+}
+int pipe_assign_bad(void) {
+    int fds[2];
+    int r = pipe(fds); // expect: API-PIPE
+    close(fds[1]);
+    return fds[0] + r * 0;
+}
+int pipe_ok(void) {
+    int fds[2];
+    if (pipe(fds) < 0)
+        return -1;
+    return fds[0];
+}
+int pipe_assign_ok(void) {
+    int fds[2];
+    int r = pipe(fds);
+    if (r == -1)
+        return -1;
+    return fds[0];
+}
+void pipe_void_ok(void) {
+    int fds[2];
+    (void)pipe(fds);
+}
+int pipe_unused_ok(void) {
+    int fds[2];
+    pipe(fds);
+    return 0;
+}
+)";
+
+const char* kPortedCxx13 = R"(#include <functional>
+#include <memory>
+std::function<int()> lam_bad() {
+    int x = 1;
+    return [&] { return x; }; // expect: CXX-LAMBDA-DANGLE
+}
+auto lam_named_bad(int n) {
+    auto f = [&n] { return n; };
+    return f; // expect: CXX-LAMBDA-DANGLE
+}
+auto lam_copy_ok() {
+    int x = 1;
+    return [=] { return x; };
+}
+auto lam_mixed_ok() {
+    int x = 1;
+    return [&, x] { return x; };
+}
+auto lam_ref_param_ok(int &r) {
+    return [&] { return r; };
+}
+int lam_called_ok() {
+    int x = 1;
+    auto f = [&] { return x; };
+    return f();
+}
+int lam_static_ok() {
+    static int s = 0;
+    return [&] { return s; }();
+}
+struct Node : std::enable_shared_from_this<Node> {
+    std::shared_ptr<Node> self;
+    Node() {
+        self = shared_from_this(); // expect: CXX-ENABLE-SHARED
+    }
+    std::shared_ptr<Node> get() { return shared_from_this(); }
+};
+class Hidden : std::enable_shared_from_this<Hidden> { // expect: CXX-ENABLE-SHARED
+public:
+    int v = 0;
+};
+class Shown : public std::enable_shared_from_this<Shown> {
+public:
+    int v = 0;
+};
+std::shared_ptr<Node> local_sft_bad() {
+    Node n;
+    return n.shared_from_this(); // expect: CXX-ENABLE-SHARED
+}
+std::shared_ptr<Node> owned_sft_ok() {
+    auto p = std::make_shared<Node>();
+    return p->shared_from_this();
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 13 (API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-SHARED)") {
+    check_marks("ported13.c", kPortedC13);
+    check_marks("ported13.cpp", kPortedCxx13);
+}
+
+// Lines in testdata/planted/ for the rules ported from batch 13 on, on both
+// front ends (the planted regex rows on the same lines are superseded).
+std::set<int> planted_ast_lines(const char* file, const char* cls, const char* func,
+                                const std::optional<fs::path>& clang, Backend b) {
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+    prism::Config cfg;
+    cfg.jobs = 1;
+    cfg.root = root;
+    std::set<int> lines;
+    for (auto& f : prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)) {
+        auto it = f.extra.find("engine");
+        if (it == f.extra.end() || it->second != "clang-ast") continue;
+        if (f.status != prism::laws::FAILED || f.cls != cls) continue;
+        if (f.function.value_or("") != func) continue;
+        lines.insert(f.line.value_or(0));
+    }
+    return lines;
+}
+
+TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-SHARED (both front ends)") {
+    auto clang = find_clang();
+    if (!clang) {
+        MESSAGE("clang not installed: testdata batch 13 astlint skipped");
+        return;
+    }
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("exec_api.c", "API-EXEC", "exec_bad", clang, b) == std::set<int>{4});
+        CHECK(planted_ast_lines("exec_api.c", "API-EXEC", "exec_ok", clang, b).empty());
+        CHECK(planted_ast_lines("pipe_api.c", "API-PIPE", "pipe_bad", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("pipe_api.c", "API-PIPE", "pipe_ok", clang, b).empty());
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_ok", clang, b).empty());
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_ref_ok", clang, b).empty());
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Conn::Conn", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Conn::handle", clang, b).empty());
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Session", clang, b) == std::set<int>{9});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_local_bad", clang, b) ==
+              std::set<int>{15});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_owned_ok", clang, b).empty());
+    }
+}
+
 TEST_CASE("astlint: project headers, nested enums and non-dependent template code are checked") {
     const std::string hdr = R"(#pragma once
 struct Shape {

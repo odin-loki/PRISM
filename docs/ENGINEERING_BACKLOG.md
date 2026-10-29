@@ -26,14 +26,15 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
-| ~145 regex-only classes (mostly bespoke CXX-* rules) | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
+| ~26 regex-only classes (2026-10-29: C++26 library types clang 18 + libstdc++ 14 cannot parse, comment-driven INTENT / API-PRECONDITION, and a few compile-time-checked CXX rules) | Port the rest that have a runtime defect on AST nodes, with `testdata/` plants | `checkers_*.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** / **STR-STRNCPY-NUL** / **MEM-REALLOC-SELF** testdata doctests | `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-MKSTEMP`**, **`API-CHMOD-WORLD`**, **`API-SETUID`** AST ports in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-SYSTEM`**, **`API-SIGNAL`**, **`API-GETENV-NULL`**, **`API-STRDUP-NULL`**, **`PTR-UNCHECKED-ALLOC`** AST + testdata doctests | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`INT-SHIFT-UB`**, **`PTR-NULL-DEREF`**, **`MEM-STACK-ESCAPE`** testdata doctests; **`return buf`** after `strip_casts` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Next | Pick from regex-only table (~265 left); port the remaining regex-text rules in `core_regex_batch()` (MEM-REALLOC-ZERO, MEM-PTR-ARITH, MEM-ONESIDED-INDEX, MEM-FLEX-ARRAY, INFOLEAK-PAD, sibling asymmetry) to AST nodes | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-29) | Batch 13: **`API-EXEC`** (non-literal exec* path), **`API-PIPE`** (pipe/pipe2 result untested while fds[] is read), **`CXX-LAMBDA-DANGLE`** (returned lambda, direct / via std::function / via a local, capturing a local or by-value parameter by reference), **`CXX-ENABLE-SHARED`** (shared_from_this() in a ctor/dtor or on a local object; enable_shared_from_this as a non-public base) on AST nodes; `testdata/planted/enable_shared_ast.cpp` | `astlint_checks.cpp`, `test_astlint.cpp` |
+| Next | Regex-only list: `comm` of the class strings in `checkers_*.cpp` against `astlint*.cpp` + `build/generated/prism/astlint_discard.inc`. Left after batch 13: CXX-ATOMIC-FENCE, CXX-ENDIAN, CXX-FORWARD-LIKE, CXX-ERROR-CATEGORY, CXX-TUPLE-GET, CXX-ASSUME (clang 18 drops `[[assume]]`), INTENT, API-PRECONDITION, and the C++26 types (generator, mdspan, expected, flat_map, inplace_vector, hive, indirect, function_ref, copyable_function, rcu, hazard_pointer, linalg, reflection, contracts, embed, text_encoding, sync_wait). The `core_regex_batch()` rules are already ported | `checkers_*.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder

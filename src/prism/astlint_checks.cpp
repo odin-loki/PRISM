@@ -1733,6 +1733,9 @@ struct Checker {
         }
         if (name == "system" && !args.empty() && !string_lit(*args[0]) && !in_macro(c))
             add(c, "API-SYSTEM", "system() command is not a string literal");
+        if (one_of(name, {"execlp", "execle", "execl", "execvpe", "execvp", "execve", "execv"}) && !args.empty() &&
+            !string_lit(*args[0]) && !in_macro(c))
+            add(c, "API-EXEC", name + "() path is not a string literal");
         if (name == "signal" && args.size() >= 2) {
             const auto& h = strip_all(*args[1]);
             bool ok = sig_dfl_or_ign(h) || has_literal_zero_or_one(h);
@@ -4759,6 +4762,104 @@ void api_assign_checks(const json& body, Checker& ck) {
         }
         if (guarded || !seen.insert({o.id, o.b}).second) continue;
         ck.add(*o.at, r.cls, assign_msg(o.name, o.callee, r.guard));
+    }
+}
+
+// API-PIPE: pipe()/pipe2() whose result is never tested (discarded, or
+// stored in a variable that no condition, comparison or return reads) while
+// the descriptor array it fills is read afterwards: on failure fds[] holds
+// garbage and the reads/writes go to arbitrary descriptors. A `(void)` cast
+// says the result is ignored on purpose.
+void pipe_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    struct Call {
+        const json* n;
+        std::string fds, fds_name, res, callee;
+        long long end;
+        bool assigned;
+    };
+    std::vector<Call> calls;
+    std::set<std::string> tested;
+    std::vector<std::pair<long long, std::string>> uses;
+    std::vector<const json*> stack;
+    auto parent_of = [&]() -> const json* {
+        for (auto it = stack.rbegin(); it != stack.rend(); ++it)
+            if (!is_implicit_wrapper(kind(**it)) && kind(**it) != "ParenExpr") return *it;
+        return nullptr;
+    };
+    auto cond_child = [](const json& s) -> const json* {
+        for (auto& c : inner(s)) {
+            if (kind(c) == "DeclStmt" || kind(c) == "VarDecl" || kind(c) == "NullStmt") continue;
+            return &c;
+        }
+        return nullptr;
+    };
+    std::function<void(const json&)> f = [&](const json& n) {
+        if (!n.is_object()) return;
+        const auto& k = kind(n);
+        if (k == "UnaryExprOrTypeTraitExpr" || k == "LambdaExpr" || k == "BlockExpr") return;
+        if (k == "DeclRefExpr") {
+            if (auto id = ref_id(n); !id.empty()) uses.emplace_back(begin_of(n).offset, id);
+        } else if (k == "BinaryOperator" && n_children(n) == 2) {
+            if (one_of(str_field(n, "opcode"), {"<", ">", "<=", ">=", "==", "!=", "&&", "||"}))
+                for (int i = 0; i < 2; ++i)
+                    if (auto id = ref_id(child(n, i)); !id.empty()) tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(n, "opcode") == "!" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) tested.insert(id);
+        } else if (one_of(k, {"IfStmt", "WhileStmt", "SwitchStmt", "ConditionalOperator"})) {
+            if (const json* c = cond_child(n))
+                if (auto id = ref_id(*c); !id.empty()) tested.insert(id);
+        } else if (k == "DoStmt" && n_children(n) == 2) {
+            if (auto id = ref_id(child(n, 1)); !id.empty()) tested.insert(id);
+        } else if (k == "ReturnStmt" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) tested.insert(id);
+        } else if (is_call_kind(k)) {
+            auto cn = callee_name(n);
+            auto a = call_args(n);
+            if (one_of(cn, {"pipe", "pipe2"}) && !a.empty()) {
+                const auto& fa = strip_casts(*a[0]);
+                const auto p = begin_of(n);
+                std::string fid = kind(fa) == "DeclRefExpr" ? ref_id(fa) : std::string();
+                if (!fid.empty() && same_file_pos(p, base) && !p.macro) {
+                    const json* par = parent_of();
+                    const std::string pk = par ? std::string(kind(*par)) : std::string();
+                    Call c{&n, fid, decl_name(fa), {}, cn, end_of(n).offset, false};
+                    bool keep = false;
+                    if (pk == "CompoundStmt" || pk == "CaseStmt" || pk == "DefaultStmt" || pk == "LabelStmt") {
+                        keep = true;
+                    } else if (one_of(pk, {"IfStmt", "WhileStmt", "DoStmt"})) {
+                        // The call as a branch/loop body statement, not as the condition.
+                        const json* cc = pk == "DoStmt" ? (n_children(*par) == 2 ? &child(*par, 1) : nullptr)
+                                                        : cond_child(*par);
+                        keep = cc && &strip_all(*cc) != &n;
+                    } else if (pk == "VarDecl") {
+                        c.res = std::string(str_field(*par, "id"));
+                        c.assigned = keep = true;
+                    } else if (pk == "BinaryOperator" && str_field(*par, "opcode") == "=" && n_children(*par) == 2 &&
+                               &strip_all(child(*par, 1)) == &n) {
+                        c.res = ref_id(child(*par, 0));
+                        c.assigned = keep = !c.res.empty();
+                    }
+                    if (keep) calls.push_back(std::move(c));
+                }
+            }
+        }
+        stack.push_back(&n);
+        for (auto& c : inner(n)) f(c);
+        stack.pop_back();
+    };
+    f(body);
+    std::set<std::string> seen;
+    for (auto& c : calls) {
+        if (c.assigned && tested.contains(c.res)) continue;
+        bool used = false;
+        for (auto& [off, id] : uses)
+            if (id == c.fds && off > c.end) used = true;
+        if (!used || !seen.insert(c.fds).second) continue;
+        ck.add(*c.n, "API-PIPE",
+               c.assigned ? c.callee + "() result used without a < 0 test"
+                          : c.fds_name + " from " + c.callee + "() used without a < 0 test");
     }
 }
 
@@ -8359,6 +8460,104 @@ void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
             }
         }
     }
+    // CXX-LAMBDA-DANGLE: a returned lambda (directly, through std::function,
+    // or through the local it was stored in) captures a local or a by-value
+    // parameter by reference; the closure outlives the frame it points into.
+    {
+        auto peel = [](const json& e0) {
+            const json* e = &e0;
+            for (;;) {
+                const auto& k = kind(*e);
+                if ((is_implicit_wrapper(k) || k == "ParenExpr" || is_explicit_cast(k) || k == "CXXConstructExpr") &&
+                    n_children(*e) >= 1)
+                    e = &child(*e, 0);
+                else
+                    break;
+            }
+            return e;
+        };
+        std::map<std::string, long long> cand;  // id -> declaration offset
+        for (auto& id : body_vars) {
+            if (static_vars.contains(id) || !vdecl.contains(id)) continue;
+            if (std::string(qual_type(*vdecl[id])).find('&') != std::string::npos) continue;
+            cand[id] = off(*vdecl[id]);
+        }
+        for (auto& [id, d] : fn.locals)
+            if (kind(*d) == "ParmVarDecl" && std::string(qual_type(*d)).find('&') == std::string::npos)
+                cand[id] = off(*d);
+        auto dangling = [&](const json& lam) -> std::string {
+            auto t = std::string(cx.text_of(lam));
+            auto close = t.find(']');
+            if (t.empty() || t[0] != '[' || close == std::string::npos) return {};
+            bool dflt_ref = false;
+            std::set<std::string> refs, copies;
+            std::string caps = t.substr(1, close - 1);
+            std::size_t i = 0;
+            while (i <= caps.size()) {
+                auto j = caps.find(',', i);
+                if (j == std::string::npos) j = caps.size();
+                auto e = strip_ws(caps.substr(i, j - i));
+                i = j + 1;
+                if (e.empty() || e == "=" || e == "this" || e == "*this") continue;
+                if (e == "&") dflt_ref = true;
+                else if (e[0] == '&' && e.find('=') == std::string::npos) refs.insert(strip_ws(e.substr(1)));
+                else if (e[0] != '&') copies.insert(strip_ws(e.substr(0, e.find('='))));
+            }
+            if (!dflt_ref && refs.empty()) return {};
+            const long long lo = off(lam);
+            std::string hit;
+            std::function<void(const json&)> g = [&](const json& x) {
+                if (!x.is_object() || !hit.empty()) return;
+                if (kind(x) == "DeclRefExpr") {
+                    const auto& d = ref_decl(x);
+                    std::string id(str_field(d, "id")), nm(str_field(d, "name"));
+                    if (auto it = cand.find(id); it != cand.end() && it->second < lo &&
+                                                 (refs.contains(nm) || (dflt_ref && !copies.contains(nm))))
+                        hit = nm;
+                }
+                for (auto& y : inner(x)) g(y);
+            };
+            g(lam);
+            return hit;
+        };
+        for (auto* n : all) {
+            if (kind(*n) != "ReturnStmt" || n_children(*n) == 0 || !ok_pos(*n)) continue;
+            const json* e = peel(child(*n, 0));
+            if (kind(*e) == "DeclRefExpr") {
+                auto id = ref_id(*e);
+                if (id.empty() || !body_vars.contains(id) || !init_expr.contains(id) || !init_expr[id]) continue;
+                e = peel(*init_expr[id]);
+            }
+            if (kind(*e) != "LambdaExpr") continue;
+            if (auto nm = dangling(*e); !nm.empty()) {
+                ck.add(*n, "CXX-LAMBDA-DANGLE", "returned lambda captures " + nm + " by reference; " + nm +
+                                                    " dies when " + fn.name + "() returns");
+                break;
+            }
+        }
+    }
+    // CXX-ENABLE-SHARED: shared_from_this() where no shared_ptr can own the
+    // object: in a constructor or destructor, or on a local object.
+    for (auto* n : all) {
+        auto mn = mcall_name(*n);
+        if (mn != "shared_from_this" || !ok_pos(*n)) continue;
+        if (fn.kind == "CXXConstructorDecl" || fn.kind == "CXXDestructorDecl") {
+            ck.add(*n, "CXX-ENABLE-SHARED",
+                   std::string("shared_from_this() in a ") +
+                       (fn.kind == "CXXConstructorDecl" ? "constructor: no shared_ptr owns the object yet"
+                                                        : "destructor: the owning shared_ptr is already gone") +
+                       " (throws bad_weak_ptr)");
+            break;
+        }
+        auto o = mcall_obj(*n);
+        if (o.empty() || !body_vars.contains(o) || !vdecl.contains(o)) continue;
+        auto qt = std::string(qual_type(*vdecl[o]));
+        if (is_pointer_type(qt) || qt.find('&') != std::string::npos) continue;
+        ck.add(*n, "CXX-ENABLE-SHARED",
+               "shared_from_this() on local object " + std::string(str_field(*vdecl[o], "name")) +
+                   " that no shared_ptr owns (throws bad_weak_ptr)");
+        break;
+    }
     // operator= rules: CXX-SELF-ASSIGN, CXX-COPY-ASSIGN-PTR.
     if (fn.name == "operator=") {
         bool self_test = false;
@@ -8396,6 +8595,43 @@ void record_rule_checks(const json& rec, Ctx& cx) {
     const auto p = begin_of(rec);
     if (c_source(p) || p.macro || !p.file || !cx.files.wanted(*p.file)) return;
     const std::string rname(str_field(rec, "name"));
+    // CXX-ENABLE-SHARED: enable_shared_from_this as a non-public base (the
+    // `class X : std::enable_shared_from_this<X>` default): make_shared never
+    // sets the weak self-pointer and shared_from_this() throws bad_weak_ptr.
+    {
+        auto t = std::string(cx.text_of(rec));
+        auto head = t.substr(0, t.find('{'));
+        auto q = head.find("enable_shared_from_this");
+        if (q != std::string::npos && t.find('{') != std::string::npos) {
+            std::size_t d = q;
+            while (d > 0) {
+                char ch = head[d - 1];
+                if (ch == ',') break;
+                if (ch == ':' && !(d >= 2 && head[d - 2] == ':') && !(d < head.size() && head[d] == ':')) break;
+                --d;
+            }
+            auto seg = head.substr(d, q - d);
+            auto word = [&](std::string_view w) {
+                for (auto p = seg.find(w); p != std::string::npos; p = seg.find(w, p + 1)) {
+                    bool l = p == 0 || !(std::isalnum(static_cast<unsigned char>(seg[p - 1])) || seg[p - 1] == '_');
+                    auto e = p + w.size();
+                    bool r = e >= seg.size() || !(std::isalnum(static_cast<unsigned char>(seg[e])) || seg[e] == '_');
+                    if (l && r) return true;
+                }
+                return false;
+            };
+            std::string tag(str_field(rec, "tagUsed"));
+            if (tag.empty()) {
+                auto c = head.find("class"), st = head.find("struct");
+                tag = c != std::string::npos && (st == std::string::npos || c < st) ? "class" : "struct";
+            }
+            bool priv = word("private") || word("protected") || (!word("public") && tag == "class");
+            if (d > 0 && priv)
+                cx.add_at(p, rname, "CXX-ENABLE-SHARED",
+                          "enable_shared_from_this is a non-public base of " + rname +
+                              ": shared_from_this() throws bad_weak_ptr (derive publicly)");
+        }
+    }
     struct F {
         std::string name, type;
         bool init;
@@ -8524,6 +8760,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     flex_array_checks(*body, w.ck, cx);
     onesided_index_checks(f, *body, w.ck);
     api_assign_checks(*body, w.ck);
+    pipe_checks(*body, w.ck);
     capacity_first_checks(*body, w.ck, cx);
     index_token_checks(*body, w.ck, cx);
     container_method_checks(*body, fn, w.ck);
