@@ -1181,6 +1181,9 @@ std::optional<std::string> ilp32_long_as_int(const fs::path& p) {
             std::size_t j = i;
             while (j < t.size() && word(t[j])) ++j;
             std::string w = t.substr(i, j - i);
+            // ILP32 nondet long / ulong are 32-bit: the int / uint ones
+            if (w == "__VERIFIER_nondet_long") w = "__VERIFIER_nondet_int";
+            else if (w == "__VERIFIER_nondet_ulong") w = "__VERIFIER_nondet_uint";
             if (w == "long") {
                 // `long long`: copy both words
                 std::size_t k = j;
