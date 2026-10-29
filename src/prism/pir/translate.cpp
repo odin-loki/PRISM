@@ -842,6 +842,27 @@ struct Tr final : pirmem::TrApi {
             }
             return;
         }
+        if (fr.ret_block < 0 && !in.ops.empty() && scalar_pair(in.ops[0].ty)) {
+            // the analysed function returning a scalar pair: each pointer
+            // field's stack-escape check, then a return without a value (PIR's
+            // `ret` carries one; the fields' checks are what is observed)
+            if (in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
+                throw Unenc{"UNENCODED: return of " + in.ops[0].ty.text};
+            if (auto pu = fr.upair.find(in.ops[0].v.name);
+                pu != fr.upair.end() && (pu->second[0] || pu->second[1]))
+                throw Unenc{"UNENCODED: undef field returned"};
+            auto [a, s] = fr.pairs[in.ops[0].v.name];
+            for (unsigned k = 0; k < 2; ++k) {
+                int src = k == 0 ? a : s;
+                if (in.ops[0].ty.elems[k].kind == ir::Type::Ptr)
+                    mt.stack_escape_check(cur, Arg::v(src, out.vars[static_cast<std::size_t>(src)].width),
+                                          fr.allocas, line);
+            }
+            Term t;
+            t.kind = Term::Ret;
+            out.blocks[static_cast<std::size_t>(cur)].term = t;
+            return;
+        }
         // ret (a raw byte copy is not a use: its shadow goes to the caller)
         std::optional<Arg> v;
         bool raw = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && fr.env.count(in.ops[0].v.name) &&
@@ -2059,7 +2080,8 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         }
         if (contracts > 1)
             tr.out.assumptions.push_back("pointer parameters point to distinct objects (\\separated)");
-        if (f.ret.kind != ir::Type::Void) {
+        // a scalar pair result is not returned (Tr::term): width 0
+        if (f.ret.kind != ir::Type::Void && !tr.scalar_pair(f.ret)) {
             tr.out.ret_width = tr.vwidth(f.ret, "return type");
             tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
         }

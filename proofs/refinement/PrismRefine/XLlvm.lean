@@ -696,6 +696,11 @@ def Res.step {α : Type} : Res α → (α → Step) → Step
 (`unpk` recovers both fields exactly). -/
 def packP (v0 v1 : Nat) : Nat := 2 ^ v0 * (2 * v1 + 1)
 
+/-- The value a returned scalar pair carries: none from the analysed function
+itself (`top`; PIR's `ret` has one value, and translate.cpp returns none
+there: only the fields' checks are observed), else the packed pair. -/
+def pairOut (top : Bool) (v0 v1 : Nat) : Option Nat := if top then none else some (packP v0 v1)
+
 def unpk (n : Nat) : Nat × Nat :=
   if h : n = 0 then (0, 0)
   else if n % 2 = 1 then (0, n / 2)
@@ -796,12 +801,12 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         -- an inlined callee returning a scalar pair: each pointer field gets
         -- the stack-escape check (translate.cpp's `ret_pair` return)
         match o, rest with
-        | .reg x, _ :: _ =>
+        | .reg x, _ =>
           (sOpnd R w0 (.reg (pairReg x 0))).step fun v0 =>
           (sOpnd R w1 (.reg (pairReg x 1))).step fun v1 =>
           (escBad R fr.F p0 v0).step fun b0 => if b0 then .ub else
           (escBad R fr.F p1 v1).step fun b1 => if b1 then .ub else
-          retFree fr.F R rest (some (packP v0 v1)) t
+          retFree fr.F R rest (pairOut rest.isEmpty v0 v1) t
         | _, _ => .stuck
       | none =>
       (sOpnd R fr.F.retw o).step fun v =>
@@ -1052,14 +1057,14 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       match fr.F.pret with
       | some (w0, w1, p0, p1) =>
         match o, rest with
-        | .reg x, _ :: _ =>
+        | .reg x, _ =>
           match lOpnd S.R w0 (.reg (pairReg x 0)) with
           | .ok (.val v0, c0) =>
             match lOpnd S.R w1 (.reg (pairReg x 1)) with
             | .ok (.val v1, c1) =>
               (escBad (lower S.R) fr.F p0 v0).lstep fun b0 => if b0 then .ub else
               (escBad (lower S.R) fr.F p1 v1).lstep fun b1 => if b1 then .ub else
-              lRetFree fr.F S.R rest (some (packP v0 v1)) t (S.c || c0 || c1)
+              lRetFree fr.F S.R rest (pairOut rest.isEmpty v0 v1) t (S.c || c0 || c1)
             | .ok (.poison, _) => .ub
             | .ok (.ind, _) => .ub
             | .ub => .ub

@@ -805,7 +805,33 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
               simp only [TailX] at hT; subst hT
               obtain ⟨I0, hC0, _, hr0, _⟩ := hVF.top
               rw [hC0] at hI; cases hI
-              simp [trTermX, hpr, hr0] at htr
+              cases o with
+              | const _ => simp [trTermX, hpr, hr0] at htr
+              | poison => simp [trTermX, hpr, hr0] at htr
+              | reg x =>
+              simp only [trTermX, hpr, hr0] at htr
+              obtain ⟨⟨A0, A1⟩, hpa, htr⟩ := Except.bind_ok htr
+              obtain ⟨⟨s0, t0⟩, he0, htr⟩ := Except.bind_ok htr
+              obtain ⟨⟨s1', te1⟩, he1, htr⟩ := Except.bind_ok htr
+              simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at htr
+              obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
+              obtain ⟨hl0, hs0, hl1, hs1⟩ := pairArgsX_ok hpa
+              have hk2 : I.hi ≤ k + t1.length := Nat.le_trans hhk (Nat.le_add_right k t1.length)
+              have hb1 : A1.below (k + t1.length) := Arg.below_mono hk2 (hctx.env _ _ hl1)
+              simp only [hfF, hpr]
+              rcases pair_field hR' w0 hl0 hs0 with h0 | h0
+              · simp only [h0, Res.step, Step.out]; trivial
+              rcases pair_field hR' w1 hl1 hs1 with h1 | h1
+              · simp only [h0, h1, Res.step, Step.out]; trivial
+              simp only [h0, h1, Res.step]
+              refine escP_osim hR' hk2 rfl he0 (TempsOK.left hT2) t' _ _ K _ ?_
+              intro σa hag
+              have hRa := RelX.agree hctx hR' hk2 hag
+              rw [← List.append_nil s1']
+              refine escP_osim hRa (Nat.le_trans hk2 (Nat.le_add_right _ _)) (Arg.get_agree hag hb1) he1
+                (TempsOK.right hT2) t' _ _ K _ ?_
+              intro σb _
+              simp [retFree, pairOut, xStmts, XPRes.run, pTerm, Step.out, OSim]
             | cons c cs =>
               obtain ⟨ι', I', hI', hcF, hcs, _, _, ⟨cb, hcb, hret⟩, hcR, hhi', hcL, hT'⟩ := hT
               obtain ⟨hrt, hpw⟩ := hret I hI
@@ -860,8 +886,9 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
                 TailX.agree hVF.inst hT' (fun j hj => hag' j (by simp [IInfo.ctx]; have := (hVF.inst _ _ hI').lohi; omega)),
                 hcL⟩
               · exact RelX.agree (hVF.inst _ _ hI').ctx hcR hhi' (fun j hj => hag' j (by simpa [IInfo.ctx] using hj))
-              · simp only [Option.some.injEq] at hv'; subst hv'
-                have hpw' : pwOf { c with pend := some (packP (A0.get σ') (A1.get σ')) } = true := by
+              · simp only [pairOut, List.isEmpty_cons, Bool.false_eq_true, ite_false, Option.some.injEq] at hv'
+                subst hv'
+                have hpw' : pwOf { c with pend := pairOut (c :: cs).isEmpty (A0.get σ') (A1.get σ') } = true := by
                   rw [hpr] at hpw; simpa [pwOf] using hpw
                 refine ⟨CB, curP, hCB, rfl, ?_⟩
                 simp only [PendX, hpw', ite_true, unpk_packP]

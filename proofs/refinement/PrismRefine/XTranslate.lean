@@ -955,7 +955,13 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
       let (s1, t1) ← escP G c p1 (k + t0.length) A1
       let sf ← freeStmts G c retTo
       pure (s0 ++ s1 ++ sf, t0 ++ t1, .jmp cb, none)
-    | some _, _, _ => .error "UNENCODED: return of a scalar pair from the analysed function"
+    | some (_, _, p0, p1), none, .reg x => do
+      -- the analysed function: the fields' checks, then a valueless return
+      let (A0, A1) ← pairArgsX c x
+      let (s0, t0) ← escP G c p0 k A0
+      let (s1, t1) ← escP G c p1 (k + t0.length) A1
+      pure (s0 ++ s1, t0 ++ t1, .ret none, none)
+    | some _, _, _ => .error "UNENCODED: return of a scalar pair constant"
     | none, _, _ => do
       need (G.retw != 0) "outside fragment: ret value in a void function"
       let (s, tw, A) ← trOpndX c G.retw true k o

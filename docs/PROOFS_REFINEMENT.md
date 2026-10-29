@@ -1092,7 +1092,7 @@ return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
 - Model: `packP v0 v1 = 2^v0*(2*v1+1)` (lossless, `unpk_packP`); `setRet`/`lSetRet` unpack; `XFunc.pret`, `CallI.pw`.
 - Translator/validator/proofs (aeda92a89): pair `ret` escape-checks each pointer field, ends the frame, jumps to the continuation whose two phis take the fields in order.
 - Syntax (30eca81b3): `L ret 0` + `L pret W0 W1 P0 P1`; call width `pW0:W1`; `L pload %x W0 W1 SIZE OFF1 P A0 A1` = load `.0`, gep `.2`, load `.1` (translate.cpp now numbers the field-1 address between the fields); `L dead %x W0 W1 64` for a dead pair load; `L xv` of a pair load/call/invoke.
-- The analysed function still refuses a pair return (UNENCODED).
+- The analysed function's own pair return: each pointer field's escape check, then `ret` without a value (PIR's `ret` has one value; `pairOut` makes the LLVM side return none at the top frame, so `pir_faithful_ret_x` reads `ret none`); `ret_width` 0. Fixtures top_pair (agree-ext x2), top_pair_neg_esc (escape check dropped: mismatch). A pair constant returned stays UNENCODED.
 - Re-measure at 30eca81b3 (five conformance suites): agree=249 agree-ext=785 agree-reject=288 outside=652 (was 681) mismatch=0.
 - Fixtures: callee_pair (agree-ext), callee_pair_neg_phi (phis swapped), callee_pair_neg_esc (escape check dropped), both mismatch.
 
