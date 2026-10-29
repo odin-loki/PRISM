@@ -1164,6 +1164,8 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
 
 }  // namespace
 
+static bool z3_over_soft_cap();  // below (memory cap), used by houdini.inc
+
 namespace {
 
 // SMT-LIB bitvector literal (#x.., #b.., true/false, decimal) -> bits (low 64).
@@ -1439,10 +1441,14 @@ thread_local bool tl_first_unwind = false;
 // an exception past memory_max_size, which every caller maps to a non-proof.
 // PRISM_PIR_MEM_MB overrides; default the smaller of 60% of physical memory
 // and a quarter of RLIMIT_AS. 0 disables.
-static std::atomic<bool> g_z3_oom{false};  // Z3 stays unusable after memory_max_size
+// Past memory_max_size Z3 throws out of the query; its global allocator
+// counts every byte freed, so once the failed function's context is gone a
+// later function starts below the cap again (Z3's out-of-memory flag is
+// never consulted: util/memory_manager.cpp). Not sticky: z3_exhausted reads
+// the live estimate, so one heavy function is one UNKNOWN, not one per
+// function of the unit (Law 7).
 static std::atomic<uint64_t> g_z3_cap_mb{0};
 static bool z3_exhausted() {
-    if (g_z3_oom.load()) return true;
     const uint64_t cap = g_z3_cap_mb.load();
     // over the soft cap now (not sticky: a finished function frees its context)
     return cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100;
@@ -1454,6 +1460,11 @@ static bool z3_exhausted() {
 // before every query: at the soft cap (g_z3_cap_mb) the query is not asked
 // (an out-of-memory z3::exception, mapped to UNKNOWN like Z3's own), and Z3's
 // hard limit is twice that, so one query has room to finish.
+static bool z3_over_soft_cap() {
+    const uint64_t cap = g_z3_cap_mb.load();
+    return (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap);
+}
+
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
     if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) {
@@ -1490,6 +1501,17 @@ static void cap_z3_memory_once() {
 Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
     cap_z3_memory_once();
+    if (std::getenv("PRISM_PIR_MEM_TRACE"))
+        std::fprintf(stderr, "pir mem: %s start, z3 estimate %llu MB, cap %llu MB, rss %ld MB\n", fn.name.c_str(),
+                     static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
+                     static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
+                         long pages = 0, rss = 0;
+                         if (FILE* f = std::fopen("/proc/self/statm", "r")) {
+                             if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0;
+                             std::fclose(f);
+                         }
+                         return rss * ::sysconf(_SC_PAGE_SIZE) / (1024 * 1024);
+                     }());
     if (z3_exhausted()) {
         // Z3's allocator fails every later request (a new context is null)
         Verdict v;
@@ -2289,7 +2311,6 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         // memory_max_size (cap_z3_memory_once): no proof, and not a crash
         const bool soft = m.find("soft memory cap") != std::string::npos;
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
-        if (oom && !soft) g_z3_oom.store(true);  // past Z3's own limit Z3 stays unusable
         v.status = std::string(oom ? laws::UNKNOWN : laws::ERROR);
         v.message = oom ? "encoder ran out of memory (PRISM_PIR_MEM_MB); no proof" : std::string("z3: ") + m;
         return v;

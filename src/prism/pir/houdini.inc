@@ -164,6 +164,7 @@ private:
     double per_query_;
     double deadline_;
     double hard_s_;
+    mutable bool mem_out_ = false;  // left() saw the soft memory cap
     HoudiniEnv env_;
     std::string cache_file_;   // "" : no cache
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
@@ -174,7 +175,15 @@ private:
     std::vector<const Stmt*> def_;
     std::vector<char> signed_use_;
 
+    // Over the encoder's soft memory cap (encode.cpp z3_over_soft_cap) the
+    // search ends as if out of time: every unanswered goal is dropped, and no
+    // query can push Z3 past its hard limit, after which Z3 is unusable for
+    // every later function of the process (Law 7: one UNKNOWN, not many).
     double left() const {
+        if (z3_over_soft_cap()) {
+            mem_out_ = true;
+            return 0;
+        }
         return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
@@ -1201,6 +1210,10 @@ HoudiniOut Houdini::run() {
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
+            if (z3_over_soft_cap()) {
+                fail = "cut program: encoder memory over the soft cap (PRISM_PIR_MEM_MB)";
+                return -1;
+            }
             if (fleft() <= 0) {
                 fail = "cut program: out of time";
                 return -1;
@@ -1301,7 +1314,7 @@ HoudiniOut Houdini::run() {
     while (changed) {
         if (left() <= 0) {
             out.undecided = true;
-            fail = "Houdini ran out of time";
+            fail = mem_out_ ? "Houdini stopped: encoder memory over the soft cap (PRISM_PIR_MEM_MB)" : "Houdini ran out of time";
             return finish_out(false);
         }
         ++out.rounds;

@@ -1197,6 +1197,13 @@ struct Tr final : pirmem::TrApi {
                 emit_assign(cur, result_var(fr, in), starts(n, "llvm.ctpop.") ? Op::Ctpop : Op::Bswap, {a});
                 return;
             }
+            if (starts(n, "llvm.is.constant.")) {
+                // __builtin_constant_p: false is always a correct answer (LLVM's
+                // lower-constant-intrinsics folds what it cannot prove to false;
+                // the guarded code is the general path either way)
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(1, 0)});
+                return;
+            }
             if (starts(n, "llvm.expect.")) {
                 unsigned w = int_width(in.ty);
                 Arg a = arg(0);
