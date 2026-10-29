@@ -736,6 +736,34 @@ z3::expr SymMem::read_cell(const z3::expr& addr) {
     return read_cell_log(addr, log_.size());
 }
 
+// (guard, dst, src) options of a copy whose destination and source both have
+// value sets: zipped when they share their guards, else the product (at most
+// kVsCombos). Guards are exhaustive. nullopt: no such finite description.
+std::optional<std::vector<std::tuple<z3::expr, uint64_t, uint64_t>>> SymMem::copy_alts(const z3::expr& dst,
+                                                                                       const z3::expr& src) const {
+    const Vs* dv = vs_of(dst);
+    if (!dv || dv->empty()) return std::nullopt;
+    const Vs* sv = vs_of(src);
+    if (!sv || sv->empty()) return std::nullopt;
+    std::vector<std::tuple<z3::expr, uint64_t, uint64_t>> out;
+    const z3::expr tt = c_.bool_val(true);
+    bool zip = dv->size() == sv->size() && dv->size() > 1;
+    for (std::size_t j = 0; zip && j < dv->size(); ++j)
+        if ((*dv)[j].guard.id() != (*sv)[j].guard.id()) zip = false;
+    if (zip) {
+        for (std::size_t j = 0; j < dv->size(); ++j) out.emplace_back((*dv)[j].guard, (*dv)[j].val, (*sv)[j].val);
+        return out;
+    }
+    if (dv->size() * sv->size() > kVsCombos) return std::nullopt;
+    for (auto& d : *dv)
+        for (auto& s : *sv) {
+            z3::expr g = dv->size() > 1 ? d.guard : tt;
+            if (sv->size() > 1) g = and2(g, s.guard);
+            out.emplace_back(g, d.val, s.val);
+        }
+    return out;
+}
+
 z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool use_prov) {
     auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
@@ -792,6 +820,31 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
             }
             case Entry::Set: v = z3::ite(e.guard && in_range(addr, e.addr, e.len), e.cell, v); break;
             case Entry::Copy: {
+                // Constant address, destination and source with value sets
+                // (e.g. a memmove at a PRISM_INDEX_LE3 position): read each
+                // constant source byte instead of the symbolic src + (addr -
+                // dst), whose read-over-write chain has no value set and
+                // nests one level per earlier copy. Exact: the options'
+                // guards are exhaustive, and per option the in-range test and
+                // the source address are those of the original term.
+                if (caddr) {
+                    if (auto alts = copy_alts(e.addr, e.src)) {
+                        const z3::expr ca = bv(*caddr, 64);
+                        std::optional<z3::expr> chain;
+                        for (std::size_t k = alts->size(); k-- > 0;) {
+                            const auto& [g, dv, sv] = (*alts)[k];
+                            z3::expr inr = in_range(ca, bv(dv, 64), e.len).simplify();
+                            z3::expr cand = v;
+                            if (!inr.is_false()) {
+                                auto rd = read_cell_log(bv(sv + (*caddr - dv), 64), i, use_prov);
+                                cand = inr.is_true() ? rd : z3::ite(inr, rd, v);
+                            }
+                            chain = chain.has_value() ? z3::ite(g, cand, *chain) : cand;
+                        }
+                        v = z3::ite(e.guard, *chain, v);
+                        break;
+                    }
+                }
                 auto src = e.src + (addr - e.addr);
                 if (use_prov)
                     if (auto ks = known(e.src)) note(src, *ks);

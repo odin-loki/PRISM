@@ -187,6 +187,8 @@ private:
     mutable std::unordered_map<unsigned, std::optional<Vs>> vs_memo_, vs_merged_;
     std::unordered_map<unsigned, Vs> vs_seed_;
     std::optional<Vs> copy_vs(const Vs* v) const;
+    std::optional<std::vector<std::tuple<z3::expr, uint64_t, uint64_t>>> copy_alts(const z3::expr& dst,
+                                                                                   const z3::expr& src) const;
     std::optional<Vs> vs_bin(const z3::expr& e, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) const;
     // ite / numeral / already-seeded arithmetic only. Does not call vs_raw and
     // does not cache a miss (a later full walk may still find a set).
