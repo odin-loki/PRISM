@@ -909,6 +909,30 @@ Done (fixture `cxx_cleanup_pad`, agree-ext 3, 0 mismatch; check.sh OK):
 Refused (outside): catch clauses / `__cxa_begin_catch`, terminate.lpad,
 phis in pads, region code joining a live block with phis or returning,
 region phis from untranslated blocks, insertvalue operands not from a pad.
+Catch dispatch (fd97e1fae): `Tr::enters`/`catches` mirrored in `dispatchX`
+(catch(...) selector 0x7FFFFFF0, exact type selector `type_id`, pointer /
+fundamental pass-by, -1 cases soft-stop, bound-pointer store at exn+16);
+`derives` (catch through a base) is refused (typeinfo initialisers not
+exported). NOT yet covered, so every catch pad is still refused at
+`__cxa_begin_catch` (`UNENCODED: call`). Handoff for the rest:
+1. `caught_slot()` is `mt.alloc(-1, 72, Static, init 1)`: block -1 is
+   `Tr::prologue`, prepended to PIR block 0 at the end
+   (`translate.cpp` ~2064). Lean has no prologue: add `TS.prologue`, prepend
+   in `translateX`, and let `segOK` of instance 0 / block 0 / seg 0 accept
+   `prologue ++ s1 ++ ...`. Proof work (XRefine/XMemSim): running the
+   prologue (one fresh object nobody names in LLVM) keeps `RelX` and the
+   memory relation; check how `.glob`/`L glob` objects are already
+   related, likely the model to follow.
+2. Mirror `eh_call` for `__cxa_begin_catch` (`translate_ctl.inc` ~520:
+   depth ld, soft_guard d<8 = br eh.ok/eh.unmodelled, count update, slot
+   gep `mt.gep(...,{d},...,1)`, push compare, store), `__cxa_end_catch`
+   (~555; destroy path inlines `type_dtor` destructors via `call`: needs
+   the exporter to emit `type_dtor` and the dtor bodies; first version can
+   refuse when any thrown type has a dtor), `llvm.eh.typeid.for` (constant
+   `type_id`), `__cxa_rethrow`. The exporter must emit these calls as
+   dedicated lines (now `call` to an unknown function).
+3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
+   list_contracts.
 Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
 via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
 
