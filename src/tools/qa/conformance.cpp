@@ -251,7 +251,7 @@ int conformance_main(const std::vector<std::string>& argv) {
         {"--jobs", "-j", true, false, "parallel PRISM runs (default: CPU count)"},
         {"--mem-limit-mb", "", true, false,
          "address-space cap per PRISM run in MB, inherited by its children (0: none); a run over it is scored as "
-         "no answer, never as a proof (default 4096)"},
+         "no answer, never as a proof (default 0: memory is bounded by PRISM_MEM_BUDGET_MB instead)"},
         {"--timeout", "", true, false, "seconds per PRISM run (default 180)"},
         {"--unwind", "", true, false, "--unwind for every PRISM run"},
         {"--filter", "", true, false, "regex on task ident"},
@@ -268,7 +268,9 @@ int conformance_main(const std::vector<std::string>& argv) {
     if (!parse_args("prism-qa conformance", "PRISM conformance suite runner (roadmap 2.7) and release gate (roadmap 6.1).",
                     specs, argv, args, rc))
         return rc;
-    long jobs = hw, mem_limit = 4096, unwind = 0;
+    // --mem-limit-mb (RLIMIT_AS) is opt-in: address space is not memory, and a 4 GB cap killed
+    // 37 libc runs with no report. Memory is bounded by PRISM_MEM_BUDGET_MB (UNKNOWN per function).
+    long jobs = hw, mem_limit = 0, unwind = 0;
     double timeout = 180.0;
     if ((args.has("--jobs") && !parse_int(args.get("--jobs"), jobs)) ||
         (args.has("--mem-limit-mb") && !parse_int(args.get("--mem-limit-mb"), mem_limit)) ||
