@@ -15,6 +15,7 @@
 
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
 #include "translate_mem.hpp"
 
 #include <algorithm>
@@ -488,6 +489,126 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     throw Unsupported{"call @" + n};
 }
 
+// translate.cpp's normal_blocks: the blocks reachable from the entry along
+// br, switch and the normal destination of invoke. A landing pad, and the
+// code only it reaches, is translated only once a throw edge reaches it
+// (eh_pass); nothing in the Lean fragment throws, so those blocks stay empty.
+std::set<std::string> normal_blocks(const ir::Function& f) {
+    std::map<std::string, const ir::Block*> by;
+    for (auto& b : f.blocks) by[b.name] = &b;
+    std::set<std::string> seen;
+    std::vector<std::string> work{f.blocks.front().name};
+    while (!work.empty()) {
+        auto n = work.back();
+        work.pop_back();
+        if (!seen.insert(n).second || !by.count(n)) continue;
+        for (auto& in : by[n]->insts) {
+            if (in.op == "br" || in.op == "switch")
+                for (auto& t : in.targets) work.push_back(t);
+            if (in.op == "switch")
+                for (auto& [c, t] : in.cases) work.push_back(t);
+            if (in.op == "invoke" && !in.targets.empty()) work.push_back(in.targets[0]);
+        }
+    }
+    return seen;
+}
+
+// The widths of the variables Tr::enter_frame numbers for a result (in order):
+// an overflow intrinsic's { iN, i1 }, a landing pad's { ptr, i32 }, a
+// two-field scalar aggregate of insertvalue/call/invoke/load, else one
+// variable for an integer, pointer, IEEE or compare result of at most 64 bits.
+std::vector<unsigned> frame_vars(const ir::Inst& in) {
+    if (in.result.empty()) return {};
+    const auto& t = in.ty;
+    auto pw = [](const ir::Type& e) -> unsigned {
+        if (e.kind == ir::Type::Ptr && e.text == "ptr") return 64;
+        if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+        return 0;
+    };
+    if (overflow_call(in)) {
+        if (t.kind == ir::Type::Struct && t.elems.size() == 2 && t.elems[0].kind == ir::Type::Int &&
+            t.elems[0].bits <= 64 && t.elems[0].bits > 0)
+            return {t.elems[0].bits, 1};
+        return {};
+    }
+    if (in.op == "landingpad" && t.kind == ir::Type::Struct && t.elems.size() == 2 &&
+        t.elems[0].kind == ir::Type::Ptr && t.elems[1].kind == ir::Type::Int && t.elems[1].bits == 32)
+        return {64, 32};
+    if ((in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load") &&
+        t.kind == ir::Type::Struct && t.elems.size() == 2 && pw(t.elems[0]) && pw(t.elems[1]))
+        return {pw(t.elems[0]), pw(t.elems[1])};
+    if (in.op == "icmp" || in.op == "fcmp") return {1};
+    if (t.kind == ir::Type::Ptr && t.text == "ptr") return {64};
+    if (auto fw = fp::width_of(t)) return {*fw};
+    if (t.kind == ir::Type::Int && t.bits > 0 && t.bits <= 64) return {t.bits};
+    return {};
+}
+
+// A block normal_blocks leaves out, as `L dead` placeholders for the variables
+// Tr::enter_frame numbers there, then `L stub` (the Lean translator refuses a
+// stub block it finds reachable). Refused where Tr::enter_frame would add a
+// shadow variable the Lean side does not mirror: a maybe-uninitialised phi
+// (`.uninit`) or a may-undef value (`.undef`, undef_analysis).
+void dead_block(std::ostream& b, const ir::Function& f, const ir::Block& bl,
+                const std::set<std::string>& maybe_uninit) {
+    std::map<std::string, const ir::Inst*> def;
+    for (auto& x : f.blocks)
+        for (auto& in : x.insts)
+            if (!in.result.empty()) def[in.result] = &in;
+    for (auto& in : bl.insts) {
+        if (!in.parsed) throw Unsupported{in.op + " (unreachable block)"};
+        if (in.op == "phi" && maybe_uninit.count(in.result))
+            throw Unsupported{"maybe-uninitialised phi in an unreachable block"};
+        // undef_analysis allocates a shadow only for values computed from undef:
+        // none here unless an undef operand (other than the aggregate an
+        // exception pair is rebuilt into) or a field read of a rebuilt pair
+        for (auto& [o, _] : in.incoming)
+            if (o.v.kind == ir::Value::Undef) throw Unsupported{"undef in an unreachable block"};
+        for (std::size_t i = 0; i < in.ops.size(); ++i)
+            if (in.ops[i].v.kind == ir::Value::Undef &&
+                !(in.op == "insertvalue" && i == 0 && frame_vars(in).size() == 2))
+                throw Unsupported{"undef in an unreachable block"};
+        if (in.op == "extractvalue") {
+            const ir::Inst* d = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local
+                                    ? (def.count(in.ops[0].v.name) ? def[in.ops[0].v.name] : nullptr)
+                                    : nullptr;
+            if (!d || d->op != "landingpad") throw Unsupported{"extractvalue in an unreachable block"};
+        }
+        auto ws = frame_vars(in);
+        if (ws.empty()) continue;
+        b << "L dead %" << name(in.result);
+        for (auto w : ws) b << " " << w;
+        b << "\n";
+    }
+    b << "L stub\n";
+}
+
+// Tr::enter_frame's maybe_uninit: the `__prism.uninit.` results and the phis
+// that carry one (fixpoint).
+std::set<std::string> maybe_uninit_of(const ir::Function& f) {
+    std::set<std::string> mu;
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts)
+            if (in.op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty() &&
+                frame_vars(in).size() == 1)
+                mu.insert(in.result);
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                if (in.op != "phi" || in.result.empty() || mu.count(in.result)) continue;
+                for (auto& [o, _] : in.incoming)
+                    if (o.v.kind == ir::Value::Local && mu.count(o.v.name)) {
+                        mu.insert(in.result);
+                        changed = true;
+                        break;
+                    }
+            }
+    }
+    return mu;
+}
+
 void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
                const std::string& top_file, std::vector<Callee>& callees, bool top, bool foreign) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
@@ -583,10 +704,33 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     struct Reset {
         ~Reset() { g_entry = nullptr; }
     } reset;
-    for (auto& bl : f.blocks) {
-        b << "L block " << name(bl.name) << "\n";
-        if (top && &bl == &f.blocks.front()) b << harness.str();
-        if (top && &bl == &f.blocks.front())
+    const auto live = normal_blocks(f);
+    const auto muninit = maybe_uninit_of(f);
+    for (auto& bl0 : f.blocks) {
+        b << "L block " << name(bl0.name) << "\n";
+        if (!live.count(bl0.name)) {
+            dead_block(b, f, bl0, muninit);
+            continue;
+        }
+        // an invoke: translate.cpp's Tr::translate_block translates it as the
+        // call (its landing pad the handler of a throw inside), then the normal
+        // edge. Nothing the Lean fragment admits throws (__cxa_throw, resume,
+        // std::__throw_* are all outside), so the handler is never used and the
+        // landing pads stay unreachable: the call, then `br` to the normal label.
+        ir::Block bl = bl0;
+        if (!bl.insts.empty() && bl.insts.back().op == "invoke") {
+            ir::Inst& inv = bl.insts.back();
+            if (inv.targets.size() != 2) throw Unsupported{"invoke shape"};
+            ir::Inst br;
+            br.op = "br";
+            br.parsed = true;
+            br.targets = {inv.targets[0]};
+            inv.op = "call";
+            inv.targets.clear();
+            bl.insts.push_back(std::move(br));
+        }
+        if (top && &bl0 == &f.blocks.front()) b << harness.str();
+        if (top && &bl0 == &f.blocks.front())
             for (auto& gname : eg) {
                 // MemTr::emit_entry_globals: the object, then its initialiser's stores
                 auto e = *pirmem::entry_global(m, lay, gname, opt.globals_initial);
@@ -595,7 +739,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 for (auto& st : e.stores) b << " " << st.off << " " << st.w << " " << st.bits;
                 b << "\n";
             }
-        if (top && oom && &bl == &f.blocks.front())
+        if (top && oom && &bl0 == &f.blocks.front())
             // MemTr::alloc(-1, c64(1), Static, init 1): one zero byte
             b << "L glob %" << kOom << " 1 16 3 1 0\n";
         for (auto& in : bl.insts) {
@@ -613,8 +757,22 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
             if (op == "phi") {
-                b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << in.incoming.size();
-                for (auto& [v, pred] : in.incoming) b << " " << opnd(v) << " " << name(pred);
+                // resolve_phis drops an incoming from a block run_frame never
+                // translated (normal_blocks does not reach it: a catch handler
+                // joining the normal path). Kept where Tr::enter_frame's
+                // shadows saw it: an undef or maybe-uninitialised input.
+                std::vector<std::pair<ir::Operand, std::string>> inc;
+                for (auto& [v, pred] : in.incoming) {
+                    if (live.count(pred)) {
+                        inc.emplace_back(v, pred);
+                        continue;
+                    }
+                    if (v.v.kind == ir::Value::Undef ||
+                        (v.v.kind == ir::Value::Local && muninit.count(v.v.name)))
+                        throw Unsupported{"phi: undef or uninitialised input from an unreachable block"};
+                }
+                b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << inc.size();
+                for (auto& [v, pred] : inc) b << " " << opnd(v) << " " << name(pred);
                 b << "\n";
             } else if (bins.count(op)) {
                 std::string fl;

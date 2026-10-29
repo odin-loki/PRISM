@@ -1101,6 +1101,8 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     let live := xLive G
     if !xLiveClosed G then throw "internal: reachable blocks not closed"
     if xDeadInc G live then throw "outside fragment: phi incoming from an unreachable block"
+    if G.blocks.zipIdx.any (fun (B, b) => B.stub && live.contains b) then
+      throw "outside fragment: a block the exporter stubbed is reachable"
     let mut rets : List (Nat × Arg) := []
     let mut tails : List Nat := []
     for (B, b) in G.blocks.zipIdx do

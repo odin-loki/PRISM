@@ -216,6 +216,11 @@ structure XBlock where
   /-- a call of a noreturn failure (`__assert_fail`, ...) ends the block: the
   PIR check's property and class; the rest of the block is dead -/
   nr : Option (String × String) := none
+  /-- a block the exporter left out (`L stub`: `normal_blocks` does not reach
+  it, e.g. a landing pad); its instructions are `nondet` placeholders that only
+  number `Tr::enter_frame`'s variables. `runFrame` refuses one it finds
+  reachable. -/
+  stub : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
