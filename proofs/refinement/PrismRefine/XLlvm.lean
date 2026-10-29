@@ -236,6 +236,9 @@ structure XBlock where
   thr : Bool := false
   /-- the typeinfo symbol of the thrown class (translator only) -/
   thrT : String := ""
+  /-- the non-float arguments of the `std::__throw_*` call (operand, width;
+  translator only: `Tr::eh_call` evaluates them before raising) -/
+  thrA : List (Opnd × Nat) := []
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where

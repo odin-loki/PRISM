@@ -932,12 +932,16 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
                        in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&
                        afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())) &&
-                       bl.insts.back().op == "unreachable" && in.ops.empty()) {
+                       bl.insts.back().op == "unreachable") {
                 // Tr::call: std::__throw_* raises a library exception (Tr::raise); the
                 // semantics stops following the run there, the PIR after it is unchecked.
                 // Under an invoke (`L icall` on the inlined path) a handler may catch it:
                 // the Lean translator refuses that (dispatch not modelled)
-                b << "L throw " << std_throw_ti(in.callee) << "\n";
+                // Tr::eh_call evaluates the non-float arguments first (their checks)
+                b << "L throw " << std_throw_ti(in.callee);
+                for (auto& a : in.ops)
+                    if (a.ty.kind != ir::Type::Float) b << " " << opnd(a) << " " << vw(a.ty);
+                b << "\n";
                 break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);

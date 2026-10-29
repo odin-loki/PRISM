@@ -1242,7 +1242,11 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         -- a handler is live: `dispatch_type` may route the exception to a landing pad
         if (← get).hdl != 0 then
           throw "outside fragment: std::__throw_* under an invoke (handler dispatch)"
-        let s2 ← throwX stack B.thrT
+        -- `Tr::eh_call`: the arguments are evaluated (their checks), then the raise
+        let k2 := k + t1.length
+        let (s0, t0, _) ← liftE (trArgsX (I.ctx (← curVars)) k2 (B.thrA.map fun (o, w) => (o, w, w)))
+        pushTemps t0
+        let s2 := s0 ++ (← throwX stack B.thrT)
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         tails := tails ++ [cur]
