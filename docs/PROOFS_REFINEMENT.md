@@ -491,6 +491,26 @@ inlined function was only 11. The two that moved:
   `__throw_bad_array_new_length` functions move to their next blocker (7 to
   the throw-under-invoke refusal, i.e. need real dispatch; 9 to an inlined
   pointer-returning callee with stack objects; 3 to `__cxa_allocate_exception`).
+* **Coverage reproducibility (491 vs 308).** The 308 runs (`cov3`, `cov4`)
+  were truncated: `prism` over the whole `testdata/conformance` tree was killed
+  (kernel OOM / box memory pressure) partway, after the newly merged
+  `libc-models` tasks, so `conformance/prism/*` and `sv-comp/*` never exported
+  (116 of 228 conformance files). The 479/491 rows came from full runs
+  earlier in the day. Reproducible method now: `/workspace/bin/prism-run
+  prism-qa pir-lean-check` with the conformance tree split into its five
+  subdirectories (one `prism` run each), the other trees as before.
+* **`L throw` with arguments** (8954fa5ce): `Tr::eh_call` evaluates the
+  non-float arguments of `std::__throw_*` before raising; the exporter writes
+  them after the typeinfo and `runFrame` translates them (`trArgsX`) before
+  `throwX`. Fixture `throw_args` (3 agree-ext).
+* **Coverage after the `fix/memory-budget` merge (3c64dac94, which brings
+  `work/libc-models`' new testdata) and the two throw changes, 2026-10-29,
+  split method:** agree 1 061, agree-ext **641**, agree-reject 274, outside
+  2 078, mismatch **0** (conformance: concurrency 43 functions / 0 agree-ext,
+  esbmc-cpp 186 / 19, libc-models 442 / 246, prism 332 / 119, sv-comp 157 / 48;
+  the run was killed by the RSS watchdog during or after `sv-comp`, so that
+  subtree may be partial — a lower bound). Not comparable row-for-row with
+  the table above (more test functions).
   \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
   the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
   files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under
