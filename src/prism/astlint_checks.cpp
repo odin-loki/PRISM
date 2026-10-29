@@ -5024,6 +5024,7 @@ const std::vector<IndexTokenRule>& index_token_rules() {
         {"CXX-TRANSFORM-REDUCE", {"transform_reduce"}, "CXX-TRANSFORM-REDUCE"},
         {"CXX-REDUCE", {"reduce"}, "CXX-REDUCE"},
         {"CXX-ADD-SAT", {"add_sat", "sub_sat", "mul_sat", "div_sat", "saturate_cast"}, "CXX-ADD-SAT"},
+        {"CXX-FORWARD-LIKE", {"forward_like"}, "std::forward_like"},
     };
     return r;
 }
@@ -8459,6 +8460,71 @@ void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
                 break;
             }
         }
+    }
+    // CXX-ATOMIC-FENCE: atomic_thread_fence / atomic_signal_fence as the only
+    // synchronisation around a plain store to a global or static: a fence
+    // orders nothing without an atomic operation to pair with.
+    {
+        const json* fence = nullptr;
+        bool atomic_obj = false, plain_store = false;
+        for (auto* n : all) {
+            if (!fence && call_named(*n, {"atomic_thread_fence", "atomic_signal_fence"})) fence = n;
+            if (kind(*n) == "DeclRefExpr" || kind(*n) == "VarDecl") {
+                auto t = kind(*n) == "VarDecl" ? std::string(qual_type(*n)) : type_of(*n);
+                if (t.find("atomic") != std::string::npos && t.find("memory_order") == std::string::npos)
+                    atomic_obj = true;
+            }
+            if (kind(*n) == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+                const auto& l = strip_all(child(*n, 0));
+                auto id = ref_id(l);
+                if (id.empty() || (vdecl.contains(id) && !static_vars.contains(id))) continue;
+                if (str_field(ref_decl(l), "kind") != "VarDecl" && !static_vars.contains(id)) continue;
+                if (type_of(l).find("atomic") != std::string::npos) continue;
+                plain_store = true;
+            }
+        }
+        if (fence && !atomic_obj && plain_store && ok_pos(*fence))
+            ck.add(*fence, "CXX-ATOMIC-FENCE",
+                   "atomic fence as the only synchronisation around a plain store (no atomic operation to pair with)");
+    }
+    // CXX-ENDIAN: std::endian (or a local holding it) as an array index, in a
+    // function that never compares it with endian::little / endian::big.
+    {
+        auto is_endian = [&](const json& e) { return type_of(e).find("endian") != std::string::npos; };
+        bool ranged = false;
+        for (auto* n : all)
+            if (kind(*n) == "DeclRefExpr" && is_endian(*n) &&
+                one_of(std::string(str_field(ref_decl(*n), "name")), {"little", "big"}))
+                ranged = true;
+        if (!ranged)
+            for (auto* n : all) {
+                const json* idx = nullptr;
+                if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) idx = &child(*n, 1);
+                else if (subscript_op(*n)) idx = &child(*n, 2);
+                if (!idx || !ok_pos(*n)) continue;
+                const auto& i = strip_casts(*idx);
+                if (kind(i) != "DeclRefExpr" || !is_endian(i)) continue;
+                ck.add(*n, "CXX-ENDIAN", "std::endian used as an array index without a range check");
+                break;
+            }
+    }
+    // CXX-ERROR-CATEGORY: a local error_category never compared (== / !=)
+    // and never asked for name() / message().
+    for (auto& id : body_vars) {
+        if (!vdecl.contains(id) || cls_of_type(std::string(qual_type(*vdecl[id]))) != "error_category") continue;
+        bool used = false;
+        if (auto it = mcalls.find(id); it != mcalls.end())
+            for (auto& m : it->second)
+                if (one_of(m.name, {"name", "message", "equivalent", "default_error_condition"})) used = true;
+        for (auto* n : all) {
+            if (used) break;
+            if (kind(*n) == "CXXOperatorCallExpr" && one_of(callee_name(*n), {"operator==", "operator!=", "operator<=>"}))
+                for (std::size_t i = 1; i < n_children(*n); ++i)
+                    if (ref_id(child(*n, i)) == id) used = true;
+        }
+        if (used || !ok_pos(*vdecl[id])) continue;
+        ck.add(*vdecl[id], "CXX-ERROR-CATEGORY", "error_category used without generic/system compare or .message()");
+        break;
     }
     // CXX-LAMBDA-DANGLE: a returned lambda (directly, through std::function,
     // or through the local it was stored in) captures a local or a by-value

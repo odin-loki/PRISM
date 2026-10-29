@@ -2890,6 +2890,85 @@ TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-S
     }
 }
 
+// Batch 14: index and synchronisation rules that were still regex-only.
+const char* kPortedCxx14 = R"(#include <atomic>
+#include <bit>
+#include <system_error>
+#include <utility>
+int g_ready;
+int g_data;
+void fence_bad() {
+    g_data = 42;
+    std::atomic_thread_fence(std::memory_order_release); // expect: CXX-ATOMIC-FENCE
+    g_ready = 1;
+}
+void fence_ok(std::atomic<int> &flag) {
+    g_data = 42;
+    std::atomic_thread_fence(std::memory_order_release);
+    flag.store(1, std::memory_order_relaxed);
+}
+void fence_local_ok() {
+    int x = 1;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    (void)x;
+}
+int endian_bad(const int *tbl) {
+    return tbl[(int)std::endian::native]; // expect: CXX-ENDIAN
+}
+int endian_local_bad(const int *tbl) {
+    auto e = std::endian::native;
+    return tbl[static_cast<int>(e)]; // expect: CXX-ENDIAN
+}
+int endian_ok(const int *tbl) {
+    auto e = std::endian::native;
+    if (e != std::endian::little && e != std::endian::big)
+        return 0;
+    return tbl[static_cast<int>(e)];
+}
+int fwdlike_bad(const int *p) {
+    int x = 9;
+    auto y = std::forward_like<int>(x);
+    return p[y]; // expect: CXX-FORWARD-LIKE
+}
+int fwdlike_ok(const int *p) {
+    int x = 3;
+    auto y = std::forward_like<int>(x);
+    if (y < 0 || y > 8)
+        return 0;
+    return p[y];
+}
+void errcat_bad() {
+    const std::error_category &c = std::generic_category(); // expect: CXX-ERROR-CATEGORY
+    (void)c;
+}
+bool errcat_cmp_ok() {
+    const std::error_category &c = std::generic_category();
+    return c == std::system_category();
+}
+const char *errcat_name_ok() {
+    const std::error_category &c = std::system_category();
+    return c.name();
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 14 (CXX-ATOMIC-FENCE, CXX-ENDIAN, CXX-FORWARD-LIKE, "
+          "CXX-ERROR-CATEGORY)") {
+    check_marks("ported14.cpp", kPortedCxx14);
+    auto clang = find_clang();
+    if (!clang) return;
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("fence_lint.cpp", "CXX-ATOMIC-FENCE", "fence_bad", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("fence_lint.cpp", "CXX-ATOMIC-FENCE", "fence_ok", clang, b).empty());
+        CHECK(planted_ast_lines("endian_lint.cpp", "CXX-ENDIAN", "endian_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("endian_lint.cpp", "CXX-ENDIAN", "endian_ok", clang, b).empty());
+        CHECK(planted_ast_lines("fwdlike_lint.cpp", "CXX-FORWARD-LIKE", "fwdlike_bad", clang, b) == std::set<int>{17});
+        CHECK(planted_ast_lines("fwdlike_lint.cpp", "CXX-FORWARD-LIKE", "fwdlike_ok", clang, b).empty());
+        CHECK(planted_ast_lines("errcat_lint.cpp", "CXX-ERROR-CATEGORY", "errcat_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("errcat_lint.cpp", "CXX-ERROR-CATEGORY", "errcat_ok", clang, b).empty());
+    }
+}
+
 TEST_CASE("astlint: project headers, nested enums and non-dependent template code are checked") {
     const std::string hdr = R"(#pragma once
 struct Shape {
