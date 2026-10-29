@@ -6537,6 +6537,224 @@ void cxx_sync_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Source text of a VarDecl's initialiser, `(...)` / `{...}` / `= ...`.
+// libclang drops paren-initialisers of class objects (std::regex re(p),
+// counted_iterator it(b, n)), so rules that need the arguments read them
+// from the file on both front ends.
+std::string decl_init_text(const json& d) {
+    const auto b = name_of(d), e = end_of(d);
+    if (!b.file || b.offset < 0 || e.offset < b.offset) return {};
+    thread_local std::map<std::string, std::string> cache;
+    auto [it, fresh] = cache.try_emplace(*b.file);
+    if (fresh) {
+        std::ifstream in(*b.file, std::ios::binary);
+        it->second.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const auto& txt = it->second;
+    const auto from = static_cast<std::size_t>(b.offset) + str_field(d, "name").size();
+    const auto to = static_cast<std::size_t>(e.offset) + 1;
+    if (from >= txt.size() || to > txt.size() || to <= from) return {};
+    return txt.substr(from, to - from);
+}
+
+// Top-level comma-separated arguments of an initialiser text.
+std::vector<std::string> init_args(std::string t) {
+    std::vector<std::string> out;
+    auto a = t.find_first_of("({");
+    if (a == std::string::npos) return out;
+    int depth = 0;
+    std::string cur;
+    for (std::size_t i = a + 1; i < t.size(); ++i) {
+        char c = t[i];
+        if (c == '(' || c == '{' || c == '[' || c == '<') ++depth;
+        if ((c == ')' || c == '}' || c == ']' || c == '>') && depth-- == 0) break;
+        if (c == ',' && depth == 0) {
+            out.push_back(cur);
+            cur.clear();
+            continue;
+        }
+        cur += c;
+    }
+    out.push_back(cur);
+    for (auto& x : out) {
+        auto f = x.find_first_not_of(" \t\n"), l = x.find_last_not_of(" \t\n");
+        x = f == std::string::npos ? std::string() : x.substr(f, l - f + 1);
+    }
+    return out;
+}
+
+// Sixth batch: casts and seeds (CXX-VOLATILE-CAST, CXX-CONST-CAST,
+// CXX-REINTERPRET, CXX-REGEX, CXX-CHRONO-SEED, CXX-STACKTRACE,
+// CXX-COUNTED-ITERATOR).
+std::string pointee_of(std::string t) {
+    auto s = t.rfind('*');
+    if (s == std::string::npos) return {};
+    t = t.substr(0, s);
+    std::string out;
+    std::istringstream is(t);
+    for (std::string w; is >> w;)
+        if (w != "const" && w != "volatile") out += (out.empty() ? "" : " ") + w;
+    if (out.starts_with("std::")) out = out.substr(5);
+    return out;
+}
+
+bool char_like(const std::string& p) {
+    return one_of(p, {"void", "char", "signed char", "unsigned char", "byte", "int8_t", "uint8_t"});
+}
+
+void cxx_cast_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    auto decl_type = [&](const std::string& id) -> std::string {
+        auto it = fn.locals.find(id);
+        return it == fn.locals.end() ? std::string() : std::string(qual_type(*it->second));
+    };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::map<std::string, std::string> local_type;
+    for (auto& [id, d] : fn.locals) local_type[id] = std::string(qual_type(*d));
+    for (auto* n : all)
+        if (kind(*n) == "VarDecl") local_type[std::string(str_field(*n, "id"))] = std::string(qual_type(*n));
+    // `*(cast)&x = v`: the cast node and the object written through it.
+    auto write_through = [&](const json& asg, std::string_view cast_kind) -> std::pair<const json*, std::string> {
+        if (kind(asg) != "BinaryOperator" || str_field(asg, "opcode") != "=" || n_children(asg) != 2) return {};
+        const auto& lhs = strip_parens(child(asg, 0));
+        if (kind(lhs) != "UnaryOperator" || str_field(lhs, "opcode") != "*" || n_children(lhs) != 1) return {};
+        const auto& c = strip_implicit(strip_parens(child(lhs, 0)));
+        if (kind(c) != cast_kind || n_children(c) != 1) return {};
+        const auto& a = strip_all(child(c, 0));
+        if (kind(a) != "UnaryOperator" || str_field(a, "opcode") != "&" || n_children(a) != 1) return {};
+        return {&c, ref_id(child(a, 0))};
+    };
+    bool vol = false, cst = false;
+    for (auto* n : all) {
+        if (!vol) {
+            auto [c, id] = write_through(*n, "CStyleCastExpr");
+            if (c && !id.empty()) {
+                auto t = local_type[id];
+                if (has_word(t, "volatile") && !is_pointer_type(t) && !has_word(type_of(*c), "volatile") &&
+                    ok_pos(*n)) {
+                    ck.add(*n, "CXX-VOLATILE-CAST", "write through C-style cast of volatile object");
+                    vol = true;
+                }
+            }
+        }
+        if (!cst) {
+            auto [c, id] = write_through(*n, "CXXConstCastExpr");
+            if (c && !id.empty()) {
+                auto t = local_type[id];
+                if (has_word(t, "const") && !is_pointer_type(t) && t.find('&') == std::string::npos &&
+                    !has_word(pointee_of(type_of(*c)), "const") && ok_pos(*n)) {
+                    ck.add(*n, "CXX-CONST-CAST", "write through const_cast of const object");
+                    cst = true;
+                }
+            }
+        }
+    }
+    // CXX-REINTERPRET: reinterpret_cast between unrelated object pointers.
+    for (auto* n : all) {
+        if (kind(*n) != "CXXReinterpretCastExpr" || n_children(*n) != 1) continue;
+        auto tgt = pointee_of(type_of(*n));
+        if (tgt.empty() || char_like(tgt)) continue;
+        const auto& s = strip_all(child(*n, 0));
+        std::string src;
+        if (kind(s) == "DeclRefExpr" && is_pointer_type(type_of(s))) src = pointee_of(type_of(s));
+        else if (kind(s) == "UnaryOperator" && str_field(s, "opcode") == "&" && n_children(s) == 1 &&
+                 kind(strip_all(child(s, 0))) == "DeclRefExpr")
+            src = pointee_of(type_of(s));
+        if (src.empty() || char_like(src) || src == tgt || src.find('(') != std::string::npos ||
+            tgt.find('(') != std::string::npos || !ok_pos(*n))
+            continue;
+        ck.add(*n, "CXX-REINTERPRET", "reinterpret_cast type-puns between object pointers");
+        break;
+    }
+    // CXX-REGEX: a std::regex built from a non-literal pattern.
+    for (auto* n : all) {
+        if (kind(*n) != "VarDecl") continue;
+        auto qt = std::string(qual_type(*n));
+        if (qt != "std::regex" && qt != "regex" && qt != "std::wregex" && !qt.starts_with("std::basic_regex<")) continue;
+        auto args = init_args(decl_init_text(*n));
+        if (args.empty() || args[0].empty()) continue;
+        const auto& a0 = args[0];
+        const bool lit = a0[0] == '"' || a0.starts_with("R\"") || a0.starts_with("L\"") || a0.starts_with("u8\"") ||
+                         a0.starts_with("LR\"");
+        if (lit || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-REGEX", "std::regex pattern is not a string literal");
+        break;
+    }
+    // CXX-CHRONO-SEED: a clock::now() and a PRNG seed (srand/mt19937) together.
+    {
+        const json *now = nullptr, *prng = nullptr;
+        for (auto* n : all) {
+            if (is_call_kind(kind(*n))) {
+                auto cn = callee_name(*n);
+                if (!now && cn == "now" && type_of(*n).find("time_point") != std::string::npos) now = n;
+                if (!prng && one_of(cn, {"srand", "srandom"})) prng = n;
+            } else if (!prng && kind(*n) == "VarDecl") {
+                auto qt = std::string(qual_type(*n));
+                if (qt.find("mt19937") != std::string::npos) prng = n;
+            }
+        }
+        if (now && prng) {
+            const json* first = off(*now) < off(*prng) ? now : prng;
+            if (ok_pos(*first)) ck.add(*first, "CXX-CHRONO-SEED", "PRNG seeded from chrono clock::now()");
+        }
+    }
+    // CXX-STACKTRACE: stacktrace::current()[0] / .at(0) without empty()/size().
+    {
+        bool guarded = false;
+        std::vector<const json*> idx;
+        for (auto* n : all) {
+            if (kind(*n) == "MemberExpr" && one_of(str_field(*n, "name"), {"empty", "size"})) guarded = true;
+            bool zero_idx = false;
+            const json* objn = nullptr;
+            if (kind(*n) == "CXXOperatorCallExpr" && n_children(*n) == 3 &&
+                str_field(ref_decl(strip_all(child(*n, 0))), "name") == "operator[]" && is_zero_literal(child(*n, 2))) {
+                zero_idx = true;
+                objn = &child(*n, 1);
+            } else if (kind(*n) == "CXXMemberCallExpr" && n_children(*n) == 2 &&
+                       str_field(strip_all(child(*n, 0)), "name") == "at" &&
+                       is_zero_literal(child(*n, 1))) {
+                const auto& me = strip_all(child(*n, 0));
+                if (kind(me) == "MemberExpr" && n_children(me) == 1) {
+                    zero_idx = true;
+                    objn = &child(me, 0);
+                }
+            }
+            if (zero_idx && type_of(strip_all(*objn)).find("stacktrace") != std::string::npos) idx.push_back(n);
+        }
+        if (!guarded && !idx.empty() && ok_pos(*idx.front()))
+            ck.add(*idx.front(), "CXX-STACKTRACE", "stacktrace::current()[0] without empty()/size()");
+    }
+    // CXX-COUNTED-ITERATOR: counted_iterator it(src, n) with n never range-checked.
+    std::map<std::string, std::string> id_of_name;
+    for (auto& [id, d] : fn.locals) id_of_name[std::string(str_field(*d, "name"))] = id;
+    for (auto* n : all) {
+        if (kind(*n) != "VarDecl" || qual_type(*n).find("counted_iterator") == std::string::npos) continue;
+        auto args = init_args(decl_init_text(*n));
+        if (args.size() != 2 || !is_ident(args[1])) continue;
+        const bool src_ok = is_ident(args[0]) || args[0].find(".begin(") != std::string::npos;
+        auto it = id_of_name.find(args[1]);
+        if (!src_ok || it == id_of_name.end()) continue;
+        const auto& nid = it->second;
+        bool guarded = false;
+        for (auto* b : all)
+            if (kind(*b) == "BinaryOperator" && n_children(*b) == 2 &&
+                one_of(str_field(*b, "opcode"), {"<", "<=", ">", ">="}) &&
+                (ref_id(child(*b, 0)) == nid || ref_id(child(*b, 1)) == nid))
+                guarded = true;
+        if (guarded || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-COUNTED-ITERATOR", "counted_iterator count " + args[1] + " has no remaining-size guard");
+        break;
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6586,6 +6804,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_borrow_rule_checks(*body, fn, w.ck);
     cxx_object_rule_checks(*body, fn, w.ck);
     cxx_sync_rule_checks(*body, fn, w.ck);
+    cxx_cast_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

@@ -1699,6 +1699,70 @@ void stop_ok(std::stop_token st, int &n) {
         ++n;
     }
 }
+#include <regex>
+#include <random>
+#include <chrono>
+#include <stacktrace>
+#include <iterator>
+void vol_bad() {
+    volatile int vreg = 0;
+    *(int *)&vreg = 5; // expect: CXX-VOLATILE-CAST
+}
+void vol_ok() {
+    volatile int vreg = 0;
+    vreg = 5;
+}
+void cc_bad() {
+    const int ci = 1;
+    *const_cast<int *>(&ci) = 2; // expect: CXX-CONST-CAST
+}
+void cc_ok(int &x) {
+    *const_cast<int *>(&x) = 2;
+}
+float pun_bad(int *ip) {
+    return *reinterpret_cast<float *>(ip); // expect: CXX-REINTERPRET
+}
+unsigned char pun_ok(int *ip) {
+    return *reinterpret_cast<unsigned char *>(ip);
+}
+bool rx_bad(const std::string &pat, const std::string &s) {
+    std::regex re(pat); // expect: CXX-REGEX
+    return std::regex_match(s, re);
+}
+bool rx_ok(const std::string &s) {
+    std::regex re("[a-z]+");
+    return std::regex_match(s, re);
+}
+unsigned seed_bad() {
+    auto t = std::chrono::system_clock::now().time_since_epoch().count(); // expect: CXX-CHRONO-SEED
+    std::mt19937 g(static_cast<unsigned>(t));
+    return g();
+}
+unsigned seed_ok() {
+    std::random_device rd;
+    std::mt19937 g(rd());
+    return g();
+}
+int st_bad() {
+    auto st = std::stacktrace::current();
+    return static_cast<int>(st[0].source_line()); // expect: CXX-STACKTRACE
+}
+int st_ok() {
+    auto st = std::stacktrace::current();
+    if (st.empty())
+        return 0;
+    return static_cast<int>(st[0].source_line());
+}
+int counted_bad(std::vector<int> &v, int n) {
+    std::counted_iterator it(v.begin(), n); // expect: CXX-COUNTED-ITERATOR
+    return *it;
+}
+int counted_ok(std::vector<int> &v, int n) {
+    if (n > static_cast<int>(v.size()))
+        return 0;
+    std::counted_iterator it(v.begin(), n);
+    return *it;
+}
 )";
 
 }  // namespace
