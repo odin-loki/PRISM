@@ -1356,6 +1356,85 @@ int stack_bad() {
     std::stack<int> st;
     return st.top(); // expect: CXX-STACK-TOP
 }
+#include <functional>
+#include <future>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <exception>
+#include <stdexcept>
+#include <cstdlib>
+#include <memory>
+#include <initializer_list>
+int bind_target(int a, int b) { return a + b; }
+int bind_bad() {
+    auto f = std::bind(bind_target, 1, std::placeholders::_1); // expect: CXX-STD-BIND
+    return f(2);
+}
+int bind_ok() {
+    auto f = [](int x) { return bind_target(1, x); };
+    return f(2);
+}
+std::condition_variable g_cv;
+std::mutex g_m;
+void notify_bad() {
+    std::unique_lock<std::mutex> lk(g_m);
+    std::notify_all_at_thread_exit(g_cv, std::move(lk)); // expect: CXX-NOTIFY-THREAD-EXIT
+}
+void notify_ok(bool &ready) {
+    std::unique_lock<std::mutex> lk(g_m);
+    std::notify_all_at_thread_exit(g_cv, std::move(lk));
+    std::unique_lock<std::mutex> lk2(g_m);
+    g_cv.wait(lk2, [&] { return ready; });
+}
+void nested_bad() {
+    std::throw_with_nested(std::runtime_error("x")); // expect: CXX-NESTED-EXCEPTION
+}
+void nested_ok() {
+    try {
+        throw std::runtime_error("a");
+    } catch (...) {
+        std::throw_with_nested(std::runtime_error("b"));
+    }
+}
+void qe_handler() {}
+void quick_bad() {
+    std::quick_exit(1); // expect: CXX-QUICK-EXIT
+}
+void quick_ok() {
+    std::at_quick_exit(qe_handler);
+    std::quick_exit(1);
+}
+int async_work() { return 1; }
+void async_bad() {
+    std::async(std::launch::async, async_work); // expect: CXX-STD-ASYNC
+}
+int async_ok() {
+    auto fut = std::async(std::launch::async, async_work);
+    return fut.get();
+}
+const int *ilist_bad() {
+    return std::initializer_list<int>{1, 2, 3}.begin(); // expect: CXX-INIT-LIST-DANGLE
+}
+int ilist_ok(std::initializer_list<int> il) {
+    return *il.begin();
+}
+template <class T> struct task {
+    T v;
+};
+template <class T> T sync_wait(task<T> t) { return t.v; }
+int task_bad() {
+    task<int> t = {1}; // expect: CXX-TASK
+    return t.v;
+}
+int task_ok() {
+    task<int> t = {1};
+    return sync_wait(t);
+}
+int auto_ptr_bad() {
+    std::auto_ptr<int> p(new int(1)); // expect: CXX-AUTO-PTR
+    return *p;
+}
 )";
 
 }  // namespace

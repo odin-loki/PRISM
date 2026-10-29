@@ -3393,6 +3393,9 @@ struct Walker {
                 return;
             }
         }
+        // A discarded std::async is CXX-STD-ASYNC (cxx_call_rule_checks) on
+        // both front ends; its [[nodiscard]] is only visible to libclang.
+        if (name == "async" && type_of(core).find("future") != std::string::npos) return;
         if (f && f->nodiscard && !in_macro(core)) {
             auto nm = name.empty() ? decl_name(child(core, 0)) : name;
             ck.add(core, "CXX-NODISCARD", nm + "() is [[nodiscard]] and its result is discarded");
@@ -5691,6 +5694,114 @@ void sibling_report(Ctx& cx) {
     }
 }
 
+// Bespoke CXX-* regex rules that reduce to "a call/declaration of X in a
+// function without Y in the same function" (checkers_cxx.cpp
+// cxx_token_unless / report_first_line). One row per class per function, at
+// the first triggering node, as the regex rule does.
+std::string any_callee_name(const json& c) {
+    if (kind(c) == "CXXMemberCallExpr" && n_children(c) > 0) {
+        const auto& me = strip_all(child(c, 0));
+        if (kind(me) == "MemberExpr") return std::string(str_field(me, "name"));
+        return {};
+    }
+    return callee_name(c);
+}
+
+void cxx_call_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    std::unordered_set<std::string> called;  // every callee / member name
+    std::unordered_set<std::string> kinds;   // node kinds present
+    std::vector<std::pair<const json*, std::string>> calls;  // (call node, callee name)
+    std::vector<const json*> vars;
+    std::vector<const json*> stmts_in_blocks;  // statements that are direct CompoundStmt children
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        kinds.insert(k);
+        if (is_call_kind(k)) {
+            auto nm = any_callee_name(n);
+            if (!nm.empty()) {
+                called.insert(nm);
+                calls.emplace_back(&n, nm);
+            }
+        } else if (k == "VarDecl") {
+            vars.push_back(&n);
+        } else if (k == "CompoundStmt") {
+            for (auto& s : inner(n)) stmts_in_blocks.push_back(&s);
+        }
+    });
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto by_offset = [](const json* a, const json* b) { return begin_of(*a).offset < begin_of(*b).offset; };
+    auto first_call = [&](std::initializer_list<std::string_view> names, std::string_view type_needle = {}) {
+        const json* best = nullptr;
+        for (auto& [n, nm] : calls) {
+            if (!one_of(nm, names) || !ok_pos(*n)) continue;
+            if (!type_needle.empty() && type_of(*n).find(type_needle) == std::string::npos) continue;
+            if (!best || by_offset(n, best)) best = n;
+        }
+        return best;
+    };
+    auto any_called = [&](std::initializer_list<std::string_view> names) {
+        for (auto& nm : names)
+            if (called.contains(std::string(nm))) return true;
+        return false;
+    };
+    // CXX-STD-BIND: std::bind (a socket bind() returns int, not a _Bind).
+    if (auto* n = first_call({"bind"}, "_Bind")) ck.add(*n, "CXX-STD-BIND", "std::bind(); prefer a lambda");
+    // CXX-NOTIFY-THREAD-EXIT: no wait()/wait_for()/wait_until() in the function.
+    if (!any_called({"wait", "wait_for", "wait_until"}))
+        if (auto* n = first_call({"notify_all_at_thread_exit"}))
+            ck.add(*n, "CXX-NOTIFY-THREAD-EXIT", "notify_all_at_thread_exit without a waiting condition_variable");
+    // CXX-NESTED-EXCEPTION: outside try/catch and without current_exception().
+    if (!kinds.contains("CXXTryStmt") && !any_called({"current_exception"}))
+        if (auto* n = first_call({"throw_with_nested", "rethrow_if_nested"}))
+            ck.add(*n, "CXX-NESTED-EXCEPTION", "throw_with_nested / nested_exception without a try/catch");
+    // CXX-QUICK-EXIT: no at_quick_exit before it, or from a destructor.
+    if (fn.kind == "CXXDestructorDecl" || !any_called({"at_quick_exit"}))
+        if (auto* n = first_call({"quick_exit"}))
+            ck.add(*n, "CXX-QUICK-EXIT",
+                   "std::quick_exit without a prior at_quick_exit handler, or quick_exit from a destructor");
+    // CXX-STD-ASYNC: std::async(...) as an expression statement.
+    for (auto* s : stmts_in_blocks) {
+        const auto& e = strip_all(*s);
+        if (kind(e) != "CallExpr" || callee_name(e) != "async" || !ok_pos(e)) continue;
+        if (type_of(e).find("future") == std::string::npos) continue;
+        ck.add(e, "CXX-STD-ASYNC", "std::async result is discarded");
+        break;
+    }
+    // CXX-TASK: a task<T> local initialised, with no co_await / sync_wait().
+    if (!kinds.contains("CoawaitExpr") && !any_called({"sync_wait"})) {
+        std::sort(vars.begin(), vars.end(), by_offset);
+        for (auto* v : vars) {
+            if (n_children(*v) == 0 || !ok_pos(*v)) continue;
+            if (template_name(std::string(qual_type(*v))) != "task") continue;
+            ck.add(*v, "CXX-TASK", "std::task started without sync_wait/co_await");
+            break;
+        }
+    }
+    // CXX-AUTO-PTR: a std::auto_ptr local.
+    std::sort(vars.begin(), vars.end(), by_offset);
+    for (auto* v : vars) {
+        if (!ok_pos(*v) || template_name(std::string(qual_type(*v))) != "auto_ptr") continue;
+        ck.add(*v, "CXX-AUTO-PTR", "std::auto_ptr is deprecated; use unique_ptr");
+        break;
+    }
+    // CXX-INIT-LIST-DANGLE: .begin() on a temporary initializer_list.
+    for (auto& [n, nm] : calls) {
+        if (nm != "begin" || kind(*n) != "CXXMemberCallExpr" || !ok_pos(*n)) continue;
+        const auto& me = strip_all(child(*n, 0));
+        if (n_children(me) != 1) continue;
+        const auto& obj = strip_all(child(me, 0));
+        if (type_of(obj).find("initializer_list") == std::string::npos) continue;
+        const auto& ok = kind(obj);
+        if (ok == "DeclRefExpr" || ok == "MemberExpr") continue;
+        ck.add(*n, "CXX-INIT-LIST-DANGLE", "pointer from a temporary initializer_list.begin()");
+        break;
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -5735,6 +5846,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     container_method_checks(*body, fn, w.ck);
     token_subscript_checks(*body, w.ck, cx);
     sub_no_size_checks(*body, fn, w.ck);
+    cxx_call_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
