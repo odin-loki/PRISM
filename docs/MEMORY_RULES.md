@@ -99,3 +99,15 @@
   PRISM_FUNCTION_BUDGET=60: /tmp/mf/up1.log.
 - cxx_unordered_map_{true,false} pir: memory-budget UNKNOWN at 432/579 MB RSS of 2550 (false trip? same
   pattern as vector_insert 765 MB in conf4): investigate.
+
+## Handoff 2026-10-30 07:00 AEDT (umap, cont.)
+- c3a008af8: rehash policy takes an exact integer path at max_load_factor 1.0 (n < 2^53, bit-identical
+  to libstdc++'s double math); clear() memsets. Binary frozen at /tmp/mf/prism-umap2.
+- Still no answer: unordered_map_contracts never answered in any earlier conformance run either
+  (libc-conf-full, lm-conf..lm-conf5), so this is not a memfix regression.
+- Minimal repro /tmp/mf/t1.cpp (one insert of symbolic int, assert .second): 8 loops, Z3 memory blows past
+  1 GB within ~60 s (budget-UNKNOWN, no wrong verdict). Equivalent C shape (/tmp/mf/t2.c: 13 buckets,
+  h % 13, chain walk, malloc node) encodes in 1 s at 148 MB, so the cost is in the C++ layer
+  (operator new/bad_alloc landing pads, pair/node construction, _M_owner iterator bookkeeping): bisect
+  those next by trimming the model (each build-mf2 rebuild ~20 min under load).
+- prism-run queue: full of 4 svcomp/astlint jobs for hours; budget <= 1000 MB bypasses it for profiling.
