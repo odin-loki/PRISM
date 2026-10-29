@@ -1467,6 +1467,8 @@ static bool z3_exhausted() {
 // (an out-of-memory z3::exception, mapped to UNKNOWN like Z3's own), and Z3's
 // hard limit is 1.5 times that, so one query has room to finish (twice that
 // overshot a 3 GB RLIMIT_AS: SIGSEGV in unordered_map_contracts.cpp).
+bool z3_hard_oom() { return g_z3_oom.load(); }
+
 static bool z3_over_soft_cap() {
     const uint64_t cap = g_z3_cap_mb.load();
     return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap);
@@ -2389,6 +2391,7 @@ Verdict check_function(const Function&, const CheckOptions&) {
 }
 
 Verdict check_function(const Function& fn, int, double) { return check_function(fn, CheckOptions{}); }
+bool z3_hard_oom() { return false; }
 
 Verdict check_function(const Function& fn, int, double, const EncodeOptions&) {
     return check_function(fn, CheckOptions{});

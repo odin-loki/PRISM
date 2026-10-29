@@ -21,6 +21,11 @@
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
 
+#include <nlohmann/json.hpp>
+#include <map>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <cstdlib>
 #include <atomic>
@@ -922,6 +927,113 @@ struct Analyzed {
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
 };
 
+
+// ---- Fresh-process continuation after a hard Z3 out-of-memory ----
+// Past Z3's hard memory limit Z3 is not usable again in this process
+// (encode.cpp z3_hard_oom), so every later function of the run would be
+// UNKNOWN. Those functions are checked again by a child PRISM (this binary,
+// the same command line, pir stage only, PRISM_PIR_ONLY=<unit>\t<fn>,...),
+// whose verdicts replace the UNKNOWN rows. The child re-runs the same
+// deterministic checks; a child that runs out of memory again does the same
+// for its own remaining functions. Linux only (/proc/self); elsewhere the
+// rows stay UNKNOWN (Law 7: said, not dropped).
+bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
+    static const std::optional<std::set<std::string>> only = []() -> std::optional<std::set<std::string>> {
+        const char* e = std::getenv("PRISM_PIR_ONLY");
+        if (!e || !*e) return std::nullopt;
+        std::set<std::string> r;
+        std::string cur;
+        for (const char* p = e;; ++p) {
+            if (*p == '\n' || *p == '\0') {
+                if (!cur.empty()) r.insert(cur);
+                cur.clear();
+                if (!*p) break;
+            } else {
+                cur += *p;
+            }
+        }
+        return r;
+    }();
+    return !only || only->count(unit + "\t" + fn) > 0;
+}
+
+std::vector<std::string> self_cmdline() {
+    std::vector<std::string> av;
+#ifdef __linux__
+    std::ifstream in("/proc/self/cmdline", std::ios::binary);
+    std::string a;
+    while (std::getline(in, a, '\0')) av.push_back(a);
+#endif
+    return av;
+}
+
+void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg) {
+    std::vector<FnRec*> pend;
+    for (auto& r : recs)
+        if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") pend.push_back(&r);
+    if (pend.empty()) return;
+    auto note = [&](const std::string& why) {
+        for (auto* r : pend) r->f.extra["pir_rerun"] = why;
+    };
+    auto av = self_cmdline();
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (av.empty() || ec) return note("not possible here (no /proc/self): stays UNKNOWN");
+    static std::atomic<int> seq{0};
+    const fs::path out = fs::temp_directory_path() /
+                         ("prism_pir_rerun_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+    std::string only;
+    for (auto* r : pend) only += u.rel + "\t" + r->f.function.value_or("") + "\n";
+    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only, exe.string()};
+    for (std::size_t i = 1; i < av.size(); ++i) {
+        const std::string& a = av[i];
+        if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
+        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
+            a == "--gui")
+            continue;
+        cmd.push_back(a);
+    }
+    cmd.insert(cmd.end(), {std::string("--stage"), std::string("inventory,classify,pir"), std::string("--out"), out.string()});
+    const double t = 120 + 3.0 * std::max(60.0, cfg.timeout) * static_cast<double>(pend.size());
+    auto r = detail::run_process(cmd, t);
+    std::map<std::string, nlohmann::json> got;
+    {
+        std::ifstream in(out / "stages.jsonl");
+        std::string line;
+        while (std::getline(in, line)) {
+            auto j = nlohmann::json::parse(line, nullptr, false);
+            if (j.is_discarded() || j.value("name", "") != "pir" || !j.contains("findings")) continue;
+            for (auto& x : j["findings"])
+                if (x.contains("file") && x["file"].is_string() && x["file"] == u.rel && x.contains("function") &&
+                    x["function"].is_string())
+                    got[x["function"].get<std::string>()] = x;
+        }
+    }
+    fs::remove_all(out, ec);
+    for (auto* rp : pend) {
+        auto& f = rp->f;
+        auto it = got.find(f.function.value_or(""));
+        if (it == got.end()) {
+            f.extra["pir_rerun"] = std::string("fresh process gave no verdict (") +
+                                   (r.timed_out ? "timed out" : "rc " + std::to_string(r.rc)) + "): stays UNKNOWN";
+            continue;
+        }
+        auto& x = it->second;
+        f.status = x.value("status", f.status);
+        f.message = x.value("message", f.message);
+        f.cls = x.value("cls", f.cls);
+        f.strength = x.value("strength", f.strength);
+        f.counterexample = x.value("counterexample", std::string());
+        if (x.contains("line") && x["line"].is_number_integer()) f.line = x["line"].get<int>();
+        if (x.contains("extra") && x["extra"].is_object())
+            for (auto& [k, v] : x["extra"].items())
+                if (v.is_string()) f.extra[k] = v.get<std::string>();
+        f.extra["pir_rerun"] = "fresh process (Z3 hard out-of-memory earlier in this one)";
+        rp->cex.clear();
+        if (f.status != laws::FAILED) rp->fn.reset();  // nothing to replay
+    }
+}
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -979,6 +1091,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         auto& f = rec.f;
         f = base_finding(u);
         f.function = sub.name.empty() ? irf.name : sub.name;
+        if (!rerun_only_wanted(u.rel, *f.function)) continue;  // fresh-process re-run of other functions
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
@@ -1037,6 +1150,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         auto copt = check_options(cfg, budget);
         if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
         auto v = check_function(fn, copt);
+        if (z3_hard_oom() && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
+            f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
@@ -1210,6 +1325,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             an.at(i).out = {f};
         }
     });
+    // Phase 2b (processes, sequential): functions Z3 could no longer check
+    for (std::size_t i = 0; i < units.size(); ++i) rerun_after_oom(units.at(i), an.at(i).recs, cfg);
     std::vector<std::vector<Finding>> per(units.size());
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit&) {
         auto& a = an.at(i);
