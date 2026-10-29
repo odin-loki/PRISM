@@ -47,7 +47,7 @@ The batch replays the `checkers_core.cpp` patterns on the same padded body the r
 - `LOCK-ORDER`: pairs the first two locks across functions.
 - `MEM-CAPACITY-FIRST`: multi-line window plus failure-arm leave / dead / release heuristics. `free_owner.c` in `tests/cpp/test_checkers_c.cpp` is the existing false-positive guard.
 - `INTENT` and `API-PRECONDITION`: comment preamble, not a call or memory pattern.
-- Exit-block replay (`exit_blocks`) used by the regex use-after-free and `lock_double_unlock` paths. The AST lock and flow checks stay straight-line. A release that only happens on a branch that later rejoins can still disagree with the regex replay.
+- Exit-block replay (`exit_blocks`) used by the regex use-after-free and `lock_double_unlock` paths. The AST lock checks stay straight-line; the flow checks follow both arms of an `if` and join them (2026-10-30), but loops and `switch` bodies are still havocked. A release that only happens on a branch that later rejoins can still disagree with the regex replay.
 - Dependent template expressions stay dropped in `Checker::add`.
 - A `static` local VLA is skipped by the regex and by this port. It is not planted: `static int c[n]` may fail to parse.
 

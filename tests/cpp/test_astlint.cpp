@@ -3186,3 +3186,109 @@ TEST_CASE("astlint: an AST row of a ported class supersedes the regex row") {
         }
     }
 }
+
+// Flow checks follow both arms of an if and join the paths that leave it
+// (must-analysis: a state survives only when every falling-through arm agrees).
+const std::string kFlowBranchC = R"(#include <stdlib.h>
+int g(int);
+int uaf_in_arm(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    if (c) {
+        return *p; // expect: MEM-UAF
+    }
+    return 0;
+}
+int uaf_after_both_arms(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        g(1);
+        free(p);
+    } else {
+        g(2);
+        free(p);
+    }
+    return *p; // expect: MEM-UAF
+}
+int uninit_in_arm(int c) {
+    int x;
+    if (c) {
+        return x; // expect: UNINIT-RETURN
+    }
+    return 0;
+}
+int double_free_after_arm(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        free(p);
+        return 1;
+    } else {
+        g(3);
+    }
+    free(p);
+    free(p); // expect: MEM-DOUBLE-FREE
+    return 0;
+}
+int freed_on_one_arm_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        free(p);
+        p = 0;
+    } else {
+        *p = 1;
+    }
+    if (p) free(p);
+    return 0;
+}
+int assigned_on_both_arms_ok(int c) {
+    int x;
+    if (c) {
+        x = 1;
+    } else {
+        x = 2;
+    }
+    return x;
+}
+int assigned_on_one_arm_ok(int c) {
+    int x;
+    if (c) x = 1;
+    else return 0;
+    return x;
+}
+int tested_in_condition_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (p && c) {
+        *p = c;
+    }
+    if (p) {
+        int v = *p;
+        free(p);
+        return v;
+    }
+    return 0;
+}
+int abort_guard_ok(int n) {
+    int *p = (int *)malloc(sizeof(int));
+    if (!p)
+        abort();
+    *p = n & 7;
+    int r = *p;
+    free(p);
+    return r;
+}
+int both_arms_leave_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    if (c) return 1;
+    else return 2;
+}
+)";
+
+TEST_CASE("astlint: flow checks follow if arms and join the paths that leave them") {
+    check_marks("flow_branch.c", kFlowBranchC);
+}

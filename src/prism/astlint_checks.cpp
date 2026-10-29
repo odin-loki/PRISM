@@ -502,6 +502,7 @@ struct Ctx {
     std::unordered_map<std::string, std::string> enum_of;                           // constant id -> enum id
     std::unordered_map<std::string, std::pair<std::string, long long>> const_info;  // id -> name, value
     std::vector<Finding> out;
+    std::set<std::tuple<std::string, int, std::string>> out_seen;
     std::set<std::string> checked;  // canonical files whose declarations were walked
     std::set<std::string> defined;  // dump path: names of functions defined in checked files
     // CTRL-SIBLING-ASYMMETRY: integer parameters of the functions in a file.
@@ -578,6 +579,9 @@ struct Ctx {
         int line = line_of(p);
         if (line <= 0) return;
         auto* f = file(p.file);
+        // One row per file, line and class: the flow walk reaches a branch block both from its
+        // enclosing block and on its own.
+        if (!out_seen.insert({f->rel, line, std::string(cls)}).second) return;
         std::vector<Finding> tmp;
         lint_add(tmp, f->rel, fn.empty() ? std::nullopt : std::optional<std::string>(fn), line, cls, msg,
                  f->lines);
@@ -3138,6 +3142,46 @@ struct Flow {
         return (is_builtin_arith(t) || is_pointer_type(t) || t.starts_with("enum ")) && !in_macro(v);
     }
 
+    // The then/else arms of an if whose condition is child(s, ci): each arm runs from the state
+    // after the condition, and the paths that leave the if are joined (must-analysis: a variable
+    // keeps a state only when every arm that falls through agrees on it). A pointer the
+    // condition tests (`if (p)`, `if (!p)`, `p == NULL`, `p && ...`) is forgotten in both arms, so
+    // the arm where it is non-null is not an unchecked use. An arm that returns, throws, breaks or
+    // calls a noreturn function does not reach the join; when no arm does, the rest of the block is
+    // unreachable on these paths and the walk stops.
+    void branches(const json& s, std::size_t ci) {
+        forget_tested(child(s, ci));
+        const auto base = st;
+        std::vector<std::map<std::string, VState>> out;
+        auto arm = [&](const json* b) {
+            st = base;
+            stopped = false;
+            if (b && b->is_object() && !b->empty()) stmt(*b);
+            if (!stopped) out.push_back(st);
+        };
+        arm(n_children(s) > ci + 1 ? &child(s, ci + 1) : nullptr);
+        arm(n_children(s) > ci + 2 ? &child(s, ci + 2) : nullptr);
+        stopped = out.empty();
+        if (stopped) return;
+        st = out.front();
+        for (std::size_t a = 1; a < out.size(); ++a)
+            std::erase_if(st, [&](const auto& kv) {
+                auto it = out[a].find(kv.first);
+                return it == out[a].end() || it->second.st != kv.second.st;
+            });
+    }
+
+    // Forget pointers a condition tests for NULL (any operand position: `p`, `!p`, `p == 0`, `p && x`).
+    void forget_tested(const json& n) {
+        if (!n.is_object()) return;
+        if (kind(n) == "DeclRefExpr") {
+            auto it = st.find(str_field(ref_decl(n), "id"));
+            if (it != st.end() && (it->second.st == St::Malloc || it->second.st == St::Nulled)) st.erase(it);
+            return;
+        }
+        for (auto& c : inner(n)) forget_tested(c);
+    }
+
     // Statements of one block, in order.
     void block(const json& b) {
         for (auto& s : inner(b)) {
@@ -3208,7 +3252,8 @@ struct Flow {
                 }
             }
             if (!null_guarded) eval(child(s, i), Ctx2::Branch);
-            for (std::size_t j = i + 1; j < n_children(s); ++j) havoc(child(s, j));
+            if (stopped) return;
+            branches(s, i);
             return;
         }
         if (k == "SwitchStmt" || k == "WhileStmt") {
