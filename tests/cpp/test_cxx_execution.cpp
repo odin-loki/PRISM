@@ -63,10 +63,11 @@ TEST_CASE("cxx execution model: seq is the only policy and no algorithm is decla
     CHECK(header.filename() == "execution");
     CHECK(header.extension().empty());
 
-    const std::string src = prism_test::unwrap_prose(slurp(header));
+    const std::string src = slurp(header);
+    const std::string prose = prism_test::unwrap_prose(src);
     REQUIRE(!src.empty());
-    CHECK(src.find("This header is not a parallelism proof.") != std::string::npos);
-    CHECK(src.find("A parallel policy that ran on one thread would be a fake parallel execution.") != std::string::npos);
+    CHECK(prose.find("This header is not a parallelism proof.") != std::string::npos);
+    CHECK(prose.find("A parallel policy that ran on one thread would be a fake parallel execution.") != std::string::npos);
     CHECK(src.find("#ifndef _GLIBCXX_EXECUTION") != std::string::npos);
     CHECK(src.find("#define _GLIBCXX_EXECUTION 1") != std::string::npos);
     CHECK(src.find("#endif  // _GLIBCXX_EXECUTION") != std::string::npos);

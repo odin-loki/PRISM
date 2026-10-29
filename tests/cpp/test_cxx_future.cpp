@@ -252,7 +252,7 @@ TEST_CASE("cxx future model: empty get() is a check and the header does not defi
     CHECK(src.find("#define _GLIBCXX_FUTURE") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std {") != std::string::npos);
-    CHECK(src.find("fail to compile") != std::string::npos);
+    CHECK(src.find("fails to compile") != std::string::npos);
     CHECK(src.find("pir falls back") != std::string::npos);
     CHECK(src.find("fake synchronization") != std::string::npos);
     for (const char* inc : {"#include <memory>", "#include <thread>", "#include <functional>", "#include <mutex>"})
