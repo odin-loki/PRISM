@@ -961,6 +961,18 @@ exported). NOT yet covered, so every catch pad is still refused at
    begin/end_catch etc. (step 2).
 3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
    list_contracts.
+DONE (ca55edb53, cbd942f88, c7fbf3a77): eager caught slot committed (14
+catch-heavy cs verdicts identical base/new; pir tests pass except 2 astlint
+cases failing on a missing libclang resource dir, unrelated). Lean `ehCallX`
+mirrors `__cxa_begin_catch`, `__cxa_end_catch` (refused when `L thrdtor`: a
+`__cxa_throw` passes a destructor), `llvm.eh.typeid.for` (exported as
+`L call %r 32 llvm.eh.typeid.for:<TI> 0`), `__cxa_rethrow` (plain call only;
+an `invoke` of it, e.g. inside a cleanup pad, is refused). Region blocks now
+append statements (several eh calls in one LLVM block). Fixture
+`cxx_catch` (catch(...), catch(std::bad_alloc&): agree-ext; rethrow refused:
+invoke + terminate.lpad). check.sh OK, 0 mismatch, testdata/pir agree-ext 87.
+Open: invoke of rethrow / terminate.lpad (`__clang_call_terminate`), thrown
+dtors in end_catch, region code joining a block with phis.
 Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
 via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
 
