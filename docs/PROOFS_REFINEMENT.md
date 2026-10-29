@@ -976,6 +976,18 @@ dtors in end_catch, region code joining a block with phis.
 Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
 via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
 
+DONE (6fa8a9de6): user-written throw. Exporter emits `L xalloc %d <sz> 64`
+and `L uthrow <TI> <ptr> <pad|-> <normal|->` only for the exact clang
+pattern (call-free stores between `__cxa_allocate_exception` and
+`__cxa_throw(result, @TI, dtor)`; else unsupported, e.g. a throw of a class
+with an out-of-line ctor). Lean trB mirrors Tr::eh_call's throw (header
+object, payload, dispatch; an invoke pushes the pad on hs) and translates
+the invoke's normal `unreachable` block as `check unreachable; stop`.
+LLVM side stays `.stuck` (thr), so no proof change. Fixtures cxx_uthrow
+(g, t2 invoke, t3: agree-ext) and cxx_uthrow_neg (ctor throw refused).
+Re-measure: final binaries in /workspace/eh/final (REV); libc-models per
+file at 700MB in /workspace/eh/lcper.log.
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
