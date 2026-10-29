@@ -1298,6 +1298,34 @@ int tok_rotl_unused(unsigned x) {
     unsigned r = std::rotl(x, 3);
     return a[0] + static_cast<int>(r);
 }
+#include <list>
+#include <map>
+#include <queue>
+#include <set>
+#include <unordered_map>
+int cont_set_bad(const std::set<int> &s) {
+    return *s.find(3); // expect: CXX-SET-FIND
+}
+int cont_set_ok(const std::set<int> &s) {
+    auto it = s.find(3);
+    return it != s.end() ? *it : 0;
+}
+int cont_map_bad(const std::map<int, int> &m) {
+    return m.at(1); // expect: CXX-MAP-AT
+}
+int cont_umap_ok(const std::unordered_map<int, int> &m) {
+    return m.contains(1) ? m.at(1) : 0;
+}
+int cont_list_bad() {
+    std::list<int> l;
+    return l.front(); // expect: CXX-LIST-FRONT
+}
+int cont_pq_ok() {
+    std::priority_queue<int> q;
+    if (q.empty())
+        return 0;
+    return q.top();
+}
 )";
 
 }  // namespace

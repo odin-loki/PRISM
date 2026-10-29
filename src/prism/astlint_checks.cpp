@@ -4984,6 +4984,91 @@ void index_token_checks(const json& body, Checker& ck, Ctx& cx) {
     }
 }
 
+// CXX container-method family (regex cxx_find_no_end, cxx_at_no_contains,
+// cxx_method_no_empty): a risky member call on a local or parameter of a
+// standard container type when the function never makes the matching check
+// on that same object.
+struct ContainerRule {
+    const char* cls;
+    std::vector<std::string> types;   // template names
+    std::vector<std::string> risky;   // methods that need the check
+    std::vector<std::string> checks;  // methods that count as the check
+    const char* msg;
+};
+
+const std::vector<ContainerRule>& container_rules() {
+    static const std::vector<std::string> fin{"find"}, endc{"end"}, at{"at"}, has{"contains", "count", "find"},
+        emp{"empty"};
+    static const char* fmsg = ".find() dereferenced without != end()";
+    static const std::vector<ContainerRule> r{
+        {"CXX-FLAT-SET", {"flat_set"}, fin, endc, fmsg},
+        {"CXX-FLAT-MULTIMAP", {"flat_multimap"}, fin, endc, fmsg},
+        {"CXX-FLAT-MULTISET", {"flat_multiset"}, fin, endc, fmsg},
+        {"CXX-SET-FIND", {"set"}, fin, endc, fmsg},
+        {"CXX-UNORDERED-SET", {"unordered_set"}, fin, endc, fmsg},
+        {"CXX-MULTIMAP-FIND", {"multimap"}, fin, endc, fmsg},
+        {"CXX-MULTISET-FIND", {"multiset"}, fin, endc, fmsg},
+        {"CXX-UNORDERED-MULTIMAP", {"unordered_multimap"}, fin, endc, fmsg},
+        {"CXX-UNORDERED-MULTISET", {"unordered_multiset"}, fin, endc, fmsg},
+        {"CXX-MAP-AT", {"map"}, at, has, ".at() without count()/find()/contains()"},
+        {"CXX-UNORDERED-AT", {"unordered_map"}, at, has, ".at() without count()/find()/contains()"},
+        {"CXX-FORWARD-LIST", {"forward_list"}, {"front"}, emp, ".front() without empty()"},
+        {"CXX-LIST-FRONT", {"list"}, {"front", "back"}, emp, ".front()/.back() without empty()"},
+        {"CXX-PRIORITY-QUEUE", {"priority_queue"}, {"top", "pop"}, emp, ".top()/.pop() without empty()"},
+    };
+    return r;
+}
+
+// "const std::set<int> &" -> "set"
+std::string template_name(std::string t) {
+    auto lt = t.find('<');
+    if (lt == std::string::npos) return {};
+    t = t.substr(0, lt);
+    while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
+    auto c = t.find_last_of(": ");
+    return c == std::string::npos ? t : t.substr(c + 1);
+}
+
+void container_method_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    struct Call {
+        const json* at;
+        std::string var, method;
+    };
+    std::vector<Call> calls;
+    std::map<std::string, std::string> tname;  // var id -> template name
+    for (auto& [id, d] : fn.locals) tname[id] = template_name(std::string(qual_type(*d)));
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (kind(n) == "VarDecl") {
+            tname[std::string(str_field(n, "id"))] = template_name(std::string(qual_type(n)));
+            return;
+        }
+        if (kind(n) != "CXXMemberCallExpr" || n_children(n) == 0) return;
+        const auto& me = strip_all(child(n, 0));
+        if (kind(me) != "MemberExpr" || n_children(me) != 1) return;
+        auto id = ref_id(child(me, 0));
+        if (id.empty()) return;
+        calls.push_back({&n, id, std::string(str_field(me, "name"))});
+    });
+    for (auto& r : container_rules()) {
+        std::set<std::string> checked;
+        for (auto& c : calls)
+            if (std::find(r.checks.begin(), r.checks.end(), c.method) != r.checks.end()) checked.insert(c.var);
+        for (auto& c : calls) {
+            if (std::find(r.risky.begin(), r.risky.end(), c.method) == r.risky.end()) continue;
+            auto it = tname.find(c.var);
+            if (it == tname.end() || std::find(r.types.begin(), r.types.end(), it->second) == r.types.end()) continue;
+            if (checked.contains(c.var)) continue;
+            const auto p = begin_of(*c.at);
+            if (!same_file_pos(p, base) || p.macro) continue;
+            const auto& me = strip_all(child(*c.at, 0));
+            auto name = std::string(str_field(ref_decl(strip_all(child(me, 0))), "name"));
+            ck.add(*c.at, r.cls, name + r.msg);
+            break;
+        }
+    }
+}
+
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
 // first later index, deref, `->`, free() or return of p, unless p is
 // assigned in between.
@@ -5506,6 +5591,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     api_assign_checks(*body, w.ck);
     capacity_first_checks(*body, w.ck, cx);
     index_token_checks(*body, w.ck, cx);
+    container_method_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
