@@ -910,6 +910,15 @@ struct Parser {
                 auto argc = e->get(params[0].second);
                 e->assume(argc.v >= e->bv_zero(argc.w));
             }
+            // Conditional compilation inside the body: prep() drops directive
+            // lines, so every arm would run one after the other (`#ifdef A
+            // return x; #else x++; #endif` makes x++ dead and its overflow
+            // unchecked). Which arm is compiled is not known here: not encoded
+            // rather than a proof of a program that is not the one compiled.
+            {
+                if (re_search(R"(^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|elifdef|elifndef|else)\b)", body, true))
+                    throw ParseFail("UNENCODED: conditional preprocessor directive in body (#if/#ifdef arms)");
+            }
             stuck_labels = self_loop_labels(body);
             e->push_scope();
             stmts(*e, prep(body));
