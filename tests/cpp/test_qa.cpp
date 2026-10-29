@@ -565,6 +565,38 @@ TEST_CASE("pir-vs-bmc buckets, matrix and hard conflicts") {
     CHECK(j["gate"]["overall"] == "FAIL");
 }
 
+TEST_CASE("pir-vs-bmc superset gap list and reasons") {
+    using prism::qa::pvb_gap_reason;
+    const std::string nh = "NEEDS-HARNESS";
+    CHECK(pvb_gap_reason(nullptr, "x") == "absent");
+    CHECK(pvb_gap_reason(&nh, "unsupported intrinsic 12: llvm.foo") == "NEEDS-HARNESS: unsupported intrinsic N");
+    CHECK(pvb_gap_reason(&nh, "") == "NEEDS-HARNESS: (no message)");
+    auto f = [](const char* fn, const char* st, const char* m) {
+        return nlohmann::json{{"file", "a.c"}, {"function", fn}, {"status", st}, {"message", m}};
+    };
+    nlohmann::json report = {
+        {"stages",
+         {{{"name", "bmc"},
+           {"findings", {f("p", "PROVED", ""), f("q", "PROVED", ""), f("r", "PROVED", ""), f("s", "FAILED", "")}}},
+          {{"name", "pir"},
+           {"findings", {f("q", "NEEDS-HARNESS", "loop 3: no bound"), f("r", "NEEDS-HARNESS", "loop 7: x"),
+                         f("s", "NEEDS-HARNESS", "loop")}}}}}};
+    auto r = prism::qa::pir_vs_bmc(report);
+    CHECK(r.superset_gaps == 3);
+    REQUIRE(r.gaps.size() == 3);
+    CHECK(r.gaps[0]["function"] == "p");
+    CHECK(r.gaps[0]["reason"] == "absent");
+    CHECK(r.gap_reasons["NEEDS-HARNESS: loop N"] == 2);
+    CHECK(r.gap_reasons["absent"] == 1);
+    const auto text = prism::qa::pir_vs_bmc_text(r);
+    CHECK(has_line(text, "superset gaps by reason:"));
+    CHECK(has_line(text, "  2  NEEDS-HARNESS: loop N"));
+    CHECK(has_line(text, "  1  absent"));
+    auto j = prism::qa::pir_vs_bmc_json(r);
+    CHECK(j["gaps"].size() == 3);
+    CHECK(j["gap_reasons"]["absent"] == 1);
+}
+
 // Synthetic rows only. A passing gate here is the counter definition, not a testdata/ run.
 TEST_CASE("pir-vs-bmc retirement gates, superset cells and exit codes") {
     auto f = [](const char* file, const char* fn, const char* st) {

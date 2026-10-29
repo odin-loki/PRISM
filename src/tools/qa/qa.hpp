@@ -72,7 +72,13 @@ struct PvbResult {
     int agree_both = 0;     // same bucket, and that bucket is not absent
     int both_report = 0;    // neither bucket is absent
     int superset_gaps = 0;  // matrix[PROVED*, absent] + matrix[PROVED*, NEEDS-HARNESS]
+    // One row per superset gap: file, function, pir (status or "absent"), pir_msg, reason.
+    nlohmann::json gaps = nlohmann::json::array();
+    std::map<std::string, int> gap_reasons;  // reason -> gap count (biggest category first in text)
 };
+// Coarse category of why pir missed a bmc PROVED* function (absent, or the
+// first clause of the pir NEEDS-HARNESS message with numbers stripped).
+std::string pvb_gap_reason(const std::string* pir_status, const std::string& pir_msg);
 // Hand-bmc retirement counters. pass is hard conflicts == 0 and superset_gaps == 0.
 // Agreement is reported (agree_both/both_report) and is not part of pass.
 // Counters at 0 on an empty report are not a testdata result.

@@ -63,6 +63,22 @@ std::string pvb_bucket(const std::string* status) {
     return "UNKNOWN";  // UNKNOWN / TIMEOUT / NOFUNC / NOTRUN
 }
 
+std::string pvb_gap_reason(const std::string* pir_status, const std::string& pir_msg) {
+    if (!pir_status) return "absent";
+    std::string m = pir_msg;
+    auto cut = m.find_first_of(":;(\n");
+    if (cut != std::string::npos) m = m.substr(0, cut);
+    std::string o;
+    for (char c : m) {
+        if (c >= '0' && c <= '9') {
+            if (o.empty() || o.back() != 'N') o += 'N';
+        } else o += c;
+    }
+    while (!o.empty() && o.back() == ' ') o.pop_back();
+    if (o.size() > 80) o.resize(80);
+    return *pir_status + ": " + (o.empty() ? "(no message)" : o);
+}
+
 PvbGate pir_vs_bmc_gate(const PvbResult& r) {
     PvbGate g;
     g.hard_conflicts_ok = r.conflicts.empty();
@@ -90,6 +106,16 @@ PvbResult pir_vs_bmc(const nlohmann::json& report) {
         const auto rb = pvb_bucket(sb ? &*sb : nullptr);
         const auto rp = pvb_bucket(sp ? &*sp : nullptr);
         ++r.matrix[{rb, rp}];
+        if (rb == "PROVED*" && (rp == "absent" || rp == "NEEDS-HARNESS")) {
+            const auto msg = p != pir.end() ? text_of(p->second, "message") : std::string();
+            const auto why = pvb_gap_reason(sp ? &*sp : nullptr, msg);
+            ++r.gap_reasons[why];
+            r.gaps.push_back({{"file", k.first},
+                              {"function", k.second},
+                              {"pir", sp ? *sp : std::string("absent")},
+                              {"pir_msg", msg},
+                              {"reason", why}});
+        }
         if ((rb == "PROVED*" && rp == "FAILED") || (rb == "FAILED" && rp == "PROVED*")) {
             r.conflicts.push_back({{"file", k.first},
                                    {"function", k.second},
@@ -139,6 +165,13 @@ std::string pir_vs_bmc_text(const PvbResult& r) {
     o << "retirement gate (pir superset): " << (gate.superset_ok ? "PASS" : "FAIL") << " (" << r.superset_gaps
       << ")\n";
     o << "retirement gate (overall): " << (gate.pass ? "PASS" : "FAIL") << "\n";
+    if (!r.gap_reasons.empty()) {
+        std::vector<std::pair<int, std::string>> by;
+        for (auto& [why, n] : r.gap_reasons) by.emplace_back(-n, why);
+        std::sort(by.begin(), by.end());
+        o << "superset gaps by reason:\n";
+        for (auto& [n, why] : by) o << "  " << -n << "  " << why << "\n";
+    }
     o << "hard conflicts (PROVED* vs FAILED): " << r.conflicts.size() << "\n";
     for (const auto& c : r.conflicts)
         o << "  " << c["file"].get<std::string>() << "::" << c["function"].get<std::string>()
@@ -157,6 +190,8 @@ nlohmann::json pir_vs_bmc_json(const PvbResult& r) {
             {"agree_both", r.agree_both},
             {"both_report", r.both_report},
             {"superset_gaps", r.superset_gaps},
+            {"gaps", r.gaps},
+            {"gap_reasons", r.gap_reasons},
             {"gate", {{"hard_conflicts", gate.hard_conflicts_ok ? "PASS" : "FAIL"},
                       {"superset", gate.superset_ok ? "PASS" : "FAIL"},
                       {"overall", gate.pass ? "PASS" : "FAIL"}}}};
@@ -164,7 +199,7 @@ nlohmann::json pir_vs_bmc_json(const PvbResult& r) {
 
 int pir_vs_bmc_main(const Args& args) {
     const auto repo = repo_root();
-    std::string tree = (repo / "testdata").string(), bin, report_path, json_out;
+    std::string tree = (repo / "testdata").string(), bin, report_path, json_out, keep_report;
     int jobs = 2;
     double timeout = 0;
     bool gate = false;
@@ -177,9 +212,11 @@ int pir_vs_bmc_main(const Args& args) {
         else if (a == "--json") json_out = next();
         else if (a == "--timeout") timeout = std::atof(next().c_str());
         else if (a == "--gate") gate = true;
+        else if (a == "--keep-report") keep_report = next();
         else if (a == "-h" || a == "--help") {
             std::cout << "prism-qa pir-vs-bmc [TREE] [--bin PRISM] [--report report.json] [--jobs N]\n"
                          "                    [--json OUT.json] [--timeout S] [--gate]\n"
+                         "                    [--keep-report report.json]\n"
                          "bmc encoder vs pir stage: per-function agreement matrix and every hard\n"
                          "conflict (PROVED* vs FAILED). --gate exits 1 when hard conflicts are\n"
                          "nonzero or a bmc PROVED* function is pir-absent or NEEDS-HARNESS.\n"
@@ -214,6 +251,10 @@ int pir_vs_bmc_main(const Args& args) {
                                       std::to_string(jobs)},
                                      so);
         report = load_json(out / "report.json");
+        if (report && !keep_report.empty()) {
+            std::error_code ec;
+            fs::copy_file(out / "report.json", keep_report, fs::copy_options::overwrite_existing, ec);
+        }
         if (!report) {
             std::cerr << "pir-vs-bmc: PRISM wrote no report.json (rc " << r.rc
                       << (r.timed_out ? ", timed out" : "") << ")\n"
