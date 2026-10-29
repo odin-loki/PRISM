@@ -4,3 +4,5 @@ language: C++
 property: memsafety
 expected:
   cxx_barrier_false: false
+witness:
+  cxx_barrier_false: [2]

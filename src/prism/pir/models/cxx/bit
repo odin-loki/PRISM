@@ -112,6 +112,11 @@ constexpr int bit_width(_Tp __x) noexcept {
     return numeric_limits<_Tp>::digits - countl_zero(__x);
 }
 
+// libstdc++ 14 headers (bits/stl_algobase.h) call std::__bit_width when this
+// file stands in for <bit>. It is the same function as bit_width.
+template <typename _Tp>
+constexpr int __bit_width(_Tp __x) noexcept { return std::bit_width(__x); }
+
 template <typename _Tp>
 constexpr bool has_single_bit(_Tp __x) noexcept {
     static_assert(is_unsigned_v<_Tp>);
@@ -197,6 +202,18 @@ constexpr _Tp byteswap(_Tp __x) noexcept {
         return __out;
     }
 }
+
+
+// The other std::__ names libstdc++ 14 internal headers call when this file
+// stands in for <bit>. Each forwards to the public function above.
+template <typename _Tp> constexpr int __countl_zero(_Tp __x) noexcept { return std::countl_zero(__x); }
+template <typename _Tp> constexpr int __countr_zero(_Tp __x) noexcept { return std::countr_zero(__x); }
+template <typename _Tp> constexpr int __popcount(_Tp __x) noexcept { return std::popcount(__x); }
+template <typename _Tp> constexpr _Tp __bit_ceil(_Tp __x) noexcept { return std::bit_ceil(__x); }
+template <typename _Tp> constexpr _Tp __bit_floor(_Tp __x) noexcept { return std::bit_floor(__x); }
+template <typename _Tp> constexpr bool __has_single_bit(_Tp __x) noexcept { return std::has_single_bit(__x); }
+template <typename _Tp> constexpr _Tp __rotl(_Tp __x, int __s) noexcept { return std::rotl(__x, __s); }
+template <typename _Tp> constexpr _Tp __rotr(_Tp __x, int __s) noexcept { return std::rotr(__x, __s); }
 
 }  // namespace std
 

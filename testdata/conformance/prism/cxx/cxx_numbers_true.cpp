@@ -3,8 +3,8 @@
 // A comparison against these literals is not a proof of a numeric identity.
 #include <numbers>
 int cxx_numbers_true() {
-    const auto pi = std::numbers::pi<long double>;
-    const auto e = std::numbers::e<long double>;
+    const auto pi = std::numbers::pi_v<long double>;
+    const auto e = std::numbers::e_v<long double>;
     if (!(pi > 3 && pi < 4)) return 1;
     if (!(e > 2 && e < 3)) return 1;
     return 0;

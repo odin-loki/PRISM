@@ -9,6 +9,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #if defined(_MSC_VER)
 #  pragma warning(push)
 #  pragma warning(disable : 4068)  // #pragma GCC system_header in the model
@@ -80,7 +82,7 @@ TEST_CASE("cxx condition_variable model: notify sets a flag, wait is omitted") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
-    const std::string src = slurp(header);
+    const std::string src = prism_test::unwrap_prose(slurp(header));
     REQUIRE(!src.empty());
 
     CHECK(src.find("#ifndef _GLIBCXX_CONDITION_VARIABLE") != std::string::npos);
