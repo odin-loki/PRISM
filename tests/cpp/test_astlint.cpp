@@ -607,7 +607,7 @@ void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
 void scanf_ok(int *p) {
     if (scanf("%d", p) != 1) return;
 }
-void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP
+void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP, STR-NULL-ARG
 void bcopy_self(char *p) { bcopy(p, p, 4); } // expect: MEM-BCOPY
 char *rself(char *p) {
     p = realloc(p, 10); // expect: MEM-REALLOC-SELF
@@ -691,8 +691,8 @@ void unchecked_malloc_plant(void) {
 }
 int missing_ret_bad(void) {
     int x = 1;
-    x = 2; // expect: CTRL-MISSING-RETURN
-}
+    x = 2; // expect: CTRL-DEAD-STORE
+} // expect: CTRL-MISSING-RETURN
 int missing_ret_ok(void) { return 1; }
 void noreturn_bad(void) { exit(1); } // expect: FUNC-NORETURN
 _Noreturn void noreturn_ok(void) { exit(1); }
@@ -706,7 +706,7 @@ int atoi_idx_bad(const char *s) {
 }
 int masked_bad(int f) {
     int d;
-    switch (f & 3) {
+    switch (f & 3) { // expect: UNINIT-SWITCH
     case 0:
         d = 0;
         break;
@@ -714,7 +714,7 @@ int masked_bad(int f) {
         d = 1;
         break;
     }
-    return d; // expect: UNINIT-SWITCH
+    return d;
 }
 #include <pthread.h>
 #include <threads.h>
@@ -815,7 +815,7 @@ int rand(void);
 void crypto_key_bad(char *key) {
     int i;
     for (i = 0; i < 8; i++)
-        key[i] = rand(); // expect: CRYPTO-MISUSE
+        key[i] = rand(); // expect: CRYPTO-MISUSE, INT-TRUNC
 }
 void srand(unsigned);
 typedef long time_t;

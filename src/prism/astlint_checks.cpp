@@ -1085,8 +1085,8 @@ std::optional<std::string> fatal_tail_callee(const json& stmt) {
 void collect_atoi_vars(const json& n, std::unordered_set<std::string>& out) {
     if (!n.is_object()) return;
     const auto& k = kind(n);
-    if (k == "VarDecl" && n_children(n) >= 2) {
-        const auto& init = strip_all(child(n, 1));
+    if (k == "VarDecl" && n_children(n) >= 1) {
+        const auto& init = strip_all(last_child(n));
         if (is_call_kind(kind(init)) && one_of(callee_name(init), {"atoi", "atol", "atoll"}))
             out.insert(str_field(n, "id"));
     }
@@ -1796,7 +1796,9 @@ struct Checker {
                 break;
             }
         }
-        if (one_of(name, {"alloca", "__builtin_alloca"}) && !args.empty() && !in_macro(c)) {
+        // glibc's <alloca.h> defines alloca(size) as __builtin_alloca(size): that expansion is the call.
+        if (one_of(name, {"alloca", "__builtin_alloca"}) && !args.empty() &&
+            (!in_macro(c) || name == "__builtin_alloca")) {
             const auto& sz = strip_all(*args[0]);
             if (!int_value(sz) && !constant_expr(sz)) {
                 auto szt = arg_text(*args[0]);
@@ -3186,11 +3188,21 @@ struct Walker {
         return std::regex_search(txt, tail) || std::regex_search(txt, fn);
     }
 
+    // _Noreturn / [[noreturn]] spelled before the body (libclang keeps no attribute node for _Noreturn).
+    bool decl_head_noreturn(const json& f, const json& body) {
+        const auto b = begin_of(f);
+        const auto e = begin_of(body);
+        if (!b.file || !e.file || *b.file != *e.file) return false;
+        const auto t = cx.text(b, e);
+        static const std::regex kw(R"((?:\b_Noreturn\b|\[\[\s*(?:std::|gnu::)?noreturn\b|\b__attribute__\s*\(\(\s*(?:__)?noreturn\b))");
+        return std::regex_search(t.begin(), t.end(), kw);
+    }
+
     void finish_tail_checks(const json& f, const json& body) {
         if (fn.name == "main" || in_macro(body)) return;
         const json* last = last_executable_stmt(body);
         if (!last) return;
-        if (!function_decl_noreturn(f) && !saw_return) {
+        if (!function_decl_noreturn(f) && !decl_head_noreturn(f, body) && !saw_return) {
             if (auto callee = fatal_tail_callee(*last)) {
                 ck.add(*last, "FUNC-NORETURN",
                        fn.name + "() ends in " + *callee + "(), not declared noreturn");
@@ -3201,7 +3213,12 @@ struct Walker {
             if (!saw_return || !tail_ok) {
                 const auto msg = !saw_return ? fn.name + "() has no return statement"
                                              : fn.name + "() does not end in return or fatal exit";
-                ck.add(*last, "CTRL-MISSING-RETURN", msg);
+                // At the closing brace: control falls off the end there (regex row parity).
+                const auto close = end_of(body);
+                if (close.file && !close.macro)
+                    ck.add_pos(close, *last, "CTRL-MISSING-RETURN", msg);
+                else
+                    ck.add(*last, "CTRL-MISSING-RETURN", msg);
             }
         }
         std::unordered_set<std::string> atoi_ids;
@@ -4556,7 +4573,10 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
             if (params.contains(name) || rx_kw().contains(name)) continue;
             auto size = rx_strip(m.named("size"));
             if (rx_parse_int(size) || rx_constant_bound(size, fn.body, params)) continue;
-            int rel_off = rx_nl(fn.body.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first))));
+            // (?m)^\s* also eats the newline(s) before the declaration: count from its first token.
+            auto start = static_cast<std::size_t>(std::max(0, m.spans[0].first));
+            while (start < fn.body.size() && std::isspace(static_cast<unsigned char>(fn.body[start]))) ++start;
+            int rel_off = rx_nl(fn.body.substr(0, start));
             auto key = std::pair{name, rel_off};
             if (seen.contains(key)) continue;
             seen.insert(key);
