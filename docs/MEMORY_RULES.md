@@ -73,3 +73,10 @@
   grep '| pir | libc' /tmp/mf/conf5/metrics.md (target >= 175, 0 wrong, no exit -9).
 - Box OOM kills seen while conf5 ran come from outside PRISM too: retdec-decompiler
   (/workspace/rd-core-build, ~4.2 GB RSS) runs without prism-run.
+- conf5 (memfix binary, 2026-10-30 02:12): pir libc 176/203 proved (lm-conf5 175/202), 0 wrong.
+  3 priority_queue functions "exit -9": kernel global OOM (prism 2.0 GB killed while
+  retdec-decompiler held 4-6.7 GB outside prism-run), not PRISM. Others: 14 unbounded_string +
+  6 unordered_map TIMEOUT, 3 sstream clang timeouts (loaded box), fs one memory-budget UNKNOWN.
+- prism-run admission now reserves half the RSS of >1 GB processes outside prism-run trees.
+- Registration-file loss: not reproduced (own trap/cleanup keep the file in tests); no inotify on
+  the box to catch the deleter. Mitigated: wrapper re-registers every 0.5 s.
