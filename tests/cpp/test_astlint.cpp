@@ -1342,6 +1342,20 @@ int view_take_ok(const std::vector<int> &v, int i) {
 int view_none(const std::vector<int> &v, int i) {
     return v[i];
 }
+#include <deque>
+#include <stack>
+int deque_bad(const std::deque<int> &d, unsigned i) {
+    return d[i]; // expect: CXX-DEQUE-INDEX
+}
+int deque_ok(const std::deque<int> &d, unsigned i) {
+    if (i < d.size())
+        return d[i];
+    return 0;
+}
+int stack_bad() {
+    std::stack<int> st;
+    return st.top(); // expect: CXX-STACK-TOP
+}
 )";
 
 }  // namespace

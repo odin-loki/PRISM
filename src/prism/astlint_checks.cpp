@@ -5016,6 +5016,7 @@ const std::vector<ContainerRule>& container_rules() {
         {"CXX-FORWARD-LIST", {"forward_list"}, {"front"}, emp, ".front() without empty()"},
         {"CXX-LIST-FRONT", {"list"}, {"front", "back"}, emp, ".front()/.back() without empty()"},
         {"CXX-PRIORITY-QUEUE", {"priority_queue"}, {"top", "pop"}, emp, ".top()/.pop() without empty()"},
+        {"CXX-STACK-TOP", {"stack"}, {"top", "pop"}, emp, ".top()/.pop() without empty()"},
     };
     return r;
 }
@@ -5153,6 +5154,59 @@ void token_subscript_checks(const json& body, Checker& ck, Ctx& cx) {
         if (!bad) continue;
         for (auto* r : live) ck.add(*n, r->cls, r->msg);
         return;
+    }
+}
+
+// CXX-DEQUE-INDEX / CXX-VALARRAY / CXX-SIMD-INDEX (regex cxx_sub_no_size):
+// c[i] on a deque, valarray or simd when i is never compared with c.size().
+void sub_no_size_checks(const json& body, const Fn& fn, Checker& ck) {
+    static const std::map<std::string, const char*> cls{
+        {"deque", "CXX-DEQUE-INDEX"}, {"valarray", "CXX-VALARRAY"}, {"simd", "CXX-SIMD-INDEX"}};
+    const auto base = begin_of(body);
+    std::map<std::string, std::string> tname;
+    for (auto& [id, d] : fn.locals) tname[id] = template_name(std::string(qual_type(*d)));
+    std::set<std::pair<std::string, std::string>> guarded;  // (idx id, container id)
+    std::vector<const json*> subs;
+    auto size_of = [](const json& e) -> std::string {
+        const auto& c = strip_all(e);
+        if (kind(c) != "CXXMemberCallExpr" || n_children(c) == 0) return {};
+        const auto& me = strip_all(child(c, 0));
+        auto m = str_field(me, "name");
+        if (kind(me) != "MemberExpr" || (m != "size" && m != "length") || n_children(me) != 1) return {};
+        return ref_id(child(me, 0));
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl") {
+            tname[std::string(str_field(n, "id"))] = template_name(std::string(qual_type(n)));
+        } else if (k == "BinaryOperator" && n_children(n) == 2) {
+            auto op = str_field(n, "opcode");
+            if (op != "<" && op != "<=" && op != ">" && op != ">=") return;
+            for (int i = 0; i < 2; ++i) {
+                auto id = ref_id(child(n, i));
+                auto c = size_of(child(n, 1 - i));
+                if (!id.empty() && !c.empty()) guarded.insert({id, c});
+            }
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) == 3) {
+            const auto& op = strip_all(child(n, 0));
+            if (kind(op) == "DeclRefExpr" && str_field(ref_decl(op), "name") == "operator[]") subs.push_back(&n);
+        }
+    });
+    std::set<std::string> reported;
+    for (auto* n : subs) {
+        auto cid = ref_id(child(*n, 1));
+        auto it = tname.find(cid);
+        if (cid.empty() || it == tname.end() || !cls.contains(it->second)) continue;
+        const auto& idx = strip_all(child(*n, 2));
+        auto iid = ref_id(idx);
+        if (!iid.empty() && guarded.contains({iid, cid})) continue;
+        const auto p = begin_of(*n);
+        if (!same_file_pos(p, base) || p.macro) continue;
+        const char* c = cls.at(it->second);
+        if (!reported.insert(c).second) continue;
+        auto cn = std::string(str_field(ref_decl(strip_all(child(*n, 1))), "name"));
+        auto in = iid.empty() ? std::string("...") : std::string(str_field(ref_decl(idx), "name"));
+        ck.add(*n, c, cn + "[" + in + "] without a size() guard");
     }
 }
 
@@ -5680,6 +5734,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     index_token_checks(*body, w.ck, cx);
     container_method_checks(*body, fn, w.ck);
     token_subscript_checks(*body, w.ck, cx);
+    sub_no_size_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
