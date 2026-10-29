@@ -56,6 +56,7 @@
 // This executes task code: only the trusted suite in this repository (or the
 // pinned Juliet archive, whose hash is checked) is ever compiled and run.
 
+#include "prism/membudget.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
 #include "support/fetch.hpp"
@@ -278,6 +279,31 @@ int conformance_main(const std::vector<std::string>& argv) {
     }
     jobs = std::max(1L, jobs);
     mem_limit = std::max(0L, mem_limit);
+    // Box safety (Law 7, docs/PIR.md "Memory budget"): --mem-limit-mb caps
+    // address space per run, not memory, so `jobs` runs could together ask
+    // for jobs x 4 GB of a machine that has far less (the kernel then kills
+    // some prism, or something else). Each run gets an RSS budget (its share
+    // of 75% of MemAvailable, never more than half the address-space cap),
+    // which PRISM enforces per function as UNKNOWN; runs are cut to what
+    // fits at ~1 GB each.
+    if (!std::getenv("PRISM_MEM_BUDGET_MB")) {
+        const uint64_t avail = prism::membudget::base_budget_mb();  // 75% of the tightest limit
+        if (avail > 0) {
+            const long fit = std::max(1L, static_cast<long>(avail / 1024));
+            if (jobs > fit) {
+                std::cerr << "prism-qa conformance: --jobs " << jobs << " cut to " << fit << " (" << avail
+                          << " MB to share, about 1 GB per run)\n";
+                jobs = fit;
+            }
+            uint64_t per = avail / static_cast<uint64_t>(jobs);
+            if (mem_limit > 0) per = std::min<uint64_t>(per, static_cast<uint64_t>(mem_limit) / 2);
+#ifdef _WIN32
+            _putenv_s("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str());
+#else
+            ::setenv("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str(), 1);
+#endif
+        }
+    }
 
     try {
         if (args.has("--fetch-juliet")) {
