@@ -9,6 +9,7 @@
 #endif
 
 #include "prism/abi_model.hpp"
+#include "prism/ai.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/models.hpp"
@@ -789,6 +790,39 @@ int main(void) {
     REQUIRE(ok.count("main"));
     CHECK(ok["main"].status == kProved);
     auto bad = bmc_run("houdini_gauss_bad.c", head + "  __VERIFIER_assert(2*sum == n*(n-1));\n  return 0;\n}\n");
+    REQUIRE(bad.count("main"));
+    CHECK(bad["main"].status != kProved);
+    CHECK(bad["main"].status != std::string(prism::laws::PROVED));
+}
+
+namespace {
+const char* kHalf = R"(extern int __VERIFIER_nondet_int(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); abort(); } }
+int main(void) {
+  int n, i, k;
+  n = __VERIFIER_nondet_int();
+  if (!(n <= 1000000)) return 0;
+  k = n;
+  i = 0;
+  while (i < n) { k--; i = i + 2; }
+  int j = 0;
+  while (j < n / 2) { __VERIFIER_assert(k > 0); k--; j++; }
+  return 0;
+}
+)";
+}  // namespace
+
+TEST_CASE("bmc: Houdini carries loop 1's invariants into loop 2 (half), and a wrong bound stays open") {
+    auto ok = bmc_run("houdini_half.c", kHalf);
+    REQUIRE(ok.count("main"));
+    CHECK(ok["main"].status == kProved);
+    CHECK(ok["main"].extra["k_induction"] == "closed-invariants");
+    // n = 2 leaves k = 1 at the first pass of loop 2: k > 1 really fails.
+    std::string bad_src = kHalf;
+    bad_src.replace(bad_src.find("k > 0"), 5, "k > 1");
+    auto bad = bmc_run("houdini_half_bad.c", bad_src);
     REQUIRE(bad.count("main"));
     CHECK(bad["main"].status != kProved);
     CHECK(bad["main"].status != std::string(prism::laws::PROVED));

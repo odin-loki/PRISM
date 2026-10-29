@@ -181,7 +181,10 @@ PRISM_API std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, 
 PRISM_API std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
                                   const std::vector<std::vector<std::pair<int, std::string>>>& inv);
 // Deterministic template candidates for one loop.
-PRISM_API std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& loop);
+// extended=false: the cheap linear/bound/congruence families; true adds the
+// non-linear and three-variable shapes (tried only when the cheap set fails).
+PRISM_API std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& loop,
+                                                       bool extended = true);
 
 struct HoudiniResult {
     bool proved = false;              // strengthened step AND base case closed, no UB property sat

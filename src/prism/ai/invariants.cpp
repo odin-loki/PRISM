@@ -501,7 +501,7 @@ std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, std::strin
     return w.loops;
 }
 
-std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& L) {
+std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& L, bool extended) {
     (void)fn;
     std::vector<std::string> out;
     std::set<std::string> seen;
@@ -545,6 +545,8 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 std::string op = r;
                 if (vocab.count(lhs)) {
                     if (op == "<") push(lhs + " <= " + rhs);
+                    if (op == "<") push(lhs + " <= " + rhs + " + 1");  // a step of 2 overshoots by 1
+                    if (op == "<") push(rhs + " < 0 || " + lhs + " <= " + rhs + " + 1");  // loop never ran
                     if (op == "<=") push(lhs + " <= " + rhs + " + 1");
                     if (op == ">") push(lhs + " >= " + rhs);
                     if (op == ">=") push(lhs + " >= " + rhs + " - 1");
@@ -613,10 +615,16 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 push(x + " + " + y + " == " + std::to_string(k));
             }
         }
+    // (7) congruences of written scalars (x stays odd, a multiple of k, ...):
+    //     x % c == r for small moduli. Houdini drops the ones that fail.
+    for (auto& x : L.modified)
+        for (long long c : {2LL, 3LL, 4LL})
+            for (long long r = 0; r < c; ++r) push(x + " % " + std::to_string(c) + " == " + std::to_string(r));
     // (8) non-linear and three-variable shapes (gauss_sum, count_by_k, half).
     //     They are checked by Houdini in the same bit-vector semantics in which
     //     they are assumed, so a wrapping product cannot make a proof unsound;
     //     the witness exporter separately drops arithmetic it cannot bound.
+    if (extended)
     for (auto& x : L.modified)
         for (auto& y : L.scalars) {
             if (x == y) continue;
@@ -634,14 +642,10 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 if (std::ranges::find(L.modified, z) != L.modified.end()) continue;
                 push("2 * " + x + " + " + y + " == 2 * " + z);
                 push(x + " + " + y + " == " + z);
+                push(x + " + " + y + " / 2 == " + z);  // 2*x + y == 2*z without the wrap ambiguity
                 push(z + " < 0 || " + x + " + " + y + " == " + z + " / 2");
             }
         }
-    // (7) congruences of written scalars (x stays odd, a multiple of k, ...):
-    //     x % c == r for small moduli. Houdini drops the ones that fail.
-    for (auto& x : L.modified)
-        for (long long c : {2LL, 3LL, 4LL})
-            for (long long r = 0; r < c; ++r) push(x + " % " + std::to_string(c) + " == " + std::to_string(r));
     return out;
 }
 
@@ -842,12 +846,24 @@ Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int u
         return rec;
     }
     std::vector<std::vector<std::string>> cands, srcs;
+    // Cheap families first; the extended set (several times larger, so each
+    // Houdini round costs more) only when the cheap one leaves the step open.
     for (auto& L : *loops) {
-        cands.push_back(template_candidates(fn, L));
+        cands.push_back(template_candidates(fn, L, false));
         srcs.push_back(std::vector<std::string>(cands.back().size(), "template"));
     }
     auto h = houdini(fn, *loops, cands, srcs, unwind);
     if (h.proved) return proved_finding(fn, bounded, h, "template", *loops);
+    if (h.encoded) {
+        cands.clear();
+        srcs.clear();
+        for (auto& L : *loops) {
+            cands.push_back(template_candidates(fn, L, true));
+            srcs.push_back(std::vector<std::string>(cands.back().size(), "template"));
+        }
+        h = houdini(fn, *loops, cands, srcs, unwind);
+        if (h.proved) return proved_finding(fn, bounded, h, "template", *loops);
+    }
     rec.extra["invariants_attempt"] = h.why.empty() ? std::string("open") : h.why;
     rec.extra["invariants"] = inv_json(h.invariants);
     if (!h.encoded) return rec;
