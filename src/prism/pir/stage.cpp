@@ -1150,7 +1150,12 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         auto copt = check_options(cfg, budget);
         if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
         auto v = check_function(fn, copt);
-        if (z3_hard_oom() && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
+        // Re-checked fresh only when this process already checked another
+        // function (its Z3 memory, or a hard out-of-memory, is what stopped
+        // this one), so the child processes always make progress.
+        static std::atomic<int> g_checked{0};
+        const bool fresh_helps = g_checked++ > 0;
+        if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
             f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
