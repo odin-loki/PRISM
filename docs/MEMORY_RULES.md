@@ -45,6 +45,8 @@
   budget; prism-qa conformance: no default --as cap, 2.5 GB floor, inherited budget split among
   --jobs at 3/4 share.
 - Not possible: per-job cgroup (agent cgroup root-owned with processes; no user systemd).
+- prism-run admission is first fit in ticket order; a ticket waiting > 600 s gets priority.
+  Wrappers started before 72be5de8d keep the old strict-FIFO loop: restart queued ones.
 - Open: PRISM still overshoots its budget ~30% (conf4 tree 3883 MB at 3000); libc conformance
   conf4 (/tmp/mf/conf4, log /workspace/logs/memfix-conf4.log, PRISM_MEM_BUDGET_MB=3400 --jobs 1)
   vs lm-conf5 175/202, 0 wrong. Peaks for unbounded_string / vector_insert not yet measured.
