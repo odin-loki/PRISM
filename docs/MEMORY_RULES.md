@@ -128,3 +128,13 @@
 - Next: test h9 at the real budget (3400) once a prism-run slot frees; or cut the number of _M_next_bkt
   call sites (prepare_insert re-calls it on a prime it already returned; do_rehash can skip it when
   bkt >= bkt_for_elements(n+1)); or two levels (branch on about 18 coarse ranges, masks within one).
+
+## Handoff 2026-10-30 ~10:00 AEDT (after box restart)
+- /workspace/bin/prism-run was already restored and is byte-identical to tools/prism-run (1e9e53bcd).
+  Smoke test passes. To reinstall: cp tools/prism-run /workspace/bin/.prism-run.new && mv it into place
+  (atomic; never edit in place).
+- build-mf2's cache points at the removed /opt paths (libomp): use build/ (Release, PRISM_Z3=ON). An
+  incremental `cmake --build build --target prism` takes about 10 s.
+- 2c73112db: h10 is in the model. tools/models/gen_prime_lb.py regenerates it (idempotent);
+  tools/models/check_prime_lb.sh <orig> <new> checks equality (201360 inputs IDENTICAL).
+- Running: full unordered_map_contracts pir at 3000 MB, binary /tmp/mf/prism-h10, log /tmp/mf/u3.log.
