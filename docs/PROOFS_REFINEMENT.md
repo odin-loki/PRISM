@@ -1021,7 +1021,9 @@ Final measure, no skips (REV 3c5fc60fa, 1500MB), all mismatch=0:
 concurrency 0/0/6/37; esbmc-cpp 8/20/86/72 (28 proved); libc-models
 6/246/4/186 (252 proved; was 4/87/3/146 with skips and checking on);
 prism 203/230/69/227 (433 proved; was killed); sv-comp 32/180/0/362 (212).
-Peak RSS 20-173MB per subdir.
+Peak RSS 20-173MB per subdir. libc-models 240 -> 442 is not memory: harness.h
+#includes model sources by repo-relative path, so the out-of-tree copies
+(lcper, lcskip) lost those units (ctype in tree: 28 agree-ext; copied: 0).
 
 ## What remains
 
