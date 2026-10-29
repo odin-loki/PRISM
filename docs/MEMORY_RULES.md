@@ -38,3 +38,14 @@
   setsid into new sessions (svcomp score).
 - oom_score_adj = 500 x RSS/budget (min 100, max 1000), updated every 0.5 s: the kernel's victim
   is the job furthest over its budget, not a small run.
+
+## Handoff (fix/memory-budget, 2026-10-29 late)
+- Done: FIFO+admission prism-run (strict MemAvailable >= budget+1.5 GB), descendant tracking,
+  oom_score_adj by RSS/budget; Z3 hard limit = budget (soft 80%); low-box stop only at >= half
+  budget; prism-qa conformance: no default --as cap, 2.5 GB floor, inherited budget split among
+  --jobs at 3/4 share.
+- Not possible: per-job cgroup (agent cgroup root-owned with processes; no user systemd).
+- Open: PRISM still overshoots its budget ~30% (conf4 tree 3883 MB at 3000); libc conformance
+  conf4 (/tmp/mf/conf4, log /workspace/logs/memfix-conf4.log, PRISM_MEM_BUDGET_MB=3400 --jobs 1)
+  vs lm-conf5 175/202, 0 wrong. Peaks for unbounded_string / vector_insert not yet measured.
+  test_pir_refinement "memory checks in XTranslate.lean" fails after the libc-models merge (not memfix).
