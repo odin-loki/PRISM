@@ -14,6 +14,10 @@
 #include <mutex>
 #include <set>
 
+namespace prism::pir {
+bool write_cxx_models(const std::filesystem::path& dir);  // src/prism/pir/libc_models.cpp
+}
+
 namespace prism::qa {
 
 using prism::i128_shl;
@@ -254,6 +258,16 @@ std::string driver_source(const Task& task, const std::string& fn, const Params&
     fs::path src = fs::weakly_canonical(fs::absolute(task.source, ec), ec);
     std::string inc = ojson(src.string()).dump(-1, ' ', false, ojson::error_handler_t::replace);
     std::vector<std::string> lines = {"#include " + inc, "#include <stddef.h>"};
+    if (is_cxx(task.lang)) {
+        // PRISM's C++ library models call the precondition intrinsic; at run
+        // time a failed check is reported the way UBSan reports UB.
+        lines.insert(lines.end(),
+                     {"#include <stdio.h>", "#include <stdlib.h>",
+                      "extern \"C\" __attribute__((weak)) void __prism_check(int ok, const char* cls, const char* msg) {",
+                      "    if (ok) return;",
+                      "    fprintf(stderr, \"runtime error: %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");",
+                      "    abort();", "}"});
+    }
     if (!params.empty()) {
         std::string fields;
         for (std::size_t i = 0; i < params.size(); ++i) {
@@ -403,7 +417,21 @@ Exec run_sanitized(const Task& task, const std::string& fn, const Params& params
 #endif
     RunOpts co;
     co.timeout_s = 180;
-    auto r = run_tree(cc, co);
+    // C++ labels speak for the program PRISM checks (pir/stage.cpp): the
+    // library's precondition checks on, PRISM's C++ library models first on
+    // the include path, and the platform library alone when a unit does not
+    // compile against the models.
+    if (is_cxx(task.lang)) cc.push_back("-D_GLIBCXX_ASSERTIONS");
+    const fs::path models = work / "prism_cxx";
+    RunResult r;
+    bool built = false;
+    if (is_cxx(task.lang) && prism::pir::write_cxx_models(models)) {
+        auto mc = cc;
+        mc.insert(mc.begin() + 1, {"-isystem", models.string()});
+        r = run_tree(mc, co);
+        built = !r.start_failed && !r.timed_out && r.rc == 0;
+    }
+    if (!built) r = run_tree(cc, co);
     if (r.start_failed) return {"compile-error", utf8_clean(r.err)};
     if (r.timed_out) return {"compile-error", "timed out after 180 seconds"};
     if (r.rc != 0) return {"compile-error", py_tail(utf8_clean(r.err.empty() ? r.out : r.err), 800)};
@@ -413,10 +441,12 @@ Exec run_sanitized(const Task& task, const std::string& fn, const Params& params
     auto x = run_tree(sandboxed({exe.string()}, work), ro);
     if (x.timed_out) return {"timeout", ">" + py_float(timeout) + "s"};
     std::string err = utf8_clean(x.err);
+    // a libstdc++ precondition (_GLIBCXX_ASSERTIONS) aborts with
+    // "Assertion '...' failed": PRISM reports that as a violation too.
     // std::terminate (an exception escaping main or a noexcept function) is a
     // property violation for PRISM (roadmap 2.6), reported by the C++ runtime
     static const Regex hit_re(
-        R"(runtime error: .*|ERROR: AddressSanitizer: \S+.*|terminate called .*|pure virtual method called)");
+        R"(runtime error: .*|ERROR: AddressSanitizer: \S+.*|terminate called .*|pure virtual method called|Assertion '.*' failed)");
     if (auto hit = hit_re.search_match(err)) return {"ub", py_head(hit->group(0), 300)};
     if (x.rc != 0) return {"crash", "exit " + std::to_string(x.rc) + ": " + py_tail(err, 300)};
     return {"clean", ""};
