@@ -506,7 +506,7 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
     std::vector<std::string> out;
     std::set<std::string> seen;
     auto push = [&](const std::string& e) {
-        if (out.size() >= 240) return;
+        if (out.size() >= 480) return;
         if (!valid_c_bool_expr(e, [&] {
                 auto v = L.scalars;
                 return v;
@@ -611,6 +611,30 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 if (k == 0) continue;
                 push(x + " == " + y + " + " + std::to_string(k));
                 push(x + " + " + y + " == " + std::to_string(k));
+            }
+        }
+    // (8) non-linear and three-variable shapes (gauss_sum, count_by_k, half).
+    //     They are checked by Houdini in the same bit-vector semantics in which
+    //     they are assumed, so a wrapping product cannot make a proof unsound;
+    //     the witness exporter separately drops arithmetic it cannot bound.
+    for (auto& x : L.modified)
+        for (auto& y : L.scalars) {
+            if (x == y) continue;
+            push("2 * " + x + " == " + y + " * " + y + " + " + y);
+            push("2 * " + x + " == " + y + " * " + y + " - " + y);
+            push(x + " == " + y + " * " + y);
+            bool y_mod = std::ranges::find(L.modified, y) != L.modified.end();
+            if (!y_mod) {
+                push(y + " == 0 || " + x + " % " + y + " == 0");
+                for (auto k : L.constants)
+                    if (k > 1000) push(x + " <= " + std::to_string(k) + " * " + y);
+            }
+            for (auto& z : L.scalars) {
+                if (z == x || z == y) continue;
+                if (std::ranges::find(L.modified, z) != L.modified.end()) continue;
+                push("2 * " + x + " + " + y + " == 2 * " + z);
+                push(x + " + " + y + " == " + z);
+                push(z + " < 0 || " + x + " + " + y + " == " + z + " / 2");
             }
         }
     // (7) congruences of written scalars (x stays odd, a multiple of k, ...):

@@ -772,3 +772,24 @@ int main(void) {
     CHECK(by["main"].status != kProved);
     CHECK(by["main"].status != std::string(prism::laws::PROVED));
 }
+
+TEST_CASE("bmc: Houdini proves gauss_sum with the non-linear template, and a wrong sum stays open") {
+    const std::string head = R"(extern int __VERIFIER_nondet_int(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); abort(); } }
+int main(void) {
+  int n, sum, i;
+  n = __VERIFIER_nondet_int();
+  if (!(1 <= n && n <= 1000)) return 0;
+  sum = 0;
+  for (i = 1; i <= n; i++) { sum = sum + i; }
+)";
+    auto ok = bmc_run("houdini_gauss.c", head + "  __VERIFIER_assert(2*sum == n*(n+1));\n  return 0;\n}\n");
+    REQUIRE(ok.count("main"));
+    CHECK(ok["main"].status == kProved);
+    auto bad = bmc_run("houdini_gauss_bad.c", head + "  __VERIFIER_assert(2*sum == n*(n-1));\n  return 0;\n}\n");
+    REQUIRE(bad.count("main"));
+    CHECK(bad["main"].status != kProved);
+    CHECK(bad["main"].status != std::string(prism::laws::PROVED));
+}
