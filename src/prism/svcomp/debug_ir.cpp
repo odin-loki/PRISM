@@ -319,13 +319,13 @@ std::optional<std::string> render_conjunct(const json& conj,
     return ta->name + " " + it->second + " " + *sb;
 }
 
-std::optional<std::string> debug_ir(const fs::path& task) {
+std::optional<std::string> debug_ir(const fs::path& task, const std::string& target) {
     Config cfg;
     auto cc = cfg.which({"clang-18", "clang"});
     auto opt = cfg.which({"opt-18", "opt"});
     if (!cc || !opt) return std::nullopt;
     std::vector<std::string> argv{cc->string()};
-    for (auto& flag : pir::lp64_clang_driver_flags()) argv.push_back(flag);
+    for (auto& flag : pir::clang_driver_flags_for(target)) argv.push_back(flag);
     argv.insert(argv.end(), {"-x", "c", "-S", "-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone",
                              "-fno-discard-value-names", "-fno-builtin-memcpy", "-g", "-std=c17", "-w", task.string(),
                              "-o", "-"});
@@ -348,7 +348,9 @@ std::optional<std::vector<std::vector<std::string>>> pir_invariant_texts(const f
     }
     static const Regex line_marker(R"(^[ \t]*#[ \t]*(line[ \t]+)?\d+)", true);
     if (line_marker.search(read_text(task))) return std::nullopt;  // debug locations would name another file's lines
-    auto ir = debug_ir(task);
+    // the same target the finding's unit was lowered for (SVCOMP-ILP32)
+    const std::string target = has(extra, "target") ? pystr(extra.at("target")) : std::string();
+    auto ir = debug_ir(task, target);
     if (!ir) return std::nullopt;
     std::string fn = has(finding, "function") && truthy(finding.at("function")) ? pystr(finding.at("function")) : "main";
     auto [f, md] = parse_debug_ir(*ir, fn);

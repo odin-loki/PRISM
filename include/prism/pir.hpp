@@ -558,6 +558,10 @@ struct Frontend {
     // pir stage): searched before libstdc++ when non-empty (docs/PIR.md
     // "C++ library models"). Empty: the platform library only.
     std::filesystem::path cxx_models;
+    // clang --target for the units (SVCOMP-ILP32: ilp32_target_triple()).
+    // Empty: the host LP64 target. Library models are LP64 and are not
+    // linked into a unit lowered for another target.
+    std::string target;
 };
 PRISM_API Frontend find_frontend(const Config& cfg);
 

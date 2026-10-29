@@ -48,10 +48,15 @@ public:
     uint64_t field_offset(const ir::Type& st, unsigned idx) const;
     const ir::Type& resolve(const ir::Type& t) const;  // named struct -> body
     const ir::Type& field_type(const ir::Type& st, unsigned idx) const;
+    // Pointer size of the datalayout (8 on LP64, 4 on i386 / ILP32).
+    unsigned ptr_bytes() const { return ptr_bytes_; }
+    // t is or contains a pointer (an opaque type counts as one).
+    bool holds_ptr(const ir::Type& t) const;
 
 private:
     const ir::Module& m_;
     std::map<unsigned, unsigned> int_align_;  // bits -> bytes
+    std::map<std::string, unsigned> fp_align_;  // half/float/double/x86_fp80/fp128 -> bytes (datalayout fN)
     unsigned ptr_bytes_ = 8, ptr_align_ = 8;
 };
 
@@ -159,6 +164,10 @@ public:
     void stack_restore(int b, Arg token);
     // Constant C string at a pointer operand (@.str / constant GEP into one).
     std::optional<std::string> const_string(const ir::Value& v) const;
+    // SVCOMP-ILP32: PIR pointer values are kPtrW (64) bits; a datalayout with
+    // narrower pointers stores them in narrower cells, which SymMem does not
+    // model. Throws Unenc when t holds a pointer and the cell would be narrower.
+    void ptr_cell(const ir::Type& t, std::string_view what) const;
 
 private:
     TrApi& t_;

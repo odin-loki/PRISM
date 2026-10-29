@@ -21,6 +21,14 @@ PRISM_API std::vector<std::string> lp64_target_flags();
 // LP64 target plus, on _WIN32, -idirafter the libc name-header shim (conc, testdata/pir, debug_ir).
 PRISM_API std::vector<std::string> lp64_clang_driver_flags();
 
+// SVCOMP-ILP32: the clang target an ILP32 (32-bit long, size_t, pointers)
+// unit is lowered for: "i386-unknown-linux-gnu".
+PRISM_API std::string ilp32_target_triple();
+
+// Driver flags for a target: empty target = lp64_clang_driver_flags();
+// otherwise {"--target=<target>"} (plus the _WIN32 libc name-header shim).
+PRISM_API std::vector<std::string> clang_driver_flags_for(const std::string& target);
+
 // True when find_frontend has clang and opt and the LP64 triple probe succeeds.
 // When false and notrun_reason is non-null, set to a Law-1 MESSAGE ("NOTRUN: ...").
 PRISM_API bool frontend_usable(const Config& cfg, std::string* notrun_reason = nullptr);

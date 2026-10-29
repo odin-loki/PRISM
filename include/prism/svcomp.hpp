@@ -144,7 +144,9 @@ struct CVar {
 PRISM_API std::optional<std::string> render_conjunct(const json& conj,
                                                      const std::function<std::optional<CVar>(const json&)>& term_of);
 // The task's IR as the pir stage builds it, with full debug information.
-PRISM_API std::optional<std::string> debug_ir(const std::filesystem::path& task);
+// target: clang --target (a pir finding's extra["target"], SVCOMP-ILP32);
+// empty = the LP64 host target pir uses by default.
+PRISM_API std::optional<std::string> debug_ir(const std::filesystem::path& task, const std::string& target = "");
 // C conjuncts per exported loop of a pir PROVED-UNBOUNDED finding (aligned
 // with extra["invariant_loops"]); nullopt when unavailable (no clang/opt,
 // no debug information, a task with line markers).

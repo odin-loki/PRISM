@@ -1856,6 +1856,11 @@ struct Tr final : pirmem::TrApi {
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;
     if (m.find(n) || !pirmem::is_format_function(n)) return false;
+    // SVCOMP-ILP32: plan_format's widths (%ld, %zu, %p, the output length
+    // bounds) are the LP64 ones; a format call of a 32-bit unit is refused.
+    if (mt.layout().ptr_bytes() * 8 < kPtrW)
+        throw Unenc{"UNENCODED: call @" + n + " (format conversions with " +
+                    std::to_string(mt.layout().ptr_bytes() * 8) + "-bit long/pointers not modelled)"};
     std::vector<ir::Type> tys;
     for (auto& o : in.ops) tys.push_back(o.ty);
     std::optional<std::string> fmt;

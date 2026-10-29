@@ -337,9 +337,9 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
     return out;
 }
 
-std::vector<std::string> base_flags(const fs::path& src) {
+std::vector<std::string> base_flags(const fs::path& src, const std::string& target) {
     std::vector<std::string> f{"-S"};
-    for (auto& t : lp64_clang_driver_flags()) f.push_back(t);
+    for (auto& t : clang_driver_flags_for(target)) f.push_back(t);
     f.insert(f.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names",
                        "-gline-tables-only"});
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
@@ -409,7 +409,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     TmpDir td;
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};
-    auto fl = base_flags(src);
+    auto fl = base_flags(src, fe.target);
     fl.insert(fl.end(), include_flags.begin(), include_flags.end());
     if (cxx_models) cxx_models->clear();
     // C++ library models (docs/PIR.md "C++ library models"): the model
@@ -654,6 +654,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         }
         if (!fe.lli || !fe.opt) {
             r.f.extra["tv"] = "NOTRUN (lli not found; " + std::string(kInstall) + ")";
+            continue;
+        }
+        if (!fe.target.empty()) {
+            r.f.extra["tv"] = "NOTRUN (unit lowered for " + fe.target + "; lli replays host-ABI IR only)";
             continue;
         }
         if (r.fn->nondet) {
@@ -1106,15 +1110,6 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 }  // namespace
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
-    // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task here.
-    if (is_ilp32(cfg.data_model)) {
-        Finding f;
-        f.stage = "pir";
-        f.status = std::string(laws::NOTRUN);
-        f.message = "pir is LP64-only; ILP32 tasks are analysed by the bmc stage (32-bit long, size_t, pointers)";
-        f.strength = std::string(laws::STRENGTH_PROVES);
-        return {f};
-    }
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});
@@ -1144,6 +1139,13 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
 #endif
     auto fe = find_frontend(cfg);
     if (units.empty()) return {};
+    // SVCOMP-ILP32: lower for i386 so int/long/size_t widths, struct layout
+    // and the datalayout are the 32-bit ones. Pointer values keep PIR's
+    // abstract encoding; a pointer stored in memory (a 4-byte cell) is
+    // refused as UNENCODED by the memory translator. The libc models are
+    // LP64 IR and are not linked: a library call is UNENCODED.
+    const bool ilp32 = is_ilp32(cfg.data_model);
+    if (ilp32) fe.target = ilp32_target_triple();
     if (!fe.clang || !fe.opt || (!fe.clangxx && std::any_of(units.begin(), units.end(), [](auto& u) {
             return is_cxx(u.path);
         }))) {
@@ -1159,7 +1161,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // library models: lowered once per run (process phase) and cached across
     // runs; their own time limit, well above the per-unit one: they are
     // PRISM's code, and every library call of every unit depends on them
-    auto models = build_models(fe, std::max(120.0, 4 * cfg.timeout));
+    auto models = ilp32 ? ModelLibrary{} : build_models(fe, std::max(120.0, 4 * cfg.timeout));
     // C++ library model headers (docs/PIR.md "C++ library models"): written
     // once per run; without them C++ units use the platform library, and
     // every C++ function says which one it was checked against.
@@ -1230,7 +1232,14 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         out.push_back(std::move(f));
     }
     for (auto& v : per)
-        for (auto& f : v) out.push_back(std::move(f));
+        for (auto& f : v) {
+            if (ilp32) {
+                f.extra["data_model"] = "ILP32";
+                f.extra["target"] = fe.target;
+                f.extra["libc_models"] = "not linked (LP64 models; a libc call is UNENCODED on ILP32)";
+            }
+            out.push_back(std::move(f));
+        }
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
 }
 

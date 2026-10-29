@@ -89,6 +89,23 @@ std::vector<std::string> lp64_clang_driver_flags() {
     return f;
 }
 
+std::string ilp32_target_triple() { return "i386-unknown-linux-gnu"; }
+
+std::vector<std::string> clang_driver_flags_for(const std::string& target) {
+    if (target.empty()) return lp64_clang_driver_flags();
+    std::vector<std::string> f{"--target=" + target};
+#ifdef _WIN32
+    const std::filesystem::path shim =
+        std::filesystem::path(__FILE__).parent_path() / "models" / "libc" / "shim";
+    std::error_code ec;
+    if (std::filesystem::is_directory(shim, ec)) {
+        f.push_back("-idirafter");
+        f.push_back(shim.string());
+    }
+#endif
+    return f;
+}
+
 bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
     auto fe = find_frontend(cfg);
     if (!fe.clang || !fe.opt) {

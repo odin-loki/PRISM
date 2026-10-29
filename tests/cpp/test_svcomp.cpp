@@ -1053,7 +1053,7 @@ TEST_CASE("taskdef: the YAML subset reader") {
 
 // ---------------------------------------------------------------- one task end to end
 
-TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run the bmc stage") {
+TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks (pir on i386, bmc with 32-bit long)") {
     TempDir d;
     auto task = d.write("t.c", "int main(void) { long x = 1; return (int)x; }\n");
     auto prp = d.write("p.prp", "CHECK( init(main()), LTL(F end) )\n");
@@ -1066,9 +1066,10 @@ TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run
     opt.data_model = "ilp32";
     oc = solve(task, props_dir() / "no-overflow.prp", opt);
     CHECK(fs::exists(d.path / "out" / "prism-out" / "report.json"));
-    // No overflow on either model. The proof has to come from bmc: pir is NOTRUN.
+    // No overflow on either model. pir lowers ILP32 units for i386 and bmc
+    // runs with 32-bit long: either may give the proof.
     CHECK(oc.decision.answer == "true");
-    CHECK(oc.decision.reason.find("bmc:") == 0);
+    CHECK((oc.decision.reason.find("bmc:") == 0 || oc.decision.reason.find("pir:") == 0));
     auto ovf = d.write("ovf.c",
                        "long __VERIFIER_nondet_long(void);\n"
                        "void __VERIFIER_assume(int);\n"

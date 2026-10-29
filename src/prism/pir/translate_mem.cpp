@@ -64,6 +64,10 @@ uint64_t count_of(const ir::Type& t) {
 Layout::Layout(const ir::Module& m) : m_(m) {
     int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 8}, {128, 16}};
     std::string dl = m.datalayout;
+    // LLVM's default i64 ABI alignment is 4 bytes; x86-64 states i64:64
+    // explicitly, i386 does not (long long / double in a struct are
+    // 4-aligned there). Without a datalayout keep the LP64 table.
+    if (!dl.empty()) int_align_[64] = 4;
     std::size_t pos = 0;
     while (pos < dl.size()) {
         auto e = dl.find('-', pos);
@@ -88,6 +92,17 @@ Layout::Layout(const ir::Module& m) : m_(m) {
         if (spec.size() > 1 && spec[0] == 'i' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
             auto v = nums(1);
             if (v.size() >= 2 && v.at(0) && v.at(1)) int_align_[v.at(0)] = v.at(1) / 8;
+        } else if (spec.size() > 1 && spec[0] == 'f' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+            auto v = nums(1);
+            if (v.size() >= 2 && v.at(0) && v.at(1)) {
+                const char* nm = v.at(0) == 16    ? "half"
+                                 : v.at(0) == 32  ? "float"
+                                 : v.at(0) == 64  ? "double"
+                                 : v.at(0) == 80  ? "x86_fp80"
+                                 : v.at(0) == 128 ? "fp128"
+                                                  : nullptr;
+                if (nm) fp_align_[nm] = v.at(1) / 8;
+            }
         } else if (spec.size() > 1 && spec[0] == 'p' && (spec[1] == ':' || spec.starts_with("p0:"))) {
             auto v = nums(spec[1] == ':' ? 2 : 3);
             if (v.size() >= 2 && v.at(0) && v.at(1)) {
@@ -96,6 +111,19 @@ Layout::Layout(const ir::Module& m) : m_(m) {
             }
         }
     }
+}
+
+bool Layout::holds_ptr(const ir::Type& t0) const {
+    const ir::Type* t = &t0;
+    try {
+        t = &resolve(t0);
+    } catch (const Unenc&) {
+        return true;
+    }
+    if (t->kind == ir::Type::Ptr) return true;
+    for (auto& e : t->elems)
+        if (holds_ptr(e)) return true;
+    return false;
 }
 
 const ir::Type& Layout::resolve(const ir::Type& t) const {
@@ -118,6 +146,7 @@ unsigned Layout::align(const ir::Type& t0) const {
         }
         case ir::Type::Ptr: return ptr_align_;
         case ir::Type::Float:
+            if (auto it = fp_align_.find(t.text); it != fp_align_.end()) return it->second;
             if (t.text == "half" || t.text == "bfloat") return 2;
             if (t.text == "float") return 4;
             if (t.text == "double") return 8;
@@ -447,6 +476,7 @@ Arg MemTr::global(const std::string& name) {
     if (g->thread_local_) throw Unenc{"UNENCODED: thread_local global @" + name};
     auto size = lay_.alloc_size(g->ty);
     if (g->external && name.starts_with("_ZTI") && name.size() > 4) {
+        ptr_cell(ir::Type{ir::Type::Ptr, 0, "ptr", {}}, "typeinfo @" + name + " holds");
         // A typeinfo object of the C++ runtime (fundamental and pointer types,
         // library classes), declared `external constant ptr`: the Itanium ABI
         // std::type_info layout { vptr, const char* __name } with __name the
@@ -507,6 +537,7 @@ Arg MemTr::global(const std::string& name) {
     }
     mark_memory();
     const bool stream = g->external && (name == "stdin" || name == "stdout" || name == "stderr");
+    if (stream) ptr_cell(ir::Type{ir::Type::Ptr, 0, "ptr", {}}, "@" + name + " holds");
     int init = 2;
     if (stream) init = 1;
     else if (g->external) init = 2;
@@ -571,6 +602,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
         case ir::Value::Undef: [[fallthrough]];
         case ir::Value::Poison:
             if (ty.kind == ir::Type::Int || ty.kind == ir::Type::Ptr) {
+                if (ty.kind == ir::Type::Ptr) ptr_cell(ty, "initializer of @" + gname + " with");
                 // undef bytes: every load may read another value, so they are
                 // stored as uninitialised (refinement finding 4), like `store undef`
                 Stmt st;
@@ -579,9 +611,13 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
                 t_.push(-1, st);
             }
             return;  // aggregate undef: padding
-        case ir::Value::Global: put(offs, global(v.name)); return;
+        case ir::Value::Global:
+            ptr_cell(ir::Type{ir::Type::Ptr, 0, "ptr", {}}, "initializer of @" + gname + " with");
+            put(offs, global(v.name));
+            return;
         case ir::Value::ConstExpr:
             if (v.ce_op == "getelementptr") {
+                ptr_cell(ir::Type{ir::Type::Ptr, 0, "ptr", {}}, "initializer of @" + gname + " with");
                 put(offs, const_gep(-1, v, 0));
                 return;
             }
@@ -744,8 +780,16 @@ void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line
                  line);
 }
 
+void MemTr::ptr_cell(const ir::Type& t, std::string_view what) const {
+    if (lay_.ptr_bytes() * 8 == kPtrW) return;
+    if (lay_.holds_ptr(t))
+        throw Unenc{"UNENCODED: " + std::string(what) + " a pointer in memory with " +
+                    std::to_string(lay_.ptr_bytes() * 8) + "-bit pointers (ILP32 pointer cells not modelled)"};
+}
+
 int MemTr::load(int b, int dst, const ir::Type& ty, Arg ptr, unsigned al, int line, bool check_uninit) {
     mark_memory();
+    ptr_cell(ty, "load of");
     auto w = value_width(ty, "load of");
     auto n = lay_.store_size(ty);
     access_checks(b, ptr, c64(n), false, al, line);
@@ -767,6 +811,7 @@ int MemTr::load(int b, int dst, const ir::Type& ty, Arg ptr, unsigned al, int li
 
 void MemTr::store(int b, Arg ptr, Arg val, Arg init, const ir::Type& ty, unsigned al, int line) {
     mark_memory();
+    ptr_cell(ty, "store of");
     auto w = value_width(ty, "store of");
     auto n = lay_.store_size(ty);
     access_checks(b, ptr, c64(n), true, al, line);
@@ -794,6 +839,23 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
                  line);
         var = t_.assign(b, Op::Add, 64, {*var, x}, "delta");
     };
+    // SVCOMP-ILP32: with 32-bit pointers LLVM truncates a wider index to the
+    // 32-bit index type and the offset arithmetic wraps mod 2^32. PIR adds
+    // sign-extended 64-bit offsets: exact for i32 (and narrower) indices whose
+    // in-bounds results are checked; anything else is refused.
+    const bool ptr32 = lay_.ptr_bytes() * 8 < kPtrW;
+    if (ptr32) {
+        for (auto& ix : idx) {
+            if (ix.width <= 32) continue;
+            const int64_t v = sext64(ix.bits, ix.width);
+            if (!ix.is_const || v < INT32_MIN || v > INT32_MAX)
+                throw Unenc{"UNENCODED: getelementptr with a " + std::to_string(ix.width) + "-bit index and " +
+                            std::to_string(lay_.ptr_bytes() * 8) + "-bit pointers"};
+        }
+        if (!inbounds)
+            throw Unenc{"UNENCODED: getelementptr without inbounds and " + std::to_string(lay_.ptr_bytes() * 8) +
+                        "-bit pointers (offset wraps mod 2^" + std::to_string(lay_.ptr_bytes() * 8) + ")"};
+    }
     for (std::size_t k = 0; k < idx.size(); ++k) {
         uint64_t scale = 0;
         if (k == 0) {
