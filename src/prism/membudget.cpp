@@ -47,6 +47,14 @@ uint64_t meminfo_mb(const char* key) {
 }
 
 void compute() {
+#ifdef __linux__
+    // glibc reserves a 64 MB heap arena per thread, up to 8 per core: 4 GB of
+    // address space on 8 cores with no memory behind it. Under an RLIMIT_AS
+    // (prlimit --as=4G) that ran out at ~28 MB RSS: a failed allocation inside
+    // Z3's rewriter, then a null deref in th_rewriter (sstream_contracts.cpp,
+    // unordered_map_contracts.cpp). Four arenas are plenty for PRISM.
+    if (!std::getenv("MALLOC_ARENA_MAX")) mallopt(M_ARENA_MAX, 4);
+#endif
     uint64_t mb = 0;
     for (const char* env : {"PRISM_MEM_BUDGET_MB", "PRISM_PIR_MEM_MB"}) {
         if (const char* e = std::getenv(env); e && *e) {
@@ -57,9 +65,6 @@ void compute() {
         }
     }
 #ifdef __linux__
-    // glibc makes one 64 MB heap arena per thread: address space, not
-    // memory, but it is what an RLIMIT_AS counts (and runs out of first).
-    mallopt(M_ARENA_MAX, 4);
     std::string src;
     auto take = [&](uint64_t v, const char* what) {
         if (v == 0) return;
@@ -126,7 +131,7 @@ bool system_low() {
 #ifdef __linux__
     static const uint64_t reserve = [] {
         const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
-        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{400};
+        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{800};
     }();
     if (reserve == 0) return false;
     const uint64_t avail = meminfo_mb("MemAvailable:");
@@ -138,7 +143,10 @@ bool system_low() {
 
 bool over_budget() {
     const uint64_t b = budget_mb();
-    return (b > 0 && rss_mb() >= b) || system_low();
+    // trip at 80%: Z3 stops at its next interrupt check and the watchdog
+    // samples every 100 ms, so the peak lands up to ~20% above the trip
+    // point (priority_queue_contracts.cpp: 3.5 GB peak with a 3 GB trip)
+    return (b > 0 && rss_mb() >= b * 4 / 5) || system_low();
 }
 
 namespace {

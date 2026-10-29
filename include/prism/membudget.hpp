@@ -24,7 +24,8 @@ PRISM_API const std::string& budget_source();
 PRISM_API uint64_t per_job_mb(int jobs);
 // Resident set of this process now (/proc/self/statm), MB; 0 if unknown.
 PRISM_API uint64_t rss_mb();
-// RSS at or over the budget. Cheap enough to call every few thousand steps.
+// RSS at or over 80% of the budget (headroom for the stop latency), or
+// system_low(). Cheap enough to call every few thousand steps.
 PRISM_API bool over_budget();
 // Same, but reads /proc only every `every` calls on this thread.
 PRISM_API bool over_budget_sampled(unsigned every = 2048);
@@ -33,7 +34,7 @@ PRISM_API bool over_budget_sampled(unsigned every = 2048);
 PRISM_API void release_free_memory();
 // The message of a per-function UNKNOWN.
 PRISM_API std::string over_message(const char* where);
-// Live headroom: the box's MemAvailable under this many MB (default 400,
+// Live headroom: the box's MemAvailable under this many MB (default 800,
 // $PRISM_MEM_RESERVE_MB) also counts as over budget, so PRISM gives a
 // function up before the kernel OOM-kills the process (other programs on a
 // shared machine grow too; the start-time budget alone cannot see them).

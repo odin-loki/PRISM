@@ -1,3 +1,4 @@
+#include "prism/membudget.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/cli.hpp"
@@ -190,6 +191,7 @@ static int launch_gui(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    (void)prism::membudget::budget_mb();  // fix the budget and malloc arenas before any thread starts
     using namespace prism;
     // Ctrl-C / SIGTERM (a scorer's timeout) also kills the solvers, checkers
     // and compilers PRISM started: they run in process groups of their own
