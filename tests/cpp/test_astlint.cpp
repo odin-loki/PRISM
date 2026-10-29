@@ -716,14 +716,14 @@ int masked_bad(int f) {
     }
     return d; // expect: UNINIT-SWITCH
 }
-typedef struct { int _x; } pthread_mutex_t;
-typedef struct { int _x; } mtx_t;
-int pthread_mutex_lock(pthread_mutex_t *m);
-int pthread_mutex_unlock(pthread_mutex_t *m);
-int pthread_mutex_init(pthread_mutex_t *m, void *a);
-int mtx_lock(mtx_t *m);
-int mtx_unlock(mtx_t *m);
-int mtx_init(mtx_t *m, const char *n, void *t, int f);
+#include <pthread.h>
+#include <threads.h>
+// pthread_mutex_t / mtx_t and their lock, unlock and init
+// functions come from the system headers above: a local typedef
+// clashes with glibc's union pthread_mutex_t, which stdlib.h
+// already pulls in on some hosts.
+//
+//
 void prism_mtx_lock(int *m);
 void prism_mtx_unlock(int *m);
 void double_unlock_bad(int *m) {
@@ -769,13 +769,13 @@ size_t str_null_arg_plant(char *s) {
     return strlen(s); // expect: STR-NULL-ARG
 }
 #define M_NOWAIT 0x02
-void *malloc(size_t, int);
+// Hosted malloc takes one argument: the flag rides in the size expression.
 void nowait_bad(unsigned n) {
-    char *p = malloc(n, M_NOWAIT);
+    char *p = malloc(n | M_NOWAIT);
     p[0] = 1; // expect: MEM-NOWAIT
 }
 void nowait_ok(unsigned n) {
-    char *p = malloc(n, M_NOWAIT);
+    char *p = malloc(n | M_NOWAIT);
     if (!p) return;
     p[0] = 1;
 }
@@ -796,7 +796,7 @@ void sprintf_ok(const char *s) {
     char b[8];
     snprintf(b, sizeof b, "%s", s);
 }
-int snprintf(char *s, unsigned n, const char *fmt, ...);
+// snprintf comes from <stdio.h>.
 void snprintf_bad(void) {
     char b[4];
     snprintf(b, 64, "%s", "x"); // expect: STR-SNPRINTF
