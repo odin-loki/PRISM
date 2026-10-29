@@ -1763,6 +1763,65 @@ int counted_ok(std::vector<int> &v, int n) {
     std::counted_iterator it(v.begin(), n);
     return *it;
 }
+#include <array>
+#include <tuple>
+#include <memory>
+#include <atomic>
+#include <utility>
+int apply_bad(std::function<int(int)> f, std::tuple<int> t) {
+    return std::apply(f, t); // expect: CXX-APPLY
+}
+int apply_ok(std::function<int(int)> f, std::tuple<int> t) {
+    if (!f)
+        return 0;
+    return std::apply(f, t);
+}
+int arr_bad(int i) {
+    std::array<int, 4> a{};
+    return a[i]; // expect: CXX-ARRAY-INDEX
+}
+int arr_ok(int i) {
+    std::array<int, 4> a{};
+    if (i < 0 || i >= 4)
+        return 0;
+    return a[i];
+}
+const int &asc_bad() {
+    int loc = 3;
+    return std::as_const(loc); // expect: CXX-AS-CONST
+}
+const int &asc_ok(const int &x) {
+    return std::as_const(x);
+}
+float aa_bad(float *buf, int i) {
+    float *p = std::assume_aligned<16>(buf);
+    return p[i]; // expect: CXX-ASSUME-ALIGNED
+}
+float aa_ok(float *buf, int i) {
+    float *p = std::assume_aligned<16>(buf);
+    if (i < 0 || i > 15)
+        return 0;
+    return p[i];
+}
+bool flag_bad() {
+    std::atomic_flag fl;
+    return fl.test_and_set(); // expect: CXX-ATOMIC-FLAG
+}
+bool flag_ok() {
+    std::atomic_flag fl;
+    fl.clear();
+    return fl.test_and_set();
+}
+int addr_bad(int *tab, int k) {
+    int *p = std::addressof(k);
+    return tab[*p]; // expect: CXX-ADDRESSOF
+}
+int addr_ok(int *tab, int k) {
+    int *p = std::addressof(k);
+    if (*p < 0 || *p > 7)
+        return 0;
+    return tab[*p];
+}
 )";
 
 }  // namespace

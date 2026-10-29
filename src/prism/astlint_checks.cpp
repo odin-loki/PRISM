@@ -6755,6 +6755,179 @@ void cxx_cast_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Seventh batch: views and indices of library results (CXX-APPLY,
+// CXX-ARRAY-INDEX, CXX-AS-CONST, CXX-ASSUME-ALIGNED, CXX-ATOMIC-FLAG,
+// CXX-ADDRESSOF).
+std::string mcall_name(const json& call) {
+    if (kind(call) != "CXXMemberCallExpr" || n_children(call) == 0) return {};
+    const auto& me = strip_all(child(call, 0));
+    return kind(me) == "MemberExpr" ? std::string(str_field(me, "name")) : std::string();
+}
+
+std::string mcall_obj(const json& call) {
+    if (kind(call) != "CXXMemberCallExpr" || n_children(call) == 0) return {};
+    const auto& me = strip_all(child(call, 0));
+    return kind(me) == "MemberExpr" && n_children(me) == 1 ? ref_id(child(me, 0)) : std::string();
+}
+
+bool subscript_op(const json& n) {
+    return kind(n) == "CXXOperatorCallExpr" && n_children(n) == 3 &&
+           str_field(ref_decl(strip_all(child(n, 0))), "name") == "operator[]";
+}
+
+void cxx_view_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::set<std::string> rel_ids, tested;  // ids in a relational compare / a truth or null test
+    std::map<std::string, const json*> init_call;  // var id -> initialising call
+    std::set<std::string> local_ids;
+    for (auto& [id, d] : fn.locals)
+        if (kind(*d) == "VarDecl") local_ids.insert(id);
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "BinaryOperator" && n_children(*n) == 2) {
+            auto op = str_field(*n, "opcode");
+            for (int i = 0; i < 2; ++i) {
+                std::string id = ref_id(child(*n, i));
+                const auto& s = strip_all(child(*n, i));
+                if (id.empty() && kind(s) == "UnaryOperator" && str_field(s, "opcode") == "*" && n_children(s) == 1)
+                    id = ref_id(child(s, 0));
+                if (id.empty()) continue;
+                if (one_of(op, {"<", "<=", ">", ">="})) rel_ids.insert(id);
+                if (one_of(op, {"==", "!="})) tested.insert(id);
+            }
+        } else if (k == "ImplicitCastExpr" && n_children(*n) == 1 &&
+                   one_of(str_field(*n, "castKind"), {"PointerToBoolean", "UserDefinedConversion"})) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(*n, "opcode") == "!" && n_children(*n) == 1) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "CXXMemberCallExpr" && one_of(mcall_name(*n), {"has_value", "operator bool"})) {
+            tested.insert(mcall_obj(*n));
+        } else if (k == "VarDecl" && n_children(*n) > 0) {
+            local_ids.insert(std::string(str_field(*n, "id")));
+            const auto* e = &strip_all(last_child(*n));
+            if (is_call_kind(kind(*e))) init_call[std::string(str_field(*n, "id"))] = e;
+        }
+    }
+    for (auto* n : all)
+        if (kind(*n) == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+            const auto& r = strip_all(child(*n, 1));
+            if (auto id = ref_id(child(*n, 0)); !id.empty() && is_call_kind(kind(r))) init_call[id] = &r;
+        }
+    auto idx_unguarded = [&](const json& idx) {
+        if (int_value(idx) || constant_expr(strip_all(idx))) return false;
+        auto id = ref_id(idx);
+        return !id.empty() && !rel_ids.contains(id);
+    };
+    auto bound_to = [&](const std::string& id, std::string_view callee) {
+        auto it = init_call.find(id);
+        return it != init_call.end() && callee_name(*it->second) == callee;
+    };
+    // CXX-APPLY: std::apply on a nullable callable that is never tested.
+    for (auto* n : all) {
+        if (!is_call_kind(kind(*n)) || callee_name(*n) != "apply" || n_children(*n) < 3) continue;
+        const auto& a = strip_all(child(*n, 1));
+        auto id = ref_id(a);
+        auto t = type_of(a);
+        const bool nullable = is_pointer_type(t) || t.find("function<") != std::string::npos ||
+                              t.find("optional<") != std::string::npos;
+        if (id.empty() || !nullable || tested.contains(id) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-APPLY", "std::apply on a nullable callable or tuple without a size/tuple_size guard");
+        break;
+    }
+    // CXX-ARRAY-INDEX / CXX-ASSUME-ALIGNED / CXX-ADDRESSOF index forms.
+    bool arr = false, aa = false, ad = false;
+    for (auto* n : all) {
+        const json *obj = nullptr, *idx = nullptr;
+        if (subscript_op(*n)) {
+            obj = &child(*n, 1);
+            idx = &child(*n, 2);
+        } else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) {
+            obj = &child(*n, 0);
+            idx = &child(*n, 1);
+        }
+        if (!obj) continue;
+        const auto& o = strip_all(*obj);
+        if (!arr && subscript_op(*n) && template_name(type_of(o)) == "array" && local_ids.contains(ref_id(o)) &&
+            idx_unguarded(*idx) && ok_pos(*n)) {
+            ck.add(*n, "CXX-ARRAY-INDEX", "std::array index without a size()/N guard");
+            arr = true;
+        }
+        if (!aa) {
+            bool from_aa = (is_call_kind(kind(o)) && callee_name(o) == "assume_aligned") ||
+                           (!ref_id(o).empty() && bound_to(ref_id(o), "assume_aligned"));
+            if (from_aa && idx_unguarded(*idx) && ok_pos(*n)) {
+                ck.add(*n, "CXX-ASSUME-ALIGNED", "assume_aligned result indexed without a bound");
+                aa = true;
+            }
+        }
+        if (!ad) {
+            const auto& i = strip_all(*idx);
+            if (kind(i) == "UnaryOperator" && str_field(i, "opcode") == "*" && n_children(i) == 1) {
+                const auto& p = strip_all(child(i, 0));
+                bool from_ad = (is_call_kind(kind(p)) && callee_name(p) == "addressof") ||
+                               (!ref_id(p).empty() && bound_to(ref_id(p), "addressof") && !rel_ids.contains(ref_id(p)));
+                if (from_ad && ok_pos(*n)) {
+                    ck.add(*n, "CXX-ADDRESSOF", "std::addressof result used as an array index without a bound");
+                    ad = true;
+                }
+            }
+        }
+    }
+    // Returned views of locals: return addressof(local) / return as_const(local)
+    // or a variable bound to one, from a function returning a pointer/reference.
+    const bool ref_ret = fn.ret.find('*') != std::string::npos || fn.ret.find('&') != std::string::npos;
+    if (ref_ret)
+        for (auto* n : all) {
+            if (kind(*n) != "ReturnStmt" || n_children(*n) == 0) continue;
+            const auto* e = &strip_all(child(*n, 0));
+            if (auto id = ref_id(*e); !id.empty() && init_call.contains(id)) e = init_call[id];
+            if (!is_call_kind(kind(*e)) || n_children(*e) < 2) continue;
+            auto cn = callee_name(*e);
+            if (!one_of(cn, {"addressof", "as_const"}) || ad && cn == "addressof") continue;
+            if (!local_ids.contains(ref_id(child(*e, 1))) || !ok_pos(*n)) continue;
+            if (cn == "addressof") {
+                ck.add(*n, "CXX-ADDRESSOF", "std::addressof of a local returned after the object dies");
+                ad = true;
+            } else {
+                ck.add(*n, "CXX-AS-CONST", "as_const view of a local returned after the local dies");
+            }
+        }
+    // CXX-AS-CONST: const_cast write through an as_const view.
+    for (auto* n : all) {
+        if (kind(*n) != "BinaryOperator" || str_field(*n, "opcode") != "=" || n_children(*n) != 2) continue;
+        const auto& l = strip_parens(child(*n, 0));
+        if (kind(l) != "CXXConstCastExpr" || n_children(l) != 1) continue;
+        const auto& s = strip_all(child(l, 0));
+        bool via = (is_call_kind(kind(s)) && callee_name(s) == "as_const") ||
+                   (!ref_id(s).empty() && bound_to(ref_id(s), "as_const"));
+        if (!via || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-AS-CONST", "const_cast write through std::as_const view");
+        break;
+    }
+    // CXX-ATOMIC-FLAG: f.test_and_set() with no f.clear().
+    std::set<std::string> cleared;
+    for (auto* n : all)
+        if (mcall_name(*n) == "clear") cleared.insert(mcall_obj(*n));
+    for (auto* n : all) {
+        if (mcall_name(*n) != "test_and_set") continue;
+        auto id = mcall_obj(*n);
+        if (id.empty() || cleared.contains(id) || !local_ids.contains(id)) continue;
+        if (type_of(strip_all(child(strip_all(child(*n, 0)), 0))).find("atomic_flag") == std::string::npos) continue;
+        if (!ok_pos(*n)) continue;
+        ck.add(*n, "CXX-ATOMIC-FLAG", "test_and_set() without a prior clear()");
+        break;
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6805,6 +6978,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_object_rule_checks(*body, fn, w.ck);
     cxx_sync_rule_checks(*body, fn, w.ck);
     cxx_cast_rule_checks(*body, fn, w.ck);
+    cxx_view_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
