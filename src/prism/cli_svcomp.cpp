@@ -160,7 +160,12 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return oc;
     }
     std::string error;
+    const auto t_start = std::chrono::steady_clock::now();
+    auto since = [](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+    };
     auto report = run_prism(task_c, opt.out / "prism-out", dm, error);
+    double last_run_s = since(t_start);
     if (!report) {
         oc.decision = Decision{"error", error, std::nullopt, json::object()};
         return oc;
@@ -207,10 +212,20 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
     // unwind, loops not closed) is re-run with a deeper unwind. A deeper
     // run can only prove (its loops close) or refute with a counterexample
     // that must still replay; BOUNDED stays unknown. Never weaker evidence.
+    // A deeper run costs about 4x the previous one (seq-3: 12 min base; s3_srvr_1a:
+    // 20 s, 3 min at 32, over 13 min at 128): skip it when that would overrun
+    // the SV-COMP 900 s limit, so the task answers unknown instead of TIMEOUT.
+    constexpr double kTaskBudgetS = 840.0;
     for (int deeper : {32, 128}) {
         if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
+        if (since(t_start) + 4.0 * last_run_s > kTaskBudgetS) {
+            dec.reason += " (bmc unwind " + std::to_string(deeper) + " skipped: time budget)";
+            break;
+        }
         std::string err2;
+        const auto t_run = std::chrono::steady_clock::now();
         auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
+        last_run_s = since(t_run);
         if (!rep2) break;
         Decision d2 = decide(*rep2, prop, rp);
         if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
