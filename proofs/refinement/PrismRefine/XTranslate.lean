@@ -703,6 +703,17 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let g := k + tp.length + tn.length
     pure (sp ++ sn ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false),
       tp ++ tn ++ ([1] ++ accTG false))
+  | .hmemset d b len => do
+    let (sd, td, D) ← trOpndX c 64 true k d
+    let (sb, tb, B) ← trOpndX c 32 true (k + td.length) b
+    need (B.width == 32) "outside fragment: byte width"
+    let (sn, tn, N) ← trOpndX c 64 true (k + td.length + tb.length) len
+    need (N.width == 64) "outside fragment: length width"
+    let g := k + td.length + tb.length + tn.length
+    let o := g + 1 + (accTG true).length
+    pure (sd ++ sb ++ sn ++ (([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N true) ++
+        [.assign o (.cast .trunc) [B], .memset D (.v o 8) N]),
+      td ++ tb ++ tn ++ (([1] ++ accTG true) ++ [8]))
   | .vcheck a w cls => do
     need (okW w) "UNENCODED: width"
     let (sa, ta, A) ← trOpndX c w true k a
@@ -913,7 +924,7 @@ where
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]
-    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .vcheck .. => []
+    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .hmemset .. | .vcheck .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)

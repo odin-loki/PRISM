@@ -330,11 +330,33 @@ void intrinsic_line(std::ostream& b, const ir::Inst& in) {
     throw Unsupported{"call @" + n};
 }
 
+// MemTr::const_string: the NUL-terminated literal a (constant GEP into a)
+// constant string global holds.
+std::optional<std::string> literal_string(const ir::Module& m, const ir::Value& v) {
+    const ir::Value* g = &v;
+    uint64_t skip = 0;
+    if (v.kind == ir::Value::ConstExpr && v.ce_op == "getelementptr" && !v.elems.empty()) {
+        g = &v.elems[0].v;
+        for (std::size_t k = 1; k < v.elems.size(); ++k) {
+            if (v.elems[k].v.kind != ir::Value::Int) return std::nullopt;
+            skip += v.elems[k].v.bits;
+        }
+    }
+    if (g->kind != ir::Value::Global) return std::nullopt;
+    const auto* gl = m.find_global(g->name);
+    if (!gl || !gl->is_const || gl->init.empty() || gl->init[0].v.kind != ir::Value::Str) return std::nullopt;
+    const auto& bytes = gl->init[0].v.bytes;
+    if (skip > bytes.size()) return std::nullopt;
+    auto s = bytes.substr(static_cast<std::size_t>(skip));
+    auto nul = s.find('\0');
+    if (nul == std::string::npos) return std::nullopt;
+    return s.substr(0, nul);
+}
+
 // The model intrinsics of Tr::model_intrinsic the extended fragment covers
 // (the libc models' malloc/free/new/delete use only these; D136 adds `hhavoc`
 // export ahead of the Lean fragment).
 void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
-    (void)m;
     const std::string& n = in.callee;
     auto cint = [&](std::size_t i) -> uint64_t {
         if (i >= in.ops.size() || in.ops[i].v.kind != ir::Value::Int)
@@ -354,7 +376,7 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
         // MemTr::dealloc: the free checks, then (free) the lifetime ends
         if (in.ops.size() != 2) throw Unsupported{"call @" + n + " arity"};
         const uint64_t k = cint(1);
-        if (k == static_cast<uint64_t>(MemKind::File) || k > 255) throw Unsupported{"call @" + n + " kind"};
+        if (k > 255) throw Unsupported{"call @" + n + " kind"};
         b << "L hfree " << opnd(in.ops[0]) << " " << k << " " << (n == "__prism_free" ? 1 : 0) << "\n";
         return;
     }
@@ -383,6 +405,31 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     if (n == "__prism_alloc_failed") {
         // Tr::st(oom, i8 1): a store of one byte, alignment 8, into the flag object
         b << "L store 8 #1 %" << kOom << " 8\n";
+        return;
+    }
+    if (n == "__prism_memset") {
+        // MemTr::memset_ with an i32 byte, truncated after the checks (Lean `hmemset`)
+        if (in.ops.size() != 3 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            throw Unsupported{"call @" + n + " arity"};
+        if (vw(in.ops[1].ty) != 32 || vw(in.ops[2].ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hmemset " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
+        return;
+    }
+    if (n == "__prism_read_range") {
+        // MemTr::read_range: the guarded read checks of n bytes at p (Lean `hread`)
+        if (in.ops.size() != 2 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            throw Unsupported{"call @" + n + " arity"};
+        if (vw(in.ops[1].ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hread " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
+        return;
+    }
+    if (n == "__prism_check") {
+        // Tr::check(ok == 0, "model", cls): the class is a literal string (Lean `vcheck`)
+        if (in.ops.size() != 3 || in.ops[0].ty.kind != ir::Type::Int) throw Unsupported{"call @" + n + " arity"};
+        auto cls = literal_string(m, in.ops[1].v);
+        if (!cls || cls->empty() || cls->find_first_of(" \t\r\n") != std::string::npos)
+            throw Unsupported{"call @" + n + " class"};
+        b << "L vcheck " << opnd(in.ops[0]) << " " << vw(in.ops[0].ty) << " " << *cls << "\n";
         return;
     }
     if (n == "__prism_havoc_bytes") {

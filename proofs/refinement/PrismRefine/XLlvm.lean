@@ -168,6 +168,8 @@ inductive SInst where
   /-- `call void @__prism_read_range(ptr p, i64 n)` (`MemTr::read_range`):
   undefined unless the `n` bytes at `p` may be read (`n ≠ 0`); no effect. -/
   | hread (p n : Opnd)
+  /-- `__prism_memset(d, int c, size_t n)`: an `i32` byte, truncated after the checks. -/
+  | hmemset (d b n : Opnd)
   /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
   class `cls` (literal strings): undefined (the property fails) when `a` is 0. -/
   | vcheck (a : Opnd) (w : Nat) (cls : String)
@@ -514,6 +516,12 @@ def sHread (R : SRegs) (W : World) (p n : Opnd) : Res World :=
   (sOpnd R 64 p).bind fun pv => (sOpnd R 64 n).bind fun v =>
     if (v % 2 ^ 64 != 0 && accessBad W.mem (pv % 2 ^ 64) (v % 2 ^ 64) false 1) then .ub else .ok W
 
+/-- `__prism_memset`: `memset` with an `i32` byte operand. -/
+def sHmemset (R : SRegs) (W : World) (d b len : Opnd) : Res World :=
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 32 b).bind fun bv => (sOpnd R 64 len).bind fun v =>
+    if v % 2 ^ 64 != 0 && accessBad W.mem (dv % 2 ^ 64) (v % 2 ^ 64) true 1 then .ub
+    else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) (v % 2 ^ 64) }
+
 /-- `__prism_check`: UB when the value is 0. -/
 def sVcheck (R : SRegs) (w : Nat) (a : Opnd) : Res Unit :=
   (sOpnd R w a).bind fun v => if v % 2 ^ w != 0 then .ok () else .ub
@@ -558,6 +566,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .hobjsz d p => (sHobjszV R W p).bind fun v => .ok (R.setOpt d v, W)
   | .hhavoc p n => (sHavoc ω R W p n).bind fun W' => .ok (R, W')
   | .hread p n => (sHread R W p n).bind fun W' => .ok (R, W')
+  | .hmemset d b n => (sHmemset R W d b n).bind fun W' => .ok (R, W')
   | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
@@ -775,6 +784,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .stuck => .stuck
   | .hhavoc p n => lMem S (sHavoc ω (lower S.R) W p n)
   | .hread p n => lMem S (sHread (lower S.R) W p n)
+  | .hmemset d b n => lMem S (sHmemset (lower S.R) W d b n)
   | .vcheck a w _ =>
     match sVcheck (lower S.R) w a with
     | .ok _ => .ok (S, W)

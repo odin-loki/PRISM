@@ -1576,9 +1576,44 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     intro v _ htn hNv hNb _
     subst htn
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
-    have hm := hread_run P ω σ t k D N hDb hNb hNw hT
+    have hm := hread_run P ω σ t k D N hDb hNb hNw false hT
     simp only [hDv, hNv] at hm
     cases hb : (v % 2 ^ 64 != 0 && accessBad t.mem (pv % 2 ^ 64) (v % 2 ^ 64) false 1)
+    · obtain ⟨σ', e, ag⟩ := hm.2 hb
+      simp only [Bool.false_eq_true, ite_false, Res.bind]
+      rw [e]
+      exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
+        rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+    · simp only [ite_true, Res.bind, SimX]
+      exact hm.1 hb
+  | hmemset d b len =>
+    simp only [trSInstX] at h
+    obtain ⟨⟨sd, td, D⟩, hd, h⟩ := Except.bind_ok h
+    obtain ⟨⟨sb, tb, B⟩, hbb, h⟩ := Except.bind_ok h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    have hBw : B.width = 32 := by simpa using need_ok hu1
+    obtain ⟨⟨sn, tn, N⟩, hn, h⟩ := Except.bind_ok h
+    obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+    have hNw : N.width = 64 := by simpa using need_ok hu2
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    simp only [sSInst, sHmemset, Res.bind_assoc, List.append_assoc]
+    refine opndX_sim hR hd hk _ _ ?_
+    intro dv _ htd hDv hDb _
+    subst htd
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hbb hn hT ⊢
+    refine opndX_sim hR hbb hk _ _ ?_
+    intro bv _ htb hBv hBb _
+    subst htb
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hn hT ⊢
+    refine opndX_sim hR hn hk _ _ ?_
+    intro v _ htn hNv hNb _
+    subst htn
+    simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
+    have hm := hmemset_run P ω σ t k D B N hDb hBb hNb hNw hBw (by simpa [List.append_assoc] using hT)
+    simp only [hDv, hNv, hBv] at hm
+    simp only [List.append_assoc] at hm
+    cases hb : (v % 2 ^ 64 != 0 && accessBad t.mem (dv % 2 ^ 64) (v % 2 ^ 64) true 1)
     · obtain ⟨σ', e, ag⟩ := hm.2 hb
       simp only [Bool.false_eq_true, ite_false, Res.bind]
       rw [e]

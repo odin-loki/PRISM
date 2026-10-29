@@ -19,15 +19,15 @@ checks under it fail exactly when the read is bad; otherwise only temporaries
 are written. -/
 theorem hread_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (g : Nat) (D N : Arg)
     (hD : D.below g) (hN : N.below g) (hNw : N.width = 64)
-    (hT : TempsOK P g ([1] ++ accTG false)) :
-    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) false 1) = true →
-      xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false) = .fail) ∧
-    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) false 1) = false →
-      ∃ σ', xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false) = .ok σ' t ∧
+    (wr : Bool) (hT : TempsOK P g ([1] ++ accTG wr)) :
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) wr 1) = true →
+      xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N wr) = .fail) ∧
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) wr 1) = false →
+      ∃ σ', xStmts P ω σ t ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N wr) = .ok σ' t ∧
         ∀ i, i < g → σ' i = σ i) := by
   generalize hn : N.get σ % 2 ^ 64 = n
   have wg : P.wd g = 1 := by simpa using wd_of hT 0 (by simp)
-  have hT1 : TempsOK P (g + 1) (accTG false) := TempsOK.cast hT.right (by simp)
+  have hT1 : TempsOK P (g + 1) (accTG wr) := TempsOK.cast hT.right (by simp)
   simp only [List.singleton_append]
   rw [xStmts_assign]
   have e2 : evalOpM t.mem σ (.cmp .ne) (P.wd g) [N, c64 0] % 2 ^ P.wd g = (n != 0).toNat := by
@@ -40,13 +40,56 @@ theorem hread_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (g : N
   have hDv2 : D.get σ2 = D.get σ := Arg.get_agree ag2 hD
   have hg2 : σ2 g = (n != 0).toNat := by rw [← hσ2]; simp [set_apply]
   have hb2 : ∀ {A : Arg}, A.below g → A.below (g + 1) := fun h => Arg.below_mono (by omega) h
-  have c1 := accChkG_run P ω σ2 t (g + 1) g D N (hb2 hD) (hb2 hN) (by omega) false hT1 hNv2 hg2
+  have c1 := accChkG_run P ω σ2 t (g + 1) g D N (hb2 hD) (hb2 hN) (by omega) wr hT1 hNv2 hg2
   rw [hDv2] at c1
-  cases hb1 : (n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n false 1)
+  cases hb1 : (n != 0 && accessBad t.mem (D.get σ % 2 ^ 64) n wr 1)
   · obtain ⟨σ3, e3, ag3⟩ := c1.2 hb1
     refine ⟨fun h => by simp at h, fun _ => ⟨σ3, e3, fun i hi => ?_⟩⟩
     rw [ag3 i (by omega), ag2 i hi]
   · exact ⟨fun _ => c1.1 hb1, fun h => by simp at h⟩
+
+
+/-- `__prism_memset`'s tail: truncate the `i32` byte (after the checks, as
+`MemTr::memset_` does), then fill. -/
+theorem hmemTail_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (o : Nat) (D B N : Arg)
+    (hD : D.below o) (_hB : B.below o) (hN : N.below o) (hBw : B.width = 32) (hwo : P.wd o = 8) :
+    xStmts P ω σ t [.assign o (.cast .trunc) [B], .memset D (.v o 8) N] =
+      .ok (σ.set o (B.get σ % 256)) { t with mem := t.mem.fill (D.get σ % 2 ^ 64) (B.get σ % 256) (N.get σ % 2 ^ 64) } := by
+  have gD : ∀ v, D.get (σ.set o v) = D.get σ := fun v => Arg.get_set_ge hD σ v (Nat.le_refl o)
+  have gN : ∀ v, N.get (σ.set o v) = N.get σ := fun v => Arg.get_set_ge hN σ v (Nat.le_refl o)
+  have e : (B.get σ % 2 ^ 32) % 2 ^ 8 = B.get σ % 256 := by
+    rw [Nat.mod_mod_of_dvd _ (by decide)]
+  simp only [xStmts, evalOpM, evalOp, castVal, hwo, hBw, BitVec.toNat_setWidth, BitVec.toNat_ofNat, e,
+    Nat.mod_mod, Arg.get_v', Store.set_same, gD, gN]
+
+theorem hmemset_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (g : Nat) (D B N : Arg)
+    (hD : D.below g) (hB : B.below g) (hN : N.below g) (hNw : N.width = 64) (hBw : B.width = 32)
+    (hT : TempsOK P g (([1] ++ accTG true) ++ [8])) :
+    let o := g + 1 + (accTG true).length
+    let body := ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N true) ++
+      [.assign o (.cast .trunc) [B], .memset D (.v o 8) N]
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) true 1) = true →
+      xStmts P ω σ t body = .fail) ∧
+    ((N.get σ % 2 ^ 64 != 0 && accessBad t.mem (D.get σ % 2 ^ 64) (N.get σ % 2 ^ 64) true 1) = false →
+      ∃ σ', xStmts P ω σ t body =
+        .ok σ' { t with mem := t.mem.fill (D.get σ % 2 ^ 64) (B.get σ % 256) (N.get σ % 2 ^ 64) } ∧
+        ∀ i, i < g → σ' i = σ i) := by
+  intro o body
+  have hr := hread_run P ω σ t g D N hD hN hNw true hT.left
+  have wo : P.wd o = 8 := by simpa using wd_of (TempsOK.cast hT.right (show g + ([1] ++ accTG true).length = o by simp [o]; omega)) 0 (by simp)
+  simp only [body]
+  rw [xStmts_append]
+  refine ⟨fun hb => by rw [hr.1 hb]; rfl, fun hb => ?_⟩
+  obtain ⟨σ1, e1, ag1⟩ := hr.2 hb
+  rw [e1]
+  simp only [XPRes.then]
+  have hlo : g ≤ o := by simp [o]; omega
+  have hD1 : D.get σ1 = D.get σ := Arg.get_agree ag1 hD
+  have hB1 : B.get σ1 = B.get σ := Arg.get_agree ag1 hB
+  have hN1 : N.get σ1 = N.get σ := Arg.get_agree ag1 hN
+  rw [hmemTail_run P ω σ1 t o D B N (Arg.below_mono hlo hD) (Arg.below_mono hlo hB) (Arg.below_mono hlo hN) hBw wo,
+    hD1, hB1, hN1]
+  exact ⟨_, rfl, fun i hi => by rw [Store.set_other _ _ (by omega), ag1 i hi]⟩
 
 /-- The last three statements: allocate, copy, release. -/
 theorem havocTail_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (o : Nat) (D N : Arg)
