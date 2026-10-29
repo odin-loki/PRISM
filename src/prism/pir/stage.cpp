@@ -1117,7 +1117,11 @@ namespace {
 bool ilp32_neutral_text(std::string t) {
     // The SV-COMP preamble's prototype of __assert_fail (only called with
     // string literals by reach_error) is the one pointer declaration allowed.
-    static Regex assert_proto("extern\\s+void\\s+__assert_fail\\s*\\([^;]*;");
+    // So are glibc's other assert prototypes (__assert_perror_fail, __assert),
+    // and `(void) sizeof`, the discarded unevaluated operand of glibc's
+    // assert() expansion: neither computes anything at run time.
+    static Regex assert_proto(
+        "extern\\s+void\\s+(?:__assert_fail|__assert_perror_fail|__assert)\\s*\\([^;]*;|\\(\\s*void\\s*\\)\\s*sizeof\\b");
     {
         auto ms = assert_proto.finditer(t);
         for (auto it = ms.rbegin(); it != ms.rend(); ++it)

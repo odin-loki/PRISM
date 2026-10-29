@@ -1387,3 +1387,29 @@ TEST_CASE("svcomp neutralize_error_calls: a canonical __VERIFIER_assert becomes 
     REQUIRE(o3.has_value());
     CHECK(o3->find("__VERIFIER_assume(1 > 0)") == std::string::npos);
 }
+
+TEST_CASE("svcomp ILP32: the glibc assert preamble does not keep pir off; a pointer still does") {
+    TempDir d;
+    const std::string pre =
+        "extern void __assert_fail (const char *__assertion, const char *__file,\n"
+        "      unsigned int __line, const char *__function) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "extern void __assert_perror_fail (int __errnum, const char *__file,\n"
+        "      unsigned int __line, const char *__function) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "extern void __assert (const char *__assertion, const char *__file, int __line) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "void reach_error() { ((void) sizeof ((0) ? 1 : 0), __extension__ ({ if (0) ; else __assert_fail (\"0\", \"t.c\", 3, __extension__ __PRETTY_FUNCTION__); })); }\n";
+    SolveOptions opt;
+    opt.data_model = "ilp32";
+    auto pir_notrun = [](const fs::path& out) {
+        return slurp(out / "prism-out" / "report.md").find("pir is LP64-only") != std::string::npos;
+    };
+    auto ok = d.write("ok.c", pre + "int main(void) { int i = 0; while (i < 10) i++; if (i != 10) reach_error(); return 0; }\n");
+    opt.out = d.path / "o1";
+    opt.witness = d.path / "w1.yml";
+    solve(ok, props_dir() / "no-overflow.prp", opt);
+    CHECK_FALSE(pir_notrun(opt.out));
+    auto bad = d.write("bad.c", pre + "int main(void) { int a[2]; int *p = a; *p = 1; return 0; }\n");
+    opt.out = d.path / "o2";
+    opt.witness = d.path / "w2.yml";
+    solve(bad, props_dir() / "no-overflow.prp", opt);
+    CHECK(pir_notrun(opt.out));
+}
