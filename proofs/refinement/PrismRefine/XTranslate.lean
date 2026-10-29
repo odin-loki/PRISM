@@ -754,6 +754,8 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     need (A.width == w) "outside fragment: check operand width"
     let j := k + ta.length
     pure (sa ++ [.assign j (.cmp .eq) [A, .c w 0], .check (.v j 1) "model" cls], ta ++ [1])
+  | .lpad .. => throw "outside fragment: landingpad (only in an exception region)"
+  | .insv .. => throw "outside fragment: insertvalue (only in an exception region)"
   | .hhavoc p n => do
     let (sp, tp, D) ← trOpndX c 64 true k p
     let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
@@ -982,6 +984,8 @@ where
     | .hfresh none _ => []
     | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .hmemset .. | .vcheck .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
+    | .lpad d _ _ => [(pairReg d 0, 64), (pairReg d 1, 32)]
+    | .insv d w0 w1 _ _ _ => [(pairReg d 0, w0), (pairReg d 1, w1)]
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
 
@@ -1030,8 +1034,16 @@ structure TS where
   insts : Array IInfo
   /-- `Tr::type_ids`: typeinfo symbols in the order first numbered -/
   tys : Array String := #[]
-  /-- the number of `invoke`s on the inlined call path (`Tr::handlers`) -/
-  hdl : Nat := 0
+  /-- `Tr::handlers`, innermost first: (instance, landing pad, `frames` depth) -/
+  hs : List (Nat × String × Nat) := []
+  /-- `Tr::frames`: the instances on the inlined call path -/
+  fr : List Nat := []
+  /-- `Tr::eh_edges`: (instance, landing-pad block) -/
+  edges : List (Nat × Nat) := []
+  /-- `Tr::pphis` of the landing-pad heads: (PIR block, variable, incomings) -/
+  lps : List (Nat × Nat × List (Nat × Arg)) := []
+  /-- `thrown_types()` (module-wide, sorted) -/
+  thrown : Option (List String) := none
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -1169,6 +1181,170 @@ def recordSeg (ι b : Nat) (pb k : Nat) (kid : Option Nat) : TM Unit :=
                | some x => I.kids.modify b (· ++ [x])
                | none => I.kids }
 
+
+/-- `Tr::ld`: an 8-aligned load with its access checks. -/
+def ldX (P : Arg) (w : Nat) : TM (List PStmt × Arg) := do
+  let v ← newVar w
+  let k := (← get).vars.size
+  let (sa, ta) := accessChecks k P ((w + 7) / 8) false 8
+  let u := k + ta.length
+  pushTemps (ta ++ [1])
+  pure (sa ++ [.load v u P, .check (.v u 1) "uninit" "UNINIT-READ"], .v v w)
+
+/-- `Tr::soft_stop`. -/
+def softStop (b : Nat) : TM Unit :=
+  setBlock b fun pb => { pb with stmts := pb.stmts ++ [.check (.c 1 1) "unmodelled" "UNENCODED"], term := .stop }
+
+/-- `Tr::add_phi`. -/
+def addPhi (b d : Nat) (pr : Nat) (a : Arg) : TM Unit :=
+  modify fun s =>
+    if s.lps.any (fun (b', d', _) => b' == b && d' == d) then
+      { s with lps := s.lps.map fun (b', d', inc) => if b' == b && d' == d then (b', d', inc ++ [(pr, a)]) else (b', d', inc) }
+    else { s with lps := s.lps ++ [(b, d, [(pr, a)])] }
+
+/-- The `landingpad` of a block: result, cleanup, clauses. -/
+def lpadOf (B : XBlock) : Option (String × Bool × List String) :=
+  ((B.segs.flatMap (·.1)) ++ B.last).findSome? fun i =>
+    match i with
+    | .lpad d cu cls => some (d, cu, cls)
+    | _ => none
+
+/-- `Tr::dispatch_type` (catch clauses are refused). -/
+def dispatchX (stack : List String) (cur : Nat) (E : Arg) (_t : String) : TM Unit := do
+  let s ← get
+  for (ι, pad, depth) in s.hs do
+    let I ← getInst ι
+    let some pb := lookupBlock I.fn.shape pad | throw "outside fragment: landing pad not found"
+    let some B := I.fn.blocks[pb]? | throw "internal: landing pad"
+    if B.stub then throw "outside fragment: landing pad the exporter stubbed"
+    let some (d, cu, cls) := lpadOf B | throw "outside fragment: landing pad not recognised"
+    match cls.head? with
+    | some "f" => softStop cur; return
+    | some _ => throw "outside fragment: catch clause (handler dispatch)"
+    | none => pure ()
+    if !cu then continue
+    -- frames between the throw and the handler: their locals end
+    let mut fs : List PStmt := []
+    for κ in s.fr.drop depth do
+      let Iκ ← getInst κ
+      let As ← liftE (escArgsX (Iκ.ctx (← curVars)) Iκ.fn.escNames)
+      fs := fs ++ As.map .free
+    let lb := I.heads.getD pb 0
+    setBlock cur fun q => { q with stmts := q.stmts ++ fs, term := .jmp lb }
+    modify fun s => { s with edges := s.edges ++ [(ι, pb)] }
+    match look I.env (pairReg d 0), look I.env (pairReg d 1) with
+    | some (.v e _), some (.v sl _) =>
+      addPhi lb e cur E
+      addPhi lb sl cur (.c 32 0)
+    | _, _ => throw "internal: landing pad pair"
+    return
+  let top := stack.headD ""
+  let entry := top == "main" || top.startsWith "_GLOBAL__sub_I" || top.startsWith "__cxx_global_var_init"
+  setBlock cur fun q => { q with stmts := q.stmts ++
+    (if entry then [.check (.c 1 1) "uncaught" "CXX-UNCAUGHT"] else []), term := .stop }
+
+/-- `Tr::eh_call` on `std::__throw_*`: the exception object and its header. -/
+def throwObjX (t : String) : TM (List PStmt × Arg) := do
+  let b ← newVar 64
+  let B := Arg.v b 64
+  let tid ← typeId t
+  let s0 ← stX B (c64 tid)
+  let (g1, P1) ← atX B 8
+  let s1 ← stX P1 (c64 0)
+  let (g2, P2) ← atX B 16
+  let (g3, P3) ← atX B 32
+  let s2 ← stX P2 P3
+  pure ([.alloc b (c64 96) 7 2 16] ++ s0 ++ g1 ++ s1 ++ g2 ++ g3 ++ s2, B)
+
+/-- `Tr::raise` of a type read from the header (`resume`). -/
+def raiseUnknownX (stack : List String) (cur0 : Nat) (E : Arg) : TM Unit := do
+  let some ts := (← get).thrown | throw "outside fragment: thrown types not exported"
+  let (sl, T) ← ldX E 64
+  setBlock cur0 fun q => { q with stmts := q.stmts ++ sl }
+  let mut cur := cur0
+  for t in ts do
+    let yes ← newBlock
+    let no ← newBlock
+    let tid ← typeId t
+    let c ← newVar 1
+    setBlock cur fun q => { q with stmts := q.stmts ++ [.assign c (.cmp .eq) [T, c64 tid]], term := .br (.v c 1) yes no }
+    dispatchX stack yes E t
+    cur := no
+  softStop cur
+  let _ ← newBlock
+
+/-- `Frame::upair` of a pair register (the fields that may be undef). -/
+def upairX (G : XFunc) : Nat → String → Except String (Bool × Bool)
+  | 0, _ => .error "outside fragment: insertvalue chain"
+  | n + 1, r => do
+    let all := G.blocks.flatMap fun B => (B.segs.flatMap (·.1)) ++ B.last
+    match all.findSome? (fun i => match i with
+        | .insv d _ _ ag v idx => if d == r then some (ag, v, idx) else none
+        | _ => none) with
+    | some (ag, _, idx) =>
+      let base ← match ag with
+        | none => pure (true, true)
+        | some a => upairX G n a
+      pure (if idx == 0 then (false, base.2) else (base.1, false))
+    | none =>
+      if all.any (fun i => match i with | .lpad d _ _ => d == r | _ => false) then pure (false, false)
+      else .error "outside fragment: resume of a pair not from a landing pad"
+
+/-- An `insertvalue` operand: a constant, or a field of a landing-pad pair. -/
+def insvOpndOK (G : XFunc) : Opnd → Bool
+  | .const _ => true
+  | .reg n =>
+    let all := G.blocks.flatMap fun B => (B.segs.flatMap (·.1)) ++ B.last
+    all.any fun i => match i with
+      | .xv d _ src _ => d == n && all.any (fun j => match j with | .lpad e _ _ => e == src | _ => false)
+      | _ => false
+  | _ => false
+
+/-- `insertvalue` into a pair (`Tr::inst`). -/
+def trInsvX (ι : Nat) (d : String) (w0 w1 : Nat) (ag : Option String) (v : Opnd) (idx : Nat) :
+    TM (List PStmt) := do
+  let I ← getInst ι
+  if !insvOpndOK I.fn v then throw "outside fragment: insertvalue operand"
+  let (some (.v a0 _), some (.v a1 _)) := (look I.env (pairReg d 0), look I.env (pairReg d 1))
+    | throw "internal: insertvalue pair"
+  let (sb, B0, B1) ← match ag with
+    | some a => match look I.env (pairReg a 0), look I.env (pairReg a 1) with
+      | some x, some y => pure ([], x, y)
+      | _, _ => throw "outside fragment: insertvalue into a non-pair"
+    | none => do
+      let h0 ← newVar w0
+      let h1 ← newVar w1
+      pure ([PStmt.havoc h0, .havoc h1], Arg.v h0 w0, Arg.v h1 w1)
+  let wsel := if idx == 0 then w0 else w1
+  let V ← match v with
+    | .const b => pure (Arg.c wsel b)
+    | .reg n => match look I.env n with
+      | some (.v i _) => pure (Arg.v i wsel)
+      | _ => throw "outside fragment: insertvalue operand"
+    | _ => throw "outside fragment: insertvalue operand"
+  pure (sb ++ [.assign a0 .copy [if idx == 0 then V else B0], .assign a1 .copy [if idx == 1 then V else B1]])
+
+/-- Instructions of a landing-pad region block (`Tr::inst`, with
+`landingpad` and `insertvalue`). -/
+def trRegionInsts (ι : Nat) (is : List SInst) : TM (List PStmt) := do
+  let mut out : List PStmt := []
+  let mut pend : List SInst := []
+  for i in is ++ [.lpad "" false []] do
+    match i with
+    | .lpad .. | .insv .. =>
+      if !pend.isEmpty then
+        let I ← getInst ι
+        let k := (← get).vars.size
+        let (s1, t1) ← liftE (trSInstsX (I.ctx (← curVars)) k pend)
+        pushTemps t1
+        out := out ++ s1
+        pend := []
+      match i with
+      | .insv d w0 w1 ag v idx => out := out ++ (← trInsvX ι d w0 w1 ag v idx)
+      | _ => pure ()
+    | _ => pend := pend ++ [i]
+  pure out
+
 /-- `Tr::run_frame` of instance `ι` (the unreachable blocks are skipped); the
 return sites `(PIR block, returned Arg)` of the instance are returned. -/
 def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List (Nat × Arg))
@@ -1181,21 +1357,21 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     if xDeadInc G live then throw "outside fragment: phi incoming from an unreachable block"
     if G.blocks.zipIdx.any (fun (B, b) => B.stub && live.contains b) then
       throw "outside fragment: a block the exporter stubbed is reachable"
-    let mut rets : List (Nat × Arg) := []
-    let mut tails : List Nat := []
-    for (B, b) in G.blocks.zipIdx do
+    -- `translate_block`: block `b` (`region` marks a landing-pad region
+    -- block); its last PIR block and returned value
+    let trB : Nat → XBlock → Bool → TM (Nat × Option Arg) := fun b B region => do
+      let I ← getInst ι
       let mut cur := (I.heads.getD b 0)
-      -- `run_frame` translates only the reachable blocks
-      if !live.contains b then
-        tails := tails ++ [cur]
-        continue
+      if region && B.stub then throw "outside fragment: landing-pad code the exporter stubbed"
       -- segments ending in a call
       for (is, cl) in B.segs do
         let I ← getInst ι
-        let c := I.ctx (← curVars)
         let k := (← get).vars.size
-        let (s1, t1) ← liftE (trSInstsX c k is)
-        pushTemps t1
+        let s1 ← if region then trRegionInsts ι is else do
+          let (s1, t1) ← liftE (trSInstsX (I.ctx (← curVars)) k is)
+          pushTemps t1
+          pure s1
+        let k1 := (← get).vars.size
         let G' ← match M.find cl.f with
           | some G' => pure G'
           | none => throw s!"UNENCODED: call @{cl.f}"
@@ -1204,7 +1380,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         if !(G'.retw == 0 || okW G'.retw) then throw s!"UNENCODED: call @{cl.f} returning i{G'.retw}"
         if cl.args.length != G'.params.length then throw s!"UNENCODED: call @{cl.f} arity"
         if !(G'.params.all fun p => okW p.2) then throw s!"UNENCODED: call @{cl.f} parameter"
-        let (s2, t2, As) ← liftE (trArgsX (I.ctx (← curVars)) (k + t1.length)
+        let (s2, t2, As) ← liftE (trArgsX (I.ctx (← curVars)) k1
           ((cl.args.zip G'.params).map fun ((o, w), (_, wp)) => (o, w, wp)))
         pushTemps t2
         let cb ← newBlock
@@ -1221,9 +1397,11 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let Iκ ← getInst κ
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
         recordSeg ι b cb k (some κ)
-        if cl.inv then modify fun s => { s with hdl := s.hdl + 1 }
+        if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
+        modify fun s => { s with hs := if cl.inv then (ι, cl.pad, s.fr.length) :: s.hs else s.hs,
+                                 fr := s.fr ++ [κ] }
         let sites ← runFrame M depth fuel (stack ++ [cl.f]) κ
-        if cl.inv then modify fun s => { s with hdl := s.hdl - 1 }
+        modify fun s => { s with hs := if cl.inv then s.hs.tail else s.hs, fr := s.fr.dropLast }
         match rv? with
         | some (rv, uv) =>
           if !sites.isEmpty then
@@ -1234,38 +1412,91 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         cur := cb
       -- the last segment
       let I ← getInst ι
-      let c := I.ctx (← curVars)
       let k := (← get).vars.size
-      let (s1, t1) ← liftE (trSInstsX c k B.last)
-      pushTemps t1
-      if B.thr then
-        -- a handler is live: `dispatch_type` may route the exception to a landing pad
-        if (← get).hdl != 0 then
-          throw "outside fragment: std::__throw_* under an invoke (handler dispatch)"
-        -- `Tr::eh_call`: the arguments are evaluated (their checks), then the raise
-        let k2 := k + t1.length
-        let (s0, t0, _) ← liftE (trArgsX (I.ctx (← curVars)) k2 (B.thrA.map fun (o, w) => (o, w, w)))
-        pushTemps t0
-        let s2 := s0 ++ (← throwX stack B.thrT)
-        setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .stop }
+      let s1 ← if region then trRegionInsts ι B.last else do
+        let (s1, t1) ← liftE (trSInstsX (I.ctx (← curVars)) k B.last)
+        pushTemps t1
+        pure s1
+      let k1 := (← get).vars.size
+      if let some r := B.res then
+        -- `resume`: re-raise the pair's exception
+        let (u0, _) ← liftE (upairX G (G.blocks.length * 8 + 8) r)
+        let E ← match look I.env (pairReg r 0) with
+          | some (.v e _) => pure (Arg.v e 64)
+          | _ => throw "outside fragment: resume of a non-pair"
+        setBlock cur fun pb => { pb with stmts := s1 ++
+          (if u0 then [.check (.c 1 1) "undef" "UB-POISON"] else []), term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
-        tails := tails ++ [cur]
-        continue
-      let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.nr B.term)
+        raiseUnknownX stack cur E
+        return (cur, none)
+      if B.thr then
+        -- `Tr::eh_call`: the arguments are evaluated (their checks), then the raise
+        let (s0, t0, _) ← liftE (trArgsX (I.ctx (← curVars)) k1 (B.thrA.map fun (o, w) => (o, w, w)))
+        pushTemps t0
+        let (s2, E) ← throwObjX B.thrT
+        setBlock cur fun pb => { pb with stmts := s1 ++ s0 ++ s2, term := .stop }
+        dispatchX stack cur E B.thrT
+        let _ ← newBlock
+        setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
+        return (cur, none)
+      if region then
+        match B.term with
+        | .ret _ => throw "outside fragment: return from landing-pad code"
+        | _ => pure ()
+      let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo k1 B.nr B.term)
       pushTemps t2
       setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := T }
       -- the first temporary of the last segment
       setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
+      pure (cur, A?)
+    let mut rets : List (Nat × Arg) := []
+    let mut tails : List Nat := I.heads
+    for (B, b) in G.blocks.zipIdx do
+      -- `run_frame` translates only the reachable blocks
+      if !live.contains b then continue
+      let (q, A?) ← trB b B false
       match A? with
-      | some A => if I.retTo.isSome then rets := rets ++ [(cur, A)]
+      | some A => if I.retTo.isSome then rets := rets ++ [(q, A)]
       | none => pure ()
-      tails := tails ++ [cur]
+      tails := tails.set b q
+    -- `eh_pass`: the landing pads a throw reached, with the code after them
+    let mut done : List Nat := []
+    let mut tried : List Nat := []
+    for _ in List.range (G.blocks.length + 1) do
+      let next := (← get).edges.findSome? fun (ι', p) =>
+        if ι' == ι && !live.contains p && !done.contains p && !tried.contains p then some p else none
+      let some p := next | break
+      tried := p :: tried
+      let mut work : List Nat := [p]
+      for _ in List.range (G.blocks.length * 4 + 4) do
+        match work with
+        | [] => break
+        | j :: rest =>
+          work := rest
+          if live.contains j || done.contains j then continue
+          let some B := G.blocks[j]? | throw "internal: region block"
+          let (q, _) ← trB j B true
+          tails := tails.set j q
+          done := done ++ [j]
+          for t in xSucc G B do
+            if live.contains t && !(G.blocks[t]?.map (·.phis.isEmpty)).getD true then
+              throw "outside fragment: landing-pad code joins a block with phis"
+          work := (xSucc G B).reverse ++ work
+      if !work.isEmpty then throw "internal: region worklist"
     -- phis (`resolve_phis`): predecessors are the blocks that end each LLVM block
     let I ← getInst ι
+    let lps := (← get).lps
     for (B, b) in G.blocks.zipIdx do
-      if !live.contains b then continue
+      if !live.contains b && !done.contains b then continue
+      if done.contains b && B.phis.any (fun p => p.inc.any fun (_, pr) =>
+          match lookupBlock G.shape pr with
+          | some j => !(live.contains j || done.contains j)
+          | none => true) then
+        throw "outside fragment: landing-pad code phi from a block not translated"
       let qs ← liftE (trPhisX G (I.ctx (← curVars)) tails B.phis)
-      setBlock (I.heads.getD b 0) fun pb => { pb with phis := qs }
+      let h := I.heads.getD b 0
+      let lq := (lps.filter fun (b', _, _) => b' == h).map fun (_, d, inc) => ({ dst := d, inc := inc } : PPhi)
+      setBlock h fun pb => { pb with phis := lq ++ qs }
     pure rets
 
 /-- The translator (`prism::pir::translate` on the extended fragment):
@@ -1283,6 +1514,7 @@ def translateX (M : XMod) (depth : Nat) (F : XFunc) : Except String (PFunc × Li
       let v ← newVar w
       penv := penv ++ [(p, .v v w)]
     let ι ← enterFrame F penv 0 none
+    modify fun s => { s with fr := [ι], thrown := F.thrown }
     let _ ← runFrame M depth (depth + 2) [F.name] ι
   let ((), s) ← go.run { vars := #[], blocks := #[], insts := #[] }
   pure ({ vars := s.vars.toList, params := List.range' 0 np, retw := F.retw, blocks := s.blocks.toList },

@@ -836,6 +836,8 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
     (hT : TempsOK P k tws) :
     SimX c σ0 (sSInst ω R t i) (xStmts P ω σ t s) := by
   cases i with
+  | lpad _ _ _ => simp only [trSInstX] at h; cases h
+  | insv _ _ _ _ _ _ => simp only [trSInstX] at h; cases h
   | i x =>
     cases x with
     | bin d op fl w a b =>

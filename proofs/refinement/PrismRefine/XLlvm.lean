@@ -182,6 +182,15 @@ inductive SInst where
   /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
   class `cls` (literal strings): undefined (the property fails) when `a` is 0. -/
   | vcheck (a : Opnd) (w : Nat) (cls : String)
+  /-- `%dst = landingpad { ptr, i32 } [cleanup] clauses` (`cls`: the catch
+  typeinfo symbols, `null` for `catch (...)`, `f` for a filter): the fields are
+  `pairReg dst 0` (exception) and `pairReg dst 1` (selector).  Only reached by
+  unwinding, which this semantics does not follow: stuck (no claim). -/
+  | lpad (dst : String) (cleanup : Bool) (cls : List String)
+  /-- `%dst = insertvalue { iw0, iw1 } agg, v, idx` of a two-field pair
+  (`agg = none`: `undef`), as clang rebuilds the exception pair before
+  `resume`; only in code unwinding reaches (stuck: no claim). -/
+  | insv (dst : String) (w0 w1 : Nat) (agg : Option String) (v : Opnd) (idx : Nat)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -212,6 +221,9 @@ structure CallI where
   /-- the call an `invoke` became (translator only): while the callee runs,
   `Tr::handlers` holds the invoke's landing pad -/
   inv : Bool := false
+  /-- the landing pad label of that `invoke` (translator only; `""`: not
+  exported, a throw dispatching to it is refused) -/
+  pad : String := ""
   deriving DecidableEq, Repr, Inhabited
 
 /-- A block split at its calls: phis, then segments each ending in a call,
@@ -239,6 +251,9 @@ structure XBlock where
   /-- the non-float arguments of the `std::__throw_*` call (operand, width;
   translator only: `Tr::eh_call` evaluates them before raising) -/
   thrA : List (Opnd × Nat) := []
+  /-- the block ends in `resume` of this exception pair register (translator
+  only: only unwinding reaches it; its `term` is `unreachable`) -/
+  res : Option String := none
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
@@ -254,6 +269,9 @@ structure XFunc where
   /-- the analysed function returns a pointer (checked for pointing into its
   own stack objects, `MemTr::stack_escape_check`) -/
   retPtr : Bool := false
+  /-- `Tr::thrown_types` (translator only, analysed function): every exception
+  type the module throws, sorted; `none`: not exported -/
+  thrown : Option (List String) := none
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/
@@ -614,6 +632,8 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .hmemset d b n => (sHmemset R W d b n).bind fun W' => .ok (R, W')
   | .hfresh d kd => (sFresh ω W kd).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
+  | .lpad .. => .stuck
+  | .insv .. => .stuck
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -857,6 +877,8 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ok _ => .ok (S, W)
     | .ub => .ub
     | .stuck => .stuck
+  | .lpad .. => .stuck
+  | .insv .. => .stuck
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)

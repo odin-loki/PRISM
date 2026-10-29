@@ -66,6 +66,8 @@ theorem lMem_lift (R : SRegs) (r : Res World) :
 theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     SLX (sSInst ω R t i) (lSInst ω ⟨lift R, false⟩ t i) := by
   cases i with
+  | lpad _ _ _ => simp only [sSInst, lSInst]; rfl
+  | insv _ _ _ _ _ _ => simp only [sSInst, lSInst]; rfl
   | i x =>
     have h := inst_lift R x
     simp only [sSInst, lSInst]
@@ -223,6 +225,8 @@ theorem lMem_mono {S S' : LSt} {t' : World} {r : Res World}
 theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     (h : lSInst ω S t i = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
   cases i with
+  | lpad _ _ _ => simp [lSInst] at h
+  | insv _ _ _ _ _ _ => simp [lSInst] at h
   | i x =>
     simp only [lSInst] at h
     cases hl : lInst S x with

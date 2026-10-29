@@ -342,11 +342,12 @@ structure XPF where
   retPtr : Bool := false
   /-- the open block has an `L dead` placeholder (allowed only in a stub block) -/
   dead : Bool := false
+  thrown : Option (List String) := none
 
 def XPF.close (f : XPF) : Except String XFunc := do
   if f.cur.isSome then throw s!"{f.name}: last block has no terminator"
   pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse,
-         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr }
+         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr, thrown := f.thrown }
 
 /-- Parse the `L ...` lines of a record in the extended syntax: the analysed
 function, then an `L fn NAME` section per function its calls reach. -/
@@ -357,8 +358,10 @@ def parseXLlvm (name : String) (ls : List (List String)) :
   let mut f : XPF := { name := name }
   for l0 in ls do
     -- `icall`: the call an invoke became (its landing pad a live handler)
-    let inv := l0.head? == some "icall"
-    let l := if inv then "call" :: l0.tail else l0
+    let inv := l0.head? == some "icall" || l0.head? == some "ivk"
+    let ipad := match l0 with | "ivk" :: p :: _ => p | _ => ""
+    let l := if l0.head? == some "icall" then "call" :: l0.tail
+      else if l0.head? == some "ivk" then "call" :: l0.tail.tail else l0
     let inBlock : Except String (String × List PhiI × List (List SInst × CallI) × List SInst) :=
       match f.cur with
       | some c => pure c
@@ -428,6 +431,19 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["ovf", d, k, w, a, b] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .ovf (← reg? d) (← ovfK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }
+    | "thrown" :: ts => f := { f with thrown := some ts }
+    | "lpad" :: d :: cu :: _ :: cls =>
+      let (bn, ps, sg, is) ← inBlock
+      f := { f with cur := some (bn, ps, sg, .lpad (← reg? d) (cu == "1") cls :: is) }
+    | ["insv", d, w0, w1, a, v, idx] =>
+      let (bn, ps, sg, is) ← inBlock
+      let ag ← if a == "undef" then pure none else do pure (some (← reg? a))
+      f := { f with cur := some (bn, ps, sg, .insv (← reg? d) (← nat? w0) (← nat? w1) ag (← opnd? v) (← nat? idx) :: is) }
+    | ["resume", r] =>
+      let (bn, ps, sg, is) ← inBlock
+      if f.dead then throw s!"block {bn}: placeholder outside a stub block"
+      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, .unreachable, none, false, false, "", [],
+                      some (← reg? r)⟩ :: f.blocks, cur := none }
     | ["xv", d, w, src, idx] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .xv (← reg? d) (← nat? w) (← reg? src) (← nat? idx) :: is) }
@@ -514,7 +530,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))
       let as ← (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
-      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as, inv := inv }
+      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as, inv := inv, pad := ipad }
       f := { f with cur := some (bn, ps, (is.reverse, cl) :: sg, []) }
     | ["ret", w] =>
       match f.cur with
@@ -522,7 +538,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       | some (bn, ps, sg, is) =>
         if f.dead then throw s!"block {bn}: placeholder outside a stub block"
         let t ← if w == "-" then pure (LTerm.ret none) else do pure (LTerm.ret (some (← opnd? w)))
-        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false, false, "", []⟩ :: f.blocks, cur := none }
+        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false, false, "", [], none⟩ :: f.blocks, cur := none }
     | _ =>
       let (bn, ps, sg, is) ← inBlock
       let t ← match l with
@@ -542,7 +558,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
                     (match l with | "throw" :: t :: _ => t | _ => ""),
                     ← (match l with
                       | "throw" :: _ :: args => (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
-                      | _ => pure [])⟩ :: f.blocks,
+                      | _ => pure []), none⟩ :: f.blocks,
                     cur := none }
   let last ← f.close
   let fs := (last :: done).reverse
