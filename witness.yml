@@ -1,16 +1,16 @@
 - entry_type: invariant_set
   metadata:
     format_version: "2.0"
-    uuid: "10b96e37-517e-48e4-a83c-9e05413201d2"
-    creation_time: "2026-10-29T13:40:41Z"
+    uuid: eb5a7b18-23c9-4fa2-92fc-f44b674932d6
+    creation_time: "2026-10-29T14:22:33Z"
     producer:
       name: PRISM
       version: "0.1.0"
     task:
       input_files:
-        - count_by_nondet.i
+        - gauss_sum.i
       input_file_hashes:
-        count_by_nondet.i: "3467a31f3cd19e731a18eaf7789079f202f3b29e437ef24ddd0458f09610424d"
+        gauss_sum.i: ac0c39e955880a6b0806ad5f8add28438e78eb47defb435342badf7c95feaa91
       specification: "CHECK( init(main()), LTL(G ! call(reach_error())) )"
       data_model: ILP32
       language: C
@@ -18,9 +18,9 @@
     - invariant:
         type: loop_invariant
         location:
-          file_name: count_by_nondet.i
-          line: 27
+          file_name: gauss_sum.i
+          line: 29
           column: 5
           function: main
-        value: "(i >= 0) && (k >= 0) && (k <= 1000000) && (i >= k) && (k <= i)"
+        value: "(sum >= 0) && (i >= 0) && (i > 0) && (i >= 1)"
         format: c_expression
