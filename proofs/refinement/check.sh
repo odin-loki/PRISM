@@ -42,8 +42,12 @@ seen=$(grep -Ec "depends on axioms|does not depend on any axioms" axioms.txt || 
 lean_audit axioms axioms.txt || { echo "FAIL: non-standard axiom (listed above)" >&2; exit 1; }
 
 echo "== correspondence checker fixtures"
+for e in fixtures/*.expected; do
+  [ -f "${e%.expected}.pirl" ] || { echo "FAIL: $e has no fixtures/*.pirl" >&2; exit 1; }
+done
 for f in fixtures/*.pirl; do
   want="${f%.pirl}.expected"
+  [ -f "$want" ] || { echo "FAIL: $f has no $want" >&2; exit 1; }
   got="$(lake exe pir_lean_check "$f" | tail -1 || true)"
   if [ "$got" != "$(cat "$want")" ]; then
     echo "FAIL: $f: got '$got', expected '$(cat "$want")'" >&2
