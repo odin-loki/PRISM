@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include "prism/astlint.hpp"
+#include "prism/checkers.hpp"
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
@@ -2887,6 +2888,66 @@ TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-S
         CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_local_bad", clang, b) ==
               std::set<int>{15});
         CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_owned_ok", clang, b).empty());
+        // No regex row either: Conn::handle is a member of an
+        // enable_shared_from_this class and is not its ctor/dtor (line 7 used
+        // to be a regex false positive the AST row could not supersede).
+        const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+        prism::Config cfg;
+        cfg.jobs = 1;
+        cfg.root = root;
+        std::set<int> any;
+        const auto es = prism::astlint::run_lints_ast({root / "enable_shared_ast.cpp"}, root, cfg, clang, b);
+        if (clang_ast_timed_out(es)) {
+            MESSAGE("clang timed out on this runner: enable_shared_ast.cpp row check skipped");
+            continue;
+        }
+        std::string rows;
+        for (auto& f : es)
+            if (f.status == prism::laws::FAILED && f.cls == "CXX-ENABLE-SHARED") {
+                rows += std::to_string(f.line.value_or(0)) + " " + f.function.value_or("") + "; ";
+                any.insert(f.line.value_or(0));
+            }
+        INFO("rows: " << rows);
+        CHECK(any == std::set<int>{5, 9, 15});
+    }
+    // The regex plant (no class, no base) still fires.
+    {
+        const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+        std::set<std::string> fns;
+        for (auto& f : prism::run_lints({root / "enable_shared.cpp"}, root, 1))
+            if (f.status == prism::laws::FAILED && f.cls == "CXX-ENABLE-SHARED") fns.insert(f.function.value_or(""));
+        CHECK(fns == std::set<std::string>{"enable_shared_bad"});
+    }
+}
+
+// testdata/fp files reduced from src/prism self-lint false positives: no AST
+// row on either front end (libclang drops the list initialiser of
+// `vector<T> v{a, b}`, so its element count is read from the source).
+TEST_CASE("astlint: testdata/fp vector guards, move reuse, scoped case labels are silent (both front ends)") {
+    auto clang = find_clang();
+    if (!clang) {
+        MESSAGE("clang not installed: testdata/fp astlint rows skipped");
+        return;
+    }
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "fp";
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        for (const char* name : {"vector_guards.cpp", "move_reuse.cpp", "scoped_case_labels.cpp"}) {
+            INFO(std::string(name));
+            prism::Config cfg;
+            cfg.jobs = 1;
+            cfg.root = root;
+            const auto out = prism::astlint::run_lints_ast({root / name}, root, cfg, clang, b);
+            if (clang_ast_timed_out(out)) {
+                MESSAGE("clang timed out on this runner: " << name << " skipped");
+                continue;
+            }
+            std::string rows;
+            for (auto& f : out)
+                if (f.status == prism::laws::FAILED)
+                    rows += f.cls + " " + std::to_string(f.line.value_or(0)) + " " + f.function.value_or("") + "; ";
+            CHECK_MESSAGE(rows.empty(), rows);
+        }
     }
 }
 

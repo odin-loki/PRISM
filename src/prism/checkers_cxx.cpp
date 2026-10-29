@@ -531,6 +531,8 @@ const Regex _DTOR_HEAD(R"re((?m)^[ \t]*(?:[A-Za-z_]\w*::)?~(?P<name>[A-Za-z_]\w*
 const Regex _DYN_CAST_ASSIGN(R"re((?P<var>[A-Za-z_]\w*)\s*=\s*[^;]*\bdynamic_cast\s*<)re");
 const Regex _EMBED_DIR(R"re(#\s*embed\b\s*(?P<arg>.*)$)re");
 const Regex _ENABLE_SHARED_FROM(R"re(\benable_shared_from_this\b)re");
+const Regex _ENABLE_SHARED_CLASS(
+    R"re(\b(?:struct|class)\s+(?P<cls>[A-Za-z_]\w*)\s*(?:final\s*)?:[^{;]*\benable_shared_from_this\s*<)re");
 const Regex _ENDIAN_ASSIGN(R"re(\b(?:auto|int|unsigned|(?:std\s*::\s*)?endian)\s+(?P<var>[A-Za-z_]\w*)\s*=[^;]*\bstd\s*::\s*endian\b)re");
 const Regex _ENDIAN_IN_INDEX(R"re(\[\s*[^\]]*\bstd\s*::\s*endian\b)re");
 const Regex _EXCHANGE_ASSIGN(R"re(\b(?P<var>[A-Za-z_]\w*)\s*=\s*std\s*::\s*exchange\s*\(\s*(?P<obj>[A-Za-z_]\w*))re");
@@ -693,12 +695,68 @@ std::set<std::string> cxx_local_u8strings(const FunctionInfo& fn) {
     return names;
 }
 
-bool move_use_after(std::string_view name, std::string_view ln) {
+// What a line after `std::move(name)` does with name: a member call, a call,
+// or (the right-hand side of) an assignment that reads it is a use; a plain
+// `name = ...` gives the moved-from object a new value, and a declaration of
+// a new `name` (`auto& name = ...`, `for (unsigned name = 0; ...`) starts a
+// different object. `e.name.` / `p->name(` name a member of another object.
+enum class MoveLine { Other, Use, Reset };
+
+bool move_decl_at(std::string_view ln, std::size_t at) {
+    static const std::set<std::string, std::less<>> kNotType{
+        "return", "co_return", "co_yield", "throw", "case", "else", "do", "delete", "new", "goto",
+        "sizeof", "typeid", "and", "or", "not", "if", "while", "switch", "for"};
+    auto blank = [&](std::size_t i) { return ln[i] == ' ' || ln[i] == '\t'; };
+    std::size_t k = at;
+    while (k > 0 && blank(k - 1)) --k;
+    const bool space_after = k < at;
+    std::size_t refs = 0;
+    while (k > 0 && (ln[k - 1] == '&' || ln[k - 1] == '*')) --k, ++refs;
+    if (refs > 0) {
+        const bool space_before = k > 0 && blank(k - 1);
+        if (space_before && space_after) return false;  // `x & name`, `x * name`: an operator
+        while (k > 0 && blank(k - 1)) --k;
+    } else if (!space_after) {
+        return false;  // `(name`, `,name`: no type in front
+    }
+    if (k == 0) return false;
+    if (ln[k - 1] == '>') return true;  // std::vector<int> name / const T<U>& name
+    std::size_t w = k;
+    while (w > 0 && (std::isalnum(static_cast<unsigned char>(ln[w - 1])) || ln[w - 1] == '_')) --w;
+    if (w == k || std::isdigit(static_cast<unsigned char>(ln[w]))) return false;
+    if (w > 0 && (ln[w - 1] == '.' || (w > 1 && ln[w - 2] == '-' && ln[w - 1] == '>'))) return false;
+    return !kNotType.contains(ln.substr(w, k - w));
+}
+
+bool move_line_declares(std::string_view name, std::string_view ln) {
+    const std::string self = "(?<!\\.|->|::)\\b" + re_escape(name);
+    Regex decl{self + R"(\s*(?:=(?!=)|\{|;|:(?!:)|\[|\(|\)|,))"};
+    for (auto& m : decl.finditer(ln))
+        if (!m.spans.empty() && move_decl_at(ln, static_cast<std::size_t>(m.spans[0].first))) return true;
+    return false;
+}
+
+MoveLine move_line_effect(std::string_view name, std::string_view ln) {
     auto stripped = re_sub_pat(R"(std\s*::\s*move\s*\(\s*[A-Za-z_]\w*\s*\))", "", ln);
     auto v = re_escape(name);
-    if (re_search("\\b" + v + "\\.", stripped)) return true;
-    if (re_search("\\b" + v + "\\s*\\(", stripped)) return true;
-    return re_search("\\b" + v + "\\s*=(?!=)", stripped);
+    const std::string self = "(?<!\\.|->|::)\\b" + v;
+    // A declaration of a new object with this name.
+    Regex decl{self + R"(\s*(?:=(?!=)|\{|;|:(?!:)|\[|\(|\)|,))"};
+    for (auto& m : decl.finditer(stripped))
+        if (!m.spans.empty() && move_decl_at(stripped, static_cast<std::size_t>(m.spans[0].first))) {
+            // `Widget w = w.clone();` still reads the old one on the right.
+            auto rhs = std::string_view(stripped).substr(static_cast<std::size_t>(m.spans[0].second));
+            if (re_search(self + R"(\s*(?:\.|\(|->))", rhs)) return MoveLine::Use;
+            return MoveLine::Reset;
+        }
+    if (auto m = Regex{self + R"(\s*=(?!=))"}.search_match(stripped)) {
+        auto lhs = std::string_view(stripped).substr(0, static_cast<std::size_t>(m->spans[0].first));
+        auto rhs = std::string_view(stripped).substr(static_cast<std::size_t>(m->spans[0].second));
+        if (re_search(self + R"(\s*(?:\.|\(|->))", lhs) || re_search(self + R"(\b)", rhs)) return MoveLine::Use;
+        return MoveLine::Reset;
+    }
+    if (re_search(self + R"(\s*(?:\.|\())", stripped)) return MoveLine::Use;
+    return MoveLine::Other;
 }
 
 void cxx_index_token_scan(const std::vector<std::string>& lines, std::string_view rel,
@@ -1229,20 +1287,74 @@ void _cxx_new_delete(const std::vector<std::string>& lines, std::string_view rel
     }
 }
 
+// Every std::move(name) that does not leave its path on its own: a move on a
+// `return`/`throw` line, or in a block that then returns or throws (or, for a
+// name declared inside a block, breaks or continues) cannot reach the lines
+// after that block. The scan also ends where name's declaring scope or an
+// enclosing lambda body closes, and at a new declaration of name or a plain
+// `name = ...`, which end the moved-from state.
 void _cxx_use_after_move(const std::vector<std::string>& lines, std::string_view rel,
                          const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+    static const Regex leaves(R"(^\s*(?:return|throw|co_return)\b)");
+    static const Regex leaves_loop(R"(^\s*(?:break|continue)\s*;)");
+    static const Regex leaves_any(R"(\b(?:return|throw|co_return)\b)");
+    static const Regex lambda_open(R"(\[[^\[\]]*\]\s*(?:\(.*\))?\s*(?:mutable\s*)?(?:->[^{;]*)?\{)");
     for (auto& fn : funcs) {
         auto body_lines = split_lines(fn.body);
-        std::map<std::string, int> last_move;
-        for (int i = 0; i < static_cast<int>(body_lines.size()); ++i)
-            for (auto& m : _STD_MOVE.finditer(body_lines[static_cast<std::size_t>(i)]))
-                last_move[m.named("name")] = i;
-        for (auto& [name, move_i] : last_move) {
-            for (int j = move_i + 1; j < static_cast<int>(body_lines.size()); ++j) {
-                if (!move_use_after(name, body_lines[static_cast<std::size_t>(j)])) continue;
-                report(out, rel, fn.name, fn.span.first + j, "CXX-USE-AFTER-MOVE",
-                       name + " used after std::move", lines);
-                break;
+        // Brace depth at the start of each line (the body is comment-blanked;
+        // a brace in a string literal only blurs this heuristic).
+        std::vector<int> depth{0};
+        for (auto& ln : body_lines) {
+            int d = depth.back();
+            for (char ch : ln) d += ch == '{' ? 1 : ch == '}' ? -1 : 0;
+            depth.push_back(d);
+        }
+        const auto at = [&](std::size_t k) { return depth.at(k); };
+        std::set<std::string> reported;
+        for (std::size_t i = 0; i < body_lines.size(); ++i) {
+            const auto& mv_line = body_lines.at(i);
+            for (auto& m : _STD_MOVE.finditer(mv_line)) {
+                auto name = m.named("name");
+                if (reported.contains(name)) continue;
+                // `return f(std::move(x));` / `throw E(std::move(x));`
+                auto before = mv_line.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first)));
+                if (leaves_any.search(before)) continue;
+                const int d0 = at(i + 1);
+                // The scope name was declared in (0: a parameter or unknown),
+                // and the innermost lambda body around the move.
+                int scope = 0;
+                for (std::size_t k = i + 1; k-- > 0;) {
+                    if (move_line_declares(name, body_lines.at(k))) {
+                        scope = std::max(at(k), at(k + 1));
+                        break;
+                    }
+                }
+                int floor = 0;
+                for (int want = d0; want > 0; --want) {
+                    std::size_t k = i;
+                    while (k > 0 && !(at(k) < want && at(k + 1) >= want)) --k;
+                    if (at(k) < want && at(k + 1) >= want && lambda_open.search(body_lines.at(k))) {
+                        floor = want;
+                        break;
+                    }
+                }
+                const int stop_below = std::max(scope, floor);
+                int cur = d0;  // the block the scan is in
+                for (std::size_t j = i + 1; j < body_lines.size(); ++j) {
+                    const auto& ln = body_lines.at(j);
+                    const int dj = at(j);
+                    cur = std::min(cur, dj);
+                    if (cur < stop_below) break;
+                    auto eff = move_line_effect(name, ln);
+                    if (eff == MoveLine::Use) {
+                        report(out, rel, fn.name, fn.span.first + static_cast<int>(j), "CXX-USE-AFTER-MOVE",
+                               name + " used after std::move", lines);
+                        reported.insert(name);
+                        break;
+                    }
+                    if (eff == MoveLine::Reset) break;
+                    if (dj == cur && (leaves.search(ln) || (scope > 0 && leaves_loop.search(ln)))) break;
+                }
             }
         }
     }
@@ -1775,6 +1887,64 @@ void _cxx_expected_null(const std::vector<std::string>& lines, std::string_view 
     }
 }
 
+// cont[idx] is guarded when the body bounds the index against the
+// container: a variable of idx compared (either way, through casts) with
+// cont.size()/length() or a local that holds it (`const auto n = s.size();
+// ... k < n`), or taken from cont.find()/rfind() (a position in cont); a
+// literal index under `!cont.empty()` / a size test, or below the element
+// count of a `vector<T> cont{a, b}` / `cont(N, v)` declaration.
+bool vector_index_guarded(std::string_view body, const std::string& cont, const std::string& idx) {
+    static const std::set<std::string, std::less<>> kNotVar{
+        "static_cast", "std", "size_t", "ptrdiff_t", "int", "long", "unsigned", "signed", "char",
+        "short", "auto", "const", "uint32_t", "uint64_t", "int64_t", "int32_t", "sizeof"};
+    const auto c = re_escape(cont);
+    const std::string size_call = c + R"(\s*(?:\.|->)\s*(?:size|length)\s*\(\s*\))";
+    std::vector<std::string> bounds{size_call};
+    Regex alias{R"(\b([A-Za-z_]\w*)\s*(?:=|\{|\()\s*(?:static_cast\s*<[^>]*>\s*\(\s*)?)" + size_call};
+    for (auto& m : alias.finditer(body)) bounds.push_back("\\b" + re_escape(m.group(1)) + "\\b");
+    static const Regex lit(R"(^\d+[uUlL]*$)");
+    if (lit.search(idx)) {
+        const auto k = std::stoull(idx);
+        if (re_search("!\\s*" + c + R"(\s*(?:\.|->)\s*empty\s*\(\s*\))", body)) return true;
+        if (re_search(R"(\bif\s*\(\s*)" + c + R"(\s*(?:\.|->)\s*empty\s*\(\s*\)\s*\))", body)) return true;
+        if (re_search(size_call + R"(\s*(?:>|>=|==|!=)\s*\d)", body)) return true;
+        // vector<T> cont{a, b, ...} / cont(N, v)
+        if (auto d = Regex{"\\b" + c + R"(\s*\{([^{};]*)\})"}.search_match(body)) {
+            std::size_t elems = 1, depth = 0;
+            for (char ch : d->group(1)) {
+                if (ch == '(' || ch == '<' || ch == '[') ++depth;
+                else if ((ch == ')' || ch == '>' || ch == ']') && depth > 0) --depth;
+                else if (ch == ',' && depth == 0) ++elems;
+            }
+            if (!strip(d->group(1)).empty() && k < elems) return true;
+        }
+        if (auto d = Regex{"\\b" + c + R"(\s*\(\s*(\d+)\s*[,)])"}.search_match(body))
+            if (k < std::stoull(d->group(1))) return true;
+        return false;
+    }
+    auto direct = [&](const std::string& name) {
+        const auto iv = "\\b" + re_escape(name) + "\\b";
+        for (auto& b : bounds) {
+            // v <op> ... bound / bound <op> ... v, within one comparison.
+            if (re_search(iv + R"([^;{}?]{0,40}?(?:<|>|<=|>=|!=|==)[^;{}?]{0,60}?)" + b, body)) return true;
+            if (re_search(b + R"([^;{}?]{0,40}?(?:<|>|<=|>=|!=|==)[^;{}?]{0,60}?)" + iv, body)) return true;
+        }
+        return re_search(iv + R"(\s*=\s*)" + c + R"(\s*\.\s*(?:r?find|find_(?:first|last)_(?:not_)?of)\s*\()", body) &&
+               re_search(R"(\bnpos\b)", body);
+    };
+    static const Regex ident(R"(\b([A-Za-z_]\w*)\b(?!\s*\())");
+    for (auto& v : ident.finditer(idx)) {
+        auto name = v.group(1);
+        if (kNotVar.contains(name)) continue;
+        if (direct(name)) return true;
+        // `shape_i = static_cast<int>(i);` with i itself bounded by cont.
+        Regex copy{"\\b" + re_escape(name) + R"(\s*=\s*(?:static_cast\s*<[^>]*>\s*\(\s*)?([A-Za-z_]\w*)\s*\)?\s*;)"};
+        for (auto& m : copy.finditer(body))
+            if (m.group(1) != name && !kNotVar.contains(m.group(1)) && direct(m.group(1))) return true;
+    }
+    return false;
+}
+
 void _cxx_vector_index(const std::vector<std::string>& lines, std::string_view rel,
                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -1790,11 +1960,7 @@ void _cxx_vector_index(const std::vector<std::string>& lines, std::string_view r
                 auto cont = m.named("cont");
                 if (!containers.count(cont)) continue;
                 auto idx = m.named("idx");
-                auto c = re_escape(cont), iv = re_escape(strip(idx));
-                if (re_search("\\bif\\s*\\(\\s*" + iv + "\\s*<\\s*" + c + "\\s*\\.\\s*(?:size|length)\\s*\\(\\s*\\)", fn.body))
-                    continue;
-                if (re_search("\\bif\\s*\\(\\s*" + c + "\\s*\\.\\s*(?:size|length)\\s*\\(\\s*\\)\\s*>\\s*" + iv, fn.body))
-                    continue;
+                if (vector_index_guarded(fn.body, cont, strip(idx))) continue;
                 report(out, rel, fn.name, start + i, "CXX-VECTOR-INDEX",
                        cont + "[" + strip(idx) + "] without a size()/length() guard", lines);
                 return;
@@ -1914,12 +2080,23 @@ void _cxx_regex(const std::vector<std::string>& lines, std::string_view rel,
 }
 
 // shared_from_this() without enable_shared_from_this in the function; once
-// per function.
-void _cxx_enable_shared(const std::vector<std::string>& lines, std::string_view rel,
-                        const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
+// per function. A member function of a class the file declares with an
+// enable_shared_from_this base is fine (the object may be owned), except the
+// class's own constructor/destructor, where no shared_ptr owns it yet.
+void _cxx_enable_shared(std::string_view stripped, const std::vector<std::string>& lines,
+                        std::string_view rel, const std::vector<FunctionInfo>& funcs,
+                        std::vector<Finding>& out) {
+    std::set<std::string> owned;  // classes with an enable_shared_from_this base
+    for (auto& m : _ENABLE_SHARED_CLASS.finditer(stripped)) owned.insert(m.named("cls"));
     for (auto& fn : funcs) {
         if (!_SHARED_FROM_THIS.search(fn.body)) continue;
         if (_ENABLE_SHARED_FROM.search(fn.body)) continue;
+        if (auto sep = fn.name.rfind("::"); sep != std::string::npos) {
+            auto cls = fn.name.substr(0, sep);
+            if (auto q = cls.rfind("::"); q != std::string::npos) cls = cls.substr(q + 2);
+            auto member = fn.name.substr(sep + 2);
+            if (owned.contains(cls) && member != cls && member != "~" + cls) continue;
+        }
         auto bl = split_lines(fn.body);
         int hit_i = 0;
         for (int i = 0; i < static_cast<int>(bl.size()); ++i)
@@ -1935,21 +2112,28 @@ void _cxx_enable_shared(const std::vector<std::string>& lines, std::string_view 
 void _cxx_move_const(const std::vector<std::string>& lines, std::string_view rel,
                      const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
-        std::set<std::string> consts;
+        // name -> body offset of its first const declaration (-1: a parameter).
+        // A const local declared after the move is a different object
+        // (`[&](std::string text) { ... std::move(text) ... }; const std::string text`).
+        std::map<std::string, int> consts;
         for (auto& [typ, name] : fn.params) {
             if (name.empty() || !re_search(R"(\bconst\b)", typ)) continue;
             auto stripped_ty = re_sub_pat(R"(\b(?:const|volatile)\b)", "", typ);
             if (stripped_ty.find('*') != std::string::npos) continue;
-            consts.insert(name);
+            consts.emplace(name, -1);
         }
-        for (auto& m : _CONST_OBJ_DECL.finditer(fn.body)) consts.insert(m.named("name"));
-        for (auto& m : _CONST_LOCAL.finditer(fn.body)) consts.insert(m.named("name"));
+        for (auto& m : _CONST_OBJ_DECL.finditer(fn.body)) consts.emplace(m.named("name"), m.spans[0].first);
+        for (auto& m : _CONST_LOCAL.finditer(fn.body)) consts.emplace(m.named("name"), m.spans[0].first);
         if (consts.empty()) continue;
         auto start = fn.span.first;
         auto body_lines = split_lines(fn.body);
+        int line_off = 0;
         for (int i = 0; i < static_cast<int>(body_lines.size()); ++i) {
+            const int off = line_off;
+            line_off += static_cast<int>(body_lines[static_cast<std::size_t>(i)].size()) + 1;
             for (auto& m : _STD_MOVE.finditer(body_lines[static_cast<std::size_t>(i)])) {
-                if (!consts.count(m.named("name"))) continue;
+                auto it = consts.find(m.named("name"));
+                if (it == consts.end() || it->second >= off + m.spans[0].first) continue;
                 report(out, rel, fn.name, start + i, "CXX-MOVE-CONST",
                        "std::move of const object " + m.named("name"), lines);
                 return;
@@ -5735,7 +5919,7 @@ void checkers_cxx(const std::vector<std::string>& lines, std::string_view rel,
     _cxx_shared_get(lines, rel, funcs, out);
     _cxx_auto_ptr(lines, rel, funcs, out);
     _cxx_string_data(lines, rel, funcs, out);
-    _cxx_enable_shared(lines, rel, funcs, out);
+    _cxx_enable_shared(stripped, lines, rel, funcs, out);
     _cxx_fwd_ref(lines, rel, funcs, out);
     _cxx_explicit_ctor(stripped, lines, rel, funcs, out);
     _cxx_move_const(lines, rel, funcs, out);

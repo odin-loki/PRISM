@@ -5920,6 +5920,9 @@ bool refs_id(const json& n, const std::string& id) {
     return hit;
 }
 
+std::string decl_init_text(const json& d);
+std::vector<std::string> init_args(std::string t);
+
 void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     const auto base = begin_of(body);
     if (c_source(base)) return;
@@ -5952,6 +5955,29 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     std::set<std::string> fn_calls;
     std::set<std::pair<std::string, std::string>> cmp;  // (id, id-of-size-object)
     std::set<std::string> null_tested, bool_tested, size_tested;
+    std::map<std::string, std::string> size_alias;  // n -> c for `n = c.size()`
+    std::map<std::string, std::size_t> init_elems;  // v -> element count of `v{a, b}`
+    std::vector<const json*> size_cmps;
+    // The object c of c.size() / c.length() (through casts), else "".
+    auto size_of_obj = [](const json& e) -> std::string {
+        const auto& o = strip_casts(e);
+        if (kind(o) != "CXXMemberCallExpr" || n_children(o) == 0) return {};
+        const auto& me = strip_all(child(o, 0));
+        auto m = str_field(me, "name");
+        if (kind(me) == "MemberExpr" && (m == "size" || m == "length") && n_children(me) == 1)
+            return ref_id(child(me, 0));
+        return {};
+    };
+    auto find_pos_obj = [](const json& e) -> std::string {
+        const auto& o = strip_casts(e);
+        if (kind(o) != "CXXMemberCallExpr" || n_children(o) == 0) return {};
+        const auto& me = strip_all(child(o, 0));
+        if (kind(me) != "MemberExpr" || n_children(me) != 1) return {};
+        if (!one_of(str_field(me, "name"), {"find", "rfind", "find_first_of", "find_last_of", "find_first_not_of",
+                                            "find_last_not_of"}))
+            return {};
+        return ref_id(child(me, 0));
+    };
     collect_nodes(body, [&](const json& n, const json*) {
         const auto& k = kind(n);
         if (k == "VarDecl") {
@@ -5959,10 +5985,27 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
             tname[id] = class_name(n);
             vname[id] = std::string(str_field(n, "name"));
             vars.push_back(&n);
+            if (n_children(n) > 0) {
+                const auto& init = child(n, n_children(n) - 1);
+                if (auto c = size_of_obj(init); !c.empty()) size_alias[id] = c;
+                if (auto c = find_pos_obj(init); !c.empty()) cmp.insert({id, c});
+            }
+            // vector<T> v{a, b}: v[0] and v[1] are in range. Counted from the
+            // source text: libclang drops a class object's list initialiser.
+            auto t = decl_init_text(n);
+            auto f = t.find_first_not_of(" \t\n=");
+            if (f != std::string::npos && t[f] == '{') {
+                auto args = init_args(t.substr(f));
+                if (args.size() == 1 && args[0].empty()) args.clear();
+                init_elems[id] = args.size();
+            }
         } else if (k == "CXXMemberCallExpr" && n_children(n) > 0) {
             const auto& me = strip_all(child(n, 0));
-            if (kind(me) == "MemberExpr" && n_children(me) == 1)
+            if (kind(me) == "MemberExpr" && n_children(me) == 1) {
                 mcalls.push_back({&n, ref_id(child(me, 0)), std::string(str_field(me, "name"))});
+                // c.empty() tested: the function knows whether c has elements.
+                if (str_field(me, "name") == "empty") size_tested.insert(ref_id(child(me, 0)));
+            }
         } else if (k == "CXXOperatorCallExpr" && n_children(n) >= 2) {
             ops.push_back(&n);
         } else if (k == "CXXCatchStmt") {
@@ -5978,25 +6021,19 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
                     if (auto id = ref_id(child(n, i)); !id.empty()) null_tested.insert(id);
             } else if (op == "<" || op == "<=" || op == ">" || op == ">=") {
                 for (int i = 0; i < 2; ++i) {
-                    auto id = ref_id(child(n, i));
-                    const auto& o = strip_all(child(n, 1 - i));
-                    if (id.empty() || kind(o) != "CXXMemberCallExpr" || n_children(o) == 0) continue;
-                    const auto& me = strip_all(child(o, 0));
-                    auto m = str_field(me, "name");
-                    if (kind(me) == "MemberExpr" && (m == "size" || m == "length") && n_children(me) == 1)
-                        cmp.insert({id, ref_id(child(me, 0))});
+                    auto id = ref_id(strip_casts(child(n, i)));
+                    auto sz = size_of_obj(child(n, 1 - i));
+                    if (!id.empty() && !sz.empty()) cmp.insert({id, sz});
                 }
+            } else if (op == "=") {
+                // p = c.find(...): a position in c (npos is tested, not size()).
+                auto id = ref_id(child(n, 0));
+                if (auto c = find_pos_obj(child(n, 1)); !id.empty() && !c.empty()) cmp.insert({id, c});
             }
-            // Any comparison with c.size() / c.empty() test establishes c's size.
+            // Any comparison with c.size() (through a cast, or a local that
+            // holds it: `const auto n = c.size(); ... k < n`) establishes c's size.
             if (one_of(op, {"==", "!=", "<", "<=", ">", ">="}))
-                for (int i = 0; i < 2; ++i) {
-                    const auto& o = strip_all(child(n, i));
-                    if (kind(o) != "CXXMemberCallExpr" || n_children(o) == 0) continue;
-                    const auto& me = strip_all(child(o, 0));
-                    auto m = str_field(me, "name");
-                    if (kind(me) == "MemberExpr" && (m == "size" || m == "length") && n_children(me) == 1)
-                        size_tested.insert(ref_id(child(me, 0)));
-                }
+                size_cmps.push_back(&n);
         } else if (k == "ImplicitCastExpr" && n_children(n) == 1) {
             auto ck2 = str_field(n, "castKind");
             if (ck2 == "PointerToBoolean" || ck2 == "UserDefinedConversion")
@@ -6005,6 +6042,13 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
             if (auto id = ref_id(child(n, 0)); !id.empty()) bool_tested.insert(id);
         }
     });
+    for (auto* c : size_cmps)
+        for (int i = 0; i < 2; ++i) {
+            auto sz = size_of_obj(child(*c, i));
+            if (sz.empty())
+                if (auto it = size_alias.find(ref_id(strip_casts(child(*c, i)))); it != size_alias.end()) sz = it->second;
+            if (!sz.empty()) size_tested.insert(sz);
+        }
     auto by_offset = [](const json* a, const json* b) { return begin_of(*a).offset < begin_of(*b).offset; };
     auto member_called = [&](const std::string& obj, std::initializer_list<std::string_view> names) {
         for (auto& m : mcalls)
@@ -6083,10 +6127,19 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
         if (cid.empty()) continue;
         auto tn = tname[cid];
         if (tn != "vector" && tn != "basic_string" && tn != "string") continue;
-        const auto& idx = strip_all(child(*n, 2));
+        const auto& idx = strip_casts(child(*n, 2));
         auto iid = ref_id(idx);
         if (!iid.empty() && cmp.contains({iid, cid})) continue;
         if (size_tested.contains(cid) || !ok_pos(*n)) continue;
+        // `text[p - 1]` with p bounded by text: any variable of the index.
+        bool bounded = false;
+        collect_nodes(idx, [&](const json& x, const json*) {
+            if (!bounded && kind(x) == "DeclRefExpr" && cmp.contains({str_field(ref_decl(x), "id"), cid})) bounded = true;
+        });
+        if (bounded) continue;
+        if (auto lit = int_value(idx); lit && *lit >= 0)
+            if (auto it = init_elems.find(cid); it != init_elems.end() && static_cast<std::size_t>(*lit) < it->second)
+                continue;
         auto in = iid.empty() ? std::string("...") : vname[iid];
         ck.add(*n, "CXX-VECTOR-INDEX", vname[cid] + "[" + in + "] without a size()/length() guard");
         break;
