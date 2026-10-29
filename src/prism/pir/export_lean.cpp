@@ -418,27 +418,6 @@ std::string std_throw_ti(const std::string& fn) {
     return fn;
 }
 
-// May `fn` run under an invoke (a handler of Tr::handlers live)? The callees of
-// every invoke of the module, closed under calls.
-bool under_invoke(const ir::Module& m, const std::string& fn) {
-    std::set<std::string> s;
-    std::vector<std::string> work;
-    for (auto& f : m.functions)
-        for (auto& b : f.blocks)
-            for (auto& in : b.insts)
-                if (in.op == "invoke") work.push_back(in.callee);
-    while (!work.empty()) {
-        auto n = work.back();
-        work.pop_back();
-        if (!s.insert(n).second) continue;
-        if (auto* g = m.find(n))
-            for (auto& b : g->blocks)
-                for (auto& in : b.insts)
-                    if (in.op == "call" || in.op == "invoke") work.push_back(in.callee);
-    }
-    return s.count(fn) > 0;
-}
-
 bool afail_tail_ok(const ir::Block& bl, size_t i) {
     for (size_t j = i + 1; j < bl.insts.size(); ++j) {
         auto& x = bl.insts[j];
@@ -778,7 +757,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         // std::__throw_* are all outside), so the handler is never used and the
         // landing pads stay unreachable: the call, then `br` to the normal label.
         ir::Block bl = bl0;
-        if (!bl.insts.empty() && bl.insts.back().op == "invoke") {
+        const bool invoke_end = !bl.insts.empty() && bl.insts.back().op == "invoke";
+        if (invoke_end) {
             ir::Inst& inv = bl.insts.back();
             if (inv.targets.size() != 2) throw Unsupported{"invoke shape"};
             ir::Inst br;
@@ -789,6 +769,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             inv.targets.clear();
             bl.insts.push_back(std::move(br));
         }
+        // the call an invoke became (Tr::handlers has its landing pad while the callee runs)
+        const ir::Inst* invoke_call = invoke_end ? &bl.insts[bl.insts.size() - 2] : nullptr;
         if (top && &bl0 == &f.blocks.front()) b << harness.str();
         if (top && &bl0 == &f.blocks.front())
             for (auto& gname : eg) {
@@ -950,9 +932,11 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
                        in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&
                        afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())) &&
-                       bl.insts.back().op == "unreachable" && in.ops.empty() && !under_invoke(m, f.name)) {
+                       bl.insts.back().op == "unreachable" && in.ops.empty()) {
                 // Tr::call: std::__throw_* raises a library exception (Tr::raise); the
-                // semantics stops following the run there, the PIR after it is unchecked
+                // semantics stops following the run there, the PIR after it is unchecked.
+                // Under an invoke (`L icall` on the inlined path) a handler may catch it:
+                // the Lean translator refuses that (dispatch not modelled)
                 b << "L throw " << std_throw_ti(in.callee) << "\n";
                 break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
@@ -968,7 +952,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && inlined_call(m, in)) {
                 const bool cforeign = foreign || foreign_callee(m, in.callee, top_file);
                 const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
-                b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                b << (&in == invoke_call ? "L icall " : "L call ") << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
                   << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
                   << in.ops.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);

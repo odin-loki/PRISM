@@ -209,6 +209,9 @@ structure CallI where
   rw : Nat
   f : String
   args : List (Opnd × Nat)
+  /-- the call an `invoke` became (translator only): while the callee runs,
+  `Tr::handlers` holds the invoke's landing pad -/
+  inv : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 /-- A block split at its calls: phis, then segments each ending in a call,

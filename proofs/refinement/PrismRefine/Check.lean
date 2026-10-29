@@ -355,7 +355,10 @@ def parseXLlvm (name : String) (ls : List (List String)) :
   let mut depth := 4
   let mut done : List XFunc := []
   let mut f : XPF := { name := name }
-  for l in ls do
+  for l0 in ls do
+    -- `icall`: the call an invoke became (its landing pad a live handler)
+    let inv := l0.head? == some "icall"
+    let l := if inv then "call" :: l0.tail else l0
     let inBlock : Except String (String × List PhiI × List (List SInst × CallI) × List SInst) :=
       match f.cur with
       | some c => pure c
@@ -511,7 +514,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))
       let as ← (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
-      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as }
+      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as, inv := inv }
       f := { f with cur := some (bn, ps, (is.reverse, cl) :: sg, []) }
     | ["ret", w] =>
       match f.cur with

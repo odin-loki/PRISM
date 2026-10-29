@@ -478,6 +478,19 @@ inlined function was only 11. The two that moved:
   1 865, mismatch 0) — every inlined-alloca function in `testdata` is blocked
   by something else (mostly throw-under-`invoke`, `__cxa_begin_catch`,
   iostream calls).
+* **Throws under an `invoke`, per call path** (this commit): the exporter no
+  longer refuses `std::__throw_*` module-wide (`under_invoke`); the call an
+  `invoke` became is exported as `L icall` (`CallI.inv`), and `runFrame`
+  counts live handlers (`TS.hdl`, `Tr::handlers`) and refuses a throw while
+  one is live (dispatch to a landing pad not modelled yet). A function that
+  throws with no handler on its own inlined path is in the fragment even when
+  some other function invokes it. Fixture `invoke_throw` (3 agree-ext, `h`
+  outside: its own `invoke` has a cleanup pad). Coverage (six trees, same
+  method as `/workspace/logs/cov3`): agree 1 019, agree-ext 308, agree-reject
+  233, outside 1 744, mismatch 0 — **no net change**: the 19
+  `__throw_bad_array_new_length` functions move to their next blocker (7 to
+  the throw-under-invoke refusal, i.e. need real dispatch; 9 to an inlined
+  pointer-returning callee with stack objects; 3 to `__cxa_allocate_exception`).
   \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
   the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
   files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under

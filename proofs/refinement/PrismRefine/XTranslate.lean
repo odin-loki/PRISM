@@ -1030,6 +1030,8 @@ structure TS where
   insts : Array IInfo
   /-- `Tr::type_ids`: typeinfo symbols in the order first numbered -/
   tys : Array String := #[]
+  /-- the number of `invoke`s on the inlined call path (`Tr::handlers`) -/
+  hdl : Nat := 0
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -1219,7 +1221,9 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let Iκ ← getInst κ
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
         recordSeg ι b cb k (some κ)
+        if cl.inv then modify fun s => { s with hdl := s.hdl + 1 }
         let sites ← runFrame M depth fuel (stack ++ [cl.f]) κ
+        if cl.inv then modify fun s => { s with hdl := s.hdl - 1 }
         match rv? with
         | some (rv, uv) =>
           if !sites.isEmpty then
@@ -1235,6 +1239,9 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
       let (s1, t1) ← liftE (trSInstsX c k B.last)
       pushTemps t1
       if B.thr then
+        -- a handler is live: `dispatch_type` may route the exception to a landing pad
+        if (← get).hdl != 0 then
+          throw "outside fragment: std::__throw_* under an invoke (handler dispatch)"
         let s2 ← throwX stack B.thrT
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
