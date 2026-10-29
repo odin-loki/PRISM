@@ -63,6 +63,14 @@ unsigned vw(const ir::Type& t) {
 // The analysed function's entry globals (pirmem::entry_globals); null while
 // a callee is written (a global there is outside the fragment).
 thread_local const std::vector<std::string>* g_entry = nullptr;
+// The analysed function's entry globals while its callees are written: each
+// inlined callee takes them as extra parameters `@name` (after its own, before
+// the allocation-failed flag) and every inlined call passes the caller's
+// `%@name` registers. A faithful rewrite: a global's address is the same in
+// every frame, and MemTr::global gives an inlined body the variable the
+// prologue allocated (pirmem::entry_globals includes the read-only globals the
+// callees name).
+thread_local std::vector<std::string> g_top_eg;
 
 std::string opnd(const ir::Operand& o) {
     switch (o.v.kind) {
@@ -733,16 +741,20 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         harness << "L glob %" << name(p.name) << " " << static_cast<uint64_t>(c->count) * esz << " 16 "
                 << (c->read_only ? 4 : 7) << " 2 0\n";
     }
-    b << "L params " << ints.size() + (oom && !top ? 1 : 0);
+    std::vector<std::string> eg;
+    if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
+    if (top) g_top_eg = eg;
+    const std::size_t neg = top ? 0 : g_top_eg.size();
+    b << "L params " << ints.size() + neg + (oom && !top ? 1 : 0);
     for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
+    if (!top)
+        for (auto& gname : g_top_eg) b << " @" << name(gname) << " 64";
     if (oom && !top) b << " " << kOom << " 64";
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
     // translate.cpp's return of a pointer: MemTr::stack_escape_check against
     // the function's own stack objects (the Lean XFunc.escNames; a callee: outside)
     if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
-    std::vector<std::string> eg;
-    if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
-    g_entry = top ? &eg : nullptr;
+    g_entry = top ? &eg : &g_top_eg;
     struct Reset {
         ~Reset() { g_entry = nullptr; }
     } reset;
@@ -1086,8 +1098,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
                 b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call ")) << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
                   << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
-                  << in.ops.size() + (coom ? 1 : 0);
+                  << in.ops.size() + g_top_eg.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
+                for (auto& gname : g_top_eg) b << " %@" << name(gname) << " 64";
                 if (coom) b << " %" << kOom << " 64";
                 b << "\n";
                 auto it = std::ranges::find_if(callees, [&](const Callee& c) { return c.name == in.callee; });

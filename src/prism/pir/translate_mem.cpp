@@ -362,6 +362,36 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
             for (auto& o : in.ops) see(o);
             for (auto& [o, _] : in.incoming) see(o);
         }
+    // then the read-only globals the functions it may inline name (depth
+    // first, in call order): allocated at entry too rather than when an
+    // inlined body first names them (MemTr::global), so the Lean export can
+    // pass them to the inlined callees as extra parameters
+    std::set<const ir::Function*> seen{&f};
+    std::vector<const ir::Function*> todo;
+    auto calls = [&](const ir::Function& g) {
+        std::vector<const ir::Function*> cs;
+        for (auto& bl : g.blocks)
+            for (auto& in : bl.insts)
+                if ((in.op == "call" || in.op == "invoke") && !in.callee.empty())
+                    if (const auto* h = m.find(in.callee); h && seen.insert(h).second) cs.push_back(h);
+        todo.insert(todo.end(), cs.rbegin(), cs.rend());
+    };
+    calls(f);
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                auto ro = [&](const ir::Operand& o) {
+                    if (o.v.kind != ir::Value::Global) return;
+                    const auto* gl = m.find_global(o.v.name);
+                    if (gl && gl->is_const && !gl->external) see(o);
+                };
+                for (auto& o : in.ops) ro(o);
+                for (auto& [o, _] : in.incoming) ro(o);
+            }
+        calls(*g);
+    }
     return out;
 }
 
