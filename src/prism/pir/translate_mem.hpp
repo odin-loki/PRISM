@@ -104,6 +104,9 @@ uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir:
 // right after the entry globals, with its variable after theirs; the Lean
 // export writes it as an `L glob` line there (docs/PROOFS_REFINEMENT.md).
 bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f);
+// calls (transitively) __cxa_begin_catch / __cxa_end_catch / __cxa_rethrow: Tr allocates the
+// caught-exceptions stack in the prologue (export_lean: `L glob %__prism.caught`)
+bool reaches_caught_slot(const ir::Module& m, const ir::Function& f);
 
 class MemTr {
 public:

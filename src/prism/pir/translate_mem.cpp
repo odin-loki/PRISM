@@ -382,6 +382,25 @@ bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f) {
     return false;
 }
 
+bool reaches_caught_slot(const ir::Module& m, const ir::Function& f) {
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> todo{&f};
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                if ((in.op != "call" && in.op != "invoke") || in.callee.empty()) continue;
+                if (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
+                    in.callee == "__cxa_rethrow")
+                    return true;
+                if (const auto* h = m.find(in.callee)) todo.push_back(h);
+            }
+    }
+    return false;
+}
+
 uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c) {
     uint64_t esz = c.elem_bytes;
     if (esz) return esz;

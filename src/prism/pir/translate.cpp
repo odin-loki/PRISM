@@ -160,7 +160,8 @@ struct Tr final : pirmem::TrApi {
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
     std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
-    bool oom_pending_ = false;                        // oom_ preassigned, its object not yet emitted
+    bool oom_pending_ = false;
+    int caught_var_ = -1;                             // caught_'s preassigned variable                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
     Snap snap();
@@ -517,6 +518,9 @@ struct Tr final : pirmem::TrApi {
                 oom_ = Arg::v(newvar("_oom", kPtrW), kPtrW);
                 oom_pending_ = true;
             }
+            // the hidden caught-exceptions stack, when a handler can be entered:
+            // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
+            if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", kPtrW);
         }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
@@ -630,6 +634,8 @@ struct Tr final : pirmem::TrApi {
                 mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0, oom_->var);
                 oom_pending_ = false;
             }
+            if (caught_var_ >= 0 && !caught_)
+                caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)

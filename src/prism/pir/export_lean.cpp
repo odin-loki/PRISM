@@ -661,6 +661,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     // entry globals, passed to every inlined function that can reach it as an
     // extra last parameter (the translator refers to its variable directly)
     const bool oom = pirmem::reaches_alloc_failed(m, f);
+    const bool caught = pirmem::reaches_caught_slot(m, f);
     // Pointer parameters. Of an inlined callee: ordinary 64-bit values bound
     // to the caller's arguments (a by-value aggregate is copied first:
     // outside). Of the analysed function (translate()): a by-value aggregate
@@ -811,6 +812,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         if (top && oom && &bl0 == &f.blocks.front())
             // MemTr::alloc(-1, c64(1), Static, init 1): one zero byte
             b << "L glob %" << kOom << " 1 16 3 1 0\n";
+        if (top && caught && &bl0 == &f.blocks.front())
+            // Tr::caught_slot: MemTr::alloc(-1, c64(72), Static, init 1), after the oom flag
+            b << "L glob %__prism.caught 72 16 3 1 0\n";
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
             const std::string& op = in.op;
