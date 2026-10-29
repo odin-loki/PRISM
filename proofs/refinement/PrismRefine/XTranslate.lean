@@ -1209,6 +1209,15 @@ def lpadOf (B : XBlock) : Option (String × Bool × List String) :=
     | .lpad d cu cls => some (d, cu, cls)
     | _ => none
 
+/-- `pointer_ti` / `fundamental_ti`. -/
+def ptrTI (t : String) : Bool := t.startsWith "_ZTIP"
+def fundTI (t : String) : Bool :=
+  t.startsWith "_ZTI" &&
+    let r := t.drop 4
+    let r := if r.startsWith "K" then r.drop 1 else r
+    ["v", "b", "c", "a", "h", "s", "t", "i", "j", "l", "m", "x", "y", "n", "o", "f", "d", "e", "g", "w",
+     "Ds", "Di", "Du", "Dn", "DF16_"].contains r.toString
+
 /-- `Tr::dispatch_type` (catch clauses are refused). -/
 def dispatchX (stack : List String) (cur : Nat) (E : Arg) (_t : String) : TM Unit := do
   let s ← get
@@ -1218,11 +1227,31 @@ def dispatchX (stack : List String) (cur : Nat) (E : Arg) (_t : String) : TM Uni
     let some B := I.fn.blocks[pb]? | throw "internal: landing pad"
     if B.stub then throw "outside fragment: landing pad the exporter stubbed"
     let some (d, cu, cls) := lpadOf B | throw "outside fragment: landing pad not recognised"
-    match cls.head? with
-    | some "f" => softStop cur; return
-    | some _ => throw "outside fragment: catch clause (handler dispatch)"
-    | none => pure ()
-    if !cu then continue
+    -- `Tr::enters` / `Tr::catches`: (enters, selector, bound pointer is the thrown pointer's value)
+    let mut res : Option (Nat × Bool) := none
+    let mut unknown := false
+    for c in cls do
+      if c == "f" then unknown := true; break
+      if c == "null" then res := some (0x7FFFFFF0, false); break
+      if c == _t then res := some (← typeId c, ptrTI _t); break
+      if ptrTI c || ptrTI _t then
+        if (ptrTI c && ptrTI _t) || (ptrTI c && _t == "_ZTIDn") then unknown := true; break
+        continue
+      if fundTI c || fundTI _t then continue
+      if !_t.startsWith "_ZTI" then unknown := true; break
+      throw "outside fragment: catch through a base class (derives)"
+    if unknown then softStop cur; return
+    let (sel, bind) ← match res with
+      | some (sel, byPtr) => do
+        -- the pointer the handler binds, stored at exn+16
+        let (g1, Pl) ← atX E 32
+        let (g2, Adj) ← if byPtr then ldX Pl 64 else pure ([], Pl)
+        let (g3, P16) ← atX E 16
+        let s4 ← stX P16 Adj
+        pure (sel, g1 ++ g2 ++ g3 ++ s4)
+      | none => if cu then pure (0, []) else pure (1, [])
+    if res.isNone && !cu then continue
+    setBlock cur fun q => { q with stmts := q.stmts ++ bind }
     -- frames between the throw and the handler: their locals end
     let mut fs : List PStmt := []
     for κ in s.fr.drop depth do
@@ -1235,7 +1264,7 @@ def dispatchX (stack : List String) (cur : Nat) (E : Arg) (_t : String) : TM Uni
     match look I.env (pairReg d 0), look I.env (pairReg d 1) with
     | some (.v e _), some (.v sl _) =>
       addPhi lb e cur E
-      addPhi lb sl cur (.c 32 0)
+      addPhi lb sl cur (.c 32 sel)
     | _, _ => throw "internal: landing pad pair"
     return
   let top := stack.headD ""
