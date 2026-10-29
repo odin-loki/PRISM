@@ -4,6 +4,7 @@
 #   at most $PRISM_RUN_SLOTS (default 4) jobs run (budget <= $PRISM_RUN_SMALL_MB, default 1024,
 #   ignores the count and the queue order) AND
 #   MemAvailable - sum(running jobs' remaining headroom: budget - current RSS) >= budget + reserve
+#   - half the RSS of large (>1 GB) processes outside prism-run trees (their growth)
 #   (reserve $PRISM_RUN_RESERVE_MB, default 1536), always, even with no other job registered
 #   (programs outside prism-run use memory too). A budget that never fits waits; lower it.
 # - cgroup containment is not possible here: /sys/fs/cgroup/agent is root-owned with processes
@@ -42,7 +43,11 @@ while :; do
     [ -e "$f" ] || continue; read b g < $f; n=$((n+1))
     r=$(treerss ${g:-0}); h=$(( b - ${r:-0} )); [ $h -gt 0 ] && headroom=$((headroom+h))
   done
-  free=$(( $(memavail) - headroom ))
+  # Outside load: large processes (> 1 GB RSS) that are not in any prism-run tree (e.g. a
+  # decompiler) can grow too; reserve half their RSS again for that growth.
+  ours=" "; for f in $D/running/*; do [ -e "$f" ] && { read b g < $f; ours="$ours$(treepids ${g:-0}) "; }; done
+  outside=$(ps -e -o pid=,rss= | awk -v o="$ours" 'BEGIN{n=split(o,a," "); for(i=1;i<=n;i++) m[a[i]]=1} $2>1048576 && !($1 in m) {s+=$2} END{print int(s/1024/2)}')
+  free=$(( $(memavail) - headroom - outside ))
   # First fit in ticket order: an older ticket that fits now goes first; one that does not fit
   # does not block younger ones, until it has waited $PRISM_RUN_HOL_S (600) s: then everyone
   # younger holds off so memory drains for it (no starvation, no head-of-line deadlock).
@@ -59,7 +64,7 @@ while :; do
   fi
   flock -u 8; exec 8>&-
   [ $admitted = 1 ] && break
-  [ $((waited % 60)) = 0 ] && echo "prism-run: queued (ticket $ticket, budget ${budget}MB, MemAvailable $(memavail)MB)" >&2
+  [ $((waited % 60)) = 0 ] && echo "prism-run: queued (ticket $ticket, budget ${budget}MB, MemAvailable $(memavail)MB, outside growth reserve ${outside:-0}MB)" >&2
   sleep 2; waited=$((waited+2))
 done
 export PRISM_MEM_BUDGET_MB=$budget
