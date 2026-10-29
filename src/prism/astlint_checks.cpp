@@ -5694,6 +5694,9 @@ void sibling_report(Ctx& cx) {
     }
 }
 
+// The bespoke CXX-* regex rules run on C++ sources only.
+bool c_source(const Pos& p) { return p.file && p.file->ends_with(".c"); }
+
 // Bespoke CXX-* regex rules that reduce to "a call/declaration of X in a
 // function without Y in the same function" (checkers_cxx.cpp
 // cxx_token_unless / report_first_line). One row per class per function, at
@@ -5709,6 +5712,7 @@ std::string any_callee_name(const json& c) {
 
 void cxx_call_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     const auto base = begin_of(body);
+    if (c_source(base)) return;
     std::unordered_set<std::string> called;  // every callee / member name
     std::unordered_set<std::string> kinds;   // node kinds present
     std::vector<std::pair<const json*, std::string>> calls;  // (call node, callee name)
@@ -5816,6 +5820,7 @@ bool refs_id(const json& n, const std::string& id) {
 
 void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     const auto base = begin_of(body);
+    if (c_source(base)) return;
     auto ok_pos = [&](const json& n) {
         const auto p = begin_of(n);
         return same_file_pos(p, base) && !p.macro;
@@ -5844,7 +5849,7 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     std::vector<const json*> ops, catches, vars, gets, conds;
     std::set<std::string> fn_calls;
     std::set<std::pair<std::string, std::string>> cmp;  // (id, id-of-size-object)
-    std::set<std::string> null_tested, bool_tested;
+    std::set<std::string> null_tested, bool_tested, size_tested;
     collect_nodes(body, [&](const json& n, const json*) {
         const auto& k = kind(n);
         if (k == "VarDecl") {
@@ -5880,6 +5885,16 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
                         cmp.insert({id, ref_id(child(me, 0))});
                 }
             }
+            // Any comparison with c.size() / c.empty() test establishes c's size.
+            if (one_of(op, {"==", "!=", "<", "<=", ">", ">="}))
+                for (int i = 0; i < 2; ++i) {
+                    const auto& o = strip_all(child(n, i));
+                    if (kind(o) != "CXXMemberCallExpr" || n_children(o) == 0) continue;
+                    const auto& me = strip_all(child(o, 0));
+                    auto m = str_field(me, "name");
+                    if (kind(me) == "MemberExpr" && (m == "size" || m == "length") && n_children(me) == 1)
+                        size_tested.insert(ref_id(child(me, 0)));
+                }
         } else if (k == "ImplicitCastExpr" && n_children(n) == 1) {
             auto ck2 = str_field(n, "castKind");
             if (ck2 == "PointerToBoolean" || ck2 == "UserDefinedConversion")
@@ -5967,7 +5982,7 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
         const auto& idx = strip_all(child(*n, 2));
         auto iid = ref_id(idx);
         if (!iid.empty() && cmp.contains({iid, cid})) continue;
-        if (!ok_pos(*n)) continue;
+        if (size_tested.contains(cid) || !ok_pos(*n)) continue;
         auto in = iid.empty() ? std::string("...") : vname[iid];
         ck.add(*n, "CXX-VECTOR-INDEX", vname[cid] + "[" + in + "] without a size()/length() guard");
         break;
@@ -6012,6 +6027,7 @@ bool byte_pointee(std::string t) {
 
 void cxx_borrow_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     const auto base = begin_of(body);
+    if (c_source(base)) return;
     auto ok_pos = [&](const json& n) {
         const auto p = begin_of(n);
         return same_file_pos(p, base) && !p.macro;
@@ -6186,6 +6202,156 @@ void cxx_borrow_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Fourth batch: library objects used without their companion call
+// (CXX-STD-JTHREAD, CXX-SHARED-MUTEX, CXX-LATCH, CXX-CONDITION-WAIT,
+// CXX-STD-FUNCTION-NULL, CXX-FUTURE-GET, CXX-ANY-CAST).
+std::string obj_class(const json& e) {
+    auto t = type_of(strip_all(e));
+    auto tn = template_name(t);
+    if (tn.empty()) tn = record_name(t);
+    if (tn.starts_with("std::")) tn.erase(0, 5);
+    auto c = tn.rfind("::");
+    return c == std::string::npos ? tn : tn.substr(c + 2);
+}
+
+void cxx_object_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    struct MCall {
+        const json* n;
+        std::string obj, cls, name;
+    };
+    std::vector<MCall> mcalls;
+    std::vector<const json*> vars, calls, opcalls, voids;
+    std::set<std::string> local_cls, assigned, bool_tested;
+    bool has_try = false;
+    std::map<std::string, std::string> vname;
+    for (auto& [id, d] : fn.locals) vname[id] = std::string(str_field(*d, "name"));
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl") {
+            vars.push_back(&n);
+            vname[std::string(str_field(n, "id"))] = std::string(str_field(n, "name"));
+            local_cls.insert(obj_class(n));
+        } else if (k == "CXXMemberCallExpr" && n_children(n) > 0) {
+            const auto& me = strip_all(child(n, 0));
+            if (kind(me) == "MemberExpr" && n_children(me) == 1)
+                mcalls.push_back({&n, ref_id(child(me, 0)), obj_class(child(me, 0)), std::string(str_field(me, "name"))});
+        } else if (k == "CallExpr") {
+            calls.push_back(&n);
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) >= 2) {
+            auto on = std::string(str_field(ref_decl(strip_all(child(n, 0))), "name"));
+            if (on == "operator=") assigned.insert(ref_id(child(n, 1)));
+            if (on == "operator()") opcalls.push_back(&n);
+        } else if (k == "CXXTryStmt") {
+            has_try = true;
+        } else if (k == "CStyleCastExpr" && type_of(n) == "void" && n_children(n) == 1) {
+            voids.push_back(&strip_all(child(n, 0)));
+        } else if (k == "ImplicitCastExpr" && n_children(n) == 1) {
+            auto c2 = str_field(n, "castKind");
+            if (c2 == "UserDefinedConversion" || c2 == "PointerToBoolean")
+                if (auto id = ref_id(child(n, 0)); !id.empty()) bool_tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(n, "opcode") == "!" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) bool_tested.insert(id);
+        }
+    });
+    for (auto& m : mcalls)
+        if (m.name == "operator bool") bool_tested.insert(m.obj);
+    auto by_offset = [&](const json* a, const json* b) { return off(*a) < off(*b); };
+    std::sort(vars.begin(), vars.end(), by_offset);
+    std::sort(mcalls.begin(), mcalls.end(), [&](auto& a, auto& b) { return off(*a.n) < off(*b.n); });
+    auto called_on = [&](const std::string& obj, std::initializer_list<std::string_view> names) {
+        for (auto& m : mcalls)
+            if (m.obj == obj && one_of(m.name, names)) return true;
+        return false;
+    };
+    auto any_member = [&](std::initializer_list<std::string_view> names) {
+        for (auto& m : mcalls)
+            if (one_of(m.name, names)) return true;
+        return false;
+    };
+    // CXX-STD-JTHREAD: a jthread local in a function that never calls request_stop().
+    if (!any_member({"request_stop"}))
+        for (auto* v : vars)
+            if (obj_class(*v) == "jthread" && ok_pos(*v)) {
+                ck.add(*v, "CXX-STD-JTHREAD",
+                       vname[std::string(str_field(*v, "id"))] + " is constructed without request_stop()");
+                break;
+            }
+    // CXX-SHARED-MUTEX / CXX-LATCH: m.lock() without m.unlock() or an RAII lock;
+    // l.wait() without l.count_down().
+    const bool raii = local_cls.contains("lock_guard") || local_cls.contains("unique_lock") ||
+                      local_cls.contains("scoped_lock") || local_cls.contains("shared_lock");
+    for (auto& m : mcalls) {
+        if (m.cls == "shared_mutex" && m.name == "lock" && !raii && !called_on(m.obj, {"unlock"}) && ok_pos(*m.n)) {
+            ck.add(*m.n, "CXX-SHARED-MUTEX", vname[m.obj] + ".lock() without unlock or lock_guard");
+            break;
+        }
+    }
+    for (auto& m : mcalls) {
+        if (m.cls == "latch" && m.name == "wait" && !called_on(m.obj, {"count_down"}) && ok_pos(*m.n)) {
+            ck.add(*m.n, "CXX-LATCH", vname[m.obj] + ".wait() without count_down()");
+            break;
+        }
+    }
+    // CXX-CONDITION-WAIT: cv.wait(lk) with no predicate.
+    for (auto& m : mcalls) {
+        if ((m.cls != "condition_variable" && m.cls != "condition_variable_any") || m.name != "wait") continue;
+        if (n_children(*m.n) != 2 || !ok_pos(*m.n)) continue;
+        ck.add(*m.n, "CXX-CONDITION-WAIT", "cv.wait(lk) without a predicate lambda");
+        break;
+    }
+    // CXX-STD-FUNCTION-NULL: a std::function local called without a truth test.
+    std::sort(opcalls.begin(), opcalls.end(), by_offset);
+    for (auto* c : opcalls) {
+        auto id = ref_id(child(*c, 1));
+        if (id.empty() || !vname.contains(id) || obj_class(child(*c, 1)) != "function") continue;
+        if (bool_tested.contains(id) || !ok_pos(*c)) continue;
+        ck.add(*c, "CXX-STD-FUNCTION-NULL", vname[id] + " invoked without a truth test");
+        break;
+    }
+    // CXX-FUTURE-GET: f.get() on a default-constructed future never assigned
+    // (no get_future()/promise in the function, no valid() test).
+    if (!any_member({"get_future"}) && !local_cls.contains("promise")) {
+        std::set<std::string> empty_fut;
+        for (auto* v : vars) {
+            if (obj_class(*v) != "future") continue;
+            bool init = false;
+            for (auto& c : inner(*v)) {
+                const auto& e = strip_all(c);
+                if (kind(e) != "CXXConstructExpr" || n_children(e) > 0) init = true;
+            }
+            if (!init) empty_fut.insert(std::string(str_field(*v, "id")));
+        }
+        for (auto& m : mcalls) {
+            if (m.name != "get" || !empty_fut.contains(m.obj) || assigned.contains(m.obj)) continue;
+            if (called_on(m.obj, {"valid"}) || !ok_pos(*m.n)) continue;
+            ck.add(*m.n, "CXX-FUTURE-GET", vname[m.obj] + ".get() without a prior future assignment");
+            break;
+        }
+    }
+    // CXX-ANY-CAST: any_cast<T>(a) by value (not the pointer form), outside
+    // try, with no a.type() / a.has_value() test, not cast to void.
+    if (!has_try) {
+        std::sort(calls.begin(), calls.end(), by_offset);
+        for (auto* c : calls) {
+            if (callee_name(*c) != "any_cast" || n_children(*c) != 2 || !ok_pos(*c)) continue;
+            if (std::find(voids.begin(), voids.end(), c) != voids.end()) continue;
+            const auto& a = strip_all(child(*c, 1));
+            if (is_pointer_type(type_of(a))) continue;
+            auto id = ref_id(a);
+            if (!id.empty() && called_on(id, {"type", "has_value"})) continue;
+            ck.add(*c, "CXX-ANY-CAST", "any_cast by value without type() or pointer form");
+            break;
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6233,6 +6399,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_call_rule_checks(*body, fn, w.ck);
     cxx_value_rule_checks(*body, fn, w.ck);
     cxx_borrow_rule_checks(*body, fn, w.ck);
+    cxx_object_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

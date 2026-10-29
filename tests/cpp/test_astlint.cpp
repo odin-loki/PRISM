@@ -1564,6 +1564,71 @@ std::uintptr_t bit_cast_ok(char *p) {
 float *bit_cast_bad(int *p) {
     return std::bit_cast<float *>(p); // expect: CXX-BIT-CAST
 }
+#include <any>
+#include <latch>
+#include <shared_mutex>
+#include <stop_token>
+void jthread_bad() {
+    std::jthread jt(thread_body); // expect: CXX-STD-JTHREAD
+}
+void jthread_ok() {
+    std::jthread jt(thread_body);
+    jt.request_stop();
+}
+int smx_bad(int &v) {
+    std::shared_mutex smx;
+    smx.lock(); // expect: CXX-SHARED-MUTEX
+    return v;
+}
+int smx_ok(int &v) {
+    std::shared_mutex smx;
+    smx.lock();
+    int r = v;
+    smx.unlock();
+    return r;
+}
+void latch_bad() {
+    std::latch lt(1);
+    lt.wait(); // expect: CXX-LATCH
+}
+void latch_ok() {
+    std::latch lt(1);
+    lt.count_down();
+    lt.wait();
+}
+void cv_bad() {
+    std::unique_lock<std::mutex> lk(g_m);
+    g_cv.wait(lk); // expect: CXX-CONDITION-WAIT
+}
+void cv_ok(bool &ready) {
+    std::unique_lock<std::mutex> lk(g_m);
+    g_cv.wait(lk, [&] { return ready; });
+}
+int fn_null_bad(std::function<int()> make) {
+    std::function<int()> f = make;
+    return f(); // expect: CXX-STD-FUNCTION-NULL
+}
+int fn_null_ok(std::function<int()> make) {
+    std::function<int()> f = make;
+    if (f)
+        return f();
+    return 0;
+}
+int future_bad() {
+    std::future<int> fu;
+    return fu.get(); // expect: CXX-FUTURE-GET
+}
+int future_ok() {
+    std::future<int> fu = std::async(std::launch::async, async_work);
+    return fu.get();
+}
+int any_bad(const std::any &a) {
+    return std::any_cast<int>(a); // expect: CXX-ANY-CAST
+}
+int any_ok(const std::any &a) {
+    const int *p = std::any_cast<int>(&a);
+    return p ? *p : 0;
+}
 )";
 
 }  // namespace
