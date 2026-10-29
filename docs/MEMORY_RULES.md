@@ -111,3 +111,20 @@
   (operator new/bad_alloc landing pads, pair/node construction, _M_owner iterator bookkeeping): bisect
   those next by trimming the model (each build-mf2 rebuild ~20 min under load).
 - prism-run queue: full of 4 svcomp/astlint jobs for hours; budget <= 1000 MB bypasses it for profiling.
+
+## Handoff 2026-10-30 ~08:30 AEDT (umap ablation, no rebuild needed)
+- Ablation harness: copy the model headers to /tmp/mf/abl/<v>/ and include them by absolute path from the
+  test (the include guards keep the embedded model out). Each variant runs in about 1 min at a 1 GB budget,
+  which skips the prism-run queue. Kept in /workspace/logs/umap-abl (run.sh, mkh.sh, h8, h9).
+- Single insert (/tmp/mf/abl/v3): base UNKNOWN (Z3 > 1 GB). Variants changed one thing each:
+  without _M_prepare_insert PROVED 10 s; without find_node, iter-link or the destructor still UNKNOWN; % 13
+  fast path still UNKNOWN; __builtin_trap before the prime-table slow path PROVED 38 s.
+  => CAUSE: _M_next_bkt's std::lower_bound over the 304-entry prime table (symbolic index into a
+  constant array). It is only taken for n >= 14, but n arrives through memory, so it is always encoded.
+- h8 (297-way if-chain of constant compares): one insert PROVED 7-48 s, but the full file hits
+  "unrolling exceeds 6000 block instances". h9 (straight-line masks, no branches): one insert PROVED
+  111 s, but the full file runs out of budget at 1 GB. Neither is committed yet. Both match the original
+  on n in [0, 2e5], 2^k +- 3 and every prime +- 1, including _M_next_resize (eq_*.cpp).
+- Next: test h9 at the real budget (3400) once a prism-run slot frees; or cut the number of _M_next_bkt
+  call sites (prepare_insert re-calls it on a prime it already returned; do_rehash can skip it when
+  bkt >= bkt_for_elements(n+1)); or two levels (branch on about 18 coarse ranges, masks within one).
