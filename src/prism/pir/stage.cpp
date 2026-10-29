@@ -1105,9 +1105,46 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 
 }  // namespace
 
+namespace {
+// A C unit whose meaning is the same under ILP32 and LP64: it names no
+// type or function whose width differs (anything spelled with `long`,
+// size_t/ssize_t, ptrdiff/intptr, wchar_t, time_t, off_t), takes no size
+// or alignment, declares no pointer (no pointer difference, no
+// pointer-integer conversion), and is not C++. int, short, char, long
+// long, arrays and string literals are the same width on both.
+bool ilp32_neutral(const fs::path& p) {
+    if (is_cxx(p)) return false;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return false;
+    std::string t((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // The SV-COMP preamble's prototype of __assert_fail (only called with
+    // string literals by reach_error) is the one pointer declaration allowed.
+    static Regex assert_proto("extern\\s+void\\s+__assert_fail\\s*\\([^;]*;");
+    {
+        auto ms = assert_proto.finditer(t);
+        for (auto it = ms.rbegin(); it != ms.rend(); ++it)
+            if (!it->spans.empty() && it->spans[0].first >= 0)
+                t.erase(static_cast<std::size_t>(it->spans[0].first),
+                        static_cast<std::size_t>(it->spans[0].second - it->spans[0].first));
+    }
+    static Regex bad(
+        "long|size_t|ptr|wchar|time_t|off_t|sizeof|alignof|_Alignof|offsetof|__int128|"
+        "\\b(?:void|char|short|int|unsigned|signed|_Bool|long|float|double)\\s*\\*|"
+        "\\b(?:struct|union)\\b|->|\\bmalloc\\b|\\balloca\\b|\\bmem[a-z]+\\s*\\(");
+    if (bad.search(t)) return false;
+    // `long long` is the same width, but `long` alone is not; the scan above
+    // already refuses both, keeping the rule simple.
+    return true;
+}
+}  // namespace
+
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
-    // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task here.
-    if (is_ilp32(cfg.data_model)) {
+    // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task
+    // here, unless every unit is data-model neutral (ilp32_neutral): then
+    // its LP64 IR computes exactly what the ILP32 program does.
+    if (is_ilp32(cfg.data_model) && !std::all_of(sources.begin(), sources.end(), [](const fs::path& p) {
+            return !is_unit(p) || ilp32_neutral(p);
+        })) {
         Finding f;
         f.stage = "pir";
         f.status = std::string(laws::NOTRUN);
