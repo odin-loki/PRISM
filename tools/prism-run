@@ -1,7 +1,8 @@
 #!/bin/bash
 # prism-run CMD...: box-safety wrapper for heavy PRISM runs (docs/MEMORY_RULES.md)
 # - admission box-wide in ticket order (first fit, aged head gets priority after 600 s); starts only when
-#   at most $PRISM_RUN_SLOTS (default 2) jobs run AND
+#   at most $PRISM_RUN_SLOTS (default 4) jobs run (budget <= $PRISM_RUN_SMALL_MB, default 1024,
+#   ignores the count and the queue order) AND
 #   MemAvailable - sum(running jobs' remaining headroom: budget - current RSS) >= budget + reserve
 #   (reserve $PRISM_RUN_RESERVE_MB, default 1536), always, even with no other job registered
 #   (programs outside prism-run use memory too). A budget that never fits waits; lower it.
@@ -14,7 +15,7 @@
 # - RSS, oom_score_adj and kills cover every descendant, including ones in new sessions.
 # - no RLIMIT_AS (ASan reserves TBs); PRISM_RUN_AS=1 opts into a 4x --as backstop.
 set -u
-SLOTS=${PRISM_RUN_SLOTS:-2}; RESERVE=${PRISM_RUN_RESERVE_MB:-1536}
+SLOTS=${PRISM_RUN_SLOTS:-4}; SMALL=${PRISM_RUN_SMALL_MB:-1024}; RESERVE=${PRISM_RUN_RESERVE_MB:-1536}
 D=${PRISM_RUN_DIR:-/tmp/prism-run-locks}; mkdir -p $D/queue $D/running 2>/dev/null; chmod 1777 $D $D/queue $D/running 2>/dev/null
 memavail() { awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo; }
 # all descendants by parent pid (children may setsid into new sessions/groups)
@@ -23,7 +24,7 @@ treerss() { local ps_=$(treepids $1); [ -z "$ps_" ] && { echo 0; return; }; ps -
 avail=$(memavail)
 cg=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
 [ "$cg" != max ] && [ -n "$cg" ] && { cgm=$((cg/1048576)); [ $cgm -lt $avail ] && avail=$cgm; }
-budget=${PRISM_MEM_BUDGET_MB:-$(( avail * 6 / 10 / SLOTS ))}
+budget=${PRISM_MEM_BUDGET_MB:-$(( avail * 6 / 10 / 2 ))}
 [ -z "${PRISM_MEM_BUDGET_MB:-}" ] && [ $budget -gt 6000 ] && budget=6000
 [ $budget -lt 512 ] && budget=512
 # ticket: nanosecond time + pid gives FIFO order across workers
@@ -48,11 +49,12 @@ while :; do
   mine=0; now=$(date +%s)
   for t in $(ls $D/queue | sort); do
     [ "$t" = "$ticket" ] && { mine=1; break; }
+    [ $budget -le $SMALL ] && continue  # small jobs (unit-test subsets) never wait behind big ones
     tb=$(cat $D/queue/$t 2>/dev/null || echo 0)
     [ $free -ge $((tb+RESERVE)) ] && break
     [ $(( now - ${t%%-*} / 1000000000 )) -ge ${PRISM_RUN_HOL_S:-600} ] && break
   done
-  if [ $mine = 1 ] && [ $n -lt $SLOTS ] && [ $free -ge $((budget+RESERVE)) ]; then
+  if [ $mine = 1 ] && { [ $n -lt $SLOTS ] || [ $budget -le $SMALL ]; } && [ $free -ge $((budget+RESERVE)) ]; then
     echo "$budget 0" > $D/running/$$; rm -f $D/queue/$ticket; admitted=1
   fi
   flock -u 8; exec 8>&-

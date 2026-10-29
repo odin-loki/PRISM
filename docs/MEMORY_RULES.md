@@ -30,7 +30,8 @@
 ## prism-run admission control (2026-10-29, after box-wide OOM kills)
 - FIFO across workers: each call takes a ticket in /tmp/prism-run-locks/queue; only the oldest
   waiting ticket may start.
-- It starts only if fewer than PRISM_RUN_SLOTS (2) jobs run and MemAvailable minus the running
+- It starts only if fewer than PRISM_RUN_SLOTS (4) jobs run (jobs with budget <= 1 GB skip the
+  count and the queue order) and MemAvailable minus the running
   jobs' remaining headroom (budget - current RSS) >= its budget + 1.5 GB (PRISM_RUN_RESERVE_MB).
   Always, even with no other job registered (fixed 2026-10-29 late). Install prism-run only via temp file + mv.
 - Watchdog kills a job at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
