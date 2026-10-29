@@ -198,3 +198,9 @@ to do: the strcat_any_true 1200 s rerun
 retrying), strncat_any_true at 600 s (its attempt failed because prism-run
 was being edited, rc=2; rerun it with /workspace/logs/run_strcat5.sh
 strncat_any_true), and the pir-vs-bmc gate (0 hard conflicts required).
+
+pir-bmc full prism_tests at db219d691 (2026-10-29): 1350 cases, 1342 passed, 8 failed, none
+from this branch (it touches no astlint/ai-assist code). 7 astlint cases: Clang-AST lints NOTRUN
+(libclang cannot find its resource dir / planted files lack includes), fixed on work/astlint
+(620d26eb6, c5eba727b). 1 ai-assist regress case: the generated ctest project's cmake/ctest
+step exits 1 on the box (environmental, pre-existing).
