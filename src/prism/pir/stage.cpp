@@ -1158,6 +1158,20 @@ bool ilp32_neutral(const fs::path& p) { return !is_cxx(p) && ilp32_neutral_text(
 std::optional<std::string> ilp32_long_as_int(const fs::path& p) {
     if (is_cxx(p)) return std::nullopt;
     std::string t = read_all(p);
+    const std::string orig = t;
+    // CIL's null test `(unsigned long )((void *)0)` is the integer 0 under
+    // either data model: spell it `(unsigned long )(0       )` (same length
+    // and lines) so the null pointer constant does not refuse the unit.
+    {
+        static Regex nullcast("\\(\\s*unsigned\\s+long\\s*\\)\\s*\\(\\(void \\*\\)0\\)");
+        auto ms = nullcast.finditer(t);
+        for (auto it = ms.rbegin(); it != ms.rend(); ++it)
+            if (!it->spans.empty() && it->spans[0].first >= 0) {
+                auto b = static_cast<std::size_t>(it->spans[0].first), e = static_cast<std::size_t>(it->spans[0].second);
+                std::size_t k = t.find("((void *)0)", b);
+                if (k != std::string::npos && k + 11 == e) t.replace(k, 11, "(0        )");
+            }
+    }
     static Regex ldouble("\\blong\\s+double\\b");
     if (ldouble.search(t)) return std::nullopt;
     std::string out;
@@ -1220,7 +1234,7 @@ std::optional<std::string> ilp32_long_as_int(const fs::path& p) {
         out += c;
         ++i;
     }
-    if (out == t || !ilp32_neutral_text(out)) return std::nullopt;
+    if (out == orig || !ilp32_neutral_text(out)) return std::nullopt;
     return out;
 }
 }  // namespace
