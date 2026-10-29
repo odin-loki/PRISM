@@ -812,6 +812,35 @@ void alloca_ok(void) {
     char *p = alloca(16);
     (void)p;
 }
+struct cap_buf { char *data; unsigned cap; };
+int cap_first_bad(struct cap_buf *b) {
+    char *n;
+    b->cap *= 2; // expect: MEM-CAPACITY-FIRST
+    n = realloc(b->data, b->cap);
+    if (n == NULL)
+        return -1;
+    b->data = n;
+    return 0;
+}
+int cap_first_restored(struct cap_buf *b) {
+    char *n;
+    b->cap *= 2;
+    n = realloc(b->data, b->cap);
+    if (n == NULL) {
+        b->cap /= 2;
+        return -1;
+    }
+    b->data = n;
+    return 0;
+}
+int cap_after_ok(struct cap_buf *b) {
+    char *n = realloc(b->data, b->cap * 2);
+    if (!n)
+        return -1;
+    b->data = n;
+    b->cap *= 2;
+    return 0;
+}
 void sprintf_bad(const char *s) {
     char b[8];
     sprintf(b, "%s", s); // expect: STR-SPRINTF

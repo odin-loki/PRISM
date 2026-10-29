@@ -4758,6 +4758,145 @@ void api_assign_checks(const json& body, Checker& ck) {
     }
 }
 
+// MEM-CAPACITY-FIRST: a capacity field is grown (+=, *=, <<=, ++) before
+// the allocation that is supposed to earn it, and the allocation's failure
+// arm leaves without restoring the field.
+std::string member_chain(const json& e) {
+    const auto& s = strip_all(strip_parens(e));
+    if (kind(s) == "MemberExpr" && n_children(s) == 1) {
+        auto base = member_chain(child(s, 0));
+        if (base.empty()) return {};
+        return base + (s.value("isArrow", false) ? "->" : ".") + str_field(s, "name");
+    }
+    if (kind(s) == "DeclRefExpr") return std::string(str_field(ref_decl(s), "name"));
+    return {};
+}
+
+void capacity_first_checks(const json& body, Checker& ck, Ctx& cx) {
+    static const std::set<std::string> allocs{"realloc", "reallocarray", "malloc", "calloc",
+                                              "mallocarray", "memcpy", "memmove"};
+    static const std::set<std::string> dead{"err", "errx", "xo_err", "xo_errx", "abort", "exit", "panic",
+                                            "_errx", "out_of_mem", "AbortProgram", "fatal", "bsdar_errc"};
+    static Regex nullt(R"(==\s*(?:NULL|nullptr|0)\b|(?:NULL|nullptr)\s*==|!\s*[A-Za-z_])");
+    const auto base = begin_of(body);
+    auto grown = [](const json& st) -> std::string {
+        const auto& e = strip_all(st);
+        const auto& k = kind(e);
+        if (k == "CompoundAssignOperator") {
+            auto op = str_field(e, "opcode");
+            if ((op == "+=" || op == "*=" || op == "<<=") && n_children(e) == 2) {
+                const auto& l = strip_all(child(e, 0));
+                if (kind(l) == "MemberExpr") return member_chain(l);
+            }
+        } else if (k == "UnaryOperator") {
+            auto op = str_field(e, "opcode");
+            if ((op == "++") && n_children(e) == 1 && kind(strip_all(child(e, 0))) == "MemberExpr")
+                return member_chain(child(e, 0));
+        }
+        return {};
+    };
+    auto mentions_chain = [&](const json& n, const std::string& var) {
+        bool hit = false;
+        collect_nodes(n, [&](const json& x, const json*) {
+            if (!hit && kind(x) == "MemberExpr" && member_chain(x) == var) hit = true;
+        });
+        return hit;
+    };
+    auto alloc_with = [&](const json& n, const std::string& var) {
+        bool hit = false;
+        collect_nodes(n, [&](const json& x, const json*) {
+            if (hit || !is_call_kind(kind(x)) || !allocs.contains(std::string(callee_name(x)))) return;
+            if (mentions_chain(x, var)) hit = true;
+        });
+        return hit;
+    };
+    auto leaves = [](const json& n) {
+        bool hit = false;
+        collect_nodes(n, [&](const json& x, const json*) {
+            auto k = kind(x);
+            if (k == "ReturnStmt" || k == "GotoStmt" || k == "BreakStmt" || k == "ContinueStmt") hit = true;
+        });
+        return hit;
+    };
+    auto calls_dead_or_release = [&](const json& n, const std::string& var) {
+        bool hit = false;
+        auto dot = var.find_first_of(".-");
+        std::string owner = dot == std::string::npos ? std::string() : var.substr(0, dot);
+        collect_nodes(n, [&](const json& x, const json*) {
+            if (hit || !is_call_kind(kind(x))) return;
+            auto cn = std::string(callee_name(x));
+            if (dead.contains(cn)) hit = true;
+            std::string low = cn;
+            for (auto& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (!owner.empty() && (low.find("free") != std::string::npos || low.find("destroy") != std::string::npos)) {
+                auto a = call_args(x);
+                if (a.size() == 1 && member_chain(*a[0]) == owner) hit = true;
+            }
+        });
+        return hit;
+    };
+    std::set<std::string> reported;
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (kind(n) != "CompoundStmt") return;
+        const auto& st = inner(n);
+        for (std::size_t i = 0; i < st.size(); ++i) {
+            auto var = grown(st.at(i));
+            if (var.empty()) continue;
+            const auto p = begin_of(st.at(i));
+            if (!same_file_pos(p, base) || p.macro) continue;
+            std::optional<std::size_t> aidx;
+            for (std::size_t j = i + 1; j < std::min(i + 6, st.size()); ++j)
+                if (alloc_with(st.at(j), var)) {
+                    aidx = j;
+                    break;
+                }
+            if (!aidx) continue;
+            const json* arm = nullptr;
+            for (std::size_t j = *aidx; j < std::min(*aidx + 7, st.size()); ++j) {
+                const auto& s2 = st.at(j);
+                if (kind(s2) != "IfStmt" || n_children(s2) < 2) continue;
+                const json* cond = nullptr;
+                for (auto& c : inner(s2)) {
+                    if (kind(c) == "DeclStmt" || kind(c) == "VarDecl") continue;
+                    cond = &c;
+                    break;
+                }
+                if (!cond || !nullt.search(std::string(cx.text_of(*cond)) + " ")) {
+                    // libclang text can run one token long; also accept a ! operator node.
+                    bool neg = false;
+                    if (cond)
+                        collect_nodes(*cond, [&](const json& x, const json*) {
+                            if (kind(x) == "UnaryOperator" && str_field(x, "opcode") == "!") neg = true;
+                            if (kind(x) == "BinaryOperator" && str_field(x, "opcode") == "==" && n_children(x) == 2 &&
+                                (is_null_ptr_expr(child(x, 0)) || is_null_ptr_expr(child(x, 1))))
+                                neg = true;
+                        });
+                    if (!neg) continue;
+                }
+                if (!leaves(s2)) continue;
+                arm = &s2;
+                break;
+            }
+            if (!arm) continue;
+            if (calls_dead_or_release(*arm, var)) continue;
+            // The arm restores or mentions the field.
+            bool restores = false;
+            {
+                bool skip_cond = true;
+                for (auto& c : inner(*arm)) {
+                    if (skip_cond && kind(c) != "DeclStmt" && kind(c) != "VarDecl") {
+                        skip_cond = false;
+                        continue;
+                    }
+                    if (mentions_chain(c, var)) restores = true;
+                }
+            }
+            if (restores || !reported.insert(var).second) continue;
+            ck.add(st.at(i), "MEM-CAPACITY-FIRST", var + " grown before the allocation that is supposed to earn it");
+        }
+    });
+}
+
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
 // first later index, deref, `->`, free() or return of p, unless p is
 // assigned in between.
@@ -5278,6 +5417,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     flex_array_checks(*body, w.ck, cx);
     onesided_index_checks(f, *body, w.ck);
     api_assign_checks(*body, w.ck);
+    capacity_first_checks(*body, w.ck, cx);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
@@ -5332,7 +5472,7 @@ void walk_decl(const json& d, Ctx& cx, std::vector<std::string>& tparams) {
 
 FileResult analyze_unit(Unit& u, const FileSet& files) {
     FileResult r;
-    Ctx cx{files, u, {}, {}, {}, {}, {}, {}, {}, {}};
+    Ctx cx{files, u, {}, {}, {}, {}, {}, {}, {}, {}, {}};
     for (auto& d : u.decls) collect_enums(d, cx);
     if (u.backend != "libclang") {
         for (auto& d : u.decls) collect_defined(d, cx);
