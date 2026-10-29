@@ -1066,6 +1066,13 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                 f.message = "clang front end failed on full unit (recovered *_ok slice only): " + low.err;
                 f.extra["frontend"] = fe.version;
                 f.extra["ok_recovery"] = "true";
+                if (!is_cxx(u.path) && low.err.find("function definition is not allowed here") != std::string::npos) {
+                    // GNU C nested functions (gcc C, not implemented by clang): Law 1
+                    f.status = std::string(laws::NOTRUN);
+                    f.message = "GNU C nested function (a gcc extension clang does not implement); pir lowers "
+                                "with clang: not checked outside the recovered *_ok slice";
+                    f.extra["install"] = "a gcc front end (pir has none)";
+                }
                 return f;
             }());
             return std::move(*recovered);
@@ -1085,6 +1092,13 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             f.message = "does not compile standalone: header '" + (mh->group(1).empty() ? mh->group(2) : mh->group(1)) +
                         "' not found (include path unknown); not checked";
             f.extra["install"] = "generate compile_commands.json (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, bear)";
+        } else if (!is_cxx(u.path) && low.err.find("function definition is not allowed here") != std::string::npos) {
+            // GNU C nested functions: valid gcc C that clang does not
+            // implement. A missing front end is NOTRUN, never clean (Law 1).
+            f.status = std::string(laws::NOTRUN);
+            f.message = "GNU C nested function (a gcc extension clang does not implement); pir lowers with clang: "
+                        "not checked";
+            f.extra["install"] = "a gcc front end (pir has none)";
         }
         out.push_back(std::move(f));
         return res;

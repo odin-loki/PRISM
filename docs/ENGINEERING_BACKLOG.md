@@ -54,6 +54,17 @@ at the start of the day), agreement 3450/4602. Gap reasons as the gate prints th
 12 `absent: clang rejects the unit`, 1 `absent: no pir result for the unit`
 (`unbounded_string_contracts.cpp` over the cap), 1 `absent` (`sgn`, same unit).
 
+**2026-10-29 rerun (current binary):** hard conflicts **0**, superset gaps **10**,
+agreement 3460/4647. Reasons: 8 `absent: clang rejects the unit` (planted lint
+snippets with no `#include`), 2 `absent: NOTRUN, GNU C nested function`.
+Remaining unbounded proof-rate items in `unbounded_string_contracts.cpp` at a
+60 s function budget: `strcat_any_true`, `strncat_any_true`, `strcmp_any_true`,
+`strcmp_any_prefix_true`, `strncmp_any_true` BOUNDED. `strcmp_any_prefix_true`
+proves PROVED-UNBOUNDED at a 300 s budget (budget-limited). `strcmp_any_true`
+is not: Houdini reaches its fixpoint in 3 rounds (42 inductive invariants)
+and the final cut-program query (2 inlined `strcmp` loops, 492 properties)
+runs out of time even split by property group.
+
 **Uncompilable units stay in the superset gate (decision).** They are not
 excluded: (a) some are valid code that pir's fixed language level rejects
 (dynamic exception specifications are C++11/14, pir lowers C++ as C++23;
