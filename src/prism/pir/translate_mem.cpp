@@ -895,6 +895,28 @@ void MemTr::icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line
     t_.push(b, s);
 }
 
+void MemTr::addr_cmp(int b, int dst, const std::string& pred, Arg x, Arg y) {
+    static const std::map<std::string, Op> preds{
+        {"eq", Op::Eq},   {"ne", Op::Ne},   {"ugt", Op::Ugt}, {"uge", Op::Uge}, {"ult", Op::Ult},
+        {"ule", Op::Ule}};
+    auto it = preds.find(pred);
+    if (it == preds.end()) throw Unenc{"UNENCODED: signed icmp " + pred + " of address values"};
+    x.width = y.width = kPtrW;
+    Arg raw = p2(b, it->second, x, y);
+    Arg r = raw;
+    if (pred != "eq" && pred != "ne") {
+        Arg same = p2(b, Op::Eq, obj(b, x), obj(b, y));
+        Arg unk = t_.havoc(b, 1, false, true);
+        r = t_.assign(b, Op::Select, 1, {same, raw, unk}, "c");
+    }
+    Stmt s;
+    s.kind = Stmt::Assign;
+    s.op = Op::Copy;
+    s.dst = dst;
+    s.args = {r};
+    t_.push(b, s);
+}
+
 void MemTr::ptr_sub_check(int b, Arg x, Arg y, int line) {
     t_.check(b, p2(b, Op::Ne, obj(b, x), obj(b, y)), "ptr-sub", "PTR-COMPARE",
              "subtraction of pointers into different objects (C17 6.5.6p9)", line);
