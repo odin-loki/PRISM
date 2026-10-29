@@ -78,12 +78,12 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
-2. **D136 (partial)** — stdio / FILE models: `__prism_havoc_bytes` is **proved**
-   (2026-10-29, branch `work/proofs`): Lean `SInst.hhavoc` / `sHavoc` / `havocW`,
-   `translateX` mirrors `MemTr::write_havoc` (`havocCore`), `havoc_run` +
-   `trSInstX` sim case in `XRefine` (no sorry, audited). Remaining: `PRISM_FILEK` in `hfree`, `L
-   hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
-3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
+2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model
+   primitives proved in Lean with C++ export parity (no sorry, audited, 104 theorems):
+   `__prism_havoc_bytes` (`hhavoc`), `__prism_read_range` (`hread`), `__prism_check`
+   (`vcheck`), `__prism_memset` (`hmemset`), `__prism_fresh_cstr` (`hfresh`), FILE kind 8
+   in `hfree` (`freeChkF`). Fixtures `stdio_file` / `stdio_prims` agree-ext. Next: re-run
+   `pir-lean-check` over `testdata` to count how many stdio functions move to agree-ext.
 
 Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 

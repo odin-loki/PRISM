@@ -483,7 +483,7 @@ fragment is written as `L unsupported <why>`. Pointer values are written with wi
 `L retptr` marks the analysed function as returning a pointer (the
 stack-escape check), a harness-bound pointer parameter is an `L glob` line
 at the start of the entry block and an unbound one `L ptrparam`; the model
-intrinsics are `L halloc`, `L hfree`, `L hobjsz`, `L hhavoc` (`__prism_havoc_bytes`, proved in `XHavoc.lean`), `L vassume` and `L nondet`, and
+intrinsics are `L halloc`, `L hfree`, `L hobjsz`, `L hhavoc` (`__prism_havoc_bytes`), `L hread`, `L hmemset`, `L hfresh`, `L vcheck` (all proved in `XHavoc.lean`), `L vassume` and `L nondet`, and
 `__prism_alloc_failed()` is written as the one-byte store it is into the flag
 object `%__prism.oom` (an `L glob` after the entry globals, passed to the
 inlined functions that can reach it as an extra last argument — the
@@ -784,11 +784,16 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   pointer parameters (`byval`, `sret`, constant-size contracts), and the
   heap of the libc models through `__prism_alloc`/`__prism_free`, and
   `__prism_obj_size` (`hobjszCore_run`; the `hobjsz` case of `sinstX_sim`).
-  `__prism_memcpy` is the existing `memcpy` statement. Not yet:
-  `FILE` objects (`fopen`/`fclose`: `__prism_havoc_bytes` is `L hhavoc` in
-  the C++ export and still outside the Lean checker; `MemTr::write_havoc`
-  needs `trSInstX`, the `XLazy` matches, and a `Check.lean` clause before it
-  can leave `outside`, and no `admit` stands in for that), `abort()` (it reads the allocation-failed flag and
+  `__prism_memcpy` is the existing `memcpy` statement. The stdio / FILE
+  primitives (D136, `XHavoc.lean`, `XHeap.lean`) are proved: `L hhavoc`
+  (`__prism_havoc_bytes`, `havoc_run`), `L hread` (`__prism_read_range`,
+  `hread_run`), `L vcheck` (`__prism_check` with a literal class,
+  `pred_eq`), `L hmemset` (`__prism_memset`, i32 byte truncated after the
+  checks, `hmemset_run`), `L hfresh` (`__prism_fresh_cstr`, drawn length
+  below 4096, `freshCore_run`), and `L hfree p 8` (FILE release, the single
+  `free-invalid` kind check of `MemTr::dealloc`, `freeChkF_run`); fixtures
+  `stdio_file` (fopen/fgets/fclose/getenv) and `stdio_prims` are `agree-ext`.
+  Not yet: `abort()` (it reads the allocation-failed flag and
   ends the block), `exit`, contracts whose size is another parameter (the
   harness assumes a range on it: a theorem conditional on that assumption),
   `ptrtoint`/`inttoptr`, globals whose initialiser holds pointers, globals
