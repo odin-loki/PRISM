@@ -153,7 +153,14 @@ bool over_budget() {
     // trip at 80%: Z3 stops at its next interrupt check and the watchdog
     // samples every 50 ms, so the peak lands above the trip point
     // (priority_queue_contracts.cpp: 3.5 GB peak with a 3 GB trip)
-    if (rss >= b * 4 / 5) return true;
+    // trip point in percent of the budget: $PRISM_MEM_TRIP_PCT (default 80,
+    // clamped to 50..95); peaks land ~35 points above it (overshoot study)
+    static const uint64_t trip_pct = [] {
+        const char* e = std::getenv("PRISM_MEM_TRIP_PCT");
+        uint64_t v = e && *e ? std::strtoull(e, nullptr, 10) : 80;
+        return v < 50 ? uint64_t{50} : v > 95 ? uint64_t{95} : v;
+    }();
+    if (rss >= b * trip_pct / 100) return true;
     // Fast growth (over ~1 GB/s, unordered_map_contracts.cpp was killed at
     // 3379 MB): trip at 70% so the stop latency still lands under budget.
     static std::mutex mu;

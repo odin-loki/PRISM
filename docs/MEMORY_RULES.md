@@ -138,3 +138,11 @@
 - 2c73112db: h10 is in the model. tools/models/gen_prime_lb.py regenerates it (idempotent);
   tools/models/check_prime_lb.sh <orig> <new> checks equality (201360 inputs IDENTICAL).
 - Running: full unordered_map_contracts pir at 3000 MB, binary /tmp/mf/prism-h10, log /tmp/mf/u3.log.
+
+## unordered_map at 3000 MB with h10 (2026-10-30 ~10:15 AEDT, /tmp/mf/u3, /tmp/mf/u4)
+- 3/8 correct, 0 wrong: umap_erase_true PROVED; erase_uaf_false MEM-UAF and end_deref_false FUNC-CONTRACT
+  refuted. 5 end as memory-budget UNKNOWN (before h10, all 8 were missing).
+- Overshoot: peak 3461/3413 MB of 3000 (+14%). PRISM_MEM_TRIP_PCT=65 changed it only from 3066 to 2941 MB
+  (umap_index_true): not trip latency. Suspect Z3 hard limit 1.5x.
+- Rerun child now gets budget minus parent RSS (defensive; no rerun happened in u4).
+- Pushes failing (classifier error): commits are local only until pushed.

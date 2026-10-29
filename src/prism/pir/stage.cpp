@@ -8,6 +8,7 @@
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/laws.hpp"
+#include "prism/membudget.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
@@ -984,7 +985,18 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
                          ("prism_pir_rerun_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
     std::string only;
     for (auto* r : pend) only += u.rel + "\t" + r->f.function.value_or("") + "\n";
-    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only, exe.string()};
+    // The child shares this process's budget, not a second copy of it: this
+    // process keeps its RSS (Z3's heap after the hard out-of-memory) while the
+    // child runs, so the tree peaked at parent RSS + a full budget (the 13-18%
+    // overshoot over PRISM_MEM_BUDGET_MB; unordered_map_contracts 3461 MB of 3000).
+    membudget::release_free_memory();
+    const uint64_t parent_budget = membudget::budget_mb();
+    const uint64_t held = membudget::rss_mb();
+    const uint64_t child_budget =
+        parent_budget == 0 ? 0 : std::max<uint64_t>(256, parent_budget > held ? parent_budget - held : 0);
+    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only};
+    if (child_budget > 0) cmd.push_back("PRISM_MEM_BUDGET_MB=" + std::to_string(child_budget));
+    cmd.push_back(exe.string());
     for (std::size_t i = 1; i < av.size(); ++i) {
         const std::string& a = av[i];
         if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
