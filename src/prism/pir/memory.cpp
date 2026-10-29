@@ -186,6 +186,31 @@ std::optional<SymMem::Vs> SymMem::vs_bin(const z3::expr& e, const z3::expr& a, c
     return r;
 }
 
+// ite(c, a, ite(c, b, d)) is ite(c, a, d) and ite(c, ite(c, a, b), d) is
+// ite(c, a, d) (also with not c; one-argument or/and are their argument).
+// The encoder's phis give such terms (a value undefined on the path the
+// outer condition excludes, e.g. uninit!N), and the dead leaf has no value
+// set. Exact: equal terms, decided on AST identity only.
+z3::expr SymMem::peel_ite(const z3::expr& c_in, z3::expr t, bool then_side) const {
+    auto strip = [](z3::expr x) {
+        while (x.is_app() && x.num_args() == 1 &&
+               (x.decl().decl_kind() == Z3_OP_OR || x.decl().decl_kind() == Z3_OP_AND))
+            x = x.arg(0);
+        return x;
+    };
+    auto neg_of = [&](const z3::expr& x, const z3::expr& y) {
+        return x.is_app() && x.decl().decl_kind() == Z3_OP_NOT && x.num_args() == 1 && strip(x.arg(0)).id() == y.id();
+    };
+    const z3::expr c = strip(c_in);
+    for (int n = 0; n < 64 && t.is_app() && t.decl().decl_kind() == Z3_OP_ITE && t.num_args() == 3; ++n) {
+        const z3::expr ic = strip(t.arg(0));
+        const bool same = ic.id() == c.id(), opp = neg_of(ic, c) || neg_of(c, ic);
+        if (!same && !opp) break;
+        t = (then_side ? same : opp) ? t.arg(1) : t.arg(2);
+    }
+    return t;
+}
+
 void SymMem::seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) {
     if (auto vs = vs_bin(sum, a, b, op)) seed_vs(sum, std::move(*vs));
 }
@@ -220,9 +245,11 @@ std::optional<SymMem::Vs> SymMem::shallow_vs(const z3::expr& e, int depth) const
         const auto kind = cur.decl().decl_kind();
         if (kind == Z3_OP_ITE) {
             if (cur.num_args() != 3) return store(std::nullopt);
-            auto a = self(self, cur.arg(1), depth - 1);
+            const z3::expr cnd0 = cur.arg(0);
+            const z3::expr ta = peel_ite(cnd0, cur.arg(1), true), tb = peel_ite(cnd0, cur.arg(2), false);
+            auto a = self(self, ta, depth - 1);
             if (!a || a->empty()) return store(std::nullopt);
-            auto b = self(self, cur.arg(2), depth - 1);
+            auto b = self(self, tb, depth - 1);
             if (!b || b->empty()) return store(std::nullopt);
             const z3::expr cnd = cur.arg(0);
             if (cnd.is_true()) return store(std::move(a));
@@ -402,18 +429,19 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
         const auto k = e.decl().decl_kind();
         if (k == Z3_OP_ITE) {
             const auto cnd = e.arg(0);
-            const Vs* a = vs_raw(e.arg(1));
-            const Vs* b = a ? vs_raw(e.arg(2)) : nullptr;
+            const z3::expr ta = peel_ite(cnd, e.arg(1), true), tb = peel_ite(cnd, e.arg(2), false);
+            const Vs* a = vs_raw(ta);
+            const Vs* b = a ? vs_raw(tb) : nullptr;
             if (a && b) {
                 if (cnd.is_true()) out = *a;
                 else if (cnd.is_false()) out = *b;
                 else {
                     // too many options kept apart: the branches' merged sets
                     if (a->size() + b->size() > kVsMax) {
-                        a = vs_of(e.arg(1));
-                        b = vs_of(e.arg(2));
+                        a = vs_of(ta);
+                        b = vs_of(tb);
                     }
-                    if (a->size() + b->size() <= kVsMax) {
+                    if (a && b && a->size() + b->size() <= kVsMax) {
                         Vs r;
                         for (auto& o : *a) r.push_back(VsOpt{and2(cnd, o.guard), o.val});
                         for (auto& o : *b) r.push_back(VsOpt{and2(!cnd, o.guard), o.val});
@@ -461,8 +489,13 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
             const Vs* shape = nullptr;
             bool zip = true;
             std::size_t combos = 1;
+            // too many raw combinations: the operands' merged sets (equal
+            // values or-ed; exact, only fewer options)
+            bool merged = false;
+            for (int pass = 0; pass < 2 && !merged; ++pass) {
+            as.clear(); ok = true; shape = nullptr; zip = true; combos = 1;
             for (unsigned i = 0; i < e.num_args() && ok; ++i) {
-                const Vs* a = vs_raw(e.arg(i));
+                const Vs* a = pass == 0 ? vs_raw(e.arg(i)) : vs_of(e.arg(i));
                 if (!a) {
                     ok = false;
                     break;
@@ -477,6 +510,9 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                         for (std::size_t j = 0; j < a->size() && zip; ++j)
                             if ((*a)[j].guard.id() != (*shape)[j].guard.id()) zip = false;
                 }
+            }
+            if (!ok || zip || combos <= kVsCombos) break;
+            merged = pass == 1;
             }
             if (ok && (zip || combos <= kVsCombos)) {
                 Vs r;
