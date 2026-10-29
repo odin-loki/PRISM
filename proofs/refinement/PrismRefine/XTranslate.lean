@@ -1507,6 +1507,10 @@ def trRegionInsts (ι : Nat) (is : List SInst) : TM (List PStmt) := do
     | _ => pend := pend ++ [i]
   pure out
 
+/-- `resolve_phis`: incomings from blocks outside `tr` (never translated) dropped. -/
+def dropUntrX (G : XFunc) (tr : List Nat) (ps : List PhiI) : List PhiI :=
+  ps.map fun p => { p with inc := p.inc.filter fun q => ((lookupBlock G.shape q.2).map tr.contains).getD true }
+
 /-- `Tr::run_frame` of instance `ι` (the unreachable blocks are skipped); the
 return sites `(PIR block, returned Arg)` of the instance are returned. -/
 def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List (Nat × Arg))
@@ -1516,7 +1520,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     let G := I.fn
     let live := xLive G
     if !xLiveClosed G then throw "internal: reachable blocks not closed"
-    if xDeadInc G live then throw "outside fragment: phi incoming from an unreachable block"
+    -- (phi incomings from untranslated blocks are dropped in `resolve_phis` below)
     if G.blocks.zipIdx.any (fun (B, b) => B.stub && live.contains b) then
       throw "outside fragment: a block the exporter stubbed is reachable"
     -- `translate_block`: block `b` (`region` marks a landing-pad region
@@ -1647,9 +1651,6 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           let (q, _) ← trB j B true
           tails := tails.set j q
           done := done ++ [j]
-          for t in xSucc G B do
-            if live.contains t && !(G.blocks[t]?.map (·.phis.isEmpty)).getD true then
-              throw "outside fragment: landing-pad code joins a block with phis"
           work := (xSucc G B).reverse ++ work
       if !work.isEmpty then throw "internal: region worklist"
     -- phis (`resolve_phis`): predecessors are the blocks that end each LLVM block
@@ -1662,10 +1663,18 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           | some j => !(live.contains j || done.contains j)
           | none => true) then
         throw "outside fragment: landing-pad code phi from a block not translated"
+      -- `resolve_phis` drops an incoming from a block never translated (a
+      -- landing-pad region no throw reached)
+      if dropUntrX G (live ++ done) B.phis != B.phis then
+        throw "outside fragment: phi incoming from a block not translated"
       let qs ← liftE (trPhisX G (I.ctx (← curVars)) tails B.phis)
       let h := I.heads.getD b 0
       let lq := (lps.filter fun (b', _, _) => b' == h).map fun (_, d, inc) => ({ dst := d, inc := inc } : PPhi)
       setBlock h fun pb => { pb with phis := lq ++ qs }
+    -- the certificate records a region block by its tail (the predecessor a
+    -- live phi's incoming from it names; region blocks are not segments)
+    for j in done do
+      setInst ι fun I => { I with blks := I.blks.set j [tails.getD j 0] }
     pure rets
 
 /-- The translator (`prism::pir::translate` on the extended fragment):

@@ -840,7 +840,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 // shadows saw it: an undef or maybe-uninitialised input.
                 std::vector<std::pair<ir::Operand, std::string>> inc;
                 for (auto& [v, pred] : in.incoming) {
-                    if (live.count(pred)) {
+                    // a landing-pad region block (catch code joining the normal
+                    // path): kept, the Lean translator drops it when no throw reached it
+                    if (live.count(pred) || padset.count(pred)) {
                         inc.emplace_back(v, pred);
                         continue;
                     }
