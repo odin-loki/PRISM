@@ -39,6 +39,8 @@ runs the check on every function it reports as `agree-ext`.
 -/
 import PrismRefine.Translate
 import PrismRefine.XLlvm
+import Std.Data.HashMap
+import Std.Data.HashSet
 
 namespace PrismRefine
 
@@ -1124,10 +1126,33 @@ def xSucc (G : XFunc) (B : XBlock) : List Nat :=
   | _ => []
 
 /-- `normal_blocks`: the blocks reachable from the entry. -/
-def xLive (G : XFunc) : List Nat :=
-  let step (seen : List Nat) : List Nat :=
-    seen ++ ((seen.flatMap fun j => (G.blocks[j]?.map (xSucc G)).getD []).filter (fun j => !seen.contains j)).eraseDups
-  (List.range G.blocks.length).foldl (fun s _ => step s) [0]
+def xLive (G : XFunc) : List Nat := Id.run do
+  -- breadth first from the entry, successors in order: the order the
+  -- translation visits blocks. Linear (was layer-by-layer over lists, cubic
+  -- on large sv-comp functions); `xLiveClosed` checks the result, so the
+  -- proofs do not depend on how it is computed.
+  let idx : Std.HashMap String Nat :=
+    G.shape.blocks.zipIdx.foldl (fun m (b, i) => m.insertIfNew b.name i) {}
+  let look (t : String) : List Nat := (idx.get? t).toList
+  let bs := G.blocks.toArray
+  let mut seen : Std.HashSet Nat := ({} : Std.HashSet Nat).insert 0
+  let mut order : Array Nat := #[0]
+  let mut i := 0
+  for _ in [0:bs.size + 1] do
+    if h : i < order.size then
+      let j := order[i]
+      i := i + 1
+      let succ := match bs[j]? with
+        | some B => match B.term with
+          | .br t => look t
+          | .cbr _ t f => look t ++ look f
+          | _ => []
+        | none => []
+      for x in succ do
+        if !seen.contains x then
+          seen := seen.insert x
+          order := order.push x
+  return order.toList
 
 /-- `xLive` contains the entry and is closed under `xSucc` (checked, not
 proved: the proof only needs the check). -/
