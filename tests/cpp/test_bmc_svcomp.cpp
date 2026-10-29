@@ -474,6 +474,19 @@ out:
 }
 )");
     CHECK(pastdecl["f"].status == kHarness);
+    // CIL's null test `(unsigned long)x == (unsigned long)((void *)0)`.
+    auto nul = bmc_run("void0.c", R"(int f(int x) {
+    if ((unsigned long)x == (unsigned long)((void *)0)) return 1;
+    return 2147483647 + (x == 0);
+}
+)");
+    CHECK(nul["f"].status == kProved);
+    auto nul_bug = bmc_run("void0b.c", R"(int f(int x) {
+    if ((unsigned long)x == (unsigned long)((void *)0)) return 2147483647 + 1;
+    return 0;
+}
+)");
+    CHECK(nul_bug["f"].status == kFailed);
     // Names the then branch declared are out of scope at the label.
     auto decl = bmc_run("else_decl.c", R"(int f(int x) {
     if (x) {

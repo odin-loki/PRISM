@@ -3115,6 +3115,15 @@ TV parse_expr(Enc& e, std::string src, Parser& parser) {
                 for (auto& wd : words)
                     if (wd != "void" && wd != "const" && wd != "volatile") is_void = false;
                 if (is_void) return e.int_val(0);  // (void)x: evaluated, value unused
+                // `(void *)0`: the null pointer constant (C11 6.3.2.3p3). Only
+                // its integer value is modelled (0 on every supported ABI,
+                // as an integer of pointer width); any other pointer cast
+                // stays unencoded.
+                if (joined == "void *" || joined == "const void *") {
+                    auto z = v.v.simplify();
+                    if (z.is_numeral() && z.get_numeral_uint64() == 0)
+                        return TV{e.ctx.bv_val(0, static_cast<unsigned>(g_abi.size_w)), g_abi.size_w, true};
+                }
                 auto ct = ctype_parse(joined);
                 if (!ct) throw ParseFail("UNENCODED: cast to " + joined);
                 return e.conv(v, *ct);

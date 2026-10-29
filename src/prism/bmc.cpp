@@ -1078,7 +1078,7 @@ std::optional<std::string> harness_for_parsefail(std::string_view err, const std
     for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     // First: the message names program identifiers, which must not match a later keyword.
     if (low.starts_with("unstructured goto unencoded"))
-        return std::string(err) + " (" + engine + " models only a goto out to a later statement and a backward goto that forms a loop): not a proof";
+        return std::string(err) + " (" + engine + " models a forward goto to a later label outside any loop pass it is not in, and a backward goto that forms a loop): not a proof";
 if (low.find(R"BMC(vla)BMC") != std::string::npos) {
     if ((engine == R"BMC(bitvector BMC)BMC")) {
         return R"BMC(VLA size is a missing bound, not a closed BMC proof)BMC";
