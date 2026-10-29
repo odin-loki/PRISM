@@ -46,6 +46,15 @@
 // memory state exactly (SymMem::load_exact: no provenance shortcut), so a
 // template means the bytes of that state for every x.
 
+// PRISM_HOUDINI_TRACE=1: one stderr line per Houdini goal query (diagnostics only)
+static bool houdini_trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("PRISM_HOUDINI_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
 struct InvTerm {
     enum Kind { Phi, Scope, Const, Entry, Size } kind = Const;
     int idx = -1;  // Phi/Entry: phi index in the header; Scope/Size: variable
@@ -1069,10 +1078,20 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
+                const auto tq0 = std::chrono::steady_clock::now();
                 auto r = s.check(as);
+                std::optional<z3::model> qm;
+                if (r == z3::sat) qm = s.get_model();
+                // the activation literal is never assumed again: retire its clause
+                // (after the model is read: adding a clause discards it)
+                s.add(!act);
+                if (houdini_trace())
+                    std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
+                                 r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
                 if (r == z3::unsat) return;
                 if (r == z3::sat) {
-                    auto m = s.get_model();
+                    auto& m = *qm;
                     bool any = false;
                     for (auto i : live)
                         if (!m.eval(*goal_of(i), true).is_true()) {
