@@ -2098,6 +2098,16 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
                 std::size_t kept = 0;
                 for (auto& l : h.invariants) kept += l.size();
                 if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
+                // $PRISM_PIR_DUMP_INVARIANTS=1: the survivors of a search that
+                // did not prove (diagnostic only; never a proof claim)
+                if (kept > 0) {
+                    const char* d = std::getenv("PRISM_PIR_DUMP_INVARIANTS");
+                    if (d && *d && std::string(d) != "0") {
+                        nlohmann::json inv = nlohmann::json::array();
+                        for (auto& l : h.invariants) inv.push_back(l);
+                        r.extra["pir_invariants_surviving"] = inv.dump();
+                    }
+                }
                 return false;
             }
             std::size_t n = 0;
