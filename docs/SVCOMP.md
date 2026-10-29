@@ -248,9 +248,9 @@ The witnesses were not validated in this run, so these are unvalidated upper bou
 | property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown/error |
 |---|---|---|---|---|---|---|---|
 | no-overflow | 117 (75 / 42) | **118** | 192 | 38 | 42 | **0** | 37 |
-| unreach-call | 127 (98 / 29) | **125** | 225 | 51 | 23 | **0** | 53 |
+| unreach-call | 127 (98 / 29) | **127** | 225 | 52 | 23 | **0** | 52 |
 
-no-overflow is 118 on the latest rescore (`--jobs 2`, under a 4 GB address-space cap; fuzz witnesses now carry nondet values). It went from 114 before that, from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
+no-overflow is 118 on the latest rescore (`--jobs 2`, under a 4 GB address-space cap; fuzz witnesses now carry nondet values). unreach-call is 127 on the same rescore (was 125; 3 tasks hit the per-task timeout at `--jobs 2`). no-overflow went from 114 before that, from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
 from 36 on the earlier baseline. One `true` answer (`bitvector/gcd_3`) dropped to unknown
 because bmc returned UNKNOWN under heavier load; that is a solver timeout, not a logic change.
 

@@ -171,6 +171,8 @@ struct Enc {
     std::vector<Nondet> nondets;
     std::vector<Jump> jumps;
     std::vector<std::vector<std::string>> scopes;
+    std::vector<long> scope_ids;  // a fresh id per entered block (scopes)
+    long next_scope_id = 0;
     bool havoc = false;  // loops are havocked (unbounded step) instead of unrolled
     bool cxx = false;    // C++ source: call arguments may bind references
     int shift_rules = 0; // Parser::shift_rules
@@ -211,9 +213,13 @@ struct Enc {
         alias[n] = canonical(target);
         note_scope(n);
     }
-    void push_scope() { scopes.emplace_back(); }
+    void push_scope() {
+        scopes.emplace_back();
+        scope_ids.push_back(++next_scope_id);
+    }
     void pop_scope() {
         if (scopes.empty()) return;
+        if (!scope_ids.empty()) scope_ids.pop_back();
         for (auto& n : scopes.back()) {
             bits.erase(n);
             unsigned_names.erase(n);
@@ -754,6 +760,33 @@ std::set<std::string> self_loop_labels(const std::string& body) {
     return out;
 }
 
+// Does text hold `name:` as a label anywhere (nested statements included)?
+// At a statement start (after `;`, `{`, `}`, `)`, `:`, or `else`/`do`),
+// not `name::`, outside string and character literals. Only a gate for
+// goto_stmt: label_stmt still checks the jump when the label is parsed.
+bool text_has_label(const std::string& text, const std::string& name) {
+    auto word = [&](size_t i) {
+        return i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_');
+    };
+    for (size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + 1)) {
+        if ((at > 0 && word(at - 1)) || word(at + name.size())) continue;
+        size_t i = at + name.size();
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i >= text.size() || text[i] != ':' || (i + 1 < text.size() && text[i + 1] == ':')) continue;
+        size_t q = at;
+        while (q > 0 && std::isspace(static_cast<unsigned char>(text[q - 1]))) --q;
+        bool start = q == 0 || std::string_view(";{}):").find(text[q - 1]) != std::string_view::npos;
+        if (!start) {
+            size_t w = q;
+            while (w > 0 && word(w - 1)) --w;
+            auto kw = text.substr(w, q - w);
+            start = kw == "else" || kw == "do";
+        }
+        if (start) return true;
+    }
+    return false;
+}
+
 // Is `name` among the labels of the first statement of text?
 bool first_stmt_has_label(const std::string& text, const std::string& name) {
     std::string t = lstrip(text);
@@ -858,6 +891,21 @@ struct Parser {
     struct PendingGoto {
         State st;
         std::vector<std::vector<std::string>> scopes;  // Enc::scopes at the goto
+        std::vector<long> scope_ids;                   // Enc::scope_ids at the goto
+        std::vector<long> reparse;                     // Parser::reparse at the goto
+    };
+    // One fresh id per text that is parsed more than once (each unrolled
+    // loop-body pass, each switch arm, each goto-loop region pass). A label
+    // merges a pending goto only if its ids are a prefix of the goto's: the
+    // label is in the same pass as the goto or in an enclosing one, never in
+    // a loop body or switch arm the goto is outside of (goto into a loop is
+    // unencoded).
+    std::vector<long> reparse;
+    long next_reparse = 0;
+    struct Reparse {
+        Parser& p;
+        explicit Reparse(Parser& q) : p(q) { p.reparse.push_back(++p.next_reparse); }
+        ~Reparse() { p.reparse.pop_back(); }
     };
     std::map<std::string, std::vector<PendingGoto>> pending_gotos;
     struct LabelLoop {
@@ -1811,8 +1859,13 @@ void Parser::goto_stmt(Enc& e, const std::string& name) {
     // declaration checks at the label still apply.
     for (auto it = else_heads.rbegin(); it != else_heads.rend() && !found; ++it)
         found = first_stmt_has_label(**it, name);
+    // Into a block that is later in the text (CIL's `goto L; ... if (0) {
+    // L: ... }` switch encoding): checked at the label (label_stmt).
+    for (auto it = lists.rbegin(); it != lists.rend() && !found; ++it) found = text_has_label(**it, name);
+    for (auto it = else_heads.rbegin(); it != else_heads.rend() && !found; ++it)
+        found = text_has_label(**it, name);
     if (!found) throw ParseFail("unstructured goto unencoded: goto " + name + " is not a jump out to a later statement");
-    pending_gotos[name].push_back(PendingGoto{e.snap(), e.scopes});
+    pending_gotos[name].push_back(PendingGoto{e.snap(), e.scopes, e.scope_ids, reparse});
     e.path_true = e.ctx.bool_val(false);
 }
 
@@ -1824,9 +1877,23 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
             // The label's list is the goto's or an enclosing one, so its scopes
             // are a prefix of the goto's: a name added to them since was
             // declared between the goto and the label.
-            if (pg.scopes.size() < e.scopes.size())
-                throw ParseFail("unstructured goto unencoded: jump into a block");
-            for (size_t d = 0; d < e.scopes.size(); ++d)
+            // Same pass (or an enclosing one) as the goto: never into a
+            // loop body or switch arm from outside it.
+            if (reparse.size() > pg.reparse.size() ||
+                !std::equal(reparse.begin(), reparse.end(), pg.reparse.begin()))
+                throw ParseFail("unstructured goto unencoded: goto " + name + " into a loop or switch");
+            // The blocks the goto and the label share: names declared there
+            // must be ones the goto saw (no jump past a declaration). A block
+            // the label is in but the goto is not is entered by the jump:
+            // allowed only if it declares nothing before the label.
+            size_t k = 0;
+            while (k < e.scope_ids.size() && k < pg.scope_ids.size() && e.scope_ids[k] == pg.scope_ids[k]) ++k;
+            if (e.scope_ids.size() != e.scopes.size() || pg.scope_ids.size() != pg.scopes.size())
+                throw ParseFail("unstructured goto unencoded: goto " + name);
+            for (size_t d = k; d < e.scopes.size(); ++d)
+                if (!e.scopes[d].empty())
+                    throw ParseFail("unstructured goto unencoded: goto " + name + " jumps into a block past the declaration of " + e.scopes[d].front());
+            for (size_t d = 0; d < k; ++d)
                 for (auto& n : e.scopes[d])
                     if (std::find(pg.scopes[d].begin(), pg.scopes[d].end(), n) == pg.scopes[d].end())
                         throw ParseFail("unstructured goto unencoded: goto " + name + " jumps past the declaration of " + n);
@@ -1873,6 +1940,7 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
                 u->second = u->second && e.ctx.bool_const((n + "_hvu" + std::to_string(++e.fresh)).c_str());
         }
         label_loops.push_back(LabelLoop{name, {}});
+        Reparse pass{*this};
         stmts(e, region);
         label_loops.pop_back();  // re-entries are covered by the havoc
         return;
@@ -1883,7 +1951,10 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
     label_loops.push_back(LabelLoop{name, {}});
     for (int i = 0; i < std::max(e.unwind, 1); ++i) {
         label_loops.back().backs.clear();
-        stmts(e, region);
+        {
+            Reparse pass{*this};
+            stmts(e, region);
+        }
         exits.push_back(e.snap());
         auto backs = std::move(label_loops.back().backs);
         label_loops.back().backs.clear();
@@ -1903,6 +1974,7 @@ void Parser::label_stmt(Enc& e, const std::string& name, std::string& text) {
 void Parser::run_body(Enc& e, const std::string& body) {
     auto base = e.snap();
     e.jumps.back().conts.clear();
+    Reparse pass{*this};
     block(e, body);
     auto& conts = e.jumps.back().conts;
     if (!conts.empty()) {
@@ -2098,7 +2170,10 @@ std::string Parser::switch_stmt(Enc& e, std::string text) {
         z3::expr cond = parts.size() == 1 ? parts[0] : z3::mk_or(parts);
         e.load(base);
         e.path_true = base.path && cond;
-        block(e, arm_code(arms, i));
+        {
+            Reparse pass{*this};
+            block(e, arm_code(arms, i));
+        }
         taken.push_back(e.snap());
     }
     if (!has_default) {
