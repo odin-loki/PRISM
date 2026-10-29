@@ -302,7 +302,7 @@ std::string fuzz_stub_source(const std::string& source) {
         else fmt = "%lld", arg = "(long long)v";
         out.push_back(ctype + " " + name + "(void) { " + ctype + " v = (" + ctype +
                       ")prism_take(); if (prism_n <= 1000) fprintf(stderr, \"PRISM-FUZZ-NONDET " + name + " " + fmt +
-                      "\\n\", " + arg + "); return v; }");
+                      " %p\\n\", " + arg + ", __builtin_return_address(0)); return v; }");
     }
     if (source.find("__VERIFIER_assume") != std::string::npos && !defines(source, "__VERIFIER_assume"))
         out.emplace_back("void __VERIFIER_assume(int c) { if (!c) _exit(0); }");
@@ -343,6 +343,7 @@ json fuzz_replay(const fs::path& src, const std::string& prop, bool allow_exec, 
         return json{{"replay", "notrun"}, {"why", "ILP32 fuzzing needs -m32"}};
 #endif
     }
+    argv.emplace_back("-no-pie");  // fixed code addresses: call sites are symbolized after the run
     if (prop == "no-overflow") {
         argv.emplace_back("-fsanitize=signed-integer-overflow,shift-base");
         argv.emplace_back("-fno-sanitize-recover=all");
@@ -364,10 +365,33 @@ json fuzz_replay(const fs::path& src, const std::string& prop, bool allow_exec, 
         if (p.timeout) continue;
         json rec = {{"exit", p.rc}, {"fuzz_seed", seed}};
         if (classify_run(prop, p.err, p.rc, rec)) {
-            static const Regex nd(R"(^PRISM-FUZZ-NONDET (\S+) (\S+)$)", true);
-            std::string trace;
-            for (const auto& m : nd.finditer(p.err)) trace += (trace.empty() ? "" : ", ") + m.group(1) + "=" + m.group(2);
+            static const Regex nd(R"(^PRISM-FUZZ-NONDET (\S+) (\S+) (0x[0-9a-fA-F]+)$)", true);
+            std::string trace, addrs;
+            std::size_t n = 0;
+            for (const auto& m : nd.finditer(p.err)) {
+                trace += (trace.empty() ? "" : ", ") + m.group(1) + "=" + m.group(2);
+                // the return address is just past the call: symbolize the byte before it
+                unsigned long long a = std::strtoull(m.group(3).c_str(), nullptr, 16);
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "0x%llx\n", a ? a - 1 : 0);
+                addrs += buf;
+                ++n;
+            }
             rec["nondet"] = trace;
+            // call sites (line:col) of each value; dropped unless every one resolves in the task file
+            if (auto sym = Config{}.which({"llvm-symbolizer", "llvm-symbolizer-18"}); sym && n) {
+                auto q = stages_detail::run_argv({sym->string(), "--obj=" + exe.string(), "--no-inlines"}, addrs, 30.0);
+                static const Regex loc(R"(^(\S+):(\d+):(\d+)$)", true);
+                std::string locs;
+                std::size_t k = 0;
+                const std::string base = csrc.filename().string();
+                for (const auto& m : loc.finditer(q.out)) {
+                    if (fs::path(m.group(1)).filename().string() != base) break;
+                    locs += (locs.empty() ? "" : ", ") + m.group(2) + ":" + m.group(3);
+                    ++k;
+                }
+                if (q.rc == 0 && k == n) rec["nondet_loc"] = locs;
+            }
             rec["detail"] = get_str(rec, "detail") + " (fuzz seed " + std::to_string(seed) + ")";
             return rec;
         }

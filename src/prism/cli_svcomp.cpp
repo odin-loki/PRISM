@@ -202,6 +202,10 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         if (get_str(r, "replay") == "replayed") {
             // a finding of main carrying the run's nondet values (witness waypoints)
             json f = {{"function", "main"}, {"stage", "fuzz"}, {"extra", {{"nondet", get_str(r, "nondet")}}}};
+            if (has(r, "nondet_loc")) {
+                f["extra"]["nondet_loc"] = r.at("nondet_loc");
+                f["extra"]["nondet_loc_kind"] = "physical";
+            }
             if (has(r, "line")) f["line"] = r.at("line");
             dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
         }
