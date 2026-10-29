@@ -891,6 +891,27 @@ A value difference that is not a soundness issue: after a failed division
 check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
 `x / 0 = 0`; the value is unobservable because the check already failed.
 
+## WIP: exception landing pads (work/proofs)
+
+Done (fixture `cxx_cleanup_pad`, agree-ext 3, 0 mismatch; check.sh OK):
+* Exporter (`export_lean.cpp`): blocks reached from a live `invoke`'s unwind
+  edge (`padset`) are exported (`L lpad`, `L insv`, `L resume`, `L xv` of a
+  pair; the invoke's call is `L ivk PAD ...`; `L thrown` = sorted
+  `thrown_types()`); a pad that fails to export is still a stub
+  (`PRISM_LEAN_PAD_DEBUG=1` prints why).
+* Lean: `SInst.lpad`/`insv` are `.stuck` (the LLVM run makes no claim past a
+  throw; pad blocks are not in `xLive`, so no proof changes beyond
+  impossible cases). `XTranslate` mirrors `Tr::handlers`/`frames`,
+  `dispatch_type` (cleanup pads; a filter soft-stops; catch clauses are
+  refused), `raise` of an unknown type (`resume`, `Tr::ld` + per-type
+  branches), `eh_pass`/`region` (region calls are not certificate segments),
+  landing-pad head phis (`add_phi`), `upair` for `resume` (UB-POISON).
+Refused (outside): catch clauses / `__cxa_begin_catch`, terminate.lpad,
+phis in pads, region code joining a live block with phis or returning,
+region phis from untranslated blocks, insertvalue operands not from a pad.
+Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
+via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
