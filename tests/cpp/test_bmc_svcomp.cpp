@@ -909,3 +909,81 @@ TEST_CASE("ai: invariant candidates accept C integer suffixes, not malformed one
     CHECK_FALSE(prism::ai::valid_c_bool_expr("i + 0ULLL <= n", {"i", "n"}));
     CHECK_FALSE(prism::ai::valid_c_bool_expr("i + 0x <= n", {"i", "n"}));
 }
+
+namespace {
+const char* kSum64 = R"(extern unsigned int __VERIFIER_nondet_uint(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); } }
+int main(void) {
+  unsigned int i, n = __VERIFIER_nondet_uint();
+  unsigned long long sn = 0;
+  for (i = 0; i <= n; i++) {
+    sn = sn + i;
+  }
+  unsigned long long nl = n;
+  unsigned long long gauss = (nl * (nl + 1U)) / 2U;
+  __VERIFIER_assert(sn == gauss || sn == 0);
+  return 0;
+}
+)";
+// the counter is narrower than the bound: c wraps at 255 while n + 1 != 0,
+// so the no-wrap step fact does not hold and the in-loop check fails (n = 300)
+const char* kNarrow = R"(extern unsigned int __VERIFIER_nondet_uint(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); } }
+int main(void) {
+  unsigned char c;
+  unsigned int n = __VERIFIER_nondet_uint();
+  unsigned long long s = 0;
+  for (c = 0; c <= n; c++) {
+    __VERIFIER_assert(n + 1 == 0 || 2 * s == (c + 0ULL) * (c + 0ULL - 1));
+    s = s + c;
+  }
+  return 0;
+}
+)";
+}  // namespace
+
+TEST_CASE("ai: step_fact for counted loops") {
+    prism::ai::LoopCut L;
+    L.cond = "i <= n";
+    L.incr = "i++";
+    L.body = "sn = sn + i;";
+    CHECK(prism::ai::step_fact(L) == "(n) + 1 == 0 || i + 0ULL == __prism_pre_i + 1ULL");
+    L.cond = "i < n";
+    CHECK(prism::ai::step_fact(L) == "i + 0ULL == __prism_pre_i + 1ULL");
+    L.body = "i = i * 2;";  // the body writes the counter too: no fact
+    CHECK(prism::ai::step_fact(L).empty());
+    L.body = "";
+    L.incr = "i += 2";
+    CHECK(prism::ai::step_fact(L).empty());
+    L.incr = "j++";
+    CHECK(prism::ai::step_fact(L).empty());
+    L.incr = "i++";
+    L.cond = "i <= n && k";
+    CHECK(prism::ai::step_fact(L).empty());
+}
+
+TEST_CASE("bmc: a 64-bit Gauss sum of a 32-bit counter gets an inductive guarded invariant from the no-wrap fact; wrong forms and narrow counters do not") {
+    auto ok = bmc_run("sum64.c", kSum64);
+    REQUIRE(ok.count("main"));
+    // The no-wrap step fact makes the guarded 64-bit Gauss relation inductive.
+    // The exit check (sn == n*(n+1)/2 from i == n + 1) is still unknown to Z3,
+    // so main stays BOUNDED for now: never PROVED from an unknown.
+    CHECK_MESSAGE(ok["main"].extra["invariants"].find("n + 1 == 0 || sn == (i + 0ULL) * (i + 0ULL - 1) / 2") !=
+                      std::string::npos,
+                  ok["main"].extra["invariants"]);
+    CHECK(ok["main"].status != std::string(prism::laws::FAILED));
+    std::string bad = kSum64;
+    bad.replace(bad.find("(nl + 1U)"), 9, "(nl + 2U)");
+    auto b = bmc_run("sum64_bad.c", bad);
+    REQUIRE(b.count("main"));
+    CHECK(b["main"].status != kProved);
+    CHECK(b["main"].status != std::string(prism::laws::PROVED));
+    auto nw = bmc_run("narrow.c", kNarrow);
+    REQUIRE(nw.count("main"));
+    CHECK(nw["main"].status != kProved);
+    CHECK(nw["main"].status != std::string(prism::laws::PROVED));
+}

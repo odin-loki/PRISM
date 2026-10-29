@@ -584,6 +584,7 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
         if (seen.insert(e).second) out.push_back(e);
     };
     std::set<std::string> vocab(L.scalars.begin(), L.scalars.end());
+    std::vector<std::string> wrap_guards;
     // (1) bounds from the loop condition atoms.
     {
         std::vector<std::string> atoms;
@@ -617,6 +618,12 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                     if (op == "<") push(lhs + " <= " + rhs + " + 1");  // a step of 2 overshoots by 1
                     if (op == "<") push(rhs + " < 0 || " + lhs + " <= " + rhs + " + 1");  // loop never ran
                     if (op == "<=") push(lhs + " <= " + rhs + " + 1");
+                    if (op == "<=" && extended) {
+                        push(lhs + " + 0ULL <= " + rhs + " + 1ULL");  // the bound in 64 bits
+                        // `lhs <= rhs` with rhs the type's maximum never exits and lhs
+                        // wraps: relations of lhs hold only when rhs + 1 != 0
+                        wrap_guards.push_back(rhs + " + 1 == 0");
+                    }
                     if (op == ">") push(lhs + " >= " + rhs);
                     if (op == ">=") push(lhs + " >= " + rhs + " - 1");
                     if (op == "!=") {
@@ -706,6 +713,14 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
         for (auto& y : L.scalars) {
             if (x == y) continue;
             push("2 * " + x + " == " + y + " * " + y + " + " + y);
+            // widened Gauss shapes (sum02-2: a 64-bit sum of a 32-bit counter);
+            // checked by Houdini in the same bit-vector semantics as the rest.
+            push("2 * " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1)");
+            for (auto& g : wrap_guards) {
+                push(g + " || 2 * " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1)");
+                // 2*x == P loses x's top bit; the halved form pins x (P is even)
+                push(g + " || " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1) / 2");
+            }
             push("2 * " + x + " == " + y + " * " + y + " - " + y);
             push(x + " == " + y + " * " + y);
             bool y_mod = std::ranges::find(L.modified, y) != L.modified.end();
@@ -726,8 +741,25 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
     return out;
 }
 
+std::string step_fact(const LoopCut& L) {
+    static const prism::Regex cond_re(R"(^\s*([A-Za-z_]\w*)\s*(<=|<)\s*([^&|?]+?)\s*$)");
+    static const prism::Regex incr_re(R"(^\s*(?:([A-Za-z_]\w*)\s*\+\+|\+\+\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*\+=\s*1)\s*$)");
+    auto c = cond_re.match_prefix(L.cond);
+    auto i = incr_re.match_prefix(L.incr);
+    if (!c || !i) return "";
+    std::string x = i->group(1).empty() ? (i->group(2).empty() ? i->group(3) : i->group(2)) : i->group(1);
+    if (x != c->group(1)) return "";
+    // x must not be written in the body as well
+    const prism::Regex write("(?<![\\w.>])" + x + R"(\s*(=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=)|(\+\+|--)\s*)" + x + R"(\b|&\s*)" + x + R"(\b)");
+    if (write.search(L.body)) return "";
+    const std::string grow = x + " + 0ULL == __prism_pre_" + x + " + 1ULL";
+    if (c->group(2) == "<") return grow;
+    return "(" + c->group(3) + ") + 1 == 0 || " + grow;
+}
+
 std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
-                        const std::vector<std::vector<std::pair<int, std::string>>>& inv) {
+                        const std::vector<std::vector<std::pair<int, std::string>>>& inv,
+                        const std::vector<std::string>* step_facts) {
     std::string body = fn.body;
     for (std::size_t j = loops.size(); j-- > 0;) {
         auto& L = loops.at(j);
@@ -749,7 +781,19 @@ std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loop
             cut += "__prism_step (" + L.cond + ") {\n" + asserts + "}\n";
         } else {
             cut += "__prism_step (" + L.cond + ") {\n{\n" + L.body + "\n}\n";
+            const std::string fact = step_facts && j < step_facts->size() ? step_facts->at(j) : std::string();
+            std::string x;
+            if (!fact.empty()) {
+                auto p = fact.find("__prism_pre_");
+                auto q = fact.find(' ', p);
+                x = fact.substr(p + 12, q - p - 12);
+                cut += "unsigned long long __prism_pre_" + x + " = " + x + " + 0ULL;\n";
+            }
             if (!L.incr.empty()) cut += L.incr + ";\n";
+            if (!fact.empty()) {
+                cut += "__prism_assert(" + std::to_string(kStepFactTag + static_cast<int>(j)) + ", (" + fact + "));\n";
+                cut += "__prism_assume(" + fact + ");\n";
+            }
             cut += asserts + "}\n";
         }
         cut += "}\n";
@@ -773,11 +817,13 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
     for (std::size_t j = 0; j < loops.size(); ++j)
         for (std::size_t k = 0; k < candidates.at(j).size(); ++k)
             all.push_back({j, candidates.at(j).at(k), k < sources.at(j).size() ? sources.at(j).at(k) : "template"});
+    std::vector<std::string> facts;
+    for (auto& L : loops) facts.push_back(step_fact(L));
     auto build = [&] {
         std::vector<std::vector<std::pair<int, std::string>>> inv(loops.size());
         for (std::size_t t = 0; t < all.size(); ++t)
             if (all.at(t).alive) inv.at(all.at(t).loop).push_back({static_cast<int>(t), all.at(t).expr});
-        return cut_program(fn, loops, inv);
+        return cut_program(fn, loops, inv, &facts);
     };
     for (int round = 0; round < 64; ++round) {
         h.rounds = round + 1;
@@ -797,6 +843,12 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
             try {
                 tag = std::stoi(p.name.substr(7));
             } catch (const std::exception&) {
+            }
+            if (tag >= kStepFactTag && tag - kStepFactTag < static_cast<int>(facts.size()) &&
+                !facts.at(static_cast<std::size_t>(tag - kStepFactTag)).empty()) {
+                facts.at(static_cast<std::size_t>(tag - kStepFactTag)).clear();  // not trusted: drop it
+                dropped = true;
+                continue;
             }
             if (tag >= 0 && tag < static_cast<int>(all.size()) && all.at(static_cast<std::size_t>(tag)).alive) {
                 all.at(static_cast<std::size_t>(tag)).alive = false;

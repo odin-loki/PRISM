@@ -3502,8 +3502,25 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
             s.set("timeout", timeout_ms);
             s.add(enc->props[static_cast<size_t>(i)].cond);
             auto r = s.check();
+            if (r == z3::unknown) {
+                // Retry once with equality solving and sum-of-monomials
+                // normalisation (equisatisfiable rewrites): non-linear
+                // counter identities such as 2*s == i*(i-1) across i++ close
+                // this way when the default bit-blasting gives up.
+                z3::params som(enc->ctx);
+                som.set("som", true);
+                z3::tactic t = z3::tactic(enc->ctx, "simplify") & z3::tactic(enc->ctx, "propagate-values") &
+                               z3::tactic(enc->ctx, "solve-eqs") & z3::tactic(enc->ctx, "ctx-simplify") &
+                               z3::with(z3::tactic(enc->ctx, "simplify"), som) & z3::tactic(enc->ctx, "smt");
+                z3::solver s2 = t.mk_solver();
+                s2.set("timeout", timeout_ms);
+                s2.add(enc->props[static_cast<size_t>(i)].cond);
+                r = s2.check();
+                if (r == z3::sat) models[i] = model_text(s2.get_model());
+            } else if (r == z3::sat) {
+                models[i] = model_text(s.get_model());
+            }
             verdict[i] = r == z3::sat ? "sat" : r == z3::unsat ? "unsat" : "unknown";
-            if (r == z3::sat) models[i] = model_text(s.get_model());
         }
         for (int i = 0; i < static_cast<int>(enc->props.size()); ++i) {
             auto& prop = enc->props[static_cast<size_t>(i)];

@@ -179,7 +179,14 @@ PRISM_API std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, 
 //   step(cond) { body; incr; assert(I_j) [consecution] }
 // with inv[j] = (tag, expression) pairs.
 PRISM_API std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
-                                  const std::vector<std::vector<std::pair<int, std::string>>>& inv);
+                                  const std::vector<std::vector<std::pair<int, std::string>>>& inv,
+                                  const std::vector<std::string>* step_facts = nullptr);
+// No-wrap step fact of a counted loop (`x++` under `x <= r` / `x < r`), as
+// an expression over x and its pre-increment snapshot __prism_pre_x; empty
+// when the loop has no such shape. Houdini asserts it (tag kStepFactTag + j)
+// before assuming it, so a fact that does not hold is dropped, never trusted.
+PRISM_API std::string step_fact(const LoopCut& loop);
+constexpr int kStepFactTag = 1000000;
 // Deterministic template candidates for one loop.
 // extended=false: the cheap linear/bound/congruence families; true adds the
 // non-linear and three-variable shapes (tried only when the cheap set fails).
