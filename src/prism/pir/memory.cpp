@@ -111,7 +111,7 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
 // function ends with a reported UNKNOWN (encode.cpp maps this exception) and
 // its context, with everything built here, is freed.
 static void mem_guard() {
-    if (membudget::over_budget_sampled(4096))
+    if (membudget::over_budget_sampled(256))
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory");
 }
 

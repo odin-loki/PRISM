@@ -1477,7 +1477,7 @@ bool z3_hard_oom() { return g_z3_oom.load(); }
 static bool z3_over_soft_cap() {
     const uint64_t cap = g_z3_cap_mb.load();
     return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) ||
-           membudget::over_budget_sampled(64);
+           membudget::over_budget_sampled(4);  // per encoded node (unordered_map_contracts: 3.4 GB kill)
 }
 
 static void z3_mem_guard() {

@@ -143,10 +143,31 @@ bool system_low() {
 
 bool over_budget() {
     const uint64_t b = budget_mb();
+    if (system_low()) return true;
+    if (b == 0) return false;
+    const uint64_t rss = rss_mb();
     // trip at 80%: Z3 stops at its next interrupt check and the watchdog
-    // samples every 100 ms, so the peak lands up to ~20% above the trip
-    // point (priority_queue_contracts.cpp: 3.5 GB peak with a 3 GB trip)
-    return (b > 0 && rss_mb() >= b * 4 / 5) || system_low();
+    // samples every 50 ms, so the peak lands above the trip point
+    // (priority_queue_contracts.cpp: 3.5 GB peak with a 3 GB trip)
+    if (rss >= b * 4 / 5) return true;
+    // Fast growth (over ~1 GB/s, unordered_map_contracts.cpp was killed at
+    // 3379 MB): trip at 70% so the stop latency still lands under budget.
+    static std::mutex mu;
+    static uint64_t last_rss = 0;
+    static std::chrono::steady_clock::time_point last_t{};
+    static bool fast = false;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        const auto now = std::chrono::steady_clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_t).count();
+        if (ms >= 50) {
+            fast = last_rss > 0 && rss > last_rss && (rss - last_rss) * 1000 / static_cast<uint64_t>(ms) >= 1024;
+            last_rss = rss;
+            last_t = now;
+        }
+        if (fast && rss >= b * 7 / 10) return true;
+    }
+    return false;
 }
 
 namespace {
@@ -162,7 +183,7 @@ bool g_thread = false;
 
 void watchdog() {
     for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
         {
             std::lock_guard<std::mutex> lk(g_wmu);
             if (g_watches.empty()) continue;
