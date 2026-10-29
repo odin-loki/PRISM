@@ -1496,7 +1496,12 @@ static void cap_z3_memory_once() {
         // its hard limit is 1.5x: at 1.0x Z3 segfaulted in its own out-of-memory path (cxx_priority_queue_true, rc 139 at 2.8 GB RSS); overshoot is bounded by the 20 ms RSS watchdog instead.
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
-        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
+        // hard limit in percent of the budget: $PRISM_Z3_HARD_PCT (default 150, 100..200)
+        uint64_t hard_pct = 150;
+        if (const char* e = std::getenv("PRISM_Z3_HARD_PCT"); e && *e)
+            hard_pct = std::min<uint64_t>(200, std::max<uint64_t>(100, std::strtoull(e, nullptr, 10)));
+        if (mb > 0)
+            z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb * hard_pct / 100, 1u << 30)));
     });
 }
 

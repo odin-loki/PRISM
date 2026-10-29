@@ -146,3 +146,7 @@
   (umap_index_true): not trip latency. Suspect Z3 hard limit 1.5x.
 - Rerun child now gets budget minus parent RSS (defensive; no rerun happened in u4).
 - Pushes failing (classifier error): commits are local only until pushed.
+- Z3 hard-limit test (PRISM_Z3_HARD_PCT knob, default 150; MALLOC_ARENA_MAX=4, umap_index_true, budget 3000):
+  150% peak 3112 MB, 120% peak 3496 MB, both UNKNOWN, no crash. A lower hard limit does not cut the
+  overshoot: the default stays 150. The overshoot is probably RSS that is not Z3's own estimate (encoder/SymMem,
+  allocator) growing between watchdog polls.
