@@ -272,6 +272,8 @@ structure XFunc where
   /-- `Tr::thrown_types` (translator only, analysed function): every exception
   type the module throws, sorted; `none`: not exported -/
   thrown : Option (List String) := none
+  /-- `L thrdtor`: some `__cxa_throw` passes a destructor (translator only) -/
+  thrDtor : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/

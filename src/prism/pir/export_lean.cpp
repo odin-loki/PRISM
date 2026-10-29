@@ -943,6 +943,21 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << "\n";
+            } else if (op == "call" && !in.is_asm && in.callee.starts_with("llvm.eh.typeid.for")) {
+                // Tr::eh_call: the constant type_id of the typeinfo (Lean region code only)
+                if (in.result.empty() || in.ops.empty() || in.ops[0].v.kind != ir::Value::Global ||
+                    !plain_name(in.ops[0].v.name))
+                    throw Unsupported{"call @" + in.callee};
+                b << "L call %" << name(in.result) << " 32 llvm.eh.typeid.for:" << in.ops[0].v.name << " 0\n";
+            } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&
+                       (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
+                        in.callee == "__cxa_rethrow")) {
+                // Tr::eh_call on the caught-exception stack (Lean region code only)
+                b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call "))
+                  << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                  << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << in.callee << " " << in.ops.size();
+                for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
+                b << "\n";
             } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm &&
                        !(afail_kind(m, in) && afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())))) {
                 intrinsic_line(b, in);
@@ -1167,6 +1182,16 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
                         else if (in.callee.starts_with("_ZSt") && in.callee.find("__throw_") != std::string::npos)
                             ts.insert(std_throw_ti(in.callee));
                     }
+            // Tr::type_dtor: a thrown class with a destructor (__cxa_end_catch would call it)
+            bool dtor = false;
+            for (auto& g : m.functions)
+                for (auto& x : g.blocks)
+                    for (auto& in : x.insts)
+                        if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_throw" &&
+                            in.ops.size() >= 3 && in.ops[1].v.kind == ir::Value::Global &&
+                            in.ops[2].v.kind == ir::Value::Global)
+                            dtor = true;
+            if (dtor) o << "L thrdtor\n";
             if (std::ranges::all_of(ts, [](const std::string& t) { return plain_name(t); })) {
                 o << "L thrown";
                 for (auto& t : ts) o << " " << t;
