@@ -7454,6 +7454,186 @@ void cxx_algo_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Eleventh batch: streams, callables, iterators and smart-pointer outputs
+// (CXX-FSTREAM, CXX-INVOKE, CXX-ITERATOR-INVALID, CXX-KILL-DEPENDENCY,
+// CXX-LERP, CXX-MAKE-EXCEPTION-PTR, CXX-OSYNCSTREAM, CXX-OUT-PTR).
+void cxx_stream_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::set<std::string> rel_ids, tested;
+    std::map<std::string, std::string> init_callee;
+    std::map<std::string, const json*> var_decl;
+    for (auto& [id, d] : fn.locals) var_decl[id] = d;
+    auto unwrap = [](const json& e0) {
+        const auto* e = &strip_all(e0);
+        while ((kind(*e) == "CXXConstructExpr" || is_explicit_cast(kind(*e))) && n_children(*e) == 1)
+            e = &strip_all(child(*e, 0));
+        return e;
+    };
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "BinaryOperator" && n_children(*n) == 2) {
+            auto op = str_field(*n, "opcode");
+            for (int i = 0; i < 2; ++i) {
+                auto id = ref_id(child(*n, i));
+                if (id.empty()) continue;
+                if (one_of(op, {"<", "<=", ">", ">="})) rel_ids.insert(id);
+                if (one_of(op, {"==", "!="})) tested.insert(id);
+            }
+            if (op == "=" && is_call_kind(kind(*unwrap(child(*n, 1)))))
+                if (auto id = ref_id(child(*n, 0)); !id.empty()) init_callee[id] = callee_name(*unwrap(child(*n, 1)));
+        } else if (k == "CXXOperatorCallExpr" && n_children(*n) == 3 &&
+                   one_of(str_field(ref_decl(strip_all(child(*n, 0))), "name"), {"operator==", "operator!="})) {
+            for (int i = 1; i < 3; ++i)
+                if (auto id = ref_id(child(*n, i)); !id.empty()) tested.insert(id);
+        } else if (k == "ImplicitCastExpr" && n_children(*n) == 1 &&
+                   one_of(str_field(*n, "castKind"), {"PointerToBoolean", "UserDefinedConversion"})) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(*n, "opcode") == "!" && n_children(*n) == 1) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "CXXOperatorCallExpr" && n_children(*n) == 2 &&
+                   str_field(ref_decl(strip_all(child(*n, 0))), "name") == "operator!") {
+            if (auto id = ref_id(child(*n, 1)); !id.empty()) tested.insert(id);
+        } else if (one_of(mcall_name(*n), {"operator bool", "is_open", "has_value", "good", "fail"})) {
+            tested.insert(mcall_obj(*n));
+        } else if (k == "VarDecl") {
+            auto id = std::string(str_field(*n, "id"));
+            var_decl[id] = n;
+            if (n_children(*n) > 0 && is_call_kind(kind(*unwrap(last_child(*n)))))
+                init_callee[id] = callee_name(*unwrap(last_child(*n)));
+        }
+    }
+    auto local_of = [&](const std::string& id, std::initializer_list<std::string_view> classes) {
+        auto it = var_decl.find(id);
+        if (it == var_decl.end() || kind(*it->second) != "VarDecl") return false;
+        return one_of(decl_class(*it->second), classes);
+    };
+    // CXX-FSTREAM: a file stream read/written with no is_open()/truth test.
+    for (auto* n : all) {
+        std::string id;
+        if (one_of(mcall_name(*n), {"get", "read", "write", "getline", "put", "peek"})) id = mcall_obj(*n);
+        else if (kind(*n) == "CXXOperatorCallExpr" && n_children(*n) == 3 &&
+                 one_of(str_field(ref_decl(strip_all(child(*n, 0))), "name"), {"operator<<", "operator>>"}))
+            id = ref_id(child(*n, 1));
+        if (id.empty() || tested.contains(id) || !local_of(id, {"ifstream", "ofstream", "fstream"}) || !ok_pos(*n))
+            continue;
+        ck.add(*n, "CXX-FSTREAM", "file stream used without is_open() or a truth test");
+        break;
+    }
+    // CXX-INVOKE: std::invoke on a nullable callable never tested.
+    for (auto* n : all) {
+        if (!is_call_kind(kind(*n)) || callee_name(*n) != "invoke" || n_children(*n) < 2) continue;
+        const auto& a = *unwrap(child(*n, 1));
+        auto id = ref_id(a);
+        auto t = type_of(a);
+        const bool nullable = is_pointer_type(t) || t.find("(*)") != std::string::npos ||
+                              t.find("function<") != std::string::npos || t.find("optional<") != std::string::npos;
+        if (id.empty() || !nullable || tested.contains(id) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-INVOKE", "std::invoke on a nullable callable without a truth test");
+        break;
+    }
+    // CXX-ITERATOR-INVALID: it = c.begin(), then c.push_back/insert/clear.
+    {
+        std::set<std::string> began;
+        for (auto* n : all) {
+            if (kind(*n) == "VarDecl" && n_children(*n) > 0) {
+                const auto& e = *unwrap(last_child(*n));
+                if (one_of(mcall_name(e), {"begin", "cbegin"})) began.insert(mcall_obj(e));
+                continue;
+            }
+            if (kind(*n) == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+                const auto& e = *unwrap(child(*n, 1));
+                if (one_of(mcall_name(e), {"begin", "cbegin"})) began.insert(mcall_obj(e));
+                continue;
+            }
+            if (!one_of(mcall_name(*n), {"push_back", "insert", "clear", "emplace_back"})) continue;
+            auto id = mcall_obj(*n);
+            if (id.empty() || !began.contains(id) || !ok_pos(*n)) continue;
+            const auto& me = strip_all(child(*n, 0));
+            if (template_name(type_of(strip_all(child(me, 0)))) == "hive") continue;
+            ck.add(*n, "CXX-ITERATOR-INVALID", "container mutated after .begin() iterator taken");
+            break;
+        }
+    }
+    // CXX-KILL-DEPENDENCY / CXX-LERP: result as an unguarded index.
+    bool kd = false, lp = false;
+    for (auto* n : all) {
+        const json* idx = nullptr;
+        if (subscript_op(*n)) idx = &child(*n, 2);
+        else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) idx = &child(*n, 1);
+        if (!idx) continue;
+        const auto& i = strip_all(*idx);
+        std::string cn;
+        if (is_call_kind(kind(i))) cn = callee_name(i);
+        else if (auto id = ref_id(i); !id.empty() && init_callee.contains(id) && !rel_ids.contains(id))
+            cn = init_callee[id];
+        if (!kd && cn == "kill_dependency" && ok_pos(*n)) {
+            ck.add(*n, "CXX-KILL-DEPENDENCY", "std::kill_dependency result used as an index without a range check");
+            kd = true;
+        }
+        if (!lp && cn == "lerp" && ok_pos(*n)) {
+            ck.add(*n, "CXX-LERP", "std::lerp result used as an array index without a range check");
+            lp = true;
+        }
+    }
+    // CXX-MAKE-EXCEPTION-PTR: rethrow of a make_exception_ptr result, untested.
+    for (auto* n : all) {
+        if (!is_call_kind(kind(*n)) || callee_name(*n) != "rethrow_exception" || n_children(*n) < 2) continue;
+        const auto& a = *unwrap(child(*n, 1));
+        auto id = ref_id(a);
+        bool hit = is_call_kind(kind(a)) && callee_name(a) == "make_exception_ptr";
+        if (!id.empty() && init_callee.contains(id) && init_callee[id] == "make_exception_ptr" && !tested.contains(id))
+            hit = true;
+        if (!hit || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-MAKE-EXCEPTION-PTR", "rethrow_exception of make_exception_ptr without a nullptr test");
+        break;
+    }
+    // CXX-OSYNCSTREAM: an osyncstream local never emit()'d.
+    {
+        std::set<std::string> emitted;
+        for (auto* n : all)
+            if (mcall_name(*n) == "emit") emitted.insert(mcall_obj(*n));
+        for (auto* n : all) {
+            if (kind(*n) != "VarDecl") continue;
+            auto id = std::string(str_field(*n, "id"));
+            if (!one_of(decl_class(*n), {"osyncstream", "basic_osyncstream"}) || emitted.contains(id) || !ok_pos(*n))
+                continue;
+            ck.add(*n, "CXX-OSYNCSTREAM", "osyncstream destroyed without emit()");
+            break;
+        }
+    }
+    // CXX-OUT-PTR: smart pointer dereferenced after out_ptr/inout_ptr, untested.
+    {
+        std::map<std::string, long long> filled;
+        for (auto* n : all)
+            if (is_call_kind(kind(*n)) && one_of(callee_name(*n), {"out_ptr", "inout_ptr"}) && n_children(*n) >= 2)
+                if (auto id = ref_id(child(*n, 1)); !id.empty()) filled[id] = end_of(*n).offset;
+        for (auto* n : all) {
+            if (filled.empty()) break;
+            std::string id;
+            if (kind(*n) == "CXXOperatorCallExpr" && n_children(*n) >= 2 &&
+                one_of(str_field(ref_decl(strip_all(child(*n, 0))), "name"), {"operator*", "operator->"}))
+                id = ref_id(child(*n, 1));
+            else if (mcall_name(*n) == "get")
+                id = mcall_obj(*n);
+            if (id.empty() || !filled.contains(id) || off(*n) <= filled[id] || tested.contains(id)) continue;
+            auto tn = template_name(type_of(*unwrap(kind(*n) == "CXXOperatorCallExpr" ? child(*n, 1)
+                                                                                         : child(strip_all(child(*n, 0)), 0))));
+            if (!one_of(tn, {"unique_ptr", "shared_ptr"}) || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-OUT-PTR", "smart pointer used after out_ptr without a null check");
+            break;
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -7508,6 +7688,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_index_rule_checks(*body, fn, w.ck);
     cxx_exc_rule_checks(*body, fn, w.ck);
     cxx_algo_rule_checks(*body, fn, w.ck);
+    cxx_stream_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

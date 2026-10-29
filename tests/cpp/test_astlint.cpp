@@ -2022,6 +2022,86 @@ char tc_ok(int x) {
         return 0;
     return out[0];
 }
+#include <fstream>
+#include <cmath>
+#include <cstdio>
+int fstream_bad(const char *path) {
+    std::ifstream in(path);
+    int v = 0;
+    in >> v; // expect: CXX-FSTREAM
+    return v;
+}
+int fstream_ok(const char *path) {
+    std::ifstream in(path);
+    int v = 0;
+    if (!in.is_open())
+        return 0;
+    in >> v;
+    return v;
+}
+int invoke_bad(int (*cb)(int)) {
+    return std::invoke(cb, 1); // expect: CXX-INVOKE
+}
+int invoke_ok(int (*cb)(int)) {
+    if (!cb)
+        return 0;
+    return std::invoke(cb, 1);
+}
+int iterinv_bad(std::vector<int> &v) {
+    auto it = v.begin();
+    v.push_back(1); // expect: CXX-ITERATOR-INVALID
+    return *it;
+}
+int iterinv_ok(std::vector<int> &v) {
+    v.push_back(1);
+    auto it = v.begin();
+    return *it;
+}
+int killdep_bad(int *tab, int x) {
+    int k = std::kill_dependency(x);
+    return tab[k]; // expect: CXX-KILL-DEPENDENCY
+}
+int lerp_bad(int *tab, double a, double b, double t) {
+    int k = static_cast<int>(std::lerp(a, b, t));
+    return tab[k]; // expect: CXX-LERP
+}
+int lerp_ok(int *tab, double a, double b, double t) {
+    int k = static_cast<int>(std::lerp(a, b, t));
+    if (k < 0 || k > 7)
+        return 0;
+    return tab[k];
+}
+void mkeptr_bad() {
+    std::exception_ptr e = std::make_exception_ptr(1);
+    std::rethrow_exception(e); // expect: CXX-MAKE-EXCEPTION-PTR, CXX-EXCEPTION-PTR
+}
+void mkeptr_ok() {
+    std::exception_ptr e = std::make_exception_ptr(1);
+    if (e)
+        std::rethrow_exception(e);
+}
+void osync_bad() {
+    std::osyncstream os(std::cout); // expect: CXX-OSYNCSTREAM
+    os << 1;
+}
+void osync_ok() {
+    std::osyncstream os(std::cout);
+    os << 1;
+    os.emit();
+}
+void open_handle(int **out);
+int outptr_bad() {
+    std::unique_ptr<int> up;
+    open_handle(std::out_ptr(up));
+    return *up; // expect: CXX-OUT-PTR
+}
+int outptr_ok() {
+    std::unique_ptr<int> up;
+    open_handle(std::out_ptr(up));
+    if (!up)
+        return 0;
+    return *up;
+}
 )";
 
 }  // namespace
