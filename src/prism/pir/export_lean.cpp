@@ -356,13 +356,30 @@ std::optional<std::string> literal_string(const ir::Module& m, const ir::Value& 
 // The model intrinsics of Tr::model_intrinsic the extended fragment covers
 // (the libc models' malloc/free/new/delete use only these; D136 adds `hhavoc`
 // export ahead of the Lean fragment).
-// Tr::call's noreturn failure calls (undefined in the module): the PIR check's property
-const char* afail_prop(const std::string& n) {
+// Tr::call's noreturn failure calls (undefined in the module): the PIR check's property and class
+std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& m, const ir::Inst& in) {
+    const std::string& n = in.callee;
+    if (n == "llvm.trap" || n == "llvm.debugtrap" || n == "llvm.ubsantrap")
+        return std::pair<std::string, std::string>{"trap", "CXX-UNREACHABLE"};
+    if (m.find(n)) return std::nullopt;
     if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" || n == "__assert2" ||
         n == "_wassert")
-        return "assert";
-    if (n == "__VERIFIER_error" || n == "reach_error") return "reach_error";
-    return nullptr;
+        return std::pair<std::string, std::string>{"assert", "FUNC-CONTRACT"};
+    if (n == "__VERIFIER_error" || n == "reach_error")
+        return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
+    if (n == "_ZSt21__glibcxx_assert_failPKciS0_S0_" || n == "_ZSt21__glibcxx_assert_failv") {
+        // libstdc++ precondition: the class from the condition text (as Tr::call)
+        std::string cond = in.ops.size() > 3 ? literal_string(m, in.ops[3].v).value_or("") : "";
+        std::string cls = "FUNC-CONTRACT";
+        if (cond.find("size()") != std::string::npos || cond.find("_Nm") != std::string::npos)
+            cls = "MEM-OOB-READ";
+        else if (cond.find("_M_is_engaged") != std::string::npos || cond.find("has_value") != std::string::npos)
+            cls = "CXX-OPTIONAL-NULL";
+        else if (cond.find("pointer()") != std::string::npos || cond.find("nullptr") != std::string::npos)
+            cls = "PTR-NULL-DEREF";
+        return std::pair<std::string, std::string>{"precondition", cls};
+    }
+    return std::nullopt;
 }
 
 // After a noreturn failure call at `i`: the rest defines no variable (Tr::enter_frame numbers every
@@ -676,7 +693,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << "\n";
-            } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm) {
+            } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm &&
+                       !(afail_kind(m, in) && afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())))) {
                 intrinsic_line(b, in);
             } else if (op == "extractvalue") {
                 // a field of an overflow intrinsic's { iN, i1 } result
@@ -686,12 +704,13 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     throw Unsupported{"extractvalue"};
                 b << "L xv %" << name(in.result) << " " << width(in.ty) << " %" << name(in.ops[0].v.name) << " "
                   << in.indices[0] << "\n";
-            } else if (op == "call" && !in.is_asm && !m.find(in.callee) && afail_prop(in.callee) &&
+            } else if (op == "call" && !in.is_asm && afail_kind(m, in) &&
                        afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data()))) {
-                // Tr::call: check(1, prop, "FUNC-CONTRACT"), then the rest of the block is dead (noreturn);
+                // Tr::call: check(1, prop, cls), then the rest of the block is dead (noreturn);
                 // an unconditional br still makes its target reachable (normal_blocks)
+                auto [prop, cls] = *afail_kind(m, in);
                 auto& t = bl.insts.back();
-                b << "L afail " << afail_prop(in.callee) << " FUNC-CONTRACT";
+                b << "L afail " << prop << " " << cls;
                 if (t.op == "br") b << " br " << name(t.targets[0]);
                 b << "\n";
                 break;
