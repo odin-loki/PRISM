@@ -63,7 +63,12 @@ Remaining unbounded proof-rate items in `unbounded_string_contracts.cpp` at a
 proves PROVED-UNBOUNDED at a 300 s budget (budget-limited). `strcmp_any_true`
 is not: Houdini reaches its fixpoint in 3 rounds (42 inductive invariants)
 and the final cut-program query (2 inlined `strcmp` loops, 492 properties)
-runs out of time even split by property group.
+runs out of time even split by property group at 60 s; alone with a 300 s
+budget it is PROVED-UNBOUNDED in ~95 s of Houdini (one `strcmp` call alone: 48 s).
+With 4 functions checked concurrently at a 150 s budget all five stay BOUNDED
+(each spends ~140-150 s: the concurrent searches slow each other). Next:
+a solver-time-aware schedule (run the hard rows last, alone, with the
+leftover unit time) rather than new invariant templates.
 
 **Uncompilable units stay in the superset gate (decision).** They are not
 excluded: (a) some are valid code that pir's fixed language level rejects
