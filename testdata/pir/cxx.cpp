@@ -16,7 +16,7 @@ int use_counter(int x) {
 }
 // C++20 and later: signed left shift is defined (modular), unlike C17.
 int cxx_shl_ok(int a) {
-    if (a < 0)
+    if (a < 0 || a > 0xFFFF)  // a << 4 fits: defined before C++20 too
         return 0;
     return a << 4;
 }

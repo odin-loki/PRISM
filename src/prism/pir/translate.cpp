@@ -160,6 +160,7 @@ struct Tr final : pirmem::TrApi {
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
     std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
+    bool svcomp_task_ = false;                        // unit declares the SV-COMP error sink (reach_error)
     bool oom_pending_ = false;                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
@@ -1324,6 +1325,17 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            // The body of the SV-COMP error sink (reach_error / __VERIFIER_error
+            // defined as `__assert_fail(...)` or `abort()`) is the sink itself:
+            // reaching it is checked at every call site (reach_error above),
+            // so inside the sink the path just ends, as in the bmc encoder.
+            if (!stack.empty() && (stack.front() == "reach_error" || stack.front() == "__VERIFIER_error") &&
+                (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" ||
+                 n == "__assert2" || n == "_wassert" || n == "abort")) {
+                assume(cur, Arg::c(1, 0));
+                noreturn = true;
+                return;
+            }
             if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" ||
                 n == "__assert2" || n == "_wassert") {
                 check(cur, Arg::c(1, 1), "assert", "FUNC-CONTRACT", "assertion can fail", line);
@@ -1357,6 +1369,14 @@ struct Tr final : pirmem::TrApi {
                 // F9; ESBMC lets malloc fail by default and models abort() as
                 // assume(false)). Dereferencing an unchecked NULL result is
                 // still a separate check.
+                // SV-COMP task (the unit has the reach_error sink): the property
+                // is unreach-call, and abort() is the benchmark's assume(false)
+                // (`if (x < N) abort();` havoc abstraction), as in the bmc encoder.
+                if (svcomp_task_) {
+                    assume(cur, Arg::c(1, 0));
+                    noreturn = true;
+                    return;
+                }
                 Arg viol = Arg::c(1, 1);
                 if (oom_) viol = assign(cur, Op::Eq, 1, {ld(cur, *oom_, 8, line), Arg::c(8, 0)}, "c");
                 check(cur, viol, "abort", "FUNC-CONTRACT", "abort() is reachable (process crash)", line);
@@ -1991,6 +2011,11 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
     }
     try {
         Tr tr(m, opt);
+        {
+            auto sink = [](const std::string& n) { return n == "reach_error" || n == "__VERIFIER_error"; };
+            for (auto& g : m.functions) tr.svcomp_task_ = tr.svcomp_task_ || sink(g.name);
+            for (auto& d : m.declarations) tr.svcomp_task_ = tr.svcomp_task_ || sink(d);
+        }
         tr.out.ir_name = f.name;
         tr.out.name = f.name;
         Frame top;

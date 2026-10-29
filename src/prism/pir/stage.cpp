@@ -10,6 +10,7 @@
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
+#include "prism/stages.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "prism/pir/folded_diag.hpp"
@@ -411,7 +412,14 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};
     auto fl = base_flags(src);
-    fl.insert(fl.end(), include_flags.begin(), include_flags.end());
+    // A -std= among the unit's flags (its compile_commands.json entry) does
+    // not change the lowering language level (C17/C++23, the models need it);
+    // it picks the signed-shift rules of a C++ unit (below), as in bmc.
+    std::string unit_std;
+    for (auto& f : include_flags) {
+        if (f.starts_with("-std=")) unit_std = f;  // the last one wins, as in the compiler
+        else fl.push_back(f);
+    }
     if (cxx_models) cxx_models->clear();
     // C++ library models (docs/PIR.md "C++ library models"): the model
     // headers come first on the include path. A unit that does not compile
@@ -509,17 +517,28 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 want_shift_loc = true;
                 break;
             }
-        if (!cxx && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
+        // C++ before C++20 (the unit's -std=, else gnu++17, the default of
+        // the C++ compilers PRISM runs; bmc shift_rules_for) keeps base UB:
+        // locate those shifts under that standard (UBSan implements the
+        // C++11-17 rule: into the sign bit is defined, past it is not).
+        const int year = cxx ? (unit_std.empty() ? 17 : cxx_std_year(unit_std)) : 0;
+        const bool cxx_base_ub = cxx && year > 0 && year < 20;
+        if ((!cxx || cxx_base_ub) && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
             std::vector<std::string> av{cc->string()};
-            av.insert(av.end(), fl.begin(), fl.end());
+            auto lf = fl;
+            if (cxx) std::replace(lf.begin(), lf.end(), std::string("-std=c++23"),
+                                  unit_std.empty() ? std::string("-std=gnu++17") : unit_std);
+            av.insert(av.end(), lf.begin(), lf.end());
             auto os = td.path / "shift.ll";
             av.insert(av.end(), {"-fsanitize=shift-base", "-o", os.string(), src.string()});
             auto rs = detail::run_process(av, timeout_s);
-            if (rs.failed || rs.timed_out || rs.rc != 0) {
+            if (!cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
                 err = "clang (signed-shift locator): " + first_error(rs.text);
                 return std::nullopt;
             }
-            *signed_shl = parse_ubsan_locs(read_file(os));
+            // a C++ unit that does not compile before C++20 is not a C++17
+            // program: C++20 rules (no base UB) are the ones that apply
+            if (!rs.failed && !rs.timed_out && rs.rc == 0) *signed_shl = parse_ubsan_locs(read_file(os));
         }
     }
     return out;
@@ -1262,17 +1281,17 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
         Lowered l;
         try {
-            // The unit's include path: its compile_commands.json entry (without
-            // -std=, PRISM's language level stays), else the scan root and
+            // The unit's include path: its compile_commands.json entry (its
+            // -std= only picks the C++ shift rules; PRISM's language level stays), else the scan root and
             // root/include searched after the system headers (-idirafter never
             // shadows a system header), as the Clang-AST lints guess it.
             std::vector<std::string> inc;
             const fs::path root = fs::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
-            for (auto& f : astlint::compile_db_flags(root, u.path))
-                if (!f.starts_with("-std=")) inc.push_back(f);
-            if (inc.empty() && !root.empty()) {
+            for (auto& f : astlint::compile_db_flags(root, u.path)) inc.push_back(f);  // -std=: shift rules only
+            if (std::none_of(inc.begin(), inc.end(), [](auto& f) { return !f.starts_with("-std="); }) &&
+                !root.empty()) {
                 std::error_code ec;
-                inc = {"-idirafter", root.string()};
+                inc.insert(inc.end(), {"-idirafter", root.string()});
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
             l.include_flags = inc;
