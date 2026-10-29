@@ -64,3 +64,6 @@
   standalone it proves in 5 s at 208 MB: investigate the trip). memfix-only: priority_queue_push_true.
   Remaining misses: 14 unbounded_string + 6 unordered_map TIMEOUT (300 s file limit).
 - prism-run: up to 4 jobs; budget <= 1 GB bypasses slots and queue order.
+- CORRECTION: conf2-conf4 ran build/prism (old, 20:07 Oct 29), not build-mf2/prism: prism-qa
+  conformance defaults to build/prism. Always pass --prism <build>/prism. conf5 (/tmp/mf/conf5,
+  log /workspace/logs/memfix-conf5.log) is the first run on the memfix binary.
