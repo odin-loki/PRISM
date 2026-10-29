@@ -34,7 +34,7 @@ PRISM_API bool over_budget_sampled(unsigned every = 2048);
 PRISM_API void release_free_memory();
 // The message of a per-function UNKNOWN.
 PRISM_API std::string over_message(const char* where);
-// Live headroom: the box's MemAvailable under this many MB (default 800,
+// Live headroom: the box's MemAvailable under this many MB (default 1500,
 // $PRISM_MEM_RESERVE_MB) also counts as over budget, so PRISM gives a
 // function up before the kernel OOM-kills the process (other programs on a
 // shared machine grow too; the start-time budget alone cannot see them).

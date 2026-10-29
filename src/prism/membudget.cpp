@@ -131,7 +131,7 @@ bool system_low() {
 #ifdef __linux__
     static const uint64_t reserve = [] {
         const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
-        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{800};
+        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{1500};
     }();
     if (reserve == 0) return false;
     const uint64_t avail = meminfo_mb("MemAvailable:");
