@@ -1,3 +1,6 @@
+#include <condition_variable>
+#include <mutex>
+#include <utility>
 void nexit_bad(void) {
     std::mutex m;
     std::condition_variable cv;

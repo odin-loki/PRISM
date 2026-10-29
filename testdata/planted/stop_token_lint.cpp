@@ -1,3 +1,4 @@
+#include <stop_token>
 void stop_token_bad(void) {
     std::stop_token st;
     while (true) {

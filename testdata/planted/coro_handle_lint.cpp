@@ -1,3 +1,4 @@
+#include <coroutine>
 void coro_h_bad(void) {
     std::coroutine_handle<> h;
     h.resume();

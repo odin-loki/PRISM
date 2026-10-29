@@ -1,3 +1,4 @@
+#include <thread>
 int jthread_unenc_bad(int n) {
     std::jthread t;
     return n;

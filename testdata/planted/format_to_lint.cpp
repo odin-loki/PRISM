@@ -1,3 +1,4 @@
+#include <format>
 void fmtto_bad(void) {
     char buf[4];
     std::format_to(buf, "{}", 1);

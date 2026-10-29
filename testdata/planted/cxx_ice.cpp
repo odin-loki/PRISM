@@ -1,3 +1,4 @@
+#include <type_traits>
 int ice_unenc_bad(int n) {
     std::is_constant_evaluated();
     return n;

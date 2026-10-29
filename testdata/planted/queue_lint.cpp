@@ -1,3 +1,4 @@
+#include <queue>
 void queue_bad(void) {
     std::queue<int> q;
     q.front();

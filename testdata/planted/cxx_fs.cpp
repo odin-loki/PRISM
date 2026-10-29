@@ -1,3 +1,4 @@
+#include <filesystem>
 int fs_unenc_bad(int n) {
     std::filesystem::path p;
     return n;

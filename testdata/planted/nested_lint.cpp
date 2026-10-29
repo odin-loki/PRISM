@@ -1,3 +1,5 @@
+#include <exception>
+#include <stdexcept>
 void nested_bad(void) {
     std::throw_with_nested(std::runtime_error("x"));
 }

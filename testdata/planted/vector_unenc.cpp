@@ -1,3 +1,4 @@
+#include <vector>
 int vector_unenc_bad(int n) {
     std::vector<int> v;
     (void)v;

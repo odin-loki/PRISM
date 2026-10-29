@@ -1,3 +1,4 @@
+#include <bit>
 void bitcast_pun_bad(void) {
     int x;
     x = 1;

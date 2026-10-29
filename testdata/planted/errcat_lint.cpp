@@ -1,3 +1,4 @@
+#include <system_error>
 void errcat_bad(void) {
     const std::error_category& c = std::generic_category();
     (void)c;

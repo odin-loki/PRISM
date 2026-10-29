@@ -1,3 +1,4 @@
+#include <system_error>
 int syserr_unenc_bad(int n) {
     std::system_error x;
     return n;

@@ -1,3 +1,4 @@
+#include <functional>
 int refwrap_bad(void) {
     int x = 1;
     return std::ref(x);

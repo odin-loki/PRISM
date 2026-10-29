@@ -1,3 +1,4 @@
+#include <forward_list>
 int fwd_list_unenc_bad(int n) {
     std::forward_list<int> f;
     return n;

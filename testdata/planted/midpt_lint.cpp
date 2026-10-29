@@ -1,3 +1,4 @@
+#include <numeric>
 int midpt_bad(int a, int b, int *p) { return p[std::midpoint(a, b)]; }
 int midpt_ok(int a, int b, int *p) {
     auto k = std::midpoint(a, b);

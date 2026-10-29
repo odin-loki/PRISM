@@ -1,3 +1,4 @@
+#include <functional>
 void move_only_fn_bad(void) {
     std::move_only_function<void()> f;
     f();

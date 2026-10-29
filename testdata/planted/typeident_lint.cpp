@@ -1,3 +1,4 @@
+#include <type_traits>
 int typeident_bad(int *p) {
     using T = std::type_identity<int>::type;
     T *q = p;

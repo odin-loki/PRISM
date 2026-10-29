@@ -1,3 +1,5 @@
+#include <ranges>
+#include <string>
 int ranges_dangle_bad(void) {
     auto v = std::string("hi") | std::views::take(1);
     return *v.begin();

@@ -1,3 +1,6 @@
+#include <sstream>
+#include <string>
+#include <string_view>
 int sstream_view_bad(void) {
     std::stringstream ss;
     std::string_view v = ss.str();

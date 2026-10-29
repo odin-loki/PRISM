@@ -1,3 +1,4 @@
+#include <memory_resource>
 void pmr_bad(int i) {
     std::pmr::vector<int> v;
     v[i]=1;

@@ -1,3 +1,4 @@
+#include <unordered_set>
 void umset_find_bad(void) {
     std::unordered_multiset<int> s;
     auto it=s.find(1);

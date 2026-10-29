@@ -1,3 +1,4 @@
+#include <valarray>
 void valarray_bad(int i) {
     std::valarray<int> v(4);
     v[i] = 1;

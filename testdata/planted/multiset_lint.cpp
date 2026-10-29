@@ -1,3 +1,4 @@
+#include <set>
 void mset_find_bad(void) {
     std::multiset<int> s;
     auto it=s.find(1);

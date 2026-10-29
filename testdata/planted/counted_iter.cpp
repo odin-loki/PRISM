@@ -1,3 +1,16 @@
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <ranges>
+#include <string>
+#include <utility>
+#include <vector>
 int counted_iter_bad(int *p, int n) {
     std::counted_iterator it(p, n);
     return *it;

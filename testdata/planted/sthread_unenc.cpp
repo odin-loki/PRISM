@@ -1,3 +1,4 @@
+#include <thread>
 int sthread_unenc_bad(int n) {
     std::thread t;
     return n;

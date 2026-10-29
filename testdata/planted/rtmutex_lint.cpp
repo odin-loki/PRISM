@@ -1,3 +1,4 @@
+#include <mutex>
 void rtmutex_bad(void) {
     std::recursive_timed_mutex m;
     m.lock();

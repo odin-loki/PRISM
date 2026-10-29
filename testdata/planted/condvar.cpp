@@ -1,3 +1,4 @@
+#include <condition_variable>
 int condvar_unenc_bad(int n) {
     std::condition_variable cv;
     return n;

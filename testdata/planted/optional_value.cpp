@@ -1,3 +1,4 @@
+#include <optional>
 int optional_value_bad(void) {
     std::optional<int> o;
     return o.value();

@@ -1,3 +1,4 @@
+#include <any>
 int any_unenc_bad(int n) {
     std::any a;
     (void)any_cast<int>(a);

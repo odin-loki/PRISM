@@ -1,3 +1,4 @@
+#include <system_error>
 void errc_bad(void) {
     std::error_code ec;
     (void)ec.message();

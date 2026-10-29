@@ -1,3 +1,4 @@
+#include <unordered_set>
 int umset_unenc_bad(int n) {
     std::unordered_multiset<int> s;
     return n;

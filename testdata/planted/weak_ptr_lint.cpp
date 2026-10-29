@@ -1,3 +1,4 @@
+#include <memory>
 void weak_bad(void) {
     std::weak_ptr<int> w;
     auto p = w.lock();

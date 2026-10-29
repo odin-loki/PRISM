@@ -1,3 +1,4 @@
+#include <set>
 int set_unenc_bad(int n) {
     std::set<int> s;
     return n;

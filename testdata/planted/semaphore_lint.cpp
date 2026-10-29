@@ -1,3 +1,4 @@
+#include <semaphore>
 void semaphore_bad(void) {
     std::counting_semaphore sem(0);
     sem.acquire();

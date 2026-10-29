@@ -1,3 +1,4 @@
+#include <string>
 int wstring_unenc_bad(int n) {
     std::wstring x;
     return n;

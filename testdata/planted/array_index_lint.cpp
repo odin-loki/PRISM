@@ -1,3 +1,4 @@
+#include <array>
 void arr_idx_bad(int i) {
     std::array<int,4> a;
     a[i]=1;

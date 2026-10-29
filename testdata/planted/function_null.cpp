@@ -1,3 +1,4 @@
+#include <functional>
 void function_null_bad(void) {
     std::function<void()> f;
     f();

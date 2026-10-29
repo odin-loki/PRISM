@@ -1,3 +1,4 @@
+#include <stack>
 void stack_bad(void) {
     std::stack<int> st;
     st.top();

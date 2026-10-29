@@ -1,3 +1,4 @@
+#include <numeric>
 int lcm_bad(int a, int b, int *p) { return p[std::lcm(a, b)]; }
 int lcm_ok(int a, int b, int *p) {
     auto k = std::lcm(a, b);

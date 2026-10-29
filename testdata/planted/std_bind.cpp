@@ -1,3 +1,4 @@
+#include <functional>
 int bind_add(int a, int b) {
     return a + b;
 }

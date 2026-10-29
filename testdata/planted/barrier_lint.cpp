@@ -1,3 +1,4 @@
+#include <barrier>
 void barrier_bad(void) {
     std::barrier b(1);
     b.arrive();

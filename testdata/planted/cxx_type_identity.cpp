@@ -1,3 +1,4 @@
+#include <type_traits>
 int typeid_unenc_bad(int n) {
     std::type_identity<int>();
     return n;

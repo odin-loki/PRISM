@@ -8332,6 +8332,33 @@ void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
         ck.add(*n, "CXX-SLICING", d + " passed by value as " + b);
         break;
     }
+    // CXX-RANGES-DANGLE: a views pipeline whose first range is a temporary string/vector;
+    // a function that copies the view into a named string/vector from .begin() is spared.
+    {
+        static const std::regex materialize(R"re((?:vector|string)\s*(?:<[^>]+>)?\s+[A-Za-z_]\w*\s*\([^;]*\.begin\s*\()re");
+        const std::string btext(cx.text_of(body));
+        if (!std::regex_search(btext, materialize)) {
+            auto is_pipe = [&](const json& e) {
+                return kind(e) == "CXXOperatorCallExpr" && n_children(e) == 3 && callee_name(e) == "operator|";
+            };
+            for (auto* n : all) {
+                if (!is_pipe(*n)) continue;
+                if (const json* p = up(*n); p && is_pipe(*p)) continue;
+                if (std::string(cx.text_of(child(*n, 2))).find("views") == std::string::npos) continue;
+                const json* l = &strip_all(child(*n, 1));
+                while (is_pipe(*l)) l = &strip_all(child(*l, 1));
+                const json* u = unwrap(*l);
+                const auto& lk = kind(*u);
+                const bool temp = lk == "CXXTemporaryObjectExpr" || lk == "CXXFunctionalCastExpr" ||
+                                  lk == "CXXConstructExpr" || lk == "InitListExpr" || lk == "CXXStdInitializerListExpr" ||
+                                  kind(*l) == "MaterializeTemporaryExpr" || is_call_kind(lk);
+                auto c = cls_of_type(type_of(*l));
+                if (!temp || ref_id(*u).size() || !one_of(c, {"basic_string", "string", "vector"}) || !ok_pos(*n)) continue;
+                ck.add(*n, "CXX-RANGES-DANGLE", "views pipeline over a temporary range");
+                break;
+            }
+        }
+    }
     // operator= rules: CXX-SELF-ASSIGN, CXX-COPY-ASSIGN-PTR.
     if (fn.name == "operator=") {
         bool self_test = false;

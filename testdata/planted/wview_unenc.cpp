@@ -1,3 +1,4 @@
+#include <string_view>
 int wview_unenc_bad(int n) {
     std::wstring_view x;
     return n;

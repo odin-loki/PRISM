@@ -1,3 +1,4 @@
+#include <future>
 int promise_bad(void) {
     std::promise<int> p;
     auto f = p.get_future();

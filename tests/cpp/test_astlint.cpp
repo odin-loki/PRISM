@@ -2448,6 +2448,19 @@ int queue_ok(std::queue<int> &q) {
         return 0;
     return q.front();
 }
+int rdangle_bad(int j) {
+    auto v = std::string("hi") | std::views::take(1);  // expect: CXX-RANGES-DANGLE
+    return *v.begin() + j;
+}
+int rdangle_ok(int j) {
+    auto v = std::string("hi") | std::views::take(1);
+    std::string out(v.begin(), v.end());
+    return (int)out.size() + j;
+}
+int rdangle_named_ok(const std::string &s, int j) {
+    auto v = s | std::views::take(1);
+    return *v.begin() + j;
+}
 int queue_pushed_ok() {
     std::queue<int> q;
     q.push(1);

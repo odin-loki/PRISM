@@ -1,3 +1,4 @@
+#include <exception>
 void mkeptr_bad(void) {
     std::rethrow_exception(std::make_exception_ptr(1));
 }

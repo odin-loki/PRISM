@@ -1,3 +1,4 @@
+#include <future>
 void worker_async(void) {
 }
 

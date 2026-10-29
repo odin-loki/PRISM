@@ -1,3 +1,4 @@
+#include <fstream>
 int ifs_unenc_bad(int n) {
     std::ifstream x;
     return n;

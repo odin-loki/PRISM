@@ -1,3 +1,4 @@
+#include <numeric>
 int inscan_bad(int *in, int *out) {
     std::inclusive_scan(in, in + 4, out);
     return out[9];

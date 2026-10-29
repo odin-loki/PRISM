@@ -1,3 +1,4 @@
+#include <semaphore>
 void binsem_bad(void) {
     std::binary_semaphore sem(0);
     sem.acquire();
