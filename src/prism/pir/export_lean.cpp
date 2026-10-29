@@ -356,6 +356,26 @@ std::optional<std::string> literal_string(const ir::Module& m, const ir::Value& 
 // The model intrinsics of Tr::model_intrinsic the extended fragment covers
 // (the libc models' malloc/free/new/delete use only these; D136 adds `hhavoc`
 // export ahead of the Lean fragment).
+// Tr::call's noreturn failure calls (undefined in the module): the PIR check's property
+const char* afail_prop(const std::string& n) {
+    if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" || n == "__assert2" ||
+        n == "_wassert")
+        return "assert";
+    if (n == "__VERIFIER_error" || n == "reach_error") return "reach_error";
+    return nullptr;
+}
+
+// After a noreturn failure call at `i`: the rest defines no variable (Tr::enter_frame numbers every
+// result) and ends in unreachable, ret, or an unconditional br (normal_blocks scans the whole block).
+bool afail_tail_ok(const ir::Block& bl, size_t i) {
+    for (size_t j = i + 1; j < bl.insts.size(); ++j) {
+        auto& x = bl.insts[j];
+        if (!x.result.empty() || x.op == "invoke" || x.op == "switch") return false;
+    }
+    auto& t = bl.insts.back();
+    return t.op == "unreachable" || t.op == "ret" || (t.op == "br" && t.targets.size() == 1);
+}
+
 void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     const std::string& n = in.callee;
     auto cint = [&](std::size_t i) -> uint64_t {
@@ -666,6 +686,15 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     throw Unsupported{"extractvalue"};
                 b << "L xv %" << name(in.result) << " " << width(in.ty) << " %" << name(in.ops[0].v.name) << " "
                   << in.indices[0] << "\n";
+            } else if (op == "call" && !in.is_asm && !m.find(in.callee) && afail_prop(in.callee) &&
+                       afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data()))) {
+                // Tr::call: check(1, prop, "FUNC-CONTRACT"), then the rest of the block is dead (noreturn);
+                // an unconditional br still makes its target reachable (normal_blocks)
+                auto& t = bl.insts.back();
+                b << "L afail " << afail_prop(in.callee) << " FUNC-CONTRACT";
+                if (t.op == "br") b << " br " << name(t.targets[0]);
+                b << "\n";
+                break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);
             } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&

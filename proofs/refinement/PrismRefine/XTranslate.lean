@@ -918,6 +918,14 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
     pure (s ++ se, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
   | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop, none)
 
+/-- The terminator of a block, or the failing check of a noreturn failure
+call (`Tr::call`: `check(1, prop, cls)`, then the block ends). -/
+def trTermN (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : Nat)
+    (nr : Option (String × String)) (t : LTerm) : Except String (List PStmt × List Nat × PTerm × Option Arg) :=
+  match nr with
+  | some (p, cl) => .ok ([.check (.c 1 1) p cl], [], .stop, none)
+  | none => trTermX G c heads retTo k t
+
 /-! ## Instances and certificates -/
 
 /-- SSA results of a function, in textual order (`Tr::enter_frame`). -/
@@ -1017,16 +1025,32 @@ def liftE {α : Type} (e : Except String α) : TM α :=
   | .ok a => pure a
   | .error m => throw m
 
-/-- Blocks reachable from the entry (`Tr::normal_blocks`). -/
+/-- The successors of an LLVM block along its terminator. -/
+def xSucc (G : XFunc) (B : XBlock) : List Nat :=
+  match B.term with
+  | .br t => (lookupBlock G.shape t).toList
+  | .cbr _ t f => (lookupBlock G.shape t).toList ++ (lookupBlock G.shape f).toList
+  | _ => []
+
+/-- `normal_blocks`: the blocks reachable from the entry. -/
 def xLive (G : XFunc) : List Nat :=
-  let succ (B : XBlock) : List Nat :=
-    match B.term with
-    | .br t => (lookupBlock G.shape t).toList
-    | .cbr _ t f => (lookupBlock G.shape t).toList ++ (lookupBlock G.shape f).toList
-    | _ => []
   let step (seen : List Nat) : List Nat :=
-    seen ++ ((seen.flatMap fun j => (G.blocks[j]?.map succ).getD []).filter (fun j => !seen.contains j)).eraseDups
+    seen ++ ((seen.flatMap fun j => (G.blocks[j]?.map (xSucc G)).getD []).filter (fun j => !seen.contains j)).eraseDups
   (List.range G.blocks.length).foldl (fun s _ => step s) [0]
+
+/-- `xLive` contains the entry and is closed under `xSucc` (checked, not
+proved: the proof only needs the check). -/
+def xLiveClosed (G : XFunc) : Bool :=
+  (xLive G).contains 0 && (List.range G.blocks.length).all fun j =>
+    !(xLive G).contains j || ((G.blocks[j]?.map (xSucc G)).getD []).all (xLive G).contains
+
+/-- A reachable block's phi names an unreachable predecessor (`Tr` drops
+such incomings; not mirrored). -/
+def xDeadInc (G : XFunc) (live : List Nat) : Bool :=
+  G.blocks.zipIdx.any fun (B, b) => live.contains b && B.phis.any fun p => p.inc.any fun (_, pr) =>
+    match lookupBlock G.shape pr with
+    | some j => !live.contains j
+    | none => false
 
 /-- `Tr::enter_frame`: blocks, result variables, shadow variables of a new
 instance whose parameters are bound to `penv`.  Returns the instance index. -/
@@ -1067,7 +1091,7 @@ def recordSeg (ι b : Nat) (pb k : Nat) (kid : Option Nat) : TM Unit :=
                | some x => I.kids.modify b (· ++ [x])
                | none => I.kids }
 
-/-- `Tr::run_frame` of instance `ι` (every block must be reachable); the
+/-- `Tr::run_frame` of instance `ι` (the unreachable blocks are skipped); the
 return sites `(PIR block, returned Arg)` of the instance are returned. -/
 def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List (Nat × Arg))
   | 0, _, _ => throw "UNENCODED: call depth"
@@ -1075,12 +1099,16 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     let I ← getInst ι
     let G := I.fn
     let live := xLive G
-    if (List.range G.blocks.length).any (fun j => !live.contains j) then
-      throw "outside fragment: unreachable block"
+    if !xLiveClosed G then throw "internal: reachable blocks not closed"
+    if xDeadInc G live then throw "outside fragment: phi incoming from an unreachable block"
     let mut rets : List (Nat × Arg) := []
     let mut tails : List Nat := []
     for (B, b) in G.blocks.zipIdx do
       let mut cur := (I.heads.getD b 0)
+      -- `run_frame` translates only the reachable blocks
+      if !live.contains b then
+        tails := tails ++ [cur]
+        continue
       -- segments ending in a call
       for (is, cl) in B.segs do
         let I ← getInst ι
@@ -1128,7 +1156,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
       let k := (← get).vars.size
       let (s1, t1) ← liftE (trSInstsX c k B.last)
       pushTemps t1
-      let (s2, t2, T, A?) ← liftE (trTermX G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.term)
+      let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.nr B.term)
       pushTemps t2
       setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := T }
       -- the first temporary of the last segment
@@ -1140,6 +1168,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     -- phis (`resolve_phis`): predecessors are the blocks that end each LLVM block
     let I ← getInst ι
     for (B, b) in G.blocks.zipIdx do
+      if !live.contains b then continue
       let qs ← liftE (trPhisX G (I.ctx (← curVars)) tails B.phis)
       setBlock (I.heads.getD b 0) fun pb => { pb with phis := qs }
     pure rets

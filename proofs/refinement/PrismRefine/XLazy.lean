@@ -485,7 +485,10 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
       · exact .inr (.inl rfl)
     | ub => exact .inl rfl
     | stuck => exact .inr (.inl rfl)
-  · split
+  · cases hnr : B.nr
+    case some => simp only [hnr]; exact .inl rfl
+    simp only [hnr]
+    split
     · split
       · exact .inr (.inr (.inl ⟨_, t, by rw [hc]⟩))
       · exact .inr (.inl rfl)
@@ -554,7 +557,10 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
           split
           · exact .inr (.inr (.inl ⟨_, t, rfl⟩))
           · exact .inr (.inl rfl)
-  · cases htm : B.term with
+  · cases hnr : B.nr
+    case some => simp only [hnr]; exact .inl rfl
+    simp only [hnr]
+    cases htm : B.term with
     | br tn =>
       simp only
       split

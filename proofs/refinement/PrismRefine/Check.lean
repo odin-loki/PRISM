@@ -500,15 +500,18 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       | none => f := { f with retw := ← nat? w }
       | some (bn, ps, sg, is) =>
         let t ← if w == "-" then pure (LTerm.ret none) else do pure (LTerm.ret (some (← opnd? w)))
-        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t⟩ :: f.blocks, cur := none }
+        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none⟩ :: f.blocks, cur := none }
     | _ =>
       let (bn, ps, sg, is) ← inBlock
       let t ← match l with
         | ["br", t] => pure (LTerm.br t)
         | ["cbr", c, t, e] => do pure (LTerm.cbr (← opnd? c) t e)
         | ["unreachable"] => pure LTerm.unreachable
+        | ["afail", _, _] => pure LTerm.unreachable
+        | ["afail", _, _, "br", t] => pure (LTerm.br t)
         | _ => throw s!"bad line {l}"
-      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t⟩ :: f.blocks, cur := none }
+      let nr := match l with | "afail" :: p :: cl :: _ => some (p, cl) | _ => none
+      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, nr⟩ :: f.blocks, cur := none }
   let last ← f.close
   let fs := (last :: done).reverse
   match fs with

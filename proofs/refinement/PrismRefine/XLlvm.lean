@@ -213,6 +213,9 @@ structure XBlock where
   segs : List (List SInst × CallI)
   last : List SInst
   term : LTerm
+  /-- a call of a noreturn failure (`__assert_fail`, ...) ends the block: the
+  PIR check's property and class; the rest of the block is dead -/
+  nr : Option (String × String) := none
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
@@ -648,6 +651,9 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         else .stuck
       | none => .stuck
   | none =>
+    match B.nr with
+    | some _ => .ub
+    | none =>
     match B.term with
     | .br tn =>
       match lookupBlock fr.F.shape tn with
@@ -870,6 +876,9 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
         else .stuck
       | none => .stuck
   | none =>
+    match B.nr with
+    | some _ => .ub
+    | none =>
     match B.term with
     | .br tn =>
       match lookupBlock fr.F.shape tn with
