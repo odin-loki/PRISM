@@ -1,0 +1,6 @@
+format_version: 1
+input_files: semaphore_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  semaphore_acquire_released_true: true

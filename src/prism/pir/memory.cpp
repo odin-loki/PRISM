@@ -3,6 +3,7 @@
 // "Memory model"; the Lean counterpart is proofs/semantics/PrismSem/Memory.lean
 // (semantics) and MemEncode.lean (read-over-write encoding).
 
+#include "prism/membudget.hpp"
 #include "memory.hpp"
 
 #include "prism/laws.hpp"
@@ -104,6 +105,16 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
 }
 }  // namespace
 
+// Law 7: one load can build millions of read-over-write terms (a symbolic
+// address against a long write log, nested once per copy). The process RSS
+// is checked every few thousand steps against the memory budget; past it the
+// function ends with a reported UNKNOWN (encode.cpp maps this exception) and
+// its context, with everything built here, is freed.
+static void mem_guard() {
+    if (membudget::over_budget_sampled(4096))
+        throw z3::exception("soft memory cap (memory budget) reached while encoding memory");
+}
+
 // Raw value sets: the options are kept apart even when two have the same
 // value, so terms built the same way (the bytes of one read-over-write
 // chain) have the same guard list and combine position by position.
@@ -186,6 +197,31 @@ std::optional<SymMem::Vs> SymMem::vs_bin(const z3::expr& e, const z3::expr& a, c
     return r;
 }
 
+// ite(c, a, ite(c, b, d)) is ite(c, a, d) and ite(c, ite(c, a, b), d) is
+// ite(c, a, d) (also with not c; one-argument or/and are their argument).
+// The encoder's phis give such terms (a value undefined on the path the
+// outer condition excludes, e.g. uninit!N), and the dead leaf has no value
+// set. Exact: equal terms, decided on AST identity only.
+z3::expr SymMem::peel_ite(const z3::expr& c_in, z3::expr t, bool then_side) const {
+    auto strip = [](z3::expr x) {
+        while (x.is_app() && x.num_args() == 1 &&
+               (x.decl().decl_kind() == Z3_OP_OR || x.decl().decl_kind() == Z3_OP_AND))
+            x = x.arg(0);
+        return x;
+    };
+    auto neg_of = [&](const z3::expr& x, const z3::expr& y) {
+        return x.is_app() && x.decl().decl_kind() == Z3_OP_NOT && x.num_args() == 1 && strip(x.arg(0)).id() == y.id();
+    };
+    const z3::expr c = strip(c_in);
+    for (int n = 0; n < 64 && t.is_app() && t.decl().decl_kind() == Z3_OP_ITE && t.num_args() == 3; ++n) {
+        const z3::expr ic = strip(t.arg(0));
+        const bool same = ic.id() == c.id(), opp = neg_of(ic, c) || neg_of(c, ic);
+        if (!same && !opp) break;
+        t = (then_side ? same : opp) ? t.arg(1) : t.arg(2);
+    }
+    return t;
+}
+
 void SymMem::seed_vs_bin(const z3::expr& sum, const z3::expr& a, const z3::expr& b, Z3_decl_kind op) {
     if (auto vs = vs_bin(sum, a, b, op)) seed_vs(sum, std::move(*vs));
 }
@@ -199,6 +235,7 @@ std::optional<SymMem::Vs> SymMem::shallow_vs(const z3::expr& e, int depth) const
     std::unordered_map<unsigned, std::optional<Vs>> seen;
     auto rec = [&](auto& self, const z3::expr& cur, int depth) -> std::optional<Vs> {
         if (auto it = seen.find(cur.id()); it != seen.end()) return it->second;
+        mem_guard();
         auto store = [&](std::optional<Vs> r) {
             seen.emplace(cur.id(), r);
             return r;
@@ -220,9 +257,11 @@ std::optional<SymMem::Vs> SymMem::shallow_vs(const z3::expr& e, int depth) const
         const auto kind = cur.decl().decl_kind();
         if (kind == Z3_OP_ITE) {
             if (cur.num_args() != 3) return store(std::nullopt);
-            auto a = self(self, cur.arg(1), depth - 1);
+            const z3::expr cnd0 = cur.arg(0);
+            const z3::expr ta = peel_ite(cnd0, cur.arg(1), true), tb = peel_ite(cnd0, cur.arg(2), false);
+            auto a = self(self, ta, depth - 1);
             if (!a || a->empty()) return store(std::nullopt);
-            auto b = self(self, cur.arg(2), depth - 1);
+            auto b = self(self, tb, depth - 1);
             if (!b || b->empty()) return store(std::nullopt);
             const z3::expr cnd = cur.arg(0);
             if (cnd.is_true()) return store(std::move(a));
@@ -402,18 +441,19 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
         const auto k = e.decl().decl_kind();
         if (k == Z3_OP_ITE) {
             const auto cnd = e.arg(0);
-            const Vs* a = vs_raw(e.arg(1));
-            const Vs* b = a ? vs_raw(e.arg(2)) : nullptr;
+            const z3::expr ta = peel_ite(cnd, e.arg(1), true), tb = peel_ite(cnd, e.arg(2), false);
+            const Vs* a = vs_raw(ta);
+            const Vs* b = a ? vs_raw(tb) : nullptr;
             if (a && b) {
                 if (cnd.is_true()) out = *a;
                 else if (cnd.is_false()) out = *b;
                 else {
                     // too many options kept apart: the branches' merged sets
                     if (a->size() + b->size() > kVsMax) {
-                        a = vs_of(e.arg(1));
-                        b = vs_of(e.arg(2));
+                        a = vs_of(ta);
+                        b = vs_of(tb);
                     }
-                    if (a->size() + b->size() <= kVsMax) {
+                    if (a && b && a->size() + b->size() <= kVsMax) {
                         Vs r;
                         for (auto& o : *a) r.push_back(VsOpt{and2(cnd, o.guard), o.val});
                         for (auto& o : *b) r.push_back(VsOpt{and2(!cnd, o.guard), o.val});
@@ -461,8 +501,13 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
             const Vs* shape = nullptr;
             bool zip = true;
             std::size_t combos = 1;
+            // too many raw combinations: the operands' merged sets (equal
+            // values or-ed; exact, only fewer options)
+            bool merged = false;
+            for (int pass = 0; pass < 2 && !merged; ++pass) {
+            as.clear(); ok = true; shape = nullptr; zip = true; combos = 1;
             for (unsigned i = 0; i < e.num_args() && ok; ++i) {
-                const Vs* a = vs_raw(e.arg(i));
+                const Vs* a = pass == 0 ? vs_raw(e.arg(i)) : vs_of(e.arg(i));
                 if (!a) {
                     ok = false;
                     break;
@@ -477,6 +522,9 @@ const SymMem::Vs* SymMem::vs_raw(const z3::expr& e) const {
                         for (std::size_t j = 0; j < a->size() && zip; ++j)
                             if ((*a)[j].guard.id() != (*shape)[j].guard.id()) zip = false;
                 }
+            }
+            if (!ok || zip || combos <= kVsCombos) break;
+            merged = pass == 1;
             }
             if (ok && (zip || combos <= kVsCombos)) {
                 Vs r;
@@ -736,9 +784,38 @@ z3::expr SymMem::read_cell(const z3::expr& addr) {
     return read_cell_log(addr, log_.size());
 }
 
+// (guard, dst, src) options of a copy whose destination and source both have
+// value sets: zipped when they share their guards, else the product (at most
+// kVsCombos). Guards are exhaustive. nullopt: no such finite description.
+std::optional<std::vector<std::tuple<z3::expr, uint64_t, uint64_t>>> SymMem::copy_alts(const z3::expr& dst,
+                                                                                       const z3::expr& src) const {
+    const Vs* dv = vs_of(dst);
+    if (!dv || dv->empty()) return std::nullopt;
+    const Vs* sv = vs_of(src);
+    if (!sv || sv->empty()) return std::nullopt;
+    std::vector<std::tuple<z3::expr, uint64_t, uint64_t>> out;
+    const z3::expr tt = c_.bool_val(true);
+    bool zip = dv->size() == sv->size() && dv->size() > 1;
+    for (std::size_t j = 0; zip && j < dv->size(); ++j)
+        if ((*dv)[j].guard.id() != (*sv)[j].guard.id()) zip = false;
+    if (zip) {
+        for (std::size_t j = 0; j < dv->size(); ++j) out.emplace_back((*dv)[j].guard, (*dv)[j].val, (*sv)[j].val);
+        return out;
+    }
+    if (dv->size() * sv->size() > kVsCombos) return std::nullopt;
+    for (auto& d : *dv)
+        for (auto& s : *sv) {
+            z3::expr g = dv->size() > 1 ? d.guard : tt;
+            if (sv->size() > 1) g = and2(g, s.guard);
+            out.emplace_back(g, d.val, s.val);
+        }
+    return out;
+}
+
 z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool use_prov) {
     auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
+    mem_guard();
     keep_.push_back(addr_in);
     // Value sets: an address with several possible constants reads each of
     // them (under its guard); one constant is read as that numeral, so the
@@ -792,6 +869,31 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
             }
             case Entry::Set: v = z3::ite(e.guard && in_range(addr, e.addr, e.len), e.cell, v); break;
             case Entry::Copy: {
+                // Constant address, destination and source with value sets
+                // (e.g. a memmove at a PRISM_INDEX_LE3 position): read each
+                // constant source byte instead of the symbolic src + (addr -
+                // dst), whose read-over-write chain has no value set and
+                // nests one level per earlier copy. Exact: the options'
+                // guards are exhaustive, and per option the in-range test and
+                // the source address are those of the original term.
+                if (caddr) {
+                    if (auto alts = copy_alts(e.addr, e.src)) {
+                        const z3::expr ca = bv(*caddr, 64);
+                        std::optional<z3::expr> chain;
+                        for (std::size_t k = alts->size(); k-- > 0;) {
+                            const auto& [g, dv, sv] = (*alts)[k];
+                            z3::expr inr = in_range(ca, bv(dv, 64), e.len).simplify();
+                            z3::expr cand = v;
+                            if (!inr.is_false()) {
+                                auto rd = read_cell_log(bv(sv + (*caddr - dv), 64), i, use_prov);
+                                cand = inr.is_true() ? rd : z3::ite(inr, rd, v);
+                            }
+                            chain = chain.has_value() ? z3::ite(g, cand, *chain) : cand;
+                        }
+                        v = z3::ite(e.guard, *chain, v);
+                        break;
+                    }
+                }
                 auto src = e.src + (addr - e.addr);
                 if (use_prov)
                     if (auto ks = known(e.src)) note(src, *ks);
@@ -822,6 +924,7 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     // the same address expression reads the same value (no new constraints)
     auto key = std::make_pair(e.havoc, addr.id());
     if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
+    mem_guard();
     auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
     auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
     uint64_t x1 = 0, x2 = 0;

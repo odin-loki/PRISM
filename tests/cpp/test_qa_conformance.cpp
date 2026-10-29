@@ -583,7 +583,7 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     // bits/basic_string.tcc replaces the libstdc++ file <string> includes
     for (const auto& f : files)
         if (f.find('/') == std::string::npos && f.rfind("prism_", 0) != 0) headers.push_back(f);
-    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex"})
+    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "deque", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
     // An explicit-include buffer, not a header the pir stage swaps in for
@@ -607,13 +607,6 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
             // and no public model header includes it. tests/cpp/test_cxx_iostream.cpp
             // includes it by path. A swap would be a file named iostream, which
             // the checks above reject, and would need stage.cpp's include path.
-            continue;
-        }
-        if (f == "deque/deque") {
-            // The model lives one directory down, so write_cxx_models would
-            // emit deque/deque, not the <deque> header. It is not embedded
-            // until the file is src/prism/pir/models/cxx/deque. tests/cpp/test_cxx_deque.cpp
-            // includes it by path.
             continue;
         }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
