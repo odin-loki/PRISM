@@ -1028,7 +1028,8 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
         if (x.contains("extra") && x["extra"].is_object())
             for (auto& [k, v] : x["extra"].items())
                 if (v.is_string()) f.extra[k] = v.get<std::string>();
-        f.extra["pir_rerun"] = "fresh process (Z3 hard out-of-memory earlier in this one)";
+        if (!f.extra.count("pir_rerun") || f.extra["pir_rerun"] == "pending")
+            f.extra["pir_rerun"] = "fresh process (Z3 memory used up earlier in this one)";
         rp->cex.clear();
         if (f.status != laws::FAILED) rp->fn.reset();  // nothing to replay
     }
