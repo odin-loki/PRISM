@@ -22,6 +22,7 @@
 // k-induction step is answered by Z3 in-process.
 
 #include "prism/laws.hpp"
+#include "prism/membudget.hpp"
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
@@ -1130,6 +1131,7 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
                            const EncodeOptions& eo) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn, g, k + 1, eo);
         e.step_loop = 0;
         e.step_fp = fp;
@@ -1443,8 +1445,9 @@ thread_local bool tl_first_unwind = false;
 // UNKNOWN, not in the kernel's OOM killer or a SIGSEGV at the address-space
 // limit (both leave no report at all; vector_insert.cpp did this). Z3 raises
 // an exception past memory_max_size, which every caller maps to a non-proof.
-// PRISM_PIR_MEM_MB overrides; default the smaller of 60% of physical memory
-// and a quarter of RLIMIT_AS. 0 disables.
+// The budget is prism/membudget.hpp's (PRISM_MEM_BUDGET_MB or PRISM_PIR_MEM_MB
+// override; else 75% of min(cgroup limit, MemAvailable, RLIMIT_AS/2)); the
+// encoder (SymMem) and every query check process RSS against it.
 // Past memory_max_size (Z3's hard limit) Z3 is not reliably usable again in
 // this process, in any context: with the flag cleared, the next function's
 // fresh context crashed in th_rewriter (unordered_map_contracts.cpp,
@@ -1457,7 +1460,9 @@ static bool z3_exhausted() {
     if (g_z3_oom.load()) return true;
     const uint64_t cap = g_z3_cap_mb.load();
     // over the soft cap now (not sticky: a finished function frees its context)
-    return cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100;
+    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100) return true;
+    membudget::release_free_memory();  // the last function's freed heap is not ours to count
+    return membudget::over_budget();
 }
 
 // Z3's own memory_max_size is the hard stop, but past it Z3 is not reliably
@@ -1471,12 +1476,13 @@ bool z3_hard_oom() { return g_z3_oom.load(); }
 
 static bool z3_over_soft_cap() {
     const uint64_t cap = g_z3_cap_mb.load();
-    return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap);
+    return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) ||
+           membudget::over_budget_sampled(64);
 }
 
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
-    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) {
+    if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
         throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached before a query");
     }
 }
@@ -1484,30 +1490,35 @@ static void z3_mem_guard() {
 static void cap_z3_memory_once() {
     static std::once_flag once;
     std::call_once(once, [] {
-        uint64_t mb = 0;
-        if (const char* e = std::getenv("PRISM_PIR_MEM_MB"); e && *e) {
-            mb = std::strtoull(e, nullptr, 10);
-        } else {
-            const long pages = ::sysconf(_SC_PHYS_PAGES), psz = ::sysconf(_SC_PAGE_SIZE);
-            const uint64_t phys =
-                pages > 0 && psz > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(psz) : 0;
-            mb = phys / (1024 * 1024) * 6 / 10;
-            // RLIMIT_AS counts address space (thread stacks, mapped model
-            // code, allocator reserves), not resident memory: Z3 gets a
-            // quarter of it (priority_queue_contracts.cpp under a 6 GB limit
-            // hit SIGSEGV inside Z3 at 60% and at a third).
-            struct rlimit rl{};
-            if (::getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
-                const uint64_t as_mb = static_cast<uint64_t>(rl.rlim_cur) / (1024 * 1024) / 4;
-                mb = mb ? std::min(mb, as_mb) : as_mb;
-            }
-        }
+        // One process-wide budget (prism/membudget.hpp): RSS, cgroup and
+        // MemAvailable, not physical RAM or address space. Z3's own estimate
+        // gets the same number as a soft cap (checked before every query);
+        // its hard limit is 1.5 times that, past the RSS check.
+        const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb);
         if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
     });
 }
 
+static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in);
 Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
+    // this function's contexts and encoder state are gone when it returns:
+    // hand the heap back so the next function's RSS check starts clean
+    struct Trim {
+        ~Trim() { membudget::release_free_memory(); }
+    } trim;
+    const uint64_t trips0 = membudget::trips();
+    Verdict mv = check_function_mem(fn, opt_in);
+    if (membudget::trips() != trips0 && mv.status != std::string(laws::PROVED) &&
+        mv.status != std::string(laws::FAILED)) {
+        // a query was interrupted by the memory watchdog: say so (Law 7)
+        mv.status = std::string(laws::UNKNOWN);
+        mv.message = membudget::over_message("while solving (query interrupted)");
+    }
+    return mv;
+}
+
+static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
     cap_z3_memory_once();
     if (std::getenv("PRISM_PIR_MEM_TRACE"))
@@ -1525,7 +1536,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
         // Z3's allocator fails every later request (a new context is null)
         Verdict v;
         v.status = std::string(laws::UNKNOWN);
-        v.message = "not checked: the encoder's memory (Z3, all contexts of this process) is over PRISM_PIR_MEM_MB, or an earlier function ran Z3 out of memory";
+        v.message = g_z3_oom.load() ? "not checked: an earlier function ran Z3 past its hard memory limit (re-checked in a fresh process)" : membudget::over_message("before this function started");
         return v;
     }
     CheckOptions opt = opt_in;
@@ -1555,8 +1566,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
     }
     if (z3_exhausted()) {
         v.status = std::string(laws::UNKNOWN);
-        v.message = "encoder ran out of memory (PRISM_PIR_MEM_MB) at unwind " + std::to_string(kFirstUnwind) +
-                    "; no proof";
+        v.message = membudget::over_message(("at unwind " + std::to_string(kFirstUnwind)).c_str());
         return v;
     }
     Verdict full = check_function_at(fn, opt);
@@ -1640,6 +1650,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     };
     try {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         // The shared options `so` are never changed: each query gets its own
         // copy, its timeout capped by what is left of the function budget
         // (certification copies `so`, so its timeouts do not depend on it).
@@ -2322,7 +2333,9 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
         if (oom && !soft) g_z3_oom.store(true);  // past Z3's own limit: no more Z3 in this process
         v.status = std::string(oom ? laws::UNKNOWN : laws::ERROR);
-        v.message = oom ? "encoder ran out of memory (PRISM_PIR_MEM_MB); no proof" : std::string("z3: ") + m;
+        v.message = oom ? (soft ? membudget::over_message("while encoding or solving")
+                                : std::string("Z3 hard memory limit reached; no proof"))
+                        : std::string("z3: ") + m;
         return v;
     } catch (const std::bad_alloc&) {
         // Law 7: running out of memory is not an empty report and not a proof.
@@ -2347,6 +2360,7 @@ std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo)
     if (!g.unencoded.empty()) return out;
     try {
         z3::context c;
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn, g, std::max(1, unwind), eo);
         e.build();
         for (auto& p : e.props) {
