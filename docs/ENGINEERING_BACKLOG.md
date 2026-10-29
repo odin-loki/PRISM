@@ -69,6 +69,15 @@ With 4 functions checked concurrently at a 150 s budget all five stay BOUNDED
 (each spends ~140-150 s: the concurrent searches slow each other). Next:
 a solver-time-aware schedule (run the hard rows last, alone, with the
 leftover unit time) rather than new invariant templates.
+**Done (scheduler):** `PRISM_UNIT_BUDGET=S` (off by default): rows left BOUNDED
+by a spent function budget are re-checked alone, in source order, with
+max(equal share, min(left, 2 x function budget)) of the unit time left; only a
+decisive answer (PROVED*, FAILED) replaces the first; each row records
+`rescheduled`. Measured on this file (60 s function budget, 280 s unit
+budget, box load 16-44): at `--jobs 4` phase 1 used ~200-270 s and one row was
+re-checked (no new answer); at `--jobs 2` (box memory limit) phase 1 alone takes
+338 s, nothing is left. The scheduler pays off only when phase 1 finishes well
+inside the unit budget; it is not a fix for this file under a 300 s cap.
 
 **Uncompilable units stay in the superset gate (decision).** They are not
 excluded: (a) some are valid code that pir's fixed language level rejects

@@ -908,7 +908,7 @@ std::optional<std::string> env_seconds(const char* name, double& out) {
 // empty: none). Every checked pir row carries it as extra.env_rejected.
 std::string rejected_budget_env() {
     std::string out;
-    for (const char* name : {"PRISM_FUNCTION_BUDGET", "PRISM_HOUDINI_BUDGET", "PRISM_CERTIFY_BUDGET"}) {
+    for (const char* name : {"PRISM_FUNCTION_BUDGET", "PRISM_HOUDINI_BUDGET", "PRISM_CERTIFY_BUDGET", "PRISM_UNIT_BUDGET"}) {
         double ignored = 0;
         if (auto why = env_seconds(name, ignored)) out += (out.empty() ? "" : "; ") + *why;
     }
@@ -1051,6 +1051,7 @@ static std::optional<Analyzed> try_ok_recovery(const Unit& u, const Frontend& fe
 
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low, const ModelLibrary& models,
                   const std::shared_ptr<HoudiniBudget>& budget) {
+    const auto unit_t0 = std::chrono::steady_clock::now();
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -1202,21 +1203,75 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     // original order, so the report does not depend on the thread count.
     std::vector<Verdict> verdicts(pending.size());
     std::vector<std::exception_ptr> errs(pending.size());
+    std::vector<Finding> f_before(pending.size());
+    // one check of row k: the check and the memory policy's re-checks share
+    // one function budget of fb seconds (<= 0: the configured one)
+    auto check_row = [&](std::size_t k, Finding& f, double fb) {
+        auto& rec = recs[pending[k].rec];
+        auto copt = check_options(cfg, budget);
+        if (fb > 0) copt.function_budget_s = fb;
+        if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+        auto v = check_function(*rec.fn, copt);
+        pirmem::apply_memory_policy(f, v, *rec.fn, mod, *rec.irf, pending[k].fopt, cfg, copt);
+        return v;
+    };
     parallel_for(low.fn_jobs, pending, [&](std::size_t k, const Pending& pd) {
         try {
             auto& rec = recs[pd.rec];
-            // one function budget for the check and the policy's re-checks of this row
-            auto copt = check_options(cfg, budget);
-            if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
-            auto v = check_function(*rec.fn, copt);
-            pirmem::apply_memory_policy(rec.f, v, *rec.fn, mod, *rec.irf, pd.fopt, cfg, copt);
-            verdicts[k] = std::move(v);
+            f_before[k] = rec.f;
+            verdicts[k] = check_row(k, rec.f, 0);
         } catch (...) {
             errs[k] = std::current_exception();
         }
     });
     for (auto& e : errs)
         if (e) std::rethrow_exception(e);
+    // Slow rows last (docs/PIR.md "Solving"): with $PRISM_UNIT_BUDGET
+    // seconds for the unit, a row left BOUNDED because its function budget
+    // was spent is checked again, alone (one row at a time, in source
+    // order), with a share of the unit time still left. Only a
+    // decisive answer of that complete re-check (PROVED*, FAILED) replaces
+    // the first one; both are sound, so this only trades time for answers.
+    double unit_s = 0;
+    (void)env_seconds("PRISM_UNIT_BUDGET", unit_s);
+    if (unit_s > 0) {
+        const double fb0 = check_options(cfg, budget).function_budget_s;
+        auto budget_spent = [](const Verdict& v) {
+            if (v.status != laws::BOUNDED) return false;
+            if (v.message.find("PRISM_FUNCTION_BUDGET") != std::string::npos) return true;
+            for (auto& [key, val] : v.extra)
+                if (val.find("PRISM_FUNCTION_BUDGET") != std::string::npos) return true;
+            return false;
+        };
+        std::vector<std::size_t> slow;
+        for (std::size_t k = 0; k < pending.size(); ++k)
+            if (budget_spent(verdicts[k])) slow.push_back(k);
+        for (std::size_t i = 0; i < slow.size(); ++i) {
+            const double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - unit_t0).count();
+            // an equal share of what is left, but at least twice the first
+            // check's budget while the unit has it (a row that answers early
+            // leaves its time to the rows after it)
+            const double left = unit_s - used;
+            const double share = std::max(left / static_cast<double>(slow.size() - i), std::min(left, 2 * fb0));
+            auto& v0 = verdicts[slow[i]];
+            if (share <= fb0) {  // no more time than the first check had
+                v0.extra["rescheduled"] = "not re-checked: the unit budget left (PRISM_UNIT_BUDGET) gives no more "
+                                          "than the function budget";
+                continue;
+            }
+            auto& rec = recs[pending[slow[i]].rec];
+            Finding f = f_before[slow[i]];
+            const auto sh = std::to_string(static_cast<long>(share));
+            auto v = check_row(slow[i], f, share);
+            if (v.status == laws::FAILED || v.status.starts_with("PROVED")) {
+                v.extra["rescheduled"] = "re-checked alone with " + sh + " s (PRISM_UNIT_BUDGET); first check BOUNDED";
+                rec.f = std::move(f);
+                v0 = std::move(v);
+            } else {
+                v0.extra["rescheduled"] = "re-checked alone with " + sh + " s (PRISM_UNIT_BUDGET): " + v.status;
+            }
+        }
+    }
     for (std::size_t pk = 0; pk < pending.size(); ++pk) {
         auto& rec = recs[pending[pk].rec];
         auto& f = rec.f;
