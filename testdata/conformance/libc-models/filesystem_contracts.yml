@@ -6,5 +6,6 @@ expected:
   fs_filename_true: true
   fs_join_true: true
   fs_stem_true: true
+  fs_stem_dots_true: true
   fs_compare_true: true
   fs_replace_ext_true: true
