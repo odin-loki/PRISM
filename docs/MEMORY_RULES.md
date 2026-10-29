@@ -80,3 +80,8 @@
 - prism-run admission now reserves half the RSS of >1 GB processes outside prism-run trees.
 - Registration-file loss: not reproduced (own trap/cleanup keep the file in tests); no inotify on
   the box to catch the deleter. Mitigated: wrapper re-registers every 0.5 s.
+
+## Handoff 2026-10-30 03:55 AEDT
+- c6ac46893: prism-qa run_prism prefixes `env PRISM_FUNCTION_BUDGET=max(120, timeout/4)` unless set. us2 test (budget 120): unbounded_string 0 -> 8 _true PROVED.
+- conf6 running (setsid, detached): `prism-run prism-qa conformance --prism /tmp/mf/prism-fix --jobs 1 --out /tmp/mf/conf6`, log /tmp/mf/conf6.log. Check `pgrep -af prism-fix` before restarting.
+- TODO: compare conf6 vs conf5 (176/203, 0 wrong); unordered_map profile; peak overshoot (~13%, conf5 3851MB/3400).
