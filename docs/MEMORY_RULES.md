@@ -150,3 +150,4 @@
   150% peak 3112 MB, 120% peak 3496 MB, both UNKNOWN, no crash. A lower hard limit does not cut the
   overshoot: the default stays 150. The overshoot is probably RSS that is not Z3's own estimate (encoder/SymMem,
   allocator) growing between watchdog polls.
+- conf7 started ~10:40 AEDT: prism-run prism-qa conformance --prism /tmp/mf/prism-conf7 (9fc143692) --jobs 1 --out /tmp/mf/conf7, budget 3400, log /tmp/mf/conf7.log. Compare vs conf6 188/203.
