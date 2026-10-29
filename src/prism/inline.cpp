@@ -283,8 +283,22 @@ std::string rename_params(const std::string& body, const std::map<std::string, s
 // `{ ret = X; break; }` inside `do { ... } while (0)`. A callee with its own
 // loop or switch (where that break would bind to the wrong statement) is
 // inlined only when its single return is its last top-level statement.
+// A label in the callee body would be copied per call site.
+bool ret_var_unsafe_for_goto(const std::string& body) {
+    static Regex label("(?:^|[;{}])\\s*[A-Za-z_]\\w*\\s*:(?!:)");
+    static Regex case_kw("\\b(?:case|default)\\b");
+    // case/default labels are fine (they are not goto targets); any other
+    // `name:` at statement start is a label.
+    for (auto& m : label.finditer(body)) {
+        std::string t = m.text;
+        if (!case_kw.search(t)) return true;
+    }
+    return false;
+}
+
 std::optional<std::string> adapt_callee_body(std::string body, const std::map<std::string, std::string>& rename,
-                                             const std::optional<std::string>& ret_var) {
+                                             const std::optional<std::string>& ret_var,
+                                             const std::optional<std::string>& end_label) {
     body = strip(rename_params(body, rename));
     static Regex ret_any("\\breturn\\b");
     static Regex ret_val("\\breturn\\s+([^;]+);");
@@ -307,7 +321,18 @@ std::optional<std::string> adapt_callee_body(std::string body, const std::map<st
         if (ret_var) body = regex_sub(ret_val, body, *ret_var + " = $1;");
         return strip(regex_sub(ret_bare, body, ""));
     }
-    if (!loops.finditer(body).empty()) return std::nullopt;
+    if (!loops.finditer(body).empty()) {
+        // A loop or switch would capture the `break`: every return becomes a
+        // forward goto to a label after the callee's body instead (a jump out
+        // of nested blocks, which the bmc goto model encodes). The label is
+        // unique per call site through the prefix; it is reached only past
+        // the end of the body's block, so no declaration it can see is
+        // skipped.
+        if (!end_label || ret_var_unsafe_for_goto(body)) return std::nullopt;
+        if (ret_var) body = regex_sub(ret_val, body, "{ " + *ret_var + " = $1; goto " + *end_label + "; }");
+        body = regex_sub(ret_bare, body, "goto " + *end_label + ";");
+        return "{\n" + body + "\n}\n" + *end_label + ": ;";
+    }
     if (ret_var) body = regex_sub(ret_val, body, "{ " + *ret_var + " = $1; break; }");
     body = regex_sub(ret_bare, body, "break;");
     return "do {\n" + body + "\n} while (0);";
@@ -418,7 +443,7 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
         decls.push_back(*rt + " " + rv + ";");
     }
     add_callee_locals(callee.body, prefix, rename);
-    auto adapted = adapt_callee_body(callee.body, rename, ret_var);
+    auto adapted = adapt_callee_body(callee.body, rename, ret_var, prefix + "_end");
     if (!adapted) return std::nullopt;
     std::vector<std::string> parts = std::move(decls);
     if (adapted.has_value() && !adapted->empty()) parts.push_back(std::move(*adapted));

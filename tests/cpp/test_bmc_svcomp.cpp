@@ -599,3 +599,39 @@ TEST_CASE("abi: LP64 stays the default; only ILP32 narrows") {
     CHECK_FALSE(prism::is_ilp32(""));
     CHECK(prism::is_ilp32("Ilp32"));
 }
+
+TEST_CASE("inline: a callee with a loop and several returns is inlined via a goto to its end") {
+    const char* safe = R"(long g(long a, long b) {
+    if (a < 0) a = -a;
+    if (a == 0) { return b; }
+    while (b != 0) { if (a > b) { a = a - b; } else { b = b - a; } }
+    return a;
+}
+int main(void) { long x = 63; long r = g(x, 18); return r == 9 ? 0 : 1; }
+)";
+    auto by = bmc_run("inl_goto_safe.c", safe, 40);
+    REQUIRE(by.count("main"));
+    CHECK(by["main"].message.find("not modelled") == std::string::npos);
+    CHECK(by["main"].status != kHarness);
+    // The early return must leave the loop: the value after it is the one
+    // returned, so the overflow past the loop is reached only when n > 5.
+    const char* bad = R"(int h(int n) {
+    for (int i = 0; i < 10; i++) { if (i == n) return i; }
+    return 2147483647;
+}
+int main(void) { int n = __VERIFIER_nondet_int(); int v = h(n); return v + 1; }
+)";
+    auto by2 = bmc_run("inl_goto_bad.c", bad, 12);
+    REQUIRE(by2.count("main"));
+    CHECK(by2["main"].status == kFailed);
+    const char* ok = R"(int h(int n) {
+    for (int i = 0; i < 10; i++) { if (i >= 0) return i; }
+    return 2147483647;
+}
+int main(void) { int n = __VERIFIER_nondet_int(); int v = h(n); return v + 1; }
+)";
+    auto by3 = bmc_run("inl_goto_ok.c", ok, 12);
+    REQUIRE(by3.count("main"));
+    CHECK(by3["main"].status != kFailed);
+    CHECK(by3["main"].status != kHarness);
+}
