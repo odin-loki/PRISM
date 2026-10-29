@@ -50,6 +50,40 @@ PerFunction per_function(const nlohmann::json& report, const std::string& stage)
     }
     return out;
 }
+
+// pir's unit-level findings (no function) by file, and every file pir reported on
+struct PirUnits {
+    std::map<std::string, std::string> unit_msg;  // first unit-level ERROR/NOTRUN message
+    std::set<std::string> files;
+};
+PirUnits pir_units(const nlohmann::json& report) {
+    PirUnits u;
+    auto st = report.find("stages");
+    if (st == report.end() || !st->is_array()) return u;
+    for (const auto& s : *st) {
+        if (text_of(s, "name") != "pir") continue;
+        auto fs_ = s.find("findings");
+        if (fs_ == s.end() || !fs_->is_array()) continue;
+        for (const auto& f : *fs_) {
+            const auto file = text_of(f, "file");
+            u.files.insert(file);
+            const auto st_ = text_of(f, "status");
+            if (text_of(f, "function").empty() && (st_ == "ERROR" || st_ == "NOTRUN"))
+                u.unit_msg.emplace(file, text_of(f, "message"));
+        }
+    }
+    return u;
+}
+
+// Why a function pir does not report is absent (Law 7: written down, not
+// excluded): the gate still counts every one of these.
+std::string absent_reason(const PirUnits& u, const std::string& file) {
+    auto m = u.unit_msg.find(file);
+    if (m != u.unit_msg.end() && m->second.starts_with("clang front end failed"))
+        return "absent: clang rejects the unit";
+    if (!u.files.count(file)) return "absent: no pir result for the unit (timeout, memory or crash)";
+    return "absent";
+}
 }  // namespace
 
 std::string pvb_bucket(const std::string* status) {
@@ -92,6 +126,7 @@ PvbResult pir_vs_bmc(const nlohmann::json& report) {
     PvbResult r;
     const auto bmc = per_function(report, "bmc");
     const auto pir = per_function(report, "pir");
+    const auto units = pir_units(report);
     std::set<std::pair<std::string, std::string>> keys;
     for (auto& [k, _] : bmc) keys.insert(k);
     for (auto& [k, _] : pir) keys.insert(k);
@@ -109,7 +144,7 @@ PvbResult pir_vs_bmc(const nlohmann::json& report) {
         ++r.matrix[{rb, rp}];
         if (rb == "PROVED*" && (rp == "absent" || rp == "NEEDS-HARNESS")) {
             const auto msg = p != pir.end() ? text_of(p->second, "message") : std::string();
-            const auto why = pvb_gap_reason(sp ? &*sp : nullptr, msg);
+            const auto why = sp ? pvb_gap_reason(&*sp, msg) : absent_reason(units, k.first);
             ++r.gap_reasons[why];
             r.gaps.push_back({{"file", k.first},
                               {"function", k.second},

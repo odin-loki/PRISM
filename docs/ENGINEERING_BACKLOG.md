@@ -48,6 +48,24 @@ Retirement **blocked** until PIR is a **superset** of bmc reach on `testdata/`.
 
 Tool: `prism-qa pir-vs-bmc`. Doctest: synthetic only in `test_qa.cpp` — **no CI gate** yet.
 
+**2026-10-29 (per-file run, 300 s / 3 GB cap, `--function-budget 60` default):**
+hard conflicts **0** (from 118), superset gaps **14** (from 353 at baseline, 18
+at the start of the day), agreement 3450/4602. Gap reasons as the gate prints them:
+12 `absent: clang rejects the unit`, 1 `absent: no pir result for the unit`
+(`unbounded_string_contracts.cpp` over the cap), 1 `absent` (`sgn`, same unit).
+
+**Uncompilable units stay in the superset gate (decision).** They are not
+excluded: (a) some are valid code that pir's fixed language level rejects
+(dynamic exception specifications are C++11/14, pir lowers C++ as C++23;
+GNU nested functions are gcc C that clang does not implement): retiring bmc
+would lose real coverage of them; (b) the rest depend on the environment (a
+libstdc++ without `<generator>`/`std::views` features), which is Law 1's
+case: a missing tool is NOTRUN, never a clean result. Law 7 is met by naming
+the reason in the gate output (`absent: clang rejects the unit`), not by
+dropping the rows. Next actions: lower a C++ unit at its own `-std=` when
+C++23 rejects it (dynamic exception specs), and report GNU nested functions
+as NOTRUN with the compiler named.
+
 ## 3.1 Portfolio vs Z3 alone
 
 Rerun 4,179-VC benchmark with Bitwuzla fix + learned scheduler (`docs/SOLVERS.md`).
