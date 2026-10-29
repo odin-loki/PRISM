@@ -4130,43 +4130,6 @@ int rx_max_before(const std::vector<int>& hits, int r) {
     return last;
 }
 
-prism::Regex rx_null_guard(std::string_view var) {
-    auto v = rx_esc(var);
-    return prism::Regex("\\bif\\s*\\(\\s*(?:!\\s*" + v + "\\b|" + v + "\\s*==\\s*(?:NULL|nullptr|0)\\b" +
-                        "|(?:NULL|nullptr|0)\\s*==\\s*" + v + "\\b|" + v + "\\s*<\\s*0\\b|" + v +
-                        "\\s*==\\s*-\\s*1\\b|\\(\\s*" + v +
-                        "\\s*=(?!=)[^;]*?\\)\\s*==\\s*(?:NULL|nullptr|0)\\b)");
-}
-
-bool rx_null_guarded(const prism::Regex& pat, const std::vector<std::string>& body_lines, int r) {
-    if (r < 0 || static_cast<std::size_t>(r) >= body_lines.size()) return false;
-    if (pat.search(body_lines.at(static_cast<std::size_t>(r)))) return true;
-    if (r > 0) {
-        auto prev = body_lines.at(static_cast<std::size_t>(r - 1));
-        while (!prev.empty() && std::isspace(static_cast<unsigned char>(prev.back()))) prev.pop_back();
-        if (!prev.empty() && prev.back() != ';' && prev.back() != '{' && prev.back() != '}' && pat.search(prev))
-            return true;
-    }
-    int depth = 0;
-    for (int j = r - 1; j >= 0; --j) {
-        auto& ln = body_lines.at(static_cast<std::size_t>(j));
-        for (int k = static_cast<int>(ln.size()) - 1; k >= 0; --k) {
-            char c = ln.at(static_cast<std::size_t>(k));
-            if (c == '}') {
-                ++depth;
-            } else if (c == '{') {
-                --depth;
-                if (depth < 0) {
-                    auto head = ln.substr(0, static_cast<std::size_t>(k));
-                    if (rx_strip(head).empty() && j > 0) head = body_lines.at(static_cast<std::size_t>(j - 1));
-                    return pat.search(head);
-                }
-            }
-        }
-    }
-    return false;
-}
-
 const std::unordered_set<std::string>& rx_signed_words() {
     static const std::unordered_set<std::string> w = {
         "int", "short", "long", "char", "signed", "ssize_t", "ptrdiff_t", "int8_t", "int16_t",
@@ -4384,39 +4347,6 @@ bool rx_chdir_after(const std::vector<std::string>& body_lines, int chroot_idx) 
     return false;
 }
 
-std::set<std::string> rx_int_globals(const std::vector<std::string>& lines) {
-    static prism::Regex ig(R"(^int\s+(?P<name>[A-Za-z_]\w*)\s*;)");
-    static prism::Regex ug(R"(^unsigned\s+(?P<name>[A-Za-z_]\w*)\s*;)");
-    int depth = 0;
-    std::set<std::string> g;
-    for (auto& line : lines) {
-        auto stripped = rx_strip(line);
-        if (stripped.empty() || stripped.starts_with('#')) {
-            depth += static_cast<int>(std::count(stripped.begin(), stripped.end(), '{') -
-                                      std::count(stripped.begin(), stripped.end(), '}'));
-            continue;
-        }
-        if (depth == 0) {
-            if (auto m = ig.search_match(line); m && ig.match_line(line))
-                g.insert(m->named("name"));
-            else if (auto m2 = ug.search_match(line); m2 && ug.match_line(line))
-                g.insert(m2->named("name"));
-        }
-        depth += static_cast<int>(std::count(stripped.begin(), stripped.end(), '{') -
-                                  std::count(stripped.begin(), stripped.end(), '}'));
-    }
-    return g;
-}
-
-bool rx_global_rmw(std::string_view body, std::string_view name) {
-    auto v = rx_esc(name);
-    if (prism::Regex("\\b" + v + "\\s*=\\s*" + v + "\\s*\\+").search(body)) return true;
-    if (prism::Regex("\\b" + v + "\\+\\+").search(body)) return true;
-    if (prism::Regex("\\+\\+\\s*" + v + "\\b").search(body)) return true;
-    if (prism::Regex("\\b" + v + "\\s*\\+=").search(body)) return true;
-    return false;
-}
-
 bool rx_c_only_file(const FileCtx& f) {
     auto ext = fs::path(f.rel).extension().string();
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -4443,6 +4373,250 @@ void rx_add(Checker& ck, const std::map<int, const json*>& at, int line, std::st
     auto it = at.find(line);
     if (it == at.end() || !it->second) return;
     ck.add(*it->second, cls, msg);
+}
+
+// ---------------------------------------------------------------- RES-FD-LEAK / CONC-TOCTOU / CONC-ATOMICITY
+// AST ports of checkers_core.cpp fd_leak, conc_toctou and conc_atomicity.
+// Same row line as the regex rule, so the AST row supersedes it; the facts
+// come from the tree (calls, declarations, operators), not from text.
+
+namespace {
+
+struct FlowEv {
+    long long off;
+    const json* at;
+};
+
+bool same_file_pos(const Pos& a, const Pos& b) { return a.file && b.file && *a.file == *b.file; }
+
+void collect_nodes(const json& n, const std::function<void(const json&, const json*)>& f, const json* if_cond = nullptr) {
+    if (!n.is_object()) return;
+    const auto& k = kind(n);
+    if (k == "LambdaExpr" || k == "BlockExpr") return;  // another function body
+    f(n, if_cond);
+    if (k == "IfStmt" && n_children(n) >= 2) {
+        // inner: [init?] [condvar?] cond then [else]; the condition is the first
+        // expression child before the then statement.
+        const auto& in = inner(n);
+        const json* cond = nullptr;
+        std::size_t then_i = 0;
+        for (std::size_t i = 0; i < in.size(); ++i) {
+            const auto& ck = kind(in.at(i));
+            if (ck == "DeclStmt" || ck == "VarDecl") continue;
+            if (!cond) {
+                cond = &in.at(i);
+                then_i = i + 1;
+                break;
+            }
+        }
+        for (std::size_t i = 0; i < in.size(); ++i)
+            collect_nodes(in.at(i), f, cond && i == then_i ? cond : nullptr);
+        return;
+    }
+    for (auto& c : inner(n)) collect_nodes(c, f, nullptr);
+}
+
+// `!v`, `v == NULL/0/-1`, `v < 0`, `(v = f()) == NULL`: the then branch runs
+// with nothing open.
+bool failure_test_of(const json& cond0, const std::string& id) {
+    const auto& c = strip_all(cond0);
+    const auto& k = kind(c);
+    if (k == "UnaryOperator" && str_field(c, "opcode") == "!" && n_children(c) == 1)
+        return ref_id(child(c, 0)) == id;
+    if (k == "BinaryOperator" && n_children(c) == 2) {
+        const auto op = str_field(c, "opcode");
+        const auto& l = strip_all(child(c, 0));
+        const auto& r = strip_all(child(c, 1));
+        auto is_var = [&](const json& x) {
+            if (ref_id(x) == id) return true;
+            // (v = f()) == NULL
+            return kind(x) == "BinaryOperator" && str_field(x, "opcode") == "=" && n_children(x) == 2 &&
+                   ref_id(child(x, 0)) == id;
+        };
+        auto is_fail_const = [&](const json& x) {
+            if (is_null_ptr_expr(x)) return true;
+            auto v = int_value(x);
+            return v && (*v == 0 || *v == -1);
+        };
+        if (op == "==" && ((is_var(l) && is_fail_const(r)) || (is_var(r) && is_fail_const(l)))) return true;
+        if (op == "<" && is_var(l) && is_zero_literal(r)) return true;
+        if (op == "||") return failure_test_of(l, id) || failure_test_of(r, id);
+    }
+    return false;
+}
+
+}  // namespace
+
+// MEM-LEAK (malloc/calloc/realloc vs free) and RES-FD-LEAK (fopen/open vs
+// fclose/close): at least two returns not under a failure test of the
+// variable, and the object still held at some but not all of them.
+void resource_leak_checks(const json& body, Checker& ck, Ctx& cx) {
+    (void)cx;
+    struct Var {
+        std::string name;
+        std::vector<long long> opens, closes;
+    };
+    struct Kind {
+        const char* cls;
+        std::initializer_list<std::string_view> open, close;
+        const char* opened;
+        const char* closed;
+    };
+    static const Kind kinds[] = {
+        {"MEM-LEAK", {"malloc", "calloc", "realloc"}, {"free", "kfree", "ck_free"}, "allocated", "freed"},
+        {"RES-FD-LEAK", {"fopen", "open"}, {"fclose", "close"}, "open", "closed"},
+    };
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::vector<std::pair<FlowEv, const json*>> returns;  // return, enclosing if condition
+    std::vector<std::map<std::string, Var>> vars(std::size(kinds));
+    collect_nodes(body, [&](const json& n, const json* if_cond) {
+        const auto& k = kind(n);
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        if (k == "ReturnStmt") {
+            returns.push_back({{p.offset, &n}, if_cond});
+            return;
+        }
+        for (std::size_t ki = 0; ki < std::size(kinds); ++ki) {
+            const auto& kd = kinds[ki];
+            auto opener = [&](const json& e) {
+                const auto& s = strip_all(e);
+                return is_call_kind(kind(s)) && one_of(callee_name(s), kd.open);
+            };
+            if (k == "VarDecl" && n_children(n) >= 1 && opener(last_child(n))) {
+                auto& v = vars[ki][str_field(n, "id")];
+                v.name = str_field(n, "name");
+                v.opens.push_back(p.offset);
+            } else if (k == "BinaryOperator" && str_field(n, "opcode") == "=" && n_children(n) == 2 &&
+                       opener(child(n, 1))) {
+                const auto& lhs = strip_all(child(n, 0));
+                if (kind(lhs) == "DeclRefExpr") {
+                    auto& v = vars[ki][str_field(ref_decl(lhs), "id")];
+                    v.name = str_field(ref_decl(lhs), "name");
+                    v.opens.push_back(p.offset);
+                }
+            } else if (is_call_kind(k) && one_of(callee_name(n), kd.close)) {
+                auto a = call_args(n);
+                if (a.size() == 1) {
+                    auto id = ref_id(*a[0]);
+                    if (!id.empty()) vars[ki][id].closes.push_back(p.offset);
+                }
+            }
+        }
+    });
+    if (returns.size() < 2) return;
+    auto max_before = [](const std::vector<long long>& xs, long long at) {
+        long long m = -1;
+        for (auto x : xs)
+            if (x < at) m = std::max(m, x);
+        return m;
+    };
+    for (std::size_t ki = 0; ki < std::size(kinds); ++ki) {
+        for (auto& [id, v] : vars[ki]) {
+            if (v.opens.empty() || v.closes.empty()) continue;
+            std::vector<const FlowEv*> var_returns;
+            for (auto& [r, cond] : returns)
+                if (!(cond && failure_test_of(*cond, id))) var_returns.push_back(&r);
+            if (var_returns.size() < 2) continue;
+            std::vector<const FlowEv*> held;
+            for (auto* r : var_returns)
+                if (max_before(v.opens, r->off) > max_before(v.closes, r->off)) held.push_back(r);
+            if (held.empty() || held.size() == var_returns.size()) continue;
+            ck.add(*held.front()->at, kinds[ki].cls,
+                   v.name + " " + kinds[ki].opened + " on " + std::to_string(v.opens.size()) + " path(s) but " +
+                       kinds[ki].closed + " before only " + std::to_string(var_returns.size() - held.size()) +
+                       " of " + std::to_string(var_returns.size()) + " returns");
+        }
+    }
+}
+
+void conc_toctou_checks(const json& body, Checker& ck, Ctx& cx) {
+    (void)cx;
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    const json* check = nullptr;
+    const json* use = nullptr;
+    long long check_off = -1;
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (use || !is_call_kind(kind(n))) return;
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        const auto name = callee_name(n);
+        if (!check) {
+            if (one_of(name, {"access", "stat", "lstat"}) && !call_args(n).empty()) {
+                check = &n;
+                check_off = p.offset;
+            }
+            return;
+        }
+        if (p.offset <= check_off || !one_of(name, {"open", "fopen", "unlink", "remove", "chmod"})) return;
+        auto ca = call_args(*check);
+        auto ua = call_args(n);
+        if (ua.empty()) return;
+        // The same path when both are a plain variable or a literal; anything
+        // else (computed paths) is taken as the same path, like the regex rule.
+        const auto ci = ref_id(*ca[0]), ui = ref_id(*ua[0]);
+        if (!ci.empty() && !ui.empty() && ci != ui) return;
+        const auto cn = decl_name(*ca[0]), un = decl_name(*ua[0]);
+        if (!cn.empty() && !un.empty() && cn != un) return;
+        auto cs = string_lit(*ca[0]), us = string_lit(*ua[0]);
+        if (cs && us && *cs != *us) return;
+        use = &n;
+    });
+    if (check && use)
+        ck.add(*use, "CONC-TOCTOU", "path checked then opened or modified without holding authority across the gap");
+}
+
+void conc_atomicity_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
+    (void)cx;
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    bool locks = false;
+    std::vector<std::pair<std::string, const json*>> rmw;  // global name, first site
+    std::set<std::string> seen;
+    auto global_int = [&](const json& e) -> std::string {
+        const auto& s = strip_all(e);
+        if (kind(s) != "DeclRefExpr") return {};
+        const auto& d = ref_decl(s);
+        if (str_field(d, "kind") != "VarDecl") return {};
+        if (fn.locals.contains(str_field(d, "id"))) return {};
+        auto t = qual_type(s);
+        if (t.starts_with("volatile ")) t.erase(0, 9);
+        if (!one_of(t, {"int", "unsigned int", "long", "unsigned long", "long long", "unsigned long long", "size_t",
+                        "short", "unsigned short"}))
+            return {};
+        return str_field(d, "name");
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (is_call_kind(k)) {
+            auto nm = callee_name(n);
+            for (auto& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (nm.find("lock") != std::string::npos || nm.find("pthread_mutex") != std::string::npos) locks = true;
+            return;
+        }
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        std::string g;
+        if (k == "UnaryOperator" && one_of(str_field(n, "opcode"), {"++"}) && n_children(n) == 1)
+            g = global_int(child(n, 0));
+        else if (k == "CompoundAssignOperator" && str_field(n, "opcode") == "+=" && n_children(n) == 2)
+            g = global_int(child(n, 0));
+        else if (k == "BinaryOperator" && str_field(n, "opcode") == "=" && n_children(n) == 2) {
+            g = global_int(child(n, 0));
+            const auto& r = strip_all(child(n, 1));
+            if (!g.empty() && !(kind(r) == "BinaryOperator" && str_field(r, "opcode") == "+" && n_children(r) == 2 &&
+                                global_int(child(r, 0)) == g))
+                g.clear();
+        }
+        if (g.empty() || seen.contains(g)) return;
+        seen.insert(g);
+        rmw.push_back({g, &n});
+    });
+    if (locks) return;
+    for (auto& [g, at] : rmw)
+        ck.add(*at, "CONC-ATOMICITY", "global '" + g + "' incremented without mutex protection");
 }
 
 void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx& cx) {
@@ -4689,65 +4863,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
         }
     }
 
-    // MEM-LEAK and RES-FD-LEAK: at least two returns, and a free or close on
-    // some of them. A null-guarded return does not hold the object.
-    {
-        static prism::Regex alloc(
-            R"((?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*)\s*=\s*(?:\([^)]*\)\s*)?(?P<fn>malloc|calloc|realloc)\s*\()");
-        static prism::Regex free_call(
-            R"(\b(?:free|kfree|ck_free)\s*\(\s*(?:\([^)]*\)\s*)*(?P<var>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*\))");
-        static prism::Regex fd_open(
-            R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?(?P<fn>fopen|open)\s*\()");
-        static prism::Regex fd_close(R"(\b(?P<fn>fclose|close)\s*\(\s*(?P<var>[A-Za-z_]\w*)\s*\))");
-        static prism::Regex ret(R"(^\s*return\b)");
-        std::map<std::string, std::vector<int>> allocs, frees, opens, closes;
-        std::vector<int> returns;
-        for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-            auto& ln = fn.lines.at(static_cast<std::size_t>(i));
-            for (auto& m : alloc.finditer(ln)) allocs[strip_ws(m.named("var"))].push_back(i);
-            for (auto& m : free_call.finditer(ln)) frees[strip_ws(m.named("var"))].push_back(i);
-            for (auto& m : fd_open.finditer(ln)) opens[m.named("var")].push_back(i);
-            for (auto& m : fd_close.finditer(ln)) closes[m.named("var")].push_back(i);
-            if (ret.match_line(ln)) returns.push_back(i);
-        }
-        if (returns.size() >= 2) {
-            for (auto& [var, hits] : allocs) {
-                auto& free_hits = frees[var];
-                if (free_hits.empty()) continue;
-                auto guard = rx_null_guard(var);
-                std::vector<int> var_returns;
-                for (int r : returns)
-                    if (!rx_null_guarded(guard, fn.lines, r)) var_returns.push_back(r);
-                if (var_returns.size() < 2) continue;
-                std::vector<int> held;
-                for (int r : var_returns)
-                    if (rx_max_before(hits, r) > rx_max_before(free_hits, r)) held.push_back(r);
-                if (!held.empty() && held.size() < var_returns.size())
-                    rx_add(ck, at, fn.span_first + held.front(), "MEM-LEAK",
-                           var + " allocated on " + std::to_string(hits.size()) + " path(s) but freed before only " +
-                               std::to_string(var_returns.size() - held.size()) + " of " +
-                               std::to_string(var_returns.size()) + " returns");
-            }
-            for (auto& [var, hits] : opens) {
-                auto& close_hits = closes[var];
-                if (close_hits.empty()) continue;
-                auto guard = rx_null_guard(var);
-                std::vector<int> var_returns;
-                for (int r : returns)
-                    if (!rx_null_guarded(guard, fn.lines, r)) var_returns.push_back(r);
-                if (var_returns.size() < 2) continue;
-                std::vector<int> held;
-                for (int r : var_returns)
-                    if (rx_max_before(hits, r) > rx_max_before(close_hits, r)) held.push_back(r);
-                if (!held.empty() && held.size() < var_returns.size())
-                    rx_add(ck, at, fn.span_first + held.front(), "RES-FD-LEAK",
-                           var + " open on " + std::to_string(hits.size()) + " path(s) but closed before only " +
-                               std::to_string(var_returns.size() - held.size()) + " of " +
-                               std::to_string(var_returns.size()) + " returns");
-            }
-        }
-    }
-
     // API-POPEN: no null-guard filter and no two-return minimum.
     {
         static prism::Regex po(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?popen\s*\()");
@@ -4820,23 +4935,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
         }
     }
 
-    // CONC-TOCTOU: first check, then a strictly later use. One finding.
-    {
-        static prism::Regex check(R"(\b(?:access|stat|lstat)\s*\()");
-        static prism::Regex use(R"(\b(?:open|fopen|unlink|remove|chmod)\s*\()");
-        std::optional<int> check_at, use_at;
-        for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-            if (!check_at && check.search(fn.lines.at(static_cast<std::size_t>(i)))) check_at = i;
-            else if (check_at && i > *check_at && use.search(fn.lines.at(static_cast<std::size_t>(i)))) {
-                use_at = i;
-                break;
-            }
-        }
-        if (check_at && use_at)
-            rx_add(ck, at, fn.span_first + *use_at, "CONC-TOCTOU",
-                   "path checked then opened or modified without holding authority across the gap");
-    }
-
     // TRUST-UNVALIDATED-INPUT. atoi used as an index also stays INT-ATOI.
     {
         static prism::Regex as(
@@ -4859,31 +4957,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
                        var + " from parsed input used as index or divisor without an if (" + var +
                            " …) guard");
                 break;
-            }
-        }
-    }
-
-    // CONC-ATOMICITY. A lock-shaped call, including prism_mtx_lock, suppresses it.
-    {
-        static prism::Regex lock_re(R"((?i)\b(?:mtx_lock|pthread_mutex|\w*lock\w*)\s*\()");
-        if (!lock_re.search(fn.body)) {
-            auto globals = rx_int_globals(fc->lines);
-            for (auto& g : globals) {
-                if (!rx_global_rmw(fn.body, g)) continue;
-                auto v = rx_esc(g);
-                int line = fn.span_first;
-                for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-                    auto& ln = fn.lines.at(static_cast<std::size_t>(i));
-                    if (prism::Regex("\\b" + v + "\\s*=\\s*" + v + "\\s*\\+").search(ln) ||
-                        prism::Regex("\\b" + v + "\\+\\+").search(ln) ||
-                        prism::Regex("\\+\\+\\s*" + v + "\\b").search(ln) ||
-                        prism::Regex("\\b" + v + "\\s*\\+=").search(ln)) {
-                        line = fn.span_first + i;
-                        break;
-                    }
-                }
-                rx_add(ck, at, line, "CONC-ATOMICITY",
-                       "global '" + g + "' incremented without mutex protection");
             }
         }
     }
@@ -4919,6 +4992,9 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     w.walk(*body, nullptr, 0, parents);
     w.ck.crypto_misuse(*body);
     lock_function_checks(*body, fn, w.ck, cx);
+    resource_leak_checks(*body, w.ck, cx);
+    conc_toctou_checks(*body, w.ck, cx);
+    conc_atomicity_checks(*body, fn, w.ck, cx);
     core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;
     for (auto& id : fn.order) {

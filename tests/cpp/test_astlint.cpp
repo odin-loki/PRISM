@@ -1040,6 +1040,35 @@ void atom_ok(void) {
     g_counter = g_counter + 1;
     prism_mtx_unlock(0);
 }
+void atom_inc_bad(void) {
+    ++g_counter; // expect: CONC-ATOMICITY
+}
+void atom_local_ok(void) {
+    int g_counter = 0;
+    g_counter++;
+    (void)g_counter;
+}
+int toctou_other_path_ok(const char *path, const char *other) {
+    if (access(path, 0) != 0)
+        return -1;
+    return open(other, 0);
+}
+int fd_assign_guard_ok(const char *path) {
+    FILE *fp;
+    if ((fp = fopen(path, "r")) == NULL)
+        return -1;
+    fclose(fp);
+    return 0;
+}
+int fd_open_bad(const char *path, int err) {
+    int fd = open(path, 0);
+    if (fd < 0)
+        return -1;
+    if (err)
+        return 1; // expect: RES-FD-LEAK
+    close(fd);
+    return 0;
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
