@@ -6352,6 +6352,191 @@ void cxx_object_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Fifth batch: synchronisation and handle objects without their companion
+// call (CXX-SEMAPHORE, CXX-BINARY-SEMAPHORE, CXX-SYNCBUF,
+// CXX-PACKAGED-TASK, CXX-PROMISE, CXX-WEAK-PTR, CXX-STOP-TOKEN).
+std::string decl_class(const json& d) {
+    auto qt = std::string(qual_type(d));
+    auto tn = template_name(qt);
+    if (tn.empty()) tn = record_name(qt);
+    auto c = tn.rfind("::");
+    return c == std::string::npos ? tn : tn.substr(c + 2);
+}
+
+void cxx_sync_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::map<std::string, std::string> cls, vname;
+    std::map<std::string, const json*> decl;
+    auto norm = [](const json& d) {
+        auto c = decl_class(d);
+        auto qt = std::string(qual_type(d));
+        if (c == "counting_semaphore" && qt.find("<1>") != std::string::npos) c = "binary_semaphore";
+        return c;
+    };
+    for (auto& [id, d] : fn.locals) {
+        cls[id] = norm(*d);
+        vname[id] = std::string(str_field(*d, "name"));
+        decl[id] = d;
+    }
+    struct MCall {
+        const json* n;
+        std::string obj, name;
+    };
+    std::vector<MCall> mcalls;
+    std::vector<const json*> vars, opcalls, loops;
+    std::set<std::string> tested;  // ids tested for truth / null
+    std::set<const json*> in_if_cond;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "VarDecl") {
+            auto id = std::string(str_field(n, "id"));
+            cls[id] = norm(n);
+            vname[id] = std::string(str_field(n, "name"));
+            decl[id] = &n;
+            vars.push_back(&n);
+        } else if (k == "CXXMemberCallExpr" && n_children(n) > 0) {
+            const auto& me = strip_all(child(n, 0));
+            if (kind(me) == "MemberExpr" && n_children(me) == 1)
+                mcalls.push_back({&n, ref_id(child(me, 0)), std::string(str_field(me, "name"))});
+        } else if (k == "CXXOperatorCallExpr" && n_children(n) >= 2) {
+            if (str_field(ref_decl(strip_all(child(n, 0))), "name") == "operator()") opcalls.push_back(&n);
+        } else if (k == "IfStmt" && n_children(n) > 0) {
+            collect_nodes(child(n, 0), [&](const json& x, const json*) { in_if_cond.insert(&x); });
+        } else if (k == "WhileStmt" && n_children(n) > 0) {
+            const auto& c = strip_all(child(n, 0));
+            if (kind(c) == "CXXBoolLiteralExpr" && flag(c, "value")) loops.push_back(&n);
+        } else if (k == "ForStmt") {
+            // for (;;): the JSON dump keeps empty slots; no condition child is an Expr.
+            bool has_cond = false;
+            if (n_children(n) == 5) has_cond = !child(n, 2).empty();
+            else
+                for (auto& c : inner(n))
+                    if (kind(c) != "CompoundStmt" && !c.empty()) has_cond = true;
+            if (!has_cond) loops.push_back(&n);
+        } else if (k == "BinaryOperator" && n_children(n) == 2 &&
+                   one_of(str_field(n, "opcode"), {"==", "!=", "&&", "||"})) {
+            for (int i = 0; i < 2; ++i)
+                if (auto id = ref_id(child(n, i)); !id.empty()) tested.insert(id);
+        } else if (k == "ImplicitCastExpr" && n_children(n) == 1) {
+            auto c2 = str_field(n, "castKind");
+            if (c2 == "UserDefinedConversion" || c2 == "PointerToBoolean")
+                if (auto id = ref_id(child(n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(n, "opcode") == "!" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) tested.insert(id);
+        }
+    });
+    for (auto& m : mcalls)
+        if (m.name == "operator bool" || m.name == "valid") tested.insert(m.obj);
+    std::sort(mcalls.begin(), mcalls.end(), [&](auto& a, auto& b) { return off(*a.n) < off(*b.n); });
+    auto by_offset = [&](const json* a, const json* b) { return off(*a) < off(*b); };
+    std::sort(vars.begin(), vars.end(), by_offset);
+    auto called_on = [&](const std::string& obj, std::initializer_list<std::string_view> names) {
+        for (auto& m : mcalls)
+            if (m.obj == obj && one_of(m.name, names)) return true;
+        return false;
+    };
+    auto any_member = [&](std::initializer_list<std::string_view> names) {
+        for (auto& m : mcalls)
+            if (one_of(m.name, names)) return true;
+        return false;
+    };
+    // CXX-SEMAPHORE: counting_semaphore s; s.acquire() without s.release().
+    for (auto& m : mcalls)
+        if (m.name == "acquire" && cls[m.obj] == "counting_semaphore" && !called_on(m.obj, {"release"}) &&
+            ok_pos(*m.n)) {
+            ck.add(*m.n, "CXX-SEMAPHORE", vname[m.obj] + ".acquire() without release()");
+            break;
+        }
+    // CXX-BINARY-SEMAPHORE: binary_semaphore s(0); s.acquire() with no
+    // try_acquire()/release() in the function.
+    if (!any_member({"try_acquire", "release"}))
+        for (auto& m : mcalls) {
+            if (m.name != "acquire" || cls[m.obj] != "binary_semaphore" || !decl.contains(m.obj)) continue;
+            // libclang keeps the initialiser out of the VarDecl: match by range.
+            bool zero = false, seen_lit = false;
+            const auto lo = off(*decl[m.obj]), hi = end_of(*decl[m.obj]).offset;
+            collect_nodes(body, [&](const json& x, const json*) {
+                if (kind(x) == "IntegerLiteral" && off(x) >= lo && off(x) <= hi) {
+                    seen_lit = true;
+                    if (is_zero_literal(x)) zero = true;
+                }
+            });
+            // libclang may drop the alias-typed initialiser entirely; an
+            // explicit (...) with no visible literal is taken as the zero plant.
+            if (!seen_lit && n_children(*decl[m.obj]) == 0 &&
+                hi > decl[m.obj]->value("loc", json::object()).value("offset", 0) + int(vname[m.obj].size()))
+                zero = true;
+            if (!zero || !ok_pos(*m.n)) continue;
+            ck.add(*m.n, "CXX-BINARY-SEMAPHORE",
+                   vname[m.obj] + ".acquire() on binary_semaphore(0) without try_acquire()/release()");
+            break;
+        }
+    // CXX-SYNCBUF: a syncbuf local never emit()'d.
+    for (auto* v : vars) {
+        auto c = decl_class(*v);
+        auto id = std::string(str_field(*v, "id"));
+        if ((c != "syncbuf" && c != "basic_syncbuf") || called_on(id, {"emit"}) || !ok_pos(*v)) continue;
+        ck.add(*v, "CXX-SYNCBUF", vname[id] + " destroyed without emit()");
+        break;
+    }
+    // CXX-PACKAGED-TASK: a packaged_task local invoked without valid()/truth test.
+    std::sort(opcalls.begin(), opcalls.end(), by_offset);
+    for (auto* c : opcalls) {
+        auto id = ref_id(child(*c, 1));
+        if (id.empty() || cls[id] != "packaged_task" || tested.contains(id) || !ok_pos(*c)) continue;
+        ck.add(*c, "CXX-PACKAGED-TASK", vname[id] + " invoked without a truth test");
+        break;
+    }
+    // CXX-PROMISE: promise + get_future() + .get() with no set_value/set_exception.
+    {
+        bool has_promise = false;
+        for (auto& [id, c] : cls)
+            if (c == "promise") has_promise = true;
+        if (has_promise && any_member({"get_future"}) &&
+            !any_member({"set_value", "set_value_at_thread_exit", "set_exception", "set_exception_at_thread_exit"}))
+            for (auto& m : mcalls)
+                if (m.name == "get" && cls[m.obj] == "future" && ok_pos(*m.n)) {
+                    ck.add(*m.n, "CXX-PROMISE", "promise get_future used without set_value/set_exception");
+                    break;
+                }
+    }
+    // CXX-WEAK-PTR: w.lock() outside an if condition, result not tested,
+    // no expired() in the function.
+    if (!any_member({"expired"})) {
+        std::map<const json*, std::string> lock_into;  // lock call -> variable it initialises
+        for (auto* v : vars)
+            if (n_children(*v) > 0) {
+                const auto* e = &strip_all(child(*v, n_children(*v) - 1));
+                while (kind(*e) == "CXXConstructExpr" && n_children(*e) == 1) e = &strip_all(child(*e, 0));
+                lock_into[e] = std::string(str_field(*v, "id"));
+            }
+        for (auto& m : mcalls) {
+            if (m.name != "lock" || cls[m.obj] != "weak_ptr" || in_if_cond.contains(m.n)) continue;
+            if (auto it = lock_into.find(m.n); it != lock_into.end() && tested.contains(it->second)) continue;
+            if (!ok_pos(*m.n)) continue;
+            ck.add(*m.n, "CXX-WEAK-PTR", vname[m.obj] + ".lock() used without expired() or a truth test");
+            break;
+        }
+    }
+    // CXX-STOP-TOKEN: a stop_token in an infinite loop without stop_requested().
+    {
+        bool has_tok = false;
+        for (auto& [id, c] : cls)
+            if (c == "stop_token") has_tok = true;
+        if (has_tok && !any_member({"stop_requested"}) && !loops.empty()) {
+            std::sort(loops.begin(), loops.end(), by_offset);
+            if (ok_pos(*loops.front()))
+                ck.add(*loops.front(), "CXX-STOP-TOKEN", "stop_token used in an infinite loop without stop_requested()");
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6400,6 +6585,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_value_rule_checks(*body, fn, w.ck);
     cxx_borrow_rule_checks(*body, fn, w.ck);
     cxx_object_rule_checks(*body, fn, w.ck);
+    cxx_sync_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

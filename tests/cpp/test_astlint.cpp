@@ -1629,6 +1629,76 @@ int any_ok(const std::any &a) {
     const int *p = std::any_cast<int>(&a);
     return p ? *p : 0;
 }
+#include <semaphore>
+#include <syncstream>
+#include <iostream>
+void sem_bad() {
+    std::counting_semaphore<4> sem(2);
+    sem.acquire(); // expect: CXX-SEMAPHORE
+}
+void sem_ok() {
+    std::counting_semaphore<4> sem(2);
+    sem.acquire();
+    sem.release();
+}
+void binsem_bad() {
+    std::binary_semaphore bs(0);
+    bs.acquire(); // expect: CXX-BINARY-SEMAPHORE
+}
+void binsem_ok() {
+    std::binary_semaphore bs(0);
+    if (bs.try_acquire())
+        bs.release();
+}
+void syncbuf_bad() {
+    std::syncbuf sb(std::cout.rdbuf()); // expect: CXX-SYNCBUF
+}
+void syncbuf_ok() {
+    std::syncbuf sb(std::cout.rdbuf());
+    sb.emit();
+}
+int ptask_bad() {
+    std::packaged_task<int()> pt(async_work);
+    pt(); // expect: CXX-PACKAGED-TASK
+    return 0;
+}
+int ptask_ok() {
+    std::packaged_task<int()> pt(async_work);
+    if (pt.valid())
+        pt();
+    return 0;
+}
+int promise_bad() {
+    std::promise<int> pr;
+    std::future<int> fu = pr.get_future();
+    return fu.get(); // expect: CXX-PROMISE
+}
+int promise_ok() {
+    std::promise<int> pr;
+    std::future<int> fu = pr.get_future();
+    pr.set_value(1);
+    return fu.get();
+}
+int weak_bad(std::weak_ptr<int> w) {
+    std::shared_ptr<int> sp = w.lock(); // expect: CXX-WEAK-PTR
+    return *sp;
+}
+int weak_ok(std::weak_ptr<int> w) {
+    std::shared_ptr<int> sp = w.lock();
+    if (sp)
+        return *sp;
+    return 0;
+}
+void stop_bad(std::stop_token st, int &n) {
+    while (true) { // expect: CXX-STOP-TOKEN
+        ++n;
+    }
+}
+void stop_ok(std::stop_token st, int &n) {
+    while (!st.stop_requested()) {
+        ++n;
+    }
+}
 )";
 
 }  // namespace
