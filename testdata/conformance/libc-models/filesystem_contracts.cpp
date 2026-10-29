@@ -39,6 +39,12 @@ int fs_stem_true(int) {
     assert(!(e.stem() == "."));
     assert(std::filesystem::path("a/b.txt").stem() == "b");
     assert(std::filesystem::path("a/b").stem() == "b");
+    return 0;
+}
+
+// The rest of fs_stem_true's cases (split so each function stays under the
+// PIR unrolling budget; the assertions are unchanged).
+int fs_stem_dots_true(int) {
     assert(std::filesystem::path(".").stem() == ".");
     assert(std::filesystem::path("..").stem() == "..");
     assert(std::filesystem::path(".txt").stem() == ".txt");
