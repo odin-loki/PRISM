@@ -1080,6 +1080,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             if (fs::path(sp.file).filename().string() == unit_name && sp.line > 0) starts.push_back(sp.line);
         std::sort(starts.begin(), starts.end());
     }
+    const bool export_only = std::getenv("PRISM_PIR_EXPORT_ONLY") && std::getenv("PRISM_PIR_LEAN_EXPORT");
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
@@ -1100,6 +1101,15 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         auto tr = translate(mod, irf, fopt);
         export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);
         for (int k : tr.folded_used) used_folded.insert(k);
+        if (export_only) {
+            // `prism-qa pir-lean-check` needs the translation, not the model
+            // checking (which is where a large C++ unit spends its memory)
+            f.status = std::string(laws::NOTRUN);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "pir: translation exported only (PRISM_PIR_EXPORT_ONLY), not checked";
+            recs.push_back(std::move(rec));
+            continue;
+        }
         if (!tr.fn) {
             f.status = tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status;
             f.strength = std::string(laws::STRENGTH_SOME);

@@ -156,7 +156,7 @@ int pir_lean_check_main(const Args& args) {
         const auto pairs = out / "pairs";
         detail::SessionOptions so;
         so.cwd = repo;
-        so.env = {{"PRISM_PIR_LEAN_EXPORT", pairs.string()}};
+        so.env = {{"PRISM_PIR_LEAN_EXPORT", pairs.string()}, {"PRISM_PIR_EXPORT_ONLY", "1"}};
         auto run = detail::run_session({exe->string(), fs::absolute(tree).string(), "--no-llm", "--stage",
                                         "inventory,classify,pir", "--out", (out / "prism-out").string(), "--jobs",
                                         std::to_string(jobs)},
