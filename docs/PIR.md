@@ -1139,6 +1139,17 @@ violated (`extra.k_induction = "closed-invariants"`, the survivors in
 `extra.invariant_footprint`). The whole search gets six times the solver
 timeout (`--timeout`, default 30 s → 180 s) plus at least three for the
 final query; out of time is no proof.
+With a function budget (`PRISM_FUNCTION_BUDGET`) the search stops at 70% of
+what was left of it when Houdini started and the final query gets the rest
+(`PRISM_HOUDINI_FINAL_RESERVE`, a fraction in [0, 0.9], default 0.3;
+`extra.houdini_final_budget` is what it got). Each group of properties in
+the final (and optimistic) query assumes only the candidates of loops whose
+header is encoded before some property of the group (a property encoded
+earlier cannot use them); assuming fewer is only weaker, so UNSAT is still a
+proof. A group without an answer is split in halves down to single
+properties, each with at most `--timeout`. `PRISM_PIR_DUMP_INVARIANTS=1`
+writes the survivors of a search that did not prove to
+`extra.pir_invariants_surviving` (diagnostic only).
 
 **Cost.** A BOUNDED function could spend 4.5 minutes here (180 s search +
 90 s final query) and a large code base has many. Four things keep it

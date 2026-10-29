@@ -399,7 +399,10 @@ TEST_CASE("pir budget: Houdini never runs past what is left of the function budg
     CHECK(std::stod(v.extra.at("houdini_seconds")) < 0.5);
     CHECK((v.status == prism::laws::BOUNDED || v.status == prism::laws::PROVED_UNBOUNDED));
     if (v.status == prism::laws::BOUNDED) {
-        CHECK(contains(v.extra.at("invariants_note"), "PRISM_FUNCTION_BUDGET"));
+        // the budget spent, or the search's deadline (the final query's
+        // reserve kept back from it) reached
+        const auto& note = v.extra.at("invariants_note");
+        CHECK((contains(note, "PRISM_FUNCTION_BUDGET") || contains(note, "out of time")));
         CHECK(v.extra.at("unwind_closed") == "false");
     }
     CHECK(b->left() > -0.5);
@@ -600,3 +603,21 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
 }
 
 #endif
+
+TEST_CASE("pir budget: the final cut-program query keeps its reserve of the function budget (skips without "
+          "clang/opt)") {
+    auto fn = fn_of("loop_long_inv");
+    if (!fn) return;
+    auto o = opts(60);
+    o.function_budget = std::make_shared<pp::FunctionBudget>(60.0);
+    auto v = pp::check_function(*fn, o);
+    // the reserve does not cost the proof that the free run finds
+    CHECK(v.status == prism::laws::PROVED_UNBOUNDED);
+    // when the final query is asked at the fixpoint it gets at least the
+    // reserve (30% of 60 s, less what the function used before Houdini)
+    if (v.extra.contains("houdini_final_budget")) {
+        CHECK(std::stod(v.extra.at("houdini_final_budget")) > 0.0);
+        CHECK(std::stod(v.extra.at("houdini_final_budget")) <= 60.0);
+    }
+    CHECK(std::stod(v.extra.at("houdini_seconds")) < 60.0 * 0.7 + 5.0);
+}

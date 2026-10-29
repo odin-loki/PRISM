@@ -146,7 +146,22 @@ public:
         : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
           deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), hard_s_(hard_s),
           env_(std::move(env)) {
-        if (hard_s_ >= 0) deadline_ = search_s >= 0 ? std::min(search_s, hard_s_) : hard_s_;
+        if (hard_s_ >= 0) {
+            deadline_ = search_s >= 0 ? std::min(search_s, hard_s_) : hard_s_;
+            // a share of the hard cap is kept for the final query so the
+            // search cannot starve it ($PRISM_HOUDINI_FINAL_RESERVE, a
+            // fraction in [0, 0.9]; default 0.3)
+            deadline_ = std::min(deadline_, (1.0 - final_reserve()) * hard_s_);
+        }
+    }
+    static double final_reserve() {
+        double r = 0.3;
+        if (const char* v = std::getenv("PRISM_HOUDINI_FINAL_RESERVE")) {
+            char* end = nullptr;
+            const double x = std::strtod(v, &end);
+            if (end != v && *end == 0 && x >= 0 && x <= 0.9) r = x;
+        }
+        return r;
     }
 
     HoudiniOut run();
@@ -1175,8 +1190,6 @@ HoudiniOut Houdini::run() {
         // split: the final query (search solver); else an optimistic one
         z3::solver& sf = split ? s : opt_solver();
         if (split) add_instances(s, added_final);
-        z3::expr_vector all_sel(c);
-        selectors([](std::size_t) { return true; }, all_sel);
         const auto tf = std::chrono::steady_clock::now();
         auto fleft = [&] {
             return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
@@ -1197,8 +1210,11 @@ HoudiniOut Houdini::run() {
                                                    : std::min(per_query_, fleft());
             p.set("timeout", query_ms(std::max(1.0, t)));
             sf.set(p);
+            // only the invariants of loops whose header is encoded before
+            // some property of the group (a property encoded earlier cannot
+            // use them); assuming fewer candidates is only weaker
             z3::expr_vector as(c);
-            for (auto x : all_sel) as.push_back(x);
+            selectors([&](std::size_t L) { return e.cut_loops[L].props_before < hi; }, as);
             as.push_back(act);
             auto r = sf.check(as);
             if (r == z3::unsat) return 0;
@@ -1311,7 +1327,10 @@ HoudiniOut Houdini::run() {
     if (unsat_with && *unsat_with == alive_set()) return finish_out(true);
     // the final query keeps a minimum of its own (the run's Houdini budget
     // does not cut it), but never runs past the function budget
-    const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
+    // with a hard cap the final query gets all of what is left of it (the
+    // search stopped at its deadline, short of the cap by the reserve)
+    const double final_budget =
+        hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, left()), hard_left());
     out.final_s = final_budget;
     const int r = final_query(final_budget, true);
     if (r == -1) out.undecided = true;

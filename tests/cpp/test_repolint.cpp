@@ -146,7 +146,7 @@ TEST_CASE("repolint: loop-cut encoder parity with encode.cpp and houdini.inc") {
     CHECK(hou.find("[&](std::size_t M) { return e.cut_loops[M].seq <= seqT; }") != std::string::npos);
     CHECK(hou.find("e.reach[static_cast<std::size_t>(CL.node)] && noviol(CL.props_before)") != std::string::npos);
     CHECK(hou.find("lt.guard && noviol(lt.props_before)") != std::string::npos);
-    CHECK(hou.find("selectors([](std::size_t) { return true; }, all_sel);") != std::string::npos);
+    CHECK(hou.find("selectors([&](std::size_t L) { return e.cut_loops[L].props_before < hi; }, as);") != std::string::npos);
     CHECK(hou.find("InvCand::MemScopeAt") != std::string::npos);
     CHECK(hou.find("+ x < size(") != std::string::npos);
 }
