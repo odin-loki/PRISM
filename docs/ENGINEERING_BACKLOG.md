@@ -77,14 +77,32 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
+Grow **`agree-ext`** beyond 491 functions (unchanged after inlined allocas, 8920b58bc; outside 1 865) (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
 
-1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
-2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
-   `__prism_havoc_bytes` (`export_lean.cpp`; checker still `outside` until Lean
-   `hhavoc` + `MemTr::write_havoc`). Remaining: `PRISM_FILEK` in `hfree`, `L
-   hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
-3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
+1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
+2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model
+   primitives proved in Lean with C++ export parity (no sorry, audited, 104 theorems):
+   `__prism_havoc_bytes` (`hhavoc`), `__prism_read_range` (`hread`), `__prism_check`
+   (`vcheck`), `__prism_memset` (`hmemset`), `__prism_fresh_cstr` (`hfresh`), FILE kind 8
+   in `hfree` (`freeChkF`). Fixtures `stdio_file` / `stdio_prims` agree-ext. Measured: 221 → 287 agree-ext.
+3. **Noreturn checks + unreachable blocks — Done (2026-10-29, `work/proofs`)** — `L afail`
+   (`assert`, `reach_error`, traps, libstdc++ assertions; `XBlock.nr`) and dead LLVM blocks
+   (`xLive` closure checked in `validB`, liveness in `InvX`/`TailX`): 287 → **419** agree-ext,
+   mismatch 0.
+4. **`invoke` / landing pads without throws — Done (2026-10-29, 65d994197)** — invoke as call +
+   `br`, unreachable blocks stubbed (`L dead`/`L stub`, `XBlock.stub`), dead phi incomings dropped:
+   419 → **479** agree-ext, mismatch 0. Next by count: real throw/catch (`__cxa_begin_catch` 63,
+   `__cxa_allocate_exception` 33, `__throw_*` 29), indirect calls 30, ptrtoint 27, float/double 42,
+   pthread/mtx 35, inlined alloca 18, constant-GEP 14.
+5. **`ptrtoint` pointer difference + `std::__throw_*` without handlers — Done (2026-10-29,
+   d02bdb7f5, 64b4cdd34)** — `L psub` (`PTR-COMPARE` on different objects) and `L ptrtoint`;
+   `L throw <typeinfo>` (semantics stuck at the throw, translator mirrors `Tr::raise`: exception
+   object, header stores, `type_id`, `CXX-UNCAUGHT` in `main`) when no invoke can be on the stack:
+   479 → **491** agree-ext (1 039 / 491 / 267 / 1 869), mismatch 0. Not mirrorable: pthread_mutex_lock /
+   mtx_lock / pthread_create are UNENCODED in `translate.cpp` itself; all 63 `__cxa_begin_catch`
+   functions are not-ok in C++. Next: `__throw_*` under a handler (landing-pad dispatch; the 29 in
+   testdata all sit under an `invoke` of the `operator new` model), throws with arguments,
+   inlined alloca 18 (frame alloca tracking + `end_lifetime` at return), constant-GEP 14 (5 ok in C++).
 
 Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 

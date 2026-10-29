@@ -297,4 +297,39 @@ theorem escHit_ok {c : Ctx} {R : SRegs} {σ : Store} (hR : RelX c R σ) (v : Nat
           · rw [ih]; right; simp only [List.any_cons, hpv]
     · simp at h
 
+/-- The world after freeing the objects `As` point to (PIR `free`s). -/
+def freeW (σ : Store) : World → List Arg → World
+  | t, [] => t
+  | t, a :: as => freeW σ { t with mem := t.mem.free (a.get σ % 2 ^ 64) } as
+
+/-- A callee's return frees its stack objects: stuck, or the PIR's frees. -/
+theorem freeAll_ok {c : Ctx} {R : SRegs} {σ : Store} (hR : RelX c R σ) :
+    ∀ (ns : List String) (As : List Arg) (t : World), escArgsX c ns = .ok As →
+      freeAll R t ns = .stuck ∨ freeAll R t ns = .ok (freeW σ t As)
+  | [], As, t, h => by simp only [escArgsX, Except.ok.injEq] at h; subst h; exact .inr rfl
+  | n :: ns, As, t, h => by
+    simp only [escArgsX] at h
+    split at h
+    · rename_i x hx
+      obtain ⟨u1, _, h⟩ := Except.bind_ok h
+      obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
+      have hsh := isNone_eq (need_ok hu2)
+      obtain ⟨As', hAs', h⟩ := Except.bind_ok h
+      simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
+      simp only [freeAll]
+      cases hn : R n with
+      | none => simp [sOpnd, hn, Res.bind]
+      | some xv =>
+        obtain ⟨a, hl, hxv⟩ := hR n xv hn
+        rw [hx] at hl; cases hl
+        have hsh' : c.shOf n = none := by
+          unfold Ctx.shOf; split <;> simp_all
+        cases xv with
+        | ind => obtain ⟨s, hs, _⟩ := hxv; rw [hsh'] at hs; cases hs
+        | val pv =>
+          obtain ⟨hpv, _⟩ := hxv
+          simp only [sOpnd, hn, Res.bind, freeW, hpv]
+          exact freeAll_ok hR ns As' _ hAs'
+    · simp at h
+
 end PrismRefine
