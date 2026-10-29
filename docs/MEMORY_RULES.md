@@ -85,3 +85,9 @@
 - c6ac46893: prism-qa run_prism prefixes `env PRISM_FUNCTION_BUDGET=max(120, timeout/4)` unless set. us2 test (budget 120): unbounded_string 0 -> 8 _true PROVED.
 - conf6 running (setsid, detached): `prism-run prism-qa conformance --prism /tmp/mf/prism-fix --jobs 1 --out /tmp/mf/conf6`, log /tmp/mf/conf6.log. Check `pgrep -af prism-fix` before restarting.
 - TODO: compare conf6 vs conf5 (176/203, 0 wrong); unordered_map profile; peak overshoot (~13%, conf5 3851MB/3400).
+
+## conf6 result (2026-10-30 ~04:30 AEDT), head c6ac46893 + prism-fix
+- release gate PASS, 0 wrong proofs. pir libc-models proved true 188/203 (conf5: 176), refuted 199/203.
+- unbounded_string now finishes. unordered_map_contracts: all 8 functions "never reported" by harness/pir (whole file lost: per-function budget 600s x 8 > file timeout). Next: lower budget for that file or profile umap_insert_true.
+- peak tree RSS 4000MB vs budget 3400 (+18%, includes prism-qa). Overshoot still open.
+- Full log: /tmp/mf/conf6.keep
