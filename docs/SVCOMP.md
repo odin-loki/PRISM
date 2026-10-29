@@ -239,6 +239,43 @@ unreach-call): no-overflow `true` → `unknown` (−2), unreach-call unchanged.
 
 ## Results (local)
 
+### Full pinned set, 2026-10-29 (`work/svcomp`)
+
+Built from `work/svcomp` (clang 18.1.8, Release, Z3 on), on the shared box:
+`build/prism svcomp score --jobs 6` and `build/prism svcomp score --property unreach-call --jobs 6`.
+The witnesses were not validated in this run, so these are unvalidated upper bounds.
+
+| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown/error |
+|---|---|---|---|---|---|---|---|
+| no-overflow | 117 (75 / 42) | **114** | 192 | 37 | 40 | **0** | 40 |
+| unreach-call | 127 (98 / 29) | **125** | 225 | 51 | 23 | **0** | 53 |
+
+no-overflow went from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
+from 36 on the earlier baseline. One `true` answer (`bitvector/gcd_3`) dropped to unknown
+because bmc returned UNKNOWN under heavier load; that is a solver timeout, not a logic change.
+
+**Fuzz fallback** (`fuzz_replay`, `src/prism/svcomp/replay.cpp`). When every stage leaves a
+task `unknown` and `--allow-exec` is given, the task is compiled once with the property's
+sanitizer and run on up to 400 seeded input streams (60 s budget, 2 s per run). Odd seeds
+draw small values and even seeds mix in type extremes. The answer becomes `false` only when
+a run shows the violation under the same check replay uses (a UBSan overflow report, or a
+`reach_error()` abort). It never produces `true`. It decided 17 no-overflow tasks (the
+`s3_*` CIL tasks whose gotos bmc cannot encode, plus `soft_float_1-*`) and 12 unreach-call
+tasks. The violation witness gives the target only, with no nondet waypoints.
+
+**Remaining unknowns, by cause.**
+- no-overflow (40). 38 are expected `true` and need a proof. The causes are bmc BOUNDED
+  (loops not closed: loop-acceleration, loop-invgen, loop-new, sum02, jain_7-2), unencoded
+  CIL gotos into a loop body (`s3_*a` variants and `soft_float_*a`, NEEDS-HARNESS), and
+  timeouts (`nested6`, `nested9`). 2 are expected `false` (`s3_clnt_1*-1a/-2a`): the
+  overflow lies behind a deep protocol-state path, and 20,000 fuzz seeds did not reach it.
+- unreach-call (53). 47 are expected `true`: 25 BOUNDED, 12 NEEDS-HARNESS, 6 bmc UNKNOWN
+  and 5 timeouts. 6 are expected `false` and fuzzing did not reach them.
+- The largest sound next steps are general `goto` encoding in bmc (about 23 tasks across
+  both properties) and loop-invariant inference for BOUNDED mains.
+
+### Earlier subset results
+
 Run on 2026-09-24 with the C++ engine built from `claude/svcomp-2`
 (binary SHA-256 prefix `4cab37bffd21`), clang 18.1.3, bubblewrap available,
 BenchExec 3.35 installed (so the answers went through the tool-info
