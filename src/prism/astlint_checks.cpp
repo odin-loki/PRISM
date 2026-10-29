@@ -2501,6 +2501,59 @@ struct Checker {
     }
 };
 
+// Compound statements whose last statement leaves (return, goto, break,
+// continue, or a call to exit/abort/...): their effects do not reach the
+// code after them. Offsets [begin, end] in the body's file.
+bool leaving_stmt(const json& st) {
+    const auto& s = strip_all(st);
+    const auto& k = kind(s);
+    if (k == "ReturnStmt" || k == "GotoStmt" || k == "BreakStmt" || k == "ContinueStmt" || k == "CXXThrowExpr")
+        return true;
+    if (k == "CallExpr")
+        return one_of(callee_name(s), {"exit", "_exit", "_Exit", "quick_exit", "abort", "err", "errx", "longjmp",
+                                        "siglongjmp", "trap", "unreachable"});
+    return false;
+}
+
+void leaving_blocks_walk(const json& n, const json& body, const Pos& base,
+                         std::vector<std::pair<long long, long long>>& out) {
+    if (!n.is_object()) return;
+    const auto& k = kind(n);
+    if (k == "LambdaExpr" || k == "BlockExpr") return;
+    if (&n != &body && k == "CompoundStmt" && n_children(n) > 0 && leaving_stmt(last_child(n))) {
+        auto b = begin_of(n), e = end_of(n);
+        if (b.file && base.file && *b.file == *base.file && b.offset >= 0 && e.offset >= 0)
+            out.emplace_back(b.offset, e.offset);
+    }
+    for (auto& c : inner(n)) leaving_blocks_walk(c, body, base, out);
+}
+
+std::vector<std::pair<long long, long long>> leaving_blocks(const json& body) {
+    std::vector<std::pair<long long, long long>> out;
+    leaving_blocks_walk(body, body, begin_of(body), out);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Replays leaving_blocks over events sorted by offset: state saved on entry,
+// restored when the walk passes the block's end.
+template <class State>
+struct LeaveReplay {
+    std::vector<std::pair<long long, long long>> blocks;
+    std::size_t next = 0;
+    std::vector<std::pair<long long, State>> stack;
+    void at(long long off, State& st) {
+        while (!stack.empty() && stack.back().first < off) {
+            st = std::move(stack.back().second);
+            stack.pop_back();
+        }
+        while (next < blocks.size() && blocks[next].first <= off) {
+            if (blocks[next].second >= off) stack.emplace_back(blocks[next].second, st);
+            ++next;
+        }
+    }
+};
+
 void walk_for_locks(const json& n, std::vector<const json*>& calls, std::vector<const json*>& returns) {
     if (!n.is_object()) {
         if (n.is_array())
@@ -2543,9 +2596,13 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
         }
     }
     // Same-line calls keep source order. std::sort is not stable.
-    std::stable_sort(seq.begin(), seq.end(), [](const Ev& a, const Ev& b) { return a.line < b.line; });
+    std::stable_sort(seq.begin(), seq.end(), [](const Ev& a, const Ev& b) {
+        return begin_of(*a.at).offset < begin_of(*b.at).offset;
+    });
     std::map<LockKey, std::optional<bool>> held;
+    LeaveReplay<std::map<LockKey, std::optional<bool>>> replay{leaving_blocks(body)};
     for (auto& e : seq) {
+        replay.at(begin_of(*e.at).offset, held);
         if (e.release) {
             // lock_double_lock keys the mutex by the lock name.
             if (auto lock_name = lock_of(e.key.first)) held[{*lock_name, e.key.second}] = false;
@@ -4287,7 +4344,8 @@ void collect_nodes(const json& n, const std::function<void(const json&, const js
             collect_nodes(in.at(i), f, cond && i == then_i ? cond : nullptr);
         return;
     }
-    for (auto& c : inner(n)) collect_nodes(c, f, nullptr);
+    // Statements directly in a `then` block are under the condition too.
+    for (auto& c : inner(n)) collect_nodes(c, f, k == "CompoundStmt" ? if_cond : nullptr);
 }
 
 // `!v`, `v == NULL/0/-1`, `v < 0`, `(v = f()) == NULL`: the then branch runs
@@ -4309,7 +4367,7 @@ bool failure_test_of(const json& cond0, const std::string& id) {
         };
         auto is_fail_const = [&](const json& x) {
             if (is_null_ptr_expr(x)) return true;
-            auto v = int_value(x);
+            auto v = int_value(strip_casts(x));
             return v && (*v == 0 || *v == -1);
         };
         if (op == "==" && ((is_var(l) && is_fail_const(r)) || (is_var(r) && is_fail_const(l)))) return true;
@@ -4770,6 +4828,14 @@ void conc_atomicity_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
             for (auto& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             if (nm.find("lock") != std::string::npos || nm.find("pthread_mutex") != std::string::npos) locks = true;
             return;
+        }
+        // RAII guards: std::lock_guard, unique_lock, scoped_lock, a *Lock*/*Guard* type.
+        if (k == "VarDecl") {
+            auto t = std::string(qual_type(n));
+            for (auto& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (t.find("lock") != std::string::npos || t.find("guard") != std::string::npos ||
+                t.find("mutex") != std::string::npos)
+                locks = true;
         }
         const auto p = begin_of(n);
         if (!same_file_pos(p, base) || p.macro) return;
