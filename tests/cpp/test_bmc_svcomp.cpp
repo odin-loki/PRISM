@@ -732,3 +732,43 @@ int main() { f(); return g; }
     REQUIRE(by3.count("main"));
     CHECK(by3["main"].status != kProved);
 }
+
+TEST_CASE("bmc: Houdini cuts a loop with nondet calls and keeps a congruence invariant") {
+    // jain_1-1 shape: y stays odd, so y != 0 for every iteration.
+    auto by = bmc_run("houdini_nondet_odd.c", R"(extern unsigned int __VERIFIER_nondet_uint(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); abort(); } }
+int main(void) {
+  unsigned int y = 1U;
+  while (1) {
+    y = y + 2U * __VERIFIER_nondet_uint();
+    __VERIFIER_assert(y != 0U);
+  }
+  return 0;
+}
+)");
+    REQUIRE(by.count("main"));
+    CHECK(by["main"].status == kProved);
+    CHECK(by["main"].extra["k_induction"] == "closed-invariants");
+}
+
+TEST_CASE("bmc: a loop whose nondet step can reach the error is never proved") {
+    // y + nondet can wrap to 0: the assert really fails, no invariant may close it.
+    auto by = bmc_run("houdini_nondet_bad.c", R"(extern unsigned int __VERIFIER_nondet_uint(void);
+extern void abort(void);
+void reach_error(void) { abort(); }
+void __VERIFIER_assert(int c) { if (!c) { reach_error(); abort(); } }
+int main(void) {
+  unsigned int y = 1U;
+  while (1) {
+    y = y + __VERIFIER_nondet_uint();
+    __VERIFIER_assert(y != 0U);
+  }
+  return 0;
+}
+)");
+    REQUIRE(by.count("main"));
+    CHECK(by["main"].status != kProved);
+    CHECK(by["main"].status != std::string(prism::laws::PROVED));
+}

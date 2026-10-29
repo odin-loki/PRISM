@@ -277,8 +277,12 @@ struct Walker {
             if (t == "&" && (i == 0 || !(is_identifier(tk[i - 1].t) || tk[i - 1].t == ")" || tk[i - 1].t == "]")))
                 return fail("address-of in loop");
             if (t == "->" || t == ".") return fail("member access in loop");
+            // A __VERIFIER_nondet_* call (bmc tags it __VERIFIER_nondet_X__prism_at_L_C)
+            // writes nothing and returns a fresh unconstrained value at every
+            // evaluation, in the cut step as in the unrolled program: keeping it
+            // does not weaken the havoc. Any other call is refused.
             if (is_identifier(t) && i + 1 < tk.size() && tk[i + 1].t == "(" && !keywords().count(t) &&
-                !type_words().count(t))
+                !type_words().count(t) && !t.starts_with("__VERIFIER_nondet_"))
                 return fail("call to '" + t + "' in loop");
         }
         return true;
@@ -609,6 +613,11 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 push(x + " + " + y + " == " + std::to_string(k));
             }
         }
+    // (7) congruences of written scalars (x stays odd, a multiple of k, ...):
+    //     x % c == r for small moduli. Houdini drops the ones that fail.
+    for (auto& x : L.modified)
+        for (long long c : {2LL, 3LL, 4LL})
+            for (long long r = 0; r < c; ++r) push(x + " % " + std::to_string(c) + " == " + std::to_string(r));
     return out;
 }
 
