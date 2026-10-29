@@ -1040,15 +1040,6 @@ bool has_bounds_guard(std::string_view var, std::string_view body) {
     return has_lower && has_upper;
 }
 
-bool atoi_index_or_size_use(std::string_view var, std::string_view text) {
-    const auto v = re_escape(var);
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\[\\s*" + v + "\\s*\\]"))) return true;
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\b(?:malloc|alloca)\\s*\\(\\s*" + v + "\\b")))
-        return true;
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\bcalloc\\s*\\(\\s*" + v + "\\b"))) return true;
-    return std::regex_search(text.begin(), text.end(), std::regex("\\brealloc\\s*\\([^,]+,\\s*" + v + "\\b"));
-}
-
 const json* last_executable_stmt(const json& stmt) {
     const auto& k = kind(stmt);
     if (k == "CompoundStmt") {
@@ -4123,13 +4114,6 @@ std::optional<std::vector<std::string>> rx_call_args(std::string_view line, std:
     return rx_split_args(line.substr(start, i - 1 - start));
 }
 
-int rx_max_before(const std::vector<int>& hits, int r) {
-    int last = -1;
-    for (int h : hits)
-        if (h < r && h > last) last = h;
-    return last;
-}
-
 const std::unordered_set<std::string>& rx_signed_words() {
     static const std::unordered_set<std::string> w = {
         "int", "short", "long", "char", "signed", "ssize_t", "ptrdiff_t", "int8_t", "int16_t",
@@ -4284,28 +4268,6 @@ bool rx_stale_use(std::string_view var, std::string_view ln) {
     if (prism::Regex("\\*\\s*" + v + "\\b").search(ln) || prism::Regex("\\b" + v + "\\s*->").search(ln)) return true;
     if (prism::Regex("\\bfree\\s*\\(\\s*(?:\\([^)]*\\)\\s*)*" + v + "\\s*\\)").search(ln)) return true;
     return prism::Regex("\\breturn\\s+" + v + "\\s*;").search(ln);
-}
-
-bool rx_nonzero_guard(std::string_view var, std::string_view text) {
-    auto v = rx_esc(var);
-    if (prism::Regex("\\bif\\s*\\(\\s*!\\s*" + v + "\\s*\\)").search(text)) return true;
-    if (prism::Regex("\\bif\\s*\\(\\s*" + v + "\\s*==\\s*0\\b").search(text)) return true;
-    if (prism::Regex("\\bif\\s*\\(\\s*0\\s*==\\s*" + v + "\\b").search(text)) return true;
-    if (prism::Regex("\\bif\\s*\\(\\s*" + v + "\\s*!=\\s*0\\b").search(text)) return true;
-    if (prism::Regex("\\bif\\s*\\(\\s*" + v + "\\s*\\)").search(text)) return true;
-    return false;
-}
-
-bool rx_chdir_after(const std::vector<std::string>& body_lines, int chroot_idx) {
-    for (int i = chroot_idx + 1; i < static_cast<int>(body_lines.size()); ++i)
-        if (rx_call_args(body_lines.at(static_cast<std::size_t>(i)), "chdir")) return true;
-    return false;
-}
-
-bool rx_c_only_file(const FileCtx& f) {
-    auto ext = fs::path(f.rel).extension().string();
-    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext != ".cpp" && ext != ".cc" && ext != ".cxx" && ext != ".ii";
 }
 
 void rx_anchors(const json& n, Ctx& cx, std::map<int, const json*>& at) {
@@ -4510,6 +4472,219 @@ void vla_checks(const json& body, Checker& ck) {
             return;
         }
     });
+}
+
+// API-POPEN: a popen() stream still open at some return, or opened after
+// the last pclose() (no null-guard filter, no two-return minimum).
+void popen_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    struct Var {
+        std::string name;
+        std::vector<std::pair<long long, const json*>> opens;
+        std::vector<long long> closes;
+    };
+    std::map<std::string, Var> vars;
+    std::vector<FlowEv> returns;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        if (k == "ReturnStmt") {
+            returns.push_back({p.offset, &n});
+            return;
+        }
+        auto opener = [](const json& e) {
+            const auto& s = strip_all(e);
+            return is_call_kind(kind(s)) && callee_name(s) == "popen";
+        };
+        if (k == "VarDecl" && n_children(n) >= 1 && opener(last_child(n))) {
+            auto& v = vars[str_field(n, "id")];
+            v.name = str_field(n, "name");
+            v.opens.push_back({p.offset, &n});
+        } else if (k == "BinaryOperator" && str_field(n, "opcode") == "=" && n_children(n) == 2 &&
+                   opener(child(n, 1))) {
+            const auto& lhs = strip_all(child(n, 0));
+            if (kind(lhs) == "DeclRefExpr") {
+                auto& v = vars[str_field(ref_decl(lhs), "id")];
+                v.name = str_field(ref_decl(lhs), "name");
+                v.opens.push_back({p.offset, &n});
+            }
+        } else if (is_call_kind(k) && callee_name(n) == "pclose") {
+            auto a = call_args(n);
+            if (a.size() == 1) {
+                auto id = ref_id(*a[0]);
+                if (!id.empty()) vars[id].closes.push_back(p.offset);
+            }
+        }
+    });
+    for (auto& [id, v] : vars) {
+        if (v.opens.empty()) continue;
+        auto last_before = [](const auto& xs, long long at, auto proj) {
+            long long m = -1;
+            for (auto& x : xs)
+                if (proj(x) < at) m = std::max(m, proj(x));
+            return m;
+        };
+        auto off_of = [](const std::pair<long long, const json*>& x) { return x.first; };
+        auto self = [](long long x) { return x; };
+        const json* leak = nullptr;
+        for (auto& r : returns) {
+            if (last_before(v.opens, r.off, off_of) > last_before(v.closes, r.off, self)) {
+                leak = r.at;
+                break;
+            }
+        }
+        if (!leak) {
+            auto last_open = std::max_element(v.opens.begin(), v.opens.end());
+            long long last_close = v.closes.empty() ? -1 : *std::max_element(v.closes.begin(), v.closes.end());
+            if (last_open->first > last_close) leak = last_open->second;
+        }
+        if (leak) ck.add(*leak, "API-POPEN", v.name + " from popen() not pclose()'d on all exits");
+    }
+}
+
+// API-CHROOT: chroot() with no later chdir() in the function.
+void chroot_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::vector<std::pair<long long, const json*>> roots;
+    long long last_chdir = -1;
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (!is_call_kind(kind(n))) return;
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base)) return;
+        const auto nm = callee_name(n);
+        if (nm == "chroot" && !p.macro) roots.push_back({p.offset, &n});
+        else if (nm == "chdir" || nm == "fchdir") last_chdir = std::max(last_chdir, p.offset);
+    });
+    for (auto& [off, at] : roots)
+        if (last_chdir < off) ck.add(*at, "API-CHROOT", "chroot() without chdir(/) into the new root");
+}
+
+namespace {
+// `v`, `!v`, `v == 0`, `0 == v`, `v != 0`: a test that splits on v being zero.
+bool zero_test_of(const json& cond0, const std::string& id) {
+    const auto& c = strip_all(cond0);
+    if (ref_id(c) == id) return true;
+    const auto& k = kind(c);
+    if (k == "UnaryOperator" && str_field(c, "opcode") == "!" && n_children(c) == 1) return ref_id(child(c, 0)) == id;
+    if (k == "BinaryOperator" && n_children(c) == 2 && one_of(str_field(c, "opcode"), {"==", "!="})) {
+        const auto& l = child(c, 0);
+        const auto& r = child(c, 1);
+        return (ref_id(l) == id && is_zero_literal(r)) || (ref_id(r) == id && is_zero_literal(l));
+    }
+    return false;
+}
+}  // namespace
+
+// INT-CLZ-ZERO (C): __builtin_clz/ctz(ll) on a literal 0, or on a variable
+// with no zero test before the call.
+void clz_zero_checks(const json& body, Checker& ck, Ctx& cx) {
+    if (cx.unit.cxx) return;
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::vector<std::pair<long long, const json*>> conds;  // if conditions in source order
+    std::vector<const json*> calls;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "IfStmt") {
+            for (auto& c : inner(n)) {
+                if (one_of(kind(c), {"DeclStmt", "VarDecl"})) continue;
+                conds.push_back({begin_of(n).offset, &c});
+                break;
+            }
+        } else if (is_call_kind(k) && n_children(n) >= 1) {
+            const auto raw = str_field(ref_decl(strip_all(child(n, 0))), "name");
+            if (one_of(raw, {"__builtin_clz", "__builtin_ctz", "__builtin_clzll", "__builtin_ctzll"})) calls.push_back(&n);
+        }
+    });
+    for (auto* c : calls) {
+        const auto p = begin_of(*c);
+        if (!same_file_pos(p, base) || p.macro) continue;
+        auto a = call_args(*c);
+        if (a.empty()) continue;
+        bool bad = false;
+        if (auto v = int_value(*a[0]); v && *v == 0) {
+            bad = true;
+        } else if (auto id = ref_id(*a[0]); !id.empty()) {
+            bad = true;
+            for (auto& [off, cond] : conds)
+                if (off < p.offset && zero_test_of(*cond, id)) bad = false;
+        }
+        if (bad)
+            ck.add(*c, "INT-CLZ-ZERO",
+                   std::string(str_field(ref_decl(strip_all(child(*c, 0))), "name")) + "() on 0 is undefined");
+    }
+}
+
+// TRUST-UNVALIDATED-INPUT: a variable from atoi/strtol/strtoul or scanf("…", &v)
+// used as an index or divisor with no if-condition on it in the function.
+void unvalidated_input_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::map<std::string, std::string> parsed;  // id -> name
+    std::vector<const json*> conds;
+    auto parser = [](const json& e) {
+        const auto& s = strip_all(e);
+        return is_call_kind(kind(s)) && one_of(callee_name(s), {"atoi", "strtol", "strtoul"});
+    };
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "IfStmt") {
+            for (auto& c : inner(n)) {
+                if (one_of(kind(c), {"DeclStmt", "VarDecl"})) continue;
+                conds.push_back(&c);
+                break;
+            }
+        } else if (k == "VarDecl" && n_children(n) >= 1 && parser(last_child(n))) {
+            parsed[str_field(n, "id")] = str_field(n, "name");
+        } else if (k == "BinaryOperator" && str_field(n, "opcode") == "=" && n_children(n) == 2 && parser(child(n, 1))) {
+            const auto& lhs = strip_all(child(n, 0));
+            if (kind(lhs) == "DeclRefExpr") parsed[str_field(ref_decl(lhs), "id")] = str_field(ref_decl(lhs), "name");
+        } else if (is_call_kind(k) && callee_name(n) == "scanf") {
+            for (auto* a : call_args(n)) {
+                const auto& s = strip_all(*a);
+                if (kind(s) == "UnaryOperator" && str_field(s, "opcode") == "&" && n_children(s) == 1) {
+                    const auto& r = strip_all(child(s, 0));
+                    if (kind(r) == "DeclRefExpr") parsed[str_field(ref_decl(r), "id")] = str_field(ref_decl(r), "name");
+                }
+            }
+        }
+    });
+    if (parsed.empty()) return;
+    std::function<bool(const json&, const std::string&)> mentions = [&](const json& n, const std::string& id) {
+        if (!n.is_object()) return false;
+        if (kind(n) == "DeclRefExpr" && str_field(ref_decl(n), "id") == id) return true;
+        for (auto& c : inner(n))
+            if (mentions(c, id)) return true;
+        return false;
+    };
+    std::vector<std::pair<std::string, std::string>> order(parsed.begin(), parsed.end());
+    std::sort(order.begin(), order.end(), [](auto& a, auto& b) { return a.second < b.second; });
+    for (auto& [id, name] : order) {
+        if (std::any_of(conds.begin(), conds.end(), [&](const json* c) { return mentions(*c, id); })) continue;
+        const json* hit = nullptr;
+        long long hit_off = -1;
+        collect_nodes(body, [&](const json& n, const json*) {
+            const auto& k = kind(n);
+            bool use = false;
+            if (k == "ArraySubscriptExpr" && n_children(n) >= 2) use = ref_id(child(n, 1)) == id;
+            else if ((k == "BinaryOperator" || k == "CompoundAssignOperator") && n_children(n) == 2 &&
+                     one_of(str_field(n, "opcode"), {"/", "%", "/=", "%="}))
+                use = ref_id(child(n, 1)) == id;
+            if (!use) return;
+            const auto p = begin_of(n);
+            if (!same_file_pos(p, base) || p.macro) return;
+            if (!hit || p.offset < hit_off) {
+                hit = &n;
+                hit_off = p.offset;
+            }
+        });
+        if (hit)
+            ck.add(*hit, "TRUST-UNVALIDATED-INPUT",
+                   name + " from parsed input used as index or divisor without an if (" + name + " …) guard");
+    }
 }
 
 void conc_toctou_checks(const json& body, Checker& ck, Ctx& cx) {
@@ -4814,104 +4989,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
             }
         }
     }
-
-    // API-POPEN: no null-guard filter and no two-return minimum.
-    {
-        static prism::Regex po(R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?popen\s*\()");
-        static prism::Regex pc(R"(\bpclose\s*\(\s*(?P<var>[A-Za-z_]\w*)\s*\))");
-        static prism::Regex ret(R"(^\s*return\b)");
-        std::map<std::string, std::vector<int>> opens, closes;
-        std::vector<int> returns;
-        for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-            auto& ln = fn.lines.at(static_cast<std::size_t>(i));
-            for (auto& m : po.finditer(ln)) opens[m.named("var")].push_back(i);
-            for (auto& m : pc.finditer(ln)) closes[m.named("var")].push_back(i);
-            if (ret.match_line(ln)) returns.push_back(i);
-        }
-        for (auto& [var, open_hits] : opens) {
-            auto& close_hits = closes[var];
-            bool leaked = false;
-            int leak_ep = open_hits.front();
-            for (int r : returns) {
-                if (rx_max_before(open_hits, r) > rx_max_before(close_hits, r)) {
-                    leaked = true;
-                    leak_ep = r;
-                    break;
-                }
-            }
-            if (!leaked) {
-                int last_open = *std::max_element(open_hits.begin(), open_hits.end());
-                int last_close = close_hits.empty() ? -1 : *std::max_element(close_hits.begin(), close_hits.end());
-                if (last_open > last_close) {
-                    leaked = true;
-                    leak_ep = last_open;
-                }
-            }
-            if (leaked)
-                rx_add(ck, at, fn.span_first + leak_ep, "API-POPEN",
-                       var + " from popen() not pclose()'d on all exits");
-        }
-    }
-
-    // API-CHROOT
-    {
-        static prism::Regex re(R"((?<![A-Za-z0-9_])chroot\s*\()");
-        for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-            if (!re.search(fn.lines.at(static_cast<std::size_t>(i)))) continue;
-            if (rx_chdir_after(fn.lines, i)) continue;
-            rx_add(ck, at, fn.span_first + i, "API-CHROOT", "chroot() without chdir(/) into the new root");
-        }
-    }
-
-    // INT-CLZ-ZERO is C-only in checkers_core (extension gate, not unit.cxx).
-    if (rx_c_only_file(*fc)) {
-        static const char* clz_fns[] = {"__builtin_clzll", "__builtin_ctzll", "__builtin_clz", "__builtin_ctz"};
-        std::unordered_set<int> seen;
-        for (int i = 0; i < static_cast<int>(chunk.size()); ++i) {
-            for (auto* fname : clz_fns) {
-                auto args = rx_call_args(chunk.at(static_cast<std::size_t>(i)), fname);
-                if (!args || args->empty()) continue;
-                auto arg = rx_strip((*args)[0]);
-                auto lit = rx_parse_int(arg);
-                bool bad = false;
-                if (lit && *lit == 0) bad = true;
-                else if (is_ident(arg)) {
-                    auto before = rx_join(chunk, 0, static_cast<std::size_t>(i + 1));
-                    bad = !rx_nonzero_guard(arg, before);
-                }
-                if (!bad || seen.contains(i)) continue;
-                seen.insert(i);
-                rx_add(ck, at, fn.span_first + i, "INT-CLZ-ZERO", std::string(fname) + "() on 0 is undefined");
-                break;
-            }
-        }
-    }
-
-    // TRUST-UNVALIDATED-INPUT. atoi used as an index also stays INT-ATOI.
-    {
-        static prism::Regex as(
-            R"(\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?(?:atoi|strtol|strtoul)\s*\()");
-        static prism::Regex sc(R"(\bscanf\s*\([^)]*&\s*(?P<var>[A-Za-z_]\w*))");
-        std::unordered_set<std::string> parsed;
-        for (auto& m : as.finditer(fn.body)) parsed.insert(m.named("var"));
-        for (auto& m : sc.finditer(fn.body)) parsed.insert(m.named("var"));
-        std::vector<std::string> vars(parsed.begin(), parsed.end());
-        std::sort(vars.begin(), vars.end());
-        for (auto& var : vars) {
-            if (prism::Regex("\\bif\\s*\\(\\s*" + rx_esc(var) + "\\b").search(fn.body)) continue;
-            auto v = rx_esc(var);
-            prism::Regex idx("\\[\\s*" + v + "\\s*\\]");
-            prism::Regex div("(?:/|%)\\s*" + v + "\\b");
-            for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-                auto& ln = fn.lines.at(static_cast<std::size_t>(i));
-                if (!idx.search(ln) && !div.search(ln)) continue;
-                rx_add(ck, at, fn.span_first + i, "TRUST-UNVALIDATED-INPUT",
-                       var + " from parsed input used as index or divisor without an if (" + var +
-                           " …) guard");
-                break;
-            }
-        }
-    }
 }
 
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
@@ -4947,6 +5024,10 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     resource_leak_checks(*body, w.ck, cx);
     conc_toctou_checks(*body, w.ck, cx);
     vla_checks(*body, w.ck);
+    popen_checks(*body, w.ck);
+    chroot_checks(*body, w.ck);
+    clz_zero_checks(*body, w.ck, cx);
+    unvalidated_input_checks(*body, w.ck);
     conc_atomicity_checks(*body, fn, w.ck, cx);
     core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;
