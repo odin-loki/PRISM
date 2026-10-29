@@ -125,7 +125,10 @@ def segOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) : Bool
            | none => false)) &&
         match B.segs[s]? with
         | some (_, cl) => callOK M P C I b s c k s1 t1 PB cl
-        | none => termOK P I c k s1 t1 pb PB B.nr B.term
+        | none =>
+          -- a throw: the run stops claiming anything there; the PIR block
+          -- starts with the instructions before it (`Tr::raise` follows)
+          if B.thr then s1.isPrefixOf PB.stmts else termOK P I c k s1 t1 pb PB B.nr B.term
   | _, _, _ => false
 
 /-- An instance.  (The lengths of `ks` and `kids` are not checked: `segOK`

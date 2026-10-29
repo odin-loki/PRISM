@@ -519,7 +519,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       | some (bn, ps, sg, is) =>
         if f.dead then throw s!"block {bn}: placeholder outside a stub block"
         let t ← if w == "-" then pure (LTerm.ret none) else do pure (LTerm.ret (some (← opnd? w)))
-        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false⟩ :: f.blocks, cur := none }
+        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false, false, ""⟩ :: f.blocks, cur := none }
     | _ =>
       let (bn, ps, sg, is) ← inBlock
       let t ← match l with
@@ -529,12 +529,15 @@ def parseXLlvm (name : String) (ls : List (List String)) :
         | ["stub"] => pure LTerm.unreachable
         | ["afail", _, _] => pure LTerm.unreachable
         | ["afail", _, _, "br", t] => pure (LTerm.br t)
+        | ["throw", _] => pure LTerm.unreachable
         | _ => throw s!"bad line {l}"
       let nr := match l with | "afail" :: p :: cl :: _ => some (p, cl) | _ => none
       let stub := l == ["stub"]
       if f.dead && !stub then throw s!"block {bn}: placeholder outside a stub block"
       if stub && !sg.isEmpty then throw s!"block {bn}: call in a stub block"
-      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, nr, stub⟩ :: f.blocks, cur := none }
+      f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, nr, stub, l.headD "" == "throw",
+                    (match l with | ["throw", t] => t | _ => "")⟩ :: f.blocks,
+                    cur := none }
   let last ← f.close
   let fs := (last :: done).reverse
   match fs with

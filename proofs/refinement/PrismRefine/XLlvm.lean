@@ -227,6 +227,12 @@ structure XBlock where
   number `Tr::enter_frame`'s variables. `runFrame` refuses one it finds
   reachable. -/
   stub : Bool := false
+  /-- the block ends in a call of `std::__throw_*` (`Tr::raise`): the
+  exception leaves the instruction sequence, which this semantics does not
+  follow (the run is stuck there: no claim about what happens next) -/
+  thr : Bool := false
+  /-- the typeinfo symbol of the thrown class (translator only) -/
+  thrT : String := ""
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
@@ -669,6 +675,7 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         else .stuck
       | none => .stuck
   | none =>
+    if B.thr then .stuck else
     match B.nr with
     | some _ => .ub
     | none =>
@@ -895,6 +902,7 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
         else .stuck
       | none => .stuck
   | none =>
+    if B.thr then .stuck else
     match B.nr with
     | some _ => .ub
     | none =>

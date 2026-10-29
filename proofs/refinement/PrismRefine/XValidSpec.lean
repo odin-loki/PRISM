@@ -135,7 +135,8 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
       (s = 0 → trPhisX I.fn (I.ctx P.vars) I.tails B.phis = .ok PB.phis) ∧
       (0 < s → ∃ is cl, B.segs[s - 1]? = some (is, cl) ∧ contOK (I.ctx P.vars) cl PB.phis = true) ∧
       (∀ is cl, B.segs[s]? = some (is, cl) → callOK M P C I b s (I.ctx P.vars) k s1 t1 PB cl = true) ∧
-      (B.segs[s]? = none → termOK P I (I.ctx P.vars) k s1 t1 pb PB B.nr B.term = true) := by
+      (B.segs[s]? = none → B.thr = false → termOK P I (I.ctx P.vars) k s1 t1 pb PB B.nr B.term = true) ∧
+      (B.segs[s]? = none → B.thr = true → ∃ s2, PB.stmts = s1 ++ s2) := by
   unfold segOK at h
   rw [hB, hpb] at h
   split at h
@@ -152,7 +153,7 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
       · rename_i s1 t1 hins
         simp only [Bool.and_eq_true] at h
         obtain ⟨⟨hT, hph⟩, hend⟩ := h
-        refine ⟨k, PB, s1, t1, hk, hPB, hhk, hins, tempsOKB_ok hT, ?_, ?_, ?_, ?_⟩
+        refine ⟨k, PB, s1, t1, hk, hPB, hhk, hins, tempsOKB_ok hT, ?_, ?_, ?_, ?_, ?_⟩
         · intro hs0; subst hs0
           simp only [ite_true] at hph
           split at hph
@@ -166,8 +167,13 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
           · simp at hph
         · intro is cl hsg
           rw [hsg] at hend; exact hend
-        · intro hsg
-          rw [hsg] at hend; exact hend
+        · intro hsg hth
+          rw [hsg] at hend; simpa [hth] using hend
+        · intro hsg hth
+          rw [hsg] at hend
+          simp only [hth, ite_true, List.isPrefixOf_iff_prefix] at hend
+          obtain ⟨s2, e⟩ := hend
+          exact ⟨s2, e.symm⟩
   · simp at h
 
 theorem contOK_spec {c : Ctx} {cl : CallI} {phis : List PPhi} (h : contOK c cl phis = true) :

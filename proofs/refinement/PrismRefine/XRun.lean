@@ -371,7 +371,7 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
     | none => rw [h] at hcur; simp at hcur
     | some bl => rw [h] at hcur; exact ⟨bl, rfl, hcur⟩
   obtain ⟨B, hB, hlen, hsle, hseg⟩ := hIF.seg fr.cur bl fr.seg curP hL hbl hs'
-  obtain ⟨k, PB, s1, t1, _, hPB, hhk, hins, hT1, hph0, hphc, hcall, hterm⟩ := segOK_spec hseg hB hcur
+  obtain ⟨k, PB, s1, t1, _, hPB, hhk, hins, hT1, hph0, hphc, hcall, hterm, hthrow⟩ := segOK_spec hseg hB hcur
   have hBf : fr.F.blocks[fr.cur]? = some B := by rw [hfF]; exact hB
   have hen := enter_sim hIF hfF hPB hR hE hph0 hphc
   simp only [sStep, hBf, pVisit, hPB, Res.step_out]
@@ -420,7 +420,15 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
       have hseq : fr.seg = B.segs.length := by
         have := List.getElem?_eq_none_iff.mp hsg; omega
       have hcurT : I.tails[fr.cur]? = some curP := tails_of hbl hlen (by rw [← hseq]; exact hs')
-      obtain ⟨s2, t2, T, A?, htr, hT2, hst, hterm', hretA⟩ := termOK_spec (hterm hsg)
+      cases hth : B.thr
+      case true =>
+        obtain ⟨s2, hst⟩ := hthrow hsg hth
+        rw [hst, xStmts_append, XPRes.then_run, hBi]
+        rw [hBi] at hins
+        refine SimX.out (sinstsX_sim hctx B.last R0 _ k t s1 t1 hR0 ha0 hhk hins hT1) ?_
+        intro R t' σ' _ _
+        simp only [sEnd, hsg, hth, ite_true, Step.out, OSim]
+      obtain ⟨s2, t2, T, A?, htr, hT2, hst, hterm', hretA⟩ := termOK_spec (hterm hsg hth)
       rw [hst, xStmts_append, XPRes.then_run, hterm', hBi]
       rw [hBi] at hins
       refine SimX.out (sinstsX_sim hctx B.last R0 _ k t s1 t1 hR0 ha0 hhk hins hT1) ?_
@@ -445,10 +453,10 @@ theorem step_sim {M : XMod} {F : XFunc} {P : PFunc} {C : List IInfo} {ω : Nat �
         obtain ⟨p, cl⟩ := pc
         simp only [trTermN, hnr, Except.ok.injEq, Prod.mk.injEq] at htr
         obtain ⟨rfl, rfl, rfl, rfl⟩ := htr
-        simp only [hnr]
+        simp only [hth, Bool.false_eq_true, ite_false, hnr]
         rfl
       simp only [trTermN, hnr] at htr
-      simp only [hnr]
+      simp only [hth, Bool.false_eq_true, ite_false, hnr]
       cases htm : B.term with
       | br tn =>
         rw [htm] at htr

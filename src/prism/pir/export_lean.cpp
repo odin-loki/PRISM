@@ -385,6 +385,60 @@ std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& 
 
 // After a noreturn failure call at `i`: the rest defines no variable (Tr::enter_frame numbers every
 // result) and ends in unreachable, ret, or an unconditional br (normal_blocks scans the whole block).
+// translate_ctl.inc's std_throw_type (the typeinfo of a std::__throw_* call)
+std::string std_throw_ti(const std::string& fn) {
+    static const std::vector<std::pair<std::string, std::string>> k{
+        {"__throw_out_of_range_fmt", "_ZTISt12out_of_range"},
+        {"__throw_out_of_range", "_ZTISt12out_of_range"},
+        {"__throw_length_error", "_ZTISt12length_error"},
+        {"__throw_bad_alloc", "_ZTISt9bad_alloc"},
+        {"__throw_bad_array_new_length", "_ZTISt20bad_array_new_length"},
+        {"__throw_logic_error", "_ZTISt11logic_error"},
+        {"__throw_invalid_argument", "_ZTISt16invalid_argument"},
+        {"__throw_domain_error", "_ZTISt12domain_error"},
+        {"__throw_runtime_error", "_ZTISt13runtime_error"},
+        {"__throw_range_error", "_ZTISt11range_error"},
+        {"__throw_overflow_error", "_ZTISt14overflow_error"},
+        {"__throw_underflow_error", "_ZTISt15underflow_error"},
+        {"__throw_bad_optional_access", "_ZTISt19bad_optional_access"},
+        {"__throw_bad_function_call", "_ZTISt17bad_function_call"},
+        {"__throw_bad_variant_access", "_ZTISt18bad_variant_access"},
+        {"__throw_bad_cast", "_ZTISt8bad_cast"},
+        {"__throw_bad_typeid", "_ZTISt10bad_typeid"},
+    };
+    for (auto& [pre, ti] : k) {
+        auto p = fn.find(pre);
+        if (p == std::string::npos) continue;
+        auto e = p + pre.size();
+        if (e < fn.size() && (std::islower(static_cast<unsigned char>(fn[e])) || fn[e] == '_') && fn.compare(e, 3, "PKc") != 0 &&
+            fn[e] != 'v' && fn[e] != 'b' && fn[e] != 'i')
+            continue;
+        return ti;
+    }
+    return fn;
+}
+
+// May `fn` run under an invoke (a handler of Tr::handlers live)? The callees of
+// every invoke of the module, closed under calls.
+bool under_invoke(const ir::Module& m, const std::string& fn) {
+    std::set<std::string> s;
+    std::vector<std::string> work;
+    for (auto& f : m.functions)
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts)
+                if (in.op == "invoke") work.push_back(in.callee);
+    while (!work.empty()) {
+        auto n = work.back();
+        work.pop_back();
+        if (!s.insert(n).second) continue;
+        if (auto* g = m.find(n))
+            for (auto& b : g->blocks)
+                for (auto& in : b.insts)
+                    if (in.op == "call" || in.op == "invoke") work.push_back(in.callee);
+    }
+    return s.count(fn) > 0;
+}
+
 bool afail_tail_ok(const ir::Block& bl, size_t i) {
     for (size_t j = i + 1; j < bl.insts.size(); ++j) {
         auto& x = bl.insts[j];
@@ -892,6 +946,14 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L afail " << prop << " " << cls;
                 if (t.op == "br") b << " br " << name(t.targets[0]);
                 b << "\n";
+                break;
+            } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
+                       in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&
+                       afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())) &&
+                       bl.insts.back().op == "unreachable" && in.ops.empty() && !under_invoke(m, f.name)) {
+                // Tr::call: std::__throw_* raises a library exception (Tr::raise); the
+                // semantics stops following the run there, the PIR after it is unchecked
+                b << "L throw " << std_throw_ti(in.callee) << "\n";
                 break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);

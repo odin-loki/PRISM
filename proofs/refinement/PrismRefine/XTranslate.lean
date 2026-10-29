@@ -1018,6 +1018,8 @@ structure TS where
   vars : Array Nat
   blocks : Array PBlock
   insts : Array IInfo
+  /-- `Tr::type_ids`: typeinfo symbols in the order first numbered -/
+  tys : Array String := #[]
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -1034,6 +1036,47 @@ def pushTemps (ts : List Nat) : TM Unit :=
   modify fun s => { s with vars := ts.foldl (fun a w => a.push w) s.vars }
 
 def curVars : TM (List Nat) := do return (← get).vars.toList
+
+/-- `Tr::type_id`. -/
+def typeId (t : String) : TM Nat := do
+  let s ← get
+  match s.tys.toList.idxOf? t with
+  | some i => pure (i + 1)
+  | none => do set { s with tys := s.tys.push t }; pure (s.tys.size + 1)
+
+/-- `Tr::at`: a new pointer variable `p + off` (`MemTr::gep` over `i8`,
+inbounds), its statements. -/
+def atX (B : Arg) (off : Nat) : TM (List PStmt × Arg) := do
+  let i ← newVar 64
+  let j := (← get).vars.size
+  pushTemps (gFinT true)
+  pure (gFinS i j B (c64 off) true, .v i 64)
+
+/-- `Tr::st`: an 8-aligned store with its access checks. -/
+def stX (P V : Arg) : TM (List PStmt) := do
+  let k := (← get).vars.size
+  let (sa, ta) := accessChecks k P ((V.width + 7) / 8) true 8
+  pushTemps ta
+  pure (sa ++ [.store P V (.c 1 1)])
+
+/-- `Tr::eh_call` on `std::__throw_*` with no handler (`Tr::raise`,
+`dispatch_type`): the exception object, its header stores, the `main`
+uncaught check, the stop, and the fresh unreachable block. -/
+def throwX (stack : List String) (t : String) : TM (List PStmt) := do
+  let b ← newVar 64
+  let B := Arg.v b 64
+  let tid ← typeId t
+  let s0 ← stX B (c64 tid)
+  let (g1, P1) ← atX B 8
+  let s1 ← stX P1 (c64 0)
+  let (g2, P2) ← atX B 16
+  let (g3, P3) ← atX B 32
+  let s2 ← stX P2 P3
+  let top := stack.headD ""
+  let entry := top == "main" || top.startsWith "_GLOBAL__sub_I" || top.startsWith "__cxx_global_var_init"
+  let _ ← newBlock
+  pure ([.alloc b (c64 96) 7 2 16] ++ s0 ++ g1 ++ s1 ++ g2 ++ g3 ++ s2 ++
+    (if entry then [.check (.c 1 1) "uncaught" "CXX-UNCAUGHT"] else []))
 
 def liftE {α : Type} (e : Except String α) : TM α :=
   match e with
@@ -1173,6 +1216,12 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
       let k := (← get).vars.size
       let (s1, t1) ← liftE (trSInstsX c k B.last)
       pushTemps t1
+      if B.thr then
+        let s2 ← throwX stack B.thrT
+        setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .stop }
+        setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
+        tails := tails ++ [cur]
+        continue
       let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.nr B.term)
       pushTemps t2
       setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := T }
