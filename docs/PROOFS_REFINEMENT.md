@@ -1008,6 +1008,15 @@ proved); libc-models minus 3 skipped 4/87/3/146 (91 proved); sv-comp
 sweep at 1000MB in /workspace/eh/prper.log: every subdir fine (mismatch=0)
 except prism/cxx (killed 1300MB); per-file sweep in /workspace/eh/cxxper.log.
 
+Memory root cause (3c5fc60fa): the ~1GB in pir-lean-check was the pir
+stage's model checking (Z3), not export or Lean (checker 15MB, export
+<80MB). pir-lean-check only needs the translation: prism-qa now sets
+PRISM_PIR_EXPORT_ONLY=1 (with PRISM_PIR_LEAN_EXPORT), and stage.cpp records
+each function NOTRUN after exporting. libc-models priority_queue / sstream /
+unordered_map: 1GB -> 21/77/60MB, same verdicts; prism/cxx culprits were the
+same containers (cxx_priority_queue/sstream/unordered_map/unordered_set_true).
+Final rerun without skips: /workspace/eh/fin_<subdir>.log (old in fin_old/).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
