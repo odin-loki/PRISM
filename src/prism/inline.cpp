@@ -147,6 +147,20 @@ bool sole_external_definition(const FunctionInfo& callee, const std::map<std::st
 }
 
 bool free_names_unshadowed(const FunctionInfo& callee, const FunctionInfo& caller);
+std::vector<std::pair<std::string, bool>> code_idents(std::string_view b);
+
+// The statement labels of a body (`name:` at a statement start, not
+// case/default, not `::`).
+std::vector<std::string> callee_labels(const std::string& body) {
+    static Regex label("(?:^|[;{}:])\\s*([A-Za-z_]\\w*)\\s*:(?!:)");
+    std::vector<std::string> out;
+    for (auto& m : label.finditer(body)) {
+        auto n = m.group(1);
+        if (n == "default" || n == "case") continue;
+        out.push_back(n);
+    }
+    return out;
+}
 
 bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
                        const std::map<std::string, int>& defs) {
@@ -164,10 +178,13 @@ bool inlineable_callee(const FunctionInfo& callee, const FunctionInfo& caller,
     if (callee.kind != "SCALAR" && callee.kind != "VOID") return false;
     if (has_calls(callee.body)) return false;
     if (!free_names_unshadowed(callee, caller)) return false;
-    // A goto's label would be copied once per call site (labels must be
-    // unique in a function for the bmc goto model).
-    static Regex goto_kw("\\bgoto\\b");
-    if (goto_kw.search(callee.body)) return false;
+    // A callee's labels are renamed per call site (add_callee_labels), so a
+    // goto is copied with a target of its own. A label name the caller
+    // also uses would be renamed together with it: not inlined.
+    for (auto& l : callee_labels(callee.body)) {
+        for (auto& [n, _] : code_idents(caller.body))
+            if (n == l) return false;
+    }
     if (returns_value(callee) && !callee_ret_type(callee)) return false;
     return true;
 }
@@ -283,19 +300,6 @@ std::string rename_params(const std::string& body, const std::map<std::string, s
 // `{ ret = X; break; }` inside `do { ... } while (0)`. A callee with its own
 // loop or switch (where that break would bind to the wrong statement) is
 // inlined only when its single return is its last top-level statement.
-// A label in the callee body would be copied per call site.
-bool ret_var_unsafe_for_goto(const std::string& body) {
-    static Regex label("(?:^|[;{}])\\s*[A-Za-z_]\\w*\\s*:(?!:)");
-    static Regex case_kw("\\b(?:case|default)\\b");
-    // case/default labels are fine (they are not goto targets); any other
-    // `name:` at statement start is a label.
-    for (auto& m : label.finditer(body)) {
-        std::string t = m.text;
-        if (!case_kw.search(t)) return true;
-    }
-    return false;
-}
-
 std::optional<std::string> adapt_callee_body(std::string body, const std::map<std::string, std::string>& rename,
                                              const std::optional<std::string>& ret_var,
                                              const std::optional<std::string>& end_label) {
@@ -328,7 +332,7 @@ std::optional<std::string> adapt_callee_body(std::string body, const std::map<st
         // unique per call site through the prefix; it is reached only past
         // the end of the body's block, so no declaration it can see is
         // skipped.
-        if (!end_label || ret_var_unsafe_for_goto(body)) return std::nullopt;
+        if (!end_label) return std::nullopt;
         if (ret_var) body = regex_sub(ret_val, body, "{ " + *ret_var + " = $1; goto " + *end_label + "; }");
         body = regex_sub(ret_bare, body, "goto " + *end_label + ";");
         return "{\n" + body + "\n}\n" + *end_label + ": ;";
@@ -443,6 +447,7 @@ std::optional<std::string> build_inline_block(const FunctionInfo& callee,
         decls.push_back(*rt + " " + rv + ";");
     }
     add_callee_locals(callee.body, prefix, rename);
+    for (auto& l : callee_labels(callee.body)) rename.insert_or_assign(l, prefix + "_L_" + l);
     auto adapted = adapt_callee_body(callee.body, rename, ret_var, prefix + "_end");
     if (!adapted) return std::nullopt;
     std::vector<std::string> parts = std::move(decls);

@@ -97,8 +97,9 @@ fs::path make_temp_dir(const fs::path& parent, const std::string& prefix) {
 // and no execution of task code (allow_exec stays off: replay is the only
 // step that runs the task, and it is gated separately).
 std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const std::string& data_model,
-                              std::string& error) {
+                              std::string& error, int unwind = 0) {
     Config cfg = default_config();
+    if (unwind > 0) cfg.unwind = unwind;
     cfg.llm = false;
     cfg.allow_exec = false;
     std::vector<std::string> stages;
@@ -178,6 +179,19 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return r;
     };
     Decision dec = decide(*report, prop, rp);
+    // Deepening: a main that is only BOUNDED (no violation within the
+    // unwind, loops not closed) is re-run with a deeper unwind. A deeper
+    // run can only prove (its loops close) or refute with a counterexample
+    // that must still replay; BOUNDED stays unknown. Never weaker evidence.
+    for (int deeper : {32, 128}) {
+        if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
+        std::string err2;
+        auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
+        if (!rep2) break;
+        Decision d2 = decide(*rep2, prop, rp);
+        if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
+        dec = std::move(d2);
+    }
     oc.decision = dec;
     Decision& d = oc.decision;
     WitnessMeta meta;
