@@ -947,6 +947,18 @@ exported). NOT yet covered, so every catch pad is still refused at
    end_catch / rethrow"), since `caught_slot()` is lazy today (first
    use, var number mid-stream). Changing translate.cpp affects product
    output: needs sign-off. (b) the renaming relation. Recommend (a).
+   STATUS (option (a) approved): implemented in the working tree, commit
+   held until verified: `pirmem::reaches_caught_slot` (translate_mem.cpp:
+   call/invoke closure reaching __cxa_begin_catch/end_catch/rethrow);
+   `Tr::enter_frame` preassigns `caught_var_` after `oom_`; `run_frame`
+   allocates `caught_` in the prologue after the oom object; exporter emits
+   `L glob %__prism.caught 72 16 3 1 0` after the oom line. Verification
+   queued (prism-run queue stalled by other agents' jobs):
+   `/workspace/eh/tests1.log` (prism_tests -tc=*pir*,*PIR*,*cxx*,*C++*,*xception*),
+   `/workspace/eh/cmp.sh` -> cs-base/ vs cs-new/ (14 catch-heavy
+   conformance files, binaries /workspace/eh/prism-base and prism-new;
+   compare verdicts in out/report.md). Then commit, then Lean mirrors of
+   begin/end_catch etc. (step 2).
 3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
    list_contracts.
 Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
