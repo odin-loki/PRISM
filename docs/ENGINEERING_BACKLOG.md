@@ -83,8 +83,13 @@ and `strncat_any_true` BOUNDED, "Houdini ran out of time" while still searching
 (~181 s, 3 rounds, 27 / 44 inductive); `strncmp_any_true` BOUNDED, fixpoint
 reached (47 inductive), final cut-program query out of time. All three stop
 at ~181 s of Houdini, below the 300 s function budget: a separate Houdini
-search cap is binding (next: find and expose it; then check whether strcat
-needs a `MemEq`/`MemFrame` template).
+search cap is binding: the Houdini deadline is 6 x the per-query `--timeout`
+(default 30 s, so 180 s; `houdini.inc` constructor). With `--timeout 60` and a
+600 s function budget, `strncmp_any_true` is **PROVED-UNBOUNDED** (316 s of
+Houdini): its BOUNDED is a time limit, not a missing template. Next: the
+same run for strcat/strncat (still searching at 180 s; may need a
+`MemEq`/`MemFrame` template), and decide whether the deadline should follow
+the function budget instead of `--timeout`.
 
 **Gate 2026-10-29 18:40 (pf6):** hard conflicts **0**, superset gaps **9**,
 agreement 3463/4650: 6 `clang rejects the unit` (lint snippets ill-formed even
