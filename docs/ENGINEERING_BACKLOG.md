@@ -33,7 +33,7 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 | Done (2026-10-25) | **`API-MKSTEMP`**, **`API-CHMOD-WORLD`**, **`API-SETUID`** AST ports in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-SYSTEM`**, **`API-SIGNAL`**, **`API-GETENV-NULL`**, **`API-STRDUP-NULL`**, **`PTR-UNCHECKED-ALLOC`** AST + testdata doctests | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`INT-SHIFT-UB`**, **`PTR-NULL-DEREF`**, **`MEM-STACK-ESCAPE`** testdata doctests; **`return buf`** after `strip_casts` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Next | Pick from regex-only table (~265 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Next | Pick from regex-only table (~265 left); port the remaining regex-text rules in `core_regex_batch()` (MEM-REALLOC-ZERO, MEM-PTR-ARITH, MEM-ONESIDED-INDEX, MEM-FLEX-ARRAY, INFOLEAK-PAD, sibling asymmetry) to AST nodes | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder
