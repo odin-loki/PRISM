@@ -816,6 +816,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         if (top && caught && &bl0 == &f.blocks.front())
             // Tr::caught_slot: MemTr::alloc(-1, c64(72), Static, init 1), after the oom flag
             b << "L glob %__prism.caught 72 16 3 1 0\n";
+        bool xalloc = false;  // a user throw's __cxa_allocate_exception was written (L xalloc)
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
             const std::string& op = in.op;
@@ -1022,6 +1023,33 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L afail " << prop << " " << cls;
                 if (t.op == "br") b << " br " << name(t.targets[0]);
                 b << "\n";
+                break;
+            } else if (op == "call" && !in.is_asm && in.callee == "__cxa_allocate_exception" && !m.find(in.callee)) {
+                // a user throw (Tr::eh_call): __cxa_allocate_exception, call-free code
+                // (the object's initialisation), then __cxa_throw of that object and
+                // `unreachable` (or the invoke's normal edge). The semantics stops
+                // following the run at the allocation; the rest is translator only.
+                const std::size_t i = static_cast<std::size_t>(&in - bl.insts.data());
+                std::size_t j = i + 1;
+                while (j < bl.insts.size() && bl.insts[j].op != "call" && bl.insts[j].op != "invoke") ++j;
+                bool ok = !xalloc && in.ops.size() == 1 && !in.result.empty() && in.ops[0].ty.kind == ir::Type::Int &&
+                          vw(in.ops[0].ty) == 64 && j + 2 == bl.insts.size();
+                if (ok) {
+                    const ir::Inst& t = bl.insts[j];
+                    ok = t.callee == "__cxa_throw" && !m.find(t.callee) && t.ops.size() == 3 &&
+                         t.ops[0].v.kind == ir::Value::Local && t.ops[0].v.name == in.result &&
+                         t.ops[1].v.kind == ir::Value::Global && plain_name(t.ops[1].v.name) &&
+                         (bl.insts.back().op == "unreachable" || &t == invoke_call);
+                }
+                if (!ok) throw Unsupported{"call @" + in.callee};
+                b << "L xalloc %" << name(in.result) << " " << opnd(in.ops[0]) << " 64\n";
+                xalloc = true;
+                continue;
+            } else if (op == "call" && !in.is_asm && in.callee == "__cxa_throw" && !m.find(in.callee)) {
+                if (!xalloc) throw Unsupported{"call @" + in.callee};
+                b << "L uthrow " << in.ops[1].v.name << " " << opnd(in.ops[0]) << " "
+                  << (&in == invoke_call ? name(invoke_pad) + " " + name(bl.insts.back().targets.at(0)) : std::string("- -"))
+                  << "\n";
                 break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
                        in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&

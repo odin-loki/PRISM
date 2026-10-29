@@ -960,7 +960,10 @@ def xResultNames (G : XFunc) : List (String × Nat) :=
     B.phis.map (fun p => (p.dst, p.w)) ++
     (B.segs.flatMap fun (is, cl) =>
       is.flatMap SInst.result ++ (match cl.dst with | some d => [(d, cl.rw)] | none => [])) ++
-    B.last.flatMap SInst.result
+    B.last.flatMap SInst.result ++
+    (match B.thrU with
+     | some (d, _, body, _) => (d, 64) :: body.flatMap SInst.result
+     | none => [])
 where
   SInst.result : SInst → List (String × Nat)
     | .i x => [x.result]
@@ -1646,6 +1649,55 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           (if u0 then [.check (.c 1 1) "undef" "UB-POISON"] else []), term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         raiseUnknownX stack cur E
+        return (cur, none)
+      if B.thr && B.thrU.isSome then
+        let some (d, so, body, po) := B.thrU | throw "internal: user throw"
+        -- `Tr::eh_call` on `__cxa_allocate_exception`: the object with its header
+        let c := I.ctx (← curVars)
+        let (sa, ta, SZ) ← liftE (trOpndX c 64 true k1 so)
+        pushTemps ta
+        let (a1, N) ← asgX 64 (.bin .add) [SZ, c64 32]
+        let r := hallocSz (← get).vars.size N
+        pushTemps r.2
+        let b0 ← newVar 64
+        let Bp := Arg.v b0 64
+        let w0 ← stX Bp (c64 0)
+        let (g1, P8) ← atX Bp 8
+        let w1 ← stX P8 (c64 0)
+        let (g2, Pl) ← atX Bp 32
+        let (g3, P16) ← atX Bp 16
+        let w2 ← stX P16 Pl
+        let i ← liftE (dstX c d 64)
+        if (look c.sh d).isSome then throw "outside fragment: result with a shadow"
+        let sAl := sa ++ a1 ++ r.1 ++ [.alloc b0 N 7 0 16] ++ w0 ++ g1 ++ w1 ++ g2 ++ g3 ++ w2 ++ [.assign i .copy [Pl]]
+        -- the object's initialisation
+        let k2 := (← get).vars.size
+        let (sb, tb) ← liftE (trSInstsX (I.ctx (← curVars)) k2 body)
+        pushTemps tb
+        -- `__cxa_throw`: the header's type id, then the raise
+        let k3 := (← get).vars.size
+        let (sp, tp, Pp) ← liftE (trOpndX (I.ctx (← curVars)) 64 true k3 po)
+        pushTemps tp
+        let (g4, E) ← atX Pp (2 ^ 64 - 32)
+        let tid ← typeId B.thrT
+        let w3 ← stX E (c64 tid)
+        let sAll := s1 ++ sAl ++ sb ++ sp ++ g4 ++ w3
+        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ sAll, term := .stop }
+        if B.thrPad != "" then modify fun s => { s with hs := (ι, B.thrPad, s.fr.length) :: s.hs }
+        dispatchX stack cur E B.thrT
+        if B.thrPad != "" then modify fun s => { s with hs := s.hs.tail }
+        -- the invoke's normal label: translate.cpp translates it (an `unreachable`
+        -- block the semantics never reaches)
+        if B.thrNorm != "" then
+          let some nb := lookupBlock G.shape B.thrNorm | throw "outside fragment: invoke normal label"
+          let some NB := G.blocks[nb]? | throw "internal: invoke normal label"
+          if !(xLive G).contains nb then
+            if !(NB.phis.isEmpty && NB.segs.isEmpty && NB.last.isEmpty && NB.term == .unreachable && !NB.thr && NB.nr.isNone) then
+              throw "outside fragment: code after an invoke of __cxa_throw"
+            let I ← getInst ι
+            setBlock (I.heads.getD nb 0) fun pb => { pb with stmts := [.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], term := .stop }
+        let _ ← newBlock
+        setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         return (cur, none)
       if B.thr then
         -- `Tr::eh_call`: the arguments are evaluated (their checks), then the raise

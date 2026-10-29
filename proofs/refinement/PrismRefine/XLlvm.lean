@@ -254,6 +254,14 @@ structure XBlock where
   /-- the block ends in `resume` of this exception pair register (translator
   only: only unwinding reaches it; its `term` is `unreachable`) -/
   res : Option String := none
+  /-- a user throw (translator only): `__cxa_allocate_exception`'s result and
+  size, the code initialising the object (the run is stuck before it), and the
+  pointer `__cxa_throw` raises -/
+  thrU : Option (String × Opnd × List SInst × Opnd) := none
+  /-- the landing pad of an `invoke` of that `__cxa_throw` (`""`: a call) -/
+  thrPad : String := ""
+  /-- that `invoke`'s normal label (translate.cpp translates it; `unreachable`) -/
+  thrNorm : String := ""
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
