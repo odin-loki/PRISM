@@ -26,3 +26,13 @@
   6 ASan cases in prism_tests failed under the old 4x --as cap. Memory is enforced by the RSS
   watchdog (kills the tree at 1.25x budget) plus PRISM's own PRISM_MEM_BUDGET_MB.
 - Opt back in for non-ASan binaries with PRISM_RUN_AS=1. Never put prlimit --as on ASan binaries.
+
+## prism-run admission control (2026-10-29, after box-wide OOM kills)
+- FIFO across workers: each call takes a ticket in /tmp/prism-run-locks/queue; only the oldest
+  waiting ticket may start.
+- It starts only if fewer than PRISM_RUN_SLOTS (2) jobs run and MemAvailable minus the running
+  jobs' remaining headroom (budget - current RSS) >= its budget + 1.5 GB (PRISM_RUN_RESERVE_MB).
+  On an idle box (no jobs) it starts anyway.
+- Watchdog kills a job at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
+- oom_score_adj = 500 x RSS/budget (min 100, max 1000), updated every 0.5 s: the kernel's victim
+  is the job furthest over its budget, not a small run.
