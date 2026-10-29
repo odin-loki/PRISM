@@ -161,6 +161,16 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
       | none => rfl
     | ub => exact .inl rfl
     | stuck => rfl
+  | hfresh d kd =>
+    simp only [sSInst, lSInst, lower_lift]
+    cases sFresh ω t kd with
+    | ok pw =>
+      obtain ⟨p, W'⟩ := pw
+      cases d with
+      | some d => simp [Res.bind, SLX, lift_set, SRegs.setOpt]
+      | none => rfl
+    | ub => exact .inl rfl
+    | stuck => rfl
   | hfree p kd kill => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | hhavoc p n => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
   | hread p n => simp only [sSInst, lSInst, lower_lift]; exact lMem_lift R _
@@ -274,6 +284,11 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
     all_goals cases h
   | halloc d n kd ini =>
+    simp only [lSInst] at h
+    split at h
+    · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+    all_goals cases h
+  | hfresh d kd =>
     simp only [lSInst] at h
     split at h
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc

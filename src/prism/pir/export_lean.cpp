@@ -372,6 +372,14 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
           << opnd(in.ops[0]) << " " << k << " " << init << "\n";
         return;
     }
+    if (n == "__prism_fresh_cstr") {
+        // MemTr::fresh_cstr(kind): a drawn length below 4096, n+1 arbitrary bytes, the NUL (Lean `hfresh`)
+        if (in.ops.size() != 1) throw Unsupported{"call @" + n + " arity"};
+        const uint64_t k = cint(0);
+        if (k > 255) throw Unsupported{"call @" + n + " kind"};
+        b << "L hfresh " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " " << k << "\n";
+        return;
+    }
     if (n == "__prism_free" || n == "__prism_free_check") {
         // MemTr::dealloc: the free checks, then (free) the lifetime ends
         if (in.ops.size() != 2) throw Unsupported{"call @" + n + " arity"};

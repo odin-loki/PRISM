@@ -94,6 +94,7 @@ open PrismRefine
 #print axioms freeChk_run
 #print axioms havoc_run
 #print axioms hread_run
+#print axioms freshCore_run
 #print axioms hmemTail_run
 #print axioms hmemset_run
 #print axioms freeChkF_run

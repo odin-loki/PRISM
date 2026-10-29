@@ -181,4 +181,58 @@ theorem havoc_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (g : N
   · rw [c1.1 hb1]
     exact ⟨fun _ => rfl, fun h => by simp at h⟩
 
+theorem truthN1 : truthN 1 = true := rfl
+
+theorem binVal_add64 (x y : Nat) : binVal .add 64 x y = (x % 2 ^ 64 + y % 2 ^ 64) % 2 ^ 64 := by
+  simp [binVal, evalBin, bv, BitVec.toNat_add]
+
+/-- `MemTr::fresh_cstr`'s statements against `sFresh`. -/
+theorem freshCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (k kd : Nat)
+    (hT : TempsOK P k freshT) :
+    (∀ p W', sFresh ω t kd = .ok (p, W') → ∃ σ', xStmts P ω σ t (freshCore k kd) = .ok σ' W' ∧
+      σ' (k + 4) = p ∧ ∀ i, i < k → σ' i = σ i) ∧
+    (sFresh ω t kd = .stuck → xStmts P ω σ t (freshCore k kd) = .blocked) := by
+  have w0 : P.wd k = 64 := by simpa [freshT] using hT 0 (by simp [freshT])
+  have w1 : P.wd (k + 1) = 1 := by simpa [freshT] using hT 1 (by simp [freshT])
+  have w2 : P.wd (k + 2) = 64 := by simpa [freshT] using hT 2 (by simp [freshT])
+  have w3 : P.wd (k + 3) = 1 := by simpa [freshT] using hT 3 (by simp [freshT])
+  have w4 : P.wd (k + 4) = 64 := by simpa [freshT] using hT 4 (by simp [freshT])
+  have w5 : P.wd (k + 5) = 64 := by simpa [freshT] using hT 5 (by simp [freshT])
+  generalize hn : ω t.t % 2 ^ 64 = n
+  by_cases hlt : n < 4096
+  · have hs : sFresh ω t kd = .ok (((t.adv 1).allocW ω (n + 1) kd 16 2).2 % 2 ^ 64,
+        ((t.adv 1).allocW ω (n + 1) kd 16 2).1.store
+          ((((t.adv 1).allocW ω (n + 1) kd 16 2).2 % 2 ^ 64 + n) % 2 ^ 64) 0 8 true) := by
+      simp [sFresh, hn, hlt]
+    refine ⟨fun p W' h => ?_, fun h => (by rw [hs] at h; cases h)⟩
+    rw [hs] at h
+    simp only [Res.ok.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hn1 : (n + 1) % 2 ^ 64 = n + 1 := Nat.mod_eq_of_lt (by omega)
+    have hnn : n % 2 ^ 64 = n := Nat.mod_eq_of_lt (by omega)
+    have hp := World.allocW_lt (t.adv 1) ω (n + 1) kd 16 2
+    have h47 : n + 1 < 2 ^ 47 := by omega
+    simp [freshCore, xStmts, evalOpM, evalOp, w0, w1, w2, w3, w4, w5,
+      icmpVal_eq', pred_ult, binVal_add64, set_apply, hn, hnn, hn1, hlt, h47, truthN1]
+    intro i hi
+    simp [show i ≠ k by omega, show i ≠ k + 1 by omega, show i ≠ k + 2 by omega, show i ≠ k + 3 by omega,
+      show i ≠ k + 4 by omega, show i ≠ k + 5 by omega]
+  · have hs : sFresh ω t kd = .stuck := by simp [sFresh, hn, hlt]
+    refine ⟨fun p W' h => (by rw [hs] at h; cases h), fun _ => ?_⟩
+    have hnn : n % 2 ^ 64 = n := by rw [← hn, Nat.mod_mod]
+    simp [freshCore, xStmts, evalOpM, evalOp, w0, w1, icmpVal_eq', pred_ult, set_apply, hnn, hlt]
+    intro h; exfalso; apply hlt; rw [← hn]; simpa using h
+
+
+theorem sFresh_ok_lt {ω : Nat → Nat} {t : World} {kd p : Nat} {W' : World} (h : sFresh ω t kd = .ok (p, W')) :
+    p < 2 ^ 64 := by
+  unfold sFresh at h
+  simp only at h
+  split at h
+  · simp only [Res.ok.injEq, Prod.mk.injEq] at h; rw [← h.1]; exact Nat.mod_lt _ (Nat.two_pow_pos 64)
+  · cases h
+
+theorem sFresh_ne_ub (ω : Nat → Nat) (t : World) (kd : Nat) : sFresh ω t kd ≠ .ub := by
+  unfold sFresh; simp only; split <;> simp
+
 end PrismRefine

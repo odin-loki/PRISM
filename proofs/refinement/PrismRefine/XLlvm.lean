@@ -168,6 +168,9 @@ inductive SInst where
   /-- `call void @__prism_read_range(ptr p, i64 n)` (`MemTr::read_range`):
   undefined unless the `n` bytes at `p` may be read (`n ≠ 0`); no effect. -/
   | hread (p n : Opnd)
+  /-- `d = __prism_fresh_cstr(kind)`: a fresh NUL-terminated string object of an
+  arbitrary length below 4096 and arbitrary (uninitialised) contents. -/
+  | hfresh (d : Option String) (kd : Nat)
   /-- `__prism_memset(d, int c, size_t n)`: an `i32` byte, truncated after the checks. -/
   | hmemset (d b n : Opnd)
   /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
@@ -522,6 +525,15 @@ def sHmemset (R : SRegs) (W : World) (d b len : Opnd) : Res World :=
     if v % 2 ^ 64 != 0 && accessBad W.mem (dv % 2 ^ 64) (v % 2 ^ 64) true 1 then .ub
     else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) (v % 2 ^ 64) }
 
+/-- `MemTr::fresh_cstr`: draw the length `n`, assume `n < 4096`, allocate
+`n + 1` arbitrary bytes of kind `kd`, store the terminating NUL at `p + n`. -/
+def sFresh (ω : Nat → Nat) (W : World) (kd : Nat) : Res (Nat × World) :=
+  let n := ω W.t % 2 ^ 64
+  if n < 4096 then
+    let A := (W.adv 1).allocW ω (n + 1) kd 16 2
+    .ok (A.2 % 2 ^ 64, A.1.store ((A.2 % 2 ^ 64 + n) % 2 ^ 64) 0 8 true)
+  else .stuck
+
 /-- `__prism_check`: UB when the value is 0. -/
 def sVcheck (R : SRegs) (w : Nat) (a : Opnd) : Res Unit :=
   (sOpnd R w a).bind fun v => if v % 2 ^ w != 0 then .ok () else .ub
@@ -567,6 +579,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .hhavoc p n => (sHavoc ω R W p n).bind fun W' => .ok (R, W')
   | .hread p n => (sHread R W p n).bind fun W' => .ok (R, W')
   | .hmemset d b n => (sHmemset R W d b n).bind fun W' => .ok (R, W')
+  | .hfresh d kd => (sFresh ω W kd).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
@@ -785,6 +798,11 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
   | .hhavoc p n => lMem S (sHavoc ω (lower S.R) W p n)
   | .hread p n => lMem S (sHread (lower S.R) W p n)
   | .hmemset d b n => lMem S (sHmemset (lower S.R) W d b n)
+  | .hfresh d kd =>
+    match sFresh ω W kd with
+    | .ok (p, W') => .ok (⟨(match d with | some d => S.R.set d (.val p) | none => S.R), S.c⟩, W')
+    | .ub => .ub
+    | .stuck => .stuck
   | .vcheck a w _ =>
     match sVcheck (lower S.R) w a with
     | .ok _ => .ok (S, W)

@@ -450,6 +450,10 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | ["vassume", a, w] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .vassume (← opnd? a) (← nat? w) :: is) }
+    | ["hfresh", d, kd] =>
+      let (bn, ps, sg, is) ← inBlock
+      let dst ← if d == "-" then pure none else do pure (some (← reg? d))
+      f := { f with cur := some (bn, ps, sg, .hfresh dst (← nat? kd) :: is) }
     | ["halloc", d, n, kd, ini] =>
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))

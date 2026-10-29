@@ -1586,6 +1586,50 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
         rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
     · simp only [ite_true, Res.bind, SimX]
       exact hm.1 hb
+  | hfresh d kd =>
+    simp only [trSInstX] at h
+    obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
+    simp only [sSInst]
+    cases d with
+    | some d =>
+      simp only at h
+      obtain ⟨di, hdi, h⟩ := Except.bind_ok h
+      obtain ⟨u3, hu3, h⟩ := Except.bind_ok h
+      have hsh := isNone_eq (need_ok hu3)
+      simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      have hm := freshCore_run P ω σ t k kd hT
+      cases hs : sFresh ω t kd with
+      | ok pw =>
+        obtain ⟨p, W'⟩ := pw
+        obtain ⟨σ', e, h4, ag⟩ := hm.1 p W' hs
+        have hp := sFresh_ok_lt hs
+        have hwi := dstX_wd hc hdi
+        have hli := dstX_lo hdi
+        simp only [Res.bind, SimX]
+        rw [xStmts_append, e]
+        simp only [XPRes.then, xStmts, evalOpM, evalOp, Arg.get_v', h4, hwi, Nat.mod_eq_of_lt hp]
+        have hrx := assignX (RelX.agree hc hR hk ag) hdi hsh p hp
+        rw [Nat.mod_eq_of_lt hp] at hrx
+        refine ⟨_, rfl, hrx, fun j hj => ?_⟩
+        rw [Store.set_other _ _ (by omega), ag j (by have := hc.lohi; omega)]
+        exact ha0 j hj
+      | ub => exact absurd hs (sFresh_ne_ub ω t kd)
+      | stuck => simp only [Res.bind, SimX]
+    | none =>
+      simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      have hm := freshCore_run P ω σ t k kd hT
+      cases hs : sFresh ω t kd with
+      | ok pw =>
+        obtain ⟨p, W'⟩ := pw
+        obtain ⟨σ', e, _, ag⟩ := hm.1 p W' hs
+        simp only [Res.bind, SimX, SRegs.setOpt]
+        rw [e]
+        exact ⟨σ', rfl, RelX.agree hc hR hk ag, fun j hj => by
+          rw [ag j (by have := hc.lohi; omega)]; exact ha0 j hj⟩
+      | ub => exact absurd hs (sFresh_ne_ub ω t kd)
+      | stuck => simp only [Res.bind, SimX]
   | hmemset d b len =>
     simp only [trSInstX] at h
     obtain ⟨⟨sd, td, D⟩, hd, h⟩ := Except.bind_ok h

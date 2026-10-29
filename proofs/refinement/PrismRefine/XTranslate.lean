@@ -508,6 +508,19 @@ def freeChkK (j : Nat) (P : Arg) (kd : Nat) : List PStmt := if kd = 8 then freeC
 
 def freeTK (kd : Nat) : List Nat := if kd = 8 then freeTF else freeT
 
+/-- `MemTr::fresh_cstr` (`__prism_fresh_cstr`, D136), temporaries from `k`:
+the drawn length, its bound, `n + 1`, the size check of `MemTr::alloc`, the
+object, `p + n` and the NUL store. -/
+def freshCore (k kd : Nat) : List PStmt :=
+  [.havoc k, .assign (k + 1) (.cmp .ult) [.v k 64, c64 4096], .assume (.v (k + 1) 1),
+   .assign (k + 2) (.bin .add) [.v k 64, c64 1],
+   .assign (k + 3) (.cmp .ult) [.v (k + 2) 64, c64 (2 ^ 47)], .assume (.v (k + 3) 1),
+   .alloc (k + 4) (.v (k + 2) 64) kd 2 16,
+   .assign (k + 5) (.bin .add) [.v (k + 4) 64, .v k 64],
+   .store (.v (k + 5) 64) (.c 8 0) (.c 1 1)]
+
+def freshT : List Nat := [64, 1, 64, 1, 64, 64]
+
 /-- The size check of `MemTr::alloc`: a variable size below `2^47` is
 assumed (a constant one is checked by the translator). -/
 def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
@@ -703,6 +716,14 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let g := k + tp.length + tn.length
     pure (sp ++ sn ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false),
       tp ++ tn ++ ([1] ++ accTG false))
+  | .hfresh d kd => do
+    need (decide (kd < 256)) "outside fragment: allocation kind"
+    match d with
+    | some d => do
+      let i ← dstX c d 64
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure (freshCore k kd ++ [.assign i .copy [.v (k + 4) 64]], freshT)
+    | none => pure (freshCore k kd, freshT)
   | .hmemset d b len => do
     let (sd, td, D) ← trOpndX c 64 true k d
     let (sb, tb, B) ← trOpndX c 32 true (k + td.length) b
@@ -924,6 +945,8 @@ where
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]
+    | .hfresh (some d) _ => [(d, 64)]
+    | .hfresh none _ => []
     | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .hmemset .. | .vcheck .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
