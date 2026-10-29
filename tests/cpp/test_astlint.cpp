@@ -1081,6 +1081,28 @@ void vla_2d_bad(int n) {
     int m[n][4]; // expect: MEM-VLA-SIZE
     (void)m;
 }
+int sib_read(int sib_idx) {
+    if (sib_idx < 0)
+        return -1;
+    return sib_idx;
+}
+int sib_write_bad(int sib_idx) {
+    int buf[4];
+    buf[sib_idx] = 1; // expect: CTRL-SIBLING-ASYMMETRY
+    return buf[0];
+}
+int sib_write_ok(int sib_idx) {
+    int buf[4];
+    if (sib_idx > 3)
+        return 0;
+    buf[sib_idx] = 1;
+    return buf[0];
+}
+long sib_other_type(long sib_idx) {
+    long buf[4];
+    buf[sib_idx] = 1;
+    return buf[0];
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>

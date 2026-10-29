@@ -503,6 +503,13 @@ struct Ctx {
     std::vector<Finding> out;
     std::set<std::string> checked;  // canonical files whose declarations were walked
     std::set<std::string> defined;  // dump path: names of functions defined in checked files
+    // CTRL-SIBLING-ASYMMETRY: integer parameters of the functions in a file.
+    struct SibParam {
+        std::string file, fn, name, type;
+        bool guarded = false, tested = false;
+        Pos subscript{};
+    };
+    std::vector<SibParam> sib_params;
 
     FileCtx* file(const std::string* canon) {
         if (!canon || !files.wanted(*canon)) return nullptr;
@@ -4864,6 +4871,99 @@ void conc_atomicity_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
         ck.add(*at, "CONC-ATOMICITY", "global '" + g + "' incremented without mutex protection");
 }
 
+// CTRL-SIBLING-ASYMMETRY, per function: each integer parameter, whether an
+// `if (p < ...)`-style test with a return guards it, whether any `if`
+// mentions it, and its first use inside a subscript.
+void sibling_params(const json& f, const json& body, const std::string& fname, Ctx& cx) {
+    if (is_pointer_type(result_type(std::string(qual_type(f))))) return;
+    static prism::Regex ity(R"((?i)\b(?:int|long|short|unsigned|size_t|uint)\b)");
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::map<std::string, Ctx::SibParam> ps;  // id -> param
+    for (auto& c : inner(f)) {
+        if (kind(c) != "ParmVarDecl" || str_field(c, "name").empty()) continue;
+        auto t = std::string(qual_type(c));
+        if (t.find('*') != std::string::npos || t.find('[') != std::string::npos || !ity.search(t)) continue;
+        std::string sq;
+        for (auto ch : t) {
+            if (std::isspace(static_cast<unsigned char>(ch))) {
+                if (!sq.empty() && sq.back() != ' ') sq.push_back(' ');
+            } else {
+                sq.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+            }
+        }
+        while (!sq.empty() && sq.back() == ' ') sq.pop_back();
+        ps[str_field(c, "id")] = {*base.file, fname, str_field(c, "name"), sq};
+    }
+    if (ps.empty()) return;
+    auto mentions = [](const json& e, std::set<std::string>& ids) {
+        collect_nodes(e, [&](const json& x, const json*) {
+            if (auto id = ref_id(x); !id.empty() && kind(x) == "DeclRefExpr") ids.insert(id);
+        });
+    };
+    auto has_return = [](const json& e) {
+        bool r = false;
+        collect_nodes(e, [&](const json& x, const json*) { r = r || kind(x) == "ReturnStmt"; });
+        return r;
+    };
+    std::vector<std::pair<long long, std::string>> subs;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        if (k == "IfStmt") {
+            const auto& in = inner(n);
+            for (std::size_t i = 0; i < in.size(); ++i) {
+                if (kind(in.at(i)) == "DeclStmt" || kind(in.at(i)) == "VarDecl") continue;
+                std::set<std::string> ids;
+                mentions(in.at(i), ids);
+                for (auto& id : ids)
+                    if (auto it = ps.find(id); it != ps.end()) it->second.tested = true;
+                const auto& c = strip_all(in.at(i));
+                if (kind(c) == "BinaryOperator" && n_children(c) == 2 && i + 1 < in.size() && has_return(in.at(i + 1))) {
+                    auto op = str_field(c, "opcode");
+                    auto id = ref_id(child(c, 0));
+                    bool ok = one_of(op, {"<", ">", ">=", "<="}) || (op == "==" && is_null_ptr_expr(child(c, 1)));
+                    if (ok)
+                        if (auto it = ps.find(id); it != ps.end()) it->second.guarded = true;
+                }
+                break;
+            }
+            return;
+        }
+        if (k != "ArraySubscriptExpr") return;
+        auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        std::set<std::string> ids;
+        mentions(n, ids);
+        for (auto& id : ids)
+            if (ps.contains(id)) subs.emplace_back(p.offset, id);
+    });
+    std::sort(subs.begin(), subs.end());
+    for (auto& [off, id] : subs) {
+        auto& sp = ps[id];
+        if (sp.subscript.file) continue;
+        sp.subscript = Pos{base.file, off, false};
+    }
+    for (auto& [_, sp] : ps) cx.sib_params.push_back(std::move(sp));
+}
+
+void sibling_report(Ctx& cx) {
+    std::map<std::pair<std::string, std::string>, std::vector<const Ctx::SibParam*>> by;  // (file, name)
+    for (auto& sp : cx.sib_params) by[{sp.file, sp.name}].push_back(&sp);
+    std::set<std::pair<std::string, std::string>> reported;
+    for (auto& [key, entries] : by) {
+        if (entries.size() < 2) continue;
+        for (auto* e : entries) {
+            if (e->tested || !e->subscript.file) continue;
+            bool similar = false;
+            for (auto* g : entries)
+                if (g != e && g->guarded && g->type == e->type) similar = true;
+            if (!similar || !reported.insert({e->fn, e->name}).second) continue;
+            cx.add_at(e->subscript, e->fn, "CTRL-SIBLING-ASYMMETRY",
+                      e->name + " guarded in a sibling but used as subscript here without a test");
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -4902,6 +5002,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     infoleak_pad_checks(*body, w.ck);
     flex_array_checks(*body, w.ck, cx);
     onesided_index_checks(f, *body, w.ck);
+    if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
     clz_zero_checks(*body, w.ck, cx);
@@ -4955,7 +5056,7 @@ void walk_decl(const json& d, Ctx& cx, std::vector<std::string>& tparams) {
 
 FileResult analyze_unit(Unit& u, const FileSet& files) {
     FileResult r;
-    Ctx cx{files, u, {}, {}, {}, {}, {}, {}, {}};
+    Ctx cx{files, u, {}, {}, {}, {}, {}, {}, {}, {}};
     for (auto& d : u.decls) collect_enums(d, cx);
     if (u.backend != "libclang") {
         for (auto& d : u.decls) collect_defined(d, cx);
@@ -4971,6 +5072,7 @@ FileResult analyze_unit(Unit& u, const FileSet& files) {
         std::vector<std::string> tparams;
         walk_decl(d, cx, tparams);
     }
+    sibling_report(cx);
     // One row per (file, line, class): lambda bodies appear twice in the dump,
     // and nested blocks are flow-checked with and without their outer block.
     std::set<std::tuple<std::string, int, std::string>> seen;
