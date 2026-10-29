@@ -791,3 +791,7 @@ none relaxes what counts as a proof or a refutation.
   `->`, pointer declaration (except the SV-COMP `__assert_fail`
   prototype) or allocator computes the same under ILP32 and LP64, so pir's
   LP64 proof holds. Refutations replay with `-m32` as before.
+
+### goto into a block (bmc)
+
+bmc now encodes a forward goto into a block that comes later in the text, which is how CIL writes a `switch` (`goto L; ... if (0) { L: ... }`). The jump stays unencoded (NEEDS-HARNESS) in three cases: it would enter a loop-body pass or switch arm from outside, it would enter a block past a declaration, or it would skip a declaration in a block the goto and the label share. The `s3_*` tasks now get past the goto. They are still unknown because of other gaps: an unbounded state-machine loop, calls to bounded callees, `void *` casts and uninit reads. Rescore with this change: no-overflow 118/192, 0 incorrect, unchanged.
