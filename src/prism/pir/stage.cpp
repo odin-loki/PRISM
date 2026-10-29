@@ -1057,6 +1057,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     link_models(mod, models);
     TranslateOptions topt;
     topt.signed_shl = sshl;
+    topt.cxx_shl_rules = is_cxx(u.path);  // C++ units only get located shifts before C++20
     topt.folded = folded;
     std::set<int> used_folded;
     const auto unit_name = u.path.filename().string();

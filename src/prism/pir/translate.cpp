@@ -940,9 +940,19 @@ struct Tr final : pirmem::TrApi {
             check(cur, p2(cur, Op::ShiftOob, a, b), "shift", "INT-SHIFT-UB", "shift amount >= width", line);
             bool signed_c = std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                       std::make_pair(l.line, l.col)) != opt.signed_shl.end();
-            if (signed_c)
+            if (signed_c && !opt.cxx_shl_rules)
                 check(cur, p2(cur, Op::ShlSOvf, a, b), "shift-base", "INT-SHIFT-UB",
                       "signed left shift of a negative value or into/past the sign bit", line);
+            if (signed_c && opt.cxx_shl_rules) {
+                // C++11-17 [expr.shift]: a >= 0 and a * 2^b representable in the
+                // unsigned type, i.e. a >> (w-b) == 0. That is the C rule on a >> 1
+                // (C: a >> (w-1-b) == 0), plus a < 0; b >= w stays UB in both.
+                auto half = assign(cur, Op::LShr, w, {a, Arg::c(w, 1)}, "h");
+                auto past = p2(cur, Op::ShlSOvf, half, b);
+                auto neg = p2(cur, Op::Slt, a, Arg::c(w, 0));
+                check(cur, assign(cur, Op::Or, 1, {past, neg}, "c"), "shift-base", "INT-SHIFT-UB",
+                      "signed left shift of a negative value or past the sign bit (C++11-17)", line);
+            }
             if (nsw) check(cur, p2(cur, Op::ShlNswOvf, a, b), "shl-nsw", "UB-POISON", "shl nsw overflows (poison)", line);
             if (nuw) check(cur, p2(cur, Op::ShlNuwOvf, a, b), "shl-nuw", "UB-POISON", "shl nuw overflows (poison)", line);
         } else if (op == "lshr" || op == "ashr") {

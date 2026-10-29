@@ -361,6 +361,8 @@ struct PtrContract {
 
 struct TranslateOptions {
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
+    // C++11-17 rule for those shifts: into the sign bit is defined, past it is not
+    bool cxx_shl_rules = false;
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
     // pointer parameters of the function being translated
