@@ -342,6 +342,7 @@ structure XPF where
   cur : Option (String × List PhiI × List (List SInst × CallI) × List SInst) := none
   ptrParams : List String := []
   retPtr : Bool := false
+  pret : Option (Nat × Nat × Bool × Bool) := none
   /-- the open block has an `L dead` placeholder (allowed only in a stub block) -/
   dead : Bool := false
   thrown : Option (List String) := none
@@ -358,7 +359,7 @@ def dtorPairs : List String → List (String × String)
 def XPF.close (f : XPF) : Except String XFunc := do
   if f.cur.isSome then throw s!"{f.name}: last block has no terminator"
   pure { name := f.name, params := f.params, retw := f.retw, blocks := f.blocks.reverse,
-         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr, thrown := f.thrown, thrDtor := f.thrDtor, dtors := f.dtors }
+         ptrParams := f.ptrParams.reverse, retPtr := f.retPtr, pret := f.pret, thrown := f.thrown, thrDtor := f.thrDtor, dtors := f.dtors }
 
 /-- Parse the `L ...` lines of a record in the extended syntax: the analysed
 function, then an `L fn NAME` section per function its calls reach. -/
@@ -493,6 +494,11 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let r ← reg? d
       f := { f with cur := some (bn, ps, sg, .nondet (pairReg r 1) (← nat? w1) :: .nondet (pairReg r 0) (← nat? w0) :: is),
                     dead := true }
+    | ["dead", d, w0, w1, wq] =>
+      let (bn, ps, sg, is) ← inBlock
+      let r ← reg? d
+      f := { f with cur := some (bn, ps, sg, .nondet (pairReg r 1) (← nat? w1) :: .nondet (pairReg r 2) (← nat? wq) ::
+                      .nondet (pairReg r 0) (← nat? w0) :: is), dead := true }
     | ["nondet", d, w] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .nondet (← reg? d) (← nat? w) :: is) }
@@ -527,6 +533,17 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .hhavoc (← opnd? p) (← opnd? n) :: is) }
     | ["retptr"] => f := { f with retPtr := true }
+    | ["pret", w0, w1, p0, p1] => f := { f with pret := some (← nat? w0, ← nat? w1, p0 == "1", p1 == "1") }
+    | ["pload", d, w0, w1, sz, off1, p, a0, a1] =>
+      -- a scalar pair load (translate.cpp's `pair_fields`): field 0, the
+      -- address of field 1, field 1
+      let (bn, ps, sg, is) ← inBlock
+      let r ← reg? d
+      let pp ← opnd? p
+      f := { f with cur := some (bn, ps, sg,
+        .load (pairReg r 1) (← nat? w1) (.reg (pairReg r 2)) (← nat? a1) ::
+        .gep (pairReg r 2) true pp [.first (.const 0) 32 (← nat? sz), .field (← nat? off1)] ::
+        .load (pairReg r 0) (← nat? w0) pp (← nat? a0) :: is) }
     | ["memcpy", d, sp, n, lw, mv, so] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg,
@@ -542,7 +559,12 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let dst ← if d == "-" then pure none else do pure (some (← reg? d))
       let as ← (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
-      let cl : CallI := { dst := dst, rw := ← nat? rw, f := callee, args := as, inv := inv, pad := ipad }
+      let (rwn, pw) ← if rw.startsWith "p" then do
+          match ((rw.drop 1).toString.splitOn ":") with
+          | [a, b] => pure (0, some (← nat? a, ← nat? b))
+          | _ => throw s!"bad pair width '{rw}'"
+        else do pure (← nat? rw, none)
+      let cl : CallI := { dst := dst, rw := rwn, pw := pw, f := callee, args := as, inv := inv, pad := ipad }
       f := { f with cur := some (bn, ps, (is.reverse, cl) :: sg, []) }
     | ["ret", w] =>
       match f.cur with

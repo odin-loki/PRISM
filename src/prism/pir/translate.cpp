@@ -82,6 +82,9 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // a scalar pair load's field-1 address, numbered between its two fields
+    // (the order export_lean's `L pload` gives the Lean frame)
+    std::map<std::string, int> pairq;
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
     // var -> undef shadow (i1): the value may be (computed from) LLVM undef,
     // so every use may observe a different value (refinement finding 4)
@@ -551,6 +554,7 @@ struct Tr final : pirmem::TrApi {
                         // two-field aggregate (the { ptr, i32 } exception pair
                         // rebuilt before `resume`, a returned std::pair ...)
                         int a = newvar(fr.prefix + in.result + ".0", sp->first);
+                        if (in.op == "load") fr.pairq[in.result] = newvar(tmpname("pair.f1"), kPtrW);
                         int s = newvar(fr.prefix + in.result + ".1", sp->second);
                         mark_fp_pair(in.ty, a, s);
                         fr.pairs[in.result] = {a, s};
@@ -1515,7 +1519,7 @@ struct Tr final : pirmem::TrApi {
     // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
     // Field k of the scalar pair `ty` stored at p: fn(k, pointer, alignment).
     template <typename Fn>
-    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn) {
+    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn, int q = -1) {
         const auto& lay = mt.layout();
         const uint64_t off1 = lay.field_offset(ty, 1);
         const unsigned a0 = align ? align : lay.align(ty);
@@ -1524,7 +1528,7 @@ struct Tr final : pirmem::TrApi {
         unsigned a1 = a0;
         while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
         fn(0, p, a0);
-        int q = newvar(tmpname("pair.f1"), kPtrW);
+        if (q < 0) q = newvar(tmpname("pair.f1"), kPtrW);
         mt.gep(cur, q, p, ty, {Arg::c(32, 0), Arg::c(32, 1)}, true, line, 1);
         fn(1, Arg::v(q, kPtrW), a1);
     }
@@ -1560,7 +1564,7 @@ struct Tr final : pirmem::TrApi {
             auto [a, s] = fr.pairs[in.result];
             pair_fields(cur, in.ty, p, in.align, line, [&](unsigned k, Arg fp, unsigned al) {
                 mt.load(cur, k == 0 ? a : s, in.ty.elems[k], fp, al, line);
-            });
+            }, fr.pairq.at(in.result));
             return true;
         }
         if (op == "store" && in.ops.size() == 2 && in.ops[0].v.kind == ir::Value::Local &&

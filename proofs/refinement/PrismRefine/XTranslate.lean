@@ -979,16 +979,21 @@ def xResultNames (G : XFunc) : List (String × Nat) :=
   G.blocks.flatMap fun B =>
     B.phis.map (fun p => (p.dst, p.w)) ++
     (B.segs.flatMap fun (is, cl) =>
-      is.flatMap SInst.result ++ (match cl.dst with | some d => [(d, cl.rw)] | none => [])) ++
+      is.flatMap SInst.result ++ callRes cl) ++
     B.last.flatMap SInst.result ++
     (match B.thrU with
      | some (d, _, body, _) => (d, 64) :: body.flatMap SInst.result
      | none => []) ++
     (match B.thrK with
      | some tl => tl.flatMap fun (cl, is) =>
-        (match cl.dst with | some d => [(d, cl.rw)] | none => []) ++ is.flatMap SInst.result
+        callRes cl ++ is.flatMap SInst.result
      | none => [])
 where
+  callRes (cl : CallI) : List (String × Nat) :=
+    match cl.dst, cl.pw with
+    | some d, some (w0, w1) => [(pairReg d 0, w0), (pairReg d 1, w1)]
+    | some d, none => [(d, cl.rw)]
+    | none, _ => []
   SInst.result : SInst → List (String × Nat)
     | .i x => [x.result]
     | .freeze d w _ => [(d, w)]

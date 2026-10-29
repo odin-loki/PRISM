@@ -587,6 +587,19 @@ std::vector<unsigned> frame_vars(const ir::Inst& in) {
     return {};
 }
 
+// A { ptr|iN, ptr|iN } scalar pair (translate.cpp's scalar_pair without its
+// floating-point fields): the two widths and whether each field is a pointer.
+struct PairTy { unsigned w0, w1; bool p0, p1; };
+std::optional<PairTy> pair_ty(const ir::Type& t) {
+    auto pw = [](const ir::Type& e) -> unsigned {
+        if (e.kind == ir::Type::Ptr && e.text == "ptr") return 64;
+        if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+        return 0;
+    };
+    if (t.kind != ir::Type::Struct || t.elems.size() != 2 || !pw(t.elems[0]) || !pw(t.elems[1])) return std::nullopt;
+    return PairTy{pw(t.elems[0]), pw(t.elems[1]), t.elems[0].kind == ir::Type::Ptr, t.elems[1].kind == ir::Type::Ptr};
+}
+
 // A block normal_blocks leaves out, as `L dead` placeholders for the variables
 // Tr::enter_frame numbers there, then `L stub` (the Lean translator refuses a
 // stub block it finds reachable). Refused where Tr::enter_frame would add a
@@ -621,6 +634,8 @@ void dead_block(std::ostream& b, const ir::Function& f, const ir::Block& bl,
         if (ws.empty()) continue;
         b << "L dead %" << name(in.result);
         for (auto w : ws) b << " " << w;
+        // a scalar pair load also numbers its field-1 address (`L pload`)
+        if (in.op == "load" && ws.size() == 2) b << " 64";
         b << "\n";
     }
     b << "L stub\n";
@@ -750,7 +765,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     if (!top)
         for (auto& gname : g_top_eg) b << " @" << name(gname) << " 64";
     if (oom && !top) b << " " << kOom << " 64";
-    b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
+    if (auto pt = pair_ty(f.ret)) {
+        // a scalar pair return (translate.cpp's ret_pair; inlined callee only)
+        b << "\nL ret 0\nL pret " << pt->w0 << " " << pt->w1 << " " << pt->p0 << " " << pt->p1 << "\n";
+    } else {
+        b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
+    }
     // translate.cpp's return of a pointer: MemTr::stack_escape_check against
     // the function's own stack objects (the Lean XFunc.escNames; also for an inlined callee)
     if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
@@ -951,7 +971,17 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"load shape"};
                 std::string p = ptr_opnd(in.ops[0]);
                 if (aggregate_load(lay, f, in)) throw Unsupported{"integer load of an aggregate (raw byte copy)"};
-                b << "L load %" << name(in.result) << " " << vw(in.ty) << " " << p << " " << in.align << "\n";
+                if (auto pt = pair_ty(in.ty)) {
+                    // translate.cpp's pair_fields: field 0, the address of field 1, field 1
+                    const uint64_t off1 = lay.field_offset(in.ty, 1);
+                    const unsigned a0 = in.align ? in.align : lay.align(in.ty);
+                    unsigned a1 = a0;
+                    while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
+                    b << "L pload %" << name(in.result) << " " << pt->w0 << " " << pt->w1 << " "
+                      << lay.alloc_size(in.ty) << " " << off1 << " " << p << " " << a0 << " " << a1 << "\n";
+                } else {
+                    b << "L load %" << name(in.result) << " " << vw(in.ty) << " " << p << " " << in.align << "\n";
+                }
             } else if (op == "store") {
                 if (in.ops.size() != 2) throw Unsupported{"store shape"};
                 b << "L store " << vw(in.ops[0].ty) << " " << opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " "
@@ -1011,7 +1041,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "extractvalue" && in.ops.size() == 1 && in.ops[0].v.kind == ir::Value::Local &&
                        def_of(f, in.ops[0].v.name) &&
                        (def_of(f, in.ops[0].v.name)->op == "landingpad" ||
-                        def_of(f, in.ops[0].v.name)->op == "insertvalue")) {
+                        def_of(f, in.ops[0].v.name)->op == "insertvalue" ||
+                        (pair_ty(def_of(f, in.ops[0].v.name)->ty) &&
+                         (def_of(f, in.ops[0].v.name)->op == "load" || def_of(f, in.ops[0].v.name)->op == "call" ||
+                          def_of(f, in.ops[0].v.name)->op == "invoke")))) {
                 // a field of an exception pair
                 if (in.indices.size() != 1 || in.indices[0] > 1 || in.result.empty() ||
                     frame_vars(*def_of(f, in.ops[0].v.name)).size() != 2)
@@ -1097,7 +1130,11 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 const bool cforeign = foreign || foreign_callee(m, in.callee, top_file);
                 const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
                 b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call ")) << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
-                  << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
+                  << [&] {
+                         if (in.ty.kind == ir::Type::Void) return std::string("0");
+                         if (auto pt = pair_ty(in.ty)) return "p" + std::to_string(pt->w0) + ":" + std::to_string(pt->w1);
+                         return std::to_string(vw(in.ty));
+                     }() << " " << name(in.callee) << " "
                   << in.ops.size() + g_top_eg.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
                 for (auto& gname : g_top_eg) b << " %@" << name(gname) << " 64";
