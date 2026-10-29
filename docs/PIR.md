@@ -1525,3 +1525,26 @@ No wrong PROVED was found in either engine on `testdata/`.
 * Units that clang rejects (undeclared identifiers, missing headers in the
   lint-oriented `_api`/`_lint` snippets) are one `ERROR` row per unit; the
   old parser still extracts functions from them (the "absent" column).
+
+
+## Memory budget
+
+Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill
+or a crash. `src/prism/membudget.cpp` fixes one budget per process at start:
+`$PRISM_MEM_BUDGET_MB` (or `$PRISM_PIR_MEM_MB`), else 75% of the smallest of
+the cgroup limit (v2 `memory.max` minus `memory.current`, or v1), MemAvailable
+and half of RLIMIT_AS (address space only bounds; it is not memory). The
+process's resident set is compared with 80% of it (headroom for the stop
+latency), and the machine's MemAvailable with `$PRISM_MEM_RESERVE_MB`
+(default 800), in three places: the encoder (SymMem's read-over-write chain,
+value-set walks and havoc reads, sampled every 4096 steps, plus every encoded
+node), before every query, and a 100 ms watchdog that interrupts every live
+Z3 context (pir's and the portfolio's) mid-query. The function then ends as
+UNKNOWN with "memory budget reached ... (process RSS, budget, source)"; its
+contexts are freed and the heap is trimmed, so the next function is checked
+normally. With `--jobs N` the threads share the one process budget.
+Past half the budget the portfolio solves without the query-cache key (that
+key copies, simplifies and prints the whole formula) and one in-process solver
+at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort; past
+it Z3 is not reused in the process and the remaining functions are re-checked
+in a fresh process (`rerun_after_oom`). Tests: `tests/cpp/test_membudget.cpp`.
