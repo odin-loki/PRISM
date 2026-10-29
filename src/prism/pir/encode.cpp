@@ -1493,10 +1493,10 @@ static void cap_z3_memory_once() {
         // One process-wide budget (prism/membudget.hpp): RSS, cgroup and
         // MemAvailable, not physical RAM or address space. Z3's own estimate
         // gets the same number as a soft cap (checked before every query);
-        // its hard limit is the budget itself (1.5x overshot it by ~20%).
+        // its hard limit is 1.5x: at 1.0x Z3 segfaulted in its own out-of-memory path (cxx_priority_queue_true, rc 139 at 2.8 GB RSS); overshoot is bounded by the 20 ms RSS watchdog instead.
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
-        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb, 1u << 30)));
+        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
     });
 }
 
