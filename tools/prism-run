@@ -3,7 +3,10 @@
 # - FIFO admission box-wide: a job waits its turn (ticket order) and starts only when
 #   at most $PRISM_RUN_SLOTS (default 2) jobs run AND
 #   MemAvailable - sum(running jobs' remaining headroom: budget - current RSS) >= budget + reserve
-#   (reserve $PRISM_RUN_RESERVE_MB, default 1536). A job too big for an idle box starts when alone.
+#   (reserve $PRISM_RUN_RESERVE_MB, default 1536), always, even with no other job registered
+#   (programs outside prism-run use memory too). A budget that never fits waits; lower it.
+# - cgroup containment is not possible here: /sys/fs/cgroup/agent is root-owned with processes
+#   in it and no user systemd, so per-job MemoryMax would need moving jobs out of the agent cgroup.
 # - PRISM_MEM_BUDGET_MB exported (PRISM ends a function as UNKNOWN past it).
 # - watchdog: kills the tree at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
 # - oom_score_adj follows RSS/budget (500 at budget, 1000 at 2x, min 100), so if the kernel
@@ -40,7 +43,7 @@ while :; do
       r=$(treerss ${g:-0}); h=$(( b - ${r:-0} )); [ $h -gt 0 ] && headroom=$((headroom+h))
     done
     free=$(( $(memavail) - headroom ))
-    if [ $n -lt $SLOTS ] && { [ $free -ge $((budget+RESERVE)) ] || [ $n -eq 0 ]; }; then
+    if [ $n -lt $SLOTS ] && [ $free -ge $((budget+RESERVE)) ]; then
       echo "$budget 0" > $D/running/$$; rm -f $D/queue/$ticket; admitted=1
     fi
   fi

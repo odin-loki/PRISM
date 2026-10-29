@@ -32,7 +32,7 @@
   waiting ticket may start.
 - It starts only if fewer than PRISM_RUN_SLOTS (2) jobs run and MemAvailable minus the running
   jobs' remaining headroom (budget - current RSS) >= its budget + 1.5 GB (PRISM_RUN_RESERVE_MB).
-  On an idle box (no jobs) it starts anyway.
+  Always, even with no other job registered (fixed 2026-10-29 late). Install prism-run only via temp file + mv.
 - Watchdog kills a job at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
 - RSS, kills and oom_score_adj cover all descendants by parent pid, including children that
   setsid into new sessions (svcomp score).
