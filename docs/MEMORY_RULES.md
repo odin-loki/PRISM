@@ -34,5 +34,7 @@
   jobs' remaining headroom (budget - current RSS) >= its budget + 1.5 GB (PRISM_RUN_RESERVE_MB).
   On an idle box (no jobs) it starts anyway.
 - Watchdog kills a job at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
+- RSS, kills and oom_score_adj cover all descendants by parent pid, including children that
+  setsid into new sessions (svcomp score).
 - oom_score_adj = 500 x RSS/budget (min 100, max 1000), updated every 0.5 s: the kernel's victim
   is the job furthest over its budget, not a small run.

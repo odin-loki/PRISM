@@ -8,12 +8,15 @@
 # - watchdog: kills the tree at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
 # - oom_score_adj follows RSS/budget (500 at budget, 1000 at 2x, min 100), so if the kernel
 #   must kill, it picks the job furthest over its budget, not a small well-behaved one.
+# - RSS, oom_score_adj and kills cover every descendant, including ones in new sessions.
 # - no RLIMIT_AS (ASan reserves TBs); PRISM_RUN_AS=1 opts into a 4x --as backstop.
 set -u
 SLOTS=${PRISM_RUN_SLOTS:-2}; RESERVE=${PRISM_RUN_RESERVE_MB:-1536}
-D=/tmp/prism-run-locks; mkdir -p $D/queue $D/running 2>/dev/null; chmod 1777 $D $D/queue $D/running 2>/dev/null
+D=${PRISM_RUN_DIR:-/tmp/prism-run-locks}; mkdir -p $D/queue $D/running 2>/dev/null; chmod 1777 $D $D/queue $D/running 2>/dev/null
 memavail() { awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo; }
-treerss() { ps -o rss= -g $1 2>/dev/null | awk '{s+=$1} END{print int(s/1024)}'; }
+# all descendants by parent pid (children may setsid into new sessions/groups)
+treepids() { ps -e -o pid=,ppid= 2>/dev/null | awk -v r=$1 '{c[$2]=c[$2]" "$1} END{q=r; out=r; while(q!=""){split(q,a," "); q=""; for(i in a){n=split(c[a[i]],k," "); for(j=1;j<=n;j++){out=out" "k[j]; q=q" "k[j]}}} print out}'; }
+treerss() { local ps_=$(treepids $1); [ -z "$ps_" ] && { echo 0; return; }; ps -o rss= -p $(echo $ps_ | tr ' ' ,) 2>/dev/null | awk '{s+=$1} END{print int(s/1024)}'; }
 avail=$(memavail)
 cg=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
 [ "$cg" != max ] && [ -n "$cg" ] && { cgm=$((cg/1048576)); [ $cgm -lt $avail ] && avail=$cgm; }
@@ -57,9 +60,9 @@ peak=0
 while kill -0 $pid 2>/dev/null; do
   r=$(treerss $pid); r=${r:-0}; [ $r -gt $peak ] && peak=$r
   adj=$(( r * 500 / budget )); [ $adj -lt 100 ] && adj=100; [ $adj -gt 1000 ] && adj=1000
-  for p in $(ps -o pid= -g $pid 2>/dev/null); do echo $adj > /proc/$p/oom_score_adj 2>/dev/null; done
+  for p in $(treepids $pid); do echo $adj > /proc/$p/oom_score_adj 2>/dev/null; done
   kill_at=$(( budget * 5 / 4 )); [ $(memavail) -lt 1024 ] && kill_at=$budget
-  if [ $r -gt $kill_at ]; then echo "prism-run: RSS ${r}MB over ${kill_at}MB (MemAvailable $(memavail)MB): killed (reported, not silent)" >&2; kill -9 -$pid; fi
+  if [ $r -gt $kill_at ]; then echo "prism-run: RSS ${r}MB over ${kill_at}MB (MemAvailable $(memavail)MB): killed (reported, not silent)" >&2; kill -9 -$pid $(treepids $pid) 2>/dev/null; fi
   sleep 0.5
 done
 wait $pid; rc=$?
