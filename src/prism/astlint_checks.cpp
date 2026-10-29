@@ -7306,6 +7306,154 @@ void cxx_exc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Tenth batch: algorithm outputs and parse results (CXX-EXCLUSIVE-SCAN,
+// CXX-INCLUSIVE-SCAN, CXX-TRANSFORM-SCAN, CXX-FILESYSTEM, CXX-FORMAT-TO, CXX-FROM-CHARS, CXX-TO-CHARS).
+// The object behind `x`, `x.begin()`, `x.data()`, `std::begin(x)`.
+std::string range_obj(const json& e0) {
+    const auto* e = &strip_all(e0);
+    while (kind(*e) == "CXXConstructExpr" && n_children(*e) == 1) e = &strip_all(child(*e, 0));
+    if (auto id = ref_id(*e); !id.empty()) return id;
+    if (one_of(mcall_name(*e), {"begin", "data", "cbegin"})) return mcall_obj(*e);
+    if (is_call_kind(kind(*e)) && one_of(callee_name(*e), {"begin", "data", "cbegin"}) && n_children(*e) == 2)
+        return ref_id(child(*e, 1));
+    return {};
+}
+
+void cxx_algo_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::set<std::string> rel_ids, tested, members;
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "BinaryOperator" && n_children(*n) == 2 &&
+            one_of(str_field(*n, "opcode"), {"<", "<=", ">", ">="}))
+            for (int i = 0; i < 2; ++i)
+                if (auto id = ref_id(child(*n, i)); !id.empty()) rel_ids.insert(id);
+        if (k == "MemberExpr") members.insert(std::string(str_field(*n, "name")));
+        if (k == "UnaryOperator" && str_field(*n, "opcode") == "!" && n_children(*n) == 1)
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        if (k == "ImplicitCastExpr" && str_field(*n, "castKind") == "UserDefinedConversion" && n_children(*n) == 1)
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        if (one_of(mcall_name(*n), {"has_value", "operator bool"})) tested.insert(mcall_obj(*n));
+    }
+    auto call_named = [](const json& n, std::initializer_list<std::string_view> names) {
+        return is_call_kind(kind(n)) && kind(n) != "CXXMemberCallExpr" && one_of(callee_name(n), names);
+    };
+    // Scans: overlapping dest, and the dest indexed without a guard.
+    struct Scan {
+        const char* cls;
+        std::initializer_list<std::string_view> names;
+    };
+    const Scan scans[] = {{"CXX-EXCLUSIVE-SCAN", {"exclusive_scan"}},
+                          {"CXX-INCLUSIVE-SCAN", {"inclusive_scan"}},
+                          {"CXX-TRANSFORM-SCAN", {"transform_inclusive_scan", "transform_exclusive_scan"}}};
+    for (auto& sc : scans) {
+        std::set<std::string> dests;
+        bool done = false;
+        for (auto* n : all) {
+            if (!call_named(*n, sc.names) || n_children(*n) < 4) continue;
+            // An execution-policy first argument shifts the iterators by one.
+            std::size_t a0 = 1;
+            if (type_of(strip_all(child(*n, 1))).find("execution") != std::string::npos) a0 = 2;
+            if (n_children(*n) < a0 + 3) continue;
+            auto src = range_obj(child(*n, a0)), dst = range_obj(child(*n, a0 + 2));
+            if (!dst.empty()) dests.insert(dst);
+            if (std::string_view(sc.cls) != "CXX-TRANSFORM-SCAN" && !src.empty() && src == dst && ok_pos(*n)) {
+                ck.add(*n, sc.cls, "scan destination overlaps its source");
+                done = true;
+                break;
+            }
+        }
+        if (done || dests.empty()) continue;
+        for (auto* n : all) {
+            const json *obj = nullptr, *idx = nullptr;
+            if (subscript_op(*n)) obj = &child(*n, 1), idx = &child(*n, 2);
+            else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) obj = &child(*n, 0), idx = &child(*n, 1);
+            if (!obj || !dests.contains(ref_id(*obj))) continue;
+            auto iid = ref_id(*idx);
+            if (int_value(*idx) || iid.empty() || rel_ids.contains(iid) || !ok_pos(*n)) continue;
+            ck.add(*n, sc.cls, "scan output indexed without a size guard");
+            break;
+        }
+    }
+    // CXX-FILESYSTEM: remove(p) then a query on the same path.
+    {
+        std::set<std::string> removed;
+        for (auto* n : all) {
+            if (!is_call_kind(kind(*n)) || n_children(*n) < 2) continue;
+            auto cn = callee_name(*n);
+            auto pid = ref_id(child(*n, 1));
+            if (pid.empty()) {
+                const auto* e = &strip_all(child(*n, 1));
+                while (kind(*e) == "CXXConstructExpr" && n_children(*e) >= 1) e = &strip_all(child(*e, 0));
+                pid = ref_id(*e);
+            }
+            if (pid.empty() || type_of(*n).empty()) continue;
+            const bool fs = std::string(str_field(ref_decl(strip_all(child(*n, 0))), "name")) == cn &&
+                            (type_of(strip_all(child(*n, 0))).find("path") != std::string::npos);
+            if (!fs) continue;
+            if (one_of(cn, {"remove", "remove_all"})) removed.insert(pid);
+            else if (one_of(cn, {"exists", "file_size", "is_regular_file", "is_directory", "last_write_time", "status",
+                                 "canonical", "equivalent"}) &&
+                     removed.contains(pid) && ok_pos(*n)) {
+                ck.add(*n, "CXX-FILESYSTEM", "filesystem::remove then use of the same path");
+                break;
+            }
+        }
+    }
+    // CXX-FORMAT-TO: format_to into a local char array, no format_to_n.
+    {
+        bool has_n = false;
+        for (auto* n : all)
+            if (call_named(*n, {"format_to_n"})) has_n = true;
+        if (!has_n)
+            for (auto* n : all) {
+                if (!call_named(*n, {"format_to"}) || n_children(*n) < 2) continue;
+                const auto& d = strip_all(child(*n, 1));
+                auto did = ref_id(d);
+                if (did.empty() || !fn.locals.contains(did)) continue;
+                auto qt = std::string(qual_type(*fn.locals.at(did)));
+                if (!qt.starts_with("char") || qt.find('[') == std::string::npos || !ok_pos(*n)) continue;
+                ck.add(*n, "CXX-FORMAT-TO", "format_to into a raw char buffer without size / format_to_n");
+                break;
+            }
+    }
+    // CXX-FROM-CHARS / CXX-TO-CHARS: output used with ec/ptr never read.
+    if (!members.contains("ec") && !members.contains("ptr")) {
+        auto use_after = [&](std::initializer_list<std::string_view> names, std::size_t argi, const char* cls,
+                             const char* msg) {
+            std::string var;
+            long long at = -1;
+            std::set<const json*> inside;
+            for (auto* n : all) {
+                if (call_named(*n, names) && n_children(*n) > argi) {
+                    auto id = range_obj(child(*n, argi));
+                    if (!id.empty()) {
+                        var = id;
+                        at = end_of(*n).offset;
+                    }
+                    collect_nodes(*n, [&](const json& x, const json*) { inside.insert(&x); });
+                    continue;
+                }
+                if (var.empty() || inside.contains(n) || kind(*n) != "DeclRefExpr" || ref_id(*n) != var) continue;
+                if (off(*n) <= at || !ok_pos(*n)) continue;
+                ck.add(*n, cls, msg);
+                return;
+            }
+        };
+        use_after({"from_chars"}, 3, "CXX-FROM-CHARS", "value used after from_chars without checking ec");
+        use_after({"to_chars"}, 1, "CXX-TO-CHARS", "buffer used after to_chars without checking ec");
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -7359,6 +7507,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_view_rule_checks(*body, fn, w.ck);
     cxx_index_rule_checks(*body, fn, w.ck);
     cxx_exc_rule_checks(*body, fn, w.ck);
+    cxx_algo_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

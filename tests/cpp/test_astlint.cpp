@@ -1955,6 +1955,73 @@ int xchg_ok(int *tab, int &cur) {
         return 0;
     return tab[old];
 }
+#include <numeric>
+#include <filesystem>
+#include <format>
+#include <charconv>
+void exscan_bad(std::vector<int> &v) {
+    std::exclusive_scan(v.begin(), v.end(), v.begin(), 0); // expect: CXX-EXCLUSIVE-SCAN
+}
+void exscan_ok(const std::vector<int> &v, std::vector<int> &o) {
+    std::exclusive_scan(v.begin(), v.end(), o.begin(), 0);
+}
+int inscan_bad(const std::vector<int> &v, int *o, int i) {
+    std::inclusive_scan(v.begin(), v.end(), o);
+    return o[i]; // expect: CXX-INCLUSIVE-SCAN, MEM-PTR-ARITH
+}
+int inscan_ok(const std::vector<int> &v, int *o, int i) {
+    std::inclusive_scan(v.begin(), v.end(), o);
+    if (i < 0 || i >= 4)
+        return 0;
+    return o[i]; // expect: MEM-PTR-ARITH
+}
+int tscan_bad(const std::vector<int> &v, int *o, int i) {
+    std::transform_inclusive_scan(v.begin(), v.end(), o, std::plus<>{}, [](int x) { return x; });
+    return o[i]; // expect: CXX-TRANSFORM-SCAN, MEM-PTR-ARITH
+}
+int tscan_ok(const std::vector<int> &v, int *o) {
+    std::transform_inclusive_scan(v.begin(), v.end(), o, std::plus<>{}, [](int x) { return x; });
+    return o[0];
+}
+bool fs_bad(const std::filesystem::path &p) {
+    std::filesystem::remove(p); // expect: API-UNLINK
+    return std::filesystem::exists(p); // expect: CXX-FILESYSTEM
+}
+bool fs_ok(const std::filesystem::path &p) {
+    return std::filesystem::remove(p);
+}
+void fmt_bad(int x) {
+    char buf[8];
+    std::format_to(buf, "{}", x); // expect: CXX-FORMAT-TO
+}
+void fmt_ok(int x) {
+    char buf[8];
+    std::format_to_n(buf, sizeof buf, "{}", x);
+}
+int fc_bad(const char *s, const char *e) {
+    int v;
+    std::from_chars(s, e, v);
+    return v; // expect: CXX-FROM-CHARS
+}
+int fc_ok(const char *s, const char *e) {
+    int v = 0;
+    auto r = std::from_chars(s, e, v);
+    if (r.ec != std::errc())
+        return 0;
+    return v;
+}
+char tc_bad(int x) {
+    char out[4];
+    std::to_chars(out, out + 4, x);
+    return out[0]; // expect: CXX-TO-CHARS
+}
+char tc_ok(int x) {
+    char out[4] = {};
+    auto r = std::to_chars(out, out + 4, x);
+    if (r.ec != std::errc())
+        return 0;
+    return out[0];
+}
 )";
 
 }  // namespace
