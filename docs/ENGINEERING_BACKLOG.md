@@ -75,7 +75,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 491 functions (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
+Grow **`agree-ext`** beyond 491 functions (unchanged after inlined allocas, 8920b58bc; outside 1 865) (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
 2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model

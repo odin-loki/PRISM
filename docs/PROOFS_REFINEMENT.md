@@ -420,6 +420,7 @@ exporter:
 | `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | 419 | 245 | 1 956 | 0 | 1 458 |
 | `invoke` as call + `br`, stubbed landing pads (65d994197) | 1 039 | **479** | 266 | 1 875 | **0** | **1 518** |
 | `ptrtoint`/`psub`, `std::__throw_*` without handlers (64b4cdd34) | 1 039 | **491** | 267 | 1 869 | **0** | **1 530** |
+| allocas in inlined callees, freed at `ret` (8920b58bc, ca7cd088d)\* | 1 039 | 491 | 267 | 1 865 | **0** | 1 530 |
 
 Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
 387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
@@ -469,6 +470,18 @@ inlined function was only 11. The two that moved:
   (Extern alloc of 96 bytes, three header stores via `Tr::at`, `type_id` in
   first-use order, `CXX-UNCAUGHT` when the top is `main` / a global init, stop,
   fresh block). Fixtures `ptr_sub`, `std_throw`. 479 → **491** agree-ext.
+* **Allocas in inlined callees** (8920b58bc): an inlined frame's allocas are
+  freed at its `ret` (`freeStmts` / `retFree`, `freeAll_ok`); an inlined callee
+  returning a pointer while owning stack objects stays outside, and `L retptr`
+  is now exported for every pointer-returning function. Fixture
+  `inlined_alloca`. Coverage: **no net change** (491 agree-ext, outside 1 869 →
+  1 865, mismatch 0) — every inlined-alloca function in `testdata` is blocked
+  by something else (mostly throw-under-`invoke`, `__cxa_begin_catch`,
+  iostream calls).
+  \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
+  the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
+  files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under
+  the cap at all, so their verdicts are this checker on the previous export.
   pthread/mtx stay outside because `translate.cpp` itself leaves them UNENCODED.
 * **Unreachable LLVM blocks.** `Tr::run_frame` translates only
   `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
