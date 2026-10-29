@@ -839,6 +839,18 @@ constexpr decltype(auto) get(const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>
     return _Prism_tuple_get<_I, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>>::get(static_cast<const tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7>&&>(__t));
 }
 
+// libstdc++ 13 and later reach bits/uses_allocator_args.h from <string>
+// (std::pmr), and its template bodies name std::make_tuple, std::apply and
+// std::make_from_tuple. They are declared deleted here so that lookup in those
+// bodies succeeds, while a call from the unit under test still fails to compile
+// and the pir stage still falls back to libstdc++ for it.
+template <typename... _Args>
+void make_tuple(_Args&&...) = delete;
+template <typename _Fn, typename _Tup>
+void apply(_Fn&&, _Tup&&) = delete;
+template <typename _Tp, typename _Tup>
+void make_from_tuple(_Tup&&) = delete;
+
 }  // namespace std
 
 #endif
