@@ -99,8 +99,25 @@ struct Api {
 struct Loaded {
     bool ok = false;
     std::string why, where;
+    std::string resource_dir;  // <libdir>/clang/<N>, passed as -resource-dir
     Api api;
 };
+
+// libclang derives its resource dir (stddef.h, stdarg.h ...) from its own
+// path, which fails for some relocated release tarballs; without it every
+// unit that includes a libc header fails to parse. Find <libdir>/clang/<N>
+// next to the library we loaded and pass it explicitly.
+std::string find_resource_dir(const std::string& lib) {
+    std::error_code ec;
+    auto real = fs::canonical(lib, ec);
+    if (ec) return {};
+    std::vector<fs::path> dirs;
+    for (auto& e : fs::directory_iterator(real.parent_path() / "clang", ec))
+        if (fs::exists(e.path() / "include" / "stddef.h", ec)) dirs.push_back(e.path());
+    if (dirs.empty()) return {};
+    std::sort(dirs.rbegin(), dirs.rend());
+    return dirs.front().string();
+}
 
 void* open_lib(const std::string& p) {
 #ifdef _WIN32
@@ -191,6 +208,7 @@ Loaded& loaded(const std::optional<fs::path>& clang) {
             L.api = a;
             L.ok = true;
             L.where = c;
+            L.resource_dir = find_resource_dir(c);
             return;
         }
         L.why = missing.empty() ? "libclang not found (install libclang1-18 / libclang-18-dev)"
@@ -1152,7 +1170,15 @@ std::optional<Unit> libclang_unit(const std::vector<std::string>& args, const st
     }
     const Api& A = L.api;
     std::vector<const char*> argv;
-    for (auto& a : args) argv.push_back(a.c_str());
+    bool has_rd = false;
+    for (auto& a : args) {
+        argv.push_back(a.c_str());
+        if (a.starts_with("-resource-dir")) has_rd = true;
+    }
+    if (!has_rd && !L.resource_dir.empty()) {
+        argv.push_back("-resource-dir");
+        argv.push_back(L.resource_dir.c_str());
+    }
     CXIndex idx = A.clang_createIndex(0, 0);
     CXTranslationUnit tu = nullptr;
     unsigned opts = CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles;
