@@ -1063,6 +1063,30 @@ lazy). Next, `{ptr,iN}`/`{i64,i64}` scalar pairs (49): C++ Frame::pairs
 inlined calls, pair load/store, upair undef tracking) — needs a two-value
 return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
 
+### Inlined callees returning a pointer (98dadedab)
+
+- **Semantics (XLlvm `sEnd`/`lEnd`):** a `ret` of a pointer from *any* frame with `retPtr` (the analysed function or an inlined callee) now runs the stack-escape check against that frame's own `escNames` before `retFree`. Previously an inlined callee was outside.
+- **Translator (XTranslate):** `escStmts` no longer requires `retTo = none`. `freeStmts` frees the callee's objects after the check.
+- **Proofs:**
+  - XRun `step_sim`'s `ret (some o)` cons case is proved: `escChk_run` plus `escHit_ok`, then the new `freeW_agree` and `freeAll_ok`, then the continuation.
+  - XLazy gets `retFree_lift'`.
+- **Fixtures:**
+  - `callee_retptr` gives agree-ext=3 and agree-reject=1.
+  - `callee_retptr_neg` drops the callee's escape check, giving MISMATCH.
+  - `inlined_alloca` moved from outside=1 to agree-ext=5.
+- **Re-measure (agree/ext/reject/outside):**
+
+  | Subdir | Result |
+  |---|---|
+  | concurrency | 0/0/6/37 |
+  | esbmc-cpp | 8/21/101/56 |
+  | libc-models | 6/303/35/98 |
+  | prism | 203/252/146/128 |
+  | sv-comp | 32/180/0/362 |
+
+  Outside went from 742 to 681, with 0 mismatches. check.sh is green and pir tests pass at 1735.
+- **Next:** `{ptr,iN}` scalar pairs, per the design: `CallI.pw`, a pair `ret`, pend packing, the `contOK`/`EntryX` pair variant, and exporter lines.
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
