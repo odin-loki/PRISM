@@ -22,6 +22,7 @@ namespace {
 
 std::atomic<uint64_t> g_budget{0};
 std::atomic<uint64_t> g_test{0};
+std::atomic<bool> g_low_trip{false};
 std::string g_source;
 std::once_flag g_once;
 
@@ -143,9 +144,12 @@ bool system_low() {
 
 bool over_budget() {
     const uint64_t b = budget_mb();
-    if (system_low()) return true;
-    if (b == 0) return false;
     const uint64_t rss = rss_mb();
+    // A low box stops only a function that is itself a big consumer (half
+    // its budget): vector_insert.cpp was stopped at 789 MB of 3000 because
+    // other programs had filled the box.
+    if (system_low() && (b == 0 || rss >= b / 2)) { g_low_trip.store(true); return true; }
+    if (b == 0) return false;
     // trip at 80%: Z3 stops at its next interrupt check and the watchdog
     // samples every 50 ms, so the peak lands above the trip point
     // (priority_queue_contracts.cpp: 3.5 GB peak with a 3 GB trip)
@@ -238,7 +242,7 @@ void release_free_memory() {
 }
 
 std::string over_message(const char* where) {
-    if (system_low())
+    if (g_low_trip.exchange(false) || system_low())
         return std::string("machine memory low (MemAvailable ") + std::to_string(meminfo_mb("MemAvailable:")) +
                " MB, PRISM_MEM_RESERVE_MB) " + where + "; stopped by the memory budget watchdog; no proof";
     return std::string("memory budget reached ") + where + " (process RSS " + std::to_string(rss_mb()) + " MB, budget " +
