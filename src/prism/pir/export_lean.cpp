@@ -1065,6 +1065,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     if (a.ty.kind != ir::Type::Float) b << " " << opnd(a) << " " << vw(a.ty);
                 b << "\n";
                 break;
+            } else if (op == "call" && !in.is_asm && in.callee == "_ZSt9terminatev" && !m.find(in.callee) &&
+                       in.ops.empty() && in.result.empty() && &in != invoke_call &&
+                       &in + 1 == &bl.insts.back() && bl.insts.back().op == "unreachable") {
+                // Tr::eh_call: std::terminate() is CXX-TERMINATE, then the run stops
+                b << "L terminate\n";
+                break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);
             } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&

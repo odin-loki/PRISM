@@ -965,6 +965,10 @@ def xResultNames (G : XFunc) : List (String × Nat) :=
     B.last.flatMap SInst.result ++
     (match B.thrU with
      | some (d, _, body, _) => (d, 64) :: body.flatMap SInst.result
+     | none => []) ++
+    (match B.thrK with
+     | some tl => tl.flatMap fun (cl, is) =>
+        (match cl.dst with | some d => [(d, cl.rw)] | none => []) ++ is.flatMap SInst.result
      | none => [])
 where
   SInst.result : SInst → List (String × Nat)
@@ -1674,6 +1678,25 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           (if u0 then [.check (.c 1 1) "undef" "UB-POISON"] else []), term := .stop }
         setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         raiseUnknownX stack cur E
+        return (cur, none)
+      if B.thr && B.thrK.isSome then
+        let some tail := B.thrK | throw "internal: terminate"
+        setBlock cur fun pb => { pb with stmts := (if region then pb.stmts else []) ++ s1 }
+        let mut c := cur
+        let mut live := true
+        for (cl, after) in tail do
+          if !live then break
+          match ← ehCallX stack (I.ctx (← curVars)) c cl with
+          | some c' =>
+            c := c'
+            let k2 := (← get).vars.size
+            let (sa, ta) ← liftE (trSInstsX (I.ctx (← curVars)) k2 after)
+            pushTemps ta
+            setBlock c fun pb => { pb with stmts := pb.stmts ++ sa }
+          | none => live := false
+        if live then
+          setBlock c fun pb => { pb with stmts := pb.stmts ++ [.check (.c 1 1) "terminate" "CXX-TERMINATE"], term := .stop }
+        setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
         return (cur, none)
       if B.thr && B.thrU.isSome then
         let some (d, so, body, po) := B.thrU | throw "internal: user throw"

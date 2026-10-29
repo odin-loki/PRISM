@@ -262,6 +262,10 @@ structure XBlock where
   thrPad : String := ""
   /-- that `invoke`'s normal label (translate.cpp translates it; `unreachable`) -/
   thrNorm : String := ""
+  /-- `std::terminate()` ends the block (`L terminate`, `thr`): the
+  caught-exception-stack calls before it, each with the instructions after it
+  (`__clang_call_terminate`'s `__cxa_begin_catch`) -/
+  thrK : Option (List (CallI × List SInst)) := none
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where

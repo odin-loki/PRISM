@@ -455,7 +455,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       if f.dead then throw s!"block {bn}: placeholder outside a stub block"
       f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, .unreachable, none, false, false, "", [],
-                      some (← reg? r), none, "", ""⟩ :: f.blocks, cur := none }
+                      some (← reg? r), none, "", "", none⟩ :: f.blocks, cur := none }
     | ["xv", d, w, src, idx] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .xv (← reg? d) (← nat? w) (← reg? src) (← nat? idx) :: is) }
@@ -550,7 +550,20 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       | some (bn, ps, sg, is) =>
         if f.dead then throw s!"block {bn}: placeholder outside a stub block"
         let t ← if w == "-" then pure (LTerm.ret none) else do pure (LTerm.ret (some (← opnd? w)))
-        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false, false, "", [], none, none, "", ""⟩ :: f.blocks, cur := none }
+        f := { f with blocks := ⟨bn, ps.reverse, sg.reverse, is.reverse, t, none, false, false, "", [], none, none, "", "", none⟩ :: f.blocks, cur := none }
+    | ["terminate"] =>
+      -- `Tr::eh_call` of std::terminate (CXX-TERMINATE; stop): the LLVM side is
+      -- stuck at the block (`thr`), the eh calls before it are region-style code
+      let (bn, ps, sg, is) ← inBlock
+      if f.dead then throw s!"block {bn}: placeholder outside a stub block"
+      let segs := sg.reverse
+      let ok := segs.all fun (_, cl) => !cl.inv && (cl.f == "__cxa_begin_catch" || cl.f == "__cxa_end_catch")
+      if !ok then throw "outside fragment: a call before std::terminate"
+      let calls := segs.map (·.2)
+      let afters := (segs.drop 1).map (·.1) ++ [is.reverse]
+      let last := (segs.head?.map (·.1)).getD is.reverse
+      let B : XBlock := { name := bn, phis := ps.reverse, segs := [], last := last, term := .unreachable, thr := true, thrK := some (calls.zip afters) }
+      f := { f with blocks := B :: f.blocks, cur := none }
     | ["xalloc", d, sz, "64"] =>
       let (_, _, _, is) ← inBlock
       if f.ua.isSome then throw "two user throws in a block"
@@ -583,7 +596,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
                     (match l with | "throw" :: t :: _ => t | _ => ""),
                     ← (match l with
                       | "throw" :: _ :: args => (pairs args).mapM (fun (o, w) => do pure ((← opnd? o), ← nat? w))
-                      | _ => pure []), none, none, "", ""⟩ :: f.blocks,
+                      | _ => pure []), none, none, "", "", none⟩ :: f.blocks,
                     cur := none }
   let last ← f.close
   let fs := (last :: done).reverse

@@ -5847,6 +5847,47 @@ TEST_CASE("pir: lean export of a user throw only in clang's exact pattern") {
     }
 }
 
+static const char* kLeanTermIr = R"IR(
+declare void @_ZSt9terminatev()
+
+define i32 @ok(i32 %x) {
+entry:
+  call void @_ZSt9terminatev()
+  unreachable
+}
+
+define i32 @not_last(i32 %x, ptr %p) {
+entry:
+  call void @_ZSt9terminatev()
+  store i32 %x, ptr %p, align 4
+  unreachable
+}
+)IR";
+
+TEST_CASE("pir: lean export of std::terminate only right before unreachable") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanTermIr);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"ok", "not_last"}) {
+        fs::path dir = fs::temp_directory_path() / "prism-lean-export-term";
+        fs::remove_all(dir);
+        tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+        tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
+        std::ifstream in(dir / "unit.pirl");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        INFO(name << "\n" << text);
+        bool good = std::string(name) == "ok";
+        CHECK((text.find("L terminate\n") != std::string::npos) == good);
+        CHECK((text.find("L unsupported") != std::string::npos) == !good);
+        in.close();
+        fs::remove_all(dir);
+    }
+}
+
 static const char* kLeanIntrIr = R"IR(
 declare void @llvm.lifetime.start.p0(i64, ptr)
 declare void @llvm.lifetime.end.p0(i64, ptr)
