@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <iostream>
 #include <fstream>
 #include <mutex>
 #include <optional>
@@ -822,7 +823,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 continue;
             }
             for (auto& fl : in.flags)
-                if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
+                if (!(op == "landingpad" && fl == "cleanup") && fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
             if (op == "phi" && padset.count(bl0.name) && std::ranges::any_of(bl0.insts, [](const ir::Inst& x) {
                     return x.op == "landingpad";
@@ -1055,7 +1056,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 emit_block(pb, bl0);
                 b << pb.str();
                 continue;
-            } catch (const Unsupported&) {
+            } catch (const Unsupported& u) {
+                if (std::getenv("PRISM_LEAN_PAD_DEBUG"))
+                    std::cerr << "pir-lean: landing pad " << f.name << "/" << bl0.name << ": " << u.why << "\n";
             }
         }
         dead_block(b, f, bl0, muninit);

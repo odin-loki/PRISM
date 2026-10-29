@@ -138,6 +138,7 @@ def parseLlvm (name : String) (ls : List (List String)) : Except String LFunc :=
     match l with
     | "unsupported" :: why => throw ("unsupported: " ++ " ".intercalate why)
     | ["depth", _] => pure ()
+    | "thrown" :: _ => pure ()
     | "params" :: _ :: rest =>
       params ← (pairs rest).mapM (fun (n, w) => do pure (n, ← nat? w))
     | ["ret", w] =>
