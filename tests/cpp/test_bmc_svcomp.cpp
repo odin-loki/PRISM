@@ -424,8 +424,56 @@ TEST_CASE("bmc goto: into the start of an else branch, and self-loop labels end 
     return x;
 }
 )");
-    CHECK(mid["f"].status == kHarness);
-    CHECK(mid["f"].message.find("unstructured goto unencoded") != std::string::npos);
+    // (jump into a block that declares nothing before the label: encoded)
+    CHECK(mid["f"].status == kProved);
+    // CIL's switch encoding: gotos into an if (0) block. The overflow is
+    // only reachable through the goto, so it must be found.
+    auto cil = bmc_run("cil_if0.c", R"(int f(int s, int x) {
+    if (s == 1) {
+        goto c1;
+    } else {
+        if (s == 2) {
+            goto c2;
+        } else {
+            goto out;
+            if (0) {
+            c1:
+                x = 2147483647;
+            c2:
+                x = x + 1;
+                goto out;
+            }
+        }
+    }
+out:
+    return x;
+}
+)");
+    CHECK(cil["f"].status == kFailed);
+    // Into a loop body from outside: unencoded.
+    auto inloop = bmc_run("goto_loop.c", R"(int f(int x) {
+    goto in;
+    while (x < 10) {
+        x = x + 1;
+    in:
+        x = x + 2;
+    }
+    return x;
+}
+)");
+    CHECK(inloop["f"].status == kHarness);
+    // Into a block past a declaration: unencoded.
+    auto pastdecl = bmc_run("goto_decl.c", R"(int f(int x) {
+    goto in;
+    if (0) {
+        int y = 1;
+    in:
+        x = y;
+    }
+    return x;
+}
+)");
+    CHECK(pastdecl["f"].status == kHarness);
     // Names the then branch declared are out of scope at the label.
     auto decl = bmc_run("else_decl.c", R"(int f(int x) {
     if (x) {
