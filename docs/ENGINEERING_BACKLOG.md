@@ -75,15 +75,18 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
+Grow **`agree-ext`** beyond 419 functions (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
 2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model
    primitives proved in Lean with C++ export parity (no sorry, audited, 104 theorems):
    `__prism_havoc_bytes` (`hhavoc`), `__prism_read_range` (`hread`), `__prism_check`
    (`vcheck`), `__prism_memset` (`hmemset`), `__prism_fresh_cstr` (`hfresh`), FILE kind 8
-   in `hfree` (`freeChkF`). Fixtures `stdio_file` / `stdio_prims` agree-ext. Next: re-run
-   `pir-lean-check` over `testdata` to count how many stdio functions move to agree-ext.
+   in `hfree` (`freeChkF`). Fixtures `stdio_file` / `stdio_prims` agree-ext. Measured: 221 → 287 agree-ext.
+3. **Noreturn checks + unreachable blocks — Done (2026-10-29, `work/proofs`)** — `L afail`
+   (`assert`, `reach_error`, traps, libstdc++ assertions; `XBlock.nr`) and dead LLVM blocks
+   (`xLive` closure checked in `validB`, liveness in `InvX`/`TailX`): 287 → **419** agree-ext,
+   mismatch 0. Next by count: `invoke`/EH (225 + 61 + 24), indirect calls, float, pthread/mtx.
 
 Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 

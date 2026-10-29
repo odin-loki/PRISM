@@ -405,6 +405,54 @@ extended fragment:
 | `testdata/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
 | `testdata`, D118 (`hobjsz`, memcpy `selfOk`) | 2 532 | 937 | **74** | 54 | 1 467 | **0** |
 
+All six trees (2026-10-29, `prism-qa pir-lean-check testdata/conformance
+testdata/fixtures testdata/fp testdata/pir testdata/planted testdata/tp`, no
+trailing slashes; `testdata/fixtures` exports nothing). "Before" is the
+`origin/fix/sarif-doctest` checker (beaef75ca, the base plus the XHeap build
+fix) with the base's `prism`; each later row is `work/proofs`' checker and
+exporter:
+
+| Run | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch | In the proved fragment |
+|---|---|---|---|---|---|---|
+| before (base) | 1 039 | 221 | 183 | 2 216 | **0** | 1 260 |
+| D136 stdio primitives (57b4be78e) | 1 039 | 287 | 231 | 2 100 | **0** | 1 326 |
+| `assert`/`reach_error` noreturn blocks + unreachable LLVM blocks (511404056) | 1 039 | 396 | 243 | 1 981 | **0** | 1 435 |
+| `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | **419** | 245 | 1 956 | **0** | **1 458** |
+
+Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
+387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
+1 451, tp 12 → 12 / 19 → 6.
+
+The largest causes outside the fragment at the base were `invoke` (210),
+undefined `__assert_fail` (170) and `__cxa_begin_catch` (63); `alloca` in an
+inlined function was only 11. The two that moved:
+
+* **Noreturn failure calls.** `Tr::call` translates an undefined
+  `__assert_fail` (and `__assert_rtn`, `_assert`, `__assert`, `__assert2`,
+  `_wassert`), `reach_error`/`__VERIFIER_error`, `llvm.trap`/`debugtrap`/
+  `ubsantrap` and `std::__glibcxx_assert_fail` as `check(1, prop, cls)` and
+  ends the block (`noreturn`). The exporter writes `L afail <prop> <cls>
+  [br <target>]` in place of the call and the rest of the block (only when
+  that rest defines no variable and ends in `unreachable`, `ret` or an
+  unconditional `br`, which `normal_blocks` still follows). `XBlock.nr`: the
+  LLVM semantics (`sEnd`/`lEnd`) is UB on reaching such a block's end, the
+  translation (`trTermN`) is the failing check then `stop`.
+* **Unreachable LLVM blocks.** `Tr::run_frame` translates only
+  `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
+  `xSucc` (XTranslate) mirror it, `runFrame` skips the dead blocks (their
+  PIR head stays empty), and `validB` checks `xLiveClosed` (the entry is
+  live, live blocks' successors are live) and `segOK` only for live blocks.
+  The simulation carries liveness of the current block in `InvX` and of every
+  suspended caller in `TailX` (`InstFacts.live0`, `.closed`). A live phi with
+  an incoming from a dead block stays outside (`Tr` drops such incomings).
+
+Fixtures `assert_dead` (3 `agree-ext`) and `trap` (2 `agree-ext`). Top
+remaining causes (kept `.pirl`s of the last run): `invoke` 225,
+`__cxa_begin_catch` 61, `__cxa_allocate_exception` 24, indirect calls 22,
+`float`/`double` 21/20, `pthread_mutex_lock` 20, `pthread_create` 17,
+`mtx_lock` 15, constant-GEP pointer operands 14, `alloca` in an inlined
+function 13, `printf` 12; 415 `agree-reject` are pointer parameters (Law 6).
+
 Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
 trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
 (65 + 74), 0 mismatches. Among them 24 of the pointer fixture
