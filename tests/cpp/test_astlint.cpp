@@ -1103,6 +1103,50 @@ long sib_other_type(long sib_idx) {
     buf[sib_idx] = 1;
     return buf[0];
 }
+#include <pwd.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+int sock_bad(void) {
+    int s;
+    s = socket(2, 1, 0); // expect: API-SOCKET
+    return s + 1;
+}
+int sock_ok(void) {
+    int s = socket(2, 1, 0);
+    if (s < 0)
+        return -1;
+    return s + 1;
+}
+int sock_cond_ok(void) {
+    int s;
+    if ((s = socket(2, 1, 0)) < 0)
+        return -1;
+    return s + 1;
+}
+const char *pw_bad(void) {
+    struct passwd *pw = getpwuid(0); // expect: API-GETPWUID
+    return pw->pw_name;
+}
+const char *pw_ok(void) {
+    struct passwd *pw = getpwuid(0);
+    if (!pw)
+        return 0;
+    return pw->pw_name;
+}
+int map_bad(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0); // expect: API-MMAP
+    return m[0];
+}
+int map_ok(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (m == MAP_FAILED)
+        return -1;
+    return m[0];
+}
+int map_sizeof_ok(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+    return (int)sizeof(*m);
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>

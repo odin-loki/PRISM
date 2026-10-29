@@ -4500,6 +4500,246 @@ void onesided_index_checks(const json& f, const json& body, Checker& ck) {
     }
 }
 
+namespace {
+
+enum class AUse { Ptr, PtrOrArg, PtrOrGetenv, PtrOrArgOrGetenv, Fd, FdOrVoidCast };
+enum class AGuard { Null, NullCheck, LtZero, MapFailed, Mq };
+
+struct AssignRule {
+    const char* cls;
+    std::initializer_list<std::string_view> fnames, skip;
+    AUse use;
+    AGuard guard;
+};
+
+// The api_assign_unguarded rules of checkers_api.cpp, as a table.
+const AssignRule kAssignRules[] = {
+    {"API-MMAP", {"mmap"}, {}, AUse::Ptr, AGuard::MapFailed},
+    {"API-GETCWD", {"getcwd"}, {}, AUse::PtrOrGetenv, AGuard::Null},
+    {"API-DLOPEN", {"dlopen"}, {"dlopen"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-ACCEPT", {"accept4", "accept"}, {"accept", "accept4"}, AUse::Fd, AGuard::LtZero},
+    {"API-REALPATH", {"realpath"}, {"realpath"}, AUse::PtrOrArgOrGetenv, AGuard::Null},
+    {"API-SOCKET", {"socket"}, {"accept", "accept4"}, AUse::Fd, AGuard::LtZero},
+    {"API-DUP", {"dup3", "dup2", "dup"}, {"dup", "dup2", "dup3", "accept", "accept4"}, AUse::Fd, AGuard::LtZero},
+    {"API-OPENAT", {"openat"}, {"openat"}, AUse::Fd, AGuard::LtZero},
+    {"API-OPENDIR", {"opendir"}, {"opendir"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-GETPWUID", {"getpwnam", "getpwuid"}, {"getpwuid", "getpwnam"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-SHM-OPEN", {"shm_open"}, {"shm_open"}, AUse::Fd, AGuard::LtZero},
+    {"API-MEMFD", {"memfd_create"}, {"memfd_create"}, AUse::Fd, AGuard::LtZero},
+    {"API-GETLOGIN", {"ttyname", "getlogin"}, {"getlogin", "ttyname"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-INOTIFY", {"inotify_init1", "inotify_init"}, {"inotify_init", "inotify_init1"}, AUse::Fd, AGuard::LtZero},
+    {"API-PTSNAME", {"ptsname"}, {"ptsname"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-FMEMOPEN", {"open_memstream", "fmemopen"}, {"fmemopen", "open_memstream"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-PIDFD", {"pidfd_open"}, {"pidfd_open"}, AUse::Fd, AGuard::LtZero},
+    {"API-FANOTIFY", {"fanotify_init"}, {"fanotify_init"}, AUse::Fd, AGuard::LtZero},
+    {"API-GETGRNAM", {"getspnam", "getgrgid", "getgrnam"}, {"getgrnam", "getgrgid", "getspnam"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-USERFAULTFD", {"userfaultfd"}, {"userfaultfd"}, AUse::Fd, AGuard::LtZero},
+    {"API-GETPASS", {"getpass"}, {"getpass"}, AUse::PtrOrArg, AGuard::Null},
+    {"API-OPENAT2", {"openat2"}, {"openat2"}, AUse::Fd, AGuard::LtZero},
+    {"API-LANDLOCK", {"landlock_create_ruleset"}, {"landlock_create_ruleset"}, AUse::Fd, AGuard::LtZero},
+    {"API-SIGNALFD", {"signalfd"}, {"signalfd"}, AUse::Fd, AGuard::LtZero},
+    {"API-PERF-EVENT", {"perf_event_open"}, {"perf_event_open"}, AUse::Fd, AGuard::LtZero},
+    {"API-PKEY", {"pkey_alloc"}, {"pkey_alloc"}, AUse::Fd, AGuard::LtZero},
+    {"API-FSOPEN", {"fsopen"}, {"fsopen"}, AUse::Fd, AGuard::LtZero},
+    {"API-MQ-OPEN", {"mq_open"}, {"mq_open"}, AUse::FdOrVoidCast, AGuard::Mq},
+    {"API-MEMFD-SECRET", {"memfd_secret"}, {"memfd_secret"}, AUse::Fd, AGuard::LtZero},
+    {"API-KQUEUE", {"kqueue"}, {"kqueue"}, AUse::Fd, AGuard::LtZero},
+    {"API-SHMGET", {"shmget"}, {"shmget"}, AUse::Fd, AGuard::LtZero},
+    {"API-SEMGET", {"semget"}, {"semget"}, AUse::Fd, AGuard::LtZero},
+    {"API-MSGGET", {"msgget"}, {"msgget"}, AUse::Fd, AGuard::LtZero},
+    {"API-REALLOCARRAY", {"reallocarray"}, {"reallocarray"}, AUse::PtrOrArg, AGuard::NullCheck},
+    {"API-REALLOCF", {"reallocf"}, {"reallocf"}, AUse::PtrOrArg, AGuard::NullCheck},
+    {"API-VALLOC", {"valloc"}, {"valloc"}, AUse::PtrOrArg, AGuard::NullCheck},
+};
+
+std::string assign_msg(const std::string& var, std::string_view f, AGuard g) {
+    std::string base = var + " from " + std::string(f) + "() used without a ";
+    switch (g) {
+        case AGuard::Null: return base + "NULL test";
+        case AGuard::NullCheck: return base + "NULL check";
+        case AGuard::LtZero: return base + "< 0 test";
+        case AGuard::MapFailed: return base + "MAP_FAILED test";
+        case AGuard::Mq: return base + "(mqd_t)-1 / < 0 test";
+    }
+    return {};
+}
+
+// Walks expressions, not into sizeof/alignof (unevaluated).
+void walk_eval(const json& n, const std::function<void(const json&)>& f) {
+    if (!n.is_object()) return;
+    const auto& k = kind(n);
+    if (k == "UnaryExprOrTypeTraitExpr" || k == "LambdaExpr" || k == "BlockExpr") return;
+    f(n);
+    for (auto& c : inner(n)) walk_eval(c, f);
+}
+
+}  // namespace
+
+// API-* "x = f(...); then x used before any failure test" rules: the
+// regex api_assign_unguarded table on AST nodes.
+void api_assign_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    struct Open {
+        const AssignRule* rule;
+        std::string id, name, callee;
+        const json* at;
+        long long b, e;
+    };
+    std::vector<Open> opens;
+    struct Ev {
+        long long b, e;
+        std::string id;
+        int what;  // 0 deref, 1 call arg (callee), 2 return, 3 arith, 4 void cast, 5 getenv-style arg
+        std::string callee;
+        AGuard g{};
+        bool guard = false;
+        std::vector<AGuard> kinds;
+    };
+    std::vector<Ev> evs;
+    auto is_var = [](const json& x) -> std::string {
+        const auto& s = strip_casts(x);
+        if (auto id = ref_id(s); !id.empty()) return id;
+        if (kind(s) == "BinaryOperator" && str_field(s, "opcode") == "=" && n_children(s) == 2)
+            return ref_id(child(s, 0));
+        return {};
+    };
+    auto neg1 = [](const json& x) {
+        auto v = int_value(strip_casts(x));
+        return v && *v == -1;
+    };
+    auto zero = [](const json& x) { return is_null_ptr_expr(x); };
+    auto guard_ev = [&](const json& n, const std::string& id, std::vector<AGuard> kinds) {
+        auto b = begin_of(n), e = end_of(n);
+        Ev ev{b.offset, e.offset, id, -1, {}, {}, true, std::move(kinds)};
+        evs.push_back(std::move(ev));
+    };
+    static const std::set<std::string> getenv_like = {"strlen", "strcpy", "strcat", "strcmp", "atoi", "atol", "atoll",
+                                                      "printf", "fprintf", "sprintf", "snprintf", "warn", "err", "syslog"};
+    walk_eval(body, [&](const json& n) {
+        const auto& k = kind(n);
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base)) return;
+        // Openers.
+        auto opener = [&](const json& init, const std::string& id, const std::string& name, const json& at) {
+            const auto& c = strip_casts(init);
+            if (!is_call_kind(kind(c))) return;
+            auto cn = callee_name(c);
+            for (auto& r : kAssignRules)
+                if (one_of(cn, r.fnames)) {
+                    opens.push_back({&r, id, name, cn, &at, begin_of(at).offset, end_of(c).offset});
+                    return;
+                }
+        };
+        if (k == "VarDecl" && n_children(n) >= 1 && !p.macro) opener(last_child(n), str_field(n, "id"), str_field(n, "name"), n);
+        if (k == "BinaryOperator" && n_children(n) == 2) {
+            const auto op = str_field(n, "opcode");
+            const auto& l = child(n, 0);
+            const auto& r = child(n, 1);
+            if (op == "=") {
+                const auto& ls = strip_all(l);
+                if (kind(ls) == "DeclRefExpr" && !p.macro) opener(r, ref_id(ls), decl_name(ls), n);
+                return;
+            }
+            if (op == "==" || op == "!=") {
+                for (auto [a, b] : {std::pair{&l, &r}, std::pair{&r, &l}}) {
+                    auto id = is_var(*a);
+                    if (id.empty()) continue;
+                    std::vector<AGuard> g;
+                    if (zero(*b)) g = {AGuard::Null, AGuard::NullCheck};
+                    if (neg1(*b)) g = {AGuard::LtZero, AGuard::MapFailed, AGuard::Mq};
+                    if (!g.empty()) guard_ev(n, id, g);
+                }
+            } else if (op == "<" || op == ">=" || op == "<=" || op == ">") {
+                auto id = is_var(l);
+                auto v = int_value(strip_casts(r));
+                if (!id.empty() && v && ((op == "<" && *v == 0) || (op == ">=" && *v == 0) || (op == "<=" && *v == -1) ||
+                                         (op == ">" && *v == -1)))
+                    guard_ev(n, id, {AGuard::LtZero, AGuard::Mq});
+            } else if (one_of(op, {"+", "-", "*", "/", "%"})) {
+                for (auto* x : {&l, &r})
+                    if (auto id = ref_id(*x); !id.empty()) evs.push_back({p.offset, p.offset, id, 3, {}, {}, false, {}});
+            }
+            return;
+        }
+        if (k == "UnaryOperator" && n_children(n) == 1) {
+            const auto op = str_field(n, "opcode");
+            auto id = ref_id(child(n, 0));
+            if (id.empty()) return;
+            if (op == "!") guard_ev(n, id, {AGuard::Null, AGuard::NullCheck});
+            else if (op == "*") evs.push_back({p.offset, p.offset, id, 0, {}, {}, false, {}});
+            return;
+        }
+        if (k == "IfStmt" || k == "WhileStmt" || k == "ConditionalOperator") {
+            for (auto& c : inner(n)) {
+                if (kind(c) == "DeclStmt" || kind(c) == "VarDecl") continue;
+                if (auto id = ref_id(c); !id.empty()) guard_ev(c, id, {AGuard::Null, AGuard::NullCheck});
+                break;
+            }
+            return;
+        }
+        if (k == "ArraySubscriptExpr" && n_children(n) == 2) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) evs.push_back({p.offset, p.offset, id, 0, {}, {}, false, {}});
+            return;
+        }
+        if (k == "MemberExpr" && flag(n, "isArrow") && n_children(n) >= 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) evs.push_back({p.offset, p.offset, id, 0, {}, {}, false, {}});
+            return;
+        }
+        if (k == "ReturnStmt" && n_children(n) == 1) {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) evs.push_back({p.offset, p.offset, id, 2, {}, {}, false, {}});
+            return;
+        }
+        if (k == "CStyleCastExpr" && n_children(n) >= 1 && qual_type(n) == "void") {
+            if (auto id = ref_id(child(n, 0)); !id.empty()) evs.push_back({p.offset, p.offset, id, 4, {}, {}, false, {}});
+            return;
+        }
+        if (is_call_kind(k)) {
+            auto cn = callee_name(n);
+            if (cn.starts_with("assert")) {
+                for (auto* a : call_args(n))
+                    if (auto id = is_var(*a); !id.empty()) guard_ev(n, id, {AGuard::Null, AGuard::NullCheck});
+                return;
+            }
+            for (auto* a : call_args(n))
+                if (auto id = ref_id(strip_casts(*a)); !id.empty())
+                    evs.push_back({begin_of(*a).offset, begin_of(*a).offset, id, getenv_like.contains(cn) ? 5 : 1, cn, {}, false, {}});
+        }
+    });
+    std::set<std::pair<std::string, long long>> seen;
+    for (auto& o : opens) {
+        const auto& r = *o.rule;
+        long long use = -1;
+        for (auto& e : evs) {
+            if (e.guard || e.id != o.id || e.b <= o.e) continue;
+            bool hit = false;
+            switch (r.use) {
+                case AUse::Ptr: hit = e.what == 0; break;
+                case AUse::PtrOrArg: hit = e.what == 0 || ((e.what == 1 || e.what == 5) && !one_of(e.callee, r.skip)); break;
+                case AUse::PtrOrGetenv: hit = e.what == 0 || e.what == 5; break;
+                case AUse::PtrOrArgOrGetenv:
+                    hit = e.what == 0 || e.what == 5 || (e.what == 1 && !one_of(e.callee, r.skip));
+                    break;
+                case AUse::Fd:
+                case AUse::FdOrVoidCast:
+                    hit = ((e.what == 1 || e.what == 5) && !one_of(e.callee, r.skip)) || e.what == 2 || e.what == 3 ||
+                          (r.use == AUse::FdOrVoidCast && e.what == 4);
+                    break;
+            }
+            if (hit && (use < 0 || e.b < use)) use = e.b;
+        }
+        if (use < 0) continue;
+        bool guarded = false;
+        for (auto& e : evs) {
+            if (!e.guard || e.id != o.id) continue;
+            if (std::find(e.kinds.begin(), e.kinds.end(), r.guard) == e.kinds.end()) continue;
+            if (e.e >= o.b && e.b <= use) guarded = true;
+        }
+        if (guarded || !seen.insert({o.id, o.b}).second) continue;
+        ck.add(*o.at, r.cls, assign_msg(o.name, o.callee, r.guard));
+    }
+}
+
 // MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
 // first later index, deref, `->`, free() or return of p, unless p is
 // assigned in between.
@@ -5002,6 +5242,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     infoleak_pad_checks(*body, w.ck);
     flex_array_checks(*body, w.ck, cx);
     onesided_index_checks(f, *body, w.ck);
+    api_assign_checks(*body, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
