@@ -67,3 +67,9 @@
 - CORRECTION: conf2-conf4 ran build/prism (old, 20:07 Oct 29), not build-mf2/prism: prism-qa
   conformance defaults to build/prism. Always pass --prism <build>/prism. conf5 (/tmp/mf/conf5,
   log /workspace/logs/memfix-conf5.log) is the first run on the memfix binary.
+- 2026-10-30 ~01:50: cxx_priority_queue_true at 1.5x Z3 limit, budget 3400: rc 0, peak 3451 MB.
+  libc commits 1c507b08b/c8345e526 are in this branch and in build-mf2/prism; conf4 missed them only
+  because it ran build/prism. conf5 (memfix binary) running: check
+  grep '| pir | libc' /tmp/mf/conf5/metrics.md (target >= 175, 0 wrong, no exit -9).
+- Box OOM kills seen while conf5 ran come from outside PRISM too: retdec-decompiler
+  (/workspace/rd-core-build, ~4.2 GB RSS) runs without prism-run.
