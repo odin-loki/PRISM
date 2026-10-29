@@ -1292,3 +1292,24 @@ TEST_CASE("run_session: normal exit returns stdout and the exit status") {
     CHECK(r.out == "ok\n");
 }
 #endif
+
+TEST_CASE("svcomp fuzz_replay: a loop longer than the 2 s run limit gets one long run; a safe long loop is not refuted") {
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: fuzz_replay with a real compiler");
+        return;
+    }
+    TempDir d;
+    // about 4e9 increments at -O0: every 2 s run times out
+    const char* body = "extern void __assert_fail(const char*, const char*, unsigned, const char*);\n"
+                       "void reach_error(void) { __assert_fail(\"0\", \"l.c\", 2, \"reach_error\"); }\n"
+                       "int main(void) { volatile unsigned x = 0; unsigned i, j;\n"
+                       "  for (i = 0; i < 400000000u; i++) for (j = 0; j < 10; j++) x++;\n"
+                       "  if (x %s 4000000000u) reach_error();\n  return 0; }\n";
+    char bad[512], ok[512];
+    std::snprintf(bad, sizeof bad, body, "==");
+    std::snprintf(ok, sizeof ok, body, "!=");
+    auto rb = fuzz_replay(d.write("lb.c", bad), "unreach-call", true, d.path / "wb", "LP64", 60.0, 50);
+    INFO(rb.dump());
+    CHECK(rb["replay"] == "replayed");
+    CHECK(fuzz_replay(d.write("lo.c", ok), "unreach-call", true, d.path / "wo", "LP64", 60.0, 50)["replay"] == "not-replayed");
+}

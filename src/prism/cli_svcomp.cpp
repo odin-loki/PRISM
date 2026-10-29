@@ -179,22 +179,14 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return r;
     };
     Decision dec = decide(*report, prop, rp);
-    // Deepening: a main that is only BOUNDED (no violation within the
-    // unwind, loops not closed) is re-run with a deeper unwind. A deeper
-    // run can only prove (its loops close) or refute with a counterexample
-    // that must still replay; BOUNDED stays unknown. Never weaker evidence.
-    for (int deeper : {32, 128}) {
-        if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
-        std::string err2;
-        auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
-        if (!rep2) break;
-        Decision d2 = decide(*rep2, prop, rp);
-        if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
-        dec = std::move(d2);
-    }
-    // Fuzzing fallback: a refutation only when a seeded run shows the
-    // violation under the same sanitizer check as replay. Never a proof.
-    if (dec.answer == "unknown" && opt.allow_exec && (prop == "no-overflow" || prop == "unreach-call")) {
+    // Fuzzing: a refutation only when a seeded run shows the violation under
+    // the same sanitizer check as replay. Never a proof. It runs before the
+    // deepening below, so the deeper (Houdini-heavy) runs cannot use up the
+    // task's time before a cheap concrete counterexample is tried.
+    bool fuzzed = false;
+    auto try_fuzz = [&] {
+        if (fuzzed || dec.answer != "unknown" || !opt.allow_exec || (prop != "no-overflow" && prop != "unreach-call")) return;
+        fuzzed = true;
         fs::path fd = make_temp_dir(opt.out, "prism-fuzz-");
         json r = fuzz_replay(task, prop, true, fd, dm);
         std::error_code rm;
@@ -209,6 +201,20 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
             if (has(r, "line")) f["line"] = r.at("line");
             dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
         }
+    };
+    try_fuzz();
+    // Deepening: a main that is only BOUNDED (no violation within the
+    // unwind, loops not closed) is re-run with a deeper unwind. A deeper
+    // run can only prove (its loops close) or refute with a counterexample
+    // that must still replay; BOUNDED stays unknown. Never weaker evidence.
+    for (int deeper : {32, 128}) {
+        if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
+        std::string err2;
+        auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
+        if (!rep2) break;
+        Decision d2 = decide(*rep2, prop, rp);
+        if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
+        dec = std::move(d2);
     }
     oc.decision = dec;
     Decision& d = oc.decision;

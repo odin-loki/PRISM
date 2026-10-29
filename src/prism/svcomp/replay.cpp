@@ -10,6 +10,7 @@
 #include "prism/sandbox.hpp"
 #include "prism/wide_int.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -354,15 +355,30 @@ json fuzz_replay(const fs::path& src, const std::string& prop, bool allow_exec, 
         return json{{"replay", "not-replayed"}, {"why", "fuzz build failed"}};
     detail::set_env("UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1");
     const auto t0 = std::chrono::steady_clock::now();
-    int runs = 0;
+    int runs = 0, timeouts = 0;
+    // Every run timing out at 2 s (a long deterministic loop such as
+    // nested_1-2, 2.7e9 iterations at -O0) gets one long run of seed 1 within
+    // the remaining budget. Same sanitizer check, so never weaker evidence.
+    bool long_run = false;
     for (int seed = 1; seed <= max_seeds; ++seed) {
         double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         if (used > budget_s) break;
+        if (runs >= 3 && timeouts == runs && !long_run) {
+            long_run = true;
+            seed = 1;
+        }
+        const double lim = long_run && seed == 1 ? std::max(2.0, std::min(30.0, budget_s - used)) : 2.0;
         detail::set_env("PRISM_FUZZ_SEED", std::to_string(seed).c_str());
         auto run_argv = sandbox::wrap_argv({exe.string()}, work);
-        auto p = stages_detail::run_argv(run_argv, "", 2.0, sandbox::limits_for(2.0, true));
+        const auto r0 = std::chrono::steady_clock::now();
+        auto p = stages_detail::run_argv(run_argv, "", lim, sandbox::limits_for(lim, true));
         ++runs;
-        if (p.timeout) continue;
+        // a CPU-limit kill (SIGXCPU) can beat the wall timeout: count it too
+        const bool hit_limit = std::chrono::duration<double>(std::chrono::steady_clock::now() - r0).count() >= 0.9 * lim;
+        if (p.timeout || hit_limit) {
+            ++timeouts;
+            continue;
+        }
         json rec = {{"exit", p.rc}, {"fuzz_seed", seed}};
         if (classify_run(prop, p.err, p.rc, rec)) {
             static const Regex nd(R"(^PRISM-FUZZ-NONDET (\S+) (\S+) (0x[0-9a-fA-F]+)$)", true);
