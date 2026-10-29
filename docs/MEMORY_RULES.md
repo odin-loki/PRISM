@@ -47,7 +47,11 @@
 - Not possible: per-job cgroup (agent cgroup root-owned with processes; no user systemd).
 - prism-run admission is first fit in ticket order; a ticket waiting > 600 s gets priority.
   Wrappers started before 72be5de8d keep the old strict-FIFO loop: restart queued ones.
-- Open: PRISM still overshoots its budget ~30% (conf4 tree 3883 MB at 3000); libc conformance
+- Watchdog polls 20 ms from 60% of budget. Z3 hard limit stays 1.5x (1.0x segfaulted Z3 at 2.8 GB).
+  Peaks at budget 3000 (single file): priority_queue_contracts 3343 MB (was 3609; UNKNOWNs, no kill),
+  vector_insert 208 MB (correct verdicts), unbounded_string: 900 s timeout, cxx_priority_queue_true:
+  segfault rc 139 under the 1.0x Z3 limit (re-measure with 1.5x).
+- Open: overshoot now ~11%; libc conformance
   conf4 (/tmp/mf/conf4, log /workspace/logs/memfix-conf4.log, PRISM_MEM_BUDGET_MB=3400 --jobs 1)
   vs lm-conf5 175/202, 0 wrong. Peaks for unbounded_string / vector_insert not yet measured.
   test_pir_refinement "memory checks in XTranslate.lean" fails after the libc-models merge (not memfix).
