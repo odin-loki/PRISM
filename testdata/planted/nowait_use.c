@@ -13,7 +13,7 @@ void nowait_unchecked(unsigned n) {
 void nowait_checked(unsigned n) {
     struct node *p;
     p = malloc(n | M_NOWAIT);
-    if (p == NULL)
+    if (p == 0)
         return;
     p->x = 1;
 }
