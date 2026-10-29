@@ -75,7 +75,7 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 419 functions (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
+Grow **`agree-ext`** beyond 479 functions (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
 
 1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
 2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model
@@ -86,7 +86,12 @@ Grow **`agree-ext`** beyond 419 functions (`docs/PROOFS_REFINEMENT.md` "All six 
 3. **Noreturn checks + unreachable blocks — Done (2026-10-29, `work/proofs`)** — `L afail`
    (`assert`, `reach_error`, traps, libstdc++ assertions; `XBlock.nr`) and dead LLVM blocks
    (`xLive` closure checked in `validB`, liveness in `InvX`/`TailX`): 287 → **419** agree-ext,
-   mismatch 0. Next by count: `invoke`/EH (225 + 61 + 24), indirect calls, float, pthread/mtx.
+   mismatch 0.
+4. **`invoke` / landing pads without throws — Done (2026-10-29, 65d994197)** — invoke as call +
+   `br`, unreachable blocks stubbed (`L dead`/`L stub`, `XBlock.stub`), dead phi incomings dropped:
+   419 → **479** agree-ext, mismatch 0. Next by count: real throw/catch (`__cxa_begin_catch` 63,
+   `__cxa_allocate_exception` 33, `__throw_*` 29), indirect calls 30, ptrtoint 27, float/double 42,
+   pthread/mtx 35, inlined alloca 18, constant-GEP 14.
 
 Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 

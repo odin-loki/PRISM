@@ -417,7 +417,8 @@ exporter:
 | before (base) | 1 039 | 221 | 183 | 2 216 | **0** | 1 260 |
 | D136 stdio primitives (57b4be78e) | 1 039 | 287 | 231 | 2 100 | **0** | 1 326 |
 | `assert`/`reach_error` noreturn blocks + unreachable LLVM blocks (511404056) | 1 039 | 396 | 243 | 1 981 | **0** | 1 435 |
-| `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | **419** | 245 | 1 956 | **0** | **1 458** |
+| `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | 419 | 245 | 1 956 | 0 | 1 458 |
+| `invoke` as call + `br`, stubbed landing pads (65d994197) | 1 039 | **479** | 266 | 1 875 | **0** | **1 518** |
 
 Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
 387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
@@ -437,6 +438,27 @@ inlined function was only 11. The two that moved:
   unconditional `br`, which `normal_blocks` still follows). `XBlock.nr`: the
   LLVM semantics (`sEnd`/`lEnd`) is UB on reaching such a block's end, the
   translation (`trTermN`) is the failing check then `stop`.
+* **`invoke` and landing pads (no throw in the fragment).** `Tr::translate_block`
+  translates an `invoke` as the call with its landing pad pushed as a handler,
+  then `Jmp` to the normal label; the handler is used only by `raise` /
+  `dispatch_type` (`__cxa_throw`, `std::__throw_*`, `__cxa_rethrow`, `resume`),
+  none of which is in the fragment, so landing pads stay untranslated
+  (`normal_blocks`). The exporter writes the call then `L br <normal>`; a block
+  `normal_blocks` does not reach is written as `L dead %r w [w2]` placeholders
+  (the variables `Tr::enter_frame` numbers: `{ptr,i32}` landing pad 64+32, ...)
+  and `L stub` (Lean `XBlock.stub`; `nondet` placeholders, parse error outside a
+  stub block, and `runFrame` refuses a stub block `xLive` reaches). Phi incomings
+  from such blocks are dropped as `resolve_phis` does (refused where a dropped
+  input is undef or maybe-uninitialised, or a dead block needs an `.undef` /
+  `.uninit` shadow). Exporter-trust assumption: nothing the fragment admits
+  unwinds, so an `invoke` is its call + `br` and unreachable blocks are
+  irrelevant. Typical gain: `operator delete` (model `invoke __prism_free` with a
+  terminate pad), `new` inside `try`. Fixture `cxx_invoke` (4 agree-ext, 2
+  outside negatives). 419 → **479** agree-ext, mismatch 0. Still outside:
+  actual throws/catches (`__cxa_begin_catch` 63, `__cxa_allocate_exception` 33,
+  `std::__throw_bad_array_new_length` 29), indirect calls 30, `ptrtoint` 27,
+  float/double 42, `pthread_mutex_lock` 20, `alloca` in an inlined function 18,
+  `pthread_create` 17, `mtx_lock` 15, constant-GEP operands 14.
 * **Unreachable LLVM blocks.** `Tr::run_frame` translates only
   `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
   `xSucc` (XTranslate) mirror it, `runFrame` skips the dead blocks (their
