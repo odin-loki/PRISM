@@ -5792,6 +5792,61 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     fs::remove_all(dir);
 }
 
+static const char* kLeanThrowIr = R"IR(
+@_ZTIi = external constant ptr
+declare ptr @__cxa_allocate_exception(i64)
+declare void @__cxa_throw(ptr, ptr, ptr)
+
+define i32 @ok(i32 %x) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %e, ptr @_ZTIi, ptr null)
+  unreachable
+}
+
+define i32 @other_ptr(i32 %x, ptr %q) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %q, ptr @_ZTIi, ptr null)
+  unreachable
+}
+
+define i32 @dyn_type(i32 %x, ptr %ti) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %e, ptr %ti, ptr null)
+  unreachable
+}
+)IR";
+
+TEST_CASE("pir: lean export of a user throw only in clang's exact pattern") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanThrowIr);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"ok", "other_ptr", "dyn_type"}) {
+        fs::path dir = fs::temp_directory_path() / "prism-lean-export-thr";
+        fs::remove_all(dir);
+        tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+        tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
+        std::ifstream in(dir / "unit.pirl");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        INFO(name << "\n" << text);
+        bool good = std::string(name) == "ok";
+        CHECK((text.find("L uthrow _ZTIi %e - -\n") != std::string::npos) == good);
+        CHECK((text.find("L xalloc %e #4 64\n") != std::string::npos) == good);
+        CHECK((text.find("L unsupported") != std::string::npos) == !good);
+        in.close();
+        fs::remove_all(dir);
+    }
+}
+
 static const char* kLeanIntrIr = R"IR(
 declare void @llvm.lifetime.start.p0(i64, ptr)
 declare void @llvm.lifetime.end.p0(i64, ptr)
