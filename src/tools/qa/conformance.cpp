@@ -288,8 +288,10 @@ int conformance_main(const std::vector<std::string>& argv) {
     // of 75% of MemAvailable, never more than half the address-space cap),
     // which PRISM enforces per function as UNKNOWN; runs are cut to what
     // fits at ~1 GB each.
-    if (!std::getenv("PRISM_MEM_BUDGET_MB")) {
-        const uint64_t avail = prism::membudget::base_budget_mb();  // 75% of the tightest limit
+    // A PRISM_MEM_BUDGET_MB from the environment (prism-run) is the budget of
+    // the whole run tree, so it is split among the jobs too, not inherited whole.
+    {
+        const uint64_t avail = prism::membudget::base_budget_mb();  // env, else 75% of the tightest limit
         if (avail > 0) {
             // Floor: a run below ~2.5 GB turns provable functions UNKNOWN
             // (a loaded box gave 169/202 vs 181). Cut jobs instead of budgets.
