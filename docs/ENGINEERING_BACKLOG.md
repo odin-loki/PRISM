@@ -103,3 +103,11 @@ Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 Eight Composer 2.5 passes informed this backlog: libc/stdlib contracts, astlint
 `STR-UNBOUNDED-COPY`, certified budgets, SV-COMP, pir-vs-bmc retirement gates,
 Lean refinement D118/D136, CPP port appendix vs status block, `vector_insert` value sets.
+
+## SV-COMP handoff (work/svcomp, 2026-10-29)
+
+- Done: bmc encodes a forward goto into a later block (CIL `if (0)` switch encoding). It is refused when the jump enters a loop pass or switch arm, or skips a declaration. `(void *)0` is modelled as the integer 0. Tests are in tests/cpp/test_bmc_svcomp.cpp.
+- Scores, all 0 incorrect: no-overflow 118/192, unchanged with the goto build. unreach-call was 127/225 on the old build. The rescore with goto plus `(void *)0` (log /workspace/logs/svcomp-score-unreach-5.log, output /tmp/svg-unreach5) was still running at handoff, so record its result.
+- Remaining s3_* gaps: s3_clnt_2 has an unbounded state-machine `while(1)` that is only proved to 8 unrollings, so main's call to it is not modelled. s3_clnt_2-2a and s3_srvr_* report UNINIT-READ. Check whether that read is real or a model gap before treating it as a bug.
+- Next: loop invariants for the BOUNDED-only tasks (loop-acceleration array_*, loop-invgen up/seq-3/half_2, loop-new count_by_*/gauss_sum). Candidate approach: feed Houdini candidates (linear equalities and bounds over loop counters) to bmc's havoc step as assumptions, proved inductive first.
+- Box: run every score through /workspace/bin/prism-run with --jobs 2. Long scores can wait a long time for a slot and can be killed by the OOM killer. Build in build-goto/ so the binary a running score uses is not replaced.
