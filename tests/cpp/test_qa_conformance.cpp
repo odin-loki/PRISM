@@ -53,7 +53,9 @@ using qa::ojson;
 using i128 = prism::qa::i128;
 
 const std::set<std::string> kProperties = {"no-overflow", "no-div0",       "no-shift-ub", "no-oob",
-                                           "no-null-deref", "memsafety", "no-fp-cast",  "no-uncaught"};
+                                           "no-null-deref", "memsafety", "no-fp-cast",  "no-uncaught",
+                                           // qa task.cpp maps noassert to FUNC-CONTRACT (cxx any_cast tasks)
+                                           "noassert"};
 
 fs::path suite() { return qa::suite_root(); }
 
