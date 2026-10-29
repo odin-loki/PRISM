@@ -1052,7 +1052,16 @@ them in the prologue like the function's own; the exporter writes them as
 `@name 64` parameters (after its own, before `__prism.oom`), each call passing
 `%@name` — the same rewrite as the oom flag, no Lean change. thread_local
 globals stay outside. Fixture `callee_global`, doctest "lean export passes
-globals to inlined callees, not thread_local ones". Re-measure: pending.
+globals to inlined callees, not thread_local ones". Re-measure (final/,
+676b3bead, mismatch 0 everywhere): concurrency 0/0/6/37, esbmc-cpp
+8/21/101/56, libc-models 6/259/35/142, prism 203/235/146/145, sv-comp
+32/180/0/362 (agree/ext/reject/outside): outside 761 -> 742, proved +19; the
+other callee-global functions now stop at a later fragment limit. Left:
+`__const.*` globals with an `undef` initialiser (flat_init fails, still
+lazy). Next, `{ptr,iN}`/`{i64,i64}` scalar pairs (49): C++ Frame::pairs
+(two variables per register, insertvalue/extractvalue, pair-returning
+inlined calls, pair load/store, upair undef tracking) — needs a two-value
+return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
 
 ## What remains
 
