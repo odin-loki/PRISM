@@ -426,6 +426,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // against them (an API or specialisation the models leave out, e.g.
     // vector<bool>) is lowered again with the platform library and says so.
     std::optional<detail::ProcOut> modelled;
+    std::vector<std::string> modelled_av;  // the command that produced `modelled`
     if (cxx && !fe.cxx_models.empty()) {
         auto mf = fl;
         mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
@@ -433,6 +434,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         av.insert(av.end(), mf.begin(), mf.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});
         auto rm = detail::run_process(av, timeout_s);
+        modelled_av = av;
         const bool rm_ok = !rm.failed && !rm.timed_out && rm.rc == 0;
         const bool rm_timed = rm.timed_out;
         const std::string rm_err = rm.text;
@@ -476,6 +478,19 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     if (r.failed || r.timed_out || r.rc != 0) {
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
+    }
+    // A unit whose functions are all inline and unused (a constexpr function,
+    // a static helper nobody calls) lowers to no definitions and nothing was
+    // checked. Lower it once more with every declaration emitted: more code
+    // checked, never less (no flag of a check changes).
+    if (read_file(o0).find("\ndefine ") == std::string::npos) {
+        auto av = modelled.has_value() ? modelled_av : argv;
+        av.insert(av.end() - 3, "-femit-all-decls");  // before "-o out src"
+        auto r3 = detail::run_process(av, timeout_s);
+        if (!r3.failed && !r3.timed_out && r3.rc == 0) {
+            r = std::move(r3);
+            fl.push_back("-femit-all-decls");
+        }
     }
     auto diags = parse_folded_clang_diagnostics(r.text, src);
     std::vector<int> placed;
