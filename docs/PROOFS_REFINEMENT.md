@@ -1001,6 +1001,12 @@ unordered_map_contracts (983MB): skipped in the final measure
 is the per-file copy losing `harness.h`, not a product issue.
 Final measure: /workspace/eh/final5.sh -> /workspace/eh/fin_<subdir>.log.
 
+Final measure (binaries /workspace/eh/final, REV 3dc99bf64), all mismatch=0:
+concurrency agree=0 ext=0 reject=6 outside=37; esbmc-cpp 8/20/86/72 (28
+proved); libc-models minus 3 skipped 4/87/3/146 (91 proved); sv-comp
+32/180/0/362 (212 proved); prism killed at 1951MB (budget 1500): per-subdir
+sweep at 1000MB in /workspace/eh/prper.log (array, asm, c23, coro fine).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
