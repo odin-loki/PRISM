@@ -998,6 +998,11 @@ struct Tr final : pirmem::TrApi {
                 mt.icmp(cur, result_var(fr, in), in.pred, a, b, line);
                 return;
             }
+            if (is_ptrtoint(fr, in.ops[0]) && is_ptrtoint(fr, in.ops[1])) {  // std::less<T*>
+                mt.addr_cmp(cur, result_var(fr, in), in.pred, operand(fr, in.ops[0], cur, line),
+                            operand(fr, in.ops[1], cur, line));
+                return;
+            }
             unsigned w = int_width(in.ty, "icmp operand type");
             Arg a = operand(fr, in.ops[0], cur, line);
             Arg b = operand(fr, in.ops[1], cur, line);
@@ -1691,7 +1696,8 @@ struct Tr final : pirmem::TrApi {
                     for (auto& [o, _] : u.incoming)
                         if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
                     if (!uses) continue;
-                    if (u.op != "sub" || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) || !is_ptrtoint(fr, u.ops[1]))
+                    if ((u.op != "sub" && u.op != "icmp") || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) ||
+                        !is_ptrtoint(fr, u.ops[1]))
                         throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
                 }
             Arg p = operand(fr, in.ops[0], cur, line);
