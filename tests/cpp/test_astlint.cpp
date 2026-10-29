@@ -1822,6 +1822,78 @@ int addr_ok(int *tab, int k) {
         return 0;
     return tab[*p];
 }
+#include <barrier>
+#include <bit>
+#include <bitset>
+#include <condition_variable>
+std::atomic_ref<int> aref_bad() {
+    int loc = 0;
+    std::atomic_ref<int> r(loc);
+    return r; // expect: CXX-ATOMIC-REF
+}
+std::atomic_ref<int> aref_ok(int &x) {
+    std::atomic_ref<int> r(x);
+    return r;
+}
+void barrier_bad() {
+    std::barrier<> bar(2);
+    (void)bar.arrive(); // expect: CXX-BARRIER
+}
+void barrier_ok() {
+    std::barrier<> bar(2);
+    bar.arrive_and_wait();
+}
+int bitceil_bad(int *tab, unsigned x) {
+    return tab[std::bit_ceil(x)]; // expect: CXX-BIT-CEIL
+}
+int bitceil_ok(int *tab, unsigned x) {
+    unsigned k = std::bit_ceil(x);
+    if (k >= 16)
+        return 0;
+    return tab[k];
+}
+bool bitset_bad(std::size_t pos) {
+    std::bitset<8> bs;
+    return bs.test(pos); // expect: CXX-BITSET-INDEX
+}
+bool bitset_ok(std::size_t pos) {
+    std::bitset<8> bs;
+    if (pos >= 8)
+        return false;
+    return bs.test(pos);
+}
+void once_bad(std::once_flag &f) {
+    std::call_once(f, [] {}); // expect: CXX-CALL-ONCE
+}
+void once_ok() {
+    static std::once_flag of;
+    std::call_once(of, [] {});
+}
+int cmpless_bad(int *tab, int a, unsigned b) {
+    return tab[std::cmp_less(a, b)]; // expect: CXX-CMP-LESS
+}
+int cmpless_ok(int *tab, int a, unsigned b) {
+    return std::cmp_less(a, b) ? tab[0] : tab[1];
+}
+void cva_bad(std::mutex &m) {
+    std::condition_variable_any cv;
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk); // expect: CXX-CONDVAR-ANY, CXX-CONDITION-WAIT
+}
+void cva_ok(std::mutex &m, bool &ready) {
+    std::condition_variable_any cv;
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk, [&] { return ready; });
+}
+int cat_bad(int *p) {
+    std::destroy_at(p);
+    return *p; // expect: CXX-CONSTRUCT-AT
+}
+int cat_ok(int *p) {
+    std::destroy_at(p);
+    std::construct_at(p, 1);
+    return *p;
+}
 )";
 
 }  // namespace

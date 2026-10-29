@@ -6928,6 +6928,196 @@ void cxx_view_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Eighth batch: synchronisation objects and bit/compare results used as
+// indices (CXX-ATOMIC-REF, CXX-BARRIER, CXX-BIT-CEIL, CXX-BITSET-INDEX,
+// CXX-CALL-ONCE, CXX-CMP-LESS, CXX-CONDVAR-ANY, CXX-CONSTRUCT-AT).
+void cxx_index_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::set<std::string> rel_ids, local_ids, param_ids;
+    std::map<std::string, std::string> id_of_name, init_callee;  // var id -> callee of its initialiser
+    std::map<std::string, const json*> var_decl;
+    for (auto& [id, d] : fn.locals) {
+        (kind(*d) == "ParmVarDecl" ? param_ids : local_ids).insert(id);
+        id_of_name[std::string(str_field(*d, "name"))] = id;
+        var_decl[id] = d;
+    }
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "BinaryOperator" && n_children(*n) == 2) {
+            auto op = str_field(*n, "opcode");
+            if (one_of(op, {"<", "<=", ">", ">="}))
+                for (int i = 0; i < 2; ++i)
+                    if (auto id = ref_id(child(*n, i)); !id.empty()) rel_ids.insert(id);
+            if (op == "=" && is_call_kind(kind(strip_all(child(*n, 1)))))
+                if (auto id = ref_id(child(*n, 0)); !id.empty()) init_callee[id] = callee_name(strip_all(child(*n, 1)));
+        } else if (k == "VarDecl") {
+            auto id = std::string(str_field(*n, "id"));
+            local_ids.insert(id);
+            id_of_name[std::string(str_field(*n, "name"))] = id;
+            var_decl[id] = n;
+            if (n_children(*n) > 0 && is_call_kind(kind(strip_all(last_child(*n)))))
+                init_callee[id] = callee_name(strip_all(last_child(*n)));
+        }
+    }
+    auto idx_unguarded = [&](const json& idx) {
+        if (int_value(idx) || constant_expr(strip_all(idx))) return false;
+        auto id = ref_id(idx);
+        return !id.empty() && !rel_ids.contains(id);
+    };
+    auto subscript_parts = [&](const json& n) -> std::pair<const json*, const json*> {
+        if (subscript_op(n)) return {&child(n, 1), &child(n, 2)};
+        if (kind(n) == "ArraySubscriptExpr" && n_children(n) == 2) return {&child(n, 0), &child(n, 1)};
+        return {nullptr, nullptr};
+    };
+    auto obj_type = [&](const json& call) {
+        const auto& me = strip_all(child(call, 0));
+        return n_children(me) == 1 ? type_of(strip_all(child(me, 0))) : std::string();
+    };
+    // CXX-ATOMIC-REF: return atomic_ref built over a local.
+    if (fn.ret.find("atomic_ref") != std::string::npos)
+        for (auto* n : all) {
+            if (kind(*n) != "ReturnStmt" || n_children(*n) == 0) continue;
+            std::string src;
+            const auto* ep = &strip_all(child(*n, 0));
+            while (kind(*ep) == "CXXConstructExpr" && n_children(*ep) == 1) ep = &strip_all(child(*ep, 0));
+            const auto& e = *ep;
+            if (auto rid = ref_id(e); !rid.empty() && var_decl.contains(rid)) {
+                auto a = init_args(decl_init_text(*var_decl[rid]));
+                if (!a.empty()) src = a[0];
+            } else {
+                collect_nodes(e, [&](const json& x, const json*) {
+                    if (src.empty() && kind(x) == "DeclRefExpr") src = str_field(x, "name").empty()
+                        ? std::string(str_field(ref_decl(x), "name")) : std::string(str_field(x, "name"));
+                });
+            }
+            auto it = id_of_name.find(src);
+            if (it == id_of_name.end() || !local_ids.contains(it->second) || !ok_pos(*n)) continue;
+            if (kind(*var_decl[it->second]) != "VarDecl" || has_word(qual_type(*var_decl[it->second]), "static") ||
+                qual_type(*var_decl[it->second]).find("atomic_ref") != std::string::npos ||
+                str_field(*var_decl[it->second], "storageClass") == "static")
+                continue;
+            ck.add(*n, "CXX-ATOMIC-REF", "return atomic_ref of local " + src);
+            break;
+        }
+    // Member-call families keyed by object id.
+    std::set<std::string> waited;
+    for (auto* n : all)
+        if (one_of(mcall_name(*n), {"wait", "arrive_and_wait"})) waited.insert(mcall_obj(*n));
+    for (auto* n : all) {
+        if (mcall_name(*n) != "arrive") continue;
+        auto id = mcall_obj(*n);
+        if (id.empty() || waited.contains(id) || template_name(obj_type(*n)) != "barrier" || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-BARRIER", "arrive() without wait()/arrive_and_wait()");
+        break;
+    }
+    for (auto* n : all) {
+        if (mcall_name(*n) != "wait" || record_name(obj_type(*n)).find("condition_variable_any") == std::string::npos)
+            continue;
+        bool pred = false;
+        for (std::size_t i = 1; i < n_children(*n); ++i)
+            if (kind(strip_all(child(*n, i))) == "LambdaExpr" || i >= 2) pred = true;
+        if (pred || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-CONDVAR-ANY", "wait() without a predicate");
+        break;
+    }
+    // CXX-BIT-CEIL / CXX-CMP-LESS: library result as an unguarded index; bit_ceil(0).
+    bool bc = false, cl = false;
+    for (auto* n : all) {
+        if (!bc && is_call_kind(kind(*n)) && callee_name(*n) == "bit_ceil" && n_children(*n) == 2 &&
+            is_zero_literal(child(*n, 1)) && ok_pos(*n)) {
+            ck.add(*n, "CXX-BIT-CEIL", "bit_ceil(0)");
+            bc = true;
+        }
+        auto [obj, idx] = subscript_parts(*n);
+        if (!obj) continue;
+        const auto& i = strip_all(*idx);
+        std::string cn;
+        if (is_call_kind(kind(i))) cn = callee_name(i);
+        else if (auto id = ref_id(i); !id.empty() && init_callee.contains(id) && !rel_ids.contains(id))
+            cn = init_callee[id];
+        if (!bc && one_of(cn, {"bit_ceil", "bit_floor", "has_single_bit", "popcount"}) && ok_pos(*n)) {
+            ck.add(*n, "CXX-BIT-CEIL", "bit_ceil/bit_floor/popcount used as an index without a range check");
+            bc = true;
+        }
+        if (!cl && one_of(cn, {"cmp_less", "in_range"}) && ok_pos(*n)) {
+            ck.add(*n, "CXX-CMP-LESS", "std::cmp_less/in_range result used as an array index");
+            cl = true;
+        }
+    }
+    // CXX-BITSET-INDEX: bitset local .test(p) / [p] with a parameter p unguarded.
+    for (auto* n : all) {
+        const json *obj = nullptr, *idx = nullptr;
+        if (mcall_name(*n) == "test" && n_children(*n) == 2) {
+            obj = &child(strip_all(child(*n, 0)), 0);
+            idx = &child(*n, 1);
+        } else if (subscript_op(*n)) {
+            obj = &child(*n, 1);
+            idx = &child(*n, 2);
+        }
+        if (!obj || template_name(type_of(strip_all(*obj))) != "bitset" || !local_ids.contains(ref_id(*obj))) continue;
+        auto iid = ref_id(*idx);
+        if (!param_ids.contains(iid) || rel_ids.contains(iid) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-BITSET-INDEX", "bitset index without a size()/N guard");
+        break;
+    }
+    // CXX-CALL-ONCE: call_once with no once_flag object declared in the function.
+    {
+        bool flag_here = false;
+        for (auto& [id, d] : var_decl)
+            if (kind(*d) == "VarDecl" && std::string(qual_type(*d)).find("once_flag") != std::string::npos)
+                flag_here = true;
+        if (!flag_here)
+            for (auto* n : all)
+                if (is_call_kind(kind(*n)) && callee_name(*n) == "call_once" && n_children(*n) >= 2) {
+                    if (type_of(strip_all(child(*n, 1))).find("once_flag") != std::string::npos &&
+                        !ref_id(child(*n, 1)).empty() && !param_ids.contains(ref_id(child(*n, 1))))
+                        break;  // a flag object from an enclosing (namespace/class) scope
+                    if (ok_pos(*n)) ck.add(*n, "CXX-CALL-ONCE", "std::call_once invoked without an once_flag object in scope");
+                    break;
+                }
+    }
+    // CXX-CONSTRUCT-AT: p used after destroy_at(p) without a new construct_at(p).
+    {
+        std::set<std::string> destroyed;
+        std::set<const json*> args_of_lib;
+        for (auto* n : all) {
+            if (is_call_kind(kind(*n)) && n_children(*n) >= 2) {
+                auto cn = callee_name(*n);
+                auto pid = ref_id(child(*n, 1));
+                if (cn == "destroy_at" && !pid.empty()) {
+                    destroyed.insert(pid);
+                    collect_nodes(*n, [&](const json& x, const json*) { args_of_lib.insert(&x); });
+                    continue;
+                }
+                if (cn == "construct_at" && !pid.empty()) {
+                    destroyed.erase(pid);
+                    collect_nodes(*n, [&](const json& x, const json*) { args_of_lib.insert(&x); });
+                    continue;
+                }
+            }
+            if (args_of_lib.contains(n)) continue;
+            const json* p = nullptr;
+            if (kind(*n) == "UnaryOperator" && str_field(*n, "opcode") == "*" && n_children(*n) == 1) p = &child(*n, 0);
+            else if (kind(*n) == "MemberExpr" && flag(*n, "isArrow") && n_children(*n) == 1) p = &child(*n, 0);
+            else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) p = &child(*n, 0);
+            if (!p) continue;
+            auto pid = ref_id(*p);
+            if (pid.empty() || !destroyed.contains(pid) || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-CONSTRUCT-AT", "pointer used after destroy_at");
+            break;
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -6979,6 +7169,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_sync_rule_checks(*body, fn, w.ck);
     cxx_cast_rule_checks(*body, fn, w.ck);
     cxx_view_rule_checks(*body, fn, w.ck);
+    cxx_index_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
