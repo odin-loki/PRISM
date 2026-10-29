@@ -4201,51 +4201,6 @@ bool rx_index_arith(std::string_view p, std::string_view n, std::string_view tex
     return prism::Regex("\\b" + pe + "\\s*\\[\\s*" + ne + "\\s*\\]").search(text);
 }
 
-bool rx_constant_bound(std::string_view size, std::string_view body, const std::unordered_set<std::string>& params) {
-    std::string s(size);
-    for (auto k = s.find("sizeof"); k != std::string::npos; k = s.find("sizeof", k)) {
-        std::size_t e = k + 6;
-        while (e < s.size() && std::isspace(static_cast<unsigned char>(s.at(e)))) ++e;
-        if (e < s.size() && s.at(e) == '(') {
-            int depth = 0;
-            for (; e < s.size(); ++e) {
-                if (s.at(e) == '(') ++depth;
-                else if (s.at(e) == ')' && --depth == 0) break;
-            }
-            if (e >= s.size()) return false;
-            ++e;
-        } else {
-            while (e < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(e))) || s.at(e) == '_')) ++e;
-        }
-        s.replace(k, e - k, std::string(e - k, ' '));
-    }
-    for (std::size_t i = 0; i < s.size();) {
-        char c = s.at(i);
-        if (std::isdigit(static_cast<unsigned char>(c))) {
-            while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(i))) || s.at(i) == '.')) ++i;
-            continue;
-        }
-        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
-            std::size_t j = i;
-            bool caps = true, letter = false;
-            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s.at(j))) || s.at(j) == '_')) {
-                if (std::islower(static_cast<unsigned char>(s.at(j)))) caps = false;
-                if (std::isalpha(static_cast<unsigned char>(s.at(j)))) letter = true;
-                ++j;
-            }
-            std::string name = s.substr(i, j - i);
-            if (!caps || !letter || params.contains(name)) return false;
-            prism::Regex assigned(R"(\b)" + name + R"(\s*(?:=[^=]|\+\+|--|[-+*/%&|^]=))");
-            if (assigned.search(body)) return false;
-            i = j;
-            continue;
-        }
-        if (std::string_view("+-*/%()<> \t\n|&^~").find(c) == std::string_view::npos) return false;
-        ++i;
-    }
-    return true;
-}
-
 std::string rx_unwrap(std::string expr) {
     auto t = rx_strip(expr);
     while (t.starts_with('(') && t.ends_with(')')) {
@@ -4531,6 +4486,32 @@ void resource_leak_checks(const json& body, Checker& ck, Ctx& cx) {
     }
 }
 
+// MEM-VLA-SIZE: an automatic array whose bound is not a constant. A
+// constant bound is folded into the type (int[16] for int a[N]); a
+// variable-length one keeps its expression (int[n]).
+void vla_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    collect_nodes(body, [&](const json& n, const json*) {
+        if (kind(n) != "VarDecl") return;
+        const auto sc = str_field(n, "storageClass");
+        if (sc == "static" || sc == "extern") return;
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base) || p.macro) return;
+        const auto t = qual_type(n);
+        if (t.find('(') != std::string::npos) return;  // pointer to array / function types
+        for (auto lb = t.find('['); lb != std::string::npos; lb = t.find('[', lb + 1)) {
+            auto rb = t.find(']', lb);
+            if (rb == std::string::npos) return;
+            auto sz = strip_ws(t.substr(lb + 1, rb - lb - 1));
+            if (sz.empty() || std::all_of(sz.begin(), sz.end(), [](unsigned char c) { return std::isdigit(c); }))
+                continue;
+            ck.add(n, "MEM-VLA-SIZE", str_field(n, "name") + "[" + sz + "] is a variable-length local array");
+            return;
+        }
+    });
+}
+
 void conc_toctou_checks(const json& body, Checker& ck, Ctx& cx) {
     (void)cx;
     const auto base = begin_of(body);
@@ -4731,35 +4712,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
                 }
                 if (reported) break;
             }
-        }
-    }
-
-    // MEM-VLA-SIZE
-    {
-        static prism::Regex re(
-            R"re((?m)^\s*(?P<static>static\s+)?(?:const\s+|volatile\s+)?(?:unsigned\s+)?(?:char|short|int|long|float|double|size_t|ssize_t|ptrdiff_t|int\d+_t|uint\d+_t)\s+(?P<name>[A-Za-z_]\w*)\s*\[\s*(?P<size>[^\]]+)\s*\]\s*;)re",
-            true);
-        std::unordered_set<std::string> params;
-        for (auto& [typ, name] : fn.params) {
-            (void)typ;
-            if (!name.empty()) params.insert(name);
-        }
-        std::set<std::pair<std::string, int>> seen;
-        for (auto& m : re.finditer(fn.body)) {
-            if (!m.named("static").empty()) continue;
-            auto name = m.named("name");
-            if (params.contains(name) || rx_kw().contains(name)) continue;
-            auto size = rx_strip(m.named("size"));
-            if (rx_parse_int(size) || rx_constant_bound(size, fn.body, params)) continue;
-            // (?m)^\s* also eats the newline(s) before the declaration: count from its first token.
-            auto start = static_cast<std::size_t>(std::max(0, m.spans[0].first));
-            while (start < fn.body.size() && std::isspace(static_cast<unsigned char>(fn.body[start]))) ++start;
-            int rel_off = rx_nl(fn.body.substr(0, start));
-            auto key = std::pair{name, rel_off};
-            if (seen.contains(key)) continue;
-            seen.insert(key);
-            rx_add(ck, at, fn.span_first + rel_off, "MEM-VLA-SIZE",
-                   name + "[" + size + "] is a variable-length local array");
         }
     }
 
@@ -4994,6 +4946,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     lock_function_checks(*body, fn, w.ck, cx);
     resource_leak_checks(*body, w.ck, cx);
     conc_toctou_checks(*body, w.ck, cx);
+    vla_checks(*body, w.ck);
     conc_atomicity_checks(*body, fn, w.ck, cx);
     core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;

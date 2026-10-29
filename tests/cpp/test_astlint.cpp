@@ -1069,6 +1069,18 @@ int fd_open_bad(const char *path, int err) {
     close(fd);
     return 0;
 }
+enum { VLA_K = 4 };
+#define VLA_N 8
+void vla_const_ok(void) {
+    int a[VLA_K];
+    char b[VLA_N * 2];
+    (void)a;
+    (void)b;
+}
+void vla_2d_bad(int n) {
+    int m[n][4]; // expect: MEM-VLA-SIZE
+    (void)m;
+}
 )";
 
 const char* kPortedCxx = R"(#include <string>
