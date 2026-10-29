@@ -278,11 +278,20 @@ struct Tr final : pirmem::TrApi {
         auto w = [](const ir::Type& e) -> unsigned {
             if (e.kind == ir::Type::Ptr && e.text == "ptr") return kPtrW;
             if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+            if (e.kind == ir::Type::Float && e.text == "double") return 64u;  // std::complex<double>
+            if (e.kind == ir::Type::Float && e.text == "float") return 32u;
             return 0;
         };
         unsigned a = w(t.elems[0]), b = w(t.elems[1]);
         if (!a || !b) return std::nullopt;
         return std::pair{a, b};
+    }
+
+    // The fields of a { double, double } pair are floating-point variables.
+    void mark_fp_pair(const ir::Type& t, int a, int b) {
+        if (t.kind != ir::Type::Struct || t.elems.size() != 2) return;
+        out.vars[static_cast<std::size_t>(a)].fp = t.elems[0].kind == ir::Type::Float;
+        out.vars[static_cast<std::size_t>(b)].fp = t.elems[1].kind == ir::Type::Float;
     }
 
     int var_of(Frame& fr, const std::string& name) {
@@ -539,6 +548,7 @@ struct Tr final : pirmem::TrApi {
                         // rebuilt before `resume`, a returned std::pair ...)
                         int a = newvar(fr.prefix + in.result + ".0", sp->first);
                         int s = newvar(fr.prefix + in.result + ".1", sp->second);
+                        mark_fp_pair(in.ty, a, s);
                         fr.pairs[in.result] = {a, s};
                         fr.defs[in.result] = &in;
                         continue;
@@ -1435,7 +1445,10 @@ struct Tr final : pirmem::TrApi {
             if (auto it = fr.pairs.find(in.result); !in.result.empty() && it != fr.pairs.end())
                 cf.ret_pair = it->second;
             else
+            {
                 cf.ret_pair = std::pair{newvar(tmpname("ret"), ret_pair->first), newvar(tmpname("ret"), ret_pair->second)};
+                mark_fp_pair(callee->ret, cf.ret_pair->first, cf.ret_pair->second);
+            }
         } else if (callee->ret.kind != ir::Type::Void) {
             int rv = in.result.empty() ? newvar(tmpname("ret"), vwidth(callee->ret)) : result_var(fr, in);
             cf.ret_var = rv;
