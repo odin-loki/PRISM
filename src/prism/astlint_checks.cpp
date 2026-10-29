@@ -5955,7 +5955,9 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     // valueless_by_exception in the function.
     bool variant_guard_fn = false;
     for (auto& m : mcalls)
-        if (m.name == "emplace" || m.name == "valueless_by_exception") variant_guard_fn = true;
+        if (m.name.starts_with("emplace") || m.name == "valueless_by_exception") variant_guard_fn = true;
+    // libclang: v.emplace<I>(x) is not always a member call.
+    if (ck.cx.text_of(body).find(".emplace<") != std::string_view::npos) variant_guard_fn = true;
     if (!variant_guard_fn) {
         std::set<std::string> held;
         for (auto* g : gets)
@@ -7634,6 +7636,827 @@ void cxx_stream_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Twelfth batch: the rest of the bespoke CXX-* regex rules (locks, queues,
+// ranges outputs, borrowed views returned, discarded results, class-level
+// operator= / conversion checks). Shared facts first, then one block per class.
+std::string cls_of_type(const std::string& t) {
+    auto tn = template_name(t);
+    if (tn.empty()) tn = record_name(t);
+    auto c = tn.rfind("::");
+    return c == std::string::npos ? tn : tn.substr(c + 2);
+}
+
+// `class D ... : ... B` somewhere in the file text.
+bool derives_in_text(std::string_view text, const std::string& d, const std::string& b) {
+    if (d.empty() || b.empty() || d == b) return false;
+    auto word = [](std::string_view s, std::size_t i, std::size_t n) {
+        auto id = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+        return (i == 0 || !id(s[i - 1])) && (i + n >= s.size() || !id(s[i + n]));
+    };
+    for (std::size_t p = text.find(d); p != std::string_view::npos; p = text.find(d, p + 1)) {
+        if (!word(text, p, d.size())) continue;
+        auto pre = text.substr(0, p);
+        while (!pre.empty() && std::isspace(static_cast<unsigned char>(pre.back()))) pre.remove_suffix(1);
+        if (!pre.ends_with("struct") && !pre.ends_with("class")) continue;
+        auto head = text.substr(p + d.size());
+        head = head.substr(0, std::min(head.find('{'), head.find(';')));
+        auto colon = head.find(':');
+        if (colon == std::string_view::npos) continue;
+        auto bases = head.substr(colon);
+        for (auto q = bases.find(b); q != std::string_view::npos; q = bases.find(b, q + 1))
+            if (word(bases, q, b.size())) return true;
+    }
+    return false;
+}
+
+// The last `#pragma pack` before `at` set a 1-byte packing.
+bool packed_before(std::string_view text, std::size_t at) {
+    auto pre = text.substr(0, std::min(at, text.size()));
+    auto p = pre.rfind("#pragma pack");
+    if (p == std::string_view::npos) return false;
+    auto line = pre.substr(p, pre.find('\n', p) - p);
+    std::string s;
+    for (char c : line)
+        if (!std::isspace(static_cast<unsigned char>(c))) s += c;
+    return s.find("pack(1)") != std::string::npos || s.find("pack(push,1)") != std::string::npos;
+}
+
+void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto& cx = ck.cx;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all, lambdas;
+    std::map<const json*, const json*> parent;
+    std::function<void(const json&, const json*)> walk = [&](const json& n, const json* p) {
+        if (!n.is_object()) return;
+        all.push_back(&n);
+        parent[&n] = p;
+        if (kind(n) == "LambdaExpr" || kind(n) == "BlockExpr") {
+            lambdas.push_back(&n);
+            return;
+        }
+        for (auto& c : inner(n)) walk(c, &n);
+    };
+    walk(body, nullptr);
+    std::stable_sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    auto unwrap = [](const json& e0) {
+        const auto* e = &strip_all(e0);
+        while ((kind(*e) == "CXXConstructExpr" || is_explicit_cast(kind(*e))) && n_children(*e) == 1)
+            e = &strip_all(child(*e, 0));
+        return e;
+    };
+    // The statement position: only implicit wrappers between n and a block.
+    auto discarded = [&](const json& n) {
+        const json* p = parent.count(&n) ? parent[&n] : nullptr;
+        while (p && is_implicit_wrapper(kind(*p))) p = parent.count(p) ? parent[p] : nullptr;
+        return p && kind(*p) == "CompoundStmt";
+    };
+    auto up = [&](const json& n) {
+        const json* p = parent.count(&n) ? parent[&n] : nullptr;
+        while (p && (is_implicit_wrapper(kind(*p)) || kind(*p) == "ParenExpr")) p = parent.count(p) ? parent[p] : nullptr;
+        return p;
+    };
+    std::set<std::string> rel_ids, cond_ids, body_vars, static_vars;
+    std::set<const json*> cond_nodes;
+    std::map<std::string, const json*> vdecl;
+    std::map<std::string, std::string> init_text, init_call, cls_by_id, name_of_id;
+    std::map<std::string, const json*> init_expr;
+    struct MC {
+        const json* n;
+        std::string name;
+    };
+    std::map<std::string, std::vector<MC>> mcalls;
+    std::map<std::string, int> plain_refs;  // DeclRefs that are not a member-call object
+    for (auto& [id, d] : fn.locals) vdecl[id] = d;
+    auto mark_cond = [&](const json& c) {
+        std::function<void(const json&)> f = [&](const json& x) {
+            if (!x.is_object()) return;
+            cond_nodes.insert(&x);
+            if (auto id = ref_id(x); !id.empty()) cond_ids.insert(id);
+            for (auto& y : inner(x)) f(y);
+        };
+        f(c);
+    };
+    auto set_init = [&](const std::string& id, const json& e) {
+        init_text[id] += std::string(cx.text_of(e));
+        init_call[id] = any_callee_name(*unwrap(e));
+        init_expr[id] = &e;
+    };
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "VarDecl") {
+            auto id = std::string(str_field(*n, "id"));
+            vdecl[id] = n;
+            body_vars.insert(id);
+            if (str_field(*n, "storageClass") == "static") static_vars.insert(id);
+            init_text[id] = std::string(cx.text_of(*n));
+            for (auto& c : inner(*n))
+                if (!kind(c).ends_with("Attr")) {
+                    set_init(id, c);
+                    break;
+                }
+        } else if (k == "DeclRefExpr") {
+            auto id = std::string(str_field(ref_decl(*n), "id"));
+            if (!id.empty() && !cls_by_id.contains(id)) cls_by_id[id] = cls_of_type(type_of(*n));
+            if (!id.empty()) name_of_id[id] = std::string(str_field(ref_decl(*n), "name"));
+            const json* p = up(*n);
+            bool mbase = p && kind(*p) == "MemberExpr" && parent.count(p) && parent[p] &&
+                         kind(*parent[p]) == "CXXMemberCallExpr";
+            if (!mbase) ++plain_refs[id];
+        } else if (k == "CXXMemberCallExpr") {
+            if (auto o = mcall_obj(*n); !o.empty()) mcalls[o].push_back({n, mcall_name(*n)});
+        } else if (k == "BinaryOperator" && n_children(*n) == 2) {
+            auto op = str_field(*n, "opcode");
+            for (int i = 0; i < 2; ++i)
+                if (auto id = ref_id(child(*n, i)); !id.empty() && one_of(op, {"<", "<=", ">", ">="})) rel_ids.insert(id);
+            if (one_of(op, {"==", "!=", "&&", "||"})) mark_cond(*n);
+            if (op == "=")
+                if (auto id = ref_id(child(*n, 0)); !id.empty()) set_init(id, child(*n, 1));
+        } else if (k == "UnaryOperator" && str_field(*n, "opcode") == "!") {
+            mark_cond(*n);
+        } else if ((k == "IfStmt" || k == "WhileStmt" || k == "ConditionalOperator" || k == "SwitchStmt") &&
+                   n_children(*n) > 0) {
+            // if (init; cond): the condition is the last expression before the branches.
+            if (k == "IfStmt" && n_children(*n) >= 2 && flag(*n, "hasInit")) mark_cond(child(*n, 1));
+            mark_cond(child(*n, 0));
+        } else if (k == "ForStmt") {
+            for (auto& c : inner(*n))
+                if (kind(c) != "CompoundStmt" && !kind(c).ends_with("Stmt")) mark_cond(c);
+        }
+        if (one_of(mcall_name(*n), {"operator bool", "has_value"})) cond_ids.insert(mcall_obj(*n));
+    }
+    auto objcls = [&](const std::string& id) {
+        if (auto it = vdecl.find(id); it != vdecl.end()) {
+            auto c = decl_class(*it->second);
+            if (!c.empty()) return c;
+        }
+        return cls_by_id.contains(id) ? cls_by_id[id] : std::string();
+    };
+    auto has_m = [&](const std::string& id, std::initializer_list<std::string_view> names) {
+        if (!mcalls.contains(id)) return false;
+        for (auto& m : mcalls[id])
+            if (one_of(m.name, names)) return true;
+        return false;
+    };
+    auto call_named = [](const json& n, std::initializer_list<std::string_view> names) {
+        return is_call_kind(kind(n)) && kind(n) != "CXXMemberCallExpr" && one_of(callee_name(n), names);
+    };
+    auto sub_parts = [](const json& n, const json*& obj, const json*& idx) {
+        obj = idx = nullptr;
+        if (subscript_op(n)) obj = &child(n, 1), idx = &child(n, 2);
+        else if (kind(n) == "ArraySubscriptExpr" && n_children(n) == 2) obj = &child(n, 0), idx = &child(n, 1);
+        return obj != nullptr;
+    };
+    auto idx_unguarded = [&](const json& idx) {
+        const auto& i = strip_all(idx);
+        if (int_value(i)) return false;
+        auto id = ref_id(i);
+        return !id.empty() && !rel_ids.contains(id) && !cond_ids.contains(id);
+    };
+    auto sized = [&](const std::string& id) { return has_m(id, {"size", "empty", "ssize"}) || cond_ids.contains(id); };
+    auto flag_index = [&](const std::set<std::string>& objs, const char* cls, const char* msg) {
+        if (objs.empty()) return;
+        for (auto* n : all) {
+            const json *obj, *idx;
+            if (!sub_parts(*n, obj, idx)) continue;
+            auto id = ref_id(*obj);
+            if (!objs.contains(id) || sized(id) || !idx_unguarded(*idx) || !ok_pos(*n)) continue;
+            ck.add(*n, cls, msg);
+            return;
+        }
+    };
+    auto vars_where = [&](const std::function<bool(const std::string&)>& pred) {
+        std::set<std::string> s;
+        for (auto& [id, d] : vdecl)
+            if (pred(id)) s.insert(id);
+        return s;
+    };
+    auto init_has = [&](const std::string& id, std::initializer_list<std::string_view> subs) {
+        if (!init_text.contains(id)) return false;
+        for (auto s : subs)
+            if (init_text[id].find(s) != std::string::npos) return true;
+        return false;
+    };
+
+    // Index-without-guard family.
+    flag_index(vars_where([&](auto& id) {
+                   auto qt = std::string(qual_type(*vdecl[id]));
+                   return (qt.find("pmr::") != std::string::npos ||
+                           type_of(*vdecl[id]).find("polymorphic_allocator") != std::string::npos) &&
+                          !is_pointer_type(qt);
+               }),
+               "CXX-PMR", "std::pmr container indexed without a size() guard");
+    flag_index(vars_where([&](auto& id) { return init_has(id, {"ranges::to<", "ranges::to("}); }), "CXX-RANGES-TO",
+               "ranges::to result indexed without a size guard");
+    flag_index(vars_where([&](auto& id) { return init_has(id, {"views::zip", "zip_view"}); }), "CXX-RANGES-ZIP",
+               "zip view indexed without a size guard");
+    flag_index(vars_where([&](auto& id) { return init_call[id] == "to_array"; }), "CXX-TO-ARRAY",
+               "std::to_array result indexed without a size guard");
+    flag_index(vars_where([&](auto& id) { return init_call[id] == "to_address"; }), "CXX-TO-ADDRESS",
+               "std::to_address result indexed without a bound");
+    flag_index(vars_where([&](auto& id) {
+                   return std::string(qual_type(*vdecl[id])).find("type_identity") != std::string::npos ||
+                          init_has(id, {"type_identity"});
+               }),
+               "CXX-TYPE-IDENTITY", "pointer recast through std::type_identity indexed without a bound");
+    flag_index(vars_where([&](auto& id) {
+                   return decl_class(*vdecl[id]) == "basic_const_iterator" ||
+                          init_has(id, {"basic_const_iterator", "make_const_iterator"});
+               }),
+               "CXX-CONST-ITERATOR", "basic_const_iterator indexed without a bound");
+    {
+        struct U {
+            const char* cls;
+            std::initializer_list<std::string_view> names;
+            std::size_t dest;
+        };
+        const U us[] = {{"CXX-UNINITIALIZED-COPY", {"uninitialized_copy", "uninitialized_move"}, 3},
+                        {"CXX-UNINITIALIZED-COPY", {"uninitialized_copy_n", "uninitialized_move_n"}, 3},
+                        {"CXX-UNINITIALIZED-FILL", {"uninitialized_fill", "uninitialized_fill_n",
+                                                    "uninitialized_default_construct", "uninitialized_default_construct_n"}, 1},
+                        {"CXX-UNINITIALIZED-VALUE", {"uninitialized_value_construct", "uninitialized_value_construct_n"}, 1}};
+        for (auto& u : us) {
+            std::set<std::string> d;
+            for (auto* n : all)
+                if (call_named(*n, u.names) && n_children(*n) > u.dest)
+                    if (auto id = range_obj(child(*n, u.dest)); !id.empty()) d.insert(id);
+            flag_index(d, u.cls, "uninitialized-memory algorithm destination indexed without a bound");
+        }
+    }
+    // CXX-TO-UNDERLYING: to_underlying result as an unguarded index.
+    for (auto* n : all) {
+        const json *obj, *idx;
+        if (!sub_parts(*n, obj, idx)) continue;
+        const auto& i = *unwrap(*idx);
+        auto id = ref_id(i);
+        bool hit = call_named(i, {"to_underlying"}) ||
+                   (!id.empty() && init_call[id] == "to_underlying" && !rel_ids.contains(id) && !cond_ids.contains(id));
+        if (!hit || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-TO-UNDERLYING", "std::to_underlying result used as an index without an enum-range guard");
+        break;
+    }
+    // CXX-IS-CONSTANT-EVALUATED: the runtime branch indexes without a guard.
+    for (auto* n : all) {
+        if (kind(*n) != "IfStmt" || n_children(*n) < 2) continue;
+        bool ice = false;
+        std::function<void(const json&)> f = [&](const json& x) {
+            if (!x.is_object()) return;
+            if (call_named(x, {"is_constant_evaluated"})) ice = true;
+            for (auto& y : inner(x)) f(y);
+        };
+        f(child(*n, 0));
+        if (!ice) continue;
+        const json* hit = nullptr;
+        std::function<void(const json&)> g = [&](const json& x) {
+            if (!x.is_object() || hit) return;
+            const json *obj, *idx;
+            if (sub_parts(x, obj, idx) && idx_unguarded(*idx) && !sized(ref_id(*obj))) hit = &x;
+            for (auto& y : inner(x)) g(y);
+        };
+        for (std::size_t i = 1; i < n_children(*n); ++i) g(child(*n, i));
+        if (hit && ok_pos(*hit)) {
+            ck.add(*hit, "CXX-IS-CONSTANT-EVALUATED", "is_constant_evaluated() branch indexes without a bound");
+            break;
+        }
+    }
+    // Lock family: lock() with no unlock() and no RAII guard over the object.
+    {
+        struct L {
+            const char* cls;
+            std::string_view type;
+        };
+        const L ls[] = {{"CXX-RECURSIVE-MUTEX", "recursive_mutex"},
+                        {"CXX-RECURSIVE-TIMED-MUTEX", "recursive_timed_mutex"},
+                        {"CXX-TIMED-MUTEX", "timed_mutex"},
+                        {"CXX-SHARED-TIMED-MUTEX", "shared_timed_mutex"}};
+        for (auto& l : ls) {
+            bool done = false;
+            for (auto& [obj, ms] : mcalls) {
+                if (done || objcls(obj) != l.type) continue;
+                if (has_m(obj, {"unlock", "unlock_shared"}) || plain_refs[obj] > 0) continue;
+                for (auto& m : ms)
+                    if (one_of(m.name, {"lock", "lock_shared"}) && ok_pos(*m.n)) {
+                        ck.add(*m.n, l.cls, std::string(l.type) + ".lock() without unlock or a lock guard");
+                        done = true;
+                        break;
+                    }
+            }
+            if (done || l.type != "timed_mutex") continue;
+            for (auto& [obj, ms] : mcalls) {
+                if (done || objcls(obj) != l.type) continue;
+                for (auto& m : ms)
+                    if (one_of(m.name, {"try_lock", "try_lock_for", "try_lock_until"}) && discarded(*m.n) &&
+                        ok_pos(*m.n)) {
+                        ck.add(*m.n, l.cls, "timed_mutex try_lock result discarded");
+                        done = true;
+                        break;
+                    }
+            }
+        }
+    }
+    // Per-object method rules.
+    auto first_m = [&](const char* cls, std::initializer_list<std::string_view> types,
+                       std::initializer_list<std::string_view> uses, std::initializer_list<std::string_view> guards,
+                       bool cond_guards, const char* msg) {
+        for (auto* n : all) {
+            if (kind(*n) != "CXXMemberCallExpr" || !one_of(mcall_name(*n), uses)) continue;
+            auto obj = mcall_obj(*n);
+            if (obj.empty() || !one_of(objcls(obj), types) || has_m(obj, guards)) continue;
+            if (cond_guards && cond_ids.contains(obj)) continue;
+            if (!ok_pos(*n)) continue;
+            ck.add(*n, cls, msg);
+            return;
+        }
+    };
+    // CXX-QUEUE-FRONT: front()/pop() with no empty() test and no push on every path before it.
+    {
+        std::map<std::string, long long> pushed;
+        for (auto* n : all) {
+            if (!one_of(mcall_name(*n), {"push", "emplace", "push_range"}) || !discarded(*n)) continue;
+            const json* p = up(*n);
+            auto o = mcall_obj(*n);
+            if (p == &body && !o.empty() && !pushed.contains(o)) pushed[o] = off(*n);
+        }
+        for (auto* n : all) {
+            if (kind(*n) != "CXXMemberCallExpr" || !one_of(mcall_name(*n), {"front", "back", "pop", "top"})) continue;
+            auto obj = mcall_obj(*n);
+            if (obj.empty() || !one_of(objcls(obj), {"queue", "priority_queue"}) || has_m(obj, {"empty", "size"})) continue;
+            if (cond_ids.contains(obj) || (pushed.contains(obj) && pushed[obj] < off(*n)) || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-QUEUE-FRONT", "queue front()/pop() without an empty() check");
+            break;
+        }
+    }
+    first_m("CXX-CORO-HANDLE", {"coroutine_handle"}, {"resume"}, {"done"}, true, "coroutine_handle resumed without done()");
+    first_m("CXX-WSTRING-CONVERT", {"wstring_convert"}, {"to_bytes", "from_bytes"}, {"converted"}, false,
+            "wstring_convert used without checking converted()");
+    first_m("CXX-SYSTEM-ERROR", {"system_error"}, {"what"}, {"code"}, false, "system_error handled without its code()");
+    // CXX-RANGES-JOIN: front()/back()/begin() of a join view with no emptiness test.
+    for (auto* n : all) {
+        if (kind(*n) != "CXXMemberCallExpr" || !one_of(mcall_name(*n), {"front", "back"})) continue;
+        auto obj = mcall_obj(*n);
+        if (obj.empty() || !init_has(obj, {"views::join", "join_view"}) || sized(obj) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-RANGES-JOIN", "join view element read without an emptiness check");
+        break;
+    }
+    // CXX-SHARED-LOCK: try_to_lock / defer_lock shared_lock never tested.
+    for (auto& id : body_vars) {
+        auto* d = vdecl[id];
+        if (decl_class(*d) != "shared_lock" || !init_has(id, {"try_to_lock", "defer_lock"})) continue;
+        if (has_m(id, {"owns_lock", "lock", "try_lock"}) || cond_ids.contains(id) || !ok_pos(*d)) continue;
+        ck.add(*d, "CXX-SHARED-LOCK", "shared_lock with try_to_lock/defer_lock used without owns_lock()");
+        break;
+    }
+    // CXX-MOVE-ONLY-FUNCTION: invoked, never tested.
+    for (auto* n : all) {
+        if (kind(*n) != "CXXOperatorCallExpr" || n_children(*n) < 2 ||
+            str_field(ref_decl(strip_all(child(*n, 0))), "name") != "operator()")
+            continue;
+        auto id = ref_id(child(*n, 1));
+        if (id.empty() || objcls(id) != "move_only_function" || cond_ids.contains(id) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-MOVE-ONLY-FUNCTION", "move_only_function invoked without a truth test");
+        break;
+    }
+    // CXX-VARIANT-VALUELSS: std::get after emplace, no valueless check.
+    {
+        std::map<std::string, long long> emplaced;
+        for (auto* n : all) {
+            std::string o;
+            if (mcall_name(*n).starts_with("emplace")) o = mcall_obj(*n);
+            if (o.empty() && is_call_kind(kind(*n))) {
+                // libclang: v.emplace<I>(x) may not come out as a member call.
+                auto t = std::string(cx.text_of(*n));
+                auto q = t.find(".emplace<");
+                if (q != std::string::npos)
+                    for (auto& [id, nm] : name_of_id)
+                        if (!nm.empty() && strip_ws(t.substr(0, q)) == nm) o = id;
+            }
+            if (!o.empty() && objcls(o) == "variant" && !emplaced.contains(o)) emplaced[o] = off(*n);
+        }
+        std::set<std::string> checked;
+        for (auto* n : all)
+            if (call_named(*n, {"holds_alternative", "get_if"}) && n_children(*n) >= 2) checked.insert(range_obj(child(*n, 1)));
+        for (auto* n : all) {
+            if (emplaced.empty()) break;
+            if (!call_named(*n, {"get"}) || n_children(*n) < 2) continue;
+            auto id = ref_id(child(*n, 1));
+            if (!emplaced.contains(id) || off(*n) <= emplaced[id] || checked.contains(id)) continue;
+            if (has_m(id, {"valueless_by_exception", "index"}) || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-VARIANT-VALUELSS", "std::get after emplace without valueless_by_exception()");
+            break;
+        }
+    }
+    // CXX-CHRONO-TZDB / CXX-ZONED-TIME.
+    {
+        bool tz = false;
+        for (auto* n : all) {
+            if (tz) break;
+            if (!call_named(*n, {"current_zone", "locate_zone"}) || !ok_pos(*n)) continue;
+            const json* p = up(*n);
+            bool hit = p && kind(*p) == "MemberExpr";
+            if (!hit && p && kind(*p) == "VarDecl") {
+                auto id = std::string(str_field(*p, "id"));
+                bool used = false;
+                for (auto* m : all)
+                    if (kind(*m) == "MemberExpr" && n_children(*m) == 1 && ref_id(child(*m, 0)) == id) used = true;
+                hit = used && !cond_ids.contains(id);
+            }
+            if (!hit) continue;
+            ck.add(*n, "CXX-CHRONO-TZDB", "time zone pointer used without a null check");
+            tz = true;
+        }
+        for (auto& id : body_vars) {
+            auto* d = vdecl[id];
+            if (decl_class(*d) != "zoned_time") continue;
+            bool hit = false;
+            std::function<void(const json&)> f = [&](const json& x) {
+                if (!x.is_object()) return;
+                if (call_named(x, {"locate_zone"})) hit = true;
+                if (auto r = ref_id(x); !r.empty() && init_call[r] == "locate_zone" && !cond_ids.contains(r)) hit = true;
+                for (auto& y : inner(x)) f(y);
+            };
+            f(*d);
+            if (init_text[id].find("locate_zone(") != std::string::npos) hit = true;
+            if (!hit || !ok_pos(*d)) continue;
+            ck.add(*d, "CXX-ZONED-TIME", "zoned_time built from locate_zone without a null check");
+            break;
+        }
+    }
+    // Discarded results: set_terminate, try_lock (above), std::unexpected.
+    for (auto* n : all) {
+        if (!discarded(*n)) continue;
+        const auto& s = strip_all(*n);
+        if (call_named(s, {"set_terminate"}) && ok_pos(s)) {
+            ck.add(s, "CXX-SET-TERMINATE", "set_terminate without storing the previous handler");
+            break;
+        }
+    }
+    for (auto* n : all) {
+        if (!discarded(*n)) continue;
+        const auto& s = strip_all(*n);
+        if (!one_of(kind(s), {"CXXFunctionalCastExpr", "CXXTemporaryObjectExpr", "CXXConstructExpr"})) continue;
+        if (cls_of_type(type_of(s)) != "unexpected" || !ok_pos(s)) continue;
+        ck.add(s, "CXX-UNEXPECTED", "std::unexpected constructed and discarded");
+        break;
+    }
+    // CXX-UNCAUGHT-EXCEPTIONS: tested as a bool with no saved count.
+    {
+        bool saved = false;
+        for (auto& [id, c] : init_call)
+            if (c == "uncaught_exceptions") saved = true;
+        if (!saved)
+            for (auto* n : all)
+                if (call_named(*n, {"uncaught_exceptions"}) && cond_nodes.contains(n) && ok_pos(*n)) {
+                    ck.add(*n, "CXX-UNCAUGHT-EXCEPTIONS", "uncaught_exceptions() as a bool without a saved count");
+                    break;
+                }
+    }
+    // CXX-UNREACHABLE: std::unreachable in a function that also returns.
+    {
+        bool rets = false;
+        for (auto* n : all)
+            if (kind(*n) == "ReturnStmt") rets = true;
+        if (rets)
+            for (auto* n : all)
+                if (call_named(*n, {"unreachable"}) && ok_pos(*n)) {
+                    ck.add(*n, "CXX-UNREACHABLE", "std::unreachable() on a path the function can otherwise return from");
+                    break;
+                }
+    }
+    // CXX-STD-FORMAT: runtime format string.
+    for (auto* n : all) {
+        if (!call_named(*n, {"vformat", "vprint_unicode", "vprint_nonunicode"}) || n_children(*n) < 3) continue;
+        std::size_t a = 1;
+        if (type_of(strip_all(child(*n, 1))).find("locale") != std::string::npos ||
+            type_of(strip_all(child(*n, 1))).find("FILE") != std::string::npos)
+            a = 2;
+        if (a >= n_children(*n)) continue;
+        const auto& f = *unwrap(child(*n, a));
+        if (kind(f) == "StringLiteral" || !ok_pos(*n)) continue;
+        if (auto id = ref_id(f); !id.empty() && vdecl.contains(id) &&
+                                 std::string(qual_type(*vdecl[id])).starts_with("const"))
+            continue;
+        ck.add(*n, "CXX-STD-FORMAT", "format call with a non-literal format string");
+        break;
+    }
+    // CXX-THIS-THREAD: sleep as the only sync around a shared store.
+    {
+        const json* sleep = nullptr;
+        bool sync = false, shared_store = false;
+        for (auto* n : all) {
+            if (!sleep && call_named(*n, {"sleep_for", "sleep_until"})) sleep = n;
+            auto c = cls_of_type(type_of(*n));
+            if (one_of(c, {"lock_guard", "unique_lock", "scoped_lock", "atomic", "condition_variable"}) ||
+                one_of(mcall_name(*n), {"lock", "store", "notify_one", "notify_all"}))
+                sync = true;
+            if (kind(*n) == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+                const auto& l = strip_all(child(*n, 0));
+                auto id = ref_id(l);
+                if (id.empty() || (vdecl.contains(id) && !static_vars.contains(id))) continue;
+                if (str_field(ref_decl(l), "kind") != "VarDecl" && !static_vars.contains(id)) continue;
+                if (type_of(l).find("atomic") != std::string::npos) continue;
+                shared_store = true;
+            }
+        }
+        if (sleep && !sync && shared_store && ok_pos(*sleep))
+            ck.add(*sleep, "CXX-THIS-THREAD", "this_thread::sleep_for used as synchronisation around a shared store");
+    }
+    // Borrowed storage of a local returned.
+    auto owning_local = [&](const std::string& id) {
+        if (!body_vars.contains(id) || static_vars.contains(id)) return false;
+        auto qt = std::string(qual_type(*vdecl[id]));
+        if (is_pointer_type(qt) || qt.find('&') != std::string::npos) return false;
+        auto c = decl_class(*vdecl[id]);
+        if (c.find("stream") != std::string::npos || c.find("spanbuf") != std::string::npos) return false;
+        return !one_of(c, {"span", "basic_string_view", "string_view", "wstring_view", "u8string_view",
+                           "reference_wrapper", "mdspan"});
+    };
+    std::function<bool(const json&, int)> refs_local = [&](const json& e, int depth) {
+        bool hit = false;
+        std::function<void(const json&)> f = [&](const json& x) {
+            if (!x.is_object() || hit) return;
+            if (auto id = ref_id(x); !id.empty()) {
+                if (owning_local(id)) hit = true;
+                else if (depth < 2 && body_vars.contains(id) && init_expr.contains(id) && init_expr[id] != &x &&
+                         refs_local(*init_expr[id], depth + 1))
+                    hit = true;
+            }
+            if (kind(x) == "LambdaExpr") return;
+            for (auto& y : inner(x)) f(y);
+        };
+        f(e);
+        return hit;
+    };
+    {
+        auto rc = cls_of_type(fn.ret);
+        const char* cls = nullptr;
+        if (rc == "span") cls = "CXX-SPAN-DANGLE";
+        else if (rc == "reference_wrapper") cls = "CXX-REFERENCE-WRAPPER";
+        else if (fn.ret.find("u8string_view") != std::string::npos || fn.ret.find("string_view<char8_t") != std::string::npos)
+            cls = "CXX-U8STRING-VIEW";
+        else if (fn.ret.find("wstring_view") != std::string::npos || fn.ret.find("string_view<wchar_t") != std::string::npos)
+            cls = "CXX-WSTRING-VIEW";
+        bool span_stream = !one_of(rc, {"span", "basic_string_view", "string_view"}), this_cap = false;
+        for (auto* n : all) {
+            if (kind(*n) != "ReturnStmt" || n_children(*n) == 0) continue;
+            const auto& e = child(*n, 0);
+            if (cls && ok_pos(*n) && refs_local(e, 0)) {
+                ck.add(*n, cls, "returned view/reference borrows a local's storage");
+                cls = nullptr;
+            }
+            std::function<void(const json&)> f = [&](const json& x) {
+                if (!x.is_object()) return;
+                if (!span_stream && one_of(mcall_name(x), {"span", "view"})) {
+                    auto o = mcall_obj(x);
+                    if (!o.empty() && body_vars.contains(o) && !static_vars.contains(o) &&
+                        objcls(o).find("spanstream") != std::string::npos &&
+                        ok_pos(*n)) {
+                        ck.add(*n, "CXX-SPANSTREAM", "spanstream view returned past the stream's lifetime");
+                        span_stream = true;
+                    }
+                }
+                if (!this_cap && kind(x) == "LambdaExpr" && fn.kind == "CXXMethodDecl" && ok_pos(*n)) {
+                    auto t = std::string(cx.text_of(x));
+                    auto caps = t.substr(0, t.find(']') == std::string::npos ? 0 : t.find(']') + 1);
+                    bool by_this = false;
+                    for (auto p = caps.find("this"); p != std::string::npos; p = caps.find("this", p + 1))
+                        if (p == 0 || caps[p - 1] != '*') by_this = true;
+                    bool dflt = caps.starts_with("[=") || caps.starts_with("[&");
+                    bool uses_this = false;
+                    std::function<void(const json&)> g = [&](const json& y) {
+                        if (!y.is_object()) return;
+                        if (kind(y) == "CXXThisExpr") uses_this = true;
+                        for (auto& z : inner(y)) g(z);
+                    };
+                    for (auto& z : inner(x)) g(z);
+                    if (by_this || (dflt && uses_this)) {
+                        ck.add(*n, "CXX-THIS-CAPTURE", "returned lambda captures this");
+                        this_cap = true;
+                    }
+                    return;
+                }
+                for (auto& y : inner(x)) f(y);
+            };
+            f(e);
+        }
+    }
+    // CXX-SSTREAM-VIEW: a view / pointer bound to stringstream::str().
+    for (auto& id : body_vars) {
+        auto* d = vdecl[id];
+        auto c = decl_class(*d);
+        if (!one_of(c, {"basic_string_view", "string_view"}) && !is_pointer_type(std::string(qual_type(*d)))) continue;
+        if (!init_expr.contains(id) || init_expr[id] == nullptr) continue;
+        bool hit = false;
+        std::function<void(const json&)> f = [&](const json& x) {
+            if (!x.is_object()) return;
+            if (mcall_name(x) == "str" && objcls(mcall_obj(x)).find("stringstream") != std::string::npos &&
+                n_children(x) == 1)
+                hit = true;
+            for (auto& y : inner(x)) f(y);
+        };
+        f(*init_expr[id]);
+        if (!hit || !ok_pos(*d)) continue;
+        ck.add(*d, "CXX-SSTREAM-VIEW", "view of a stringstream::str() temporary");
+        break;
+    }
+    // CXX-PLACEMENT-NEW: placement new of T into a pointer to an unrelated object type.
+    for (auto* n : all) {
+        if (kind(*n) != "CXXNewExpr") continue;
+        auto t = std::string(cx.text_of(*n));
+        auto p = t.find("new");
+        if (p == std::string::npos) continue;
+        std::size_t i = p + 3;
+        while (i < t.size() && std::isspace(static_cast<unsigned char>(t[i]))) ++i;
+        if (i >= t.size() || t[i] != '(') continue;
+        auto close = t.find(')', i);
+        if (close == std::string::npos) continue;
+        auto arg = strip_ws(t.substr(i + 1, close - i - 1));
+        std::size_t j = close + 1;
+        while (j < t.size() && std::isspace(static_cast<unsigned char>(t[j]))) ++j;
+        std::size_t k = j;
+        while (k < t.size() && (std::isalnum(static_cast<unsigned char>(t[k])) || t[k] == '_' || t[k] == ':')) ++k;
+        auto newt = t.substr(j, k - j);
+        if (newt.starts_with("std::")) newt = newt.substr(5);
+        const json* d = nullptr;
+        for (auto& [id, v] : vdecl)
+            if (str_field(*v, "name") == arg) d = v;
+        if (!d || newt.empty()) continue;
+        auto qt = std::string(qual_type(*d));
+        if (!is_pointer_type(qt)) continue;
+        auto pt = pointee_of(qt);
+        for (auto* q : {"struct ", "class "})
+            if (pt.starts_with(q)) pt = pt.substr(std::strlen(q));
+        if (pt.empty() || char_like(pt) || pt == newt || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-PLACEMENT-NEW", "placement new of " + newt + " into a " + pt + " pointer");
+        break;
+    }
+    // CXX-PACK-PRAGMA: address of a non-char member of a pack(1) struct.
+    for (auto* n : all) {
+        if (kind(*n) != "UnaryOperator" || str_field(*n, "opcode") != "&" || n_children(*n) != 1) continue;
+        const auto& me = strip_all(child(*n, 0));
+        if (kind(me) != "MemberExpr" || n_children(me) != 1) continue;
+        auto ft = type_of(me);
+        if (char_like(ft) || ft.find('[') != std::string::npos) continue;
+        auto rt = type_of(strip_all(child(me, 0)));
+        auto rn = record_name(rt);
+        if (auto c = rn.rfind("::"); c != std::string::npos) rn = rn.substr(c + 2);
+        if (rn.empty()) continue;
+        auto p = begin_of(*n);
+        auto* fc = cx.file(p.file);
+        if (!fc) continue;
+        std::string_view text(fc->text);
+        bool packed = false;
+        for (std::size_t q = text.find(rn); q != std::string_view::npos && !packed; q = text.find(rn, q + 1)) {
+            auto pre = text.substr(0, q);
+            while (!pre.empty() && pre.back() == ' ') pre.remove_suffix(1);
+            if ((pre.ends_with("struct") || pre.ends_with("class")) && packed_before(text, q)) packed = true;
+        }
+        if (!packed || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-PACK-PRAGMA", "address of a member of a #pragma pack(1) struct");
+        break;
+    }
+    // CXX-SLICING: a derived object copied into a by-value base parameter.
+    for (auto* n : all) {
+        if (kind(*n) != "CXXConstructExpr" || n_children(*n) != 1) continue;
+        const json* p = up(*n);
+        if (!p || !is_call_kind(kind(*p))) continue;
+        const auto& a = strip_all(child(*n, 0));
+        if (kind(a) != "DeclRefExpr") continue;
+        auto b = cls_of_type(type_of(*n)), d = cls_of_type(type_of(a));
+        auto* fc = cx.file(begin_of(*n).file);
+        if (!fc || !derives_in_text(fc->text, d, b) || !ok_pos(*n)) continue;
+        ck.add(*n, "CXX-SLICING", d + " passed by value as " + b);
+        break;
+    }
+    // operator= rules: CXX-SELF-ASSIGN, CXX-COPY-ASSIGN-PTR.
+    if (fn.name == "operator=") {
+        bool self_test = false;
+        const json* del = nullptr;
+        const json* shallow = nullptr;
+        for (auto* n : all) {
+            if (kind(*n) == "BinaryOperator" && n_children(*n) == 2 && one_of(str_field(*n, "opcode"), {"==", "!="}))
+                for (int i = 0; i < 2; ++i)
+                    if (kind(strip_all(child(*n, i))) == "CXXThisExpr") self_test = true;
+            if (!del && kind(*n) == "CXXDeleteExpr") del = n;
+            if (!shallow && kind(*n) == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+                const auto& l = strip_all(child(*n, 0));
+                const auto& r = strip_all(child(*n, 1));
+                if (kind(l) == "MemberExpr" && kind(r) == "MemberExpr" && n_children(l) == 1 && n_children(r) == 1 &&
+                    kind(strip_all(child(l, 0))) == "CXXThisExpr" && kind(strip_all(child(r, 0))) != "CXXThisExpr" &&
+                    is_pointer_type(type_of(l)))
+                    shallow = n;
+            }
+        }
+        if (del && !self_test && ok_pos(*del)) ck.add(*del, "CXX-SELF-ASSIGN", "operator= deletes before a self-assignment test");
+        if (shallow && ok_pos(*shallow))
+            ck.add(*shallow, "CXX-COPY-ASSIGN-PTR", "operator= shallow-copies a raw pointer member");
+    }
+    // CXX-EXPLICIT-CTOR: implicit operator bool.
+    if (fn.kind == "CXXConversionDecl" && fn.node && fn.name == "operator bool") {
+        auto t = std::string(cx.text_of(*fn.node));
+        auto p = t.find("operator");
+        if (p != std::string::npos && t.substr(0, p).find("explicit") == std::string::npos && ok_pos(*fn.node))
+            ck.add(*fn.node, "CXX-EXPLICIT-CTOR", "operator bool without explicit");
+    }
+}
+
+// Class-level: CXX-SPACESHIP-DEFAULT, CXX-UNINIT-MEMBER.
+void record_rule_checks(const json& rec, Ctx& cx) {
+    const auto p = begin_of(rec);
+    if (c_source(p) || p.macro || !p.file || !cx.files.wanted(*p.file)) return;
+    const std::string rname(str_field(rec, "name"));
+    struct F {
+        std::string name, type;
+        bool init;
+    };
+    std::vector<F> fields;
+    bool has_ptr = false;
+    for (auto& c : inner(rec)) {
+        if (kind(c) != "FieldDecl") continue;
+        auto t = std::string(cx.text_of(c));
+        auto nm = std::string(str_field(c, "name"));
+        auto at = t.rfind(nm);
+        bool init = at != std::string::npos && (t.find('=', at) != std::string::npos || t.find('{', at) != std::string::npos);
+        if (n_children(c) > 0) init = true;
+        auto qt = std::string(qual_type(c));
+        if (is_pointer_type(qt)) has_ptr = true;
+        fields.push_back({nm, qt, init});
+    }
+    auto scalar = [](std::string t) {
+        if (t.starts_with("const ")) return false;
+        if (is_pointer_type(t)) return true;
+        return one_of(t, {"int", "unsigned int", "unsigned", "long", "unsigned long", "long long", "unsigned long long",
+                          "short", "unsigned short", "bool", "float", "double", "char", "size_t", "std::size_t",
+                          "int32_t", "uint32_t", "int64_t", "uint64_t", "std::int32_t", "std::uint32_t",
+                          "std::int64_t", "std::uint64_t"});
+    };
+    bool sp_done = false, um_done = false;
+    for (auto& c : inner(rec)) {
+        const auto& k = kind(c);
+        if (flag(c, "isImplicit")) continue;
+        auto t = std::string(cx.text_of(c));
+        if (!sp_done && k == "CXXMethodDecl" && str_field(c, "name") == "operator<=>" && has_ptr &&
+            t.find("default") != std::string::npos && !begin_of(c).macro) {
+            cx.add_at(begin_of(c), rname, "CXX-SPACESHIP-DEFAULT", "defaulted operator<=> compares a pointer member");
+            sp_done = true;
+        }
+        if (um_done || k != "CXXConstructorDecl" || begin_of(c).macro) continue;
+        bool body = false;
+        for (auto& x : inner(c))
+            if (kind(x) == "CompoundStmt") body = true;
+        if (!body) continue;
+        auto lb = t.find('{');
+        auto head = t.substr(0, lb == std::string::npos ? t.size() : lb);
+        auto cp = head.find(')');
+        if (cp != std::string::npos && head.find(rname + "(", cp) != std::string::npos) continue;  // delegating
+        if (cp != std::string::npos && head.find(rname + "{", cp) != std::string::npos) continue;
+        auto word_in = [&](const std::string& w) {
+            for (auto q = t.find(w); q != std::string::npos; q = t.find(w, q + 1)) {
+                auto id = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+                if ((q == 0 || !id(t[q - 1])) && (q + w.size() >= t.size() || !id(t[q + w.size()]))) return true;
+            }
+            return false;
+        };
+        // Any call in the body may initialise members (init(), memset(this...)).
+        bool calls = false;
+        std::function<void(const json&)> g = [&](const json& x) {
+            if (!x.is_object()) return;
+            if (is_call_kind(kind(x)) && kind(x) != "CXXConstructExpr") calls = true;
+            for (auto& y : inner(x)) g(y);
+        };
+        for (auto& x : inner(c))
+            if (kind(x) == "CompoundStmt") g(x);
+        if (calls) continue;
+        for (auto& f : fields) {
+            if (f.init || f.name.empty() || !scalar(f.type) || word_in(f.name)) continue;
+            cx.add_at(begin_of(c), rname, "CXX-UNINIT-MEMBER", "constructor leaves " + f.name + " uninitialised");
+            um_done = true;
+            break;
+        }
+    }
+}
+
+// CXX-THROW-SPEC: a dynamic exception specification.
+void throw_spec_check(const json& f, Ctx& cx) {
+    const auto p = begin_of(f);
+    if (c_source(p) || p.macro || !p.file || !cx.files.wanted(*p.file)) return;
+    auto t = std::string(cx.text_of(f));
+    auto close = t.find(')');
+    auto brace = t.find('{');
+    if (close == std::string::npos) return;
+    auto tail = t.substr(close, brace == std::string::npos ? std::string::npos : brace - close);
+    auto q = tail.find("throw");
+    if (q == std::string::npos) return;
+    auto r = q + 5;
+    while (r < tail.size() && std::isspace(static_cast<unsigned char>(tail[r]))) ++r;
+    if (r >= tail.size() || tail[r] != '(') return;
+    cx.add_at(p, std::string(str_field(f, "name")), "CXX-THROW-SPEC", "dynamic exception specification");
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -7642,6 +8465,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     fn.ret = result_type(std::string(qual_type(f)));
     fn.noexcept_ = fn_noexcept(std::string(qual_type(f))) || fn.kind == "CXXDestructorDecl";
     fn.tparams = tparams;
+    if (tparams.empty()) throw_spec_check(f, cx);
     const json* body = nullptr;
     Walker w(cx, fn);
     w.scopes.emplace_back();  // parameters
@@ -7689,6 +8513,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_exc_rule_checks(*body, fn, w.ck);
     cxx_algo_rule_checks(*body, fn, w.ck);
     cxx_stream_rule_checks(*body, fn, w.ck);
+    cxx_misc_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
@@ -7735,6 +8560,7 @@ void walk_decl(const json& d, Ctx& cx, std::vector<std::string>& tparams) {
     }
     if (k == "NamespaceDecl" || k == "LinkageSpecDecl" || k == "CXXRecordDecl" || k == "RecordDecl" ||
         k == "ExportDecl" || k == "ClassTemplateSpecializationDecl") {
+        if (k == "CXXRecordDecl" && tparams.empty()) record_rule_checks(d, cx);
         for (auto& c : inner(d)) walk_decl(c, cx, tparams);
     }
 }
