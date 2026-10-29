@@ -1,3 +1,4 @@
+#include <cstdlib>
 // pir-vs-bmc: differential oracle between the bmc encoder and the pir stage
 // (roadmap 2.8). Runs PRISM once over a tree with --stage
 // inventory,classify,bmc,pir (or reads an existing report.json) and prints the
@@ -202,6 +203,12 @@ int pir_vs_bmc_main(const Args& args) {
     std::string tree = (repo / "testdata").string(), bin, report_path, json_out, keep_report;
     int jobs = 2;
     double timeout = 0;
+    // Per-function pir solver budget for the gated run (PRISM_FUNCTION_BUDGET):
+    // one huge function (SV-COMP s3_srvr's state machine) must not use up
+    // the run so that every other function of its unit goes unreported.
+    // A spent budget is a TIMEOUT verdict with the budget named (Law 7),
+    // never a proof; the environment's own value wins.
+    std::string function_budget = "60";
     bool gate = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
@@ -212,15 +219,18 @@ int pir_vs_bmc_main(const Args& args) {
         else if (a == "--json") json_out = next();
         else if (a == "--timeout") timeout = std::atof(next().c_str());
         else if (a == "--gate") gate = true;
+        else if (a == "--function-budget") function_budget = next();
         else if (a == "--keep-report") keep_report = next();
         else if (a == "-h" || a == "--help") {
             std::cout << "prism-qa pir-vs-bmc [TREE] [--bin PRISM] [--report report.json] [--jobs N]\n"
                          "                    [--json OUT.json] [--timeout S] [--gate]\n"
-                         "                    [--keep-report report.json]\n"
+                         "                    [--keep-report report.json] [--function-budget S]\n"
                          "bmc encoder vs pir stage: per-function agreement matrix and every hard\n"
                          "conflict (PROVED* vs FAILED). --gate exits 1 when hard conflicts are\n"
                          "nonzero or a bmc PROVED* function is pir-absent or NEEDS-HARNESS.\n"
-                         "Agreement is printed and is not an exit condition. Default TREE: testdata.\n";
+                         "Agreement is printed and is not an exit condition. Default TREE: testdata.\n"
+                         "--function-budget: pir seconds per function (PRISM_FUNCTION_BUDGET; default 60,\n"
+                         "0: none; the environment's value wins). A spent budget is TIMEOUT, not PROVED.\n";
             return 0;
         } else if (!a.starts_with("-")) tree = a;
         else {
@@ -243,6 +253,15 @@ int pir_vs_bmc_main(const Args& args) {
         }
         TempDir td("prism_pir_vs_bmc_");
         const auto out = td.path / "out";
+        if (const char* e = std::getenv("PRISM_FUNCTION_BUDGET"); e && *e) function_budget = e;
+        else {
+#ifdef _WIN32
+            ::_putenv_s("PRISM_FUNCTION_BUDGET", function_budget.c_str());
+#else
+            ::setenv("PRISM_FUNCTION_BUDGET", function_budget.c_str(), 1);
+#endif
+        }
+        std::cout << "pir function budget: " << function_budget << " s (PRISM_FUNCTION_BUDGET)\n";
         detail::SessionOptions so;
         so.cwd = repo;
         so.timeout_s = timeout;
