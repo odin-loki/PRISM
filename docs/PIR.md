@@ -788,7 +788,7 @@ element shift plus the symbolic position); `vector_insert.cpp` (insert at a
 position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
 twin) is in the suite now; measured 2026-09-25 per harness on a loaded
 machine: `vector_insert_uaf_false` FAILED MEM-UAF in 146 s,
-`vector_insert_true` did not finish within 1800 s then; on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default 60% of min(RAM, RLIMIT_AS)), and later functions of the run are UNKNOWN "not checked" once the cap is reached. `map_contracts.cpp` checks the map/set
+`vector_insert_true` did not finish within 1800 s then; on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default the smaller of 60% of RAM and a quarter of RLIMIT_AS), and later functions of the run are UNKNOWN "not checked" once the cap is reached. `map_contracts.cpp` checks the map/set
 models (insert/operator[]/erase/at/order, multiset counts; false twins: an
 erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
 order contract). It did not finish within 1200 s before value sets

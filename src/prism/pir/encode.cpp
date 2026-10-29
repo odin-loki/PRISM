@@ -1437,8 +1437,8 @@ thread_local bool tl_first_unwind = false;
 // UNKNOWN, not in the kernel's OOM killer or a SIGSEGV at the address-space
 // limit (both leave no report at all; vector_insert.cpp did this). Z3 raises
 // an exception past memory_max_size, which every caller maps to a non-proof.
-// PRISM_PIR_MEM_MB overrides; default 60% of the smaller of physical memory
-// and RLIMIT_AS. 0 disables.
+// PRISM_PIR_MEM_MB overrides; default the smaller of 60% of physical memory
+// and a quarter of RLIMIT_AS. 0 disables.
 static std::atomic<bool> g_z3_oom{false};  // Z3 stays unusable after memory_max_size
 static std::atomic<uint64_t> g_z3_cap_mb{0};
 static bool z3_exhausted() {
@@ -1456,11 +1456,18 @@ static void cap_z3_memory_once() {
             mb = std::strtoull(e, nullptr, 10);
         } else {
             const long pages = ::sysconf(_SC_PHYS_PAGES), psz = ::sysconf(_SC_PAGE_SIZE);
-            uint64_t lim = pages > 0 && psz > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(psz) : 0;
+            const uint64_t phys =
+                pages > 0 && psz > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(psz) : 0;
+            mb = phys / (1024 * 1024) * 6 / 10;
+            // RLIMIT_AS counts address space (thread stacks, mapped model
+            // code, allocator reserves), not resident memory: Z3 gets a
+            // quarter of it (priority_queue_contracts.cpp under a 6 GB limit
+            // hit SIGSEGV inside Z3 at 60% and at a third).
             struct rlimit rl{};
-            if (::getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
-                lim = lim ? std::min<uint64_t>(lim, rl.rlim_cur) : rl.rlim_cur;
-            mb = lim / (1024 * 1024) * 6 / 10;
+            if (::getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+                const uint64_t as_mb = static_cast<uint64_t>(rl.rlim_cur) / (1024 * 1024) / 4;
+                mb = mb ? std::min(mb, as_mb) : as_mb;
+            }
         }
         g_z3_cap_mb.store(mb);
         if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb, 1u << 30)));
