@@ -105,7 +105,19 @@ struct _Prism_prime_rehash_policy {
 
     float max_load_factor() const noexcept { return _M_max_load_factor; }
 
+    // Integer fast path for the default max_load_factor 1.0: below 2^53 the
+    // double round trips (n / 1.0, ceil, floor(n * 1.0)) are exact, so these
+    // equal libstdc++'s results bit for bit. It keeps floating point (costly
+    // bit-blasting, unordered_map_contracts timeouts) out of the encoding.
+    static constexpr size_t _S_exact = size_t(1) << 53;
+    bool _M_unit() const noexcept { return _M_max_load_factor == 1.0f; }
+    size_t _M_floor_scaled(size_t __b) const noexcept {
+        if (_M_unit() && __b < _S_exact) return __b;
+        return static_cast<size_t>(std::floor(__b * static_cast<double>(_M_max_load_factor)));
+    }
+
     size_t _M_bkt_for_elements(size_t __n) const noexcept {
+        if (_M_unit() && __n < _S_exact) return __n;
         return static_cast<size_t>(std::ceil(__n / static_cast<double>(_M_max_load_factor)));
     }
 
@@ -113,7 +125,7 @@ struct _Prism_prime_rehash_policy {
         static const unsigned char __fast_bkt[] = {2, 2, 2, 3, 5, 5, 7, 7, 11, 11, 11, 11, 13, 13};
         if (__n < sizeof(__fast_bkt)) {
             if (__n == 0) return 1;
-            _M_next_resize = static_cast<size_t>(std::floor(__fast_bkt[__n] * static_cast<double>(_M_max_load_factor)));
+            _M_next_resize = _M_floor_scaled(__fast_bkt[__n]);
             return __fast_bkt[__n];
         }
         const unsigned long* __prime_list = _S_prime_list();
@@ -127,12 +139,19 @@ struct _Prism_prime_rehash_policy {
         if (__next_bkt == __last_prime)
             _M_next_resize = size_t(-1);
         else
-            _M_next_resize = static_cast<size_t>(std::floor(*__next_bkt * static_cast<double>(_M_max_load_factor)));
+            _M_next_resize = _M_floor_scaled(*__next_bkt);
         return *__next_bkt;
     }
 
     pair<bool, size_t> _M_need_rehash(size_t __n_bkt, size_t __n_elt, size_t __n_ins) const {
         if (__n_elt + __n_ins > _M_next_resize) {
+            if (_M_unit() && __n_elt + __n_ins < _S_exact && __n_bkt < _S_exact) {
+                // __min_bkts is the integer m exactly; floor(m) + 1 = m + 1
+                const size_t __m = std::max<size_t>(__n_elt + __n_ins, _M_next_resize ? 0 : 11);
+                if (__m >= __n_bkt) return {true, _M_next_bkt(std::max<size_t>(__m + 1, __n_bkt * _S_growth_factor))};
+                _M_next_resize = __n_bkt;
+                return {false, 0};
+            }
             double __min_bkts = std::max<size_t>(__n_elt + __n_ins, _M_next_resize ? 0 : 11) /
                                 static_cast<double>(_M_max_load_factor);
             if (__min_bkts >= static_cast<double>(__n_bkt))
@@ -509,7 +528,7 @@ public:
         }
         _M_iter_tail = nullptr;
         _M_element_count = 0;
-        for (size_type __i = 0; __i < _M_bucket_count; ++__i) _M_buckets[__i] = nullptr;
+        __builtin_memset(static_cast<void*>(_M_buckets), 0, _M_bucket_count * sizeof(_Node*));
     }
 
     void reserve(size_type __n) { rehash(_M_rehash_policy._M_bkt_for_elements(__n)); }
