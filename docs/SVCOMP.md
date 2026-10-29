@@ -717,3 +717,40 @@ vendored code). Re-running needs Java 21 and the two archives above.
   definition (extern only) are rewritten like the canonical SV-COMP shape;
   a non-`static` definition in the same file is still not inlined, so
   Houdini invariants on `main` may not see it.
+
+## Proof-yield work (work/svcomp, 2026-10-29)
+
+Each change only lets an existing sound engine see more of the program;
+none relaxes what counts as a proof or a refutation.
+
+- **ILP32 replay environment:** UBSan replay of ILP32 tasks needs 32-bit
+  glibc headers and the i386 `libclang_rt.ubsan_standalone`/`asan` from the
+  same LLVM (18). Without them every `-m32` replay failed to build, so true
+  refutations stayed `unknown`. Debian: `libc6-dev-i386 lib32gcc-14-dev`
+  plus the i386 clang_rt files of `libclang-rt-18-dev` in
+  `<resource-dir>/lib/linux/`.
+- **Inlining callees with loops and several returns** (`inline.cpp`
+  `adapt_callee_body`): each `return` becomes `{ ret = X; goto <site>_end; }`,
+  a forward jump out of the callee's block that the bmc goto model encodes.
+- **Inlining goto-bearing (CIL) callees:** the callee's labels are renamed
+  per call site (`<site>_L_<label>`); a label name the caller also uses
+  blocks inlining.
+- **Deepening** (`cli_svcomp.cpp` `solve`): when the answer is `unknown`
+  because bmc's main is only `BOUNDED`, bmc is re-run with unwind 32, then
+  128. A deeper run proves only if its loops close and refutes only with a
+  counterexample that replays.
+- **Main-only globals** (`bmc.cpp` `localize_main_globals`): an integer
+  file-scope scalar with a literal or no initialiser that only main names
+  (one declaration, every other mention in main) becomes a local of main
+  with that initialiser, when every mention of `main` in the unit is its
+  definition head or a prototype (main runs once).
+- **Shadowed declarations** (`bmc.cpp` `rename_shadowed`): a block
+  declaration that shadows a visible name is alpha-renamed for the rest of
+  its block. Bodies with declarations the scan does not type (typedef
+  names, struct, float, for-headers, literals) are left unchanged.
+- **pir on data-model-neutral ILP32 units** (`pir/stage.cpp`
+  `ilp32_neutral`): a C unit that spells no `long`, `size_t`, `ptr*`,
+  `wchar`, `time_t`, `off_t`, `sizeof`/`alignof`/`offsetof`, struct/union,
+  `->`, pointer declaration (except the SV-COMP `__assert_fail`
+  prototype) or allocator computes the same under ILP32 and LP64, so pir's
+  LP64 proof holds. Refutations replay with `-m32` as before.
