@@ -4043,27 +4043,6 @@ bool rx_full(const prism::Regex& re, std::string_view s) {
     return m && !m->spans.empty() && m->spans[0].first == 0 && m->spans[0].second == static_cast<int>(s.size());
 }
 
-std::optional<int> rx_parse_int(std::string_view raw) {
-    static prism::Regex re(R"(^(?P<n>-?(?:0x[0-9a-fA-F]+|0[0-7]*|\d+))(?:[uUlL]{0,3})?$)");
-    auto s = rx_strip(raw);
-    auto m = re.search_match(s);
-    if (!m || m->spans.empty() || m->spans[0].first != 0 || m->spans[0].second != static_cast<int>(s.size()))
-        return std::nullopt;
-    auto n = m->named("n");
-    try {
-        int base = 10;
-        if (n.size() >= 2 && n[0] == '0' && (n[1] == 'x' || n[1] == 'X')) base = 16;
-        else if (n.size() > 1 && n[0] == '0' && std::isdigit(static_cast<unsigned char>(n[1])))
-            base = 8;
-        std::size_t idx = 0;
-        long v = std::stol(n, &idx, base);
-        if (idx != n.size()) return std::nullopt;
-        return static_cast<int>(v);
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
 std::vector<std::string> rx_split_args(std::string_view inner) {
     std::vector<std::string> args;
     int depth = 0;
@@ -4246,28 +4225,6 @@ std::string rx_re_sub(const prism::Regex& re, std::string_view repl, const std::
     }
     out.append(s, off, std::string::npos);
     return out;
-}
-
-std::optional<std::string> rx_realloc_zero(std::string_view ln) {
-    auto args = rx_call_args(ln, "realloc");
-    if (!args || args->size() < 2) return std::nullopt;
-    auto lit = rx_parse_int((*args)[1]);
-    if (!lit || *lit != 0) return std::nullopt;
-    static prism::Regex cast(R"(^\([^)]*\)\s*)");
-    auto ptr = rx_strip((*args)[0]);
-    if (auto m = cast.search_match(ptr); m && cast.match_line(ptr))
-        ptr = rx_strip(ptr.substr(static_cast<std::size_t>(m->spans[0].second)));
-    prism::Regex self("^" + rx_esc(ptr) + "\\s*=\\s*(?:\\([^)]*\\)\\s*)*realloc\\s*\\(");
-    if (self.match_line(ln)) return std::nullopt;
-    return ptr;
-}
-
-bool rx_stale_use(std::string_view var, std::string_view ln) {
-    auto v = rx_esc(var);
-    if (prism::Regex("\\b" + v + "\\s*\\[").search(ln)) return true;
-    if (prism::Regex("\\*\\s*" + v + "\\b").search(ln) || prism::Regex("\\b" + v + "\\s*->").search(ln)) return true;
-    if (prism::Regex("\\bfree\\s*\\(\\s*(?:\\([^)]*\\)\\s*)*" + v + "\\s*\\)").search(ln)) return true;
-    return prism::Regex("\\breturn\\s+" + v + "\\s*;").search(ln);
 }
 
 void rx_anchors(const json& n, Ctx& cx, std::map<int, const json*>& at) {
@@ -4472,6 +4429,68 @@ void vla_checks(const json& body, Checker& ck) {
             return;
         }
     });
+}
+
+// MEM-REALLOC-ZERO: after realloc(p, 0) (not `p = realloc(p, 0)`), the
+// first later index, deref, `->`, free() or return of p, unless p is
+// assigned in between.
+void realloc_zero_checks(const json& body, Checker& ck) {
+    const auto base = begin_of(body);
+    if (!base.file) return;
+    std::set<const json*> self_assigned;
+    struct Zero { long long off; std::string id; const json* call; };
+    std::vector<Zero> zeros;
+    std::map<std::string, std::string> names;
+    struct Ev { long long off; std::string id; const json* n; bool assign; };
+    std::vector<Ev> evs;
+    collect_nodes(body, [&](const json& n, const json*) {
+        const auto& k = kind(n);
+        const auto p = begin_of(n);
+        if (!same_file_pos(p, base)) return;
+        if (k == "BinaryOperator" && str_field(n, "opcode") == "=" && n_children(n) == 2) {
+            auto id = ref_id(child(n, 0));
+            if (id.empty()) return;
+            evs.push_back({end_of(n).offset, id, &n, true});
+            const auto& r = strip_all(child(n, 1));
+            if (kind(r) == "CallExpr" && callee_name(r) == "realloc") {
+                auto a = call_args(r);
+                if (a.size() >= 1 && ref_id(*a[0]) == id) self_assigned.insert(&r);
+            }
+            return;
+        }
+        if (k == "CallExpr") {
+            auto cn = callee_name(n);
+            auto a = call_args(n);
+            if (cn == "realloc" && a.size() == 2 && is_zero_literal(*a[1])) {
+                auto id = ref_id(*a[0]);
+                if (!id.empty()) {
+                    names[id] = decl_name(*a[0]);
+                    zeros.push_back({end_of(n).offset, id, &n});
+                }
+            } else if (cn == "free" && a.size() == 1) {
+                auto id = ref_id(*a[0]);
+                if (!id.empty()) evs.push_back({p.offset, id, &n, false});
+            }
+            return;
+        }
+        std::string id;
+        if (k == "ArraySubscriptExpr" && n_children(n) == 2) id = ref_id(child(n, 0));
+        else if (k == "UnaryOperator" && str_field(n, "opcode") == "*" && n_children(n) == 1) id = ref_id(child(n, 0));
+        else if (k == "MemberExpr" && flag(n, "isArrow") && n_children(n) >= 1) id = ref_id(child(n, 0));
+        else if (k == "ReturnStmt" && n_children(n) == 1) id = ref_id(child(n, 0));
+        if (!id.empty()) evs.push_back({p.offset, id, &n, false});
+    });
+    std::sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.off < b.off; });
+    for (const auto& z : zeros) {
+        if (self_assigned.count(z.call)) continue;
+        const auto& id = z.id;
+        for (auto& e : evs) {
+            if (e.off <= z.off || e.id != id) continue;
+            if (e.assign) break;
+            ck.add(*e.n, "MEM-REALLOC-ZERO", names[id] + " used after realloc(" + names[id] + ", 0)");
+            break;
+        }
+    }
 }
 
 // API-POPEN: a popen() stream still open at some return, or opened after
@@ -4840,22 +4859,6 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
     auto chunk = chunk_lines();
     auto chunk_text = rx_join(chunk, 0, chunk.size());
 
-    // MEM-REALLOC-ZERO. A self-assign is skipped only when the line itself
-    // starts with `ptr = realloc` (indented self-assigns still count).
-    for (int i = 0; i < static_cast<int>(fn.lines.size()); ++i) {
-        auto old = rx_realloc_zero(fn.lines.at(static_cast<std::size_t>(i)));
-        if (!old) continue;
-        for (int j = i + 1; j < static_cast<int>(fn.lines.size()); ++j) {
-            auto& later = fn.lines.at(static_cast<std::size_t>(j));
-            if (prism::Regex("\\b" + rx_esc(*old) + "\\s*=").search(later)) break;
-            if (rx_stale_use(*old, later)) {
-                rx_add(ck, at, fn.span_first + j, "MEM-REALLOC-ZERO",
-                       *old + " used after realloc(" + *old + ", 0)");
-                break;
-            }
-        }
-    }
-
     // MEM-PTR-ARITH: pointer param indexed by an integer param, unless both
     // have an `if` guard.
     if (fn.pointer) {
@@ -5024,6 +5027,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     resource_leak_checks(*body, w.ck, cx);
     conc_toctou_checks(*body, w.ck, cx);
     vla_checks(*body, w.ck);
+    realloc_zero_checks(*body, w.ck);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);
     clz_zero_checks(*body, w.ck, cx);
