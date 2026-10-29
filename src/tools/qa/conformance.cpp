@@ -289,14 +289,18 @@ int conformance_main(const std::vector<std::string>& argv) {
     if (!std::getenv("PRISM_MEM_BUDGET_MB")) {
         const uint64_t avail = prism::membudget::base_budget_mb();  // 75% of the tightest limit
         if (avail > 0) {
-            const long fit = std::max(1L, static_cast<long>(avail / 1024));
+            // Floor: a run below ~2.5 GB turns provable functions UNKNOWN
+            // (a loaded box gave 169/202 vs 181). Cut jobs instead of budgets.
+            constexpr uint64_t kFloorMb = 2500;
+            const long fit = std::max(1L, static_cast<long>(avail / kFloorMb));
             if (jobs > fit) {
                 std::cerr << "prism-qa conformance: --jobs " << jobs << " cut to " << fit << " (" << avail
-                          << " MB to share, about 1 GB per run)\n";
+                          << " MB to share, at least " << kFloorMb << " MB per run)\n";
                 jobs = fit;
             }
-            uint64_t per = avail / static_cast<uint64_t>(jobs);
-            if (mem_limit > 0) per = std::min<uint64_t>(per, static_cast<uint64_t>(mem_limit) / 2);
+            uint64_t per = std::max<uint64_t>(kFloorMb, avail / static_cast<uint64_t>(jobs));
+            if (mem_limit > 0) per = std::min<uint64_t>(per, static_cast<uint64_t>(mem_limit) * 3 / 4);
+            per = std::max<uint64_t>(per, std::min<uint64_t>(kFloorMb, mem_limit > 0 ? static_cast<uint64_t>(mem_limit) : kFloorMb));
 #ifdef _WIN32
             _putenv_s("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str());
 #else
