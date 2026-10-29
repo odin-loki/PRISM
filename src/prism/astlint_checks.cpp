@@ -7118,6 +7118,194 @@ void cxx_index_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     }
 }
 
+// Ninth batch: exception objects, error codes and raw ownership
+// (CXX-CURRENT-EXCEPTION, CXX-EXCEPTION-PTR, CXX-DESTROY-N, CXX-ERROR-CODE,
+// CXX-EXCEPTION-LEAK, CXX-EXCHANGE).
+void cxx_exc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
+    const auto base = begin_of(body);
+    if (c_source(base)) return;
+    auto ok_pos = [&](const json& n) {
+        const auto p = begin_of(n);
+        return same_file_pos(p, base) && !p.macro;
+    };
+    auto off = [](const json& n) { return begin_of(n).offset; };
+    std::vector<const json*> all;
+    collect_nodes(body, [&](const json& n, const json*) { all.push_back(&n); });
+    std::sort(all.begin(), all.end(), [&](auto* a, auto* b) { return off(*a) < off(*b); });
+    std::set<std::string> rel_ids, tested;
+    std::map<std::string, std::string> init_callee;
+    std::map<std::string, const json*> var_decl;
+    for (auto& [id, d] : fn.locals) var_decl[id] = d;
+    for (auto* n : all) {
+        const auto& k = kind(*n);
+        if (k == "BinaryOperator" && n_children(*n) == 2) {
+            auto op = str_field(*n, "opcode");
+            for (int i = 0; i < 2; ++i) {
+                auto id = ref_id(child(*n, i));
+                if (id.empty()) continue;
+                if (one_of(op, {"<", "<=", ">", ">="})) rel_ids.insert(id);
+                if (one_of(op, {"==", "!="})) tested.insert(id);
+            }
+            if (op == "=" && is_call_kind(kind(strip_all(child(*n, 1)))))
+                if (auto id = ref_id(child(*n, 0)); !id.empty()) init_callee[id] = callee_name(strip_all(child(*n, 1)));
+        } else if (k == "CXXOperatorCallExpr" && n_children(*n) == 3 &&
+                   one_of(str_field(ref_decl(strip_all(child(*n, 0))), "name"), {"operator==", "operator!="})) {
+            for (int i = 1; i < 3; ++i)
+                if (auto id = ref_id(child(*n, i)); !id.empty()) tested.insert(id);
+        } else if (k == "ImplicitCastExpr" && n_children(*n) == 1 &&
+                   one_of(str_field(*n, "castKind"), {"PointerToBoolean", "UserDefinedConversion"})) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "UnaryOperator" && str_field(*n, "opcode") == "!" && n_children(*n) == 1) {
+            if (auto id = ref_id(child(*n, 0)); !id.empty()) tested.insert(id);
+        } else if (k == "CXXMemberCallExpr" && one_of(mcall_name(*n), {"operator bool", "value"})) {
+            tested.insert(mcall_obj(*n));
+        } else if (k == "VarDecl") {
+            auto id = std::string(str_field(*n, "id"));
+            var_decl[id] = n;
+            if (n_children(*n) > 0 && is_call_kind(kind(strip_all(last_child(*n)))))
+                init_callee[id] = callee_name(strip_all(last_child(*n)));
+        }
+    }
+    auto is_call_to = [](const json& n, std::string_view name) {
+        return is_call_kind(kind(n)) && callee_name(n) == name;
+    };
+    // CXX-CURRENT-EXCEPTION / CXX-EXCEPTION-PTR: rethrow of an untested exception_ptr.
+    bool ce = false, ep = false;
+    for (auto* n : all) {
+        if (!is_call_to(*n, "rethrow_exception") || n_children(*n) < 2 || !ok_pos(*n)) continue;
+        const auto* ap = &strip_all(child(*n, 1));
+        while (kind(*ap) == "CXXConstructExpr" && n_children(*ap) == 1) ap = &strip_all(child(*ap, 0));
+        const auto& a = *ap;
+        if (!ce && is_call_to(a, "current_exception")) {
+            ck.add(*n, "CXX-CURRENT-EXCEPTION", "std::current_exception() rethrown without a nullptr test");
+            ce = true;
+            continue;
+        }
+        auto id = ref_id(a);
+        if (id.empty() || tested.contains(id)) continue;
+        auto ic = init_callee.find(id);
+        if (!ce && ic != init_callee.end() && ic->second == "current_exception") {
+            ck.add(*n, "CXX-CURRENT-EXCEPTION", "rethrow_exception from current_exception without a nullptr test");
+            ce = true;
+        } else if (!ep && var_decl.contains(id) && kind(*var_decl[id]) == "VarDecl" &&
+                   std::string(qual_type(*var_decl[id])).find("exception_ptr") != std::string::npos) {
+            ck.add(*n, "CXX-EXCEPTION-PTR", "rethrow_exception without a nullptr test");
+            ep = true;
+        }
+    }
+    // CXX-DESTROY-N: unchecked count, or the range used after destroy_n.
+    {
+        std::set<std::string> destroyed;
+        std::set<const json*> inside;
+        for (auto* n : all) {
+            if (is_call_to(*n, "destroy_n") && n_children(*n) >= 3) {
+                collect_nodes(*n, [&](const json& x, const json*) { inside.insert(&x); });
+                auto pid = ref_id(child(*n, 1));
+                if (!pid.empty()) destroyed.insert(pid);
+                const auto& c = child(*n, 2);
+                auto cid = ref_id(c);
+                if (!int_value(c) && !cid.empty() && !rel_ids.contains(cid) && ok_pos(*n)) {
+                    ck.add(*n, "CXX-DESTROY-N", "destroy_n count is unchecked");
+                    break;
+                }
+                continue;
+            }
+            if (inside.contains(n)) continue;
+            const json* p = nullptr;
+            if (kind(*n) == "UnaryOperator" && str_field(*n, "opcode") == "*" && n_children(*n) == 1) p = &child(*n, 0);
+            else if (kind(*n) == "MemberExpr" && flag(*n, "isArrow") && n_children(*n) == 1) p = &child(*n, 0);
+            else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) p = &child(*n, 0);
+            if (!p) continue;
+            auto pid = ref_id(*p);
+            if (pid.empty() || !destroyed.contains(pid) || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-DESTROY-N", "pointer used after destroy_n");
+            break;
+        }
+    }
+    // CXX-ERROR-CODE: a local error_code read with no if(ec) / .value().
+    for (auto* n : all) {
+        auto nm = mcall_name(*n);
+        if (nm.empty() || nm == "operator bool" || nm == "value" || nm == "clear" || nm == "assign") continue;
+        auto id = mcall_obj(*n);
+        if (id.empty() || tested.contains(id) || !var_decl.contains(id) || kind(*var_decl[id]) != "VarDecl") continue;
+        auto qt = std::string(qual_type(*var_decl[id]));
+        if (qt != "std::error_code" && qt != "error_code") continue;
+        if (!ok_pos(*n)) continue;
+        ck.add(*n, "CXX-ERROR-CODE", "error_code used without if(ec) or .value()");
+        break;
+    }
+    // CXX-EXCEPTION-LEAK: p = new T, then a call before delete p.
+    {
+        std::map<std::string, long long> owned;  // raw pointer id -> offset of its new
+        std::set<std::string> done;
+        std::set<const json*> news;
+        for (auto* n : all) {
+            const auto& k = kind(*n);
+            std::string id;
+            const json* rhs = nullptr;
+            if (k == "VarDecl" && n_children(*n) > 0) {
+                id = str_field(*n, "id");
+                rhs = &last_child(*n);
+            } else if (k == "BinaryOperator" && str_field(*n, "opcode") == "=" && n_children(*n) == 2) {
+                id = ref_id(child(*n, 0));
+                rhs = &child(*n, 1);
+            }
+            if (rhs && !id.empty() && kind(strip_all(*rhs)) == "CXXNewExpr" && is_pointer_type(type_of(strip_all(*rhs)))) {
+                if (k == "VarDecl" && !is_pointer_type(std::string(qual_type(*n)))) continue;
+                owned[id] = off(*n);
+                collect_nodes(*rhs, [&](const json& x, const json*) { news.insert(&x); });
+                continue;
+            }
+            if (k == "CXXDeleteExpr") {
+                collect_nodes(*n, [&](const json& x, const json*) {
+                    if (kind(x) == "DeclRefExpr") owned.erase(str_field(ref_decl(x), "id"));
+                });
+                continue;
+            }
+            if ((k == "CallExpr" || k == "CXXMemberCallExpr") && !news.contains(n) && !owned.empty()) {
+                auto cn = callee_name(*n);
+                if (cn.empty() || cn.find("unique") != std::string::npos || cn.find("shared") != std::string::npos ||
+                    fn_noexcept(type_of(strip_all(child(*n, 0)))))
+                    continue;
+                if (type_of(*n).find("unique_ptr") != std::string::npos ||
+                    type_of(*n).find("shared_ptr") != std::string::npos)
+                    continue;
+                bool takes_owned = false;  // the pointer itself is an argument or the object
+                for (std::size_t i = 0; i < n_children(*n); ++i) {
+                    const auto& a = strip_all(child(*n, i));
+                    if (kind(a) == "DeclRefExpr" && owned.contains(ref_id(a))) takes_owned = true;
+                    if (kind(a) == "MemberExpr" && n_children(a) == 1 && owned.contains(ref_id(child(a, 0))))
+                        takes_owned = true;
+                }
+                if (takes_owned || !ok_pos(*n)) continue;  // ownership may move into the callee
+                ck.add(*n, "CXX-EXCEPTION-LEAK", "allocated with new but a call precedes delete; may leak on throw");
+                break;
+            }
+        }
+    }
+    // CXX-EXCHANGE: std::exchange result (or the exchanged object) as an unguarded index.
+    {
+        std::set<std::string> from_x;
+        for (auto& [id, c] : init_callee)
+            if (c == "exchange") from_x.insert(id);
+        for (auto* n : all)
+            if (is_call_to(*n, "exchange") && n_children(*n) >= 2)
+                if (auto id = ref_id(child(*n, 1)); !id.empty()) from_x.insert(id);
+        for (auto* n : all) {
+            const json* idx = nullptr;
+            if (subscript_op(*n)) idx = &child(*n, 2);
+            else if (kind(*n) == "ArraySubscriptExpr" && n_children(*n) == 2) idx = &child(*n, 1);
+            if (!idx) continue;
+            const auto& i = strip_all(*idx);
+            auto id = ref_id(i);
+            bool bad = is_call_to(i, "exchange") || (!id.empty() && from_x.contains(id) && !rel_ids.contains(id));
+            if (!bad || !ok_pos(*n)) continue;
+            ck.add(*n, "CXX-EXCHANGE", "std::exchange result used as an array index without a range check");
+            break;
+        }
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -7170,6 +7358,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     cxx_cast_rule_checks(*body, fn, w.ck);
     cxx_view_rule_checks(*body, fn, w.ck);
     cxx_index_rule_checks(*body, fn, w.ck);
+    cxx_exc_rule_checks(*body, fn, w.ck);
     if (fn.tparams.empty()) sibling_params(f, *body, fn.name, cx);
     popen_checks(*body, w.ck);
     chroot_checks(*body, w.ck);

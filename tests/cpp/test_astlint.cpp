@@ -1894,6 +1894,67 @@ int cat_ok(int *p) {
     std::construct_at(p, 1);
     return *p;
 }
+#include <exception>
+#include <system_error>
+void cexc_bad() {
+    std::exception_ptr ep = std::current_exception();
+    std::rethrow_exception(ep); // expect: CXX-CURRENT-EXCEPTION
+}
+void cexc_ok() {
+    std::exception_ptr ep = std::current_exception();
+    if (ep)
+        std::rethrow_exception(ep);
+}
+void eptr_bad(std::exception_ptr src) {
+    std::exception_ptr held = src;
+    std::rethrow_exception(held); // expect: CXX-EXCEPTION-PTR
+}
+void eptr_ok(std::exception_ptr src) {
+    std::exception_ptr held = src;
+    if (held != nullptr)
+        std::rethrow_exception(held);
+}
+void dn_bad(std::string *p, std::size_t n) {
+    std::destroy_n(p, n); // expect: CXX-DESTROY-N
+}
+void dn_ok(std::string *p, std::size_t n) {
+    if (n > 4)
+        return;
+    std::destroy_n(p, n);
+}
+std::string ec_bad() {
+    std::error_code ec;
+    return ec.message(); // expect: CXX-ERROR-CODE
+}
+std::string ec_ok() {
+    std::error_code ec;
+    if (ec)
+        return ec.message();
+    return {};
+}
+int may_throw(int);
+int leak_bad() {
+    int *p = new int(3);
+    int r = may_throw(*p); // expect: CXX-EXCEPTION-LEAK
+    delete p;
+    return r;
+}
+int leak_ok() {
+    int *p = new int(3);
+    int r = *p;
+    delete p;
+    return may_throw(r);
+}
+int xchg_bad(int *tab, int &cur) {
+    int old = std::exchange(cur, 0);
+    return tab[old]; // expect: CXX-EXCHANGE
+}
+int xchg_ok(int *tab, int &cur) {
+    int old = std::exchange(cur, 0);
+    if (old < 0 || old > 7)
+        return 0;
+    return tab[old];
+}
 )";
 
 }  // namespace
