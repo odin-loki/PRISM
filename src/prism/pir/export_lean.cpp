@@ -952,9 +952,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     !plain_name(in.ops[0].v.name))
                     throw Unsupported{"call @" + in.callee};
                 b << "L call %" << name(in.result) << " 32 llvm.eh.typeid.for:" << in.ops[0].v.name << " 0\n";
-            } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&
-                       (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
-                        in.callee == "__cxa_rethrow")) {
+            } else if (op == "call" && !in.is_asm &&
+                       ((!m.find(in.callee) && (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
+                                                in.callee == "__cxa_rethrow")) ||
+                        in.callee == "__clang_call_terminate")) {
                 // Tr::eh_call on the caught-exception stack (Lean region code only)
                 b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call "))
                   << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "

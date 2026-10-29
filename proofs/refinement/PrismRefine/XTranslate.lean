@@ -1397,7 +1397,10 @@ def softGuardX (cur : Nat) (ss : List PStmt) (ok : Arg) : TM Nat := do
 block `cur` (its earlier statements already there); `some b`: the block the
 rest of the LLVM block continues in, `none`: the call does not return. -/
 def ehCallX (stack : List String) (c : Ctx) (cur : Nat) (cl : CallI) : TM (Option Nat) := do
-  if cl.inv then throw s!"outside fragment: invoke of @{cl.f}"
+  if cl.f == "__clang_call_terminate" then
+    if cl.dst.isSome then throw "outside fragment: __clang_call_terminate result"
+    setBlock cur fun q => { q with stmts := q.stmts ++ [.check (.c 1 1) "terminate" "CXX-THROW-NOEXCEPT"], term := .stop }
+    return none
   if cl.f.startsWith "llvm.eh.typeid.for:" then
     let t := (cl.f.drop "llvm.eh.typeid.for:".length).toString
     let some d := cl.dst | throw "outside fragment: llvm.eh.typeid.for without a result"
@@ -1495,7 +1498,8 @@ def ehCallX (stack : List String) (c : Ctx) (cur : Nat) (cl : CallI) : TM (Optio
 
 /-- The calls `ehCallX` translates. -/
 def ehCallee (f : String) : Bool :=
-  f == "__cxa_begin_catch" || f == "__cxa_end_catch" || f == "__cxa_rethrow" || f.startsWith "llvm.eh.typeid.for:"
+  f == "__cxa_begin_catch" || f == "__cxa_end_catch" || f == "__cxa_rethrow" || f.startsWith "llvm.eh.typeid.for:" ||
+    f == "__clang_call_terminate"
 
 /-- Instructions of a landing-pad region block (`Tr::inst`, with
 `landingpad` and `insertvalue`). -/
@@ -1592,6 +1596,10 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
           pure s1
         if region && ehCallee cl.f && (M.find cl.f).isNone then
           setBlock cur fun pb => { pb with stmts := pb.stmts ++ s1 }
+          -- an `invoke`: its landing pad handles a throw in the call (and the destructors)
+          if cl.inv && cl.pad == "" then throw "outside fragment: invoke without its landing pad"
+          if cl.inv then modify fun s => { s with hs := (ι, cl.pad, s.fr.length) :: s.hs }
+          let popH : TM Unit := if cl.inv then modify fun s => { s with hs := s.hs.tail } else pure ()
           match ← ehCallX stack (I.ctx (← curVars)) cur cl with
           | some c' =>
             cur := c'
@@ -1613,8 +1621,10 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
                 setBlock cb fun q => { q with term := .jmp no }
                 dc := no
               setBlock dc fun q => { q with stmts := q.stmts ++ [.free E], term := .jmp dn }
+            popH
             continue
           | none =>
+            popH
             setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
             return (cur, none)
         cur ← callAt I b region cur k cl s1
