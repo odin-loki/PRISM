@@ -1017,6 +1017,12 @@ unordered_map: 1GB -> 21/77/60MB, same verdicts; prism/cxx culprits were the
 same containers (cxx_priority_queue/sstream/unordered_map/unordered_set_true).
 Final rerun without skips: /workspace/eh/fin_<subdir>.log (old in fin_old/).
 
+Final measure, no skips (REV 3c5fc60fa, 1500MB), all mismatch=0:
+concurrency 0/0/6/37; esbmc-cpp 8/20/86/72 (28 proved); libc-models
+6/246/4/186 (252 proved; was 4/87/3/146 with skips and checking on);
+prism 203/230/69/227 (433 proved; was killed); sv-comp 32/180/0/362 (212).
+Peak RSS 20-173MB per subdir.
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
