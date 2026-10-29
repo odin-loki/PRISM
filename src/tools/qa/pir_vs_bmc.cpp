@@ -79,6 +79,9 @@ PirUnits pir_units(const nlohmann::json& report) {
 // excluded): the gate still counts every one of these.
 std::string absent_reason(const PirUnits& u, const std::string& file) {
     auto m = u.unit_msg.find(file);
+    if (m != u.unit_msg.end() && m->second.starts_with("clang front end failed") &&
+        m->second.find("clang timed out") != std::string::npos)
+        return "absent: clang timed out on the unit";
     if (m != u.unit_msg.end() && m->second.starts_with("clang front end failed"))
         return "absent: clang rejects the unit";
     if (m != u.unit_msg.end() && m->second.starts_with("GNU C nested function"))

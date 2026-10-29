@@ -78,6 +78,20 @@ budget, box load 16-44): at `--jobs 4` phase 1 used ~200-270 s and one row was
 re-checked (no new answer); at `--jobs 2` (box memory limit) phase 1 alone takes
 338 s, nothing is left. The scheduler pays off only when phase 1 finishes well
 inside the unit budget; it is not a fix for this file under a 300 s cap.
+Standalone (one function per unit, 300 s function budget, `--jobs 2`): `strcat_any_true`
+and `strncat_any_true` BOUNDED, "Houdini ran out of time" while still searching
+(~181 s, 3 rounds, 27 / 44 inductive); `strncmp_any_true` BOUNDED, fixpoint
+reached (47 inductive), final cut-program query out of time. All three stop
+at ~181 s of Houdini, below the 300 s function budget: a separate Houdini
+search cap is binding (next: find and expose it; then check whether strcat
+needs a `MemEq`/`MemFrame` template).
+
+**Gate 2026-10-29 18:40 (pf6):** hard conflicts **0**, superset gaps **9**,
+agreement 3463/4650: 6 `clang rejects the unit` (lint snippets ill-formed even
+with includes: `int*` piped into views, C++26 `std::function_ref`,
+`future<int>` from a void `async`), 2 GNU nested function NOTRUN, 1 `clang
+timed out on the unit` (`jthread_lint.cpp`, `<thread>` under box load).
+`cxx_async_lint.cpp` closed by its `#include <future>`.
 
 **Uncompilable units stay in the superset gate (decision).** They are not
 excluded: (a) some are valid code that pir's fixed language level rejects
