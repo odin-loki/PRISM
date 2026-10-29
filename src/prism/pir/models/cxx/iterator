@@ -104,6 +104,7 @@ std::ptrdiff_t _Prism_pointer_diff(_Tp* __first, _Tp* __last) noexcept {
 // Pointer to the first element. The bound is at least 1: N == 0 does not
 // match this parameter.
 template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
 constexpr _Tp* begin(_Tp (&__arr)[_Nm]) noexcept {
     return __arr;
 }
@@ -111,6 +112,7 @@ constexpr _Tp* begin(_Tp (&__arr)[_Nm]) noexcept {
 // One past the last element. The addition is the bound. N == 0 does not
 // match this parameter.
 template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
 constexpr _Tp* end(_Tp (&__arr)[_Nm]) noexcept {
     return __arr + _Nm;
 }

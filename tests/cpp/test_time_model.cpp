@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -136,7 +138,7 @@ TEST_CASE("mktime model: month 99 is not a successful calendar time") {
 }
 
 TEST_CASE("difftime model: a difference that fits is a double, and one that does not traps") {
-    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    const auto src = prism_test::unwrap_prose(slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp"));
     REQUIRE(!src.empty());
     const auto at = src.find("double difftime(");
     REQUIRE(at != std::string::npos);
@@ -196,7 +198,7 @@ TEST_CASE("difftime harness: fitting difference is true and a zero stand-in is F
 }
 
 TEST_CASE("clock model: nondet clock_t does not mention tm_mon") {
-    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp");
+    const auto src = prism_test::unwrap_prose(slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "time.cpp"));
     REQUIRE(!src.empty());
     CHECK(src.find("typedef long clock_t;") != std::string::npos);
     const auto at = src.find("clock_t clock(");

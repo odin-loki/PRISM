@@ -15,6 +15,7 @@
 
 #include "prism/pir.hpp"
 
+#include "fp.hpp"
 #include "translate_mem.hpp"
 
 #include <algorithm>
@@ -330,11 +331,103 @@ void intrinsic_line(std::ostream& b, const ir::Inst& in) {
     throw Unsupported{"call @" + n};
 }
 
+// MemTr::const_string: the NUL-terminated literal a (constant GEP into a)
+// constant string global holds.
+std::optional<std::string> literal_string(const ir::Module& m, const ir::Value& v) {
+    const ir::Value* g = &v;
+    uint64_t skip = 0;
+    if (v.kind == ir::Value::ConstExpr && v.ce_op == "getelementptr" && !v.elems.empty()) {
+        g = &v.elems[0].v;
+        for (std::size_t k = 1; k < v.elems.size(); ++k) {
+            if (v.elems[k].v.kind != ir::Value::Int) return std::nullopt;
+            skip += v.elems[k].v.bits;
+        }
+    }
+    if (g->kind != ir::Value::Global) return std::nullopt;
+    const auto* gl = m.find_global(g->name);
+    if (!gl || !gl->is_const || gl->init.empty() || gl->init[0].v.kind != ir::Value::Str) return std::nullopt;
+    const auto& bytes = gl->init[0].v.bytes;
+    if (skip > bytes.size()) return std::nullopt;
+    auto s = bytes.substr(static_cast<std::size_t>(skip));
+    auto nul = s.find('\0');
+    if (nul == std::string::npos) return std::nullopt;
+    return s.substr(0, nul);
+}
+
 // The model intrinsics of Tr::model_intrinsic the extended fragment covers
 // (the libc models' malloc/free/new/delete use only these; D136 adds `hhavoc`
 // export ahead of the Lean fragment).
+// Tr::call's noreturn failure calls (undefined in the module): the PIR check's property and class
+std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& m, const ir::Inst& in) {
+    const std::string& n = in.callee;
+    if (n == "llvm.trap" || n == "llvm.debugtrap" || n == "llvm.ubsantrap")
+        return std::pair<std::string, std::string>{"trap", "CXX-UNREACHABLE"};
+    if (m.find(n)) return std::nullopt;
+    if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" || n == "__assert2" ||
+        n == "_wassert")
+        return std::pair<std::string, std::string>{"assert", "FUNC-CONTRACT"};
+    if (n == "__VERIFIER_error" || n == "reach_error")
+        return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
+    if (n == "_ZSt21__glibcxx_assert_failPKciS0_S0_" || n == "_ZSt21__glibcxx_assert_failv") {
+        // libstdc++ precondition: the class from the condition text (as Tr::call)
+        std::string cond = in.ops.size() > 3 ? literal_string(m, in.ops[3].v).value_or("") : "";
+        std::string cls = "FUNC-CONTRACT";
+        if (cond.find("size()") != std::string::npos || cond.find("_Nm") != std::string::npos)
+            cls = "MEM-OOB-READ";
+        else if (cond.find("_M_is_engaged") != std::string::npos || cond.find("has_value") != std::string::npos)
+            cls = "CXX-OPTIONAL-NULL";
+        else if (cond.find("pointer()") != std::string::npos || cond.find("nullptr") != std::string::npos)
+            cls = "PTR-NULL-DEREF";
+        return std::pair<std::string, std::string>{"precondition", cls};
+    }
+    return std::nullopt;
+}
+
+// After a noreturn failure call at `i`: the rest defines no variable (Tr::enter_frame numbers every
+// result) and ends in unreachable, ret, or an unconditional br (normal_blocks scans the whole block).
+// translate_ctl.inc's std_throw_type (the typeinfo of a std::__throw_* call)
+std::string std_throw_ti(const std::string& fn) {
+    static const std::vector<std::pair<std::string, std::string>> k{
+        {"__throw_out_of_range_fmt", "_ZTISt12out_of_range"},
+        {"__throw_out_of_range", "_ZTISt12out_of_range"},
+        {"__throw_length_error", "_ZTISt12length_error"},
+        {"__throw_bad_alloc", "_ZTISt9bad_alloc"},
+        {"__throw_bad_array_new_length", "_ZTISt20bad_array_new_length"},
+        {"__throw_logic_error", "_ZTISt11logic_error"},
+        {"__throw_invalid_argument", "_ZTISt16invalid_argument"},
+        {"__throw_domain_error", "_ZTISt12domain_error"},
+        {"__throw_runtime_error", "_ZTISt13runtime_error"},
+        {"__throw_range_error", "_ZTISt11range_error"},
+        {"__throw_overflow_error", "_ZTISt14overflow_error"},
+        {"__throw_underflow_error", "_ZTISt15underflow_error"},
+        {"__throw_bad_optional_access", "_ZTISt19bad_optional_access"},
+        {"__throw_bad_function_call", "_ZTISt17bad_function_call"},
+        {"__throw_bad_variant_access", "_ZTISt18bad_variant_access"},
+        {"__throw_bad_cast", "_ZTISt8bad_cast"},
+        {"__throw_bad_typeid", "_ZTISt10bad_typeid"},
+    };
+    for (auto& [pre, ti] : k) {
+        auto p = fn.find(pre);
+        if (p == std::string::npos) continue;
+        auto e = p + pre.size();
+        if (e < fn.size() && (std::islower(static_cast<unsigned char>(fn[e])) || fn[e] == '_') && fn.compare(e, 3, "PKc") != 0 &&
+            fn[e] != 'v' && fn[e] != 'b' && fn[e] != 'i')
+            continue;
+        return ti;
+    }
+    return fn;
+}
+
+bool afail_tail_ok(const ir::Block& bl, size_t i) {
+    for (size_t j = i + 1; j < bl.insts.size(); ++j) {
+        auto& x = bl.insts[j];
+        if (!x.result.empty() || x.op == "invoke" || x.op == "switch") return false;
+    }
+    auto& t = bl.insts.back();
+    return t.op == "unreachable" || t.op == "ret" || (t.op == "br" && t.targets.size() == 1);
+}
+
 void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
-    (void)m;
     const std::string& n = in.callee;
     auto cint = [&](std::size_t i) -> uint64_t {
         if (i >= in.ops.size() || in.ops[i].v.kind != ir::Value::Int)
@@ -350,11 +443,19 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
           << opnd(in.ops[0]) << " " << k << " " << init << "\n";
         return;
     }
+    if (n == "__prism_fresh_cstr") {
+        // MemTr::fresh_cstr(kind): a drawn length below 4096, n+1 arbitrary bytes, the NUL (Lean `hfresh`)
+        if (in.ops.size() != 1) throw Unsupported{"call @" + n + " arity"};
+        const uint64_t k = cint(0);
+        if (k > 255) throw Unsupported{"call @" + n + " kind"};
+        b << "L hfresh " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " " << k << "\n";
+        return;
+    }
     if (n == "__prism_free" || n == "__prism_free_check") {
         // MemTr::dealloc: the free checks, then (free) the lifetime ends
         if (in.ops.size() != 2) throw Unsupported{"call @" + n + " arity"};
         const uint64_t k = cint(1);
-        if (k == static_cast<uint64_t>(MemKind::File) || k > 255) throw Unsupported{"call @" + n + " kind"};
+        if (k > 255) throw Unsupported{"call @" + n + " kind"};
         b << "L hfree " << opnd(in.ops[0]) << " " << k << " " << (n == "__prism_free" ? 1 : 0) << "\n";
         return;
     }
@@ -385,8 +486,33 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
         b << "L store 8 #1 %" << kOom << " 8\n";
         return;
     }
+    if (n == "__prism_memset") {
+        // MemTr::memset_ with an i32 byte, truncated after the checks (Lean `hmemset`)
+        if (in.ops.size() != 3 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            throw Unsupported{"call @" + n + " arity"};
+        if (vw(in.ops[1].ty) != 32 || vw(in.ops[2].ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hmemset " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
+        return;
+    }
+    if (n == "__prism_read_range") {
+        // MemTr::read_range: the guarded read checks of n bytes at p (Lean `hread`)
+        if (in.ops.size() != 2 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            throw Unsupported{"call @" + n + " arity"};
+        if (vw(in.ops[1].ty) != 64) throw Unsupported{"call @" + n + " type"};
+        b << "L hread " << ptr_opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
+        return;
+    }
+    if (n == "__prism_check") {
+        // Tr::check(ok == 0, "model", cls): the class is a literal string (Lean `vcheck`)
+        if (in.ops.size() != 3 || in.ops[0].ty.kind != ir::Type::Int) throw Unsupported{"call @" + n + " arity"};
+        auto cls = literal_string(m, in.ops[1].v);
+        if (!cls || cls->empty() || cls->find_first_of(" \t\r\n") != std::string::npos)
+            throw Unsupported{"call @" + n + " class"};
+        b << "L vcheck " << opnd(in.ops[0]) << " " << vw(in.ops[0].ty) << " " << *cls << "\n";
+        return;
+    }
     if (n == "__prism_havoc_bytes") {
-        // MemTr::write_havoc (D136 stdio models): Lean `hhavoc` not in the fragment yet
+        // MemTr::write_havoc (D136 stdio models): Lean `hhavoc` (XHavoc.lean, proved)
         if (in.ops.size() != 2 || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
             throw Unsupported{"call @" + n + " arity"};
         if (vw(in.ops[1].ty) != 64) throw Unsupported{"call @" + n + " type"};
@@ -396,6 +522,129 @@ void model_line(std::ostream& b, const ir::Module& m, const ir::Inst& in) {
     throw Unsupported{"call @" + n};
 }
 
+// translate.cpp's normal_blocks: the blocks reachable from the entry along
+// br, switch and the normal destination of invoke. A landing pad, and the
+// code only it reaches, is translated only once a throw edge reaches it
+// (eh_pass); nothing in the Lean fragment throws, so those blocks stay empty.
+std::set<std::string> normal_blocks(const ir::Function& f) {
+    std::map<std::string, const ir::Block*> by;
+    for (auto& b : f.blocks) by[b.name] = &b;
+    std::set<std::string> seen;
+    std::vector<std::string> work{f.blocks.front().name};
+    while (!work.empty()) {
+        auto n = work.back();
+        work.pop_back();
+        if (!seen.insert(n).second || !by.count(n)) continue;
+        for (auto& in : by[n]->insts) {
+            if (in.op == "br" || in.op == "switch")
+                for (auto& t : in.targets) work.push_back(t);
+            if (in.op == "switch")
+                for (auto& [c, t] : in.cases) work.push_back(t);
+            if (in.op == "invoke" && !in.targets.empty()) work.push_back(in.targets[0]);
+        }
+    }
+    return seen;
+}
+
+// The widths of the variables Tr::enter_frame numbers for a result (in order):
+// an overflow intrinsic's { iN, i1 }, a landing pad's { ptr, i32 }, a
+// two-field scalar aggregate of insertvalue/call/invoke/load, else one
+// variable for an integer, pointer, IEEE or compare result of at most 64 bits.
+std::vector<unsigned> frame_vars(const ir::Inst& in) {
+    if (in.result.empty()) return {};
+    const auto& t = in.ty;
+    auto pw = [](const ir::Type& e) -> unsigned {
+        if (e.kind == ir::Type::Ptr && e.text == "ptr") return 64;
+        if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+        // Tr::scalar_pair: { double, double } / { float, float } (std::complex returns)
+        if (e.kind == ir::Type::Float && e.text == "double") return 64;
+        if (e.kind == ir::Type::Float && e.text == "float") return 32;
+        return 0;
+    };
+    if (overflow_call(in)) {
+        if (t.kind == ir::Type::Struct && t.elems.size() == 2 && t.elems[0].kind == ir::Type::Int &&
+            t.elems[0].bits <= 64 && t.elems[0].bits > 0)
+            return {t.elems[0].bits, 1};
+        return {};
+    }
+    if (in.op == "landingpad" && t.kind == ir::Type::Struct && t.elems.size() == 2 &&
+        t.elems[0].kind == ir::Type::Ptr && t.elems[1].kind == ir::Type::Int && t.elems[1].bits == 32)
+        return {64, 32};
+    if ((in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load") &&
+        t.kind == ir::Type::Struct && t.elems.size() == 2 && pw(t.elems[0]) && pw(t.elems[1]))
+        return {pw(t.elems[0]), pw(t.elems[1])};
+    if (in.op == "icmp" || in.op == "fcmp") return {1};
+    if (t.kind == ir::Type::Ptr && t.text == "ptr") return {64};
+    if (auto fw = fp::width_of(t)) return {*fw};
+    if (t.kind == ir::Type::Int && t.bits > 0 && t.bits <= 64) return {t.bits};
+    return {};
+}
+
+// A block normal_blocks leaves out, as `L dead` placeholders for the variables
+// Tr::enter_frame numbers there, then `L stub` (the Lean translator refuses a
+// stub block it finds reachable). Refused where Tr::enter_frame would add a
+// shadow variable the Lean side does not mirror: a maybe-uninitialised phi
+// (`.uninit`) or a may-undef value (`.undef`, undef_analysis).
+void dead_block(std::ostream& b, const ir::Function& f, const ir::Block& bl,
+                const std::set<std::string>& maybe_uninit) {
+    std::map<std::string, const ir::Inst*> def;
+    for (auto& x : f.blocks)
+        for (auto& in : x.insts)
+            if (!in.result.empty()) def[in.result] = &in;
+    for (auto& in : bl.insts) {
+        if (!in.parsed) throw Unsupported{in.op + " (unreachable block)"};
+        if (in.op == "phi" && maybe_uninit.count(in.result))
+            throw Unsupported{"maybe-uninitialised phi in an unreachable block"};
+        // undef_analysis allocates a shadow only for values computed from undef:
+        // none here unless an undef operand (other than the aggregate an
+        // exception pair is rebuilt into) or a field read of a rebuilt pair
+        for (auto& [o, _] : in.incoming)
+            if (o.v.kind == ir::Value::Undef) throw Unsupported{"undef in an unreachable block"};
+        for (std::size_t i = 0; i < in.ops.size(); ++i)
+            if (in.ops[i].v.kind == ir::Value::Undef &&
+                !(in.op == "insertvalue" && i == 0 && frame_vars(in).size() == 2))
+                throw Unsupported{"undef in an unreachable block"};
+        if (in.op == "extractvalue") {
+            const ir::Inst* d = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local
+                                    ? (def.count(in.ops[0].v.name) ? def[in.ops[0].v.name] : nullptr)
+                                    : nullptr;
+            if (!d || d->op != "landingpad") throw Unsupported{"extractvalue in an unreachable block"};
+        }
+        auto ws = frame_vars(in);
+        if (ws.empty()) continue;
+        b << "L dead %" << name(in.result);
+        for (auto w : ws) b << " " << w;
+        b << "\n";
+    }
+    b << "L stub\n";
+}
+
+// Tr::enter_frame's maybe_uninit: the `__prism.uninit.` results and the phis
+// that carry one (fixpoint).
+std::set<std::string> maybe_uninit_of(const ir::Function& f) {
+    std::set<std::string> mu;
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts)
+            if (in.op == "call" && in.callee.starts_with("__prism.uninit.") && !in.result.empty() &&
+                frame_vars(in).size() == 1)
+                mu.insert(in.result);
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                if (in.op != "phi" || in.result.empty() || mu.count(in.result)) continue;
+                for (auto& [o, _] : in.incoming)
+                    if (o.v.kind == ir::Value::Local && mu.count(o.v.name)) {
+                        mu.insert(in.result);
+                        changed = true;
+                        break;
+                    }
+            }
+    }
+    return mu;
+}
+
 void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
                const std::string& top_file, std::vector<Callee>& callees, bool top, bool foreign) {
     if (!f.parse_error.empty()) throw Unsupported{"unparsed IR"};
@@ -403,6 +652,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     static const std::set<std::string> bins{"add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
                                             "shl", "lshr", "ashr", "and", "or", "xor"};
     const pirmem::Layout lay(m);
+    // Tr::is_ptrtoint: a register the function defines by ptrtoint
+    auto is_ptrtoint = [&](const ir::Operand& o) {
+        if (o.v.kind != ir::Value::Local) return false;
+        const auto* d = def_of(f, o.v.name);
+        return d != nullptr && d->op == "ptrtoint";
+    };
     // the hidden allocation-failed flag (translate.cpp: preassigned when the
     // analysed function can reach __prism_alloc_failed): an object after the
     // entry globals, passed to every inlined function that can reach it as an
@@ -483,18 +738,44 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     if (oom && !top) b << " " << kOom << " 64";
     b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
     // translate.cpp's return of a pointer: MemTr::stack_escape_check against
-    // the analysed function's own stack objects (the Lean XFunc.escNames)
-    if (top && f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
+    // the function's own stack objects (the Lean XFunc.escNames; a callee: outside)
+    if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
     std::vector<std::string> eg;
     if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
     g_entry = top ? &eg : nullptr;
     struct Reset {
         ~Reset() { g_entry = nullptr; }
     } reset;
-    for (auto& bl : f.blocks) {
-        b << "L block " << name(bl.name) << "\n";
-        if (top && &bl == &f.blocks.front()) b << harness.str();
-        if (top && &bl == &f.blocks.front())
+    const auto live = normal_blocks(f);
+    const auto muninit = maybe_uninit_of(f);
+    for (auto& bl0 : f.blocks) {
+        b << "L block " << name(bl0.name) << "\n";
+        if (!live.count(bl0.name)) {
+            dead_block(b, f, bl0, muninit);
+            continue;
+        }
+        // an invoke: translate.cpp's Tr::translate_block translates it as the
+        // call (its landing pad the handler of a throw inside), then the normal
+        // edge. Nothing the Lean fragment admits throws (__cxa_throw, resume,
+        // std::__throw_* are all outside), so the handler is never used and the
+        // landing pads stay unreachable: the call, then `br` to the normal label.
+        ir::Block bl = bl0;
+        const bool invoke_end = !bl.insts.empty() && bl.insts.back().op == "invoke";
+        if (invoke_end) {
+            ir::Inst& inv = bl.insts.back();
+            if (inv.targets.size() != 2) throw Unsupported{"invoke shape"};
+            ir::Inst br;
+            br.op = "br";
+            br.parsed = true;
+            br.targets = {inv.targets[0]};
+            inv.op = "call";
+            inv.targets.clear();
+            bl.insts.push_back(std::move(br));
+        }
+        // the call an invoke became (Tr::handlers has its landing pad while the callee runs)
+        const ir::Inst* invoke_call = invoke_end ? &bl.insts[bl.insts.size() - 2] : nullptr;
+        if (top && &bl0 == &f.blocks.front()) b << harness.str();
+        if (top && &bl0 == &f.blocks.front())
             for (auto& gname : eg) {
                 // MemTr::emit_entry_globals: the object, then its initialiser's stores
                 auto e = *pirmem::entry_global(m, lay, gname, opt.globals_initial);
@@ -503,7 +784,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 for (auto& st : e.stores) b << " " << st.off << " " << st.w << " " << st.bits;
                 b << "\n";
             }
-        if (top && oom && &bl == &f.blocks.front())
+        if (top && oom && &bl0 == &f.blocks.front())
             // MemTr::alloc(-1, c64(1), Static, init 1): one zero byte
             b << "L glob %" << kOom << " 1 16 3 1 0\n";
         for (auto& in : bl.insts) {
@@ -521,9 +802,38 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
             if (op == "phi") {
-                b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << in.incoming.size();
-                for (auto& [v, pred] : in.incoming) b << " " << opnd(v) << " " << name(pred);
+                // resolve_phis drops an incoming from a block run_frame never
+                // translated (normal_blocks does not reach it: a catch handler
+                // joining the normal path). Kept where Tr::enter_frame's
+                // shadows saw it: an undef or maybe-uninitialised input.
+                std::vector<std::pair<ir::Operand, std::string>> inc;
+                for (auto& [v, pred] : in.incoming) {
+                    if (live.count(pred)) {
+                        inc.emplace_back(v, pred);
+                        continue;
+                    }
+                    if (v.v.kind == ir::Value::Undef ||
+                        (v.v.kind == ir::Value::Local && muninit.count(v.v.name)))
+                        throw Unsupported{"phi: undef or uninitialised input from an unreachable block"};
+                }
+                b << "L phi %" << name(in.result) << " " << vw(in.ty) << " " << inc.size();
+                for (auto& [v, pred] : inc) b << " " << opnd(v) << " " << name(pred);
                 b << "\n";
+            } else if (op == "sub" && in.ops.size() == 2 && !in.result.empty() && is_ptrtoint(in.ops[0]) &&
+                       is_ptrtoint(in.ops[1])) {
+                // Tr::binop: MemTr::ptr_sub_check (same object), then the subtraction
+                if (in.ty.kind != ir::Type::Int || in.ty.bits != 64) throw Unsupported{"sub of ptrtoint width"};
+                std::string fl;
+                for (auto f2 : {"nsw", "nuw"})
+                    if (has(in, f2)) fl += (fl.empty() ? "" : ",") + std::string(f2);
+                b << "L psub %" << name(in.result) << " " << word(fl) << " " << opnd(in.ops[0]) << " "
+                  << opnd(in.ops[1]) << "\n";
+            } else if (op == "ptrtoint") {
+                // Tr::inst: a copy of the 64-bit pointer (every use is a sub or icmp of two ptrtoint values there)
+                if (in.result.empty() || in.ops.size() != 1 || in.ty.kind != ir::Type::Int || in.ty.bits != 64 ||
+                    in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+                    throw Unsupported{"ptrtoint shape"};
+                b << "L ptrtoint %" << name(in.result) << " " << opnd(in.ops[0]) << "\n";
             } else if (bins.count(op)) {
                 std::string fl;
                 for (auto f2 : {"nsw", "nuw", "exact", "disjoint"})
@@ -546,7 +856,15 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
             } else if (op == "icmp") {
                 if (in.result.empty() || in.ops.size() != 2) throw Unsupported{"icmp shape"};
-                if (in.ty.kind == ir::Type::Ptr && in.pred != "eq" && in.pred != "ne") {
+                if (is_ptrtoint(in.ops[0]) && is_ptrtoint(in.ops[1])) {
+                    // MemTr::addr_cmp (std::less<T*>): exact for ==/!= and within one object,
+                    // an unknown bit for the order of two different objects
+                    if (in.pred != "eq" && in.pred != "ne" && in.pred != "ult" && in.pred != "ule" &&
+                        in.pred != "ugt" && in.pred != "uge")
+                        throw Unsupported{"signed icmp of address values"};
+                    b << "L acmp %" << name(in.result) << " " << in.pred << " " << opnd(in.ops[0]) << " "
+                      << opnd(in.ops[1]) << "\n";
+                } else if (in.ty.kind == ir::Type::Ptr && in.pred != "eq" && in.pred != "ne") {
                     // MemTr::icmp: a relational comparison of pointers checks they share an object
                     if (in.ty.text != "ptr") throw Unsupported{"icmp on " + in.ty.text};
                     b << "L pcmp %" << name(in.result) << " " << in.pred << " " << opnd(in.ops[0]) << " "
@@ -601,7 +919,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << "\n";
-            } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm) {
+            } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm &&
+                       !(afail_kind(m, in) && afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())))) {
                 intrinsic_line(b, in);
             } else if (op == "extractvalue") {
                 // a field of an overflow intrinsic's { iN, i1 } result
@@ -611,6 +930,30 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     throw Unsupported{"extractvalue"};
                 b << "L xv %" << name(in.result) << " " << width(in.ty) << " %" << name(in.ops[0].v.name) << " "
                   << in.indices[0] << "\n";
+            } else if (op == "call" && !in.is_asm && afail_kind(m, in) &&
+                       afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data()))) {
+                // Tr::call: check(1, prop, cls), then the rest of the block is dead (noreturn);
+                // an unconditional br still makes its target reachable (normal_blocks)
+                auto [prop, cls] = *afail_kind(m, in);
+                auto& t = bl.insts.back();
+                b << "L afail " << prop << " " << cls;
+                if (t.op == "br") b << " br " << name(t.targets[0]);
+                b << "\n";
+                break;
+            } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
+                       in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&
+                       afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())) &&
+                       bl.insts.back().op == "unreachable") {
+                // Tr::call: std::__throw_* raises a library exception (Tr::raise); the
+                // semantics stops following the run there, the PIR after it is unchecked.
+                // Under an invoke (`L icall` on the inlined path) a handler may catch it:
+                // the Lean translator refuses that (dispatch not modelled)
+                // Tr::eh_call evaluates the non-float arguments first (their checks)
+                b << "L throw " << std_throw_ti(in.callee);
+                for (auto& a : in.ops)
+                    if (a.ty.kind != ir::Type::Float) b << " " << opnd(a) << " " << vw(a.ty);
+                b << "\n";
+                break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);
             } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&
@@ -624,7 +967,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && inlined_call(m, in)) {
                 const bool cforeign = foreign || foreign_callee(m, in.callee, top_file);
                 const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
-                b << "L call " << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                b << (&in == invoke_call ? "L icall " : "L call ") << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
                   << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
                   << in.ops.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);

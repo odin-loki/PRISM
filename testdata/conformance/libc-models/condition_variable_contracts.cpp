@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <condition_variable> so the C++ model-header conformance case sees
 // this include. notify_one and notify_all set the model's flag. They do
 // not run a waiter. A default condition_variable has the flag false.

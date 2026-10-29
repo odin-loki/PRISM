@@ -103,9 +103,18 @@ constexpr double fabs(double __x) { return __builtin_fabs(__x); }
 constexpr float fabs(float __x) { return __builtin_fabsf(__x); }
 constexpr long double fabs(long double __x) { return __builtin_fabsl(__x); }
 
+// Under libstdc++, bits/std_abs.h (reached from <cstdlib> and others) defines
+// the floating abs overloads with the same builtins; use it so they are not
+// defined twice.
+#if defined(__GLIBCXX__)
+}  // namespace std
+#include <bits/std_abs.h>
+namespace std {
+#else
 constexpr double abs(double __x) { return __builtin_fabs(__x); }
 constexpr float abs(float __x) { return __builtin_fabsf(__x); }
 constexpr long double abs(long double __x) { return __builtin_fabsl(__x); }
+#endif
 
 // Classification, not a numeric identity. A floating zero is finite and is
 // not a NaN. The sign bit of a negative value is set. Clang's isfinite,

@@ -19,7 +19,10 @@ int sstream_chain_true(int a, int b) {
     return 0;
 }
 
-int sstream_strbuf_true(const char* p) {
+int sstream_strbuf_true(int) {
+    // a terminated string (an unguarded pointer parameter is a missing
+    // precondition, NEEDS-HARNESS, not a defect)
+    const char p[] = "abc";
     std::stringbuf buf;
     buf.sputn(p, static_cast<std::streamsize>(std::strlen(p)));
     assert(buf.str() == p);

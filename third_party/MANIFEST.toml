@@ -70,7 +70,7 @@ archive_sha256 = "8723197f4827370e26e6b845dc310be68b3d348acada91e8ef75995be7bd7e
 spdx = "MIT"
 licence_file = "LICENSE.txt"
 path = "third_party/z3"
-tree_sha256 = "ff553588f5d86e06f51f48a8bc0de7824a10c5f1603027fa486494fb24b7a527"
+tree_sha256 = "d67acb518d030d6d1bff72d13ed2ca3d045ed1015e88e502bf35cc530f20c3f7"
 tree_version_file = "CMakeLists.txt"
 tree_version_regex = 'project\(Z3 VERSION (\d+)\.(\d+)\.(\d+)'
 tree_version = "4.13.4"
@@ -78,6 +78,7 @@ drift = [
   "D src/api/js/package-lock.json",
   "D src/api/js/package.json",
   "M src/math/simplex/model_based_opt.cpp",
+  "M src/util/memory_manager.cpp",
 ]
 
 [[component]]

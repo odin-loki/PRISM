@@ -46,6 +46,15 @@
 // memory state exactly (SymMem::load_exact: no provenance shortcut), so a
 // template means the bytes of that state for every x.
 
+// PRISM_HOUDINI_TRACE=1: one stderr line per Houdini goal query (diagnostics only)
+static bool houdini_trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("PRISM_HOUDINI_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
 struct InvTerm {
     enum Kind { Phi, Scope, Const, Entry, Size } kind = Const;
     int idx = -1;  // Phi/Entry: phi index in the header; Scope/Size: variable
@@ -155,6 +164,7 @@ private:
     double per_query_;
     double deadline_;
     double hard_s_;
+    mutable bool mem_out_ = false;  // left() saw the soft memory cap
     HoudiniEnv env_;
     std::string cache_file_;   // "" : no cache
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
@@ -165,7 +175,15 @@ private:
     std::vector<const Stmt*> def_;
     std::vector<char> signed_use_;
 
+    // Over the encoder's soft memory cap (encode.cpp z3_over_soft_cap) the
+    // search ends as if out of time: every unanswered goal is dropped, and no
+    // query can push Z3 past its hard limit, after which Z3 is unusable for
+    // every later function of the process (Law 7: one UNKNOWN, not many).
     double left() const {
+        if (z3_over_soft_cap()) {
+            mem_out_ = true;
+            return 0;
+        }
         return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
@@ -1069,10 +1087,22 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
+                const auto tq0 = std::chrono::steady_clock::now();
                 auto r = s.check(as);
+                std::optional<z3::model> qm;
+                if (r == z3::sat) qm = s.get_model();
+                // the activation literal is never assumed again: retire its clause
+                // (after the model is read: adding a clause discards it)
+                s.add(!act);
+                if (houdini_trace())
+                    std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
+                                 r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
+                if (houdini_trace() && live.size() == 1 && r != z3::unsat)
+                    std::fprintf(stderr, "houdini   goal: %s\n", text(cands[live[0]]).c_str());
                 if (r == z3::unsat) return;
                 if (r == z3::sat) {
-                    auto m = s.get_model();
+                    auto& m = *qm;
                     bool any = false;
                     for (auto i : live)
                         if (!m.eval(*goal_of(i), true).is_true()) {
@@ -1180,6 +1210,10 @@ HoudiniOut Houdini::run() {
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
+            if (z3_over_soft_cap()) {
+                fail = "cut program: encoder memory over the soft cap (PRISM_PIR_MEM_MB)";
+                return -1;
+            }
             if (fleft() <= 0) {
                 fail = "cut program: out of time";
                 return -1;
@@ -1280,7 +1314,7 @@ HoudiniOut Houdini::run() {
     while (changed) {
         if (left() <= 0) {
             out.undecided = true;
-            fail = "Houdini ran out of time";
+            fail = mem_out_ ? "Houdini stopped: encoder memory over the soft cap (PRISM_PIR_MEM_MB)" : "Houdini ran out of time";
             return finish_out(false);
         }
         ++out.rounds;

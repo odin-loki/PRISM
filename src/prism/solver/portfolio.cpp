@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
 #include "prism/solver_certs.hpp"
 #include "internal.hpp"
@@ -258,6 +259,7 @@ private:
 struct Jobs {
     Board board;
     std::deque<std::unique_ptr<z3::context>> ctxs;  // private contexts
+    std::deque<prism::membudget::Watch> watches;    // memory watchdog: interrupts each context
     std::deque<z3::expr> exprs;                     // the formula translated into each
     std::deque<std::atomic<bool>> done;             // one per thread, raised last
     std::shared_ptr<const Cnf> cnf;
@@ -541,7 +543,20 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     res.bucket = ft.bucket();
     std::vector<std::string> canonical;
     std::string norm;
-    try {
+    // The cache key copies the formula into a fresh context, simplifies it
+    // and prints it: three to four times the formula's memory (Z3_translate
+    // of priority_queue_contracts.cpp's queries pushed a 2 GB process past
+    // 3.6 GB and into the kernel's OOM killer). Past half the memory budget
+    // the query is solved without the cache, under a key no other query has.
+    const uint64_t budget = prism::membudget::budget_mb();
+    const bool skip_norm = budget > 0 && prism::membudget::rss_mb() * 2 >= budget;
+    if (skip_norm) {
+        static std::atomic<uint64_t> uniq{0};
+        norm = "prism-solver-query uncached (memory budget) " + std::to_string(::getpid()) + " " +
+               std::to_string(uniq.fetch_add(1)) + " " + std::to_string(now_s());
+        notes.push_back("not cached: the process is over half its memory budget (" +
+                        std::to_string(prism::membudget::rss_mb()) + " of " + std::to_string(budget) + " MB)");
+    } else try {
         norm = normalized_query(c, formula, &canonical);
     } catch (const z3::exception& e) {
         res.kind = Kind::Error;
@@ -884,7 +899,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::shared_ptr<const Cnf>& cnf = J->cnf;
     enum class CnfState { None, Running, Ready, Failed } cnf_state = CnfState::None;
     z3::context* blast_ctx = nullptr;
-    const unsigned slots = opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency());
+    // Every in-process member solves its own copy of the formula: past half
+    // the memory budget, one member at a time (prism/membudget.hpp).
+    const unsigned slots = skip_norm ? 1u
+                                     : (opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency()));
+    if (skip_norm) notes.push_back("one solver at a time: memory budget");
     unsigned running = 0;
 
     // Stop every job and wait for it. A Z3 interrupt that lands before
@@ -944,7 +963,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
     auto new_ctx = [&]() -> z3::context& {
         J->ctxs.push_back(std::make_unique<z3::context>());
-        return *J->ctxs.back();
+        z3::context* zc = J->ctxs.back().get();
+        J->watches.emplace_back([zc] { Z3_interrupt(*zc); });
+        return *zc;
     };
     // The formula in context zc, kept in Jobs (a job thread only refers to it).
     auto translated = [&](z3::context& zc) -> const z3::expr& {

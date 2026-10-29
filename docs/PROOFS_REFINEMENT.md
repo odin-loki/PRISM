@@ -405,6 +405,113 @@ extended fragment:
 | `testdata/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
 | `testdata`, D118 (`hobjsz`, memcpy `selfOk`) | 2 532 | 937 | **74** | 54 | 1 467 | **0** |
 
+All six trees (2026-10-29, `prism-qa pir-lean-check testdata/conformance
+testdata/fixtures testdata/fp testdata/pir testdata/planted testdata/tp`, no
+trailing slashes; `testdata/fixtures` exports nothing). "Before" is the
+`origin/fix/sarif-doctest` checker (beaef75ca, the base plus the XHeap build
+fix) with the base's `prism`; each later row is `work/proofs`' checker and
+exporter:
+
+| Run | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch | In the proved fragment |
+|---|---|---|---|---|---|---|
+| before (base) | 1 039 | 221 | 183 | 2 216 | **0** | 1 260 |
+| D136 stdio primitives (57b4be78e) | 1 039 | 287 | 231 | 2 100 | **0** | 1 326 |
+| `assert`/`reach_error` noreturn blocks + unreachable LLVM blocks (511404056) | 1 039 | 396 | 243 | 1 981 | **0** | 1 435 |
+| `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | 419 | 245 | 1 956 | 0 | 1 458 |
+| `invoke` as call + `br`, stubbed landing pads (65d994197) | 1 039 | **479** | 266 | 1 875 | **0** | **1 518** |
+| `ptrtoint`/`psub`, `std::__throw_*` without handlers (64b4cdd34) | 1 039 | **491** | 267 | 1 869 | **0** | **1 530** |
+| allocas in inlined callees, freed at `ret` (8920b58bc, ca7cd088d)\* | 1 039 | 491 | 267 | 1 865 | **0** | 1 530 |
+
+Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
+387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
+1 451, tp 12 → 12 / 19 → 6.
+
+The largest causes outside the fragment at the base were `invoke` (210),
+undefined `__assert_fail` (170) and `__cxa_begin_catch` (63); `alloca` in an
+inlined function was only 11. The two that moved:
+
+* **Noreturn failure calls.** `Tr::call` translates an undefined
+  `__assert_fail` (and `__assert_rtn`, `_assert`, `__assert`, `__assert2`,
+  `_wassert`), `reach_error`/`__VERIFIER_error`, `llvm.trap`/`debugtrap`/
+  `ubsantrap` and `std::__glibcxx_assert_fail` as `check(1, prop, cls)` and
+  ends the block (`noreturn`). The exporter writes `L afail <prop> <cls>
+  [br <target>]` in place of the call and the rest of the block (only when
+  that rest defines no variable and ends in `unreachable`, `ret` or an
+  unconditional `br`, which `normal_blocks` still follows). `XBlock.nr`: the
+  LLVM semantics (`sEnd`/`lEnd`) is UB on reaching such a block's end, the
+  translation (`trTermN`) is the failing check then `stop`.
+* **`invoke` and landing pads (no throw in the fragment).** `Tr::translate_block`
+  translates an `invoke` as the call with its landing pad pushed as a handler,
+  then `Jmp` to the normal label; the handler is used only by `raise` /
+  `dispatch_type` (`__cxa_throw`, `std::__throw_*`, `__cxa_rethrow`, `resume`),
+  none of which is in the fragment, so landing pads stay untranslated
+  (`normal_blocks`). The exporter writes the call then `L br <normal>`; a block
+  `normal_blocks` does not reach is written as `L dead %r w [w2]` placeholders
+  (the variables `Tr::enter_frame` numbers: `{ptr,i32}` landing pad 64+32, ...)
+  and `L stub` (Lean `XBlock.stub`; `nondet` placeholders, parse error outside a
+  stub block, and `runFrame` refuses a stub block `xLive` reaches). Phi incomings
+  from such blocks are dropped as `resolve_phis` does (refused where a dropped
+  input is undef or maybe-uninitialised, or a dead block needs an `.undef` /
+  `.uninit` shadow). Exporter-trust assumption: nothing the fragment admits
+  unwinds, so an `invoke` is its call + `br` and unreachable blocks are
+  irrelevant. Typical gain: `operator delete` (model `invoke __prism_free` with a
+  terminate pad), `new` inside `try`. Fixture `cxx_invoke` (4 agree-ext, 2
+  outside negatives). 419 → **479** agree-ext, mismatch 0. Still outside:
+  actual throws/catches (`__cxa_begin_catch` 63, `__cxa_allocate_exception` 33,
+  `std::__throw_bad_array_new_length` 29), indirect calls 30, `ptrtoint` 27,
+  float/double 42, `pthread_mutex_lock` 20, `alloca` in an inlined function 18,
+  `pthread_create` 17, `mtx_lock` 15, constant-GEP operands 14.
+* **Pointer difference and library throws (d02bdb7f5, 64b4cdd34).** `sub` of two
+  `ptrtoint`s is `SInst.psub` (ub on different objects, mirroring the
+  `PTR-COMPARE` check); a bare `ptrtoint` is a copy. `std::__throw_*` with no
+  arguments, when no `invoke` can be on the stack (`under_invoke`), is
+  `L throw <typeinfo>`: `XBlock.thr` makes the LLVM run stuck there (no claim),
+  `segOK` checks only the prefix, and `runFrame` mirrors `Tr::raise` exactly
+  (Extern alloc of 96 bytes, three header stores via `Tr::at`, `type_id` in
+  first-use order, `CXX-UNCAUGHT` when the top is `main` / a global init, stop,
+  fresh block). Fixtures `ptr_sub`, `std_throw`. 479 → **491** agree-ext.
+* **Allocas in inlined callees** (8920b58bc): an inlined frame's allocas are
+  freed at its `ret` (`freeStmts` / `retFree`, `freeAll_ok`); an inlined callee
+  returning a pointer while owning stack objects stays outside, and `L retptr`
+  is now exported for every pointer-returning function. Fixture
+  `inlined_alloca`. Coverage: **no net change** (491 agree-ext, outside 1 869 →
+  1 865, mismatch 0) — every inlined-alloca function in `testdata` is blocked
+  by something else (mostly throw-under-`invoke`, `__cxa_begin_catch`,
+  iostream calls).
+* **Throws under an `invoke`, per call path** (this commit): the exporter no
+  longer refuses `std::__throw_*` module-wide (`under_invoke`); the call an
+  `invoke` became is exported as `L icall` (`CallI.inv`), and `runFrame`
+  counts live handlers (`TS.hdl`, `Tr::handlers`) and refuses a throw while
+  one is live (dispatch to a landing pad not modelled yet). A function that
+  throws with no handler on its own inlined path is in the fragment even when
+  some other function invokes it. Fixture `invoke_throw` (3 agree-ext, `h`
+  outside: its own `invoke` has a cleanup pad). Coverage (six trees, same
+  method as `/workspace/logs/cov3`): agree 1 019, agree-ext 308, agree-reject
+  233, outside 1 744, mismatch 0 — **no net change**: the 19
+  `__throw_bad_array_new_length` functions move to their next blocker (7 to
+  the throw-under-invoke refusal, i.e. need real dispatch; 9 to an inlined
+  pointer-returning callee with stack objects; 3 to `__cxa_allocate_exception`).
+  \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
+  the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
+  files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under
+  the cap at all, so their verdicts are this checker on the previous export.
+  pthread/mtx stay outside because `translate.cpp` itself leaves them UNENCODED.
+* **Unreachable LLVM blocks.** `Tr::run_frame` translates only
+  `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
+  `xSucc` (XTranslate) mirror it, `runFrame` skips the dead blocks (their
+  PIR head stays empty), and `validB` checks `xLiveClosed` (the entry is
+  live, live blocks' successors are live) and `segOK` only for live blocks.
+  The simulation carries liveness of the current block in `InvX` and of every
+  suspended caller in `TailX` (`InstFacts.live0`, `.closed`). A live phi with
+  an incoming from a dead block stays outside (`Tr` drops such incomings).
+
+Fixtures `assert_dead` (3 `agree-ext`) and `trap` (2 `agree-ext`). Top
+remaining causes (kept `.pirl`s of the last run): `invoke` 225,
+`__cxa_begin_catch` 61, `__cxa_allocate_exception` 24, indirect calls 22,
+`float`/`double` 21/20, `pthread_mutex_lock` 20, `pthread_create` 17,
+`mtx_lock` 15, constant-GEP pointer operands 14, `alloca` in an inlined
+function 13, `printf` 12 (counts over kept `.pirl` files, which repeat inlined callees). The `agree-reject` verdicts are unguarded pointer parameters (Law 6).
+
 Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
 trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
 (65 + 74), 0 mismatches. Among them 24 of the pointer fixture
@@ -483,7 +590,7 @@ fragment is written as `L unsupported <why>`. Pointer values are written with wi
 `L retptr` marks the analysed function as returning a pointer (the
 stack-escape check), a harness-bound pointer parameter is an `L glob` line
 at the start of the entry block and an unbound one `L ptrparam`; the model
-intrinsics are `L halloc`, `L hfree`, `L vassume` and `L nondet`, and
+intrinsics are `L halloc`, `L hfree`, `L hobjsz`, `L hhavoc` (`__prism_havoc_bytes`), `L hread`, `L hmemset`, `L hfresh`, `L vcheck` (all proved in `XHavoc.lean`), `L vassume` and `L nondet`, and
 `__prism_alloc_failed()` is written as the one-byte store it is into the flag
 object `%__prism.oom` (an `L glob` after the entry globals, passed to the
 inlined functions that can reach it as an extra last argument — the
@@ -784,11 +891,16 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   pointer parameters (`byval`, `sret`, constant-size contracts), and the
   heap of the libc models through `__prism_alloc`/`__prism_free`, and
   `__prism_obj_size` (`hobjszCore_run`; the `hobjsz` case of `sinstX_sim`).
-  `__prism_memcpy` is the existing `memcpy` statement. Not yet:
-  `FILE` objects (`fopen`/`fclose`: `__prism_havoc_bytes` is `L hhavoc` in
-  the C++ export and still outside the Lean checker; `MemTr::write_havoc`
-  needs `trSInstX`, the `XLazy` matches, and a `Check.lean` clause before it
-  can leave `outside`, and no `admit` stands in for that), `abort()` (it reads the allocation-failed flag and
+  `__prism_memcpy` is the existing `memcpy` statement. The stdio / FILE
+  primitives (D136, `XHavoc.lean`, `XHeap.lean`) are proved: `L hhavoc`
+  (`__prism_havoc_bytes`, `havoc_run`), `L hread` (`__prism_read_range`,
+  `hread_run`), `L vcheck` (`__prism_check` with a literal class,
+  `pred_eq`), `L hmemset` (`__prism_memset`, i32 byte truncated after the
+  checks, `hmemset_run`), `L hfresh` (`__prism_fresh_cstr`, drawn length
+  below 4096, `freshCore_run`), and `L hfree p 8` (FILE release, the single
+  `free-invalid` kind check of `MemTr::dealloc`, `freeChkF_run`); fixtures
+  `stdio_file` (fopen/fgets/fclose/getenv) and `stdio_prims` are `agree-ext`.
+  Not yet: `abort()` (it reads the allocation-failed flag and
   ends the block), `exit`, contracts whose size is another parameter (the
   harness assumes a range on it: a theorem conditional on that assumption),
   `ptrtoint`/`inttoptr`, globals whose initialiser holds pointers, globals

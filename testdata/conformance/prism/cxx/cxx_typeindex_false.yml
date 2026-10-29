@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_typeindex_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_typeindex_false: false
+witness:
+  cxx_typeindex_false: [1]

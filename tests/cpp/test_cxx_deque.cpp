@@ -1,8 +1,8 @@
 // Differential test of the std::deque model header. Standalone: it does not
-// share fixtures with tests/cpp/test_cxx_models.cpp. The header is not on the
-// pir include path yet (docs/finish-notes/deque.md); this test compiles
+// share fixtures with tests/cpp/test_cxx_models.cpp. The header is on the
+// pir include path (embedded as cxx/deque); this test compiles
 // tests/cxx_models/deque_trace.cpp twice, once against libstdc++ and once with
-// -isystem src/prism/pir/models/cxx/deque so #include <deque> is the model.
+// -isystem on a directory holding only the model, so #include <deque> is it.
 //
 // Without a libstdc++ clang++ that can run ASan/UBSan the cases report NOTRUN.
 
@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -30,7 +31,18 @@ namespace {
 
 fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
 
-fs::path model_dir() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "deque"; }
+// A directory holding only the model <deque> (src/prism/pir/models/cxx/deque),
+// so -isystem swaps that one header and leaves the other models out.
+fs::path model_dir() {
+    static const fs::path d = [] {
+        fs::path dir = fs::temp_directory_path() / ("prism_deque_model_" + std::to_string(std::random_device{}()));
+        fs::create_directories(dir);
+        fs::copy_file(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "deque", dir / "deque",
+                      fs::copy_options::overwrite_existing);
+        return dir;
+    }();
+    return d;
+}
 
 struct DequeCtx {
     fs::path tmp;
@@ -71,7 +83,7 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
         posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
     }
     pid_t pid = 0;
-    extern char** environ;
+    // environ comes from <unistd.h> (a block-scope extern here would get internal linkage).
     if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
         posix_spawn_file_actions_destroy(&actions);
         if (out) {

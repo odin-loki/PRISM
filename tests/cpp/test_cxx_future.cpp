@@ -9,6 +9,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -244,13 +246,13 @@ TEST_CASE("cxx future model: empty get() is a check and the header does not defi
     const fs::path header = future_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
-    const std::string src = slurp(header);
+    const std::string src = prism_test::unwrap_prose(slurp(header));
     REQUIRE_FALSE(src.empty());
     CHECK(src.find("#ifndef _GLIBCXX_FUTURE") != std::string::npos);
     CHECK(src.find("#define _GLIBCXX_FUTURE") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std {") != std::string::npos);
-    CHECK(src.find("fail to compile") != std::string::npos);
+    CHECK(src.find("fails to compile") != std::string::npos);
     CHECK(src.find("pir falls back") != std::string::npos);
     CHECK(src.find("fake synchronization") != std::string::npos);
     for (const char* inc : {"#include <memory>", "#include <thread>", "#include <functional>", "#include <mutex>"})

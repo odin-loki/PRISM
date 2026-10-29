@@ -541,6 +541,10 @@ struct CheckOptions {
     std::shared_ptr<HoudiniBudget> houdini_budget;
 };
 PRISM_API Verdict check_function(const Function& fn, const CheckOptions& opt);
+// True once Z3 hit its hard memory limit in this process: every later
+// check_function is UNKNOWN "not checked" (pir stage re-runs those in a
+// fresh process).
+PRISM_API bool z3_hard_oom();
 // The portfolio without the query cache (library callers and tests).
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s = 30.0);
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions& eo);

@@ -1,0 +1,6 @@
+format_version: 1
+input_files: bit_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  bit_counts_true: true

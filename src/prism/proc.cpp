@@ -619,6 +619,14 @@ RunOut run(const RunSpec& spec) {
     close_fd(err_p[0]);
     if (WIFEXITED(st)) {
         r.rc = WEXITSTATUS(st);
+        // bwrap (the sandbox wrapper) runs the command as a child and exits
+        // 128 + N when that child is killed by signal N, so a crash inside
+        // the sandbox would otherwise read as a plain nonzero exit.
+        if (!r.timed_out && !args.empty() && fs::path(args[0]).filename() == "bwrap" && r.rc > 128 &&
+            r.rc < 128 + 65) {
+            r.rc = -(r.rc - 128);
+            r.crashed = true;
+        }
     } else if (WIFSIGNALED(st)) {
         r.rc = -WTERMSIG(st);
         if (!r.timed_out) r.crashed = true;

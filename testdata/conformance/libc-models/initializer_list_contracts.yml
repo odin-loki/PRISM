@@ -1,0 +1,6 @@
+format_version: 1
+input_files: initializer_list_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  initializer_list_walk_true: true
