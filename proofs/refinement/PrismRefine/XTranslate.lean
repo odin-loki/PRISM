@@ -686,6 +686,24 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
             .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-sub" "PTR-COMPARE"] ++
             sc ++ [.assign i (.bin .sub) [A, B]],
           ta ++ tb ++ [64, 64, 1] ++ tc)
+  | .acmp d p a b => do
+    need (p == .eq || p == .ne || p == .ult || p == .ule || p == .ugt || p == .uge)
+      "UNENCODED: signed icmp of address values"
+    let (sa, ta, A) ← trOpndX c 64 false k a
+    let (sb, tb, B) ← trOpndX c 64 false (k + ta.length) b
+    let i ← dstX c d 1
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let j := k + ta.length + tb.length
+    -- `MemTr::addr_cmp`: the comparison; for an order, also the objects, their
+    -- equality, an unknown bit and the select; then the copy into the result
+    if p == .eq || p == .ne then
+      pure (sa ++ sb ++ [.assign j (.cmp p) [A, B], .assign i .copy [.v j 1]], ta ++ tb ++ [1])
+    else
+      pure (sa ++ sb ++ [.assign j (.cmp p) [A, B], .assign (j + 1) (.bin .lshr) [A, c64 48],
+              .assign (j + 2) (.bin .lshr) [B, c64 48], .assign (j + 3) (.cmp .eq) [.v (j + 1) 64, .v (j + 2) 64],
+              .havoc (j + 4), .assign (j + 5) .select [.v (j + 3) 1, .v j 1, .v (j + 4) 1],
+              .assign i .copy [.v (j + 5) 1]],
+            ta ++ tb ++ [1, 64, 64, 1, 1, 1])
   | .nondet d w => do
     need (okW w) "UNENCODED: width"
     let i ← dstX c d w
@@ -975,6 +993,7 @@ where
     | .glob d _ _ _ _ _ => [(d, 64)]
     | .pcmp d _ _ _ => [(d, 1)]
     | .psub d _ _ _ => [(d, 64)]
+    | .acmp d _ _ _ => [(d, 1)]
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]

@@ -448,6 +448,10 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let q ← match pred? p with | some q => pure q | none => throw s!"icmp {p}"
       f := { f with cur := some (bn, ps, sg, .pcmp (← reg? d) q (← opnd? a) (← opnd? b) :: is) }
+    | ["acmp", d, p, a, b] =>
+      let (bn, ps, sg, is) ← inBlock
+      let q ← match pred? p with | some q => pure q | none => throw s!"icmp {p}"
+      f := { f with cur := some (bn, ps, sg, .acmp (← reg? d) q (← opnd? a) (← opnd? b) :: is) }
     | ["psub", d, fl, a, b] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .psub (← reg? d) (← flags? fl) (← opnd? a) (← opnd? b) :: is) }

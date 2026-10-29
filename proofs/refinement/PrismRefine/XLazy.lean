@@ -56,6 +56,13 @@ theorem lOne_lift (R : SRegs) (t : World) (d : String) (r : Res Nat) :
   | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
   | stuck => rfl
 
+theorem lOneW_lift (R : SRegs) (t : World) (d : String) (r : Res (Nat × World)) :
+    SLX (r.bind fun (v, W') => .ok (R.set d v, W')) (lOneW ⟨lift R, false⟩ t d r) := by
+  cases r with
+  | ok vw => obtain ⟨v, W'⟩ := vw; simp [Res.bind, lOneW, SLX, lift_set]
+  | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
+  | stuck => rfl
+
 theorem lMem_lift (R : SRegs) (r : Res World) :
     SLX (r.bind fun W' => .ok (R, W')) (lMem ⟨lift R, false⟩ r) := by
   cases r with
@@ -145,6 +152,7 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
   | glob d size al kd ini st => simp [sSInst, lSInst, SLX, lift_set]
   | pcmp d p a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
   | psub d fl a b => simp only [sSInst, lSInst, lower_lift]; exact lOne_lift R t d _
+  | acmp d p a b => simp only [sSInst, lSInst, lower_lift]; exact lOneW_lift R t d _
   | nondet d w => simp [sSInst, lSInst, SLX, lift_set]
   | vassume a w =>
     simp only [sSInst, lSInst, lower_lift]
@@ -213,6 +221,15 @@ theorem lOne_mono {S S' : LSt} {t t' : World} {d : String} {r : Res Nat}
   | ub => simp only [lOne, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
   | stuck => cases h
 
+theorem lOneW_mono {S S' : LSt} {t t' : World} {d : String} {r : Res (Nat × World)}
+    (h : lOneW S t d r = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
+  cases r with
+  | ok vw =>
+    obtain ⟨v, W'⟩ := vw
+    simp only [lOneW, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
+  | ub => simp only [lOneW, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; rfl
+  | stuck => cases h
+
 theorem lMem_mono {S S' : LSt} {t' : World} {r : Res World}
     (h : lMem S r = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
   cases r with
@@ -279,6 +296,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
   | pcmp d p a b => exact lOne_mono h hc
   | psub d fl a b => exact lOne_mono h hc
+  | acmp d p a b => exact lOneW_mono h hc
   | nondet d w => simp only [lSInst, Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
   | vassume a w =>
     simp only [lSInst] at h

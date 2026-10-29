@@ -556,6 +556,9 @@ std::vector<unsigned> frame_vars(const ir::Inst& in) {
     auto pw = [](const ir::Type& e) -> unsigned {
         if (e.kind == ir::Type::Ptr && e.text == "ptr") return 64;
         if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+        // Tr::scalar_pair: { double, double } / { float, float } (std::complex returns)
+        if (e.kind == ir::Type::Float && e.text == "double") return 64;
+        if (e.kind == ir::Type::Float && e.text == "float") return 32;
         return 0;
     };
     if (overflow_call(in)) {
@@ -826,7 +829,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 b << "L psub %" << name(in.result) << " " << word(fl) << " " << opnd(in.ops[0]) << " "
                   << opnd(in.ops[1]) << "\n";
             } else if (op == "ptrtoint") {
-                // Tr::inst: a copy of the 64-bit pointer (every use is a sub of two ptrtoint values there)
+                // Tr::inst: a copy of the 64-bit pointer (every use is a sub or icmp of two ptrtoint values there)
                 if (in.result.empty() || in.ops.size() != 1 || in.ty.kind != ir::Type::Int || in.ty.bits != 64 ||
                     in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
                     throw Unsupported{"ptrtoint shape"};
@@ -853,7 +856,15 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[0]) << " " << opnd(in.ops[1]) << "\n";
             } else if (op == "icmp") {
                 if (in.result.empty() || in.ops.size() != 2) throw Unsupported{"icmp shape"};
-                if (in.ty.kind == ir::Type::Ptr && in.pred != "eq" && in.pred != "ne") {
+                if (is_ptrtoint(in.ops[0]) && is_ptrtoint(in.ops[1])) {
+                    // MemTr::addr_cmp (std::less<T*>): exact for ==/!= and within one object,
+                    // an unknown bit for the order of two different objects
+                    if (in.pred != "eq" && in.pred != "ne" && in.pred != "ult" && in.pred != "ule" &&
+                        in.pred != "ugt" && in.pred != "uge")
+                        throw Unsupported{"signed icmp of address values"};
+                    b << "L acmp %" << name(in.result) << " " << in.pred << " " << opnd(in.ops[0]) << " "
+                      << opnd(in.ops[1]) << "\n";
+                } else if (in.ty.kind == ir::Type::Ptr && in.pred != "eq" && in.pred != "ne") {
                     // MemTr::icmp: a relational comparison of pointers checks they share an object
                     if (in.ty.text != "ptr") throw Unsupported{"icmp on " + in.ty.text};
                     b << "L pcmp %" << name(in.result) << " " << in.pred << " " << opnd(in.ops[0]) << " "

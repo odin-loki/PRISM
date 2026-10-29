@@ -905,7 +905,9 @@ void MemTr::addr_cmp(int b, int dst, const std::string& pred, Arg x, Arg y) {
     Arg raw = p2(b, it->second, x, y);
     Arg r = raw;
     if (pred != "eq" && pred != "ne") {
-        Arg same = p2(b, Op::Eq, obj(b, x), obj(b, y));
+        Arg ox = obj(b, x);  // sequenced: the Lean mirror (XTranslate `acmp`) fixes the temp order
+        Arg oy = obj(b, y);
+        Arg same = p2(b, Op::Eq, ox, oy);
         Arg unk = t_.havoc(b, 1, false, true);
         r = t_.assign(b, Op::Select, 1, {same, raw, unk}, "c");
     }

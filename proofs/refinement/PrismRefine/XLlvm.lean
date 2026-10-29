@@ -142,6 +142,13 @@ inductive SInst where
   the 64-bit pointers (`ptrtoint` of a 64-bit pointer is the pointer, as
   `Tr::inst` copies it). -/
   | psub (dst : String) (fl : LFlags) (a b : Opnd)
+  /-- `%dst = icmp p i64 a, b` of two `ptrtoint` results (`MemTr::addr_cmp`,
+  e.g. `std::less<T*>`): `eq`/`ne` and the order of two addresses in one
+  object are the comparison of the 64-bit pointers; the order of addresses
+  of two different objects is not specified by C or C++ (and PRISM does not
+  model the layout), so it is an arbitrary bit, drawn from the oracle.  Only
+  `eq`, `ne` and the unsigned predicates. -/
+  | acmp (dst : String) (p : Pred) (a b : Opnd)
   /-- `%dst = call iw @__VERIFIER_nondet_*()` (or `nondet_*`, not defined in
   the module): an arbitrary value, drawn from the oracle. -/
   | nondet (dst : String) (w : Nat)
@@ -428,6 +435,13 @@ def sPsubV (R : SRegs) (fl : LFlags) (a b : Opnd) : Res Nat :=
       (if binPoison .sub fl 64 x y then .ub else .ok (binVal .sub 64 x y))
     else .ub
 
+/-- `acmp`: the value and the world after the draw (an ordered predicate
+always draws, as `MemTr::addr_cmp` havocs its unknown bit). -/
+def sAcmpV (ω : Nat → Nat) (R : SRegs) (W : World) (p : Pred) (a b : Opnd) : Res (Nat × World) :=
+  (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
+    if p = .eq ∨ p = .ne then .ok (icmpVal p 64 x y, W)
+    else .ok (if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then icmpVal p 64 x y else ω W.t % 2 ^ 1, W.adv 1)
+
 /-- Whether pointer `v` points into the object of one of the registers `ns`
 (each a use; a missing register: stuck). -/
 def escHit (R : SRegs) (v : Nat) : List String → Res Bool
@@ -604,6 +618,7 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
   | .pcmp d p a b => (sPcmpV R p a b).bind fun v => .ok (R.set d v, W)
   | .psub d fl a b => (sPsubV R fl a b).bind fun v => .ok (R.set d v, W)
+  | .acmp d p a b => (sAcmpV ω R W p a b).bind fun (v, W') => .ok (R.set d v, W')
   | .nondet d w => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
   | .vassume a w => (sVassume R w a).bind fun _ => .ok (R, W)
   | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
@@ -757,6 +772,12 @@ def lOne (S : LSt) (W : World) (d : String) : Res Nat → Res (LSt × World)
   | .ub => .ok (⟨S.R.set d .poison, true⟩, W)
   | .stuck => .stuck
 
+/-- `lOne` for a result that also advances the world (an oracle draw). -/
+def lOneW (S : LSt) (W : World) (d : String) : Res (Nat × World) → Res (LSt × World)
+  | .ok (v, W') => .ok (⟨S.R.set d (.val v), S.c⟩, W')
+  | .ub => .ok (⟨S.R.set d .poison, true⟩, W)
+  | .stuck => .stuck
+
 /-- A memory intrinsic on the LangRef side: as the strict side on the
 registers holding numbers (a poison pointer or length is a use of poison). -/
 def lMem (S : LSt) : Res World → Res (LSt × World)
@@ -826,6 +847,7 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
   -- pointers into different objects: C UB (not LLVM poison), flagged like a C array bound
   | .pcmp d p a b => lOne S W d (sPcmpV (lower S.R) p a b)
   | .psub d fl a b => lOne S W d (sPsubV (lower S.R) fl a b)
+  | .acmp d p a b => lOneW S W d (sAcmpV ω (lower S.R) W p a b)
   | .nondet d w => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c⟩, W.adv 1)
   -- a poison or indeterminate argument of these calls is a use of it: UB
   | .vassume a w =>
