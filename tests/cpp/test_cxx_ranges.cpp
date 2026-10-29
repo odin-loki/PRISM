@@ -27,6 +27,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -251,7 +253,7 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
-    const std::string src = slurp(header);
+    const std::string src = prism_test::unwrap_prose(slurp(header));
     REQUIRE_FALSE(src.empty());
     CHECK(src.find("_GLIBCXX_RANGES") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);

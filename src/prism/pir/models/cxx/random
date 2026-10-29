@@ -158,7 +158,7 @@ public:
     result_type operator()() { return __VERIFIER_nondet_uint(); }
 };
 
-// Only the int specialization. uniform_int_distribution<long> and the other
+// Only the int specialization. The long specialization and the other
 // distributions are not defined. a > b does not store the inverted pair.
 // operator() on that range does not return a value. This is not a proof of
 // uniformity.

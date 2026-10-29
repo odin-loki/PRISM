@@ -11,6 +11,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -61,7 +63,7 @@ TEST_CASE("cxx execution model: seq is the only policy and no algorithm is decla
     CHECK(header.filename() == "execution");
     CHECK(header.extension().empty());
 
-    const std::string src = slurp(header);
+    const std::string src = prism_test::unwrap_prose(slurp(header));
     REQUIRE(!src.empty());
     CHECK(src.find("This header is not a parallelism proof.") != std::string::npos);
     CHECK(src.find("A parallel policy that ran on one thread would be a fake parallel execution.") != std::string::npos);
