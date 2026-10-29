@@ -3728,6 +3728,169 @@ FunctionInfo program_main(FunctionInfo fn, bool main_called) {
     return fn;
 }
 
+// A file-scope integer scalar that only `main` names (one declaration in
+// the unit, every other mention of the name inside main's body) behaves as
+// a local of main initialised at entry, when main runs once (never called
+// back): it is declared at the head of main's body with its initialiser
+// (0 for a tentative definition, C11 6.9.2p2). Anything else (another
+// function, an initialiser, an extern, a qualifier, a non-literal
+// initialiser) leaves the global unmodelled, as before.
+// A block-scope declaration that shadows a visible name (CIL output
+// redeclares `__VERIFIER_assert__cond` in every inlined copy) gets a fresh
+// name for the rest of its block: alpha-renaming, same program. Bodies with
+// a declaration in a `for` header (a scope this scan does not track), a
+// string or character literal, or a preprocessor line are left as they are.
+FunctionInfo rename_shadowed(FunctionInfo fn) {
+    const std::string& b = fn.body;
+    static Regex for_decl("\\bfor\\s*\\(\\s*(?:const\\s+)?(?:unsigned|signed|int|long|short|char|_Bool|bool|size_t|u?int\\d+_t)\\b");
+    if (for_decl.search(b) || b.find('"') != std::string::npos || b.find('\'') != std::string::npos ||
+        b.find('#') != std::string::npos)
+        return fn;
+    static const std::unordered_set<std::string> types = {"int", "unsigned", "signed", "long", "short",
+                                                          "char", "_Bool", "bool", "const", "volatile"};
+    // Any declaration whose type this scan does not know (a typedef name,
+    // struct, float, ...) would not be registered, and a use inside its
+    // scope could be bound to an outer alias: such bodies are left alone.
+    static Regex other_kw("\\b(?:struct|union|enum|typedef|float|double|register|static|extern|auto|__typeof__|typeof)\\b");
+    if (other_kw.search(b)) return fn;
+    {
+        static Regex two_words("(?:^|[;{}:])\\s*([A-Za-z_]\\w*)[\\s*]+([A-Za-z_]\\w*)\\s*[;=,\\[)]");
+        static const std::unordered_set<std::string> ok_first = {"return", "goto", "else", "case", "default",
+                                                                 "do", "break", "continue", "sizeof"};
+        for (auto& m : two_words.finditer(b)) {
+            auto f = m.group(1);
+            if (!types.contains(f) && !ok_first.contains(f)) return fn;
+        }
+    }
+    auto word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    std::vector<std::map<std::string, std::string>> scopes(1);
+    for (auto& [_, n] : fn.params) scopes[0][n] = n;
+    auto lookup = [&](const std::string& n) -> const std::string* {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto f = it->find(n);
+            if (f != it->end()) return &f->second;
+        }
+        return nullptr;
+    };
+    std::string out;
+    int fresh = 0;
+    bool changed = false;
+    char last_sig = ';';  // last non-space char before the current statement
+    bool in_decl = false; // after a type keyword at a statement start, until ; or =
+    bool decl_seen_type = false;
+    int paren = 0;
+    for (std::size_t i = 0; i < b.size();) {
+        char c = b[i];
+        if (!word(c)) {
+            if (c == '{') { scopes.emplace_back(); in_decl = false; }
+            else if (c == '}') { if (scopes.size() > 1) scopes.pop_back(); in_decl = false; }
+            else if (c == '(') ++paren;
+            else if (c == ')') --paren;
+            else if (c == ';' || c == '=') { in_decl = in_decl && c == '=' ? false : false; }
+            if (c == ',' && in_decl) { /* next declarator keeps in_decl */ }
+            if (!std::isspace(static_cast<unsigned char>(c))) last_sig = c;
+            out += c;
+            ++i;
+            continue;
+        }
+        std::size_t j = i;
+        while (j < b.size() && word(b[j])) ++j;
+        std::string w = b.substr(i, j - i);
+        bool member = false;
+        {
+            std::size_t p = i;
+            while (p > 0 && std::isspace(static_cast<unsigned char>(b[p - 1]))) --p;
+            member = (p > 0 && b[p - 1] == '.') || (p > 1 && b[p - 1] == '>' && b[p - 2] == '-');
+        }
+        if (std::isdigit(static_cast<unsigned char>(w[0])) || member) {
+            out += w;
+        } else if (types.contains(w)) {
+            if (paren == 0 && (last_sig == ';' || last_sig == '{' || last_sig == '}' || last_sig == ':' || decl_seen_type))
+                in_decl = true, decl_seen_type = true;
+            out += w;
+        } else if (in_decl && paren == 0 && (last_sig == ',' || decl_seen_type)) {
+            // a declarator name
+            decl_seen_type = false;
+            std::string alias = w;
+            if (lookup(w) && scopes.size() > 1) {
+                alias = w + "__shd" + std::to_string(++fresh);
+                changed = true;
+            }
+            scopes.back()[w] = alias;
+            out += alias;
+        } else {
+            decl_seen_type = false;
+            auto* a = lookup(w);
+            out += a ? *a : w;
+        }
+        last_sig = 'a';
+        i = j;
+    }
+    if (!changed) return fn;
+    fn.body = std::move(out);
+    fn.body_line = fn.body_col = 0;
+    fn.col_shifts.clear();
+    return fn;
+}
+
+thread_local std::string g_unit_root;
+
+FunctionInfo localize_main_globals(FunctionInfo fn) {
+    if (fn.name != "main") return fn;
+    auto ext = std::filesystem::path(fn.file).extension().string();
+    if (ext != ".c" && ext != ".i") return fn;
+    std::filesystem::path src(fn.file);
+    if (src.is_relative() && !g_unit_root.empty()) src = std::filesystem::path(g_unit_root) / src;
+    std::ifstream in(src, std::ios::binary);
+    if (!in) return fn;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    static Regex decl(
+        "(?:^|\\n)[ \\t]*(?P<typ>(?:unsigned|signed)\\s+(?:long\\s+long|long|short|char|int)(?:\\s+int)?|"
+        "long\\s+long(?:\\s+int)?|long(?:\\s+int)?|short(?:\\s+int)?|unsigned|int|char|_Bool)"
+        "\\s+(?P<name>[A-Za-z_]\\w*)\\s*(?:=\\s*(?P<init>-?\\s*[0-9]+[uUlL]*)\\s*)?;");
+    static Regex word("[A-Za-z_]\\w*");
+    // main runs once: every mention of it is its definition head or a
+    // prototype (`int main();`, `int main(void)`), so nothing calls it.
+    {
+        static Regex any_main("\\bmain\\b");
+        static Regex head_main("\\bint\\s+main\\s*\\(\\s*(?:void)?\\s*\\)\\s*[;{]");
+        if (any_main.finditer(text).size() != head_main.finditer(text).size()) return fn;
+    }
+    auto count_in = [&](const std::string& t, const std::string& n) {
+        int c = 0;
+        for (auto& m : word.finditer(t))
+            if (m.text == n) ++c;
+        return c;
+    };
+    // Brace depth at each offset: a declaration counts only at depth 0.
+    std::vector<int> depth(text.size() + 1, 0);
+    {
+        int d = 0;
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            depth[i] = d;
+            if (text[i] == '{') ++d;
+            else if (text[i] == '}') --d;
+        }
+    }
+    std::string head;
+    for (auto& m : decl.finditer(text)) {
+        if (m.spans.empty() || depth[static_cast<std::size_t>(m.spans[0].first)] != 0) continue;
+        std::string name = m.named("name");
+        std::string typ = m.named("typ");
+        if (name == "main") continue;
+        int in_main = count_in(fn.body, name);
+        if (in_main == 0) continue;
+        if (count_in(text, name) != in_main + 1) continue;
+        std::string init = m.named("init");
+        head += typ + " " + name + " = " + (init.empty() ? std::string("0") : init) + "; ";
+    }
+    if (head.empty()) return fn;
+    fn.body = head + fn.body;
+    fn.body_line = fn.body_col = 0;
+    fn.col_shifts.clear();
+    return fn;
+}
+
 // Any mention of main may reach a call of it with any argument: `main(...)`,
 // `(main)(...)`, `&main`, a function pointer initialised from main, a macro
 // that expands to main. So every body (main's own included, for recursion)
@@ -3738,6 +3901,8 @@ bool tree_calls_main(const std::vector<FunctionInfo>& functions) {
         if (f.unit_names_main || word.search(f.body)) return true;
     return false;
 }
+
+void set_bmc_unit_root(const std::string& dir) { g_unit_root = dir; }
 
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers, std::string_view data_model) {
@@ -3757,6 +3922,7 @@ std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unw
         tagged.push_back(vassert && fn.name != "__VERIFIER_assert" ? rewrite_verifier_assert(tag_nondet_sites(fn))
                                                                    : tag_nondet_sites(fn));
     }
+    for (auto& fn : tagged) fn = rename_shadowed(localize_main_globals(std::move(fn)));
     for (auto& fn : inline_static(tagged)) {
         // R1: one function the encoder cannot handle (a Z3 sort error, ...)
         // is an ERROR for that function, never a crash of the whole stage.

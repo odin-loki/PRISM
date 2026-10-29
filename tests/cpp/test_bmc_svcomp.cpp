@@ -635,3 +635,39 @@ int main(void) { int n = __VERIFIER_nondet_int(); int v = h(n); return v + 1; }
     CHECK(by3["main"].status != kFailed);
     CHECK(by3["main"].status != kHarness);
 }
+
+TEST_CASE("bmc: a global only main names is a local of main; a shadowing declaration is renamed") {
+    const char* src = R"(int __return_main;
+int main();
+int main() {
+    int c = 1;
+    { int c = 2; __return_main = c; }
+    if (c != 1) { int x = 2147483647; x = x + 1; }
+    return __return_main;
+}
+)";
+    auto by = bmc_run("glob_main.c", src, 8);
+    REQUIRE(by.count("main"));
+    CHECK(by["main"].status == kProved);
+    // The inner c must not be confused with the outer one: the overflow is
+    // reached only if the outer c were overwritten.
+    const char* bad = R"(int g;
+int main() {
+    int c = 1;
+    { int c = 2; g = c; }
+    if (c == 1) { int x = 2147483647; x = x + g; }
+    return g;
+}
+)";
+    auto by2 = bmc_run("glob_main_bad.c", bad, 8);
+    REQUIRE(by2.count("main"));
+    CHECK(by2["main"].status == kFailed);
+    // Another function names the global: it stays unmodelled.
+    const char* shared = R"(int g;
+void f(void) { g = 5; }
+int main() { f(); return g; }
+)";
+    auto by3 = bmc_run("glob_shared.c", shared, 8);
+    REQUIRE(by3.count("main"));
+    CHECK(by3["main"].status != kProved);
+}

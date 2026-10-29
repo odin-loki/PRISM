@@ -433,6 +433,8 @@ RunReport run_pipeline(const Config& cfg) {
     });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
     auto bmc_rec = stage("bmc", [&] {
+        std::error_code dec;
+        set_bmc_unit_root((std::filesystem::is_directory(cfg.root, dec) ? cfg.root : cfg.root.parent_path()).string());
         return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind, false, cfg.data_model);
     });
     stage("pir", [&] { return pir::run_pir(sources, cfg); });

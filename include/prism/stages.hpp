@@ -59,6 +59,10 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
 // predicate, or nullopt when it is not encodable (\valid, \old, quantifiers,
 // ->, calls, ...), which makes the wp record ERROR.
 std::optional<std::string> encode_wp_predicate(const std::string& raw);
+// Directory a relative FunctionInfo::file is resolved against when bmc
+// reads the unit's text (file-scope globals); set by the pipeline for
+// this thread. Empty: the current directory.
+PRISM_API void set_bmc_unit_root(const std::string& dir);
 std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
                              bool allow_local_pointers = false, std::string_view data_model = "LP64");
 // The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 -> 11,
