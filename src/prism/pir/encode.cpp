@@ -233,6 +233,8 @@ std::string format_cex(const Function& fn, const std::vector<uint64_t>& args) {
 
 bool z3_available() { return true; }
 
+static bool z3_over_soft_cap();  // below (memory cap): encode_node, houdini.inc
+
 namespace {
 
 constexpr int kMaxInstances = 6000;
@@ -894,6 +896,10 @@ struct Encoding {
     }
 
     void encode_node(int id, const std::vector<std::tuple<int, int, int>>& outs) {
+        // Law 7: the encoding itself can outgrow Z3's hard limit between two
+        // queries, and past that limit Z3 is unusable for the whole process.
+        // At the soft cap the function stops here (soft: later functions run).
+        if (z3_over_soft_cap()) throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while encoding");
         auto& nd = nodes.at(static_cast<std::size_t>(id));
         auto& bl = fn.blocks.at(static_cast<std::size_t>(nd.block));
         auto& m = vals.at(static_cast<std::size_t>(id));
@@ -1163,8 +1169,6 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
 }
 
 }  // namespace
-
-static bool z3_over_soft_cap();  // below (memory cap), used by houdini.inc
 
 namespace {
 
