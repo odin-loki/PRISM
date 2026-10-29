@@ -310,6 +310,7 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/cxx/bits/basic_string.tcc
   src/prism/pir/models/cxx/sstream
   src/prism/pir/models/cxx/list
+  src/prism/pir/models/cxx/deque
   src/prism/pir/models/cxx/array
   src/prism/pir/models/cxx/bitset
   src/prism/pir/models/cxx/stack
@@ -828,6 +829,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
     tests/cpp/test_cxx_models.cpp
+    tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_iostream.cpp
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_list.cpp

@@ -608,8 +608,9 @@ behaviour the real library can:
   `std::unique_ptr` are not replaced: their libstdc++ code is small,
   loop-free and already checks exactly the standard's preconditions under
   `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
-  `std::unordered_map`/`unordered_set`, `std::list`, `std::deque` and
-  iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
+  `std::deque` is the model `models/cxx/deque` (one heap node per element,
+  invalidation is a real free, `docs/finish-notes/deque.md`;
+  `libc-models/deque_contracts`). Iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
   into `libstdc++.so`).
 
 Encoder support added for the model: a use of a loop value outside its loop
