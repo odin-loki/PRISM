@@ -71,6 +71,8 @@ thread_local const std::vector<std::string>* g_entry = nullptr;
 // prologue allocated (pirmem::entry_globals includes the read-only globals the
 // callees name).
 thread_local std::vector<std::string> g_top_eg;
+// the analysed function can reach __prism_alloc_failed (translate.cpp's oom_)
+thread_local bool g_top_oom = false;
 
 std::string opnd(const ir::Operand& o) {
     switch (o.v.kind) {
@@ -378,6 +380,9 @@ std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& 
         return std::pair<std::string, std::string>{"assert", "FUNC-CONTRACT"};
     if (n == "__VERIFIER_error" || n == "reach_error")
         return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
+    // Tr::call's abort(): an unconditional check unless an allocation can
+    // have failed (then the check reads the hidden flag)
+    if (n == "abort" && !g_top_oom) return std::pair<std::string, std::string>{"abort", "FUNC-CONTRACT"};
     if (n == "_ZSt21__glibcxx_assert_failPKciS0_S0_" || n == "_ZSt21__glibcxx_assert_failv") {
         // libstdc++ precondition: the class from the condition text (as Tr::call)
         std::string cond = in.ops.size() > 3 ? literal_string(m, in.ops[3].v).value_or("") : "";
@@ -685,6 +690,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     // entry globals, passed to every inlined function that can reach it as an
     // extra last parameter (the translator refers to its variable directly)
     const bool oom = pirmem::reaches_alloc_failed(m, f);
+    if (top) g_top_oom = oom;
     const bool caught = pirmem::reaches_caught_slot(m, f);
     // Pointer parameters. Of an inlined callee: ordinary 64-bit values bound
     // to the caller's arguments (a by-value aggregate is copied first:

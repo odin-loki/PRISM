@@ -1096,6 +1096,11 @@ return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
 - Re-measure at 30eca81b3 (five conformance suites): agree=249 agree-ext=785 agree-reject=288 outside=652 (was 681) mismatch=0.
 - Fixtures: callee_pair (agree-ext), callee_pair_neg_phi (phis swapped), callee_pair_neg_esc (escape check dropped), both mismatch.
 
+## Outside tally at 36dfbca60 and abort()
+
+- Tally (all five suites, 652 outside): `call @abort` 341, getelementptr cases ~70 (`pointer operand @global` 37, constant-bound index 39, `operand ptr getelementptr` 19), `call @<indirect>` 25, `__cxa_allocate_exception` 17, `pthread_create` 16, `__throw_logic_error` 14, `pthread_mutex_lock` 12, `printf` 12, float/double ~42, raw aggregate load 14.
+- abort(): translate.cpp's check(1, "abort", FUNC-CONTRACT) + noreturn, exactly a noreturn failure call (`afail_kind`), unless the analysed function reaches `__prism_alloc_failed` (then the check reads the oom flag: still outside). Fixtures abort_call (agree-ext x2), abort_call_neg (check dropped: mismatch).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
