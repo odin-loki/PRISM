@@ -747,6 +747,10 @@ HoudiniOut Houdini::run() {
     std::vector<Footprint> fps(g_.loops.size());
     for (int attempt = 0;; ++attempt) {
         z3::context c;
+        // the in-process Houdini checks bypass the portfolio's z3-worker
+        // child (PRISM_Z3_CHILD_NODES): stop them at the budget watchdog's
+        // trip; an interrupted check is unknown, never unsat
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn_, g_, 1, eo_);
         e.cut_mode = true;
         e.loop_fp = fps;
@@ -790,6 +794,7 @@ HoudiniOut Houdini::run() {
     }
 
     z3::context c;
+    membudget::Watch mem_watch([&c] { Z3_interrupt(c); });  // see the footprint loop above
     Encoding e(c, fn_, g_, 1, eo_);
     e.cut_mode = true;
     e.loop_fp = fps;
