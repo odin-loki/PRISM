@@ -1059,6 +1059,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         p.set("timeout", static_cast<unsigned>(std::min(left * 1000.0, 4.0e9)));
                         s.set(p);
                         s.add(*f2);
+                        prism::membudget::Phase phase_job("portfolio: z3 job check");
                         auto r = stop->load() ? z3::unknown : s.check();
                         if (r == z3::sat) {
                             worker_msg.kind = Kind::Sat;

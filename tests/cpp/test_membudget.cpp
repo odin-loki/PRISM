@@ -93,3 +93,17 @@ TEST_CASE("membudget: the watchdog stops a registered computation over the budge
     CHECK(stopped.load());
     CHECK(w.fired());
 }
+
+TEST_CASE("membudget: trips that persist past PRISM_MEM_STUCK_MS call the stuck hook once") {
+    mb::set_budget_mb_for_test(1);  // every sample is over budget
+    Restore r;
+    std::atomic<int> hooked{0};
+    mb::set_stuck_hook([&] { hooked.fetch_add(1); });
+    {
+        mb::Watch w([] {});  // ignores the interrupt, like a stuck Z3 check
+        std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+        CHECK(w.fired());
+    }
+    mb::set_stuck_hook({});
+    CHECK(hooked.load() == 1);
+}

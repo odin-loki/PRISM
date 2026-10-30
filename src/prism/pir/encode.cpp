@@ -28,6 +28,7 @@
 #include "fp.hpp"
 #include "memory.hpp"
 
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -1132,6 +1133,7 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
     for (int attempt = 0; attempt < 2; ++attempt) {
         z3::context c;
         membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
+        prism::membudget::Phase phase_enc("encode: build (k-induction)");
         Encoding e(c, fn, g, k + 1, eo);
         e.step_loop = 0;
         e.step_fp = fp;
@@ -1162,6 +1164,7 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
         if (hk == e.ids.end()) return StepAnswer{true, fp, e.step_havocked};  // header@k unreachable: nothing to show
         s.add(e.reach.at(static_cast<std::size_t>(hk->second)));
         s.add(any_of(c, goal));
+        prism::membudget::Phase phase_ki("encode: k-induction check");
         auto r = s.check();
         if (r == z3::unsat) return StepAnswer{true, fp, e.step_havocked};
         if (r == z3::sat) return StepAnswer{false, fp, e.step_havocked};
@@ -1501,6 +1504,15 @@ static void cap_z3_memory_once() {
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
         if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
+        // A Z3 call can ignore Z3_interrupt (a portfolio job's check on
+        // priority_queue_contracts.cpp grew 2.1 -> 3.6 GB over a 2.4 GB trip
+        // point for ~20 s). Lowering memory_max_size under it was tried and
+        // segfaults inside Z3, so the only safe stop is the process: in a
+        // fresh rerun process (PRISM_PIR_ONLY) leave at once; the parent
+        // records "fresh process gave no verdict (rc 75)" and the function
+        // stays UNKNOWN. In the main process the 1.5x hard limit stays.
+        if (mb > 0 && std::getenv("PRISM_PIR_ONLY"))
+            membudget::set_stuck_hook([] { std::_Exit(75); });
     });
 }
 
@@ -1676,6 +1688,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             // (after the cap: a test's delay here stands for a slow query)
             if (opt.debug_before_query) opt.debug_before_query(label);
             z3_mem_guard();
+prism::membudget::Phase phase_vc("encode: vc solve");
 const auto& r = bk.add(label, solver::solve(c, vc, o));
             if (capped && r.kind != solver::SolveResult::Sat && r.kind != solver::SolveResult::Unsat &&
                 fn_budget->exhausted()) {
@@ -1688,6 +1701,7 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
         const auto cut_by_budget = [&](const std::string& label) {
             return std::find(fn_budget_cut.begin(), fn_budget_cut.end(), label) != fn_budget_cut.end();
         };
+        prism::membudget::Phase phase_build("encode: build + check_function");
         Encoding e(c, fn, g, unwind, eo);
         e.build();
         if (fn.uses_memory) {
@@ -1788,6 +1802,7 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
                     const auto l0 = static_cast<std::ptrdiff_t>(lo), l1 = static_cast<std::ptrdiff_t>(hi);
                     std::vector<z3::expr> part(all.begin() + l0, all.begin() + l1);
                     z3_mem_guard();
+prism::membudget::Phase phase_cert("encode: combined certified solve");
 auto cr = solver::solve(c, base && any_of(c, part), budgeted(ko));
                     const std::string cr_note = cr.note;
                     const auto cr_kind = cr.kind;

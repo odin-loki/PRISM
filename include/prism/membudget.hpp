@@ -31,6 +31,25 @@ PRISM_API bool over_budget();
 PRISM_API bool over_budget_sampled(unsigned every = 2048);
 // Give freed heap back to the kernel (after a function's state is gone),
 // so the next function's RSS check does not count the last one's garbage.
+// What this thread is doing, for PRISM_MEM_TRACE (a watchdog trip names the
+// phase of every thread, so a call that ignores Z3_interrupt is named).
+class PRISM_API Phase {
+public:
+    explicit Phase(const char* name);
+    ~Phase();
+    Phase(const Phase&) = delete;
+    Phase& operator=(const Phase&) = delete;
+
+private:
+    const char* prev_;
+};
+PRISM_API std::string phases();
+// Called by the watchdog once a streak of trips has lasted
+// PRISM_MEM_STUCK_MS (default 1000 ms) without RSS falling back under the trip
+// point: the running computation ignores interrupts. pir sets Z3's hard limit
+// just above Z3's current size, so the stuck call fails with out-of-memory and
+// the remaining functions are re-checked in fresh, killable processes.
+PRISM_API void set_stuck_hook(std::function<void()> hook);
 PRISM_API void release_free_memory();
 // The message of a per-function UNKNOWN.
 PRISM_API std::string over_message(const char* where);

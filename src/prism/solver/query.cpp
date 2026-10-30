@@ -5,6 +5,7 @@
 
 #ifdef PRISM_HAS_Z3
 
+#include "prism/membudget.hpp"
 #include "prism/solver.hpp"
 #include "query.hpp"
 
@@ -412,6 +413,7 @@ std::optional<Cnf> bitblast_fresh(z3::context& c, const z3::expr& f, std::string
     g.add(g0);
     z3::tactic t = z3::tactic(c, "simplify") & z3::tactic(c, "bit-blast") &
                    z3::tactic(c, "simplify") & z3::tactic(c, "tseitin-cnf");
+    prism::membudget::Phase phase_29793("query: bit-blast tactics (to CNF)");
     z3::apply_result ar = t(g);
     if (ar.size() != 1) return fail("bit-blast produced " + std::to_string(ar.size()) + " goals");
     z3::goal out = ar[0];

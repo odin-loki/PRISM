@@ -186,7 +186,17 @@ unsigned long g_next = 1;
 std::atomic<uint64_t> g_trips{0};
 bool g_thread = false;
 
+std::mutex g_hmu;
+std::function<void()> g_stuck_hook;
+
 void watchdog() {
+    using clk = std::chrono::steady_clock;
+    clk::time_point streak{};
+    bool hooked = false;
+    const long stuck_ms = [] {
+        const char* e = std::getenv("PRISM_MEM_STUCK_MS");
+        return e && *e ? std::strtol(e, nullptr, 10) : 1000L;
+    }();
     for (;;) {
         // 20 ms near the limit (from 60% of budget): a Z3 query or an encoder
         // burst grows hundreds of MB between 50 ms samples (~30% overshoot).
@@ -199,14 +209,28 @@ void watchdog() {
             std::lock_guard<std::mutex> lk(g_wmu);
             if (g_watches.empty()) continue;
         }
-        if (!over_budget()) continue;
+        if (!over_budget()) {
+            streak = {};
+            hooked = false;
+            continue;
+        }
+        if (streak == clk::time_point{}) streak = clk::now();
+        if (!hooked && stuck_ms > 0 && clk::now() - streak >= std::chrono::milliseconds(stuck_ms)) {
+            hooked = true;
+            std::function<void()> h;
+            { std::lock_guard<std::mutex> lk(g_hmu); h = g_stuck_hook; }
+            if (std::getenv("PRISM_MEM_TRACE"))
+                std::fprintf(stderr, "[memtrace] stuck %ld ms rss=%llu phases=%s: hard stop\n", stuck_ms,
+                             static_cast<unsigned long long>(rss_mb()), phases().c_str());
+            if (h) h();
+        }
         g_trips.fetch_add(1);
         if (std::getenv("PRISM_MEM_TRACE")) {
             std::size_t n = 0;
             { std::lock_guard<std::mutex> lk(g_wmu); n = g_watches.size(); }
-            std::fprintf(stderr, "[memtrace] %lld trip rss=%llu watches=%zu\n",
+            std::fprintf(stderr, "[memtrace] %lld trip rss=%llu watches=%zu phases=%s\n",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                         static_cast<unsigned long long>(rss_mb()), n);
+                         static_cast<unsigned long long>(rss_mb()), n, phases().c_str());
         }
         std::lock_guard<std::mutex> lk(g_wmu);
         for (auto& [id, r] : g_watches) {
@@ -233,6 +257,33 @@ Watch::~Watch() {
 }
 
 uint64_t trips() { return g_trips.load(); }
+
+void set_stuck_hook(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lk(g_hmu);
+    g_stuck_hook = std::move(hook);
+}
+
+namespace {
+std::mutex g_pmu;
+std::map<std::thread::id, const char*> g_phase;
+}  // namespace
+Phase::Phase(const char* name) {
+    std::lock_guard<std::mutex> lk(g_pmu);
+    auto& slot = g_phase[std::this_thread::get_id()];
+    prev_ = slot;
+    slot = name;
+}
+Phase::~Phase() {
+    std::lock_guard<std::mutex> lk(g_pmu);
+    if (prev_) g_phase[std::this_thread::get_id()] = prev_;
+    else g_phase.erase(std::this_thread::get_id());
+}
+std::string phases() {
+    std::lock_guard<std::mutex> lk(g_pmu);
+    std::string out;
+    for (auto& [id, n] : g_phase) out += (out.empty() ? "" : ",") + std::string(n ? n : "?");
+    return out;
+}
 
 bool Watch::fired() const {
     std::lock_guard<std::mutex> lk(g_wmu);
