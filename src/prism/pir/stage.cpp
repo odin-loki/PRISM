@@ -866,6 +866,20 @@ std::string rejected_budget_env() {
     return out;
 }
 
+// $PRISM_PIR_PROGRESS=FILE: one line per unit analysed ("start PATH" and
+// "done SECONDS PATH"), appended and flushed, so a slow or stuck unit in a
+// long run can be named from outside the process.
+void progress_note(const char* what, const fs::path& unit, double secs) {
+    static std::mutex m;
+    const char* f = std::getenv("PRISM_PIR_PROGRESS");
+    if (!f || !*f) return;
+    std::lock_guard<std::mutex> lk(m);
+    std::ofstream o(f, std::ios::app);
+    o << what << ' ';
+    if (secs > 0) o << secs << ' ';
+    o << unit.string() << '\n';
+}
+
 std::shared_ptr<HoudiniBudget> houdini_budget(const Config& cfg) {
     double b = std::max(3600.0, 120.0 * cfg.timeout);
     (void)env_seconds("PRISM_HOUDINI_BUDGET", b);  // a rejected value: rejected_budget_env
@@ -1334,7 +1348,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::vector<Analyzed> an(batch.size());
     parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
         try {
+            const auto t0 = std::chrono::steady_clock::now();
+            progress_note("start", u.path, 0.0);
             an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
+            progress_note("done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
