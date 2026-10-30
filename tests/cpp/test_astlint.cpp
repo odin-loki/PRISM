@@ -566,6 +566,7 @@ int shift(int x) { return x << 40; } // expect: INT-SHIFT-UB
 int shift_ok(unsigned long long x) { return (int)(x << 40); }
 void ignored(void) { malloc(10); } // expect: API-IGNORED-ERROR
 void kept(void) { void *m = malloc(10); free(m); }
+char *gets(char *); /* removed from <stdio.h> in C11 (glibc 2.16+) */
 void gets_bad(char *buf) { gets(buf); } // expect: API-GETS
 void gets_ok(char *buf) { fgets(buf, 16, stdin); }
 void strtok_bad(char *s) { (void)strtok(s, " "); } // expect: API-STRTOK-REENTRANT
@@ -607,7 +608,7 @@ void scanf_bad(int *p) { scanf("%d", p); } // expect: API-SCANF-UNCHECKED
 void scanf_ok(int *p) {
     if (scanf("%d", p) != 1) return;
 }
-void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP
+void overlap(char *s) { strcpy(s, s); } // expect: MEM-OVERLAP, STR-NULL-ARG
 void bcopy_self(char *p) { bcopy(p, p, 4); } // expect: MEM-BCOPY
 char *rself(char *p) {
     p = realloc(p, 10); // expect: MEM-REALLOC-SELF
@@ -691,7 +692,7 @@ void unchecked_malloc_plant(void) {
 }
 int missing_ret_bad(void) {
     int x = 1;
-    x = 2; // expect: CTRL-MISSING-RETURN
+    x = 2; // expect: CTRL-MISSING-RETURN, CTRL-DEAD-STORE
 }
 int missing_ret_ok(void) { return 1; }
 void noreturn_bad(void) { exit(1); } // expect: FUNC-NORETURN
@@ -706,7 +707,7 @@ int atoi_idx_bad(const char *s) {
 }
 int masked_bad(int f) {
     int d;
-    switch (f & 3) {
+    switch (f & 3) { // expect: UNINIT-SWITCH
     case 0:
         d = 0;
         break;
@@ -714,22 +715,32 @@ int masked_bad(int f) {
         d = 1;
         break;
     }
-    return d; // expect: UNINIT-SWITCH
+    return d;
 }
-typedef struct { int _x; } pthread_mutex_t;
-typedef struct { int _x; } mtx_t;
-int pthread_mutex_lock(pthread_mutex_t *m);
-int pthread_mutex_unlock(pthread_mutex_t *m);
-int pthread_mutex_init(pthread_mutex_t *m, void *a);
-int mtx_lock(mtx_t *m);
-int mtx_unlock(mtx_t *m);
-int mtx_init(mtx_t *m, const char *n, void *t, int f);
+#include <pthread.h> /* the real types: <sys/types.h> already brings glibc's pthread_mutex_t */
 void prism_mtx_lock(int *m);
 void prism_mtx_unlock(int *m);
 void double_unlock_bad(int *m) {
     prism_mtx_lock(m);
     prism_mtx_unlock(m);
     prism_mtx_unlock(m); // expect: LOCK-DOUBLE-UNLOCK
+}
+void double_unlock_after_exit_bad(int *m, int c) {
+    prism_mtx_lock(m);
+    if (c) {
+        prism_mtx_unlock(m);
+        return;
+    }
+    prism_mtx_unlock(m);
+    prism_mtx_unlock(m); // expect: LOCK-DOUBLE-UNLOCK
+}
+void unlock_on_each_path_ok(int *m, int c) {
+    prism_mtx_lock(m);
+    if (c) {
+        prism_mtx_unlock(m);
+        return;
+    }
+    prism_mtx_unlock(m);
 }
 void double_unlock_ok(int *m) {
     prism_mtx_lock(m);
@@ -768,17 +779,6 @@ void ptr_chain_null_plant(struct ast_link *a, int v) {
 size_t str_null_arg_plant(char *s) {
     return strlen(s); // expect: STR-NULL-ARG
 }
-#define M_NOWAIT 0x02
-void *malloc(size_t, int);
-void nowait_bad(unsigned n) {
-    char *p = malloc(n, M_NOWAIT);
-    p[0] = 1; // expect: MEM-NOWAIT
-}
-void nowait_ok(unsigned n) {
-    char *p = malloc(n, M_NOWAIT);
-    if (!p) return;
-    p[0] = 1;
-}
 void *alloca(unsigned long);
 void alloca_bad(int n) {
     char *p = alloca(n); // expect: MEM-ALLOCA
@@ -796,7 +796,6 @@ void sprintf_ok(const char *s) {
     char b[8];
     snprintf(b, sizeof b, "%s", s);
 }
-int snprintf(char *s, unsigned n, const char *fmt, ...);
 void snprintf_bad(void) {
     char b[4];
     snprintf(b, 64, "%s", "x"); // expect: STR-SNPRINTF
@@ -815,7 +814,7 @@ int rand(void);
 void crypto_key_bad(char *key) {
     int i;
     for (i = 0; i < 8; i++)
-        key[i] = rand(); // expect: CRYPTO-MISUSE
+        key[i] = rand(); // expect: CRYPTO-MISUSE, INT-TRUNC
 }
 void srand(unsigned);
 typedef long time_t;
@@ -1042,6 +1041,23 @@ void atom_ok(void) {
 }
 )";
 
+// Kernel-style malloc(size, flags) cannot be declared next to <stdlib.h>, so
+// the M_NOWAIT plants are their own unit without libc headers.
+const char* kNowaitC = R"(typedef unsigned long size_t;
+#define M_NOWAIT 0x02
+#define M_NOWAIT 0x02
+void *malloc(size_t, int);
+void nowait_bad(unsigned n) {
+    char *p = malloc(n, M_NOWAIT);
+    p[0] = 1; // expect: MEM-NOWAIT
+}
+void nowait_ok(unsigned n) {
+    char *p = malloc(n, M_NOWAIT);
+    if (!p) return;
+    p[0] = 1;
+}
+)";
+
 const char* kPortedCxx = R"(#include <string>
 #include <utility>
 #include <vector>
@@ -1115,6 +1131,7 @@ void tnew() {
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
+    check_marks("nowait.c", kNowaitC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "
@@ -1171,7 +1188,8 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "fatal", b) == std::set<int>{4});
         CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_noreturn", b).empty());
         CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_attr", b).empty());
-        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_bad", b) == std::set<int>{4});
+        // Reported on the last statement, as in kPortedC (missing_ret_bad).
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_bad", b) == std::set<int>{3});
         CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_oneline_bad", b) ==
               std::set<int>{14});
         CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_ok", b).empty());
