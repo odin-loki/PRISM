@@ -5,6 +5,7 @@
 // translation-validated: the PIR interpreter and `lli` (sandboxed) run the
 // same concrete inputs and must agree wherever PIR reports no UB.
 
+#include "prism/membudget.hpp"
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/laws.hpp"
@@ -1355,6 +1356,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
     });
     for (std::size_t i = 0; i < per.size(); ++i) per_all.at(b0 + i) = std::move(per.at(i));
+    low.clear();
+    an.clear();
+    prism::membudget::release_free_memory();
     }  // batch: its IR (low) and analyses are freed here
     std::vector<Finding> out;
     if (!models.error.empty()) {

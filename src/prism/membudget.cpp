@@ -53,8 +53,9 @@ void compute() {
     // address space on 8 cores with no memory behind it. Under an RLIMIT_AS
     // (prlimit --as=4G) that ran out at ~28 MB RSS: a failed allocation inside
     // Z3's rewriter, then a null deref in th_rewriter (sstream_contracts.cpp,
-    // unordered_map_contracts.cpp). Four arenas are plenty for PRISM.
-    if (!std::getenv("MALLOC_ARENA_MAX")) mallopt(M_ARENA_MAX, 4);
+    // unordered_map_contracts.cpp). Two arenas: on testdata/conformance/sv-comp (115 units, --jobs 2) peak RSS
+    // was 826 MB with 4 and 276 MB with 2, same verdicts, 518 s vs 235 s.
+    if (!std::getenv("MALLOC_ARENA_MAX")) mallopt(M_ARENA_MAX, 2);
 #endif
     uint64_t mb = 0;
     for (const char* env : {"PRISM_MEM_BUDGET_MB", "PRISM_PIR_MEM_MB"}) {
