@@ -38,7 +38,7 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 | Done (2026-10-25) | **`API-SYSTEM`**, **`API-SIGNAL`**, **`API-GETENV-NULL`**, **`API-STRDUP-NULL`**, **`PTR-UNCHECKED-ALLOC`** AST + testdata doctests | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`INT-SHIFT-UB`**, **`PTR-NULL-DEREF`**, **`MEM-STACK-ESCAPE`** testdata doctests; **`return buf`** after `strip_casts` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-30) | **`LOCK-ORDER`** AST port (`lock_order.c` plants); libclang front end: driver-derived system includes (`clang -###`), C11 `_Noreturn`, sugared `wchar_t` — lint suite agrees across both front ends | `astlint.cpp`, `astlint_libclang.cpp`, `astlint_checks.cpp` |
-| Next | Recount (2026-10-30): only **`API-PRECONDITION`**, **`INTENT`** (comment/contract, text by nature), **`CTRL-SIBLING-ASYMMETRY`**, **`MEM-CAPACITY-FIRST`** have no AST rule (`API-IGNORED-ERROR` / `API-SCANF-UNCHECKED` ride the generated `astlint_discard.inc`) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-30) | **`CTRL-SIBLING-ASYMMETRY`**, **`MEM-CAPACITY-FIRST`** AST ports (`sibling.c`, `capacity.c` plants). Remaining regex-only: **`API-PRECONDITION`** and **`INTENT`** — both compare a comment preamble with the body, so they stay text rules by design | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder
