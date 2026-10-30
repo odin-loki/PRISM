@@ -1413,3 +1413,24 @@ TEST_CASE("svcomp ILP32: the glibc assert preamble does not keep pir off; a poin
     solve(bad, props_dir() / "no-overflow.prp", opt);
     CHECK(pir_notrun(opt.out));
 }
+
+TEST_CASE("svcomp ILP32: CIL's (unsigned long)((void *)0) null test does not keep pir off; a real pointer cast does") {
+    TempDir d;
+    SolveOptions opt;
+    opt.data_model = "ilp32";
+    auto pir_notrun = [](const fs::path& out) {
+        return slurp(out / "prism-out" / "report.md").find("pir is LP64-only") != std::string::npos;
+    };
+    auto ok = d.write("ok.c", "int main(void) { int b = 0; unsigned long l = 1UL;\n"
+                              "  if ((unsigned long )b == (unsigned long )((void *)0)) l = l + 1UL; return (int)l; }\n");
+    opt.out = d.path / "o1";
+    opt.witness = d.path / "w1.yml";
+    auto oc = solve(ok, props_dir() / "no-overflow.prp", opt);
+    CHECK_FALSE(pir_notrun(opt.out));
+    CHECK(oc.decision.answer != "false(no-overflow)");
+    auto bad = d.write("bad.c", "int main(void) { int b = 0; if ((unsigned long )b == (unsigned long )((void *)&b)) return 1; return 0; }\n");
+    opt.out = d.path / "o2";
+    opt.witness = d.path / "w2.yml";
+    solve(bad, props_dir() / "no-overflow.prp", opt);
+    CHECK(pir_notrun(opt.out));
+}
