@@ -505,6 +505,12 @@ struct Ctx {
     std::vector<Finding> out;
     std::set<std::string> checked;  // canonical files whose declarations were walked
     std::set<std::string> defined;  // dump path: names of functions defined in checked files
+    // LOCK-ORDER: each function's first two distinct lock acquisitions.
+    struct LockOrder {
+        std::string fn, first, second;
+        Pos at;
+    };
+    std::vector<LockOrder> lock_orders;
 
     FileCtx* file(const std::string* canon) {
         if (!canon || !files.wanted(*canon)) return nullptr;
@@ -2551,7 +2557,6 @@ void walk_for_locks(const json& n, std::vector<const json*>& calls, std::vector<
 }
 
 void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
-    (void)fn;
     std::vector<const json*> calls, returns;
     std::unordered_set<const json*> exiting;
     walk_for_locks(body, calls, returns, exiting);
@@ -2583,6 +2588,17 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
     }
     // Same-line calls keep source order. std::sort is not stable.
     std::stable_sort(seq.begin(), seq.end(), [](const Ev& a, const Ev& b) { return a.line < b.line; });
+    {
+        const Ev* first = nullptr;
+        for (auto& e : seq) {
+            if (e.release || e.key.second.empty()) continue;
+            if (!first) first = &e;
+            else if (e.key.second != first->key.second) {
+                cx.lock_orders.push_back({fn.name, first->key.second, e.key.second, begin_of(*first->at)});
+                break;
+            }
+        }
+    }
     std::map<LockKey, std::optional<bool>> held;
     for (auto& e : seq) {
         if (e.release) {
@@ -4999,6 +5015,21 @@ FileResult analyze_unit(Unit& u, const FileSet& files) {
         if (*p.file != files.main) checked.insert(files.rel_of(*p.file));
         std::vector<std::string> tparams;
         walk_decl(d, cx, tparams);
+    }
+    // LOCK-ORDER: two functions take the same pair of locks in opposite order.
+    {
+        std::set<std::string> reported;
+        auto& lo = cx.lock_orders;
+        for (std::size_t i = 0; i < lo.size(); ++i)
+            for (std::size_t j = i + 1; j < lo.size(); ++j) {
+                if (lo[i].first != lo[j].second || lo[i].second != lo[j].first) continue;
+                for (auto* o : {&lo[i], &lo[j]}) {
+                    if (!reported.insert(o->fn).second) continue;
+                    cx.add_at(o->at, o->fn, "LOCK-ORDER",
+                              "locks " + o->first + " then " + o->second +
+                                  "; another function locks them in the opposite order");
+                }
+            }
     }
     // One row per (file, line, class): lambda bodies appear twice in the dump,
     // and nested blocks are flow-checked with and without their outer block.
