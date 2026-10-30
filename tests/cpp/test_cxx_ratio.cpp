@@ -8,11 +8,6 @@
 // ratio_greater_equal is not less. An overflowing cross product is a
 // contract check. It is not a true result and it is not a false result.
 
-#if defined(_MSC_VER) && !defined(__clang__)
-// MSVC cl has no __builtin_trap; the model's overflow arm is never taken here.
-#  include <cstdlib>
-#  define __builtin_trap() std::abort()
-#endif
 #include "../../src/prism/pir/models/cxx/ratio"
 
 #include <doctest/doctest.h>
