@@ -578,7 +578,17 @@ struct Encoding {
         reach.assign(nodes.size(), c.bool_val(false));
         exit_reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
-        for (int id : order) encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
+        for (int id : order) {
+            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
+            encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
+            if (tr_on && membudget::rss_mb() > r0 + 100)
+                std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
+                             static_cast<unsigned long long>(membudget::rss_mb() - r0));
+        }
+        if (std::getenv("PRISM_MEM_TRACE"))
+            std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu\n", nodes.size(),
+                         static_cast<unsigned long long>(membudget::rss_mb()));
     }
 
     // A use outside the loop of its definition. LLVM's LCSSA form never has
@@ -1004,6 +1014,18 @@ struct Encoding {
             if (membudget::over_budget_sampled(16))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while encoding");
             const auto& s = bl.stmts[si];
+            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            const uint64_t rss0 = tr_on ? membudget::rss_mb() : 0;
+            struct TraceBig {
+                bool on; uint64_t r0; int kind, op; std::size_t si; int id;
+                ~TraceBig() {
+                    if (!on) return;
+                    const uint64_t r1 = membudget::rss_mb();
+                    if (r1 > r0 + 100)
+                        std::fprintf(stderr, "[memtrace] stmt node=%d si=%zu kind=%d op=%d +%llu MB\n", id, si, kind, op,
+                                     static_cast<unsigned long long>(r1 - r0));
+                }
+            } trace_big{tr_on, rss0, static_cast<int>(s.kind), static_cast<int>(s.op), si, id};
             switch (s.kind) {
                 case Stmt::Assign: {
                     auto v = op_expr(s, id);

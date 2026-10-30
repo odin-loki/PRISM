@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <fstream>
+#include <unistd.h>
 #include <set>
 #include <string>
 #include <vector>
@@ -510,4 +512,31 @@ TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit
         REQUIRE(m.count("nested_fn_ok"));
         CHECK(m["nested_fn_ok"].status.starts_with("PROVED"));
     }
+}
+
+// Gap (hard conflicts, 115 of 117): reach_error's assert(0) is FAILED alone.
+// Discharged at the call sites only when every caller inlined it and is proved.
+TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and stays FAILED otherwise") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    if (!pp::pir_test_c_file_supported("sink.c")) return;
+    const auto dir = fs::temp_directory_path() / ("prism_sink_" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    auto put = [&](const char* name, const char* main_body) {
+        std::ofstream(dir / name) << "extern void __assert_fail(const char*, const char*, unsigned, const char*)"
+                                     " __attribute__((__noreturn__));\n"
+                                     "void reach_error(void) { __assert_fail(\"0\", \"x.c\", 1, \"reach_error\"); }\n"
+                                     "int main(void) {\n" << main_body << "\n}\n";
+        return dir / name;
+    };
+    std::vector<fs::path> paths{put("sink_safe.c", "  int x = 3; if (x != 3) reach_error(); return 0;"),
+                                put("sink_bad.c", "  reach_error(); return 0;")};
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::map<std::pair<std::string, std::string>, std::string> m;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+    fs::remove_all(dir);
+    CHECK(m[{"sink_safe.c", "reach_error"}] == "PROVED-ASSUMING");
+    CHECK(m[{"sink_bad.c", "reach_error"}] == "FAILED");
 }

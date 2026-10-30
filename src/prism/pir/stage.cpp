@@ -1177,6 +1177,68 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     }
 }
 
+// An assertion that fails whenever its function is called (SV-COMP's
+// reach_error, __VERIFIER_assert's failing branch) is FAILED when the
+// function is checked alone, though no caller can reach it: 115 of the 117
+// pir-vs-bmc hard conflicts. When every caller in the unit inlined the
+// function and was PROVED (so the callee's assertions were checked at each
+// call site), the callee's verdict becomes PROVED-ASSUMING "called only from
+// those call sites". A function with no caller in the unit keeps FAILED (an
+// outside caller may reach it), as does one whose failures are not all
+// assertions (UB is reported where it is, not moved to callers).
+void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) {
+    std::map<std::string, std::set<std::string>> callers;  // IR callee -> IR callers
+    for (const auto& fn : mod.functions) {
+        if (fn.is_declaration || fn.is_model) continue;
+        for (const auto& b : fn.blocks)
+            for (const auto& in : b.insts)
+                if (!in.callee.empty() && in.callee != fn.name) callers[in.callee].insert(fn.name);
+    }
+    std::map<std::string, FnRec*> by_ir;
+    for (auto& r : recs)
+        if (r.irf) by_ir[r.irf->name] = &r;
+    auto proved = [](const std::string& st) { return st.starts_with("PROVED"); };
+    auto split = [](const std::string& csv) {
+        std::set<std::string> out;
+        std::string cur;
+        for (char ch : csv + ",") {
+            if (ch == ',') { if (!cur.empty()) out.insert(cur); cur.clear(); }
+            else cur += ch;
+        }
+        return out;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto& r : recs) {
+            if (!r.irf || r.f.status != laws::FAILED || !r.f.message.starts_with("assert:")) continue;
+            auto it = callers.find(r.irf->name);
+            if (it == callers.end() || it->second.empty()) continue;
+            const std::string src_name = r.f.function.value_or(r.irf->name);
+            bool ok = true;
+            std::string names;
+            for (const auto& cn : it->second) {
+                auto c = by_ir.find(cn);
+                if (c == by_ir.end() || !proved(c->second->f.status)) { ok = false; break; }
+                auto inl = c->second->f.extra.find("inlined");
+                if (inl == c->second->f.extra.end() || !split(inl->second).count(src_name)) { ok = false; break; }
+                names += (names.empty() ? "" : ", ") + c->second->f.function.value_or(cn);
+            }
+            if (!ok) continue;
+            r.f.extra["verdict_alone"] = r.f.status + ": " + r.f.message;
+            r.f.status = std::string(laws::PROVED_ASSUMING);
+            r.f.strength = std::string(laws::STRENGTH_SOME);
+            r.f.message = "its assertion fails only if called; every caller in this unit (" + names +
+                          ") inlined it and is proved, so it is not reached from them";
+            r.f.extra["assumption"] = "called only from the proved call sites in this unit";
+            r.f.counterexample.clear();
+            r.f.extra.erase("cex");
+            r.cex.clear();
+            r.fn.reset();
+            changed = true;
+        }
+    }
+}
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -1367,6 +1429,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                            " not attributable to an IR instruction (" + folded_msg + ")";
         owner->fn.reset();
     }
+    caller_discharged_asserts(recs, mod);
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);
