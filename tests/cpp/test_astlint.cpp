@@ -1177,6 +1177,40 @@ int other_ok(long n) {
 }
 )";
 
+// MEM-CAPACITY-FIRST: cap doubled before realloc; failure arm keeps it.
+const char* kCapacityC = R"(typedef unsigned long size_t;
+void *realloc(void *, size_t);
+void free(void *);
+#define NULL ((void *)0)
+struct buf { int *data; size_t cap; };
+int grow_bad(struct buf *b) {
+    b->cap *= 2; // expect: MEM-CAPACITY-FIRST
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL)
+        return -1;
+    b->data = p;
+    return 0;
+}
+int grow_undo_ok(struct buf *b) {
+    b->cap *= 2;
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL) {
+        b->cap /= 2;
+        return -1;
+    }
+    b->data = p;
+    return 0;
+}
+int grow_after_ok(struct buf *b) {
+    int *p = realloc(b->data, b->cap + 64);
+    if (p == NULL)
+        return -1;
+    b->cap *= 2;
+    b->data = p;
+    return 0;
+}
+)";
+
 }  // namespace
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
@@ -1184,6 +1218,7 @@ TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends
     check_marks("nowait.c", kNowaitC);
     check_marks("lock_order.c", kLockOrderC);
     check_marks("sibling.c", kSiblingC);
+    check_marks("capacity.c", kCapacityC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "

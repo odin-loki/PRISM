@@ -4975,6 +4975,91 @@ void sibling_collect(const json& f, const json& body, const std::string& fname, 
     }
 }
 
+// MEM-CAPACITY-FIRST: a capacity field grown (+=, *=, <<=, ++) before the
+// allocation that should earn it, whose failure arm leaves without undoing it.
+void capacity_first_scan(const json& n, Checker& ck, Ctx& cx) {
+    auto txt = [&](const json& x) {
+        std::string r;
+        for (char ch : cx.text_of(x))
+            if (!std::isspace(static_cast<unsigned char>(ch))) r += ch;
+        return r;
+    };
+    auto calls_any = [&](const json& x, std::initializer_list<const char*> names) {
+        bool hit = false;
+        std::function<void(const json&)> rec = [&](const json& y) {
+            if (hit) return;
+            if (is_call_kind(kind(y))) {
+                auto nm = callee_name(y);
+                for (auto* c : names)
+                    if (nm == c) hit = true;
+            }
+            for (auto& c : inner(y)) rec(c);
+        };
+        rec(x);
+        return hit;
+    };
+    if (kind(n) == "CompoundStmt") {
+        const auto& st = inner(n);
+        for (std::size_t i = 0; st.is_array() && i < st.size(); ++i) {
+            const auto& g = st[i];
+            const json* field = nullptr;
+            const auto& gk = kind(g);
+            if (gk == "CompoundAssignOperator" &&
+                one_of(std::string(str_field(g, "opcode")), {"+=", "*=", "<<="}))
+                field = &strip_all(child(g, 0));
+            else if (gk == "UnaryOperator" && one_of(std::string(str_field(g, "opcode")), {"++"}))
+                field = &strip_all(child(g, 0));
+            if (!field || kind(*field) != "MemberExpr" || in_macro(g)) continue;
+            auto var = txt(*field);
+            if (var.empty()) continue;
+            std::optional<std::size_t> a;
+            for (std::size_t j = i + 1; j < std::min(st.size(), i + 6); ++j)
+                if (calls_any(st[j], {"realloc", "reallocarray", "malloc", "calloc", "mallocarray", "memcpy", "memmove"})) {
+                    a = j;
+                    break;
+                }
+            if (!a || txt(st[*a]).find(var) == std::string::npos) continue;
+            for (std::size_t j = *a + 1; j < std::min(st.size(), *a + 7); ++j) {
+                if (kind(st[j]) != "IfStmt" || n_children(st[j]) < 2) continue;
+                auto cond = txt(child(st[j], 0));
+                const auto& cn = strip_all(child(st[j], 0));
+                bool ast_null = (kind(cn) == "UnaryOperator" && str_field(cn, "opcode") == "!") ||
+                                (kind(cn) == "BinaryOperator" && str_field(cn, "opcode") == "==" &&
+                                 (is_null_ptr_expr(child(cn, 0)) || is_null_ptr_expr(child(cn, 1)) ||
+                                  is_zero_literal(child(cn, 0)) || is_zero_literal(child(cn, 1))));
+                bool nullt = ast_null || cond.starts_with("!") || cond.find("==NULL") != std::string::npos ||
+                             cond.find("==nullptr") != std::string::npos || cond.find("==0") != std::string::npos;
+                if (!nullt) continue;
+                const auto& arm = child(st[j], 1);
+                bool leaves = false;
+                std::function<void(const json&)> rec = [&](const json& y) {
+                    if (is_jump_stmt(y)) leaves = true;
+                    for (auto& c : inner(y)) rec(c);
+                };
+                rec(arm);
+                if (!leaves) continue;
+                if (calls_any(arm, {"err", "errx", "abort", "exit", "panic", "_errx", "fatal"})) break;
+                auto at = txt(arm);
+                if (at.find(var) != std::string::npos) break;
+                auto dot = var.find_first_of(".-");
+                if (dot != std::string::npos) {
+                    auto base = var.substr(0, dot);
+                    // the failure arm releases the owner (free_index(index)): the grown size dies with it
+                    std::string esc;
+                    for (char ch : base) {
+                        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '_') esc += '\\';
+                        esc += ch;
+                    }
+                    if (std::regex_search(at, std::regex("\\w*(?:free|destroy)\\w*\\(" + esc + "\\)"))) break;
+                }
+                ck.add(g, "MEM-CAPACITY-FIRST", var + " grown before the allocation that is supposed to earn it");
+                break;
+            }
+        }
+    }
+    for (auto& c : inner(n)) capacity_first_scan(c, ck, cx);
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -5006,6 +5091,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     w.ck.crypto_misuse(*body);
     lock_function_checks(*body, fn, w.ck, cx);
     if (fn.kind == "FunctionDecl" && fn.tparams.empty()) sibling_collect(f, *body, fn.name, cx);
+    capacity_first_scan(*body, w.ck, cx);
     core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;
     for (auto& id : fn.order) {
