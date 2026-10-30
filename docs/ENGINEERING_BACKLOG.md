@@ -20,7 +20,7 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
 | `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
-| `vector_insert_true` timeout | **In progress:** `PRISM_INDEX_LE3` + `seed_vs_bin` + `materialize_vs`; direct `pir` ~61 min failed (no output); `prism-qa conformance --stages pir` still **Law 7** (no findings, ~96 s) — raise mem limit / disable solver cache / debug OOM | `memory.cpp`, `encode.cpp`, `vector_insert.cpp` |
+| `vector_insert_true` timeout | **Done (2026-10-30):** vector model's reallocating insert moves trivially copyable elements in one `size()`-bounded loop — PROVED in 71 s (was >1800 s); all 15 vector_* conformance harnesses as expected | `models/cxx/vector` |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
 
@@ -106,3 +106,7 @@ Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 Eight Composer 2.5 passes informed this backlog: libc/stdlib contracts, astlint
 `STR-UNBOUNDED-COPY`, certified budgets, SV-COMP, pir-vs-bmc retirement gates,
 Lean refinement D118/D136, CPP port appendix vs status block, `vector_insert` value sets.
+
+## Documentation rewrite (owner request, 2026-10-30)
+
+When the current backlog work is finished: rewrite all documentation from scratch (it has gone stale) and double-check every claim against the code and fresh measurements.
