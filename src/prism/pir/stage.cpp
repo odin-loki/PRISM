@@ -1012,7 +1012,7 @@ struct Salvage {
     std::vector<std::tuple<std::string, int, std::string>> dropped;
 };
 
-std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err) {
+std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err, bool hoist = true) {
     const std::string text = read_file(src);
     if (text.empty()) return std::nullopt;
     // error lines in this file
@@ -1086,6 +1086,7 @@ std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err)
     std::string out = text;
     Salvage sv;
     std::set<std::size_t> cut;
+    std::vector<std::pair<int, std::string>> hoisted;
     for (auto& [eline, msg] : errs) {
         const Block* hit = nullptr;
         for (auto& b : blocks)
@@ -1097,6 +1098,25 @@ std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err)
         if (not_fn.search_match(hd)) return std::nullopt;
         auto m = fn_head.search_match(hd);
         if (!m) return std::nullopt;
+        // A GNU C nested function (clang: "function definition is not allowed
+        // here"): besides cutting the outer function, hoist the nested one to
+        // file scope at its own lines, so it is checked when it uses nothing
+        // of the outer frame (if it does, the next round's error cuts it).
+        if (hoist && msg.find("function definition is not allowed here") != std::string::npos) {
+            std::size_t ls = 0;
+            for (int ln = 1; ln < eline && ls != std::string::npos; ++ln) ls = text.find('\n', ls) + 1;
+            const std::size_t ob = ls < text.size() ? text.find('{', ls) : std::string::npos;
+            if (ob != std::string::npos && ob < hit->close) {
+                int d = 0;
+                std::size_t k = ob;
+                for (; k < hit->close; ++k) {
+                    if (text[k] == '{') ++d;
+                    else if (text[k] == '}' && --d == 0) break;
+                }
+                if (d == 0 && k < hit->close && !std::any_of(hoisted.begin(), hoisted.end(), [&](auto& h) { return h.first == eline; }))
+                    hoisted.emplace_back(eline, text.substr(ls, k + 1 - ls));
+            }
+        }
         if (!cut.insert(hit->open).second) continue;
         sv.dropped.emplace_back(m->group(1), hit->l0, msg);
         // body -> ';' keeping every newline
@@ -1108,6 +1128,7 @@ std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err)
     std::string esc;
     for (char c2 : src.string()) { if (c2 == '"' || c2 == '\\') esc += '\\'; esc += c2; }
     sv.text = "#line 1 \"" + esc + "\"\n" + out;
+    for (auto& [ln, code] : hoisted) sv.text += "\n#line " + std::to_string(ln) + " \"" + esc + "\"\n" + code + "\n";
     return sv;
 }
 
@@ -1624,8 +1645,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 // gathered so far (the salvaged copy keeps the original file
                 // name and lines through #line), a few rounds at most.
                 std::string errs = l.err;
-                for (int round = 0; round < 6; ++round) {
-                    auto sv = salvage_unit(u.path, errs);
+                bool hoist = true;
+                for (int round = 0; round < 8; ++round) {
+                    auto sv = salvage_unit(u.path, errs, hoist);
                     if (!sv) break;
                     TmpDir td;
                     const fs::path cp = td.path / u.path.filename();
@@ -1644,7 +1666,13 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                         l.err.clear();
                         break;
                     }
-                    if (errs.find(err2) != std::string::npos) break;  // no new error: stop
+                    if (errs.find(err2) != std::string::npos) {
+                        // No new error: a hoisted nested function uses the
+                        // outer frame. Try once more without hoisting.
+                        if (!hoist) break;
+                        hoist = false;
+                        continue;
+                    }
                     errs += "\n" + err2;
                 }
             }

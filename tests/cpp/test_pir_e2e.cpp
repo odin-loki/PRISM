@@ -511,6 +511,9 @@ TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit
     if (fs::exists(dir / "nested_fn.c")) {
         REQUIRE(m.count("nested_fn_ok"));
         CHECK(m["nested_fn_ok"].status.starts_with("PROVED"));
+        // the nested function itself is hoisted to file scope and checked
+        REQUIRE(m.count("inner"));
+        CHECK(m["inner"].status.starts_with("PROVED"));
     }
 }
 
