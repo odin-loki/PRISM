@@ -1,0 +1,28 @@
+format_version: 1
+input_files: spanstream_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  spanbuf_putc_true: true
+  spanbuf_size0_false: false
+  spanbuf_null_false: false
+  spanbuf_getc_true: true
+  spanbuf_getc_size0_false: false
+  spanbuf_getc_null0_false: false
+  spanbuf_sungetc_true: true
+  spanbuf_sungetc_off0_false: false
+  spanbuf_sungetc_null0_false: false
+  spanbuf_sputn_true: true
+  spanbuf_sputn_clip_true: true
+  spanbuf_sputn_zero_true: true
+  spanbuf_sputn_neg_false: false
+  spanbuf_sputn_null_false: false
+expect_class:  # the violation each false harness plants
+  spanbuf_size0_false: "MEM-OOB-WRITE"
+  spanbuf_null_false: "PTR-NULL-DEREF"
+  spanbuf_getc_size0_false: "MEM-OOB-READ"
+  spanbuf_getc_null0_false: "MEM-OOB-READ"
+  spanbuf_sungetc_off0_false: "MEM-OOB-READ"
+  spanbuf_sungetc_null0_false: "MEM-OOB-READ"
+  spanbuf_sputn_neg_false: "FUNC-CONTRACT"
+  spanbuf_sputn_null_false: "PTR-NULL-DEREF"

@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <syncstream> so the C++ model-header conformance case sees this include.
 // The scored tasks are testdata/conformance/prism/cxx/cxx_syncstream_true.cpp
 // (one character into a 4-byte caller buffer) and cxx_syncstream_false.cpp

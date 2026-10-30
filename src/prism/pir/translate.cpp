@@ -278,11 +278,20 @@ struct Tr final : pirmem::TrApi {
         auto w = [](const ir::Type& e) -> unsigned {
             if (e.kind == ir::Type::Ptr && e.text == "ptr") return kPtrW;
             if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+            if (e.kind == ir::Type::Float && e.text == "double") return 64u;  // std::complex<double>
+            if (e.kind == ir::Type::Float && e.text == "float") return 32u;
             return 0;
         };
         unsigned a = w(t.elems[0]), b = w(t.elems[1]);
         if (!a || !b) return std::nullopt;
         return std::pair{a, b};
+    }
+
+    // The fields of a { double, double } pair are floating-point variables.
+    void mark_fp_pair(const ir::Type& t, int a, int b) {
+        if (t.kind != ir::Type::Struct || t.elems.size() != 2) return;
+        out.vars[static_cast<std::size_t>(a)].fp = t.elems[0].kind == ir::Type::Float;
+        out.vars[static_cast<std::size_t>(b)].fp = t.elems[1].kind == ir::Type::Float;
     }
 
     int var_of(Frame& fr, const std::string& name) {
@@ -539,6 +548,7 @@ struct Tr final : pirmem::TrApi {
                         // rebuilt before `resume`, a returned std::pair ...)
                         int a = newvar(fr.prefix + in.result + ".0", sp->first);
                         int s = newvar(fr.prefix + in.result + ".1", sp->second);
+                        mark_fp_pair(in.ty, a, s);
                         fr.pairs[in.result] = {a, s};
                         fr.defs[in.result] = &in;
                         continue;
@@ -998,6 +1008,11 @@ struct Tr final : pirmem::TrApi {
                 mt.icmp(cur, result_var(fr, in), in.pred, a, b, line);
                 return;
             }
+            if (is_ptrtoint(fr, in.ops[0]) && is_ptrtoint(fr, in.ops[1])) {  // std::less<T*>
+                mt.addr_cmp(cur, result_var(fr, in), in.pred, operand(fr, in.ops[0], cur, line),
+                            operand(fr, in.ops[1], cur, line));
+                return;
+            }
             unsigned w = int_width(in.ty, "icmp operand type");
             Arg a = operand(fr, in.ops[0], cur, line);
             Arg b = operand(fr, in.ops[1], cur, line);
@@ -1195,6 +1210,23 @@ struct Tr final : pirmem::TrApi {
                 Arg a = arg(0);
                 a.width = w;
                 emit_assign(cur, result_var(fr, in), starts(n, "llvm.ctpop.") ? Op::Ctpop : Op::Bswap, {a});
+                return;
+            }
+            if (n == "llvm.returnaddress" || n == "llvm.frameaddress.p0") {
+                // a code / frame address: any address outside every modelled
+                // object (object id 0, any offset; null for an outer frame is
+                // offset 0). Not a pointer into the program's data, so it does
+                // not alias a local (no stack escape) and a dereference is
+                // checked like a wild pointer.
+                Arg h = havoc(cur, kPtrW, false, true);
+                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(kPtrW, (uint64_t{1} << 48) - 1)});
+                return;
+            }
+            if (starts(n, "llvm.is.constant.")) {
+                // __builtin_constant_p: false is always a correct answer (LLVM's
+                // lower-constant-intrinsics folds what it cannot prove to false;
+                // the guarded code is the general path either way)
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(1, 0)});
                 return;
             }
             if (starts(n, "llvm.expect.")) {
@@ -1423,7 +1455,10 @@ struct Tr final : pirmem::TrApi {
             if (auto it = fr.pairs.find(in.result); !in.result.empty() && it != fr.pairs.end())
                 cf.ret_pair = it->second;
             else
+            {
                 cf.ret_pair = std::pair{newvar(tmpname("ret"), ret_pair->first), newvar(tmpname("ret"), ret_pair->second)};
+                mark_fp_pair(callee->ret, cf.ret_pair->first, cf.ret_pair->second);
+            }
         } else if (callee->ret.kind != ir::Type::Void) {
             int rv = in.result.empty() ? newvar(tmpname("ret"), vwidth(callee->ret)) : result_var(fr, in);
             cf.ret_var = rv;
@@ -1684,7 +1719,8 @@ struct Tr final : pirmem::TrApi {
                     for (auto& [o, _] : u.incoming)
                         if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
                     if (!uses) continue;
-                    if (u.op != "sub" || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) || !is_ptrtoint(fr, u.ops[1]))
+                    if ((u.op != "sub" && u.op != "icmp") || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) ||
+                        !is_ptrtoint(fr, u.ops[1]))
                         throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
                 }
             Arg p = operand(fr, in.ops[0], cur, line);

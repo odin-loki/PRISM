@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <bit> so the C++ model-header conformance case sees this include.
 // The scored check is testdata/conformance/prism/cxx/cxx_bit_true.cpp.
 // There is no false twin: a too-wide bit_ceil is a precondition, and a

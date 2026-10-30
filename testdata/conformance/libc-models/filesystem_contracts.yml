@@ -1,0 +1,11 @@
+format_version: 1
+input_files: filesystem_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  fs_filename_true: true
+  fs_join_true: true
+  fs_stem_true: true
+  fs_stem_dots_true: true
+  fs_compare_true: true
+  fs_replace_ext_true: true

@@ -1,0 +1,242 @@
+func diff_ok
+L params 1 n 32
+L ret 64
+L block entry
+L uninit %__prism_uninit.0 32
+L alloca %a 32 16
+L uninit %__prism_uninit.1 64
+L bin %and and - 32 %n #7
+L cast %idxprom sext 0 32 64 %and
+L gep %arrayidx 1 %a 2 f #0 64 32 a %idxprom 64 4 8 0
+L gep %arraydecay 1 %a 2 f #0 64 32 a #0 64 4 8 0
+L ptrtoint %sub.ptr.lhs.cast %arrayidx
+L ptrtoint %sub.ptr.rhs.cast %arraydecay
+L psub %sub.ptr.sub - %sub.ptr.lhs.cast %sub.ptr.rhs.cast
+L bin %sub.ptr.div sdiv exact 64 %sub.ptr.sub #4
+L ret %sub.ptr.div
+status ok
+P vars 35 32 32 64 64 32 64 64 64 64 64 64 64 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 1 64 64 1 1 1 1
+P params 1 0
+P retw 64
+P block
+P havoc 1
+P alloc 2 c64:32 1 0 16
+P havoc 3
+P assign 4 and 2 v0:32 c32:7
+P assign 5 sext 1 v4:32
+P assign 12 ugt 2 v5:64 c64:8
+P check v12:1 ptr-arith MEM-PTR-ARITH
+P assign 13 smul.ovf 2 v5:64 c64:4
+P check v13:1 ptr-arith MEM-PTR-ARITH
+P assign 14 mul 2 v5:64 c64:4
+P assign 6 add 2 v2:64 v14:64
+P assign 15 lshr 2 v2:64 c64:48
+P assign 16 lshr 2 v6:64 c64:48
+P assign 17 eq 2 v15:64 c64:0
+P assign 18 ne 2 v14:64 c64:0
+P assign 19 and 2 v17:1 v18:1
+P check v19:1 ptr-arith MEM-PTR-ARITH
+P assign 20 obj.kind 1 v2:64
+P assign 21 obj.size 1 v2:64
+P assign 22 ne 2 v16:64 v15:64
+P assign 23 and 2 v6:64 c64:281474976710655
+P assign 24 ugt 2 v23:64 v21:64
+P assign 25 or 2 v22:1 v24:1
+P assign 26 ne 2 v20:8 c8:0
+P assign 27 and 2 v26:1 v25:1
+P check v27:1 ptr-arith MEM-PTR-ARITH
+P assign 28 ugt 2 c64:0 c64:8
+P check v28:1 ptr-arith MEM-PTR-ARITH
+P assign 7 copy 1 v2:64
+P assign 8 copy 1 v6:64
+P assign 9 copy 1 v7:64
+P assign 29 lshr 2 v8:64 c64:48
+P assign 30 lshr 2 v9:64 c64:48
+P assign 31 ne 2 v29:64 v30:64
+P check v31:1 ptr-sub PTR-COMPARE
+P assign 10 sub 2 v8:64 v9:64
+P assign 32 eq 2 c64:4 c64:0
+P check v32:1 div0 INT-DIV-ZERO
+P assign 33 sdiv.ovf 2 v10:64 c64:4
+P check v33:1 divovf INT-SIGNED-OVF
+P assign 34 sdiv.inexact 2 v10:64 c64:4
+P check v34:1 exact UB-POISON
+P assign 11 sdiv 2 v10:64 c64:4
+P ret v11:64
+end
+func diff_bad
+L params 1 n 32
+L ret 64
+L block entry
+L uninit %__prism_uninit.2 32
+L alloca %a 16 16
+L alloca %b 16 16
+L icmp %tobool ne 32 %n #0
+L cbr %tobool cond.true cond.false
+L block cond.true
+L gep %arrayidx 1 %a 2 f #0 64 16 a #1 64 4 4 0
+L br cond.end
+L block cond.false
+L gep %arrayidx1 1 %a 2 f #0 64 16 a #2 64 4 4 0
+L br cond.end
+L block cond.end
+L phi %cond 64 2 %arrayidx cond.true %arrayidx1 cond.false
+L gep %arraydecay 1 %b 2 f #0 64 16 a #0 64 4 4 0
+L ptrtoint %sub.ptr.lhs.cast %cond
+L ptrtoint %sub.ptr.rhs.cast %arraydecay
+L psub %sub.ptr.sub - %sub.ptr.lhs.cast %sub.ptr.rhs.cast
+L bin %sub.ptr.div sdiv exact 64 %sub.ptr.sub #4
+L ret %sub.ptr.div
+status ok
+P vars 48 32 32 64 64 1 64 64 64 64 64 64 64 64 1 64 64 1 1 1 8 64 1 64 1 1 1 1 1 64 64 1 1 1 8 64 1 64 1 1 1 1 1 64 64 1 1 1 1
+P params 1 0
+P retw 64
+P block
+P havoc 1
+P alloc 2 c64:16 1 0 16
+P alloc 3 c64:16 1 0 16
+P assign 4 ne 2 v0:32 c32:0
+P br v4:1 1 2
+P block
+P assign 13 ugt 2 c64:1 c64:4
+P check v13:1 ptr-arith MEM-PTR-ARITH
+P assign 5 add 2 v2:64 c64:4
+P assign 14 lshr 2 v2:64 c64:48
+P assign 15 lshr 2 v5:64 c64:48
+P assign 16 eq 2 v14:64 c64:0
+P assign 17 ne 2 c64:4 c64:0
+P assign 18 and 2 v16:1 v17:1
+P check v18:1 ptr-arith MEM-PTR-ARITH
+P assign 19 obj.kind 1 v2:64
+P assign 20 obj.size 1 v2:64
+P assign 21 ne 2 v15:64 v14:64
+P assign 22 and 2 v5:64 c64:281474976710655
+P assign 23 ugt 2 v22:64 v20:64
+P assign 24 or 2 v21:1 v23:1
+P assign 25 ne 2 v19:8 c8:0
+P assign 26 and 2 v25:1 v24:1
+P check v26:1 ptr-arith MEM-PTR-ARITH
+P jmp 3
+P block
+P assign 27 ugt 2 c64:2 c64:4
+P check v27:1 ptr-arith MEM-PTR-ARITH
+P assign 6 add 2 v2:64 c64:8
+P assign 28 lshr 2 v2:64 c64:48
+P assign 29 lshr 2 v6:64 c64:48
+P assign 30 eq 2 v28:64 c64:0
+P assign 31 ne 2 c64:8 c64:0
+P assign 32 and 2 v30:1 v31:1
+P check v32:1 ptr-arith MEM-PTR-ARITH
+P assign 33 obj.kind 1 v2:64
+P assign 34 obj.size 1 v2:64
+P assign 35 ne 2 v29:64 v28:64
+P assign 36 and 2 v6:64 c64:281474976710655
+P assign 37 ugt 2 v36:64 v34:64
+P assign 38 or 2 v35:1 v37:1
+P assign 39 ne 2 v33:8 c8:0
+P assign 40 and 2 v39:1 v38:1
+P check v40:1 ptr-arith MEM-PTR-ARITH
+P jmp 3
+P block
+P phi 7 2 1 v5:64 2 v6:64
+P assign 41 ugt 2 c64:0 c64:4
+P check v41:1 ptr-arith MEM-PTR-ARITH
+P assign 8 copy 1 v3:64
+P assign 9 copy 1 v7:64
+P assign 10 copy 1 v8:64
+P assign 42 lshr 2 v9:64 c64:48
+P assign 43 lshr 2 v10:64 c64:48
+P assign 44 ne 2 v42:64 v43:64
+P check v44:1 ptr-sub PTR-COMPARE
+P assign 11 sub 2 v9:64 v10:64
+P assign 45 eq 2 c64:4 c64:0
+P check v45:1 div0 INT-DIV-ZERO
+P assign 46 sdiv.ovf 2 v11:64 c64:4
+P check v46:1 divovf INT-SIGNED-OVF
+P assign 47 sdiv.inexact 2 v11:64 c64:4
+P check v47:1 exact UB-POISON
+P assign 12 sdiv 2 v11:64 c64:4
+P ret v12:64
+end
+func main
+L depth 4
+L params 0
+L ret 32
+L block entry
+L call %call 64 diff_ok 1 #3 32
+L cast %conv trunc 0 64 32 %call
+L ret %conv
+L fn diff_ok
+L params 1 n 32
+L ret 64
+L block entry
+L uninit %__prism_uninit.0 32
+L alloca %a 32 16
+L uninit %__prism_uninit.1 64
+L bin %and and - 32 %n #7
+L cast %idxprom sext 0 32 64 %and
+L gep %arrayidx 1 %a 2 f #0 64 32 a %idxprom 64 4 8 0
+L gep %arraydecay 1 %a 2 f #0 64 32 a #0 64 4 8 0
+L ptrtoint %sub.ptr.lhs.cast %arrayidx
+L ptrtoint %sub.ptr.rhs.cast %arraydecay
+L psub %sub.ptr.sub - %sub.ptr.lhs.cast %sub.ptr.rhs.cast
+L bin %sub.ptr.div sdiv exact 64 %sub.ptr.sub #4
+L ret %sub.ptr.div
+status ok
+P vars 37 64 32 8 32 64 64 32 64 64 64 64 64 64 64 1 1 64 64 64 1 1 1 8 64 1 64 1 1 1 1 1 64 64 1 1 1 1
+P params 0
+P retw 32
+P block
+P jmp 2
+P block
+P phi 2 1 2 c8:0
+P phi 0 1 2 v13:64
+P assign 1 trunc 1 v0:64
+P ret v1:32
+P block
+P havoc 3
+P alloc 4 c64:32 1 0 16
+P havoc 5
+P assign 6 and 2 c32:3 c32:7
+P assign 7 sext 1 v6:32
+P assign 14 ugt 2 v7:64 c64:8
+P check v14:1 ptr-arith MEM-PTR-ARITH
+P assign 15 smul.ovf 2 v7:64 c64:4
+P check v15:1 ptr-arith MEM-PTR-ARITH
+P assign 16 mul 2 v7:64 c64:4
+P assign 8 add 2 v4:64 v16:64
+P assign 17 lshr 2 v4:64 c64:48
+P assign 18 lshr 2 v8:64 c64:48
+P assign 19 eq 2 v17:64 c64:0
+P assign 20 ne 2 v16:64 c64:0
+P assign 21 and 2 v19:1 v20:1
+P check v21:1 ptr-arith MEM-PTR-ARITH
+P assign 22 obj.kind 1 v4:64
+P assign 23 obj.size 1 v4:64
+P assign 24 ne 2 v18:64 v17:64
+P assign 25 and 2 v8:64 c64:281474976710655
+P assign 26 ugt 2 v25:64 v23:64
+P assign 27 or 2 v24:1 v26:1
+P assign 28 ne 2 v22:8 c8:0
+P assign 29 and 2 v28:1 v27:1
+P check v29:1 ptr-arith MEM-PTR-ARITH
+P assign 30 ugt 2 c64:0 c64:8
+P check v30:1 ptr-arith MEM-PTR-ARITH
+P assign 9 copy 1 v4:64
+P assign 10 copy 1 v8:64
+P assign 11 copy 1 v9:64
+P assign 31 lshr 2 v10:64 c64:48
+P assign 32 lshr 2 v11:64 c64:48
+P assign 33 ne 2 v31:64 v32:64
+P check v33:1 ptr-sub PTR-COMPARE
+P assign 12 sub 2 v10:64 v11:64
+P assign 34 eq 2 c64:4 c64:0
+P check v34:1 div0 INT-DIV-ZERO
+P assign 35 sdiv.ovf 2 v12:64 c64:4
+P check v35:1 divovf INT-SIGNED-OVF
+P assign 36 sdiv.inexact 2 v12:64 c64:4
+P check v36:1 exact UB-POISON
+P assign 13 sdiv 2 v12:64 c64:4
+P free v4:64
+P jmp 1
+end

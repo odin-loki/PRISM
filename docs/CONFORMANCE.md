@@ -485,7 +485,7 @@ queries split on no answer; the `basic_string.tcc` fix for libstdc++ 14).
 | `map<int,int>`, two elements, `erase(k)` at an input-dependent key, destructor | no answer in 900 s | PROVED, 2.1 s |
 | same, `*it` of the erased element (MEM-UAF twin) / wrong-sum twin / `set` variants | not run | FAILED MEM-UAF / FAILED FUNC-CONTRACT / 2 PROVED, 2 FAILED — 13.5 s for the file of 5 |
 | `libc-models/map_contracts.cpp` (11 harnesses, one file) | NEEDS-HARNESS ×11 in 3 s (the unit did not compile against the model headers with libstdc++ 14 and fell back to libstdc++); with the header fix but without value sets `map_insert_true` alone gave no answer in 600 s (1,295 property VCs, each timing out) | 7/7 PROVED, 4/4 refuted with the planted class, 13–18 s for the file (0.4–2.4 s of solving per harness) |
-| `libc-models/vector_insert.cpp` | not measured | `vector_insert_uaf_false` FAILED MEM-UAF in 146 s; `vector_insert_true` PROVED in 71 s (2026-10-30; one `size()`-bounded transfer loop in the model's reallocating insert) |
+| `libc-models/vector_insert.cpp` | not measured | `vector_insert_uaf_false` FAILED MEM-UAF in 146 s; `vector_insert_true` PROVED in ~24 s (unwind 8) after the value-set fixes |
 
 0 wrong proofs among these.
 

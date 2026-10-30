@@ -19,10 +19,12 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
 | `getenv_true` → PROVED | **Done:** `__prism_obj_size` + NUL; `harness.h` `extern "C"` for `assert` in `.cpp` harnesses | `stdlib_contracts.cpp`, `harness.h` |
-| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still need `MemEq`/`MemFrame` fixpoint + Z3 timing on `strcat_any_true` / `strncat_any_true` | `houdini.inc`, `unbounded_string_contracts.cpp` |
-| `vector_insert_true` timeout | **Done (2026-10-30):** vector model's reallocating insert moves trivially copyable elements in one `size()`-bounded loop — PROVED in 71 s (was >1800 s); all 15 vector_* conformance harnesses as expected | `models/cxx/vector` |
+| `strcat`/`strncat` unbounded BOUNDED | **Started:** Houdini `MemScopeAt` (`∀x < i: off + x < size(p)`) generated from store scope offsets; still BOUNDED: Houdini runs out of time (348 candidates, 4 loops; 3 rounds in 1200 s with `--timeout 200`) — needs cheaper step queries / fewer candidates | `houdini.inc`, `unbounded_string_contracts.cpp` |
+| `vector_insert_true` timeout | **Done:** `peel_ite` (dead same-condition ites, single-arg `or`/`and`), merged-set operand retry, `kVsMax` 64 → PROVED at unwind 8 in ~24 s / 1.5 GB; UAF twin FAILED MEM-UAF. Encoder OOM is now Law 7 UNKNOWN (`PRISM_PIR_MEM_MB`, default min(60% RAM, RLIMIT_AS/4)) | `memory.cpp`, `encode.cpp`, `test_pir_mem.cpp` Also (2026-10-30): the vector model's reallocating insert moves trivially copyable elements in one `size()`-bounded loop (71 s on its own). |
 | printf not in libc harnesses | **Done (doc):** translator + `mem_libc.c` boundary in `docs/PIR.md` §8.2 | `libc_format.cpp` |
 | iostreams / unordered / libc++ | New `models/cxx/` headers + harnesses | `docs/PIR.md` "Not modelled" |
+| Z3 hard OOM poisons the process / box OOM | **Done (2026-10-29, `fix/memory-budget`):** one process-wide memory budget (`prism/membudget.hpp`): 75% of min(cgroup limit, MemAvailable, RLIMIT_AS/2), override `PRISM_MEM_BUDGET_MB` (`PRISM_PIR_MEM_MB` still read); trips at 80% of it or when MemAvailable < `PRISM_MEM_RESERVE_MB` (800). Checked in the encoder (SymMem read-over-write / value sets / havoc reads, every encoded node) and by a 100 ms watchdog that `Z3_interrupt`s every live context (pir and portfolio) mid-query: per-function UNKNOWN with the reason, heap `malloc_trim`med between functions, later functions checked (not sticky). Past half the budget the portfolio skips the cache-key copy (`normalized_query`'s `Z3_translate`, measured as the jump that killed `priority_queue_contracts`) and runs one in-process solver. `M_ARENA_MAX=4` set in `main`: glibc's per-thread 64 MB arenas were the address space a 4 GB RLIMIT_AS ran out of at ~28 MB RSS (th_rewriter null deref on `unordered_map`/`sstream`); no crash now. `prism-qa conformance` gives each run its share of MemAvailable and cuts `--jobs` to fit. Box wrapper `/workspace/bin/prism-run`. Left: the hard-limit fresh-process continuation stays as the last resort; `umap_erase_uaf_false` is slow (>12 min, memory flat) — a time problem, not memory | `membudget.cpp`, `encode.cpp`, `memory.cpp`, `portfolio.cpp`, `tests/cpp/test_membudget.cpp` |
+| 24 C++ harnesses had no `.yml` | **Done:** labelled (streams, algorithm, chrono, filesystem, ...); `tuple` model fixed for `tuple<T&...>` (map/set models compile again, 11/11) | `testdata/conformance/libc-models`, `models/cxx/tuple` |
 
 ## 2.8 AST lints (`astlint`)
 
@@ -78,14 +80,32 @@ C++ surface: `prism svcomp`, `src/prism/svcomp/`. **Keep** `tools/svcomp/prism.p
 
 ## 8.2 LLVM → PIR refinement (Lean checker)
 
-Grow **`agree-ext`** beyond 139 functions (`docs/PROOFS_REFINEMENT.md`; `pir-lean-check` on `testdata/pir` + `testdata`):
+Grow **`agree-ext`** beyond 491 functions (unchanged after inlined allocas, 8920b58bc; outside 1 865) (`docs/PROOFS_REFINEMENT.md` "All six trees"; `pir-lean-check` over the six `testdata` trees, base 221, mismatch 0):
 
-1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` still `admit`
-2. **D136 (partial)** — stdio / FILE models: C++ Lean export emits `L hhavoc` for
-   `__prism_havoc_bytes` (`export_lean.cpp`; checker still `outside` until Lean
-   `hhavoc` + `MemTr::write_havoc`). Remaining: `PRISM_FILEK` in `hfree`, `L
-   hread`/`hhavoc` parity for `__prism_read_range`, `__prism_check` in stdio bodies.
-3. **`__prism_check` / `__prism_memset` / `__prism_fresh_cstr`** for inlined libc bodies
+1. **D118** — **Done (checker):** Lean `hobjsz` + `memcpy selfOk` align C++; `pir-lean-check` **139** `agree-ext`, `heap` fixture **15** `agree-ext`, `mismatch=0`; `hobjsz` full sim in `XRefine` proved (XHeap fixed to build on core Lean 4.34, 2026-10-29)
+2. **D136 — Done (primitives, 2026-10-29, branch `work/proofs`)** — stdio / FILE model
+   primitives proved in Lean with C++ export parity (no sorry, audited, 104 theorems):
+   `__prism_havoc_bytes` (`hhavoc`), `__prism_read_range` (`hread`), `__prism_check`
+   (`vcheck`), `__prism_memset` (`hmemset`), `__prism_fresh_cstr` (`hfresh`), FILE kind 8
+   in `hfree` (`freeChkF`). Fixtures `stdio_file` / `stdio_prims` agree-ext. Measured: 221 → 287 agree-ext.
+3. **Noreturn checks + unreachable blocks — Done (2026-10-29, `work/proofs`)** — `L afail`
+   (`assert`, `reach_error`, traps, libstdc++ assertions; `XBlock.nr`) and dead LLVM blocks
+   (`xLive` closure checked in `validB`, liveness in `InvX`/`TailX`): 287 → **419** agree-ext,
+   mismatch 0.
+4. **`invoke` / landing pads without throws — Done (2026-10-29, 65d994197)** — invoke as call +
+   `br`, unreachable blocks stubbed (`L dead`/`L stub`, `XBlock.stub`), dead phi incomings dropped:
+   419 → **479** agree-ext, mismatch 0. Next by count: real throw/catch (`__cxa_begin_catch` 63,
+   `__cxa_allocate_exception` 33, `__throw_*` 29), indirect calls 30, ptrtoint 27, float/double 42,
+   pthread/mtx 35, inlined alloca 18, constant-GEP 14.
+5. **`ptrtoint` pointer difference + `std::__throw_*` without handlers — Done (2026-10-29,
+   d02bdb7f5, 64b4cdd34)** — `L psub` (`PTR-COMPARE` on different objects) and `L ptrtoint`;
+   `L throw <typeinfo>` (semantics stuck at the throw, translator mirrors `Tr::raise`: exception
+   object, header stores, `type_id`, `CXX-UNCAUGHT` in `main`) when no invoke can be on the stack:
+   479 → **491** agree-ext (1 039 / 491 / 267 / 1 869), mismatch 0. Not mirrorable: pthread_mutex_lock /
+   mtx_lock / pthread_create are UNENCODED in `translate.cpp` itself; all 63 `__cxa_begin_catch`
+   functions are not-ok in C++. Next: `__throw_*` under a handler (landing-pad dispatch; the 29 in
+   testdata all sit under an `invoke` of the `operator new` model), throws with arguments,
+   inlined alloca 18 (frame alloca tracking + `end_lifetime` at return), constant-GEP 14 (5 ok in C++).
 
 Verify: `prism-qa pir-lean-check` on `testdata/pir` + `testdata`.
 
@@ -110,3 +130,10 @@ Lean refinement D118/D136, CPP port appendix vs status block, `vector_insert` va
 ## Documentation rewrite (owner request, 2026-10-30)
 
 When the current backlog work is finished: rewrite all documentation from scratch (it has gone stale) and double-check every claim against the code and fresh measurements.
+
+## prism_tests failures not caused by work/libc-models (2026-10-29)
+
+Full run under `/workspace/bin/prism-run` (prlimit --as=4 GB): 15 failed cases.
+Four were caused by this branch and are fixed: the libc contract-harness test (true-only ymls now carry a `no-false-twin:` line), the per-function harness test (`_Hash_bytes` moved to the `<typeindex>` model), the deps SBOM drift string (z3 `memory_manager.cpp`), and the regex model source test (`_M_fail` inlined).
+- **Environmental (ASan cannot reserve its shadow memory under an address-space cap):** cxx format model setup, certified (combined proof split), label self-check, fuse PRISM_AFL, ai9 lean best-first, ai-assist regress (sanitizer half). All of these pass when run without prlimit.
+- **Pre-existing:** the 6 astlint cases (libclang resource dir), and ai-assist regress `test_ai_assist.cpp:433`. That check runs a cmake+ctest build of the generated tests and fails without prlimit too. No ai/ files changed on this branch.

@@ -3,6 +3,7 @@ input_files: unbounded_string_contracts.cpp
 language: C
 property: libc-contract
 timeout: 2400  # every loop is cut by Houdini invariants: several solver queries per function
+prism_timeout: 300  # strcat/strncat: one Houdini step query over 19 goals needs ~100 s (PRISM --timeout)
 expected:
   strlen_any_true: true
   strlen_any_earlier_nul_false: false
