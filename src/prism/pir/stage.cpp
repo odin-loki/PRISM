@@ -1197,7 +1197,13 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
                          ("prism_pir_rerun_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
     std::string only;
     for (auto* r : pend) only += u.rel + "\t" + r->f.function.value_or("") + "\n";
-    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only, exe.string()};
+    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only};
+    // The child gets what the tree leaves of the budget, so parent + child stay in it.
+    if (const uint64_t mb = membudget::budget_mb(); mb > 0) {
+        const uint64_t rss = membudget::tree_rss_mb();
+        cmd.push_back("PRISM_MEM_BUDGET_MB=" + std::to_string(std::max<uint64_t>(256, mb > rss ? mb - rss : 0)));
+    }
+    cmd.push_back(exe.string());
     for (std::size_t i = 1; i < av.size(); ++i) {
         const std::string& a = av[i];
         if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }

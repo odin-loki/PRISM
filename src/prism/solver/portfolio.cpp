@@ -346,7 +346,7 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
     // child: an in-process Z3 call can ignore Z3_interrupt and carry the tree
     // past the budget (full corpus, budget 2000: 2098 MB at the kill).
     const uint64_t rss0 = prism::membudget::tree_rss_mb();
-    if (min_nodes > 0 && rss0 * 2 >= mb) min_nodes = 0;
+    if (min_nodes > 2000 && rss0 * 2 >= mb) min_nodes = 2000;  // not every query: a child per tiny query costs more than it saves
     if (min_nodes < 0 || nodes < static_cast<std::size_t>(min_nodes)) return {};
     static const std::string exe = [] {
         if (const char* e = std::getenv("PRISM_Z3_WORKER"); e && *e) return std::string(e);
