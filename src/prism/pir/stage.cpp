@@ -1360,6 +1360,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     link_models(mod, models);
     TranslateOptions topt;
     topt.signed_shl = sshl;
+    topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
     std::set<int> used_folded;
     const auto unit_name = u.path.filename().string();

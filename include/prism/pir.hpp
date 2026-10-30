@@ -360,6 +360,9 @@ struct PtrContract {
 };
 
 struct TranslateOptions {
+    // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
+    // is negative or the result does not fit the unsigned type; C: past the sign bit.
+    bool shl_cxx = false;
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;

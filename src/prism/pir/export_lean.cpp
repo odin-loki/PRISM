@@ -848,6 +848,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                             if (sc == 0) throw Unsupported{"signed shift location without a column"};
                     } else if (std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                          std::make_pair(l.line, l.col)) != opt.signed_shl.end()) {
+                        if (opt.shl_cxx) throw Unsupported{"C++ signed shift rule (CWG 1457)"};
                         fl += (fl.empty() ? "" : ",") + std::string("csigned");
                     }
                 }

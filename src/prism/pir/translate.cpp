@@ -949,7 +949,12 @@ struct Tr final : pirmem::TrApi {
             check(cur, p2(cur, Op::ShiftOob, a, b), "shift", "INT-SHIFT-UB", "shift amount >= width", line);
             bool signed_c = std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                       std::make_pair(l.line, l.col)) != opt.signed_shl.end();
-            if (signed_c)
+            if (signed_c && opt.shl_cxx) {
+                check(cur, p2(cur, Op::ShlNuwOvf, a, b), "shift-base", "INT-SHIFT-UB",
+                      "signed left shift whose result does not fit the unsigned type (C++ before C++20)", line);
+                check(cur, p2(cur, Op::Slt, a, zero), "shift-base", "INT-SHIFT-UB",
+                      "signed left shift of a negative value", line);
+            } else if (signed_c)
                 check(cur, p2(cur, Op::ShlSOvf, a, b), "shift-base", "INT-SHIFT-UB",
                       "signed left shift of a negative value or into/past the sign bit", line);
             if (nsw) check(cur, p2(cur, Op::ShlNswOvf, a, b), "shl-nsw", "UB-POISON", "shl nsw overflows (poison)", line);

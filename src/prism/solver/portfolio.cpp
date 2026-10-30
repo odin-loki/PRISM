@@ -342,6 +342,11 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
     if (mb == 0) return {};
     long min_nodes = 20000;
     if (const char* e = std::getenv("PRISM_Z3_CHILD_NODES"); e && *e) min_nodes = std::strtol(e, nullptr, 10);
+    // Once the tree holds half the budget, every query goes to the killable
+    // child: an in-process Z3 call can ignore Z3_interrupt and carry the tree
+    // past the budget (full corpus, budget 2000: 2098 MB at the kill).
+    const uint64_t rss0 = prism::membudget::tree_rss_mb();
+    if (min_nodes > 0 && rss0 * 2 >= mb) min_nodes = 0;
     if (min_nodes < 0 || nodes < static_cast<std::size_t>(min_nodes)) return {};
     static const std::string exe = [] {
         if (const char* e = std::getenv("PRISM_Z3_WORKER"); e && *e) return std::string(e);
@@ -353,8 +358,8 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
         return fs::exists(sib, ec) ? sib.string() : std::string();
     }();
     if (exe.empty()) return {};
-    const uint64_t rss = prism::membudget::tree_rss_mb();
-    const uint64_t child_mb = std::max<uint64_t>(256, mb > rss ? mb - rss : 0);  // keep the process tree in budget
+    const uint64_t rss = rss0;
+    const uint64_t child_mb = std::max<uint64_t>(64, mb > rss ? mb - rss : 0);  // keep the process tree in budget
     return {exe, "z3-worker", "{input}", std::to_string(child_mb)};
 }
 
