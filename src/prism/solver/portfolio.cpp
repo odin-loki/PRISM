@@ -1532,6 +1532,8 @@ int z3_worker_main(int argc, char** argv) {
 
 #else  // !PRISM_HAS_Z3
 
+#include <cstdio>
+
 namespace prism::solver {
 // Built without Z3: the `prism z3-worker` subcommand has nothing to run.
 int z3_worker_main(int, char**) {
