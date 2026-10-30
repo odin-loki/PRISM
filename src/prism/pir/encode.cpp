@@ -51,8 +51,10 @@
 #  include "prism/solver.hpp"
 #  include <nlohmann/json.hpp>
 #  include <z3++.h>
-#  include <sys/resource.h>
-#  include <unistd.h>
+#  ifndef _WIN32
+#    include <sys/resource.h>
+#    include <unistd.h>
+#  endif
 #  include <mutex>
 #  include <atomic>
 #endif
@@ -1590,11 +1592,15 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
                      static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
                      static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
                          long pages = 0, rss = 0;
+#ifdef _WIN32
+                         return rss;
+#else
                          if (FILE* f = std::fopen("/proc/self/statm", "r")) {
                              if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0;
                              std::fclose(f);
                          }
                          return rss * ::sysconf(_SC_PAGE_SIZE) / (1024 * 1024);
+#endif
                      }());
     if (z3_exhausted()) {
         // Z3's allocator fails every later request (a new context is null)
