@@ -652,6 +652,7 @@ std::string ll_const(uint64_t v, unsigned w) {
 struct Unit {
     fs::path path;
     std::string rel;
+    bool header = false;  // a C header lowered alone for its unused inline functions
 };
 
 struct FnRec {
@@ -1530,6 +1531,16 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});
+    // A C header in the tree that defines functions (static inline helpers):
+    // a helper no unit calls is emitted by none, so it would have no verdict.
+    // The header is lowered alone as C with every declaration emitted, after
+    // the units; only functions no unit reported are kept from it.
+    if (!units.empty() && std::getenv("PRISM_PIR_NO_HEADERS") == nullptr) {
+        static const Regex has_body(R"(\)\s*\{)");
+        for (auto& p : sources)
+            if (p.extension() == ".h" && has_body.search(read_file(p)))
+                units.push_back(Unit{p, rel_of(p, cfg.root), true});
+    }
     if (!z3_available()) {
         Finding f;
         f.stage = "pir";
@@ -1636,10 +1647,11 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
+            if (u.header) inc.insert(inc.begin(), {"-x", "c", "-femit-all-decls"});
             const auto lt0 = std::chrono::steady_clock::now();
             progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
-            if (!l.ir && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
+            if (!l.ir && !u.header && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
                 // clang reports the first error only (first_error): cut the
                 // functions it names, re-lower, and repeat with the errors
                 // gathered so far (the salvaged copy keeps the original file
@@ -1727,8 +1739,21 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.message = "library models could not be built: " + models.error;
         out.push_back(std::move(f));
     }
-    for (auto& v : per_all)
-        for (auto& f : v) out.push_back(std::move(f));
+    std::set<std::pair<std::string, std::string>> seen;
+    for (std::size_t i = 0; i < per_all.size(); ++i)
+        if (!units_all.at(i).header)
+            for (auto& f : per_all.at(i))
+                if (f.function) seen.emplace(f.file, *f.function);
+    for (std::size_t i = 0; i < per_all.size(); ++i)
+        for (auto& f : per_all.at(i)) {
+            if (units_all.at(i).header) {
+                // only functions of the header itself that no unit reported;
+                // a header that does not compile alone says nothing
+                if (!f.function || f.file != units_all.at(i).rel || seen.count({f.file, *f.function})) continue;
+                f.extra["lowered_as"] = "the header alone (no unit calls this function)";
+            }
+            out.push_back(std::move(f));
+        }
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
 }
 

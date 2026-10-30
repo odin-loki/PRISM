@@ -547,3 +547,24 @@ TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and sta
     CHECK(m[{"sink_bad.c", "main"}] == "FAILED");
     CHECK(m[{"sink_safe.c", "main"}].starts_with("PROVED"));
 }
+
+// Gap (harness.h nd_char): a static inline helper in a header that no unit
+// calls is emitted by no unit; the header is lowered alone for it.
+TEST_CASE("pir: unused static inline function in a header gets a verdict") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    if (!pp::pir_test_c_file_supported("hdr.c")) return;
+    const auto dir = fs::temp_directory_path() / ("prism_hdr_" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    std::ofstream(dir / "h.h") << "static inline int used_h(int x) { return x & 7; }\n"
+                                  "static inline int unused_h(int x) { return x / 2; }\n";
+    std::ofstream(dir / "u.c") << "#include \"h.h\"\nint user(int x) { return used_h(x); }\n";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::map<std::pair<std::string, std::string>, std::string> m;
+    for (auto& f : pp::run_pir({dir / "u.c", dir / "h.h"}, cfg))
+        if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+    fs::remove_all(dir);
+    CHECK(m[{"h.h", "unused_h"}].starts_with("PROVED"));
+    CHECK(m[{"u.c", "user"}].starts_with("PROVED"));
+}
