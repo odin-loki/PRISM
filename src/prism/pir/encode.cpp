@@ -1543,7 +1543,12 @@ static void cap_z3_memory_once() {
         // 1.0 -> 2.3 GB inside one in-process check). A memout is UNKNOWN,
         // never a proof. PRISM_Z3_WATERMARK_PCT overrides the share (0 = off).
         if (mb > 0) {
-            uint64_t pct = 50;
+            // Default off: the watermark is process-wide and sticky. On
+            // conformance/libc-models the live Z3 heap reached the mark
+            // (1002 of 1000 MB) and stayed there, so every later check
+            // returned memout at once and pir stalled for over an hour on
+            // the fallback engines. Opt in with PRISM_Z3_WATERMARK_PCT.
+            uint64_t pct = 0;
             if (const char* e = std::getenv("PRISM_Z3_WATERMARK_PCT"); e && *e) pct = std::strtoull(e, nullptr, 10);
             if (pct > 0) z3::set_param("memory_high_watermark_mb", static_cast<int>(std::max<uint64_t>(64, mb * pct / 100)));
         }
