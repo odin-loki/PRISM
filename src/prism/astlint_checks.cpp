@@ -511,6 +511,14 @@ struct Ctx {
         Pos at;
     };
     std::vector<LockOrder> lock_orders;
+    // CTRL-SIBLING-ASYMMETRY: per function, its integer parameters by name.
+    struct SibParam {
+        std::string fn, name, type;
+        bool guarded = false;   // `if (p <|>|<=|>= …)` with a return in the then-arm
+        bool tested = false;    // p appears in any if condition
+        const json* subscript = nullptr;  // first a[p] use
+    };
+    std::vector<SibParam> sib_params;
 
     FileCtx* file(const std::string* canon) {
         if (!canon || !files.wanted(*canon)) return nullptr;
@@ -4921,6 +4929,52 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
     }
 }
 
+bool mentions_decl(const json& n, const std::string& id) {
+    if (kind(n) == "DeclRefExpr" && str_field(ref_decl(n), "id") == id) return true;
+    for (auto& c : inner(n))
+        if (mentions_decl(c, id)) return true;
+    return false;
+}
+
+bool contains_return(const json& n) {
+    if (kind(n) == "ReturnStmt") return true;
+    for (auto& c : inner(n))
+        if (contains_return(c)) return true;
+    return false;
+}
+
+void sibling_collect(const json& f, const json& body, const std::string& fname, Ctx& cx) {
+    for (auto& prm : inner(f)) {
+        if (kind(prm) != "ParmVarDecl") continue;
+        auto t = type_of(prm);
+        auto nm = std::string(str_field(prm, "name"));
+        if (nm.empty() || !is_int_type(t)) continue;
+        Ctx::SibParam sp{fname, nm, t};
+        auto id = std::string(str_field(prm, "id"));
+        std::function<void(const json&)> scan = [&](const json& n) {
+            const auto& k = kind(n);
+            if (k == "IfStmt" && n_children(n) >= 2) {
+                const auto& cond = strip_all(child(n, 0));
+                if (mentions_decl(cond, id)) {
+                    sp.tested = true;
+                    if (kind(cond) == "BinaryOperator" &&
+                        one_of(std::string(str_field(cond, "opcode")), {"<", ">", "<=", ">="}) &&
+                        kind(strip_all(child(cond, 0))) == "DeclRefExpr" &&
+                        str_field(ref_decl(strip_all(child(cond, 0))), "id") == id && contains_return(child(n, 1)))
+                        sp.guarded = true;
+                }
+            }
+            if (k == "ArraySubscriptExpr" && !sp.subscript && n_children(n) >= 2) {
+                const auto& ix = strip_all(child(n, 1));
+                if (kind(ix) == "DeclRefExpr" && str_field(ref_decl(ix), "id") == id && !in_macro(n)) sp.subscript = &n;
+            }
+            for (auto& c : inner(n)) scan(c);
+        };
+        scan(body);
+        cx.sib_params.push_back(std::move(sp));
+    }
+}
+
 void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tparams) {
     Fn fn;
     fn.node = &f;
@@ -4951,6 +5005,7 @@ void analyze_function(const json& f, Ctx& cx, const std::vector<std::string>& tp
     w.walk(*body, nullptr, 0, parents);
     w.ck.crypto_misuse(*body);
     lock_function_checks(*body, fn, w.ck, cx);
+    if (fn.kind == "FunctionDecl" && fn.tparams.empty()) sibling_collect(f, *body, fn.name, cx);
     core_regex_batch(f, *body, w.ck, cx);
     if (fn.opaque) return;
     for (auto& id : fn.order) {
@@ -5030,6 +5085,20 @@ FileResult analyze_unit(Unit& u, const FileSet& files) {
                                   "; another function locks them in the opposite order");
                 }
             }
+    }
+    // CTRL-SIBLING-ASYMMETRY: an integer parameter that a sibling function
+    // range-checks before use is used here as a subscript with no test.
+    {
+        std::set<std::pair<std::string, std::string>> reported;
+        for (auto& u : cx.sib_params) {
+            if (u.tested || !u.subscript) continue;
+            bool sib = false;
+            for (auto& g : cx.sib_params)
+                if (g.guarded && g.name == u.name && g.fn != u.fn && g.type == u.type) sib = true;
+            if (!sib || !reported.insert({u.fn, u.name}).second) continue;
+            cx.add_at(begin_of(*u.subscript), u.fn, "CTRL-SIBLING-ASYMMETRY",
+                      u.name + " guarded in a sibling but used as subscript here without a test");
+        }
     }
     // One row per (file, line, class): lambda bodies appear twice in the dump,
     // and nested blocks are flow-checked with and without their outer block.

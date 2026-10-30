@@ -1158,12 +1158,32 @@ void cd_again_ok(void) {
 }
 )";
 
+// CTRL-SIBLING-ASYMMETRY: idx is range-checked in get_ok, not in get_bad.
+const char* kSiblingC = R"(int table[16];
+int get_ok(int idx) {
+    if (idx >= 16)
+        return -1;
+    return table[idx];
+}
+int get_bad(int idx) {
+    return table[idx]; // expect: CTRL-SIBLING-ASYMMETRY
+}
+int get_tested_ok(int idx) {
+    if (idx == 3) return 0;
+    return table[idx];
+}
+int other_ok(long n) {
+    return table[n];
+}
+)";
+
 }  // namespace
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
     check_marks("nowait.c", kNowaitC);
     check_marks("lock_order.c", kLockOrderC);
+    check_marks("sibling.c", kSiblingC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "
