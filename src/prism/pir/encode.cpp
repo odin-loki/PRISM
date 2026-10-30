@@ -1535,6 +1535,18 @@ static void cap_z3_memory_once() {
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
         if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
+        // Graceful stop under the hard limit: past memory_high_watermark_mb
+        // (Z3's own heap count) the SMT search returns unknown, reason
+        // "memout" (smt_context resource checks), instead of the allocator
+        // throwing. Half the budget: the rest of the process (IR, lowered
+        // units) holds up to ~1 GB at 2000 MB (conformance/libc-models went
+        // 1.0 -> 2.3 GB inside one in-process check). A memout is UNKNOWN,
+        // never a proof. PRISM_Z3_WATERMARK_PCT overrides the share (0 = off).
+        if (mb > 0) {
+            uint64_t pct = 50;
+            if (const char* e = std::getenv("PRISM_Z3_WATERMARK_PCT"); e && *e) pct = std::strtoull(e, nullptr, 10);
+            if (pct > 0) z3::set_param("memory_high_watermark_mb", static_cast<int>(std::max<uint64_t>(64, mb * pct / 100)));
+        }
         // A Z3 call can ignore Z3_interrupt (a portfolio job's check on
         // priority_queue_contracts.cpp grew 2.1 -> 3.6 GB over a 2.4 GB trip
         // point for ~20 s). Lowering memory_max_size under it was tried and
