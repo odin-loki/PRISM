@@ -9,6 +9,7 @@
 #include "prism/pir.hpp"
 #include "prism/pir/frontend.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -434,4 +435,39 @@ TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {
     CHECK(f.cls == "MEM-STRICT-ALIAS");
     REQUIRE(got.contains({"mem_alias.c", "char_ok"}));
     CHECK(got.at({"mem_alias.c", "char_ok"})->status == prism::laws::PROVED);
+}
+
+// Regression (OOM at 12.8 GB): run_pir lowers, analyses and validates in
+// batches and frees each batch's IR. Batch size 1 must give the same verdicts
+// as one batch holding every unit.
+TEST_CASE("pir e2e: PRISM_PIR_BATCH=1 gives the same verdicts as the default") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::vector<fs::path> paths;
+    for (const char* n : {"overflow.c", "casts.c", "loops.c"})
+        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+    REQUIRE(paths.size() >= 2);
+    auto verdicts = [&](const char* batch) {
+#ifdef _WIN32
+        _putenv_s("PRISM_PIR_BATCH", batch);
+#else
+        ::setenv("PRISM_PIR_BATCH", batch, 1);
+#endif
+        std::map<std::pair<std::string, std::string>, std::string> m;
+        for (auto& f : pp::run_pir(paths, cfg))
+            if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+        return m;
+    };
+    auto one = verdicts("1");
+    auto all = verdicts("1000");
+#ifdef _WIN32
+    _putenv_s("PRISM_PIR_BATCH", "");
+#else
+    ::unsetenv("PRISM_PIR_BATCH");
+#endif
+    CHECK(!one.empty());
+    CHECK(one == all);
 }
