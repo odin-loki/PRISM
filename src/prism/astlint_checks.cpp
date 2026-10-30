@@ -399,9 +399,11 @@ Pos loc_pos(const json& l) {
     p.offset = o->get<long long>();
     p.macro = false;
     if (f->is_string()) {
-        thread_local std::string loc_file;
-        loc_file = f->get<std::string>();
-        p.file = &loc_file;
+        // Interned: begin and end of a range must not share (and overwrite)
+        // one buffer, or text(b, e) cannot tell two files apart. Set elements
+        // keep their address across inserts.
+        thread_local std::unordered_set<std::string> loc_files;
+        p.file = &*loc_files.insert(f->get<std::string>()).first;
     }
     return p;
 }
@@ -1012,7 +1014,10 @@ bool function_decl_noreturn(const json& f) {
         if (one_of(kind(c), {"NoReturnAttr", "CXX11NoReturnAttr", "C11NoReturnAttr"})) return true;
     }
     const auto qt = qual_type(f);
-    return qt.find("_Noreturn") != std::string::npos || qt.find("[[noreturn]]") != std::string::npos;
+    // The GNU attribute after the declarator is not an attribute node: clang
+    // folds it into the function type ("void (int) __attribute__((noreturn))").
+    return qt.find("_Noreturn") != std::string::npos || qt.find("[[noreturn]]") != std::string::npos ||
+           qt.find("__attribute__((noreturn))") != std::string::npos;
 }
 
 bool has_wrap_mul_text(std::string_view s) {
@@ -1085,8 +1090,10 @@ std::optional<std::string> fatal_tail_callee(const json& stmt) {
 void collect_atoi_vars(const json& n, std::unordered_set<std::string>& out) {
     if (!n.is_object()) return;
     const auto& k = kind(n);
-    if (k == "VarDecl" && n_children(n) >= 2) {
-        const auto& init = strip_all(child(n, 1));
+    // The initialiser is the VarDecl's last child ("init" is set); there is
+    // no type child in the -ast-dump=json schema, so it is often the only one.
+    if (k == "VarDecl" && n.contains("init") && n_children(n) >= 1) {
+        const auto& init = strip_all(child(n, n_children(n) - 1));
         if (is_call_kind(kind(init)) && one_of(callee_name(init), {"atoi", "atol", "atoll"}))
             out.insert(str_field(n, "id"));
     }
@@ -1796,11 +1803,16 @@ struct Checker {
                 break;
             }
         }
-        if (one_of(name, {"alloca", "__builtin_alloca"}) && !args.empty() && !in_macro(c)) {
+        // glibc's <alloca.h> defines alloca(size) as __builtin_alloca(size): that
+        // expansion is the user's alloca call, reported at the expansion site.
+        // (callee_name drops the __builtin_ prefix.)
+        const bool alloca_macro = name == "alloca" && in_macro(c);
+        if (one_of(name, {"alloca", "__builtin_alloca"}) && !args.empty() && (!in_macro(c) || alloca_macro)) {
             const auto& sz = strip_all(*args[0]);
             if (!int_value(sz) && !constant_expr(sz)) {
                 auto szt = arg_text(*args[0]);
-                add(c, "MEM-ALLOCA", name + "(" + szt + ") size is not a constant");
+                if (szt.empty() && alloca_macro) szt = "...";
+                add(c, "MEM-ALLOCA", name + "(" + szt + ") size is not a constant", alloca_macro);
             }
         }
         if (one_of(name, {"sprintf", "vsprintf"}) && !args.empty()) {
@@ -2504,28 +2516,49 @@ struct Checker {
     }
 };
 
-void walk_for_locks(const json& n, std::vector<const json*>& calls, std::vector<const json*>& returns) {
+bool is_jump_stmt(const json& n) {
+    const auto& k = kind(n);
+    return k == "ReturnStmt" || k == "GotoStmt" || k == "ContinueStmt" || k == "BreakStmt";
+}
+
+// Calls inside a nested block that ends in return/goto/continue/break are on
+// a path that leaves: a release there does not reach the statements after the
+// block (lock; if (c) { unlock; return; } unlock; is one release per path).
+void walk_for_locks(const json& n, std::vector<const json*>& calls, std::vector<const json*>& returns,
+                    std::unordered_set<const json*>& exiting, bool in_exit = false, bool top = true) {
     if (!n.is_object()) {
         if (n.is_array())
-            for (auto& c : n) walk_for_locks(c, calls, returns);
+            for (auto& c : n) walk_for_locks(c, calls, returns, exiting, in_exit, top);
         return;
     }
     const auto& k = kind(n);
-    if (is_call_kind(k)) calls.push_back(&n);
+    if (is_call_kind(k)) {
+        calls.push_back(&n);
+        if (in_exit) exiting.insert(&n);
+    }
     if (k == "ReturnStmt") returns.push_back(&n);
-    for (auto& c : inner(n)) walk_for_locks(c, calls, returns);
+    bool child_exit = in_exit;
+    bool child_top = top;
+    if (k == "CompoundStmt") {
+        const auto& kids = inner(n);
+        if (!top && kids.is_array() && !kids.empty() && is_jump_stmt(kids.back())) child_exit = true;
+        child_top = false;
+    }
+    for (auto& c : inner(n)) walk_for_locks(c, calls, returns, exiting, child_exit, child_top);
 }
 
 void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
     (void)fn;
     std::vector<const json*> calls, returns;
-    walk_for_locks(body, calls, returns);
+    std::unordered_set<const json*> exiting;
+    walk_for_locks(body, calls, returns, exiting);
     std::map<LockKey, std::vector<int>> acquire_lines, release_lines;
     struct Ev {
         int line;
         const json* at;
         LockKey key;
         bool release;
+        bool exits = false;  // on a path that leaves the enclosing block
     };
     std::vector<Ev> seq;
     for (auto* c : calls) {
@@ -2538,7 +2571,7 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
         int ln = cx.line_of(begin_of(*c));
         if (ln <= 0) continue;
         if (is_unlock_name(name)) {
-            seq.push_back({ln, c, {name, arg}, true});
+            seq.push_back({ln, c, {name, arg}, true, exiting.contains(c)});
             release_lines[{name, arg}].push_back(ln);
         } else if (unlock_of(name)) {
             seq.push_back({ln, c, {name, arg}, false});
@@ -2551,14 +2584,14 @@ void lock_function_checks(const json& body, Fn& fn, Checker& ck, Ctx& cx) {
     for (auto& e : seq) {
         if (e.release) {
             // lock_double_lock keys the mutex by the lock name.
-            if (auto lock_name = lock_of(e.key.first)) held[{*lock_name, e.key.second}] = false;
+            if (auto lock_name = lock_of(e.key.first); lock_name && !e.exits) held[{*lock_name, e.key.second}] = false;
             auto it = held.find(e.key);
             if (it != held.end() && it->second == false) {
                 ck.add(*e.at, "LOCK-DOUBLE-UNLOCK",
                        e.key.first + "(" + e.key.second + ") released twice without an acquire between");
                 break;
             }
-            held[e.key] = false;
+            if (!e.exits) held[e.key] = false;
             continue;
         }
         auto paired = unlock_of(e.key.first);
@@ -4556,7 +4589,11 @@ void core_regex_batch(const json& decl, const json& body_node, Checker& ck, Ctx&
             if (params.contains(name) || rx_kw().contains(name)) continue;
             auto size = rx_strip(m.named("size"));
             if (rx_parse_int(size) || rx_constant_bound(size, fn.body, params)) continue;
-            int rel_off = rx_nl(fn.body.substr(0, static_cast<std::size_t>(std::max(0, m.spans[0].first))));
+            // `^\s*` can start the match on an earlier line (it eats newlines),
+            // so the line is that of the first non-blank character matched.
+            std::size_t decl_at = fn.body.find_first_not_of(" \t\r\n", static_cast<std::size_t>(std::max(0, m.spans[0].first)));
+            if (decl_at == std::string_view::npos) decl_at = fn.body.size();
+            int rel_off = rx_nl(fn.body.substr(0, decl_at));
             auto key = std::pair{name, rel_off};
             if (seen.contains(key)) continue;
             seen.insert(key);

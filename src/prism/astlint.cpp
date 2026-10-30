@@ -440,6 +440,28 @@ bool libclang_available(std::string* why, std::string* where) {
     return detail::libclang_load(fe.clang ? fe.clang : fe.clangxx, why, where);
 }
 
+// libclang finds its builtin headers (stddef.h ...) relative to where it was
+// built to live, which is wrong for relocated installs (conda, a copied
+// toolchain). The clang driver beside it knows: ask it once per clang.
+std::optional<std::string> resource_dir_of(const std::optional<fs::path>& clang) {
+    if (!clang) return std::nullopt;
+    static std::mutex mu;
+    static std::map<std::string, std::optional<std::string>> cache;
+    std::lock_guard lk(mu);
+    auto key = clang->string();
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    std::optional<std::string> out;
+    auto pr = ::prism::detail::run_process({key, "-print-resource-dir"}, 30);
+    if (!pr.failed && !pr.timed_out && pr.rc == 0) {
+        std::string d = pr.text;
+        while (!d.empty() && (d.back() == '\n' || d.back() == '\r' || d.back() == ' ')) d.pop_back();
+        std::error_code ec;
+        if (!d.empty() && fs::is_directory(fs::path(d) / "include", ec)) out = d;
+    }
+    cache[key] = out;
+    return out;
+}
+
 FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, const fs::path& root,
                     std::string_view rel, double timeout_s, Backend backend, const Headers& headers) {
     FileResult r;
@@ -454,6 +476,7 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     if (use_lib) {
         auto fsx = file_set(src, rel, headers);
         std::string err;
+        if (auto rd = resource_dir_of(clang)) flags.insert(flags.begin(), "-resource-dir=" + *rd);
         auto u = detail::libclang_unit(flags, src.string(), fsx, is_cxx_unit(src), err);
         if (!u) {
             r.error = err.starts_with("does not parse: ") ? name_error(err.substr(16), src, rel, has_db) : err;
@@ -483,13 +506,19 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
         return r;
     }
     if (pr.rc != 0) {
+        // stdout (megabytes of JSON) and stderr are merged, so the first
+        // diagnostic can be anywhere. Diagnostics start in column 0 with
+        // "<file>:<line>:<col>: error:"; JSON lines start with space or a brace.
         std::string first;
-        std::size_t from = pr.text.size() > (1u << 20) ? pr.text.size() - (1u << 20) : 0;
-        std::istringstream ls(pr.text.substr(from));
-        std::string line;
-        while (std::getline(ls, line)) {
-            if (line.find("error:") != std::string::npos) {
-                first = line;
+        std::string_view text = pr.text;
+        for (std::size_t at = 0; at < text.size();) {
+            std::size_t nl = text.find('\n', at);
+            if (nl == std::string_view::npos) nl = text.size();
+            std::string_view line = text.substr(at, nl - at);
+            at = nl + 1;
+            if (line.empty() || line[0] == ' ' || line[0] == '{' || line[0] == '}' || line[0] == '"') continue;
+            if (line.find(": error:") != std::string_view::npos || line.starts_with("error:")) {
+                first = std::string(line);
                 break;
             }
         }
