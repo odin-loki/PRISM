@@ -523,9 +523,14 @@ struct Encoding {
         std::vector<std::tuple<int, int, int>> edges;  // from, succ idx, to (-1 cut)
         std::set<int> seen{0};
         while (!q.empty()) {
+            // The unrolled graph itself (node contexts, edges) is plain C++
+            // memory no Z3 limit sees: priority_queue_contracts.cpp grew
+            // 2.1 -> 3.8 GB here in one second (budget 3000 MB).
+            if (membudget::over_budget_sampled(64))
+                throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while unrolling");
             int id = q.front();
             q.pop_front();
-            auto nb = nodes.at(static_cast<std::size_t>(id));
+            auto nb = nodes.at(static_cast<std::size_t>(id));  // a copy: node_id grows nodes
             const auto& ss = g.succ.at(static_cast<std::size_t>(nb.block));
             for (std::size_t k = 0; k < ss.size(); ++k) {
                 auto ctx = succ_ctx(nb.block, nb.ctx, ss[k]);
@@ -994,6 +999,10 @@ struct Encoding {
         // strengthened by each Assume already passed in this node.
         z3::expr r = reach.at(static_cast<std::size_t>(id));
         for (std::size_t si = 0; si < bl.stmts.size(); ++si) {
+            // per statement too: one node of priority_queue_contracts.cpp's
+            // unrolling grew the process by 1.6 GB between two node checks
+            if (membudget::over_budget_sampled(16))
+                throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while encoding");
             const auto& s = bl.stmts[si];
             switch (s.kind) {
                 case Stmt::Assign: {
@@ -1703,7 +1712,10 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
         };
         prism::membudget::Phase phase_build("encode: build + check_function");
         Encoding e(c, fn, g, unwind, eo);
-        e.build();
+        {
+            prism::membudget::Phase phase_b("encode: Encoding::build");
+            e.build();
+        }
         if (fn.uses_memory) {
             v.extra["memory"] = eo.memory == MemEncoding::Array ? "array" : "bv";
             v.extra["objects"] = std::to_string(e.mem->objects());

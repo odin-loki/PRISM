@@ -481,3 +481,33 @@ TEST_CASE("pir: the default per-function budget is bounded and follows --timeout
     cfg.timeout = 120;
     CHECK(pp::default_function_budget_s(cfg) == doctest::Approx(1200.0));
 }
+
+// Gap category 1 (pir-vs-bmc, 242 of 339 superset gaps): clang rejected the
+// whole unit for one function bmc's front end skipped; the other functions
+// had no verdict. Now the rejected function is cut out (NEEDS-HARNESS) and
+// the rest of the unit is checked.
+TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit is checked") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::vector<fs::path> paths;
+    for (const char* n : {"aligned_unenc.c", "nested_fn.c"})
+        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+    if (paths.empty()) return;
+    std::map<std::string, prism::Finding> m;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) m[*f.function] = f;
+    if (fs::exists(dir / "aligned_unenc.c")) {
+        REQUIRE(m.count("aligned_unenc_bad"));
+        CHECK(m["aligned_unenc_bad"].status == "NEEDS-HARNESS");
+        CHECK(m["aligned_unenc_bad"].message.find("front end rejects") != std::string::npos);
+        REQUIRE(m.count("aligned_unenc_ok"));
+        CHECK(m["aligned_unenc_ok"].status.starts_with("PROVED"));
+    }
+    if (fs::exists(dir / "nested_fn.c")) {
+        REQUIRE(m.count("nested_fn_ok"));
+        CHECK(m["nested_fn_ok"].status.starts_with("PROVED"));
+    }
+}

@@ -22,6 +22,8 @@
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
 
+#include <cctype>
+#include <tuple>
 #include <nlohmann/json.hpp>
 #include <map>
 #ifndef _WIN32
@@ -944,7 +946,122 @@ struct Lowered {
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
+    // Functions the front end rejected, cut out so the rest of the unit could
+    // be lowered (salvage_unit): name, line, the first clang error.
+    std::vector<std::tuple<std::string, int, std::string>> dropped;
 };
+
+// ---- Front-end salvage ----
+// The bmc front end checks each function on its own, so one function clang
+// rejects (an undeclared name, a construct clang does not support) costs only
+// that function. Clang rejects the whole unit. When every error clang reports
+// lies inside top-level function bodies, those definitions are turned into
+// declarations (same line numbers, the file's own name via #line) and the
+// unit is lowered again; each cut function is reported NEEDS-HARNESS.
+struct Salvage {
+    std::string text;
+    std::vector<std::tuple<std::string, int, std::string>> dropped;
+};
+
+std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err) {
+    const std::string text = read_file(src);
+    if (text.empty()) return std::nullopt;
+    // error lines in this file
+    std::vector<std::pair<int, std::string>> errs;
+    {
+        const std::string tag = src.string() + ":";
+        std::size_t pos = 0;
+        while ((pos = err.find(tag, pos)) != std::string::npos) {
+            std::size_t q = pos + tag.size();
+            int line = 0;
+            while (q < err.size() && std::isdigit(static_cast<unsigned char>(err[q]))) line = line * 10 + (err[q++] - '0');
+            const std::size_t eol = err.find('\n', q);
+            const std::string rest = err.substr(q, eol == std::string::npos ? std::string::npos : eol - q);
+            if (line > 0 && rest.find(" error: ") != std::string::npos) {
+                const auto e = rest.find("error: ");
+                errs.emplace_back(line, rest.substr(e + 7));
+            }
+            pos = q;
+        }
+    }
+    if (errs.empty() || err.find("fatal error") != std::string::npos) return std::nullopt;
+    // top-level { } blocks, skipping comments, strings and preprocessor lines
+    struct Block { std::size_t head, open, close; int l0, l1; };
+    std::vector<Block> blocks;
+    int depth = 0, line = 1, open_line = 0;
+    std::size_t head = 0, open = 0;
+    bool bol = true;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char ch = text[i];
+        if (ch == '\n') { ++line; bol = true; continue; }
+        if (bol && ch == '#' && depth == 0) {  // directive: to end of line (with continuations)
+            while (i < text.size() && !(text[i] == '\n' && text[i - 1] != '\\')) ++i;
+            ++line;
+            head = i + 1;
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(ch))) bol = false;
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+            while (i + 1 < text.size() && text[i + 1] != '\n') ++i;
+            continue;
+        }
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) { if (text[i] == '\n') ++line; ++i; }
+            ++i;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            for (++i; i < text.size() && text[i] != ch; ++i) {
+                if (text[i] == '\\') ++i;
+                else if (text[i] == '\n') ++line;
+            }
+            continue;
+        }
+        if (ch == '{') {
+            if (depth == 0) { open = i; open_line = line; }
+            ++depth;
+        } else if (ch == '}') {
+            if (--depth < 0) return std::nullopt;
+            if (depth == 0) {
+                blocks.push_back({head, open, i, open_line, line});
+                head = i + 1;
+            }
+        } else if (ch == ';' && depth == 0) {
+            head = i + 1;
+        }
+    }
+    if (depth != 0) return std::nullopt;
+    static const Regex fn_head(R"(([A-Za-z_][A-Za-z_0-9]*)\s*\([^{};]*\)[^{};()]*$)");
+    static const Regex not_fn(R"(^\s*(?:struct|class|union|enum|namespace|extern|template|typedef)\b|=\s*$)");
+    std::string out = text;
+    Salvage sv;
+    std::set<std::size_t> cut;
+    for (auto& [eline, msg] : errs) {
+        const Block* hit = nullptr;
+        for (auto& b : blocks)
+            if (b.l0 <= eline && eline <= b.l1) { hit = &b; break; }
+        if (!hit) return std::nullopt;  // an error outside every function body
+        // the error is in the head (the signature itself): not salvageable
+        const std::string hd = text.substr(hit->head, hit->open - hit->head);
+        if (eline < hit->l0) return std::nullopt;
+        if (not_fn.search_match(hd)) return std::nullopt;
+        auto m = fn_head.search_match(hd);
+        if (!m) return std::nullopt;
+        if (!cut.insert(hit->open).second) continue;
+        sv.dropped.emplace_back(m->group(1), hit->l0, msg);
+        // body -> ';' keeping every newline
+        out[hit->open] = ';';
+        for (std::size_t k = hit->open + 1; k <= hit->close; ++k)
+            if (out[k] != '\n') out[k] = ' ';
+    }
+    if (sv.dropped.empty()) return std::nullopt;
+    std::string esc;
+    for (char c2 : src.string()) { if (c2 == '"' || c2 == '\\') esc += '\\'; esc += c2; }
+    sv.text = "#line 1 \"" + esc + "\"\n" + out;
+    return sv;
+}
+
 
 struct Analyzed {
     std::vector<FnRec> recs;
@@ -1087,6 +1204,18 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         }
         out.push_back(std::move(f));
         return res;
+    }
+    for (const auto& [name, line, why] : low.dropped) {
+        auto f = base_finding(u);
+        f.function = name;
+        f.line = line;
+        f.status = std::string(laws::NEEDS_HARNESS);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "the clang front end rejects this function (" + why +
+                    "); it was cut out and the rest of the unit checked";
+        f.extra["frontend"] = fe.version;
+        f.extra["frontend_salvage"] = "cut";
+        out.push_back(std::move(f));
     }
     res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
     auto& mod = *res.mod;
@@ -1370,6 +1499,26 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             const auto lt0 = std::chrono::steady_clock::now();
             progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
+            if (!l.ir && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
+                if (auto sv = salvage_unit(u.path, l.err)) {
+                    TmpDir td;
+                    const fs::path cp = td.path / u.path.filename();
+                    write_file(cp, sv->text);
+                    auto inc2 = inc;
+                    inc2.insert(inc2.begin(), {"-iquote", u.path.parent_path().string()});
+                    std::string err2;
+                    Lowered l2;
+                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2);
+                    if (l2.ir) {
+                        l.ir = std::move(l2.ir);
+                        l.folded = std::move(l2.folded);
+                        l.sshl = std::move(l2.sshl);
+                        l.cxx_models = std::move(l2.cxx_models);
+                        l.dropped = std::move(sv->dropped);
+                        l.err.clear();
+                    }
+                }
+            }
             progress_note("lower-done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - lt0).count());
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
