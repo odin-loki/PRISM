@@ -122,7 +122,7 @@ static void mem_guard() {
     thread_local uint64_t rss = 0;
     const uint64_t b = membudget::budget_mb();
     if (b == 0) return;
-    if (++n >= 32 || rss == 0) { n = 0; rss = membudget::rss_mb(); }
+    if (++n >= 32 || rss == 0) { n = 0; rss = membudget::tree_rss_mb(); }
     const uint64_t z3mb = static_cast<uint64_t>(Z3_get_estimated_alloc_size() >> 20);
     // A full doubling must fit (two jobs may grow at once; rss is sampled).
     if (rss + z3mb > b)

@@ -353,7 +353,7 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
         return fs::exists(sib, ec) ? sib.string() : std::string();
     }();
     if (exe.empty()) return {};
-    const uint64_t rss = prism::membudget::rss_mb();
+    const uint64_t rss = prism::membudget::tree_rss_mb();
     const uint64_t child_mb = std::max<uint64_t>(256, mb > rss ? mb - rss : 0);  // keep the process tree in budget
     return {exe, "z3-worker", "{input}", std::to_string(child_mb)};
 }
@@ -406,6 +406,18 @@ double check_budget(const SolveOptions& o) {
 // Memory cap (MB) of the certificate tools: the option, else
 // $PRISM_CHECKER_MEM, else 4096 (cake_lpr's own default heap, stated
 // explicitly so a note can name it).
+// Resident-memory cap for one solver child under a memory budget: the room
+// left in the process tree, shared by the children that may run at once.
+// Without it bitwuzla/cadical/kissat ran uncapped next to in-process Z3
+// (pir6: 3439 MB tree peak with a 3000 MB budget). 0: no budget, no cap.
+std::uint64_t solver_child_cap(std::size_t children) {
+    const uint64_t mb = prism::membudget::budget_mb();
+    if (mb == 0) return 0;
+    const uint64_t tree = prism::membudget::tree_rss_mb();
+    const uint64_t room = mb > tree ? mb - tree : 0;
+    return std::max<uint64_t>(256, room / std::max<std::size_t>(1, children)) << 20;
+}
+
 unsigned checker_mem_mb(const SolveOptions& o) {
     if (o.checker_mem_mb > 0) return o.checker_mem_mb;
     if (const char* e = std::getenv("PRISM_CHECKER_MEM"); e && *e) {
@@ -1147,8 +1159,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             case MemberKind::Smt2: {
                 std::vector<std::string> argv;
                 for (const auto& a : slot.argv) argv.push_back(subst(a, smt_path, lrat_path));
-                spawn(slot.name, [J = J.get(), argv, i, left, stop] {
-                    J->board.post(smt_result(i, detail::run(argv, left, stop.get())));
+                const auto mcap = solver_child_cap(slots);
+                spawn(slot.name, [J = J.get(), argv, i, left, stop, mcap] {
+                    J->board.post(smt_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap)));
                 });
                 break;
             }
@@ -1156,8 +1169,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 std::vector<std::string> argv;
                 for (const auto& a : slot.argv) argv.push_back(subst(a, cnf_path, lrat_path));
                 auto cp = cnf;
-                spawn(slot.name, [J = J.get(), argv, i, left, stop, cp] {
-                    J->board.post(dimacs_result(i, detail::run(argv, left, stop.get()), *cp));
+                const auto mcap = solver_child_cap(slots);
+                spawn(slot.name, [J = J.get(), argv, i, left, stop, cp, mcap] {
+                    J->board.post(dimacs_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap), *cp));
                 });
                 break;
             }

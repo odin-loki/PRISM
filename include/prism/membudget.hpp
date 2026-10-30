@@ -24,6 +24,8 @@ PRISM_API const std::string& budget_source();
 PRISM_API uint64_t per_job_mb(int jobs);
 // Resident set of this process now (/proc/self/statm), MB; 0 if unknown.
 PRISM_API uint64_t rss_mb();
+// rss_mb() plus every descendant process (Linux; else rss_mb()).
+PRISM_API uint64_t tree_rss_mb();
 // RSS at or over 80% of the budget (headroom for the stop latency), or
 // system_low(). Cheap enough to call every few thousand steps.
 PRISM_API bool over_budget();

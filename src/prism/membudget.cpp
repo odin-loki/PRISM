@@ -1,3 +1,5 @@
+#include <filesystem>
+#include <cstring>
 #include "prism/membudget.hpp"
 
 #include <algorithm>
@@ -129,6 +131,44 @@ uint64_t rss_mb() {
 #endif
 }
 
+#ifdef __linux__
+namespace {
+uint64_t proc_rss_kb(const std::string& pid) {
+    uint64_t kb = 0;
+    if (FILE* f = std::fopen(("/proc/" + pid + "/status").c_str(), "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f))
+            if (std::strncmp(line, "VmRSS:", 6) == 0) { kb = std::strtoull(line + 6, nullptr, 10); break; }
+        std::fclose(f);
+    }
+    return kb;
+}
+uint64_t children_rss_kb(const std::string& pid, int depth) {
+    if (depth > 8) return 0;
+    uint64_t kb = 0;
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator("/proc/" + pid + "/task", ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        std::ifstream in(it->path() / "children");
+        std::string c;
+        while (in >> c) kb += proc_rss_kb(c) + children_rss_kb(c, depth + 1);
+    }
+    return kb;
+}
+}  // namespace
+#endif
+
+// This process and every process it started (solver children, z3-worker):
+// the budget is for the whole tree, as prism-run measures it (pir6 peaked at
+// 3439 MB of tree RSS with a 3000 MB budget while the process alone was under).
+uint64_t tree_rss_mb() {
+#ifdef __linux__
+    return rss_mb() + children_rss_kb(std::to_string(::getpid()), 0) / 1024;
+#else
+    return rss_mb();
+#endif
+}
+
 bool system_low() {
 #ifdef __linux__
     static const uint64_t reserve = [] {
@@ -145,7 +185,7 @@ bool system_low() {
 
 bool over_budget() {
     const uint64_t b = budget_mb();
-    const uint64_t rss = rss_mb();
+    const uint64_t rss = tree_rss_mb();
     // A low box stops only a function that is itself a big consumer (half
     // its budget): vector_insert.cpp was stopped at 789 MB of 3000 because
     // other programs had filled the box.
