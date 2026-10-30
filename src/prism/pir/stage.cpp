@@ -1348,7 +1348,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
+            const auto lt0 = std::chrono::steady_clock::now();
+            progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
+            progress_note("lower-done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - lt0).count());
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
             l.ir.reset();
@@ -1372,11 +1375,19 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         }
     });
     // Phase 2b (processes, sequential): functions Z3 could no longer check
-    for (std::size_t i = 0; i < batch.size(); ++i) rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
+    for (std::size_t i = 0; i < batch.size(); ++i) {
+        const auto rt0 = std::chrono::steady_clock::now();
+        rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
+        const double rs = std::chrono::duration<double>(std::chrono::steady_clock::now() - rt0).count();
+        if (rs > 0.5) progress_note("rerun-done", batch.at(i).path, rs);
+    }
     std::vector<std::vector<Finding>> per(batch.size());
     parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit&) {
         auto& a = an.at(i);
+        const auto vt0 = std::chrono::steady_clock::now();
+        progress_note("validate-start", batch.at(i).path, 0.0);
         if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
+        progress_note("validate-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - vt0).count());
         per.at(i) = std::move(a.out);
         for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
         if (!low.at(i).cxx_models.empty())
