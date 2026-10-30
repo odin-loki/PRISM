@@ -1390,7 +1390,7 @@ switches the combined query off (plain answers and certificates per VC). Plain m
 
 The plain property queries, the unwinding assertion, k-induction and Houdini
 of one function share a **function budget** (`CheckOptions::function_budget_s`;
-the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none). One clock
+the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none; unset, max(300 s, 10 x `--timeout`)). One clock
 covers both unwind attempts of `check_function` and the stage's memory-policy
 re-checks of the same function (static initialisation, arbitrary or initial
 globals), which also use the run's solver cache, Houdini budget and core share.

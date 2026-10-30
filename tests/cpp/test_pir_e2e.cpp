@@ -471,3 +471,13 @@ TEST_CASE("pir e2e: PRISM_PIR_BATCH=1 gives the same verdicts as the default") {
     CHECK(!one.empty());
     CHECK(one == all);
 }
+
+// Regression (straggler): without a per-function default budget one function's
+// Z3 query held a whole batch for 10+ minutes on full testdata.
+TEST_CASE("pir: the default per-function budget is bounded and follows --timeout") {
+    auto cfg = prism::default_config();
+    CHECK(pp::default_function_budget_s(cfg) > 0);
+    CHECK(pp::default_function_budget_s(cfg) >= 300.0);
+    cfg.timeout = 120;
+    CHECK(pp::default_function_budget_s(cfg) == doctest::Approx(1200.0));
+}

@@ -629,4 +629,8 @@ PRISM_API std::string unit_vcs_json(const std::filesystem::path& src, const Conf
 // is where the scheduler's solve-time history is kept.
 PRISM_API std::string solve_smt2_json(const std::string& smt2, const Config& cfg, bool z3_only);
 
+// The pir stage's default per-function budget in seconds when
+// $PRISM_FUNCTION_BUDGET is unset: max(300, 10 x cfg.timeout).
+double default_function_budget_s(const Config& cfg);
+
 }  // namespace prism::pir

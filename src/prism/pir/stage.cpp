@@ -880,6 +880,11 @@ void progress_note(const char* what, const fs::path& unit, double secs) {
     o << unit.string() << '\n';
 }
 
+}  // namespace
+
+double default_function_budget_s(const Config& cfg) { return std::max(300.0, 10.0 * cfg.timeout); }
+
+namespace {
 std::shared_ptr<HoudiniBudget> houdini_budget(const Config& cfg) {
     double b = std::max(3600.0, 120.0 * cfg.timeout);
     (void)env_seconds("PRISM_HOUDINI_BUDGET", b);  // a rejected value: rejected_budget_env
@@ -903,6 +908,11 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     // Per-function pir budget (docs/PIR.md "Solving"): $PRISM_FUNCTION_BUDGET
     // seconds (0: none). Spent before every VC is answered: TIMEOUT with the
     // budget message and extra.function_budget_s (CheckOptions).
+    // Default: max(300 s, 10 x timeout). With none, one function whose Z3
+    // query grows without tripping the memory budget (filesystem_contracts.cpp
+    // fs_stem_dots_true under a 3000 MB budget) held its whole batch, and the
+    // other workers idle, for 10+ minutes; with 60 s the unit took 192 s.
+    o.function_budget_s = default_function_budget_s(cfg);
     (void)env_seconds("PRISM_FUNCTION_BUDGET", o.function_budget_s);
     o.cache_dir = cfg.solver_cache.string();
     // Solver and checker binaries: --tool NAME=PATH first, then the pinned
