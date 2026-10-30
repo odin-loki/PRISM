@@ -1293,8 +1293,21 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         else
             cxx_models_error = "libstdc++ (the PRISM C++ model headers could not be written)";
     }
-    std::vector<Lowered> low(units.size());
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
+    // Units go through lower/analyse/re-run/validate in batches, and each
+    // batch's LLVM IR is freed before the next is lowered. Lowering every unit
+    // first kept the whole corpus's IR alive at once: RSS grew with the corpus
+    // (4.9 GB on testdata, OOM-killed at 12.8 GB with --jobs 8), and no
+    // per-function budget check can see memory held between phases.
+    const std::vector<Unit>& units_all = units;
+    std::vector<std::vector<Finding>> per_all(units_all.size());
+    const auto budget = houdini_budget(cfg);
+    std::size_t batch_n = std::max<std::size_t>(8, 2 * static_cast<std::size_t>(std::max(1, static_cast<int>(cfg.jobs))));
+    if (const char* e = std::getenv("PRISM_PIR_BATCH")) batch_n = std::max<std::size_t>(1, std::strtoull(e, nullptr, 10));
+    for (std::size_t b0 = 0; b0 < units_all.size(); b0 += batch_n) {
+    const std::vector<Unit> batch(units_all.begin() + static_cast<std::ptrdiff_t>(b0),
+                                  units_all.begin() + static_cast<std::ptrdiff_t>(std::min(units_all.size(), b0 + batch_n)));
+    std::vector<Lowered> low(batch.size());
+    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
         auto& l = low.at(i);
         try {
             // The unit's include path: its compile_commands.json entry (without
@@ -1317,9 +1330,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             l.err = std::string("internal error: ") + ex.what();
         }
     });
-    std::vector<Analyzed> an(units.size());
-    const auto budget = houdini_budget(cfg);
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
+    std::vector<Analyzed> an(batch.size());
+    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
         try {
             an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
         } catch (const std::exception& ex) {
@@ -1332,9 +1344,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         }
     });
     // Phase 2b (processes, sequential): functions Z3 could no longer check
-    for (std::size_t i = 0; i < units.size(); ++i) rerun_after_oom(units.at(i), an.at(i).recs, cfg);
-    std::vector<std::vector<Finding>> per(units.size());
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit&) {
+    for (std::size_t i = 0; i < batch.size(); ++i) rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
+    std::vector<std::vector<Finding>> per(batch.size());
+    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit&) {
         auto& a = an.at(i);
         if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
         per.at(i) = std::move(a.out);
@@ -1342,6 +1354,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         if (!low.at(i).cxx_models.empty())
             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
     });
+    for (std::size_t i = 0; i < per.size(); ++i) per_all.at(b0 + i) = std::move(per.at(i));
+    }  // batch: its IR (low) and analyses are freed here
     std::vector<Finding> out;
     if (!models.error.empty()) {
         // Law 7: without the models every library call stays UNENCODED; say why
@@ -1352,7 +1366,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.message = "library models could not be built: " + models.error;
         out.push_back(std::move(f));
     }
-    for (auto& v : per)
+    for (auto& v : per_all)
         for (auto& f : v) out.push_back(std::move(f));
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
 }
