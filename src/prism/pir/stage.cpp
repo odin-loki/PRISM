@@ -1326,13 +1326,32 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     const std::vector<Unit>& units_all = units;
     std::vector<std::vector<Finding>> per_all(units_all.size());
     const auto budget = houdini_budget(cfg);
-    std::size_t batch_n = std::max<std::size_t>(8, 2 * static_cast<std::size_t>(std::max(1, static_cast<int>(cfg.jobs))));
+    // One pipeline per unit (lower, analyse, validate, free its IR) on a work
+    // queue: no phase barrier, so a slow unit holds one worker, not the batch.
+    std::size_t batch_n = std::max<std::size_t>(1, units_all.size());
     if (const char* e = std::getenv("PRISM_PIR_BATCH")) batch_n = std::max<std::size_t>(1, std::strtoull(e, nullptr, 10));
     for (std::size_t b0 = 0; b0 < units_all.size(); b0 += batch_n) {
     const std::vector<Unit> batch(units_all.begin() + static_cast<std::ptrdiff_t>(b0),
                                   units_all.begin() + static_cast<std::ptrdiff_t>(std::min(units_all.size(), b0 + batch_n)));
     std::vector<Lowered> low(batch.size());
+    std::vector<Analyzed> an(batch.size());
+    std::vector<std::vector<Finding>> per(batch.size());
+    std::vector<char> pending(batch.size(), 0);
+    auto finish = [&](std::size_t i) {
+        auto& a = an.at(i);
+        const auto vt0 = std::chrono::steady_clock::now();
+        progress_note("validate-start", batch.at(i).path, 0.0);
+        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
+        progress_note("validate-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - vt0).count());
+        per.at(i) = std::move(a.out);
+        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
+        if (!low.at(i).cxx_models.empty())
+            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+        low.at(i).ir.reset();
+        a = Analyzed{};
+    };
     parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
+        {
         auto& l = low.at(i);
         try {
             // The unit's include path: its compile_commands.json entry (without
@@ -1357,9 +1376,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             l.ir.reset();
             l.err = std::string("internal error: ") + ex.what();
         }
-    });
-    std::vector<Analyzed> an(batch.size());
-    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
+        }
         try {
             const auto t0 = std::chrono::steady_clock::now();
             progress_note("start", u.path, 0.0);
@@ -1373,26 +1390,22 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             an.at(i).recs.clear();
             an.at(i).out = {f};
         }
+        // Functions Z3 could no longer check are re-run in fresh processes,
+        // sequentially, after the queue; every other unit finishes here.
+        bool needs_rerun = false;
+        for (auto& r : an.at(i).recs)
+            if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") needs_rerun = true;
+        if (needs_rerun) pending.at(i) = 1;
+        else finish(i);
+        prism::membudget::release_free_memory();
     });
-    // Phase 2b (processes, sequential): functions Z3 could no longer check
     for (std::size_t i = 0; i < batch.size(); ++i) {
+        if (!pending.at(i)) continue;
         const auto rt0 = std::chrono::steady_clock::now();
         rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
-        const double rs = std::chrono::duration<double>(std::chrono::steady_clock::now() - rt0).count();
-        if (rs > 0.5) progress_note("rerun-done", batch.at(i).path, rs);
+        progress_note("rerun-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - rt0).count());
+        finish(i);
     }
-    std::vector<std::vector<Finding>> per(batch.size());
-    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit&) {
-        auto& a = an.at(i);
-        const auto vt0 = std::chrono::steady_clock::now();
-        progress_note("validate-start", batch.at(i).path, 0.0);
-        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
-        progress_note("validate-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - vt0).count());
-        per.at(i) = std::move(a.out);
-        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
-        if (!low.at(i).cxx_models.empty())
-            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
-    });
     for (std::size_t i = 0; i < per.size(); ++i) per_all.at(b0 + i) = std::move(per.at(i));
     low.clear();
     an.clear();
