@@ -1295,7 +1295,10 @@ struct Checker {
     std::optional<long long> local_wchar_array_size(const json& n) const {
         const auto* v = local_var(n);
         if (!v || kind(*v) != "VarDecl" || !automatic(v)) return std::nullopt;
-        auto t = type_of(*v);
+        // wchar_t is a typedef in C: read the type as written, not desugared
+        // (libclang reports `int[4]` as the desugared spelling).
+        auto t = v->contains("type") ? str_field((*v)["type"], "qualType") : std::string{};
+        if (t.starts_with("const ")) t.erase(0, 6);
         auto lb = t.find('['), rb = t.find(']');
         if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1) return std::nullopt;
         auto elem = t.substr(0, lb);

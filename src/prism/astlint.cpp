@@ -440,23 +440,51 @@ bool libclang_available(std::string* why, std::string* where) {
     return detail::libclang_load(fe.clang ? fe.clang : fe.clangxx, why, where);
 }
 
-// libclang finds its builtin headers (stddef.h ...) relative to where it was
-// built to live, which is wrong for relocated installs (conda, a copied
-// toolchain). The clang driver beside it knows: ask it once per clang.
-std::optional<std::string> resource_dir_of(const std::optional<fs::path>& clang) {
-    if (!clang) return std::nullopt;
+// libclang does not read the driver's config file (--sysroot, gcc toolchain)
+// and finds its builtin headers relative to where it was built to live, so a
+// relocated install (conda, a copied toolchain) misses stddef.h or <string>.
+// The clang driver beside it knows: ask it once per clang and language for
+// the cc1 system include list and pass that list explicitly.
+std::vector<std::string> driver_system_flags(const std::optional<fs::path>& clang, bool cxx) {
+    if (!clang) return {};
     static std::mutex mu;
-    static std::map<std::string, std::optional<std::string>> cache;
+    static std::map<std::pair<std::string, bool>, std::vector<std::string>> cache;
     std::lock_guard lk(mu);
-    auto key = clang->string();
+    auto key = std::pair{clang->string(), cxx};
     if (auto it = cache.find(key); it != cache.end()) return it->second;
-    std::optional<std::string> out;
-    auto pr = ::prism::detail::run_process({key, "-print-resource-dir"}, 30);
+    std::vector<std::string> out;
+    auto pr = ::prism::detail::run_process(
+        {key.first, "-###", "-fsyntax-only", "-x", cxx ? "c++" : "c", "-"}, 30);
     if (!pr.failed && !pr.timed_out && pr.rc == 0) {
-        std::string d = pr.text;
-        while (!d.empty() && (d.back() == '\n' || d.back() == '\r' || d.back() == ' ')) d.pop_back();
-        std::error_code ec;
-        if (!d.empty() && fs::is_directory(fs::path(d) / "include", ec)) out = d;
+        // The cc1 line: tokens in double quotes, backslash escapes.
+        std::vector<std::string> toks;
+        std::string cur;
+        bool in = false;
+        for (std::size_t i = 0; i < pr.text.size(); ++i) {
+            char c = pr.text[i];
+            if (!in) {
+                if (c == '"') { in = true; cur.clear(); }
+                continue;
+            }
+            if (c == '\\' && i + 1 < pr.text.size()) { cur += pr.text[++i]; continue; }
+            if (c == '"') { in = false; toks.push_back(cur); continue; }
+            cur += c;
+        }
+        std::vector<std::string> dirs;
+        std::string rdir;
+        for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
+            if (toks[i] == "-internal-isystem" || toks[i] == "-internal-externc-isystem") dirs.push_back(toks[i + 1]);
+            else if (toks[i] == "-resource-dir") rdir = toks[i + 1];
+        }
+        if (!dirs.empty()) {
+            if (!rdir.empty()) out.push_back("-resource-dir=" + rdir);
+            out.push_back("-nostdinc");
+            if (cxx) out.push_back("-nostdinc++");
+            for (auto& d : dirs) {
+                out.push_back("-isystem");
+                out.push_back(d);
+            }
+        }
     }
     cache[key] = out;
     return out;
@@ -476,7 +504,10 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     if (use_lib) {
         auto fsx = file_set(src, rel, headers);
         std::string err;
-        if (auto rd = resource_dir_of(clang)) flags.insert(flags.begin(), "-resource-dir=" + *rd);
+        {
+            auto sys = driver_system_flags(clang, is_cxx_unit(src));
+            flags.insert(flags.end(), sys.begin(), sys.end());
+        }
         auto u = detail::libclang_unit(flags, src.string(), fsx, is_cxx_unit(src), err);
         if (!u) {
             r.error = err.starts_with("does not parse: ") ? name_error(err.substr(16), src, rel, has_db) : err;
