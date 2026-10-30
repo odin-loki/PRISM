@@ -201,6 +201,13 @@ void watchdog() {
         }
         if (!over_budget()) continue;
         g_trips.fetch_add(1);
+        if (std::getenv("PRISM_MEM_TRACE")) {
+            std::size_t n = 0;
+            { std::lock_guard<std::mutex> lk(g_wmu); n = g_watches.size(); }
+            std::fprintf(stderr, "[memtrace] %lld trip rss=%llu watches=%zu\n",
+                         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
+                         static_cast<unsigned long long>(rss_mb()), n);
+        }
         std::lock_guard<std::mutex> lk(g_wmu);
         for (auto& [id, r] : g_watches) {
             r.fired = true;

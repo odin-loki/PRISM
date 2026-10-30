@@ -1483,6 +1483,10 @@ static bool z3_over_soft_cap() {
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
     if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
+        if (std::getenv("PRISM_MEM_TRACE"))
+            std::fprintf(stderr, "[memtrace] %lld guard rss=%llu z3=%llu\n",
+                         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
+                         static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(Z3_get_estimated_alloc_size() >> 20));
         throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached before a query");
     }
 }
