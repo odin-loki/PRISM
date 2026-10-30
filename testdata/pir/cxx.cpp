@@ -14,7 +14,9 @@ int use_counter(int x) {
     Counter c{x};
     return c.get();
 }
-// C++20 and later: signed left shift is defined (modular), unlike C17.
+// Signed left shift: UB before C++20 when the result does not fit the unsigned
+// type (CWG 1457). No compile_commands.json, so the unit is C++17 (the
+// compilers' default) and a << 4 for a >= 2^28 is UB, as bmc reports.
 int cxx_shl_ok(int a) {
     if (a < 0)
         return 0;

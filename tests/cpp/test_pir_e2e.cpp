@@ -49,7 +49,7 @@ const std::vector<Row>& rows() {
         {"coro_gen.cpp", "coro_ok", "PROVED", ""},
         {"cxx.cpp", "constexpr_ok", "PROVED", ""},
         {"cxx.cpp", "cxx_add_bad", "FAILED", ""},
-        {"cxx.cpp", "cxx_shl_ok", "PROVED", ""},
+        {"cxx.cpp", "cxx_shl_ok", "FAILED", "INT-SHIFT-UB"},  // C++17 default: a << 4 can exceed unsigned int
         {"cxx.cpp", "get", "NEEDS-HARNESS", ""},
         {"cxx.cpp", "use_twice_ok", "PROVED", ""},
         {"div0.c", "div_bad", "FAILED", "INT-DIV-ZERO"},
@@ -538,5 +538,9 @@ TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and sta
         if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
     fs::remove_all(dir);
     CHECK(m[{"sink_safe.c", "reach_error"}] == "PROVED-ASSUMING");
-    CHECK(m[{"sink_bad.c", "reach_error"}] == "FAILED");
+    // The sink itself is discharged to its callers either way; the failure is
+    // reported where it is reached (main), not lost.
+    CHECK(m[{"sink_bad.c", "reach_error"}] == "PROVED-ASSUMING");
+    CHECK(m[{"sink_bad.c", "main"}] == "FAILED");
+    CHECK(m[{"sink_safe.c", "main"}].starts_with("PROVED"));
 }

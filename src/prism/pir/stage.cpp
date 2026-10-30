@@ -401,7 +401,7 @@ Frontend find_frontend(const Config& cfg) {
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
                                        std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
-                                       const std::vector<std::string>& include_flags) {
+                                       const std::vector<std::string>& include_flags, int cxx_std) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -516,23 +516,42 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 want_shift_loc = true;
                 break;
             }
-        if (!cxx && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
+        // C++ before C++20 (P1236) has the C++11 rule (CWG 1457): the result
+        // must fit the unsigned counterpart. clang's shift-base check follows
+        // the -std it is given, so the locator runs at the unit's standard.
+        const bool shl_ub = !cxx || cxx_std < 20;
+        if (shl_ub && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
             std::vector<std::string> av{cc->string()};
             av.insert(av.end(), fl.begin(), fl.end());
+            if (cxx)
+                for (auto& a : av)
+                    if (a.starts_with("-std=")) a = "-std=c++" + std::to_string(cxx_std < 11 ? 98 : cxx_std);
             auto os = td.path / "shift.ll";
             av.insert(av.end(), {"-fsanitize=shift-base", "-o", os.string(), src.string()});
             auto rs = detail::run_process(av, timeout_s);
-            if (rs.failed || rs.timed_out || rs.rc != 0) {
+            if (cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
+                // The unit needs a later standard than it declares: C++20 rules.
+            } else if (rs.failed || rs.timed_out || rs.rc != 0) {
                 err = "clang (signed-shift locator): " + first_error(rs.text);
                 return std::nullopt;
+            } else {
+                *signed_shl = parse_ubsan_locs(read_file(os));
             }
-            *signed_shl = parse_ubsan_locs(read_file(os));
         }
     }
     return out;
 }
 
 namespace {
+
+// "17", "1z", "20", "2a", "23", "2b", "2c", "98", "03", "0x" -> 17, 20, ...
+int cxx_std_number(const std::string& v) {
+    static const std::map<std::string, int> m{{"98", 98}, {"03", 98}, {"0x", 11}, {"11", 11}, {"1y", 14}, {"14", 14},
+                                              {"1z", 17}, {"17", 17}, {"2a", 20}, {"20", 20}, {"2b", 23},
+                                              {"23", 23}, {"2c", 26}, {"26", 26}};
+    auto it = m.find(v.substr(0, 2));
+    return it == m.end() ? 17 : it->second == 98 ? 3 : it->second;
+}
 
 std::string rel_of(const fs::path& p, const fs::path& root) {
     std::error_code ec;
@@ -1177,15 +1196,15 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     }
 }
 
-// An assertion that fails whenever its function is called (SV-COMP's
-// reach_error, __VERIFIER_assert's failing branch) is FAILED when the
-// function is checked alone, though no caller can reach it: 115 of the 117
-// pir-vs-bmc hard conflicts. When every caller in the unit inlined the
-// function and was PROVED (so the callee's assertions were checked at each
-// call site), the callee's verdict becomes PROVED-ASSUMING "called only from
-// those call sites". A function with no caller in the unit keeps FAILED (an
-// outside caller may reach it), as does one whose failures are not all
-// assertions (UB is reported where it is, not moved to callers).
+// An error sink without parameters (SV-COMP's reach_error: its assertion
+// fails whenever it is called) is FAILED when checked alone, though whether
+// it fails is decided only by its callers: most of the pir-vs-bmc hard
+// conflicts. When every caller in the unit inlined it (so each call site was
+// checked, and a reachable call is FAILED in that caller), the sink becomes
+// PROVED-ASSUMING "called only from those checked call sites", as bmc treats
+// it. A sink with no caller in the unit keeps FAILED (an outside caller may
+// reach it); a function with parameters (__VERIFIER_assert(cond)) keeps
+// FAILED (some argument fails it), as do failures that are not assertions.
 void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) {
     std::map<std::string, std::set<std::string>> callers;  // IR callee -> IR callers
     for (const auto& fn : mod.functions) {
@@ -1197,7 +1216,6 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
     std::map<std::string, FnRec*> by_ir;
     for (auto& r : recs)
         if (r.irf) by_ir[r.irf->name] = &r;
-    auto proved = [](const std::string& st) { return st.starts_with("PROVED"); };
     auto split = [](const std::string& csv) {
         std::set<std::string> out;
         std::string cur;
@@ -1211,6 +1229,11 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
         changed = false;
         for (auto& r : recs) {
             if (!r.irf || r.f.status != laws::FAILED || !r.f.message.starts_with("assert:")) continue;
+            // Only a sink without parameters (reach_error): whether it fails is
+            // decided entirely by whether it is called. A function with
+            // parameters (__VERIFIER_assert(cond)) can fail for some caller's
+            // argument and keeps FAILED alone, as bmc reports it.
+            if (!r.irf->params.empty()) continue;
             auto it = callers.find(r.irf->name);
             if (it == callers.end() || it->second.empty()) continue;
             const std::string src_name = r.f.function.value_or(r.irf->name);
@@ -1218,7 +1241,7 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
             std::string names;
             for (const auto& cn : it->second) {
                 auto c = by_ir.find(cn);
-                if (c == by_ir.end() || !proved(c->second->f.status)) { ok = false; break; }
+                if (c == by_ir.end()) { ok = false; break; }
                 auto inl = c->second->f.extra.find("inlined");
                 if (inl == c->second->f.extra.end() || !split(inl->second).count(src_name)) { ok = false; break; }
                 names += (names.empty() ? "" : ", ") + c->second->f.function.value_or(cn);
@@ -1227,9 +1250,9 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
             r.f.extra["verdict_alone"] = r.f.status + ": " + r.f.message;
             r.f.status = std::string(laws::PROVED_ASSUMING);
             r.f.strength = std::string(laws::STRENGTH_SOME);
-            r.f.message = "its assertion fails only if called; every caller in this unit (" + names +
-                          ") inlined it and is proved, so it is not reached from them";
-            r.f.extra["assumption"] = "called only from the proved call sites in this unit";
+            r.f.message = "error sink: it fails exactly when called; every caller in this unit (" + names +
+                          ") inlined it, so reaching it is checked (and reported) at each call site";
+            r.f.extra["assumption"] = "called only from the call sites in this unit, which are checked";
             r.f.counterexample.clear();
             r.f.extra.erase("cex");
             r.cex.clear();
@@ -1552,8 +1575,11 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             // shadows a system header), as the Clang-AST lints guess it.
             std::vector<std::string> inc;
             const fs::path root = fs::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
-            for (auto& f : astlint::compile_db_flags(root, u.path))
+            int cxx_std = 17;
+            for (auto& f : astlint::compile_db_flags(root, u.path)) {
                 if (!f.starts_with("-std=")) inc.push_back(f);
+                else if (auto k = f.find("++"); k != std::string::npos) cxx_std = cxx_std_number(f.substr(k + 2));
+            }
             if (inc.empty() && !root.empty()) {
                 std::error_code ec;
                 inc = {"-idirafter", root.string()};
@@ -1561,7 +1587,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             }
             const auto lt0 = std::chrono::steady_clock::now();
             progress_note("lower-start", u.path, 0.0);
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
             if (!l.ir && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
                 if (auto sv = salvage_unit(u.path, l.err)) {
                     TmpDir td;
@@ -1571,7 +1597,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                     inc2.insert(inc2.begin(), {"-iquote", u.path.parent_path().string()});
                     std::string err2;
                     Lowered l2;
-                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2);
+                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std);
                     if (l2.ir) {
                         l.ir = std::move(l2.ir);
                         l.folded = std::move(l2.folded);

@@ -573,7 +573,12 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  std::vector<FoldedUb>* folded = nullptr,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr,
                                                  std::string* cxx_models = nullptr,
-                                                 const std::vector<std::string>& include_flags = {});
+                                                 const std::vector<std::string>& include_flags = {},
+                                                 int cxx_std = 17);
+// cxx_std: the C++ standard the unit is built with (its compile_commands.json
+// -std=, else 17, the default of the compilers PRISM runs). Below 20 a signed
+// left shift whose result does not fit is UB (C++11..17, CWG 1457), so the
+// signed-shift locator also runs for C++ with that standard.
 // include_flags: the unit's -I/-D/... from compile_commands.json (never -std=,
 // which stays PRISM's own), or a search path guess; appended to every clang run.
 // cxx_models receives which C++ library the unit was lowered with when
