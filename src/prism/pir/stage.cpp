@@ -457,7 +457,10 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
     auto r = modelled.has_value() ? std::move(*modelled) : detail::run_process(argv, timeout_s);
-    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+    // C23's static_assert keyword (no <assert.h>) compiles as C17 only as an
+    // implicit call to a function named static_assert: also a C23 unit.
+    const bool c23_kw = !r.failed && r.rc == 0 && r.text.find("function 'static_assert'") != std::string::npos;
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0 || c23_kw)) {
         // C23 code (bool, nullptr, typeof, digit separators ...) does not
         // compile as C17: try once more as C23 before giving up. Only the
         // language level changes; every check flag stays.
@@ -472,9 +475,36 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             fl = std::move(c23);
         }
     }
+    if (cxx && !r.timed_out && (r.failed || r.rc != 0) &&
+        r.text.find("ISO C++17 does not allow") != std::string::npos) {
+        // Code from before C++17 (dynamic exception specifications,
+        // `register`): try once more as C++14. Only the language level changes.
+        auto c14 = fl;
+        std::replace(c14.begin(), c14.end(), std::string("-std=c++23"), std::string("-std=c++14"));
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), c14.begin(), c14.end());
+        av.insert(av.end(), {"-o", o0.string(), src.string()});
+        auto r2 = detail::run_process(av, timeout_s);
+        if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+            r = std::move(r2);
+            fl = std::move(c14);
+            cxx_std = std::min(cxx_std, 14);
+        }
+    }
     if (r.failed || r.timed_out || r.rc != 0) {
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
+    }
+    // Nothing defined: the unit's functions are all inline, constexpr or
+    // static and unused, so clang emitted none. Emit them anyway to check them
+    // (only then: in other units it would pull in every unused library inline).
+    if (read_file(o0).find("\ndefine ") == std::string::npos) {
+        // clang writes -o through a temporary file, so a failed run leaves
+        // o0 as it was.
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), fl.begin(), fl.end());
+        av.insert(av.end(), {"-femit-all-decls", "-o", o0.string(), src.string()});
+        (void)detail::run_process(av, timeout_s);
     }
     auto diags = parse_folded_clang_diagnostics(r.text, src);
     std::vector<int> placed;
@@ -1589,7 +1619,14 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
             if (!l.ir && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
-                if (auto sv = salvage_unit(u.path, l.err)) {
+                // clang reports the first error only (first_error): cut the
+                // functions it names, re-lower, and repeat with the errors
+                // gathered so far (the salvaged copy keeps the original file
+                // name and lines through #line), a few rounds at most.
+                std::string errs = l.err;
+                for (int round = 0; round < 6; ++round) {
+                    auto sv = salvage_unit(u.path, errs);
+                    if (!sv) break;
                     TmpDir td;
                     const fs::path cp = td.path / u.path.filename();
                     write_file(cp, sv->text);
@@ -1605,7 +1642,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                         l.cxx_models = std::move(l2.cxx_models);
                         l.dropped = std::move(sv->dropped);
                         l.err.clear();
+                        break;
                     }
+                    if (errs.find(err2) != std::string::npos) break;  // no new error: stop
+                    errs += "\n" + err2;
                 }
             }
             progress_note("lower-done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - lt0).count());
