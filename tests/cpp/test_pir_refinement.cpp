@@ -51,7 +51,8 @@ TEST_CASE("pir refinement: every Lean check property appears in translate.cpp") 
 TEST_CASE("pir refinement: memory checks in XTranslate.lean appear in translate_mem.cpp") {
     const auto xlean = slurp(repo() / "proofs" / "refinement" / "PrismRefine" / "XTranslate.lean");
     const auto mem = slurp(repo() / "src" / "prism" / "pir" / "translate_mem.cpp") +
-                     slurp(repo() / "src" / "prism" / "pir" / "translate.cpp");
+                     slurp(repo() / "src" / "prism" / "pir" / "translate.cpp") +
+                     slurp(repo() / "src" / "prism" / "pir" / "translate_ctl.inc");
     std::regex pair_re(R"re("([a-z0-9+*\-]+)" "([A-Z][A-Z\-]+)")re");
     std::regex tuple_re(R"re(\("([a-z0-9\-]+)", "([A-Z][A-Z\-]+)"\))re");
     std::set<std::pair<std::string, std::string>> pairs;
