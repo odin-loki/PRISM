@@ -1,0 +1,58 @@
+# Build toolchain and large system dependencies: pinned to exact versions with SHA-256,
+# fetched (never committed: too large for git) by scripts/fetch_toolchain.py into
+# ~/.prism/toolchain/<name>/<version>/. Linked libraries are vendored and pinned in
+# MANIFEST.toml; external analysis tools are pinned there too ([[component]] kind=external).
+# LLVM/clang is pinned separately in third_party/llvm/PIN.toml (branch prism-llvm, 23.1.4).
+# FORGE is deliberately NOT pinned or vendored: it tracks odin-loki/FORGE main (mandatory).
+# Checksums were read from each upstream's own checksum file on 2026-10-31.
+
+schema = 1
+
+[[pin]]
+name = "cmake"
+version = "3.31.6"
+source = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-SHA-256.txt"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz", sha256 = "5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf" }
+"macos-universal" = { url = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-macos-universal.tar.gz", sha256 = "330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d" }
+"windows-x86_64" = { url = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-windows-x86_64.zip", sha256 = "d163cd3ab4959b0a53fa8988f2ddbd2e6c501658201e6a154386bad9dbe4f836" }
+
+[[pin]]
+name = "qtbase"
+version = "6.8.3"
+source = "https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz.sha256"
+build = "source"   # configured with -DQT_BUILD_EXAMPLES=OFF -DQT_BUILD_TESTS=OFF, Widgets only
+[pin.artifacts]
+"source" = { url = "https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz", sha256 = "56001b905601bb9023d399f3ba780d7fa940f3e4861e496a7c490331f49e0b80" }
+
+# CUDA 12.6.3 redistributables (redistrib_12.6.3.json): only what the two kernels need.
+[[pin]]
+name = "cuda_nvcc"
+version = "12.6.85"
+source = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.6.85-archive.tar.xz", sha256 = "840deff234d9bef20d6856439c49881cb4f29423b214f9ecd2fa59b7ac323817" }
+"windows-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.6.85-archive.zip", sha256 = "3fb9f76b87c37d02f947354be89b718ad5f2c76b6ab47995265bfa3a068a5e14" }
+
+[[pin]]
+name = "cuda_cudart"
+version = "12.6.77"
+source = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz", sha256 = "f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9" }
+"windows-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.6.77-archive.zip", sha256 = "7a313bc0c93b1a50bb03aa9783a199ae70c3b66e2d8084da65e8254a8577b925" }
+
+[[pin]]
+name = "cuda_cccl"
+version = "12.6.77"
+source = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.6.3.json"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.6.77-archive.tar.xz", sha256 = "9c3145ef01f73e50c0f5fcf923f0899c847f487c529817daa8f8b1a3ecf20925" }
+"windows-x86_64" = { url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.6.77-archive.zip", sha256 = "469b783b6731964170b3d27ae214e97e2a63ec93c57ace3ed4052e6d01261f2e" }
+
+# Lean 4: pinned by proofs/**/lean-toolchain (leanprover/lean4:v4.34.0) and the
+# lake-manifest.json revs (Mathlib etc. by git commit). elan resolves the toolchain.
+[[pin]]
+name = "lean4"
+version = "v4.34.0"
+source = "proofs/lean-toolchain + proofs/**/lake-manifest.json"
