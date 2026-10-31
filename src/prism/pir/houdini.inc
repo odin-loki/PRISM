@@ -427,13 +427,24 @@ std::string Houdini::text(const InvCand& c) const {
 }
 
 void Houdini::generate(std::vector<InvCand>& out) {
-    constexpr std::size_t kScope = 16, kConsts = 8, kGhostPerLoop = 160, kSteps = 4, kArithPhis = 6, kArithScope = 4;
+    constexpr std::size_t kScopeFlat = 16, kConstsFlat = 8, kScopeNested = 6, kConstsNested = 3, kGhostPerLoop = 160, kSteps = 4, kArithPhis = 6, kArithScope = 4;
     static const Op kRel[] = {Op::Eq, Op::Ne, Op::Ule, Op::Ult, Op::Uge, Op::Ugt,
                               Op::Sle, Op::Slt, Op::Sge, Op::Sgt};
     for (std::size_t Li = 0; Li < g_.loops.size(); ++Li) {
         const int L = static_cast<int>(Li);
         const auto& loop = g_.loops[Li];
         const auto& H = fn_.blocks[static_cast<std::size_t>(loop.header)];
+        // Nested loops (this loop contains or is contained in another) get a
+        // smaller scope and constant set: their candidates multiply across the
+        // loop nest and nested_4 needed ~780 MB of a 788 MB budget.
+        bool nested = false;
+        for (std::size_t Lj = 0; Lj < g_.loops.size() && !nested; ++Lj) {
+            if (Lj == Li) continue;
+            const auto& o = g_.loops[Lj];
+            nested = loop.body[static_cast<std::size_t>(o.header)] || o.body[static_cast<std::size_t>(loop.header)];
+        }
+        const std::size_t kScope = nested ? kScopeNested : kScopeFlat;
+        const std::size_t kConsts = nested ? kConstsNested : kConstsFlat;
         // header phis (integer, not floating point)
         std::vector<int> phis;
         for (std::size_t i = 0; i < H.phis.size(); ++i) {
