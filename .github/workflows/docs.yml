@@ -23,12 +23,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Cache pinned LLVM 23.1.4
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
+        shell: bash
+        run: |
+          bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
+          echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: Configure (no Z3, no engine tests)
         run: >
           cmake -B build -G Ninja
-          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF
       - name: Build prism_docs_check
         run: cmake --build build --target prism_docs_check
