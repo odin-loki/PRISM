@@ -686,7 +686,7 @@ if(PRISM_QT)
     # (prism_gui_tests) link the same code.
     add_library(prism_gui_window STATIC
       src/gui/MainWindow.cpp
-      src/gui/MainWindow.h
+      src/gui/MainWindow.hpp
     )
     set_target_properties(prism_gui_window PROPERTIES AUTOMOC ON)
     target_include_directories(prism_gui_window PUBLIC "${PRISM_ROOT}/include" src/gui)

@@ -10,7 +10,7 @@
 #include "prism/taxonomy.hpp"
 
 #ifdef PRISM_HAS_CUDA
-#include "prism/cuda_mutate.h"
+#include "prism/cuda_mutate.hpp"
 #endif
 
 #include <array>
@@ -136,7 +136,7 @@ TEST_CASE("havoc: cpu havoc preserves length and mutates") {
 #ifdef PRISM_HAS_CUDA
 TEST_CASE("havoc: cuda havoc returns 0 or honest device failure never a proof") {
     uint8_t buf[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    int rc = prism_cuda_havoc(buf, 8, 1, 1);
+    int rc = prism::cuda::havoc(buf, 8, 1, 1);
     CHECK(rc <= 0);
     CHECK(rc != 1);
 }

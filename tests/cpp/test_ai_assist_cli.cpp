@@ -367,7 +367,7 @@ TEST_CASE("ai-assist cli: the assurance template draft links every claim to the 
 TEST_CASE("ai-assist gui: the Qt assistant panel keeps its contract; assistant_reply answers it") {
     // Qt is not built in every configuration: the panel's source contract.
     const auto cpp = slurp(repo_root() / "src" / "gui" / "MainWindow.cpp");
-    const auto hdr = slurp(repo_root() / "src" / "gui" / "MainWindow.h");
+    const auto hdr = slurp(repo_root() / "src" / "gui" / "MainWindow.hpp");
     REQUIRE(!cpp.empty());
     CHECK(hdr.find("void onAsk();") != std::string::npos);
     CHECK(cpp.find("prism::ai::assistant_reply") != std::string::npos);

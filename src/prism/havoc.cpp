@@ -1,6 +1,6 @@
 #include "prism/simd.hpp"
 #ifdef PRISM_HAS_CUDA
-#include "prism/cuda_mutate.h"
+#include "prism/cuda_mutate.hpp"
 #endif
 
 #include <cstdint>
@@ -30,7 +30,7 @@ void havoc(uint8_t* data, size_t n, uint64_t seed) {
     // GPU INTERESTING_8/16/32 overlays. cudaMalloc failure is a CPU fallback,
     // never a silent disable of the algorithm and never a proof.
     if (n <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
-        prism_cuda_havoc(data, static_cast<int>(n), 1, seed) == 0) {
+        prism::cuda::havoc(data, static_cast<int>(n), 1, seed) == 0) {
         return;
     }
 #endif
