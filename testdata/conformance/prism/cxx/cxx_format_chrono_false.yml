@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_format_chrono_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_format_chrono_false: false
+witness:
+  cxx_format_chrono_false: [1000]

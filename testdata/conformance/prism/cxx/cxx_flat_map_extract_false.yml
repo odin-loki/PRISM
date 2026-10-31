@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_flat_map_extract_false.cpp
+language: C++
+property: no-uncaught
+expected:
+  cxx_flat_map_extract_false: false
+witness:
+  cxx_flat_map_extract_false: [0]
