@@ -39,6 +39,17 @@ jobs:
           bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
           echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: bash
+        run: |
+          d=$(python3 scripts/fetch_toolchain.py cmake)
+          echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
       - uses: actions/cache@v4
@@ -51,7 +62,8 @@ jobs:
           cmake -B build -G Ninja
           -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build --target prism prism-qa
       - uses: actions/upload-artifact@v4

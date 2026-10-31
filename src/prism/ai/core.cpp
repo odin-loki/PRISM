@@ -1,7 +1,8 @@
 // PRISM AI layer core: hashing, grammar validation, prompt fencing, model
-// backends (llama-server grammar / Ollama format), session and audit log.
+// backend (FORGE mind, GBNF-constrained), session and audit log.
 // Roadmap 4.1 and 9.6. The model proposes; a checker decides.
 
+#include "prism/forge_llm.hpp"
 #include "ai_internal.hpp"
 
 #include <nlohmann/json.hpp>
@@ -573,79 +574,15 @@ std::string system_prompt(const std::string& task) {
 // ------------------------------------------------------------------ backends
 ModelBackend::~ModelBackend() = default;
 
-namespace {
-class LlamaServerBackend final : public ModelBackend {
-public:
-    LlamaServerBackend(std::string url, std::string model) : url_(std::move(url)), model_(std::move(model)) {}
-    std::string name() const override { return "llama-server:" + model_; }
-    std::string model_sha256() const override { return "unknown"; }
-    ModelReply complete(const ModelRequest& req) override {
-        nlohmann::json body{{"prompt", req.system + "\n\n" + req.user + "\n"},
-                            {"n_predict", 768},
-                            {"temperature", 0.2},
-                            {"cache_prompt", false},
-                            {"grammar", req.grammar_text}};
-        auto resp = http_request_raw("POST", url_ + "/completion", body.dump(), 180000);
-        if (!resp) return {"", "HTTP error (llama-server /completion)"};
-        try {
-            auto j = nlohmann::json::parse(*resp);
-            return {j.value("content", ""), ""};
-        } catch (const std::exception& ex) {
-            return {"", std::string("bad llama-server reply: ") + ex.what()};
-        }
-    }
-
-private:
-    std::string url_, model_;
-};
-
-class OllamaBackend final : public ModelBackend {
-public:
-    OllamaBackend(std::string host, std::string model) : host_(std::move(host)), model_(std::move(model)) {}
-    std::string name() const override { return "ollama:" + model_; }
-    std::string model_sha256() const override { return "unknown"; }
-    ModelReply complete(const ModelRequest& req) override {
-        nlohmann::json fmt;
-        try {
-            fmt = nlohmann::json::parse(grammar_json_schema(req.grammar));
-        } catch (...) {
-            fmt = "json";
-        }
-        nlohmann::json body{{"model", model_},
-                            {"system", req.system},
-                            {"prompt", req.user},
-                            {"format", fmt},
-                            {"stream", false},
-                            {"think", false},
-                            {"options", {{"temperature", 0.2}, {"num_ctx", 8192}}}};
-        auto resp = http_request_raw("POST", host_ + "/api/generate", body.dump(), 180000);
-        if (!resp) return {"", "HTTP error (Ollama /api/generate)"};
-        try {
-            auto j = nlohmann::json::parse(*resp);
-            return {j.value("response", ""), ""};
-        } catch (const std::exception& ex) {
-            return {"", std::string("bad Ollama reply: ") + ex.what()};
-        }
-    }
-
-private:
-    std::string host_, model_;
-};
-}  // namespace
-
 std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* why) {
     auto say = [&](std::string m) {
         if (why) *why = std::move(m);
         return std::shared_ptr<ModelBackend>{};
     };
     if (!cfg.llm) return say("--no-llm");
-    if (!cfg.llama_server.empty() && (http_request_raw("GET", cfg.llama_server + "/health", {}, 1500) ||
-                                      http_request_raw("GET", cfg.llama_server + "/v1/models", {}, 1500)))
-        return std::make_shared<LlamaServerBackend>(cfg.llama_server, cfg.model);
-    if (!cfg.ollama_host.empty() && http_request_raw("GET", cfg.ollama_host + "/api/tags", {}, 1500))
-        return std::make_shared<OllamaBackend>(cfg.ollama_host, cfg.model);
-    return say("llama.cpp/Ollama not reachable (AI features need llama-server with grammar support or "
-               "Ollama; the in-process GGUF path has no grammar sampler wired)");
+    if (forge_llm::is_fpk(cfg.fpk)) return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model);
+    return say("no FORGE model: set PRISM_FPK to a .fpk (Qwen 3.5 9B converted with FORGE); tried " +
+               cfg.fpk.string());
 }
 
 // ------------------------------------------------------------------ session

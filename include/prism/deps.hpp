@@ -121,7 +121,7 @@ fs::path install_dir(const Table& comp, const fs::path& base);
 // ---------------------------------------------------------- linked checks
 
 // Files under root, sorted by POSIX relative path, skipping __pycache__/.git
-// directories and *.gguf / *.pyc files.
+// directories and *.gguf / *.fpk / *.pyc files.
 std::vector<fs::path> tree_files(const fs::path& root);
 // SHA-256 over sorted "<relpath>\0<sha256>\n" lines of every file under root.
 std::string tree_digest(const fs::path& root);

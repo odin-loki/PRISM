@@ -8,6 +8,8 @@
 #include "prism/exec.hpp"
 #include "prism/sandbox.hpp"
 
+#include <forge/os/process.hpp>
+
 #include <atomic>
 #include <cctype>
 #include <mutex>

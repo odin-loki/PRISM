@@ -1,4 +1,4 @@
-#include "MainWindow.h"
+#include "MainWindow.hpp"
 
 #include "prism/gui_model.hpp"
 

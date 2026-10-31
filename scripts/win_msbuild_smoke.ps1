@@ -60,7 +60,7 @@ function Invoke-VcCmd([string]$Body) {
 $z3Flag = if ($Z3) { '-DPRISM_Z3=ON' } else { '-DPRISM_Z3=OFF' }
 $cfg = "`"$Cmake`" -S `"$Root`" -B `"$BuildDir`" -G Ninja -DCMAKE_BUILD_TYPE=Release $NinjaMake " +
        '-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl ' +
-       "-DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF $z3Flag " +
+       "-DPRISM_CUDA=OFF -DPRISM_QT=OFF $z3Flag " +
        '-DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF'
 Invoke-VcCmd $cfg
 

@@ -20,9 +20,9 @@ inline const auto& mem_reserve_mb() { static auto s = fs::define("PRISM_MEM_RESE
 inline const auto& mem_stuck_ms() { static auto s = fs::define("PRISM_MEM_STUCK_MS", std::int64_t{1000}, "watchdog: ms over budget before a run is stopped"); return s; }
 inline const auto& mem_trace() { static auto s = fs::define("PRISM_MEM_TRACE", false, "trace memory-budget decisions to stderr"); return s; }
 inline const auto& pbsd() { static auto s = fs::define("PRISM_PBSD", "", "PRISM data directory override"); return s; }
-inline const auto& gguf() { static auto s = fs::define("PRISM_GGUF", "", "model file override"); return s; }
+inline const auto& fpk() { static auto s = fs::define("PRISM_FPK", "", "FORGE model file (.fpk) override; default ~/.prism/models/qwen3.5-9b.fpk"); return s; }
 inline const auto& tools_dir() { static auto s = fs::define("PRISM_TOOLS_DIR", "", "directory holding PRISM's helper tools"); return s; }
-inline const auto& embed_server() { static auto s = fs::define("PRISM_EMBED_SERVER", "", "embedding server URL for triage"); return s; }
+inline const auto& embed_fpk() { static auto s = fs::define("PRISM_EMBED_FPK", "", "FORGE embedding model (.fpk) for triage"); return s; }
 inline const auto& proof_cache() { static auto s = fs::define("PRISM_PROOF_CACHE", "", "persistent proof-repair cache directory"); return s; }
 inline const auto& n_gpu_layers() { static auto s = fs::define("PRISM_N_GPU_LAYERS", std::int64_t{-1}, "model layers offloaded to the GPU; -1: all"); return s; }
 

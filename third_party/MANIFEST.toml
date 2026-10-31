@@ -104,26 +104,6 @@ drift = [
 ]
 
 [[component]]
-name = "xsimd"
-kind = "linked"
-version = "13.2.0"
-url = "https://github.com/xtensor-stack/xsimd"
-tag = "13.2.0"
-commit = "1f8dd9c8e162968d9b4ff0251c56d431b8777f36"
-archive_sha256 = "8840df5f469d8068fafc1dcae60caccdc0a868ffa3e2158426883bc607d1a59f"
-spdx = "BSD-3-Clause"
-licence_file = "LICENSE"
-path = "third_party/xsimd"
-tree_sha256 = "119271bdec94760e06639a05b7180f0437e138aab262e0c7276f565c144d7c60"
-tree_version_file = "include/xsimd/config/xsimd_config.hpp"
-tree_version_regex = 'XSIMD_VERSION_MAJOR (\d+)\s*#define XSIMD_VERSION_MINOR (\d+)\s*#define XSIMD_VERSION_PATCH (\d+)'
-tree_version = "13.2.0"
-drift = [
-  "M docs/make.bat",
-  "M docs/source/xsimd.svg",
-]
-
-[[component]]
 name = "nlohmann_json"
 kind = "linked"
 version = "3.11.3"
@@ -162,31 +142,6 @@ tree_version_file = "doctest.h"
 tree_version_regex = 'DOCTEST_VERSION_MAJOR (\d+)\s*#define DOCTEST_VERSION_MINOR (\d+)\s*#define DOCTEST_VERSION_PATCH (\d+)'
 tree_version = "2.4.11"
 drift = []
-
-[[component]]
-name = "llama.cpp"
-kind = "linked"
-version = "b6875"
-url = "https://github.com/ggml-org/llama.cpp"
-tag = "b6875"
-commit = "3eb2be1ca5f37480aeb16102970d9e65f43347fe"
-archive_sha256 = "8ec335a2254ca0393c5471c3df84fe758ca63e9aa2f7ddc216bcf8cceb5e070b"
-spdx = "MIT"
-licence_file = "LICENSE"
-path = "third_party/llama.cpp"
-tree_sha256 = "2af497071fc799683f82530c5225540d5ec37e0f823ae30f6d45e2769c064e40"
-# No release number in tree; the ggml version is the in-tree marker.
-tree_version_file = "ggml/CMakeLists.txt"
-tree_version_regex = 'GGML_VERSION_MAJOR (\d+)\)\s*set\(GGML_VERSION_MINOR (\d+)\)\s*set\(GGML_VERSION_PATCH (\d+)\)'
-tree_version = "0.9.4"
-# *.gguf vocab files are ignored on both sides (never vendored, .gitignore).
-drift = [
-  "D build-xcframework.sh",
-  "D docs/build-riscv64-spacemit.md",
-  "D docs/build-s390x.md",
-  "D examples/llama.swiftui/llama.swiftui.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist",
-  "M models/templates/moonshotai-Kimi-K2.jinja",
-]
 
 # -------------------------------------------------------------- external ----
 # Run as separate processes only (licence firewall, roadmap 1.2).

@@ -12,7 +12,7 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 build="${1:-$repo/build-fuzz}"
 seconds="${2:-300}"
 cmake -S "$repo" -B "$build" -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF -DPRISM_FUZZ=ON \
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF -DPRISM_FUZZ=ON \
   -DPRISM_FUZZ_SECONDS="$seconds"
 if ! grep -q '^PRISM_HAS_LIBFUZZER:INTERNAL=1' "$build/CMakeCache.txt"; then
   echo "prism_fuzz_self cannot be built (compiler without -fsanitize=fuzzer): NOTRUN" >&2
