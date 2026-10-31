@@ -1447,8 +1447,26 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         }
         // one function budget for the check and the policy's re-checks of this row
         auto copt = check_options(cfg, budget);
+        // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
+        // function gets at most N seconds; one that is still UNKNOWN at the
+        // cap is re-checked with its full budget in a fresh child
+        // (rerun_after_oom), whose memory the budget bounds and the kernel
+        // reclaims. The child (PRISM_PIR_ONLY) is never capped. A capped
+        // check only ever stops early: UNKNOWN, never PROVED.
+        static const double divert_s = [] {
+            const char* e = std::getenv("PRISM_PIR_DIVERT_S");
+            return (e && *e && !std::getenv("PRISM_PIR_ONLY")) ? std::strtod(e, nullptr) : 0.0;
+        }();
+        const bool capped = divert_s > 0 && (copt.function_budget_s <= 0 || copt.function_budget_s > divert_s);
+        if (capped) copt.function_budget_s = divert_s;
         if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+        const auto t_fn0 = std::chrono::steady_clock::now();
         auto v = check_function(fn, copt);
+        const double fn_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count();
+        if (capped && v.status == laws::UNKNOWN && fn_s >= 0.9 * divert_s) {
+            f.extra["pir_rerun"] = "pending";
+            f.extra["pir_diverted_after_s"] = std::to_string(static_cast<int>(fn_s));
+        }
         // Re-checked fresh only when this process already checked another
         // function (its Z3 memory, or a hard out-of-memory, is what stopped
         // this one), so the child processes always make progress.
