@@ -22,6 +22,7 @@
 #include "prism/log.hpp"
 #include "qa.hpp"
 
+#include "prism/exec.hpp"
 #include "../../prism/proc.hpp"
 #include "prism/config.hpp"
 #include "prism/pir.hpp"
@@ -255,11 +256,11 @@ int llvm_sem_vs_lli_main(const Args& args) {
                 const auto vecs = input_vectors(rec.params, nvec, rng);
                 std::string q;
                 for (auto& v : vecs) q += rec.name + (v.empty() ? "" : " " + join_u64(v, " ")) + "\n";
-                detail::RunSpec spec;
+                exec::Spec spec;
                 spec.argv = {eval.string(), pirl.string()};
-                spec.input = q;
-                spec.timeout_s = 600;
-                auto ev = detail::run(spec);
+                spec.stdin_data = q;
+                spec.timeout_ms = 600000;
+                auto ev = exec::run(spec);
                 std::istringstream lines(ev.out);
                 for (std::string line; std::getline(lines, line);) {
                     const auto bar = line.find(" | ");

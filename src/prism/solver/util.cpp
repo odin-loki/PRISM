@@ -1,6 +1,7 @@
 // Solver library plumbing: SHA-256, process runner, tool lookup, LRAT checking.
 
 #include "prism/solver.hpp"
+#include "prism/clock.hpp"
 #include "prism/config.hpp"
 #include "internal.hpp"
 #include "../proc.hpp"
@@ -163,7 +164,7 @@ namespace detail {
 
 double now_s() {
     using namespace std::chrono;
-    return duration<double>(steady_clock::now().time_since_epoch()).count();
+    return (static_cast<double>(prism::clock::now_ns()) * 1e-9);
 }
 
 std::string home_dir() {
@@ -188,7 +189,7 @@ bool write_file(const fs::path& p, std::string_view data) {
     // Write-then-rename so a concurrent reader never sees half a file.
     auto tmp = p;
     tmp += ".tmp." + std::to_string(static_cast<unsigned long long>(
-                         std::chrono::steady_clock::now().time_since_epoch().count()));
+                         prism::clock::now_ns()));
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) return false;

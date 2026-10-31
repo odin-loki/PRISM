@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/settings.hpp"
 #include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
 #include "prism/solver_certs.hpp"
@@ -348,7 +349,7 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
     if (min_nodes > 2000 && rss0 * 2 >= mb) min_nodes = 2000;  // not every query: a child per tiny query costs more than it saves
     if (min_nodes < 0 || nodes < static_cast<std::size_t>(min_nodes)) return {};
     static const std::string exe = [] {
-        if (const char* e = std::getenv("PRISM_Z3_WORKER"); e && *e) return std::string(e);
+        if (const char* e = prism::settings::cstr(prism::settings::z3_worker()); e && *e) return std::string(e);
         std::error_code ec;
         const fs::path self = fs::read_symlink("/proc/self/exe", ec);
         if (ec) return std::string();
@@ -431,7 +432,7 @@ std::uint64_t solver_child_cap(std::size_t children) {
 
 unsigned checker_mem_mb(const SolveOptions& o) {
     if (o.checker_mem_mb > 0) return o.checker_mem_mb;
-    if (const char* e = std::getenv("PRISM_CHECKER_MEM"); e && *e) {
+    if (const char* e = prism::settings::cstr(prism::settings::checker_mem()); e && *e) {
         std::uint64_t v = 0;
         if (certs::parse_size(e, v) && (v >> 20) >= 64) return static_cast<unsigned>(std::min<std::uint64_t>(v >> 20, 1u << 20));
     }
@@ -805,7 +806,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // (`prism z3-worker`) with its own hard limit: killable, and an
     // out-of-memory there is that query's UNKNOWN, not this process's.
     const auto z3_proc = z3_worker_argv(ft.nodes);
-    if (std::getenv("PRISM_MEM_TRACE"))
+    if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "[memtrace] query nodes=%zu z3=%s\n", static_cast<std::size_t>(ft.nodes),
                      z3_proc.empty() ? "in-process" : "child");
     if (opt.z3_in_process && !z3_proc.empty())

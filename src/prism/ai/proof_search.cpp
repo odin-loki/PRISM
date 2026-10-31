@@ -20,6 +20,7 @@
 // Every model call is in <out>/ai_audit.jsonl.
 
 #include "prism/exit.hpp"
+#include "prism/clock.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/log.hpp"
@@ -822,7 +823,7 @@ ProveResult prove_theorem(const ProveOptions& opt) {
     PathGuard path_guard(*lake);
 
     // Scratch copy of the package (the source tree is never touched unless --write).
-    auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    auto stamp = std::to_string(prism::clock::now_ns());
     auto scratch = fs::temp_directory_path() / ("prism-prove-" + sha256_hex(t.file.string() + stamp).substr(0, 12));
     struct Cleanup {
         fs::path p;

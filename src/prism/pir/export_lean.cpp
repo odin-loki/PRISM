@@ -14,6 +14,7 @@
 // directory. Unset (the default): nothing is written.
 
 #include "prism/pir.hpp"
+#include "prism/settings.hpp"
 
 #include "fp.hpp"
 #include "translate_mem.hpp"
@@ -1055,7 +1056,7 @@ void pir_side(std::ostream& o, const Function& fn) {
 
 void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
                       const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
-    const char* env = std::getenv("PRISM_PIR_LEAN_EXPORT");
+    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
     if (!env || !*env) return;
     std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
     std::ostringstream o;

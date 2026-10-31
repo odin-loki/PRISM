@@ -8,6 +8,7 @@
 #include <forge/os/settings.hpp>
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace prism::settings {
@@ -24,5 +25,20 @@ inline const auto& tools_dir() { static auto s = fs::define("PRISM_TOOLS_DIR", "
 inline const auto& embed_server() { static auto s = fs::define("PRISM_EMBED_SERVER", "", "embedding server URL for triage"); return s; }
 inline const auto& proof_cache() { static auto s = fs::define("PRISM_PROOF_CACHE", "", "persistent proof-repair cache directory"); return s; }
 inline const auto& n_gpu_layers() { static auto s = fs::define("PRISM_N_GPU_LAYERS", std::int64_t{-1}, "model layers offloaded to the GPU; -1: all"); return s; }
+
+inline const auto& pir_lean_export() { static auto s = fs::define("PRISM_PIR_LEAN_EXPORT", "", "export PIR to Lean (path)"); return s; }
+inline const auto& pir_progress() { static auto s = fs::define("PRISM_PIR_PROGRESS", "", "PIR progress-note file"); return s; }
+inline const auto& pir_only() { static auto s = fs::define("PRISM_PIR_ONLY", "", "PIR: restrict to these units / skip memory headroom"); return s; }
+inline const auto& pir_batch() { static auto s = fs::define("PRISM_PIR_BATCH", "", "PIR units per batch"); return s; }
+inline const auto& houdini_trace() { static auto s = fs::define("PRISM_HOUDINI_TRACE", "", "trace Houdini invariant inference"); return s; }
+inline const auto& z3_worker() { static auto s = fs::define("PRISM_Z3_WORKER", "", "path of the z3 worker binary"); return s; }
+inline const auto& checker_mem() { static auto s = fs::define("PRISM_CHECKER_MEM", "", "proof-checker memory cap"); return s; }
+inline const auto& solver_predict() { static auto s = fs::define("PRISM_SOLVER_PREDICT", "", "0: disable the solver predictor"); return s; }
+inline const auto& solver_model() { static auto s = fs::define("PRISM_SOLVER_MODEL", "", "solver predictor model override"); return s; }
+inline const auto& cert_cache_max() { static auto s = fs::define("PRISM_CERT_CACHE_MAX", "", "certificate cache size cap"); return s; }
+
+// The raw value as getenv gives it (nullptr when unset), for callers that keep
+// their own parsing. The name must be defined above (FORGE's registry lists it).
+inline const char* cstr(const fs::setting<std::string>& s) { return s.is_set() ? std::getenv(s.name().c_str()) : nullptr; }
 
 }  // namespace prism::settings

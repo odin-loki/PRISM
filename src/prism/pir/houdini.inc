@@ -49,7 +49,7 @@
 // PRISM_HOUDINI_TRACE=1: one stderr line per Houdini goal query (diagnostics only)
 static bool houdini_trace() {
     static const bool on = [] {
-        const char* e = std::getenv("PRISM_HOUDINI_TRACE");
+        const char* e = prism::settings::cstr(prism::settings::houdini_trace());
         return e && *e && *e != '0';
     }();
     return on;
@@ -170,7 +170,7 @@ private:
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
     std::vector<std::string> cands_for_key_;
     int query_ = 0;
-    std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
+    prism::clock::Stopwatch t0_;
     std::vector<char> ptr_;
     std::vector<const Stmt*> def_;
     std::vector<char> signed_use_;
@@ -184,12 +184,12 @@ private:
             mem_out_ = true;
             return 0;
         }
-        return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+        return deadline_ - t0_.elapsed_s();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
     double hard_left() const {
         if (hard_s_ < 0) return 1e18;
-        return hard_s_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+        return hard_s_ - t0_.elapsed_s();
     }
     // a query's Z3 timeout in ms: t seconds, never past the hard cap (1 ms at least)
     unsigned query_ms(double t) const { return static_cast<unsigned>(std::max(0.001, std::min(t, hard_left())) * 1000); }
@@ -1092,7 +1092,7 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
-                const auto tq0 = std::chrono::steady_clock::now();
+                const prism::clock::Stopwatch tq0;
                 auto r = s.check(as);
                 std::optional<z3::model> qm;
                 if (r == z3::sat) qm = s.get_model();
@@ -1102,7 +1102,7 @@ HoudiniOut Houdini::run() {
                 if (houdini_trace())
                     std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
                                  r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
-                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
+                                 tq0.elapsed_s());
                 if (houdini_trace() && live.size() == 1 && r != z3::unsat)
                     std::fprintf(stderr, "houdini   goal: %s\n", text(cands[live[0]]).c_str());
                 if (r == z3::unsat) return;
@@ -1209,9 +1209,9 @@ HoudiniOut Houdini::run() {
         if (split) add_instances(s, added_final);
         z3::expr_vector all_sel(c);
         selectors([](std::size_t) { return true; }, all_sel);
-        const auto tf = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch tf;
         auto fleft = [&] {
-            return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+            return budget - tf.elapsed_s();
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;

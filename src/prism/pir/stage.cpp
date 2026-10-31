@@ -6,6 +6,8 @@
 // same concrete inputs and must agree wherever PIR reports no UB.
 
 #include "prism/membudget.hpp"
+#include "prism/clock.hpp"
+#include "prism/settings.hpp"
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/laws.hpp"
@@ -923,7 +925,7 @@ std::string rejected_budget_env() {
 // long run can be named from outside the process.
 void progress_note(const char* what, const fs::path& unit, double secs) {
     static std::mutex m;
-    const char* f = std::getenv("PRISM_PIR_PROGRESS");
+    const char* f = prism::settings::cstr(prism::settings::pir_progress());
     if (!f || !*f) return;
     std::lock_guard<std::mutex> lk(m);
     std::ofstream o(f, std::ios::app);
@@ -1152,7 +1154,7 @@ struct Analyzed {
 // rows stay UNKNOWN (Law 7: said, not dropped).
 bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
     static const std::optional<std::set<std::string>> only = []() -> std::optional<std::set<std::string>> {
-        const char* e = std::getenv("PRISM_PIR_ONLY");
+        const char* e = prism::settings::cstr(prism::settings::pir_only());
         if (!e || !*e) return std::nullopt;
         std::set<std::string> r;
         std::string cur;
@@ -1616,7 +1618,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // One pipeline per unit (lower, analyse, validate, free its IR) on a work
     // queue: no phase barrier, so a slow unit holds one worker, not the batch.
     std::size_t batch_n = std::max<std::size_t>(1, units_all.size());
-    if (const char* e = std::getenv("PRISM_PIR_BATCH")) batch_n = std::max<std::size_t>(1, std::strtoull(e, nullptr, 10));
+    if (const char* e = prism::settings::cstr(prism::settings::pir_batch())) batch_n = std::max<std::size_t>(1, std::strtoull(e, nullptr, 10));
     for (std::size_t b0 = 0; b0 < units_all.size(); b0 += batch_n) {
     const std::vector<Unit> batch(units_all.begin() + static_cast<std::ptrdiff_t>(b0),
                                   units_all.begin() + static_cast<std::ptrdiff_t>(std::min(units_all.size(), b0 + batch_n)));
@@ -1626,10 +1628,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::vector<char> pending(batch.size(), 0);
     auto finish = [&](std::size_t i) {
         auto& a = an.at(i);
-        const auto vt0 = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch vt0;
         progress_note("validate-start", batch.at(i).path, 0.0);
         if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
-        progress_note("validate-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - vt0).count());
+        progress_note("validate-done", batch.at(i).path, vt0.elapsed_s());
         per.at(i) = std::move(a.out);
         for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
         if (!low.at(i).cxx_models.empty())
@@ -1658,7 +1660,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
             if (u.header) inc.insert(inc.begin(), {"-x", "c", "-femit-all-decls"});
-            const auto lt0 = std::chrono::steady_clock::now();
+            const prism::clock::Stopwatch lt0;
             progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
             if (!l.ir && !u.header) {
@@ -1698,7 +1700,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                     errs += "\n" + err2;
                 }
             }
-            progress_note("lower-done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - lt0).count());
+            progress_note("lower-done", u.path, lt0.elapsed_s());
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
             l.ir.reset();
@@ -1706,10 +1708,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         }
         }
         try {
-            const auto t0 = std::chrono::steady_clock::now();
+            const prism::clock::Stopwatch t0;
             progress_note("start", u.path, 0.0);
             an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
-            progress_note("done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            progress_note("done", u.path, t0.elapsed_s());
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
@@ -1729,9 +1731,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     });
     for (std::size_t i = 0; i < batch.size(); ++i) {
         if (!pending.at(i)) continue;
-        const auto rt0 = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch rt0;
         rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
-        progress_note("rerun-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - rt0).count());
+        progress_note("rerun-done", batch.at(i).path, rt0.elapsed_s());
         finish(i);
     }
     for (std::size_t i = 0; i < per.size(); ++i) per_all.at(b0 + i) = std::move(per.at(i));

@@ -22,6 +22,8 @@
 // k-induction step is answered by Z3 in-process.
 
 #include "prism/laws.hpp"
+#include "prism/clock.hpp"
+#include "prism/settings.hpp"
 #include "prism/membudget.hpp"
 #include "prism/pir.hpp"
 
@@ -581,14 +583,14 @@ struct Encoding {
         exit_reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
         for (int id : order) {
-            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
             encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
             if (tr_on && membudget::rss_mb() > r0 + 100)
                 std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
                              static_cast<unsigned long long>(membudget::rss_mb() - r0));
         }
-        if (std::getenv("PRISM_MEM_TRACE"))
+        if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu\n", nodes.size(),
                          static_cast<unsigned long long>(membudget::rss_mb()));
     }
@@ -1016,7 +1018,7 @@ struct Encoding {
             if (membudget::over_budget_sampled(16))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while encoding");
             const auto& s = bl.stmts[si];
-            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t rss0 = tr_on ? membudget::rss_mb() : 0;
             struct TraceBig {
                 bool on; uint64_t r0; int kind, op; std::size_t si; int id;
@@ -1325,7 +1327,7 @@ struct VcBook {
 };
 
 double detail_now_s() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return (static_cast<double>(prism::clock::now_ns()) * 1e-9);
 }
 
 // A budget's seconds as written in messages and extra.function_budget_s
@@ -1519,7 +1521,7 @@ static bool z3_over_soft_cap() {
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
     if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
-        if (std::getenv("PRISM_MEM_TRACE"))
+        if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] %lld guard rss=%llu z3=%llu\n",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
                          static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(Z3_get_estimated_alloc_size() >> 20));
@@ -1547,7 +1549,7 @@ static void cap_z3_memory_once() {
         // fresh rerun process (PRISM_PIR_ONLY) leave at once; the parent
         // records "fresh process gave no verdict (rc 75)" and the function
         // stays UNKNOWN. In the main process the 1.5x hard limit stays.
-        if (mb > 0 && std::getenv("PRISM_PIR_ONLY"))
+        if (mb > 0 && prism::settings::cstr(prism::settings::pir_only()))
             membudget::set_stuck_hook([] { std::_Exit(75); });
     });
 }
@@ -1573,7 +1575,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
 static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
     cap_z3_memory_once();
-    if (std::getenv("PRISM_MEM_TRACE"))
+    if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "pir mem: %s start, z3 estimate %llu MB, cap %llu MB, rss %ld MB\n", fn.name.c_str(),
                      static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
                      static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
@@ -2255,10 +2257,10 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             // final query included, runs past it (docs/PIR.md "Solving")
             const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
             if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
-            const auto th = std::chrono::steady_clock::now();
+            const prism::clock::Stopwatch th;
             Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
             auto h = hd.run();
-            const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
+            const double hs = th.elapsed_s();
             if (opt.houdini_budget) opt.houdini_budget->spend(hs);
             {
                 char buf[32];

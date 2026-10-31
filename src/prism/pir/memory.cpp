@@ -4,6 +4,7 @@
 // (semantics) and MemEncode.lean (read-over-write encoding).
 
 #include "prism/membudget.hpp"
+#include "prism/settings.hpp"
 #include "memory.hpp"
 
 #include "prism/laws.hpp"
@@ -1068,7 +1069,7 @@ std::optional<z3::expr> SymMem::word_split(uint64_t a, unsigned n, std::size_t u
 }
 
 SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
-    static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+    static const bool tr_on = prism::settings::mem_trace().is_set();
     uint64_t tr_r = tr_on ? membudget::rss_mb() : 0;
     auto tr = [&](const char* what) {
         if (!tr_on) return;

@@ -646,9 +646,9 @@ int svcomp_main(int argc, char** argv) {
     SolveOptions opt;
     bool version = false;
     auto usage = [] {
-        std::cerr << "usage: prism svcomp [--allow-exec] [--data-model ILP32|LP64] [--out DIR] [--witness FILE]\n"
-                     "                    --prop PROPERTY.prp TASK.c\n"
-                     "       prism svcomp score ... | prism svcomp pack ...   (--help for each)\n";
+        prism::log::plain("usage: prism svcomp [--allow-exec] [--data-model ILP32|LP64] [--out DIR] [--witness FILE]\n"
+                          "                    --prop PROPERTY.prp TASK.c\n"
+                          "       prism svcomp score ... | prism svcomp pack ...   (--help for each)");
     };
     for (int i = 0; i < argc; ++i) {
         std::string a = argv[i];

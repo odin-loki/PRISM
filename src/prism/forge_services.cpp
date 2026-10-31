@@ -4,6 +4,7 @@
 #include "prism/cache.hpp"
 #include "prism/exec.hpp"
 #include "prism/pool.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/threads.hpp"
 
 #include <forge/cache/cache.hpp>
@@ -13,13 +14,36 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
 namespace prism::exec {
 
+void refuse_disabled_checks(const std::vector<std::string>& argv) {
+    for (const auto& flag : argv)
+        if (flag.starts_with("--no-") && flag.ends_with("-check"))
+            throw std::runtime_error("refusing to disable a check: " + flag);
+}
+
+void apply_limits(Spec& s, bool enabled, double cpu_seconds, bool limit_as) {
+    if (!enabled) return;
+    auto cpu = static_cast<std::uint64_t>(cpu_seconds + 0.999);
+    if (cpu < 1) cpu = 1;
+    s.cpu_seconds = cpu + 1;  // the parent's timeout fires first
+    s.open_files = sandbox::LIMIT_NOFILE;
+    s.file_size_bytes = sandbox::LIMIT_FSIZE_BYTES;
+    s.no_core = true;
+    if (limit_as) s.memory_bytes = sandbox::LIMIT_AS_BYTES;
+}
+
 Result run(const Spec& s) {
+    refuse_disabled_checks(s.argv);
     forge::os::spawn_spec sp;
+    sp.merge_stderr = s.merge_stderr;
+    // TODO(FORGE main): sp.limits.file_size_bytes / sp.limits.no_core once the
+    // prism-forge proc_limits additions land; s.file_size_bytes, s.no_core are
+    // dropped until then.
     sp.argv = s.argv;
     sp.cwd = s.cwd;
     sp.env_set = s.env_set;
