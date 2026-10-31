@@ -23,6 +23,8 @@
 #include "stage_mem.hpp"
 
 #include <cctype>
+#include <cstring>
+#include <algorithm>
 #include <tuple>
 #include <nlohmann/json.hpp>
 #include <map>
@@ -774,6 +776,189 @@ std::string c_only_to_cxx(std::string t) {
     t = std::regex_replace(t, std::regex(R"(\[\s*\*\s*\])"), "[]");
     return t;
 }
+// Token-level renaming of file-scope identifiers (coverage item 6): strings,
+// character literals, comments, member accesses (. and ->), struct/union
+// member declarations and #include lines are left alone.
+std::string rename_tokens(const std::string& in, const std::map<std::string, std::string>& ren) {
+    if (ren.empty()) return in;
+    std::string out;
+    out.reserve(in.size() + 64);
+    const size_t n = in.size();
+    std::vector<bool> member_scope{false};  // per brace depth: inside a struct/union body
+    bool pending_aggr = false;               // saw struct/union, awaiting '{' or ';'
+    char prev = 0, prev2 = 0;                // last two non-space characters emitted
+    for (size_t i = 0; i < n;) {
+        const char c = in[i];
+        if (c == '/' && i + 1 < n && (in[i + 1] == '/' || in[i + 1] == '*')) {
+            size_t e = in[i + 1] == '/' ? in.find('\n', i) : in.find("*/", i + 2);
+            e = e == std::string::npos ? n : (in[i + 1] == '/' ? e : e + 2);
+            out.append(in, i, e - i); i = e; continue;
+        }
+        if (c == '"' || c == '\'') {
+            size_t e = i + 1;
+            for (; e < n && in[e] != c; ++e) if (in[e] == '\\') ++e;
+            e = std::min(n, e + 1);
+            out.append(in, i, e - i); i = e; prev2 = prev; prev = c; continue;
+        }
+        if (c == '#') {  // #include <...> / "..." : copy the line verbatim
+            size_t ls = in.rfind('\n', i == 0 ? 0 : i - 1);
+            ls = (ls == std::string::npos || i == 0) ? 0 : ls + 1;
+            if (in.find_first_not_of(" \t", ls) == i && in.compare(in.find_first_not_of(" \t", i + 1), 7, "include") == 0) {
+                size_t e = in.find('\n', i); e = e == std::string::npos ? n : e;
+                out.append(in, i, e - i); i = e; continue;
+            }
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            size_t e = i;
+            while (e < n && (std::isalnum(static_cast<unsigned char>(in[e])) || in[e] == '_')) ++e;
+            const std::string tok = in.substr(i, e - i);
+            if (tok == "struct" || tok == "union") pending_aggr = true;
+            auto it = ren.find(tok);
+            const bool member = prev == '.' || (prev == '>' && prev2 == '-');
+            if (it != ren.end() && !member && !member_scope.back()) out += it->second;
+            else out += tok;
+            prev2 = prev; prev = 'a'; i = e; continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c))) {  // pp-number: 1e5f, 0x1p3 ...
+            size_t e = i;
+            while (e < n && (std::isalnum(static_cast<unsigned char>(in[e])) || in[e] == '_' || in[e] == '.' ||
+                             ((in[e] == '+' || in[e] == '-') && std::strchr("eEpP", in[e - 1])))) ++e;
+            out.append(in, i, e - i); i = e; prev2 = prev; prev = '0'; continue;
+        }
+        if (c == '{') { member_scope.push_back(pending_aggr); pending_aggr = false; }
+        else if (c == '}') { if (member_scope.size() > 1) member_scope.pop_back(); }
+        else if (c == ';' || c == ')' || c == '(' || c == '=' || c == ',') pending_aggr = false;
+        out += c;
+        if (!std::isspace(static_cast<unsigned char>(c))) { prev2 = prev; prev = c; }
+        ++i;
+    }
+    return out;
+}
+
+// Real reordering of designated initialisers for the C++ part (C++20 wants
+// declaration order; C allows any order). Field orders come from the
+// struct/union definitions in the unit; a list is reordered by the unique
+// field order that covers all its designators (lists that match none, or
+// several orders that disagree, are left to clang's extension). Array
+// designators [N] = v with integer-literal N become positional elements,
+// gaps filled with {} (value-initialised, as C zero-initialises them).
+std::vector<std::vector<std::string>> collect_field_orders(const std::string& src) {
+    std::vector<std::vector<std::string>> r;
+    static const std::regex kAggr(R"(\b(?:struct|union)\s*(?:\w+\s*)?\{)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kAggr); it != std::sregex_iterator(); ++it) {
+        size_t b = static_cast<size_t>(it->position() + it->length()), e = b;
+        int d = 1;
+        for (; e < src.size() && d; ++e) { if (src[e] == '{') ++d; else if (src[e] == '}') --d; }
+        std::string body = src.substr(b, e - b - 1);
+        // drop nested aggregate bodies (their members are not ours)
+        std::string flat; int dd = 0;
+        for (char ch : body) { if (ch == '{') { ++dd; continue; } if (ch == '}') { --dd; continue; } if (!dd) flat += ch; }
+        std::vector<std::string> f;
+        size_t s0 = 0;
+        for (size_t z = 0; z <= flat.size(); ++z) {
+            if (z == flat.size() || flat[z] == ';') {
+                std::string decl = flat.substr(s0, z - s0);
+                s0 = z + 1;
+                // every declarator: name before [..], :bits, or end
+                std::string cur; int pd = 0;
+                auto take = [&](const std::string& q) {
+                    std::smatch m;
+                    std::string q2 = q.substr(0, q.find(':'));
+                    if (std::regex_search(q2, m, std::regex(R"(([A-Za-z_]\w*)\s*\)?\s*(?:\[[^\]]*\]\s*)*(?:\([^)]*\)\s*)?$)"))) f.push_back(m[1]);
+                };
+                for (char ch : decl) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && !pd) { take(cur); cur.clear(); } else cur += ch; }
+                if (cur.find_first_not_of(" \t\r\n") != std::string::npos) take(cur);
+            }
+        }
+        if (!f.empty()) r.push_back(std::move(f));
+    }
+    return r;
+}
+std::string reorder_designators(const std::string& t, const std::vector<std::vector<std::string>>& orders);
+std::string reorder_list(const std::string& inner, const std::vector<std::vector<std::string>>& orders) {
+    // inner: text between '{' and '}', already processed recursively
+    std::vector<std::string> el;
+    std::string cur; int d = 0; char q = 0;
+    for (size_t z = 0; z < inner.size(); ++z) {
+        char ch = inner[z];
+        if (q) { cur += ch; if (ch == '\\' && z + 1 < inner.size()) cur += inner[++z]; else if (ch == q) q = 0; continue; }
+        if (ch == '"' || ch == '\'') q = ch;
+        if (ch == '(' || ch == '[' || ch == '{') ++d;
+        if (ch == ')' || ch == ']' || ch == '}') --d;
+        if (ch == ',' && !d) { el.push_back(cur); cur.clear(); } else cur += ch;
+    }
+    if (cur.find_first_not_of(" \t\r\n") != std::string::npos) el.push_back(cur);
+    if (el.empty()) return inner;
+    static const std::regex kField(R"(^\s*\.\s*([A-Za-z_]\w*)\s*=([\s\S]*)$)");
+    static const std::regex kIndex(R"(^\s*\[\s*(\d+)[uUlL]*\s*\]\s*=([\s\S]*)$)");
+    std::smatch m;
+    bool all_field = true, any_index = false, idx_ok = true;
+    for (auto& e : el) {
+        if (!std::regex_match(e, m, kField)) all_field = false;
+        if (std::regex_match(e, m, kIndex)) any_index = true;
+        else if (std::regex_search(e, std::regex(R"(^\s*[.\[])"))) idx_ok = false;  // .x or [i+1] mixed in
+    }
+    if (all_field) {
+        std::vector<std::pair<std::string, std::string>> kv;
+        for (auto& e : el) { std::regex_match(e, m, kField); kv.emplace_back(m[1], m[2]); }
+        const std::vector<std::string>* pick = nullptr;
+        for (const auto& o : orders) {
+            bool cover = true;
+            for (auto& [k, v] : kv) if (std::find(o.begin(), o.end(), k) == o.end()) { cover = false; break; }
+            if (!cover) continue;
+            if (pick) {
+                // a second candidate: fine only when it orders these names the same way
+                auto pos = [&](const std::vector<std::string>& oo, const std::string& k) { return std::find(oo.begin(), oo.end(), k) - oo.begin(); };
+                for (size_t a = 0; a < kv.size(); ++a) for (size_t b = a + 1; b < kv.size(); ++b)
+                    if ((pos(*pick, kv[a].first) < pos(*pick, kv[b].first)) != (pos(o, kv[a].first) < pos(o, kv[b].first))) return inner;
+            } else pick = &o;
+        }
+        if (!pick) return inner;
+        std::stable_sort(kv.begin(), kv.end(), [&](auto& a, auto& b) {
+            return std::find(pick->begin(), pick->end(), a.first) < std::find(pick->begin(), pick->end(), b.first);
+        });
+        std::string r;
+        for (size_t z = 0; z < kv.size(); ++z) r += (z ? ", ." : " .") + kv[z].first + " =" + kv[z].second;
+        return r + " ";
+    }
+    if (any_index && idx_ok) {
+        std::map<unsigned long, std::string> at;
+        unsigned long nx = 0;
+        for (auto& e : el) {
+            if (std::regex_match(e, m, kIndex)) { nx = std::stoul(m[1]); at[nx++] = m[2]; }
+            else at[nx++] = e;  // positional continues after the last designator
+        }
+        if (at.rbegin()->first > 4096) return inner;
+        std::string r;
+        for (unsigned long z = 0; z <= at.rbegin()->first; ++z) {
+            auto f = at.find(z);
+            r += (z ? ", " : " ") + (f == at.end() ? std::string("{}") : f->second);
+        }
+        return r + " ";
+    }
+    return inner;
+}
+std::string reorder_designators(const std::string& t, const std::vector<std::vector<std::string>>& orders) {
+    if (orders.empty() && t.find('[') == std::string::npos) return t;
+    std::string out;
+    size_t i = 0;
+    while (i < t.size()) {
+        char c = t[i];
+        if (c == '"' || c == '\'') { size_t e = i + 1; for (; e < t.size() && t[e] != c; ++e) if (t[e] == '\\') ++e; e = std::min(t.size(), e + 1); out.append(t, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < t.size() && (t[i + 1] == '/' || t[i + 1] == '*')) { size_t e = t[i + 1] == '/' ? t.find('\n', i) : t.find("*/", i + 2); e = e == std::string::npos ? t.size() : (t[i + 1] == '/' ? e : e + 2); out.append(t, i, e - i); i = e; continue; }
+        if (c == '{') {
+            size_t e = i + 1; int d = 1;
+            for (; e < t.size() && d; ++e) { if (t[e] == '"' || t[e] == '\'') { char q = t[e]; for (++e; e < t.size() && t[e] != q; ++e) if (t[e] == '\\') ++e; continue; } if (t[e] == '{') ++d; else if (t[e] == '}') --d; }
+            if (d) { out.append(t, i, std::string::npos); break; }
+            std::string inner = reorder_designators(t.substr(i + 1, e - i - 2), orders);
+            out += "{" + reorder_list(inner, orders) + "}";
+            i = e;
+            continue;
+        }
+        out += c; ++i;
+    }
+    return out;
+}
 std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt = "") {
     struct Item { std::string text; bool fn = false, pp = false; std::string name, head; };
     std::vector<Item> items;
@@ -857,7 +1042,7 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
     }
     DfpSplit out;
     // Non-decimal file-scope statics shared with the C++ part: external
-    // linkage under a unit-unique name (#define in both parts), defined
+    // linkage under a unit-unique name (token-level rename in both parts), defined
     // once on the C side.
     static const std::regex kStatic(R"(^(\s*(?:(?:inline|const|volatile|_Thread_local|__inline__)\s+)*)static\b)");
     static const std::regex kDeclName(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*(?:\)\s*\([^)]*\))?\s*(?:=|,|;|\(|$))");
@@ -885,9 +1070,13 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
         if (it.fn) { it.text = std::regex_replace(it.text, kStatic, "$1"); it.head = std::regex_replace(it.head, kStatic, "$1"); }
         else it.text = std::regex_replace(it.text, kStatic, "$1");
     }
-    for (const auto& nm : renamed) defs += "#define " + nm + " __prism_split_" + salt + "_" + nm + "\n";
-    out.c += defs;
-    out.cxx += defs;
+    std::map<std::string, std::string> ren;
+    for (const auto& nm : renamed) ren[nm] = "__prism_split_" + salt + "_" + nm;
+    if (!ren.empty())
+        for (auto& it : items) { it.text = rename_tokens(it.text, ren); if (!it.head.empty()) it.head = rename_tokens(it.head, ren); it.name = ren.count(it.name) ? ren[it.name] : it.name; }
+    (void)defs;
+    const auto orders = collect_field_orders(in);
+    auto cx = [&](const std::string& t) { return reorder_designators(c_only_to_cxx(t), orders); };
     // extern declarations for every declarator, initialisers dropped
     auto externs = [](const std::string& text) {
         std::string body = text.substr(0, text.rfind(';'));
@@ -911,7 +1100,7 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
                 // C-only spellings: K&R head -> prototype, [static N] -> [N]
                 std::string body = it.text.substr(it.head.size());
                 std::string head = it.head.find(';') != std::string::npos ? knr_to_prototype(it.head) : it.head;
-                out.cxx += c_only_to_cxx(head + body);
+                out.cxx += cx(head + body);
                 if (!std::regex_search(it.head, kDec)) out.c += proto;
             } else {
                 out.c += it.text;
@@ -922,7 +1111,7 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
         }
         // declarations, types, prototypes
         static const std::regex kObjDef(R"(^\s*(?!typedef\b|extern\b|static\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\b)[^(){};]*(?:=[^;]*)?;\s*$)");
-        if (d) { out.cxx += it.text; continue; }
+        if (d) { out.cxx += cx(it.text); continue; }
         out.c += it.text;
         if (std::regex_match(it.text, kObjDef)) out.cxx += externs(it.text);
         else out.cxx += c_only_to_cxx(it.text);

@@ -526,10 +526,39 @@ inline _Mp _mp_lgamma_pos(const _Mp& x, int L) {
     _Mp r = _mp_sub(_mp_mul(_mp_sub(z, half, LL), lz, LL), z, LL);
     r = _mp_add(r, _mp_mul(half, _mp_log(_mp_muls(_mp_pi(LL), 2, LL), LL), LL), LL);
     _Mp iz = _mp_div(_mp_u(1), z, LL), iz2 = _mp_mul(iz, iz, LL), zp = iz;
-    for (int k = 1; k <= 17; ++k) {
-        _Mp t = _mp_divs(_mp_mul(_mp_u((unsigned long long)(bn[k - 1] < 0 ? -bn[k - 1] : bn[k - 1])), zp, LL), bd[k - 1] * (unsigned)(2 * k) * (unsigned)(2 * k - 1), LL);
-        r = bn[k - 1] < 0 ? _mp_sub(r, t, LL) : _mp_add(r, t, LL);
-        zp = _mp_mul(zp, iz2, LL);
+    // Asymptotic Stirling series, summed until the term is below the target
+    // precision (or starts to grow). B2..B34 from the table; beyond that
+    // B_2k / (2k(2k-1) z^(2k-1)) = (-1)^(k+1) f_k zeta(2k) with
+    // f_k = 2 (2k-2)! / ((2 pi)^(2k) z^(2k-1)), f_1 = 2 / ((2 pi)^2 z),
+    // f_(k+1) = f_k (2k)(2k-1) / ((2 pi z)^2).
+    const _Mp tp2 = [&] { _Mp t = _mp_muls(_mp_pi(LL), 2, LL); return _mp_mul(t, t, LL); }();
+    const _Mp itpz2 = _mp_mul(_mp_div(_mp_u(1), tp2, LL), iz2, LL);
+    _Mp fk = _mp_muls(_mp_div(iz, tp2, LL), 2, LL);
+    const long rexp = r.zero() ? 0 : _mp_dexp(r);
+    long prev = 1L << 30;
+    for (int k = 1; k < 100000; ++k) {
+        _Mp t;
+        if (k <= 17) {
+            t = _mp_divs(_mp_mul(_mp_u((unsigned long long)(bn[k - 1] < 0 ? -bn[k - 1] : bn[k - 1])), zp, LL), bd[k - 1] * (unsigned)(2 * k) * (unsigned)(2 * k - 1), LL);
+            zp = _mp_mul(zp, iz2, LL);
+        } else {
+            _Mp zeta = _mp_u(1);  // 1 + sum n^-2k, n >= 2, until below the precision
+            for (unsigned nn = 2; nn < 1000000u; ++nn) {
+                double dig = 2.0 * k * __builtin_log10((double)nn);
+                if (dig > 9.0 * LL + 20) break;
+                int o; _Mp e = _mp_exp(_mp_neg(_mp_muls(_mp_log(_mp_u(nn), LL + 1), (unsigned)(2 * k), LL + 1)), LL, &o);
+                if (o) break;
+                zeta = _mp_add(zeta, e, LL);
+            }
+            t = _mp_mul(fk, zeta, LL);
+        }
+        if (t.zero()) break;
+        const long te = _mp_dexp(t);
+        if (te > prev) break;  // past the smallest term: the series diverges from here
+        prev = te;
+        r = (k & 1) ? _mp_add(r, t, LL) : _mp_sub(r, t, LL);
+        if (te < rexp - 9L * LL - 4) break;
+        fk = _mp_mul(_mp_muls(fk, (unsigned)(2 * k) * (unsigned)(2 * k - 1), LL), itpz2, LL);
     }
     if (shifted) r = _mp_sub(r, _mp_log(prod, LL), LL);
     return r;
