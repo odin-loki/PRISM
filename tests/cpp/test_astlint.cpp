@@ -1192,7 +1192,7 @@ int other_ok(long n) {
 )";
 
 // MEM-CAPACITY-FIRST: cap doubled before realloc; failure arm keeps it.
-const char* kCapacityC = R"(typedef unsigned long size_t;
+const char* kCapacityC = R"(typedef __SIZE_TYPE__ size_t;
 void *realloc(void *, size_t);
 void free(void *);
 #define NULL ((void *)0)
