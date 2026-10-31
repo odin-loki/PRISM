@@ -222,7 +222,6 @@ include("${PRISM_ROOT}/cmake/z3.cmake")
 # Explicit source list (no file(GLOB)).
 set(PRISM_SRC
   src/prism/adapters.cpp
-  src/prism/proc.cpp
   src/prism/astlint.cpp
   src/prism/astlint_checks.cpp
   src/prism/astlint_libclang.cpp
@@ -283,7 +282,6 @@ set(PRISM_SRC
   src/prism/cli.cpp
   src/prism/polyglot.cpp
   src/prism/toml_syntax.cpp
-  src/prism/proc_session.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
@@ -596,13 +594,8 @@ set(_prism_qa_sources
   src/tools/qa/conformance.cpp
   src/tools/qa/gen_random.cpp
   src/tools/qa/soundness.cpp)
-# Process tree runner: POSIX sessions (setsid/killpg) vs a Windows stub whose
-# run_tree is NOTRUN (Law 1) until a Job Object implementation lands.
-if(WIN32)
-  list(APPEND _prism_qa_sources src/tools/qa/support/proctree_win.cpp)
-else()
-  list(APPEND _prism_qa_sources src/tools/qa/support/proctree.cpp)
-endif()
+# Process tree runner: prism::exec / FORGE (sessions, Job Objects).
+list(APPEND _prism_qa_sources src/tools/qa/support/proctree.cpp)
 add_library(prism_qa STATIC ${_prism_qa_sources})
 if(MSVC)
   target_compile_options(prism_qa PRIVATE /utf-8)

@@ -12,11 +12,13 @@
 // result, docs/PIR.md "Library models verified by PRISM"), never a proof for
 // all sizes (Law 2), and it is reported as such.
 
+#include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/regex.hpp"
 
 #include <algorithm>
@@ -75,10 +77,10 @@ struct Run {
 Run run_one(const fs::path& prism, const fs::path& src, const std::string& fn, int n, double timeout,
             const fs::path& repo) {
     const auto out = src.parent_path() / ("out_" + fn + "_" + std::to_string(n));
-    detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.cwd = repo;
     so.timeout_s = timeout;
-    auto r = detail::run_session({prism.string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
+    auto r = prism::exec::run_session({prism.string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
                                   "--out", out.string(), "--unwind", std::to_string(2 * n + 2), "--solver-cache",
                                   (src.parent_path() / ("cache_" + fn + "_" + std::to_string(n))).string()},
                                  so);

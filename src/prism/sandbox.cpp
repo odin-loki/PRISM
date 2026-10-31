@@ -1,10 +1,12 @@
 // Law 9 exec policy + process sandbox. Twin of the Python engine prism/sandbox.py.
 
+#include "prism/exec.hpp"
 #include "prism/sandbox.hpp"
 
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <atomic>
 #include <cctype>
@@ -72,7 +74,7 @@ std::optional<std::string> probe_bwrap() {
 #if defined(__linux__)
     auto exe = Config{}.which({"bwrap"});
     if (!exe) return std::nullopt;
-    auto r = detail::run_process(bwrap_argv(exe->string(), {"true"}, "/"), 10.0);
+    auto r = prism::exec::run_process(bwrap_argv(exe->string(), {"true"}, "/"), 10.0);
     if (r.failed || r.timed_out || r.rc != 0) return std::nullopt;
     return exe->string();
 #else

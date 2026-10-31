@@ -19,6 +19,7 @@
 // --allow-exec and runs Lean in the bwrap jail when one is available.
 // Every model call is in <out>/ai_audit.jsonl.
 
+#include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/clock.hpp"
 #include "ai_internal.hpp"
@@ -28,7 +29,8 @@
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -556,11 +558,11 @@ struct PathGuard {
     }
 };
 
-detail::ProcOut run_lake(const fs::path& lake, const std::vector<std::string>& args, const fs::path& cwd,
+prism::exec::ProcOut run_lake(const fs::path& lake, const std::vector<std::string>& args, const fs::path& cwd,
                          double timeout, const fs::path& writable) {
     std::vector<std::string> argv{lake.string()};
     argv.insert(argv.end(), args.begin(), args.end());
-    return detail::run_process(sandbox::wrap_argv(argv, writable), timeout, cwd);
+    return prism::exec::run_process(sandbox::wrap_argv(argv, writable), timeout, cwd);
 }
 
 bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {

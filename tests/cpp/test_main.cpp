@@ -1,4 +1,5 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -40,7 +41,8 @@
 #ifdef _WIN32
 #  include <process.h>
 
-#  include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #else
 #  include <unistd.h>
 #endif
@@ -4223,7 +4225,7 @@ TEST_CASE("config: which skips the Microsoft Store python stub (exit 9009)") {
     auto cfg = prism::default_config();
     auto py = cfg.which({"python3", "python"});
     if (!py) return;
-    auto r = prism::detail::run_process({py->string(), "--version"}, 10.0);
+    auto r = prism::exec::run_process({py->string(), "--version"}, 10.0);
     CHECK_FALSE(r.failed);
     CHECK(r.rc != 9009);
 }
@@ -7487,7 +7489,8 @@ TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
     MESSAGE("POSIX-only (fork/SIGTERM); Windows: see the Job Object cases in tests/cpp/test_qa.cpp");
 }
 #else
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "../../src/prism/stages/common.hpp"
 
 #include <csignal>
@@ -7525,7 +7528,7 @@ TEST_CASE("process runners kill the child's whole process tree on timeout") {
     REQUIRE(gc > 1);
     CHECK(proc_gone(gc));
     // the adapter runner (clang, opt, ...) as well
-    auto a = prism::detail::run_process({"sh", "-c", "sleep 30 & echo $!; wait"}, 1.0);
+    auto a = prism::exec::run_process({"sh", "-c", "sleep 30 & echo $!; wait"}, 1.0);
     CHECK(a.timed_out);
     long gc2 = std::atol(a.text.c_str());
     REQUIRE(gc2 > 1);
@@ -7541,7 +7544,7 @@ TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
         // stands in for PRISM: the handler main() installs, one tracked child
         // group (a solver in a process group of its own), then wait for a signal
         ::close(pfd[0]);
-        prism::detail::install_child_cleanup();
+        prism::exec::install_interrupt_cleanup();
         pid_t g = ::fork();
         if (g == 0) {
             ::setpgid(0, 0);

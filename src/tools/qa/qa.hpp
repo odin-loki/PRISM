@@ -17,9 +17,10 @@
 //   docs-check                --help flags documented, anchors resolve, stage order
 //
 // PRISM runs as a child process in a session of its own
-// (detail::run_session): a timeout or Ctrl-C kills it and every solver,
+// (prism::exec::run_session): a timeout or Ctrl-C kills it and every solver,
 // checker and compiler it started.
 
+#include "prism/exec.hpp"
 #include "docscan.hpp"
 
 #include <nlohmann/json.hpp>

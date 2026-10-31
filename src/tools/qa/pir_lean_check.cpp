@@ -15,11 +15,13 @@
 // Exit 1 when any function is a MISMATCH, 2 when a tool is missing or no
 // tree exported a pair (NOTRUN, never a silent pass).
 
+#include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/ai_proof.hpp"
 
 #include <algorithm>
@@ -101,9 +103,9 @@ std::optional<fs::path> find_pir_lean_checker(const std::string& explicit_path, 
     if (fs::is_regular_file(exe, ec)) return exe;
     auto lake = ai::find_lake();
     if (!lake) return std::nullopt;
-    detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.cwd = project;
-    auto r = detail::run_session({lake->string(), "build", "pir_lean_check"}, so);
+    auto r = prism::exec::run_session({lake->string(), "build", "pir_lean_check"}, so);
     if (r.rc == 0 && fs::is_regular_file(exe, ec)) return exe;
     return std::nullopt;
 }
@@ -156,10 +158,10 @@ int pir_lean_check_main(const Args& args) {
     for (const auto& tree : trees) {
         const auto out = tmp.path / tree.filename();
         const auto pairs = out / "pairs";
-        detail::SessionOptions so;
+        prism::exec::SessionOptions so;
         so.cwd = repo;
         so.env = {{"PRISM_PIR_LEAN_EXPORT", pairs.string()}};
-        auto run = detail::run_session({exe->string(), fs::absolute(tree).string(), "--no-llm", "--stage",
+        auto run = prism::exec::run_session({exe->string(), fs::absolute(tree).string(), "--no-llm", "--stage",
                                         "inventory,classify,pir", "--out", (out / "prism-out").string(), "--jobs",
                                         std::to_string(jobs)},
                                        so);
@@ -174,7 +176,7 @@ int pir_lean_check_main(const Args& args) {
         ++exported_trees;
         std::vector<std::string> argv{checker->string()};
         for (auto& f : files) argv.push_back(f.string());
-        auto r = detail::run_session(argv);
+        auto r = prism::exec::run_session(argv);
         auto parsed = parse_checker_output(r.out);
         // outside reasons: the first two words of the reason column, most common first
         std::vector<std::pair<std::string, int>> reasons;

@@ -6,6 +6,7 @@
 // 2.0 YAML. Also the task-definition reader, the subset scorer, the tool
 // archive and the session runner the scorer uses.
 
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -17,7 +18,8 @@
 #include "prism/pipeline.hpp"
 #include "prism/svcomp.hpp"
 #include "prism/taskdef.hpp"
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -127,7 +129,7 @@ bool cc_with_ubsan() {
     if (!cc) return false;
     TempDir d;
     auto src = d.write("t.c", "int main(void){return 0;}\n");
-    auto r = prism::detail::run_process({cc->string(), "-fsanitize=signed-integer-overflow", src.string(), "-o",
+    auto r = prism::exec::run_process({cc->string(), "-fsanitize=signed-integer-overflow", src.string(), "-o",
                                          (d.path / "t").string()},
                                         120.0);
     return !r.failed && !r.timed_out && r.rc == 0;
@@ -1195,7 +1197,7 @@ TEST_CASE("svcomp pack: the tool archive") {
     CHECK(res.manifest["dependencies"].contains("prism_env"));
     CHECK_FALSE(res.manifest["dependencies"].contains("python"));
     if (!lister) return;
-    auto ls = prism::detail::run_process({lister->string(), "tzvf", out.string()}, 60.0);
+    auto ls = prism::exec::run_process({lister->string(), "tzvf", out.string()}, 60.0);
     for (const auto& name : want) CHECK(ls.text.find("prism/" + name) != std::string::npos);
 #ifdef _WIN32
     // NTFS has no mode bits: bsdtar's rwx column says nothing about the executable
@@ -1205,7 +1207,7 @@ TEST_CASE("svcomp pack: the tool archive") {
     CHECK(ls.text.find("rwxr-xr-x") != std::string::npos);  // the binary stays executable
 #endif
     fs::create_directories(d.path / "x");
-    prism::detail::run_process({lister->string(), "xzf", out.string(), "-C", (d.path / "x").string()}, 60.0);
+    prism::exec::run_process({lister->string(), "xzf", out.string(), "-C", (d.path / "x").string()}, 60.0);
     auto deps = json::parse(slurp(d.path / "x" / "prism" / "dependencies.json"));
     CHECK(deps.contains("clang"));
     CHECK(deps.contains("prism_env"));
@@ -1228,7 +1230,7 @@ TEST_CASE("run_session: a timeout kills the whole session, also a child in its o
     const std::string pg_script = "(set -m; sleep 60 & echo $! > '" + pidfile.string() + "'; wait) & exec sleep 60";
     (void)script;
     const auto t0 = std::chrono::steady_clock::now();
-    auto r = prism::detail::run_session({"/bin/sh", "-c", pg_script}, 2.0);
+    auto r = prism::exec::run_session({"/bin/sh", "-c", pg_script}, 2.0);
     CHECK(r.timed_out);
     CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(30));
     long solver = 0;
@@ -1258,7 +1260,7 @@ TEST_CASE("run_session: a timeout kills the whole session, also a child in its o
 }
 
 TEST_CASE("run_session: normal exit returns stdout and the exit status") {
-    auto r = prism::detail::run_session({"/bin/sh", "-c", "echo ok; echo err >&2; exit 3"}, 30.0);
+    auto r = prism::exec::run_session({"/bin/sh", "-c", "echo ok; echo err >&2; exit 3"}, 30.0);
     CHECK_FALSE(r.timed_out);
     CHECK(r.rc == 3);
     CHECK(r.out == "ok\n");

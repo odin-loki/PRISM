@@ -19,7 +19,7 @@
 #include "prism/models.hpp"
 #include "prism/regex.hpp"
 #include "prism/sandbox.hpp"
-#include "../proc.hpp"
+#include "prism/exec.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -156,7 +156,7 @@ struct ProcRun {
 ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
                  const sandbox::Limits& limits = sandbox::Limits());
 // The full spec: an environment overlay for the child only, a working directory.
-ProcRun run_spec(const detail::RunSpec& spec);
+ProcRun run_spec(const exec::Spec& spec);
 // Law 1 / Law 7: the child did not start. One NOTRUN finding, with an install
 // hint. A child that started (failed == false) is nullopt — including an
 // exit of 127 — so this does not emit CLEAN or PROVED.

@@ -5,6 +5,7 @@
 // translation-validated: the PIR interpreter and `lli` (sandboxed) run the
 // same concrete inputs and must agree wherever PIR reports no UB.
 
+#include "prism/exec.hpp"
 #include "prism/membudget.hpp"
 #include "prism/clock.hpp"
 #include "prism/settings.hpp"
@@ -19,7 +20,8 @@
 #include "prism/sandbox.hpp"
 #include "prism/threads.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
@@ -388,7 +390,7 @@ Frontend find_frontend(const Config& cfg) {
     fe.lli = tool(cfg, {"lli-18", "lli"});
     fe.version = "clang";
     if (fe.clang) {
-        auto r = detail::run_process({fe.clang->string(), "--version"}, 20.0);
+        auto r = prism::exec::run_process({fe.clang->string(), "--version"}, 20.0);
         auto p = r.text.find("clang version ");
         if (p != std::string::npos) {
             auto s = p + 14;
@@ -426,14 +428,14 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // headers come first on the include path. A unit that does not compile
     // against them (an API or specialisation the models leave out, e.g.
     // vector<bool>) is lowered again with the platform library and says so.
-    std::optional<detail::ProcOut> modelled;
+    std::optional<prism::exec::ProcOut> modelled;
     if (cxx && !fe.cxx_models.empty()) {
         auto mf = fl;
         mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), mf.begin(), mf.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});
-        auto rm = detail::run_process(av, timeout_s);
+        auto rm = prism::exec::run_process(av, timeout_s);
         const bool rm_ok = !rm.failed && !rm.timed_out && rm.rc == 0;
         const bool rm_timed = rm.timed_out;
         const std::string rm_err = rm.text;
@@ -458,7 +460,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     }
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
-    auto r = modelled.has_value() ? std::move(*modelled) : detail::run_process(argv, timeout_s);
+    auto r = modelled.has_value() ? std::move(*modelled) : prism::exec::run_process(argv, timeout_s);
     // C23's static_assert keyword (no <assert.h>) compiles as C17 only as an
     // implicit call to a function named static_assert: also a C23 unit.
     const bool c23_kw = !r.failed && r.rc == 0 && r.text.find("function 'static_assert'") != std::string::npos;
@@ -471,7 +473,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), c23.begin(), c23.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});
-        auto r2 = detail::run_process(av, timeout_s);
+        auto r2 = prism::exec::run_process(av, timeout_s);
         if (!r2.failed && !r2.timed_out && r2.rc == 0) {
             r = std::move(r2);
             fl = std::move(c23);
@@ -486,7 +488,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), c14.begin(), c14.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});
-        auto r2 = detail::run_process(av, timeout_s);
+        auto r2 = prism::exec::run_process(av, timeout_s);
         if (!r2.failed && !r2.timed_out && r2.rc == 0) {
             r = std::move(r2);
             fl = std::move(c14);
@@ -506,7 +508,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), fl.begin(), fl.end());
         av.insert(av.end(), {"-femit-all-decls", "-o", o0.string(), src.string()});
-        (void)detail::run_process(av, timeout_s);
+        (void)prism::exec::run_process(av, timeout_s);
     }
     auto diags = parse_folded_clang_diagnostics(r.text, src);
     std::vector<int> placed;
@@ -531,7 +533,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
                                "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
                              : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
-    auto ro = detail::run_process({fe.opt->string(), passes,
+    auto ro = prism::exec::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
                                   timeout_s);
     if (ro.failed || ro.timed_out || ro.rc != 0) {
@@ -560,7 +562,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                     if (a.starts_with("-std=")) a = "-std=c++" + std::to_string(cxx_std < 11 ? 98 : cxx_std);
             auto os = td.path / "shift.ll";
             av.insert(av.end(), {"-fsanitize=shift-base", "-o", os.string(), src.string()});
-            auto rs = detail::run_process(av, timeout_s);
+            auto rs = prism::exec::run_process(av, timeout_s);
             if (cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
                 // The unit needs a later standard than it declares: C++20 rules.
             } else if (rs.failed || rs.timed_out || rs.rc != 0) {
@@ -803,7 +805,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         return;
     }
     // Compile-only reduction: keep the driver and what it reaches.
-    auto ro = detail::run_process({fe.opt->string(), "-passes=internalize,globaldce",
+    auto ro = prism::exec::run_process({fe.opt->string(), "-passes=internalize,globaldce",
                                    "-internalize-public-api-list=__prism_tv_main", "-S", "-o", tv2.string(),
                                    tv.string()},
                                   cfg.timeout);
@@ -820,7 +822,7 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
                                    "--fsize=" + std::to_string(sandbox::LIMIT_FSIZE_BYTES),
                                    "--cpu=" + std::to_string(static_cast<long>(cfg.timeout) + 2), "--"});
     }
-    auto rr = detail::run_process(sandbox::wrap_argv(argv, td.path), cfg.timeout + 5.0, td.path);
+    auto rr = prism::exec::run_process(sandbox::wrap_argv(argv, td.path), cfg.timeout + 5.0, td.path);
     std::map<std::pair<std::size_t, std::size_t>, uint64_t> got;
     for (auto& line : split_lines(rr.text)) {
         if (!line.starts_with("R ")) continue;
@@ -1216,7 +1218,7 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     }
     cmd.insert(cmd.end(), {std::string("--stage"), std::string("inventory,classify,pir"), std::string("--out"), out.string()});
     const double t = 120 + 3.0 * std::max(60.0, cfg.timeout) * static_cast<double>(pend.size());
-    auto r = detail::run_process(cmd, t);
+    auto r = prism::exec::run_process(cmd, t);
     std::map<std::string, nlohmann::json> got;
     {
         std::ifstream in(out / "stages.jsonl");

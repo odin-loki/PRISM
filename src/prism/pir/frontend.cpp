@@ -1,8 +1,10 @@
+#include "prism/exec.hpp"
 #include "prism/pir/frontend.hpp"
 
 #include "prism/pir.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -32,7 +34,7 @@ bool lp64_clang_probe(const std::filesystem::path& clang) {
         }
         f << kProbeSrc;
     }
-    auto r = detail::run_process({clang.string(), "--target=" + std::string(lp64_target_triple()), "-S", "-emit-llvm", "-x",
+    auto r = prism::exec::run_process({clang.string(), "--target=" + std::string(lp64_target_triple()), "-S", "-emit-llvm", "-x",
                                   "c", "-o", out.string(), src.string()},
                                  20.0);
     std::string ir;

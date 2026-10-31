@@ -39,10 +39,6 @@ struct RunResult {
 
 RunResult run_tree(const std::vector<std::string>& argv, const RunOpts& opts = {});
 
-// PIDs whose session id is sid (Linux /proc; empty elsewhere).
-std::vector<int> session_members(int sid);
-// SIGKILL the session `sid` leads: its process group, then every other member.
-void kill_session(int sid) noexcept;
 // SIGINT/SIGTERM/SIGHUP: kill every running session, then die of the signal.
 void install_interrupt_cleanup() noexcept;
 

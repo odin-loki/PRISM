@@ -16,7 +16,8 @@
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <filesystem>
 #include <fstream>

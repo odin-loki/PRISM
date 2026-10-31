@@ -1,8 +1,10 @@
+#include "prism/exec.hpp"
 #include "prism/settings.hpp"
 #include "prism/config.hpp"
 #include "prism/deps.hpp"
 #include "prism/manifest_pins.hpp"  // generated from third_party/MANIFEST.toml by prism-deps pins
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -106,7 +108,7 @@ static bool is_store_python_stub(const fs::path& p) {
         std::lock_guard<std::mutex> lock(mu);
         if (auto it = cache.find(key); it != cache.end()) return it->second;
     }
-    auto r = detail::run_process({p.string(), "--version"}, 10.0);
+    auto r = prism::exec::run_process({p.string(), "--version"}, 10.0);
     const bool stub = r.failed || r.timed_out || r.rc == 9009;
     std::lock_guard<std::mutex> lock(mu);
     cache[key] = stub;

@@ -6,11 +6,13 @@
 // soundness bug (docs/PIR.md). --gate exits 1 when hard conflicts are nonzero
 // or bmc PROVED* meets pir absent / NEEDS-HARNESS. It does not retire bmc.
 
+#include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -208,10 +210,10 @@ int pir_vs_bmc_main(const Args& args) {
         }
         TempDir td("prism_pir_vs_bmc_");
         const auto out = td.path / "out";
-        detail::SessionOptions so;
+        prism::exec::SessionOptions so;
         so.cwd = repo;
         so.timeout_s = timeout;
-        auto r = detail::run_session({exe->string(), fs::absolute(tree).string(), "--no-llm", "--stage",
+        auto r = prism::exec::run_session({exe->string(), fs::absolute(tree).string(), "--no-llm", "--stage",
                                       "inventory,classify,bmc,pir", "--out", out.string(), "--jobs",
                                       std::to_string(jobs)},
                                      so);

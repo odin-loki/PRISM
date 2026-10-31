@@ -4,7 +4,7 @@
 #include "prism/clock.hpp"
 #include "prism/config.hpp"
 #include "internal.hpp"
-#include "../proc.hpp"
+#include "prism/exec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,7 +25,6 @@
 #include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
-extern char** environ;
 #endif
 
 #ifdef _WIN32
@@ -201,163 +200,44 @@ bool write_file(const fs::path& p, std::string_view data) {
     return true;
 }
 
-#if defined(__linux__)
-namespace {
-// Resident set size of a process in bytes (0 when unreadable).
-std::uint64_t rss_of(pid_t pid) {
-    char path[64];
-    std::snprintf(path, sizeof path, "/proc/%d/statm", static_cast<int>(pid));
-    std::FILE* f = std::fopen(path, "r");
-    if (!f) return 0;
-    unsigned long long size = 0, res = 0;
-    const int n = std::fscanf(f, "%llu %llu", &size, &res);
-    std::fclose(f);
-    if (n != 2) return 0;
-    static const long page = sysconf(_SC_PAGESIZE);
-    return static_cast<std::uint64_t>(res) * static_cast<std::uint64_t>(page > 0 ? page : 4096);
-}
-}  // namespace
-#endif
-
 Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atomic<bool>* stop,
          std::size_t cap, const std::string& stdin_path, const std::string& stdout_path, std::uint64_t mem_cap) {
     Proc r;
     r.mem_cap = mem_cap;
-    const double t0 = now_s();
-#ifdef _WIN32
     if (argv.empty()) {
         r.failed = true;
         return r;
     }
-    prism::detail::RunSpec spec;
+    prism::exec::Spec spec;
     spec.argv = argv;
-    spec.timeout_s = timeout_s;
+    spec.timeout_ms = timeout_s > 0 ? static_cast<std::uint64_t>(timeout_s * 1000) : 0;
     spec.merge_stderr = stdout_path.empty();
     spec.stop = stop;
-    spec.max_output_bytes = cap;
-    // Resident-memory cap: the Job Object runner samples the working set
-    // (the counterpart of the Linux /proc/<pid>/statm watchdog below).
-    spec.rss_cap_bytes = mem_cap;
-    if (!stdout_path.empty()) spec.stdout_path = stdout_path;
-    if (!stdin_path.empty()) spec.stdin_path = stdin_path;
-    auto ro = prism::detail::run(spec);
-    r.secs = now_s() - t0;
+    spec.max_output = cap;
+    spec.watch_memory_bytes = mem_cap;  // FORGE: process-group RSS (Linux), Job Object memory (Windows)
+    spec.stdin_file = stdin_path;
+    spec.stdout_file = stdout_path;
+    prism::exec::Result ro;
+    try {
+        ro = prism::exec::run(spec);
+    } catch (const std::exception& e) {  // Law 8 refusal; this runner never throws
+        r.failed = true;
+        r.out = e.what();
+        return r;
+    }
+    r.secs = static_cast<double>(ro.wall_ms) / 1000.0;
     r.failed = ro.failed;
     r.timed_out = ro.timed_out;
     r.cancelled = ro.cancelled;
-    r.mem_exceeded = ro.rss_exceeded;
-    r.peak_rss = ro.peak_rss;
-    r.rc = ro.rc;
+    r.mem_exceeded = ro.memory_killed;
+    r.rc = ro.rc();
     if (ro.failed) {
-        r.out = ro.err.empty() ? ro.out : ro.err;
+        r.out = "cannot start " + argv.at(0) + ": " + ro.err;
     } else {
-        r.out = ro.out;
+        r.out = std::move(ro.out);
         if (!ro.err.empty()) r.out += ro.err;
     }
     return r;
-#else
-    if (argv.empty()) { r.failed = true; return r; }
-    int fds[2];
-    // O_CLOEXEC on both ends: a sibling thread spawning at the same moment
-    // must not inherit our write end (that would hold EOF back).
-    if (pipe2(fds, O_CLOEXEC) != 0) { r.failed = true; return r; }
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addopen(&fa, 0, stdin_path.empty() ? "/dev/null" : stdin_path.c_str(),
-                                     O_RDONLY, 0);
-    if (stdout_path.empty())
-        posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
-    else
-        posix_spawn_file_actions_addopen(&fa, 1, stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
-    posix_spawnattr_t at;
-    posix_spawnattr_init(&at);
-    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
-    posix_spawnattr_setpgroup(&at, 0);
-    std::vector<char*> args;
-    for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    pid_t pid = -1;
-    int rc = posix_spawnp(&pid, args.at(0), &fa, &at, args.data(), environ);
-    posix_spawn_file_actions_destroy(&fa);
-    posix_spawnattr_destroy(&at);
-    close(fds[1]);
-    if (rc != 0) {
-        close(fds[0]);
-        r.failed = true;
-        r.out = std::string("cannot start ") + argv.at(0) + ": " + std::strerror(rc);
-        return r;
-    }
-    // registered so that a SIGINT/SIGTERM to PRISM kills this group too (proc.hpp)
-    prism::detail::ChildGroup tracked(pid);
-    bool open = true;
-    char b[65536];
-    auto kill_group = [&] { ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL); };
-    double next_mem = 0;
-    // true when the child passed the memory cap (it is then killed)
-    auto over_mem = [&]() -> bool {
-#if defined(__linux__)
-        if (mem_cap == 0 || r.mem_exceeded) return false;
-        const double t = now_s();
-        if (t < next_mem) return false;
-        next_mem = t + 0.1;
-        const auto rss = rss_of(pid);
-        r.peak_rss = std::max(r.peak_rss, rss);
-        if (rss <= mem_cap) return false;
-        r.mem_exceeded = true;
-        kill_group();
-        return true;
-#else
-        return false;
-#endif
-    };
-    while (open) {
-        if (stop && stop->load()) { r.cancelled = true; kill_group(); break; }
-        if (timeout_s > 0 && now_s() - t0 > timeout_s) { r.timed_out = true; kill_group(); break; }
-        if (over_mem()) break;
-        pollfd pf{fds[0], POLLIN, 0};
-        int pr = poll(&pf, 1, 20);
-        if (pr < 0) { if (errno == EINTR) continue; break; }
-        if (pr == 0) continue;
-        ssize_t n = read(fds[0], b, sizeof b);
-        if (n <= 0) { open = false; break; }
-        if (r.out.size() < cap) r.out.append(b, std::size_t(n));
-    }
-    int st = 0;
-    // The child may have closed stdout but still be running: wait with the
-    // same deadline / stop rules. Once killed, it gets kReapGraceS to be
-    // reaped; a process that cannot die in time (uninterruptible sleep) is
-    // left to a detached reaper and the run returns (watchdog, recorded in
-    // Proc::unreaped): the caller's timeout is never exceeded by more.
-    constexpr double kReapGraceS = 2.0;
-    double killed_at = r.timed_out || r.cancelled ? now_s() : -1.0;
-    for (;;) {
-        pid_t w = waitpid(pid, &st, WNOHANG);
-        if (w == pid) break;
-        if (w < 0 && errno != EINTR) break;
-        if (stop && stop->load() && !r.cancelled) { r.cancelled = true; kill_group(); }
-        if (timeout_s > 0 && now_s() - t0 > timeout_s && !r.timed_out && !r.cancelled) {
-            r.timed_out = true;
-            kill_group();
-        }
-        if (!r.timed_out && !r.cancelled) over_mem();
-        if ((r.timed_out || r.cancelled) && killed_at < 0) killed_at = now_s();
-        if (killed_at >= 0 && now_s() - killed_at > kReapGraceS) {
-            r.unreaped = true;
-            std::thread([pid] {
-                int s2 = 0;
-                while (waitpid(pid, &s2, 0) < 0 && errno == EINTR) {}
-            }).detach();
-            break;
-        }
-        usleep(2000);
-    }
-    close(fds[0]);
-    if (WIFEXITED(st)) r.rc = WEXITSTATUS(st);
-    else if (WIFSIGNALED(st)) r.rc = 128 + WTERMSIG(st);
-    r.secs = now_s() - t0;
-    return r;
-#endif
 }
 
 std::optional<std::string> out_of_memory(const Proc& p) {

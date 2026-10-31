@@ -1,6 +1,7 @@
 // `prism svcomp`: PRISM as an SV-COMP verifier (include/prism/svcomp.hpp,
 // docs/SVCOMP.md). One task, the subset scorer (`svcomp score`) and the
 // tool archive (`svcomp pack`).
+#include "prism/exec.hpp"
 #include "prism/clock.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
@@ -9,7 +10,8 @@
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/taskdef.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "svcomp/internal.hpp"
 
 #include <algorithm>
@@ -417,7 +419,7 @@ int score_main(int argc, char** argv) {
             }
             cmd.push_back(t.input.string());
             const prism::clock::Stopwatch sw;
-            auto r = prism::detail::run_session(cmd, timeout);
+            auto r = prism::exec::run_session(cmd, timeout);
             const double secs = sw.elapsed_s();
             std::vector<std::string> lines = splitlines(r.out);
             std::string answer;
@@ -475,7 +477,7 @@ int score_main(int argc, char** argv) {
 // ---------------------------------------------------------------- pack
 
 std::optional<std::string> first_line(const std::vector<std::string>& cmd) {
-    auto r = prism::detail::run_process(cmd, 15.0);
+    auto r = prism::exec::run_process(cmd, 15.0);
     if (r.failed || r.timed_out || r.rc != 0) return std::nullopt;
     std::string t = strip(r.text);
     if (t.empty()) return std::nullopt;
@@ -629,7 +631,7 @@ PackResult pack(const fs::path& prism_bin, const fs::path& repo, const fs::path&
     std::vector<std::string> cmd = tar_cmd;
     cmd.push_back(out.string());
     cmd.emplace_back("prism");
-    auto r = prism::detail::run_process(cmd, 300.0, stage);
+    auto r = prism::exec::run_process(cmd, 300.0, stage);
     if (r.failed || r.timed_out || r.rc != 0) {
         res.error = "archiver failed: " + strip(r.text);
         return res;

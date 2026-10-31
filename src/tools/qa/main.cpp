@@ -8,10 +8,12 @@
 //   prism-qa pir-vs-bmc ...        bmc vs pir agreement matrix
 //   (see usage below for the rest)
 
+#include "prism/exec.hpp"
 #include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "support/cli.hpp"
 #include "support/proctree.hpp"
 
@@ -57,7 +59,7 @@ int usage(std::ostream& o, int rc) {
 int main(int argc, char** argv) {
     prism::log::set_program("prism-qa");
     prism::qa::install_interrupt_cleanup();
-    prism::detail::install_child_cleanup();
+    prism::exec::install_interrupt_cleanup();
     if (argc < 2) return usage(prism::log::err_stream(), 2);
     const std::string_view cmd = argv[1];
     if (cmd == "-h" || cmd == "--help") return usage(std::cout, 0);

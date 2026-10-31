@@ -765,14 +765,14 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
     int vsec = std::max(1, static_cast<int>(timeout));
-    detail::RunSpec spec;
+    exec::Spec spec;
     spec.argv = sandbox::wrap_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V",
                                     std::to_string(vsec), "--", exe.string()},
                                    td);
-    spec.env = afl_env();  // the child's environment only, never PRISM's
-    spec.cwd = td;
-    spec.timeout_s = timeout + 10.0;
-    spec.limits = sandbox::limits_for(timeout + 10.0, /*limit_as=*/false);
+    for (const auto& [k, v] : afl_env()) spec.env_set[k] = v;  // the child's environment only, never PRISM's
+    spec.cwd = td.string();
+    spec.timeout_ms = static_cast<std::uint64_t>((timeout + 10.0) * 1000);
+    exec::apply_limits(spec, true, timeout + 10.0, /*limit_as=*/false);
     ProcRun run = run_spec(spec);
     std::optional<AflCrashFile> crash;
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};

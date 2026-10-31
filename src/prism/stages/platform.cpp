@@ -4,7 +4,6 @@
 #include "prism/clock.hpp"
 #include "common.hpp"
 #include "../ai/ai_internal.hpp"
-#include "../proc.hpp"
 
 #ifdef _WIN32
 #  ifndef NOMINMAX
@@ -66,11 +65,11 @@ namespace stages_detail {
 // The stages' view of detail::run (proc.cpp): stdin, split stdout/stderr.
 ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
                  const sandbox::Limits& limits) {
-    detail::RunSpec spec;
+    exec::Spec spec;
     spec.argv = args;
-    spec.input = input;
-    spec.timeout_s = timeout_s;
-    spec.limits = limits;
+    spec.stdin_data = input;
+    spec.timeout_ms = timeout_s > 0 ? static_cast<std::uint64_t>(timeout_s * 1000) : 0;
+    exec::apply_limits(spec, limits.enabled, limits.cpu_seconds, limits.limit_as);
     return run_spec(spec);
 }
 
@@ -82,14 +81,16 @@ void suppress_crash_dialogs() {
 #endif
 }
 
-ProcRun run_spec(const detail::RunSpec& spec) {
-    auto r = detail::run(spec);
+ProcRun run_spec(const exec::Spec& in) {
+    exec::Spec spec = in;
+    spec.max_output = ~0ull;
+    auto r = exec::run(spec);
     ProcRun out;
-    out.rc = r.rc;
+    out.rc = r.rc();
     out.out = std::move(r.out);
     out.err = std::move(r.err);
     out.timeout = r.timed_out;
-    out.crashed = r.crashed;
+    out.crashed = r.crashed();
     out.failed = r.failed;
     return out;
 }

@@ -8,7 +8,8 @@
 #include "prism/cparse.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/exec.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "sanitize_detail.hpp"
 #include "adapters_internal.hpp"
 
@@ -103,7 +104,7 @@ std::string tail(const std::string& s, std::size_t n) {
     return s.substr(s.size() - n);
 }
 
-void refuse_disabled_checks(const std::vector<std::string>& cmd) { detail::refuse_disabled_checks(cmd); }
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { exec::refuse_disabled_checks(cmd); }
 
 Finding finding(std::string stage, std::string_view status, std::string file, std::string cls,
                 std::string message, std::string_view strength) {

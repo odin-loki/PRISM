@@ -23,7 +23,8 @@
 #include "qa.hpp"
 
 #include "prism/exec.hpp"
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/config.hpp"
 #include "prism/pir.hpp"
 
@@ -225,9 +226,9 @@ int llvm_sem_vs_lli_main(const Args& args) {
         std::vector<fs::path> pirls;
         const auto dir = pairs_dir.empty() ? t.path / "pairs" / stem : pairs_dir;
         if (pairs_dir.empty()) {
-            detail::SessionOptions so;
+            prism::exec::SessionOptions so;
             so.env = {{"PRISM_PIR_LEAN_EXPORT", dir.string()}};
-            detail::run_session({exe->string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
+            prism::exec::run_session({exe->string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
                                  "--out", (t.path / "out" / stem).string()},
                                 so);
         }
@@ -287,9 +288,9 @@ int llvm_sem_vs_lli_main(const Args& args) {
                         continue;
                     }
                     std::ofstream(prog, std::ios::binary) << lli_harness(*ir, rec.name, rec.params, rec.ret, vals);
-                    detail::SessionOptions lo;
+                    prism::exec::SessionOptions lo;
                     lo.timeout_s = 60;
-                    auto li = detail::run_session(
+                    auto li = prism::exec::run_session(
                         {fe.lli->string(), "--entry-function=__prism_lli_main", prog.string()}, lo);
                     auto out_words = words(li.out);
                     if (li.rc != 0 || out_words.empty()) {

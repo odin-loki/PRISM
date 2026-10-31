@@ -21,11 +21,13 @@
 //
 // Output: <out>/solver_bench.json and <out>/solver_bench.md.
 
+#include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/regex.hpp"
 
 #include <algorithm>
@@ -137,10 +139,10 @@ nlohmann::json solve(const fs::path& prism, const std::string& vc, bool z3, doub
     std::vector<std::string> argv{prism.string(), "--solve-smt2", vc, "--timeout", pyfloat(timeout),
                                   "--solver-cache", hist.string()};
     if (z3) argv.push_back("--z3-only");
-    detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.cwd = repo;
     so.timeout_s = timeout * 3 + 30;
-    auto r = detail::run_session(argv, so);
+    auto r = prism::exec::run_session(argv, so);
     nlohmann::json res;
     if (r.timed_out) {
         res = {{"kind", "error"}, {"note", "driver: TimeoutExpired"}};
@@ -248,10 +250,10 @@ int solver_bench_main(const Args& args) {
     for (const auto& t : tasks) {
         std::string dir_name;
         for (char c : t.ident) dir_name += c == '/' ? std::string("__") : std::string(1, c);
-        detail::SessionOptions so;
+        prism::exec::SessionOptions so;
         so.cwd = repo;
         so.timeout_s = 600;
-        auto r = detail::run_session({prism->string(), "--pir-vcs", t.source.string(), "--out",
+        auto r = prism::exec::run_session({prism->string(), "--pir-vcs", t.source.string(), "--out",
                                       (work.path / "vcs" / dir_name).string(), "--unwind", std::to_string(unwind)},
                                      so);
         nlohmann::json d;

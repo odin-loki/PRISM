@@ -6,6 +6,7 @@
 // Tools are fake executables (shell scripts or .cmd stubs on WIN32) in a temp
 // dir, handed over through Config::tools, $PATH or $PRISM_TOOLS_DIR, so every
 // branch runs against a real child process.
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -19,7 +20,8 @@
 #include "prism/stages.hpp"
 
 #include "../../src/prism/adapters_internal.hpp"
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "../../src/prism/stages/common.hpp"
 #include "../../src/prism/stages/llm.hpp"
 
@@ -481,7 +483,7 @@ TEST_CASE("proc: one runner with stdin, split or merged output, env overlay and 
     CHECK_FALSE(qr.failed);
 
     // Law 8: no runner starts a child with a check disabled.
-    CHECK_THROWS_AS(prism::detail::run_process({"x", "--no-bounds-check"}, 5), std::runtime_error);
+    CHECK_THROWS_AS(prism::exec::run_process({"x", "--no-bounds-check"}, 5), std::runtime_error);
     prism::detail::RunSpec l8;
     l8.argv = {"sh", "-c", "true", "--no-pointer-check"};
     CHECK_THROWS_AS(prism::detail::run(l8), std::runtime_error);
@@ -514,7 +516,7 @@ TEST_CASE("proc: one runner with stdin, split or merged output, env overlay and 
     auto sr = sd::run_argv({"sh", "-c", "cat; echo e >&2"}, "in\n", 10);
     CHECK(sr.out == "in\n");
     CHECK(sr.err == "e\n");
-    auto pr = prism::detail::run_process({"sh", "-c", "echo a; echo b >&2; pwd"}, 10, t.dir);
+    auto pr = prism::exec::run_process({"sh", "-c", "echo a; echo b >&2; pwd"}, 10, t.dir);
     CHECK(pr.text == "a\nb\n" + fs::canonical(t.dir).string() + "\n");
 }
 

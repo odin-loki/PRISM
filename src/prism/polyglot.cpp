@@ -18,6 +18,7 @@
 // Built-in scans read every text file in scope (id_rsa, key.pem, .npmrc,
 // Dockerfile, ...); language tools go by extension.
 
+#include "prism/exec.hpp"
 #include "prism/stages.hpp"
 #include "prism/laws.hpp"
 #include "prism/polyglot.hpp"
@@ -25,7 +26,8 @@
 #include "prism/regex.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -729,7 +731,7 @@ std::vector<Finding> run_check(const PgCheck& check, std::vector<fs::path> files
     const Regex unconfigured(tool->unconfigured.empty() ? std::string{}
                                                         : "(?i)" + tool->unconfigured);
     auto one = [&](const Call& call) -> std::vector<Finding> {
-        auto r = detail::run_process(expand(*tool, exe_path.string(), call.files),
+        auto r = prism::exec::run_process(expand(*tool, exe_path.string(), call.files),
                                      tool->timeout, call.cwd);
         if (r.timed_out)
             return {pg_finding(laws::TIMEOUT, "", std::nullopt, "",

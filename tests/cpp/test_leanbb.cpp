@@ -11,7 +11,8 @@
 
 #include "prism/solver.hpp"
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <filesystem>
 #include <fstream>
