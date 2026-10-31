@@ -143,6 +143,9 @@ public:
 
     // Both indices are checked. The address is i * extent(1) + j in the
     // caller's array, not a padding element.
+    // C++23 multidimensional subscript: the same checked access as operator().
+    reference operator[](size_type __i, size_type __j) const { return (*this)(__i, __j); }
+
     reference operator()(size_type __i, size_type __j) const {
         __prism_check(__i < _M_e0 && __j < _M_e1, "MEM-OOB-READ",
                       "std::mdspan::operator() index is outside the extents");

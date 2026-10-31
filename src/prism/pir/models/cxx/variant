@@ -32,7 +32,7 @@
 // that holds a value. Two different variant types are not that operator.
 // This is not PROVED and not CLEAN.
 //
-// visit, swap, relational comparison of variant (operator<, operator<=>, and
+// visit of one variant is modelled (below). Multi-variant visit, swap, relational comparison of variant (operator<, operator<=>, and
 // the other relational operators), hash, in_place constructors, and
 // bad_variant_access are not declared. operator<=> on monostate is not
 // declared. A use of an omitted API fails to compile against this header, so
@@ -517,6 +517,28 @@ struct variant_alternative<_I, const volatile _T> {
 };
 template <std::size_t _I, typename _T>
 using variant_alternative_t = typename variant_alternative<_I, _T>::type;
+
+
+// std::visit of one variant (roadmap 2.6). The active alternative is found by
+// a get_if chain over the indexes, so the visitor runs on the live object only
+// and never reads an inactive alternative. All alternatives must give the same
+// return type (the visitor's on index 0). More than one variant argument is not
+// declared and falls back to libstdc++.
+template <std::size_t _I, typename _Vis, typename _Var>
+decltype(auto) _Prism_var_visit_at(_Vis&& __vis, _Var* __v) {
+    if constexpr (_I + 1 < variant_size<typename _Prism_var_uncv<_Var>::type>::value) {
+        if (__v->index() != _I) return _Prism_var_visit_at<_I + 1>(static_cast<_Vis&&>(__vis), __v);
+    }
+    return static_cast<_Vis&&>(__vis)(*get_if<_I>(__v));
+}
+template <typename _Vis, typename... _Types>
+decltype(auto) visit(_Vis&& __vis, variant<_Types...>& __v) {
+    return _Prism_var_visit_at<0>(static_cast<_Vis&&>(__vis), &__v);
+}
+template <typename _Vis, typename... _Types>
+decltype(auto) visit(_Vis&& __vis, const variant<_Types...>& __v) {
+    return _Prism_var_visit_at<0>(static_cast<_Vis&&>(__vis), &__v);
+}
 
 }  // namespace std
 

@@ -1,4 +1,5 @@
 #include "proctree.hpp"
+#include "prism/serialized_fork.hpp"
 
 #include <atomic>
 #include <cerrno>
@@ -233,7 +234,7 @@ RunResult run_tree(const std::vector<std::string>& args, const RunOpts& opts) {
         r.err = std::strerror(errno);
         return r;
     }
-    pid_t pid = ::fork();
+    pid_t pid = prism::detail::serialized_fork();
     if (pid < 0) {
         for (int fd : {out_p[0], out_p[1], err_p[0], err_p[1], exec_p[0], exec_p[1]}) ::close(fd);
         r.start_failed = true;

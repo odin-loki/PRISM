@@ -391,12 +391,6 @@ RunOut run(const RunSpec& spec) {
 
 #else
 
-int serialized_fork() {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lk(m);
-    return static_cast<int>(::fork());
-}
-
 RunOut run(const RunSpec& spec) {
     refuse_disabled_checks(spec.argv);
     RunOut r;

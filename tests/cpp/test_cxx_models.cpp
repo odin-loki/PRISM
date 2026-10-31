@@ -276,3 +276,13 @@ TEST_CASE("cxx models: map/set trace matches libstdc++ and UAF on erase") {
     }
 #endif
 }
+
+TEST_CASE("cxx models: ranges views::take/drop trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("ranges_views_trace", {"ranges"});
+}
+
+TEST_CASE("cxx models: variant visit trace matches libstdc++") {
+    if (!ctx().ok) return;
+    same_trace("variant_visit_trace", {"variant"});
+}
