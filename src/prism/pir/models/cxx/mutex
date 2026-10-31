@@ -27,7 +27,7 @@
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
-extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+#include <bits/prism_sched.h>
 
 namespace std {
 
@@ -43,6 +43,15 @@ public:
     // lock is omitted so the unit fails to compile and pir falls back.
     // A blocking lock that returns immediately would be a fake acquisition.
 
+    // A lock held elsewhere blocks: a queued thread must run (and release
+    // it), else no schedule can acquire it (CXX-DEADLOCK).
+    void lock() {
+        while (_M_locked) {
+            __prism_sched::__must_switch("mutex::lock can never acquire the mutex");
+        }
+        _M_locked = true;
+    }
+
     bool try_lock() noexcept {
         if (_M_locked)
             return false;
@@ -54,7 +63,58 @@ public:
         __prism_check(_M_locked ? 1 : 0, "CXX-MUTEX-UNLOCK",
                       "mutex::unlock on an unlocked mutex");
         _M_locked = false;
+        __prism_sched::__maybe_switch();
     }
+};
+
+struct defer_lock_t { explicit defer_lock_t() = default; };
+struct try_to_lock_t { explicit try_to_lock_t() = default; };
+struct adopt_lock_t { explicit adopt_lock_t() = default; };
+inline constexpr defer_lock_t defer_lock{};
+inline constexpr try_to_lock_t try_to_lock{};
+inline constexpr adopt_lock_t adopt_lock{};
+
+template <class _M>
+class lock_guard {
+    _M& _M_m;
+public:
+    explicit lock_guard(_M& __m) : _M_m(__m) { _M_m.lock(); }
+    lock_guard(_M& __m, adopt_lock_t) noexcept : _M_m(__m) {}
+    ~lock_guard() { _M_m.unlock(); }
+    lock_guard(const lock_guard&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+};
+
+template <class _M>
+class unique_lock {
+    _M* _M_m = nullptr;
+    bool _M_own = false;
+public:
+    using mutex_type = _M;
+    unique_lock() noexcept = default;
+    explicit unique_lock(_M& __m) : _M_m(&__m) { lock(); }
+    unique_lock(_M& __m, defer_lock_t) noexcept : _M_m(&__m) {}
+    unique_lock(_M& __m, try_to_lock_t) : _M_m(&__m), _M_own(__m.try_lock()) {}
+    unique_lock(_M& __m, adopt_lock_t) noexcept : _M_m(&__m), _M_own(true) {}
+    unique_lock(const unique_lock&) = delete;
+    unique_lock& operator=(const unique_lock&) = delete;
+    unique_lock(unique_lock&& __o) noexcept : _M_m(__o._M_m), _M_own(__o._M_own) { __o._M_m = nullptr; __o._M_own = false; }
+    ~unique_lock() { if (_M_own) _M_m->unlock(); }
+    void lock() {
+        __prism_check(_M_m != nullptr && !_M_own ? 1 : 0, "FUNC-CONTRACT", "unique_lock::lock without a mutex or already owned");
+        _M_m->lock();
+        _M_own = true;
+    }
+    bool try_lock() { _M_own = _M_m->try_lock(); return _M_own; }
+    void unlock() {
+        __prism_check(_M_own ? 1 : 0, "FUNC-CONTRACT", "unique_lock::unlock without ownership");
+        _M_own = false;
+        _M_m->unlock();
+    }
+    bool owns_lock() const noexcept { return _M_own; }
+    explicit operator bool() const noexcept { return _M_own; }
+    _M* mutex() const noexcept { return _M_m; }
+    _M* release() noexcept { _M* __m = _M_m; _M_m = nullptr; _M_own = false; return __m; }
 };
 
 }  // namespace std

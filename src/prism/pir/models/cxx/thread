@@ -1,0 +1,105 @@
+// PRISM model of <thread> (std::thread, std::jthread subset, this_thread).
+// A thread is scheduled by bits/prism_sched.h: queued at construction, run
+// at a sync point the solver picks, and at the latest by join().
+#ifndef _GLIBCXX_THREAD
+#define _GLIBCXX_THREAD 1
+
+#pragma GCC system_header
+
+#include <bits/prism_sched.h>
+#include <utility>
+#include <type_traits>
+
+namespace std {
+
+class thread {
+    template <class _L>
+    static void _S_run(void* __p) { (*static_cast<_L*>(__p))(); }
+    template <class _L>
+    static void _S_del(void* __p) { delete static_cast<_L*>(__p); }
+
+    __prism_sched::__task* _M_t = nullptr;
+    bool _M_detached = false;
+
+public:
+    class id {
+        const void* _M_p = nullptr;
+        friend class thread;
+    public:
+        id() noexcept = default;
+        explicit id(const void* __p) noexcept : _M_p(__p) {}
+        friend bool operator==(id __a, id __b) noexcept { return __a._M_p == __b._M_p; }
+    };
+
+    thread() noexcept = default;
+
+    template <class _Fn, class... _Args, class = enable_if_t<!is_same_v<remove_cvref_t<_Fn>, thread>>>
+    explicit thread(_Fn&& __f, _Args&&... __a) {
+        // decay-copies of the callable and arguments, as [thread.thread.constr]
+        auto* __fn = new auto([__g = decay_t<_Fn>(std::forward<_Fn>(__f)), ... __b = decay_t<_Args>(std::forward<_Args>(__a))]() mutable {
+            std::move(__g)(std::move(__b)...);
+        });
+        using _L = remove_pointer_t<decltype(__fn)>;
+        _M_t = new __prism_sched::__task{&_S_run<_L>, &_S_del<_L>, __fn, false};
+        __prism_sched::__enqueue(_M_t);
+    }
+
+    thread(const thread&) = delete;
+    thread& operator=(const thread&) = delete;
+    thread(thread&& __o) noexcept : _M_t(__o._M_t) { __o._M_t = nullptr; }
+    thread& operator=(thread&& __o) noexcept {
+        __prism_check(_M_t == nullptr ? 1 : 0, "CXX-THREAD-JOINABLE", "std::thread move-assigned while joinable (std::terminate)");
+        _M_t = __o._M_t;
+        __o._M_t = nullptr;
+        return *this;
+    }
+    ~thread() {
+        __prism_check(_M_t == nullptr ? 1 : 0, "CXX-THREAD-JOINABLE", "std::thread destroyed while joinable (std::terminate)");
+    }
+
+    [[nodiscard]] bool joinable() const noexcept { return _M_t != nullptr; }
+    [[nodiscard]] id get_id() const noexcept { return id(_M_t); }
+
+    void join() {
+        __prism_check(_M_t != nullptr ? 1 : 0, "FUNC-CONTRACT", "std::thread::join on a non-joinable thread");
+        if (!_M_t->_M_done) __prism_sched::__run_task(_M_t);
+        _M_t->_M_del(_M_t->_M_fn);
+        delete _M_t;
+        _M_t = nullptr;
+    }
+
+    // A detached thread stays queued; it may run at any later sync point or
+    // never (the program may exit first). Its storage is not reclaimed.
+    void detach() {
+        __prism_check(_M_t != nullptr ? 1 : 0, "FUNC-CONTRACT", "std::thread::detach on a non-joinable thread");
+        _M_t = nullptr;
+    }
+
+    static unsigned hardware_concurrency() noexcept { return 2; }
+};
+
+class jthread {
+    thread _M_th;
+public:
+    jthread() noexcept = default;
+    template <class _Fn, class... _Args, class = enable_if_t<!is_same_v<remove_cvref_t<_Fn>, jthread>>>
+    explicit jthread(_Fn&& __f, _Args&&... __a) : _M_th(std::forward<_Fn>(__f), std::forward<_Args>(__a)...) {}
+    jthread(jthread&&) noexcept = default;
+    ~jthread() { if (_M_th.joinable()) _M_th.join(); }
+    bool joinable() const noexcept { return _M_th.joinable(); }
+    void join() { _M_th.join(); }
+    void detach() { _M_th.detach(); }
+};
+
+namespace this_thread {
+inline void yield() noexcept { __prism_sched::__maybe_switch(); }
+inline thread::id get_id() noexcept { return thread::id(); }
+template <class _Dur>
+inline void sleep_for(const _Dur&) { __prism_sched::__maybe_switch(); }
+template <class _Tp>
+inline void sleep_until(const _Tp&) { __prism_sched::__maybe_switch(); }
+}  // namespace this_thread
+
+}  // namespace std
+
+#endif  // _GLIBCXX_THREAD

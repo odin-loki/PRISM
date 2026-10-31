@@ -1,0 +1,206 @@
+// PRISM modelled `import std;` ([std.modules]). Built with
+//   clang++ -std=c++23 -isystem <models> --precompile std.cppm -o std.pcm
+// and used with -fmodule-file=std=std.pcm, so a unit that imports std sees
+// the PRISM model headers, as an #include-based unit does. Names not listed
+// here fail to resolve and the unit falls back (extra.cxx_models).
+module;
+#include <algorithm>
+#include <any>
+#include <array>
+#include <bit>
+#include <bitset>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <complex>
+#include <condition_variable>
+#include <coroutine>
+#include <deque>
+#include <expected>
+#include <flat_map>
+#include <flat_set>
+#include <format>
+#include <forward_list>
+#include <functional>
+#include <generator>
+#include <initializer_list>
+#include <iterator>
+#include <list>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <numbers>
+#include <numeric>
+#include <optional>
+#include <print>
+#include <queue>
+#include <random>
+#include <ranges>
+#include <ratio>
+#include <regex>
+#include <set>
+#include <source_location>
+#include <span>
+#include <stack>
+#include <string_view>
+#include <thread>
+#include <tuple>
+#include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
+#include <variant>
+#include <vector>
+#include <string>
+#include <utility>
+#include <type_traits>
+#include <exception>
+#include <stdexcept>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+export module std;
+export namespace std {
+  using std::vector;
+  using std::array;
+  using std::deque;
+  using std::list;
+  using std::forward_list;
+  using std::map;
+  using std::multimap;
+  using std::set;
+  using std::multiset;
+  using std::unordered_map;
+  using std::unordered_set;
+  using std::queue;
+  using std::stack;
+  using std::span;
+  using std::string;
+  using std::string_view;
+  using std::basic_string;
+  using std::to_string;
+  using std::optional;
+  using std::variant;
+  using std::visit;
+  using std::get;
+  using std::holds_alternative;
+  using std::monostate;
+  using std::any;
+  using std::any_cast;
+  using std::expected;
+  using std::unexpected;
+  using std::tuple;
+  using std::make_tuple;
+  using std::pair;
+  using std::make_pair;
+  using std::move;
+  using std::forward;
+  using std::swap;
+  using std::exchange;
+  using std::unique_ptr;
+  using std::make_unique;
+  using std::addressof;
+  using std::function;
+  using std::invoke;
+  using std::hash;
+  using std::less;
+  using std::greater;
+  using std::equal_to;
+  using std::plus;
+  using std::sort;
+  using std::stable_sort;
+  using std::find;
+  using std::find_if;
+  using std::count;
+  using std::count_if;
+  using std::min;
+  using std::max;
+  using std::min_element;
+  using std::max_element;
+  using std::copy;
+  using std::fill;
+  using std::transform;
+  using std::reverse;
+  using std::accumulate;
+  using std::iota;
+  using std::begin;
+  using std::end;
+  using std::size;
+  using std::empty;
+  using std::distance;
+  using std::next;
+  using std::prev;
+  using std::advance;
+  using std::generator;
+  using std::coroutine_handle;
+  using std::coroutine_traits;
+  using std::suspend_always;
+  using std::suspend_never;
+  using std::noop_coroutine;
+  using std::mutex;
+  using std::lock_guard;
+  using std::unique_lock;
+  using std::defer_lock;
+  using std::try_to_lock;
+  using std::adopt_lock;
+  using std::condition_variable;
+  using std::condition_variable_any;
+  using std::cv_status;
+  using std::thread;
+  using std::jthread;
+  using std::regex;
+  using std::regex_match;
+  using std::regex_search;
+  using std::smatch;
+  using std::cmatch;
+  using std::print;
+  using std::println;
+  using std::bitset;
+  using std::complex;
+  using std::ratio;
+  using std::source_location;
+  using std::size_t;
+  using std::ptrdiff_t;
+  using std::nullptr_t;
+  using std::int8_t;
+  using std::int16_t;
+  using std::int32_t;
+  using std::int64_t;
+  using std::uint8_t;
+  using std::uint16_t;
+  using std::uint32_t;
+  using std::uint64_t;
+  using std::exception;
+  using std::runtime_error;
+  using std::logic_error;
+  using std::out_of_range;
+  using std::invalid_argument;
+  using std::abs;
+  using std::is_same_v;
+  using std::is_integral_v;
+  using std::remove_cvref_t;
+  using std::decay_t;
+  using std::enable_if_t;
+  using std::conditional_t;
+  using std::initializer_list;
+  using std::memcpy;
+  using std::memset;
+  using std::strlen;
+  using std::malloc;
+  using std::free;
+  namespace this_thread { using std::this_thread::yield; using std::this_thread::get_id; using std::this_thread::sleep_for; }
+  namespace ranges { using namespace std::ranges; }
+  namespace chrono { using namespace std::chrono; }
+}
+export namespace __gnu_cxx {
+  using __gnu_cxx::operator==;
+  using __gnu_cxx::operator<=>;
+  using __gnu_cxx::operator-;
+  using __gnu_cxx::operator+;
+}
+export namespace std {
+  using std::operator==;
+  using std::operator<=>;
+  using std::operator+;
+  using std::operator-;
+}

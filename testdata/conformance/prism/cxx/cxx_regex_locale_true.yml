@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_regex_locale_true.cpp
+language: C++
+property: noassert
+timeout: 600  # item 4 (prism-llvm), not yet run
+expected:
+  cxx_regex_locale_true: true

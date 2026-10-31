@@ -602,6 +602,17 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
 PRISM_API const std::vector<std::pair<std::string, std::string>>& model_sources();
 // Write the C++ model headers ("cxx/..." sources) into dir; false on an I/O error.
 PRISM_API bool write_cxx_models(const std::filesystem::path& dir);
+// `import std;` support: true when the source text imports the std (or
+// std.compat) module outside a comment or string.
+PRISM_API bool source_imports_std(const std::string& text);
+// Precompile the modelled std module (cxx/std.cppm, written by
+// write_cxx_models into models_dir) with clangxx at the given -std, to
+// out_pcm. The unit is then lowered with "-fmodule-file=std=<out_pcm>".
+// false (err set) when the module does not build; the caller then falls
+// back to libstdc++ as for any unit that does not compile against the models.
+PRISM_API bool build_cxx_std_module(const std::filesystem::path& clangxx, const std::filesystem::path& models_dir,
+                                    const std::string& cxx_std, const std::vector<std::string>& extra_flags,
+                                    const std::filesystem::path& out_pcm, double timeout_s, std::string& err);
 
 struct ModelLibrary {
     std::vector<ir::Module> units;  // lowered model files

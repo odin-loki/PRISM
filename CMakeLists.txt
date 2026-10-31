@@ -360,6 +360,10 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/cxx/typeindex
   src/prism/pir/models/cxx/algorithm
   src/prism/pir/models/cxx/coroutine
+  src/prism/pir/models/cxx/generator
+  src/prism/pir/models/cxx/thread
+  src/prism/pir/models/cxx/bits/prism_sched.h
+  src/prism/pir/models/cxx/std.cppm
   src/prism/pir/models/cxx/iterator
   src/prism/pir/models/cxx/ranges
   src/prism/pir/models/cxx/execution

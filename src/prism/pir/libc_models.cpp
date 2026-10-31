@@ -44,6 +44,69 @@ bool write_cxx_models(const std::filesystem::path& dir) {
     return true;
 }
 
+bool source_imports_std(const std::string& t) {
+    // Skip comments and string/char literals; match `import std` followed by
+    // optional whitespace and ';' or '.compat'.
+    std::size_t i = 0;
+    const std::size_t n = t.size();
+    bool line_start = true;
+    while (i < n) {
+        const char c = t[i];
+        if (c == '/' && i + 1 < n && t[i + 1] == '/') { while (i < n && t[i] != '\n') ++i; continue; }
+        if (c == '/' && i + 1 < n && t[i + 1] == '*') {
+            const auto e = t.find("*/", i + 2);
+            i = e == std::string::npos ? n : e + 2;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            ++i;
+            while (i < n && t[i] != c) { if (t[i] == '\\') ++i; ++i; }
+            ++i;
+            line_start = false;
+            continue;
+        }
+        if (c == '\n') { line_start = true; ++i; continue; }
+        if (c == ' ' || c == '\t' || c == '\r') { ++i; continue; }
+        if (line_start) {
+            std::size_t j = i;
+            if (t.compare(j, 7, "export ") == 0) j += 7;
+            while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+            if (t.compare(j, 6, "import") == 0) {
+                j += 6;
+                const std::size_t ws = j;
+                while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+                if (j > ws && t.compare(j, 3, "std") == 0) {
+                    j += 3;
+                    if (t.compare(j, 7, ".compat") == 0) j += 7;
+                    while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+                    if (j < n && t[j] == ';') return true;
+                }
+            }
+        }
+        line_start = false;
+        ++i;
+    }
+    return false;
+}
+
+bool build_cxx_std_module(const std::filesystem::path& clangxx, const std::filesystem::path& models_dir,
+                          const std::string& cxx_std, const std::vector<std::string>& extra_flags,
+                          const std::filesystem::path& out_pcm, double timeout_s, std::string& err) {
+    const auto src = models_dir / "std.cppm";
+    std::error_code ec;
+    if (!std::filesystem::exists(src, ec)) { err = "std.cppm model missing in " + models_dir.string(); return false; }
+    std::vector<std::string> argv{clangxx.string(), "-std=" + (cxx_std.empty() ? std::string("c++23") : cxx_std),
+                                  "-isystem", models_dir.string()};
+    argv.insert(argv.end(), extra_flags.begin(), extra_flags.end());
+    argv.insert(argv.end(), {"-w", "--precompile", "-o", out_pcm.string(), src.string()});
+    auto r = detail::run_process(argv, timeout_s);
+    if (r.failed || r.timed_out || r.rc != 0) {
+        err = r.timed_out ? "std module precompile timed out" : "std module precompile failed: " + r.text.substr(0, 400);
+        return false;
+    }
+    return true;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
