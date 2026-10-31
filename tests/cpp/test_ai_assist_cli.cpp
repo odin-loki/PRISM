@@ -18,6 +18,7 @@
 #  undef ERROR
 #endif
 
+#include "prism/ai.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
@@ -115,124 +116,6 @@ CliResult run_cli(int (*fn)(int, char**), std::vector<std::string> args) {
     return r;
 }
 
-#ifndef _WIN32
-// llama-server test double: /completion answers the ask grammar with a query
-// JSON and the draft grammar with one linked and one unlinked claim;
-// /embedding returns a 2-d vector; GET is a health check.
-class FakeModelServer {
-public:
-    FakeModelServer() {
-        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        int one = 1;
-        ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = 0;
-        ::bind(fd_, reinterpret_cast<sockaddr*>(&a), sizeof a);
-        ::listen(fd_, 16);
-        socklen_t len = sizeof a;
-        ::getsockname(fd_, reinterpret_cast<sockaddr*>(&a), &len);
-        port_ = ntohs(a.sin_port);
-        thread_ = std::thread([this] { serve(); });
-    }
-    ~FakeModelServer() {
-        stop_ = true;
-        thread_.join();
-        ::close(fd_);
-    }
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_); }
-    std::vector<std::string> paths() {
-        std::lock_guard<std::mutex> g(mu_);
-        return paths_;
-    }
-
-private:
-    int fd_ = -1;
-    int port_ = 0;
-    std::atomic<bool> stop_{false};
-    std::thread thread_;
-    std::mutex mu_;
-    std::vector<std::string> paths_;
-
-    void serve() {
-        while (!stop_) {
-            pollfd p{fd_, POLLIN, 0};
-            if (::poll(&p, 1, 100) <= 0) continue;
-            const int c = ::accept(fd_, nullptr, nullptr);
-            if (c < 0) continue;
-            handle(c);
-            ::close(c);
-        }
-    }
-
-    void handle(int c) {
-        std::string req;
-        char buf[8192];
-        std::size_t head_end = std::string::npos;
-        std::size_t need = 0;
-        while (true) {
-            pollfd p{c, POLLIN, 0};
-            if (::poll(&p, 1, 5000) <= 0) return;
-            const auto n = ::recv(c, buf, sizeof buf, 0);
-            if (n <= 0) break;
-            req.append(buf, static_cast<std::size_t>(n));
-            if (head_end == std::string::npos && (head_end = req.find("\r\n\r\n")) != std::string::npos) {
-                std::string lower;
-                for (char ch : req.substr(0, head_end)) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                auto cl = lower.find("content-length:");
-                need = cl == std::string::npos ? 0 : std::stoul(lower.substr(cl + 15));
-            }
-            if (head_end != std::string::npos && req.size() >= head_end + 4 + need) break;
-        }
-        if (head_end == std::string::npos) return;
-        const auto sp1 = req.find(' '), sp2 = req.find(' ', sp1 + 1);
-        const auto method = req.substr(0, sp1);
-        const auto path = req.substr(sp1 + 1, sp2 - sp1 - 1);
-        const auto body = req.substr(head_end + 4, need);
-        {
-            std::lock_guard<std::mutex> g(mu_);
-            paths_.push_back(path);
-        }
-        json reply;
-        if (method == "GET") {
-            reply = {{"status", "ok"}};
-        } else {
-            json r = json::parse(body.empty() ? "{}" : body, nullptr, false);
-            if (r.is_discarded()) r = json::object();
-            if (path == "/embedding") {
-                const auto text = r.value("content", std::string());
-                reply = {{"embedding", text.find("div") != std::string::npos ? json{1.0, 0.0} : json{0.0, 1.0}}};
-            } else {
-                const auto grammar = r.value("grammar", std::string());
-                std::string content = "{}";
-                if (grammar.find("statuses") != std::string::npos)
-                    content = json{{"stages", {"bmc"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
-                                   {"function_glob", ""}, {"text", ""},          {"group_by", ""}, {"count_only", false}}
-                                  .dump();
-                else if (grammar.find("links") != std::string::npos)
-                    content = json::array({{{"section", "Defects"},
-                                            {"text", "Dividing by a zero parameter is undefined."},
-                                            {"links", {"verdict:bmc#1"}}},
-                                           {{"section", "Defects"},
-                                            {"text", "Everything else is proved."},
-                                            {"links", {"stage:bmc"}}}})
-                                  .dump();
-                reply = {{"content", content}};
-            }
-        }
-        const auto b = reply.dump();
-        const std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                                 std::to_string(b.size()) + "\r\nConnection: close\r\n\r\n" + b;
-        std::size_t off = 0;
-        while (off < resp.size()) {
-            const auto n = ::send(c, resp.data() + off, resp.size() - off, MSG_NOSIGNAL);
-            if (n <= 0) break;
-            off += static_cast<std::size_t>(n);
-        }
-    }
-};
-#endif
 
 constexpr const char* kCalc = R"(int add_big(int x) {
     return x + 100;
@@ -388,4 +271,101 @@ TEST_CASE("ai-assist gui: the Qt assistant panel keeps its contract; assistant_r
     CAPTURE(reply);
     CHECK(reply.find("query (grammar)") != std::string::npos);
     CHECK(reply.find("bmc#0 FAILED a.c:1") != std::string::npos);
+}
+
+// ---- FORGE-era replacements for the llama-server fakes (in-process model seams) ----
+namespace {
+// The assistant model as an injected ai::ModelBackend: answers by the GBNF it is
+// constrained with (the ask grammar has "statuses", the draft grammar "links").
+class ScriptedModel final : public prism::ai::ModelBackend {
+public:
+    std::string name() const override { return "forge:test"; }
+    std::string model_sha256() const override { return "unknown"; }
+    prism::ai::ModelReply complete(const prism::ai::ModelRequest& req) override {
+        ++calls;
+        if (req.grammar_text.find("statuses") != std::string::npos)
+            return {json{{"stages", {"bmc"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
+                         {"function_glob", ""}, {"text", ""}, {"group_by", ""}, {"count_only", false}}
+                        .dump(),
+                    ""};
+        if (req.grammar_text.find("links") != std::string::npos)
+            return {json::array({{{"section", "Defects"},
+                                  {"text", "Dividing by a zero parameter is undefined."},
+                                  {"links", {"verdict:bmc#1"}}},
+                                 {{"section", "Defects"}, {"text", "Everything else is proved."}, {"links", {"stage:bmc"}}}})
+                        .dump(),
+                    ""};
+        return {"{}", ""};
+    }
+    int calls = 0;
+};
+struct ModelScope {
+    std::shared_ptr<ScriptedModel> m = std::make_shared<ScriptedModel>();
+    ModelScope() { prism::ai::set_session_backend_for_testing(m); }
+    ~ModelScope() { prism::ai::set_session_backend_for_testing(nullptr); }
+};
+class ScriptedEmbedder final : public prism::ai::Embedder {
+public:
+    std::string name() const override { return "forge:test-embed.fpk"; }
+    std::optional<std::vector<double>> embed(const std::string& text) override {
+        ++calls;
+        return text.find("div") != std::string::npos ? std::vector<double>{1.0, 0.0} : std::vector<double>{0.0, 1.0};
+    }
+    int calls = 0;
+};
+}  // namespace
+
+TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked draft claim is rejected") {
+    if (!kHasBmc) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no FAILED rows to query");
+        return;
+    }
+    AssistRun run;
+    ModelScope model;
+    auto a = run_cli(prism::ai::ask_main,
+                     {"division problems from model checking", "--report", run.out.string(), "--json"});
+    CAPTURE(a.out);
+    auto j = json::parse(a.out);
+    CHECK(j["translator"].get<std::string>().rfind("llm:", 0) == 0);
+    std::vector<std::string> fns;
+    for (const auto& m : j["matches"]) fns.push_back(m["function"].get<std::string>());
+    CHECK(fns == std::vector<std::string>{"divide"});
+    std::vector<json> ask;
+    std::istringstream al(slurp(run.out / "ai_audit.jsonl"));
+    for (std::string l; std::getline(al, l);)
+        if (l.find_first_not_of(" \t\r") != std::string::npos) {
+            auto x = json::parse(l);
+            if (x["feature"] == "ask") ask.push_back(x);
+        }
+    REQUIRE(!ask.empty());
+    CHECK(ask.back()["checker_result"] == "accepted");
+    CHECK(ask.back()["verdict_effect"] == "none");
+    auto d = run_cli(prism::ai::draft_main, {"--report", run.out.string(), "--out", (run.out / "d.md").string()});
+    CHECK(d.rc == 0);
+    auto dj = json::parse(slurp(run.out / "d.json"));
+    CHECK(dj["author"].get<std::string>().rfind("llm:", 0) == 0);
+    CHECK(dj["rejected"].size() == 1);
+    const auto dmd = slurp(run.out / "d.md");
+    CHECK(dmd.substr(0, dmd.find("## Rejected")).find("Everything else is proved") == std::string::npos);
+    CHECK(slurp(run.out / "report.json") == run.report_text);
+    CHECK(model.m->calls >= 2);
+}
+
+TEST_CASE("ai-assist cli: triage uses the FORGE embedder when one is configured") {
+    if (!kHasBmc) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no findings to embed");
+        return;
+    }
+    AssistRun run;
+    auto emb = std::make_shared<ScriptedEmbedder>();
+    prism::ai::set_embedder_for_testing(emb);
+    const auto dir = run.td / "copy";
+    fs::create_directories(dir);
+    std::ofstream(dir / "report.json", std::ios::binary) << run.report_text;
+    auto r = run_cli(prism::ai::triage_main, {dir.string()});
+    prism::ai::set_embedder_for_testing(nullptr);
+    CHECK(r.rc == 0);
+    const auto tri = json::parse(slurp(dir / "triage.json"));
+    CHECK(tri["embedder"].get<std::string>().find("forge:") != std::string::npos);
+    CHECK(emb->calls >= 1);
 }

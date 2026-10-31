@@ -855,6 +855,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_fstream.cpp
     tests/cpp/test_cxx_regex.cpp
     tests/cpp/test_fuse.cpp
+    tests/cpp/test_forge_ai.cpp
     tests/cpp/test_afl_notrun.cpp
     tests/cpp/test_libfuzzer_notrun.cpp
     tests/cpp/test_gui_model.cpp
@@ -920,15 +921,12 @@ if(PRISM_TESTS)
   endif()
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
-    "${PRISM_ROOT}/third_party")
+    "${PRISM_ROOT}/third_party"
+    "${FORGE_SOURCE_DIR}/tests")  # FORGE tests/tiny_model.hpp: tiny .fpk fixture (forge_test_model.hpp)
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa prism_ai_lib)
   target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_ROOT="${PRISM_ROOT}")
   if(_prism_warn)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
-  endif()
-  if(WIN32)
-    # test_repair's fake model server listens on a Winsock loopback socket.
-    target_link_libraries(prism_tests PRIVATE ws2_32)
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui fake_cake_lpr fake_mem_hog)

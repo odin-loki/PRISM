@@ -149,7 +149,25 @@ std::optional<std::vector<double>> embed(const fs::path& fpk, const std::string&
         if (ids.empty()) return fail("empty input");
         std::vector<float> in(ids.begin(), ids.end());
         forge::mind::session sess(model);
-        auto out = sess.infer({{"input_ids", in}}, forge::i64(ids.size()));
+        // FORGE's one_shot infer() has no fixed input name: it binds the names the
+        // .fpk blueprint declares (pack::blueprint::inputs, from the ONNX import) and
+        // raises on any missing one. Bind token ids to the id input and fill the
+        // usual companions (attention mask, token types, positions).
+        std::map<std::string, std::vector<float>> feeds;
+        const std::size_t n = in.size();
+        for (const auto& d : sess.blueprint().inputs) {
+            const std::string& nm = d.name;
+            if (nm == "attention_mask") feeds[nm].assign(n, 1.0f);
+            else if (nm == "token_type_ids") feeds[nm].assign(n, 0.0f);
+            else if (nm == "position_ids" || nm == "positions") {
+                auto& v = feeds[nm];
+                for (std::size_t i = 0; i < n; ++i) v.push_back(float(i));
+            } else if (feeds.find("__ids") == feeds.end()) { feeds[nm] = in; feeds["__ids"]; }
+            else return fail(fpk.string() + ": embedding graph input '" + nm + "' is not one PRISM can feed");
+        }
+        feeds.erase("__ids");
+        if (feeds.empty()) return fail(fpk.string() + ": embedding graph declares no inputs");
+        auto out = sess.infer(feeds, forge::i64(ids.size()));
         if (out.empty() || out.begin()->second.empty()) return fail("embedding graph returned nothing");
         const auto& v = out.begin()->second;
         const std::size_t seq = ids.size(), dim = v.size() % seq == 0 ? v.size() / seq : v.size();

@@ -12,6 +12,7 @@
 
 #include "../../src/prism/stages/agent.hpp"
 
+#include "forge_test_model.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
@@ -83,74 +84,6 @@ prism::Config offline_cfg(const fs::path& out) {
 
 bool have_cc() { return sd::which_cc().has_value(); }
 
-#ifndef _WIN32
-// A one-route HTTP server: every request gets the answer of `handler`
-// (status, body) for its (method, path).
-class TinyHttp {
-public:
-    using Handler = std::function<std::pair<int, std::string>(const std::string& method, const std::string& path)>;
-    explicit TinyHttp(Handler h) : handler_(std::move(h)) {
-        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        int one = 1;
-        ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        ::bind(fd_, reinterpret_cast<sockaddr*>(&a), sizeof a);
-        ::listen(fd_, 16);
-        socklen_t len = sizeof a;
-        ::getsockname(fd_, reinterpret_cast<sockaddr*>(&a), &len);
-        port_ = ntohs(a.sin_port);
-        th_ = std::thread([this] {
-            while (!stop_) {
-                pollfd p{fd_, POLLIN, 0};
-                if (::poll(&p, 1, 100) <= 0) continue;
-                int c = ::accept(fd_, nullptr, nullptr);
-                if (c < 0) continue;
-                serve(c);
-                ::close(c);
-            }
-        });
-    }
-    ~TinyHttp() {
-        stop_ = true;
-        th_.join();
-        ::close(fd_);
-    }
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_); }
-
-private:
-    Handler handler_;
-    int fd_ = -1, port_ = 0;
-    std::atomic<bool> stop_{false};
-    std::thread th_;
-    void serve(int c) {
-        std::string req;
-        char buf[8192];
-        std::size_t need = 0, head = std::string::npos;
-        while (true) {
-            pollfd p{c, POLLIN, 0};
-            if (::poll(&p, 1, 3000) <= 0) break;
-            auto n = ::recv(c, buf, sizeof buf, 0);
-            if (n <= 0) break;
-            req.append(buf, static_cast<std::size_t>(n));
-            if (head == std::string::npos && (head = req.find("\r\n\r\n")) != std::string::npos) {
-                std::string low;
-                for (char ch : req.substr(0, head)) low += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                auto cl = low.find("content-length:");
-                need = cl == std::string::npos ? 0 : std::stoul(low.substr(cl + 15));
-            }
-            if (head != std::string::npos && req.size() >= head + 4 + need) break;
-        }
-        const auto sp1 = req.find(' '), sp2 = req.find(' ', sp1 + 1);
-        if (sp1 == std::string::npos || sp2 == std::string::npos) return;
-        auto [code, body] = handler_(req.substr(0, sp1), req.substr(sp1 + 1, sp2 - sp1 - 1));
-        std::string resp = "HTTP/1.1 " + std::to_string(code) + " X\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-        ::send(c, resp.data(), resp.size(), MSG_NOSIGNAL);
-    }
-};
-#endif
 
 }  // namespace
 
@@ -572,3 +505,43 @@ TEST_CASE("repo lint: LLM stage strings and pipeline exports (ex test_llm.py)") 
     const auto tax = slurp(root / "src" / "prism" / "taxonomy.cpp");
     CHECK(tax.find("coverage_from_report") != std::string::npos);
 }
+
+// ---- FORGE-era replacements for the TinyHttp llama-server fakes ----
+TEST_CASE("agent: a failed model call keeps its error; a good answer keeps its text") {
+    auto out = agent_tmp("chat");
+    {
+        prism_test::ScriptedChat bad([](const std::string&) { return std::string(); });
+        bad.fail_with("FORGE: context 4096 exceeded");
+        sd::LlmEngine e(offline_cfg(out));
+        REQUIRE(e.backend == "test-double");
+        auto r = e.complete({{"user", "hi"}}, 5.0);
+        CHECK(r.error == "FORGE: context 4096 exceeded");
+        CHECK(r.text.empty());
+    }
+    prism_test::ScriptedChat ok([](const std::string&) { return std::string("fine"); });
+    sd::LlmEngine e2(offline_cfg(out));
+    auto r2 = e2.complete({{"user", "hi"}}, 5.0);
+    CHECK(r2.error.empty());
+    CHECK(r2.text == "fine");
+    CHECK(ok.chats() == 1);
+}
+#ifndef _WIN32  // setenv
+TEST_CASE("agent: Fuzz4All uses the run's model settings, not built-in defaults") {
+    auto td = agent_tmp("fuse-cfg");
+    std::ofstream(td / "f.c") << "int f(int x) {\n    return x + 1;\n}\n";
+    auto fns = prism::extract_functions(td / "f.c", "f.c");
+    REQUIRE(!fns.empty());
+    auto has_skip = [](const std::vector<prism::Finding>& fs) {
+        for (const auto& f : fs)
+            if (f.message.find("stall mutants / autoprompt skipped") != std::string::npos) return true;
+        return false;
+    };
+    // The run's Config names a real (tiny) FORGE model; the defaults name none.
+    auto cfg = offline_cfg(td / "out");
+    cfg.fpk = prism_test::tiny_fpk();
+    ::setenv("PRISM_FPK", (td / "no_such_model.fpk").c_str(), 1);
+    CHECK_FALSE(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true, cfg)));
+    CHECK(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true)));
+    ::unsetenv("PRISM_FPK");
+}
+#endif
