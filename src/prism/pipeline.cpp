@@ -1,5 +1,5 @@
-#ifdef __linux__
 #include "prism/settings.hpp"
+#ifdef __linux__
 #include <malloc.h>
 #endif
 #include "prism/astlint.hpp"

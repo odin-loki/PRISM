@@ -273,8 +273,8 @@ void watchdog() {
         // burst grows hundreds of MB between 50 ms samples (~30% overshoot).
         {
             const uint64_t b = budget_mb();
-            const bool near = b > 0 && rss_mb() >= b * 3 / 5;
-            std::this_thread::sleep_for(std::chrono::milliseconds(near ? 20 : 50));
+            const bool near_limit = b > 0 && rss_mb() >= b * 3 / 5;
+            std::this_thread::sleep_for(std::chrono::milliseconds(near_limit ? 20 : 50));
         }
         {
             std::lock_guard<std::mutex> lk(g_wmu);
