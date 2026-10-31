@@ -72,10 +72,25 @@ protected:
 
     void _M_append(const __string_type& __s) { _M_append(__s.data(), __s.size()); }
 
-    void _M_append_int(int __v) {
-        const __string_type __t = std::to_string(__v);
-        _M_append(__t.data(), __t.size());
+    // Lighter integer text (session 4): digits into a stack buffer, then
+    // one _M_append. No temporary std::string (std::to_string allocated and
+    // freed a heap block per operator<<), so a loop of operator<< has one
+    // growing allocation, not two per iteration. Same "C"-locale text.
+    void _M_append_ull(unsigned long long __mag, bool __neg) {
+        char __buf[24];
+        __size_type __i = sizeof(__buf);
+        do {
+            __buf[--__i] = static_cast<char>('0' + static_cast<int>(__mag % 10ull));
+            __mag /= 10ull;
+        } while (__mag != 0ull);
+        if (__neg) __buf[--__i] = '-';
+        _M_append(__buf + __i, sizeof(__buf) - __i);
     }
+    void _M_append_ll(long long __v) {
+        const bool __neg = __v < 0;
+        _M_append_ull(__neg ? 0ull - static_cast<unsigned long long>(__v) : static_cast<unsigned long long>(__v), __neg);
+    }
+    void _M_append_int(int __v) { _M_append_ll(__v); }
 
     friend class basic_ostringstream<_CharT, _Traits, _Alloc>;
 
@@ -221,13 +236,13 @@ public:
         return *this;
     }
 
-    // Wider integers: decimal text via std::to_string, as num_put does in
+    // Wider integers: decimal text from a stack buffer, as num_put does in
     // the "C" locale with default flags. bool prints 0/1 (noboolalpha).
-    basic_ostringstream& operator<<(long __v) { return _M_text(std::to_string(__v)); }
-    basic_ostringstream& operator<<(long long __v) { return _M_text(std::to_string(__v)); }
-    basic_ostringstream& operator<<(unsigned __v) { return _M_text(std::to_string(__v)); }
-    basic_ostringstream& operator<<(unsigned long __v) { return _M_text(std::to_string(__v)); }
-    basic_ostringstream& operator<<(unsigned long long __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(long __v) { _M_stringbuf._M_append_ll(__v); return *this; }
+    basic_ostringstream& operator<<(long long __v) { _M_stringbuf._M_append_ll(__v); return *this; }
+    basic_ostringstream& operator<<(unsigned __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
+    basic_ostringstream& operator<<(unsigned long __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
+    basic_ostringstream& operator<<(unsigned long long __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
     basic_ostringstream& operator<<(short __v) { return *this << static_cast<int>(__v); }
     basic_ostringstream& operator<<(unsigned short __v) { return *this << static_cast<int>(__v); }
     basic_ostringstream& operator<<(bool __v) { return *this << (__v ? '1' : '0'); }
