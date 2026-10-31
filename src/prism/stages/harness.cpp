@@ -1,5 +1,5 @@
 // Stage harness: pointer-parameter functions materialized from an honest
-// requires and model-checked (run_harness_bmc).
+// requires and checked by PIR (run_harness).
 #include "common.hpp"
 
 namespace prism {
@@ -7,7 +7,7 @@ namespace fs = std::filesystem;
 using namespace stages_detail;
 
 namespace {
-// Element type of a one-level pointer/array parameter, if the BMC encoder
+// Element type of a one-level pointer/array parameter, if PIR
 // models it (an integer type); nullopt keeps NEEDS-HARNESS. Mirrors
 // prism/harness.py _pointee_type.
 std::optional<std::string> pointee_type(const std::string& typ) {
@@ -139,7 +139,7 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
 
 std::optional<FunctionInfo> materialize_harness(const FunctionInfo& fn) { return materialize(fn); }
 
-std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind) {
+std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind) {
     std::vector<Finding> out;
     for (auto& fn : functions) {
         if (fn.kind != "POINTER") continue;
@@ -149,13 +149,13 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
             // model when one is bound). PROVED-ASSUMING at best, every
             // assumption listed; no draft keeps the NEEDS-HARNESS row below.
             std::string refused;
-            if (auto drafted = ai::drafted_harness_bmc(fn, unwind, &refused)) {
+            if (auto drafted = ai::drafted_harness_check(fn, unwind, &refused)) {
                 out.push_back(std::move(drafted).value());
                 continue;
             }
             auto f = make_find(
                 "harness", laws::NEEDS_HARNESS, fn, "",
-                "POINTER: no honest requires; unguarded BMC would invent "
+                "POINTER: no honest requires; an unguarded check would invent "
                 "a buffer or dress a NULL crash as a finding",
                 laws::STRENGTH_SOME);
             f.extra["harness"] = "false";
@@ -170,8 +170,7 @@ std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions,
             auto s = strip(r);
             if (!s.empty()) reqs.push_back(s);
         }
-        auto recs = run_bmc({*harnessed}, unwind, true);
-        auto r = recs.empty() ? bmc_one(*harnessed, unwind) : recs[0];
+        auto r = check_function_pir(*harnessed, unwind);
         r.extra["assumed"] = "true";
         r.extra["requires"] = nlohmann::json(reqs).dump();
         r.extra["original_status"] = r.status;

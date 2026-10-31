@@ -1,4 +1,4 @@
-// run_harness_bmc (include/prism/stages.hpp). A harness assumption is not an
+// run_harness (include/prism/stages.hpp). A harness assumption is not an
 // unconditional proof.
 //
 //   PROVED           -> PROVED-ASSUMING
@@ -7,7 +7,7 @@
 //   FAILED           -> FAILED
 //   NOTRUN           -> NOTRUN
 //
-// run_bmc always asks for an unbounded answer, so a closed unwinding is
+// the pir check always asks for an unbounded answer, so a closed unwinding is
 // recorded as PROVED-UNBOUNDED. The same assignment lowers a literal PROVED.
 
 #include <doctest/doctest.h>
@@ -53,7 +53,7 @@ std::string extra_or(const prism::Finding& f, const char* key) {
 
 prism::Finding harness_of(const prism::FunctionInfo& fn) {
     REQUIRE(fn.kind == "POINTER");
-    auto recs = prism::run_harness_bmc({fn}, 8);
+    auto recs = prism::run_harness({fn}, 8);
     REQUIRE(recs.size() == 1);
     return recs[0];
 }
@@ -139,7 +139,7 @@ TEST_CASE("harness assumed: FAILED stays FAILED") {
 #else
 
 TEST_CASE("harness assumed: NOTRUN stays NOTRUN") {
-    auto recs = prism::run_harness_bmc({fn_in("ptr_copy.c", "deref_ok")}, 8);
+    auto recs = prism::run_harness({fn_in("ptr_copy.c", "deref_ok")}, 8);
     REQUIRE(recs.size() == 1);
     CHECK(extra_or(recs[0], "original_status") == prism::laws::NOTRUN);
     CHECK(recs[0].status == prism::laws::NOTRUN);

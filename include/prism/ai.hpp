@@ -9,7 +9,7 @@
 //   * drafted harness assumptions give PROVED-ASSUMING with every assumption
 //     listed, never PROVED;
 //   * explanations and fixes are HYPOTHESIS / READS; a fix is called
-//     "verified fix" only when BMC proves the patched function.
+//     "verified fix" only when PIR proves the patched function.
 // Every model interaction is appended to <out>/ai_audit.jsonl.
 
 #include "prism/config.hpp"
@@ -105,7 +105,7 @@ struct AuditRecord {
     std::string raw_output_sha256;
     bool output_valid = false;
     std::string rejected_reason;
-    std::string checker;          // e.g. "z3-houdini+k-induction", "bmc(patched)"
+    std::string checker;          // e.g. "z3-houdini+k-induction", "pir(patched)"
     std::string checker_result;   // the checker's own status; "" = no checker ran
     std::string verdict_effect;   // "none" or the checked verdict
     std::string id;               // stable id referenced by findings (extra.ai_audit_id)
@@ -137,7 +137,7 @@ PRISM_API void audit_model_call(AuditRecord& rec, const std::string& prompt, con
 PRISM_API std::filesystem::path audit_path();  // "" when no session
 
 // ---------------------------------------------------------------- BMC primitive
-// Implemented in src/prism/bmc.cpp (needs the encoder). Encodes `body` for
+// Implemented in src/prism/ai/program_check.cpp (on pir). Checks `body` for
 // `fn`'s parameters with the AI hook statements enabled:
 //   __prism_assume(e);  __prism_assert(tag, e);  __prism_havoc(x);
 //   __prism_step (c) { ... }   (runs the block under c, then continues under !c
@@ -210,9 +210,9 @@ struct HarnessDraft {
 };
 // One draft per concrete size case (size range); empty = could not draft.
 PRISM_API std::vector<HarnessDraft> draft_harness(const FunctionInfo& fn, std::string* why = nullptr);
-// Runs the drafted harness through BMC. nullopt when no draft was possible
+// Runs the drafted harness through PIR. nullopt when no draft was possible
 // (`refused` then says why: template reason, and the model note).
-PRISM_API std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind,
+PRISM_API std::optional<Finding> drafted_harness_check(const FunctionInfo& fn, int unwind,
                                                      std::string* refused = nullptr);
 
 // ---------------------------------------------------------------- explanation / repair
