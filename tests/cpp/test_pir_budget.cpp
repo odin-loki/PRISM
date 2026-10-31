@@ -47,6 +47,10 @@ bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
         MESSAGE(why);
         return true;
     }
+    if (!pp::z3_available()) {
+        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        return true;
+    }
     return false;
 }
 

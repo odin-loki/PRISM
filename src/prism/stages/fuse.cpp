@@ -1,4 +1,4 @@
-﻿// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
+// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
 #include "agent.hpp"
 #include "fuse.hpp"
@@ -366,7 +366,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         return f;
     };
     auto is_bin_crash = [&](const ProcRun& rr) {
-        if (rr.timeout) return false;
+        if (rr.timeout || rr.failed) return false;
         if (rr.crashed || rr.rc < 0) return true;
         auto low = lower_copy(rr.err);
         return low.find("runtime error") != std::string::npos ||
@@ -377,8 +377,13 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     };
     auto run_one = [&](const std::vector<uint8_t>& child) {
         std::string in(child.begin(), child.end());
-        return run_argv(sandbox::wrap_argv({exe.string()}, workdir), in, 1.0,
-                        sandbox::limits_for(1.0, /*limit_as=*/false));
+        detail::RunSpec spec;  // the harness's whole tree dies with the run
+        spec.argv = sandbox::wrap_argv({exe.string()}, workdir);
+        spec.input = std::move(in);
+        spec.timeout_s = 1.0;
+        spec.limits = sandbox::limits_for(1.0, /*limit_as=*/false);
+        spec.kill_descendants = true;
+        return run_spec(spec);
     };
     // A window of inputs runs at once; the first crash in input order wins,
     // so the reported input and binary_iters match a one-at-a-time run.
@@ -391,7 +396,14 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
             auto rr = runs[k].get();
             if (hit) continue;
             ++n;
-            if (is_bin_crash(rr)) hit = bin_crash(window[k], rr.err, n);
+            if (rr.failed && !rr.timeout) {
+                // The harness never ran (for example the ASan runtime DLL is not
+                // on PATH): Law 7, the binary half is NOTRUN, never a crash.
+                auto f = no_crash();
+                f.extra["binary"] = std::string(laws::NOTRUN);
+                f.extra["binary_error"] = rr.err.substr(0, 400);
+                hit = f;
+            } else if (is_bin_crash(rr)) hit = bin_crash(window[k], rr.err, n);
         }
         return hit;
     };
@@ -615,6 +627,23 @@ std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel) {
            fn.name + "(" + args + ");\n    return 0;\n}\n";
 }
 
+namespace {
+// One bounded run whose whole process tree dies with it: a compiler's linker
+// daemon (link.exe's mspdbsrv), an ASan runtime helper or a batch file's
+// grandchildren must not outlive the run holding its pipes (the Windows
+// clang-cl CI hang in the PRISM_AFL opt-in test).
+ProcRun run_tree(const std::vector<std::string>& argv, const std::string& input, double timeout_s,
+                 const sandbox::Limits& limits = {}) {
+    detail::RunSpec spec;
+    spec.argv = argv;
+    spec.input = input;
+    spec.timeout_s = timeout_s;
+    spec.limits = limits;
+    spec.kill_descendants = true;
+    return run_spec(spec);
+}
+}  // namespace
+
 std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const fs::path& exe) {
     // Python engine prism/afl.py compile_afl_harness sanitizer fallback:
     //   1. -fsanitize=address,undefined  -fno-sanitize-recover=address,undefined
@@ -639,7 +668,7 @@ std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const 
         std::vector<std::string> san = cmd;
         san.insert(san.begin() + 1, flags[0]);
         san.insert(san.begin() + 2, flags[1]);
-        p = run_argv(san, {}, 30.0);
+        p = run_tree(san, {}, 30.0);
         if (p.timeout) return {false, "compile timeout"};
         if (p.rc == 0) {
             compiled = true;
@@ -647,7 +676,7 @@ std::pair<bool, std::string> compile_afl_harness(const fs::path& harness, const 
         }
     }
     if (!compiled) {
-        p = run_argv(cmd, {}, 30.0);
+        p = run_tree(cmd, {}, 30.0);
         if (p.timeout) return {false, "compile timeout"};
         if (p.rc != 0) {
             std::string err = p.err.empty() ? p.out : p.err;
@@ -772,6 +801,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
     spec.cwd = td;
     spec.timeout_s = timeout + 10.0;
     spec.limits = sandbox::limits_for(timeout + 10.0, /*limit_as=*/false);
+    spec.kill_descendants = true;
     ProcRun run = run_spec(spec);
     std::optional<AflCrashFile> crash;
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};
@@ -848,7 +878,7 @@ std::pair<std::string, std::string> compile_libfuzzer(const fs::path& clang, con
         std::vector<std::string> cmd{clang.string(), flags[0]};
         if (flags[1]) cmd.push_back(flags[1]);
         cmd.insert(cmd.end(), {"-O0", "-g", "-std=c11", src.string(), "-o", exe.string()});
-        auto p = run_argv(cmd, {}, 30.0);
+        auto p = run_tree(cmd, {}, 30.0);
         last_text = p.err.empty() ? p.out : p.err + p.out;
         if (p.timeout) return {"timeout", last_text};
         if (p.rc == 0) return {"ok", {}};

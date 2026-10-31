@@ -109,8 +109,10 @@ int main() {
     const int r64 = round_ok(static_cast<std::uint64_t>(0x0123456789ABCDEFULL));
     std::printf("counts %d %d %d\n", cu, c8, c64);
     std::printf("round %d %d %d\n", ru, r8, r64);
-    std::printf("endian %d %d %d\n", static_cast<int>(std::endian::little), static_cast<int>(std::endian::big),
-                static_cast<int>(std::endian::native));
+    // relations, not raw values: libstdc++ uses __ORDER_*_ENDIAN__ (1234/4321), MSVC STL uses 0/1
+    std::printf("endian native_little=%d little_ne_big=%d\n",
+                static_cast<int>(std::endian::native == std::endian::little),
+                static_cast<int>(std::endian::little != std::endian::big));
     // Runtime values, so the byte moves are executed and not only folded.
     volatile std::uint8_t b8 = 0xAB;
     volatile std::uint16_t b16 = 0x1234;
