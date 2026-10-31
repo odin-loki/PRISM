@@ -99,7 +99,7 @@ const std::vector<Row>& rows() {
         {"kinduct.c", "kind_countdown", "PROVED-UNBOUNDED", ""},
         {"kinduct.c", "kind_open", "BOUNDED", ""},
         {"loops.c", "count4_ok", "PROVED", ""},
-        {"loops.c", "loop_long_bounded", "PROVED-UNBOUNDED", ""},  // triangular template (2s == i(i-1))
+        {"loops.c", "loop_long_sum", "PROVED-UNBOUNDED", ""},  // triangular template (2s == i(i-1))
         {"loops.c", "loop_long_inv", "PROVED-UNBOUNDED", ""},
         {"loops.c", "loop_ovf_bad", "FAILED", ""},
         {"loops.c", "nested_ok", "PROVED", ""},

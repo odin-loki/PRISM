@@ -102,7 +102,7 @@ P block
 P phi 8 1 1 v4:32
 P ret v8:32
 end
-func loop_long_bounded
+func loop_long_sum
 L params 1 n 32
 L ret 32
 L block entry

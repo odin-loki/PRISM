@@ -1227,7 +1227,7 @@ doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
 refuted` (strlen and copy loops over heap objects of any size; reading one
 past the terminator, an off-by-one write, an unterminated string and a write
 through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
-(`loop_long_inv` closes; `loop_long_bounded`, whose invariant
+(`loop_long_inv` closes; `loop_long_sum`, whose invariant
 `2s == i(i-1)` is non-linear, closes through the bounded triangular
 template, admitted only by Houdini and the induction check).
 
