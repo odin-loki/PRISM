@@ -52,7 +52,7 @@ endif()
 
 set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# third_party/ holds only the five linked libraries (xsimd, z3, pcre2, nlohmann,
+# third_party/ holds only the four linked libraries (z3, pcre2, nlohmann,
 # doctest), each pinned in third_party/MANIFEST.toml. External tools
 # are fetched by `prism-deps tool NAME` into ~/.prism/tools/, never built here.
 # Never file(GLOB) third_party/.
@@ -161,11 +161,6 @@ string(APPEND _pm_inc "};\n")
 file(WRITE "${_pins_dir}/prism/solver/predict_default.inc.tmp" "${_pm_inc}")
 configure_file("${_pins_dir}/prism/solver/predict_default.inc.tmp" "${_pins_dir}/prism/solver/predict_default.inc" COPYONLY)
 
-# --- vendored xsimd (header-only) ---
-set(_xsimd_inc "${PRISM_ROOT}/third_party/xsimd/include")
-add_library(xsimd INTERFACE)
-add_library(xsimd::xsimd ALIAS xsimd)
-target_include_directories(xsimd INTERFACE "${_xsimd_inc}")
 
 # --- vendored nlohmann/json (header-only). Include the parent of nlohmann/. ---
 add_library(nlohmann_json INTERFACE)
@@ -421,7 +416,7 @@ target_compile_definitions(prism_core PUBLIC PRISM_VERSION_STRING="${PROJECT_VER
 # back to Z3's bit-blast tactics and says so (NOTRUN, never silent).
 target_compile_definitions(prism_core PRIVATE
   PRISM_LEAN_BIN_DIR="${PRISM_ROOT}/proofs/techniques/.lake/build/bin")
-target_link_libraries(prism_core PUBLIC xsimd nlohmann_json prism_deps_lib)
+target_link_libraries(prism_core PUBLIC nlohmann_json prism_deps_lib)
 # pcre2-8 is the 8-bit library target from the vendored tree
 if(TARGET pcre2-8-static)
   target_link_libraries(prism_core PUBLIC pcre2-8-static)
@@ -531,7 +526,6 @@ endif()
 if(PRISM_NATIVE)
   add_library(prism_native SHARED src/prism/capi.cpp src/prism/hash.cpp src/prism/havoc.cpp)
   target_include_directories(prism_native PUBLIC "${PRISM_ROOT}/include")
-  target_link_libraries(prism_native PUBLIC xsimd)
   target_compile_definitions(prism_native PRIVATE PRISM_EXPORTS)
   if(WIN32)
     set_target_properties(prism_native PROPERTIES PREFIX "" OUTPUT_NAME "prism_native")

@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <limits>
-#include <xsimd/xsimd.hpp>
 
 namespace prism {
 
@@ -79,7 +78,6 @@ void havoc(uint8_t* data, size_t n, uint64_t seed) {
         }
         }
     }
-    (void)xsimd::batch<uint8_t>::size;
 }
 
 }  // namespace prism

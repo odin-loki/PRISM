@@ -3,6 +3,8 @@
 #include "prism/log.hpp"
 #include "prism/membudget.hpp"
 
+#include <forge/os/sysinfo.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -29,26 +31,9 @@ std::atomic<bool> g_low_trip{false};
 std::string g_source;
 std::once_flag g_once;
 
-uint64_t read_u64_file(const char* path) {
-    std::ifstream in(path);
-    std::string s;
-    if (!(in >> s) || s == "max") return 0;
-    try {
-        return std::stoull(s);
-    } catch (...) {
-        return 0;
-    }
-}
-
-uint64_t meminfo_mb(const char* key) {
-    std::ifstream in("/proc/meminfo");
-    std::string k;
-    uint64_t v = 0;
-    std::string unit;
-    while (in >> k >> v >> unit)
-        if (k == key) return v / 1024;
-    return 0;
-}
+// Machine memory through FORGE's OS wrapper (forge::os::memory: /proc/meminfo
+// and the cgroup v2/v1 limit on Linux, sysctl on Apple/FreeBSD, Win32 elsewhere).
+uint64_t available_mb() { return forge::os::memory().available / (1024 * 1024); }
 
 void compute() {
 #ifdef __linux__
@@ -69,7 +54,6 @@ void compute() {
             return;
         }
     }
-#ifdef __linux__
     std::string src;
     auto take = [&](uint64_t v, const char* what) {
         if (v == 0) return;
@@ -78,21 +62,17 @@ void compute() {
             src = what;
         }
     };
-    // cgroup v2, then v1 (a value near 2^63 means no limit)
-    uint64_t cg = read_u64_file("/sys/fs/cgroup/memory.max");
-    uint64_t cur = read_u64_file("/sys/fs/cgroup/memory.current");
-    if (cg == 0) {
-        cg = read_u64_file("/sys/fs/cgroup/memory/memory.limit_in_bytes");
-        cur = read_u64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes");
-    }
+    const forge::os::memory_info mi = forge::os::memory();
+    const uint64_t cg = mi.cgroup_limit, cur = mi.cgroup_usage;
     if (cg > 0 && cg < (uint64_t{1} << 60)) take((cg - std::min(cg, cur)) / (1024 * 1024), "cgroup memory limit");
-    take(meminfo_mb("MemAvailable:"), "MemAvailable");
+    take(mi.available / (1024 * 1024), "MemAvailable");
+#ifdef __linux__
     struct rlimit rl{};
     if (::getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
         take(static_cast<uint64_t>(rl.rlim_cur) / (1024 * 1024) / 2, "RLIMIT_AS/2");
-    mb = mb * 3 / 4;
-    g_source = "75% of " + src;
 #endif
+    mb = mb * 3 / 4;
+    if (!src.empty()) g_source = "75% of " + src;
     g_budget.store(mb);
 }
 
@@ -126,7 +106,7 @@ uint64_t rss_mb() {
         if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0;
         std::fclose(f);
     }
-    return static_cast<uint64_t>(rss) * static_cast<uint64_t>(::sysconf(_SC_PAGE_SIZE)) / (1024 * 1024);
+    return static_cast<uint64_t>(rss) * static_cast<uint64_t>(forge::os::page_size()) / (1024 * 1024);
 #else
     return 0;
 #endif
@@ -201,17 +181,13 @@ uint64_t tree_rss_mb() {
 }
 
 bool system_low() {
-#ifdef __linux__
     static const uint64_t reserve = [] {
         const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
         return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{1500};
     }();
     if (reserve == 0) return false;
-    const uint64_t avail = meminfo_mb("MemAvailable:");
+    const uint64_t avail = available_mb();
     return avail > 0 && avail < reserve;
-#else
-    return false;
-#endif
 }
 
 bool over_budget() {
@@ -380,7 +356,7 @@ void release_free_memory() {
 
 std::string over_message(const char* where) {
     if (g_low_trip.exchange(false) || system_low())
-        return std::string("machine memory low (MemAvailable ") + std::to_string(meminfo_mb("MemAvailable:")) +
+        return std::string("machine memory low (MemAvailable ") + std::to_string(available_mb()) +
                " MB, PRISM_MEM_RESERVE_MB) " + where + "; stopped by the memory budget watchdog; no proof";
     return std::string("memory budget reached ") + where + " (process RSS " + std::to_string(rss_mb()) + " MB, budget " +
            std::to_string(budget_mb()) + " MB from " + (g_test.load() ? std::string("a test") : budget_source()) +

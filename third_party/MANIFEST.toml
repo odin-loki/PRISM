@@ -104,26 +104,6 @@ drift = [
 ]
 
 [[component]]
-name = "xsimd"
-kind = "linked"
-version = "13.2.0"
-url = "https://github.com/xtensor-stack/xsimd"
-tag = "13.2.0"
-commit = "1f8dd9c8e162968d9b4ff0251c56d431b8777f36"
-archive_sha256 = "8840df5f469d8068fafc1dcae60caccdc0a868ffa3e2158426883bc607d1a59f"
-spdx = "BSD-3-Clause"
-licence_file = "LICENSE"
-path = "third_party/xsimd"
-tree_sha256 = "119271bdec94760e06639a05b7180f0437e138aab262e0c7276f565c144d7c60"
-tree_version_file = "include/xsimd/config/xsimd_config.hpp"
-tree_version_regex = 'XSIMD_VERSION_MAJOR (\d+)\s*#define XSIMD_VERSION_MINOR (\d+)\s*#define XSIMD_VERSION_PATCH (\d+)'
-tree_version = "13.2.0"
-drift = [
-  "M docs/make.bat",
-  "M docs/source/xsimd.svg",
-]
-
-[[component]]
 name = "nlohmann_json"
 kind = "linked"
 version = "3.11.3"
