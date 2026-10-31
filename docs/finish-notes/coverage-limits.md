@@ -31,7 +31,8 @@ built per configuration. A unit using `import std;` must keep falling back
 re-exports the model headers.
 
 ## Truly blocked
-- `constexpr` C23 objects and `#embed`: need clang >= 19 (see the clang 19 plan).
+- ~~`constexpr` C23 objects and `#embed`~~: unblocked on prism-llvm (LLVM 23.1.4 pin); tasks
+  c23_constexpr_* and c23_embed_* added (not yet run).
 - A real concurrency proof for condition_variable: the model is single-threaded.
   `wait` returns at once (spurious wakeup, permitted), `wait(l, pred)` assumes
   pred() on return; a forever-false pred is a hang, not a checked path.
