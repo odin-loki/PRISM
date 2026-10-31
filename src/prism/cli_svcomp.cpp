@@ -1,6 +1,7 @@
 // `prism svcomp`: PRISM as an SV-COMP verifier (include/prism/svcomp.hpp,
 // docs/SVCOMP.md). One task, the subset scorer (`svcomp score`) and the
 // tool archive (`svcomp pack`).
+#include "prism/log.hpp"
 #include "prism/svcomp.hpp"
 
 #include "prism/config.hpp"
@@ -244,7 +245,7 @@ std::vector<SubsetTask> subset_tasks(const fs::path& suite, const std::string& p
     for (const auto& yml : ymls) {
         auto y = taskdef::load_yaml(yml);
         if (!y.value) {
-            std::cerr << "WARNING svcomp score: " << y.error << " (task skipped)\n";
+            log::warn("svcomp score", y.error + " (task skipped)");
             continue;
         }
         auto t = taskdef::parse_taskdef(*y.value);
@@ -368,19 +369,19 @@ int score_main(int argc, char** argv) {
                          "Writes DIR/score.md and DIR/results.json; exit 1 on any incorrect answer.\n";
             return 0;
         } else {
-            std::cerr << "prism svcomp score: unknown argument " << a << "\n";
+            log::error("svcomp score", "unknown argument " + std::string(a));
             return 2;
         }
     }
     if (property != "no-overflow" && property != "unreach-call") {
-        std::cerr << "prism svcomp score: --property expects no-overflow or unreach-call\n";
+        log::error("svcomp score", "--property expects no-overflow or unreach-call");
         return 2;
     }
     if (suite.empty()) {
         auto repo = find_repo(fs::current_path());
         if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
         if (!repo) {
-            std::cerr << "prism svcomp score: no testdata/conformance/sv-comp here; pass --suite DIR\n";
+            log::error("svcomp score", "no testdata/conformance/sv-comp here; pass --suite DIR");
             return 2;
         }
         suite = *repo / "testdata" / "conformance" / "sv-comp";
@@ -498,19 +499,19 @@ int pack_main(int argc, char** argv) {
                          "dependencies.json (the clang/opt seen here, which are not bundled).\n";
             return 0;
         } else {
-            std::cerr << "prism svcomp pack: unknown argument " << a << "\n";
+            log::error("svcomp pack", "unknown argument " + std::string(a));
             return 2;
         }
     }
     if (!repo) repo = find_repo(fs::current_path());
     if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
     if (!repo) {
-        std::cerr << "prism svcomp pack: tools/svcomp/prism.py not found above the working directory; pass --repo DIR\n";
+        log::error("svcomp pack", "tools/svcomp/prism.py not found above the working directory; pass --repo DIR");
         return 2;
     }
     auto res = pack(prism, *repo, fs::absolute(out));
     if (!res.ok) {
-        std::cerr << "ERROR svcomp pack: " << res.error << "\n";
+        log::error("svcomp pack", res.error);
         return 2;
     }
     std::cout << "wrote " << out.string() << " (" << res.manifest.at("files").size() << " files, prism "
@@ -665,7 +666,7 @@ int svcomp_main(int argc, char** argv) {
             auto v = next();
             if (!v) {
                 usage();
-                std::cerr << "prism svcomp: " << a << " expects a value\n";
+                log::error("svcomp", std::string(a) + " expects a value");
                 return 2;
             }
             if (a == "--prop") prop = *v;
@@ -674,7 +675,7 @@ int svcomp_main(int argc, char** argv) {
             else if (a == "--data-model") {
                 if (upper(*v) != "LP64" && upper(*v) != "ILP32") {
                     usage();
-                    std::cerr << "prism svcomp: --data-model expects LP64 or ILP32\n";
+                    log::error("svcomp", "--data-model expects LP64 or ILP32");
                     return 2;
                 }
                 opt.data_model = *v;
@@ -699,7 +700,7 @@ int svcomp_main(int argc, char** argv) {
             task = a;
         } else {
             usage();
-            std::cerr << "prism svcomp: unrecognized argument " << a << "\n";
+            log::error("svcomp", "unrecognized argument " + std::string(a));
             return 2;
         }
     }
@@ -709,12 +710,12 @@ int svcomp_main(int argc, char** argv) {
     }
     if (!task) {
         usage();
-        std::cerr << "prism svcomp: TASK and --prop are required\n";
+        log::error("svcomp", "TASK and --prop are required");
         return 2;
     }
     if (!prop) {
         usage();
-        std::cerr << "prism svcomp: TASK and --prop are required\n";
+        log::error("svcomp", "TASK and --prop are required");
         return 2;
     }
     Outcome oc;

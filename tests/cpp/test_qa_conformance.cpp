@@ -21,6 +21,7 @@
 #include "support/replay.hpp"
 #include "support/report.hpp"
 #include "support/task.hpp"
+#include "prism/laws.hpp"
 #include "support/yaml_subset.hpp"
 
 #include "prism/ai.hpp"
@@ -645,8 +646,8 @@ TEST_CASE("qa conformance: classify") {
         return t;
     };
     const ojson fail = one(finding("FAILED", "INT-SIGNED-OVF"));
-    CHECK(qa::PROOF == std::set<std::string>{"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"});
-    for (const auto& proof : qa::PROOF) {
+    for (const char* proof : {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}) {
+        CHECK(prism::laws::is_proof(proof));
         CAPTURE(proof);
         CHECK(qa::classify(task(false), "f", one(finding(proof))) == "wrong-proof");
         CHECK(qa::classify(task(true), "f", one(finding(proof))) == "proved");
