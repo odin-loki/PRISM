@@ -1840,7 +1840,7 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
 #ifdef _WIN32
     CHECK(has(out[0].message, "CreateProcess"));  // FORGE spawn: "CreateProcess <exe>: <system message>"
 #else
-    CHECK(has(out[0].message, "cannot execute"));
+    CHECK(has(out[0].message, "spawn "));  // FORGE spawn: "spawn <exe>: <strerror>"
 #endif
     CHECK(xget(out[0], "install") == prism::adapter_install("cppcheck"));
     // Something that starts but answers like a test binary is not cppcheck.
