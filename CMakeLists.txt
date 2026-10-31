@@ -64,8 +64,43 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # third_party/ code, so CI and the Docker build compile and run it to verify
 # third_party/ before anything from there is built. -DPRISM_DEPS_ONLY=ON
 # configures this target alone (no Z3, no PCRE2).
-option(PRISM_DEPS_ONLY "Configure only the std-only prism-deps tool" OFF)
+# --- FORGE (required, unpinned: tracks odin-loki/FORGE main) ---
+# PRISM's runtime services (log, exec, pool, cache, clock, settings) are
+# FORGE's. FORGE is header-only for these modules, so only its include
+# directories are used; FORGE's own build is never configured. Point
+# FORGE_SOURCE_DIR at a checkout, or leave it empty to fetch FORGE main.
+set(FORGE_SOURCE_DIR "" CACHE PATH "FORGE checkout (empty: fetch odin-loki/FORGE main)")
+if(NOT FORGE_SOURCE_DIR)
+  include(FetchContent)
+  FetchContent_Declare(forge GIT_REPOSITORY https://github.com/odin-loki/FORGE.git GIT_TAG main GIT_SHALLOW TRUE)
+  FetchContent_GetProperties(forge)
+  if(NOT forge_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(SET CMP0169 OLD)  # populate only: FORGE's own build is not configured
+    endif()
+    FetchContent_Populate(forge)
+  endif()
+  set(FORGE_SOURCE_DIR "${forge_SOURCE_DIR}")
+endif()
+if(NOT EXISTS "${FORGE_SOURCE_DIR}/core/include/forge/core/log.hpp")
+  message(FATAL_ERROR "PRISM requires FORGE (odin-loki/FORGE main). Not found at '${FORGE_SOURCE_DIR}'. "
+                      "Set -DFORGE_SOURCE_DIR=/path/to/FORGE, or allow the configure step to fetch it.")
+endif()
+message(STATUS "PRISM: FORGE from ${FORGE_SOURCE_DIR}")
+add_library(prism_forge INTERFACE)
+target_include_directories(prism_forge SYSTEM INTERFACE
+  "${FORGE_SOURCE_DIR}/core/include" "${FORGE_SOURCE_DIR}/os/include" "${FORGE_SOURCE_DIR}/support/include")
+find_package(Threads REQUIRED)
+target_link_libraries(prism_forge INTERFACE Threads::Threads)
+if(WIN32)
+  target_link_libraries(prism_forge INTERFACE ws2_32 bcrypt)
+elseif(UNIX AND NOT APPLE)
+  target_link_libraries(prism_forge INTERFACE ${CMAKE_DL_LIBS})
+endif()
+
+option(PRISM_DEPS_ONLY "Configure only the prism-deps tool (std + FORGE headers)" OFF)
 add_library(prism_deps_lib STATIC
+  src/prism/log.cpp  # prism::log on FORGE's logger, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
   src/tools/prism_deps/fetch.cpp
   src/tools/prism_deps/licence.cpp
@@ -75,6 +110,7 @@ add_library(prism_deps_lib STATIC
   src/tools/prism_deps/tar.cpp
   src/tools/prism_deps/toml.cpp)
 target_include_directories(prism_deps_lib PUBLIC "${PRISM_ROOT}/include")
+target_link_libraries(prism_deps_lib PUBLIC prism_forge)
 add_executable(prism-deps src/tools/prism_deps/main.cpp)
 target_link_libraries(prism-deps PRIVATE prism_deps_lib)
 
@@ -186,7 +222,6 @@ include("${PRISM_ROOT}/cmake/z3.cmake")
 # Explicit source list (no file(GLOB)).
 set(PRISM_SRC
   src/prism/adapters.cpp
-  src/prism/proc.cpp
   src/prism/astlint.cpp
   src/prism/astlint_checks.cpp
   src/prism/astlint_libclang.cpp
@@ -223,6 +258,7 @@ set(PRISM_SRC
   src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
+  src/prism/forge_services.cpp
   src/prism/membudget.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
@@ -247,7 +283,6 @@ set(PRISM_SRC
   src/prism/cli.cpp
   src/prism/polyglot.cpp
   src/prism/toml_syntax.cpp
-  src/prism/proc_session.cpp
   src/prism/regex.cpp
   src/prism/sandbox.cpp
   src/prism/sarif.cpp
@@ -396,6 +431,7 @@ file(CONFIGURE OUTPUT "${_pir_models_cpp}" CONTENT "${_pir_models_txt}" @ONLY)
 list(APPEND PRISM_SRC "${_pir_models_cpp}")
 
 add_library(prism_core STATIC ${PRISM_SRC} "${_pins_hdr}")
+target_link_libraries(prism_core PUBLIC prism_forge)
 
 # --- src/prism/checkers_*.cpp -> prism/astlint_discard.inc (build time) ---
 # The Clang-AST layer's "<fn>() return is discarded" table is read out of
@@ -577,13 +613,8 @@ set(_prism_qa_sources
   src/tools/qa/conformance.cpp
   src/tools/qa/gen_random.cpp
   src/tools/qa/soundness.cpp)
-# Process tree runner: POSIX sessions (setsid/killpg) vs a Windows stub whose
-# run_tree is NOTRUN (Law 1) until a Job Object implementation lands.
-if(WIN32)
-  list(APPEND _prism_qa_sources src/tools/qa/support/proctree_win.cpp)
-else()
-  list(APPEND _prism_qa_sources src/tools/qa/support/proctree.cpp)
-endif()
+# Process tree runner: prism::exec / FORGE (sessions, Job Objects).
+list(APPEND _prism_qa_sources src/tools/qa/support/proctree.cpp)
 add_library(prism_qa STATIC ${_prism_qa_sources})
 if(MSVC)
   target_compile_options(prism_qa PRIVATE /utf-8)
@@ -611,6 +642,7 @@ add_executable(prism_docs_check
   src/tools/qa/docscan.cpp
   src/prism/regex.cpp)
 target_include_directories(prism_docs_check PRIVATE "${PRISM_ROOT}/include")
+target_link_libraries(prism_docs_check PRIVATE prism_deps_lib)  # prism::log on FORGE
 target_compile_definitions(prism_docs_check PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
 if(TARGET pcre2-8-static)
   target_link_libraries(prism_docs_check PRIVATE pcre2-8-static)
@@ -760,6 +792,9 @@ if(PRISM_TESTS)
   # test_sanitize_static.cpp are reference-only splits and are not built (they
   # would register the same doctest names twice).
   set(_prism_test_sources
+    tests/cpp/test_env_registry.cpp
+    tests/cpp/test_log.cpp
+    tests/cpp/test_backends.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp
@@ -904,7 +939,7 @@ if(PRISM_TESTS)
     tests/cpp/test_repair.cpp
     tests/cpp/test_adapters.cpp
     tests/cpp/test_sanitize.cpp
-    # test_qa.cpp holds every case test_qa_static.cpp has (checked: same 13
+    # test_qa.cpp holds every case test_qa_static.cpp has (checked: same 12
     # TEST_CASEs) plus the prism-qa / run_session subprocess ones; its fork /
     # session-kill cases are #ifndef _WIN32. test_qa_static.cpp is not built
     # here (it would register the same names twice).
@@ -969,6 +1004,7 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa prism_ai_lib)
+  target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_ROOT="${PRISM_ROOT}")
   if(_prism_warn)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()

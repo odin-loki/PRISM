@@ -8,6 +8,7 @@
 // rejected. The packing is lossless for every well-formed text LRAT file.
 
 #include "prism/solver_certs.hpp"
+#include "prism/settings.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -241,7 +242,7 @@ std::uint64_t cap_bytes(std::int64_t opt_bytes, std::string* why) {
         set(why, "option");
         return static_cast<std::uint64_t>(opt_bytes);
     }
-    if (const char* e = std::getenv("PRISM_CERT_CACHE_MAX"); e && *e) {
+    if (const char* e = prism::settings::cstr(prism::settings::cert_cache_max()); e && *e) {
         std::uint64_t v = 0;
         if (parse_size(e, v)) {
             set(why, "PRISM_CERT_CACHE_MAX");

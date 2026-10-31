@@ -1,9 +1,9 @@
 // OS plumbing of the stages: run_argv (over detail::run in proc.cpp:
 // CreateProcess / fork+execvp with sandbox rlimits) and the plain-HTTP client (WinHTTP / sockets) that the LLM
 // engine and src/prism/ai use (ai::http_request_raw).
+#include "prism/clock.hpp"
 #include "common.hpp"
 #include "../ai/ai_internal.hpp"
-#include "../proc.hpp"
 
 #ifdef _WIN32
 #  ifndef NOMINMAX
@@ -65,11 +65,11 @@ namespace stages_detail {
 // The stages' view of detail::run (proc.cpp): stdin, split stdout/stderr.
 ProcRun run_argv(const std::vector<std::string>& args, const std::string& input, double timeout_s,
                  const sandbox::Limits& limits) {
-    detail::RunSpec spec;
+    exec::Spec spec;
     spec.argv = args;
-    spec.input = input;
-    spec.timeout_s = timeout_s;
-    spec.limits = limits;
+    spec.stdin_data = input;
+    spec.timeout_ms = timeout_s > 0 ? static_cast<std::uint64_t>(timeout_s * 1000) : 0;
+    exec::apply_limits(spec, limits.enabled, limits.cpu_seconds, limits.limit_as);
     return run_spec(spec);
 }
 
@@ -81,14 +81,16 @@ void suppress_crash_dialogs() {
 #endif
 }
 
-ProcRun run_spec(const detail::RunSpec& spec) {
-    auto r = detail::run(spec);
+ProcRun run_spec(const exec::Spec& in) {
+    exec::Spec spec = in;
+    spec.max_output = ~0ull;
+    auto r = exec::run(spec);
     ProcRun out;
-    out.rc = r.rc;
+    out.rc = r.rc();
     out.out = std::move(r.out);
     out.err = std::move(r.err);
     out.timeout = r.timed_out;
-    out.crashed = r.crashed;
+    out.crashed = r.crashed();
     out.failed = r.failed;
     return out;
 }
@@ -214,18 +216,16 @@ std::optional<std::string> http_request(const std::string& method, const std::st
     if (has_ctl_or_space(host, true) || has_ctl_or_space(path, false) || has_ctl_or_space(method, true))
         return std::nullopt;
 
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, timeout_ms));
+    const auto deadline = prism::clock::Deadline::after_ms(static_cast<std::uint64_t>(std::max(0, timeout_ms)));
     auto remain_ms = [&]() -> int {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) return 0;
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        return ms > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max() : static_cast<int>(ms);
+        const auto ms = deadline.remaining_ms();
+        return ms > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ? std::numeric_limits<int>::max()
+                                                                                : static_cast<int>(ms);
     };
     auto poll_wait = [&](int sfd, short events) -> bool {
         for (;;) {
             const int ms = remain_ms();
-            if (ms <= 0 && std::chrono::steady_clock::now() >= deadline) return false;
+            if (ms <= 0 && deadline.expired()) return false;
             pollfd pfd{};
             pfd.fd = sfd;
             pfd.events = events;

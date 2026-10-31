@@ -10,10 +10,11 @@
 // ir::Module (the models' metadata references are renamed so they cannot
 // collide with the unit's), so no llvm-link run is needed.
 
+#include "prism/exec.hpp"
 #include "prism/pir.hpp"
 #include "prism/pir/frontend.hpp"
 
-#include "../proc.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -106,7 +107,7 @@ bool build_cxx_std_module(const std::filesystem::path& clangxx, const std::files
     const auto tmp = out_pcm.string() + ".tmp" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +
                      "." + std::to_string(seq.fetch_add(1));
     argv.insert(argv.end(), {"-w", "--precompile", "-o", tmp, src.string()});
-    auto r = detail::run_process(argv, timeout_s);
+    auto r = prism::exec::run_process(argv, timeout_s);
     if (!r.failed && !r.timed_out && r.rc == 0) {
         std::filesystem::rename(tmp, out_pcm, ec);
         if (ec) { err = "std module rename failed: " + ec.message(); return false; }
@@ -193,10 +194,10 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
                              "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
                              src.string()});
-    auto r = detail::run_process(argv, timeout_s);
+    auto r = prism::exec::run_process(argv, timeout_s);
     if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
     if (r.failed || r.rc != 0) return "model " + name + ": " + first_error_line(r.text);
-    auto ro = detail::run_process({fe.opt->string(), c_ir_passes(*fe.opt), "-S",
+    auto ro = prism::exec::run_process({fe.opt->string(), c_ir_passes(*fe.opt), "-S",
                                    "-o", o1.string(), o0.string()},
                                   timeout_s);
     if (ro.timed_out) return "model " + name + " (opt): timed out after " + std::to_string(int(timeout_s)) + " s";

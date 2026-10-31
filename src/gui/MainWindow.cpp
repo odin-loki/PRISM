@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "prism/log.hpp"
 
 #include <cstdio>
 
@@ -378,8 +379,8 @@ void MainWindow::runSmoke(const QString& screenshot) {
             [this, screenshot](int, QProcess::ExitStatus) {
                 const int rows = findings_->rowCount();
                 const bool saved = grab().save(screenshot);
-                std::fprintf(stderr, "gui smoke: %d finding rows, screenshot %s\n", rows,
-                             saved ? "saved" : "NOT saved");
+                prism::log::plain(prism::log::cat("gui smoke: ", rows, " finding rows, screenshot ",
+                                                   saved ? "saved" : "NOT saved"));
                 QCoreApplication::exit(rows > 0 && saved ? 0 : 3);
             });
     onRun();

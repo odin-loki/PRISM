@@ -7,9 +7,12 @@
 //   prism-qa triage-selfscan ...   bucket a self-scan report.sarif
 //   (see usage below for the rest)
 
+#include "prism/exec.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "support/cli.hpp"
 #include "support/proctree.hpp"
 
@@ -52,14 +55,15 @@ int usage(std::ostream& o, int rc) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    prism::log::set_program("prism-qa");
     prism::qa::install_interrupt_cleanup();
-    prism::detail::install_child_cleanup();
-    if (argc < 2) return usage(std::cerr, 2);
+    prism::exec::install_interrupt_cleanup();
+    if (argc < 2) return usage(prism::log::err_stream(), 2);
     const std::string_view cmd = argv[1];
     if (cmd == "-h" || cmd == "--help") return usage(std::cout, 0);
     prism::qa::Args args(argv + 2, argv + argc);
     for (const auto& c : COMMANDS)
         if (c.name == cmd) return c.run(args);
-    std::cerr << "prism-qa: unknown command " << cmd << "\n";
-    return usage(std::cerr, 2);
+    prism::log::error("", prism::log::cat("unknown command ", cmd));
+    return usage(prism::log::err_stream(), 2);
 }

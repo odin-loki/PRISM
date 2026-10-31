@@ -1,5 +1,6 @@
 // The LLM chat engine (llama-server, Ollama or linked llama.cpp) and the
 // sandboxed compile+run of LLM-written C (declared in llm.hpp).
+#include "prism/settings.hpp"
 #include "llm.hpp"
 
 #include "prism/ai.hpp"
@@ -90,14 +91,7 @@ int native_gpu_layers() {
 #ifdef _WIN32
     if (!Config{}.which({"cl"})) return 0;
 #endif
-    if (const char* e = std::getenv("PRISM_N_GPU_LAYERS"); e && *e) {
-        try {
-            return std::stoi(e);
-        } catch (...) {
-            return -1;
-        }
-    }
-    return -1;
+    return static_cast<int>(settings::n_gpu_layers().get());
 }
 
 // Context of the linked model: prompt and reply together (the servers use 8192 too).

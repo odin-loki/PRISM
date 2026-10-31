@@ -34,6 +34,7 @@
 #include "prism_ai.hpp"
 #include "pycompat.hpp"
 
+#include "prism/laws.hpp"
 #include "prism/solver_predict.hpp"
 
 #include <algorithm>
@@ -265,7 +266,7 @@ ojson policy(const std::vector<BoundRow>& rows, const std::function<int(const Bo
         // A check on the data, not on the policy: a proof at the chosen depth
         // while unwind 16 finds a counterexample would be a pir bug (every
         // unwind's verdict must stand on its own).
-        contradictions += run.status.rfind("PROVED", 0) == 0 && r.final_status == "FAILED";
+        contradictions += prism::laws::is_proof(run.status) && r.final_status == "FAILED";
         if (r.final_status == "FAILED") {
             ++n_failed;
             // time to the first counterexample: try u, else escalate to 16

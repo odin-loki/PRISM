@@ -1,12 +1,13 @@
 // Regression: pir over several units with --jobs 2 spun forever. Two workers
 // spawning clang at the same moment both ran Z3's pthread_atfork prepare
 // handler (scoped_timer::finalize) and livelocked on its timer-pool locks.
-// detail::serialized_fork() lets one thread fork at a time; this hammers it
+// Every fork (prism::exec over FORGE spawn_wait, prism::detail::serialized_fork)
+// holds forge::os::fork_mutex(), so one thread forks at a time; this hammers it
 // from several threads while others run Z3 checks with timeouts (which start
 // scoped_timer workers), and fails instead of hanging if it livelocks.
 #include <doctest/doctest.h>
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
 
 #include <z3++.h>
 
@@ -19,14 +20,14 @@
 #include <vector>
 
 #if !defined(_WIN32)
-TEST_CASE("proc: concurrent forks with live Z3 timers do not livelock") {
+TEST_CASE("exec: concurrent forks with live Z3 timers do not livelock") {
     std::atomic<bool> stop{false};
     std::atomic<int> runs{0}, fails{0};
     std::atomic<bool> done{false};
     std::thread watchdog([&] {
         for (int i = 0; i < 1200 && !done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!done.load()) {
-            std::fprintf(stderr, "proc: concurrent fork livelock (serialized_fork regression)\n");
+            std::fprintf(stderr, "exec: concurrent fork livelock (serialized_fork regression)\n");
             std::_Exit(3);
         }
     });
@@ -48,11 +49,11 @@ TEST_CASE("proc: concurrent forks with live Z3 timers do not livelock") {
     for (int t = 0; t < 3; ++t)
         ts.emplace_back([&] {
             for (int i = 0; i < 60; ++i) {
-                prism::detail::RunSpec sp;
+                prism::exec::Spec sp;
                 sp.argv = {"/bin/true"};
-                auto r = prism::detail::run(sp);
+                auto r = prism::exec::run(sp);
                 ++runs;
-                if (r.rc != 0) ++fails;
+                if (r.rc() != 0) ++fails;
             }
         });
     for (std::size_t i = 2; i < ts.size(); ++i) ts[i].join();
