@@ -948,6 +948,7 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     CheckOptions o;
     o.houdini_budget = std::move(budget);
     o.unwind = cfg.unwind;
+    o.only_props = cfg.pir_only_props;
     o.timeout_s = cfg.timeout;
     o.certified = cfg.certified;
     // Certification budget per PROVED function (docs/PIR.md "Solving"):
@@ -1534,7 +1535,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         Finding f;
         f.stage = "pir";
         f.status = std::string(laws::NOTRUN);
-        f.message = "pir is LP64-only; ILP32 tasks are analysed by the bmc stage (32-bit long, size_t, pointers)";
+        f.message = "pir is LP64-only; ILP32 tasks (32-bit long, size_t, pointers) are not analysed";
         f.strength = std::string(laws::STRENGTH_PROVES);
         return {f};
     }

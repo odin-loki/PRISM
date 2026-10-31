@@ -9,20 +9,20 @@ namespace prism {
 
 const std::vector<TaxonomyClass>& taxonomy_classes() {
     static const std::vector<TaxonomyClass> C = {
-        {"MEM-OOB-READ", "out-of-bounds read", {125}, {{"bmc", "PROVES"}, {"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
-        {"MEM-OOB-WRITE", "out-of-bounds write", {787}, {{"bmc", "PROVES"}, {"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
+        {"MEM-OOB-READ", "out-of-bounds read", {125}, {{"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
+        {"MEM-OOB-WRITE", "out-of-bounds write", {787}, {{"esbmc", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
         {"PTR-CHAIN-NULL", "chained pointer dereference without intermediate null check", {476},
          {{"lints", "FINDS"}}},
-        {"PTR-NULL-DEREF", "null pointer dereference", {476}, {{"bmc", "PROVES"}, {"lints", "SOME"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}}},
+        {"PTR-NULL-DEREF", "null pointer dereference", {476}, {{"lints", "SOME"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}}},
         {"PTR-UNCHECKED-ALLOC", "unchecked allocation", {690}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}}},
         {"MEM-UAF", "use after free", {416}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"infer", "FINDS"}}},
         {"MEM-DOUBLE-FREE", "double free", {415}, {{"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"infer", "FINDS"}}},
         {"FMT-STRING", "format string from non-literal", {134}, {{"lints", "FINDS"}, {"taint", "FINDS"}, {"semgrep", "FINDS"}}},
-        {"UNINIT-READ", "uninitialised value", {457}, {{"bmc", "SOME"}, {"pir", "PROVES"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
+        {"UNINIT-READ", "uninitialised value", {457}, {{"pir", "PROVES"}, {"cppcheck", "FINDS"}, {"lints", "SOME"}}},
         {"UNINIT-SWITCH", "masked switch gap escapes uninit", {}, {{"lints", "FINDS"}}},
-        {"INT-SIGNED-OVF", "signed overflow", {190}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"esbmc", "PROVES"}}},
-        {"INT-DIV-ZERO", "division by zero", {369}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"lints", "SOME"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
-        {"INT-SHIFT-UB", "undefined shift", {1335}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}}},
+        {"INT-SIGNED-OVF", "signed overflow", {190}, {{"pir", "PROVES"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"esbmc", "PROVES"}}},
+        {"INT-DIV-ZERO", "division by zero", {369}, {{"pir", "PROVES"}, {"lints", "SOME"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}, {"cppcheck", "FINDS"}}},
+        {"INT-SHIFT-UB", "undefined shift", {1335}, {{"pir", "PROVES"}, {"lints", "FINDS"}, {"cppcheck", "FINDS"}, {"fuzz", "FINDS"}, {"concolic", "FINDS"}}},
         {"LOCK-IMBALANCE", "lock released on some paths only", {}, {{"lints", "FINDS"}}},
         {"LOCK-ORDER", "conflicting lock acquisition order", {833}, {{"lints", "FINDS"}}},
         {"LOCK-DOUBLE-UNLOCK", "lock released twice without acquire", {765}, {{"lints", "FINDS"}}},
@@ -616,7 +616,7 @@ const std::vector<TaxonomyClass>& taxonomy_classes() {
         {"EMPTY-TU", "translation unit parsed no functions", {}, {{"inventory", "FINDS"}}},
         {"PARSE-GAP", "code in braces the parser attributed to no function", {}, {{"inventory", "FINDS"}}},
         {"LTL-SAFETY", "LTL safety violation", {}, {{"ltl", "PROVES"}, {"strix", "PROVES"}}},
-        {"FUNC-CONTRACT", "ensures clause fails", {}, {{"bmc", "PROVES"}, {"pir", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
+        {"FUNC-CONTRACT", "ensures clause fails", {}, {{"pir", "PROVES"}, {"dafny", "PROVES"}, {"wp", "PROVES"}, {"contracts", "PROVES"}, {"rapid", "FINDS"}, {"muttest", "SOME"}, {"llm", "READS"}}},
         {"INTENT", "comment/code contract mismatch", {}, {{"lints", "FINDS"}, {"llm", "READS"}}},
         {"VACUOUS-ASSUMPTION", "requires/harness assumption no input satisfies (vacuous proof)", {}, {{"review", "PROVES"}}},
         {"PROOF-REGRESSION", "a stored proof no longer checks after a change", {}, {{"review", "FINDS"}}},
@@ -666,7 +666,6 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
     std::map<std::string, int> rank{{PROVES, 3}, {FINDS, 2}, {SOME, 1}, {READS, 1}};
     std::map<std::string, std::string> hits;
     std::set<std::string> ran_ok;
-    bool bmc_closed = false;
     bool pir_closed = false;  // taxonomy.py _PIR_UB
     for (auto& s : report.stages) if (s.status == "ok") ran_ok.insert(s.name);
     auto note = [&](const std::string& cls, const std::string& strength) {
@@ -691,8 +690,7 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
                 f.status == laws::NEEDS_HARNESS || f.status == laws::TIMEOUT ||
                 f.status == laws::UNKNOWN || f.status == laws::NOSEED) continue;
             if (laws::is_proof(f.status)) {  // incl. PROVED-CERTIFIED
-                // WP/contracts stay PROVED-ASSUMING; only BMC folds encoded UB.
-                if (s.name == "bmc") bmc_closed = true;
+                // WP/contracts stay PROVED-ASSUMING; only pir folds encoded UB.
                 if (s.name == "pir") pir_closed = true;
                 std::string cls = f.cls;
                 if (cls.empty() && (s.name == "wp" || s.name == "contracts")) cls = "FUNC-CONTRACT";
@@ -706,10 +704,6 @@ std::vector<TaxonomyRow> coverage_from_report(const RunReport& report) {
                 note(f.cls, st);
             }
         }
-    }
-    if (bmc_closed) {
-        for (auto* id : {"INT-DIV-ZERO", "INT-SHIFT-UB", "INT-SIGNED-OVF", "MEM-OOB-READ", "MEM-OOB-WRITE"})
-            if (!hits.contains(id)) hits[id] = PROVES;
     }
     if (pir_closed) {
         // No memory model in PIR: MEM-OOB-* are not folded (taxonomy.py _PIR_UB).

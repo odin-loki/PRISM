@@ -1,7 +1,7 @@
 // A finding that did not prove anything is READS. prove_with_contract and
 // run_wp return NEEDS-HARNESS for a POINTER function; that row is
-// STRENGTH_READS and is_proof is false. bmc_one's empty-result ERROR
-// ("BMC produced no result") is the same strength. run_bmc does not return
+// STRENGTH_READS and is_proof is false. pir_one's empty-result ERROR
+// ("BMC produced no result") is the same strength. the pir stage does not return
 // an empty list for one function without Z3 (it returns NOTRUN), so that
 // make_find is checked in common.cpp. A WP obligation that holds stays
 // PROVED-ASSUMING with STRENGTH_PROVES.
@@ -150,28 +150,6 @@ TEST_CASE("gap strength: contracts fail() on an unencodable decreases is ERROR a
     CHECK(rows[0].stage == "contracts");
     CHECK(rows[0].message.find("cannot encode decreases") != std::string::npos);
     CHECK(rows[0].extra.at("decreases_unencoded") == "true");
-}
-
-TEST_CASE("gap strength: bmc_one empty result is READS in common.cpp") {
-    // run_bmc({fn}) is never empty here: without Z3 it is one NOTRUN row,
-    // and with Z3 a non-empty function list is given a finding. The empty
-    // branch is the source of "BMC produced no result".
-    const auto text = slurp(fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "stages" / "common.cpp");
-    const auto key = std::string("BMC produced no result");
-    const auto at = text.find(key);
-    REQUIRE(at != std::string::npos);
-    REQUIRE(text.find(key, at + key.size()) == std::string::npos);
-    const auto fn_at = text.rfind("Finding bmc_one", at);
-    REQUIRE(fn_at != std::string::npos);
-    auto line_start = text.rfind('\n', at);
-    line_start = line_start == std::string::npos ? 0 : line_start + 1;
-    auto line_end = text.find('\n', at);
-    if (line_end == std::string::npos) line_end = text.size();
-    const auto line = text.substr(line_start, line_end - line_start);
-    CHECK(line.find("make_find") != std::string::npos);
-    CHECK(line.find("laws::ERROR") != std::string::npos);
-    CHECK(line.find("laws::STRENGTH_READS") != std::string::npos);
-    CHECK(line.find("laws::STRENGTH_PROVES") == std::string::npos);
 }
 
 TEST_CASE("gap strength: a holding WP stays PROVED-ASSUMING with PROVES") {

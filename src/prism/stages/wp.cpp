@@ -349,7 +349,7 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
         }
 
         std::optional<std::string> ens_opt = ensures;
-        auto rec = bmc_with_assume(fn, unwind, requires_, ens_opt, std::nullopt, std::nullopt);
+        auto rec = check_with_assume(fn, unwind, requires_, ens_opt, std::nullopt, std::nullopt);
         rec.stage = "wp";
         fill_extra(rec);
         if (rec.status == laws::PROVED) {

@@ -49,7 +49,7 @@ std::vector<Finding> run_esbmc(const std::vector<std::filesystem::path>& paths,
 std::vector<Finding> run_dafny(const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);
 std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind);
-// The contracts engine (BMC with requires assumed, ensures asserted at every
+// The contracts engine (PIR with requires assumed, ensures asserted at every
 // return) for a contract given here instead of in fn's comments. SCALAR only;
 // anything else is NEEDS-HARNESS. Stage "contracts" on the result.
 PRISM_API Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
@@ -59,15 +59,19 @@ std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwi
 // predicate, or nullopt when it is not encodable (\valid, \old, quantifiers,
 // ->, calls, ...), which makes the wp record ERROR.
 std::optional<std::string> encode_wp_predicate(const std::string& raw);
-std::vector<Finding> run_bmc(const std::vector<FunctionInfo>& functions, int unwind,
-                             bool allow_local_pointers = false, std::string_view data_model = "LP64");
+// One function checked by PIR on its own: its unit is the function's file
+// with the function as extracted (signature + body), so a patched or
+// instrumented body is checked in its original context. Stage "pir".
+PRISM_API Finding check_function_pir(const FunctionInfo& fn, int unwind);
 // The year of a `-std=` flag's C++ standard (c++98/03 -> 3, c++0x/11 -> 11,
-// c++2a/20 -> 20, gnu++ alike); 0 for anything else. Same in prism/bmc.py.
+// c++2a/20 -> 20, gnu++ alike); 0 for anything else.
 int cxx_std_year(std::string_view std_flag);
 // functions with FunctionInfo::cxx_std set from the -std= of their unit in
 // compile_commands.json (root or root/build), as the lints read it.
 std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, const std::filesystem::path& root);
-std::vector<Finding> run_harness_bmc(const std::vector<FunctionInfo>& functions, int unwind);
+// Stage "harness": POINTER functions materialized from an honest requires
+// and checked by PIR; PROVED-ASSUMING at best.
+std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind);
 // The harness stage's materialization of a POINTER function: each pointer
 // parameter becomes a local buffer of its pointee type, sized by an honest
 // `requires`, and the requires guard the body. nullopt when the function is
@@ -124,12 +128,12 @@ struct FuzzPrompt {
 FuzzPrompt create_prompt_from_source(const std::string& name, const std::string& body, const std::string& source);
 
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
-                              const std::vector<Finding>& bmc_findings,
+                              const std::vector<Finding>& checker_findings,
                               const std::filesystem::path& src_root,
                               double budget, int iters, bool llm);
 // cfg: where afl-fuzz is looked up (--tool, the pinned build, PATH).
 std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions,
-                              const std::vector<Finding>& bmc_findings,
+                              const std::vector<Finding>& checker_findings,
                               const std::filesystem::path& src_root,
                               double budget, int iters, bool llm, const Config& cfg);
 std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,

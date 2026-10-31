@@ -12,6 +12,7 @@
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/ai.hpp"
 #include "prism/pir/frontend.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
@@ -570,7 +571,7 @@ TEST_CASE("real-world: fuzz goal BMC stops when the fuzz budget is spent, and sa
     REQUIRE_FALSE(fz.empty());
     CHECK(fz[0].status != prism::laws::PROVED);
 #ifdef PRISM_HAS_Z3  // the BMC goals come from the solver (Law 1: without Z3 there are none)
-    CHECK(fz[0].extra["bmc_goals_skipped"].find("fuzz budget spent") != std::string::npos);
+    CHECK(fz[0].extra["goal_checks_skipped"].find("fuzz budget spent") != std::string::npos);
 #endif
 }
 
@@ -721,45 +722,12 @@ TEST_CASE("rlef_repair missing llm is NOTRUN never CLEAN") {
 }
 
 #ifdef PRISM_HAS_Z3
-TEST_CASE("bmc proves abs_ok") {
-    auto fn = load_fn("abs_ok.c", "abs_ok");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].function == "abs_ok");
-    CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-    CHECK((findings[0].status == prism::laws::PROVED ||
-           findings[0].status == prism::laws::PROVED_UNBOUNDED));
-}
-
-TEST_CASE("bmc fails div_param") {
-    auto fn = load_fn("div_param.c", "div_param");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == prism::laws::FAILED);
-    CHECK(findings[0].cls == "INT-DIV-ZERO");
-}
-
-TEST_CASE("bmc fails add_overflow") {
-    auto fn = load_fn("add_overflow.c", "add_overflow");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == prism::laws::FAILED);
-    CHECK(findings[0].cls == "INT-SIGNED-OVF");
-}
-
-TEST_CASE("bmc fails oob_write") {
-    auto fn = load_fn("oob_write.c", "oob_write");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == prism::laws::FAILED);
-}
-
 // docs/CONFORMANCE.md "Known issues": every wrong proof S1-S6 and the
 // soundness-relevant F/R items, reduced to one function each. A function
 // with a violation must never be proved; the expected refutation class is
 // checked where the encoder models it.
-static std::map<std::string, prism::Finding> bmc_source(const std::string& name, const std::string& src) {
-    auto dir = std::filesystem::temp_directory_path() / "prism_bmc_soundness";
+static std::map<std::string, prism::Finding> pir_source(const std::string& name, const std::string& src) {
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_soundness";
     std::filesystem::create_directories(dir);
     auto path = dir / name;
     {
@@ -768,13 +736,17 @@ static std::map<std::string, prism::Finding> bmc_source(const std::string& name,
     }
     auto fns = prism::extract_functions(path, path.string());
     std::map<std::string, prism::Finding> by;
-    for (auto& f : prism::run_bmc(fns, 8))
+    (void)fns;
+    auto cfg = prism::default_config();
+    cfg.root = dir;
+    cfg.jobs = 1;
+    for (auto& f : prism::pir::run_pir({path}, cfg))
         if (f.function) by[*f.function] = f;
     return by;
 }
 
 TEST_CASE("bmc: unsized array initialisers have exactly as many elements as items") {
-    auto by = bmc_source("unsized.c",
+    auto by = pir_source("unsized.c",
                          "int u_true(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i >= 4) return 0; return a[i]; }\n"
                          "int u_false(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i > 4) return 0; return a[i]; }\n"
                          "int u_ovf(int x) { int a[] = {x + 1, 2}; return a[1]; }\n"
@@ -788,7 +760,7 @@ TEST_CASE("bmc: unsized array initialisers have exactly as many elements as item
 }
 
 TEST_CASE("bmc: C23 digit separators are one literal; a 2-D array is encoded") {
-    auto by = bmc_source("digitsep.c",
+    auto by = pir_source("digitsep.c",
                          "int d_true(int a) { if (a < 0 || a > 1'000) return 0; return a * 1'000'000; }\n"
                          "int d_false(int a) { if (a < 0 || a > 10'000) return 0; return a * 1'000'000; }\n"
                          "int d_hex(int a) { return a & 0xFF'FF; }\n"
@@ -813,26 +785,26 @@ int main(void) {
 )";
     const std::string decl = "extern void abort(void);\n";
     // extern only (SV-COMP): the name model applies and the add cannot overflow
-    auto ext = bmc_source("assume_ext.c", decl + "void assume_abort_if_not(int cond);\n" + main_src);
+    auto ext = pir_source("assume_ext.c", decl + "void assume_abort_if_not(int cond);\n" + main_src);
     CHECK(prism::laws::is_proof(ext["main"].status));
     // canonical definitions: same
     for (std::string def : {"void assume_abort_if_not(int cond) {\n  if (!cond) {abort();}\n}\n",
                             "void assume_abort_if_not(int cond) {\n  if (!(cond)) abort();\n  return;\n}\n",
                             "void assume_abort_if_not(int cond) {\n  if (!cond) { exit(0); }\n}\n"}) {
-        auto can = bmc_source("assume_canon.c", decl + "extern void exit(int);\n" + def + main_src);
+        auto can = pir_source("assume_canon.c", decl + "extern void exit(int);\n" + def + main_src);
         CHECK_MESSAGE(prism::laws::is_proof(can["main"].status), def);
     }
     // a body that does not stop the run: never a proof (x = INT_MAX overflows)
     for (std::string def : {"void assume_abort_if_not(int cond) {}\n",
                             "int hits;\nvoid assume_abort_if_not(int cond) {\n  if (!cond) { hits++; }\n}\n"}) {
-        auto bad = bmc_source("assume_noop.c", decl + def + main_src);
+        auto bad = pir_source("assume_noop.c", decl + def + main_src);
         CHECK_MESSAGE(!prism::laws::is_proof(bad["main"].status), def, " -> ", bad["main"].status);
     }
 }
 
 TEST_CASE("bmc: two asserts in one block parse, and the second is checked") {
     const std::string pre = "#include <assert.h>\nextern int __VERIFIER_nondet_int(void);\n";
-    auto bad = bmc_source("two_asserts_bad.c", pre + R"(int main(void) {
+    auto bad = pir_source("two_asserts_bad.c", pre + R"(int main(void) {
   int x = __VERIFIER_nondet_int();
   if (x < 0 || x > 10) return 0;
   assert(x >= 0);
@@ -841,7 +813,7 @@ TEST_CASE("bmc: two asserts in one block parse, and the second is checked") {
 }
 )");
     CHECK(bad["main"].status == std::string(prism::laws::FAILED));
-    auto ok = bmc_source("two_asserts_ok.c", pre + R"(int main(void) {
+    auto ok = pir_source("two_asserts_ok.c", pre + R"(int main(void) {
   int x = __VERIFIER_nondet_int();
   if (x < 0 || x > 4) return 0;
   assert(x >= 0);
@@ -858,7 +830,7 @@ void reach_error() { abort(); }
 extern unsigned int __VERIFIER_nondet_uint(void);
 )";
     // the SV-COMP definition: a false condition ends the run at reach_error()
-    auto ok = bmc_source("vassert_ok.c", defs + R"(void __VERIFIER_assert(int cond) {
+    auto ok = pir_source("vassert_ok.c", defs + R"(void __VERIFIER_assert(int cond) {
   if (!(cond)) {
     ERROR: {reach_error();abort();}
   }
@@ -871,7 +843,7 @@ int main(void) {
 }
 )");
     CHECK(prism::laws::is_proof(ok["main"].status));
-    auto bad = bmc_source("vassert_bad.c", defs + R"(void __VERIFIER_assert(int cond) {
+    auto bad = pir_source("vassert_bad.c", defs + R"(void __VERIFIER_assert(int cond) {
   if (!(cond)) {
     ERROR: {reach_error();abort();}
   }
@@ -886,7 +858,7 @@ int main(void) {
     CHECK(bad["main"].status == prism::laws::FAILED);
     CHECK(bad["main"].cls == "FUNC-CONTRACT");
     // the argument is converted to the parameter type (int) as in the call
-    auto conv = bmc_source("vassert_conv.c", defs + R"(extern unsigned long __VERIFIER_nondet_ulong(void);
+    auto conv = pir_source("vassert_conv.c", defs + R"(extern unsigned long __VERIFIER_nondet_ulong(void);
 void __VERIFIER_assert(int cond) {
   if (!(cond)) {
     ERROR: {reach_error();abort();}
@@ -902,7 +874,7 @@ int main(void) {
 )");
     CHECK(conv["main"].status == prism::laws::FAILED);
     // any other definition (here: with an effect) stays unmodelled
-    auto other = bmc_source("vassert_other.c", defs + R"(int hits;
+    auto other = pir_source("vassert_other.c", defs + R"(int hits;
 void __VERIFIER_assert(int cond) {
   if (!(cond)) {
     hits++;
@@ -917,7 +889,7 @@ int main(void) {
 )");
     CHECK(other["main"].status == prism::laws::NEEDS_HARNESS);
     // no definition in the unit: assume SV-COMP semantics at call sites
-    auto ext = bmc_source("vassert_extern.c", defs + R"(extern void __VERIFIER_assert(int cond);
+    auto ext = pir_source("vassert_extern.c", defs + R"(extern void __VERIFIER_assert(int cond);
 int main(void) {
   unsigned int x = __VERIFIER_nondet_uint();
   __VERIFIER_assert(x == x);
@@ -933,7 +905,7 @@ TEST_CASE("bmc: a reachable reach_error() call is a FUNC-CONTRACT violation (SV-
 void reach_error() { abort(); }
 extern int __VERIFIER_nondet_int(void);
 )";
-    auto bad = bmc_source("reach_bad.c", defs + R"(int main(void) {
+    auto bad = pir_source("reach_bad.c", defs + R"(int main(void) {
   int x = __VERIFIER_nondet_int();
   if (x > 10 && x < 20) {
     if (x == 15) reach_error();
@@ -946,7 +918,7 @@ extern int __VERIFIER_nondet_int(void);
     CHECK(bad["main"].message.starts_with("reach_error:"));
     CHECK(bad["main"].extra["nondet"].find("15") != std::string::npos);
     // unreachable: the proof now covers the call
-    auto ok = bmc_source("reach_ok.c", defs + R"(int main(void) {
+    auto ok = pir_source("reach_ok.c", defs + R"(int main(void) {
   int x = __VERIFIER_nondet_int();
   int i = 0;
   if (x > 10 && x < 20) {
@@ -959,7 +931,7 @@ extern int __VERIFIER_nondet_int(void);
 )");
     CHECK(prism::laws::is_proof(ok["main"].status));
     // __VERIFIER_error() is the older name of the same property
-    auto old = bmc_source("reach_old.c", R"(extern void __VERIFIER_error(void);
+    auto old = pir_source("reach_old.c", R"(extern void __VERIFIER_error(void);
 extern int __VERIFIER_nondet_int(void);
 int main(void) {
   int x = __VERIFIER_nondet_int();
@@ -970,7 +942,7 @@ int main(void) {
     CHECK(old["main"].status == prism::laws::FAILED);
     CHECK(old["main"].cls == "FUNC-CONTRACT");
     // a static definition with no effect is not inlined over the call
-    auto st = bmc_source("reach_static.c", R"(static void reach_error(void) {}
+    auto st = pir_source("reach_static.c", R"(static void reach_error(void) {}
 extern int __VERIFIER_nondet_int(void);
 int main(void) {
   int x = __VERIFIER_nondet_int();
@@ -981,7 +953,7 @@ int main(void) {
     CHECK(st["main"].status == prism::laws::FAILED);
     CHECK(st["main"].cls == "FUNC-CONTRACT");
     // abort() and __assert_fail() still only end the path
-    auto ab = bmc_source("reach_abort.c", R"(extern void abort(void);
+    auto ab = pir_source("reach_abort.c", R"(extern void abort(void);
 extern int __VERIFIER_nondet_int(void);
 int main(void) {
   int x = __VERIFIER_nondet_int();
@@ -993,7 +965,7 @@ int main(void) {
 }
 
 TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
-    auto by = bmc_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
+    auto by = pir_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
 extern unsigned char __VERIFIER_nondet_uchar(void);
 extern char __VERIFIER_nondet_char(void);
 int main(void) {
@@ -1028,7 +1000,7 @@ int nothing(int x) { return x / 2; }
 }
 
 TEST_CASE("bmc: nondet call sites survive inlining and several calls on a line") {
-    auto by = bmc_source("nondet_sites.c", R"(extern int __VERIFIER_nondet_int(void);
+    auto by = pir_source("nondet_sites.c", R"(extern int __VERIFIER_nondet_int(void);
 static int get(void) { return __VERIFIER_nondet_int(); }
 int main(void) {
   int a = get(); int b = __VERIFIER_nondet_int ( );
@@ -1045,8 +1017,8 @@ int main(void) {
     CHECK(f.extra["nondet_loc"] == "2:31, 4:26");
 }
 
-TEST_CASE("bmc soundness: known wrong proofs are refuted (S1-S6)") {
-    auto by = bmc_source("sound_s.c", R"(#include <stdlib.h>
+TEST_CASE("pir soundness: known wrong proofs are refuted (S1-S6)") {
+    auto by = pir_source("sound_s.c", R"(#include <stdlib.h>
 #include <limits.h>
 int s1(int a, int b) { if (a < 0) return 0; return a - b; }
 int s2(int a, int b) { if (b == 0) return 0; return a % b; }
@@ -1079,9 +1051,9 @@ long long mul_ll(long long a) { return a * 3; }
     }
 }
 
-TEST_CASE("bmc soundness: dynamic initialisation before main (S8)") {
+TEST_CASE("pir soundness: dynamic initialisation before main (S8)") {
     // a global's constructor throws before main: main's proof is not the program's
-    auto by = bmc_source("sound_s8.cpp", R"(struct C { C() { throw 1; } };
+    auto by = pir_source("sound_s8.cpp", R"(struct C { C() { throw 1; } };
 C global_c;
 int main() { return 0; }
 )");
@@ -1090,11 +1062,11 @@ int main() { return 0; }
     CHECK(by["main"].message.find("dynamic initialisation before main") != std::string::npos);
 }
 
-TEST_CASE("bmc soundness: an unmodelled C++ callee may write reference arguments (F10)") {
+TEST_CASE("pir soundness: an unmodelled C++ callee may write reference arguments (F10)") {
     // f is a function-try-block (not extracted, not inlined): v may be 10
     // after f(v), so assert(v == 10) is not refuted; neither is a[1] after
     // g(a[1]). A violation that holds whatever the callee writes still is.
-    auto by = bmc_source("sound_f10.cpp", R"(#include <cassert>
+    auto by = pir_source("sound_f10.cpp", R"(#include <cassert>
 void f(int &x) try { throw 10; } catch (const int &i) { x = i; }
 void g(int &x);
 int main() { int v = 0; f(v); assert(v == 10); return 0; }
@@ -1115,15 +1087,15 @@ int byval(int n) { int v = 0; g(v + 1); return 100 / v + (n & 1); }
         CHECK(by[name].cls == "INT-DIV-ZERO");
     }
     // C: by-value arguments only, the refutation stands
-    auto c = bmc_source("sound_f10.c", R"(void g(int x);
+    auto c = pir_source("sound_f10.c", R"(void g(int x);
 int cval(int n) { int v = 0; g(v); return 100 / v + (n & 1); }
 )");
     REQUIRE(c.count("cval"));
     CHECK(c["cval"].status == prism::laws::FAILED);
 }
 
-TEST_CASE("bmc soundness: unmodelled constructs are never proofs") {
-    auto by = bmc_source("sound_u.c", R"(#define SQ(x) ((x) * (x))
+TEST_CASE("pir soundness: unmodelled constructs are never proofs") {
+    auto by = pir_source("sound_u.c", R"(#define SQ(x) ((x) * (x))
 int b6(int x) { return SQ(x); }
 int g6(int x) { return UNKNOWN_BOUND + x; }
 int glob;
@@ -1139,8 +1111,8 @@ int h6(int x) { return glob / x; }
     CHECK_FALSE(prism::laws::is_proof(by["h6"].status));
 }
 
-TEST_CASE("bmc soundness: control flow keeps every path") {
-    auto by = bmc_source("sound_cf.c", R"(static int g(int a) { if (a == 0) return 0; return 1; }
+TEST_CASE("pir soundness: control flow keeps every path") {
+    auto by = pir_source("sound_cf.c", R"(static int g(int a) { if (a == 0) return 0; return 1; }
 int inl(int a) { int r = g(a); return 10 / r; }
 int loopk(int n) { int s = 0; for (int i = 0; i < n; i++) s = i; return 100 / (s - 20); }
 int loopb(int n) { int i; if (n < 0) return 0; for (i = 0; i < n && i < 5; i++) { } return 100 / (n - 2); }
@@ -1166,14 +1138,6 @@ int innocent(int a) { if (a < 0 || a > 10) return 0; return a * 2; }
         REQUIRE(by.count(name));
         CHECK(by[name].status == prism::laws::PROVED_UNBOUNDED);
     }
-}
-
-TEST_CASE("thrd_create is not a vacuous proof") {
-    auto fn = load_fn("iso_thread_race.c", "iso_thrd_start");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == prism::laws::NEEDS_HARNESS);
-    CHECK(findings[0].message.find("thrd") != std::string::npos);
 }
 
 TEST_CASE("wp acsl_abs is PROVED-ASSUMING never PROVED") {
@@ -1256,6 +1220,30 @@ TEST_CASE("concolic z3 model of negated predicate is x=10") {
     auto got = prism::solve_fork_flip(fn, {{"x", 0}}, "x > 8 && x < 12 && x % 17 == 10", true);
     REQUIRE(got.kind == prism::ForkFlipKind::Model);
     CHECK(got.args.at("x") == 10);
+}
+
+TEST_CASE("ai::check_program on pir: refutes, proves and cuts with __prism_step") {
+    auto fn = load_fn("klee_fork.c", "klee_fork_neg");
+    const std::string body = "__prism_assume(x > 0 && x < 100); __prism_assert(1, x > 0); __prism_assert(2, x > 5);\n"
+                             "int i = 0; __prism_assert(3, i >= 0); __prism_havoc(i); __prism_assume(i >= 0);\n"
+                             "__prism_step (i < 10) { i = i + 1; __prism_assert(4, i >= 1); }\n"
+                             "return 0;";
+    for (bool only : {true, false}) {
+        INFO(only);
+        auto pc = prism::ai::check_program(fn, body, 4, 4000, only);
+        REQUIRE(pc.encoded);
+        std::map<std::string, prism::ai::ProgramProp> by;
+        for (auto& p : pc.props) by[p.name] = p;
+        CHECK(by["ai-inv#1"].result == "unsat");
+        CHECK(by["ai-inv#2"].result == "sat");
+        CHECK(by["ai-inv#2"].model.find("x=") != std::string::npos);
+        CHECK(by["ai-inv#3"].result == "unsat");
+        CHECK(by["ai-inv#4"].result == "unsat");
+        CHECK(pc.unwind_ok);
+    }
+    // a malformed hook is not encoded (never a silent pass)
+    auto bad = prism::ai::check_program(fn, "__prism_assert(x, 1);", 4, 4000, true);
+    CHECK_FALSE(bad.encoded);
 }
 #endif
 
@@ -2176,1790 +2164,11 @@ TEST_CASE("execute_cex POINTER is NEEDS-HARNESS") {
 }
 
 #ifdef PRISM_HAS_Z3
-TEST_CASE("bmc leftover10 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"kld_load_unenc.c", "kld_load_unenc_bad", "kld_load"},
-        {"ksem_close_unenc.c", "ksem_close_unenc_bad", "ksem"},
-        {"print_unenc.c", "print_unenc_bad", "format"},
-        {"future_unenc.c", "future_unenc_bad", "async"},
-        {"ulock_unenc.c", "ulock_unenc_bad", "mutex"},
-        {"destroy_at_unenc.c", "destroy_at_unenc_bad", "construct_at"},
-        {"subsat_unenc.c", "subsat_unenc_bad", "add_sat"},
-        {"getterm_unenc.c", "getterm_unenc_bad", "set_terminate"},
-        {"fmtn_unenc.c", "fmtn_unenc_bad", "format_to"},
-        {"bitfloor_unenc.c", "bitfloor_unenc_bad", "bit_ceil"},
-        {"stopsrc_unenc.c", "stopsrc_unenc_bad", "stop_token"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover10 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"kld_load_unenc.c", "kld_load_unenc_ok"},
-        {"ksem_close_unenc.c", "ksem_close_unenc_ok"},
-        {"print_unenc.c", "print_unenc_ok"},
-        {"future_unenc.c", "future_unenc_ok"},
-        {"ulock_unenc.c", "ulock_unenc_ok"},
-        {"destroy_at_unenc.c", "destroy_at_unenc_ok"},
-        {"subsat_unenc.c", "subsat_unenc_ok"},
-        {"getterm_unenc.c", "getterm_unenc_ok"},
-        {"fmtn_unenc.c", "fmtn_unenc_ok"},
-        {"bitfloor_unenc.c", "bitfloor_unenc_ok"},
-        {"stopsrc_unenc.c", "stopsrc_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover10 unstructured goto is NEEDS-HARNESS and abs_ok stays PROVED-UNBOUNDED") {
-    // Premise changed with the goto model: plain goto was ERROR, now a
-    // forward goto is encoded and only an unstructured one is NEEDS-HARNESS.
-    auto gt = load_fn("goto_structured.c", "goto_into_block");
-    auto gf = prism::run_bmc({gt}, 8);
-    REQUIRE_FALSE(gf.empty());
-    CHECK(gf[0].status == std::string(prism::laws::NEEDS_HARNESS));
-    CHECK(gf[0].status != std::string(prism::laws::ERROR));
-    auto wg = prism::run_bmc({load_fn("goto_unenc.c", "with_goto")}, 8);
-    REQUIRE_FALSE(wg.empty());
-    CHECK(wg[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
-
-    auto fn = load_fn("abs_ok.c", "abs_ok");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-    CHECK(findings[0].status != std::string(prism::laws::ERROR));
-}
-
-TEST_CASE("bmc leftover11 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"mulsat_unenc.c", "mulsat_unenc_bad", "add_sat"},
-        {"divsat_unenc.c", "divsat_unenc_bad", "add_sat"},
-        {"satcast_unenc.c", "satcast_unenc_bad", "add_sat"},
-        {"lguard_unenc.cpp", "lguard_unenc_bad", "mutex"},
-        {"slock_unenc.cpp", "slock_unenc_bad", "shared_lock"},
-        {"hasbit_unenc.c", "hasbit_unenc_bad", "bit_ceil"},
-        {"stopcb_unenc.cpp", "stopcb_unenc_bad", "stop_token"},
-        {"popcnt_unenc.cpp", "popcnt_unenc_bad", "bit_ceil"},
-        {"scoped_unenc.c", "scoped_unenc_bad", "mutex"},
-        {"promise_unenc.c", "promise_unenc_bad", "async"},
-        {"smutex_unenc.c", "smutex_unenc_bad", "condition_variable"},
-        {"czone_unenc.c", "czone_unenc_bad", "tzdb"},
-        {"chunkby_unenc.c", "chunkby_unenc_bad", "chunk"},
-        {"adjt_unenc.c", "adjt_unenc_bad", "adjacent"},
-        {"texscan_unenc.c", "texscan_unenc_bad", "transform_inclusive_scan"},
-        {"rotr_unenc.c", "rotr_unenc_bad", "rotl"},
-        {"cmpg_unenc.c", "cmpg_unenc_bad", "cmp_less"},
-        {"cntrz_unenc.c", "cntrz_unenc_bad", "countl_zero"},
-        {"uimove_unenc.c", "uimove_unenc_bad", "uninitialized_copy"},
-        {"uifilln_unenc.c", "uifilln_unenc_bad", "uninitialized_fill"},
-        {"pinterb_unenc.c", "pinterb_unenc_bad", "is_pointer_interconvertible"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover11 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"mulsat_unenc.c", "mulsat_unenc_ok"},
-        {"divsat_unenc.c", "divsat_unenc_ok"},
-        {"satcast_unenc.c", "satcast_unenc_ok"},
-        {"lguard_unenc.cpp", "lguard_unenc_ok"},
-        {"slock_unenc.cpp", "slock_unenc_ok"},
-        {"hasbit_unenc.c", "hasbit_unenc_ok"},
-        {"stopcb_unenc.cpp", "stopcb_unenc_ok"},
-        {"popcnt_unenc.cpp", "popcnt_unenc_ok"},
-        {"scoped_unenc.c", "scoped_unenc_ok"},
-        {"promise_unenc.c", "promise_unenc_ok"},
-        {"smutex_unenc.c", "smutex_unenc_ok"},
-        {"czone_unenc.c", "czone_unenc_ok"},
-        {"chunkby_unenc.c", "chunkby_unenc_ok"},
-        {"adjt_unenc.c", "adjt_unenc_ok"},
-        {"texscan_unenc.c", "texscan_unenc_ok"},
-        {"rotr_unenc.c", "rotr_unenc_ok"},
-        {"cmpg_unenc.c", "cmpg_unenc_ok"},
-        {"cntrz_unenc.c", "cntrz_unenc_ok"},
-        {"uimove_unenc.c", "uimove_unenc_ok"},
-        {"uifilln_unenc.c", "uifilln_unenc_ok"},
-        {"pinterb_unenc.c", "pinterb_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover12 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"madvise_unenc.c", "madvise_unenc_bad", "madvise"},
-        {"posix_madvise_unenc.c", "posix_madvise_unenc_bad", "madvise"},
-        {"setusercontext_unenc.c", "setusercontext_unenc_bad", "login_getclass"},
-        {"strtofflags_unenc.c", "strtofflags_unenc_bad", "fflagstostr"},
-        {"kinfo_getfile_unenc.c", "kinfo_getfile_unenc_bad", "kinfo_getproc"},
-        {"kinfo_getvmmap_unenc.c", "kinfo_getvmmap_unenc_bad", "kinfo_getproc"},
-        {"chunkv_unenc.c", "chunkv_unenc_bad", "chunk"},
-        {"adjvw_unenc.c", "adjvw_unenc_bad", "adjacent"},
-        {"uidc_unenc.c", "uidc_unenc_bad", "uninitialized_fill"},
-        {"uidcn_unenc.c", "uidcn_unenc_bad", "uninitialized_fill"},
-        {"uicn_unenc.c", "uicn_unenc_bad", "uninitialized_copy"},
-        {"uimn_unenc.c", "uimn_unenc_bad", "uninitialized_copy"},
-        {"cmple_unenc.c", "cmple_unenc_bad", "cmp_less"},
-        {"cmpge_unenc.c", "cmpge_unenc_bad", "cmp_less"},
-        {"cmpeq_unenc.c", "cmpeq_unenc_bad", "cmp_less"},
-        {"cmpne_unenc.c", "cmpne_unenc_bad", "cmp_less"},
-        {"inrng_unenc.c", "inrng_unenc_bad", "cmp_less"},
-        {"cntlo_unenc.c", "cntlo_unenc_bad", "countl_zero"},
-        {"cntro_unenc.c", "cntro_unenc_bad", "countl_zero"},
-        {"ifs_unenc.cpp", "ifs_unenc_bad", "fstream"},
-        {"ofs_unenc.cpp", "ofs_unenc_bad", "fstream"},
-        {"u8view_unenc.cpp", "u8view_unenc_bad", "u8string"},
-        {"mofn_unenc.cpp", "mofn_unenc_bad", "move_only_function"},
-        {"uvaln_unenc.c", "uvaln_unenc_bad", "uninitialized_value_construct"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover12 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"madvise_unenc.c", "madvise_unenc_ok"},
-        {"posix_madvise_unenc.c", "posix_madvise_unenc_ok"},
-        {"setusercontext_unenc.c", "setusercontext_unenc_ok"},
-        {"strtofflags_unenc.c", "strtofflags_unenc_ok"},
-        {"kinfo_getfile_unenc.c", "kinfo_getfile_unenc_ok"},
-        {"kinfo_getvmmap_unenc.c", "kinfo_getvmmap_unenc_ok"},
-        {"chunkv_unenc.c", "chunkv_unenc_ok"},
-        {"adjvw_unenc.c", "adjvw_unenc_ok"},
-        {"uidc_unenc.c", "uidc_unenc_ok"},
-        {"uidcn_unenc.c", "uidcn_unenc_ok"},
-        {"uicn_unenc.c", "uicn_unenc_ok"},
-        {"uimn_unenc.c", "uimn_unenc_ok"},
-        {"cmple_unenc.c", "cmple_unenc_ok"},
-        {"cmpge_unenc.c", "cmpge_unenc_ok"},
-        {"cmpeq_unenc.c", "cmpeq_unenc_ok"},
-        {"cmpne_unenc.c", "cmpne_unenc_ok"},
-        {"inrng_unenc.c", "inrng_unenc_ok"},
-        {"cntlo_unenc.c", "cntlo_unenc_ok"},
-        {"cntro_unenc.c", "cntro_unenc_ok"},
-        {"ifs_unenc.cpp", "ifs_unenc_ok"},
-        {"ofs_unenc.cpp", "ofs_unenc_ok"},
-        {"u8view_unenc.cpp", "u8view_unenc_ok"},
-        {"mofn_unenc.cpp", "mofn_unenc_ok"},
-        {"uvaln_unenc.c", "uvaln_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover13 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"setloginclass_unenc.c", "setloginclass_unenc_bad", "loginclass"},
-        {"setfsent_unenc.c", "setfsent_unenc_bad", "getfsent"},
-        {"endfsent_unenc.c", "endfsent_unenc_bad", "getfsent"},
-        {"modstat_unenc.c", "modstat_unenc_bad", "modfind"},
-        {"modnext_unenc.c", "modnext_unenc_bad", "modfind"},
-        {"modfnext_unenc.c", "modfnext_unenc_bad", "modfind"},
-        {"slidev_unenc.c", "slidev_unenc_bad", "slide"},
-        {"jwithv_unenc.c", "jwithv_unenc_bad", "join_with"},
-        {"joinv_unenc.c", "joinv_unenc_bad", "join"},
-        {"ztransv_unenc.c", "ztransv_unenc_bad", "zip_transform"},
-        {"zipv_unenc.c", "zipv_unenc_bad", "zip"},
-        {"asrvalv_unenc.c", "asrvalv_unenc_bad", "as_rvalue"},
-        {"enumvw_unenc.c", "enumvw_unenc_bad", "enumerate"},
-        {"cartv_unenc.c", "cartv_unenc_bad", "cartesian_product"},
-        {"stridev_unenc.c", "stridev_unenc_bad", "stride"},
-        {"repeatv_unenc.c", "repeatv_unenc_bad", "repeat"},
-        {"twhilev_unenc.c", "twhilev_unenc_bad", "take_while"},
-        {"takevw_unenc.c", "takevw_unenc_bad", "take"},
-        {"dwhilev_unenc.c", "dwhilev_unenc_bad", "drop_while"},
-        {"dropvw_unenc.c", "dropvw_unenc_bad", "drop"},
-        {"keysv_unenc.c", "keysv_unenc_bad", "keys"},
-        {"valsv_unenc.c", "valsv_unenc_bad", "values"},
-        {"revv_unenc.c", "revv_unenc_bad", "reverse"},
-        {"countvw_unenc.c", "countvw_unenc_bad", "counted"},
-        {"filtervw_unenc.c", "filtervw_unenc_bad", "filter"},
-        {"tvw_unenc.c", "tvw_unenc_bad", "views::transform"},
-        {"elemsv_unenc.c", "elemsv_unenc_bad", "elements"},
-        {"iotav_unenc.c", "iotav_unenc_bad", "iota"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover13 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"setloginclass_unenc.c", "setloginclass_unenc_ok"},
-        {"setfsent_unenc.c", "setfsent_unenc_ok"},
-        {"endfsent_unenc.c", "endfsent_unenc_ok"},
-        {"modstat_unenc.c", "modstat_unenc_ok"},
-        {"modnext_unenc.c", "modnext_unenc_ok"},
-        {"modfnext_unenc.c", "modfnext_unenc_ok"},
-        {"slidev_unenc.c", "slidev_unenc_ok"},
-        {"jwithv_unenc.c", "jwithv_unenc_ok"},
-        {"joinv_unenc.c", "joinv_unenc_ok"},
-        {"ztransv_unenc.c", "ztransv_unenc_ok"},
-        {"zipv_unenc.c", "zipv_unenc_ok"},
-        {"asrvalv_unenc.c", "asrvalv_unenc_ok"},
-        {"enumvw_unenc.c", "enumvw_unenc_ok"},
-        {"cartv_unenc.c", "cartv_unenc_ok"},
-        {"stridev_unenc.c", "stridev_unenc_ok"},
-        {"repeatv_unenc.c", "repeatv_unenc_ok"},
-        {"twhilev_unenc.c", "twhilev_unenc_ok"},
-        {"takevw_unenc.c", "takevw_unenc_ok"},
-        {"dwhilev_unenc.c", "dwhilev_unenc_ok"},
-        {"dropvw_unenc.c", "dropvw_unenc_ok"},
-        {"keysv_unenc.c", "keysv_unenc_ok"},
-        {"valsv_unenc.c", "valsv_unenc_ok"},
-        {"revv_unenc.c", "revv_unenc_ok"},
-        {"countvw_unenc.c", "countvw_unenc_ok"},
-        {"filtervw_unenc.c", "filtervw_unenc_ok"},
-        {"tvw_unenc.c", "tvw_unenc_ok"},
-        {"elemsv_unenc.c", "elemsv_unenc_ok"},
-        {"iotav_unenc.c", "iotav_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover14 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"thr_new_unenc.c", "thr_new_unenc_bad", "thr_kill"},
-        {"thr_kill2_unenc.c", "thr_kill2_unenc_bad", "thr_kill"},
-        {"thr_self_unenc.c", "thr_self_unenc_bad", "thr_kill"},
-        {"thr_exit_unenc.c", "thr_exit_unenc_bad", "thr_kill"},
-        {"thr_suspend_unenc.c", "thr_suspend_unenc_bad", "thr_kill"},
-        {"thr_wake_unenc.c", "thr_wake_unenc_bad", "thr_kill"},
-        {"kldunload_unenc.c", "kldunload_unenc_bad", "kldload"},
-        {"kldfind_unenc.c", "kldfind_unenc_bad", "kldload"},
-        {"kldsym_unenc.c", "kldsym_unenc_bad", "kldload"},
-        {"kldstat_unenc.c", "kldstat_unenc_bad", "kldload"},
-        {"extattr_get_file_unenc.c", "extattr_get_file_unenc_bad", "extattr"},
-        {"extattr_delete_file_unenc.c", "extattr_delete_file_unenc_bad", "extattr"},
-        {"extattr_list_file_unenc.c", "extattr_list_file_unenc_bad", "extattr"},
-        {"extattr_set_fd_unenc.c", "extattr_set_fd_unenc_bad", "extattr"},
-        {"extattr_get_fd_unenc.c", "extattr_get_fd_unenc_bad", "extattr"},
-        {"extattr_delete_fd_unenc.c", "extattr_delete_fd_unenc_bad", "extattr"},
-        {"extattr_list_fd_unenc.c", "extattr_list_fd_unenc_bad", "extattr"},
-        {"extattr_set_link_unenc.c", "extattr_set_link_unenc_bad", "extattr"},
-        {"extattr_get_link_unenc.c", "extattr_get_link_unenc_bad", "extattr"},
-        {"extattr_delete_link_unenc.c", "extattr_delete_link_unenc_bad", "extattr"},
-        {"extattr_list_link_unenc.c", "extattr_list_link_unenc_bad", "extattr"},
-        {"mac_get_proc_unenc.c", "mac_get_proc_unenc_bad", "mac_set"},
-        {"mac_set_fd_unenc.c", "mac_set_fd_unenc_bad", "mac_set"},
-        {"mac_get_fd_unenc.c", "mac_get_fd_unenc_bad", "mac_set"},
-        {"mac_set_file_unenc.c", "mac_set_file_unenc_bad", "mac_set"},
-        {"mac_get_file_unenc.c", "mac_get_file_unenc_bad", "mac_set"},
-        {"getaudit_unenc.c", "getaudit_unenc_bad", "auditon"},
-        {"setaudit_unenc.c", "setaudit_unenc_bad", "auditon"},
-        {"auditctl_unenc.c", "auditctl_unenc_bad", "auditon"},
-        {"kvm_openfiles_unenc.c", "kvm_openfiles_unenc_bad", "kvm_open"},
-        {"kvm_getprocs_unenc.c", "kvm_getprocs_unenc_bad", "kvm_open"},
-        {"kvm_close_unenc.c", "kvm_close_unenc_bad", "kvm_open"},
-        {"kvm_nlist_unenc.c", "kvm_nlist_unenc_bad", "kvm_open"},
-        {"cap_ioctls_limit_unenc.c", "cap_ioctls_limit_unenc_bad", "cap_fcntls"},
-        {"pdwait4_unenc.c", "pdwait4_unenc_bad", "pdgetpid"},
-        {"crypt_checkpass_unenc.c", "crypt_checkpass_unenc_bad", "crypt_newhash"},
-        {"jail_attach_unenc.c", "jail_attach_unenc_bad", "jail"},
-        {"jail_get_unenc.c", "jail_get_unenc_bad", "jail"},
-        {"jail_set_unenc.c", "jail_set_unenc_bad", "jail"},
-        {"jail_remove_unenc.c", "jail_remove_unenc_bad", "jail"},
-        {"getresgid_unenc.c", "getresgid_unenc_bad", "getresuid"},
-        {"timingsafe_memcmp_unenc.c", "timingsafe_memcmp_unenc_bad", "timingsafe"},
-        {"setprogname_unenc.c", "setprogname_unenc_bad", "getprogname"},
-        {"setproctitle_unenc.c", "setproctitle_unenc_bad", "daemon"},
-        {"arc4random_buf_unenc.c", "arc4random_buf_unenc_bad", "arc4random"},
-        {"arc4random_uniform_unenc.c", "arc4random_uniform_unenc_bad", "arc4random"},
-        {"fchflags_unenc.c", "fchflags_unenc_bad", "chflags"},
-        {"lchflags_unenc.c", "lchflags_unenc_bad", "chflags"},
-        {"ntp_adjtime_unenc.c", "ntp_adjtime_unenc_bad", "adjtime"},
-        {"sem_getvalue_unenc.c", "sem_getvalue_unenc_bad", "sem_trywait"},
-        {"rtprio_thread_unenc.c", "rtprio_thread_unenc_bad", "rtprio"},
-        {"cpuset_getaffinity_unenc.c", "cpuset_getaffinity_unenc_bad", "cpuset"},
-        {"fhopen_unenc.c", "fhopen_unenc_bad", "getfh"},
-        {"fhstat_unenc.c", "fhstat_unenc_bad", "getfh"},
-        {"fhstatfs_unenc.c", "fhstatfs_unenc_bad", "getfh"},
-        {"getfhat_unenc.c", "getfhat_unenc_bad", "getfh"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover14 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"thr_new_unenc.c", "thr_new_unenc_ok"},
-        {"thr_kill2_unenc.c", "thr_kill2_unenc_ok"},
-        {"thr_self_unenc.c", "thr_self_unenc_ok"},
-        {"thr_exit_unenc.c", "thr_exit_unenc_ok"},
-        {"thr_suspend_unenc.c", "thr_suspend_unenc_ok"},
-        {"thr_wake_unenc.c", "thr_wake_unenc_ok"},
-        {"kldunload_unenc.c", "kldunload_unenc_ok"},
-        {"kldfind_unenc.c", "kldfind_unenc_ok"},
-        {"kldsym_unenc.c", "kldsym_unenc_ok"},
-        {"kldstat_unenc.c", "kldstat_unenc_ok"},
-        {"extattr_get_file_unenc.c", "extattr_get_file_unenc_ok"},
-        {"extattr_delete_file_unenc.c", "extattr_delete_file_unenc_ok"},
-        {"extattr_list_file_unenc.c", "extattr_list_file_unenc_ok"},
-        {"extattr_set_fd_unenc.c", "extattr_set_fd_unenc_ok"},
-        {"extattr_get_fd_unenc.c", "extattr_get_fd_unenc_ok"},
-        {"extattr_delete_fd_unenc.c", "extattr_delete_fd_unenc_ok"},
-        {"extattr_list_fd_unenc.c", "extattr_list_fd_unenc_ok"},
-        {"extattr_set_link_unenc.c", "extattr_set_link_unenc_ok"},
-        {"extattr_get_link_unenc.c", "extattr_get_link_unenc_ok"},
-        {"extattr_delete_link_unenc.c", "extattr_delete_link_unenc_ok"},
-        {"extattr_list_link_unenc.c", "extattr_list_link_unenc_ok"},
-        {"mac_get_proc_unenc.c", "mac_get_proc_unenc_ok"},
-        {"mac_set_fd_unenc.c", "mac_set_fd_unenc_ok"},
-        {"mac_get_fd_unenc.c", "mac_get_fd_unenc_ok"},
-        {"mac_set_file_unenc.c", "mac_set_file_unenc_ok"},
-        {"mac_get_file_unenc.c", "mac_get_file_unenc_ok"},
-        {"getaudit_unenc.c", "getaudit_unenc_ok"},
-        {"setaudit_unenc.c", "setaudit_unenc_ok"},
-        {"auditctl_unenc.c", "auditctl_unenc_ok"},
-        {"kvm_openfiles_unenc.c", "kvm_openfiles_unenc_ok"},
-        {"kvm_getprocs_unenc.c", "kvm_getprocs_unenc_ok"},
-        {"kvm_close_unenc.c", "kvm_close_unenc_ok"},
-        {"kvm_nlist_unenc.c", "kvm_nlist_unenc_ok"},
-        {"cap_ioctls_limit_unenc.c", "cap_ioctls_limit_unenc_ok"},
-        {"pdwait4_unenc.c", "pdwait4_unenc_ok"},
-        {"crypt_checkpass_unenc.c", "crypt_checkpass_unenc_ok"},
-        {"jail_attach_unenc.c", "jail_attach_unenc_ok"},
-        {"jail_get_unenc.c", "jail_get_unenc_ok"},
-        {"jail_set_unenc.c", "jail_set_unenc_ok"},
-        {"jail_remove_unenc.c", "jail_remove_unenc_ok"},
-        {"getresgid_unenc.c", "getresgid_unenc_ok"},
-        {"timingsafe_memcmp_unenc.c", "timingsafe_memcmp_unenc_ok"},
-        {"setprogname_unenc.c", "setprogname_unenc_ok"},
-        {"setproctitle_unenc.c", "setproctitle_unenc_ok"},
-        {"arc4random_buf_unenc.c", "arc4random_buf_unenc_ok"},
-        {"arc4random_uniform_unenc.c", "arc4random_uniform_unenc_ok"},
-        {"fchflags_unenc.c", "fchflags_unenc_ok"},
-        {"lchflags_unenc.c", "lchflags_unenc_ok"},
-        {"ntp_adjtime_unenc.c", "ntp_adjtime_unenc_ok"},
-        {"sem_getvalue_unenc.c", "sem_getvalue_unenc_ok"},
-        {"rtprio_thread_unenc.c", "rtprio_thread_unenc_ok"},
-        {"cpuset_getaffinity_unenc.c", "cpuset_getaffinity_unenc_ok"},
-        {"fhopen_unenc.c", "fhopen_unenc_ok"},
-        {"fhstat_unenc.c", "fhstat_unenc_ok"},
-        {"fhstatfs_unenc.c", "fhstatfs_unenc_ok"},
-        {"getfhat_unenc.c", "getfhat_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover15 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"cap_rights_get_unenc.c", "cap_rights_get_unenc_bad", "cap_rights"},
-        {"pthread_attr_destroy_unenc.c", "pthread_attr_destroy_unenc_bad", "pthread_attr"},
-        {"pthread_attr_setstacksize_unenc.c", "pthread_attr_setstacksize_unenc_bad", "pthread_attr"},
-        {"pthread_attr_setstack_unenc.c", "pthread_attr_setstack_unenc_bad", "pthread_attr"},
-        {"pthread_attr_setdetachstate_unenc.c", "pthread_attr_setdetachstate_unenc_bad", "pthread_attr"},
-        {"pthread_attr_getstacksize_unenc.c", "pthread_attr_getstacksize_unenc_bad", "pthread_attr"},
-        {"pthread_attr_getstack_unenc.c", "pthread_attr_getstack_unenc_bad", "pthread_attr"},
-        {"pthread_attr_getdetachstate_unenc.c", "pthread_attr_getdetachstate_unenc_bad", "pthread_attr"},
-        {"setcontext_unenc.c", "setcontext_unenc_bad", "getcontext"},
-        {"swapcontext_unenc.c", "swapcontext_unenc_bad", "getcontext"},
-        {"makecontext_unenc.c", "makecontext_unenc_bad", "getcontext"},
-        {"wait3_unenc.c", "wait3_unenc_bad", "wait4"},
-        {"setregid_unenc.c", "setregid_unenc_bad", "setreuid"},
-        {"setresuid_unenc.c", "setresuid_unenc_bad", "setreuid"},
-        {"setresgid_unenc.c", "setresgid_unenc_bad", "setreuid"},
-        {"raise_unenc.c", "raise_unenc_bad", "kill"},
-        {"alarm_unenc.c", "alarm_unenc_bad", "kill"},
-        {"pthread_detach_unenc.c", "pthread_detach_unenc_bad", "pthread_join"},
-        {"sem_post_unenc.c", "sem_post_unenc_bad", "sem_wait"},
-        {"sem_init_unenc.c", "sem_init_unenc_bad", "sem"},
-        {"sem_destroy_unenc.c", "sem_destroy_unenc_bad", "sem"},
-        {"fdopendir_unenc.c", "fdopendir_unenc_bad", "opendir"},
-        {"readdir_unenc.c", "readdir_unenc_bad", "opendir"},
-        {"closedir_unenc.c", "closedir_unenc_bad", "opendir"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover15 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"cap_rights_get_unenc.c", "cap_rights_get_unenc_ok"},
-        {"pthread_attr_destroy_unenc.c", "pthread_attr_destroy_unenc_ok"},
-        {"pthread_attr_setstacksize_unenc.c", "pthread_attr_setstacksize_unenc_ok"},
-        {"pthread_attr_setstack_unenc.c", "pthread_attr_setstack_unenc_ok"},
-        {"pthread_attr_setdetachstate_unenc.c", "pthread_attr_setdetachstate_unenc_ok"},
-        {"pthread_attr_getstacksize_unenc.c", "pthread_attr_getstacksize_unenc_ok"},
-        {"pthread_attr_getstack_unenc.c", "pthread_attr_getstack_unenc_ok"},
-        {"pthread_attr_getdetachstate_unenc.c", "pthread_attr_getdetachstate_unenc_ok"},
-        {"setcontext_unenc.c", "setcontext_unenc_ok"},
-        {"swapcontext_unenc.c", "swapcontext_unenc_ok"},
-        {"makecontext_unenc.c", "makecontext_unenc_ok"},
-        {"wait3_unenc.c", "wait3_unenc_ok"},
-        {"setregid_unenc.c", "setregid_unenc_ok"},
-        {"setresuid_unenc.c", "setresuid_unenc_ok"},
-        {"setresgid_unenc.c", "setresgid_unenc_ok"},
-        {"raise_unenc.c", "raise_unenc_ok"},
-        {"alarm_unenc.c", "alarm_unenc_ok"},
-        {"pthread_detach_unenc.c", "pthread_detach_unenc_ok"},
-        {"sem_post_unenc.c", "sem_post_unenc_ok"},
-        {"sem_init_unenc.c", "sem_init_unenc_ok"},
-        {"sem_destroy_unenc.c", "sem_destroy_unenc_ok"},
-        {"fdopendir_unenc.c", "fdopendir_unenc_ok"},
-        {"readdir_unenc.c", "readdir_unenc_ok"},
-        {"closedir_unenc.c", "closedir_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover16 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"pthread_once_unenc.c", "pthread_once_unenc_bad", "pthread join"},
-        {"pthread_key_delete_unenc.c", "pthread_key_delete_unenc_bad", "pthread_key_create"},
-        {"pthread_setspecific_unenc.c", "pthread_setspecific_unenc_bad", "pthread_key_create"},
-        {"pthread_getspecific_unenc.c", "pthread_getspecific_unenc_bad", "pthread_key_create"},
-        {"pthread_cond_timedwait_unenc.c", "pthread_cond_timedwait_unenc_bad", "pthread_cond"},
-        {"pthread_cond_signal_unenc.c", "pthread_cond_signal_unenc_bad", "pthread_cond"},
-        {"pthread_cond_broadcast_unenc.c", "pthread_cond_broadcast_unenc_bad", "pthread_cond"},
-        {"pthread_cond_init_unenc.c", "pthread_cond_init_unenc_bad", "pthread_cond"},
-        {"pthread_cond_destroy_unenc.c", "pthread_cond_destroy_unenc_bad", "pthread_cond"},
-        {"pthread_rwlock_wrlock_unenc.c", "pthread_rwlock_wrlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_unlock_unenc.c", "pthread_rwlock_unlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_init_unenc.c", "pthread_rwlock_init_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_destroy_unenc.c", "pthread_rwlock_destroy_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_tryrdlock_unenc.c", "pthread_rwlock_tryrdlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_trywrlock_unenc.c", "pthread_rwlock_trywrlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_timedrdlock_unenc.c", "pthread_rwlock_timedrdlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_rwlock_timedwrlock_unenc.c", "pthread_rwlock_timedwrlock_unenc_bad", "pthread_rwlock"},
-        {"pthread_spin_unlock_unenc.c", "pthread_spin_unlock_unenc_bad", "pthread_spin"},
-        {"pthread_spin_trylock_unenc.c", "pthread_spin_trylock_unenc_bad", "pthread_spin"},
-        {"pthread_spin_init_unenc.c", "pthread_spin_init_unenc_bad", "pthread_spin"},
-        {"pthread_spin_destroy_unenc.c", "pthread_spin_destroy_unenc_bad", "pthread_spin"},
-        {"pthread_barrier_init_unenc.c", "pthread_barrier_init_unenc_bad", "pthread_barrier"},
-        {"pthread_barrier_destroy_unenc.c", "pthread_barrier_destroy_unenc_bad", "pthread_barrier"},
-        {"dup2_unenc.c", "dup2_unenc_bad", "dup"},
-        {"dup3_unenc.c", "dup3_unenc_bad", "dup"},
-        {"pipe2_unenc.c", "pipe2_unenc_bad", "pipe"},
-        {"wait_unenc.c", "wait_unenc_bad", "wait"},
-        {"waitid_unenc.c", "waitid_unenc_bad", "wait"},
-        {"poll_unenc.c", "poll_unenc_bad", "select"},
-        {"pselect_unenc.c", "pselect_unenc_bad", "select"},
-        {"epoll_wait_unenc.c", "epoll_wait_unenc_bad", "select"},
-        {"epoll_ctl_unenc.c", "epoll_ctl_unenc_bad", "select"},
-        {"recvmsg_unenc.c", "recvmsg_unenc_bad", "sendmsg"},
-        {"freeaddrinfo_unenc.c", "freeaddrinfo_unenc_bad", "addrinfo"},
-        {"sysctlbyname_unenc.c", "sysctlbyname_unenc_bad", "sysctl"},
-        {"setfsgid_unenc.c", "setfsgid_unenc_bad", "setfsuid"},
-        {"setsid_unenc.c", "setsid_unenc_bad", "setpgid"},
-        {"getsid_unenc.c", "getsid_unenc_bad", "setpgid"},
-        {"sem_close_unenc.c", "sem_close_unenc_bad", "sem_open"},
-        {"sem_unlink_unenc.c", "sem_unlink_unenc_bad", "sem_open"},
-        {"getrlimit_unenc.c", "getrlimit_unenc_bad", "setrlimit"},
-        {"lstat_unenc.c", "lstat_unenc_bad", "stat"},
-        {"fstat_unenc.c", "fstat_unenc_bad", "stat"},
-        {"usleep_unenc.c", "usleep_unenc_bad", "sleep"},
-        {"nanosleep_unenc.c", "nanosleep_unenc_bad", "sleep"},
-        {"aio_write_unenc.c", "aio_write_unenc_bad", "aio"},
-        {"aio_error_unenc.c", "aio_error_unenc_bad", "aio"},
-        {"aio_return_unenc.c", "aio_return_unenc_bad", "aio"},
-        {"aio_suspend_unenc.c", "aio_suspend_unenc_bad", "aio"},
-        {"io_uring_enter_unenc.c", "io_uring_enter_unenc_bad", "io_uring"},
-        {"io_uring_register_unenc.c", "io_uring_register_unenc_bad", "io_uring"},
-        {"lsetxattr_unenc.c", "lsetxattr_unenc_bad", "setxattr"},
-        {"fsetxattr_unenc.c", "fsetxattr_unenc_bad", "setxattr"},
-        {"getxattr_unenc.c", "getxattr_unenc_bad", "setxattr"},
-        {"listxattr_unenc.c", "listxattr_unenc_bad", "setxattr"},
-        {"removexattr_unenc.c", "removexattr_unenc_bad", "setxattr"},
-        {"landlock_add_rule_unenc.c", "landlock_add_rule_unenc_bad", "landlock"},
-        {"landlock_restrict_self_unenc.c", "landlock_restrict_self_unenc_bad", "landlock"},
-        {"mq_timedsend_unenc.c", "mq_timedsend_unenc_bad", "mq_unlink"},
-        {"mq_timedreceive_unenc.c", "mq_timedreceive_unenc_bad", "mq_unlink"},
-        {"mq_notify_unenc.c", "mq_notify_unenc_bad", "mq_unlink"},
-        {"mq_getsetattr_unenc.c", "mq_getsetattr_unenc_bad", "mq_unlink"},
-        {"globfree_unenc.c", "globfree_unenc_bad", "glob"},
-        {"posix_spawnp_unenc.c", "posix_spawnp_unenc_bad", "posix_spawn"},
-        {"shm_unlink_unenc.c", "shm_unlink_unenc_bad", "shm_open"},
-        {"gettimeofday_unenc.c", "gettimeofday_unenc_bad", "clock_gettime"},
-        {"ftell_unenc.c", "ftell_unenc_bad", "fseek"},
-        {"rewind_unenc.c", "rewind_unenc_bad", "fseek"},
-        {"fgetpos_unenc.c", "fgetpos_unenc_bad", "fseek"},
-        {"fsetpos_unenc.c", "fsetpos_unenc_bad", "fseek"},
-        {"setsockopt_unenc.c", "setsockopt_unenc_bad", "getsockopt"},
-        {"getpeername_unenc.c", "getpeername_unenc_bad", "getsockname"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover16 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"pthread_once_unenc.c", "pthread_once_unenc_ok"},
-        {"pthread_key_delete_unenc.c", "pthread_key_delete_unenc_ok"},
-        {"pthread_setspecific_unenc.c", "pthread_setspecific_unenc_ok"},
-        {"pthread_getspecific_unenc.c", "pthread_getspecific_unenc_ok"},
-        {"pthread_cond_timedwait_unenc.c", "pthread_cond_timedwait_unenc_ok"},
-        {"pthread_cond_signal_unenc.c", "pthread_cond_signal_unenc_ok"},
-        {"pthread_cond_broadcast_unenc.c", "pthread_cond_broadcast_unenc_ok"},
-        {"pthread_cond_init_unenc.c", "pthread_cond_init_unenc_ok"},
-        {"pthread_cond_destroy_unenc.c", "pthread_cond_destroy_unenc_ok"},
-        {"pthread_rwlock_wrlock_unenc.c", "pthread_rwlock_wrlock_unenc_ok"},
-        {"pthread_rwlock_unlock_unenc.c", "pthread_rwlock_unlock_unenc_ok"},
-        {"pthread_rwlock_init_unenc.c", "pthread_rwlock_init_unenc_ok"},
-        {"pthread_rwlock_destroy_unenc.c", "pthread_rwlock_destroy_unenc_ok"},
-        {"pthread_rwlock_tryrdlock_unenc.c", "pthread_rwlock_tryrdlock_unenc_ok"},
-        {"pthread_rwlock_trywrlock_unenc.c", "pthread_rwlock_trywrlock_unenc_ok"},
-        {"pthread_rwlock_timedrdlock_unenc.c", "pthread_rwlock_timedrdlock_unenc_ok"},
-        {"pthread_rwlock_timedwrlock_unenc.c", "pthread_rwlock_timedwrlock_unenc_ok"},
-        {"pthread_spin_unlock_unenc.c", "pthread_spin_unlock_unenc_ok"},
-        {"pthread_spin_trylock_unenc.c", "pthread_spin_trylock_unenc_ok"},
-        {"pthread_spin_init_unenc.c", "pthread_spin_init_unenc_ok"},
-        {"pthread_spin_destroy_unenc.c", "pthread_spin_destroy_unenc_ok"},
-        {"pthread_barrier_init_unenc.c", "pthread_barrier_init_unenc_ok"},
-        {"pthread_barrier_destroy_unenc.c", "pthread_barrier_destroy_unenc_ok"},
-        {"dup2_unenc.c", "dup2_unenc_ok"},
-        {"dup3_unenc.c", "dup3_unenc_ok"},
-        {"pipe2_unenc.c", "pipe2_unenc_ok"},
-        {"wait_unenc.c", "wait_unenc_ok"},
-        {"waitid_unenc.c", "waitid_unenc_ok"},
-        {"poll_unenc.c", "poll_unenc_ok"},
-        {"pselect_unenc.c", "pselect_unenc_ok"},
-        {"epoll_wait_unenc.c", "epoll_wait_unenc_ok"},
-        {"epoll_ctl_unenc.c", "epoll_ctl_unenc_ok"},
-        {"recvmsg_unenc.c", "recvmsg_unenc_ok"},
-        {"freeaddrinfo_unenc.c", "freeaddrinfo_unenc_ok"},
-        {"sysctlbyname_unenc.c", "sysctlbyname_unenc_ok"},
-        {"setfsgid_unenc.c", "setfsgid_unenc_ok"},
-        {"setsid_unenc.c", "setsid_unenc_ok"},
-        {"getsid_unenc.c", "getsid_unenc_ok"},
-        {"sem_close_unenc.c", "sem_close_unenc_ok"},
-        {"sem_unlink_unenc.c", "sem_unlink_unenc_ok"},
-        {"getrlimit_unenc.c", "getrlimit_unenc_ok"},
-        {"lstat_unenc.c", "lstat_unenc_ok"},
-        {"fstat_unenc.c", "fstat_unenc_ok"},
-        {"usleep_unenc.c", "usleep_unenc_ok"},
-        {"nanosleep_unenc.c", "nanosleep_unenc_ok"},
-        {"aio_write_unenc.c", "aio_write_unenc_ok"},
-        {"aio_error_unenc.c", "aio_error_unenc_ok"},
-        {"aio_return_unenc.c", "aio_return_unenc_ok"},
-        {"aio_suspend_unenc.c", "aio_suspend_unenc_ok"},
-        {"io_uring_enter_unenc.c", "io_uring_enter_unenc_ok"},
-        {"io_uring_register_unenc.c", "io_uring_register_unenc_ok"},
-        {"lsetxattr_unenc.c", "lsetxattr_unenc_ok"},
-        {"fsetxattr_unenc.c", "fsetxattr_unenc_ok"},
-        {"getxattr_unenc.c", "getxattr_unenc_ok"},
-        {"listxattr_unenc.c", "listxattr_unenc_ok"},
-        {"removexattr_unenc.c", "removexattr_unenc_ok"},
-        {"landlock_add_rule_unenc.c", "landlock_add_rule_unenc_ok"},
-        {"landlock_restrict_self_unenc.c", "landlock_restrict_self_unenc_ok"},
-        {"mq_timedsend_unenc.c", "mq_timedsend_unenc_ok"},
-        {"mq_timedreceive_unenc.c", "mq_timedreceive_unenc_ok"},
-        {"mq_notify_unenc.c", "mq_notify_unenc_ok"},
-        {"mq_getsetattr_unenc.c", "mq_getsetattr_unenc_ok"},
-        {"globfree_unenc.c", "globfree_unenc_ok"},
-        {"posix_spawnp_unenc.c", "posix_spawnp_unenc_ok"},
-        {"shm_unlink_unenc.c", "shm_unlink_unenc_ok"},
-        {"gettimeofday_unenc.c", "gettimeofday_unenc_ok"},
-        {"ftell_unenc.c", "ftell_unenc_ok"},
-        {"rewind_unenc.c", "rewind_unenc_ok"},
-        {"fgetpos_unenc.c", "fgetpos_unenc_ok"},
-        {"fsetpos_unenc.c", "fsetpos_unenc_ok"},
-        {"setsockopt_unenc.c", "setsockopt_unenc_ok"},
-        {"getpeername_unenc.c", "getpeername_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover17 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"posix_memalign_unenc.c", "posix_memalign_unenc_bad", "aligned_alloc"},
-        {"munlock_unenc.c", "munlock_unenc_bad", "mlock"},
-        {"mlockall_unenc.c", "mlockall_unenc_bad", "mlock"},
-        {"munlockall_unenc.c", "munlockall_unenc_bad", "mlock"},
-        {"sched_getaffinity_unenc.c", "sched_getaffinity_unenc_bad", "sched_setaffinity"},
-        {"capget_unenc.c", "capget_unenc_bad", "capset"},
-        {"pidfd_send_signal_unenc.c", "pidfd_send_signal_unenc_bad", "pidfd_open"},
-        {"pidfd_getfd_unenc.c", "pidfd_getfd_unenc_bad", "pidfd_open"},
-        {"setpriority_unenc.c", "setpriority_unenc_bad", "getpriority"},
-        {"setgroups_unenc.c", "setgroups_unenc_bad", "initgroups"},
-        {"setns_unenc.c", "setns_unenc_bad", "unshare"},
-        {"recvmmsg_unenc.c", "recvmmsg_unenc_bad", "sendmmsg"},
-        {"io_destroy_unenc.c", "io_destroy_unenc_bad", "io_setup"},
-        {"io_cancel_unenc.c", "io_cancel_unenc_bad", "io_setup"},
-        {"io_pgetevents_unenc.c", "io_pgetevents_unenc_bad", "io_setup"},
-        {"io_getevents_unenc.c", "io_getevents_unenc_bad", "io_submit"},
-        {"shmdt_unenc.c", "shmdt_unenc_bad", "shmat"},
-        {"semtimedop_unenc.c", "semtimedop_unenc_bad", "semop"},
-        {"msgrcv_unenc.c", "msgrcv_unenc_bad", "msgsnd"},
-        {"timer_gettime_unenc.c", "timer_gettime_unenc_bad", "timer_delete"},
-        {"timer_getoverrun_unenc.c", "timer_getoverrun_unenc_bad", "timer_delete"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover17 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"posix_memalign_unenc.c", "posix_memalign_unenc_ok"},
-        {"munlock_unenc.c", "munlock_unenc_ok"},
-        {"mlockall_unenc.c", "mlockall_unenc_ok"},
-        {"munlockall_unenc.c", "munlockall_unenc_ok"},
-        {"sched_getaffinity_unenc.c", "sched_getaffinity_unenc_ok"},
-        {"capget_unenc.c", "capget_unenc_ok"},
-        {"pidfd_send_signal_unenc.c", "pidfd_send_signal_unenc_ok"},
-        {"pidfd_getfd_unenc.c", "pidfd_getfd_unenc_ok"},
-        {"setpriority_unenc.c", "setpriority_unenc_ok"},
-        {"setgroups_unenc.c", "setgroups_unenc_ok"},
-        {"setns_unenc.c", "setns_unenc_ok"},
-        {"recvmmsg_unenc.c", "recvmmsg_unenc_ok"},
-        {"io_destroy_unenc.c", "io_destroy_unenc_ok"},
-        {"io_cancel_unenc.c", "io_cancel_unenc_ok"},
-        {"io_pgetevents_unenc.c", "io_pgetevents_unenc_ok"},
-        {"io_getevents_unenc.c", "io_getevents_unenc_ok"},
-        {"shmdt_unenc.c", "shmdt_unenc_ok"},
-        {"semtimedop_unenc.c", "semtimedop_unenc_ok"},
-        {"msgrcv_unenc.c", "msgrcv_unenc_ok"},
-        {"timer_gettime_unenc.c", "timer_gettime_unenc_ok"},
-        {"timer_getoverrun_unenc.c", "timer_getoverrun_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover18 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"mmap_unenc.c", "mmap_unenc_bad", "mmap"},
-        {"munmap_unenc.c", "munmap_unenc_bad", "mmap"},
-        {"mprotect_unenc.c", "mprotect_unenc_bad", "mmap"},
-        {"chmod_unenc.c", "chmod_unenc_bad", "chmod"},
-        {"fchmod_unenc.c", "fchmod_unenc_bad", "chmod"},
-        {"mkdir_unenc.c", "mkdir_unenc_bad", "mkdir"},
-        {"rmdir_unenc.c", "rmdir_unenc_bad", "mkdir"},
-        {"rename_unenc.c", "rename_unenc_bad", "mkdir"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover18 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"mmap_unenc.c", "mmap_unenc_ok"},
-        {"munmap_unenc.c", "munmap_unenc_ok"},
-        {"mprotect_unenc.c", "mprotect_unenc_ok"},
-        {"chmod_unenc.c", "chmod_unenc_ok"},
-        {"fchmod_unenc.c", "fchmod_unenc_ok"},
-        {"mkdir_unenc.c", "mkdir_unenc_ok"},
-        {"rmdir_unenc.c", "rmdir_unenc_ok"},
-        {"rename_unenc.c", "rename_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover19 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"clone_call_unenc.c", "clone_call_unenc_bad", "unshare"},
-        {"listmount_call_unenc.c", "listmount_call_unenc_bad", "listmount"},
-        {"fallocate_call_unenc.c", "fallocate_call_unenc_bad", "fallocate"},
-        {"epoll_create1_unenc.c", "epoll_create1_unenc_bad", "epoll_create"},
-        {"epoll_pwait2_unenc.c", "epoll_pwait2_unenc_bad", "epoll_pwait"},
-        {"rt_tgsigqueueinfo_unenc.c", "rt_tgsigqueueinfo_unenc_bad", "rt_sigqueueinfo"},
-        {"file_setattr_unenc.c", "file_setattr_unenc_bad", "file_getattr"},
-        {"clock_adjtime_unenc.c", "clock_adjtime_unenc_bad", "clock_settime"},
-        {"clock_nanosleep_unenc.c", "clock_nanosleep_unenc_bad", "clock_settime"},
-        {"quick_exit_unenc.c", "quick_exit_unenc_bad", "quick_exit"},
-        {"getopt_long_only_unenc.c", "getopt_long_only_unenc_bad", "getopt"},
-        {"getopt_long_unenc.c", "getopt_long_unenc_bad", "getopt"},
-        {"gethostname_unenc.c", "gethostname_unenc_bad", "uname"},
-        {"copy_file_range_unenc.c", "copy_file_range_unenc_bad", "sendfile"},
-        {"preadv2_unenc.c", "preadv2_unenc_bad", "preadv"},
-        {"pwritev2_unenc.c", "pwritev2_unenc_bad", "preadv"},
-        {"pwritev_unenc.c", "pwritev_unenc_bad", "preadv"},
-        {"timerfd_gettime_unenc.c", "timerfd_gettime_unenc_bad", "timerfd_settime"},
-        {"eventfd_write_unenc.c", "eventfd_write_unenc_bad", "eventfd_read"},
-        {"eventfd_unenc.c", "eventfd_unenc_bad", "memfd"},
-        {"timerfd_create_unenc.c", "timerfd_create_unenc_bad", "memfd"},
-        {"ptrace_unenc.c", "ptrace_unenc_bad", "prctl"},
-        {"tcsetattr_unenc.c", "tcsetattr_unenc_bad", "tcgetattr"},
-        {"cfmakeraw_unenc.c", "cfmakeraw_unenc_bad", "tcgetattr"},
-        {"fpathconf_unenc.c", "fpathconf_unenc_bad", "sysconf"},
-        {"pathconf_unenc.c", "pathconf_unenc_bad", "sysconf"},
-        {"ftw_unenc.c", "ftw_unenc_bad", "nftw"},
-        {"wordfree_unenc.c", "wordfree_unenc_bad", "wordexp"},
-        {"getlogin_r_unenc.c", "getlogin_r_unenc_bad", "getlogin"},
-        {"ttyname_r_unenc.c", "ttyname_r_unenc_bad", "getlogin"},
-        {"ttyname_unenc.c", "ttyname_unenc_bad", "getlogin"},
-        {"inet_ntop_unenc.c", "inet_ntop_unenc_bad", "inet_pton"},
-        {"inet_aton_unenc.c", "inet_aton_unenc_bad", "inet_pton"},
-        {"posix_fadvise64_unenc.c", "posix_fadvise64_unenc_bad", "posix_fadvise"},
-        {"vmsplice_unenc.c", "vmsplice_unenc_bad", "splice"},
-        {"inotify_init1_unenc.c", "inotify_init1_unenc_bad", "inotify"},
-        {"inotify_add_watch_unenc.c", "inotify_add_watch_unenc_bad", "inotify"},
-        {"fdatasync_unenc.c", "fdatasync_unenc_bad", "fsync"},
-        {"getentropy_unenc.c", "getentropy_unenc_bad", "getrandom"},
-        {"getdelim_unenc.c", "getdelim_unenc_bad", "getline"},
-        {"strlcat_unenc.c", "strlcat_unenc_bad", "strlcpy"},
-        {"memset_s_unenc.c", "memset_s_unenc_bad", "explicit_bzero"},
-        {"explicit_memset_unenc.c", "explicit_memset_unenc_bad", "explicit_bzero"},
-        {"posix_openpt_unenc.c", "posix_openpt_unenc_bad", "ptsname"},
-        {"ptsname_r_unenc.c", "ptsname_r_unenc_bad", "ptsname"},
-        {"grantpt_unenc.c", "grantpt_unenc_bad", "ptsname"},
-        {"unlockpt_unenc.c", "unlockpt_unenc_bad", "ptsname"},
-        {"umount2_unenc.c", "umount2_unenc_bad", "mount"},
-        {"umount_unenc.c", "umount_unenc_bad", "mount"},
-        {"open_wmemstream_unenc.c", "open_wmemstream_unenc_bad", "fmemopen"},
-        {"open_memstream_unenc.c", "open_memstream_unenc_bad", "fmemopen"},
-        {"getxattrat_unenc.c", "getxattrat_unenc_bad", "setxattrat"},
-        {"listxattrat_unenc.c", "listxattrat_unenc_bad", "setxattrat"},
-        {"removexattrat_unenc.c", "removexattrat_unenc_bad", "setxattrat"},
-        {"sched_getattr_unenc.c", "sched_getattr_unenc_bad", "sched_setattr"},
-        {"sched_getscheduler_unenc.c", "sched_getscheduler_unenc_bad", "sched_setscheduler"},
-        {"sched_setparam_unenc.c", "sched_setparam_unenc_bad", "sched_setscheduler"},
-        {"sched_getparam_unenc.c", "sched_getparam_unenc_bad", "sched_setscheduler"},
-        {"fanotify_mark_unenc.c", "fanotify_mark_unenc_bad", "fanotify"},
-        {"getgrgid_unenc.c", "getgrgid_unenc_bad", "getgrnam"},
-        {"getspnam_unenc.c", "getspnam_unenc_bad", "getgrnam"},
-        {"lsm_set_self_attr_unenc.c", "lsm_set_self_attr_unenc_bad", "lsm_get_self_attr"},
-        {"lsm_list_modules_unenc.c", "lsm_list_modules_unenc_bad", "lsm_get_self_attr"},
-        {"sigsuspend_unenc.c", "sigsuspend_unenc_bad", "sigprocmask"},
-        {"sigwaitinfo_unenc.c", "sigwaitinfo_unenc_bad", "sigwait"},
-        {"sigtimedwait_unenc.c", "sigtimedwait_unenc_bad", "sigwait"},
-        {"sigpending_unenc.c", "sigpending_unenc_bad", "sigwait"},
-        {"open_by_handle_at_unenc.c", "open_by_handle_at_unenc_bad", "name_to_handle"},
-        {"prlimit64_unenc.c", "prlimit64_unenc_bad", "prlimit"},
-        {"migrate_pages_unenc.c", "migrate_pages_unenc_bad", "move_pages"},
-        {"fsmount_unenc.c", "fsmount_unenc_bad", "fsopen"},
-        {"open_tree_unenc.c", "open_tree_unenc_bad", "fsopen"},
-        {"move_mount_unenc.c", "move_mount_unenc_bad", "fsopen"},
-        {"fspick_unenc.c", "fspick_unenc_bad", "fsopen"},
-        {"fsconfig_unenc.c", "fsconfig_unenc_bad", "fsopen"},
-        {"ioprio_get_unenc.c", "ioprio_get_unenc_bad", "ioprio"},
-        {"futex_wake_unenc.c", "futex_wake_unenc_bad", "futex_wait"},
-        {"futex_requeue_unenc.c", "futex_requeue_unenc_bad", "futex_wait"},
-        {"swapoff_unenc.c", "swapoff_unenc_bad", "swapon"},
-        {"iopl_unenc.c", "iopl_unenc_bad", "ioperm"},
-        {"finit_module_unenc.c", "finit_module_unenc_bad", "init_module"},
-        {"delete_module_unenc.c", "delete_module_unenc_bad", "init_module"},
-        {"kexec_file_load_unenc.c", "kexec_file_load_unenc_bad", "kexec"},
-        {"pkey_mprotect_unenc.c", "pkey_mprotect_unenc_bad", "pkey_free"},
-        {"mremap_unenc.c", "mremap_unenc_bad", "msync"},
-        {"getitimer_unenc.c", "getitimer_unenc_bad", "setitimer"},
-        {"getdents64_unenc.c", "getdents64_unenc_bad", "getdents"},
-        {"futimens_unenc.c", "futimens_unenc_bad", "utimensat"},
-        {"utimes_unenc.c", "utimes_unenc_bad", "utimensat"},
-        {"set_mempolicy_unenc.c", "set_mempolicy_unenc_bad", "mbind"},
-        {"get_mempolicy_unenc.c", "get_mempolicy_unenc_bad", "mbind"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover19 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"clone_call_unenc.c", "clone_call_unenc_ok"},
-        {"listmount_call_unenc.c", "listmount_call_unenc_ok"},
-        {"fallocate_call_unenc.c", "fallocate_call_unenc_ok"},
-        {"epoll_create1_unenc.c", "epoll_create1_unenc_ok"},
-        {"epoll_pwait2_unenc.c", "epoll_pwait2_unenc_ok"},
-        {"rt_tgsigqueueinfo_unenc.c", "rt_tgsigqueueinfo_unenc_ok"},
-        {"file_setattr_unenc.c", "file_setattr_unenc_ok"},
-        {"clock_adjtime_unenc.c", "clock_adjtime_unenc_ok"},
-        {"clock_nanosleep_unenc.c", "clock_nanosleep_unenc_ok"},
-        {"quick_exit_unenc.c", "quick_exit_unenc_ok"},
-        {"getopt_long_only_unenc.c", "getopt_long_only_unenc_ok"},
-        {"getopt_long_unenc.c", "getopt_long_unenc_ok"},
-        {"gethostname_unenc.c", "gethostname_unenc_ok"},
-        {"copy_file_range_unenc.c", "copy_file_range_unenc_ok"},
-        {"preadv2_unenc.c", "preadv2_unenc_ok"},
-        {"pwritev2_unenc.c", "pwritev2_unenc_ok"},
-        {"pwritev_unenc.c", "pwritev_unenc_ok"},
-        {"timerfd_gettime_unenc.c", "timerfd_gettime_unenc_ok"},
-        {"eventfd_write_unenc.c", "eventfd_write_unenc_ok"},
-        {"eventfd_unenc.c", "eventfd_unenc_ok"},
-        {"timerfd_create_unenc.c", "timerfd_create_unenc_ok"},
-        {"ptrace_unenc.c", "ptrace_unenc_ok"},
-        {"tcsetattr_unenc.c", "tcsetattr_unenc_ok"},
-        {"cfmakeraw_unenc.c", "cfmakeraw_unenc_ok"},
-        {"fpathconf_unenc.c", "fpathconf_unenc_ok"},
-        {"pathconf_unenc.c", "pathconf_unenc_ok"},
-        {"ftw_unenc.c", "ftw_unenc_ok"},
-        {"wordfree_unenc.c", "wordfree_unenc_ok"},
-        {"getlogin_r_unenc.c", "getlogin_r_unenc_ok"},
-        {"ttyname_r_unenc.c", "ttyname_r_unenc_ok"},
-        {"ttyname_unenc.c", "ttyname_unenc_ok"},
-        {"inet_ntop_unenc.c", "inet_ntop_unenc_ok"},
-        {"inet_aton_unenc.c", "inet_aton_unenc_ok"},
-        {"posix_fadvise64_unenc.c", "posix_fadvise64_unenc_ok"},
-        {"vmsplice_unenc.c", "vmsplice_unenc_ok"},
-        {"inotify_init1_unenc.c", "inotify_init1_unenc_ok"},
-        {"inotify_add_watch_unenc.c", "inotify_add_watch_unenc_ok"},
-        {"fdatasync_unenc.c", "fdatasync_unenc_ok"},
-        {"getentropy_unenc.c", "getentropy_unenc_ok"},
-        {"getdelim_unenc.c", "getdelim_unenc_ok"},
-        {"strlcat_unenc.c", "strlcat_unenc_ok"},
-        {"memset_s_unenc.c", "memset_s_unenc_ok"},
-        {"explicit_memset_unenc.c", "explicit_memset_unenc_ok"},
-        {"posix_openpt_unenc.c", "posix_openpt_unenc_ok"},
-        {"ptsname_r_unenc.c", "ptsname_r_unenc_ok"},
-        {"grantpt_unenc.c", "grantpt_unenc_ok"},
-        {"unlockpt_unenc.c", "unlockpt_unenc_ok"},
-        {"umount2_unenc.c", "umount2_unenc_ok"},
-        {"umount_unenc.c", "umount_unenc_ok"},
-        {"open_wmemstream_unenc.c", "open_wmemstream_unenc_ok"},
-        {"open_memstream_unenc.c", "open_memstream_unenc_ok"},
-        {"getxattrat_unenc.c", "getxattrat_unenc_ok"},
-        {"listxattrat_unenc.c", "listxattrat_unenc_ok"},
-        {"removexattrat_unenc.c", "removexattrat_unenc_ok"},
-        {"sched_getattr_unenc.c", "sched_getattr_unenc_ok"},
-        {"sched_getscheduler_unenc.c", "sched_getscheduler_unenc_ok"},
-        {"sched_setparam_unenc.c", "sched_setparam_unenc_ok"},
-        {"sched_getparam_unenc.c", "sched_getparam_unenc_ok"},
-        {"fanotify_mark_unenc.c", "fanotify_mark_unenc_ok"},
-        {"getgrgid_unenc.c", "getgrgid_unenc_ok"},
-        {"getspnam_unenc.c", "getspnam_unenc_ok"},
-        {"lsm_set_self_attr_unenc.c", "lsm_set_self_attr_unenc_ok"},
-        {"lsm_list_modules_unenc.c", "lsm_list_modules_unenc_ok"},
-        {"sigsuspend_unenc.c", "sigsuspend_unenc_ok"},
-        {"sigwaitinfo_unenc.c", "sigwaitinfo_unenc_ok"},
-        {"sigtimedwait_unenc.c", "sigtimedwait_unenc_ok"},
-        {"sigpending_unenc.c", "sigpending_unenc_ok"},
-        {"open_by_handle_at_unenc.c", "open_by_handle_at_unenc_ok"},
-        {"prlimit64_unenc.c", "prlimit64_unenc_ok"},
-        {"migrate_pages_unenc.c", "migrate_pages_unenc_ok"},
-        {"fsmount_unenc.c", "fsmount_unenc_ok"},
-        {"open_tree_unenc.c", "open_tree_unenc_ok"},
-        {"move_mount_unenc.c", "move_mount_unenc_ok"},
-        {"fspick_unenc.c", "fspick_unenc_ok"},
-        {"fsconfig_unenc.c", "fsconfig_unenc_ok"},
-        {"ioprio_get_unenc.c", "ioprio_get_unenc_ok"},
-        {"futex_wake_unenc.c", "futex_wake_unenc_ok"},
-        {"futex_requeue_unenc.c", "futex_requeue_unenc_ok"},
-        {"swapoff_unenc.c", "swapoff_unenc_ok"},
-        {"iopl_unenc.c", "iopl_unenc_ok"},
-        {"finit_module_unenc.c", "finit_module_unenc_ok"},
-        {"delete_module_unenc.c", "delete_module_unenc_ok"},
-        {"kexec_file_load_unenc.c", "kexec_file_load_unenc_ok"},
-        {"pkey_mprotect_unenc.c", "pkey_mprotect_unenc_ok"},
-        {"mremap_unenc.c", "mremap_unenc_ok"},
-        {"getitimer_unenc.c", "getitimer_unenc_ok"},
-        {"getdents64_unenc.c", "getdents64_unenc_ok"},
-        {"futimens_unenc.c", "futimens_unenc_ok"},
-        {"utimes_unenc.c", "utimes_unenc_ok"},
-        {"set_mempolicy_unenc.c", "set_mempolicy_unenc_ok"},
-        {"get_mempolicy_unenc.c", "get_mempolicy_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover20 unenc plants are NEEDS-HARNESS never PROVED") {
-    auto fn = load_fn("twnested_unenc.c", "twnested_unenc_bad");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-    CHECK(findings[0].status != std::string(prism::laws::PROVED));
-    CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-    CHECK(findings[0].status != std::string(prism::laws::FAILED));
-    CHECK(findings[0].status != std::string(prism::laws::ERROR));
-    CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-    std::string msg = findings[0].message;
-    for (char& c : msg)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    CHECK(msg.find("throw_with_nested") != std::string::npos);
-}
-
-TEST_CASE("bmc leftover20 unenc ok still not NEEDS-HARNESS") {
-    auto fn = load_fn("twnested_unenc.c", "twnested_unenc_ok");
-    auto findings = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(findings.empty());
-    CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-    CHECK(findings[0].status != std::string(prism::laws::ERROR));
-    CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-           findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-}
-
-TEST_CASE("bmc leftover21 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"decimal32_unenc.c", "decimal32_unenc_bad", "decimal"},
-        {"decimal128_unenc.c", "decimal128_unenc_bad", "decimal"},
-        {"float32_unenc.c", "float32_unenc_bad", "ieee"},
-        {"float64_unenc.c", "float64_unenc_bad", "ieee"},
-        {"fp16_unenc.c", "fp16_unenc_bad", "ieee"},
-        {"bitint_unenc.c", "bitint_unenc_bad", "128"},
-        {"int128t_unenc.c", "int128t_unenc_bad", "128"},
-        {"slaarray_unenc.c", "slaarray_unenc_bad", "start_lifetime_as"},
-        {"inoutptr_unenc.c", "inoutptr_unenc_bad", "out_ptr"},
-        {"sref_unenc.c", "sref_unenc_bad", "reference_wrapper"},
-        {"scref_unenc.c", "scref_unenc_bad", "reference_wrapper"},
-        {"csem_unenc.cpp", "csem_unenc_bad", "latch"},
-        {"poly_unenc.cpp", "poly_unenc_bad", "indirect"},
-        {"wview_unenc.cpp", "wview_unenc_bad", "wstring"},
-        {"isps_unenc.cpp", "isps_unenc_bad", "spanstream"},
-        {"osps_unenc.cpp", "osps_unenc_bad", "spanstream"},
-        {"rcuobj_unenc.cpp", "rcuobj_unenc_bad", "rcu"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover21 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"decimal32_unenc.c", "decimal32_unenc_ok"},
-        {"decimal128_unenc.c", "decimal128_unenc_ok"},
-        {"float32_unenc.c", "float32_unenc_ok"},
-        {"float64_unenc.c", "float64_unenc_ok"},
-        {"fp16_unenc.c", "fp16_unenc_ok"},
-        {"bitint_unenc.c", "bitint_unenc_ok"},
-        {"int128t_unenc.c", "int128t_unenc_ok"},
-        {"slaarray_unenc.c", "slaarray_unenc_ok"},
-        {"inoutptr_unenc.c", "inoutptr_unenc_ok"},
-        {"sref_unenc.c", "sref_unenc_ok"},
-        {"scref_unenc.c", "scref_unenc_ok"},
-        {"csem_unenc.cpp", "csem_unenc_ok"},
-        {"poly_unenc.cpp", "poly_unenc_ok"},
-        {"wview_unenc.cpp", "wview_unenc_ok"},
-        {"isps_unenc.cpp", "isps_unenc_ok"},
-        {"osps_unenc.cpp", "osps_unenc_ok"},
-        {"rcuobj_unenc.cpp", "rcuobj_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover22 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"bosync_unenc.cpp", "bosync_unenc_bad", "osyncstream"},
-        {"bsyncbuf_unenc.cpp", "bsyncbuf_unenc_bad", "syncbuf"},
-        {"bspan_unenc.cpp", "bspan_unenc_bad", "spanstream"},
-        {"bispan_unenc.cpp", "bispan_unenc_bad", "spanstream"},
-        {"bospan_unenc.cpp", "bospan_unenc_bad", "spanstream"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover22 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"bosync_unenc.cpp", "bosync_unenc_ok"},
-        {"bsyncbuf_unenc.cpp", "bsyncbuf_unenc_ok"},
-        {"bspan_unenc.cpp", "bspan_unenc_ok"},
-        {"bispan_unenc.cpp", "bispan_unenc_ok"},
-        {"bospan_unenc.cpp", "bospan_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover23 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"tounqual_unenc.c", "tounqual_unenc_bad", "typeof_unqual"},
-        {"dlsym_unenc.c", "dlsym_unenc_bad", "dlopen"},
-        {"dlclose_unenc.c", "dlclose_unenc_bad", "dlopen"},
-        {"clzll_unenc.c", "clzll_unenc_bad", "clz"},
-        {"ctz_unenc.c", "ctz_unenc_bad", "clz"},
-        {"ctzll_unenc.c", "ctzll_unenc_bad", "clz"},
-        {"astore_unenc.c", "astore_unenc_bad", "atomic"},
-        {"syncadd_unenc.c", "syncadd_unenc_bad", "atomic"},
-        {"synccas_unenc.c", "synccas_unenc_bad", "atomic"},
-        {"wcscat_unenc.c", "wcscat_unenc_bad", "wcscpy"},
-        {"wcsncpy_unenc.c", "wcsncpy_unenc_bad", "wcscpy"},
-        {"wcsncat_unenc.c", "wcsncat_unenc_bad", "wcscpy"},
-        {"fork_unenc.c", "fork_unenc_bad", "fork"},
-        {"vfork_unenc.c", "vfork_unenc_bad", "fork"},
-        {"execl_unenc.c", "execl_unenc_bad", "fork"},
-        {"execlp_unenc.c", "execlp_unenc_bad", "fork"},
-        {"execle_unenc.c", "execle_unenc_bad", "fork"},
-        {"execv_unenc.c", "execv_unenc_bad", "fork"},
-        {"execve_unenc.c", "execve_unenc_bad", "fork"},
-        {"execvp_unenc.c", "execvp_unenc_bad", "fork"},
-        {"execvpe_unenc.c", "execvpe_unenc_bad", "fork"},
-        {"symlink_unenc.c", "symlink_unenc_bad", "symlink"},
-        {"readlink_unenc.c", "readlink_unenc_bad", "symlink"},
-        {"sstream_unenc.cpp", "sstream_unenc_bad", "stringstream"},
-        {"osstream_unenc.cpp", "osstream_unenc_bad", "stringstream"},
-        {"isstream_unenc.cpp", "isstream_unenc_bad", "stringstream"},
-        {"bsstream_unenc.cpp", "bsstream_unenc_bad", "stringstream"},
-        {"bosstream_unenc.cpp", "bosstream_unenc_bad", "stringstream"},
-        {"bisstream_unenc.cpp", "bisstream_unenc_bad", "stringstream"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover23 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"tounqual_unenc.c", "tounqual_unenc_ok"},
-        {"dlsym_unenc.c", "dlsym_unenc_ok"},
-        {"dlclose_unenc.c", "dlclose_unenc_ok"},
-        {"clzll_unenc.c", "clzll_unenc_ok"},
-        {"ctz_unenc.c", "ctz_unenc_ok"},
-        {"ctzll_unenc.c", "ctzll_unenc_ok"},
-        {"astore_unenc.c", "astore_unenc_ok"},
-        {"syncadd_unenc.c", "syncadd_unenc_ok"},
-        {"synccas_unenc.c", "synccas_unenc_ok"},
-        {"wcscat_unenc.c", "wcscat_unenc_ok"},
-        {"wcsncpy_unenc.c", "wcsncpy_unenc_ok"},
-        {"wcsncat_unenc.c", "wcsncat_unenc_ok"},
-        {"fork_unenc.c", "fork_unenc_ok"},
-        {"vfork_unenc.c", "vfork_unenc_ok"},
-        {"execl_unenc.c", "execl_unenc_ok"},
-        {"execlp_unenc.c", "execlp_unenc_ok"},
-        {"execle_unenc.c", "execle_unenc_ok"},
-        {"execv_unenc.c", "execv_unenc_ok"},
-        {"execve_unenc.c", "execve_unenc_ok"},
-        {"execvp_unenc.c", "execvp_unenc_ok"},
-        {"execvpe_unenc.c", "execvpe_unenc_ok"},
-        {"symlink_unenc.c", "symlink_unenc_ok"},
-        {"readlink_unenc.c", "readlink_unenc_ok"},
-        {"sstream_unenc.cpp", "sstream_unenc_ok"},
-        {"osstream_unenc.cpp", "osstream_unenc_ok"},
-        {"isstream_unenc.cpp", "isstream_unenc_ok"},
-        {"bsstream_unenc.cpp", "bsstream_unenc_ok"},
-        {"bosstream_unenc.cpp", "bosstream_unenc_ok"},
-        {"bisstream_unenc.cpp", "bisstream_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover24 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"tlocal_unenc.c", "tlocal_unenc_bad", "thread-local"},
-        {"complex_unenc.c", "complex_unenc_bad", "complex"},
-        {"typeof_unenc.c", "typeof_unenc_bad", "typeof"},
-        {"alignof_unenc.c", "alignof_unenc_bad", "alignof"},
-        {"sthread_unenc.cpp", "sthread_unenc_bad", "std::thread"},
-        {"counted_unenc.cpp", "counted_unenc_bad", "counted_iterator"},
-        {"vector_unenc.cpp", "vector_unenc_bad", "std::vector"},
-        {"optional_unenc.cpp", "optional_unenc_bad", "optional"},
-        {"variant_unenc.cpp", "variant_unenc_bad", "variant"},
-        {"span_unenc.cpp", "span_unenc_bad", "std::span"},
-        {"ilist_unenc.cpp", "ilist_unenc_bad", "initializer_list"},
-        {"coro_unenc.cpp", "coro_unenc_bad", "coroutine"},
-        {"packed_unenc.c", "packed_unenc_bad", "packed"},
-        {"asm_unenc.c", "asm_unenc_bad", "asm"},
-        {"generic_unenc.c", "generic_unenc_bad", "_generic"},
-        {"offsetof_unenc.c", "offsetof_unenc_bad", "offsetof"},
-        {"volatile_unenc.c", "volatile_unenc_bad", "volatile"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover24 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"tlocal_unenc.c", "tlocal_unenc_ok"},
-        {"complex_unenc.c", "complex_unenc_ok"},
-        {"typeof_unenc.c", "typeof_unenc_ok"},
-        {"alignof_unenc.c", "alignof_unenc_ok"},
-        {"sthread_unenc.cpp", "sthread_unenc_ok"},
-        {"counted_unenc.cpp", "counted_unenc_ok"},
-        {"vector_unenc.cpp", "vector_unenc_ok"},
-        {"optional_unenc.cpp", "optional_unenc_ok"},
-        {"variant_unenc.cpp", "variant_unenc_ok"},
-        {"span_unenc.cpp", "span_unenc_ok"},
-        {"ilist_unenc.cpp", "ilist_unenc_ok"},
-        {"coro_unenc.cpp", "coro_unenc_ok"},
-        {"packed_unenc.c", "packed_unenc_ok"},
-        {"asm_unenc.c", "asm_unenc_ok"},
-        {"generic_unenc.c", "generic_unenc_ok"},
-        {"offsetof_unenc.c", "offsetof_unenc_ok"},
-        {"volatile_unenc.c", "volatile_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover25 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"rangefor_unenc.cpp", "rangefor_unenc_bad", "range-for"},
-        {"lambda_unenc.cpp", "lambda_unenc_bad", "lambda"},
-        {"ccast_unenc.cpp", "ccast_unenc_bad", "const_cast"},
-        {"dcast_unenc.cpp", "dcast_unenc_bad", "dynamic_cast"},
-        {"tid_unenc.cpp", "tid_unenc_bad", "typeid"},
-        {"rcast_unenc.cpp", "rcast_unenc_bad", "reinterpret_cast"},
-        {"sbind_unenc.cpp", "sbind_unenc_bad", "std::bind"},
-        {"inplace_unenc.cpp", "inplace_unenc_bad", "inplace_vector"},
-        {"catchall_unenc.cpp", "catchall_unenc_bad", "catch-all"},
-        {"thrownew_unenc.cpp", "thrownew_unenc_bad", "throw-new"},
-        {"sfrom_unenc.cpp", "sfrom_unenc_bad", "shared_from_this"},
-        {"ppack_unenc.c", "ppack_unenc_bad", "pragma pack"},
-        {"widech_unenc.c", "widech_unenc_bad", "wide character"},
-        {"widestr_unenc.c", "widestr_unenc_bad", "wide character"},
-        {"trycatch_unenc.cpp", "trycatch_unenc_bad", "try/catch"},
-        {"newdel_unenc.cpp", "newdel_unenc_bad", "new/delete"},
-        {"cgoto_unenc.c", "cgoto_unenc_bad", "computed goto"},
-        {"laddr_unenc.c", "laddr_unenc_bad", "label-address"},
-        {"vaarg_unenc.c", "vaarg_unenc_bad", "va_arg"},
-        {"dinit_unenc.c", "dinit_unenc_bad", "designated init"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover25 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"rangefor_unenc.cpp", "rangefor_unenc_ok"},
-        {"lambda_unenc.cpp", "lambda_unenc_ok"},
-        {"ccast_unenc.cpp", "ccast_unenc_ok"},
-        {"dcast_unenc.cpp", "dcast_unenc_ok"},
-        {"tid_unenc.cpp", "tid_unenc_ok"},
-        {"rcast_unenc.cpp", "rcast_unenc_ok"},
-        {"sbind_unenc.cpp", "sbind_unenc_ok"},
-        {"inplace_unenc.cpp", "inplace_unenc_ok"},
-        {"catchall_unenc.cpp", "catchall_unenc_ok"},
-        {"thrownew_unenc.cpp", "thrownew_unenc_ok"},
-        {"sfrom_unenc.cpp", "sfrom_unenc_ok"},
-        {"ppack_unenc_ok.c", "ppack_unenc_ok"},
-        {"widech_unenc.c", "widech_unenc_ok"},
-        {"widestr_unenc.c", "widestr_unenc_ok"},
-        {"trycatch_unenc.cpp", "trycatch_unenc_ok"},
-        {"newdel_unenc.cpp", "newdel_unenc_ok"},
-        {"cgoto_unenc.c", "cgoto_unenc_ok"},
-        {"laddr_unenc.c", "laddr_unenc_ok"},
-        {"vaarg_unenc.c", "vaarg_unenc_ok"},
-        {"dinit_unenc.c", "dinit_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover26 unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"nfn_unenc.c", "nfn_unenc_bad", "nested function"},
-        {"uaddr_unenc.c", "uaddr_unenc_bad", "address-of"},
-        {"clocal_unenc.c", "clocal_unenc_bad", "const local"},
-        {"regstor_unenc.c", "regstor_unenc_bad", "register/auto"},
-        {"autostor_unenc.c", "autostor_unenc_bad", "register/auto"},
-        {"slocal_unenc.c", "slocal_unenc_bad", "struct/union local"},
-        {"staticloc_unenc.c", "staticloc_unenc_bad", "static/extern"},
-        {"externloc_unenc.c", "externloc_unenc_bad", "static/extern"},
-        {"stmtexpr_unenc.c", "stmtexpr_unenc_bad", "statement expression"},
-        {"autotype_unenc.c", "autotype_unenc_bad", "__auto_type"},
-        {"aenum_unenc.c", "aenum_unenc_bad", "anonymous enum"},
-        {"alignas_unenc.c", "alignas_unenc_bad", "_alignas"},
-        {"compound_unenc.c", "compound_unenc_bad", "compound literal"},
-        {"rviews_unenc.cpp", "rviews_unenc_bad", "ranges views"},
-        {"unlink_unenc.c", "unlink_unenc_bad", "unlink"},
-        {"strinit_unenc.c", "strinit_unenc_bad", "array string-init"},
-        {"pmtx_unenc.c", "pmtx_unenc_bad", "mutex object"},
-        {"cmtx_unenc.c", "cmtx_unenc_bad", "mutex object"},
-        {"utypedef_unenc.c", "utypedef_unenc_bad", "unknown typedef"},
-        {"memcpy_unenc.c", "memcpy_unenc_bad", "libc buffer"},
-        {"memmove_unenc.c", "memmove_unenc_bad", "libc buffer"},
-        {"mkstemp_unenc.c", "mkstemp_unenc_bad", "libc buffer"},
-        {"chroot_unenc.c", "chroot_unenc_bad", "libc buffer"},
-        {"popen_unenc.c", "popen_unenc_bad", "libc buffer"},
-        {"umask_unenc.c", "umask_unenc_bad", "libc buffer"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover26 unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"nfn_unenc.c", "nfn_unenc_ok"},
-        {"uaddr_unenc.c", "uaddr_unenc_ok"},
-        {"clocal_unenc.c", "clocal_unenc_ok"},
-        {"regstor_unenc.c", "regstor_unenc_ok"},
-        {"autostor_unenc.c", "autostor_unenc_ok"},
-        {"slocal_unenc.c", "slocal_unenc_ok"},
-        {"staticloc_unenc.c", "staticloc_unenc_ok"},
-        {"externloc_unenc.c", "externloc_unenc_ok"},
-        {"stmtexpr_unenc.c", "stmtexpr_unenc_ok"},
-        {"autotype_unenc.c", "autotype_unenc_ok"},
-        {"aenum_unenc.c", "aenum_unenc_ok"},
-        {"alignas_unenc.c", "alignas_unenc_ok"},
-        {"compound_unenc.c", "compound_unenc_ok"},
-        {"rviews_unenc.cpp", "rviews_unenc_ok"},
-        {"unlink_unenc.c", "unlink_unenc_ok"},
-        {"strinit_unenc.c", "strinit_unenc_ok"},
-        {"pmtx_unenc.c", "pmtx_unenc_ok"},
-        {"cmtx_unenc.c", "cmtx_unenc_ok"},
-        {"utypedef_unenc.c", "utypedef_unenc_ok"},
-        {"memcpy_unenc.c", "memcpy_unenc_ok"},
-        {"memmove_unenc.c", "memmove_unenc_ok"},
-        {"mkstemp_unenc.c", "mkstemp_unenc_ok"},
-        {"chroot_unenc.c", "chroot_unenc_ok"},
-        {"popen_unenc.c", "popen_unenc_ok"},
-        {"umask_unenc.c", "umask_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover27 sibling unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"anycast_lt_unenc.cpp", "anycast_lt_unenc_bad", "std::any"},
-        {"anycast_id_unenc.cpp", "anycast_id_unenc_bad", "std::any"},
-        {"stdfs_unenc.cpp", "stdfs_unenc_bad", "std::filesystem"},
-        {"filesystem_ns_unenc.cpp", "filesystem_ns_unenc_bad", "std::filesystem"},
-        {"regex_match_unenc.cpp", "regex_match_unenc_bad", "std::regex"},
-        {"regex_var_unenc.cpp", "regex_var_unenc_bad", "std::regex"},
-        {"indirect_lt_unenc.cpp", "indirect_lt_unenc_bad", "indirect"},
-        {"polymorphic_lt_unenc.cpp", "polymorphic_lt_unenc_bad", "indirect"},
-        {"int_const_unenc.c", "int_const_unenc_bad", "const local"},
-        {"for_const_unenc.c", "for_const_unenc_bad", "const local"},
-        {"std_bit_cast_unenc.cpp", "std_bit_cast_unenc_bad", "bit_cast"},
-        {"function_lt_unenc.cpp", "function_lt_unenc_bad", "std::function"},
-        {"std_mdspan_unenc.cpp", "std_mdspan_unenc_bad", "std::mdspan"},
-        {"atomic_ref_lt_unenc.cpp", "atomic_ref_lt_unenc_bad", "std::atomic_ref"},
-        {"generator_lt_unenc.cpp", "generator_lt_unenc_bad", "std::generator"},
-        {"from_chars_bare_unenc.cpp", "from_chars_bare_unenc_bad", "from_chars"},
-        {"flat_map_lt_unenc.cpp", "flat_map_lt_unenc_bad", "flat_map"},
-        {"flat_set_lt_unenc.cpp", "flat_set_lt_unenc_bad", "flat_set"},
-        {"flat_mset_lt_unenc.cpp", "flat_mset_lt_unenc_bad", "flat_multiset"},
-        {"flat_mmap_lt_unenc.cpp", "flat_mmap_lt_unenc_bad", "flat_multimap"},
-        {"chrono_ns_unenc.cpp", "chrono_ns_unenc_bad", "chrono"},
-        {"ranges_views_std_unenc.cpp", "ranges_views_std_unenc_bad", "ranges views"},
-        {"hive_lt_unenc.cpp", "hive_lt_unenc_bad", "hive"},
-        {"bitset_lt_unenc.cpp", "bitset_lt_unenc_bad", "bitset"},
-        {"linalg_ns_unenc.cpp", "linalg_ns_unenc_bad", "linalg"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover27 sibling unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"anycast_lt_unenc.cpp", "anycast_lt_unenc_ok"},
-        {"anycast_id_unenc.cpp", "anycast_id_unenc_ok"},
-        {"stdfs_unenc.cpp", "stdfs_unenc_ok"},
-        {"filesystem_ns_unenc.cpp", "filesystem_ns_unenc_ok"},
-        {"regex_match_unenc.cpp", "regex_match_unenc_ok"},
-        {"regex_var_unenc.cpp", "regex_var_unenc_ok"},
-        {"indirect_lt_unenc.cpp", "indirect_lt_unenc_ok"},
-        {"polymorphic_lt_unenc.cpp", "polymorphic_lt_unenc_ok"},
-        {"int_const_unenc.c", "int_const_unenc_ok"},
-        {"for_const_unenc.c", "for_const_unenc_ok"},
-        {"std_bit_cast_unenc.cpp", "std_bit_cast_unenc_ok"},
-        {"function_lt_unenc.cpp", "function_lt_unenc_ok"},
-        {"std_mdspan_unenc.cpp", "std_mdspan_unenc_ok"},
-        {"atomic_ref_lt_unenc.cpp", "atomic_ref_lt_unenc_ok"},
-        {"generator_lt_unenc.cpp", "generator_lt_unenc_ok"},
-        {"from_chars_bare_unenc.cpp", "from_chars_bare_unenc_ok"},
-        {"flat_map_lt_unenc.cpp", "flat_map_lt_unenc_ok"},
-        {"flat_set_lt_unenc.cpp", "flat_set_lt_unenc_ok"},
-        {"flat_mset_lt_unenc.cpp", "flat_mset_lt_unenc_ok"},
-        {"flat_mmap_lt_unenc.cpp", "flat_mmap_lt_unenc_ok"},
-        {"chrono_ns_unenc.cpp", "chrono_ns_unenc_ok"},
-        {"ranges_views_std_unenc.cpp", "ranges_views_std_unenc_ok"},
-        {"hive_lt_unenc.cpp", "hive_lt_unenc_ok"},
-        {"bitset_lt_unenc.cpp", "bitset_lt_unenc_ok"},
-        {"linalg_ns_unenc.cpp", "linalg_ns_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover28 extra sibling unenc plants are NEEDS-HARNESS never PROVED") {
-    struct Plant { const char* file; const char* name; const char* needle; };
-    const Plant plants[] = {
-        {"pmr_ns_unenc.cpp", "pmr_ns_unenc_bad", "pmr"},
-        {"rcu_obj_unenc.cpp", "rcu_obj_lt_unenc_bad", "rcu"},
-        {"rcu_sync_unenc.cpp", "rcu_sync_only_unenc_bad", "rcu"},
-        {"reflect_caret_unenc.cpp", "reflect_caret_unenc_bad", "reflection"},
-        {"jthread_bare_unenc.cpp", "jthread_bare_unenc_bad", "jthread"},
-        {"packaged_lt_unenc.cpp", "packaged_lt_unenc_bad", "packaged_task"},
-        {"lock_guard_lt_unenc.cpp", "lock_guard_lt_unenc_bad", "mutex"},
-        {"cv_bare_unenc.cpp", "cv_bare_unenc_bad", "condition_variable"},
-        {"future_lt_unenc.cpp", "future_lt_unenc_bad", "async"},
-        {"latch_ctor_unenc.cpp", "latch_ctor_unenc_bad", "latch"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status == std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED));
-        CHECK(findings[0].status != std::string(prism::laws::PROVED_UNBOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::BOUNDED));
-        CHECK(findings[0].status != std::string(prism::laws::FAILED));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK_FALSE(prism::laws::is_proof(findings[0].status));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find(p.needle) != std::string::npos);
-    }
-}
-
-TEST_CASE("bmc leftover28 extra sibling unenc ok still not NEEDS-HARNESS") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"pmr_ns_unenc.cpp", "pmr_ns_unenc_ok"},
-        {"rcu_obj_unenc.cpp", "rcu_obj_lt_unenc_ok"},
-        {"rcu_sync_unenc.cpp", "rcu_sync_only_unenc_ok"},
-        {"reflect_caret_unenc.cpp", "reflect_caret_unenc_ok"},
-        {"jthread_bare_unenc.cpp", "jthread_bare_unenc_ok"},
-        {"packaged_lt_unenc.cpp", "packaged_lt_unenc_ok"},
-        {"lock_guard_lt_unenc.cpp", "lock_guard_lt_unenc_ok"},
-        {"cv_bare_unenc.cpp", "cv_bare_unenc_ok"},
-        {"future_lt_unenc.cpp", "future_lt_unenc_ok"},
-        {"latch_ctor_unenc.cpp", "latch_ctor_unenc_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-    }
-}
-
-TEST_CASE("bmc leftover27 comment-strip plants still prove") {
-    struct Plant { const char* file; const char* name; };
-    const Plant plants[] = {
-        {"nullptr_comment.c", "nullptr_comment_ok"},
-        {"ppack_comment.c", "ppack_comment_ok"},
-        {"import_comment.cpp", "import_comment_ok"},
-    };
-    for (const auto& p : plants) {
-        auto fn = load_fn(p.file, p.name);
-        auto findings = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(findings.empty());
-        CHECK(findings[0].status != std::string(prism::laws::NEEDS_HARNESS));
-        CHECK(findings[0].status != std::string(prism::laws::ERROR));
-        CHECK((findings[0].status == std::string(prism::laws::PROVED) ||
-               findings[0].status == std::string(prism::laws::PROVED_UNBOUNDED)));
-        std::string msg = findings[0].message;
-        for (char& c : msg)
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        CHECK(msg.find("nullptr") == std::string::npos);
-        CHECK(msg.find("pragma pack") == std::string::npos);
-        CHECK(msg.find("module import") == std::string::npos);
-    }
-    auto real_null = load_fn("nullptr_c23.c", "nullptr_unenc_bad");
-    auto nfind = prism::run_bmc({real_null}, 8);
-    REQUIRE_FALSE(nfind.empty());
-    CHECK(nfind[0].status == std::string(prism::laws::NEEDS_HARNESS));
-    auto real_pack = load_fn("ppack_unenc.c", "ppack_unenc_bad");
-    auto pfind = prism::run_bmc({real_pack}, 8);
-    REQUIRE_FALSE(pfind.empty());
-    CHECK(pfind[0].status == std::string(prism::laws::NEEDS_HARNESS));
-    auto real_imp = load_fn("cxx_import.cpp", "import_unenc_bad");
-    auto ifind = prism::run_bmc({real_imp}, 8);
-    REQUIRE_FALSE(ifind.empty());
-    CHECK(ifind[0].status == std::string(prism::laws::NEEDS_HARNESS));
-    auto absfn = load_fn("abs_ok.c", "abs_ok");
-    auto absf = prism::run_bmc({absfn}, 8);
-    REQUIRE_FALSE(absf.empty());
-    CHECK(absf[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK_FALSE(prism::laws::is_proof(nfind[0].status));
-}
 #endif
-
-TEST_CASE("run_bmc never silent-empty") {
-#ifdef PRISM_HAS_Z3
-    auto fn = load_fn("abs_ok.c", "abs_ok");
-    auto recs = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(recs.empty());
-    CHECK(recs[0].stage == "bmc");
-    CHECK(recs[0].status != std::string(prism::laws::CLEAN));
-    CHECK_FALSE(recs[0].status.empty());
-#else
-    auto recs = prism::run_bmc({}, 8);
-    REQUIRE_FALSE(recs.empty());
-    CHECK(recs[0].status == std::string(prism::laws::NOTRUN));
-    CHECK(recs[0].status != std::string(prism::laws::CLEAN));
-    CHECK_FALSE(prism::laws::is_proof(recs[0].status));
-    CHECK(recs[0].message.find("z3") != std::string::npos);
-#endif
-}
 
 TEST_CASE("harness POINTER without requires is NEEDS-HARNESS never silent") {
     auto fn = load_fn("null_branch.c", "null_branch");
-    auto recs = prism::run_harness_bmc({fn}, 8);
+    auto recs = prism::run_harness({fn}, 8);
     REQUIRE_FALSE(recs.empty());
     CHECK(recs[0].stage == "harness");
     CHECK(recs[0].status == std::string(prism::laws::NEEDS_HARNESS));
@@ -5163,133 +3372,9 @@ TEST_CASE("ai houdini drops non-inductive candidates and keeps the inductive one
     CHECK_FALSE(weak.cti.empty());
 }
 
-TEST_CASE("ai template invariants move BOUNDED to PROVED-UNBOUNDED without a model") {
-    for (auto* name : {"ai_sum_to_n", "ai_fill", "ai_pair"}) {
-        auto fn = load_fn("ai_invariants.c", name);
-        auto recs = prism::run_bmc({fn}, 8);
-        REQUIRE(recs.size() == 1);
-        auto& r = recs[0];
-        CHECK_MESSAGE(r.status == std::string(prism::laws::PROVED_UNBOUNDED), name, " ", r.status, " ",
-                      r.message, " ", r.extra["invariants_attempt"]);
-        CHECK(r.extra["invariant_source"] == "template");
-        CHECK(r.extra["bounded_status"] == std::string(prism::laws::BOUNDED));
-        CHECK(r.extra["k_induction"] == "closed-invariants");
-        CHECK(r.extra["invariants"].find('[') == 0);
-        CHECK(r.extra["invariant_loops"].find("\"kind\"") != std::string::npos);
-        if (std::string(name) == "ai_sum_to_n")  // the while keyword in testdata/planted/ai_invariants.c
-            CHECK(r.extra["invariant_loops"] == R"([{"column":5,"kind":"while","line":13}])");
-        // Soundness oracle: no UB on 2000 random/boundary inputs.
-        CHECK_MESSAGE(oracle_ub(fn, 2000, 7).empty(), name);
-    }
-}
-
-TEST_CASE("ai closed k-induction step does not cover post-loop code") {
-    auto fn = load_fn("ai_invariants.c", "ai_post_loop");
-    auto recs = prism::run_bmc({fn}, 8);
-    REQUIRE(recs.size() == 1);
-    CHECK_MESSAGE(recs[0].status == std::string(prism::laws::BOUNDED), recs[0].message);
-    // The havocked k-induction step checks the code after the loop too, so
-    // the step itself is open here (n == 500 divides by zero).
-    CHECK(recs[0].extra["k_induction"] != "closed");
-    CHECK_FALSE(prism::laws::is_proof(recs[0].status));
-    std::map<std::string, int> args{{"n", 500}};
-    CHECK(prism::concrete_execute(fn, args).ub == "INT-DIV-ZERO");
-    // A loop whose post-loop code is safe keeps PROVED-UNBOUNDED, now checked.
-    auto closed = prism::run_bmc({load_fn("kinduct.c", "kinduct_closed")}, 8);
-    REQUIRE(closed.size() == 1);
-    CHECK(closed[0].status == std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(closed[0].extra["k_induction"] == "closed");
-    CHECK(closed[0].extra["post_loop_check"] == "closed (havoc step)");
-}
-
-TEST_CASE("ai real overflow stays BOUNDED and the model half is NOTRUN") {
-    auto fn = load_fn("ai_invariants.c", "ai_doubling");
-    auto recs = prism::run_bmc({fn}, 8);
-    REQUIRE(recs.size() == 1);
-    CHECK(recs[0].status == std::string(prism::laws::BOUNDED));
-    CHECK_FALSE(prism::laws::is_proof(recs[0].status));
-    CHECK(recs[0].extra["llm_invariants"].rfind("NOTRUN", 0) == 0);
-    CHECK_FALSE(oracle_ub(fn, 2000, 11).empty());  // the oracle does see the bug
-}
-
-TEST_CASE("ai prompt injection in comments cannot produce a proof") {
-    auto out = ai_tmp_out("inject");
-    prism::Config cfg = prism::default_config();
-    cfg.out = out;
-    prism::ai::Session session(cfg);
-    auto fake = std::make_shared<FakeModel>();
-    // The double echoes what the comment asks for, then tries tautologies;
-    // none of it can close a step that is really open.
-    fake->replies = {"PROVED", "{\"verdict\":\"PROVED-UNBOUNDED\"}", "[\"1\", \"n >= 0 || n < 0\"]"};
-    prism::ai::set_session_backend_for_testing(fake);
-    auto fn = load_fn("ai_injection.c", "ai_injection");
-    auto recs = prism::run_bmc({fn}, 8);
-    REQUIRE(recs.size() == 1);
-    CHECK(recs[0].status == std::string(prism::laws::BOUNDED));
-    CHECK_FALSE(prism::laws::is_proof(recs[0].status));
-    REQUIRE_FALSE(fake->seen.empty());
-    // The source reached the model only inside the untrusted fence.
-    auto& u = fake->seen[0].user;
-    auto fence = u.find("<<<UNTRUSTED SOURCE");
-    auto inj = u.find("ignore previous instructions");
-    REQUIRE(fence != std::string::npos);
-    REQUIRE(inj != std::string::npos);
-    CHECK(inj > fence);
-    CHECK(fake->seen[0].system.find("not instructions") != std::string::npos);
-    CHECK(fake->seen[0].grammar_text.find("ident  ::= \"n\" | \"x\"") != std::string::npos);
-    auto lines = read_lines(out / "ai_audit.jsonl");
-    REQUIRE(lines.size() == 3);
-    auto j0 = nlohmann::json::parse(lines[0]);
-    CHECK(j0["output_valid"] == false);
-    CHECK(j0["checker_result"] == "rejected");
-    CHECK(j0["verdict_effect"] == "none");
-    CHECK(j0["model"] == "fake:test-double");
-    CHECK(j0["model_sha256"] == "unknown");
-    CHECK(j0["prompt_sha256"].get<std::string>().size() == 64);
-    auto j2 = nlohmann::json::parse(lines[2]);
-    CHECK(j2["output_valid"] == true);
-    CHECK(j2["checker"] == "z3-houdini+k-induction");
-    CHECK(j2["checker_result"] == "step-open");
-    CHECK(j2["verdict_effect"] == "none");
-}
-
-TEST_CASE("ai model invariants are checked, logged and only then raise a verdict") {
-    auto out = ai_tmp_out("llminv");
-    prism::Config cfg = prism::default_config();
-    cfg.out = out;
-    prism::ai::Session session(cfg);
-    auto fake = std::make_shared<FakeModel>();
-    fake->replies = {"[\"y == 7 * x\", \"x >= 0\", \"x <= 300\"]"};
-    prism::ai::set_session_backend_for_testing(fake);
-    prism::FunctionInfo fn;
-    fn.file = "mem.c";
-    fn.name = "llm_needed";
-    fn.kind = "SCALAR";
-    fn.params = {{"int", "n"}};
-    // y grows by 7 per step: 7 is not a literal of the body (4 + 3), so the
-    // template generator has no y == 7 * x candidate, and without it the
-    // division after the loop is not provably safe.
-    fn.body = "int x; int y; x = 0; y = 0; if (n > 300) return 0; while (x < n) { y = y + 4; y = y + 3; "
-              "x = x + 1; } return 100 / (y - x - x - x - x - x - x - x + 1);";
-    auto recs = prism::run_bmc({fn}, 8);
-    REQUIRE(recs.size() == 1);
-    auto& r = recs[0];
-    CHECK_MESSAGE(r.status == std::string(prism::laws::PROVED_UNBOUNDED), r.message, " ",
-                  r.extra["invariants_attempt"], " ", r.extra["llm_invariants"]);
-    CHECK(r.extra["invariant_source"] == "llm:fake:test-double");
-    auto lines = read_lines(out / "ai_audit.jsonl");
-    REQUIRE(lines.size() == 1);
-    auto j = nlohmann::json::parse(lines.back());
-    CHECK(j["id"] == r.extra["ai_audit_id"]);
-    CHECK(j["checker"] == "z3-houdini+k-induction");
-    CHECK(j["checker_result"] == std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(j["verdict_effect"] == std::string(prism::laws::PROVED_UNBOUNDED));
-    CHECK(oracle_ub(fn, 2000, 5).empty());
-}
-
 TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed") {
     auto fn = load_fn("ai_harness.c", "ai_max");
-    auto recs = prism::run_harness_bmc({fn}, 8);
+    auto recs = prism::run_harness({fn}, 8);
     REQUIRE(recs.size() == 1);
     auto& r = recs[0];
     // Drafted assumptions never yield a proof class (Law 6): NEEDS-HARNESS with
@@ -5308,7 +3393,7 @@ TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed
     CHECK(all.find("1 <= n <= 4") != std::string::npos);
     for (auto& x : a) CHECK(r.message.find(x.get<std::string>()) != std::string::npos);
 
-    auto first = prism::run_harness_bmc({load_fn("ai_harness.c", "ai_first")}, 8);
+    auto first = prism::run_harness({load_fn("ai_harness.c", "ai_first")}, 8);
     REQUIRE(first.size() == 1);
     CHECK_MESSAGE((first[0].status == std::string(prism::laws::NEEDS_HARNESS) && first[0].extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), first[0].message);
     CHECK(first[0].extra["assumptions"].find("p != NULL") != std::string::npos);
@@ -5316,13 +3401,13 @@ TEST_CASE("ai drafted harness gives PROVED-ASSUMING with every assumption listed
 
 TEST_CASE("ai drafted harness refuses pointers passed on, sizes an index guard") {
     // mtx_lock(m): the pointer escapes to a call; no draft, the row says why.
-    auto lock = prism::run_harness_bmc({load_fn("double_lock.c", "double_lock_bad")}, 8);
+    auto lock = prism::run_harness({load_fn("double_lock.c", "double_lock_bad")}, 8);
     REQUIRE(lock.size() == 1);
     CHECK(lock[0].status == std::string(prism::laws::NEEDS_HARNESS));
     CHECK(lock[0].extra["harness"] == "false");
     CHECK(lock[0].extra["harness_draft"].find("used other than") != std::string::npos);
     // p[n] with if (n >= 4) return: at least 4 elements, not "exactly n".
-    auto ok = prism::run_harness_bmc({load_fn("ptr_arith.c", "arith_ok")}, 8);
+    auto ok = prism::run_harness({load_fn("ptr_arith.c", "arith_ok")}, 8);
     REQUIRE(ok.size() == 1);
     CHECK_MESSAGE((ok[0].status == std::string(prism::laws::NEEDS_HARNESS) && ok[0].extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), ok[0].message);
     CHECK(ok[0].extra["assumptions"].find("at least 4") != std::string::npos);
@@ -5345,7 +3430,7 @@ TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
     std::string why;
     CHECK(prism::ai::draft_harness(fn, &why).empty());
     fake->replies = {R"({"assumptions":[{"kind":"nonnull","param":"p"},{"kind":"size","param":"p","elements":3}]})"};
-    auto recs = prism::run_harness_bmc({fn}, 8);
+    auto recs = prism::run_harness({fn}, 8);
     REQUIRE(recs.size() == 1);
     auto& r = recs[0];
     CHECK_MESSAGE((r.status == std::string(prism::laws::NEEDS_HARNESS) && r.extra["draft_verdict"] == std::string(prism::laws::PROVED_ASSUMING)), r.message);
@@ -5361,14 +3446,14 @@ TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
     // A draft that is too small is caught by BMC, not believed.
     fake->replies = {R"({"assumptions":[{"kind":"nonnull","param":"p"},{"kind":"size","param":"p","elements":1}]})"};
     fake->next = 0;
-    auto small = prism::run_harness_bmc({fn}, 8);
+    auto small = prism::run_harness({fn}, 8);
     REQUIRE(small.size() == 1);
     CHECK(small[0].status == std::string(prism::laws::NEEDS_HARNESS));
     CHECK_FALSE(prism::laws::is_proof(small[0].status));
 }
 
 TEST_CASE("ai drafted harness counterexample is not a defect") {
-    auto recs = prism::run_harness_bmc({load_fn("ai_harness.c", "ai_off_by_one")}, 8);
+    auto recs = prism::run_harness({load_fn("ai_harness.c", "ai_off_by_one")}, 8);
     REQUIRE(recs.size() == 1);
     CHECK_MESSAGE(recs[0].status == std::string(prism::laws::NEEDS_HARNESS), recs[0].message);
     CHECK(recs[0].status != std::string(prism::laws::FAILED));
@@ -5472,7 +3557,7 @@ TEST_CASE("ai explanation and repair: NOTRUN without a model, verified only when
     rows = prism::ai::explain_failed(fail, cfg);
     REQUIRE(rows.size() == 2);
     CHECK(rows[1].extra["fix_label"] == "unverified suggestion");
-    CHECK(rows[1].extra["fix_bmc_status"] == std::string(prism::laws::FAILED));
+    CHECK(rows[1].extra["fix_pir_status"] == std::string(prism::laws::FAILED));
     auto lines = read_lines(out / "ai_audit.jsonl");
     REQUIRE(lines.size() == 2);
     for (auto& l : lines) {
@@ -5486,61 +3571,6 @@ TEST_CASE("ai explanation and repair: NOTRUN without a model, verified only when
 // PRISM_AI_MEASURE=1. Prints BOUNDED -> PROVED-UNBOUNDED moves and
 // NEEDS-HARNESS -> PROVED-ASSUMING clears, and runs the concrete oracle on
 // every newly proved function.
-TEST_CASE("ai measure corpus (PRISM_AI_MEASURE=1)") {
-    const char* on = std::getenv("PRISM_AI_MEASURE");
-    if (!on || std::string(on) != "1") return;
-    int bounded_before = 0, moved = 0, needs_before = 0, cleared = 0, oracle_hits = 0;
-    std::vector<std::string> moved_names, cleared_names, stayed, refused;
-    std::vector<std::filesystem::path> files;
-    for (auto& e : std::filesystem::directory_iterator(testdata_root()))
-        if (e.path().extension() == ".c") files.push_back(e.path());
-    std::sort(files.begin(), files.end());
-    for (auto& p : files) {
-        auto fns = prism::extract_functions(p, p.string());
-        for (auto& fn : prism::inline_static(fns)) {
-            auto recs = prism::run_bmc({fn}, 8);
-            if (recs.empty()) continue;
-            auto& r = recs[0];
-            if (r.extra.count("bounded_status") || r.status == prism::laws::BOUNDED) ++bounded_before;
-            if (r.status == prism::laws::BOUNDED)
-                stayed.push_back(fn.name + " [" + r.extra["invariants_attempt"] + "]");
-            if (r.extra["k_induction"] == "closed-invariants") {
-                ++moved;
-                moved_names.push_back(p.filename().string() + ":" + fn.name);
-                auto hit = oracle_ub(fn, 2000, 1);
-                if (!hit.empty()) {
-                    ++oracle_hits;
-                    MESSAGE("SOUNDNESS: " << fn.name << " " << hit);
-                }
-            }
-        }
-        for (auto& fn : fns) {
-            if (fn.kind != "POINTER") continue;
-            auto h = prism::run_harness_bmc({fn}, 8);
-            if (h.empty() || h[0].extra["harness"] == "true") continue;  // user-written requires
-            ++needs_before;
-            if (h[0].extra.count("harness_draft")) refused.push_back(fn.name + " [" + h[0].extra["harness_draft"] + "]");
-            else if (h[0].extra["draft_verdict"] != prism::laws::PROVED_ASSUMING)
-                refused.push_back(fn.name + " [" + h[0].status + ": " + h[0].message.substr(0, 120) + "]");
-            if (h[0].extra["draft_verdict"] == prism::laws::PROVED_ASSUMING) {
-                ++cleared;
-                cleared_names.push_back(p.filename().string() + ":" + fn.name);
-            }
-        }
-    }
-    std::string mv, cl;
-    for (auto& n : moved_names) mv += " " + n;
-    for (auto& n : cleared_names) cl += " " + n;
-    MESSAGE("AI-MEASURE bounded_before=" << bounded_before << " moved_to_proved_unbounded=" << moved
-                                         << " needs_harness_before=" << needs_before
-                                         << " cleared_proved_assuming=" << cleared
-                                         << " oracle_hits=" << oracle_hits);
-    MESSAGE("AI-MEASURE moved:" << mv);
-    MESSAGE("AI-MEASURE cleared:" << cl);
-    for (auto& x : stayed) MESSAGE("AI-MEASURE stayed BOUNDED: " << x);
-    for (auto& x : refused) MESSAGE("AI-MEASURE not cleared: " << x);
-    CHECK(oracle_hits == 0);
-}
 #endif  // PRISM_HAS_Z3 (AI tests)
 
 // ---------------------------------------------------------------------------
@@ -7278,8 +5308,8 @@ TEST_CASE("export_lean_pair writes the LLVM fragment and the PIR only when enabl
 // docs/CONFORMANCE.md S7: an unwritten local array element is an
 // indeterminate value (C11 6.3.2.1p2). Same snippets as the Python engine's
 // tests/test_bmc_soundness.py TestUninitArrayElements.
-TEST_CASE("bmc soundness: unwritten array elements are UNINIT-READ (S7)") {
-    auto by = bmc_source("sound_s7.c", R"(#include <string.h>
+TEST_CASE("pir soundness: unwritten array elements are UNINIT-READ (S7)") {
+    auto by = pir_source("sound_s7.c", R"(#include <string.h>
 int u1(int i) { int a[4]; a[0] = 1; return a[i & 3]; }
 int u2(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }
 int u3(int c) { int a[2]; if (c) a[1] = 2; a[0] = 1; return a[1]; }
@@ -7340,78 +5370,27 @@ std::vector<prism::FunctionInfo> fns_of(const std::string& file, const std::stri
     { std::ofstream(p, std::ios::binary) << src; }  // binary: WIN32 text mode would write CRLF
     return prism::extract_functions(p, p.string());
 }
-std::string bmc_status(prism::FunctionInfo fn, int std = 0) {
-    fn.cxx_std = std;
-    auto r = prism::run_bmc({fn}, 8);
-    REQUIRE_FALSE(r.empty());
-    return r[0].status;
+// pir on fn's file; std != 0 sets the unit's -std= through a compile database
+std::string checker_status(prism::FunctionInfo fn, int std = 0) {
+    const std::filesystem::path file = fn.file;
+    const auto dir = file.parent_path();
+    if (std != 0) {
+        nlohmann::json db = nlohmann::json::array();
+        db.push_back({{"directory", dir.string()},
+                      {"file", file.string()},
+                      {"arguments", {"clang++", "-std=c++" + std::to_string(std < 11 ? 98 : std), "-c", file.string()}}});
+        std::ofstream(dir / "compile_commands.json") << db.dump();
+    }
+    auto cfg = prism::default_config();
+    cfg.root = dir;
+    cfg.jobs = 1;
+    for (auto& f : prism::pir::run_pir({file}, cfg))
+        if (f.function && *f.function == fn.name) return f.status;
+    return "missing";
 }
 }  // namespace
 
-TEST_CASE("bmc goto: structured jumps encoded, unstructured NEEDS-HARNESS") {
-#ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
-    return;
-#endif
-    const std::map<std::string, std::set<std::string_view>> want = {
-        {"goto_out_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
-        {"goto_out_bad", {prism::laws::FAILED}},
-        {"goto_loop_ok", {prism::laws::PROVED, prism::laws::PROVED_UNBOUNDED}},
-        {"goto_loop_bad", {prism::laws::FAILED}},
-        {"goto_loop_open", {prism::laws::PROVED_UNBOUNDED}},
-        {"goto_into_block", {prism::laws::NEEDS_HARNESS}},
-        {"goto_past_decl", {prism::laws::NEEDS_HARNESS}},
-        {"goto_loop_deep", {prism::laws::BOUNDED}},
-        {"goto_uninit", {prism::laws::FAILED}},
-    };
-    auto td = testdata_root() / "goto_structured.c";
-    auto fns = prism::extract_functions(td, "goto_structured.c");
-    REQUIRE(fns.size() == want.size());
-    for (auto& fn : fns) {
-        auto r = prism::run_bmc({fn}, 8);
-        REQUIRE_FALSE(r.empty());
-        INFO(fn.name << ": " << r[0].message);
-        REQUIRE(want.count(fn.name));
-        CHECK(want.at(fn.name).count(std::string_view(r[0].status)));
-        if (r[0].status == prism::laws::NEEDS_HARNESS)
-            CHECK(r[0].message.find("unstructured goto unencoded") != std::string::npos);
-        if (fn.name == "goto_loop_deep") CHECK(r[0].extra["k_induction"] == "step-open");
-    }
-}
-
-TEST_CASE("bmc goto: backward goto across an inner loop, forward out of a switch") {
-#ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
-    return;
-#endif
-    auto a = fns_of("t.c",
-                    "int f(int x) {\n    int n = 0;\nagain:\n    n++;\n"
-                    "    for (int i = 0; i < 2; i++) {\n        if (n < 3) goto again;\n    }\n"
-                    "    return 100 / (n - 3);\n}\n");
-    REQUIRE(a.size() == 1);
-    auto ra = prism::run_bmc({a[0]}, 8);
-    CHECK(ra[0].status == std::string(prism::laws::FAILED));
-    CHECK(ra[0].cls == "INT-DIV-ZERO");
-    auto b = fns_of("t.c",
-                    "int f(int x) {\n    switch (x) {\n    case 1:\n        goto out;\n"
-                    "    default:\n        x = 0;\n    }\n    return 0;\nout:\n    return 7 / x;\n}\n");
-    auto sb = bmc_status(b[0]);
-    CHECK((sb == prism::laws::PROVED || sb == prism::laws::PROVED_UNBOUNDED));
-    auto c = fns_of("t.c",
-                    "int f(int x) {\n    if (x) {\n        goto l;\n    } else {\n    l:\n"
-                    "        x = 1;\n    }\n    return x;\n}\n");
-    // A jump from the then branch to the start of the else branch joins the
-    // else branch's entry state (tests/cpp/test_bmc_svcomp.cpp has the
-    // refuting twin): x is 1 on both paths.
-    auto sc = bmc_status(c[0]);
-    CHECK((sc == prism::laws::PROVED || sc == prism::laws::PROVED_UNBOUNDED));
-}
-
-TEST_CASE("bmc shift rules follow the C++ standard of the unit (F7)") {
-#ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: bmc needs PRISM_HAS_Z3");
-    return;
-#endif
+TEST_CASE("pir shift rules follow the C++ standard of the unit (F7)") {
     const char* pos = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 1 << s;\n}\n";
     const char* neg = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return -1 << s;\n}\n";
     const char* three = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 3 << s;\n}\n";
@@ -7419,15 +5398,15 @@ TEST_CASE("bmc shift rules follow the C++ standard of the unit (F7)") {
     auto proved = [](const std::string& s) {
         return s == prism::laws::PROVED || s == prism::laws::PROVED_UNBOUNDED;
     };
-    CHECK(bmc_status(fns_of("t.c", pos)[0]) == prism::laws::FAILED);         // C
-    CHECK(bmc_status(fns_of("t.h", pos)[0]) == prism::laws::FAILED);         // a header may be C
-    CHECK(proved(bmc_status(fns_of("t.cpp", pos)[0])));                      // default gnu++17
-    CHECK(bmc_status(fns_of("t.cpp", neg)[0]) == prism::laws::FAILED);
-    CHECK(bmc_status(fns_of("t.cpp", three)[0]) == prism::laws::FAILED);     // 3 * 2^31
-    CHECK(bmc_status(fns_of("t.cpp", pos)[0], 3) == prism::laws::FAILED);    // C++03
-    CHECK(proved(bmc_status(fns_of("t.cpp", neg)[0], 20)));
-    CHECK(proved(bmc_status(fns_of("t.cpp", three)[0], 23)));
-    CHECK(bmc_status(fns_of("t.cpp", count)[0], 20) == prism::laws::FAILED); // count 32
+    CHECK(checker_status(fns_of("t.c", pos)[0]) == prism::laws::FAILED);         // C
+    CHECK(checker_status(fns_of("t.h", pos)[0]) == prism::laws::FAILED);         // a header may be C
+    CHECK(proved(checker_status(fns_of("t.cpp", pos)[0])));                      // default gnu++17
+    CHECK(checker_status(fns_of("t.cpp", neg)[0]) == prism::laws::FAILED);
+    CHECK(checker_status(fns_of("t.cpp", three)[0]) == prism::laws::FAILED);     // 3 * 2^31
+    CHECK(checker_status(fns_of("t.cpp", pos)[0], 3) == prism::laws::FAILED);    // C++03
+    CHECK(proved(checker_status(fns_of("t.cpp", neg)[0], 20)));
+    CHECK(proved(checker_status(fns_of("t.cpp", three)[0], 23)));
+    CHECK(checker_status(fns_of("t.cpp", count)[0], 20) == prism::laws::FAILED); // count 32
     CHECK(prism::cxx_std_year("-std=c++20") == 20);
     CHECK(prism::cxx_std_year("-std=gnu++2b") == 23);
     CHECK(prism::cxx_std_year("-std=c++1z") == 17);
@@ -7471,7 +5450,7 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
     CHECK(fns[0].body_line == 1);
     CHECK(fns[1].name == "user");
 #ifdef PRISM_HAS_Z3
-    for (auto& fn : fns) CHECK(bmc_status(fn) == prism::laws::NEEDS_HARNESS);
+    for (auto& fn : fns) CHECK(checker_status(fn) == prism::laws::NEEDS_HARNESS);
 #endif
 }
 

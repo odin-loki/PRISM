@@ -367,7 +367,7 @@ TEST_CASE("fuse: a CLEAN run carries its goal ids and map and is not a proof") {
 TEST_CASE("fuse: a spent fuzz budget skips the goal BMC and proves nothing") {
     auto recs = prism::run_fuse({fn_named("fuse_goals.c", "fuse_goals")}, {}, td(), 0.0, 4, false);
     REQUIRE_FALSE(recs.empty());
-    CHECK(extra_or(recs[0], "bmc_goals_skipped").find("fuzz budget spent") != std::string::npos);
+    CHECK(extra_or(recs[0], "goal_checks_skipped").find("fuzz budget spent") != std::string::npos);
     CHECK(recs[0].status != prism::laws::PROVED);
     CHECK_FALSE(prism::laws::is_proof(recs[0].status));
 }

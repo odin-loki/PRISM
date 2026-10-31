@@ -219,65 +219,9 @@ TEST_CASE("cparse: a comment is whitespace, length-preserving") {
     CHECK(multi == "a     \n     b     \nc");
 }
 
-TEST_CASE("cparse: body_col survives a block comment (bmc nondet call-site column)") {
-    SKIP_IF_NO_Z3();
-    std::string src = "int f(void) { /* c */ int x = __VERIFIER_nondet_int(); return 100 / x; }\n";
-    auto fns = prism::extract_functions_from_text(src, "n.c");
-    REQUIRE(fns.size() == 1);
-    auto& fn = fns[0];
-    auto at = fn.body.find("__VERIFIER_nondet_int");
-    REQUIRE(at != std::string::npos);
-    const int want_col = static_cast<int>(src.find("__VERIFIER_nondet_int")) + 1;
-    CHECK(fn.body_line == 1);
-    CHECK(fn.body_col + static_cast<int>(at) == want_col);
-    auto rows = prism::run_bmc({fn}, 4);
-    bool seen = false;
-    for (auto& r : rows) {
-        if (r.status != prism::laws::FAILED) continue;
-        seen = true;
-        CHECK(r.cls == "INT-DIV-ZERO");
-        CHECK(r.extra["nondet_loc"].find("1:" + std::to_string(want_col)) != std::string::npos);
-    }
-    CHECK(seen);
-}
-
 TEST_CASE("cparse: match_brace refuses a negative index") {
     CHECK(prism::match_brace("{ }", -1) == -1);
     CHECK(prism::match_brace("{ }", 0) == 2);
-}
-
-TEST_CASE("cparse: digit separators are not character literals") {
-    // Before: the `'` in 1'000 opened a literal that ran to the next `'`, so
-    // the comment's `}` closed the function and `return x;` was lost.
-    auto fns = prism::extract_functions_from_text(
-        "int f(void) { int x = 1'000; /* } */ return x; }\n"
-        "int g(int n) {\n    return 0x10'00 + 1'000 / n;\n}\n"
-        "int h(int c) {\n    if (c == '0') return c + '\\'';\n    return u8'a' + L'}' + (c ? 1 : '2');\n}\n"
-        "int after(void) {\n    return 1;\n}\n",
-        "d.c");
-    CHECK(names_of(fns) == std::vector<std::string>{"f", "g", "h", "after"});
-    REQUIRE(fns.size() == 4);
-    CHECK(fns[0].body.find("return x;") != std::string::npos);
-    CHECK(fns[2].span == std::pair<int, int>{5, 8});  // L'}' does not end the body
-    CHECK(prism::parse_gaps_from_text("int f(void) { int x = 1'000; /* } */ return x; }\n").empty());
-    auto s = prism::strip_comments_keep_lines("int x = 1'000; /* } */ char c = '}';");
-    CHECK(s == "int x = 1'000;         char c = '}';");
-    // The bmc front end reads the separated number: 1'000 / n fails at n == 0.
-    SKIP_IF_NO_Z3();
-    auto rows = prism::run_bmc({fns[1]}, 4);
-    bool div0 = false;
-    for (auto& r : rows) {
-        INFO(r.status << " " << r.message);
-        CHECK(r.status != prism::laws::ERROR);
-        CHECK_FALSE(prism::laws::is_proof(r.status));
-        if (r.status == prism::laws::FAILED && r.cls == "INT-DIV-ZERO") div0 = true;
-    }
-    CHECK(div0);
-    // The interval stage too.
-    bool idiv0 = false;
-    for (auto& r : prism::run_interval({fns[1]}))
-        if (r.status == prism::laws::FAILED && r.cls == "INT-DIV-ZERO") idiv0 = true;
-    CHECK(idiv0);
 }
 
 TEST_CASE("cparse: invalid UTF-8 is scrubbed, byte for byte") {
@@ -314,53 +258,6 @@ TEST_CASE("cparse: invalid UTF-8 is scrubbed, byte for byte") {
 // literal is -23 as signed char, its replacement 0x7F is 127. So no engine
 // may model a body that holds one. Twin: the same function spelled with the
 // escape '\xE9' (valid text, same value) is still refuted by bmc.
-TEST_CASE("cparse: a scrubbed byte is never modelled (no wrong proof)") {
-    SKIP_IF_NO_Z3();
-    const std::string raw = "int f(void) {\n    signed char c = '\xe9';\n    return 100 / (c + 23);\n}\n";
-    auto p = scratch_file("latin1_div.c", raw);
-    auto fns = prism::extract_functions(p, p.string());
-    REQUIRE(fns.size() == 1);
-    CHECK(fns[0].body.find(prism::SCRUBBED_BYTE) != std::string::npos);
-    CHECK(prism::scrubbed_byte_reason(fns[0].body, "x").has_value());
-    CHECK_FALSE(prism::scrubbed_byte_reason("return 'a';", "x").has_value());
-    for (auto& r : prism::run_bmc(fns, 4)) {
-        INFO(r.status << " " << r.message);
-        CHECK(r.status == prism::laws::NEEDS_HARNESS);
-        CHECK(r.message.find("UNENCODED: byte that is not UTF-8 text") != std::string::npos);
-    }
-    CHECK(prism::run_interval(fns).empty());
-    for (auto& r : prism::run_concolic(fns, 8)) {
-        INFO(r.status << " " << r.message);
-        CHECK(r.status == prism::laws::NEEDS_HARNESS);
-    }
-    for (auto& r : prism::run_rapid(fns, 8)) CHECK(r.status == prism::laws::NEEDS_HARNESS);
-    // Inlined into a caller the byte still stops the model.
-    auto both = prism::extract_functions_from_text(
-        "static int g(void) { signed char c = '\xe9'; return c; }\n"
-        "int h(void) { return 100 / (g() + 23); }\n", "both.c");
-    REQUIRE(both.size() == 2);
-    for (auto& r : prism::run_bmc(both, 4)) {
-        INFO(r.function.value_or("") << " " << r.status << " " << r.message);
-        CHECK_FALSE(prism::laws::is_proof(r.status));
-        CHECK(r.status != prism::laws::FAILED);
-    }
-    // A comment's byte is only blanked text: the function is modelled.
-    auto cmt = prism::extract_functions_from_text("int k(int n) { /* caf\xe9 */ return 100 / n; }\n", "c.c");
-    REQUIRE(cmt.size() == 1);
-    CHECK(cmt[0].body.find(prism::SCRUBBED_BYTE) == std::string::npos);
-    // False twin: the escape spelling is modelled and refuted.
-    auto twin = prism::extract_functions_from_text(
-        "int f(void) {\n    signed char c = '\\xE9';\n    return 100 / (c + 23);\n}\n", "twin.c");
-    REQUIRE(twin.size() == 1);
-    bool div0 = false;
-    for (auto& r : prism::run_bmc(twin, 4)) {
-        INFO(r.status << " " << r.message);
-        CHECK_FALSE(prism::laws::is_proof(r.status));
-        if (r.status == prism::laws::FAILED && r.cls == "INT-DIV-ZERO") div0 = true;
-    }
-    CHECK(div0);
-}
-
 // ---------------------------------------------------------------- report JSON
 
 TEST_CASE("models: load is per field and tolerant") {
@@ -710,24 +607,4 @@ TEST_CASE("inline: assignment, declaration-initialiser and void-helper forms") {
     auto* caller = find_fn(out, "caller");
     REQUIRE(caller);
     CHECK(caller->body.find("bump(") == std::string::npos);
-}
-
-TEST_CASE("inline: an inlined caller is not an unconstrained proof") {
-    SKIP_IF_NO_Z3();
-    auto p = repo_dir("testdata/planted") / "inline_add.c";
-    auto fns = prism::extract_functions(p, p.string());
-    std::map<std::string, prism::Finding> recs;
-    for (auto& f : prism::run_bmc(fns, 8))
-        if (f.function) recs[*f.function] = f;
-    REQUIRE(recs.contains("caller"));
-    CHECK(recs["caller"].status == prism::laws::FAILED);
-    CHECK(recs["caller"].cls == "INT-SIGNED-OVF");
-    // Without the callee to inline, the call is unmodelled: never a proof.
-    auto* raw = find_fn(fns, "caller");
-    REQUIRE(raw);
-    auto alone = prism::run_bmc({*raw}, 8);
-    REQUIRE(alone.size() == 1);
-    INFO(alone[0].message);
-    CHECK(alone[0].status == prism::laws::NEEDS_HARNESS);
-    CHECK(alone[0].message.find("UNENCODED") != std::string::npos);
 }

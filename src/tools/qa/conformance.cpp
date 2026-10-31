@@ -246,7 +246,7 @@ int conformance_main(const std::vector<std::string>& argv) {
         {"--esbmc-thorough", "", false, false, "also convert ESBMC's THOROUGH tests"},
         {"--curate-esbmc", "", true, false,
          "write the committed subset (testdata/conformance/esbmc-cpp) from fetched tasks in DIR"},
-        {"--stages", "", true, false, "override verdict stages (default: bmc,harness + pir,conc when listed)"},
+        {"--stages", "", true, false, "override verdict stages (default: pir, conc when listed)"},
         {"--out", "", true, false, "output directory (default: conformance-out)"},
         {"--jobs", "-j", true, false, "parallel PRISM runs (default: CPU count)"},
         {"--mem-limit-mb", "", true, false,
@@ -494,8 +494,6 @@ int conformance_main(const std::vector<std::string>& argv) {
             if (auto os = ORIGIN_STAGES.find(t.origin); os != ORIGIN_STAGES.end() && !os->second.count(stage)) continue;
             for (const auto& [fn, exp] : t.expected) {
                 ojson found = err ? ojson::array() : res.run.found(stage, fn);
-                if (found.empty() && SCOPED_STAGES.count(stage) && !err)
-                    continue;  // outside the stage's scope (e.g. harness: pointer functions)
                 ojson row = ojson::object();
                 row["task"] = t.ident;
                 row["origin"] = t.origin;

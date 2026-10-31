@@ -636,23 +636,6 @@ TEST_CASE("svcomp: loop invariants sit on the loop keyword") {
     CHECK(correctness_invariants(src, f).first.empty());
 }
 
-TEST_CASE("svcomp: arithmetic in an invariant only when the bounds keep every subterm in int") {
-    Bounds b = {{"i", {0LL, 1000LL}}, {"s", {0LL, std::nullopt}}};
-    CHECK(int_safe("2 * i", b));
-    CHECK(int_safe("i + 1", b));
-    CHECK_FALSE(int_safe("2 * s", b));
-    CHECK_FALSE(int_safe("i / 2", b));
-    CHECK_FALSE(int_safe("3000000 * i", b));
-    CHECK(int_safe("-(i - 1)", b));
-    CHECK(exportable_conjuncts({"i >= 0", "i <= 1000", "s == 2 * i", "s <= 2 * n", "i != s", "f(i) > 0"}) ==
-          std::vector<std::string>{"i >= 0", "i <= 1000", "s == 2 * i", "i != s"});
-    CHECK(exportable_conjuncts({"i >= 0", "i <= 1000", "s == 2 * i", "s == 3000000 * i", "t <= s + 1", "i - 1 < i"}) ==
-          std::vector<std::string>{"i >= 0", "i <= 1000", "s == 2 * i", "i - 1 < i"});
-    // a bound written constant-first counts; a huge constant bounds nothing
-    CHECK(exportable_conjuncts({"0 <= x", "10 > x", "y == x * x", "z <= 99999999999999999999", "w == z + 1"}) ==
-          std::vector<std::string>{"0 <= x", "10 > x", "y == x * x", "z <= 99999999999999999999"});
-}
-
 TEST_CASE("svcomp: pir conjuncts rendered in C only when C means the proved relation") {
     std::map<std::string, CVar> t = {{"x", {"x", true, 32}}, {"u", {"u", false, 32}}, {"c", {"c", true, 8}}};
     auto term = [&](const json& j) -> std::optional<CVar> {

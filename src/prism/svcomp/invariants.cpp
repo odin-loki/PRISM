@@ -21,158 +21,10 @@ namespace prism::svcomp {
 using namespace detail;
 namespace fs = std::filesystem;
 
-namespace {
-
-constexpr long long INT_MIN_ = -(1LL << 31);
-constexpr long long INT_MAX_ = (1LL << 31) - 1;
-
-const Regex& atom_re() {
-    static const Regex re(R"(^\(?\s*([A-Za-z_]\w*|-?\d+)\s*(<=|>=|==|!=|<|>)\s*([A-Za-z_]\w*|-?\d+)\s*\)?$)");
-    return re;
-}
-
-bool is_const(const std::string& s) {
-    static const Regex re(R"(-?\d+\z)");
-    return fullmatch(re, s);
-}
-
-// Constant bounds of variables implied by comparison conjuncts.
-Bounds bounds_of(const std::vector<std::string>& atoms) {
-    std::map<std::string, long long> lo, hi;
-    std::vector<std::string> order;  // first-bound order (the result is a map in effect)
-    for (const auto& a : atoms) {
-        auto m = atom_re().match_prefix(a);
-        if (!m) continue;
-        std::string x = m->group(1), op = m->group(2), y = m->group(3);
-        if (is_const(x) && !is_const(y)) {
-            std::swap(x, y);
-            static const std::map<std::string, std::string> flip = {{"<", ">"}, {">", "<"}, {"<=", ">="}, {">=", "<="}};
-            if (auto it = flip.find(op); it != flip.end()) op = it->second;
-        }
-        // Only `variable op constant`: a bound carried through `x <= y` could be
-        // wrong when x and y differ in signedness (C compares them unsigned).
-        if (is_const(x) || !is_const(y)) continue;
-        long long c = parse_ll(y).value_or(0);
-        auto set_hi = [&](long long v) { hi[x] = hi.contains(x) ? std::min(hi[x], v) : v; };
-        auto set_lo = [&](long long v) { lo[x] = lo.contains(x) ? std::max(lo[x], v) : v; };
-        if (op == "<=" || op == "==") set_hi(c);
-        if (op == "<") set_hi(c - 1);
-        if (op == ">=" || op == "==") set_lo(c);
-        if (op == ">") set_lo(c + 1);
-    }
-    std::set<std::string> vars;
-    for (auto& [k, _] : lo) vars.insert(k);
-    for (auto& [k, _] : hi) vars.insert(k);
-    Bounds out;
-    for (const auto& v : vars) {
-        std::optional<long long> l, h;
-        if (lo.contains(v)) l = lo[v];
-        if (hi.contains(v)) h = hi[v];
-        out.emplace_back(v, std::make_pair(l, h));
-    }
-    return out;
-}
-
-struct Unsafe {};
-
-}  // namespace
-
-bool int_safe(const std::string& expr, const Bounds& bounds) {
-    static const Regex tok_re(R"(\d+|[A-Za-z_]\w*|[-+*()]|\S)");
-    static const Regex ident(R"([A-Za-z_]\w*\z)");
-    std::vector<std::string> toks;
-    for (const auto& m : tok_re.finditer(expr)) toks.push_back(m.text);
-    std::size_t pos = 0;
-    using Iv = std::pair<long long, long long>;
-    auto ok = [](Iv iv) -> Iv {
-        if (iv.first < INT_MIN_ || iv.second > INT_MAX_) throw Unsafe{};
-        return iv;
-    };
-    std::function<Iv()> add;
-    std::function<Iv()> atom = [&]() -> Iv {
-        if (pos >= toks.size()) throw Unsafe{};
-        const std::string t = toks.at(pos++);
-        if (t == "(") {
-            if (!add) throw Unsafe{};
-            Iv v = add();
-            if (pos >= toks.size() || toks.at(pos) != ")") throw Unsafe{};
-            ++pos;
-            return v;
-        }
-        if (t == "-") {
-            if (!atom) throw Unsafe{};
-            Iv a = atom();
-            return ok({-a.second, -a.first});
-        }
-        if (!t.empty() && std::all_of(t.begin(), t.end(), [](char c) { return c >= '0' && c <= '9'; })) {
-            long long v = parse_ll(t).value_or(1LL << 62);
-            return ok({v, v});
-        }
-        if (fullmatch(ident, t)) {
-            auto it = std::find_if(bounds.begin(), bounds.end(), [&](const auto& b) { return b.first == t; });
-            if (it == bounds.end() || !it->second.first || !it->second.second) throw Unsafe{};
-            return ok({*it->second.first, *it->second.second});
-        }
-        throw Unsafe{};
-    };
-    auto mul = [&]() -> Iv {
-        Iv v = atom();
-        while (pos < toks.size() && toks.at(pos) == "*") {
-            ++pos;
-            Iv w = atom();
-            long long ps[4] = {v.first * w.first, v.first * w.second, v.second * w.first, v.second * w.second};
-            v = ok({*std::min_element(ps, ps + 4), *std::max_element(ps, ps + 4)});
-        }
-        return v;
-    };
-    add = [&]() -> Iv {
-        Iv v = mul();
-        while (pos < toks.size() && (toks.at(pos) == "+" || toks.at(pos) == "-")) {
-            std::string op = toks.at(pos++);
-            Iv w = mul();
-            v = ok(op == "+" ? Iv{v.first + w.first, v.second + w.second} : Iv{v.first - w.second, v.second - w.first});
-        }
-        return v;
-    };
-    try {
-        add();
-    } catch (const Unsafe&) {
-        return false;
-    }
-    return pos == toks.size();
-}
-
-std::vector<std::string> exportable_conjuncts(const std::vector<std::string>& conjuncts) {
-    std::vector<std::string> atoms;
-    for (const auto& c : conjuncts)
-        if (atom_re().match_prefix(c)) atoms.push_back(c);
-    Bounds b = bounds_of(atoms);
-    static const Regex cmp(R"(^(.*?)\s*(<=|>=|==|!=|<|>)\s*(.*)$)");
-    static const Regex rel_chars(R"([<>=!])");
-    static const Regex simple(R"((?:[A-Za-z_]\w*|-?\d+)\z)");
-    std::vector<std::string> out;
-    for (const auto& c : conjuncts) {
-        if (atom_re().match_prefix(c)) {
-            out.push_back(c);
-            continue;
-        }
-        auto m = cmp.match_prefix(c);
-        if (!m || rel_chars.search(m->group(1) + m->group(3))) continue;
-        bool all = true;
-        for (const auto& side : {m->group(1), m->group(3)})
-            if (!(fullmatch(simple, strip(side)) || int_safe(side, b))) {
-                all = false;
-                break;
-            }
-        if (all) out.push_back(c);
-    }
-    return out;
-}
-
 // Only invariants the engine proved are exported: the Houdini-filtered loop
-// invariants of a bmc PROVED-UNBOUNDED (extra["invariants"], one list per
-// cut loop, with the loops' source positions in extra["invariant_loops"]),
-// or pir's structured conjuncts rendered in C (debug_ir.cpp). A loop whose
+// invariants of a pir PROVED-UNBOUNDED: its structured conjuncts rendered
+// in C (debug_ir.cpp), with the loops' source positions in
+// extra["invariant_loops"]. A loop whose
 // position is unknown (inlined body), that is a `do` loop (its invariant is
 // proved at the top of the body, not where the condition is evaluated), or
 // whose keyword is not at that position in the task text gets none. Every
@@ -186,28 +38,15 @@ std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::
     const json& extra = extra_of(finding);
     const std::string st = get_str(finding, "status", "");
     const bool proved = st == "PROVED-UNBOUNDED" || st == "PROVED" || st == "PROVED-CERTIFIED";
-    if (!proved || get_str(extra, "k_induction", "None") != "closed-invariants" ||
-        !(has(extra, "invariants") || has(extra, "invariant_conjuncts")))
+    if (!proved || get_str(extra, "k_induction", "None") != "closed-invariants" || !has(extra, "invariant_conjuncts"))
         return {{}, "no loop invariant exported by the proving stage (empty invariant set)"};
-    const bool pir = !has(extra, "invariants");
     std::vector<std::vector<std::string>> invs;
     json loops;
     try {
-        if (!pir) {
-            json raw = json::parse(pystr(extra.at("invariants")));
-            if (!raw.is_array()) throw std::invalid_argument("invariants");
-            for (const auto& list : raw) {
-                std::vector<std::string> row;
-                if (list.is_array())
-                    for (const auto& e : list) row.push_back(pystr(e));
-                invs.push_back(std::move(row));
-            }
-        } else {
-            // pir: structured conjuncts over IR values, rendered in C here
-            auto texts = pir_invariant_texts(task, finding);
-            if (!texts) return {{}, "pir invariants not mapped to C (no debug information; empty invariant set)"};
-            invs = std::move(*texts);
-        }
+        // structured conjuncts over IR values, rendered in C here
+        auto texts = pir_invariant_texts(task, finding);
+        if (!texts) return {{}, "pir invariants not mapped to C (no debug information; empty invariant set)"};
+        invs = std::move(*texts);
         loops = json::parse(has(extra, "invariant_loops") ? pystr(extra.at("invariant_loops")) : "[]");
     } catch (const std::exception&) {
         return {{}, "unreadable invariants (empty invariant set)"};
@@ -248,8 +87,8 @@ std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::
             std::vector<std::string> mine;
             for (const auto& e : invs[j])
                 if (!(declared.has_value() && declared->search(e))) mine.push_back(strip(e));
-            // pir conjuncts are rendered with their C types; bmc's are filtered here
-            std::vector<std::string> kept = pir ? mine : exportable_conjuncts(mine);
+            // conjuncts are rendered with their C types
+            const std::vector<std::string>& kept = mine;
             if (!kept.empty()) {
                 std::string value;
                 for (std::size_t k = 0; k < kept.size(); ++k) value += (k ? " && " : "") + ("(" + kept.at(k) + ")");
@@ -266,7 +105,7 @@ std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::
         }
         n += k;
     }
-    std::string stage = has(finding, "stage") ? pystr(finding.at("stage")) : "bmc";
+    std::string stage = has(finding, "stage") ? pystr(finding.at("stage")) : "pir";
     return {out, std::to_string(n) + " Houdini loop invariant conjunct(s) from " + stage};
 }
 

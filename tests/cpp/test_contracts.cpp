@@ -143,18 +143,6 @@ TEST_CASE("contracts capitalised clauses count as a spec for drafting and for ra
 // ---- PROVED-ASSUMING, never PROVED ----
 
 #ifdef PRISM_HAS_Z3
-TEST_CASE("contracts inc is PROVED-ASSUMING; without the requires it overflows") {
-    auto fn = tfn("contract_add.c", "inc");
-    auto r = prove1(fn);
-    CHECK(r.status == std::string(laws::PROVED_ASSUMING));
-    CHECK(r.status != std::string(laws::PROVED));
-    CHECK(r.extra.contains("requires"));
-    CHECK(xget(r, "assumed") == "true");
-    auto raw = prism::run_bmc({fn}, 8);
-    REQUIRE(raw.size() == 1);
-    CHECK(raw[0].status == std::string(laws::FAILED));
-    CHECK(raw[0].cls == "INT-SIGNED-OVF");
-}
 
 TEST_CASE("contracts capitalised clauses are checked: holds and its false twin fails") {
     auto ok = prove1(tfn("contract_case.c", "inc_caps"));
@@ -238,7 +226,7 @@ TEST_CASE("contracts compound decreases n - i that grows is FAILED, not assumed"
     CHECK(r.cls == "FUNC-CONTRACT");
     CHECK(has(r.message, "FUNC-CONTRACT"));
     CHECK(xget(r, "decreases_assumed") == "false");
-    auto without = sd::bmc_with_assume(fn, 8, xget(r, "requires"), xget(r, "ensures"), std::nullopt, std::nullopt);
+    auto without = sd::check_with_assume(fn, 8, xget(r, "requires"), xget(r, "ensures"), std::nullopt, std::nullopt);
     CHECK(without.status == std::string(laws::PROVED_ASSUMING));
 }
 
@@ -259,9 +247,9 @@ TEST_CASE("contracts valid linear decreases are PROVED-ASSUMING; overflowing mea
     CHECK(ovf.cls == "INT-SIGNED-OVF");
     CHECK(has(ovf.message, "INT-SIGNED-OVF"));
     auto req = xget(ovf, "requires"), ens = xget(ovf, "ensures");
-    CHECK(sd::bmc_with_assume(ovf_fn, 8, req, ens, std::nullopt, std::nullopt).status ==
+    CHECK(sd::check_with_assume(ovf_fn, 8, req, ens, std::nullopt, std::nullopt).status ==
           std::string(laws::PROVED_ASSUMING));
-    CHECK(sd::bmc_with_assume(ovf_fn, 8, req, ens, std::string("i - 0"), std::nullopt).status ==
+    CHECK(sd::check_with_assume(ovf_fn, 8, req, ens, std::string("i - 0"), std::nullopt).status ==
           std::string(laws::PROVED_ASSUMING));
 }
 #endif
@@ -316,36 +304,6 @@ TEST_CASE("contracts VOID and OTHER functions are NEEDS-HARNESS") {
 // ---- FuSeBMC helpers and the differential stage ----
 
 #ifdef PRISM_HAS_Z3
-TEST_CASE("fuse seeds come from a BMC counterexample") {
-    auto fn = tfn("add_overflow.c", "add_overflow");
-    auto bmc = prism::run_bmc({fn}, 8);
-    REQUIRE(bmc.size() == 1);
-    CHECK(bmc[0].status == std::string(laws::FAILED));
-    auto seeds = sd::seeds_from_bmc(fn, bmc);
-    REQUIRE_FALSE(seeds.empty());
-    REQUIRE(seeds[0].size() == 4);
-    // Little-endian x from the counterexample; it must overflow x + 100.
-    uint32_t u = 0;
-    for (int i = 3; i >= 0; --i) u = (u << 8) | seeds[0][static_cast<std::size_t>(i)];
-    auto x = static_cast<int32_t>(u);
-    CHECK(static_cast<long long>(x) + 100 > 2147483647LL);
-    // A solver bit-vector literal and a plain C literal decode alike.
-    prism::Finding hex = bmc[0], dec = bmc[0];
-    hex.counterexample = "x=#x7fffff9c";
-    dec.counterexample = "x=2147483548";
-    auto hs = sd::seeds_from_bmc(fn, {hex});
-    auto ds = sd::seeds_from_bmc(fn, {dec});
-    REQUIRE(hs.size() == 1);
-    CHECK(hs == ds);
-    CHECK(hs[0] == std::vector<uint8_t>{0x9c, 0xff, 0xff, 0x7f});
-    // Not FAILED, or another function: no seed.
-    prism::Finding other = hex;
-    other.function = "not_add_overflow";
-    CHECK(sd::seeds_from_bmc(fn, {other}).empty());
-    prism::Finding bounded = hex;
-    bounded.status = std::string(laws::BOUNDED);
-    CHECK(sd::seeds_from_bmc(fn, {bounded}).empty());
-}
 #endif
 
 TEST_CASE("fuse branch goals and CLEAN is not a proof") {

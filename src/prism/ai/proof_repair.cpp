@@ -8,7 +8,7 @@
 //
 // On the next run, a stored function the current run does not prove is
 // re-checked with its stored artefacts (Houdini + loop-cut induction for
-// invariants, the contracts engine for contracts, the drafted harness BMC):
+// invariants, the contracts engine for contracts, the drafted harness check):
 //   * still checks -> the proof is re-established from the store (the checker
 //     decided, so the verdict is the checker's);
 //   * does not check -> PROOF-REGRESSION (UNKNOWN, extra.regression = true)
@@ -211,7 +211,7 @@ Finding recheck_artefact(const FunctionInfo& fn, const ProofArtefact& a, int unw
     }
     if (!a.assumptions.empty()) {
         std::string refused;
-        auto d = drafted_harness_bmc(fn, unwind, &refused);
+        auto d = drafted_harness_check(fn, unwind, &refused);
         if (!d) return row(laws::UNKNOWN, fn, "", "harness can no longer be drafted: " + refused, laws::STRENGTH_PROVES);
         auto f = *d;
         f.stage = "review";
@@ -222,8 +222,7 @@ Finding recheck_artefact(const FunctionInfo& fn, const ProofArtefact& a, int unw
         }
         return f;
     }
-    auto recs = run_bmc({fn}, unwind);
-    auto f = recs.empty() ? row(laws::ERROR, fn, "", "bmc returned nothing", laws::STRENGTH_PROVES) : recs[0];
+    auto f = check_function_pir(fn, unwind);
     f.stage = "review";
     return f;
 }
@@ -316,7 +315,7 @@ std::optional<Finding> repair_contract(const FunctionInfo& fn, const ProofArtefa
     AuditRecord rec;
     rec.function = fn.name;
     rec.file = fn.file;
-    rec.checker = "contracts engine (bmc)";
+    rec.checker = "contracts engine (pir)";
     auto reply = ask(backend, req, rec);
     auto v = reply.error.empty() ? validate_contract(reply.text, vars) : Validated{};
     rec.output_valid = v.ok;
@@ -353,7 +352,7 @@ std::optional<Finding> repair_contract(const FunctionInfo& fn, const ProofArtefa
 }
 
 const std::set<std::string>& proving_stages() {
-    static const std::set<std::string> s{"bmc", "contracts", "harness", "wp", "pir", "review"};
+    static const std::set<std::string> s{"contracts", "wp", "pir", "review"};
     return s;
 }
 

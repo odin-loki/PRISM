@@ -25,6 +25,8 @@ struct Config {
     int jobs = 2;
     double timeout = 30.0;
     int unwind = 8;
+    // pir: verify only these Check props (CheckOptions::only_props); internal
+    std::vector<std::string> pir_only_props;
     double fuzz_budget = 8.0;
     int fuzz_iters = 2048;
     bool llm = true;

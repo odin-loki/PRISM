@@ -514,9 +514,9 @@ std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionIn
 }
 
 namespace stages_detail {
-std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings) {
+std::vector<std::vector<uint8_t>> seeds_from_findings(const FunctionInfo& fn, const std::vector<Finding>& checker_findings) {
     std::vector<std::vector<uint8_t>> out;
-    for (auto& f : bmc_findings) {
+    for (auto& f : checker_findings) {
         if (!f.function || *f.function != fn.name) continue;
         if (f.status != laws::FAILED) continue;
         auto b = bytes_from_cex(f.counterexample, fn);
@@ -1020,7 +1020,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     return f;
 }
 
-Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings, const fs::path& root,
+Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& checker_findings, const fs::path& root,
                  double budget, int iters, int rounds, LlamaEngine* engine, const Config& cfg) {
     auto nh = [&](std::string msg) {
         return make_find("fuse", laws::NEEDS_HARNESS, fn, "", std::move(msg), laws::STRENGTH_FINDS);
@@ -1042,16 +1042,16 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (!fs::exists(src) && fs::is_regular_file(root)) src = root;
     if (!fs::exists(src) && fs::exists(root / fs::path(fn.file).filename()))
         src = root / fs::path(fn.file).filename();
-    auto seeds = seeds_from_bmc(fn, bmc_findings);
-    int from_bmc = static_cast<int>(seeds.size());
+    auto seeds = seeds_from_findings(fn, checker_findings);
+    int from_checker = static_cast<int>(seeds.size());
     auto labeled = numbered_goals(fn);
     std::set<std::string> covered;
     Finding last;
     std::map<std::string, std::string> extra{
-        {"from_bmc", std::to_string(from_bmc)},
+        {"from_checker", std::to_string(from_checker)},
         {"rounds", "0"},
-        {"new_bmc_seeds", "0"},
-        {"noseed", from_bmc == 0 ? "true" : "false"},
+        {"new_checker_seeds", "0"},
+        {"noseed", from_checker == 0 ? "true" : "false"},
     };
     {
         nlohmann::json ids = nlohmann::json::array();
@@ -1270,10 +1270,10 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         int goals_skipped = 0;
         for (auto& [lab, cond] : labeled) {
             if (covered.contains(lab)) continue;
-            // The goal BMC runs only while the round's fuzz budget lasts: a
+            // The goal checks run only while the round's fuzz budget lasts: a
             // goal is a seed source, never a check (a fuzzer CLEAN is not a
             // proof, Law 3). zlib: one goal query per branch of every scalar
-            // function took the fuzz stage past 700 s; the bmc stage checks
+            // function took the fuzz stage past 700 s; the pir stage checks
             // each function in full on its own.
             if (std::chrono::duration<double>(std::chrono::steady_clock::now() - round_t0).count() >= budget) {
                 ++goals_skipped;
@@ -1281,24 +1281,24 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             }
             auto cloned = fn;
             cloned.body = "if (!(" + cond + ")) return 0;\n" + fn.body;
-            auto g = bmc_one(cloned, 8);
+            auto g = pir_one(cloned, 8);
             extra["rounds"] = std::to_string(r + 1);
             if (g.status == laws::FAILED && !g.counterexample.empty()) {
                 covered.insert(lab);
                 nlohmann::json ids = nlohmann::json::array();
-                if (extra.contains("bmc_goals")) {
+                if (extra.contains("goal_checks")) {
                     try {
-                        ids = nlohmann::json::parse(extra["bmc_goals"]);
+                        ids = nlohmann::json::parse(extra["goal_checks"]);
                     } catch (...) {
                         ids = nlohmann::json::array();
                     }
                 }
                 ids.push_back(lab);
-                extra["bmc_goals"] = ids.dump();
+                extra["goal_checks"] = ids.dump();
                 if (auto seed_bytes = bytes_from_cex(g.counterexample, fn)) {
                     if (std::ranges::find(seeds, *seed_bytes) == seeds.end())
                         seeds.push_back(*seed_bytes);
-                    extra["new_bmc_seeds"] = std::to_string(std::stoi(extra["new_bmc_seeds"]) + 1);
+                    extra["new_checker_seeds"] = std::to_string(std::stoi(extra["new_checker_seeds"]) + 1);
                 }
             } else if (g.status == laws::PROVED || g.status == laws::PROVED_UNBOUNDED ||
                        g.status == laws::BOUNDED) {
@@ -1306,7 +1306,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             }
         }
         if (goals_skipped > 0)
-            extra["bmc_goals_skipped"] = std::to_string(goals_skipped) + " (fuzz budget spent: no seed from them)";
+            extra["goal_checks_skipped"] = std::to_string(goals_skipped) + " (fuzz budget spent: no seed from them)";
 #endif
     }
     extra["covered_goals"] = nlohmann::json(std::vector<std::string>(covered.begin(), covered.end())).dump();
@@ -1584,17 +1584,17 @@ std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const Fu
 
 }  // namespace
 
-std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& checker_findings,
                               const fs::path& src_root, double budget, int iters, bool llm) {
-    return run_fuse(functions, bmc_findings, src_root, budget, iters, llm, default_config());
+    return run_fuse(functions, checker_findings, src_root, budget, iters, llm, default_config());
 }
 
-std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& checker_findings,
                               const fs::path& src_root, double budget, int iters, bool llm, const Config& cfg) {
     std::vector<Finding> out;
     int rounds = 2;
     // A zero budget is already spent: do not lift it to the 0.05 s floor.
-    // Goal BMC (below) runs only while that budget lasts, and a positive
+    // Goal checks (below) run only while that budget lasts, and a positive
     // budget still gets a floor so a short round does some concrete fuzzing.
     double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
@@ -1604,7 +1604,7 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     if (llm) eng.emplace(cfg);
     LlamaEngine* ep = eng.has_value() ? &eng.value() : nullptr;
     for (auto& fn : functions)
-        out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
+        out.push_back(fuse_one(fn, checker_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
     if (ep && !ep->available() && !functions.empty()) {
         Finding f;
         f.stage = "fuse";

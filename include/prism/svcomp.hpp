@@ -6,7 +6,7 @@
 //                  [--witness FILE] --prop PROPERTY.prp TASK.c
 //
 // runs the pipeline on one task with exactly the stages
-// inventory,classify,bmc,pir (no LLM, no execution of task code), maps
+// inventory,classify,pir (no LLM, no execution of task code), maps
 // report.json to an SV-COMP answer, replays the counterexample and writes a
 // witness (a violation witness for `false`, a correctness witness for
 // `true`). It prints `PRISM-SVCOMP-RESULT: <answer>` where answer is `true`,
@@ -16,7 +16,7 @@
 // The mapping keeps PRISM's laws (docs/VERDICTS.md, docs/SVCOMP.md):
 //
 // - `true` only from PROVED, PROVED-UNBOUNDED or PROVED-CERTIFIED of main by
-//   a verdict stage that covers the property (bmc/pir for no-overflow and
+//   a verdict stage that covers the property (pir for no-overflow and
 //   unreach-call; nothing covers the whole of valid-memsafety, so it is
 //   never `true`), and only when no verdict stage reported a FAILED of the
 //   property's class. PROVED-ASSUMING and BOUNDED are never `true` (Law 2).
@@ -48,7 +48,7 @@ namespace prism::svcomp {
 
 using json = nlohmann::json;
 
-inline constexpr const char* STAGES = "inventory,classify,bmc,pir";
+inline constexpr const char* STAGES = "inventory,classify,pir";
 inline constexpr const char* RESULT_PREFIX = "PRISM-SVCOMP-RESULT: ";
 inline constexpr const char* REASON_PREFIX = "PRISM-SVCOMP-REASON: ";
 inline constexpr const char* WITNESS_PREFIX = "PRISM-SVCOMP-WITNESS: ";
@@ -73,7 +73,7 @@ struct Decision {
 // Findings about main per verdict stage, in report order (plus a
 // STAGE-FAILED row for a crashed stage).
 PRISM_API std::vector<std::pair<std::string, std::vector<json>>> main_findings(const json& report);
-// extra["prop"] (pir), else the message prefix (bmc: "shift31: INT-SHIFT-UB").
+// extra["prop"] (pir), else the message prefix ("<prop>: <CLASS>").
 PRISM_API std::string finding_prop(const json& finding);
 PRISM_API bool refutes(const json& finding, const std::string& prop);
 // replay(finding) replays one refutation; its "replay" key must be
@@ -121,12 +121,6 @@ PRISM_API std::optional<long> target_column(const std::filesystem::path& src, lo
 PRISM_API bool decl_head(const std::string& text);
 
 // ---------------------------------------------------------------- invariants
-// Every subterm of the arithmetic expr stays within int for all values in
-// bounds (variable -> [lo, hi], either side may be unknown).
-using Bounds = std::vector<std::pair<std::string, std::pair<std::optional<long long>, std::optional<long long>>>>;
-PRISM_API bool int_safe(const std::string& expr, const Bounds& bounds);
-// The proved conjuncts a witness may carry (see invariants.cpp).
-PRISM_API std::vector<std::string> exportable_conjuncts(const std::vector<std::string>& conjuncts);
 // Loop invariants for a correctness witness of a `true` answer, and a note
 // on where they came from.
 PRISM_API std::pair<std::vector<Invariant>, std::string> correctness_invariants(const std::filesystem::path& task,

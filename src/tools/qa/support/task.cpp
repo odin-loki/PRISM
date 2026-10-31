@@ -16,9 +16,8 @@
 namespace prism::qa {
 
 const std::set<std::string> PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"};
-const std::vector<std::string> BASE_STAGES = {"inventory", "classify", "bmc", "harness"};
-const std::vector<std::string> VERDICT_STAGES = {"bmc", "harness", "pir", "conc"};
-const std::set<std::string> SCOPED_STAGES = {"harness"};
+const std::vector<std::string> BASE_STAGES = {"inventory", "classify"};
+const std::vector<std::string> VERDICT_STAGES = {"pir", "conc"};
 const std::map<std::string, std::set<std::string>> STAGE_TASK_ORIGINS = {{"conc", {"concurrency"}}};
 const std::map<std::string, std::set<std::string>> ORIGIN_STAGES = {{"concurrency", {"conc"}}};
 const std::vector<std::string> DEFAULT_ROOTS = {"prism", "sv-comp", "concurrency", "esbmc-cpp", "libc-models"};

@@ -542,6 +542,10 @@ struct CheckOptions {
     // own limit), and whether its outcome is cached under cache_dir/houdini
     // (use_cache; a cached proof is re-checked, docs/PIR.md "Loop invariants")
     std::shared_ptr<HoudiniBudget> houdini_budget;
+    // Non-empty: only Check statements whose prop is listed are verified;
+    // the others are dropped (not assumed). Used by the AI loop-invariant
+    // checks (ai::check_program, only_invariants), never by a verdict run.
+    std::vector<std::string> only_props;
 };
 PRISM_API Verdict check_function(const Function& fn, const CheckOptions& opt);
 // True once Z3 hit its hard memory limit in this process: every later

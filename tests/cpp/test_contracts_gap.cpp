@@ -2,7 +2,7 @@
 // Law 7: a function that has a contract and cannot be checked is written
 // down. prove_contracts (src/prism/stages/contracts.cpp) returns
 // NEEDS-HARNESS before BMC for a POINTER function. A SCALAR contract
-// reaches bmc_one; without Z3 that row is NOTRUN, never PROVED and never
+// reaches pir_one; without Z3 that row is NOTRUN, never PROVED and never
 // dropped. Linked into prism_tests next to test_main.cpp (which provides
 // main()). The pointer-parameter case runs on every build.
 #include <doctest/doctest.h>
@@ -124,9 +124,4 @@ TEST_CASE("contracts: missing Z3 on a contracted scalar is NOTRUN, never PROVED 
     CHECK(f.extra.at("ensures").find("result == x") != std::string::npos);
 }
 #else
-TEST_CASE("contracts: missing Z3 on a contracted scalar is NOTRUN, never PROVED or empty") {
-    // The missing-backend row is run_bmc's build without Z3 ("z3 not built").
-    // With Z3 the same scalar contract is a solver answer, not this gap.
-    MESSAGE("PRISM_HAS_Z3: skip missing-backend NOTRUN row");
-}
 #endif
