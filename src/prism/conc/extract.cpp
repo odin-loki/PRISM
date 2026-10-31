@@ -174,7 +174,7 @@ std::vector<int> scalar_orders(const std::vector<std::string>& ws) {
     return r;
 }
 
-void require_sc(const std::vector<std::string>& ws) {
+[[maybe_unused]] void require_sc(const std::vector<std::string>& ws) {
     for (auto& w : ws) {
         if (w.starts_with("syncscope(")) throw Unenc{"UNENCODED: atomic syncscope " + w};
         if (is_order(w) && w != "seq_cst" && tl_weak_order.empty()) tl_weak_order = c_order_name(w);
@@ -307,8 +307,17 @@ struct Rewriter {
                             addr_taken.insert(o.v.name);
                     }
                     for (auto& [o, _] : in.incoming) ce(o);
+                    // a scalar global loaded / stored at more than one type
+                    // lives in the byte-addressed memory (mixed widths)
+                    if (in.op == "load" && !in.ops.empty() && in.ops[0].v.kind == ir::Value::Global)
+                        acc_types[in.ops[0].v.name].insert(in.ty.text);
+                    if (in.op == "store" && in.ops.size() > 1 && in.ops[1].v.kind == ir::Value::Global)
+                        acc_types[in.ops[1].v.name].insert(in.ops[0].ty.text);
                 }
+        for (auto& [g, ts] : acc_types)
+            if (ts.size() > 1) addr_taken.insert(g);
     }
+    std::map<std::string, std::set<std::string>> acc_types;  // direct-access global -> access types
     std::set<std::string> addr_taken;                 // scalar globals that live in the bounded memory
     std::map<std::string, std::vector<std::string>> frame_slots;  // fn -> escaping allocas (paddr names)
     std::map<std::string, std::vector<int>> mem_params;           // defined fn -> pointer params carried as i64
@@ -721,6 +730,7 @@ struct Rewriter {
         vo.mem = true;
         vo.obj = obj;
         vo.atomic = atomic;
+        vo.order = atomic ? scalar_orders(words(in.text)).at(0) : -1;
         vo.width = ty.bits;
         vo.line = line;
         vo.what = std::string(atomic ? "atomic " : "") + (store ? "store" : "load");
@@ -996,7 +1006,6 @@ struct Rewriter {
         if ((op == "phi" || op == "select") && rewrite_ptr_merge(fn, in, out)) return;
         if (op == "load") {
             if (rewrite_mem_access(fn, in, out, false, in.text.find(" atomic ") != std::string::npos, line)) {
-                if (in.text.find(" atomic ") != std::string::npos) require_sc(words(in.text));
                 return;
             }
             auto parts = inst_parts(in.text);
@@ -1043,7 +1052,6 @@ struct Rewriter {
         }
         if (op == "store") {
             if (rewrite_mem_access(fn, in, out, true, in.text.find(" atomic ") != std::string::npos, line)) {
-                if (in.text.find(" atomic ") != std::string::npos) require_sc(words(in.text));
                 return;
             }
             auto parts = inst_parts(in.text);
@@ -1098,8 +1106,7 @@ struct Rewriter {
             auto maddr = mem_addr(fn, ir::Operand{ir::parse_type("ptr"), parse_value(w0[3], ir::parse_type("ptr")), {}}, mobj);
             if (!maddr && g.empty())
                 throw Unenc{"UNENCODED: atomicrmw on " + w0[3].substr(0, 40) + " (outside the bounded memory)"};
-            if (maddr) require_sc(w1);
-            const int ord = maddr ? 4 : scalar_orders(w1).at(0);
+            const int ord = scalar_orders(w1).at(0);
             int v = maddr ? -1 : shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Rmw;
@@ -1162,8 +1169,7 @@ struct Rewriter {
             auto maddr = mem_addr(fn, ir::Operand{ir::parse_type("ptr"), parse_value(w0[2], ir::parse_type("ptr")), {}}, mobj);
             if (!maddr && g.empty())
                 throw Unenc{"UNENCODED: cmpxchg on " + w0[2].substr(0, 40) + " (outside the bounded memory)"};
-            if (maddr) require_sc(w2);
-            auto ords = maddr ? std::vector<int>{4, 4} : scalar_orders(w2);
+            auto ords = scalar_orders(w2);
             int v = maddr ? -1 : shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Rmw;
@@ -1172,7 +1178,7 @@ struct Rewriter {
             vo.obj = mobj;
             vo.order = ords.at(0);
             vo.order_fail = ords.size() > 1 ? ords.at(1) : ords.at(0);
-            vo.cas = !maddr;
+            vo.cas = true;
             vo.atomic = true;
             vo.width = ty.bits;
             vo.line = line;
@@ -1201,7 +1207,7 @@ struct Rewriter {
             sel.ops = {local(ok, int_type(1)), nv, old};
             out.push_back(sel);
             // success flag for the view model: a failed compare-exchange is a load
-            if (!maddr) out.push_back(copy(in, marker(k) + "c", local(ok, int_type(1))));
+            out.push_back(copy(in, marker(k) + "c", local(ok, int_type(1))));
             out.push_back(copy(in, marker(k, true), local(n, ty)));
             if (!in.result.empty()) cmpx.insert_or_assign(in.result, std::pair{marker(k), ok});
             return;
@@ -1589,8 +1595,19 @@ std::map<std::string, std::string> unsupported_threading(const ir::Module& m) {
     return out;
 }
 
+namespace {
+Build build_impl(const ir::Module& m, std::string_view ir_text, const std::string& harness, const Options& opt,
+                 int depth);
+}
+
 Build build_program(const ir::Module& m, std::string_view ir_text, const std::string& harness,
                     const Options& opt) {
+    return build_impl(m, ir_text, harness, opt, 0);
+}
+
+namespace {
+Build build_impl(const ir::Module& m, std::string_view ir_text, const std::string& harness, const Options& opt,
+                 int depth) {
     Build b;
     b.status = std::string(laws::NEEDS_HARNESS);
     const auto* hf = m.find(harness);
@@ -1679,6 +1696,48 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
                 rw.mem_params[k.first].push_back(k.second);
                 changed = true;
             }
+            if (changed) continue;
+            // mixed call sites (some pass bounded-memory pointers, some do
+            // not): clone the callee for the bounded-memory sites and build
+            // again, so that each copy has one pointer kind per parameter
+            std::map<std::string, std::set<int>> mixed;
+            for (auto& [k, c] : sites)
+                if (c.second > 0 && c.second < c.first && !rw.entry_of.count(k.first)) mixed[k.first].insert(k.second);
+            if (mixed.empty() || depth >= 3) break;
+            ir::Module m2 = m;
+            int retargeted = 0;
+            for (auto& f : m2.functions) {
+                if (!scope.count(f.name)) continue;
+                for (auto& bl : f.blocks)
+                    for (auto& in : bl.insts) {
+                        if (in.op != "call") continue;
+                        auto it = mixed.find(in.callee);
+                        if (it == mixed.end()) continue;
+                        bool all = true;
+                        for (int i : it->second) {
+                            if (static_cast<std::size_t>(i) >= in.ops.size()) { all = false; break; }
+                            const auto& po = in.ops[static_cast<std::size_t>(i)];
+                            const auto vk = po.v.kind;
+                            if (!(vk == ir::Value::Null || vk == ir::Value::Zero || rw.mem_resolvable(f.name, po)))
+                                all = false;
+                        }
+                        if (!all) continue;
+                        auto nn = in.callee + "__prism_mem";
+                        if (auto pos = in.text.find("@" + in.callee + "("); pos != std::string::npos)
+                            in.text.replace(pos, in.callee.size() + 1, "@" + nn);
+                        in.callee = nn;
+                        ++retargeted;
+                    }
+            }
+            if (retargeted == 0) break;
+            for (auto& [fn, _] : mixed) {
+                const auto* orig = m.find(fn);
+                if (!orig) continue;
+                ir::Function cl = *orig;
+                cl.name = fn + "__prism_mem";
+                m2.functions.push_back(std::move(cl));
+            }
+            return build_impl(m2, ir_text, harness, opt, depth + 1);
         }
         for (auto& f : rw.m.functions) {
             if (!scope.count(f.name) || !f.parse_error.empty()) continue;  // translate reports it if reached
@@ -1747,5 +1806,6 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
     }
     return b;
 }
+}  // namespace
 
 }  // namespace prism::conc

@@ -197,9 +197,12 @@ memory (`Program::objects`). Object `k` has addresses
 i64 arithmetic with the module's data layout, and a load or store through it
 into two markers: the head (`__prism.conc.k`, the address; the context-switch
 point) and the tail (`__prism.conc.ks`, the value read or written in the same
-step). The encoder keeps one Z3 array `M` from byte address to word (the
-whole access, zero-extended); it is word-addressed, so overlapping accesses
-of different widths to the same bytes are not modelled exactly. Every access
+step). The encoder keeps one Z3 array `M` from byte address to byte; an access of
+w bits reads or writes its ceil(w/8) bytes little-endian, so overlapping
+accesses of different widths agree. A scalar global loaded or stored at more
+than one type lives in this memory too (as an address-taken one does). The
+race check still compares start addresses (overlapping accesses that start
+at different bytes are not race-checked against each other). Every access
 is bounds-checked (`MEM-OOB-READ`/`MEM-OOB-WRITE`), and the race check
 compares addresses. Not yet: constant-expression GEP operands, pointers
 stored in memory or passed to calls, heap (`malloc`/`free`), non-global
@@ -360,11 +363,14 @@ visible operation of the thread (atomics, locks, fences, create, join,
 alloc/free) drains its buffer, a join drains the joined thread's buffer, and
 before every visible step each buffer may commit its oldest entry
 nondeterministically. A bounded k under-approximates TSO; litmus tests such
-as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding matches on
-the start address only (mixed-width overlap is not forwarded).
+as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding is per byte: each byte of a
+load comes from the newest buffered store that covers it, else from `M`.
 The race check of a buffered plain store runs when it commits (it becomes
 visible then), not when it is issued; loads are checked when issued. TSO and
-the C11 view model are exclusive (NEEDS-HARNESS when both apply).
+the C11 view model are exclusive: a program with a weaker C11 order run
+under `--memory-model tso` is NEEDS-HARNESS ("UNENCODED: --memory-model tso
+together with C11 weaker orders"); run it under the default model, whose
+C11 encoding already contains every TSO behaviour of a race-free program.
 
 ## 6. C11 orders (view model)
 
@@ -385,16 +391,34 @@ forbids po;rf cycles):
   (release sequences); an RMW reads message ts and writes ts + 1 and carries
   the read view on; a failed compare-exchange is a load with the failure
   order;
-- create, join and mutexes (by name or address) transfer views;
-- non-atomic accesses keep SC values but their race check is
-  happens-before (epochs against the view clocks), for scalars and the
-  bounded memory.
+- atomics in the bounded memory (arrays, structs, heap, address-taken or
+  mixed-width globals), when one of them has a weaker order: the view gets
+  one more entry, an array from address to timestamp (joined pointwise with
+  a lambda). Each memory atomic store / RMW site execution is a message
+  (address, timestamp, value, view); the plain contents of `M` are one more
+  message per address whose timestamp `Pts[a]` a plain store sets (above the
+  storing thread's view). Every load of the memory, plain or atomic, reads
+  one of the messages at its address at or above its view;
+- create, join, mutexes (by name or address) and condition variables
+  transfer views: a wait is unlock / block / re-lock, and the re-lock is an
+  ordinary lock, so it acquires the view of the last unlock (the signaller's,
+  when it held the mutex);
+- seq_cst fences: one SC view in the fences' total order (RC11 psc_F): a
+  seq_cst fence joins it into the thread view and stores the result back.
+  Store buffering with seq_cst fences between relaxed accesses is forbidden
+  (tests/conc/c11_sc_fence_sb.c);
+- race check, happens-before (epochs against the view clocks), for scalars
+  and the bounded memory: a non-atomic access races with any conflicting
+  access it is not ordered with, atomic or not (each thread's last atomic
+  read / write clock per location is kept); an atomic access races only with
+  non-atomic ones. Values of non-atomic locations stay SC.
 
 Approximations (each only adds behaviours, so clean results stand):
-seq_cst accesses to a location that also has weaker accesses, and seq_cst
-fences, are treated as acq_rel; locations with only seq_cst accesses stay
-SC. A plain access to an atomic location is relaxed and is not race-checked
-against the atomic accesses. The C++ `<atomic>` model passes the order
+seq_cst loads, stores and RMWs on a location that also has weaker accesses
+are treated as acq_rel (RC11's psc over SC accesses is not encoded; locations
+with only seq_cst accesses stay SC). A plain access to an atomic location
+reads / writes like a relaxed one (and is race-checked). Memory atomics are
+keyed by start address: an atomic location must be accessed at one width. The C++ `<atomic>` model passes the order
 through and the stage folds it with sccp (only for sources naming a weaker
 order). extra["method"] names the model, extra["c11_locations"] counts the
 locations.

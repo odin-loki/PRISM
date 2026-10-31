@@ -526,7 +526,7 @@ struct Enc {
     // TSO store buffers (Options::tso): per thread pending / variable / value
     // per thread: k entries (key, value) oldest first and a count; key =
     // byte address for the bounded memory, 2^63 | var for a scalar global
-    std::vector<std::vector<z3::expr>> sb_key, sb_val;
+    std::vector<std::vector<z3::expr>> sb_key, sb_val, sb_nb;  // sb_nb: bytes of a memory entry
     std::vector<z3::expr> sb_cnt;
     std::map<std::pair<int, int>, int> create_slot;  // (thread, node) of a looped Create -> created thread
     // mutexes / condition variables addressed through the bounded memory
@@ -547,7 +547,19 @@ struct Enc {
     struct Msg { z3::expr ts, used, val; View view; };
     bool vw = false;
     std::vector<int> aidx;                      // var -> index in A, or -1
-    std::size_t nA = 0, NC = 0;
+    std::size_t nA = 0, NC = 0, VS = 0;          // VS: view size (NC, + 1 array entry for memory)
+    bool memv = false;                          // atomics in the bounded memory use messages too
+    std::size_t MV = 0;                         // the view entry of the memory: address -> timestamp
+    struct MMsg { z3::expr addr, ts, used, val; View view; };
+    std::vector<MMsg> mmsgs;                    // messages of memory atomics (val zero-extended to 64)
+    std::map<std::pair<int, int>, std::size_t> mmsg_of;
+    std::map<std::pair<int, int>, z3::expr> pts_of;  // (thread, node) -> timestamp of a plain memory store
+    z3::expr Pts{c};                            // address -> timestamp of its plain (M) value; 0 initial
+    std::vector<View> relxM;                    // [thread]: per entry, address -> view of its last release store
+    z3::expr mrd_val{c};                        // memory read of the current access (64 bits)
+    std::vector<View> scv;                      // [0]: the SC view of seq_cst fences
+    std::vector<std::vector<z3::expr>> Wa, Ra;  // [var][thread]: clock of its last atomic write / read
+    std::vector<z3::expr> WaA, RaA;             // [thread]: address -> clock of its last atomic write / read
     std::vector<View> cur, acqv, relv;          // per thread: view, pending acquire, last release fence
     std::vector<std::vector<View>> relx;        // [thread][a]: view of its last release store to a
     std::vector<std::vector<Msg>> msgs;         // [a]
@@ -569,7 +581,7 @@ struct Enc {
     Enc(const Program& prog, const Options& o)
         : p(prog), opt(o), exited(c.bool_val(false)), last_tid(c.bv_val(0, 8)), last_var(c.bv_val(0, 16)),
           last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)),
-          M(z3::const_array(c.bv_sort(64), c.bv_val(0, 64))), maddr(c.bv_val(0, 64)), last_addr(c.bv_val(0, 64)),
+          M(z3::const_array(c.bv_sort(64), c.bv_val(0, 8))), maddr(c.bv_val(0, 64)), last_addr(c.bv_val(0, 64)),
           last_mem(c.bool_val(false)), OwnA(z3::const_array(c.bv_sort(64), c.bv_val(0, 8))),
           CgenA(z3::const_array(c.bv_sort(64), c.bv_val(0, 16))) {}
 
@@ -844,7 +856,20 @@ struct Enc {
         events.push_back(ERec{e, r, t, op, seq, std::move(val), w});
     }
 
-    // commit thread u's buffered store when `when`
+    // ---- byte-addressed bounded memory (little-endian) -------------------
+    static unsigned nbytes(unsigned w) { return w == 0 ? 1 : (w + 7) / 8; }
+    z3::expr mload(const z3::expr& mem, const z3::expr& a, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr r = z3::select(mem, a);
+        for (unsigned i = 1; i < nb; ++i) r = z3::concat(z3::select(mem, a + bv(i, 64)), r);
+        return w < nb * 8 ? r.extract(w - 1, 0) : r;
+    }
+    z3::expr mstore(z3::expr mem, const z3::expr& a, const z3::expr& v, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr x = w < nb * 8 ? z3::zext(v, nb * 8 - w) : v;
+        for (unsigned i = 0; i < nb; ++i) mem = z3::store(mem, a + bv(i, 64), x.extract(8 * i + 7, 8 * i));
+        return mem;
+    }
     z3::expr sb_skey(std::size_t v) { return c.bv_val((uint64_t{1} << 63) | v, 64); }
 
     // commit thread u's oldest buffered store when `when`
@@ -884,25 +909,51 @@ struct Enc {
             unsigned w = p.vars[v].width;
             G[v] = z3::ite(go && K[0] == sb_skey(v), w < 64 ? V[0].extract(w - 1, 0) : V[0], G[v]);
         }
-        M = z3::ite(go && K[0].extract(63, 63) == c.bv_val(0, 1), z3::store(M, K[0], V[0]), M);
+        {
+            auto& NB = sb_nb[u];
+            auto gm = go && K[0].extract(63, 63) == c.bv_val(0, 1);
+            for (unsigned i = 0; i < 8; ++i)
+                M = z3::ite(gm && z3::ult(bv(i, 8), NB[0]), z3::store(M, K[0] + bv(i, 64), V[0].extract(8 * i + 7, 8 * i)), M);
+        }
         for (std::size_t i = 0; i + 1 < K.size(); ++i) {
             K[i] = z3::ite(go, K[i + 1], K[i]);
             V[i] = z3::ite(go, V[i + 1], V[i]);
+            sb_nb[u][i] = z3::ite(go, sb_nb[u][i + 1], sb_nb[u][i]);
         }
         sb_cnt[u] = z3::ite(go, sb_cnt[u] - bv(1, 8), sb_cnt[u]);
     }
     void sb_drain(std::size_t u, const z3::expr& when) {
         for (std::size_t i = 0; i < sb_key[u].size(); ++i) sb_commit(u, when);
     }
-    void sb_push(std::size_t u, const z3::expr& e, const z3::expr& key, const z3::expr& val) {
+    void sb_push(std::size_t u, const z3::expr& e, const z3::expr& key, const z3::expr& val, unsigned nb = 8) {
         auto k = static_cast<uint64_t>(sb_key[u].size());
         sb_commit(u, e && sb_cnt[u] == bv(k, 8));  // full: the oldest commits first
         for (std::size_t i = 0; i < sb_key[u].size(); ++i) {
             auto here = e && sb_cnt[u] == bv(i, 8);
             sb_key[u][i] = z3::ite(here, key, sb_key[u][i]);
             sb_val[u][i] = z3::ite(here, val, sb_val[u][i]);
+            sb_nb[u][i] = z3::ite(here, bv(nb, 8), sb_nb[u][i]);
         }
         sb_cnt[u] = z3::ite(e, sb_cnt[u] + bv(1, 8), sb_cnt[u]);
+    }
+    // a load of w bits at memory address a by thread u: each byte from the
+    // newest buffered store covering it (overlap forwarding), else M
+    z3::expr sb_forward_mem(std::size_t u, const z3::expr& a, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr r(c);
+        for (unsigned j = 0; j < nb; ++j) {
+            auto aj = a + bv(j, 64);
+            z3::expr b = z3::select(M, aj);
+            for (std::size_t i = 0; i < sb_key[u].size(); ++i) {
+                auto k = sb_key[u][i];
+                auto d = aj - k;
+                auto cov = z3::ult(bv(i, 8), sb_cnt[u]) && k.extract(63, 63) == c.bv_val(0, 1) && z3::uge(aj, k) &&
+                           z3::ult(d, z3::zext(sb_nb[u][i], 56));
+                b = z3::ite(cov, z3::lshr(sb_val[u][i], d * bv(8, 64)).extract(7, 0), b);
+            }
+            r = j == 0 ? b : z3::concat(b, r);
+        }
+        return w < nb * 8 ? r.extract(w - 1, 0) : r;
     }
     // the newest buffered value for key, else `mem`
     z3::expr sb_forward(std::size_t u, const z3::expr& key, const z3::expr& mem) {
@@ -913,7 +964,13 @@ struct Enc {
     }
 
     // ---- C11 view model -------------------------------------------------
-    z3::expr vmax(const z3::expr& a, const z3::expr& b) { return z3::ite(z3::ugt(b, a), b, a); }
+    z3::expr vmax(const z3::expr& a, const z3::expr& b) {
+        if (a.get_sort().is_array()) {  // the memory entry: pointwise
+            auto x = c.bv_const(("vx!" + std::to_string(fresh++)).c_str(), 64);
+            return z3::lambda(x, vmax(z3::select(a, x), z3::select(b, x)));
+        }
+        return z3::ite(z3::ugt(b, a), b, a);
+    }
     View vjoin(const View& a, const View& b) {
         View r;
         for (std::size_t i = 0; i < a.size(); ++i) r.push_back(vmax(a[i], b[i]));
@@ -922,7 +979,11 @@ struct Enc {
     void vset(View& d, const z3::expr& e, const View& v) {
         for (std::size_t i = 0; i < d.size(); ++i) d[i] = z3::ite(e, v[i], d[i]);
     }
-    View vzero() { return View(NC, c.bv_val(0, 16)); }
+    View vzero() {
+        View v(NC, c.bv_val(0, 16));
+        if (memv) v.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        return v;
+    }
     std::size_t clk(std::size_t u) { return nA + u; }
     static bool acq(int o) { return o == 1 || o == 3 || o == 4; }
     static bool rel(int o) { return o == 2 || o == 3 || o == 4; }
@@ -940,6 +1001,12 @@ struct Enc {
                 aidx[static_cast<std::size_t>(o.var)] < 0)
                 aidx[static_cast<std::size_t>(o.var)] = static_cast<int>(nA++);
         NC = nA + N;
+        for (const auto& o : p.ops)
+            if (o.mem && o.atomic && ((o.order >= 0 && o.order < 4) || (o.cas && o.order_fail >= 0 && o.order_fail < 4)))
+                memv = true;
+        MV = NC;
+        VS = NC + (memv ? 1 : 0);
+        scv.assign(1, vzero());
         cur.assign(N, vzero());
         acqv.assign(N, vzero());
         relv.assign(N, vzero());
@@ -969,9 +1036,47 @@ struct Enc {
             }
         mview.assign(p.mutexes.size(), vzero());
         svar.assign(p.vars.size(), vzero());
-        for (std::size_t i = 0; i < NC; ++i) {
-            mviewA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
-            svA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        {
+            auto z = vzero();
+            for (std::size_t i = 0; i < VS; ++i) {
+                mviewA.push_back(z3::const_array(c.bv_sort(64), z[i]));
+                svA.push_back(z3::const_array(c.bv_sort(64), z[i]));
+            }
+            relxM.assign(N, {});
+            for (auto& r : relxM)
+                for (std::size_t i = 0; i < VS; ++i) r.push_back(z3::const_array(c.bv_sort(64), z[i]));
+        }
+        Wa.assign(p.vars.size(), std::vector<z3::expr>(N, c.bv_val(0, 16)));
+        Ra.assign(p.vars.size(), std::vector<z3::expr>(N, c.bv_val(0, 16)));
+        for (std::size_t u = 0; u < N; ++u) {
+            WaA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+            RaA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        }
+        Pts = z3::const_array(c.bv_sort(64), c.bv_val(0, 16));
+        mrd_val = c.bv_val(0, 64);
+        if (memv) {  // memory messages: one per atomic store / RMW site execution; plain stores get a timestamp
+            z3::expr_vector all(c);
+            for (auto& ms : msgs)
+                for (auto& m : ms)
+                    if (!m.ts.is_numeral()) all.push_back(m.ts);
+            for (std::size_t t = 0; t < N; ++t)
+                for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                    int h = g[t].nodes[nd].head;
+                    if (h < 0) continue;
+                    const auto& o = p.ops[static_cast<std::size_t>(h)];
+                    if (!o.mem || (o.kind != VisOp::Store && o.kind != VisOp::Rmw)) continue;
+                    auto ts = fresh_bv("mts", 16);
+                    hard.push_back(z3::ugt(ts, c.bv_val(0, 16)) && z3::ult(ts, c.bv_val(0x4000, 16)));
+                    all.push_back(ts);
+                    std::pair<int, int> key{static_cast<int>(t), static_cast<int>(nd)};
+                    if (o.atomic) {
+                        mmsg_of[key] = mmsgs.size();
+                        mmsgs.push_back({c.bv_val(0, 64), ts, c.bool_val(false), c.bv_val(0, 64), vzero()});
+                    } else {
+                        pts_of.insert({key, ts});
+                    }
+                }
+            if (all.size() > 1) hard.push_back(z3::distinct(all));
         }
         Wt.assign(p.vars.size(), c.bv_val(0, 8));
         Wc.assign(p.vars.size(), c.bv_val(0, 16));
@@ -991,14 +1096,22 @@ struct Enc {
         return r;
     }
 
+    // A non-atomic access races with any conflicting access it is not
+    // ordered with; an atomic one only with non-atomic accesses. wt / wc / rc:
+    // the last non-atomic write and reads; wa / ra (non-atomic accesses
+    // only): each thread's last atomic write / read clock.
     void hb_race(int t, const z3::expr& e, const VisOp& o, bool write, const z3::expr& wt, const z3::expr& wc,
-                 const std::vector<z3::expr>& rc, const std::string& what) {
+                 const std::vector<z3::expr>& rc, const std::string& what, const std::vector<z3::expr>* wa = nullptr,
+                 const std::vector<z3::expr>* ra = nullptr) {
         const auto ti = static_cast<std::size_t>(t);
         auto tid = bv(ti + 1, 8);
         z3::expr conflict = wt != bv(0, 8) && wt != tid && z3::ugt(wc, clock_of(ti, wt));
-        if (write)
-            for (std::size_t u = 0; u < p.threads.size(); ++u)
-                if (u != ti) conflict = conflict || z3::ugt(rc[u], cur[ti][clk(u)]);
+        for (std::size_t u = 0; u < p.threads.size(); ++u) {
+            if (u == ti) continue;
+            if (write) conflict = conflict || z3::ugt(rc[u], cur[ti][clk(u)]);
+            if (wa) conflict = conflict || z3::ugt((*wa)[u], cur[ti][clk(u)]);
+            if (ra && write) conflict = conflict || z3::ugt((*ra)[u], cur[ti][clk(u)]);
+        }
         VRec v{ok && e && conflict,
                "race",
                "CONC-DATA-RACE",
@@ -1014,11 +1127,18 @@ struct Enc {
         viols.push_back(std::move(v));
     }
 
-    // a non-atomic access to a scalar global outside A
+    // the race check of an access to a scalar global (atomic or not)
     void hb_scalar(int t, const z3::expr& e, const VisOp& o, bool write) {
         const auto v = static_cast<std::size_t>(o.var);
         const auto ti = static_cast<std::size_t>(t);
-        hb_race(t, e, o, write, Wt[v], Wc[v], Rc[v], p.vars[v].name);
+        if (o.atomic) {
+            hb_race(t, e, o, write, Wt[v], Wc[v], Rc[v], p.vars[v].name);
+            auto now = cur[ti][clk(ti)];
+            if (o.kind != VisOp::Load) Wa[v][ti] = z3::ite(e, now, Wa[v][ti]);
+            if (o.kind != VisOp::Store) Ra[v][ti] = z3::ite(e, now, Ra[v][ti]);
+            return;
+        }
+        hb_race(t, e, o, write, Wt[v], Wc[v], Rc[v], p.vars[v].name, &Wa[v], &Ra[v]);
         if (write) {
             Wt[v] = z3::ite(e, bv(ti + 1, 8), Wt[v]);
             Wc[v] = z3::ite(e, cur[ti][clk(ti)], Wc[v]);
@@ -1032,7 +1152,19 @@ struct Enc {
         std::vector<z3::expr> rc;
         for (auto& x : RcA) rc.push_back(z3::select(x, a));
         auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
-        hb_race(t, e, o, write, z3::select(WtA, a), z3::select(WcA, a), rc, what);
+        if (o.atomic) {
+            hb_race(t, e, o, write, z3::select(WtA, a), z3::select(WcA, a), rc, what);
+            auto now = cur[ti][clk(ti)];
+            if (o.kind != VisOp::Load) WaA[ti] = z3::ite(e, z3::store(WaA[ti], a, now), WaA[ti]);
+            if (o.kind != VisOp::Store) RaA[ti] = z3::ite(e, z3::store(RaA[ti], a, now), RaA[ti]);
+            return;
+        }
+        std::vector<z3::expr> wa, ra;
+        for (std::size_t u = 0; u < p.threads.size(); ++u) {
+            wa.push_back(z3::select(WaA[u], a));
+            ra.push_back(z3::select(RaA[u], a));
+        }
+        hb_race(t, e, o, write, z3::select(WtA, a), z3::select(WcA, a), rc, what, &wa, &ra);
         if (write) {
             WtA = z3::ite(e, z3::store(WtA, a, bv(ti + 1, 8)), WtA);
             WcA = z3::ite(e, z3::store(WcA, a, cur[ti][clk(ti)]), WcA);
@@ -1055,7 +1187,7 @@ struct Enc {
             if (j == 0) continue;
             val = z3::ite(pick, ms[j].val, val);
             ts = z3::ite(pick, ms[j].ts, ts);
-            for (std::size_t i = 0; i < NC; ++i) view[i] = z3::ite(pick, ms[j].view[i], view[i]);
+            for (std::size_t i = 0; i < VS; ++i) view[i] = z3::ite(pick, ms[j].view[i], view[i]);
         }
         ok = ok && z3::implies(e, can);
         cur[ti][a] = z3::ite(e, vmax(cur[ti][a], ts), cur[ti][a]);
@@ -1089,6 +1221,53 @@ struct Enc {
         vset(m.view, e, mv);
     }
 
+    // memory: read a message at address a (w bits) at or above thread t's
+    // view; message 0 is the plain value in M (timestamp Pts[a], no view)
+    z3::expr read_mmsg(int t, const z3::expr& e, const z3::expr& a, unsigned w) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto idx = fresh_bv("mrf", 16);
+        auto curA = z3::select(cur[ti][MV], a);
+        auto pv = mload(M, a, w);
+        z3::expr val = w < 64 ? z3::zext(pv, 64 - w) : pv;
+        z3::expr ts = z3::select(Pts, a);
+        z3::expr can = idx == bv(0, 16) && z3::uge(ts, curA);
+        View view = vzero();
+        for (std::size_t j = 0; j < mmsgs.size(); ++j) {
+            auto& m = mmsgs[j];
+            auto pick = idx == bv(j + 1, 16);
+            can = can || (pick && m.used && m.addr == a && z3::uge(m.ts, curA));
+            val = z3::ite(pick, m.val, val);
+            ts = z3::ite(pick, m.ts, ts);
+            for (std::size_t i = 0; i < VS; ++i) view[i] = z3::ite(pick, m.view[i], view[i]);
+        }
+        ok = ok && z3::implies(e, can);
+        cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], a, vmax(curA, ts)), cur[ti][MV]);
+        rd_ts = ts;
+        rd_view = view;
+        return val;
+    }
+
+    void write_mmsg(int t, int node, const z3::expr& e, const z3::expr& a, int ord, const z3::expr& nv, unsigned w,
+                    std::optional<View> from) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto& m = mmsgs.at(mmsg_of.at({t, node}));
+        cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], a, m.ts), cur[ti][MV]);
+        View mv = cur[ti];
+        if (rel(ord)) {
+            for (std::size_t i = 0; i < VS; ++i) relxM[ti][i] = z3::ite(e, z3::store(relxM[ti][i], a, cur[ti][i]), relxM[ti][i]);
+        } else {
+            View rx;
+            for (std::size_t i = 0; i < VS; ++i) rx.push_back(z3::select(relxM[ti][i], a));
+            mv = vjoin(relv[ti], rx);
+            mv[MV] = z3::store(mv[MV], a, m.ts);
+        }
+        if (from) mv = vjoin(mv, *from);
+        m.used = m.used || e;
+        m.addr = z3::ite(e, a, m.addr);
+        m.val = z3::ite(e, w < 64 ? z3::zext(nv, 64 - w) : nv, m.val);
+        vset(m.view, e, mv);
+    }
+
     // views at synchronisation: s = sync view (by reference), acquire / release
     void sync_acquire(std::size_t ti, const z3::expr& e, const View& s) { vset(cur[ti], e, vjoin(cur[ti], s)); }
 
@@ -1099,6 +1278,10 @@ struct Enc {
             cur[ti][clk(ti)] = z3::ite(e, cur[ti][clk(ti)] + bv(1, 16), cur[ti][clk(ti)]);
         if (o.kind == VisOp::Fence) {
             if (acq(o.order)) vset(cur[ti], e, vjoin(cur[ti], acqv[ti]));
+            if (o.order == 4) {  // seq_cst fence: the fences' total order carries the SC view (RC11 psc_F)
+                vset(cur[ti], e, vjoin(cur[ti], scv[0]));
+                vset(scv[0], e, cur[ti]);
+            }
             if (rel(o.order)) vset(relv[ti], e, cur[ti]);
             return false;
         }
@@ -1110,17 +1293,17 @@ struct Enc {
                     vset(svar[v], e, vjoin(svar[v], cur[ti]));
                     return false;
                 }
-                if (!o.atomic) {
-                    hb_scalar(t, e, o, o.kind != VisOp::Load);
-                } else {
+                hb_scalar(t, e, o, o.kind != VisOp::Load);
+                if (o.atomic) {
                     if (o.kind != VisOp::Store) sync_acquire(ti, e, svar[v]);
                     if (o.kind == VisOp::Store) vset(svar[v], e, cur[ti]);
                 }
                 return false;  // the value is the SC one (G)
             }
             const auto a = static_cast<std::size_t>(ai);
-            const int ord = o.atomic ? o.order : 0;  // a plain access to an atomic location: relaxed
+            const int ord = o.atomic ? o.order : 0;  // a plain access to an atomic location: relaxed (race-checked)
             auto& m = msgs[a];
+            if (!mk.tail) hb_scalar(t, e, o, o.kind != VisOp::Load);
             if (o.kind == VisOp::Load) {
                 auto val = read_msg(t, e, a);
                 read_sync(ti, e, ord);
@@ -1160,11 +1343,51 @@ struct Enc {
         }
         if (o.mem && (o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw)) {
             if (mk.read) return false;
+            if (memv) {
+                const int ord = o.atomic ? o.order : 0;
+                if (!mk.tail) {
+                    auto a = lookup(t, node, s.args.at(0));
+                    hb_mem(t, e, o, o.kind != VisOp::Load, a);
+                    if (o.kind != VisOp::Store) {
+                        mrd_val = read_mmsg(t, e, a, o.width);
+                        cas_ok = c.bool_val(true);
+                        if (o.kind == VisOp::Load) read_sync(ti, e, ord);
+                    }
+                    return false;  // the common code checks the address and records the head
+                }
+                if (o.kind == VisOp::Load) {
+                    define(t, node, s.dst, e, o.width < 64 ? mrd_val.extract(o.width - 1, 0) : mrd_val);
+                    return true;
+                }
+                auto nv = lookup(t, node, s.args.at(0));
+                if (o.kind == VisOp::Store && !o.atomic) {  // plain: M, with a timestamp above the view
+                    auto ts = pts_of.at({t, node});
+                    auto curA = z3::select(cur[ti][MV], maddr);
+                    ok = ok && z3::implies(e, z3::ugt(ts, curA));
+                    Pts = z3::ite(e, z3::store(Pts, maddr, ts), Pts);
+                    cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], maddr, ts), cur[ti][MV]);
+                    return false;  // the common code writes M
+                }
+                if (o.kind == VisOp::Store) {
+                    auto& msg = mmsgs.at(mmsg_of.at({t, node}));
+                    ok = ok && z3::implies(e, z3::ugt(msg.ts, z3::select(cur[ti][MV], maddr)));
+                    write_mmsg(t, node, e, maddr, ord, nv, o.width, std::nullopt);
+                    define(t, node, s.dst, e, nv);
+                    return true;
+                }
+                auto succ = e && cas_ok;
+                if (o.cas) read_sync(ti, e && !cas_ok, o.order_fail);
+                read_sync(ti, succ, o.order);
+                auto& msg = mmsgs.at(mmsg_of.at({t, node}));
+                ok = ok && z3::implies(succ, msg.ts == rd_ts + bv(1, 16));
+                write_mmsg(t, node, succ, maddr, o.order, nv, o.width, rd_view);
+                define(t, node, s.dst, e, nv);
+                return true;
+            }
             if (!mk.tail) {
                 auto a = lookup(t, node, s.args.at(0));
-                if (!o.atomic) {
-                    hb_mem(t, e, o, o.kind != VisOp::Load, a);
-                } else if (o.kind != VisOp::Store) {
+                hb_mem(t, e, o, o.kind != VisOp::Load, a);
+                if (o.atomic && o.kind != VisOp::Store) {
                     View sv;
                     for (auto& x : svA) sv.push_back(z3::select(x, a));
                     sync_acquire(ti, e, sv);
@@ -1172,7 +1395,7 @@ struct Enc {
                 return false;
             }
             if (o.atomic && o.kind != VisOp::Load)
-                for (std::size_t i = 0; i < NC; ++i) {
+                for (std::size_t i = 0; i < VS; ++i) {
                     auto old = z3::select(svA[i], maddr);
                     auto nw = o.kind == VisOp::Rmw ? vmax(old, cur[ti][i]) : cur[ti][i];
                     svA[i] = z3::ite(e, z3::store(svA[i], maddr, nw), svA[i]);
@@ -1190,7 +1413,7 @@ struct Enc {
             return v;
         };
         auto arr_set = [&](const z3::expr& a, const z3::expr& when) {
-            for (std::size_t i = 0; i < NC; ++i) mviewA[i] = z3::ite(when, z3::store(mviewA[i], a, cur[ti][i]), mviewA[i]);
+            for (std::size_t i = 0; i < VS; ++i) mviewA[i] = z3::ite(when, z3::store(mviewA[i], a, cur[ti][i]), mviewA[i]);
         };
         switch (o.kind) {
             case VisOp::Lock:
@@ -1226,8 +1449,8 @@ struct Enc {
             return;
         }
         if (mk.read) {  // bounded-memory RMW: the old value at the head's address
-            auto word = z3::select(M, maddr);
-            define(t, node, s.dst, e, o.width < 64 ? word.extract(o.width - 1, 0) : word);
+            define(t, node, s.dst, e,
+                   memv ? (o.width < 64 ? mrd_val.extract(o.width - 1, 0) : mrd_val) : mload(M, maddr, o.width));
             return;
         }
         if (vw) {
@@ -1259,11 +1482,10 @@ struct Enc {
             const auto ti = static_cast<std::size_t>(t);
             if (o.kind == VisOp::Store) {
                 auto nv = lookup(t, node, s.args.at(0));
-                sb_push(ti, e, maddr, o.width < 64 ? z3::zext(nv, 64 - o.width) : nv);
+                sb_push(ti, e, maddr, o.width < 64 ? z3::zext(nv, 64 - o.width) : nv, nbytes(o.width));
                 define(t, node, s.dst, e, nv);
             } else {
-                auto word = sb_forward(ti, maddr, z3::select(M, maddr));
-                define(t, node, s.dst, e, o.width < 64 ? word.extract(o.width - 1, 0) : word);
+                define(t, node, s.dst, e, sb_forward_mem(ti, maddr, o.width));
             }
             return;
         }
@@ -1301,12 +1523,10 @@ struct Enc {
             }
             if (o.kind != VisOp::Load) {  // store, or the write of a read-modify-write
                 auto nv = lookup(t, node, s.args.at(0));
-                auto word = o.width < 64 ? z3::zext(nv, 64 - o.width) : nv;
-                M = z3::ite(e, z3::store(M, maddr, word), M);
+                M = z3::ite(e, mstore(M, maddr, nv, o.width), M);
                 define(t, node, s.dst, e, nv);
             } else {
-                auto word = z3::select(M, maddr);
-                define(t, node, s.dst, e, o.width < 64 ? word.extract(o.width - 1, 0) : word);
+                define(t, node, s.dst, e, mload(M, maddr, o.width));
             }
             return;
         }
@@ -1440,7 +1660,7 @@ struct Enc {
                     auto& a = active[static_cast<std::size_t>(u)];
                     a = a || e;
                     auto h = lookup(t, node, s.args.at(0));
-                    M = z3::ite(e, z3::store(M, h, c.bv_val(static_cast<uint64_t>(u), 64)), M);
+                    M = z3::ite(e, mstore(M, h, c.bv_val(static_cast<uint64_t>(u), 64), 64), M);
                     define(t, node, s.dst, e, h);
                     touch(t, e, mk.op, -1, false, false);
                     return;
@@ -1749,7 +1969,8 @@ struct Enc {
         for (auto& v : p.vars) G.push_back(bv(v.init, v.width));
         for (std::size_t k = 0; k < p.objects.size(); ++k)
             for (auto& in : p.objects[k].init)
-                M = z3::store(M, c.bv_val(((static_cast<uint64_t>(k) + 1) << 32) | in.off, 64), c.bv_val(in.bits, 64));
+                M = mstore(M, c.bv_val(((static_cast<uint64_t>(k) + 1) << 32) | in.off, 64), bv(in.bits, in.w ? in.w : 64),
+                           in.w ? in.w : 64);
         for (std::size_t m = 0; m < p.mutexes.size(); ++m) owner.push_back(bv(0, 8));
         for (std::size_t k = 0; k < p.conds.size(); ++k) cgen.push_back(bv(0, 16));
         ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
@@ -1758,9 +1979,11 @@ struct Enc {
             sb_cnt.push_back(c.bv_val(0, 8));
             sb_key.emplace_back();
             sb_val.emplace_back();
+            sb_nb.emplace_back();
             for (int i = 0; i < std::max(1, opt.tso_buffer); ++i) {
                 sb_key.back().push_back(c.bv_val(0, 64));
                 sb_val.back().push_back(c.bv_val(0, 64));
+                sb_nb.back().push_back(c.bv_val(8, 8));
             }
             tkd.push_back(c.bv_val(0, 16));
             pc.push_back(c.bv_val(0, 16));
