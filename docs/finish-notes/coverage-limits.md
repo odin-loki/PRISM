@@ -167,6 +167,36 @@ below.
   argument reduction + Taylor series at W digits, W = 40, 60, 100, ...
   until rounding r-err and r+err to 34 digits agree; the other functions
   derive from exp/log/sin/cos with their own exact cases.
+  Session 10 (written; compile-checked only):
+  - CLOSED (unverified), item 6: when the shim fails, stage.cpp
+    `dfp_split` cuts the unit at file scope (string/comment aware, K&R
+    heads recognised): function definitions using a decimal type, literal
+    or FENV_DEC (or calling such a function, to a fixpoint) go to
+    <unit>.split.cpp lowered against the shim; the rest stays C (K&R,
+    reordered designators, [static N], VLAs compile as C). Both sides get
+    types and prototypes; non-decimal objects are defined on the C side
+    and declared extern on the C++ side; the two IR modules are joined
+    with llvm-link (next to clang). Limits: a file-scope static object
+    used on both sides is duplicated; a multi-declarator initialised
+    declaration becomes extern for its first declarator only; a decimal
+    function whose own body needs a C-only construct still fails.
+  - CLOSED (unverified), item 4: models/cxx/prism_dfp_mp.hpp, a
+    base-1e9 multi-limb decimal float (no C++ library headers) and Ziv's
+    loop (W = P+30, doubling to a cap; digits after P+1 minus a 12-digit
+    margin and cancellation losses must be neither all 0 nor all 9;
+    result rounded via a sticky digit by _S_make in the current FE_DEC
+    mode). Correctly rounded for all three formats: exp, exp2, exp10,
+    expm1, log, log2, log10, log1p, sin, cos, tan (reduction with
+    exponent-sized pi), asin, acos, atan, atan2, sinh, cosh, tanh, cbrt,
+    hypot, pow (finite x > 0). Exact cases are taken as exact at the cap
+    (exp10 and log10 of powers of ten are exact up front); tiny arguments
+    round x (or 1) nudged by the sign of the first dropped term.
+    Still long double: erf, erfc, tgamma, lgamma; pow with x <= 0 or
+    non-finite arguments (exact special values); tanh of huge |x| returns
+    +-1 as exact (it is just inside 1: wrong under FE_DEC_TOWARDZERO /
+    the mode toward zero).
+  Still open after session 10: item 1 (not written), and the item-4
+  remainders listed above.
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route

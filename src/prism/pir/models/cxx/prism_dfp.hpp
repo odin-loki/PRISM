@@ -499,6 +499,7 @@ template <typename _D> inline _D _fmod(_D __x, _D __y) {
     return _Wt<_D>::_S_make(__ca % __cb, __e);
 }
 template <typename _D> inline _D _ld(long double __v) { char __s[64]; snprintf(__s, sizeof __s, "%.21Le", __v); if (__v != __v) return _Wt<_D>::_S_nan(); if (__v - __v != 0) return _Wt<_D>::_S_inf(__v < 0); bool __n = __s[0] == '-'; return __n ? -__prism_dfp_parse<_D>(__s + 1) : __prism_dfp_parse<_D>(__s); }
+#include "prism_dfp_mp.hpp"
 }  // namespace __prism_dfpm
 
 #define __PRISM_DFPM(T, S)                                                                         \
@@ -533,14 +534,33 @@ template <typename _D> inline _D _ld(long double __v) { char __s[64]; snprintf(_
     inline long long llquantexp##S(T __x) { return __prism_dfpm::_llqexp(__x); }                    \
     inline T nextup##S(T __x) { auto __w = __x._M_w(); if (__w._M_k) return __x; int __o = __prism_dfp_rnd; __prism_dfp_rnd = FE_DEC_UPWARD; T __r = T::_W::_S_make(__w._M_c * 10 + 1, __w._M_e - 1); __prism_dfp_rnd = __o; return __r; } \
     inline T nextdown##S(T __x) { return -nextup##S(-__x); }                                        \
-    __PRISM_DFPM_LD1(T, S, exp) __PRISM_DFPM_LD1(T, S, exp2) __PRISM_DFPM_LD1(T, S, expm1)        \
-    __PRISM_DFPM_LD1(T, S, log) __PRISM_DFPM_LD1(T, S, log2) __PRISM_DFPM_LD1(T, S, log10)        \
-    __PRISM_DFPM_LD1(T, S, log1p) __PRISM_DFPM_LD1(T, S, sin) __PRISM_DFPM_LD1(T, S, cos)         \
-    __PRISM_DFPM_LD1(T, S, tan) __PRISM_DFPM_LD1(T, S, asin) __PRISM_DFPM_LD1(T, S, acos)         \
-    __PRISM_DFPM_LD1(T, S, atan) __PRISM_DFPM_LD1(T, S, sinh) __PRISM_DFPM_LD1(T, S, cosh)        \
-    __PRISM_DFPM_LD1(T, S, tanh) __PRISM_DFPM_LD1(T, S, cbrt) __PRISM_DFPM_LD1(T, S, erf)         \
-    __PRISM_DFPM_LD1(T, S, erfc) __PRISM_DFPM_LD1(T, S, tgamma) __PRISM_DFPM_LD1(T, S, lgamma)    \
-    __PRISM_DFPM_LD2(T, S, pow) __PRISM_DFPM_LD2(T, S, atan2) __PRISM_DFPM_LD2(T, S, hypot)
+    __PRISM_DFPM_CR1(T, S, exp, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_mp_tiny(__x, 1) ? __prism_dfpm::_mp_nudge(T(1), __x < T(0) ? -1 : 1) : __prism_dfpm::_cr_exp(__x, 0, false))) \
+    __PRISM_DFPM_CR1(T, S, exp2, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_cr_exp(__x, 2, false))) \
+    __PRISM_DFPM_CR1(T, S, exp10, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_cr_exp(__x, 10, false))) \
+    __PRISM_DFPM_CR1(T, S, expm1, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 1) ? __prism_dfpm::_mp_nudge(__x, __x < T(0) ? -1 : 1) : __prism_dfpm::_cr_exp(__x, 0, true))) \
+    __PRISM_DFPM_CR1(T, S, log, (__prism_dfpm::_cr_log(__x, 0, false))) \
+    __PRISM_DFPM_CR1(T, S, log2, (__prism_dfpm::_cr_log(__x, 2, false))) \
+    __PRISM_DFPM_CR1(T, S, log10, (__prism_dfpm::_cr_log(__x, 10, false))) \
+    __PRISM_DFPM_CR1(T, S, log1p, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 1) ? __prism_dfpm::_mp_nudge(__x, __x < T(0) ? 1 : -1) : __prism_dfpm::_cr_log(__x, 0, true))) \
+    __PRISM_DFPM_CR1(T, S, sin, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : __prism_dfpm::_cr_trig(__x, 0))) \
+    __PRISM_DFPM_CR1(T, S, cos, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(T(1), -1) : __prism_dfpm::_cr_trig(__x, 1))) \
+    __PRISM_DFPM_CR1(T, S, tan, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, 1) : __prism_dfpm::_cr_trig(__x, 2))) \
+    __PRISM_DFPM_CR1(T, S, asin, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, 1) : __prism_dfpm::_cr_asin(__x, false))) \
+    __PRISM_DFPM_CR1(T, S, acos, (__prism_dfpm::_cr_asin(__x, true))) \
+    __PRISM_DFPM_CR1(T, S, atan, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : __prism_dfpm::_cr_atan(__x))) \
+    __PRISM_DFPM_CR1(T, S, sinh, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, 1) : __prism_dfpm::_cr_hyp(__x, 0))) \
+    __PRISM_DFPM_CR1(T, S, cosh, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(T(1), 1) : __prism_dfpm::_cr_hyp(__x, 1))) \
+    __PRISM_DFPM_CR1(T, S, tanh, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : __prism_dfpm::_cr_hyp(__x, 2))) \
+    __PRISM_DFPM_CR1(T, S, cbrt, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_cr_cbrt(__x))) \
+    __PRISM_DFPM_LD1(T, S, erf) __PRISM_DFPM_LD1(T, S, erfc) __PRISM_DFPM_LD1(T, S, tgamma) __PRISM_DFPM_LD1(T, S, lgamma) \
+    __PRISM_DFPM_CR2(T, S, pow, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) && __x > T(0) && !__prism_dfpm::_mp_z(__y) && __x != T(1) ? __prism_dfpm::_cr_pow(__x, __y) : __prism_dfpm::_ld<T>(::powl((long double)__x, (long double)__y)))) \
+    __PRISM_DFPM_CR2(T, S, atan2, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) && !__prism_dfpm::_mp_z(__x) && !__prism_dfpm::_mp_z(__y) ? __prism_dfpm::_cr_atan2(__y, __x) : __prism_dfpm::_ld<T>(::atan2l((long double)__y, (long double)__x)))) \
+    __PRISM_DFPM_CR2(T, S, hypot, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) ? __prism_dfpm::_cr_hypot(__x, __y) : __prism_dfpm::_ld<T>(::hypotl((long double)__x, (long double)__y))))
+// finite arguments go to the correctly rounded MP path; inf/nan to libm,
+// whose results there are exact (inf, nan, 0, +-1, +-pi/2 handled by C's
+// special cases)
+#define __PRISM_DFPM_CR1(T, S, F, E) inline T F##S(T __x) { if (!__prism_dfpm::_mp_fin(__x)) return __prism_dfpm::_ld<T>(::F##l((long double)__x)); return E; }
+#define __PRISM_DFPM_CR2(T, S, F, E) inline T F##S(T __x, T __y) { return E; }
 #define __PRISM_DFPM_LD1(T, S, F) inline T F##S(T __x) { return __prism_dfpm::_ld<T>(::F##l((long double)__x)); }
 #define __PRISM_DFPM_LD2(T, S, F) inline T F##S(T __x, T __y) { return __prism_dfpm::_ld<T>(::F##l((long double)__x, (long double)__y)); }
 __PRISM_DFPM(__prism_dec32, d32)
@@ -549,6 +569,8 @@ __PRISM_DFPM(__prism_dec128, d128)
 #undef __PRISM_DFPM
 #undef __PRISM_DFPM_LD1
 #undef __PRISM_DFPM_LD2
+#undef __PRISM_DFPM_CR1
+#undef __PRISM_DFPM_CR2
 // type-generic classification (<math.h> macros are functions in C++)
 #define __PRISM_DFPC(T)                                                                            \
     inline bool (isnan)(T __x) { return __x._M_w()._M_k == 2; }                                       \
