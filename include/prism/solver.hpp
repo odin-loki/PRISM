@@ -56,7 +56,6 @@ struct ExternalSolver {
 //         is written into the note and the certificate_info.
 // Plain (uncertified) requests use Z3's tactics unless Lean is forced.
 enum class Bitblaster { Auto, Lean, Z3 };
-std::string_view bitblaster_name(Bitblaster b);
 
 struct SolveOptions {
     double timeout_s = 30.0;

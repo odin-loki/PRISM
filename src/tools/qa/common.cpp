@@ -1,4 +1,5 @@
 #include "qa.hpp"
+#include "prism/settings.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -50,7 +51,7 @@ std::optional<fs::path> find_prism(const std::string& explicit_bin, const fs::pa
         if (executable(explicit_bin)) return fs::absolute(explicit_bin);
         return std::nullopt;
     }
-    if (const char* e = std::getenv("PRISM_BIN"); e && *e) cands.emplace_back(e);
+    if (const char* e = prism::settings::cstr(prism::settings::bin()); e && *e) cands.emplace_back(e);
     if (auto d = self_dir(); !d.empty()) {
         cands.push_back(d / "prism.exe");
         cands.push_back(d / "prism");

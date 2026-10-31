@@ -29,6 +29,7 @@
 // available), never code from elsewhere.
 
 #include "prism/exit.hpp"
+#include "prism/settings.hpp"
 #include "prism/log.hpp"
 #include "gen_random.hpp"
 #include "prism/laws.hpp"
@@ -192,7 +193,7 @@ int soundness_main(const std::vector<std::string>& argv) {
     struct Cleanup {
         fs::path p;
         ~Cleanup() {
-            if (std::getenv("PRISM_CONF_KEEP")) {
+            if (prism::settings::cstr(prism::settings::conf_keep())) {
                 prism::log::plain(prism::log::cat("work dir kept: ", p.string(), "\n"));
             } else {
                 std::error_code e;

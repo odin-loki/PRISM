@@ -27,15 +27,6 @@ namespace fs = std::filesystem;
 
 namespace prism::solver {
 
-std::string_view bitblaster_name(Bitblaster b) {
-    switch (b) {
-        case Bitblaster::Lean: return "lean";
-        case Bitblaster::Z3: return "z3";
-        case Bitblaster::Auto: break;
-    }
-    return "auto";
-}
-
 namespace {
 
 using prism::i128;

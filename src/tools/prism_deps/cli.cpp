@@ -1,5 +1,6 @@
 // prism-deps command line (see deps.hpp for the commands and exit codes).
 #include "prism/exit.hpp"
+#include "prism/settings.hpp"
 #include "prism/log.hpp"
 #include "prism/deps.hpp"
 
@@ -181,7 +182,7 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
     }
     if (cmd == "sbom") {
         std::string v = version ? *version : [] {
-            const char* e = std::getenv("PRISM_VERSION");
+            const char* e = prism::settings::cstr(prism::settings::version());
             return std::string(e ? e : "0.0.0-dev");
         }();
         std::string text;

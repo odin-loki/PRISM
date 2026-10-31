@@ -1315,12 +1315,6 @@ std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const
     return out;
 }
 
-bool tu_is_empty(const std::filesystem::path& path) {
-    auto ext = to_lower(path.extension().string());
-    if (!is_tu_ext(ext)) return false;
-    return extract_functions(path).empty();
-}
-
 std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root) {
     std::vector<std::filesystem::path> files;
     if (std::filesystem::is_regular_file(root)) return {root};

@@ -57,6 +57,7 @@
 // pinned Juliet archive, whose hash is checked) is ever compiled and run.
 
 #include "prism/exit.hpp"
+#include "prism/settings.hpp"
 #include "prism/log.hpp"
 #include "prism/membudget.hpp"
 #include "support/cli.hpp"
@@ -117,7 +118,7 @@ fs::path make_work_dir(const std::string& prefix) {
 struct WorkDir {
     fs::path path;
     ~WorkDir() {
-        if (std::getenv("PRISM_CONF_KEEP")) {
+        if (prism::settings::cstr(prism::settings::conf_keep())) {
             prism::log::plain(prism::log::cat("work dir kept: ", path.string(), "\n"));
         } else {
             std::error_code ec;
@@ -309,7 +310,7 @@ int conformance_main(const std::vector<std::string>& argv) {
             // Under prism-run the tree is killed at 1.25x its budget, and one PRISM run can
             // overshoot its own budget by ~30% before the stop lands (libc conf4: 3883 MB tree
             // with 3000 MB): give each run 3/4 of its share.
-            if (std::getenv("PRISM_MEM_BUDGET_MB")) per = std::max<uint64_t>(512, avail * 3 / 4 / static_cast<uint64_t>(jobs));
+            if (prism::settings::cstr(prism::settings::mem_budget_mb())) per = std::max<uint64_t>(512, avail * 3 / 4 / static_cast<uint64_t>(jobs));
 #ifdef _WIN32
             _putenv_s("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str());
 #else

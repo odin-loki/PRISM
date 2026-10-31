@@ -42,7 +42,6 @@ struct Type {
     unsigned bits = 0;         // Int width
     std::string text;          // as written ("i32", "{ i32, i1 }", "double")
     std::vector<Type> elems;   // Struct / Array / Vector element types
-    bool is_int() const { return kind == Int; }
 };
 
 struct Operand;

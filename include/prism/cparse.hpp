@@ -57,6 +57,5 @@ PRISM_API std::vector<std::pair<int, std::string>> parse_gaps_from_text(std::str
 // parse_gaps as inventory records: NOTRUN, cls PARSE-GAP, one per gap.
 PRISM_API std::vector<Finding> parse_gap_findings(const std::filesystem::path& path,
                                                   const std::string& rel);
-PRISM_API bool tu_is_empty(const std::filesystem::path& path);
 
 }  // namespace prism

@@ -37,6 +37,12 @@ inline const auto& solver_predict() { static auto s = fs::define("PRISM_SOLVER_P
 inline const auto& solver_model() { static auto s = fs::define("PRISM_SOLVER_MODEL", "", "solver predictor model override"); return s; }
 inline const auto& cert_cache_max() { static auto s = fs::define("PRISM_CERT_CACHE_MAX", "", "certificate cache size cap"); return s; }
 
+inline const auto& bin() { static auto s = fs::define("PRISM_BIN", "", "prism binary used by the QA tools"); return s; }
+inline const auto& function_budget() { static auto s = fs::define("PRISM_FUNCTION_BUDGET", "", "per-function solver budget (s)"); return s; }
+inline const auto& conf_keep() { static auto s = fs::define("PRISM_CONF_KEEP", "", "keep QA work directories"); return s; }
+inline const auto& mem_budget_mb() { static auto s = fs::define("PRISM_MEM_BUDGET_MB", "", "memory budget per run (MB)"); return s; }
+inline const auto& version() { static auto s = fs::define("PRISM_VERSION", "", "version string for prism-deps packaging"); return s; }
+
 // The raw value as getenv gives it (nullptr when unset), for callers that keep
 // their own parsing. The name must be defined above (FORGE's registry lists it).
 inline const char* cstr(const fs::setting<std::string>& s) { return s.is_set() ? std::getenv(s.name().c_str()) : nullptr; }

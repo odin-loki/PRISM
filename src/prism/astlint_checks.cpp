@@ -1059,15 +1059,6 @@ bool has_bounds_guard(std::string_view var, std::string_view body) {
     return has_lower && has_upper;
 }
 
-bool atoi_index_or_size_use(std::string_view var, std::string_view text) {
-    const auto v = re_escape(var);
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\[\\s*" + v + "\\s*\\]"))) return true;
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\b(?:malloc|alloca)\\s*\\(\\s*" + v + "\\b")))
-        return true;
-    if (std::regex_search(text.begin(), text.end(), std::regex("\\bcalloc\\s*\\(\\s*" + v + "\\b"))) return true;
-    return std::regex_search(text.begin(), text.end(), std::regex("\\brealloc\\s*\\([^,]+,\\s*" + v + "\\b"));
-}
-
 const json* last_executable_stmt(const json& stmt) {
     const auto& k = kind(stmt);
     if (k == "CompoundStmt") {
