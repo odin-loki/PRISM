@@ -359,7 +359,8 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
     CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
     const std::string code = strip_comments(src);
     CHECK(has_ident(code, "monostate"));
-    for (const char* name : {"visit", "swap", "bad_variant_access", "hash", "in_place"}) {
+    CHECK(has_ident(code, "visit"));  // modelled (one or more lvalue variants)
+    for (const char* name : {"swap", "bad_variant_access", "hash", "in_place"}) {
         CAPTURE(name);
         CHECK_FALSE(has_ident(code, name));
     }
@@ -383,7 +384,7 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
     CHECK(code.find("#include <compare>") == std::string::npos);
 }
 
-TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against the model") {
+TEST_CASE("cxx variant model: swap and variant comparison fail against the model") {
     auto& c = ctx();
     if (!c.ok) return;
     struct Snip {
@@ -400,10 +401,6 @@ TEST_CASE("cxx variant model: visit, swap, and variant comparison fail against t
         {"swap",
          "#include <variant>\n"
          "int use(){ std::variant<int, char> a(1), b(2); a.swap(b); return std::get<int>(a); }\n"},
-        {"visit",
-         "#include <variant>\n"
-         "int use(){ std::variant<int, char> a(1);\n"
-         "  return std::visit([](auto x){ return static_cast<int>(x); }, a); }\n"},
         {"bad",
          "#include <variant>\n"
          "int use(){ std::bad_variant_access ex; (void)ex; return 0; }\n"},

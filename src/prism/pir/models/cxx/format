@@ -16,7 +16,12 @@
 // written. This header is not a proof. This is not PROVED and not CLEAN.
 //
 // Session 4 adds double/float, chrono::duration and range overloads (see
-// below). Session 5 adds std::format / format_to / formatted_size (end of file).
+// below). Session 5 adds std::format / format_to / formatted_size (end of file),
+// which return or append to std::string, so this header includes <string>.
+// Names it does not declare (std::formatter specialisations,
+// make_format_args, format_args, basic_format_string, runtime_format, the
+// wchar_t overloads) fail to compile against it, and pir then falls back to
+// libstdc++ for that unit.
 #ifndef _GLIBCXX_FORMAT
 #define _GLIBCXX_FORMAT 1
 

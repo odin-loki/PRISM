@@ -88,6 +88,21 @@ else()
   set(_prism_python3 "${_prism_z3gen}")
 endif()
 
+# Python3_EXECUTABLE is one global cache entry, so FORGE's spec codegen
+# (included before this file) also reaches z3gen. Keep the interpreter found
+# so far: z3gen forwards every script and -c snippet it does not emulate to it.
+if(Python3_EXECUTABLE AND NOT Python3_EXECUTABLE STREQUAL "${_prism_python3}" AND EXISTS "${Python3_EXECUTABLE}")
+  set(PRISM_HOST_PYTHON3 "${Python3_EXECUTABLE}" CACHE FILEPATH "host Python for non-Z3 codegen (z3gen forwards to it)" FORCE)
+endif()
+if(NOT PRISM_HOST_PYTHON3)
+  find_program(PRISM_HOST_PYTHON3 NAMES python3 python)
+endif()
+if(PRISM_HOST_PYTHON3)
+  file(WRITE "${_prism_z3gen_dir}/z3gen_python.txt" "${PRISM_HOST_PYTHON3}")
+else()
+  file(REMOVE "${_prism_z3gen_dir}/z3gen_python.txt")
+endif()
+
 set(Python3_EXECUTABLE "${_prism_python3}" CACHE FILEPATH "PRISM z3gen (no Python for Z3 codegen)" FORCE)
 set(Python3_FOUND TRUE CACHE BOOL "" FORCE)
 set(Python3_VERSION "3.11.0" CACHE STRING "" FORCE)

@@ -26,20 +26,19 @@
 // returns false: it does not allocate and it does not overwrite the stored
 // mapped object. On a missing key it constructs the mapped object from
 // those arguments in a new node and returns true. That mapped object is
-// not constructed until the key is known to be absent. This header has no
-// insert and no iterators, so try_emplace returns bool: false when the key
-// was already present, true when a node was inserted.
+// not constructed until the key is known to be absent. try_emplace returns
+// bool (false when the key was already present, true when a node was
+// inserted), not libstdc++'s pair<iterator, bool>.
 //
-// Session 4: Compare parameter (default less<Key>), sorted_unique and
-// container constructors (sorted_unique precondition CHECKED), extract() &&
-// / replace() via vector<Key>/vector<T>, transparent contains/count/at.
-// insert ranges and the rest are not declared. Omitted names
-// fail to compile against this header and pir falls back to libstdc++
-// (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
-// swap, (session 5 adds iterators, find, erase(iterator): see below)
-// the Compare / KeyContainer / MappedContainer parameters (this
-// template takes Key and T only), and any allocator other than the
-// ::operator new / ::operator delete pair above.
+// The template takes Key, T and Compare (default less<Key>); there are no
+// KeyContainer / MappedContainer parameters and no allocator other than the
+// ::operator new / ::operator delete pair above. Declared besides the above:
+// the sorted_unique and container constructors (the sorted_unique
+// precondition is CHECKED), extract() && and replace() over vector<Key> /
+// vector<T>, transparent contains/count/at, iterators (key order), find and
+// erase(iterator). Not declared: insert, insert_range, emplace, swap and the
+// rest; a use of an omitted name fails to compile against this header and
+// pir falls back to libstdc++ (extra.cxx_models).
 #ifndef _PRISM_MODEL_FLAT_MAP
 #define _PRISM_MODEL_FLAT_MAP 1
 #define _GLIBCXX_FLAT_MAP 1  // libstdc++'s <flat_map> include guard: never both
