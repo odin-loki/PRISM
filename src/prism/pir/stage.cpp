@@ -427,6 +427,20 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     if (cxx && !fe.cxx_models.empty()) {
         auto mf = fl;
         mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
+        // `import std;` (prism-llvm; merge note in FINAL_TESTS): the modelled
+        // std module (cxx/std.cppm), precompiled once per -std into the
+        // models directory. If it does not build, the unit falls back below.
+        if (source_imports_std(read_file(src))) {
+            std::string sv;
+            for (auto& f : fl)
+                if (f.starts_with("-std=")) sv = f.substr(5);
+            const auto pcm = fe.cxx_models / ("std-" + (sv.empty() ? std::string("c++23") : sv) + ".pcm");
+            std::string perr;
+            std::error_code pec;
+            if (std::filesystem::exists(pcm, pec) ||
+                build_cxx_std_module(*cc, fe.cxx_models, sv, {}, pcm, timeout_s, perr))
+                mf.push_back("-fmodule-file=std=" + pcm.string());
+        }
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), mf.begin(), mf.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});

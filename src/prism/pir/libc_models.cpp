@@ -23,6 +23,8 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <string>
+#include <thread>
 
 namespace prism::pir {
 
@@ -98,9 +100,20 @@ bool build_cxx_std_module(const std::filesystem::path& clangxx, const std::files
     std::vector<std::string> argv{clangxx.string(), "-std=" + (cxx_std.empty() ? std::string("c++23") : cxx_std),
                                   "-isystem", models_dir.string()};
     argv.insert(argv.end(), extra_flags.begin(), extra_flags.end());
-    argv.insert(argv.end(), {"-w", "--precompile", "-o", out_pcm.string(), src.string()});
+    // Lowering runs units in parallel: build to a private name, then rename
+    // (atomic on one file system), so no unit reads a half-written module.
+    static std::atomic<unsigned> seq{0};
+    const auto tmp = out_pcm.string() + ".tmp" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +
+                     "." + std::to_string(seq.fetch_add(1));
+    argv.insert(argv.end(), {"-w", "--precompile", "-o", tmp, src.string()});
     auto r = detail::run_process(argv, timeout_s);
-    if (r.failed || r.timed_out || r.rc != 0) {
+    if (!r.failed && !r.timed_out && r.rc == 0) {
+        std::filesystem::rename(tmp, out_pcm, ec);
+        if (ec) { err = "std module rename failed: " + ec.message(); return false; }
+        return true;
+    }
+    std::filesystem::remove(tmp, ec);
+    {
         err = r.timed_out ? "std module precompile timed out" : "std module precompile failed: " + r.text.substr(0, 400);
         return false;
     }

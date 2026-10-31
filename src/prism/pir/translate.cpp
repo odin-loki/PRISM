@@ -1810,6 +1810,12 @@ struct Tr final : pirmem::TrApi {
             Arg ok = arg(0);
             auto cls = mt.const_string(in.ops.at(1).v), msg = mt.const_string(in.ops.at(2).v);
             if (!cls || !msg) throw Unenc{"UNENCODED: __prism_check without literal class/message"};
+            // Thread-scheduler model classes (models/cxx/bits/prism_sched.h)
+            // onto the taxonomy: a wait/lock no schedule can satisfy is a
+            // deadlock (CWE-833, property nodeadlock); a std::thread destroyed
+            // or move-assigned while joinable calls std::terminate.
+            if (*cls == "CXX-DEADLOCK") cls = std::string("CONC-DEADLOCK");
+            else if (*cls == "CXX-THREAD-JOINABLE") cls = std::string("CXX-TERMINATE");
             check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
             return;
         }

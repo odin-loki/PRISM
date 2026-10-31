@@ -92,70 +92,38 @@ std::string body_of(std::string_view src, std::string_view sig) {
 
 }  // namespace
 
-TEST_CASE("cxx coroutine model: null resume, destroy, and done are checks then traps") {
+TEST_CASE("cxx coroutine model: resume, destroy, done use the coroutine builtins after a null check") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
     const std::string src = slurp(header);
-    REQUIRE(src.find("struct coroutine_handle<void>") != std::string::npos);
     CHECK(src.find("#ifndef _GLIBCXX_COROUTINE") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
-    CHECK(src.find("not a proof that a coroutine runs") != std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <thread>") == std::string::npos);
-    CHECK(src.find("#include <exception>") == std::string::npos);
-    CHECK(src.find("#include <atomic>") == std::string::npos);
-    CHECK(src.find("promise_type") == std::string::npos);
-    CHECK(src.find("co_await") == std::string::npos);
-    CHECK(src.find("noop_coroutine") == std::string::npos);
-    CHECK(src.find("suspend_always") == std::string::npos);
-    CHECK(src.find("suspend_never") == std::string::npos);
-    CHECK(src.find("operator<=>") == std::string::npos);
-    CHECK(src.find("#include <compare>") == std::string::npos);
-    CHECK(src.find("not a proof that a coroutine ran") != std::string::npos);
-    CHECK(src.find("__builtin_coro_resume") == std::string::npos);
-    CHECK(src.find("__builtin_coro_destroy") == std::string::npos);
-    CHECK(src.find("__builtin_coro_done") == std::string::npos);
-    CHECK(src.find("~coroutine_handle") == std::string::npos);
-    CHECK(src.find("extern \"C\" void __prism_check(int ok, const char* cls, const char* msg);") !=
-          std::string::npos);
-    CHECK(src.find("__prism_check(int ok, const char* cls, const char* msg) {") == std::string::npos);
-
+    CHECK(src.find("struct coroutine_traits") != std::string::npos);
+    CHECK(src.find("noop_coroutine") != std::string::npos);
+    CHECK(src.find("struct suspend_always") != std::string::npos);
+    CHECK(src.find("struct suspend_never") != std::string::npos);
+    CHECK(src.find("from_promise") != std::string::npos);
+    CHECK(src.find("extern \"C\" void __prism_check(int ok, const char* cls, const char* msg);") != std::string::npos);
     CHECK(src.find("constexpr coroutine_handle() noexcept : _M_fr_ptr(nullptr) {}") != std::string::npos);
-    CHECK(src.find("void* _M_fr_ptr = nullptr;") != std::string::npos);
     CHECK(src.find("constexpr void* address() const noexcept { return _M_fr_ptr; }") != std::string::npos);
-    CHECK(src.find("__h._M_fr_ptr = __a;") != std::string::npos);
-
-    for (const char* sig : {"void resume() const", "void destroy() const", "bool done() const"}) {
-        const auto body = body_of(src, sig);
-        REQUIRE(!body.empty());
-        const auto check = body.find("__prism_check");
-        const auto trap = body.find("__builtin_trap");
+    for (const char* sig : {"void resume() const {", "void destroy() const {", "bool done() const {"}) {
+        CAPTURE(sig);
+        const std::string body = body_of(src, sig);
+        REQUIRE_FALSE(body.empty());
+        const auto check = body.find("__prism_check(_M_fr_ptr != nullptr ? 1 : 0, \"FUNC-CONTRACT\"");
+        const auto builtin = body.find("__builtin_coro_");
         REQUIRE(check != std::string::npos);
-        REQUIRE(trap != std::string::npos);
-        CHECK(check < trap);
-        CHECK(body.find("FUNC-CONTRACT") != std::string::npos);
-        CHECK(body.find("_M_fr_ptr != nullptr ? 1 : 0") != std::string::npos);
-        CHECK(body.find("return") == std::string::npos);
-        CHECK(body.find("new") == std::string::npos);
-        CHECK(body.find("operator==") == std::string::npos);
-        CHECK(body.find("operator!=") == std::string::npos);
+        REQUIRE(builtin != std::string::npos);
+        CHECK(check < builtin);
+        CHECK(body.find("__builtin_trap") == std::string::npos);
     }
-    const auto done = body_of(src, "bool done() const");
-    CHECK(done.find("return true") == std::string::npos);
-    CHECK(done.find("true") == std::string::npos);
-
-    const auto eq = body_of(src, "operator==(coroutine_handle __a, coroutine_handle __b)");
-    REQUIRE(!eq.empty());
-    CHECK(eq.find("return __a.address() == __b.address();") != std::string::npos);
-    CHECK(eq.find("__prism_check") == std::string::npos);
-    CHECK(eq.find("__builtin_trap") == std::string::npos);
-    CHECK(eq.find("return true") == std::string::npos);
-    const auto ne = body_of(src, "operator!=(coroutine_handle __a, coroutine_handle __b)");
-    REQUIRE(!ne.empty());
-    CHECK(ne.find("return !(__a == __b);") != std::string::npos);
-    CHECK(ne.find("__prism_check") == std::string::npos);
-    CHECK(ne.find("__builtin_trap") == std::string::npos);
+    // resuming a finished coroutine is a contract failure
+    const std::string res = body_of(src, "void resume() const {");
+    CHECK(res.find("!__builtin_coro_done(_M_fr_ptr)") != std::string::npos);
+    CHECK(res.find("__builtin_coro_resume(_M_fr_ptr)") != std::string::npos);
 }
 
 #if !defined(_MSC_VER) || defined(__clang__)

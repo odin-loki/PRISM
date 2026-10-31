@@ -76,8 +76,13 @@ struct __prism_re_loc {
     void* _M_p = nullptr;
     void (*_M_del)(void*) = nullptr;
     void* (*_M_cpy)(const void*) = nullptr;
+    // ctype<char>::is for a named class (index into __prism_re_cls_names),
+    // ctype<char>::tolower, collate<char>::compare of two characters (via locale::operator()).
+    bool (*_M_isc)(const void*, int, char) = nullptr;
+    char (*_M_lower)(const void*, char) = nullptr;
+    int (*_M_coll)(const void*, char, char) = nullptr;
     __prism_re_loc() noexcept = default;
-    __prism_re_loc(const __prism_re_loc& __o) : _M_on(__o._M_on), _M_del(__o._M_del), _M_cpy(__o._M_cpy) {
+    __prism_re_loc(const __prism_re_loc& __o) : _M_on(__o._M_on), _M_del(__o._M_del), _M_cpy(__o._M_cpy), _M_isc(__o._M_isc), _M_lower(__o._M_lower), _M_coll(__o._M_coll) {
         for (int __i = 0; __i < 3; ++__i) for (int __j = 0; __j < 32; ++__j) _M_t[__i][__j] = __o._M_t[__i][__j];
         if (__o._M_p) _M_p = __o._M_cpy(__o._M_p);
     }
@@ -91,6 +96,9 @@ struct __prism_re_loc {
         void* __p = _M_p; _M_p = __o._M_p; __o._M_p = __p;
         auto __d = _M_del; _M_del = __o._M_del; __o._M_del = __d;
         auto __c2 = _M_cpy; _M_cpy = __o._M_cpy; __o._M_cpy = __c2;
+        auto __i2 = _M_isc; _M_isc = __o._M_isc; __o._M_isc = __i2;
+        auto __l2 = _M_lower; _M_lower = __o._M_lower; __o._M_lower = __l2;
+        auto __k2 = _M_coll; _M_coll = __o._M_coll; __o._M_coll = __k2;
     }
     bool _M_is(int __k, char __c) const noexcept {
         const unsigned char __u = static_cast<unsigned char>(__c);
@@ -98,23 +106,68 @@ struct __prism_re_loc {
     }
     template <class _Loc>
     void _M_set(const _Loc& __l) {
-        const auto& __f = use_facet<ctype<char>>(__l);
-        for (int __u = 0; __u < 256; ++__u) {
-            const char __c = static_cast<char>(__u);
-            const bool __b[3] = {__f.is(__f.digit, __c), __f.is(__f.alnum, __c) || __c == '_', __f.is(__f.space, __c)};
-            for (int __k = 0; __k < 3; ++__k)
-                if (__b[__k]) _M_t[__k][__u >> 3] |= static_cast<unsigned char>(1u << (__u & 7));
-        }
         _M_on = true;
         if (_M_p) _M_del(_M_p);
         _M_p = new _Loc(__l);
         _M_del = [](void* __q) { delete static_cast<_Loc*>(__q); };
         _M_cpy = [](const void* __q) -> void* { return new _Loc(*static_cast<const _Loc*>(__q)); };
+        _M_isc = [](const void* __q, int __k, char __c) -> bool {
+            const auto& __g = use_facet<ctype<char>>(*static_cast<const _Loc*>(__q));
+            switch (__k) {
+                case 0: return __g.is(__g.alnum, __c);
+                case 1: return __g.is(__g.alpha, __c);
+                case 2: return __g.is(__g.blank, __c);
+                case 3: return __g.is(__g.cntrl, __c);
+                case 4: return __g.is(__g.digit, __c);
+                case 5: return __g.is(__g.graph, __c);
+                case 6: return __g.is(__g.lower, __c);
+                case 7: return __g.is(__g.print, __c);
+                case 8: return __g.is(__g.punct, __c);
+                case 9: return __g.is(__g.space, __c);
+                case 10: return __g.is(__g.upper, __c);
+                case 11: return __g.is(__g.xdigit, __c);
+                case 12: return __g.is(__g.alnum, __c) || __c == '_';
+                default: return false;
+            }
+        };
+        _M_lower = [](const void* __q, char __c) -> char { return use_facet<ctype<char>>(*static_cast<const _Loc*>(__q)).tolower(__c); };
+        _M_coll = [](const void* __q, char __a, char __b) -> int {
+            // locale::operator() is collate<char>::compare(...) < 0.
+            const _Loc& __lc = *static_cast<const _Loc*>(__q);
+            const std::string __x(1, __a), __y(1, __b);
+            return __lc(__x, __y) ? -1 : __lc(__y, __x) ? 1 : 0;
+        };
     }
 };
 
+namespace regex_constants {
+enum syntax_option_type : unsigned {
+    icase = 1u << 0, nosubs = 1u << 1, optimize = 1u << 2, collate = 1u << 3,
+    ECMAScript = 1u << 4, basic = 1u << 5, extended = 1u << 6, awk = 1u << 7,
+    grep = 1u << 8, egrep = 1u << 9, multiline = 1u << 10
+};
+constexpr syntax_option_type operator|(syntax_option_type __a, syntax_option_type __b) noexcept {
+    return static_cast<syntax_option_type>(static_cast<unsigned>(__a) | static_cast<unsigned>(__b));
+}
+constexpr syntax_option_type operator&(syntax_option_type __a, syntax_option_type __b) noexcept {
+    return static_cast<syntax_option_type>(static_cast<unsigned>(__a) & static_cast<unsigned>(__b));
+}
+}  // namespace regex_constants
+
 class regex {
 public:
+    using flag_type = regex_constants::syntax_option_type;
+    static constexpr flag_type icase = regex_constants::icase;
+    static constexpr flag_type nosubs = regex_constants::nosubs;
+    static constexpr flag_type optimize = regex_constants::optimize;
+    static constexpr flag_type collate = regex_constants::collate;
+    static constexpr flag_type ECMAScript = regex_constants::ECMAScript;
+    static constexpr flag_type basic = regex_constants::basic;
+    static constexpr flag_type extended = regex_constants::extended;
+    static constexpr flag_type awk = regex_constants::awk;
+    static constexpr flag_type grep = regex_constants::grep;
+    static constexpr flag_type egrep = regex_constants::egrep;
+    static constexpr flag_type multiline = regex_constants::multiline;
     regex() noexcept : _M_str(nullptr), _M_len(0), _M_flags(0) {}
 
     // C string. A null pointer is a contract failure, not a pattern. A
@@ -199,8 +252,9 @@ public:
     // the locale, builds \d \w \s from its ctype<char> facet, and returns
     // the previously imbued locale (the global one the first time). assign
     // keeps the locale. getloc returns it. Bracket expressions stay byte
-    // ranges, and [[:class:]] / icase / collation are not modelled (they
-    // reach __prism_re_unsup).
+    // ranges ([a-z] in byte order unless collate), [[:class:]] uses the
+    // locale ctype, icase folds with ctype::tolower; [. .] and [= =] reach
+    // __prism_re_unsup.
     template <class _Loc>
     _Loc imbue(const _Loc& __l) {
         _Loc __prev = _M_loc._M_p ? *static_cast<const _Loc*>(_M_loc._M_p) : _Loc();
@@ -302,6 +356,40 @@ inline bool __prism_re_is_word(char c) {
 }
 inline bool __prism_re_is_space(char c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 
+// [[:name:]] classes, [re.traits] lookup_classname order; "w" "s" "d" too.
+inline int __prism_re_cls_index(const char* p, std::size_t n) {
+    const char* const names[] = {"alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower",
+                                 "print", "punct", "space", "upper", "xdigit", "w", "s", "d"};
+    for (int i = 0; i < 15; ++i) {
+        std::size_t k = 0;
+        while (names[i][k] != '\0' && k < n && names[i][k] == p[k]) ++k;
+        if (k == n && names[i][k] == '\0') return i == 13 ? 9 : i == 14 ? 4 : i;
+    }
+    return -1;
+}
+// "C" locale classification by index (as __prism_re_cls_index returns).
+inline bool __prism_re_c_is(int k, char ch) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    const bool up = c >= 'A' && c <= 'Z', lo = c >= 'a' && c <= 'z', dg = c >= '0' && c <= '9';
+    const bool pr = c >= 0x20 && c < 0x7f;
+    switch (k) {
+        case 0: return up || lo || dg;
+        case 1: return up || lo;
+        case 2: return c == ' ' || c == '\t';
+        case 3: return c < 0x20 || c == 0x7f;
+        case 4: return dg;
+        case 5: return pr && c != ' ';
+        case 6: return lo;
+        case 7: return pr;
+        case 8: return pr && c != ' ' && !(up || lo || dg);
+        case 9: return c == ' ' || (c >= '\t' && c <= '\r');
+        case 10: return up;
+        case 11: return dg || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        case 12: return up || lo || dg || c == '_';
+        default: return false;
+    }
+}
+
 [[noreturn]] inline void __prism_re_unsup() {
     __prism_incomplete("std::regex syntax outside the PRISM matcher");
     __builtin_trap();
@@ -336,6 +424,14 @@ inline std::size_t __prism_re_parse(const char* p, std::size_t n, __prism_re_tok
             if (j < n && p[j] == '^') { x.neg = true; ++j; }
             const std::size_t b = j;
             while (j < n && p[j] != ']') {
+                if (p[j] == '[' && j + 1 < n && p[j + 1] == ':') {
+                    std::size_t e = j + 2;
+                    while (e + 1 < n && !(p[e] == ':' && p[e + 1] == ']')) ++e;
+                    if (e + 1 >= n || __prism_re_cls_index(p + j + 2, e - j - 2) < 0) __prism_re_unsup();
+                    j = e + 2;
+                    continue;
+                }
+                // [. .] collating elements and [= =] equivalence classes
                 if (p[j] == '\\' || p[j] == '[') __prism_re_unsup();
                 ++j;
             }
@@ -349,20 +445,48 @@ inline std::size_t __prism_re_parse(const char* p, std::size_t n, __prism_re_tok
     return k;
 }
 
-inline bool __prism_re_atom(const char* p, const __prism_re_tok& x, char c, const __prism_re_loc* L = nullptr) {
+struct __prism_re_mode {
+    const __prism_re_loc* L;
+    bool icase, coll;
+    char fold(char c) const {
+        if (!icase) return c;
+        if (L && L->_M_on && L->_M_lower) return L->_M_lower(L->_M_p, c);
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+    bool is(int k, char c) const {
+        if (L && L->_M_on && L->_M_isc) return L->_M_isc(L->_M_p, k, c);
+        return __prism_re_c_is(k, c);
+    }
+    // c in [lo-hi]: byte order, or the locale's collation order (collate).
+    bool in_range(char lo, char c, char hi) const {
+        if (coll && L && L->_M_on && L->_M_coll) return L->_M_coll(L->_M_p, lo, c) <= 0 && L->_M_coll(L->_M_p, c, hi) <= 0;
+        const unsigned char l = static_cast<unsigned char>(lo), v = static_cast<unsigned char>(c), h = static_cast<unsigned char>(hi);
+        return l <= v && v <= h;
+    }
+};
+
+inline bool __prism_re_atom(const char* p, const __prism_re_tok& x, char c, const __prism_re_mode* M = nullptr) {
+    const __prism_re_mode __dm{nullptr, false, false};
+    const __prism_re_mode& m = M ? *M : __dm;
     bool r = false;
-    if (x.kind == 0) return c == x.ch;
+    if (x.kind == 0) return m.fold(c) == m.fold(x.ch);
     if (x.kind == 1) return c != '\n' && c != '\r';
-    if (L && L->_M_on && x.kind >= 3) r = L->_M_is(x.kind - 3, c);
-    else if (x.kind == 3) r = __prism_re_is_digit(c);
-    else if (x.kind == 4) r = __prism_re_is_word(c);
-    else if (x.kind == 5) r = __prism_re_is_space(c);
+    if (x.kind == 3) r = m.is(4, c);
+    else if (x.kind == 4) r = m.is(12, c);
+    else if (x.kind == 5) r = m.is(9, c);
     else {
         for (std::size_t j = x.b; j < x.e; ++j) {
-            if (j + 2 < x.e && p[j + 1] == '-') {
-                if (c >= p[j] && c <= p[j + 2]) r = true;
+            if (p[j] == '[' && j + 1 < x.e && p[j + 1] == ':') {
+                std::size_t e = j + 2;
+                while (!(p[e] == ':' && p[e + 1] == ']')) ++e;
+                const int k = __prism_re_cls_index(p + j + 2, e - j - 2);
+                // icase: [[:lower:]] / [[:upper:]] match either case
+                if (m.is(k, c) || (m.icase && (k == 6 || k == 10) && (m.is(6, c) || m.is(10, c)))) r = true;
+                j = e + 1;
+            } else if (j + 2 < x.e && p[j + 1] == '-') {
+                if (m.in_range(p[j], c, p[j + 2]) || (m.icase && m.in_range(p[j], m.fold(c), p[j + 2]))) r = true;
                 j += 2;
-            } else if (c == p[j]) r = true;
+            } else if (m.fold(c) == m.fold(p[j])) r = true;
         }
     }
     return x.neg ? !r : r;
@@ -371,7 +495,7 @@ inline bool __prism_re_atom(const char* p, const __prism_re_tok& x, char c, cons
 // Matches the tokens at s[at, len). Returns the end of the greedy match in
 // ECMAScript backtracking order, or -1.
 inline long __prism_re_here(const char* p, const __prism_re_tok* t, std::size_t k, bool eol, const char* s,
-                            std::size_t len, std::size_t at, const __prism_re_loc* L = nullptr) {
+                            std::size_t len, std::size_t at, const __prism_re_mode* L = nullptr) {
     std::size_t from[__prism_re_max], cnt[__prism_re_max];
     std::size_t i = 0, pos = at;
     for (;;) {
@@ -425,7 +549,13 @@ using cmatch = match_results<const char*>;
 // __whole: regex_match (the match must cover the subject); else leftmost search.
 template <class _It>
 inline bool __prism_re_run(const regex& __re, const char* __s, std::size_t __len, match_results<_It>* __m, bool __whole) {
-    if (__re.flags() != 0) __prism_re_unsup();
+    // ECMAScript (the default grammar) with icase / collate; nosubs and
+    // optimize do not change a match. Other grammars and multiline: not
+    // modelled.
+    const unsigned __fl = __re.flags();
+    if ((__fl & ~(regex_constants::icase | regex_constants::nosubs | regex_constants::optimize | regex_constants::collate | regex_constants::ECMAScript)) != 0)
+        __prism_re_unsup();
+    const __prism_re_mode __mode{&__re._M_locale(), (__fl & regex_constants::icase) != 0, (__fl & regex_constants::collate) != 0};
     __prism_re_tok __t[__prism_re_max];
     bool __bol = false, __eol = false;
     const char* __p = __re.data();
@@ -433,7 +563,7 @@ inline bool __prism_re_run(const regex& __re, const char* __s, std::size_t __len
     if (__whole) { __bol = true; __eol = true; }
     const std::size_t __last = __bol ? 0 : __len;
     for (std::size_t __at = 0; __at <= __last; ++__at) {
-        const long __e = __prism_re_here(__p, __t, __k, __eol, __s, __len, __at, &__re._M_locale());
+        const long __e = __prism_re_here(__p, __t, __k, __eol, __s, __len, __at, &__mode);
         if (__e >= 0) {
             if (__m) {
                 __m->_M_ready = true; __m->_M_matched = true; __m->_M_base = __s;

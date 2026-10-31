@@ -23,6 +23,7 @@ module;
 #include <forward_list>
 #include <functional>
 #include <generator>
+#include <numbers>
 #include <initializer_list>
 #include <iterator>
 #include <list>
@@ -44,6 +45,7 @@ module;
 #include <stack>
 #include <string_view>
 #include <thread>
+#include <atomic>
 #include <tuple>
 #include <typeindex>
 #include <unordered_map>
@@ -147,6 +149,14 @@ export namespace std {
   using std::condition_variable_any;
   using std::cv_status;
   using std::thread;
+  using std::atomic;
+  using std::atomic_flag;
+  using std::memory_order;
+  using std::memory_order_relaxed;
+  using std::memory_order_acquire;
+  using std::memory_order_release;
+  using std::memory_order_seq_cst;
+  using std::atomic_thread_fence;
   using std::jthread;
   using std::regex;
   using std::regex_match;
@@ -190,6 +200,8 @@ export namespace std {
   using std::free;
   namespace this_thread { using std::this_thread::yield; using std::this_thread::get_id; using std::this_thread::sleep_for; }
   namespace ranges { using namespace std::ranges; }
+  namespace numbers { using namespace std::numbers; }
+  namespace regex_constants { using namespace std::regex_constants; }
   namespace chrono { using namespace std::chrono; }
 }
 export namespace __gnu_cxx {

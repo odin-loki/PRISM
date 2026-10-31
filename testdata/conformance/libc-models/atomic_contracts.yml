@@ -1,0 +1,8 @@
+format_version: 1
+input_files: atomic_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  atomic_ops_true: true
+  atomic_cas_true: true
+  atomic_weak_false: false

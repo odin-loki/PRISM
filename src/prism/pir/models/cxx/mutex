@@ -27,7 +27,7 @@
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
-#include <bits/prism_sched.h>
+#include "bits/prism_sched.h"
 
 namespace std {
 

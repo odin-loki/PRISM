@@ -1,10 +1,21 @@
-// PRISM model of C++23 <generator> (std::generator<Ref, V>, no custom
-// allocator; elements_of of a nested generator is yielded ranges::elements_of is not
-// modelled: a unit using it fails to compile here and falls back). Built on the <coroutine> model: iteration resumes the frame
-// through __builtin_coro_resume, which the coro passes in lower_to_ir turn
-// into calls the pir follows. Checks: dereferencing or incrementing an
-// exhausted iterator (FUNC-CONTRACT), begin() called twice (FUNC-CONTRACT,
-// [coro.generator.members]), an exception from the body is rethrown.
+// PRISM model of C++23 <generator> (std::generator<Ref, V>; a custom
+// allocator parameter is accepted and ignored: frames use operator new).
+// Built on the <coroutine> model: iteration resumes frames through
+// __builtin_coro_resume, which the coro passes in lower_to_ir turn into calls
+// the pir follows.
+//
+// co_yield ranges::elements_of(g) of the same generator type delegates to g
+// ([coro.generator.promise]): the inner frame is linked below the outer one
+// and iteration always resumes the innermost started frame; when it finishes
+// its parent resumes. elements_of of any other range is wrapped in a
+// generator of this type that yields each element, then delegated the same
+// way. An exception in an inner generator is rethrown in the outer one at
+// the co_yield.
+//
+// Checks: dereferencing or incrementing an exhausted iterator
+// (FUNC-CONTRACT), begin() called twice or on a moved-from generator
+// (FUNC-CONTRACT, [coro.generator.members]); an exception from the body is
+// rethrown to the iterating code.
 #ifndef _GLIBCXX_GENERATOR
 #define _GLIBCXX_GENERATOR 1
 
@@ -19,7 +30,22 @@
 
 namespace std {
 
-
+#ifndef _GLIBCXX_BITS_ELEMENTS_OF
+#define _GLIBCXX_BITS_ELEMENTS_OF 1
+// ranges::elements_of, defined here under libstdc++'s guard for
+// bits/elements_of.h (that file pulls libstdc++'s ranges_base, which clashes
+// with the <ranges> model). The allocator member is not used.
+namespace ranges {
+struct __prism_no_alloc {};
+template <class _Range, class _Alloc = __prism_no_alloc>
+struct elements_of {
+    [[no_unique_address]] _Range range;
+    [[no_unique_address]] _Alloc allocator = _Alloc();
+};
+template <class _Range, class _Alloc = __prism_no_alloc>
+elements_of(_Range&&, _Alloc = _Alloc()) -> elements_of<_Range&&, _Alloc>;
+}  // namespace ranges
+#endif
 
 template <class _Ref, class _Val = void, class _Alloc = void>
 class generator {
@@ -28,11 +54,17 @@ class generator {
     using _Yielded = conditional_t<is_reference_v<_Reference>, _Reference, const _Reference&>;
 
 public:
+    struct promise_type;
+    using _Handle = coroutine_handle<promise_type>;
+
     struct promise_type {
         add_pointer_t<_Yielded> _M_val = nullptr;
         exception_ptr _M_exc;
+        _Handle _M_inner;   // delegated-to generator, while it runs
+        _Handle _M_parent;  // set in a delegated-to generator
+        bool _M_started = false;
 
-        generator get_return_object() noexcept { return generator(coroutine_handle<promise_type>::from_promise(*this)); }
+        generator get_return_object() noexcept { return generator(_Handle::from_promise(*this)); }
         suspend_always initial_suspend() const noexcept { return {}; }
         suspend_always final_suspend() noexcept { return {}; }
 
@@ -53,15 +85,41 @@ public:
             };
             return _Aw{__v, this};
         }
+
+        struct _Delegate {
+            generator _M_g;
+            bool await_ready() const noexcept { return !_M_g._M_h; }
+            void await_suspend(_Handle __outer) noexcept {
+                _M_g._M_h.promise()._M_parent = __outer;
+                __outer.promise()._M_inner = _M_g._M_h;
+            }
+            void await_resume() {
+                if (_M_g._M_h && _M_g._M_h.promise()._M_exc) rethrow_exception(_M_g._M_h.promise()._M_exc);
+            }
+        };
+        template <class _Al>
+        _Delegate yield_value(ranges::elements_of<generator&&, _Al> __e) noexcept {
+            return _Delegate{std::move(__e.range)};
+        }
+        template <class _Al>
+        _Delegate yield_value(ranges::elements_of<generator&, _Al> __e) noexcept {
+            return _Delegate{std::move(__e.range)};
+        }
+        template <class _Rng, class _Al>
+            requires(!is_same_v<remove_cvref_t<_Rng>, generator>)
+        _Delegate yield_value(ranges::elements_of<_Rng, _Al> __e) {
+            return _Delegate{_S_wrap(static_cast<_Rng&&>(__e.range))};
+        }
+
         void await_transform() = delete;
         void return_void() const noexcept {}
         void unhandled_exception() { _M_exc = current_exception(); }
     };
 
     class iterator {
-        coroutine_handle<promise_type> _M_h;
+        _Handle _M_h;
         friend class generator;
-        explicit iterator(coroutine_handle<promise_type> __h) noexcept : _M_h(__h) {}
+        explicit iterator(_Handle __h) noexcept : _M_h(__h) {}
     public:
         using value_type = _Value;
         using difference_type = ptrdiff_t;
@@ -69,12 +127,11 @@ public:
         iterator& operator=(iterator&& __o) noexcept { _M_h = std::exchange(__o._M_h, nullptr); return *this; }
         _Reference operator*() const {
             __prism_check(_M_h && !_M_h.done() ? 1 : 0, "FUNC-CONTRACT", "std::generator iterator dereferenced past the end");
-            return static_cast<_Reference>(*_M_h.promise()._M_val);
+            return static_cast<_Reference>(*_S_deep(_M_h).promise()._M_val);
         }
         iterator& operator++() {
             __prism_check(_M_h && !_M_h.done() ? 1 : 0, "FUNC-CONTRACT", "std::generator iterator incremented past the end");
-            _M_h.resume();
-            if (_M_h.promise()._M_exc) rethrow_exception(_M_h.promise()._M_exc);
+            _S_step(_M_h);
             return *this;
         }
         void operator++(int) { ++*this; }
@@ -89,16 +146,48 @@ public:
     iterator begin() {
         __prism_check(_M_h && !_M_began ? 1 : 0, "FUNC-CONTRACT", "std::generator::begin called twice or on a moved-from generator");
         _M_began = true;
-        _M_h.resume();
-        if (_M_h.promise()._M_exc) rethrow_exception(_M_h.promise()._M_exc);
+        _S_step(_M_h);
         return iterator(_M_h);
     }
     default_sentinel_t end() const noexcept { return default_sentinel; }
 
 private:
-    coroutine_handle<promise_type> _M_h;
+    _Handle _M_h;
     bool _M_began = false;
-    explicit generator(coroutine_handle<promise_type> __h) noexcept : _M_h(__h) {}
+    explicit generator(_Handle __h) noexcept : _M_h(__h) {}
+
+    template <class _Rng>
+    static generator _S_wrap(_Rng __r) {
+        for (auto&& __x : __r) co_yield static_cast<_Yielded>(__x);
+    }
+
+    static _Handle _S_deep(_Handle __h) noexcept {
+        while (__h.promise()._M_inner) __h = __h.promise()._M_inner;
+        return __h;
+    }
+    // Resume the innermost frame; start delegated frames; resume a parent
+    // whose delegate finished; stop at the next value or at the end.
+    static void _S_step(_Handle __h) {
+        _Handle __d = _S_deep(__h);
+        __d.promise()._M_started = true;
+        __d.resume();
+        for (;;) {
+            __d = _S_deep(__h);
+            if (!__d.promise()._M_started) {
+                __d.promise()._M_started = true;
+                __d.resume();
+                continue;
+            }
+            if (__d != __h && __d.done()) {
+                _Handle __p = __d.promise()._M_parent;
+                __p.promise()._M_inner = nullptr;
+                __p.resume();
+                continue;
+            }
+            break;
+        }
+        if (__h.done() && __h.promise()._M_exc) rethrow_exception(__h.promise()._M_exc);
+    }
 };
 
 }  // namespace std
