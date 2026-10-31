@@ -177,8 +177,8 @@ iota(_Tp* __first, _Tp* __last, _Tp __value) {
     }
 }
 
-// [accumulate]. Two pointers of the same type, and an initial value of that
-// type. A value of a different type does not match this overload. last <
+// [accumulate]. Two pointers to the same element type (const or not), and an
+// initial value of that type. A value of a different type does not match this overload. last <
 // first fails the check before any read and does not return init. An empty
 // range returns init before any read. The next sum is formed only when
 // another element remains, and only in the else of the fit test, so a
@@ -189,7 +189,7 @@ iota(_Tp* __first, _Tp* __last, _Tp __value) {
 // overflow. The unsigned limit is the maximum value of T.
 template <typename _Tp>
 constexpr _Tp
-accumulate(_Tp* __first, _Tp* __last, _Tp __init) {
+accumulate(const _Tp* __first, const _Tp* __last, _Tp __init) {
     if (__last < __first) {
         __prism_check(0, "FUNC-CONTRACT", "std::accumulate last is before first");
         __builtin_trap();

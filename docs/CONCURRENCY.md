@@ -96,8 +96,19 @@ reason:
 - A thread argument that the thread entry uses, and a join result pointer.
 - A creation site inside a loop, or in a function called more than once
   (dynamic thread sets), and threads created by threads.
-- `std::thread` and `std::jthread`, which lower through a virtual `_State`
-  object, and OpenMP.
+- libstdc++'s own `std::thread` / `std::jthread` (a virtual `_State` object),
+  and OpenMP. The stage lowers C++ units against the PRISM models with
+  `-D__PRISM_CONC_THREADS=1 -fignore-exceptions` (models/cxx/bits/prism_conc.h),
+  then runs `sroa,mem2reg`, so `std::thread`, `std::mutex`, `lock_guard`,
+  `unique_lock`, `condition_variable` and seq_cst `std::atomic` reach the
+  encoder as the pthread / `__atomic` calls above. A callable with captures or
+  arguments is a thread argument (UNENCODED); `joinable()` is always true.
+  This is the complete-within-K-rounds path for C++ threads (every thread has
+  its own saved pc, so a resumed thread can itself be preempted again). The
+  pir stage's in-model scheduler (bits/prism_sched.h) is still an
+  under-approximation. A condition-variable wait is unlock, switch, lock, so
+  a wait that never returns is cut by the unwind bound, not reported as a
+  deadlock here; the pir stage's scheduler reports it.
 - Everything `pir::translate` does not encode, such as floating point, calls
   to unknown externals, and memory. Its own `UNENCODED:` reason is passed
   through, with the thread named.

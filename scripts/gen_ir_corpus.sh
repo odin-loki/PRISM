@@ -40,8 +40,13 @@ one() {
     */c23/*) c="$LLVM/bin/clang $SR -std=c23 -isystem $ROOT/src/prism/pir/models/libc/c23"; p="mem2reg,lower-switch,loop-simplify,lcssa,instnamer";;
     *) c="$LLVM/bin/clang $SR -std=c17"; p="mem2reg,lower-switch,loop-simplify,lcssa,instnamer";;
   esac
-  if timeout 60 $c -S -emit-llvm -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -gline-tables-only -w -o "$OUT/$n.0.ll" "$s" 2>"$OUT/$n.err" \
-     && "$LLVM/bin/opt" -passes="$p" -S -o "$OUT/$n.ll" "$OUT/$n.0.ll" 2>>"$OUT/$n.err"; then
+  f="-S -emit-llvm -O0 -Xclang -disable-O0-optnone -fno-discard-value-names -gline-tables-only -w -o $OUT/$n.0.ll"
+  ok=0; timeout 60 $c $f "$s" 2>"$OUT/$n.err" && ok=1
+  # pre-C++17 code (dynamic exception specs, register): retry as C++14, as lower_to_ir does
+  if [ $ok = 0 ] && grep -q "ISO C++17 does not allow" "$OUT/$n.err"; then
+    timeout 60 ${c/-std=c++23/-std=c++14} $f "$s" 2>"$OUT/$n.err" && ok=1
+  fi
+  if [ $ok = 1 ] && "$LLVM/bin/opt" -passes="$p" -S -o "$OUT/$n.ll" "$OUT/$n.0.ll" 2>>"$OUT/$n.err"; then
     rm -f "$OUT/$n.0.ll" "$OUT/$n.err"
     if [ -n "$PARSECHECK" ] && ! "$PARSECHECK" "$OUT/$n.ll" >/dev/null 2>"$OUT/$n.pc"; then echo "PARSE $s"; else rm -f "$OUT/$n.pc"; echo "OK $s"; fi
   else echo "COMPILE $s"; fi

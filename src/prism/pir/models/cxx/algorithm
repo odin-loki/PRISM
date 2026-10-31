@@ -50,6 +50,14 @@
 // __builtin_trap. That path does not return a wrapped count. The function
 // does not allocate.
 //
+// The C++11 predicates over two pointers and any callable predicate:
+// all_of, any_of, none_of, find_if_not, copy_if, is_partitioned,
+// partition_point, minmax, minmax_element, is_heap, is_heap_until. An
+// inverted range is __prism_check FUNC-CONTRACT then __builtin_trap, as
+// above. Empty ranges follow [alg.all.of]: all_of and none_of are true,
+// any_of is false. minmax_element returns the first smallest and the last
+// largest.
+//
 // sort, copy, fill, for_each, and every other algorithm are not
 // declared. A use of those names fails to compile and the pir stage falls
 // back to libstdc++ (extra.cxx_models). A partial header is intentional.
@@ -61,6 +69,8 @@
 #define _GLIBCXX_ALGORITHM 1
 
 #pragma GCC system_header
+
+#include <bits/stl_pair.h>
 
 // PIR intrinsic (translate.cpp). Literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -195,6 +205,95 @@ constexpr __PTRDIFF_TYPE__ count(_Tp* __first, _Tp* __last, const _Tp& __value) 
     }
     return __n;
 }
+
+#define _PRISM_RANGE_CHECK(__f, __l, __name)                                   \
+    if ((__l) < (__f)) {                                                       \
+        __prism_check(0, "FUNC-CONTRACT", __name ": last < first");            \
+        __builtin_trap();                                                      \
+    }
+
+template <typename _Tp, typename _Pred>
+constexpr bool all_of(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "all_of")
+    for (; __first != __last; ++__first)
+        if (!__pred(*__first)) return false;
+    return true;
+}
+template <typename _Tp, typename _Pred>
+constexpr bool any_of(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "any_of")
+    for (; __first != __last; ++__first)
+        if (__pred(*__first)) return true;
+    return false;
+}
+template <typename _Tp, typename _Pred>
+constexpr bool none_of(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "none_of")
+    for (; __first != __last; ++__first)
+        if (__pred(*__first)) return false;
+    return true;
+}
+template <typename _Tp, typename _Pred>
+constexpr _Tp* find_if_not(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "find_if_not")
+    for (; __first != __last; ++__first)
+        if (!__pred(*__first)) return __first;
+    return __last;
+}
+template <typename _Tp, typename _Up, typename _Pred>
+constexpr _Up* copy_if(_Tp* __first, _Tp* __last, _Up* __out, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "copy_if")
+    for (; __first != __last; ++__first)
+        if (__pred(*__first)) *__out++ = *__first;
+    return __out;
+}
+template <typename _Tp, typename _Pred>
+constexpr bool is_partitioned(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "is_partitioned")
+    for (; __first != __last && __pred(*__first); ++__first) {}
+    for (; __first != __last; ++__first)
+        if (__pred(*__first)) return false;
+    return true;
+}
+// Linear scan: the first element for which pred is false. On a range that
+// is_partitioned this is the partition point required by [alg.partitions].
+template <typename _Tp, typename _Pred>
+constexpr _Tp* partition_point(_Tp* __first, _Tp* __last, _Pred __pred) {
+    _PRISM_RANGE_CHECK(__first, __last, "partition_point")
+    for (; __first != __last; ++__first)
+        if (!__pred(*__first)) return __first;
+    return __last;
+}
+template <_Prism_less_than_comparable _Tp>
+constexpr pair<const _Tp&, const _Tp&> minmax(const _Tp& __a, const _Tp& __b) {
+    if (__b < __a) return pair<const _Tp&, const _Tp&>(__b, __a);
+    return pair<const _Tp&, const _Tp&>(__a, __b);
+}
+template <_Prism_less_than_comparable _Tp>
+constexpr pair<_Tp*, _Tp*> minmax_element(_Tp* __first, _Tp* __last) {
+    _PRISM_RANGE_CHECK(__first, __last, "minmax_element")
+    _Tp* __lo = __first;
+    _Tp* __hi = __first;
+    for (_Tp* __p = __first; __p != __last; ++__p) {
+        if (*__p < *__lo) __lo = __p;
+        if (!(*__p < *__hi)) __hi = __p;  // last largest
+    }
+    return pair<_Tp*, _Tp*>(__lo, __hi);
+}
+template <_Prism_less_than_comparable _Tp>
+constexpr _Tp* is_heap_until(_Tp* __first, _Tp* __last) {
+    _PRISM_RANGE_CHECK(__first, __last, "is_heap_until")
+    const __PTRDIFF_TYPE__ __n = __last - __first;
+    for (__PTRDIFF_TYPE__ __i = 1; __i < __n; ++__i)
+        if (__first[(__i - 1) / 2] < __first[__i]) return __first + __i;
+    return __last;
+}
+template <_Prism_less_than_comparable _Tp>
+constexpr bool is_heap(_Tp* __first, _Tp* __last) {
+    return is_heap_until(__first, __last) == __last;
+}
+
+#undef _PRISM_RANGE_CHECK
 
 }  // namespace std
 

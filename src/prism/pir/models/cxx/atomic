@@ -13,6 +13,11 @@
 
 #pragma GCC system_header
 
+// conc stage: the pthread / seq_cst mapping its lazy sequentialisation encodes
+#ifdef __PRISM_CONC_THREADS
+#include "bits/prism_conc.h"
+#else
+
 #include "bits/prism_sched.h"
 #include <type_traits>
 #include <cstddef>
@@ -190,5 +195,7 @@ using atomic_size_t = atomic<size_t>;
 using atomic_ptrdiff_t = atomic<ptrdiff_t>;
 
 }  // namespace std
+
+#endif  // __PRISM_CONC_THREADS
 
 #endif  // _GLIBCXX_ATOMIC

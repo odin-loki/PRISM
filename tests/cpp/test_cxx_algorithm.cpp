@@ -240,11 +240,16 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
         while (std::getline(lines, line)) {
             std::size_t i = 0;
             while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-            CHECK(line.compare(i, 8, "#include") != 0);
+            // the one include is <bits/stl_pair.h>, for minmax/minmax_element
+            if (line.compare(i, 8, "#include") == 0) CHECK(line.find("<bits/stl_pair.h>") != std::string::npos);
         }
     }
-    for (const char* name : {"sort(", "copy(", "fill(", "for_each(", "count_if", "find_if_not"})
+    for (const char* name : {"sort(", " copy(", "fill(", "for_each(", "count_if"})
         CHECK(text.find(name) == std::string::npos);
+
+    for (const char* name : {"all_of(", "any_of(", "none_of(", "find_if_not(", "copy_if(", "is_partitioned(",
+                             "partition_point(", "minmax(", "minmax_element(", "is_heap_until(", "is_heap("})
+        CHECK(text.find(name) != std::string::npos);
 
     const auto min_at = text.find("constexpr const _Tp& min(");
     const auto max_at = text.find("constexpr const _Tp& max(", min_at);

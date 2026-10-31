@@ -6,9 +6,11 @@
 static std::mutex m;
 static std::condition_variable cv;
 static bool ready;
+static int seed;  // the input, read by the thread (captureless: the conc stage encodes no thread arguments)
 int cxx_condvar_false(int c) {
     ready = false;
-    std::thread t([c] { std::lock_guard<std::mutex> g(m); if (!c) ready = true; cv.notify_one(); });
+    seed = c;
+    std::thread t([] { std::lock_guard<std::mutex> g(m); if (!seed) ready = true; cv.notify_one(); });
     { std::unique_lock<std::mutex> l(m); cv.wait(l, [] { return ready; }); }
     t.join();
     return 0;

@@ -23,6 +23,15 @@
 
 #pragma GCC system_header
 
+// libstdc++'s <ostream> (C++23) defines print/vprint_* on top of the real
+// <format> internals (format_args, __format::_Str_sink, vformat_to) when
+// __cpp_lib_print is set. This model has none of those, so mark print as
+// not provided by <ostream>: bits/version.h only defines __cpp_lib_print
+// when it is not yet defined. The <print> model supplies std::print.
+#ifndef __cpp_lib_print
+#define __cpp_lib_print 0
+#endif
+
 #include <cstddef>
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the

@@ -35,7 +35,8 @@
 // sleep_until are not declared. A sleep that returns immediately would be
 // a fake wait. Omitted names fail to compile against this header and pir
 // falls back to libstdc++. That includes period conversion and the calendar
-// typedefs. Compound assignment is only the same duration type. A different
+// typedefs (the SI duration typedefs nanoseconds..hours are declared, with
+// a cross-period duration_cast; see the end of the file). Compound assignment is only the same duration type. A different
 // period is not declared for it. duration_cast is declared only when
 // the source and target period are the same type, this header's
 // __duration_period (num 1, den 1). The result count is that count. It
@@ -325,6 +326,54 @@ template <typename _Rep, typename _Period, typename _Scalar>
     requires __duration_same_type<_Scalar, _Rep>
 duration<_Rep, _Period> operator*(const _Scalar& __s, const duration<_Rep, _Period>& __d) {
     return __duration_mul(__d, __s);
+}
+
+// Periods other than seconds: a stand-in with num and den (not std::ratio,
+// so <ratio> stays out). A std::ratio period also works: only ::num and
+// ::den are read. The SI typedefs use it.
+template <long long _Num, long long _Den>
+struct __duration_ratio {
+    static_assert(_Den != 0, "duration period with a zero denominator");
+    static constexpr long long num = _Num;
+    static constexpr long long den = _Den;
+};
+
+using nanoseconds = duration<long long, __duration_ratio<1, 1000000000>>;
+using microseconds = duration<long long, __duration_ratio<1, 1000000>>;
+using milliseconds = duration<long long, __duration_ratio<1, 1000>>;
+using seconds = duration<long long>;
+using minutes = duration<long long, __duration_ratio<60, 1>>;
+using hours = duration<long long, __duration_ratio<3600, 1>>;
+
+constexpr long long __duration_gcd(long long __a, long long __b) noexcept {
+    if (__a < 0) __a = -__a;
+    if (__b < 0) __b = -__b;
+    while (__b != 0) {
+        const long long __t = __a % __b;
+        __a = __b;
+        __b = __t;
+    }
+    return __a;
+}
+
+// [time.duration.cast] between two different periods: count * (Pn*Td) /
+// (Pd*Tn), reduced at compile time, truncated toward zero. A product that
+// does not fit the 64-bit count is __prism_check INT-SIGNED-OVF then
+// __builtin_trap: it does not return a wrapped count.
+template <typename _ToDur, typename _Rep, typename _Period>
+    requires(!(__duration_same_type<typename _ToDur::period, __duration_period> &&
+               __duration_same_type<_Period, __duration_period>))
+_ToDur duration_cast(const duration<_Rep, _Period>& __d) {
+    constexpr long long __n0 = _Period::num * _ToDur::period::den;
+    constexpr long long __d0 = _Period::den * _ToDur::period::num;
+    constexpr long long __g = __duration_gcd(__n0, __d0);
+    constexpr long long __num = __n0 / __g;
+    constexpr long long __den = __d0 / __g;
+    const long long __x = static_cast<long long>(__d.count());
+    const int __ok = __duration_mul_fits(__x, __num);
+    __prism_check(__ok, "INT-SIGNED-OVF", "std::chrono::duration_cast overflows the representation");
+    if (!__ok) __builtin_trap();
+    return _ToDur(static_cast<typename _ToDur::rep>(__duration_product(__x, __num) / __den));
 }
 
 }  // namespace std::chrono

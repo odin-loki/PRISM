@@ -20,7 +20,11 @@
 // Not modelled (NEEDS-HARNESS "UNENCODED: ..."): shared data that is not a
 // scalar integer global (heap, arrays, structs, pointers: waits for the PIR
 // memory model, roadmap 2.5), non-seq_cst atomics, thread arguments,
-// std::thread, mutexes that are not globals, nested thread creation.
+// libstdc++'s std::thread (the stage lowers C++ with the PRISM models under
+// __PRISM_CONC_THREADS, whose std::thread / mutex / condition_variable /
+// atomic inline to the pthread / __atomic calls above; a callable with
+// captures or arguments then reaches pthread_create as a thread argument),
+// mutexes that are not globals, nested thread creation.
 
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"

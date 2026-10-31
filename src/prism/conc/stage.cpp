@@ -10,11 +10,20 @@
 
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
+#include "../proc.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <fstream>
 #include <sstream>
+
+#ifndef _WIN32
+#  include <unistd.h>
+#else
+#  include <process.h>
+#  define getpid _getpid
+#endif
 
 namespace fs = std::filesystem;
 
@@ -27,6 +36,46 @@ constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch
 bool is_cxx(const fs::path& p) {
     auto e = p.extension().string();
     return e == ".cc" || e == ".cpp" || e == ".cxx" || e == ".C" || e == ".c++";
+}
+
+// C++ units are lowered with the conc variant of the thread models
+// (models/cxx/bits/prism_conc.h): std::thread / mutex / condition_variable /
+// atomic become the pthread calls and seq_cst atomics this stage encodes.
+const std::vector<std::string>& conc_flags(const fs::path& p) {
+    // -fignore-exceptions: calls stay `call` (the encoder does not follow
+    // `invoke`); a try block still compiles.
+    static const std::vector<std::string> cxx{"-D__PRISM_CONC_THREADS=1", "-fignore-exceptions"}, none;
+    return is_cxx(p) ? cxx : none;
+}
+
+std::string read_text(const fs::path& p);
+
+// Lower one unit for this stage. C++ units also go through sroa: the lock
+// objects (lock_guard, unique_lock) are small structs holding the mutex
+// address, and only once they are split does each pthread call name the
+// global mutex the encoder needs (it does not follow loads of pointers).
+// The shared pir stage pipeline (pir::lower_to_ir) is left unchanged.
+std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& src, double timeout_s,
+                                      std::string& err) {
+    auto ir = pir::lower_to_ir(fe, src, timeout_s, err, nullptr, nullptr, nullptr, conc_flags(src));
+    if (!ir || !is_cxx(src) || !fe.opt) return ir;
+    static std::atomic<unsigned> seq{0};
+    const auto dir = fs::temp_directory_path() /
+                     ("prism-conc-" + std::to_string(::getpid()) + "-" + std::to_string(seq++));
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const auto in = dir / "in.ll", outp = dir / "out.ll";
+    {
+        std::ofstream o(in, std::ios::binary);
+        o << *ir;
+    }
+    auto r = detail::run_process({fe.opt->string(), "-passes=function(sroa,mem2reg,lower-switch,loop-simplify,lcssa,instnamer)",
+                                  "-S", "-o", outp.string(), in.string()},
+                                 timeout_s);
+    std::optional<std::string> res = ir;  // sroa failing keeps the unsplit IR (the encoder then says UNENCODED)
+    if (!r.failed && !r.timed_out && r.rc == 0) res = read_text(outp);
+    fs::remove_all(dir, ec);
+    return res;
 }
 
 bool is_unit(const fs::path& p) { return p.extension() == ".c" || is_cxx(p); }
@@ -192,7 +241,7 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
     const auto weak = weak_memory_order(read_text(src));
     auto fe = pir::find_frontend(cfg);
     std::string err;
-    auto ir = pir::lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err);
+    auto ir = lower_unit(fe, src, std::max(10.0, cfg.timeout), err);
     if (!ir) {
         Result r;
         r.status = std::string(laws::ERROR);
@@ -242,7 +291,7 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
     std::vector<std::string> errs(units.size());
     for (std::size_t i = 0; i < units.size(); ++i) {
         try {
-            irs.at(i) = pir::lower_to_ir(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i));
+            irs.at(i) = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i));
         } catch (const std::exception& ex) {
             irs.at(i).reset();
             errs.at(i) = std::string("internal error: ") + ex.what();

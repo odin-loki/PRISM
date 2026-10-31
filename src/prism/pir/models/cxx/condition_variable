@@ -35,6 +35,11 @@
 
 #pragma GCC system_header
 
+// conc stage: the pthread / seq_cst mapping its lazy sequentialisation encodes
+#ifdef __PRISM_CONC_THREADS
+#include "bits/prism_conc.h"
+#else
+
 #include "bits/prism_sched.h"
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
@@ -177,5 +182,7 @@ public:
 };
 
 }  // namespace std
+
+#endif  // __PRISM_CONC_THREADS
 
 #endif  // _GLIBCXX_CONDITION_VARIABLE
