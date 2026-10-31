@@ -941,6 +941,10 @@ if(PRISM_TESTS)
     add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
+  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # model headers included by path use __builtin_trap (tests/cpp/msvc_builtins.hpp)
+    target_compile_options(prism_tests PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/msvc_builtins.hpp")
+  endif()
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")

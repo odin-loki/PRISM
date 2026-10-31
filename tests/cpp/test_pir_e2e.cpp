@@ -13,7 +13,12 @@
 #include <filesystem>
 #include <map>
 #include <fstream>
-#include <unistd.h>
+#ifdef _WIN32
+#  include <process.h>
+#  define getpid _getpid
+#else
+#  include <unistd.h>
+#endif
 #include <set>
 #include <string>
 #include <vector>

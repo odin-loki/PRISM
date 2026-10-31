@@ -43,7 +43,7 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 // not provide __builtin_trap. clang, which the pir stage uses, provides
 // both. The stand-in is abort, so a square that does not fit, and a zero
 // divisor, still do not return. This is not an include of <cmath>.
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(PRISM_MSVC_BUILTIN_TRAP)
 // Declared exactly as the UCRT declares it: dllimport under /MD (_DLL), else
 // cl reports C2375 (redefinition; different linkage) once <stdlib.h> is seen.
 #  if defined(_DLL)

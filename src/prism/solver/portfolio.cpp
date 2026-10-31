@@ -1539,4 +1539,16 @@ int z3_worker_main(int argc, char** argv) {
 
 }  // namespace prism::solver
 
+#else  // !PRISM_HAS_Z3
+
+#include <cstdio>
+
+namespace prism::solver {
+// Built without Z3: the `prism z3-worker` subcommand has nothing to run.
+int z3_worker_main(int, char**) {
+    std::fprintf(stderr, "prism z3-worker: this build has no Z3\n");
+    return 2;
+}
+}  // namespace prism::solver
+
 #endif  // PRISM_HAS_Z3

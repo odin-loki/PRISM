@@ -135,6 +135,6 @@
   (atomic; never edit in place).
 - build-mf2's cache points at the removed /opt paths (libomp): use build/ (Release, PRISM_Z3=ON). An
   incremental `cmake --build build --target prism` takes about 10 s.
-- 2c73112db: h10 is in the model. tools/models/gen_prime_lb.py regenerates it (idempotent);
+- 2c73112db: h10 is in the model. tools/models/gen_prime_lb.cpp regenerates it (idempotent);
   tools/models/check_prime_lb.sh <orig> <new> checks equality (201360 inputs IDENTICAL).
 - Running: full unordered_map_contracts pir at 3000 MB, binary /tmp/mf/prism-h10, log /tmp/mf/u3.log.
