@@ -563,7 +563,7 @@ PRISM_API std::string format_cex(const Function& fn, const std::vector<uint64_t>
 
 struct Frontend {
     std::optional<std::filesystem::path> clang, clangxx, opt, lli;
-    std::string version;       // "clang-18"
+    std::string version;       // "clang-23" (from --version)
     // C++ library model headers (src/prism/pir/models/cxx, written out by the
     // pir stage): searched before libstdc++ when non-empty (docs/PIR.md
     // "C++ library models"). Empty: the platform library only.

@@ -1056,8 +1056,17 @@ struct Tr final : pirmem::TrApi {
             unsigned fw = int_width(in.ops[0].ty), tw = int_width(in.ty);
             Arg a = operand(fr, in.ops[0], cur, line);
             a.width = fw;
-            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw")))
-                throw Unenc{"UNENCODED: trunc nuw/nsw"};
+            // trunc nuw / nsw (LLVM 19+): poison when the dropped bits are not
+            // all zero (nuw) / not a sign extension (nsw). Checked, never trusted.
+            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw"))) {
+                Arg t = assign(cur, Op::Trunc, tw, {a}, "t");
+                if (has_flag(in, "nuw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::ZExt, fw, {t}, "t"), a), "nuw", "UB-POISON",
+                          "trunc nuw drops nonzero bits (poison)", line);
+                if (has_flag(in, "nsw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::SExt, fw, {t}, "t"), a), "nsw", "UB-POISON",
+                          "trunc nsw changes the signed value (poison)", line);
+            }
             if (op == "zext" && has_flag(in, "nneg"))
                 check(cur, p2(cur, Op::Slt, a, Arg::c(fw, 0)), "nneg", "UB-POISON", "zext nneg of a negative value (poison)", line);
             (void)tw;
@@ -1708,6 +1717,20 @@ struct Tr final : pirmem::TrApi {
                     } catch (const Unenc&) {
                         base_last = true;  // unknown layout: no sub-array check
                     }
+            // gep nuw (LLVM 19+): poison if any index, read as unsigned, makes the
+            // offset arithmetic wrap. A negative variable index always wraps, so
+            // it is checked here; the rest is bounded by the inbounds/object check.
+            // nusw is implied by inbounds (checked by MemTr::gep); without
+            // inbounds it is dropped (conservative: the result is not trusted).
+            if (has_flag(in, "nuw"))
+                for (std::size_t k = 1; k < in.ops.size(); ++k) {
+                    if (in.ops[k].v.kind != ir::Value::Local) continue;
+                    unsigned iw = int_width(in.ops[k].ty);
+                    Arg ix = operand(fr, in.ops[k], cur, line);
+                    ix.width = iw;
+                    check(cur, p2(cur, Op::Slt, ix, Arg::c(iw, 0)), "nuw", "UB-POISON",
+                          "getelementptr nuw with a negative index (poison)", line);
+                }
             mt.gep(cur, result_var(fr, in), base, in.ety, idx, has_flag(in, "inbounds"), line, use, base_last);
             return true;
         }

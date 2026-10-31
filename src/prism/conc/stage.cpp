@@ -22,7 +22,7 @@ namespace prism::conc {
 
 namespace {
 
-constexpr const char* kInstall = "install clang and llvm 18 (apt install clang-18 llvm-18)";
+constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch_llvm.py; see third_party/llvm/PIN.toml) or set PRISM_LLVM_BIN";
 
 bool is_cxx(const fs::path& p) {
     auto e = p.extension().string();

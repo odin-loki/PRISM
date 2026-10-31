@@ -163,7 +163,10 @@ void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f,
     if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr" || in.result.empty())
         throw Unsupported{"vector getelementptr"};
     for (auto& fl : in.flags)
-        if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};
+        // nusw is implied by inbounds (LLVM 19+); nuw adds a no-negative-index
+        // obligation the Lean model does not state yet -> no certificate.
+        if (fl != "inbounds" && !(fl == "nusw" && std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end()))
+            throw Unsupported{"getelementptr " + fl};
     int use = 0;  // 0 address, 1 loaded, 2 stored through, 3 deeper GEP
     for (auto& bl : f.blocks)
         for (auto& u : bl.insts) {

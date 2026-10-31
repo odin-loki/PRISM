@@ -1,0 +1,45 @@
+# Pinned LLVM toolchain for PRISM (clang, clang++, opt, llvm-link, lli, libclang).
+# Binaries are 1.5-2 GB per platform, too large for git: this is a pinned fetch.
+# scripts/fetch_llvm.py downloads the asset for the host, checks the sha256
+# below (and refuses on mismatch), extracts only the needed members into
+# <dest>/llvm-<version>/, and deletes the tarball. Tool identity = tag + sha256.
+# PRISM's IR parser (src/prism/pir/ir_parser.cpp) targets exactly this release.
+tag = "llvmorg-23.1.4"
+version = "23.1.4"
+base_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/"
+members = ["bin/clang", "bin/clang++", "bin/clang-23", "bin/opt", "bin/llvm-link", "bin/lli",
+           "bin/clang-scan-deps", "lib/clang", "lib/libclang.so*", "lib/libc++*", "include/c++", "include/clang-c", "share/libc++"]
+
+[[asset]]
+platform = "linux-x86_64"
+name = "LLVM-23.1.4-Linux-X64.tar.xz"
+sha256 = "25d814fda50d5fb0084b42be09605d8b1595d49d5e2e03a3345d7e112ff6f9f3"
+size = 2017061664
+
+[[asset]]
+platform = "linux-aarch64"
+name = "LLVM-23.1.4-Linux-ARM64.tar.xz"
+sha256 = "9b27cf263d711aa6ebfd4045ab241d947bd09b3cd19ffa5728f48a80c9eb3a91"
+size = 1829686400
+
+[[asset]]
+platform = "macos-arm64"
+name = "LLVM-23.1.4-macOS-ARM64.tar.xz"
+sha256 = "5d3179db39adeca5b17a34d82708fe976bc60e055b05fe557878fb3fb64d39ef"
+size = 1570051292
+
+[[asset]]
+platform = "windows-x86_64"
+name = "clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz"
+sha256 = "854bffcfc84528e0ee92490ff5c178920abd358a79c3e98f053e41e3e8e4c6d2"
+size = 901281460
+
+[[asset]]
+platform = "windows-arm64"
+name = "clang+llvm-23.1.4-aarch64-pc-windows-msvc.tar.xz"
+sha256 = "f0d2e32424850ffb9b6aef190587a8298353d858a8a7260f490c173fe98d6811"
+size = 771710768
+
+[source]
+name = "llvm-project-23.1.4.src.tar.xz"
+sha256 = "819ecf7351f1a66f76b2d701d8942faaf5faeb324cb90c9d5b090de142434bb2"

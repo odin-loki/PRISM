@@ -227,6 +227,27 @@ std::optional<fs::path> Config::which(std::initializer_list<std::string_view> na
     return std::nullopt;
 }
 
+std::optional<fs::path> Config::llvm_tool(std::string_view name) const {
+    std::error_code ec;
+    if (auto it = tools.find(std::string(name)); it != tools.end() && fs::is_regular_file(it->second, ec))
+        return it->second;
+    std::vector<fs::path> dirs;
+    if (!llvm_bin.empty()) dirs.push_back(llvm_bin);
+    if (const char* e = std::getenv("PRISM_LLVM_BIN"); e && *e) dirs.emplace_back(e);
+#ifdef PRISM_LLVM_PINNED_BIN
+    dirs.emplace_back(PRISM_LLVM_PINNED_BIN);
+#endif
+    std::string base(name);
+#ifdef _WIN32
+    base += ".exe";
+#endif
+    for (const auto& d : dirs) {
+        fs::path cand = d / base;
+        if (fs::is_regular_file(cand, ec)) return cand;
+    }
+    return which({name});
+}
+
 // Stage -> third_party/MANIFEST.toml component. Same table as
 // prism/config.py VENDOR_DIR. No CodeQL (roadmap 1.2: engine terms).
 static const char* vendor_dir_for(std::string_view stage) {

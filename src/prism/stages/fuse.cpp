@@ -799,7 +799,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
 
 namespace {
 
-const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
+const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: the pinned LLVM (scripts/fetch_llvm.py, third_party/llvm/PIN.toml)";
 
 std::string libfuzzer_harness_source(const FunctionInfo& fn, std::string src_rel) {
     for (char& c : src_rel)

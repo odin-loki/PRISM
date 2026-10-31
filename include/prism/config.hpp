@@ -69,6 +69,14 @@ struct Config {
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(
         std::initializer_list<std::string_view> names) const;
+    // The one configured LLVM toolchain (third_party/llvm/PIN.toml).
+    // Directory holding clang, clang++, opt, llvm-link, lli. Empty = resolve:
+    // $PRISM_LLVM_BIN, then the pinned fetch dir baked in at build time
+    // (PRISM_LLVM_PINNED_BIN, scripts/fetch_llvm.py), then PATH.
+    std::filesystem::path llvm_bin;
+    // tools[name] override, then llvm_bin/name, then PATH name. No versioned
+    // fallbacks: PRISM's IR parser targets exactly the pinned release.
+    PRISM_API std::optional<std::filesystem::path> llvm_tool(std::string_view name) const;
     // (1) tools[], (2) the pinned `prism-deps tool` build
     // <tools_home>/<component>/<commit>/bin/ (commit from third_party/MANIFEST.toml,
     // baked in at build time), (3) PATH.

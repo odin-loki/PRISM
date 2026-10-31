@@ -321,8 +321,8 @@ std::optional<std::string> render_conjunct(const json& conj,
 
 std::optional<std::string> debug_ir(const fs::path& task) {
     Config cfg;
-    auto cc = cfg.which({"clang-18", "clang"});
-    auto opt = cfg.which({"opt-18", "opt"});
+    auto cc = cfg.llvm_tool("clang");
+    auto opt = cfg.llvm_tool("opt");
     if (!cc || !opt) return std::nullopt;
     std::vector<std::string> argv{cc->string()};
     for (auto& flag : pir::lp64_clang_driver_flags()) argv.push_back(flag);

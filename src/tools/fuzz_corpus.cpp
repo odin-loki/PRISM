@@ -162,7 +162,7 @@ PRISM_FUZZ_CORPUS_INLINE int make_corpus(const Options& o, const fs::path& self_
         if (auto d = read_file(p)) put(o.out / "c", *d, p.extension().string());
 
     auto clang = which({"clang"});
-    auto opt = which({"opt", "opt-18"});
+    auto opt = which({"opt"});
     if (!clang) log << "ll seeds: NOTRUN (clang not found on PATH)\n";
     else if (!opt) log << "ll seeds: opt not found on PATH (NOTRUN for the optimised IR; clang IR only)\n";
     if (clang) {

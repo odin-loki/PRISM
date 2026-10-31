@@ -442,17 +442,26 @@ endif()
 # Only the header is needed at build time: the library is dlopen()ed at run
 # time (src/prism/astlint_libclang.cpp), so a machine without libclang.so still
 # runs PRISM and the layer falls back to clang as a process. Default ON when
-# <clang-c/Index.h> is found (apt install libclang-18-dev).
+# <clang-c/Index.h> is found (the pinned LLVM ships it).
+# One configured LLVM toolchain (third_party/llvm/PIN.toml, scripts/fetch_llvm.py).
+set(PRISM_LLVM_PINNED_BIN "" CACHE PATH "bin dir of the pinned LLVM (clang, opt, llvm-link, lli)")
+if(PRISM_LLVM_PINNED_BIN)
+  target_compile_definitions(prism_core PRIVATE PRISM_LLVM_PINNED_BIN="${PRISM_LLVM_PINNED_BIN}")
+endif()
+
 option(PRISM_LIBCLANG "Clang-AST lints through libclang (header needed at build time)" ON)
 if(PRISM_LIBCLANG)
   set(_llvm_hints)
+  if(PRISM_LLVM_PINNED_BIN)
+    list(APPEND _llvm_hints "${PRISM_LLVM_PINNED_BIN}/..")
+  endif()
   foreach(_v 21 20 19 18 17)
     list(APPEND _llvm_hints "/usr/lib/llvm-${_v}")
   endforeach()
   list(APPEND _llvm_hints "/usr/local/opt/llvm" "/opt/homebrew/opt/llvm" "C:/Program Files/LLVM")
   find_path(PRISM_CLANG_C_INCLUDE clang-c/Index.h
     HINTS ${_llvm_hints} PATH_SUFFIXES include)
-  find_library(PRISM_LIBCLANG_LIBRARY NAMES clang libclang clang-18 clang-19 clang-20 clang-17
+  find_library(PRISM_LIBCLANG_LIBRARY NAMES clang libclang
     HINTS ${_llvm_hints} PATH_SUFFIXES lib)
   if(PRISM_CLANG_C_INCLUDE)
     target_include_directories(prism_core SYSTEM PRIVATE "${PRISM_CLANG_C_INCLUDE}")

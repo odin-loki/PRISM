@@ -49,7 +49,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr int kTvVectors = 64;
-constexpr const char* kInstall = "install clang and llvm 18 (apt install clang-18 llvm-18)";
+constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch_llvm.py; see third_party/llvm/PIN.toml) or set PRISM_LLVM_BIN";
 
 std::optional<fs::path> tool(const Config& cfg, std::initializer_list<std::string_view> names) {
     for (auto n : names) {
@@ -389,10 +389,10 @@ std::vector<std::string> base_flags(const fs::path& src) {
 
 Frontend find_frontend(const Config& cfg) {
     Frontend fe;
-    fe.clang = tool(cfg, {"clang-18", "clang"});
-    fe.clangxx = tool(cfg, {"clang++-18", "clang++"});
-    fe.opt = tool(cfg, {"opt-18", "opt"});
-    fe.lli = tool(cfg, {"lli-18", "lli"});
+    fe.clang = cfg.llvm_tool("clang");
+    fe.clangxx = cfg.llvm_tool("clang++");
+    fe.opt = cfg.llvm_tool("opt");
+    fe.lli = cfg.llvm_tool("lli");
     fe.version = "clang";
     if (fe.clang) {
         auto r = detail::run_process({fe.clang->string(), "--version"}, 20.0);
