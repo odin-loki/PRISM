@@ -141,6 +141,26 @@ public:
 
     path& operator/=(const path& __p);
 
+    // Lexical queries on the stored characters only (no OS access).
+    [[nodiscard]] bool is_absolute() const noexcept { return _M_len != 0 && _M_str[0] == '/'; }
+    [[nodiscard]] bool is_relative() const noexcept { return !is_absolute(); }
+    [[nodiscard]] bool has_root_directory() const noexcept { return is_absolute(); }
+    [[nodiscard]] bool has_filename() const { return !filename().empty(); }
+    [[nodiscard]] bool has_extension() const { return !extension().empty(); }
+    [[nodiscard]] bool has_stem() const { return !stem().empty(); }
+    [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
+    void clear() noexcept { _M_free(); }
+    void swap(path& __o) noexcept { _M_swap(__o); }
+    path& remove_filename() {
+        std::size_t __b = 0, __e = 0;
+        _M_last(__b, __e);
+        if (__e > __b) { path __r = _M_slice(0, __b); _M_swap(__r); }
+        return *this;
+    }
+    path& replace_filename(const path& __r) { remove_filename(); return *this /= __r; }
+
+    friend bool operator!=(const path& __a, const path& __b) noexcept { return !(__a == __b); }
+
     friend bool operator==(const path& __a, const path& __b) noexcept {
         if (__a._M_len != __b._M_len) return false;
         for (std::size_t __i = 0; __i < __a._M_len; ++__i)
