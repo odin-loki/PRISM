@@ -18,7 +18,7 @@ __global__ void havoc_kernel(uint8_t *corpus, int seed_len, int nseeds, uint64_t
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int nbytes = nseeds * seed_len;
     if (idx >= nbytes) return;
-    uint64_t x = (uint64_t)idx * 0x9E3779B97F4A7C15ull ^ tick;
+    uint64_t x = static_cast<uint64_t>(idx) * 0x9E3779B97F4A7C15ull ^ tick;
     x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull;
     int seed_i = idx / seed_len;
     int off = idx % seed_len;
@@ -38,12 +38,12 @@ __global__ void havoc_kernel(uint8_t *corpus, int seed_len, int nseeds, uint64_t
     } else if (kind == 5) {
         const int16_t interesting16[10] = {
             -32768, -129, 128, 255, 256, 512, 1000, 1024, 4096, 32767};
-        overlay_le(seed, seed_len, off, static_cast<uint32_t>(uint16_t)interesting16[(x >> 8) % 10], 2);
+        overlay_le(seed, seed_len, off, static_cast<uint32_t>(static_cast<uint16_t>(interesting16[(x >> 8) % 10])), 2);
     } else if (kind == 6) {
         const int32_t interesting32[9] = {
             (int32_t)0x80000000, -100663046, -32769, 32768,
             65535, 65536, 100663045, 2139095040, 2147483647};
-        overlay_le(seed, seed_len, off, (uint32_t)interesting32[(x >> 8) % 9], 4);
+        overlay_le(seed, seed_len, off, static_cast<uint32_t>(interesting32[(x >> 8) % 9]), 4);
     } else {
         int j = static_cast<int>((x >> 16) % static_cast<uint64_t>(seed_len));
         uint8_t t = seed[off];
