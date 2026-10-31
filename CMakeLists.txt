@@ -741,6 +741,7 @@ if(PRISM_TESTS)
   # test_sanitize_static.cpp are reference-only splits and are not built (they
   # would register the same doctest names twice).
   set(_prism_test_sources
+    tests/cpp/test_env_registry.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp
@@ -949,6 +950,7 @@ if(PRISM_TESTS)
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party")
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa prism_ai_lib)
+  target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_ROOT="${PRISM_ROOT}")
   if(_prism_warn)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()

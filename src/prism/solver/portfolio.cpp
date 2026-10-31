@@ -341,7 +341,6 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
     const uint64_t mb = prism::membudget::budget_mb();
     if (mb == 0) return {};
     long min_nodes = 20000;
-    if (const char* e = std::getenv("PRISM_Z3_CHILD_NODES"); e && *e) min_nodes = std::strtol(e, nullptr, 10);
     // Once the tree holds half the budget, every query goes to the killable
     // child: an in-process Z3 call can ignore Z3_interrupt and carry the tree
     // past the budget (full corpus, budget 2000: 2098 MB at the kill).
@@ -596,10 +595,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // simplify polls Z3_interrupt while working on
     // it: priority_queue_contracts.cpp gave a 9.3M-node query whose
     // query.smt2 write alone took the process from 2.1 to 3.5 GB (budget
-    // 3000 MB). Cap: PRISM_MAX_QUERY_NODES, default 1000 nodes per budget MB.
+    // 3000 MB). Cap: 1000 nodes per budget MB.
     if (const uint64_t bmb = prism::membudget::budget_mb(); bmb > 0) {
-        uint64_t cap = bmb * 1000;
-        if (const char* e = std::getenv("PRISM_MAX_QUERY_NODES"); e && *e) cap = std::strtoull(e, nullptr, 10);
+        const uint64_t cap = bmb * 1000;
         if (cap > 0 && static_cast<uint64_t>(ft.nodes) > cap) {
             res.kind = Kind::Unknown;
             notes.push_back("memory budget: query has " + std::to_string(ft.nodes) + " nodes, over the " +

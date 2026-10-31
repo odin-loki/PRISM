@@ -442,3 +442,52 @@ std::optional<fs::path> Config::which_adapter(std::string_view stage,
 }
 
 }  // namespace prism
+
+namespace prism {
+// Every environment variable PRISM reads, in one place. A getenv of a
+// PRISM_* name that is not listed here fails test_env_registry.
+const std::vector<EnvVar>& env_vars() {
+    static const std::vector<EnvVar> v = {
+    {"PRISM_BIN", "path of the prism executable used by tools and tests"},
+    {"PRISM_CERT_CACHE_MAX", "maximum entries kept in the proof-certificate cache"},
+    {"PRISM_CHECKER_MEM", "memory cap (MB) for external certificate checkers"},
+    {"PRISM_CONF_KEEP", "qa conformance/soundness: keep per-task scratch dirs"},
+    {"PRISM_EMBED_SERVER", "URL of the embedding server used by ai helpers"},
+    {"PRISM_FUNCTION_BUDGET", "per-function time budget (seconds)"},
+    {"PRISM_GGUF", "path of the default GGUF model"},
+    {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},
+    {"PRISM_LAKE", "path of Lean's lake for proof search"},
+    {"PRISM_LLAMA_SERVER", "URL of a running llama server"},
+    {"PRISM_LLAMA_SERVER_BIN", "path of the llama-server binary"},
+    {"PRISM_MEM_BUDGET_MB", "process-tree memory budget (MB); 0 = unlimited"},
+    {"PRISM_MEM_RESERVE_MB", "memory held back from the budget for the main process"},
+    {"PRISM_MEM_STUCK_MS", "time over the hard limit before the stuck hook fires"},
+    {"PRISM_MEM_TRACE", "diagnostics: memory-budget, Z3 and pir memory trace lines on stderr"},
+    {"PRISM_MODEL", "default LLM model name"},
+    {"PRISM_N_GPU_LAYERS", "GPU layers for local LLM inference"},
+    {"PRISM_PBSD", "path of the pbsd tool"},
+    {"PRISM_PIR_BATCH", "pir: functions per fresh-process batch"},
+    {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
+    {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (removed with bmc)"},
+    {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},
+    {"PRISM_PROOF_CACHE", "directory of the proof cache"},
+    {"PRISM_PROVER_GGUF", "path of the prover GGUF model"},
+    {"PRISM_PROVER_MODEL", "prover LLM model name"},
+    {"PRISM_PROVER_SERVER", "URL of the prover LLM server"},
+    {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
+    {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
+    {"PRISM_TOOLS_DIR", "directory of vendored external tools"},
+    {"PRISM_TRIAGE", "enable LLM triage"},
+    {"PRISM_VERSION", "override the reported version string"},
+    {"PRISM_Z3_GENERATED_ROOT", "z3gen: output root for generated Z3 sources (build time)"},
+    {"PRISM_Z3_WORKER", "path of the executable used for killable Z3 child queries"},
+    {"OLLAMA_HOST", "Ollama endpoint"},
+    {"CC_SAN", "qa replay: C compiler for sanitizer builds"},
+    {"CXX_SAN", "qa replay: C++ compiler for sanitizer builds"},
+    {"MALLOC_ARENA_MAX", "glibc; if unset PRISM caps arenas at 2"},
+    {"SOURCE_DATE_EPOCH", "reproducible timestamps in reports"},
+    {"XDG_CACHE_HOME", "cache root"},
+    };
+    return v;
+}
+}  // namespace prism

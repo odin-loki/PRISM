@@ -95,4 +95,10 @@ PRISM_API std::string tool_identity(const std::filesystem::path& exe);
 PRISM_API void stamp_tool_sha(std::vector<Finding>& findings, const std::filesystem::path& exe);
 PRISM_API std::string sha256_hex(std::string_view data);
 
+// The documented environment variables (src/prism/config.cpp).
+struct EnvVar {
+    std::string_view name, purpose;
+};
+PRISM_API const std::vector<EnvVar>& env_vars();
+
 }  // namespace prism

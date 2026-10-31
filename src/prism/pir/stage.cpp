@@ -1545,7 +1545,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // a helper no unit calls is emitted by none, so it would have no verdict.
     // The header is lowered alone as C with every declaration emitted, after
     // the units; only functions no unit reported are kept from it.
-    if (!units.empty() && std::getenv("PRISM_PIR_NO_HEADERS") == nullptr) {
+    if (!units.empty()) {
         static const Regex has_body(R"(\)\s*\{)");
         for (auto& p : sources)
             if (p.extension() == ".h" && has_body.search(read_file(p)))
@@ -1661,7 +1661,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             const auto lt0 = std::chrono::steady_clock::now();
             progress_note("lower-start", u.path, 0.0);
             l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
-            if (!l.ir && !u.header && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
+            if (!l.ir && !u.header) {
                 // clang reports the first error only (first_error): cut the
                 // functions it names, re-lower, and repeat with the errors
                 // gathered so far (the salvaged copy keeps the original file
