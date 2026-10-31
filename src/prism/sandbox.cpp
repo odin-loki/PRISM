@@ -49,6 +49,19 @@ std::vector<std::string> bwrap_argv(const std::string& bwrap, const std::vector<
                                  "/dev",  "--proc",    "/proc",  "--tmpfs",  "/tmp",
                                  "--bind", s,          s,        "--unshare-all",
                                  "--die-with-parent", "--"};
+    // The fresh /tmp hides a program that lives there (a tool unpacked or
+    // built under the temp dir): keep its directory visible, read-only.
+    if (!argv.empty()) {
+        const fs::path exe(argv[0]);
+        const auto rel = exe.lexically_relative("/tmp");
+        const auto in_scratch = exe.lexically_relative(scratch);
+        const bool under_tmp = exe.is_absolute() && !rel.empty() && *rel.begin() != "..";
+        const bool under_s = !in_scratch.empty() && *in_scratch.begin() != "..";
+        if (under_tmp && !under_s) {
+            const std::string d = exe.parent_path().string();
+            out.insert(out.end() - 3, {"--ro-bind", d, d});
+        }
+    }
     out.insert(out.end(), argv.begin(), argv.end());
     return out;
 }

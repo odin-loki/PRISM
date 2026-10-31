@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -130,7 +132,7 @@ TEST_CASE("cxx flat_set model: duplicate insert does not grow size; erase delete
 }
 
 TEST_CASE("cxx flat_set model: container equality does not read past the shorter set") {
-    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "flat_set");
+    const auto src = prism_test::unwrap_prose(slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "flat_set"));
     REQUIRE(!src.empty());
 
     CHECK(src.find("#include <memory>") == std::string::npos);

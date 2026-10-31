@@ -9,6 +9,6 @@ int cxx_make_unique_true(int c) {
     (void)z;
     auto a = std::make_unique<int[]>(2);
     a[0] = *p;
-    a[1] = 1;
+    a[1] = 0;
     return a[0] + a[1];
 }

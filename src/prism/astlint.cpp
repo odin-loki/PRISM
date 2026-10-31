@@ -440,6 +440,56 @@ bool libclang_available(std::string* why, std::string* where) {
     return detail::libclang_load(fe.clang ? fe.clang : fe.clangxx, why, where);
 }
 
+// libclang does not read the driver's config file (--sysroot, gcc toolchain)
+// and finds its builtin headers relative to where it was built to live, so a
+// relocated install (conda, a copied toolchain) misses stddef.h or <string>.
+// The clang driver beside it knows: ask it once per clang and language for
+// the cc1 system include list and pass that list explicitly.
+std::vector<std::string> driver_system_flags(const std::optional<fs::path>& clang, bool cxx) {
+    if (!clang) return {};
+    static std::mutex mu;
+    static std::map<std::pair<std::string, bool>, std::vector<std::string>> cache;
+    std::lock_guard lk(mu);
+    auto key = std::pair{clang->string(), cxx};
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    std::vector<std::string> out;
+    auto pr = ::prism::detail::run_process(
+        {key.first, "-###", "-fsyntax-only", "-x", cxx ? "c++" : "c", "-"}, 30);
+    if (!pr.failed && !pr.timed_out && pr.rc == 0) {
+        // The cc1 line: tokens in double quotes, backslash escapes.
+        std::vector<std::string> toks;
+        std::string cur;
+        bool in = false;
+        for (std::size_t i = 0; i < pr.text.size(); ++i) {
+            char c = pr.text[i];
+            if (!in) {
+                if (c == '"') { in = true; cur.clear(); }
+                continue;
+            }
+            if (c == '\\' && i + 1 < pr.text.size()) { cur += pr.text[++i]; continue; }
+            if (c == '"') { in = false; toks.push_back(cur); continue; }
+            cur += c;
+        }
+        std::vector<std::string> dirs;
+        std::string rdir;
+        for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
+            if (toks[i] == "-internal-isystem" || toks[i] == "-internal-externc-isystem") dirs.push_back(toks[i + 1]);
+            else if (toks[i] == "-resource-dir") rdir = toks[i + 1];
+        }
+        if (!dirs.empty()) {
+            if (!rdir.empty()) out.push_back("-resource-dir=" + rdir);
+            out.push_back("-nostdinc");
+            if (cxx) out.push_back("-nostdinc++");
+            for (auto& d : dirs) {
+                out.push_back("-isystem");
+                out.push_back(d);
+            }
+        }
+    }
+    cache[key] = out;
+    return out;
+}
+
 FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, const fs::path& root,
                     std::string_view rel, double timeout_s, Backend backend, const Headers& headers) {
     FileResult r;
@@ -454,6 +504,10 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     if (use_lib) {
         auto fsx = file_set(src, rel, headers);
         std::string err;
+        {
+            auto sys = driver_system_flags(clang, is_cxx_unit(src));
+            flags.insert(flags.end(), sys.begin(), sys.end());
+        }
         auto u = detail::libclang_unit(flags, src.string(), fsx, is_cxx_unit(src), err);
         if (!u) {
             r.error = err.starts_with("does not parse: ") ? name_error(err.substr(16), src, rel, has_db) : err;
@@ -483,13 +537,23 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
         return r;
     }
     if (pr.rc != 0) {
+        // stdout (megabytes of JSON) and stderr are merged, so the first
+        // diagnostic can be anywhere. Diagnostics start in column 0 with
+        // "<file>:<line>:<col>: error:"; JSON lines start with space or a brace.
         std::string first;
-        std::size_t from = pr.text.size() > (1u << 20) ? pr.text.size() - (1u << 20) : 0;
-        std::istringstream ls(pr.text.substr(from));
-        std::string line;
-        while (std::getline(ls, line)) {
-            if (line.find("error:") != std::string::npos) {
-                first = line;
+        std::string_view text = pr.text;
+        for (std::size_t at = 0; at < text.size();) {
+            std::size_t nl = text.find('\n', at);
+            if (nl == std::string_view::npos) nl = text.size();
+            std::string_view line = text.substr(at, nl - at);
+            at = nl + 1;
+            if (line.empty() || line[0] == ' ' || line[0] == '{' || line[0] == '}' || line[0] == '"') continue;
+            // "fatal error:" too (a missing header), and clang's MSVC-style
+            // "<file>(<line>,<col>): error:" on Windows targets.
+            if (line.find(": error:") != std::string_view::npos || line.find(": fatal error:") != std::string_view::npos ||
+                line.find("): error") != std::string_view::npos || line.starts_with("error:") ||
+                line.starts_with("fatal error:")) {
+                first = std::string(line);
                 break;
             }
         }

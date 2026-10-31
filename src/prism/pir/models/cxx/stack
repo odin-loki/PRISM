@@ -254,9 +254,13 @@ public:
     [[nodiscard]] friend bool operator>(const stack& __x, const stack& __y) { return __y < __x; }
     [[nodiscard]] friend bool operator<=(const stack& __x, const stack& __y) { return !(__y < __x); }
     [[nodiscard]] friend bool operator>=(const stack& __x, const stack& __y) { return !(__x < __y); }
+    // A template so that the return type is only formed when <=> is used: a
+    // stack of an element without < (unique_ptr under libstdc++ 14) is still
+    // a complete type.
+    template <typename _Up = _Tp>
     [[nodiscard]] friend auto operator<=>(const stack& __x, const stack& __y)
-        -> decltype(__detail::__synth3way(std::declval<const _Tp&>(), std::declval<const _Tp&>())) {
-        using _Cat = decltype(__detail::__synth3way(std::declval<const _Tp&>(), std::declval<const _Tp&>()));
+        -> decltype(__detail::__synth3way(std::declval<const _Up&>(), std::declval<const _Up&>())) {
+        using _Cat = decltype(__detail::__synth3way(std::declval<const _Up&>(), std::declval<const _Up&>()));
         const _Node* __a = __x._M_bot;
         const _Node* __b = __y._M_bot;
         while (__a && __b) {

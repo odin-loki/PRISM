@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_numbers_false.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_numbers_false: false
+witness:
+  cxx_numbers_false: [1]

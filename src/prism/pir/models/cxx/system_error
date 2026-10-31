@@ -30,6 +30,13 @@
 // need std::runtime_error and the string / stdexcept headers, which this
 // file does not include. A use of either name fails to compile and falls
 // back the same way.
+// libstdc++'s bits/ios_base.h (reached from <ios>, <sstream>, <iostream>)
+// needs the full <system_error>: io_errc specializes is_error_code_enum and
+// ios_base::failure derives from system_error. When <ios> asks, the real
+// header is used and this partial model is not.
+#if defined(_IOS_BASE_H) && !defined(_GLIBCXX_SYSTEM_ERROR)
+#include_next <system_error>
+#endif
 #ifndef _GLIBCXX_SYSTEM_ERROR
 #define _GLIBCXX_SYSTEM_ERROR 1  // libstdc++'s <system_error> include guard: never both
 

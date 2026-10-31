@@ -474,6 +474,22 @@ std::optional<z3::expr> parse_literal(z3::context& c, const z3::sort& s, std::st
         if (v == "false") return c.bool_val(false);
         return std::nullopt;
     }
+    if (s.is_array()) {
+        // An array value as Z3 prints it, e.g. ((as const (Array ..)) #x01)
+        // or a store chain over one: parse it with the SMT-LIB2 reader and
+        // keep it only when it is closed (no free constants).
+        try {
+            const std::string text = "(declare-const |prism!v| " + s.to_string() + ")(assert (= |prism!v| " +
+                                     std::string(v) + "))";
+            z3::expr_vector as = c.parse_string(text.c_str());
+            if (as.size() != 1 || as[0].num_args() != 2) return std::nullopt;
+            z3::expr val = as[0].arg(1);
+            if (!z3::eq(val.get_sort(), s) || !collect_consts(val).empty()) return std::nullopt;
+            return val;
+        } catch (const z3::exception&) {
+            return std::nullopt;
+        }
+    }
     if (!s.is_bv()) return std::nullopt;
     const unsigned w = s.bv_size();
     std::vector<bool> bits;  // LSB first

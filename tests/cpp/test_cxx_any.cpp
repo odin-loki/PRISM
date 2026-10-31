@@ -74,7 +74,7 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
         posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
     }
     pid_t pid = 0;
-    extern char** environ;
+    // environ comes from <unistd.h> (a block-scope extern here would get internal linkage).
     if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
         posix_spawn_file_actions_destroy(&actions);
         if (out) {
@@ -233,7 +233,10 @@ TEST_CASE("cxx any model: empty any_cast is a check and does not invent a value"
     REQUIRE(mk != std::string::npos);
     const auto mk_end = src.find("template <typename _ValueType>", mk);
     REQUIRE(mk_end != std::string::npos);
-    const std::string made = src.substr(mk, mk_end - mk);
+    // The enable_if constraint is the return type, written before the name.
+    const auto mk_from = src.rfind("template <typename _Tp, typename... _Args>", mk);
+    REQUIRE(mk_from != std::string::npos);
+    const std::string made = src.substr(mk_from, mk_end - mk_from);
     CHECK(made.find("is_constructible_v<any, in_place_type_t<_Tp>, _Args...>") != std::string::npos);
     CHECK(made.find("return any(in_place_type<_Tp>, std::forward<_Args>(__args)...);") != std::string::npos);
     CHECK(made.find("return T{}") == std::string::npos);
