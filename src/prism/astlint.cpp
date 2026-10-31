@@ -548,7 +548,11 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
             std::string_view line = text.substr(at, nl - at);
             at = nl + 1;
             if (line.empty() || line[0] == ' ' || line[0] == '{' || line[0] == '}' || line[0] == '"') continue;
-            if (line.find(": error:") != std::string_view::npos || line.starts_with("error:")) {
+            // "fatal error:" too (a missing header), and clang's MSVC-style
+            // "<file>(<line>,<col>): error:" on Windows targets.
+            if (line.find(": error:") != std::string_view::npos || line.find(": fatal error:") != std::string_view::npos ||
+                line.find("): error") != std::string_view::npos || line.starts_with("error:") ||
+                line.starts_with("fatal error:")) {
                 first = std::string(line);
                 break;
             }
