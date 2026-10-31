@@ -520,6 +520,7 @@ struct Enc {
     struct HeapSlot { uint64_t id; uint64_t size; z3::expr live; std::string name; };
     std::vector<HeapSlot> heap;
     std::vector<z3::expr> targ;
+    std::map<std::pair<int, int>, int> create_slot;  // (thread, node) of a looped Create -> created thread
     // mutexes / condition variables addressed through the bounded memory
     z3::expr OwnA, CgenA;
     std::vector<z3::expr> tkd;  // per thread: CgenA[cv] when it released for a wait on a non-global cv  // per thread: the argument its creating call passed
@@ -933,6 +934,23 @@ struct Enc {
                 break;
             }
             case VisOp::Create: {
+                if (o.copies > 1 || create_slot.count({t, node})) {
+                    // looped creation: head = handle address, tail = argument
+                    int u = create_slot.at({t, node});
+                    if (mk.tail) {
+                        auto& ta = targ[static_cast<std::size_t>(u)];
+                        ta = z3::ite(e, lookup(t, node, s.args.at(0)), ta);
+                        define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
+                        return;
+                    }
+                    auto& a = active[static_cast<std::size_t>(u)];
+                    a = a || e;
+                    auto h = lookup(t, node, s.args.at(0));
+                    M = z3::ite(e, z3::store(M, h, c.bv_val(static_cast<uint64_t>(u), 64)), M);
+                    define(t, node, s.dst, e, h);
+                    touch(t, e, mk.op, -1, false, false);
+                    return;
+                }
                 auto& a = active[static_cast<std::size_t>(o.thread)];
                 a = a || e;
                 auto& ta = targ[static_cast<std::size_t>(o.thread)];
@@ -1184,11 +1202,28 @@ struct Enc {
                                "UNENCODED: " + o.what + " reached by several threads, or a thread that (indirectly) "
                                "creates itself" + at_line(o.line)};
             }
+        // looped creation sites: the k-th unrolled execution creates slot
+        // thread + k; more executions than slots is a bound hit (reported)
+        for (std::size_t t = 0; t < N; ++t) {
+            std::map<int, int> used;
+            for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                int h = g[t].nodes[nd].head;
+                if (h < 0) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(h)];
+                if (o.kind != VisOp::Create || o.copies <= 1) continue;
+                int k = used[h]++;
+                if (k >= o.copies)
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " runs more than " + std::to_string(o.copies) +
+                                   " times (thread slots per looped creation site = unwind)" + at_line(o.line)};
+                create_slot[{static_cast<int>(t), static_cast<int>(nd)}] = o.thread + k;
+            }
+        }
         for (std::size_t t = 0; t < N; ++t)
             for (auto& nd : g[t].nodes) {
                 if (nd.head < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
-                if (o.kind != VisOp::Create) continue;
+                if (o.kind != VisOp::Create || o.copies > 1) continue;
                 int cnt = 0;
                 for (auto& m : g[t].nodes)
                     if (m.head == nd.head) ++cnt;
@@ -1318,6 +1353,9 @@ Result check(const Program& prog, const Options& opt) {
         Enc enc(prog, opt);
         enc.encode();
         res.extra["heap_slots"] = std::to_string(enc.heap.size());
+        for (auto& o : prog.ops)
+            if (o.kind == VisOp::Create && o.copies > 1)
+                res.extra["loop_thread_slots"] = std::to_string(o.copies) + " per looped creation site";
         z3::solver s(enc.c);
         z3::params prm(enc.c);
         prm.set("timeout", static_cast<unsigned>(std::max(1.0, opt.timeout_s) * 1000));

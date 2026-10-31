@@ -80,7 +80,11 @@ struct VisOp {
     // releases for a wait on such a condition variable has cond_dyn set and a
     // tail marker copying the condition variable's address.
     bool dyn = false;
-    bool cond_dyn = false;       // Alloc: calloc (memory is zero either way: M starts at 0)
+    bool cond_dyn = false;
+    // Create in a loop (handle stored through the bounded memory): thread
+    // slots thread .. thread + copies - 1, one per unrolled execution; the
+    // head marker copies the handle's address, the tail marker the argument.
+    int copies = 1;       // Alloc: calloc (memory is zero either way: M starts at 0)
 };
 
 // An object of the bounded memory (docs/CONCURRENCY.md "Memory"): a shared

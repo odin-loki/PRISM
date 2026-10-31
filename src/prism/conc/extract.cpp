@@ -249,7 +249,10 @@ struct Rewriter {
     pir::pirmem::Layout lay;
     std::map<std::string, int> obj_index;             // aggregate global -> Program::objects
     std::map<std::string, std::string> caddr;         // "fn/%p" -> i64 local holding its address
-    std::set<std::string> arg_params;                 // "fn/%p": thread-entry parameters carried by VisOp::Arg
+    std::set<std::string> arg_params;
+    int loop_copies = 4;                              // thread slots per creation site in a loop (Options::unwind)
+    std::map<std::string, int> create_seen;           // fn -> creation calls seen (pass 1 / rewrite order)
+    std::map<std::string, int> loop_create;           // "fn#n" -> Create op of a creation site in a loop                 // "fn/%p": thread-entry parameters carried by VisOp::Arg
 
     Rewriter(const ir::Module& s, std::string_view ir_text) : src(s), m(s), lay(s) {
         for (auto& g : parse_globals(ir_text)) globals[g.name] = g;
@@ -416,11 +419,46 @@ struct Rewriter {
         }
         if (p.v.kind == ir::Value::Local) {
             auto it = caddr.find(handle_key(fn, "%" + p.v.name));
-            if (it == caddr.end()) return std::nullopt;
+            if (it == caddr.end()) {
+                // an aggregate alloca of the harness (it runs once): a memory object
+                int k = harness_stack_object(fn, p.v.name);
+                if (k < 0) return std::nullopt;
+                obj = k;
+                return cint(obj_base(k), i64);
+            }
             obj = -1;
             return local(it->second, i64);
         }
         return std::nullopt;
+    }
+
+    const ir::Inst* def_of(const std::string& fn, const std::string& name) const {
+        const auto* f = src.find(fn);
+        if (!f) return nullptr;
+        for (auto& bl : f->blocks)
+            for (auto& in : bl.insts)
+                if (in.result == name) return &in;
+        return nullptr;
+    }
+
+    int harness_stack_object(const std::string& fn, const std::string& name) {
+        if (fn != prog.harness) return -1;
+        auto key = fn + "/%" + name;
+        if (auto it = obj_index.find(key); it != obj_index.end()) return it->second;
+        if (handle_thread.count(key)) return -1;
+        const auto* d = def_of(fn, name);
+        if (!d || d->op != "alloca" || (!d->ops.empty() && d->ops[0].v.kind != ir::Value::Int)) return -1;
+        const auto& rt = lay.resolve(d->ety);
+        if (rt.kind != ir::Type::Array && rt.kind != ir::Type::Struct) return -1;
+        MemObject o;
+        o.name = name;
+        o.size = lay.alloc_size(d->ety);
+        if (!d->ops.empty()) o.size *= d->ops[0].v.bits;
+        if (o.size == 0 || o.size > (uint64_t{1} << 31)) throw Unenc{"UNENCODED: size of local aggregate %" + name};
+        prog.objects.push_back(std::move(o));
+        int k = static_cast<int>(prog.objects.size()) - 1;
+        obj_index[key] = k;
+        return k;
     }
 
     // ---- symbolic pointers into the bounded memory ----
@@ -434,7 +472,8 @@ struct Rewriter {
         if (o.v.kind == ir::Value::ConstExpr && !o.v.elems.empty() &&
             (o.v.ce_op == "getelementptr" || o.v.ce_op == "bitcast"))
             return mem_resolvable(fn, o.v.elems[0]);
-        if (o.v.kind == ir::Value::Local) return caddr.count(handle_key(fn, "%" + o.v.name)) > 0;
+        if (o.v.kind == ir::Value::Local)
+            return caddr.count(handle_key(fn, "%" + o.v.name)) > 0 || harness_stack_object(fn, o.v.name) >= 0;
         return false;
     }
 
@@ -659,6 +698,35 @@ struct Rewriter {
                     const auto& fnv = in.ops[fi].v;
                     if (fnv.kind != ir::Value::Global || !src.find(fnv.name))
                         throw Unenc{"UNENCODED: " + in.callee + " of a function pointer that is not a defined function"};
+                    std::string site = f.name + "#" + std::to_string(create_seen[f.name]++);
+                    const ir::Inst* hd = h.kind == ir::Value::Local ? def_of(f.name, h.name) : nullptr;
+                    bool indexed = h.kind == ir::Value::ConstExpr || (hd && hd->op == "getelementptr");
+                    if (indexed) {
+                        // handle in an array (threads created in a loop): copies slots
+                        Thread th;
+                        th.entry = fnv.name;
+                        th.name = fnv.name;
+                        if (auto* ef = src.find(fnv.name)) {
+                            auto it = src.subprograms.find(ef->dbg);
+                            if (it != src.subprograms.end() && !it->second.name.empty()) th.name = it->second.name;
+                        }
+                        VisOp op;
+                        op.kind = VisOp::Create;
+                        op.thread = static_cast<int>(prog.threads.size());
+                        op.copies = loop_copies;
+                        op.line = line_of(in);
+                        op.what = in.callee;
+                        int k = add_op(op);
+                        th.create_op = k;
+                        for (int c = 0; c < loop_copies; ++c) {
+                            auto tc = th;
+                            if (loop_copies > 1) tc.name += "#" + std::to_string(c);
+                            prog.threads.push_back(std::move(tc));
+                        }
+                        loop_create[site] = k;
+                        entry_of[fnv.name] = "";
+                        continue;
+                    }
                     std::string hk;
                     if (h.kind == ir::Value::Local) hk = handle_key(f.name, "%" + h.name);
                     else if (h.kind == ir::Value::Global) hk = "@" + h.name;
@@ -750,6 +818,7 @@ struct Rewriter {
         if (op == "alloca") {
             // thread handles live in allocas: drop them (their loads become constants)
             if (handle_thread.count(handle_key(fn, "%" + in.result))) return;
+            if (obj_index.count(fn + "/%" + in.result)) return;  // a memory object (harness_stack_object)
             out.push_back(in);
             return;
         }
@@ -962,8 +1031,22 @@ struct Rewriter {
             return in.ops[i];
         };
         if (n == "pthread_create" || n == "thrd_create") {
-            int k = create_op_for(fn, in);
+            auto site = fn + "#" + std::to_string(create_seen[fn]++);
             const auto& ta = arg(n == "pthread_create" ? 3 : 2);
+            if (auto lc = loop_create.find(site); lc != loop_create.end()) {
+                int ho = -1, ao = -1;
+                auto ha = mem_addr(fn, arg(0), ho);
+                if (!ha) throw Unenc{"UNENCODED: " + n + " handle array outside the bounded memory"};
+                std::optional<ir::Operand> av = ta.v.kind == ir::Value::Null || ta.v.kind == ir::Value::Zero
+                                                    ? std::optional{cint(0, i64)}
+                                                    : mem_addr(fn, ta, ao);
+                if (!av) throw Unenc{"UNENCODED: " + n + " argument outside the bounded memory"};
+                out.push_back(copy(in, marker(lc->second), *ha));
+                out.push_back(copy(in, marker(lc->second, true), *av));
+                zero_result(in, out);
+                return;
+            }
+            int k = create_op_for(fn, in);
             std::optional<ir::Operand> av;
             int obj = -1;
             if (ta.v.kind == ir::Value::Null || ta.v.kind == ir::Value::Zero || ta.v.kind == ir::Value::Undef ||
@@ -1300,6 +1383,7 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
     tl_weak_order.clear();
     try {
         Rewriter rw(m, ir_text);
+        rw.loop_copies = std::max(1, opt.unwind);
         Thread main;
         main.entry = harness;
         main.name = harness;
