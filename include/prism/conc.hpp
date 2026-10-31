@@ -49,7 +49,7 @@ struct Options {
 
 // A visible operation: a context-switch point is placed before each one.
 struct VisOp {
-    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free };
+    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free, Arg };
     Kind kind = Load;
     int var = -1;            // Load/Store/Rmw: shared variable
     int mutex = -1;          // Lock/TryLock/Unlock/MutexInit
@@ -69,6 +69,9 @@ struct VisOp {
     // result is the i64 address of a fresh heap slot (one per unrolled
     // execution of the call, so the allocation count is bounded by the
     // unwinding); Free: the marker copies the freed address.
+    // Create: the marker copies the thread argument (i64 address into the
+    // bounded memory, 0 for null); Arg: at the entry of a thread function, the
+    // marker's result is the argument its creating call passed.
     uint64_t size = 0;
     bool zero = false;       // Alloc: calloc (memory is zero either way: M starts at 0)
 };

@@ -249,6 +249,7 @@ struct Rewriter {
     pir::pirmem::Layout lay;
     std::map<std::string, int> obj_index;             // aggregate global -> Program::objects
     std::map<std::string, std::string> caddr;         // "fn/%p" -> i64 local holding its address
+    std::set<std::string> arg_params;                 // "fn/%p": thread-entry parameters carried by VisOp::Arg
 
     Rewriter(const ir::Module& s, std::string_view ir_text) : src(s), m(s), lay(s) {
         for (auto& g : parse_globals(ir_text)) globals[g.name] = g;
@@ -685,9 +686,32 @@ struct Rewriter {
 
     void rewrite_function(ir::Function& f, const std::string& orig_name) {
         std::map<std::string, std::pair<std::string, std::string>> cmpx;  // result -> (old, ok)
+        // thread argument: the entry's pointer parameter carries the address
+        // its creating call passed (VisOp::Arg)
+        std::vector<ir::Inst> pre;
+        if (entry_of.count(orig_name) && !f.params.empty() && f.params[0].ty.kind == ir::Type::Ptr &&
+            !f.params[0].name.empty() && !f.blocks.empty()) {
+            const auto& pn = f.params[0].name;
+            caddr[handle_key(orig_name, "%" + pn)] = paddr(pn);
+            VisOp vo;
+            vo.kind = VisOp::Arg;
+            vo.what = "thread argument";
+            int k = add_op(vo);
+            ir::Inst anchor;
+            if (!f.blocks[0].insts.empty()) anchor = f.blocks[0].insts[0];
+            pre.push_back(copy(anchor, marker(k), cint(0, int_type(64))));
+            pre.push_back(freeze(anchor, paddr(pn), local(marker(k), int_type(64))));
+            arg_params.insert(handle_key(orig_name, "%" + pn));
+        }
         find_mem_pointers(orig_name, f);
+        bool first = true;
         for (auto& bl : f.blocks) {
             std::vector<ir::Inst> out;
+            if (first) {
+                // after the entry block's phis/allocas would be ideal; the entry block has no phis
+                out = pre;
+                first = false;
+            }
             bool cut = false;
             for (auto& in : bl.insts) {
                 if (cut) break;
@@ -929,7 +953,16 @@ struct Rewriter {
         };
         if (n == "pthread_create" || n == "thrd_create") {
             int k = create_op_for(fn, in);
-            out.push_back(copy(in, marker(k), cint(0, i64)));
+            const auto& ta = arg(n == "pthread_create" ? 3 : 2);
+            std::optional<ir::Operand> av;
+            int obj = -1;
+            if (ta.v.kind == ir::Value::Null || ta.v.kind == ir::Value::Zero || ta.v.kind == ir::Value::Undef ||
+                ta.v.kind == ir::Value::Poison)
+                av = cint(0, i64);
+            else
+                av = mem_addr(fn, ta, obj);
+            if (!av) throw Unenc{"UNENCODED: " + n + " argument outside the bounded memory (stack or scalar global)"};
+            out.push_back(copy(in, marker(k), *av));
             zero_result(in, out);
             return;
         }
@@ -1082,7 +1115,7 @@ struct Rewriter {
     // Thread entry: drop the (unused) argument and the return value.
     void prepare_entry(ir::Function& f) {
         for (auto& p : f.params) {
-            if (p.name.empty()) continue;
+            if (p.name.empty() || arg_params.count(handle_key(f.name, "%" + p.name))) continue;
             for (auto& bl : f.blocks)
                 for (auto& in : bl.insts) {
                     bool used = false;

@@ -372,6 +372,7 @@ std::string op_text(const Program& p, const VisOp& o) {
         case VisOp::CondSignal: return o.what + "(" + p.conds[static_cast<std::size_t>(o.cond)] + ")";
         case VisOp::Alloc: return o.what + "(" + std::to_string(o.size) + ")";
         case VisOp::Free: return o.what;
+        case VisOp::Arg: return o.what;
     }
     return o.what;
 }
@@ -516,6 +517,7 @@ struct Enc {
     // bounded heap: one slot per unrolled execution of an allocation site
     struct HeapSlot { uint64_t id; uint64_t size; z3::expr live; std::string name; };
     std::vector<HeapSlot> heap;
+    std::vector<z3::expr> targ;  // per thread: the argument its creating call passed
     std::map<std::pair<int, int>, std::size_t> heap_of;  // (thread, node) -> heap index
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
@@ -889,7 +891,14 @@ struct Enc {
             case VisOp::Create: {
                 auto& a = active[static_cast<std::size_t>(o.thread)];
                 a = a || e;
+                auto& ta = targ[static_cast<std::size_t>(o.thread)];
+                ta = z3::ite(e, lookup(t, node, s.args.at(0)), ta);
                 break;
+            }
+            case VisOp::Arg: {
+                define(t, node, s.dst, e, targ[static_cast<std::size_t>(t)]);
+                touch(t, e, mk.op, -1, false, false);
+                return;
             }
             case VisOp::Alloc: {
                 auto& h = heap.at(heap_of.at({t, node}));
@@ -1147,6 +1156,7 @@ struct Enc {
         for (std::size_t k = 0; k < p.conds.size(); ++k) cgen.push_back(bv(0, 16));
         ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
         for (std::size_t t = 0; t < N; ++t) {
+            targ.push_back(c.bv_val(0, 64));
             pc.push_back(c.bv_val(0, 16));
             active.push_back(c.bool_val(t == 0));
         }
