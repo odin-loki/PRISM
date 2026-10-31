@@ -818,7 +818,7 @@ void snprintf_ok(void) {
     char b[4];
     snprintf(b, sizeof b, "x");
 }
-typedef int wchar_t;
+#include <wchar.h> /* the platform's wchar_t: int on glibc, unsigned short on UCRT */
 wchar_t *wcscpy(wchar_t *dst, const wchar_t *src);
 void wcs_bad(void) {
     wchar_t b[4];
