@@ -64,6 +64,7 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # third_party/ before anything from there is built. -DPRISM_DEPS_ONLY=ON
 # configures this target alone (no Z3, no PCRE2).
 option(PRISM_DEPS_ONLY "Configure only the std-only prism-deps tool" OFF)
+include(cmake/forge.cmake)  # FORGE: mandatory, the one integration point
 add_library(prism_deps_lib STATIC
   src/prism/log.cpp  # prism::log: std-only, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
@@ -676,7 +677,6 @@ else()
   message(WARNING "PRISM_CUDA=OFF — CUDA kernel skipped (NOTRUN, not a silent disable)")
 endif()
 
-include(cmake/forge_mind.cmake)
 target_link_libraries(prism_core PUBLIC prism_forge_mind)
 
 if(PRISM_QT)

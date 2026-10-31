@@ -4,7 +4,7 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 
 | Dependency | Kind | Pin | Where | Vendored? |
 |---|---|---|---|---|
-| FORGE (odin-loki/FORGE) | linked, **mandatory** | **unpinned**, tracks `main` | `FORGE_SOURCE_DIR` or FetchContent `main` (cmake/forge_mind.cmake) | no (by design) |
+| FORGE (odin-loki/FORGE) | linked, **mandatory** | **unpinned**, tracks `main` | `FORGE_SOURCE_DIR` or FetchContent `main` (cmake/forge.cmake) | no (by design) |
 | Z3 4.13.4 | linked | commit + archive/tree SHA-256 | third_party/MANIFEST.toml | yes, third_party/z3 |
 | PCRE2 | linked | commit + SHA-256 | MANIFEST.toml | yes |
 | xsimd | linked | commit + SHA-256 | MANIFEST.toml | yes |
