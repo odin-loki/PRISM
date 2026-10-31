@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <cstring>
+#include "prism/log.hpp"
 #include "prism/membudget.hpp"
 
 #include <algorithm>
@@ -290,17 +291,18 @@ void watchdog() {
             std::function<void()> h;
             { std::lock_guard<std::mutex> lk(g_hmu); h = g_stuck_hook; }
             if (std::getenv("PRISM_MEM_TRACE"))
-                std::fprintf(stderr, "[memtrace] stuck %ld ms rss=%llu phases=%s: hard stop\n", stuck_ms,
-                             static_cast<unsigned long long>(rss_mb()), phases().c_str());
+                prism::log::trace("memtrace", "stuck " + std::to_string(stuck_ms) + " ms rss=" + std::to_string(rss_mb()) +
+                                                  " phases=" + phases() + ": hard stop");
             if (h) h();
         }
         g_trips.fetch_add(1);
         if (std::getenv("PRISM_MEM_TRACE")) {
             std::size_t n = 0;
             { std::lock_guard<std::mutex> lk(g_wmu); n = g_watches.size(); }
-            std::fprintf(stderr, "[memtrace] %lld trip rss=%llu watches=%zu phases=%s\n",
-                         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                         static_cast<unsigned long long>(rss_mb()), n, phases().c_str());
+            prism::log::trace("memtrace", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                     std::chrono::system_clock::now().time_since_epoch()).count()) +
+                                                 " trip rss=" + std::to_string(rss_mb()) + " watches=" + std::to_string(n) +
+                                                 " phases=" + phases());
         }
         std::lock_guard<std::mutex> lk(g_wmu);
         for (auto& [id, r] : g_watches) {

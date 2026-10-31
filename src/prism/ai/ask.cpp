@@ -14,6 +14,7 @@
 
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/laws.hpp"
 #include "prism/verdict.hpp"
@@ -720,7 +721,7 @@ int ask_main(int argc, char** argv) {
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR ask: cannot read " << report_path.string() << "\n";
+        prism::log::error("ask", "cannot read " + report_path.string());
         return 2;
     }
     Config cfg = default_config();

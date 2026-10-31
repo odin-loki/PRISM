@@ -13,6 +13,7 @@
 
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
@@ -500,17 +501,17 @@ int draft_main(int argc, char** argv) {
             return 0;
         } else {
             // An option this command does not know is an error, never ignored.
-            std::cerr << "prism draft: error: unrecognized arguments: " << a << "\n";
+            prism::log::error("draft", "unrecognized arguments: " + std::string(a));
             return 2;
         }
     }
     if (kind != "report" && kind != "assurance") {
-        std::cerr << "--kind expects report|assurance\n";
+        prism::log::error("draft", "--kind expects report|assurance");
         return 2;
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR draft: cannot read " << report_path.string() << "\n";
+        prism::log::error("draft", "cannot read " + report_path.string());
         return 2;
     }
     if (proofs.empty()) {

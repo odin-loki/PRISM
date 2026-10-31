@@ -14,6 +14,7 @@
 // A finding that cannot become a test is listed as "unsupported" with the
 // reason (Law 7: nothing is dropped quietly).
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 
 #include "prism/cparse.hpp"
@@ -752,20 +753,20 @@ int regress_main(int argc, char** argv) {
             report_given = true;
         } else {
             // An option this command does not know is an error, never ignored.
-            std::cerr << "prism regress: error: unrecognized arguments: " << a << "\n";
+            prism::log::error("regress", "unrecognized arguments: " + std::string(a));
             return 2;
         }
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR regress: cannot read " << report_path.string() << "\n";
+        prism::log::error("regress", "cannot read " + report_path.string());
         return 2;
     }
     opt.relative_includes = !write_dir.empty();
     opt.out_dir = write_dir.empty() ? fs::absolute(report_path).parent_path() / "regression_tests" : fs::absolute(write_dir);
     if (opt.framework != "auto" && opt.framework != "gtest" && opt.framework != "catch2" &&
         opt.framework != "ctest" && opt.framework != "pytest" && opt.framework != "plain") {
-        std::cerr << "--framework expects auto|gtest|catch2|ctest|pytest|plain\n";
+        prism::log::error("regress", "--framework expects auto|gtest|catch2|ctest|pytest|plain");
         return 2;
     }
     auto res = generate_regression_tests(*report, opt);

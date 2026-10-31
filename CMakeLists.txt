@@ -222,6 +222,7 @@ set(PRISM_SRC
   src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
+  src/prism/log.cpp
   src/prism/membudget.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
@@ -742,6 +743,7 @@ if(PRISM_TESTS)
   # would register the same doctest names twice).
   set(_prism_test_sources
     tests/cpp/test_env_registry.cpp
+    tests/cpp/test_log.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp

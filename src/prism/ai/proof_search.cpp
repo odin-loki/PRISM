@@ -21,6 +21,7 @@
 
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
@@ -1172,7 +1173,7 @@ int prove_main(int argc, char** argv) {
             return 0;
         } else if (!a.starts_with("-")) pos.push_back(a);
         else {
-            std::cerr << "prism prove: unknown option " << a << "\n";
+            prism::log::error("prove", "unrecognized arguments: " + std::string(a));
             return 2;
         }
     }
@@ -1185,7 +1186,7 @@ int prove_main(int argc, char** argv) {
         return 0;
     }
     if (pos.size() != 2) {
-        std::cerr << "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)\n";
+        prism::log::error("prove", "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)");
         return 2;
     }
     opt.file = fs::absolute(pos.at(0));

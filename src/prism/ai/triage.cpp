@@ -22,6 +22,7 @@
 
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/cli.hpp"
 #include "prism/laws.hpp"
@@ -560,7 +561,7 @@ void write_triage(const RunReport& report, const fs::path& out, const TriageOpti
 int triage_main(int argc, char** argv) {
     auto parsed = parse_triage_cli(std::span<const char* const>(argv, static_cast<std::size_t>(argc)));
     if (!parsed.value) {
-        std::cerr << "prism triage: error: " << parsed.message << "\n";
+        prism::log::error("triage", parsed.message);
         return 2;
     }
     fs::path rp = parsed.value->report_dir;
@@ -570,7 +571,7 @@ int triage_main(int argc, char** argv) {
     if (fs::is_regular_file(rp)) rp = rp.parent_path();
     auto rep = RunReport::load(rp / "report.json");
     if (!rep) {
-        std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
+        prism::log::error("triage", "cannot read " + (rp / "report.json").string());
         return 2;
     }
     auto t = triage(*rep, topt);
