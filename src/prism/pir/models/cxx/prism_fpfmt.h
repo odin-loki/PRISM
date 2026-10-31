@@ -146,17 +146,27 @@ inline Bits decompose(double v) {
     else { r.m |= 1ull << 52; r.e = be - 1075; }
     return r;
 }
+#if defined(__LDBL_MANT_DIG__) && __LDBL_MANT_DIG__ == 64
 // x86 80-bit long double: explicit integer bit, 15-bit exponent
 inline Bits decompose(long double v) {
-    struct X { unsigned long long m; unsigned short se; unsigned short pad[3]; };
-    static_assert(sizeof(long double) == sizeof(X), "x86 80-bit long double expected");
+    // 10 significant bytes, little-endian; storage is 12 (i386) or 16 (x86-64).
+    struct X { unsigned char b[sizeof(long double)]; };
     X x = __builtin_bit_cast(X, v);
-    Bits r{(x.se >> 15) != 0, 0, x.m, 0, 64};
-    int be = x.se & 0x7fff;
-    if (be == 0x7fff) { r.kind = (x.m << 1) ? 2 : 1; return r; }
+    unsigned long long m = 0;
+    for (int i = 7; i >= 0; --i) m = (m << 8) | x.b[i];
+    unsigned se = unsigned(x.b[8]) | (unsigned(x.b[9]) << 8);
+    Bits r{(se >> 15) != 0, 0, m, 0, 64};
+    int be = int(se & 0x7fff);
+    if (be == 0x7fff) { r.kind = (m << 1) ? 2 : 1; return r; }
     r.e = (be == 0 ? 1 : be) - 16383 - 63;
     return r;
 }
+#else
+// long double is double (MSVC, 32-bit ARM, ...): same bits. Where it is IEEE
+// binary128 (AArch64/RISC-V Linux) the value is rounded to double first, so
+// %Lf there is exact only for values that fit a double (TODO: 113-bit path).
+inline Bits decompose(long double v) { return decompose(static_cast<double>(v)); }
+#endif
 inline Bits decompose(float v) {
     unsigned u = __builtin_bit_cast(unsigned, v);
     Bits r{(u >> 31) != 0, 0, u & ((1u << 23) - 1), 0, 24};
