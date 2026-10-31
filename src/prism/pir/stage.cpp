@@ -707,6 +707,131 @@ Frontend find_frontend(const Config& cfg) {
     return fe;
 }
 
+
+// Item 6: C with no C++ spelling (K&R definitions, reordered designated
+// initialisers, [static N], VLA forms) cannot go through the C++ shim. The
+// unit is split at file scope instead: function definitions that use a
+// decimal type (directly or by calling one that does) go to a C++ file
+// lowered against the shim; everything else stays C. Both sides see every
+// type, prototype and object declaration; objects are defined only on the
+// C side (the C++ side gets `extern` declarations) unless their type is
+// decimal. Limits: a file-scope `static` non-decimal object used by both
+// sides is duplicated (each side gets its own copy); a declaration with
+// several initialised declarators keeps only the first declarator extern.
+struct DfpSplit { std::string c, cxx; bool any = false; };
+std::optional<DfpSplit> dfp_split(const std::string& in) {
+    struct Item { std::string text; bool fn = false, pp = false; std::string name, head; };
+    std::vector<Item> items;
+    const size_t n = in.size();
+    size_t i = 0, start = 0;
+    int depth = 0, paren = 0;
+    auto push = [&](size_t end, bool fn, size_t body) {
+        Item it;
+        it.text = in.substr(start, end - start);
+        it.fn = fn;
+        if (fn) {
+            it.head = in.substr(start, body - start);
+            static const std::regex kName(R"(([A-Za-z_]\w*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)[^()]*$)");
+            std::smatch m;
+            if (std::regex_search(it.head, m, kName)) it.name = m[1];
+        }
+        items.push_back(std::move(it));
+        start = end;
+    };
+    size_t body = 0;
+    char last = 0;
+    while (i < n) {
+        const char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { i = in.find('\n', i); if (i == std::string::npos) i = n; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { i = in.find("*/", i + 2); i = i == std::string::npos ? n : i + 2; continue; }
+        if (c == '"' || c == '\'') { for (++i; i < n && in[i] != c; ++i) if (in[i] == '\\') ++i; ++i; continue; }
+        if (c == '#' && depth == 0) {
+            // a preprocessor line (with continuations) is its own item
+            size_t ls = in.rfind('\n', i);
+            ls = ls == std::string::npos ? 0 : ls + 1;
+            if (in.find_first_not_of(" \t", ls) == i) {
+                if (ls > start && in.find_first_not_of(" \t\r\n", start) < ls) push(ls, false, 0);
+                start = ls;
+                size_t e = i;
+                for (;;) { e = in.find('\n', e); if (e == std::string::npos) { e = n; break; } if (e > 0 && in[e - 1] == '\\') { ++e; continue; } ++e; break; }
+                push(e, false, 0);
+                items.back().pp = true;
+                i = e;
+                continue;
+            }
+        }
+        if (c == '(') ++paren;
+        else if (c == ')') --paren;
+        else if (c == '{') {
+            // a function body: '{' at file scope after ')' or after K&R parameter declarations ending ';'
+            if (depth == 0 && paren == 0 && (last == ')' || last == ';')) {
+                // K&R: last==';' only counts if a ')' precedes the parameter declarations in this item
+                const std::string pre = in.substr(start, i - start);
+                if (last == ')' || (pre.find(')') != std::string::npos && pre.find('=') == std::string::npos && pre.find("struct") == std::string::npos))
+                    body = i;
+                else body = 0;
+            } else if (depth == 0) body = 0;
+            ++depth;
+        } else if (c == '}') {
+            if (--depth == 0 && body) { push(i + 1, true, body); body = 0; last = '}'; ++i; continue; }
+        } else if (c == ';' && depth == 0 && paren == 0) {
+            // a ';' between ')' and '{' belongs to K&R parameter declarations
+            size_t k = in.find_first_not_of(" \t\r\n", i + 1);
+            const std::string pre = in.substr(start, i - start);
+            const bool knr = pre.find(')') != std::string::npos && pre.find('=') == std::string::npos &&
+                             std::regex_search(pre, std::regex(R"(^\s*(?:\w+\s+)*\w+\s*\(\s*\w+(?:\s*,\s*\w+)*\s*\))"));
+            if (!knr || k == std::string::npos) { push(i + 1, false, 0); last = ';'; ++i; continue; }
+            (void)k;
+        }
+        if (!std::isspace(static_cast<unsigned char>(c))) last = c;
+        ++i;
+    }
+    if (depth != 0) return std::nullopt;
+    if (start < n) push(n, false, 0);
+    static const std::regex kDec(R"(\b_Decimal(?:32|64|128)\b|\b\d[\d.eE+-]*(?:df|dd|dl|DF|DD|DL)\b|FENV_DEC_ROUND|\bfe_dec_)");
+    std::vector<bool> dec(items.size(), false);
+    for (size_t k = 0; k < items.size(); ++k) if (items[k].fn && std::regex_search(items[k].text, kDec)) dec[k] = true;
+    for (bool grew = true; grew;) {  // callers of decimal functions are decimal
+        grew = false;
+        for (size_t k = 0; k < items.size(); ++k) {
+            if (!items[k].fn || dec[k]) continue;
+            for (size_t j = 0; j < items.size() && !dec[k]; ++j)
+                if (dec[j] && !items[j].name.empty() && std::regex_search(items[k].text, std::regex("\\b" + items[j].name + "\\s*\\(")))
+                    dec[k] = grew = true;
+        }
+    }
+    DfpSplit out;
+    for (size_t k = 0; k < items.size(); ++k) {
+        const Item& it = items[k];
+        const bool d = std::regex_search(it.text, kDec);
+        if (it.pp) { out.c += it.text; out.cxx += it.text; continue; }
+        if (it.fn) {
+            const std::string proto = it.head + ";\n";
+            if (dec[k]) {
+                out.any = true;
+                out.cxx += it.text;
+                if (!std::regex_search(it.head, kDec)) out.c += proto;
+            } else {
+                out.c += it.text;
+                // a K&R head has no C++ spelling: the C++ side gets no prototype
+                if (it.head.find(';') == std::string::npos) out.cxx += proto;
+            }
+            continue;
+        }
+        // declarations, types, prototypes
+        static const std::regex kObjDef(R"(^\s*(?!typedef\b|extern\b|static\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\b)[^(){};]*(?:=[^;]*)?;\s*$)");
+        if (d) { out.cxx += it.text; continue; }
+        out.c += it.text;
+        if (std::regex_match(it.text, kObjDef)) {
+            std::string t = it.text;
+            const size_t eq = t.find('=');
+            if (eq != std::string::npos) t = t.substr(0, eq) + ";\n";
+            out.cxx += "extern " + t.substr(t.find_first_not_of(" \t\r\n"));
+        } else out.cxx += it.text;
+    }
+    return out;
+}
+
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
                                        std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
@@ -869,7 +994,45 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 fl = std::move(dfl);
                 if (cxx_models) *cxx_models = "dfp shim: C23 decimal floating point lowered as C++ (models/cxx/prism_dfp.hpp)";
             } else {
-                r.text += "\nprism: C23 decimal floating point shim also failed: " + first_error(r2.text);
+                // Item 6: split decimal functions into their own C++ file,
+                // keep the rest as C, and link the two modules.
+                bool split_ok = false;
+                if (auto sp = dfp_split(read_file(src)); sp && sp->any) {
+                    const fs::path cpart = o0.parent_path() / (o0.stem().string() + ".split.c");
+                    const fs::path xpart = o0.parent_path() / (o0.stem().string() + ".split.cpp");
+                    const fs::path cll = o0.parent_path() / (o0.stem().string() + ".split.c.ll");
+                    const fs::path xll = o0.parent_path() / (o0.stem().string() + ".split.cpp.ll");
+                    {
+                        std::ofstream a1(cpart, std::ios::binary);
+                        a1 << "#line 1 \"" << src.string() << "\"\n" << sp->c;
+                    }
+                    std::string xt = dfp_rewrite(sp->cxx, src);
+                    {
+                        std::ofstream a2(xpart, std::ios::binary);
+                        a2 << xt;
+                    }
+                    std::vector<std::string> cv{cc->string()};
+                    cv.insert(cv.end(), fl.begin(), fl.end());
+                    cv.insert(cv.end(), {"-I", src.parent_path().string(), "-o", cll.string(), cpart.string()});
+                    std::vector<std::string> xv{cc->string()};
+                    xv.insert(xv.end(), dfl.begin(), dfl.end());
+                    xv.insert(xv.end(), {"-o", xll.string(), "-x", "c++", xpart.string()});
+                    auto rc1 = detail::run_process(cv, timeout_s);
+                    auto rc2 = detail::run_process(xv, timeout_s);
+                    if (!rc1.failed && !rc1.timed_out && rc1.rc == 0 && !rc2.failed && !rc2.timed_out && rc2.rc == 0) {
+                        const fs::path link = fs::path(*cc).parent_path() / "llvm-link";
+                        auto rl = detail::run_process({link.string(), "-S", "-o", o0.string(), cll.string(), xll.string()}, timeout_s);
+                        if (!rl.failed && !rl.timed_out && rl.rc == 0) {
+                            r = std::move(rc1);
+                            r.text += rc2.text;
+                            split_ok = true;
+                            if (cxx_models) *cxx_models = "dfp shim (split): decimal functions lowered as C++, the rest as C, linked";
+                        } else r.text += "\nprism: decimal split link failed: " + first_error(rl.text);
+                    } else {
+                        r.text += "\nprism: decimal split failed: " + first_error(rc1.rc ? rc1.text : rc2.text);
+                    }
+                }
+                if (!split_ok) r.text += "\nprism: C23 decimal floating point shim also failed: " + first_error(r2.text);
             }
         }
     }
