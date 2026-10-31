@@ -197,10 +197,13 @@ struct _Prism_tree_const_iterator {
 };
 
 // Key extraction without a functor object: _S_get is static.
+#ifndef _PRISM_IDENTITY_DEFINED
+#define _PRISM_IDENTITY_DEFINED 1  // shared by prism_tree.h and prism_hash_table.h
 template <typename _Val>
 struct _Prism_identity {
     static const _Val& _S_get(const _Val& __x) noexcept { return __x; }
 };
+#endif
 
 // The container core shared by map, multimap, set and multiset.
 template <typename _Key, typename _Val, typename _KeyOfValue, typename _Compare, typename _Alloc, bool _Multi>

@@ -54,18 +54,8 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr int kTvVectors = 64;
-constexpr const char* kInstall = "install clang and llvm 18 (apt install clang-18 llvm-18)";
+constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch_llvm.py; see third_party/llvm/PIN.toml) or set PRISM_LLVM_BIN";
 
-std::optional<fs::path> tool(const Config& cfg, std::initializer_list<std::string_view> names) {
-    for (auto n : names) {
-        auto it = cfg.tools.find(std::string(n));
-        if (it != cfg.tools.end()) {
-            std::error_code ec;
-            if (fs::is_regular_file(it->second, ec)) return it->second;
-        }
-    }
-    return cfg.which(names);
-}
 
 std::string read_file(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -692,10 +682,10 @@ std::vector<std::string> base_flags(const fs::path& src) {
 
 Frontend find_frontend(const Config& cfg) {
     Frontend fe;
-    fe.clang = tool(cfg, {"clang-18", "clang"});
-    fe.clangxx = tool(cfg, {"clang++-18", "clang++"});
-    fe.opt = tool(cfg, {"opt-18", "opt"});
-    fe.lli = tool(cfg, {"lli-18", "lli"});
+    fe.clang = cfg.llvm_tool("clang");
+    fe.clangxx = cfg.llvm_tool("clang++");
+    fe.opt = cfg.llvm_tool("opt");
+    fe.lli = cfg.llvm_tool("lli");
     fe.version = "clang";
     if (fe.clang) {
         auto r = detail::run_process({fe.clang->string(), "--version"}, 20.0);
@@ -1378,6 +1368,20 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     if (cxx && !fe.cxx_models.empty()) {
         auto mf = fl;
         mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
+        // `import std;` (prism-llvm; merge note in FINAL_TESTS): the modelled
+        // std module (cxx/std.cppm), precompiled once per -std into the
+        // models directory. If it does not build, the unit falls back below.
+        if (source_imports_std(read_file(src))) {
+            std::string sv;
+            for (auto& f : fl)
+                if (f.starts_with("-std=")) sv = f.substr(5);
+            const auto pcm = fe.cxx_models / ("std-" + (sv.empty() ? std::string("c++23") : sv) + ".pcm");
+            std::string perr;
+            std::error_code pec;
+            if (std::filesystem::exists(pcm, pec) ||
+                build_cxx_std_module(*cc, fe.cxx_models, sv, {}, pcm, timeout_s, perr))
+                mf.push_back("-fmodule-file=std=" + pcm.string());
+        }
         std::vector<std::string> av{cc->string()};
         av.insert(av.end(), mf.begin(), mf.end());
         av.insert(av.end(), {"-o", o0.string(), src.string()});

@@ -59,6 +59,7 @@ TEST_CASE("cxx mutex model: second try_lock is false, unlock checks, lock is omi
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std {") != std::string::npos);
     CHECK(src.find("#include <thread>") == std::string::npos);
+    CHECK(src.find("#include \"bits/prism_sched.h\"") != std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <shared_mutex>") == std::string::npos);
 
@@ -91,12 +92,16 @@ TEST_CASE("cxx mutex model: second try_lock is false, unlock checks, lock is omi
     // Does not pretend the mutex was locked.
     CHECK(unlock.find("_M_locked = true") == std::string::npos);
 
-    CHECK_FALSE(defines_lock(src));
+    // lock blocks through the scheduler (bits/prism_sched.h): a queued
+    // thread must run and release it, else CXX-DEADLOCK.
+    CHECK(defines_lock(src));
+    CHECK(src.find("__prism_sched::__must_switch(\"mutex::lock can never acquire the mutex\")") != std::string::npos);
+    CHECK(unlock.find("__prism_sched::__maybe_switch()") != std::string::npos);
     CHECK(src.find("class timed_mutex") == std::string::npos);
     CHECK(src.find("class recursive_mutex") == std::string::npos);
     CHECK(src.find("class scoped_lock") == std::string::npos);
-    CHECK(src.find("class lock_guard") == std::string::npos);
-    CHECK(src.find("class unique_lock") == std::string::npos);
+    CHECK(src.find("class lock_guard") != std::string::npos);
+    CHECK(src.find("class unique_lock") != std::string::npos);
     CHECK(src.find("timed_mutex") != std::string::npos);
     CHECK(src.find("new ") == std::string::npos);
     CHECK(src.find("std::thread") == std::string::npos);

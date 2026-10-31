@@ -171,7 +171,7 @@ def parseLlvm (name : String) (ls : List (List String)) : Except String LFunc :=
     | ["cast", d, k, nn, fw, tw, a] =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw "instruction outside a block"
       let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"
-      cur := some (bn, ps, .cast (← reg? d) ck (nn == "1") (← nat? fw) (← nat? tw) (← opnd? a) :: is)
+      cur := some (bn, ps, .cast (← reg? d) ck (← nat? nn) (← nat? fw) (← nat? tw) (← opnd? a) :: is)
     | _ =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw s!"bad line {l}"
       let t ← match l with
@@ -399,7 +399,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"
       f := { f with cur := some (bn, ps, sg,
-        .i (.cast (← reg? d) ck (nn == "1") (← nat? fw) (← nat? tw) (← opnd? a)) :: is) }
+        .i (.cast (← reg? d) ck (← nat? nn) (← nat? fw) (← nat? tw) (← opnd? a)) :: is) }
     | ["freeze", d, w, a] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .freeze (← reg? d) (← nat? w) (← fopnd? a) :: is) }
@@ -415,7 +415,9 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | "gep" :: d :: inb :: base :: _ :: rest =>
       let (bn, ps, sg, is) ← inBlock
       let ix ← gidx? rest
-      f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (inb == "1") (← opnd? base) ix :: is) }
+      -- flag set: bit 0 inbounds, bit 1 nuw (export_lean.cpp gep_line)
+      let fl ← nat? inb
+      f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (fl % 2 == 1) (fl / 2 % 2 == 1) (← opnd? base) ix :: is) }
     | ["mm", d, k, w, a, b] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .mm (← reg? d) (← mmK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }

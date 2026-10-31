@@ -811,7 +811,7 @@ std::vector<Finding> run_cbmc(const std::string& exe, const std::vector<fs::path
 
 Finding libfuzzer_probe_impl(const Config& cfg) {
     auto clang = cfg.which({"clang"});
-    const char* install = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
+    const char* install = "clang -fsanitize=fuzzer is a system tool: the pinned LLVM (scripts/fetch_llvm.py, third_party/llvm/PIN.toml)";
     if (!clang) {
         // clang is a system tool looked up on PATH only (no pinned build).
         auto f = notrun("libfuzzer", "clang", install);

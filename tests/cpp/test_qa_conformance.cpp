@@ -588,7 +588,7 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     // bits/basic_string.tcc replaces the libstdc++ file <string> includes
     for (const auto& f : files)
         if (f.find('/') == std::string::npos && f.rfind("prism_", 0) != 0) headers.push_back(f);
-    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "deque", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex"})
+    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "deque", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex", "generator", "thread", "atomic"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
     // An explicit-include buffer, not a header the pir stage swaps in for
@@ -615,13 +615,16 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
             continue;
         }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
+        if (f == "std.cppm") continue;  // imported by `import std`, built by build_cxx_std_module
         if (pub.count(f)) {
             CHECK(harnesses.find("#include <" + pub[f] + ">") != std::string::npos);
             CHECK(tasks.find("#include <" + pub[f] + ">") != std::string::npos);
         } else {  // an internal header: some public model header includes it
             bool any = false;
             for (const auto& h : headers)
-                if (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos) any = true;
+                if (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos ||
+                    slurp(cxx / h).find("#include \"" + f + "\"") != std::string::npos)
+                    any = true;
             CHECK(any);
         }
     }

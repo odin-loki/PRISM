@@ -17,15 +17,26 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Cache pinned LLVM 23.1.4
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
+        shell: bash
+        run: |
+          bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
+          echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
       # prism-deps links the standard library only: nothing from third_party/
       # is compiled before the checks below pass. PRISM_DEPS_ONLY configures
       # that one target (no Z3, no PCRE2).
       - name: Build prism-deps
         run: |
           cmake -B build-deps -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPRISM_DEPS_ONLY=ON
+            -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_DEPS_ONLY=ON
           cmake --build build-deps --target prism-deps
       - name: Licence firewall (no copyleft in linked components)
         run: build-deps/prism-deps licence-check
@@ -46,9 +57,20 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Cache pinned LLVM 23.1.4
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
+        shell: bash
+        run: |
+          bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
+          echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Install toolchain
         # python3-minimal: BenchExec SV-COMP tool-info smoke only; Z3 build is Python-free (phase 6).
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev python3-minimal
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache qt6-base-dev libgl-dev python3-minimal
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -57,7 +79,7 @@ jobs:
       - name: Configure
         run: >
           cmake -B build -G Ninja
-          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
       - name: Build
@@ -240,50 +262,21 @@ jobs:
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
           else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
-      # PIR e2e on Windows needs clang + opt. The stock LLVM install on the runner has
-      # clang but no opt.exe, so test_pir_e2e reports NOTRUN. This step fetches the
-      # official LLVM 18.1.8 MSVC archive (the version PIR is validated against, see
-      # kInstall in src/prism/pir/stage.cpp) and unpacks only bin/clang.exe, bin/opt.exe
-      # and the clang resource headers. clang is installed as clang-18.exe (find_frontend
-      # looks for clang-18 first), so the runner's clang.exe, and with it the ASan DLL
-      # lookup and label self-check above, are untouched. Best effort: if the download
-      # fails, the e2e cases print "NOTRUN" (Law 1), they never pass quietly.
-      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+      # PIR e2e on Windows needs clang + opt from the pinned LLVM 23.1.4
+      # (third_party/llvm/PIN.toml; scripts/fetch_llvm.py picks
+      # clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz and checks its sha256).
+      # PRISM_LLVM_BIN points PIR at it; the runner's clang-cl still compiles PRISM.
+      - name: Cache pinned LLVM 23.1.4
         uses: actions/cache@v4
-        id: llvm18
         with:
-          path: C:\llvm18
-          key: win-llvm-18.1.8-pir-v1
-      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
-        if: steps.llvm18.outputs.cache-hit != 'true'
-        continue-on-error: true
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
-          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
-          try {
-            curl.exe -sSL --retry 3 -o $tar $url
-            if ($LASTEXITCODE -ne 0) { throw "download failed" }
-            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
-            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
-            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
-            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
-          } catch {
-            # Never let actions/cache save a half-unpacked tree under the key.
-            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
-            throw
-          }
-      - name: Put LLVM 18 (clang-18, opt) on PATH
-        shell: pwsh
-        run: |
-          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
-            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
-          } else {
-            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
-          }
+          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
+          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
+          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
@@ -338,42 +331,21 @@ jobs:
           key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
-      # PIR e2e: same LLVM 18 clang-18 + opt as the clang-cl Z3 job (see comment there).
-      - name: Cache LLVM 18 (clang-18 + opt for PIR e2e)
+      # PIR e2e on Windows needs clang + opt from the pinned LLVM 23.1.4
+      # (third_party/llvm/PIN.toml; scripts/fetch_llvm.py picks
+      # clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz and checks its sha256).
+      # PRISM_LLVM_BIN points PIR at it; the runner's clang-cl still compiles PRISM.
+      - name: Cache pinned LLVM 23.1.4
         uses: actions/cache@v4
-        id: llvm18
         with:
-          path: C:\llvm18
-          key: win-llvm-18.1.8-pir-v1
-      - name: Install LLVM 18 clang-18 + opt (PIR e2e C subset)
-        if: steps.llvm18.outputs.cache-hit != 'true'
-        continue-on-error: true
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $name = "clang+llvm-18.1.8-x86_64-pc-windows-msvc"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/$name.tar.xz"
-          $tar = Join-Path $env:RUNNER_TEMP "llvm18.tar.xz"
-          try {
-            curl.exe -sSL --retry 3 -o $tar $url
-            if ($LASTEXITCODE -ne 0) { throw "download failed" }
-            New-Item -ItemType Directory -Force C:\llvm18 | Out-Null
-            & "$env:SystemRoot\System32\tar.exe" -xf $tar -C C:\llvm18 --strip-components=1 "$name/bin/clang.exe" "$name/bin/opt.exe" "$name/lib/clang/18/include"
-            if ($LASTEXITCODE -ne 0) { throw "extract failed" }
-            Move-Item C:\llvm18\bin\clang.exe C:\llvm18\bin\clang-18.exe -Force
-          } catch {
-            Remove-Item -Recurse -Force C:\llvm18 -ErrorAction SilentlyContinue
-            throw
-          }
-      - name: Put LLVM 18 (clang-18, opt) on PATH
-        shell: pwsh
-        run: |
-          if ((Test-Path C:\llvm18\bin\opt.exe) -and (Test-Path C:\llvm18\bin\clang-18.exe)) {
-            "C:\llvm18\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-            Write-Host "LLVM 18 on PATH: PIR e2e C subset will run"
-          } else {
-            Write-Host "::warning::LLVM 18 opt.exe not available: PIR e2e cases will be NOTRUN"
-          }
+          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
+          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
+          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-cl-z3\prism_tests.exe
 

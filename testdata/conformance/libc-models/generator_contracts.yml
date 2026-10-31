@@ -1,0 +1,8 @@
+format_version: 1
+input_files: generator_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  generator_order_true: true
+  generator_elements_of_true: true
+  generator_sum_false: false

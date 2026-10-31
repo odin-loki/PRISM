@@ -746,7 +746,7 @@ struct Tr final : pirmem::TrApi {
 
     void terminator(Frame& fr, const ir::Inst& in, int& cur, int line, bool noreturn) {
         auto& T = out.blocks[static_cast<std::size_t>(cur)].term;
-        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lowerswitch did not run)"};
+        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lower-switch did not run)"};
         if (!in.parsed) throw Unenc{"UNENCODED: " + in.op};
         if (in.op == "resume") {
             // re-throw after cleanup code: the exception continues to the next handler
@@ -1056,8 +1056,17 @@ struct Tr final : pirmem::TrApi {
             unsigned fw = int_width(in.ops[0].ty), tw = int_width(in.ty);
             Arg a = operand(fr, in.ops[0], cur, line);
             a.width = fw;
-            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw")))
-                throw Unenc{"UNENCODED: trunc nuw/nsw"};
+            // trunc nuw / nsw (LLVM 19+): poison when the dropped bits are not
+            // all zero (nuw) / not a sign extension (nsw). Checked, never trusted.
+            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw"))) {
+                Arg t = assign(cur, Op::Trunc, tw, {a}, "t");
+                if (has_flag(in, "nuw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::ZExt, fw, {t}, "t"), a), "nuw", "UB-POISON",
+                          "trunc nuw drops nonzero bits (poison)", line);
+                if (has_flag(in, "nsw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::SExt, fw, {t}, "t"), a), "nsw", "UB-POISON",
+                          "trunc nsw changes the signed value (poison)", line);
+            }
             if (op == "zext" && has_flag(in, "nneg"))
                 check(cur, p2(cur, Op::Slt, a, Arg::c(fw, 0)), "nneg", "UB-POISON", "zext nneg of a negative value (poison)", line);
             (void)tw;
@@ -1708,6 +1717,22 @@ struct Tr final : pirmem::TrApi {
                     } catch (const Unenc&) {
                         base_last = true;  // unknown layout: no sub-array check
                     }
+            // gep nuw (LLVM 19+): poison if any index, read as unsigned, makes the
+            // offset arithmetic wrap. A negative index (variable or constant; a
+            // struct field index is never negative) always wraps, so it is checked
+            // here (Lean: PrismRefine.nuwChecks); the rest is bounded by the
+            // inbounds/object check.
+            // nusw is implied by inbounds (checked by MemTr::gep); without
+            // inbounds it is dropped (conservative: the result is not trusted).
+            if (has_flag(in, "nuw"))
+                for (std::size_t k = 1; k < in.ops.size(); ++k) {
+                    if (in.ops[k].v.kind != ir::Value::Local && in.ops[k].v.kind != ir::Value::Int) continue;
+                    unsigned iw = int_width(in.ops[k].ty);
+                    Arg ix = operand(fr, in.ops[k], cur, line);
+                    ix.width = iw;
+                    check(cur, p2(cur, Op::Slt, ix, Arg::c(iw, 0)), "nuw", "UB-POISON",
+                          "getelementptr nuw with a negative index (poison)", line);
+                }
             mt.gep(cur, result_var(fr, in), base, in.ety, idx, has_flag(in, "inbounds"), line, use, base_last);
             return true;
         }
@@ -1785,6 +1810,12 @@ struct Tr final : pirmem::TrApi {
             Arg ok = arg(0);
             auto cls = mt.const_string(in.ops.at(1).v), msg = mt.const_string(in.ops.at(2).v);
             if (!cls || !msg) throw Unenc{"UNENCODED: __prism_check without literal class/message"};
+            // Thread-scheduler model classes (models/cxx/bits/prism_sched.h)
+            // onto the taxonomy: a wait/lock no schedule can satisfy is a
+            // deadlock (CWE-833, property nodeadlock); a std::thread destroyed
+            // or move-assigned while joinable calls std::terminate.
+            if (*cls == "CXX-DEADLOCK") cls = std::string("CONC-DEADLOCK");
+            else if (*cls == "CXX-THREAD-JOINABLE") cls = std::string("CXX-TERMINATE");
             check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
             return;
         }

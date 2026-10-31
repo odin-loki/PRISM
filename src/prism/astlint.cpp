@@ -48,7 +48,7 @@ namespace {
 
 constexpr std::size_t npos = std::string_view::npos;
 constexpr const char* kInstall =
-    "install libclang (apt install libclang1-18) or clang (apt install clang-18) for the AST lints";
+    "install the pinned LLVM (scripts/fetch_llvm.py) or set PRISM_LLVM_BIN for the AST lints";
 
 // ---------------------------------------------------------------- dump split
 

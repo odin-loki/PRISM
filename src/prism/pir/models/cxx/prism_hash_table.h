@@ -39,10 +39,13 @@
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 
+#ifndef _PRISM_IDENTITY_DEFINED
+#define _PRISM_IDENTITY_DEFINED 1  // shared by prism_tree.h and prism_hash_table.h
 template <typename _Val>
 struct _Prism_identity {
     static const _Val& _S_get(const _Val& __x) noexcept { return __x; }
 };
+#endif
 
 namespace _Prism_hash_detail {
 

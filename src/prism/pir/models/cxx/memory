@@ -24,8 +24,9 @@
 //    __prism_check reports MEM-OOB-WRITE and __builtin_trap runs before the
 //    allocation. That path does not allocate a wrapped count.
 //
-// shared_ptr, weak_ptr, allocator, pointer_traits, and uninitialized_* are
-// not declared. A use of those names fails to compile against this header
+// shared_ptr, weak_ptr, and make_shared are modelled at the end of this file
+// (control block, last owner deletes). allocator, pointer_traits, and
+// uninitialized_* are not declared. A use of those names fails to compile against this header
 // and the pir stage lowers that translation unit again with libstdc++.
 // A partial header is intentional. make_unique_for_overwrite, custom
 // deleters, and unique_ptr for a bounded array are not declared or are a
@@ -255,6 +256,169 @@ typename _Prism_make_uniq<_Tp>::array make_unique(size_t __n) {
     }
     return unique_ptr<_Tp>(new _Elem[__n]());
 }
+
+// [util.smartptr.shared] shared_ptr / weak_ptr / make_shared. One control
+// block per owned object: use and weak counts, the pointer, and a deleter
+// that runs `delete` on the original type. The last shared owner deletes the
+// object (so a raw pointer kept past it is a use-after-free the analysis can
+// see); the block itself is freed when no weak_ptr remains either. Counts are
+// plain longs: the thread scheduler (bits/prism_sched.h) has no switch point
+// inside these operations. operator* and operator-> on an empty shared_ptr
+// fail the precondition through __prism_check. Aliasing constructors,
+// allocators, custom deleters, arrays, enable_shared_from_this, and atomic
+// shared_ptr are not declared, so those units fall back.
+struct _Prism_sp_block {
+    long _M_use;
+    long _M_weak;  // weak_ptr count, plus 1 while _M_use > 0
+    void* _M_ptr;
+    void (*_M_del)(void*);
+};
+
+template <typename _Tp>
+void _Prism_sp_delete(void* __p) { delete static_cast<_Tp*>(__p); }
+
+inline void _Prism_sp_release_weak(_Prism_sp_block* __b) {
+    if (__b != nullptr && --__b->_M_weak == 0) delete __b;
+}
+inline void _Prism_sp_release(_Prism_sp_block* __b) {
+    if (__b == nullptr) return;
+    if (--__b->_M_use == 0) {
+        __b->_M_del(__b->_M_ptr);
+        __b->_M_ptr = nullptr;
+        _Prism_sp_release_weak(__b);
+    }
+}
+
+template <typename _Tp> class weak_ptr;
+
+template <typename _Tp>
+class shared_ptr {
+    template <typename _Up> friend class shared_ptr;
+    template <typename _Up> friend class weak_ptr;
+    _Tp* _M_ptr = nullptr;
+    _Prism_sp_block* _M_blk = nullptr;
+
+    shared_ptr(_Tp* __p, _Prism_sp_block* __b) noexcept : _M_ptr(__p), _M_blk(__b) {}
+
+public:
+    using element_type = _Tp;
+    using weak_type = weak_ptr<_Tp>;
+
+    constexpr shared_ptr() noexcept = default;
+    constexpr shared_ptr(nullptr_t) noexcept {}
+    template <typename _Up>
+        requires is_convertible_v<_Up*, _Tp*>
+    explicit shared_ptr(_Up* __p) : _M_ptr(__p) {
+        if (__p != nullptr) _M_blk = new _Prism_sp_block{1, 1, static_cast<void*>(__p), &_Prism_sp_delete<_Up>};
+    }
+    shared_ptr(const shared_ptr& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        if (_M_blk) ++_M_blk->_M_use;
+    }
+    template <typename _Up>
+        requires is_convertible_v<_Up*, _Tp*>
+    shared_ptr(const shared_ptr<_Up>& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        if (_M_blk) ++_M_blk->_M_use;
+    }
+    shared_ptr(shared_ptr&& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        __o._M_ptr = nullptr;
+        __o._M_blk = nullptr;
+    }
+    template <typename _Up>
+        requires is_convertible_v<_Up*, _Tp*>
+    shared_ptr(shared_ptr<_Up>&& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        __o._M_ptr = nullptr;
+        __o._M_blk = nullptr;
+    }
+    template <typename _Up, typename _Dp>
+        requires is_convertible_v<_Up*, _Tp*>
+    shared_ptr(unique_ptr<_Up, _Dp>&& __u) : shared_ptr(__u.release()) {}
+    ~shared_ptr() { _Prism_sp_release(_M_blk); }
+
+    shared_ptr& operator=(const shared_ptr& __o) noexcept {
+        shared_ptr(__o).swap(*this);
+        return *this;
+    }
+    shared_ptr& operator=(shared_ptr&& __o) noexcept {
+        shared_ptr(static_cast<shared_ptr&&>(__o)).swap(*this);
+        return *this;
+    }
+    void swap(shared_ptr& __o) noexcept {
+        _Tp* __p = _M_ptr; _M_ptr = __o._M_ptr; __o._M_ptr = __p;
+        _Prism_sp_block* __b = _M_blk; _M_blk = __o._M_blk; __o._M_blk = __b;
+    }
+    void reset() noexcept { shared_ptr().swap(*this); }
+    template <typename _Up>
+    void reset(_Up* __p) { shared_ptr(__p).swap(*this); }
+
+    _Tp* get() const noexcept { return _M_ptr; }
+    _Tp& operator*() const noexcept {
+        __prism_check(_M_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "shared_ptr::operator* on an empty shared_ptr");
+        return *_M_ptr;
+    }
+    _Tp* operator->() const noexcept {
+        __prism_check(_M_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "shared_ptr::operator-> on an empty shared_ptr");
+        return _M_ptr;
+    }
+    long use_count() const noexcept { return _M_blk ? _M_blk->_M_use : 0; }
+    bool unique() const noexcept { return use_count() == 1; }
+    explicit operator bool() const noexcept { return _M_ptr != nullptr; }
+
+    template <typename _Up, typename... _Args>
+    friend shared_ptr<_Up> make_shared(_Args&&... __args);
+};
+
+template <typename _Tp, typename _Up>
+bool operator==(const shared_ptr<_Tp>& __a, const shared_ptr<_Up>& __b) noexcept { return __a.get() == __b.get(); }
+template <typename _Tp>
+bool operator==(const shared_ptr<_Tp>& __a, nullptr_t) noexcept { return __a.get() == nullptr; }
+
+// One allocation for the object and one for the block (not fused): the
+// object is deleted by the last owner even while weak_ptrs keep the block.
+template <typename _Tp, typename... _Args>
+shared_ptr<_Tp> make_shared(_Args&&... __args) {
+    return shared_ptr<_Tp>(new _Tp(static_cast<_Args&&>(__args)...));
+}
+
+template <typename _Tp>
+class weak_ptr {
+    _Tp* _M_ptr = nullptr;
+    _Prism_sp_block* _M_blk = nullptr;
+
+public:
+    using element_type = _Tp;
+    constexpr weak_ptr() noexcept = default;
+    weak_ptr(const shared_ptr<_Tp>& __s) noexcept : _M_ptr(__s._M_ptr), _M_blk(__s._M_blk) {
+        if (_M_blk) ++_M_blk->_M_weak;
+    }
+    weak_ptr(const weak_ptr& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        if (_M_blk) ++_M_blk->_M_weak;
+    }
+    weak_ptr(weak_ptr&& __o) noexcept : _M_ptr(__o._M_ptr), _M_blk(__o._M_blk) {
+        __o._M_ptr = nullptr;
+        __o._M_blk = nullptr;
+    }
+    ~weak_ptr() { _Prism_sp_release_weak(_M_blk); }
+    weak_ptr& operator=(const weak_ptr& __o) noexcept {
+        weak_ptr(__o).swap(*this);
+        return *this;
+    }
+    weak_ptr& operator=(const shared_ptr<_Tp>& __s) noexcept {
+        weak_ptr(__s).swap(*this);
+        return *this;
+    }
+    void swap(weak_ptr& __o) noexcept {
+        _Tp* __p = _M_ptr; _M_ptr = __o._M_ptr; __o._M_ptr = __p;
+        _Prism_sp_block* __b = _M_blk; _M_blk = __o._M_blk; __o._M_blk = __b;
+    }
+    void reset() noexcept { weak_ptr().swap(*this); }
+    long use_count() const noexcept { return _M_blk ? _M_blk->_M_use : 0; }
+    bool expired() const noexcept { return use_count() == 0; }
+    shared_ptr<_Tp> lock() const noexcept {
+        if (expired()) return shared_ptr<_Tp>();
+        ++_M_blk->_M_use;
+        return shared_ptr<_Tp>(_M_ptr, _M_blk);
+    }
+};
 
 _GLIBCXX_END_NAMESPACE_VERSION
 }  // namespace std

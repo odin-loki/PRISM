@@ -197,6 +197,8 @@ const std::unordered_set<std::string>& param_attr_words() {
         "align",     "dereferenceable", "dereferenceable_or_null", "byval", "byref",
         "sret",      "inalloca",  "preallocated", "elementtype", "range", "nofpclass",
         "captures",  "initializes", "alignstack",
+        // LLVM 20-23 additions (no semantics PRISM relies on; never trusted):
+        "dead_on_return",
     };
     return k;
 }
@@ -447,7 +449,15 @@ struct P {
         v.kind = Value::ConstExpr;
         v.ce_op = op;
         v.text = op;
-        while (peek().kind == Tok::Word) v.ce_flags.push_back(next().text);
+        while (peek().kind == Tok::Word) {
+            v.ce_flags.push_back(next().text);
+            // LLVM 19+: `getelementptr inbounds inrange(lo, hi) (T, ...)`; the
+            // range only bounds later derived accesses, so it is dropped.
+            if (v.ce_flags.back() == "inrange" && is_punct('(')) {
+                v.ce_flags.pop_back();
+                skip_group();
+            }
+        }
         if (!is_punct('(')) throw ParseError("constant expression without operands");
         ++i;
         if (op == "getelementptr") {
@@ -1161,6 +1171,10 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
     for (auto raw : body) {
         auto line = trim(raw);
         if (line.empty() || line[0] == ';') continue;
+        // Debug records (LLVM 19+ "#dbg_value(...)", "#dbg_declare(...)",
+        // "#dbg_assign(...)", "#dbg_label(...)") replace the llvm.dbg.*
+        // intrinsics. They carry no semantics: dropped, like the intrinsics.
+        if (line.starts_with("#dbg_")) continue;
         if (!lpad.empty()) {
             if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
                 lpad += " " + line;

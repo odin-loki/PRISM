@@ -10,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include "prose_text.hpp"
+#include "prism/pir.hpp"
 
 #if defined(_MSC_VER)
 #  pragma warning(push)
@@ -78,67 +79,77 @@ bool defines_call(std::string_view src, std::string_view name) {
 
 }  // namespace
 
-TEST_CASE("cxx condition_variable model: notify sets a flag, wait is a spurious wakeup or assumes pred") {
+TEST_CASE("cxx condition_variable model: waits explore thread interleavings through the scheduler") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
     const std::string src = prism_test::unwrap_prose(slurp(header));
-    REQUIRE(!src.empty());
-
     CHECK(src.find("#ifndef _GLIBCXX_CONDITION_VARIABLE") != std::string::npos);
     CHECK(src.find("#define _GLIBCXX_CONDITION_VARIABLE 1") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std {") != std::string::npos);
-    CHECK(src.find("not a concurrency proof") != std::string::npos);
+    // the scheduler, included by a quoted path so it resolves next to the
+    // model (no libstdc++ file of that name exists)
+    CHECK(src.find("#include \"bits/prism_sched.h\"") != std::string::npos);
+    CHECK(src.find("not a concurrency proof") == std::string::npos);
     CHECK(src.find("spurious wakeup") != std::string::npos);
-    CHECK(src.find("#include <mutex>") == std::string::npos);
     CHECK(src.find("#include <thread>") == std::string::npos);
-    CHECK(src.find("#include <atomic>") == std::string::npos);
-    CHECK(src.find("#include <memory>") == std::string::npos);
-    CHECK(src.find("#include <chrono>") == std::string::npos);
-    CHECK(src.find("#include <functional>") == std::string::npos);
-    CHECK(src.find("std::thread") == std::string::npos);
-    CHECK(src.find("new ") == std::string::npos);
     CHECK(src.find("class condition_variable_any") != std::string::npos);
-
-    CHECK(src.find("bool _M_flag;") != std::string::npos);
-    CHECK(src.find("condition_variable() noexcept : _M_flag(false) {}") != std::string::npos);
-    CHECK(src.find("~condition_variable() = default;") != std::string::npos);
     CHECK(src.find("condition_variable(const condition_variable&) = delete;") != std::string::npos);
 
-    const std::string decl =
-        "extern \"C\" void __prism_check(int __ok, const char* __cls, const char* __msg);";
-    const auto at = src.find(decl);
-    REQUIRE(at != std::string::npos);
-    const auto call = src.find("__prism_check(");
-    REQUIRE(call != std::string::npos);
-    CHECK(call > at);
-    CHECK(call < at + decl.size());
-    CHECK(src.find("__prism_check(", call + std::string("__prism_check(").size()) == std::string::npos);
-
-    const auto one = body_of(src, "void notify_one() noexcept");
-    const auto all = body_of(src, "void notify_all() noexcept");
-    REQUIRE(one == "{ _M_flag = true; }");
-    REQUIRE(all == "{ _M_flag = true; }");
-    CHECK(one.find("(") == std::string::npos);
-    CHECK(all.find("(") == std::string::npos);
-    CHECK(one.find("__prism_check") == std::string::npos);
-    CHECK(all.find("__prism_check") == std::string::npos);
-    CHECK(one.find("_M_flag = false") == std::string::npos);
-    CHECK(all.find("_M_flag = false") == std::string::npos);
-
+    // wait(l, pred): release, re-check, must switch, relock - never assume pred
+    const std::string wp = body_of(src, "inline void __wait_pred(");
+    REQUIRE_FALSE(wp.empty());
+    CHECK(wp.find("__l.unlock()") != std::string::npos);
+    CHECK(wp.find("__must_switch") != std::string::npos);
+    CHECK(wp.find("__l.lock()") != std::string::npos);
+    CHECK(wp.find("__prism_assume") == std::string::npos);
+    CHECK(wp.find("__l.unlock()") < wp.find("__must_switch"));
+    CHECK(wp.find("__must_switch") < wp.find("__l.lock()"));
+    // plain wait: an optional switch (spurious wakeup when none runs)
+    const std::string wo = body_of(src, "inline void __wait_once(");
+    CHECK(wo.find("__maybe_switch") != std::string::npos);
+    // timed wait with nothing queued times out
+    const std::string wt = body_of(src, "inline bool __wait_timed(");
+    CHECK(wt.find("__prism_sched::__n == 0") != std::string::npos);
+    // notify is a switch point
+    const std::string one = body_of(src, "void notify_one() noexcept");
+    CHECK(one.find("__maybe_switch") != std::string::npos);
     CHECK(defines_call(src, "wait"));
     CHECK(defines_call(src, "wait_for"));
     CHECK(defines_call(src, "wait_until"));
     CHECK_FALSE(defines_call(src, "notify_all_at_thread_exit"));
+}
 
-    static_assert(sizeof(std::condition_variable) == sizeof(bool));
-    static_assert(std::is_trivially_destructible_v<std::condition_variable>);
-    static_assert(std::is_standard_layout_v<std::condition_variable>);
-    static_assert(!std::is_copy_constructible_v<std::condition_variable>);
-    static_assert(!std::is_move_constructible_v<std::condition_variable>);
+TEST_CASE("cxx scheduler model: deadlock check, preemption bound, prune of unrepresentable schedules") {
+    const std::string s = prism_test::unwrap_prose(slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "bits" / "prism_sched.h"));
+    CHECK(s.find("\"CXX-DEADLOCK\"") != std::string::npos);
+    CHECK(s.find("#define PRISM_SCHED_PREEMPTIONS 2") != std::string::npos);
+    const std::string ms = body_of(s, "inline void __maybe_switch()");
+    CHECK(ms.find("__budget == 0") != std::string::npos);
+    CHECK(ms.find("--__budget") != std::string::npos);
+    const std::string mu = body_of(s, "inline void __must_switch(");
+    CHECK(mu.find("__prism_assume(0)") != std::string::npos);
+    CHECK(mu.find("__prism_assume(0)") < mu.find("CXX-DEADLOCK"));
+    const std::string th = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "thread");
+    CHECK(th.find("\"CXX-THREAD-JOINABLE\"") != std::string::npos);
+    CHECK(th.find("__maybe_start()") != std::string::npos);
+    const std::string at = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "atomic");
+    CHECK(at.find("__maybe_switch") != std::string::npos);
+    // translate.cpp maps the model classes onto the taxonomy
+    const std::string tr = slurp(repo() / "src" / "prism" / "pir" / "translate.cpp");
+    CHECK(tr.find("\"CXX-DEADLOCK\") cls = std::string(\"CONC-DEADLOCK\")") != std::string::npos);
+    CHECK(tr.find("\"CXX-THREAD-JOINABLE\") cls = std::string(\"CXX-TERMINATE\")") != std::string::npos);
+}
 
-    std::condition_variable cv;
-    cv.notify_one();
-    cv.notify_all();
+TEST_CASE("cxx models: source_imports_std") {
+    CHECK(prism::pir::source_imports_std("import std;\nint main(){}"));
+    CHECK(prism::pir::source_imports_std("  import   std ;"));
+    CHECK(prism::pir::source_imports_std("export import std.compat;"));
+    CHECK_FALSE(prism::pir::source_imports_std("// import std;\n"));
+    CHECK_FALSE(prism::pir::source_imports_std("/* import std; */"));
+    CHECK_FALSE(prism::pir::source_imports_std("const char* s = \"import std;\";"));
+    CHECK_FALSE(prism::pir::source_imports_std("import stdx;"));
+    CHECK_FALSE(prism::pir::source_imports_std("int x; import std;"));
+    CHECK_FALSE(prism::pir::source_imports_std("#include <vector>"));
 }
