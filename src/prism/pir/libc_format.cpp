@@ -121,7 +121,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
         }
         char c = f[i];
         auto conv = f.substr(start + 1, i - start);
-        if (c == 'n' || (lenmod == "L" && std::string_view("fFeEgG").find(c) == std::string_view::npos) || (lenmod == "l" && (c == 's' || c == 'c')) || f.substr(start, i - start).find('\'') != std::string::npos)
+        if (lenmod == "L" && std::string_view("fFeEgGaA").find(c) == std::string_view::npos)
             float_star = true;  // not modelled by __prism_fmtv: keep the bounded havoc
         bool wide = lenmod == "l" || lenmod == "ll" || lenmod == "j" || lenmod == "z" || lenmod == "t" || lenmod == "q";
         unsigned ib = wide ? 64 : 32;
@@ -199,7 +199,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                 m = (c == 'f' || c == 'F') ? (ld ? 4950 : 330) + prec : 32 + prec;
                 if (next > 0 && !(next - 1 < consts.size() && consts.at(next - 1))) {
                     float_arg = static_cast<int>(next - 1);
-                    float_star = float_star || f.substr(start, i - start).find('\'') != std::string::npos;
+                    
                 }
                 // A literal double: the exact text length (models/cxx/prism_fpfmt.h,
                 // the same digits glibc prints), so digit-dependent lengths are exact.
@@ -229,7 +229,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     // the symbolic value) instead of havoc bytes.
     // Session 11: any number of conversions (ints, chars, strings,
     // pointers, doubles, '*' width/precision) via __prism_fmtv.
-    if (p.buf_arg >= 0 && float_arg >= 0 && !float_star && nconv <= 24) p.exact_double_arg = float_arg;
+    if (p.buf_arg >= 0 && float_arg >= 0 && !float_star) p.exact_double_arg = float_arg;
     if (p.buf_arg >= 0 && p.size_arg < 0) {
         if (!bounded && p.exact_double_arg < 0) {
             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";

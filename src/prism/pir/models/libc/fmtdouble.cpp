@@ -6,43 +6,100 @@
  * %%, d i u o x X c s p and the double conversions (prism_fpfmt: the exact
  * bytes glibc prints), flags - + space # 0, width and precision including
  * '*'. Returns the full length; writes at most cap-1 characters and a NUL
- * when cap > 0. Not handled (the planner keeps the bounded havoc): %n, %L,
- * %ls/%lc, the ' flag.
+ * when cap > 0. Also %n (all sizes), %Lf/%Le/%Lg/%La, %lc/%ls (C locale:
+ * ASCII, else -1/EILSEQ) and the ' flag (no grouping in the C locale).
  */
 #include "prism_model.h"
 #include "prism_fpfmt.h"
 
-extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
+// glibc %La for the x86 80-bit format (sysdeps/ieee754/ldbl-96
+// printf_fphex): the leading hex digit is the top nibble of the explicit
+// 64-bit mantissa, 15 fraction digits, exponent = biased - 16383 - 3; a
+// carry out of the leading digit gives 0x1 and exponent + 4.
+static int __prism_ldhex(char* t, long double v, int prec, bool upper, bool alt, bool plus, bool space) {
+    prism_fpfmt::Bits b = prism_fpfmt::decompose(v);
+    int len = 0;
+    if (b.neg) t[len++] = '-'; else if (plus) t[len++] = '+'; else if (space) t[len++] = ' ';
+    t[len++] = '0'; t[len++] = upper ? 'X' : 'x';
+    const char* dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    unsigned long long m = b.m;
+    long exp = m ? (long)b.e + 60 : 0;
+    unsigned lead = (unsigned)(m >> 60);
+    unsigned long long frac = m & ((1ull << 60) - 1);
+    int nd = 15;
+    if (prec >= 0 && prec < 15) {
+        const int sh = 4 * (15 - prec);
+        const unsigned long long rem = frac & ((1ull << sh) - 1), half = 1ull << (sh - 1);
+        unsigned long long top = (((unsigned long long)lead << 60) | frac) >> sh;  // lead + kept digits
+        if (rem > half || (rem == half && (top & 1))) ++top;
+        if ((top >> (4 * prec)) > 0xf) { lead = 1; frac = 0; exp += 4; }
+        else { lead = (unsigned)(top >> (4 * prec)); frac = (top & ((1ull << (4 * prec)) - 1)) << sh; }
+        nd = prec;
+    } else if (prec < 0) {
+        while (nd > 0 && ((frac >> (4 * (15 - nd))) & 15) == 0) --nd;
+    }
+    t[len++] = dig[lead];
+    if (nd > 0 || alt || prec > 0) t[len++] = '.';
+    for (int z = 0; z < nd && z < 15; ++z) t[len++] = dig[(frac >> (4 * (14 - z))) & 15];
+    for (int z = 15; z < prec; ++z) t[len++] = '0';
+    t[len++] = upper ? 'P' : 'p';
+    t[len++] = exp < 0 ? '-' : '+';
+    unsigned long ue = (unsigned long)(exp < 0 ? -exp : exp);
+    char r[8]; int nr = 0;
+    do { r[nr++] = char('0' + ue % 10); ue /= 10; } while (ue);
+    while (nr) t[len++] = r[--nr];
+    return len;
+}
+
+// Renders the conversions whose first argument index lies in [ab, ae)
+// (and the literal text after them; text before the first conversion goes
+// with ab == 0), continuing from pos0 characters already produced. The
+// typed slots hold the arguments with indices [ab, ab + 8) in order of
+// their class. The translator chains calls over windows of the argument
+// list, so there is no fixed cap on the number of arguments.
+extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int ae, int pos0,
                             int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7,
                             long long j0, long long j1, long long j2, long long j3, long long j4, long long j5, long long j6, long long j7,
                             double d0, double d1, double d2, double d3, double d4, double d5, double d6, double d7,
-                            long double l0, long double l1, long double l2, long double l3,
+                            long double l0, long double l1, long double l2, long double l3, long double l4, long double l5, long double l6, long double l7,
                             const char* p0, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5, const char* p6, const char* p7) {
     const int is[8] = {i0, i1, i2, i3, i4, i5, i6, i7};
     const long long js[8] = {j0, j1, j2, j3, j4, j5, j6, j7};
     const double ds[8] = {d0, d1, d2, d3, d4, d5, d6, d7};
-    const long double ls[4] = {l0, l1, l2, l3};
+    const long double ls[8] = {l0, l1, l2, l3, l4, l5, l6, l7};
     int nl = 0;
     const char* const ps[8] = {p0, p1, p2, p3, p4, p5, p6, p7};
     int ni = 0, nj = 0, nd = 0, np = 0;
-    size_t n = 0;
-    auto put = [&](char c) { if (cap && n + 1 < cap) buf[n] = c; ++n; };
+    if (pos0 < 0) return pos0;  // an earlier window failed (EILSEQ)
+    size_t n = (size_t)pos0;
+    int ai = 0;          // global index of the next argument
+    bool on = ab == 0;   // the current conversion (and its trailing text) is ours
+    auto win = [&]() { int a = ai++; return a >= ab && a < ab + 8; };
+    auto gi = [&]() -> int { bool w = win(); return w && ni < 8 ? is[ni++] : 0; };
+    auto gj = [&]() -> long long { bool w = win(); return w && nj < 8 ? js[nj++] : 0; };
+    auto gd = [&]() -> double { bool w = win(); return w && nd < 8 ? ds[nd++] : 0.0; };
+    auto gl = [&]() -> long double { bool w = win(); return w && nl < 8 ? ls[nl++] : 0.0L; };
+    auto gp = [&]() -> const char* { bool w = win(); return w && np < 8 ? ps[np++] : nullptr; };
+    auto put = [&](char c) { if (!on) return; if (cap && n + 1 < cap) buf[n] = c; ++n; };
     for (const char* p = fmt; *p; ++p) {
         if (*p != '%') { put(*p); continue; }
         ++p;
         if (*p == '%') { put('%'); continue; }
+        on = ai >= ab && ai < ae;
         bool left = false, zero = false, plus = false, space = false, alt = false;
         for (;; ++p) {
             if (*p == '-') left = true; else if (*p == '0') zero = true; else if (*p == '+') plus = true;
-            else if (*p == ' ') space = true; else if (*p == '#') alt = true; else break;
+            else if (*p == ' ') space = true; else if (*p == '#') alt = true;
+            else if (*p == '\'') {}  // thousands grouping: empty in the C locale
+            else break;
         }
         int width = 0;
-        if (*p == '*') { width = ni < 8 ? is[ni++] : 0; if (width < 0) { left = true; width = -width; } ++p; }
+        if (*p == '*') { width = gi(); if (width < 0) { left = true; width = -width; } ++p; }
         else while (*p >= '0' && *p <= '9') width = width * 10 + (*p++ - '0');
         int prec = -1;
         if (*p == '.') {
             ++p; prec = 0;
-            if (*p == '*') { prec = ni < 8 ? is[ni++] : 0; if (prec < 0) prec = -1; ++p; }
+            if (*p == '*') { prec = gi(); if (prec < 0) prec = -1; ++p; }
             else while (*p >= '0' && *p <= '9') prec = prec * 10 + (*p++ - '0');
         }
         int lm = 0;  // 0 int, -1 h, -2 hh, 1 long (64), 
@@ -60,9 +117,9 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
         if (c == 'd' || c == 'i' || c == 'u' || c == 'o' || c == 'x' || c == 'X') {
             const bool sg = c == 'd' || c == 'i';
             unsigned long long u; bool neg = false;
-            if (lm == 1) { long long v = nj < 8 ? js[nj++] : 0; if (sg && v < 0) { neg = true; u = 0ull - (unsigned long long)v; } else u = (unsigned long long)v; }
+            if (lm == 1) { long long v = gj(); if (sg && v < 0) { neg = true; u = 0ull - (unsigned long long)v; } else u = (unsigned long long)v; }
             else {
-                int v = ni < 8 ? is[ni++] : 0;
+                int v = gi();
                 if (lm == -1) v = sg ? (int)(short)v : (int)(unsigned short)v;
                 if (lm == -2) v = sg ? (int)(signed char)v : (int)(unsigned char)v;
                 if (sg && v < 0) { neg = true; u = 0ull - (unsigned long long)(long long)v; } else u = sg ? (unsigned long long)v : (unsigned long long)(unsigned)v;
@@ -80,10 +137,34 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
             for (int z = 0; z < zeros; ++z) t[len++] = '0';
             while (nr) t[len++] = r[--nr];
             if (prec >= 0) zero = false;
+        } else if (c == 'n') {
+            void* q = (void*)gp();
+            if (on && q) {
+                if (lm == -2) *(signed char*)q = (signed char)n;
+                else if (lm == -1) *(short*)q = (short)n;
+                else if (lm == 1) *(long long*)q = (long long)n;
+                else *(int*)q = (int)n;
+            }
+            continue;
+        } else if (c == 'c' && lm == 1) {  // %lc: wcrtomb in the C locale (ASCII only, else EILSEQ)
+            const int w = gi(); numeric = false;
+            if (w < 0 || w > 0x7f) { if (on) return -1; continue; }
+            t[len++] = (char)w;
+        } else if (c == 's' && lm == 1) {  // %ls: precision counts bytes
+            const int* ws = (const int*)gp(); numeric = false;
+            static const int nulls[] = {'(', 'n', 'u', 'l', 'l', ')', 0};
+            if (!ws) ws = nulls;
+            int sl = 0;
+            for (; ws[sl] && (prec < 0 || sl < prec); ++sl) if (ws[sl] < 0 || ws[sl] > 0x7f) { if (on) return -1; break; }
+            const int pad = width > sl ? width - sl : 0;
+            if (!left) for (int z = 0; z < pad; ++z) put(' ');
+            for (int z = 0; z < sl; ++z) put((char)ws[z]);
+            if (left) for (int z = 0; z < pad; ++z) put(' ');
+            continue;
         } else if (c == 'c') {
-            t[len++] = (char)(ni < 8 ? is[ni++] : 0); numeric = false;
+            t[len++] = (char)(gi()); numeric = false;
         } else if (c == 's') {
-            const char* s = np < 8 ? ps[np++] : nullptr; numeric = false;
+            const char* s = gp(); numeric = false;
             if (!s) s = "(null)";
             // long strings: emitted directly, padding computed on the length
             int sl = 0; while (s[sl] && (prec < 0 || sl < prec)) ++sl;
@@ -93,18 +174,20 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
             if (left) for (int z = 0; z < pad; ++z) put(' ');
             continue;
         } else if (c == 'p') {
-            const char* q = np < 8 ? ps[np++] : nullptr; numeric = false;
+            const char* q = gp(); numeric = false;
             unsigned long long u = (unsigned long long)(size_t)q;
             if (!u) { const char* nl = "(nil)"; while (*nl) t[len++] = *nl++; }
             else { t[len++] = '0'; t[len++] = 'x'; char r[20]; int nr = 0; for (; u; u >>= 4) r[nr++] = "0123456789abcdef"[u & 15]; while (nr) t[len++] = r[--nr]; }
         } else if (c == 'f' || c == 'F' || c == 'e' || c == 'E' || c == 'g' || c == 'G' || c == 'a' || c == 'A') {
-            const bool ldv = lm == 2;  // %Lf %Le %Lg (the planner keeps %La as havoc)
-            const long double lv = ldv ? (nl < 4 ? ls[nl++] : 0.0L) : 0.0L;
-            const double v = ldv ? 0.0 : (nd < 8 ? ds[nd++] : 0);
+            const bool ldv = lm == 2;  // %Lf %Le %Lg %La
+            const long double lv = ldv ? (gl()) : 0.0L;
+            const double v = ldv ? 0.0 : (gd());
             unsigned fl = (alt ? prism_fpfmt::kAlt : 0u) | ((c == 'a' || c == 'A') ? prism_fpfmt::kPrintfExp : 0u);
             if (plus) fl |= prism_fpfmt::kPlus; else if (space) fl |= prism_fpfmt::kSpace;
             const int pr = prec >= 0 ? prec : ((c == 'a' || c == 'A') ? -1 : 6);
-            len = ldv ? prism_fpfmt::to_chars(t, (int)sizeof t, lv, c, pr, fl) : prism_fpfmt::to_chars(t, (int)sizeof t, v, c, pr, fl);
+            const bool lfin = ldv && lv - lv == 0;
+            len = (lfin && (c == 'a' || c == 'A')) ? __prism_ldhex(t, lv, prec, c == 'A', alt, plus, space)
+                : ldv ? prism_fpfmt::to_chars(t, (int)sizeof t, lv, c, pr, fl) : prism_fpfmt::to_chars(t, (int)sizeof t, v, c, pr, fl);
             if (len > (int)sizeof t) len = (int)sizeof t;  // precision past ~4990: bytes past the buffer are not exact
             finite = ldv ? lv - lv == 0 : v - v == 0;
             if (k < len && (t[k] == '-' || t[k] == '+' || t[k] == ' ')) ++k;
@@ -120,6 +203,6 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
         else for (int z = 0; z < len; ++z) put(t[z]);
         if (left) for (int z = 0; z < pad; ++z) put(' ');
     }
-    if (cap) buf[n < cap ? n : cap - 1] = 0;
+    if (cap && ae == 0x7fffffff) buf[n < cap ? n : cap - 1] = 0;  // the last window terminates
     return (int)n;
 }

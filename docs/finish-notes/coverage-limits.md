@@ -256,6 +256,44 @@ below.
   constness; only address identity across evaluations differs, which
   6.5.2.5 leaves unspecified for const literals. `constexpr` object
   declarations need clang 19+, so the constexpr tasks depend on prism-llvm.
+  Session 12 (written; compile-checked only) closes the session 11 list:
+  - CLOSED (unverified): out-of-order designated initialisers are really
+    reordered in the C++ part (field orders collected from the unit's
+    struct/union definitions; a list is sorted by the unique covering
+    order) and array designators [N] = v become positional elements with
+    {} in the gaps (positional elements continue after a designator).
+    -Wno-reorder-init-list stays only as the fallback for lists no unit
+    definition covers (types from headers) or nested designators (.a.b =).
+  - CLOSED (unverified): %La for x86 80-bit long double (glibc ldbl-96
+    printf_fphex: top-nibble leading digit, 15 fraction digits, carry to
+    0x1 with exponent + 4).
+  - CLOSED (unverified): %n (hh/h/l/ll/j/z/t sizes; still reported as
+    FMT-PERCENT-N), %lc/%ls (C locale: ASCII bytes, otherwise -1 with
+    EILSEQ, the precision of %ls counting bytes) and the ' flag (no
+    grouping in the C locale) are rendered by __prism_fmtv.
+  - CLOSED (unverified): no argument caps — the translator chains
+    __prism_fmtv over windows of 8 arguments (conversions starting in the
+    first 6), passing the running length, so any argument count and any
+    mix of i32/i64/double/x86_fp80/ptr is exact; the nconv <= 24 limit is
+    gone. Other vararg types (i128, structs by value) still use havoc.
+  - CLOSED (unverified): split statics are renamed by a token-level
+    rewrite (strings, character literals, comments, #include lines,
+    member accesses and struct/union member declarations untouched)
+    instead of #define.
+  - CLOSED (unverified): lgamma for large x sums the asymptotic Stirling
+    series adaptively (B2..B34 from the table, then B_2k via
+    2(2k)! zeta(2k)/(2 pi)^2k recursively) until the term is below the
+    working precision or the series turns, so the 2e5 shift cap no longer
+    limits accuracy.
+  Still open after session 12: printf assumes the C locale (setlocale to
+  another locale is not modelled for %ls/%lc/' ); vararg types other than
+  i32/i64/double/x86_fp80/ptr fall back to havoc; designators the unit
+  cannot place (struct defined in a header, nested .a.b / [i].x,
+  non-literal array indices) still rely on clang's extension; the token
+  renamer treats a same-named local or label as the static (consistent,
+  so semantics are kept) and does not look inside macro bodies built by
+  token pasting.
+
 
 ## Exact binary floating-point text (session 6)
 `models/cxx/prism_fpfmt.h`: the full decimal expansion of the double

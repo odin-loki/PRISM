@@ -1938,8 +1938,8 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     }
     if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmtv")) {
         // exact output bytes (coverage item 1): every variadic argument goes
-        // to a typed slot of __prism_fmtv (8 x i32, 8 x i64, 8 x double,
-        // 8 x ptr), which renders the whole format with prism_fpfmt.
+        // to a typed slot of __prism_fmtv (8 each of i32, i64, double,
+        // x86_fp80, ptr), which renders the whole format with prism_fpfmt.
         const ir::Type ti32{ir::Type::Int, 32, "i32", {}}, ti64{ir::Type::Int, 64, "i64", {}},
             tdbl{ir::Type::Float, 0, "double", {}}, tld{ir::Type::Float, 0, "x86_fp80", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
         auto zero = [](const ir::Type& t) {
@@ -1949,36 +1949,53 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
             o.v.bits = 0;
             return o;
         };
-        std::vector<ir::Operand> si, sj, sd, sl, sp;
+        // Windows of 8 arguments (conversions starting in the first 6 of them,
+        // so '*' width, '*' precision and the value always fit), chained
+        // through the running length: no cap on the argument count.
+        auto cls = [](const ir::Operand& o) {
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) return 0;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) return 1;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "double") return 2;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") return 3;
+            if (o.ty.kind == ir::Type::Ptr) return 4;
+            return -1;
+        };
         bool fits = true;
-        for (std::size_t k = fi + 1; k < in.ops.size(); ++k) {
-            const auto& o = in.ops[k];
-            if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) si.push_back(o);
-            else if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) sj.push_back(o);
-            else if (o.ty.kind == ir::Type::Float && o.ty.text == "double") sd.push_back(o);
-            else if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") sl.push_back(o);
-            else if (o.ty.kind == ir::Type::Ptr) sp.push_back(o);
-            else fits = false;
-        }
-        if (fits && si.size() <= 8 && sj.size() <= 8 && sd.size() <= 8 && sl.size() <= 4 && sp.size() <= 8) {
-            ir::Inst call;
-            call.op = "call";
-            call.callee = "__prism_fmtv";
-            call.result = in.result;
-            call.ty = ti32;
+        const std::size_t na = in.ops.size() - (fi + 1);
+        for (std::size_t k = fi + 1; k < in.ops.size(); ++k) if (cls(in.ops[k]) < 0) fits = false;
+        if (fits) {
             ir::Operand cap;
             if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
             else {
                 cap = zero(ti64);
                 cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
             }
-            call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi]};
-            for (auto* v : {&si, &sj, &sd, &sl, &sp}) {
-                const ir::Type& t = v == &si ? ti32 : v == &sj ? ti64 : v == &sd ? tdbl : v == &sl ? tld : tptr;
-                for (std::size_t k = 0; k < (v == &sl ? 4u : 8u); ++k) call.ops.push_back(k < v->size() ? (*v)[k] : zero(t));
+            ir::Operand pos = zero(ti32);
+            static unsigned fmt_seq = 0;
+            const std::string base = (in.result.empty() ? std::string("prism.fmtv") : in.result) + ".w" + std::to_string(fmt_seq++) + ".";
+            for (std::size_t ab = 0;; ab += 6) {
+                const bool last = ab + 6 >= na;
+                ir::Inst call;
+                call.op = "call";
+                call.callee = "__prism_fmtv";
+                call.result = last && !in.result.empty() ? in.result : base + std::to_string(ab);
+                call.ty = ti32;
+                ir::Operand oab = zero(ti32), oae = zero(ti32);
+                oab.v.bits = ab;
+                oae.v.bits = last ? 0x7fffffffu : ab + 6;
+                call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi], oab, oae, pos};
+                std::vector<ir::Operand> sv[5];
+                for (std::size_t k = ab; k < std::min(na, ab + 8); ++k) sv[cls(in.ops[fi + 1 + k])].push_back(in.ops[fi + 1 + k]);
+                const ir::Type* tys[5] = {&ti32, &ti64, &tdbl, &tld, &tptr};
+                for (int c = 0; c < 5; ++c)
+                    for (std::size_t k = 0; k < 8u; ++k) call.ops.push_back(k < sv[c].size() ? sv[c][k] : zero(*tys[c]));
+                inline_call(fr, call, cur, line);
+                if (last) return true;
+                pos = ir::Operand{};
+                pos.ty = ti32;
+                pos.v.kind = ir::Value::Local;
+                pos.v.name = call.result;
             }
-            inline_call(fr, call, cur, line);
-            return true;
         }
     }
     if (plan.buf_arg >= 0) {
