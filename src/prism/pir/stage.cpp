@@ -530,9 +530,9 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // passes (roadmap 2.3), then encoded like any other code (docs/PIR.md "Coroutines");
     // fix-irreducible gives their resume functions (loops re-entered at a
     // suspend point) a single loop header.
-    const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
-                               "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
-                             : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
+    const std::string passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
+                                     "function(" + lowerswitch_pass(*fe.opt) + ",fix-irreducible,loop-simplify,lcssa,instnamer)"
+                                   : c_ir_passes(*fe.opt);
     auto ro = prism::exec::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
                                   timeout_s);
