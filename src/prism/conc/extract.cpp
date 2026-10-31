@@ -379,6 +379,40 @@ struct Rewriter {
             obj = k;
             return cint(obj_base(k), i64);
         }
+        if (p.v.kind == ir::Value::ConstExpr && (p.v.ce_op == "getelementptr" || p.v.ce_op == "bitcast") &&
+            !p.v.elems.empty()) {
+            // Constant GEP (e.g. `getelementptr inbounds ([4 x i32], ptr @buf, i64 0, i64 2)`):
+            // every index is a literal, so fold the byte offset statically.
+            auto b = mem_addr(fn, p.v.elems[0], obj);
+            if (!b || b->v.kind != ir::Value::Int) return std::nullopt;
+            if (p.v.ce_op == "bitcast") return b;
+            auto sext = [](const ir::Operand& o) -> std::optional<uint64_t> {
+                if (o.v.kind == ir::Value::Zero || o.v.kind == ir::Value::Null) return 0;
+                if (o.v.kind != ir::Value::Int) return std::nullopt;
+                uint64_t x = o.v.bits;
+                if (o.ty.bits && o.ty.bits < 64 && ((x >> (o.ty.bits - 1)) & 1)) x |= ~wmask_bits(o.ty.bits);
+                return x;
+            };
+            uint64_t off = 0;
+            ir::Type cur = p.v.ce_ty;
+            for (std::size_t k = 1; k < p.v.elems.size(); ++k) {
+                auto ix = sext(p.v.elems[k]);
+                if (!ix) throw Unenc{"UNENCODED: constant getelementptr with a non-literal index"};
+                if (k == 1) { off += *ix * lay.alloc_size(cur); continue; }
+                const auto& rt = lay.resolve(cur);
+                if (rt.kind == ir::Type::Struct) {
+                    auto f = static_cast<unsigned>(*ix);
+                    off += lay.field_offset(rt, f);
+                    cur = lay.field_type(rt, f);
+                } else if (rt.kind == ir::Type::Array && !rt.elems.empty()) {
+                    cur = rt.elems[0];
+                    off += *ix * lay.alloc_size(cur);
+                } else {
+                    throw Unenc{"UNENCODED: constant getelementptr through " + rt.text + " (bounded memory)"};
+                }
+            }
+            return cint(b->v.bits + off, i64);
+        }
         if (p.v.kind == ir::Value::Local) {
             auto it = caddr.find(handle_key(fn, "%" + p.v.name));
             if (it == caddr.end()) return std::nullopt;

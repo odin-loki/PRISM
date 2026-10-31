@@ -149,6 +149,7 @@ public:
 // ---- <thread>
 class thread {
     pthread_t _M_h;  // no initializer: pthread_create writes it (a store would hide the handle)
+    bool _M_j = false;  // joinable(): set by the launching constructor, cleared by join()
 
     template <class _Fd>
     static void* _S_entry(void*) {
@@ -182,19 +183,27 @@ public:
         using _Fd = decay_t<_Fn>;
         if constexpr (sizeof...(_Args) == 0 && is_empty_v<_Fd> && is_default_constructible_v<_Fd>) {
             pthread_create(_M_handle(), nullptr, &_S_entry<_Fd>, nullptr);
+            _M_j = true;
         } else {
             auto* __fn = new auto([__g = _Fd(std::forward<_Fn>(__f)), ... __b = decay_t<_Args>(std::forward<_Args>(__a))]() mutable {
                 std::move(__g)(std::move(__b)...);
             });
             using _L = remove_pointer_t<decltype(__fn)>;
             pthread_create(_M_handle(), nullptr, &_S_entry_arg<_L>, __fn);
+            _M_j = true;
         }
     }
     thread(const thread&) = delete;
     thread& operator=(const thread&) = delete;
 
-    _PRISM_AI void join() { pthread_join(*_M_handle(), nullptr); }
-    _PRISM_AI bool joinable() const noexcept { return true; }
+    // join() on a non-joinable thread throws std::system_error(invalid_argument)
+    // in libstdc++/libc++; modelled as a trap so the verdict reports it.
+    _PRISM_AI void join() {
+        if (!_M_j) __builtin_trap();
+        pthread_join(*_M_handle(), nullptr);
+        _M_j = false;
+    }
+    _PRISM_AI bool joinable() const noexcept { return _M_j; }
     static unsigned hardware_concurrency() noexcept { return 2; }
 };
 
