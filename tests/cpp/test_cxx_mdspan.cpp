@@ -164,7 +164,7 @@ MdCtx& ctx() {
     std::ofstream(probe) << "#include <mdspan>\n"
                             "int main() {\n"
                             "  int a[1] = {7};\n"
-                            "  std::mdspan<int> m(a, 1);\n"
+                            "  std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 1);\n"
                             "  return m(0) == 7 ? 0 : 1;\n"
                             "}\n";
     std::vector<std::string> build{c.cxx};

@@ -44,7 +44,7 @@
 // standard spelling), iterators, and any rank other than 1, 2, 3, 4, 5, 6,
 // or 7.
 // The standard template argument list (Extents, LayoutPolicy, AccessorPolicy)
-// is not this mdspan<T> / mdspan<T, 2> / mdspan<T, 3> / mdspan<T, 4> /
+// is not mdspan<T, extents/dextents, layout_right> (ranks 1..7) / mdspan<T, 3> / mdspan<T, 4> /
 // mdspan<T, 5> / mdspan<T, 6> / mdspan<T, 7>. This header is not a proof.
 #ifndef _GLIBCXX_MDSPAN
 #define _GLIBCXX_MDSPAN 1
@@ -60,11 +60,11 @@ namespace std {
 
 // Any other rank, or a standard Extents/Layout/Accessor argument, is an
 // incomplete type: the unit fails to compile and pir falls back.
-template <typename _Tp, std::size_t _Rank = 1>
-class mdspan;
+template <typename _Tp, std::size_t _Rank>
+class __prism_mdspan;
 
 template <typename _Tp>
-class mdspan<_Tp, 1> {
+class __prism_mdspan<_Tp, 1> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -76,13 +76,13 @@ public:
     static constexpr std::size_t rank() noexcept { return 1; }
 
     // Stores the pointer. Does not allocate and does not copy elements.
-    explicit mdspan(_Tp* __p, size_type __ext) : _M_ptr(__p), _M_ext(__ext) {
+    explicit __prism_mdspan(_Tp* __p, size_type __ext) : _M_ptr(__p), _M_ext(__ext) {
         __prism_check(__p != nullptr || __ext == 0, "PTR-NULL-DEREF",
                       "std::mdspan null data pointer with a non-zero extent");
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_ext; }
 
@@ -105,7 +105,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 2> {
+class __prism_mdspan<_Tp, 2> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -119,7 +119,7 @@ public:
     // Contiguous row-major packing of the caller's array. Both extents are
     // stored. A product that does not fit in size_t is a precondition, and
     // size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1) : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_size(0) {
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1) : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_size(0) {
         __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0), "PTR-NULL-DEREF",
                       "std::mdspan null data pointer with a non-zero extent");
         const bool __fits = __e1 == 0 || __e0 <= static_cast<size_type>(-1) / __e1;
@@ -128,7 +128,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -160,7 +160,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 3> {
+class __prism_mdspan<_Tp, 3> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -176,7 +176,7 @@ public:
     // the other two would overflow each other. Otherwise each step is
     // multiplied only when it fits in size_t. A product that does not fit
     // is a precondition, and size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2)
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2)
         : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_size(0) {
         __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0 && __e2 == 0), "PTR-NULL-DEREF",
                       "std::mdspan null data pointer with a non-zero extent");
@@ -195,7 +195,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -226,7 +226,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 4> {
+class __prism_mdspan<_Tp, 4> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -242,7 +242,7 @@ public:
     // the other three would overflow each other. Otherwise each step is
     // multiplied only when it fits in size_t. A product that does not fit
     // is a precondition, and size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3)
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3)
         : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_e3(__e3), _M_size(0) {
         __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0 && __e2 == 0 && __e3 == 0),
                       "PTR-NULL-DEREF",
@@ -265,7 +265,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -299,7 +299,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 5> {
+class __prism_mdspan<_Tp, 5> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -315,7 +315,7 @@ public:
     // the other four would overflow each other. Otherwise each step is
     // multiplied only when it fits in size_t. A product that does not fit
     // is a precondition, and size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4)
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4)
         : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_e3(__e3), _M_e4(__e4), _M_size(0) {
         __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0 && __e2 == 0 && __e3 == 0 && __e4 == 0),
                       "PTR-NULL-DEREF",
@@ -341,7 +341,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -379,7 +379,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 6> {
+class __prism_mdspan<_Tp, 6> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -395,7 +395,7 @@ public:
     // the other five would overflow each other. Otherwise each step is
     // multiplied only when it fits in size_t. A product that does not fit
     // is a precondition, and size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4,
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4,
                     size_type __e5)
         : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_e3(__e3), _M_e4(__e4), _M_e5(__e5), _M_size(0) {
         __prism_check(__p != nullptr || (__e0 == 0 && __e1 == 0 && __e2 == 0 && __e3 == 0 && __e4 == 0 && __e5 == 0),
@@ -425,7 +425,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -468,7 +468,7 @@ private:
 };
 
 template <typename _Tp>
-class mdspan<_Tp, 7> {
+class __prism_mdspan<_Tp, 7> {
 public:
     using element_type = _Tp;
     using index_type = std::size_t;
@@ -484,7 +484,7 @@ public:
     // the other six would overflow each other. Otherwise each step is
     // multiplied only when it fits in size_t. A product that does not fit
     // is a precondition, and size() stays 0 on that path (not a wrapped count).
-    explicit mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4,
+    explicit __prism_mdspan(_Tp* __p, size_type __e0, size_type __e1, size_type __e2, size_type __e3, size_type __e4,
                     size_type __e5, size_type __e6)
         : _M_ptr(__p), _M_e0(__e0), _M_e1(__e1), _M_e2(__e2), _M_e3(__e3), _M_e4(__e4), _M_e5(__e5), _M_e6(__e6),
           _M_size(0) {
@@ -519,7 +519,7 @@ public:
     }
 
     // Non-owning. Destroying the view does not free _M_ptr.
-    ~mdspan() = default;
+    ~__prism_mdspan() = default;
 
     size_type size() const noexcept { return _M_size; }
 
@@ -569,26 +569,96 @@ private:
     size_type _M_size;
 };
 
+// Standard spelling (C++23 [mdspan.syn]). extents<IndexType, Exts...> keeps
+// the static extents for rank() and static_extent(); dynamic_extent entries
+// are supplied to the constructor. mdspan<T, Extents, Layout, Accessor>
+// derives from the rank model above, so every check is the same. Only
+// layout_right with default_accessor is modelled: any other layout or
+// accessor is an incomplete type, the unit fails to compile and pir falls
+// back.
+inline constexpr std::size_t __prism_mdspan_dynamic = static_cast<std::size_t>(-1);
+
+template <typename _IndexType, std::size_t... _Exts>
+class extents {
+public:
+    using index_type = _IndexType;
+    using size_type = std::size_t;
+    using rank_type = std::size_t;
+    static constexpr rank_type rank() noexcept { return sizeof...(_Exts); }
+    static constexpr rank_type rank_dynamic() noexcept {
+        return ((_Exts == __prism_mdspan_dynamic ? 1u : 0u) + ... + 0u);
+    }
+    static constexpr std::size_t static_extent(rank_type __r) noexcept {
+        constexpr std::size_t __e[] = {_Exts..., 0};
+        return __e[__r];
+    }
+};
+
+template <typename _IndexType, std::size_t _Rank, std::size_t... _Acc>
+struct __prism_dextents_build {
+    using type = typename __prism_dextents_build<_IndexType, _Rank - 1, _Acc..., __prism_mdspan_dynamic>::type;
+};
+template <typename _IndexType, std::size_t... _Acc>
+struct __prism_dextents_build<_IndexType, 0, _Acc...> {
+    using type = extents<_IndexType, _Acc...>;
+};
+
+template <typename _IndexType, std::size_t _Rank>
+using dextents = typename __prism_dextents_build<_IndexType, _Rank>::type;
+
+struct layout_right {};
 template <typename _Tp>
-mdspan(_Tp*, std::size_t) -> mdspan<_Tp, 1>;
+struct default_accessor {
+    using element_type = _Tp;
+    using reference = _Tp&;
+    using data_handle_type = _Tp*;
+};
+
+template <typename _Tp, typename _Extents, typename _Layout = layout_right,
+          typename _Accessor = default_accessor<_Tp>>
+class mdspan;
+
+template <typename _Tp, typename _IndexType, std::size_t... _Exts>
+class mdspan<_Tp, extents<_IndexType, _Exts...>, layout_right, default_accessor<_Tp>>
+    : public __prism_mdspan<_Tp, sizeof...(_Exts)> {
+    using _Base = __prism_mdspan<_Tp, sizeof...(_Exts)>;
+
+public:
+    using extents_type = extents<_IndexType, _Exts...>;
+    using layout_type = layout_right;
+    using accessor_type = default_accessor<_Tp>;
+    using typename _Base::reference;
+    using typename _Base::size_type;
+    using _Base::_Base;
+
+    // C++23 multidimensional subscript. Same bounds check as operator().
+    template <typename... _Idx>
+    reference operator[](_Idx... __i) const {
+        static_assert(sizeof...(_Idx) == sizeof...(_Exts), "std::mdspan::operator[] needs rank() indices");
+        return (*this)(static_cast<size_type>(__i)...);
+    }
+};
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t) -> mdspan<_Tp, 2>;
+mdspan(_Tp*, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 1>>;
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 3>;
+mdspan(_Tp*, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 2>>;
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 4>;
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 3>>;
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 5>;
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 4>>;
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 6>;
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 5>>;
 
 template <typename _Tp>
-mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 7>;
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 6>>;
+
+template <typename _Tp>
+mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 7>>;
 
 }  // namespace std
 

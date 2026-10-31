@@ -11,7 +11,7 @@
 
 static void in_range() {
     int a[4] = {10, 20, 30, 40};
-    std::mdspan<int> m(a, 4);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 4);
     m(0) = 11;
     std::printf("in %d %d %d %d\n", m(0), m(1), m(2), m(3));
     std::printf("size %zu %zu\n", m.size(), m.extent(0));
@@ -24,14 +24,14 @@ static void not_own() {
     int stack[2] = {7, 8};
     int* p = stack;
     {
-        std::mdspan<int> m(p, 2);
+        std::mdspan<int, std::dextents<std::size_t, 1>> m(p, 2);
         std::printf("inside %d\n", m(1));
     }
     std::printf("after %d\n", p[1]);
 
     int* heap = new int[2]{9, 4};
     {
-        std::mdspan<int> m(heap, 2);
+        std::mdspan<int, std::dextents<std::size_t, 1>> m(heap, 2);
         std::printf("heap %d\n", m(0));
     }
     std::printf("kept %d\n", heap[0]);
@@ -39,20 +39,20 @@ static void not_own() {
 }
 
 static void empty() {
-    std::mdspan<int> z(static_cast<int*>(nullptr), 0);
+    std::mdspan<int, std::dextents<std::size_t, 1>> z(static_cast<int*>(nullptr), 0);
     std::printf("empty %zu %zu %d\n", z.size(), z.extent(0), int(z.data() == nullptr));
 }
 
 static void rank2() {
     int b[6] = {1, 2, 3, 4, 5, 6};
-    std::mdspan<int, 2> m(b, 2, 3);
+    std::mdspan<int, std::dextents<std::size_t, 2>> m(b, 2, 3);
     std::printf("r2 %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m(0, 0), m(1, 2));
 }
 
 static void rank3() {
     int c[24];
     for (int i = 0; i < 24; ++i) c[i] = i + 1;
-    std::mdspan<int, 3> m(c, 2, 3, 4);
+    std::mdspan<int, std::dextents<std::size_t, 3>> m(c, 2, 3, 4);
     std::printf("r3 %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2), m(0, 0, 0),
                 m(1, 2, 3));
 }
@@ -62,19 +62,19 @@ static void rank3() {
 static void zero3() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 3> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(0));
+    std::mdspan<int, std::dextents<std::size_t, 3>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(0));
     std::printf("z3 %zu\n", m.size());
 }
 
 static void empty3() {
-    std::mdspan<int, 3> z(static_cast<int*>(nullptr), 0, 0, 0);
+    std::mdspan<int, std::dextents<std::size_t, 3>> z(static_cast<int*>(nullptr), 0, 0, 0);
     std::printf("e3 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
 static void rank4() {
     int d[120];
     for (int i = 0; i < 120; ++i) d[i] = i + 1;
-    std::mdspan<int, 4> m(d, 2, 3, 4, 5);
+    std::mdspan<int, std::dextents<std::size_t, 4>> m(d, 2, 3, 4, 5);
     std::printf("r4 %zu %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2), m.extent(3),
                 m(0, 0, 0, 0), m(1, 2, 3, 4));
 }
@@ -84,20 +84,20 @@ static void rank4() {
 static void zero4() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 4> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 4>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(0));
     std::printf("z4 %zu\n", m.size());
 }
 
 static void empty4() {
-    std::mdspan<int, 4> z(static_cast<int*>(nullptr), 0, 0, 0, 0);
+    std::mdspan<int, std::dextents<std::size_t, 4>> z(static_cast<int*>(nullptr), 0, 0, 0, 0);
     std::printf("e4 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
 static void rank5() {
     int e[720];
     for (int i = 0; i < 720; ++i) e[i] = i + 1;
-    std::mdspan<int, 5> m(e, 2, 3, 4, 5, 6);
+    std::mdspan<int, std::dextents<std::size_t, 5>> m(e, 2, 3, 4, 5, 6);
     std::printf("r5 %zu %zu %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2), m.extent(3),
                 m.extent(4), m(0, 0, 0, 0, 0), m(1, 2, 3, 4, 5));
 }
@@ -107,20 +107,20 @@ static void rank5() {
 static void zero5() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 5> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 5>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(0));
     std::printf("z5 %zu\n", m.size());
 }
 
 static void empty5() {
-    std::mdspan<int, 5> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0);
+    std::mdspan<int, std::dextents<std::size_t, 5>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0);
     std::printf("e5 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
 static void rank6() {
     int f[5040];
     for (int i = 0; i < 5040; ++i) f[i] = i + 1;
-    std::mdspan<int, 6> m(f, 2, 3, 4, 5, 6, 7);
+    std::mdspan<int, std::dextents<std::size_t, 6>> m(f, 2, 3, 4, 5, 6, 7);
     std::printf("r6 %zu %zu %zu %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2),
                 m.extent(3), m.extent(4), m.extent(5), m(0, 0, 0, 0, 0, 0), m(1, 2, 3, 4, 5, 6));
 }
@@ -130,20 +130,20 @@ static void rank6() {
 static void zero6() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 6> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 6>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(0));
     std::printf("z6 %zu\n", m.size());
 }
 
 static void empty6() {
-    std::mdspan<int, 6> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0);
+    std::mdspan<int, std::dextents<std::size_t, 6>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0);
     std::printf("e6 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
 static void rank7() {
     int g[40320];
     for (int i = 0; i < 40320; ++i) g[i] = i + 1;
-    std::mdspan<int, 7> m(g, 2, 3, 4, 5, 6, 7, 8);
+    std::mdspan<int, std::dextents<std::size_t, 7>> m(g, 2, 3, 4, 5, 6, 7, 8);
     std::printf("r7 %zu %zu %zu %zu %zu %zu %zu %zu %d %d\n", m.size(), m.extent(0), m.extent(1), m.extent(2),
                 m.extent(3), m.extent(4), m.extent(5), m.extent(6), m(0, 0, 0, 0, 0, 0, 0), m(1, 2, 3, 4, 5, 6, 7));
 }
@@ -153,66 +153,66 @@ static void rank7() {
 static void zero7() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 7> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 7>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(0));
     std::printf("z7 %zu\n", m.size());
 }
 
 static void empty7() {
-    std::mdspan<int, 7> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0);
+    std::mdspan<int, std::dextents<std::size_t, 7>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0);
     std::printf("e7 %zu %d\n", z.size(), int(z.data() == nullptr));
 }
 
 static int oob() {
     int a[4] = {1, 2, 3, 4};
-    std::mdspan<int> m(a, 4);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 4);
     return m(4);
 }
 
 static int oob2() {
     int b[6] = {1, 2, 3, 4, 5, 6};
-    std::mdspan<int, 2> m(b, 2, 3);
+    std::mdspan<int, std::dextents<std::size_t, 2>> m(b, 2, 3);
     return m(1, 3);
 }
 
 static int null_ext() {
-    std::mdspan<int> m(static_cast<int*>(nullptr), 1);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(static_cast<int*>(nullptr), 1);
     return static_cast<int>(m.size());
 }
 
 // which 0/1/2 is one past extent 0/1/2. The other indices are in range.
 static int oob3(int which) {
     int c[24] = {};
-    std::mdspan<int, 3> m(c, 2, 3, 4);
+    std::mdspan<int, std::dextents<std::size_t, 3>> m(c, 2, 3, 4);
     if (which == 0) return m(2, 0, 0);
     if (which == 1) return m(0, 3, 0);
     return m(0, 0, 4);
 }
 
 static int null3() {
-    std::mdspan<int, 3> m(static_cast<int*>(nullptr), 0, 0, 1);
+    std::mdspan<int, std::dextents<std::size_t, 3>> m(static_cast<int*>(nullptr), 0, 0, 1);
     return static_cast<int>(m.size());
 }
 
 static int ovf3() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 3> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2));
+    std::mdspan<int, std::dextents<std::size_t, 3>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
 }
 
 static int ovf2() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 2> m(&one, huge, static_cast<std::size_t>(2));
+    std::mdspan<int, std::dextents<std::size_t, 2>> m(&one, huge, static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
 }
 
 // which 0/1/2/3 is one past extent 0/1/2/3. The other indices are in range.
 static int oob4(int which) {
     int d[120] = {};
-    std::mdspan<int, 4> m(d, 2, 3, 4, 5);
+    std::mdspan<int, std::dextents<std::size_t, 4>> m(d, 2, 3, 4, 5);
     if (which == 0) return m(2, 0, 0, 0);
     if (which == 1) return m(0, 3, 0, 0);
     if (which == 2) return m(0, 0, 4, 0);
@@ -220,14 +220,14 @@ static int oob4(int which) {
 }
 
 static int null4() {
-    std::mdspan<int, 4> m(static_cast<int*>(nullptr), 0, 0, 0, 1);
+    std::mdspan<int, std::dextents<std::size_t, 4>> m(static_cast<int*>(nullptr), 0, 0, 0, 1);
     return static_cast<int>(m.size());
 }
 
 static int ovf4() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 4> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 4>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
 }
@@ -235,7 +235,7 @@ static int ovf4() {
 // which 0/1/2/3/4 is one past extent 0/1/2/3/4. The other indices are in range.
 static int oob5(int which) {
     int e[720] = {};
-    std::mdspan<int, 5> m(e, 2, 3, 4, 5, 6);
+    std::mdspan<int, std::dextents<std::size_t, 5>> m(e, 2, 3, 4, 5, 6);
     if (which == 0) return m(2, 0, 0, 0, 0);
     if (which == 1) return m(0, 3, 0, 0, 0);
     if (which == 2) return m(0, 0, 4, 0, 0);
@@ -244,14 +244,14 @@ static int oob5(int which) {
 }
 
 static int null5() {
-    std::mdspan<int, 5> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 1);
+    std::mdspan<int, std::dextents<std::size_t, 5>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 1);
     return static_cast<int>(m.size());
 }
 
 static int ovf5() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 5> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 5>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
 }
@@ -259,7 +259,7 @@ static int ovf5() {
 // which 0/1/2/3/4/5 is one past extent 0/1/2/3/4/5. The other indices are in range.
 static int oob6(int which) {
     int f[5040] = {};
-    std::mdspan<int, 6> m(f, 2, 3, 4, 5, 6, 7);
+    std::mdspan<int, std::dextents<std::size_t, 6>> m(f, 2, 3, 4, 5, 6, 7);
     if (which == 0) return m(2, 0, 0, 0, 0, 0);
     if (which == 1) return m(0, 3, 0, 0, 0, 0);
     if (which == 2) return m(0, 0, 4, 0, 0, 0);
@@ -269,14 +269,14 @@ static int oob6(int which) {
 }
 
 static int null6() {
-    std::mdspan<int, 6> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 1);
+    std::mdspan<int, std::dextents<std::size_t, 6>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 1);
     return static_cast<int>(m.size());
 }
 
 static int ovf6() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 6> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 6>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
 }
@@ -284,7 +284,7 @@ static int ovf6() {
 // which 0/1/2/3/4/5/6 is one past extent 0/1/2/3/4/5/6. The other indices are in range.
 static int oob7(int which) {
     int g[40320] = {};
-    std::mdspan<int, 7> m(g, 2, 3, 4, 5, 6, 7, 8);
+    std::mdspan<int, std::dextents<std::size_t, 7>> m(g, 2, 3, 4, 5, 6, 7, 8);
     if (which == 0) return m(2, 0, 0, 0, 0, 0, 0);
     if (which == 1) return m(0, 3, 0, 0, 0, 0, 0);
     if (which == 2) return m(0, 0, 4, 0, 0, 0, 0);
@@ -295,14 +295,14 @@ static int oob7(int which) {
 }
 
 static int null7() {
-    std::mdspan<int, 7> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 1);
+    std::mdspan<int, std::dextents<std::size_t, 7>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 1);
     return static_cast<int>(m.size());
 }
 
 static int ovf7() {
     int one = 1;
     const std::size_t huge = static_cast<std::size_t>(-1);
-    std::mdspan<int, 7> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
+    std::mdspan<int, std::dextents<std::size_t, 7>> m(&one, huge, static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2), static_cast<std::size_t>(2), static_cast<std::size_t>(2),
                           static_cast<std::size_t>(2));
     return static_cast<int>(m.size());
