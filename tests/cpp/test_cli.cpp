@@ -86,7 +86,7 @@ TEST_CASE("cli: defaults match default_config and the documented values") {
 }
 
 TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
-    auto a = parse({"src", "--out", "o", "--no-llm", "--stage", "bmc,pir", "--skip", "fuzz",
+    auto a = parse({"src", "--out", "o", "--no-llm", "--stage", "wp,pir", "--skip", "fuzz",
                     "--unwind", "3", "--jobs", "4", "--fuzz-budget", "1.5", "--fuzz-iters", "16",
                     "--repair-rounds", "1", "--resume", "--tool", "esbmc=/opt/esbmc", "--allow-exec",
                     "--certified", "--solver-cache", "sc", "--timeout", "5", "--pbsd", "pb",
@@ -105,7 +105,7 @@ TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
         CHECK(r->cfg.out == fs::path("o"));
         CHECK_FALSE(r->cfg.llm);
         REQUIRE(r->cfg.stages);
-        CHECK(*r->cfg.stages == std::vector<std::string>{"bmc", "pir"});
+        CHECK(*r->cfg.stages == std::vector<std::string>{"wp", "pir"});
         CHECK(r->cfg.skip == std::vector<std::string>{"fuzz"});
         CHECK(r->cfg.unwind == 3);
         CHECK(r->cfg.jobs == 4);
@@ -224,7 +224,7 @@ TEST_CASE("cli: --flag=value, unknown flags, and a missing value") {
     REQUIRE(eq);
     CHECK(eq->fail_on == "defect");
     REQUIRE(eq->cfg.stages);
-    CHECK(*eq->cfg.stages == std::vector<std::string>{"bmc"});
+    CHECK(*eq->cfg.stages == std::vector<std::string>{"wp"});
     CHECK(eq->cfg.out == fs::path("reports"));
     CHECK(eq->cfg.skip == std::vector<std::string>{"fuzz"});
     CHECK(eq->cfg.unwind == 3);
@@ -273,7 +273,7 @@ TEST_CASE("cli: --stage/--skip take only pipeline stages; an empty --stage runs 
     }
     auto sp = parse({"--stage", " bmc , pir ", "--skip", ""});
     REQUIRE(sp);
-    CHECK(*sp->cfg.stages == std::vector<std::string>{"bmc", "pir"});
+    CHECK(*sp->cfg.stages == std::vector<std::string>{"wp", "pir"});
     CHECK(sp->cfg.skip.empty());
     // Every stage name is accepted.
     std::string all;
@@ -312,7 +312,7 @@ TEST_CASE("cli: prism triage options") {
 // ---- the stage list ------------------------------------------------------------
 
 TEST_CASE("pipeline: every STAGE_ORDER name is run, in order (none skipped quietly)") {
-    for (auto* s : {"harness", "rapid", "muttest", "diff", "fuzz", "bmc", "execute", "concolic",
+    for (auto* s : {"harness", "rapid", "muttest", "diff", "fuzz", "execute", "concolic",
                     "sanitize", "taint", "thread", "interval", "wp", "polyglot", "pir", "conc",
                     "review", "unify"}) {
         auto o = stage_order();

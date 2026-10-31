@@ -189,7 +189,7 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
                        "proof of absence (see the gaps).",
                        {}};
             for (auto& s : report.stages)
-                if (s.status != laws::NOTRUN && (s.name == "bmc" || s.name == "pir" || s.name == "fuzz" || s.name == "sanitize"))
+                if (s.status != laws::NOTRUN && (s.name == "pir" || s.name == "fuzz" || s.name == "sanitize"))
                     none.links.push_back("stage:" + s.name);
             defects.claims.push_back(none);
         }
@@ -232,7 +232,7 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
         if (proofs.claims.empty()) {
             Claim c{"No proof verdict was reached in this run.", {}};
             for (auto& s : report.stages)
-                if (s.name == "bmc" || s.name == "pir") c.links.push_back("stage:" + s.name);
+                if (s.name == "pir") c.links.push_back("stage:" + s.name);
             proofs.claims.push_back(c);
         }
     }

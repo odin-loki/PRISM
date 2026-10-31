@@ -218,7 +218,6 @@ set(PRISM_SRC
   src/prism/cparse.cpp
   src/prism/hash.cpp
   src/prism/havoc.cpp
-  src/prism/inline.cpp
   src/prism/interval.cpp
   src/prism/gui_model.cpp
   src/prism/journal.cpp

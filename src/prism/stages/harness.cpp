@@ -111,6 +111,8 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
         if (!elem_t) return std::nullopt;
         decls.push_back(*elem_t + " _h_" + name + "[" + std::to_string(*k) + "];");
         decls.push_back(*elem_t + " *" + name + " = _h_" + name + ";");
+        // The caller's buffer holds any bytes: havoc it, never read it uninitialised.
+        decls.push_back("__prism_havoc_bytes(_h_" + name + ", sizeof _h_" + name + ");");
     }
     std::string guard;
     for (std::size_t i = 0; i < reqs.size(); ++i) {
@@ -118,7 +120,10 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
         guard += "(" + reqs.at(i) + ")";
     }
     auto parts = decls;
-    if (!guard.empty()) parts.push_back("if (!(" + guard + ")) return 0;");
+    // A void function returns nothing; anything else returns 0 (a scalar or
+    // a null pointer) when the requires do not hold.
+    const bool void_ret = strip(fn.return_type) == "void";
+    if (!guard.empty()) parts.push_back("if (!(" + guard + ")) return" + std::string(void_ret ? ";" : " 0;"));
     parts.push_back(fn.body);
     auto out = fn;
     out.kind = scalars.empty() ? "VOID" : "SCALAR";

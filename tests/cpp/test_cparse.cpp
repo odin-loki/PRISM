@@ -1,6 +1,5 @@
-// C/C++ front end (src/prism/cparse.cpp), the report JSON form
-// (src/prism/models.cpp), and the static scalar inliner (src/prism/inline.cpp).
-// Ported from tests/test_false_positives.py and tests/test_inline.py.
+// C/C++ front end (src/prism/cparse.cpp) and the report JSON form
+// (src/prism/models.cpp). Ported from tests/test_false_positives.py.
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -74,21 +73,6 @@ fs::path scratch_file(const std::string& name, const std::string& text) {
     auto p = dir / name;
     std::ofstream(p, std::ios::binary) << text;
     return p;
-}
-
-prism::FunctionInfo scalar_fn(const char* name, const char* sig, const char* body, bool is_static,
-                              const char* kind = "SCALAR", const char* ret = "int") {
-    prism::FunctionInfo f;
-    f.file = "a.c";
-    f.name = name;
-    f.kind = kind;
-    f.line = 1;
-    f.signature = sig;
-    f.params = {{"int", "x"}};
-    f.return_type = ret;
-    f.body = body;
-    f.is_static = is_static;
-    return f;
 }
 
 std::string no_spaces(std::string s) {
@@ -536,75 +520,4 @@ TEST_CASE("false positives: a C++ qualified name is unencoded, not ERROR") {
     for (auto& f : prism::run_concolic(fns, 4))
         if (f.function == std::optional<std::string>("is_false")) st.push_back(f.status);
     CHECK(st == std::vector<std::string>{std::string(prism::laws::NEEDS_HARNESS)});
-}
-
-// ---------------------------------------------------------------- inline
-// tests/test_inline.py: the deterministic static scalar inliner.
-
-TEST_CASE("inline: a static scalar callee is inlined into its caller") {
-    auto p = repo_dir("testdata/planted") / "inline_add.c";
-    auto fns = prism::extract_functions(p, p.string());
-    auto out = prism::inline_static(fns);
-    auto* caller = find_fn(out, "caller");
-    REQUIRE(caller);
-    CHECK(caller->body.find("bump(") == std::string::npos);
-    auto flat = no_spaces(caller->body);
-    CHECK((flat.find("x+1") != std::string::npos || flat.find("_i0+1") != std::string::npos ||
-           flat.find("_ret") != std::string::npos));
-}
-
-TEST_CASE("inline: pointer functions are unchanged and the input is not mutated") {
-    auto p = repo_dir("testdata/planted") / "ptr_copy.c";
-    auto fns = prism::extract_functions(p, p.string());
-    std::map<std::string, std::string> orig;
-    for (auto& f : fns) orig[f.name] = f.body;
-    for (auto& f : prism::inline_static(fns))
-        if (f.kind == "POINTER") CHECK(f.body == orig[f.name]);
-
-    auto q = repo_dir("testdata/planted") / "inline_add.c";
-    auto add = prism::extract_functions(q, q.string());
-    std::vector<std::pair<std::string, std::string>> before, after;
-    for (auto& f : add) before.emplace_back(f.name, f.body);
-    (void)prism::inline_static(add);
-    for (auto& f : add) after.emplace_back(f.name, f.body);
-    CHECK(before == after);
-}
-
-TEST_CASE("inline: a non-static callee is not inlined") {
-    auto out = prism::inline_static({scalar_fn("pub", "int pub(int x)", "return x + 1;", false),
-                                     scalar_fn("caller", "int caller(int x)", "return pub(x);", false)});
-    auto* caller = find_fn(out, "caller");
-    REQUIRE(caller);
-    CHECK(caller->body.find("pub(") != std::string::npos);
-}
-
-TEST_CASE("inline: one level, no transitive inlining") {
-    auto out = prism::inline_static({scalar_fn("inner", "static int inner(int x)", "return x + 1;", true),
-                                     scalar_fn("mid", "static int mid(int x)", "return inner(x);", true),
-                                     scalar_fn("caller", "int caller(int x)", "return mid(x);", false)});
-    auto* caller = find_fn(out, "caller");
-    auto* mid = find_fn(out, "mid");
-    REQUIRE(caller);
-    REQUIRE(mid);
-    CHECK(caller->body.find("mid(") != std::string::npos);
-    CHECK(mid->body.find("inner(") == std::string::npos);
-    auto flat = no_spaces(mid->body);
-    CHECK((flat.find("x+1") != std::string::npos || flat.find("_i0+1") != std::string::npos ||
-           flat.find("_ret") != std::string::npos));
-}
-
-TEST_CASE("inline: assignment, declaration-initialiser and void-helper forms") {
-    auto bump = scalar_fn("bump", "static int bump(int x)", "return x + 1;", true);
-    for (const char* body : {"int y; y = bump(x); return y;", "int y = bump(x); return y;"}) {
-        INFO(body);
-        auto out = prism::inline_static({bump, scalar_fn("caller", "int caller(int x)", body, false)});
-        auto* caller = find_fn(out, "caller");
-        REQUIRE(caller);
-        CHECK(caller->body.find("bump(") == std::string::npos);
-    }
-    auto vbump = scalar_fn("bump", "static void bump(int x)", "(void)x;", true, "VOID", "void");
-    auto out = prism::inline_static({vbump, scalar_fn("caller", "int caller(int x)", "bump(x); return x;", false)});
-    auto* caller = find_fn(out, "caller");
-    REQUIRE(caller);
-    CHECK(caller->body.find("bump(") == std::string::npos);
 }

@@ -442,10 +442,10 @@ RunReport run_pipeline(const Config& cfg) {
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
     auto pir_rec = stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
+    stage("harness", [&] { return run_harness(functions, cfg.unwind); });
     // Roadmap 9.2/9.3/4.2: vacuity audit, approved/drafted contracts, model
     // assumption audit, proof store and PROOF-REGRESSION (src/prism/ai/review.cpp).
     stage("review", [&] { return ai::run_review(functions, report.stages, cfg); });
-    stage("harness", [&] { return run_harness(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
         return exec_gate_note(

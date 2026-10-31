@@ -241,47 +241,49 @@ TEST_CASE("svcomp: the reach_error() call site, not its definition") {
 TEST_CASE("svcomp: true only from a covering proof of main (never PROVED-ASSUMING or BOUNDED)") {
     for (const char* st : {"PROVED", "PROVED-UNBOUNDED", "PROVED-CERTIFIED"}) {
         INFO(st);
-        CHECK(decide(report({{"bmc", {{{"status", st}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "true");
+        CHECK(decide(report({{"pir", {{{"status", st}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "true");
     }
     for (const char* st : {"PROVED-ASSUMING", "BOUNDED", "NEEDS-HARNESS", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "CLEAN"}) {
         INFO(st);
-        CHECK(decide(report({{"bmc", {{{"status", st}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "unknown");
+        CHECK(decide(report({{"pir", {{{"status", st}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "unknown");
     }
-    // a proof by a stage that is not a verdict stage covers nothing
+    // a proof by a stage that is not a verdict stage covers nothing (bmc is retired)
     CHECK(decide(report({{"wp", {{{"status", "PROVED"}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "unknown");
+    CHECK(decide(report({{"bmc", {{{"status", "PROVED"}, {"cls", ""}}}}}), "no-overflow", replayed).answer == "unknown");
 }
 
 TEST_CASE("svcomp: false needs a replayed counterexample") {
-    auto rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"message", "ovf+"}}}}});
+    auto rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"message", "ovf+"}}}}});
     auto d = decide(rep, "no-overflow", replayed);
     CHECK(d.answer == "false(no-overflow)");
     REQUIRE(d.finding.has_value());
-    CHECK((*d.finding)["stage"] == "bmc");
+    CHECK((*d.finding)["stage"] == "pir");
     CHECK(d.reason.find("counterexample replayed: UBSan: signed integer overflow") != std::string::npos);
     d = decide(rep, "no-overflow", not_replayed);
     CHECK(d.answer == "unknown");
-    CHECK(d.reason == "bmc: FAILED INT-SIGNED-OVF but the counterexample did not replay (not-replayed: ran clean)");
+    CHECK(d.reason == "pir: FAILED INT-SIGNED-OVF but the counterexample did not replay (not-replayed: ran clean)");
 }
 
 TEST_CASE("svcomp: a finding of another class is not a refutation") {
-    auto rep = report({{"bmc", {{{"status", "PROVED-UNBOUNDED"}, {"cls", ""}}}},
-                       {"pir", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"extra", {{"prop", "assert"}}}}}}});
+    auto rep = report({{"pir", {{{"status", "PROVED-UNBOUNDED"}, {"cls", ""}},
+                                {{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"extra", {{"prop", "assert"}}}}}}});
     CHECK(decide(rep, "no-overflow", replayed).answer == "true");
-    rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}}}}});
+    rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}}}}});
     CHECK(decide(rep, "no-overflow", replayed).answer == "unknown");
 }
 
 TEST_CASE("svcomp: a shift whose result is not representable is an overflow, a bad shift count is not") {
-    // SV-COMP no-overflow: pir shift-base, bmc shift31
-    for (const json& f : {json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift31: INT-SHIFT-UB"}},
-                          json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"extra", {{"prop", "shift-base"}}}}}) {
-        CHECK(decide(report({{"bmc", {f}}}), "no-overflow", replayed).answer == "false(no-overflow)");
-        CHECK(decide(report({{"bmc", {f}}}), "no-overflow", not_replayed).answer == "unknown");
+    // SV-COMP no-overflow: pir's shift-base check (bmc's shift31 is retired)
+    for (const json& f : {json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"extra", {{"prop", "shift-base"}}}},
+                          json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift-base: INT-SHIFT-UB"}}}) {
+        CHECK(decide(report({{"pir", {f}}}), "no-overflow", replayed).answer == "false(no-overflow)");
+        CHECK(decide(report({{"pir", {f}}}), "no-overflow", not_replayed).answer == "unknown");
     }
     for (const json& f : {json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift: INT-SHIFT-UB"}},
+                          json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift31: INT-SHIFT-UB"}},
                           json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift-neg: INT-SHIFT-UB"}},
                           json{{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"extra", {{"prop", "shift"}}}}})
-        CHECK(decide(report({{"bmc", {f}}}), "no-overflow", replayed).answer == "unknown");
+        CHECK(decide(report({{"pir", {f}}}), "no-overflow", replayed).answer == "unknown");
     // not an unreach-call refutation
     json f = {{"status", "FAILED"}, {"cls", "INT-SHIFT-UB"}, {"message", "shift31: INT-SHIFT-UB"}};
     CHECK(decide(report({{"pir", {f}}}), "unreach-call", replayed).answer == "unknown");
@@ -293,50 +295,47 @@ TEST_CASE("svcomp: finding_prop reads extra.prop, else the message prefix") {
     CHECK(finding_prop(json{{"message", "no colon"}}) == "");
 }
 
-TEST_CASE("svcomp: a refutation with nondet call sites is replayed first, pir's before bmc's") {
-    auto rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"extra", {{"nondet", "f=1"}}}}}},
-                       {"pir", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"},
+TEST_CASE("svcomp: a refutation with nondet call sites is replayed first") {
+    auto rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"message", "first"},
+                                 {"extra", {{"nondet", "f=1"}}}},
+                                {{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"message", "second"},
                                  {"extra", {{"nondet", "f=1"}, {"nondet_loc", "3:9"}}}}}}});
     auto d = decide(rep, "no-overflow", replayed);
     CHECK(d.answer == "false(no-overflow)");
     REQUIRE(d.finding.has_value());
-    CHECK((*d.finding)["stage"] == "pir");
-    // both have call sites: pir first
+    CHECK((*d.finding)["message"] == "second");
+    // both have call sites: report order
     rep["stages"][0]["findings"][0]["extra"]["nondet_loc"] = "3:9";
     d = decide(rep, "no-overflow", replayed);
     REQUIRE(d.finding.has_value());
-    CHECK((*d.finding)["stage"] == "pir");
-    // only bmc's has call sites: bmc first
-    rep["stages"][1]["findings"][0]["extra"].erase("nondet_loc");
-    d = decide(rep, "no-overflow", replayed);
-    REQUIRE(d.finding.has_value());
-    CHECK((*d.finding)["stage"] == "bmc");
+    CHECK((*d.finding)["message"] == "first");
+    // a retired bmc stage's refutation is never replayed
+    auto old = report({{"bmc", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}, {"extra", {{"nondet_loc", "3:9"}}}}}}});
+    CHECK(decide(old, "no-overflow", replayed).answer == "unknown");
 }
 
 TEST_CASE("svcomp: an unreplayed refutation blocks a proof; a replayed one reports the disagreement") {
-    auto rep = report({{"bmc", {{{"status", "PROVED"}, {"cls", ""}}}},
-                       {"pir", {{{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}}}}});
+    auto rep = report({{"pir", {{{"status", "PROVED"}, {"cls", ""}},
+                                {{"status", "FAILED"}, {"cls", "INT-SIGNED-OVF"}}}}});
     CHECK(decide(rep, "no-overflow", not_replayed).answer == "unknown");
     auto d = decide(rep, "no-overflow", replayed);
     CHECK(d.answer == "false(no-overflow)");
-    CHECK(d.reason.find("DISAGREEMENT: bmc claimed a proof") != std::string::npos);
+    CHECK(d.reason.find("DISAGREEMENT: pir claimed a proof") != std::string::npos);
 }
 
 TEST_CASE("svcomp: unreach-call proofs and refutations") {
-    // bmc and pir both encode reach_error() as a property: either proof covers it
-    for (const char* st : {"bmc", "pir"}) {
-        CHECK(decide(report({{st, {{{"status", "PROVED"}, {"cls", ""}}}}}), "unreach-call", replayed).answer == "true");
-        CHECK(decide(report({{st, {{{"status", "BOUNDED"}, {"cls", ""}}}}}), "unreach-call", replayed).answer == "unknown");
-    }
-    // bmc names the check in the message prefix
-    auto rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "reach_error: FUNC-CONTRACT"}}}}});
+    // pir encodes reach_error() as a property: its proof of main covers it
+    CHECK(decide(report({{"pir", {{{"status", "PROVED"}, {"cls", ""}}}}}), "unreach-call", replayed).answer == "true");
+    CHECK(decide(report({{"pir", {{{"status", "BOUNDED"}, {"cls", ""}}}}}), "unreach-call", replayed).answer == "unknown");
+    // the check may be named by the message prefix
+    auto rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "reach_error: FUNC-CONTRACT"}}}}});
     CHECK(decide(rep, "unreach-call", replayed).answer == "false(unreach-call)");
     CHECK(decide(rep, "unreach-call", not_replayed).answer == "unknown");
-    rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "abort: FUNC-CONTRACT"}}}}});
+    rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "abort: FUNC-CONTRACT"}}}}});
     CHECK(decide(rep, "unreach-call", replayed).answer == "unknown");
-    // an unreplayed bmc refutation blocks pir's proof
-    rep = report({{"bmc", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "reach_error: FUNC-CONTRACT"}}}},
-                  {"pir", {{{"status", "PROVED"}, {"cls", ""}}}}});
+    // an unreplayed refutation blocks pir's proof
+    rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"message", "reach_error: FUNC-CONTRACT"}},
+                           {{"status", "PROVED"}, {"cls", ""}}}}});
     CHECK(decide(rep, "unreach-call", not_replayed).answer == "unknown");
     rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "FUNC-CONTRACT"}, {"extra", {{"prop", "reach_error"}}}}}}});
     CHECK(decide(rep, "unreach-call", replayed).answer == "false(unreach-call)");
@@ -345,7 +344,7 @@ TEST_CASE("svcomp: unreach-call proofs and refutations") {
 }
 
 TEST_CASE("svcomp: valid-memsafety is never true; a replay names the subproperty") {
-    auto rep = report({{"bmc", {{{"status", "PROVED-CERTIFIED"}, {"cls", ""}}}}, {"pir", {{{"status", "PROVED"}, {"cls", ""}}}}});
+    auto rep = report({{"pir", {{{"status", "PROVED-CERTIFIED"}, {"cls", ""}}, {{"status", "PROVED"}, {"cls", ""}}}}});
     CHECK(decide(rep, "valid-memsafety", replayed).answer == "unknown");
     rep = report({{"pir", {{{"status", "FAILED"}, {"cls", "MEM-OOB-READ"}}}}});
     auto free_replay = [](const json&) { return json{{"replay", "replayed"}, {"subproperty", "valid-free"}}; };
@@ -354,12 +353,12 @@ TEST_CASE("svcomp: valid-memsafety is never true; a replay names the subproperty
 
 TEST_CASE("svcomp: a crashed stage or no finding of main is unknown") {
     CHECK(decide(json{{"stages", json::array()}}, "no-overflow", replayed).answer == "unknown");
-    json rep = {{"stages", {{{"name", "bmc"}, {"status", "failed"}, {"detail", "boom"}, {"findings", json::array()}}}}};
+    json rep = {{"stages", {{{"name", "pir"}, {"status", "failed"}, {"detail", "boom"}, {"findings", json::array()}}}}};
     auto d = decide(rep, "no-overflow", replayed);
     CHECK(d.answer == "unknown");
-    CHECK(d.reason == "no proof covering no-overflow and no replayed refutation (bmc: STAGE-FAILED)");
-    CHECK(decide(report({{"bmc", {}}}), "no-overflow", replayed).reason == "no verdict stage reported main");
-    CHECK(decide(report({{"bmc", {{{"status", "PROVED"}}}}}), "termination", replayed).answer == "unknown");
+    CHECK(d.reason == "no proof covering no-overflow and no replayed refutation (pir: STAGE-FAILED)");
+    CHECK(decide(report({{"pir", {}}}), "no-overflow", replayed).reason == "no verdict stage reported main");
+    CHECK(decide(report({{"pir", {{{"status", "PROVED"}}}}}), "termination", replayed).answer == "unknown");
 }
 
 TEST_CASE("svcomp: SV-COMP points") {
@@ -578,35 +577,33 @@ TEST_CASE("svcomp witness: ACSL constants and float text") {
 // ---------------------------------------------------------------- invariants
 
 TEST_CASE("svcomp: correctness invariants are only proved ones the C text can carry") {
+    // Positive cases (pir's structured conjuncts on the loop keyword) are in
+    // "svcomp: pir conjuncts rendered in C ..." below. Here: what never exports.
     TempDir d;
-    auto src = d.write("t.c",
-                       "int main(void) {\n  int i = 0, n = 5;\n  while (i < n) i++;\n"
-                       "  for (int k = 0; k < 3; k++) i--;\n  do { i++; } while (i < 3);\n  return 0;\n}\n");
-    json base = {{"stage", "bmc"}, {"function", "main"}, {"status", "PROVED-UNBOUNDED"}};
-    json f = base;
-    f["extra"] = {{"k_induction", "closed-invariants"},
-                  {"invariant_loops", R"([{"kind":"while","line":3,"column":3},{"kind":"for","line":4,"column":3},)"
-                                      R"({"kind":"do","line":5,"column":3}])"},
-                  {"invariants", R"([["i >= 0", "i <= n", "i == 2 * n"], ["k >= 0", "i <= 5"], ["i >= 0"]])"}};
-    auto [invs, note] = correctness_invariants(src, f);
-    // arithmetic conjuncts, names declared in a for-init and do loops are left out
-    REQUIRE(invs.size() == 2);
-    CHECK(invs[0].location.line == 3);
-    CHECK(invs[0].value == "(i >= 0) && (i <= n)");
-    CHECK(invs[1].location.line == 4);
-    CHECK(invs[1].value == "(i <= 5)");
-    CHECK(note == "3 Houdini loop invariant conjunct(s) from bmc");
+    auto src = d.write("t.c", "int main(void) {\n  int i = 0, n = 5;\n  while (i < n) i++;\n  return 0;\n}\n");
+    json base = {{"stage", "pir"}, {"function", "main"}, {"status", "PROVED-UNBOUNDED"}};
+    // retired bmc's text invariants without pir conjuncts: nothing mapped to C
+    json text_only = base;
+    text_only["extra"] = {{"k_induction", "closed-invariants"},
+                          {"invariant_loops", R"([{"kind":"while","line":3,"column":3}])"},
+                          {"invariants", R"([["i >= 0", "i <= n"]])"}};
+    auto [invs, note] = correctness_invariants(src, text_only);
+    CHECK(invs.empty());
+    CHECK(note.find("empty invariant set") != std::string::npos);
     // A proof that did not close by invariants must not export them, even
-    // when the finding carries invariant text and loop locations.
+    // when the finding carries invariant data and loop locations.
     json loose = base;
     loose["extra"] = {{"k_induction", "closed"},
-                      {"invariant_loops", R"([{"kind":"while","line":3,"column":3}])"},
-                      {"invariants", R"([["i >= 0"]])"}};
+                      {"invariant_loops", R"([{"kind":"","line":3,"column":3}])"},
+                      {"invariant_conjuncts", R"([[{"rel":"sge","a":{"v":"i.0","w":32},"b":{"c":"0","w":32}}]])"}};
     CHECK(correctness_invariants(src, loose).first.empty());
     json bounded = loose;
     bounded["status"] = "BOUNDED";
     bounded["extra"]["k_induction"] = "closed-invariants";
     CHECK(correctness_invariants(src, bounded).first.empty());
+    json assumed = bounded;
+    assumed["status"] = "PROVED-ASSUMING";
+    CHECK(correctness_invariants(src, assumed).first.empty());
     // plain k-induction or a bounded-unwind proof: no invariant (empty set)
     for (const json& extra : {json{{"k_induction", "closed"}}, json{{"k_induction", "not-needed"}, {"unwind_closed", "true"}}}) {
         json g = base;
@@ -614,26 +611,9 @@ TEST_CASE("svcomp: correctness invariants are only proved ones the C text can ca
         CHECK(correctness_invariants(src, g).first.empty());
     }
     json bad = base;
-    bad["extra"] = {{"k_induction", "closed-invariants"}, {"invariants", "not json"}};
-    CHECK(correctness_invariants(src, bad).second == "unreadable invariants (empty invariant set)");
-}
-
-TEST_CASE("svcomp: loop invariants sit on the loop keyword") {
-    TempDir d;
-    auto src = d.write("t.c", "int main() {\n  int i = 0;\n  while (i < 10) i++;\n}\n");
-    json f = {{"function", "main"},
-              {"status", "PROVED-UNBOUNDED"},
-              {"extra", {{"k_induction", "closed-invariants"},
-                         {"invariants", R"([["i >= 0", "i <= 10", "i + 1 > i", "i <= 2 * n"]])"},
-                         {"invariant_loops", R"([{"kind": "while", "line": 3, "column": 3}])"}}}};
-    auto [invs, _] = correctness_invariants(src, f);
-    REQUIRE(invs.size() == 1);
-    CHECK(invs[0].kind == "loop_invariant");
-    CHECK(invs[0].location.line == 3);
-    CHECK(invs[0].location.column == 3);
-    CHECK(invs[0].value == "(i >= 0) && (i <= 10) && (i + 1 > i)");
-    f["extra"]["invariant_loops"] = R"([{"kind": "while", "line": 2, "column": 3}])";
-    CHECK(correctness_invariants(src, f).first.empty());
+    bad["extra"] = {{"k_induction", "closed-invariants"}, {"invariant_conjuncts", "not json"},
+                    {"invariant_loops", "[]"}};
+    CHECK(correctness_invariants(src, bad).first.empty());
 }
 
 TEST_CASE("svcomp: pir conjuncts rendered in C only when C means the proved relation") {
@@ -963,7 +943,7 @@ TEST_CASE("svcomp: line markers disable debug locations, not physical ones") {
     // in a preprocessed task, debug lines name the original file's lines;
     // int has two sites: nothing placed without the locations
     CHECK(nondet_waypoints(src, trace, locs).empty());
-    // bmc's positions are physical (the analysed text itself): kept
+    // physical positions (the analysed text itself): kept
     CHECK(nondet_waypoints(src, trace, locs, true).size() == 3);
 }
 
@@ -1036,7 +1016,7 @@ TEST_CASE("taskdef: the YAML subset reader") {
 
 // ---------------------------------------------------------------- one task end to end
 
-TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run the bmc stage") {
+TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks are proved by pir on ILP32") {
     TempDir d;
     auto task = d.write("t.c", "int main(void) { long x = 1; return (int)x; }\n");
     auto prp = d.write("p.prp", "CHECK( init(main()), LTL(F end) )\n");
@@ -1049,14 +1029,14 @@ TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run
     opt.data_model = "ilp32";
     oc = solve(task, props_dir() / "no-overflow.prp", opt);
     CHECK(fs::exists(d.path / "out" / "prism-out" / "report.json"));
-    // No overflow on either model. The proof has to come from bmc: pir is NOTRUN.
+    // No overflow on either model. pir checks the task with the ILP32 data model.
 #ifdef PRISM_HAS_Z3
     CHECK(oc.decision.answer == "true");
-    CHECK(oc.decision.reason.find("bmc:") == 0);
+    CHECK(oc.decision.reason.find("pir:") == 0);
 #else
-    // bmc is the Z3 engine; a build without Z3 has no stage that can prove the
+    // pir needs Z3; a build without Z3 has no stage that can prove the
     // ILP32 task, so the answer must stay unknown (never an unproved true).
-    MESSAGE("NOTRUN: ILP32 bmc proof needs a Z3 build (PRISM_HAS_Z3)");
+    MESSAGE("NOTRUN: ILP32 pir proof needs a Z3 build (PRISM_HAS_Z3)");
     CHECK(oc.decision.answer == "unknown");
 #endif
     auto ovf = d.write("ovf.c",

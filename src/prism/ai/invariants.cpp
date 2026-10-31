@@ -772,7 +772,7 @@ std::string loops_json(const FunctionInfo& fn, const std::vector<LoopCut>& loops
 Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const HoudiniResult& h,
                        const std::string& source, const std::vector<LoopCut>& loops) {
     Finding f;
-    f.stage = "bmc";
+    f.stage = "pir";
     f.status = std::string(laws::PROVED_UNBOUNDED);
     f.file = fn.file;
     f.function = fn.name;

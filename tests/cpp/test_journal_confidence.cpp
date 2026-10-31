@@ -286,10 +286,10 @@ prism::FunctionInfo cfn(const std::string& name, const std::string& kind = "SCAL
     return f;
 }
 
-prism::Finding bmc_row(std::string_view status, std::optional<std::string> function = "add",
+prism::Finding pir_row(std::string_view status, std::optional<std::string> function = "add",
                        const std::string& cex = "") {
     prism::Finding f;
-    f.stage = "bmc";
+    f.stage = "pir";
     f.status = std::string(status);
     f.file = "a.c";
     f.function = std::move(function);
@@ -306,7 +306,7 @@ prism::RunReport report_of(std::vector<prism::FunctionInfo> fns, std::optional<s
     r.root = "x";
     r.functions = std::move(fns);
     if (rows) {
-        prism::StageResult s = stage("bmc", "ok", static_cast<int>(rows->size()));
+        prism::StageResult s = stage("pir", "ok", static_cast<int>(rows->size()));
         s.findings = *rows;
         r.stages.push_back(s);
     }
@@ -324,11 +324,11 @@ const char* kEmptyNote = "confidence 0: no functions parsed (no data, not clean)
 
 }  // namespace
 
-TEST_CASE("confidence: an empty scope is 0 on every factor, even with stray bmc rows") {
+TEST_CASE("confidence: an empty scope is 0 on every factor, even with stray pir rows") {
     prism::RunReport empty;
     empty.root = "empty";
     check_score(prism::confidence_score(empty), 0, 0, 0, 0);
-    check_score(prism::confidence_score(report_of({}, std::vector{bmc_row(prism::laws::PROVED)})), 0, 0, 0, 0);
+    check_score(prism::confidence_score(report_of({}, std::vector{pir_row(prism::laws::PROVED)})), 0, 0, 0, 0);
 }
 
 TEST_CASE("confidence: apply zeroes stale fields and writes the note once, never n/a") {
@@ -351,7 +351,7 @@ TEST_CASE("confidence: apply zeroes stale fields and writes the note once, never
     CHECK(blob.find(prism::laws::CLEAN) == std::string::npos);
 }
 
-TEST_CASE("confidence: no bmc stage scores 0") {
+TEST_CASE("confidence: no pir stage scores 0") {
     auto r = report_of({cfn("add")}, std::nullopt);
     check_score(prism::confidence_score(r), 1.0, 0.0, 0.0, 0.0);
     prism::apply_confidence(r);
@@ -359,14 +359,14 @@ TEST_CASE("confidence: no bmc stage scores 0") {
 }
 
 TEST_CASE("confidence: every function NEEDS-HARNESS is an empty answer scope, 0") {
-    auto r = report_of({cfn("walk", "POINTER")}, std::vector{bmc_row(prism::laws::NEEDS_HARNESS, "walk")});
+    auto r = report_of({cfn("walk", "POINTER")}, std::vector{pir_row(prism::laws::NEEDS_HARNESS, "walk")});
     check_score(prism::confidence_score(r), 1.0, 0.0, 0.0, 0.0);
 }
 
 TEST_CASE("confidence: a row without a function name does not answer for add") {
-    check_score(prism::confidence_score(report_of({cfn("add")}, std::vector{bmc_row(prism::laws::PROVED, std::nullopt)})),
+    check_score(prism::confidence_score(report_of({cfn("add")}, std::vector{pir_row(prism::laws::PROVED, std::nullopt)})),
                 1.0, 0.0, 0.0, 0.0);
-    auto r2 = report_of({cfn("add")}, std::vector{bmc_row(prism::laws::PROVED, "add")});
+    auto r2 = report_of({cfn("add")}, std::vector{pir_row(prism::laws::PROVED, "add")});
     check_score(prism::confidence_score(r2), 1.0, 1.0, 1.0, 1.0);
     prism::apply_confidence(r2);
     CHECK(r2.confidence == 1.0);
@@ -374,18 +374,18 @@ TEST_CASE("confidence: a row without a function name does not answer for add") {
 }
 
 TEST_CASE("confidence: FAILED resolves only with a counterexample or a non-empty oracle") {
-    check_score(prism::confidence_score(report_of({cfn("add")}, std::vector{bmc_row(prism::laws::FAILED, "add", "x=1")})),
+    check_score(prism::confidence_score(report_of({cfn("add")}, std::vector{pir_row(prism::laws::FAILED, "add", "x=1")})),
                 1.0, 1.0, 1.0, 1.0);
-    auto no_cex = prism::confidence_score(report_of({cfn("add")}, std::vector{bmc_row(prism::laws::FAILED)}));
+    auto no_cex = prism::confidence_score(report_of({cfn("add")}, std::vector{pir_row(prism::laws::FAILED)}));
     CHECK(no_cex.answer == 1.0);
     CHECK(no_cex.resolution == 0.0);
     CHECK(no_cex.confidence == 0.0);
     // An oracle/read key with an empty value is not an answer.
-    auto empty_oracle = bmc_row(prism::laws::FAILED);
+    auto empty_oracle = pir_row(prism::laws::FAILED);
     empty_oracle.extra["oracle"] = "";
     empty_oracle.extra["read"] = "";
     CHECK(prism::confidence_score(report_of({cfn("add")}, std::vector{empty_oracle})).resolution == 0.0);
-    auto oracle = bmc_row(prism::laws::FAILED);
+    auto oracle = pir_row(prism::laws::FAILED);
     oracle.extra["oracle"] = "x=1 divides by zero";
     CHECK(prism::confidence_score(report_of({cfn("add")}, std::vector{oracle})).resolution == 1.0);
 }
@@ -400,7 +400,7 @@ TEST_CASE("confidence: scores round to 4 decimals, ties to even on the exact val
     CHECK(prism::round4(0.00005) == 0.0001);
     CHECK(prism::round4(0.00015) == 0.0001);
     // 1/3 of the functions answered, through apply.
-    auto r = report_of({cfn("add"), cfn("sub"), cfn("mul")}, std::vector{bmc_row(prism::laws::PROVED, "add")});
+    auto r = report_of({cfn("add"), cfn("sub"), cfn("mul")}, std::vector{pir_row(prism::laws::PROVED, "add")});
     prism::apply_confidence(r);
     CHECK(r.answer == 0.3333);
     CHECK(r.confidence == 0.3333);
@@ -427,7 +427,7 @@ TEST_CASE("confidence: an exact 4th-decimal tie rounds half to even") {
     std::vector<prism::FunctionInfo> fns;
     fns.reserve(32);
     for (int i = 0; i < 32; ++i) fns.push_back(cfn("f" + std::to_string(i)));
-    auto r = report_of(std::move(fns), std::vector{bmc_row(prism::laws::PROVED, "f0")});
+    auto r = report_of(std::move(fns), std::vector{pir_row(prism::laws::PROVED, "f0")});
     auto raw = prism::confidence_score(r);
     CHECK(raw.visibility == 1.0);
     CHECK(raw.answer == doctest::Approx(1.0 / 32.0));

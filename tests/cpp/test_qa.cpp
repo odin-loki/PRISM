@@ -210,7 +210,7 @@ TEST_CASE("run_session: a timeout kills the solver in its own group") {
     auto r = prism::detail::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 2.0));
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(r.timed_out);
-    CHECK(r.rc == -1);
+    CHECK((r.rc == -SIGKILL || r.rc == -SIGTERM));  // -signal: the timeout signalled the group
     CHECK(secs < 30.0);
     const long solver = solver_pid(pidfile);
     REQUIRE(solver > 1);

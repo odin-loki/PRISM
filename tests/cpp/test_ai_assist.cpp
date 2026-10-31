@@ -147,12 +147,12 @@ prism::RunReport sample_report(const fs::path& root) {
         r.functions.push_back(fn);
     }
     prism::StageResult inv{"inventory", "ok", "", 0, 0, {}, 0, ""};
-    prism::StageResult bmc{"bmc", "ok", "", 0, 0, {}, 0, ""};
-    bmc.findings.push_back(mk("bmc", "FAILED", "calc.c", "add_big", 1, "INT-SIGNED-OVF",
+    prism::StageResult wp{"wp", "ok", "", 0, 0, {}, 0, ""};
+    wp.findings.push_back(mk("wp", "FAILED", "calc.c", "add_big", 1, "INT-SIGNED-OVF",
                               "ovf+: INT-SIGNED-OVF", "x=#x7fffffff"));
-    bmc.findings.push_back(mk("bmc", "FAILED", "calc.c", "divide", 5, "INT-DIV-ZERO", "div0: INT-DIV-ZERO",
+    wp.findings.push_back(mk("wp", "FAILED", "calc.c", "divide", 5, "INT-DIV-ZERO", "div0: INT-DIV-ZERO",
                               "a=#x00000007, b=#x00000000"));
-    bmc.findings.push_back(mk("bmc", "PROVED-UNBOUNDED", "calc.c", "ok", 9, "", "no UB"));
+    wp.findings.push_back(mk("wp", "PROVED-UNBOUNDED", "calc.c", "ok", 9, "", "no UB"));
     prism::StageResult pir{"pir", "ok", "", 0, 0, {}, 0, ""};
     pir.findings.push_back(mk("pir", "FAILED", "calc.c", "add_big", 2, "INT-SIGNED-OVF",
                               "signed add overflow (ovf+)", "x=2147483647"));
@@ -163,7 +163,7 @@ prism::RunReport sample_report(const fs::path& root) {
     prism::StageResult fuzz{"fuzz", "NOTRUN", "libFuzzer not found", 0, 0, {}, 0, "install clang"};
     fuzz.findings.push_back(mk("fuzz", "NOTRUN", "", "", 0, "", "libFuzzer not found"));
     prism::StageResult unify{"unify", "ok", "", 0, 0, {}, 0, ""};
-    r.stages = {inv, bmc, pir, san, fuzz, unify};
+    r.stages = {inv, wp, pir, san, fuzz, unify};
     return r;
 }
 
@@ -297,7 +297,7 @@ TEST_CASE("ai-assist regress: tests are generated per framework, never into the 
         CHECK(res.framework == fw);
         int written = 0;
         for (auto& t : res.tests) written += t.status == "written";
-        // add_big (bmc), divide (bmc); pir's add_big is the same call -> duplicate
+        // add_big (wp), divide (wp); pir's add_big is the same call -> duplicate
         CHECK(written == 2);
         bool dup = false;
         for (auto& t : res.tests) dup = dup || (t.status == "duplicate" && t.finding_id == "pir#0");
@@ -333,9 +333,9 @@ TEST_CASE("ai-assist regress: unsupported findings are listed, not dropped") {
     fn.name = "deref";
     fn.params = {{"int *", "p"}};
     r.functions.push_back(fn);
-    prism::StageResult s{"bmc", "ok", "", 0, 0, {}, 0, ""};
-    s.findings.push_back(mk("bmc", "FAILED", "p.c", "deref", 1, "PTR-NULL-DEREF", "null", "p=#x00000000"));
-    s.findings.push_back(mk("bmc", "FAILED", "p.c", "deref", 1, "PTR-NULL-DEREF", "no cex"));
+    prism::StageResult s{"wp", "ok", "", 0, 0, {}, 0, ""};
+    s.findings.push_back(mk("wp", "FAILED", "p.c", "deref", 1, "PTR-NULL-DEREF", "null", "p=#x00000000"));
+    s.findings.push_back(mk("wp", "FAILED", "p.c", "deref", 1, "PTR-NULL-DEREF", "no cex"));
     r.stages = {s};
     prism::ai::RegressOptions opt;
     opt.out_dir = root / "out";
@@ -452,17 +452,17 @@ TEST_CASE("ai-assist triage: duplicates cluster, ordering only, statuses unchang
     auto t = prism::ai::triage(report);
     CHECK(t.considered == 5);  // 3x overflow, div0, BOUNDED (proof / NOTRUN excluded)
     REQUIRE(!t.clusters.empty());
-    // The overflow reported by bmc, pir and sanitize is one root cause, ranked first.
+    // The overflow reported by wp, pir and sanitize is one root cause, ranked first.
     const auto& c1 = t.clusters[0];
     CHECK(c1.id == "C1");
     CHECK(c1.top_status == "FAILED");
     CHECK(c1.members.size() == 3);
     CHECK(c1.stages.size() == 3);
-    CHECK(c1.representative == "bmc#0");
+    CHECK(c1.representative == "wp#0");
     // The division by zero is a different root cause.
     bool div_alone = false;
     for (auto& c : t.clusters)
-        if (c.representative == "bmc#1") div_alone = c.members.size() == 1;
+        if (c.representative == "wp#1") div_alone = c.members.size() == 1;
     CHECK(div_alone);
     CHECK(t.embedder_note.find("NOTRUN") != std::string::npos);
     // write_triage: triage.json + Clusters section; report untouched.
@@ -504,7 +504,7 @@ TEST_CASE("ai-assist triage: the pipeline writes triage.json and never changes s
     cfg.root = root / "src";
     cfg.out = root / "out";
     cfg.llm = false;
-    cfg.stages = std::vector<std::string>{"inventory", "classify", "bmc"};
+    cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
     auto rep = prism::run_pipeline(cfg);
     REQUIRE(fs::exists(cfg.out / "triage.json"));
     auto md = slurp(cfg.out / "report.md");
@@ -531,13 +531,13 @@ TEST_CASE("ai-assist ask: keyword grammar") {
     CHECK(q.count_only);
     CHECK(q.group_by == "stage");
     CHECK(q.statuses == std::vector<std::string>{"FAILED"});
-    q = prism::ai::parse_question("overflows found by bmc in calc.c for function add_*");
-    CHECK(q.stages == std::vector<std::string>{"bmc"});
+    q = prism::ai::parse_question("overflows found by wp in calc.c for function add_*");
+    CHECK(q.stages == std::vector<std::string>{"wp"});
     CHECK(q.file_glob == "*calc.c*");
     CHECK(q.function_glob == "add_*");
     CHECK(std::find(q.cls.begin(), q.cls.end(), "OVF") != q.cls.end());
     q = prism::ai::parse_question("proofs from the model checker", &unused);
-    CHECK(q.stages == std::vector<std::string>{"bmc"});
+    CHECK(q.stages == std::vector<std::string>{"pir"});
     CHECK(q.statuses.size() == 4);
     q = prism::ai::parse_question("findings mentioning 'runtime error' zorblax", &unused);
     CHECK(q.text == "runtime error");
@@ -553,7 +553,7 @@ TEST_CASE("ai-assist ask: answers show the structured query; JSON round trip and
     CHECK(r.translator == "grammar");
     CHECK(r.matches.size() == 3);
     CHECK(r.answer.find("query (grammar): {") != std::string::npos);
-    CHECK(r.answer.find("bmc#0 FAILED calc.c:1 `add_big`") != std::string::npos);
+    CHECK(r.answer.find("wp#0 FAILED calc.c:1 `add_big`") != std::string::npos);
     auto q2 = prism::ai::query_from_json(prism::ai::query_to_json(r.query));
     REQUIRE(q2);
     CHECK(prism::ai::query_to_json(*q2) == prism::ai::query_to_json(r.query));
@@ -580,21 +580,21 @@ TEST_CASE("ai-assist ask: model translation is grammar-constrained, validated an
     prism::ai::Session session(cfg);
     auto fake = std::make_shared<AssistFake>();
     fake->replies = {
-        R"({"stages":["bmc"],"statuses":["FAILED"],"cls":["DIV"],"file_glob":"","function_glob":"","text":"","group_by":"","count_only":false})",
-        R"({"stages":["bmc"],"statuses":["PROVED-BY-AI"]})"};
+        R"({"stages":["wp"],"statuses":["FAILED"],"cls":["DIV"],"file_glob":"","function_glob":"","text":"","group_by":"","count_only":false})",
+        R"({"stages":["wp"],"statuses":["PROVED-BY-AI"]})"};
     prism::ai::set_session_backend_for_testing(fake);
     auto before = report.dumps();
     auto r = prism::ai::ask_question(report, "which division problems did model checking find", true);
     CHECK(r.translator == "llm:fake:assist-double");
     REQUIRE(r.matches.size() == 1);
-    CHECK(r.matches[0].id == "bmc#1");
+    CHECK(r.matches[0].id == "wp#1");
     CHECK(r.answer.find("query (llm:fake:assist-double)") != std::string::npos);
     REQUIRE(fake->seen.size() == 1);
     CHECK(fake->seen[0].grammar == "ask");
-    CHECK(fake->seen[0].grammar_text.find("\"\\\"bmc\\\"\"") != std::string::npos);
+    CHECK(fake->seen[0].grammar_text.find("\"\\\"wp\\\"\"") != std::string::npos);
     CHECK(fake->seen[0].user.find("<<<UNTRUSTED QUESTION") != std::string::npos);
     // Invalid model output: rejected, grammar fallback, still answered.
-    auto r2 = prism::ai::ask_question(report, "failed bmc", true);
+    auto r2 = prism::ai::ask_question(report, "failed wp", true);
     CHECK(r2.translator == "grammar");
     CHECK(r2.model_note.find("rejected") != std::string::npos);
     CHECK(r2.matches.size() == 2);
@@ -647,7 +647,7 @@ TEST_CASE("ai-assist draft: template claims all link; unlinked or unsupported cl
         CHECK_MESSAGE(chk.ok, kind, ": ", (chk.rejected.empty() ? "" : chk.rejected[0]));
         CHECK(chk.claims >= 5);
         auto md = prism::ai::render_draft(d, chk);
-        CHECK(md.find("[verdict:bmc#0]") != std::string::npos);
+        CHECK(md.find("[verdict:wp#0]") != std::string::npos);
         if (kind == "assurance") CHECK(md.find("[theorem:Prism.proved_bounded_never_merge]") != std::string::npos);
     }
     // Without the theorem index the argument steps have no support: rejected, not rendered.
@@ -665,10 +665,10 @@ TEST_CASE("ai-assist draft: template claims all link; unlinked or unsupported cl
     bad.sections.push_back({"S",
                             {{"Everything is fine.", {}},
                              {"add_big is proved safe.", {"finding:pir#1"}},
-                             {"ok is proved.", {"verdict:bmc#2"}},
-                             {"bogus link", {"finding:bmc#99"}},
+                             {"ok is proved.", {"verdict:wp#2"}},
+                             {"bogus link", {"finding:wp#99"}},
                              {"bounded is a verdict", {"verdict:fuzz#0"}},
-                             {"certified!", {"verdict:bmc#2"}},
+                             {"certified!", {"verdict:wp#2"}},
                              {"a theorem", {"theorem:Prism.no_such"}}}});
     auto c2 = prism::ai::validate_draft(bad, report, thms);
     CHECK(c2.rejected.size() == 6);  // only "ok is proved." (a PROVED-UNBOUNDED verdict) stands
@@ -682,8 +682,8 @@ TEST_CASE("ai-assist draft: model rewording is validated like any draft") {
     prism::ai::Session session(cfg);
     auto fake = std::make_shared<AssistFake>();
     fake->replies = {
-        R"([{"section":"Defects","text":"Adding 100 to x overflows for x = INT_MAX.","links":["verdict:bmc#0"]},
-            {"section":"Defects","text":"All functions are proved correct.","links":["stage:bmc"]}])"};
+        R"([{"section":"Defects","text":"Adding 100 to x overflows for x = INT_MAX.","links":["verdict:wp#0"]},
+            {"section":"Defects","text":"All functions are proved correct.","links":["stage:wp"]}])"};
     prism::ai::set_session_backend_for_testing(fake);
     std::string note;
     auto d = prism::ai::draft_with_model(report, "report", {}, &note);
@@ -1091,8 +1091,8 @@ TEST_CASE("ai-assist regress: uninitialised reads get a MemorySanitizer build an
     fn.name = "uninit_bad";
     fn.params = {{"int", "c"}};
     r.functions.push_back(fn);
-    prism::StageResult s{"bmc", "ok", "", 0, 0, {}, 0, ""};
-    s.findings.push_back(mk("bmc", "FAILED", "u.c", "uninit_bad", 1, "UNINIT-READ", "uninit", "c=#x00000000"));
+    prism::StageResult s{"wp", "ok", "", 0, 0, {}, 0, ""};
+    s.findings.push_back(mk("wp", "FAILED", "u.c", "uninit_bad", 1, "UNINIT-READ", "uninit", "c=#x00000000"));
     r.stages = {s};
     prism::ai::RegressOptions opt;
     opt.out_dir = root / "out";
