@@ -187,8 +187,7 @@ when every theorem is proved, 3 only when every one is `NOTRUN`).
 | `--budget N`, `--beam N` | model calls allowed (default 24) and partial proofs kept (default 4) |
 | `--timeout S` | Lean time limit per check in seconds (default 120, minimum 5) |
 | `--out DIR` | output directory (default `prism-out`) |
-| `--prover-server URL` | a llama.cpp server running the prover model (else `PRISM_PROVER_SERVER`) |
-| `--prover-gguf PATH`, `--prover-model NAME` | a local GGUF prover model (else `PRISM_PROVER_GGUF`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
+| `--prover-fpk PATH`, `--prover-model NAME` | the FORGE prover model (`.fpk`, else `PRISM_PROVER_FPK`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
 | `--json` | print only the JSON result |
 | `--help`, `-h` | print the option summary and exit |
 
