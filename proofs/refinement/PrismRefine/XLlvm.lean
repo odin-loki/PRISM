@@ -96,8 +96,8 @@ inductive SInst where
   | load (dst : String) (w : Nat) (p : Opnd) (al : Nat)
   /-- `store iw v, ptr p, align al` (`v` may be `undef`) -/
   | store (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat)
-  /-- `%dst = getelementptr [inbounds] T, ptr base, ix…` -/
-  | gep (dst : String) (inb : Bool) (base : Opnd) (ix : List GIdx)
+  /-- `%dst = getelementptr [inbounds] [nuw] T, ptr base, ix…` -/
+  | gep (dst : String) (inb nuw : Bool) (base : Opnd) (ix : List GIdx)
   /-- `%dst = call iw @llvm.smax.iw(a, b)` (`smin`, `umax`, `umin`) -/
   | mm (dst : String) (k : MMK) (w : Nat) (a b : Opnd)
   /-- `%dst = call iw @llvm.abs.iw(a, i1 flag)` (`ctlz`, `cttz` with their
@@ -366,6 +366,20 @@ def gFinish (m : Mem) (inb : Bool) (b : Nat) (acc : GAcc) : Res Nat :=
 def gepVal (m : Mem) (inb : Bool) (b : Nat) (ix : List GIdx) (vs : List Nat) : Res Nat :=
   (gFold { cst := 0, var := none } (ix.zip vs)).bind fun acc => gFinish m inb b acc
 
+/-- `getelementptr nuw` (LLVM 19+): the result is poison when an index, read
+as unsigned, makes the offset arithmetic wrap. PRISM checks the sufficient
+per-index condition `Tr::mem_inst` emits: an array or first index (variable
+or constant) is negative at its own width. Struct fields are never negative. -/
+def gNuwBad : List (GIdx × Nat) → Bool
+  | [] => false
+  | (.first _ w _, v) :: t => evalPred .slt (bv w v) (bv w 0) || gNuwBad t
+  | (.field _, _) :: t => gNuwBad t
+  | (.arr _ w _ _ _, v) :: t => evalPred .slt (bv w v) (bv w 0) || gNuwBad t
+
+/-- `getelementptr` with its `nuw` flag: the per-index checks, then `gepVal`. -/
+def gepValN (m : Mem) (inb nuw : Bool) (b : Nat) (ix : List GIdx) (vs : List Nat) : Res Nat :=
+  if nuw && gNuwBad (ix.zip vs) then .ub else gepVal m inb b ix vs
+
 /-- The operand of an index (`none`: a struct field, no operand). -/
 def GIdx.opnd : GIdx → Option (Opnd × Nat)
   | .first o w _ => some (o, w)
@@ -601,9 +615,9 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
       else if (loadCells W.mem pv w).any (·.isNone) then .ub
       else .ok (R.set d (bytesVal ((loadCells W.mem pv w).map (·.getD 0)) % 2 ^ w), W)
   | .store w v p al => sStoreR ω R W w v p al
-  | .gep d inb base ix =>
+  | .gep d inb nuw base ix =>
     (sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
-      (gepVal W.mem inb b ix vs).bind fun r => .ok (R.set d r, W)
+      (gepValN W.mem inb nuw b ix vs).bind fun r => .ok (R.set d r, W)
   | .mm d k w a b => (sMMV R k w a b).bind fun v => .ok (R.set d v, W)
   | .un d k w a flag => (sUnV R k w a flag).bind fun v => .ok (R.set d v, W)
   | .expect d w a => (sExpV R w a).bind fun v => .ok (R.set d v, W)
@@ -821,11 +835,11 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ub => .ub
     | .stuck => .stuck
   | .store w v p al => lStoreR ω S W w v p al
-  | .gep d inb base ix =>
+  | .gep d inb nuw base ix =>
     -- a poison or indeterminate operand, an overflow, a C bound or leaving the
     -- object: the result is poison (LLVM) or C UB; flagged
     match ((sOpnd (lower S.R) 64 base).bind fun b => (sIdxVals (lower S.R) ix).bind fun vs =>
-            gepVal W.mem inb b ix vs) with
+            gepValN W.mem inb nuw b ix vs) with
     | .ok r => .ok (⟨S.R.set d (.val r), S.c⟩, W)
     | .ub => .ok (⟨S.R.set d (.val 0), true⟩, W)
     | .stuck => .stuck

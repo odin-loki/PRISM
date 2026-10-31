@@ -121,17 +121,17 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
       rw [hs] at h; simp only [OpRel] at h
       rcases h with h | h <;> rw [h] <;> exact .inl rfl
   | store w v p al => exact store_liftX ω R t w v p al
-  | gep d inb base ix =>
+  | gep d inb nuw base ix =>
     simp only [sSInst, lSInst, lower_lift]
     have e : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
-        (gepVal t.mem inb b ix vs).bind fun r => Res.ok (R.set d r, t)) =
-        ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs).bind
+        (gepValN t.mem inb nuw b ix vs).bind fun r => Res.ok (R.set d r, t)) =
+        ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepValN t.mem inb nuw b ix vs).bind
           (fun r => Res.ok (R.set d r, t)) := by
       cases sOpnd R 64 base <;> simp only [Res.bind]
       rename_i b
       cases sIdxVals R ix <;> simp only [Res.bind]
     rw [e]
-    cases hg : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs) with
+    cases hg : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepValN t.mem inb nuw b ix vs) with
     | ok r => simp [Res.bind, SLX, lift_set]
     | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
     | stuck => rfl
@@ -272,7 +272,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
       · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; simp [hc]
     all_goals cases h
   | store w v p al => exact lStoreR_mono h hc
-  | gep d inb base ix =>
+  | gep d inb nuw base ix =>
     simp only [lSInst] at h
     split at h
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc

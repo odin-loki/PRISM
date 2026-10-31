@@ -284,6 +284,59 @@ theorem emitX_all (P : PFunc) (ω : Nat → Nat) (cs : List Chk) (σ : Store) (k
   obtain ⟨σ', e, ha⟩ := h.2 hc
   exact ⟨σ', by rw [e]; rfl, ha⟩
 
+/-! ### `getelementptr nuw` checks -/
+
+theorem nuwChecks_bad {σ : Store} {k av : Nat} :
+    ∀ {ix : List GIdx} {As : List Arg} {vs : List Nat}, IdxR σ k av ix As vs →
+    (nuwChecks (ix.zip As)).any (Chk.bad σ) = gNuwBad (ix.zip vs)
+  | _, _, _, .nil => rfl
+  | _, _, _, .first hA hI => by
+    obtain ⟨hAv, hAw, -⟩ := hA
+    simp only [List.zip_cons_cons, nuwChecks, gNuwBad, List.any_cons, bad_cmp, nuwChecks_bad hI]
+    rw [hAv, hAw]; rfl
+  | _, _, _, .field hI => by
+    simp only [List.zip_cons_cons, nuwChecks, gNuwBad]; exact nuwChecks_bad hI
+  | _, _, _, .arr hA hI => by
+    obtain ⟨hAv, hAw, -⟩ := hA
+    simp only [List.zip_cons_cons, nuwChecks, gNuwBad, List.any_cons, bad_cmp, nuwChecks_bad hI]
+    rw [hAv, hAw]; rfl
+
+theorem nuwChecks_below {σ : Store} {k av : Nat} :
+    ∀ {ix : List GIdx} {As : List Arg} {vs : List Nat}, IdxR σ k av ix As vs →
+    ∀ c ∈ nuwChecks (ix.zip As), c.below k
+  | _, _, _, .nil => by intro c hc; cases hc
+  | _, _, _, .first hA hI => by
+    intro c hc
+    simp only [List.zip_cons_cons, nuwChecks, List.mem_cons] at hc
+    rcases hc with rfl | hc
+    · exact ⟨hA.2.2.2.1, trivial⟩
+    · exact nuwChecks_below hI c hc
+  | _, _, _, .field hI => by
+    simp only [List.zip_cons_cons, nuwChecks]; exact nuwChecks_below hI
+  | _, _, _, .arr hA hI => by
+    intro c hc
+    simp only [List.zip_cons_cons, nuwChecks, List.mem_cons] at hc
+    rcases hc with rfl | hc
+    · exact ⟨hA.2.2.2.1, trivial⟩
+    · exact nuwChecks_below hI c hc
+
+theorem nuwChecks_opOK : ∀ (l : List (GIdx × Arg)), ∀ c ∈ nuwChecks l, c.opOK = true
+  | [] => by intro c hc; cases hc
+  | (g, A) :: t => by
+    intro c hc
+    cases g with
+    | field off => exact nuwChecks_opOK t c (by simpa only [nuwChecks] using hc)
+    | first o w sc =>
+      simp only [nuwChecks, List.mem_cons] at hc
+      rcases hc with rfl | hc
+      · simp [Chk.opOK, POp.isMem]
+      · exact nuwChecks_opOK t c hc
+    | arr o w sc n use =>
+      simp only [nuwChecks, List.mem_cons] at hc
+      rcases hc with rfl | hc
+      · simp [Chk.opOK, POp.isMem]
+      · exact nuwChecks_opOK t c hc
+
 /-! ## One instruction -/
 
 /-- A strict step and a PIR statement run correspond; `σ0` is the store at
@@ -1153,7 +1206,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
   | store w v p al =>
     simp only [trSInstX] at h
     exact store_simX hc hR ha0 hk h hT
-  | gep d inb base ix =>
+  | gep d inb nuw base ix =>
     simp only [trSInstX] at h
     obtain ⟨u0, hu0, h⟩ := Except.bind_ok h
     obtain ⟨⟨sb, tb, B⟩, hb, h⟩ := Except.bind_ok h
@@ -1194,38 +1247,66 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
         · cases hb
       | poison => simp [sOpnd] at hbv
     have hdk : di < k := by omega
-    have hG0 : GRel P ω t k di σ { s := [], ts := [], cst := 0, var := none } { cst := 0, var := none } σ :=
-      ⟨rfl, fun _ _ => rfl, rfl, trivial, hdk⟩
     obtain ⟨⟨le, hle⟩, ⟨lt, hlt⟩⟩ := gEnd_ext k di B inb g
     have hTg : TempsOK P k g.ts := by rw [hlt] at hT; exact hT.left
-    have hL := gLoop_sim hI hG0 hg hTg
-    simp only [gepVal, Res.bind_assoc]
-    cases hf : gFold { cst := 0, var := none } (ix.zip vs) with
-    | ok acc =>
-      rw [hf] at hL
-      obtain ⟨σg, hGg⟩ := hL
-      have he := gEnd_sim hGg hBb hBi hwd inb hT
-      rw [hBv] at he
-      simp only [Res.ok_bind]
-      cases hr : gFinish t.mem inb bv acc with
-      | ok r =>
-        rw [hr] at he
-        obtain ⟨σ', e, h1, h2⟩ := he
-        simp only [Res.ok_bind, SimX, e]
-        refine ⟨σ', rfl, ?_, fun j hj => ?_⟩
-        · refine RelX.agree hc (m := k) (RelX.set hR hl hu hsh r) hk (fun j hj => ?_)
-          by_cases hji : j = di
-          · subst hji; rw [h1, Store.set_same]
-          · rw [h2 j hj hji, Store.set_other _ _ hji]
-        · rw [h2 j (by omega) (by omega)]; exact ha0 j hj
-      | ub => rw [hr] at he; simp only [Res.bind, SimX]; exact he
-      | stuck => trivial
-    | ub =>
-      rw [hf] at hL
-      simp only [Res.bind, SimX]
+    have hgx := gLoop_gext hg
+    have hTn := hTg.ext hgx
+    have hcb : ∀ c ∈ (if nuw then nuwChecks (ix.zip As) else []), c.below k := by
+      split
+      · exact nuwChecks_below hI
+      · intro c hc; cases hc
+    have hco : ∀ c ∈ (if nuw then nuwChecks (ix.zip As) else []), c.opOK = true := by
+      split
+      · exact nuwChecks_opOK _
+      · intro c hc; cases hc
+    have hem := emitX_all P ω _ σ k t hTn hcb hco
+    have hbad : (if nuw then nuwChecks (ix.zip As) else []).any (Chk.bad σ) = (nuw && gNuwBad (ix.zip vs)) := by
+      cases nuw
+      · rfl
+      · simp only [ite_true, Bool.true_and]; exact nuwChecks_bad hI
+    simp only [gepValN]
+    cases hnb : (nuw && gNuwBad (ix.zip vs)) with
+    | true =>
+      simp only [ite_true, Res.bind, SimX]
       rw [hle]
-      exact xStmts_fail_append hL _
-    | stuck => trivial
+      obtain ⟨⟨l, hl⟩, _⟩ := hgx
+      rw [hl, List.append_assoc]
+      exact xStmts_fail_append (hem.1 (hbad.trans hnb)) _
+    | false =>
+      obtain ⟨σn, en, han⟩ := hem.2 (hbad.trans hnb)
+      have hG0 : GRel P ω t k di σ
+          ⟨(emitAll k (if nuw then nuwChecks (ix.zip As) else [])).1,
+            (emitAll k (if nuw then nuwChecks (ix.zip As) else [])).2, 0, none⟩
+          { cst := 0, var := none } σn :=
+        ⟨en, han, rfl, trivial, hdk⟩
+      have hL := gLoop_sim hI hG0 hg hTg
+      simp only [Bool.false_eq_true, ite_false, gepVal, Res.bind_assoc]
+      cases hf : gFold { cst := 0, var := none } (ix.zip vs) with
+      | ok acc =>
+        rw [hf] at hL
+        obtain ⟨σg, hGg⟩ := hL
+        have he := gEnd_sim hGg hBb hBi hwd inb hT
+        rw [hBv] at he
+        simp only [Res.ok_bind]
+        cases hr : gFinish t.mem inb bv acc with
+        | ok r =>
+          rw [hr] at he
+          obtain ⟨σ', e, h1, h2⟩ := he
+          simp only [Res.ok_bind, SimX, e]
+          refine ⟨σ', rfl, ?_, fun j hj => ?_⟩
+          · refine RelX.agree hc (m := k) (RelX.set hR hl hu hsh r) hk (fun j hj => ?_)
+            by_cases hji : j = di
+            · subst hji; rw [h1, Store.set_same]
+            · rw [h2 j hj hji, Store.set_other _ _ hji]
+          · rw [h2 j (by omega) (by omega)]; exact ha0 j hj
+        | ub => rw [hr] at he; simp only [Res.bind, SimX]; exact he
+        | stuck => trivial
+      | ub =>
+        rw [hf] at hL
+        simp only [Res.bind, SimX]
+        rw [hle]
+        exact xStmts_fail_append hL _
+      | stuck => trivial
   | mm d mk w a b =>
     simp only [trSInstX] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h

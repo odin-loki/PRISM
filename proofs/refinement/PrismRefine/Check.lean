@@ -415,7 +415,9 @@ def parseXLlvm (name : String) (ls : List (List String)) :
     | "gep" :: d :: inb :: base :: _ :: rest =>
       let (bn, ps, sg, is) ← inBlock
       let ix ← gidx? rest
-      f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (inb == "1") (← opnd? base) ix :: is) }
+      -- flag set: bit 0 inbounds, bit 1 nuw (export_lean.cpp gep_line)
+      let fl ← nat? inb
+      f := { f with cur := some (bn, ps, sg, .gep (← reg? d) (fl % 2 == 1) (fl / 2 % 2 == 1) (← opnd? base) ix :: is) }
     | ["mm", d, k, w, a, b] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .mm (← reg? d) (← mmK? k) (← nat? w) (← opnd? a) (← opnd? b) :: is) }

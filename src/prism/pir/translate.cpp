@@ -1718,13 +1718,15 @@ struct Tr final : pirmem::TrApi {
                         base_last = true;  // unknown layout: no sub-array check
                     }
             // gep nuw (LLVM 19+): poison if any index, read as unsigned, makes the
-            // offset arithmetic wrap. A negative variable index always wraps, so
-            // it is checked here; the rest is bounded by the inbounds/object check.
+            // offset arithmetic wrap. A negative index (variable or constant; a
+            // struct field index is never negative) always wraps, so it is checked
+            // here (Lean: PrismRefine.nuwChecks); the rest is bounded by the
+            // inbounds/object check.
             // nusw is implied by inbounds (checked by MemTr::gep); without
             // inbounds it is dropped (conservative: the result is not trusted).
             if (has_flag(in, "nuw"))
                 for (std::size_t k = 1; k < in.ops.size(); ++k) {
-                    if (in.ops[k].v.kind != ir::Value::Local) continue;
+                    if (in.ops[k].v.kind != ir::Value::Local && in.ops[k].v.kind != ir::Value::Int) continue;
                     unsigned iw = int_width(in.ops[k].ty);
                     Arg ix = operand(fr, in.ops[k], cur, line);
                     ix.width = iw;

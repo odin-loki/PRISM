@@ -320,6 +320,14 @@ def gLoop (k : Nat) : GSt → List (GIdx × Arg) → Except String GSt
     if !decide (n < 2 ^ 63) then throw "outside fragment: array length"
     gLoop k (← gTermT k (gBoundT k g A n use) A scale) t
 
+/-- `Tr::mem_inst`'s `getelementptr nuw` checks: every first or array index
+(variable or constant) negative at its own width is poison. -/
+def nuwChecks : List (GIdx × Arg) → List Chk
+  | [] => []
+  | (.first _ w _, A) :: t => .p (.cmp .slt) A (.c w 0) "nuw" "UB-POISON" :: nuwChecks t
+  | (.field _, _) :: t => nuwChecks t
+  | (.arr _ w _ _ _, A) :: t => .p (.cmp .slt) A (.c w 0) "nuw" "UB-POISON" :: nuwChecks t
+
 /-- The pointer addition and the object checks of `MemTr::gep` (result `i`,
 temporaries from `j`). -/
 def gFinS (i j : Nat) (B delta : Arg) (inb : Bool) : List PStmt :=
@@ -578,14 +586,15 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     let u := k + tp.length + ta.length
     pure (sp ++ sa ++ [.load i u P, .check (.v u 1) "uninit" "UNINIT-READ"], tp ++ ta ++ [1])
   | .store w v p al => trStore c k w v p al
-  | .gep d inb base ix => do
+  | .gep d inb nuw base ix => do
     need ((gepUses base ix).all (· != .reg d)) "outside fragment: getelementptr reads its own result"
     let (sb, tb, B) ← trOpndX c 64 true k base
     let (si, ti, As) ← trIdxOps c (k + tb.length) ix
     let i ← dstX c d 64
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     let k' := k + tb.length + ti.length
-    let g ← gLoop k' { s := [], ts := [], cst := 0, var := none } (ix.zip As)
+    let e := emitAll k' (if nuw then nuwChecks (ix.zip As) else [])
+    let g ← gLoop k' { s := e.1, ts := e.2, cst := 0, var := none } (ix.zip As)
     let (sg, tg) := gEnd k' i B inb g
     pure (sb ++ si ++ sg, tb ++ ti ++ tg)
   | .mm d mk w a b => do
@@ -984,7 +993,7 @@ where
     | .alloca d _ _ => [(d, 64)]
     | .load d w _ _ => [(d, w)]
     | .store .. => []
-    | .gep d _ _ _ => [(d, 64)]
+    | .gep d _ _ _ _ => [(d, 64)]
     | .mm d _ w _ _ => [(d, w)]
     | .un d _ w _ _ => [(d, w)]
     | .expect d w _ => [(d, w)]
