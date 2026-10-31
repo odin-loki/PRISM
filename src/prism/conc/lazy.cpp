@@ -349,9 +349,15 @@ Graph build_graph(const pir::Function& fn, const Options& opt) {
 
 std::string op_text(const Program& p, const VisOp& o) {
     switch (o.kind) {
-        case VisOp::Load: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
-        case VisOp::Store: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
-        case VisOp::Rmw: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Load:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Store:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Rmw:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
         case VisOp::Lock:
             [[fallthrough]];
         case VisOp::TryLock:
@@ -503,6 +509,8 @@ struct Enc {
     std::vector<z3::expr> cgen;                 // per condition variable: signals so far
     std::vector<std::vector<z3::expr>> ticket;  // [thread][cond]: cgen when the thread began its wait
     z3::expr exited, last_tid, last_var, last_w, last_at, last_op, ok;
+    // bounded memory: byte address -> word (the whole access, zero-extended)
+    z3::expr M, maddr, last_addr, last_mem;
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
     std::vector<ERec> events;
@@ -510,7 +518,9 @@ struct Enc {
 
     Enc(const Program& prog, const Options& o)
         : p(prog), opt(o), exited(c.bool_val(false)), last_tid(c.bv_val(0, 8)), last_var(c.bv_val(0, 16)),
-          last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)) {}
+          last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)),
+          M(z3::const_array(c.bv_sort(64), c.bv_val(0, 64))), maddr(c.bv_val(0, 64)), last_addr(c.bv_val(0, 64)),
+          last_mem(c.bool_val(false)) {}
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
@@ -706,6 +716,45 @@ struct Enc {
         last_w = z3::ite(e, c.bool_val(write), last_w);
         last_at = z3::ite(e, c.bool_val(atomic), last_at);
         last_op = z3::ite(e, bv(static_cast<uint64_t>(op + 1), 16), last_op);
+        last_mem = z3::ite(e, c.bool_val(false), last_mem);
+    }
+
+    void touch_mem(int t, const z3::expr& e, int op, const z3::expr& addr, bool write, bool atomic) {
+        touch(t, e, op, -1, write, atomic);
+        last_mem = z3::ite(e, c.bool_val(true), last_mem);
+        last_addr = z3::ite(e, addr, last_addr);
+    }
+
+    // A memory access: in bounds of its object (objects are 2^32 apart, so an
+    // out-of-bounds address never reaches another object; it is UB itself),
+    // and a race when the last visible operation was a conflicting access to
+    // the same address by another thread.
+    void mem_checks(int t, const z3::expr& e, int op, const VisOp& o, const z3::expr& addr, bool write) {
+        auto id = z3::lshr(addr, c.bv_val(32, 64));
+        auto off = addr & bv(0xffffffffu, 64);
+        z3::expr inb = c.bool_val(false);
+        for (std::size_t k = 0; k < p.objects.size(); ++k)
+            inb = inb || (id == c.bv_val(static_cast<uint64_t>(k + 1), 64) &&
+                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), c.bv_val(p.objects[k].size, 64)));
+        auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
+        violation(e && !inb, write ? "oob-write" : "oob-read", write ? "MEM-OOB-WRITE" : "MEM-OOB-READ",
+                  "out-of-bounds " + o.what + " of " + what + " by " + tname(p, t) + at_line(o.line), o.line, t,
+                  "oob:" + std::to_string(op));
+        auto conflict = e && last_mem && last_addr == addr && last_tid != bv(0, 8) &&
+                        last_tid != bv(static_cast<uint64_t>(t + 1), 8) && (last_w || c.bool_val(write)) &&
+                        !(last_at && c.bool_val(o.atomic));
+        VRec v{ok && conflict,
+               "race",
+               "CONC-DATA-RACE",
+               "data race on " + what + ": " + o.what + " by " + tname(p, t) + at_line(o.line),
+               "race:" + what + ":" + std::to_string(o.line),
+               o.line,
+               t,
+               seq,
+               -1,
+               last_op,
+               {}};
+        viols.push_back(std::move(v));
     }
 
     void race_check(int t, const z3::expr& e, int op, const VisOp& o, bool write) {
@@ -735,6 +784,27 @@ struct Enc {
     void visible(int r, int t, int node, const Stmt& s, const Mark& mk, const z3::expr& e) {
         const auto& o = p.ops[static_cast<std::size_t>(mk.op)];
         auto tid = bv(static_cast<uint64_t>(t + 1), 8);
+        if (o.mem) {
+            if (!mk.tail) {  // head: the address
+                maddr = lookup(t, node, s.args.at(0));
+                bool write = o.kind != VisOp::Load;
+                mem_checks(t, e, mk.op, o, maddr, write);
+                event(e, r, t, mk.op, maddr, 64);
+                define(t, node, s.dst, e, maddr);
+                touch_mem(t, e, mk.op, maddr, write, o.atomic);
+                return;
+            }
+            if (o.kind == VisOp::Store) {
+                auto nv = lookup(t, node, s.args.at(0));
+                auto word = o.width < 64 ? z3::zext(nv, 64 - o.width) : nv;
+                M = z3::ite(e, z3::store(M, maddr, word), M);
+                define(t, node, s.dst, e, nv);
+            } else {
+                auto word = z3::select(M, maddr);
+                define(t, node, s.dst, e, o.width < 64 ? word.extract(o.width - 1, 0) : word);
+            }
+            return;
+        }
         if (o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw) {
             auto& gv = G[static_cast<std::size_t>(o.var)];
             if (mk.tail) {  // Rmw write part, same atomic step as the head
@@ -1018,6 +1088,9 @@ struct Enc {
                                " (dynamic thread sets need the PIR memory model)" + at_line(o.line)};
             }
         for (auto& v : p.vars) G.push_back(bv(v.init, v.width));
+        for (std::size_t k = 0; k < p.objects.size(); ++k)
+            for (auto& in : p.objects[k].init)
+                M = z3::store(M, c.bv_val(((static_cast<uint64_t>(k) + 1) << 32) | in.off, 64), c.bv_val(in.bits, 64));
         for (std::size_t m = 0; m < p.mutexes.size(); ++m) owner.push_back(bv(0, 8));
         for (std::size_t k = 0; k < p.conds.size(); ++k) cgen.push_back(bv(0, 16));
         ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));

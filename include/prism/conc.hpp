@@ -60,6 +60,22 @@ struct VisOp {
     uint64_t busy = 16;      // TryLock: result when the mutex is held (EBUSY / thrd_busy)
     int line = 0;
     std::string what;        // "load", "store", "atomicrmw add", "pthread_mutex_lock", ...
+    // Load/Store through the bounded memory (Program::objects): var == -1, the
+    // head marker copies the i64 address, the tail marker ("s") is the value
+    // read (nondet) or written (copy) in the same step.
+    bool mem = false;
+    int obj = -1;            // the object when statically known, else -1
+};
+
+// An object of the bounded memory (docs/CONCURRENCY.md "Memory"): a shared
+// aggregate global. Addresses are i64 `((index + 1) << 32) | byte offset`, so
+// objects never alias; memory is word-addressed (one SMT array element per
+// byte address accessed, holding the whole access).
+struct MemObject {
+    std::string name;        // IR global name
+    uint64_t size = 0;       // bytes
+    struct Init { uint64_t off = 0; unsigned w = 0; uint64_t bits = 0; };
+    std::vector<Init> init;  // non-zero initial words
 };
 
 struct Shared {
@@ -79,6 +95,7 @@ struct Thread {
 struct Program {
     std::string harness;              // IR name of the harness function
     std::vector<Shared> vars;
+    std::vector<MemObject> objects;   // bounded memory (aggregate globals)
     std::vector<std::string> mutexes; // IR global names
     std::vector<std::string> conds;   // condition variables (IR global names)
     std::string weak_order;           // first non-seq_cst order seen (encoded as seq_cst), "" if none

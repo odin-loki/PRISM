@@ -189,7 +189,24 @@ earliest violation in the model is reported with its interleaving. That
 violation is then excluded and Z3 is asked again, up to `max_findings`.
 Z3 answering UNSAT gives `BOUNDED`.
 
-### 4. Memory model hook
+### 4. Bounded memory (shared aggregates)
+
+Shared globals that are arrays or structs of integers live in a bounded
+memory (`Program::objects`). Object `k` has addresses
+`((k + 1) << 32) | offset`, so objects never alias. The extractor rewrites a
+`getelementptr` on such an object (or on an address derived from one) into
+i64 arithmetic with the module's data layout, and a load or store through it
+into two markers: the head (`__prism.conc.k`, the address; the context-switch
+point) and the tail (`__prism.conc.ks`, the value read or written in the same
+step). The encoder keeps one Z3 array `M` from byte address to word (the
+whole access, zero-extended); it is word-addressed, so overlapping accesses
+of different widths to the same bytes are not modelled exactly. Every access
+is bounds-checked (`MEM-OOB-READ`/`MEM-OOB-WRITE`), and the race check
+compares addresses. Not yet: constant-expression GEP operands, pointers
+stored in memory or passed to calls, heap (`malloc`/`free`), non-global
+mutexes, thread arguments.
+
+### 5. Memory model hook
 
 Shared state is a vector of bit-vectors, `G[var]`, and the access rules are
 in `Enc::visible`. When the PIR memory model lands (roadmap 2.5), a `Load`,

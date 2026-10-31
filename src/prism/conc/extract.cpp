@@ -31,10 +31,13 @@
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
 
+#include "../pir/translate_mem.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -243,8 +246,11 @@ struct Rewriter {
     std::map<std::string, int> handle_thread;       // "fn/%x" or "@g" -> thread index
     std::map<std::string, std::string> entry_of;    // thread entries (IR name) -> ""
     int fresh = 0;
+    pir::pirmem::Layout lay;
+    std::map<std::string, int> obj_index;             // aggregate global -> Program::objects
+    std::map<std::string, std::string> caddr;         // "fn/%p" -> i64 local holding its address
 
-    Rewriter(const ir::Module& s, std::string_view ir_text) : src(s), m(s) {
+    Rewriter(const ir::Module& s, std::string_view ir_text) : src(s), m(s), lay(s) {
         for (auto& g : parse_globals(ir_text)) globals[g.name] = g;
     }
 
@@ -331,6 +337,144 @@ struct Rewriter {
         prog.vars.push_back(s);
         var_index[g] = static_cast<int>(prog.vars.size()) - 1;
         return var_index[g];
+    }
+
+    // ---- bounded memory (docs/CONCURRENCY.md "Memory") ----
+    static uint64_t obj_base(int k) { return (static_cast<uint64_t>(k) + 1) << 32; }
+
+    // A shared aggregate global (array/struct of integers): -1 when g is not one.
+    int mem_object(const std::string& g) {
+        if (auto it = obj_index.find(g); it != obj_index.end()) return it->second;
+        if (var_index.count(g) || mutex_index.count(g) || handle_thread.count("@" + g)) return -1;
+        const auto* gl = src.find_global(g);
+        if (!gl) return -1;
+        const auto& rt = lay.resolve(gl->ty);
+        if (rt.kind == ir::Type::Int || rt.kind == ir::Type::Ptr) return -1;
+        if (gl->thread_local_) throw Unenc{"UNENCODED: thread_local aggregate @" + g};
+        MemObject o;
+        o.name = g;
+        o.size = lay.alloc_size(gl->ty);
+        if (o.size == 0 || o.size > (uint64_t{1} << 31)) throw Unenc{"UNENCODED: size of aggregate @" + g};
+        if (!gl->external && !gl->init.empty()) {
+            auto st = pir::pirmem::flat_init(lay, gl->ty, gl->init[0].v);
+            if (!st) throw Unenc{"UNENCODED: initialiser of shared aggregate @" + g + " (pointers / undef)"};
+            for (auto& x : *st)
+                if (x.bits) o.init.push_back({x.off, x.w, x.bits});
+        } else if (gl->external) {
+            throw Unenc{"UNENCODED: external aggregate @" + g};
+        }
+        prog.objects.push_back(std::move(o));
+        int k = static_cast<int>(prog.objects.size()) - 1;
+        obj_index[g] = k;
+        return k;
+    }
+
+    // The i64 address of pointer operand `p` in `fn`, or nullopt when it is
+    // not into the bounded memory.
+    std::optional<ir::Operand> mem_addr(const std::string& fn, const ir::Operand& p, int& obj) {
+        auto i64 = int_type(64);
+        if (p.v.kind == ir::Value::Global) {
+            int k = mem_object(p.v.name);
+            if (k < 0) return std::nullopt;
+            obj = k;
+            return cint(obj_base(k), i64);
+        }
+        if (p.v.kind == ir::Value::Local) {
+            auto it = caddr.find(handle_key(fn, "%" + p.v.name));
+            if (it == caddr.end()) return std::nullopt;
+            obj = -1;
+            return local(it->second, i64);
+        }
+        return std::nullopt;
+    }
+
+    // getelementptr into the bounded memory: integer address arithmetic. The
+    // original pointer is dropped; using it other than as a load/store/GEP
+    // address leaves it undefined in PIR (reported there).
+    bool rewrite_gep(const std::string& fn, const ir::Inst& in, std::vector<ir::Inst>& out) {
+        if (in.ops.empty()) return false;
+        int obj = -1;
+        auto base_addr = mem_addr(fn, in.ops[0], obj);
+        if (!base_addr) return false;
+        auto i64 = int_type(64);
+        ir::Operand acc = *base_addr;
+        auto step = [&](const ir::Operand& idx, uint64_t scale) {
+            if (idx.v.kind == ir::Value::Int) {
+                auto off = idx.v.bits;
+                if (idx.ty.bits < 64 && (off >> (idx.ty.bits - 1)) & 1) off |= ~wmask_bits(idx.ty.bits);
+                if (off == 0) return;
+                auto r = "__prism.conc.a" + std::to_string(fresh++);
+                out.push_back(bin(in, r, "add", acc, cint(off * scale, i64)));
+                acc = local(r, i64);
+                return;
+            }
+            ir::Operand x = idx;
+            if (idx.ty.bits < 64) {
+                auto r = "__prism.conc.a" + std::to_string(fresh++);
+                auto se = base(in, r, "sext", i64);
+                se.ops = {idx};
+                out.push_back(se);
+                x = local(r, i64);
+            }
+            auto m1 = "__prism.conc.a" + std::to_string(fresh++);
+            out.push_back(bin(in, m1, "mul", x, cint(scale, i64)));
+            auto a1 = "__prism.conc.a" + std::to_string(fresh++);
+            out.push_back(bin(in, a1, "add", acc, local(m1, i64)));
+            acc = local(a1, i64);
+        };
+        ir::Type cur = in.ety;
+        step(in.ops.size() > 1 ? in.ops[1] : cint(0, i64), lay.alloc_size(cur));
+        for (std::size_t k = 2; k < in.ops.size(); ++k) {
+            const auto& rt = lay.resolve(cur);
+            if (rt.kind == ir::Type::Struct) {
+                if (in.ops[k].v.kind != ir::Value::Int) throw Unenc{"UNENCODED: struct GEP with a variable index"};
+                auto f = static_cast<unsigned>(in.ops[k].v.bits);
+                auto off = lay.field_offset(rt, f);
+                cur = lay.field_type(rt, f);
+                step(cint(1, i64), off);
+            } else if (rt.kind == ir::Type::Array && !rt.elems.empty()) {
+                cur = rt.elems[0];
+                step(in.ops[k], lay.alloc_size(cur));
+            } else {
+                throw Unenc{"UNENCODED: getelementptr through " + rt.text + " (bounded memory)"};
+            }
+        }
+        auto r = "__prism.conc.a" + std::to_string(fresh++);
+        out.push_back(bin(in, r, "add", acc, cint(0, i64)));
+        caddr[handle_key(fn, "%" + in.result)] = r;
+        return true;
+    }
+    static uint64_t wmask_bits(unsigned w) { return w >= 64 ? ~uint64_t{0} : ((uint64_t{1} << w) - 1); }
+
+    // load/store through the bounded memory: head marker = the address,
+    // tail marker = the value.
+    bool rewrite_mem_access(const std::string& fn, const ir::Inst& in, std::vector<ir::Inst>& out, bool store,
+                            bool atomic, int line) {
+        if (in.ops.size() < (store ? 2u : 1u)) return false;
+        int obj = -1;
+        auto a = mem_addr(fn, in.ops[store ? 1 : 0], obj);
+        if (!a) return false;
+        const auto& ty = store ? in.ops[0].ty : in.ty;
+        if (ty.kind != ir::Type::Int || ty.bits == 0 || ty.bits > 64)
+            throw Unenc{"UNENCODED: " + std::string(store ? "store of " : "load of ") + ty.text +
+                        " through the bounded memory"};
+        VisOp vo;
+        vo.kind = store ? VisOp::Store : VisOp::Load;
+        vo.mem = true;
+        vo.obj = obj;
+        vo.atomic = atomic;
+        vo.width = ty.bits;
+        vo.line = line;
+        vo.what = std::string(atomic ? "atomic " : "") + (store ? "store" : "load");
+        int k = add_op(vo);
+        out.push_back(copy(in, marker(k), *a));
+        if (store) {
+            out.push_back(copy(in, marker(k, true), in.ops[0]));
+        } else {
+            out.push_back(nondet(in, marker(k, true), ty));
+            if (!in.result.empty()) out.push_back(freeze(in, in.result, local(marker(k, true), ty)));
+        }
+        return true;
     }
 
     int mutex(const ir::Operand& o, const std::string& fn) {
@@ -454,7 +598,12 @@ struct Rewriter {
             require_sc(words(inst_parts(in.text)[0]));
             return;  // a seq_cst fence orders nothing more under SC
         }
+        if (op == "getelementptr" && rewrite_gep(fn, in, out)) return;
         if (op == "load") {
+            if (rewrite_mem_access(fn, in, out, false, in.text.find(" atomic ") != std::string::npos, line)) {
+                if (in.text.find(" atomic ") != std::string::npos) require_sc(words(in.text));
+                return;
+            }
             auto parts = inst_parts(in.text);
             if (parts.size() < 2) throw Unenc{"UNENCODED: load form " + in.text};
             auto w0 = words(parts[0]);  // load [atomic] [volatile] T
@@ -497,6 +646,10 @@ struct Rewriter {
             return;
         }
         if (op == "store") {
+            if (rewrite_mem_access(fn, in, out, true, in.text.find(" atomic ") != std::string::npos, line)) {
+                if (in.text.find(" atomic ") != std::string::npos) require_sc(words(in.text));
+                return;
+            }
             auto parts = inst_parts(in.text);
             if (parts.size() < 2) throw Unenc{"UNENCODED: store form " + in.text};
             auto w0 = words(parts[0]);  // store [atomic] [volatile] T V
