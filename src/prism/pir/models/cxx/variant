@@ -32,7 +32,7 @@
 // that holds a value. Two different variant types are not that operator.
 // This is not PROVED and not CLEAN.
 //
-// visit of one variant is modelled (below). Multi-variant visit, swap, relational comparison of variant (operator<, operator<=>, and
+// visit of one or more lvalue variants is modelled (below). swap, relational comparison of variant (operator<, operator<=>, and
 // the other relational operators), hash, in_place constructors, and
 // bad_variant_access are not declared. operator<=> on monostate is not
 // declared. A use of an omitted API fails to compile against this header, so
@@ -522,8 +522,8 @@ using variant_alternative_t = typename variant_alternative<_I, _T>::type;
 // std::visit of one variant (roadmap 2.6). The active alternative is found by
 // a get_if chain over the indexes, so the visitor runs on the live object only
 // and never reads an inactive alternative. All alternatives must give the same
-// return type (the visitor's on index 0). More than one variant argument is not
-// declared and falls back to libstdc++.
+// return type (the visitor's on index 0). Two or more variants: see the curried
+// overload below.
 template <std::size_t _I, typename _Vis, typename _Var>
 decltype(auto) _Prism_var_visit_at(_Vis&& __vis, _Var* __v) {
     if constexpr (_I + 1 < variant_size<typename _Prism_var_uncv<_Var>::type>::value) {
@@ -538,6 +538,29 @@ decltype(auto) visit(_Vis&& __vis, variant<_Types...>& __v) {
 template <typename _Vis, typename... _Types>
 decltype(auto) visit(_Vis&& __vis, const variant<_Types...>& __v) {
     return _Prism_var_visit_at<0>(static_cast<_Vis&&>(__vis), &__v);
+}
+
+// std::visit of two or more variants. Curried over the single-variant visit:
+// the first variant's live alternative is bound, then the rest are visited
+// with that value fixed. Each step uses the get_if chain above, so no
+// inactive alternative of any argument is read. Same return-type rule as the
+// single-variant form. Lvalue (const or not) variant arguments only.
+template <typename _T>
+struct _Prism_is_variant { static constexpr bool value = false; };
+template <typename... _Ts>
+struct _Prism_is_variant<variant<_Ts...>> { static constexpr bool value = true; };
+template <typename... _Ts>
+struct _Prism_is_variant<const variant<_Ts...>> { static constexpr bool value = true; };
+
+template <typename _Vis, typename _V1, typename _V2, typename... _Vs>
+    requires(_Prism_is_variant<_V1>::value && _Prism_is_variant<_V2>::value &&
+             (_Prism_is_variant<_Vs>::value && ...))
+decltype(auto) visit(_Vis&& __vis, _V1& __v1, _V2& __v2, _Vs&... __vs) {
+    return std::visit(
+        [&](auto& __a) -> decltype(auto) {
+            return std::visit([&](auto&... __bs) -> decltype(auto) { return __vis(__a, __bs...); }, __v2, __vs...);
+        },
+        __v1);
 }
 
 }  // namespace std

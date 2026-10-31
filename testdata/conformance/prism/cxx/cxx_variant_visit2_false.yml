@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_variant_visit2_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_variant_visit2_false: false
+witness:
+  cxx_variant_visit2_false: [2147483647, 1]
