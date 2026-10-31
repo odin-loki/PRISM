@@ -413,27 +413,8 @@ forbids po;rf cycles):
   read / write clock per location is kept); an atomic access races only with
   non-atomic ones. Values of non-atomic locations stay SC.
 
-Atomics in the bounded memory (arrays, struct fields, the heap,
-address-taken globals) use the same machine: one message per atomic store /
-RMW site execution with a symbolic address, the plain value in M as the
-message of timestamp Pts[addr] (0 initially; a plain store takes a timestamp
-above its view), and a view entry that maps addresses to timestamps (joined
-pointwise). Plain loads read a message like relaxed loads, so a value written
-atomically is seen by a later plain access. A failed compare-exchange is a
-load (flag marker "c") on both paths.
-
-seq_cst fences follow RC11's psc_F: the fences' order (the interleaving)
-carries an SC view, joined into the fence's thread view and replaced by it.
-
-Race checks: a non-atomic access races with every conflicting access it does
-not happen after, atomic or not; an atomic access only with non-atomic ones
-(per thread epochs of the last atomic write / read, for scalars and per
-address).
-
-Condition variables: pthread_cond_wait is unlock, block, re-acquire; the
-re-acquire is a Lock and acquires the mutex view of the last unlock (the
-signaller's), so a hand-over through the mutex synchronises
-(c11_condvar_sync.c).
+A failed compare-exchange is a load (flag marker "c") on both the scalar
+and the memory path.
 
 Approximations (each only adds behaviours, so clean results stand):
 seq_cst accesses (not fences) to a location that also has weaker accesses
