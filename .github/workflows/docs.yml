@@ -23,13 +23,25 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: bash
+        run: |
+          d=$(python3 scripts/fetch_toolchain.py cmake)
+          echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang
       - name: Configure (no Z3, no engine tests)
         run: >
           cmake -B build -G Ninja
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF -DPRISM_TESTS=OFF
       - name: Build prism_docs_check
         run: cmake --build build --target prism_docs_check
       - name: Assurance package cites only existing artefacts

@@ -28,6 +28,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: bash
+        run: |
+          d=$(python3 scripts/fetch_toolchain.py cmake)
+          echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Install toolchain
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache
       - uses: actions/cache@v4
@@ -40,7 +51,8 @@ jobs:
           cmake -B build -G Ninja
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build --target prism prism-qa
       - uses: actions/upload-artifact@v4

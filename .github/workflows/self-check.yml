@@ -27,6 +27,17 @@ jobs:
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: bash
+        run: |
+          d=$(python3 scripts/fetch_toolchain.py cmake)
+          echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Toolchain
         run: |
           sudo apt-get update
@@ -35,7 +46,8 @@ jobs:
         run: >
           cmake -B build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
-          -DPRISM_SANITIZE=ON -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_SANITIZE=ON -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build-san
       - name: prism_tests under sanitizers

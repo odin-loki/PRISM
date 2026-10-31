@@ -46,6 +46,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: bash
+        run: |
+          d=$(python3 scripts/fetch_toolchain.py cmake)
+          echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Install toolchain
         # python3-minimal: BenchExec SV-COMP tool-info smoke only; Z3 build is Python-free (phase 6).
         run: sudo apt-get update && sudo apt-get install -y ninja-build clang ccache qt6-base-dev libgl-dev libclang-18-dev python3-minimal
@@ -59,7 +70,8 @@ jobs:
           cmake -B build -G Ninja
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build
       # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
@@ -111,6 +123,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $d = python scripts/fetch_toolchain.py cmake
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
+          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -124,7 +148,8 @@ jobs:
           cmake -B build-win-cl -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win-cl --target prism_core prism prism-qa prism_tests
@@ -147,6 +172,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $d = python scripts/fetch_toolchain.py cmake
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
+          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -159,7 +196,8 @@ jobs:
         run: >
           cmake -B build-win -G Ninja
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win --target prism_core prism prism-qa prism_tests
@@ -182,6 +220,18 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $d = python scripts/fetch_toolchain.py cmake
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
+          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -216,7 +266,8 @@ jobs:
         run: >
           cmake -B build-win-z3 -G Ninja
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       # On a warm (exact) hit, `-d explain` prints why Ninja rebuilds anything at all.
       - name: Build vendored Z3 (libz3)
@@ -294,6 +345,18 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $d = python scripts/fetch_toolchain.py cmake
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
+          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -324,7 +387,8 @@ jobs:
           cmake -B build-win-cl-z3 -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       - name: Build vendored Z3 (libz3)
         shell: pwsh
@@ -388,6 +452,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Check out FORGE main (mandatory, unpinned)
+        uses: actions/checkout@v4
+        with:
+          repository: odin-loki/FORGE
+          ref: main
+          path: _forge
+      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $d = python scripts/fetch_toolchain.py cmake
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
+          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -410,7 +486,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
-          -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=ON -DPRISM_Z3=OFF
+          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
+          -DPRISM_CUDA=OFF -DPRISM_QT=ON -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       # An unknown target here means Qt6 Widgets was not found (CMake only warns
       # and PRISM_QT quietly builds no GUI): the step fails, never passes empty.
