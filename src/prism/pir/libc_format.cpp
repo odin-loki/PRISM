@@ -6,8 +6,10 @@
 // destination buffer (bounded by the maximal output length).
 
 #include "translate_mem.hpp"
+#include "models/cxx/prism_fpfmt.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <map>
 
@@ -190,6 +192,19 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                     return t.kind == ir::Type::Float && t.text == (ld ? "x86_fp80" : "double");
                 });
                 m = (c == 'f' || c == 'F') ? 330 + prec : 32 + prec;
+                // A literal double: the exact text length (models/cxx/prism_fpfmt.h,
+                // the same digits glibc prints), so digit-dependent lengths are exact.
+                if (!ld && next > 0 && next - 1 < args.size() && next - 1 < consts.size() && consts.at(next - 1) &&
+                    args.at(next - 1).kind == ir::Type::Float && args.at(next - 1).text == "double" &&
+                    f.substr(start, i - start).find('\'') == std::string::npos) {
+                    const double dv = std::bit_cast<double>(*consts.at(next - 1));
+                    unsigned fl = (alt_flag ? prism_fpfmt::kAlt : 0u) | ((c == 'a' || c == 'A') ? prism_fpfmt::kPrintfExp : 0u);
+                    const std::string flags = f.substr(start + 1, i - start);
+                    if (flags.find('+') != std::string::npos) fl |= prism_fpfmt::kPlus;
+                    else if (flags.find(' ') != std::string::npos) fl |= prism_fpfmt::kSpace;
+                    const int pr = has_prec ? static_cast<int>(prec) : ((c == 'a' || c == 'A') ? -1 : 6);
+                    m = static_cast<uint64_t>(prism_fpfmt::to_chars(nullptr, 0, dv, c, pr, fl));
+                }
                 break;
             }
             default:

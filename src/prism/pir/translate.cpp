@@ -1914,7 +1914,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     auto fi = n == "printf" ? 0u : n == "snprintf" ? 2u : 1u;
     if (fi < in.ops.size()) fmt = mt.const_string(in.ops[fi].v);
     std::vector<std::optional<uint64_t>> lits;
-    for (auto& o : in.ops) lits.push_back(o.v.kind == ir::Value::Int ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
+    // Int: two's complement bits; Fp: IEEE bits (libc_format.cpp tells them apart by the IR type)
+    for (auto& o : in.ops)
+        lits.push_back(o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Fp ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
     auto plan = pirmem::plan_format(n, fmt, tys, lits);
     if (!plan.handled) return false;
     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};

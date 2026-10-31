@@ -30,6 +30,8 @@
 #include <unistd.h>
 #endif
 #include <algorithm>
+#include <functional>
+#include <regex>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -468,6 +470,26 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
             }
             out += tok; i = j; continue;
         }
+        if ((std::isalpha(static_cast<unsigned char>(c)) || c == '_') && !(i > 0 && ident(in[i - 1]))) {
+            size_t j = i;
+            while (j < n && ident(in[j])) ++j;
+            std::string id = in.substr(i, j - i);
+            size_t k = j;
+            while (k < n && (in[k] == ' ' || in[k] == '\t')) ++k;
+            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf"};
+            // C++-only keywords are ordinary identifiers in C
+            static const std::set<std::string> kKw{
+                "class", "new", "delete", "this", "template", "typename", "namespace", "operator", "private",
+                "public", "protected", "virtual", "friend", "using", "throw", "try", "catch", "explicit",
+                "mutable", "export", "typeid", "reinterpret_cast", "static_cast", "dynamic_cast", "const_cast",
+                "concept", "requires", "co_await", "co_yield", "co_return", "char8_t", "consteval", "constinit",
+                "noexcept", "decltype", "final", "override", "import", "module"};
+            if (kIo.count(id) && k < n && in[k] == '(') out += "__prism_dfp_" + id;
+            else if (kKw.count(id) && id != "final" && id != "override" && id != "import" && id != "module") out += "__prism_c_" + id;
+            else out += id;
+            i = j;
+            continue;
+        }
         out.push_back(c); ++i;
     }
     out += "\n}\n";
@@ -476,6 +498,7 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
     std::string fixed;
     size_t line = 0, pos = 0;
     int body_line = -3;  // the first three lines are the prologue
+    int depth = 0;
     while (pos < out.size()) {
         size_t e = out.find('\n', pos);
         e = e == std::string::npos ? out.size() : e + 1;
@@ -487,6 +510,20 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
         const bool inc = body_line >= 1 && f != std::string::npos && l[f] == '#' &&
                          l.find_first_not_of(" \t", f + 1) != std::string::npos &&
                          l.compare(l.find_first_not_of(" \t", f + 1), 7, "include") == 0;
+        // #pragma STDC FENV_DEC_ROUND <mode>: block scope -> scoped mode,
+        // file scope -> static initialiser (braces counted per line; the
+        // extern "C" wrapper itself is depth 1).
+        const bool prag = f != std::string::npos && l.compare(f, 7, "#pragma") == 0 &&
+                          l.find("STDC") != std::string::npos && l.find("FENV_DEC_ROUND") != std::string::npos;
+        if (prag) {
+            size_t m = l.find("FENV_DEC_ROUND") + 14;
+            std::string mode = l.substr(m);
+            while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.back()))) mode.pop_back();
+            while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.front()))) mode.erase(0, 1);
+            fixed += (depth > 1 ? "__PRISM_DFP_ROUND_BLOCK(" : "__PRISM_DFP_ROUND_FILE(") + mode + ")\n";
+            continue;
+        }
+        for (char ch : l) depth += ch == '{' ? 1 : ch == '}' ? -1 : 0;
         if (inc)
             fixed += "}\n" + l + (l.ends_with("\n") ? "" : "\n") + "extern \"C\" {\n#line " +
                      std::to_string(body_line + 1) + " \"" + orig.string() + "\"\n";
@@ -494,6 +531,50 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
             fixed += l;
     }
     return fixed;
+}
+
+// C is not C++: the implicit conversions C allows (void* -> T*, int ->
+// enum, T* -> unrelated T*) are errors in C++. clang names each one with
+// the target type and the expression's source range, so the cast C performs
+// implicitly is inserted explicitly: "((T)(expr))". Diagnostics are read
+// from a probe copy whose #line directives are neutralised, so lines and
+// columns are those of the text being edited. Up to 8 rounds.
+std::string dfp_cxx_fixups(std::string text, const std::function<std::string(const std::string&)>& diagnose) {
+    static const std::regex kDiag(
+        R"([^:]*:(\d+):\d+:\{(\d+):(\d+)-(\d+):(\d+)\}.*: error: (?:cannot initialize .* of type '([^']+)' with an [lr]value of type '[^']+'|assigning to '([^']+)' from incompatible type '[^']+').*)");
+    for (int round = 0; round < 8; ++round) {
+        std::string probe;
+        {
+            std::istringstream is(text);
+            std::string l;
+            while (std::getline(is, l)) probe += (l.rfind("#line", 0) == 0 ? "// " + l : l) + "\n";
+        }
+        const std::string d = diagnose(probe);
+        struct Edit { size_t at; std::string s; };
+        std::vector<Edit> edits;
+        std::vector<size_t> starts{0};
+        for (size_t k = 0; k < text.size(); ++k) if (text[k] == '\n') starts.push_back(k + 1);
+        auto off = [&](int line, int col) -> std::optional<size_t> {
+            if (line < 1 || static_cast<size_t>(line) > starts.size()) return std::nullopt;
+            return starts[line - 1] + static_cast<size_t>(col - 1);
+        };
+        std::istringstream ds(d);
+        std::string dl;
+        while (std::getline(ds, dl)) {
+            std::smatch m;
+            if (dl.find(".dfp.probe.cpp:") == std::string::npos || !std::regex_match(dl, m, kDiag)) continue;
+            const std::string ty = m[6].matched ? m[6].str() : m[7].str();
+            auto b = off(std::stoi(m[2]), std::stoi(m[3]));
+            auto e = off(std::stoi(m[4]), std::stoi(m[5]));
+            if (!b || !e || *e < *b || *e > text.size()) continue;
+            edits.push_back({*e, "))"});
+            edits.push_back({*b, "((" + ty + ")("});
+        }
+        if (edits.empty()) break;
+        std::stable_sort(edits.begin(), edits.end(), [](const Edit& x, const Edit& y) { return x.at > y.at; });
+        for (auto& ed : edits) text.insert(ed.at, ed.s);
+    }
+    return text;
 }
 
 std::vector<std::string> base_flags(const fs::path& src) {
@@ -678,21 +759,39 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         r.text.find("decimal type extension not supported") != std::string::npos) {
         // C23 _Decimal32/64/128: clang has no decimal floating point. Lower
         // the unit as C++23 against the PRISM decimal shim instead.
-        const fs::path shim = fs::path(__FILE__).parent_path() / "models" / "dfp" / "prism_dfp.hpp";
+        const fs::path shim = !fe.cxx_models.empty() ? fe.cxx_models / "prism_dfp.hpp"
+                                                     : fs::path(__FILE__).parent_path() / "models" / "cxx" / "prism_dfp.hpp";
         const fs::path dsrc = o0.parent_path() / (o0.stem().string() + ".dfp.cpp");
         std::error_code dec;
         if (fs::is_regular_file(shim, dec)) {
-            {
-                std::ofstream os(dsrc, std::ios::binary);
-                os << dfp_rewrite(read_file(src), src);
-            }
+            std::string dtext = dfp_rewrite(read_file(src), src);
             std::vector<std::string> dfl;
             for (size_t k = 0; k < fl.size(); ++k) {
                 if (fl[k].starts_with("-std=")) { dfl.push_back("-std=c++23"); continue; }
                 dfl.push_back(fl[k]);
             }
             dfl.insert(dfl.end(), {"-I", src.parent_path().string(), "-include", shim.string(),
-                                   "-Wno-c99-designator", "-Wno-writable-strings"});
+                                   "-D__PRISM_DFP_C_UNIT=1", "-Wno-c99-designator", "-Wno-writable-strings"});
+            dtext = dfp_cxx_fixups(std::move(dtext), [&](const std::string& probe) {
+                const fs::path pf = o0.parent_path() / (o0.stem().string() + ".dfp.probe.cpp");
+                {
+                    std::ofstream ps(pf, std::ios::binary);
+                    ps << probe;
+                }
+                std::vector<std::string> pv{cc->string()};
+                for (auto& t : dfl)
+                    if (t != "-S") pv.push_back(t);
+                pv.insert(pv.end(), {"-fsyntax-only", "-fdiagnostics-print-source-range-info", "-fno-caret-diagnostics",
+                                     "-fno-color-diagnostics", "-ferror-limit=0", "-x", "c++", pf.string()});
+                auto pr = detail::run_process(pv, timeout_s);
+                std::error_code rmec;
+                fs::remove(pf, rmec);
+                return pr.text;
+            });
+            {
+                std::ofstream os(dsrc, std::ios::binary);
+                os << dtext;
+            }
             std::vector<std::string> av{cc->string()};
             av.insert(av.end(), dfl.begin(), dfl.end());
             av.insert(av.end(), {"-o", o0.string(), "-x", "c++", dsrc.string()});
@@ -700,7 +799,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             if (!r2.failed && !r2.timed_out && r2.rc == 0) {
                 r = std::move(r2);
                 fl = std::move(dfl);
-                if (cxx_models) *cxx_models = "dfp shim: C23 decimal floating point lowered as C++ (models/dfp)";
+                if (cxx_models) *cxx_models = "dfp shim: C23 decimal floating point lowered as C++ (models/cxx/prism_dfp.hpp)";
             } else {
                 r.text += "\nprism: C23 decimal floating point shim also failed: " + first_error(r2.text);
             }
@@ -1813,7 +1912,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // every C++ function says which one it was checked against.
     std::optional<TmpDir> cxx_dir;
     std::string cxx_models_error;
-    if (std::any_of(units.begin(), units.end(), [](auto& u) { return is_cxx(u.path); })) {
+    // C units need the directory too: the C23 decimal route force-includes
+    // prism_dfp.hpp from it (embedded, so installed builds have it).
+    if (!units.empty()) {
         cxx_dir.emplace();
         if (cxx_dir.has_value() && write_cxx_models(cxx_dir->path / "prism_cxx"))
             fe.cxx_models = cxx_dir->path / "prism_cxx";

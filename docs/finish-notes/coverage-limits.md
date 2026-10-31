@@ -76,17 +76,48 @@ below.
   pir stage (stage.cpp `dfp_rewrite`) rewrites DF/DD/DL literal suffixes to
   user-defined literals, wraps the unit in `extern "C"` (C symbol names;
   `#include` lines stay outside), keeps `#line` to the original file, and
-  lowers it as C++23 with `models/dfp/prism_dfp.hpp` force-included. The
+  lowers it as C++23 with `models/cxx/prism_dfp.hpp` force-included. The
   shim's classes implement IEEE 754-2008 decimal arithmetic (7/16/34
   digits, emax 96/384/6144) with round-half-even, infinities, NaN, x/0,
   mixed-width promotion, exact literal parsing, and an FP-CAST check on
-  out-of-range decimal->integer conversion. Precisely what remains out:
-  rounding modes other than FE_DEC_TONEAREST, the `<math.h>` quantum
-  functions and `*d32/*d64/*d128` math library, printf/scanf `%H/%D/%DD`,
-  the BID/DPD bit layout (memcpy/union punning sees the shim's layout), and
-  C units that are not valid C++ (implicit `void*` conversion, K&R
-  definitions, `restrict`, VLAs in some forms): those still fail and the
-  error says the shim was tried. Subnormal precision loss is approximated.
+  out-of-range decimal->integer conversion. Session 6 closed the items
+  session 5 left out (written, compile-checked; host smoke run listed in
+  FINAL_TESTS):
+  - BID encoding: objects are the 4/8/16-byte IEEE 754 BID interchange
+    bits (both coefficient forms, canonical inf/NaN, non-canonical
+    coefficient reads as 0), so memcpy/union views and sizeof are real
+    (host check: 0.1DD+0.2DD -> 0x31a0000000000003, 1DF -> 0x32800001).
+  - Rounding modes: all five FE_DEC_* modes, fe_dec_getround/setround;
+    every rounding step drops excess digits at once with a sticky digit
+    (session 5's digit-by-digit rounding double-rounded, e.g. 149 -> 2;
+    fixed). `#pragma STDC FENV_DEC_ROUND m` becomes a scoped mode in a
+    block, a static initialiser at file scope.
+  - `<math.h>`: the d32/d64/d128 functions listed in the shim header; the
+    exact ones (rounding, quantum functions, sqrt, fmod, classification)
+    are exact; transcendental ones go through long double.
+  - printf/scanf `%H/%D/%DD` (e f g a, flags, width, precision, `*`):
+    printf/fprintf/sprintf/snprintf/scanf/fscanf/sscanf calls in the unit
+    become typed variadic templates; other conversions go to the C library.
+  - C that is not C++: C++-only keywords used as identifiers are renamed,
+    `restrict/_Bool/_Noreturn/_Alignas/_Alignof/_Thread_local` are mapped,
+    and the implicit conversions C allows (void* -> T*, int -> enum) are
+    made explicit from clang's own diagnostics (source ranges), up to 8
+    rounds (stage.cpp `dfp_cxx_fixups`).
+  - The shim and prism_fpfmt.h are embedded (CMake PRISM_PIR_MODELS) and
+    written to the per-run model directory, which is now created for C
+    runs too, so installed builds have them.
+  Precise remaining limits (each is a semantic gap of the shim, not an
+  unwritten feature): the sign of a decimal zero is not kept; printf
+  rounding of dropped digits is half-even regardless of the dynamic mode;
+  transcendental functions are not correctly rounded for _Decimal128
+  (long double has ~19 digits; a correctly rounded 34-digit libm is a
+  project of its own, as libdfp shows); v*printf/v*scanf with a va_list
+  holding decimal arguments are not rewritten (the va_list erases the
+  type); C constructs with no C++ spelling at all (K&R definitions,
+  `[static N]` parameters in some positions, designated-initializer
+  reordering, VLA typedefs) still fail and the error says the shim was
+  tried; the file-scope pragma is dynamic (affects the whole program from
+  startup) where C23 makes it lexical.
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route
@@ -99,6 +130,28 @@ below.
   6.5.2.5 leaves unspecified for const literals. `constexpr` object
   declarations need clang 19+, so the constexpr tasks depend on prism-llvm.
 
+## Exact binary floating-point text (session 6)
+`models/cxx/prism_fpfmt.h`: the full decimal expansion of the double
+(bignum, no libc), half-even rounding, exact shortest round-trip decided
+against the two rounding-interval midpoints, exact hex. Used by
+std::format/format_to/format_to_n/formatted_size (all float types and
+specs; `{}` and `{:e}`/`{:f}` without precision follow
+[format.string.std]), by the decimal shim's printf, and by the
+translator's printf planner (libc_format.cpp: a literal double argument
+gets its exact text length). Host check: 20000 random doubles x 17 styles
+against glibc snprintf and libstdc++ to_chars, 0 mismatches. Limit: the
+translator's sprintf/snprintf model still writes havoc bytes bounded by
+the planned length (the length is exact for literal doubles; non-literal
+doubles keep the per-conversion bound). Making printf output bytes exact
+for symbolic doubles needs the translator to run this algorithm
+symbolically, which the bound-only printf model does not do.
+
+## Items owned by prism-llvm
+`import std;`, `<generator>`, the condition_variable concurrency check
+and regex locales were handed to the prism-llvm branch (LLVM 23.1.4 bump,
+started 31 Oct) and are not re-done here to avoid conflicting work; the
+sections below describe the state on prism-cov until that branch merges.
+
 ## Modules (`import std;`)
 Not supported, and not fixable inside the model directory: the models are
 headers placed first on the include path. `import std;` loads a prebuilt
@@ -110,7 +163,7 @@ built per configuration. A unit using `import std;` must keep falling back
 re-exports the model headers.
 
 ## Truly blocked
-- `constexpr` C23 objects and `#embed`: need clang >= 19 (see the clang 19 plan).
+- `constexpr` C23 objects and `#embed`: need clang >= 19; resolved by the prism-llvm bump (tasks written, compile with clang 23.1.4).
 - A real concurrency proof for condition_variable: the model is single-threaded.
   `wait` returns at once (spurious wakeup, permitted), `wait(l, pred)` assumes
   pred() on return; a forever-false pred is a hang, not a checked path.
