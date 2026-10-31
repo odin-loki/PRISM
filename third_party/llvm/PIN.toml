@@ -8,7 +8,9 @@ tag = "llvmorg-23.1.4"
 version = "23.1.4"
 base_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/"
 members = ["bin/clang", "bin/clang++", "bin/clang-23", "bin/opt", "bin/llvm-link", "bin/lli",
-           "bin/clang-scan-deps", "lib/clang", "lib/libclang.so*", "lib/libc++*", "include/c++", "include/clang-c", "share/libc++"]
+           "bin/clang-scan-deps", "lib/clang", "lib/libclang.so*", "lib/libc++*", "include/c++", "include/clang-c", "share/libc++",
+           "include/x86_64-unknown-linux-gnu", "include/aarch64-unknown-linux-gnu",
+           "lib/x86_64-unknown-linux-gnu", "lib/aarch64-unknown-linux-gnu"]
 
 [[asset]]
 platform = "linux-x86_64"

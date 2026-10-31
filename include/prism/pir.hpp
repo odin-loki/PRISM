@@ -3,7 +3,7 @@
 // PIR: the PRISM intermediate representation (roadmap Part 2, docs/PIR.md).
 //
 // Pipeline: Clang -> LLVM IR (-O0, optnone off) -> fixed normalisation passes
-// (mem2reg, lowerswitch, loop-simplify, lcssa, instnamer) -> textual IR
+// (mem2reg, lower-switch, loop-simplify, lcssa, instnamer) -> textual IR
 // parser (ir::) -> PIR (typed SSA over bitvectors with explicit property
 // checks inserted by PRISM, Law 8 polarity) -> Z3 bitvector encoder
 // (bounded unrolling + unwinding assertion + k-induction).

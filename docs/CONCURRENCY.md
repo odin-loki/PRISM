@@ -107,7 +107,7 @@ reason:
 ### 1. Front end: the PIR one, plus visible-operation markers (`src/prism/conc/extract.cpp`)
 
 `pir::lower_to_ir` lowers the unit (clang `-O0`, then `mem2reg`,
-`lowerswitch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
+`lower-switch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
 parses it. `pir::translate` models the memory of one function
 (docs/PIR.md), not memory shared between threads. So the stage copies the
 module and rewrites every *visible* operation into a **marker**, an

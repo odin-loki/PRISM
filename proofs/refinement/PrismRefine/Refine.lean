@@ -514,7 +514,7 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Opt
     simp only [Res.bind, Sim, pStmts, hwd, evalOp, hAx, hBy, hCz]
     refine ⟨_, rfl, assign_sim hW hR hfd hsh _ ?_⟩
     unfold selVal; split <;> exact Nat.mod_lt _ (Nat.two_pow_pos w)
-  | cast d ck nneg fw tw a =>
+  | cast d ck fl fw tw a =>
     simp only [trInst] at h
     obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
     obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
@@ -532,19 +532,15 @@ theorem inst_sim {P : PFunc} {names : List (String × Nat)} {sh : String → Opt
     intro x _ hta hAx hAb hAw
     subst hta
     simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
-    have hbad := nneg_bad σ fw A (hAw rfl) nneg
+    have hbad := cast_bad σ ck fl fw tw A (hAw rfl) hnn
     rw [hAx] at hbad
-    have hcp : castPoison ck nneg fw x = castPoison .zext nneg fw x := by
-      cases nneg
-      · simp [castPoison]
-      · simp at hnn; subst hnn; rfl
-    rw [← hcp] at hbad
     have hem := emit_all P _ σ k hT (by
       intro c hc'
-      cases nneg <;> simp [opt] at hc'
-      subst hc'; exact ⟨hAb, trivial⟩)
+      simp only [castChecks, List.mem_append] at hc'
+      rcases hc' with ((h | h) | h) | h <;> (simp only [opt] at h; split at h <;> simp at h) <;>
+        subst h <;> exact ⟨hAb, trivial⟩)
     rw [pStmts_append]
-    cases hc : castPoison ck nneg fw x
+    cases hc : castPoison ck fl fw tw x
     · rw [hc] at hbad
       obtain ⟨σ', e, hag⟩ := hem.2 hbad
       simp only [hc, Bool.false_eq_true, ite_false, Sim, e, PRes.then, pStmts, hwd, evalOp]

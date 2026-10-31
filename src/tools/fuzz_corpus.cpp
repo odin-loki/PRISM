@@ -178,7 +178,7 @@ PRISM_FUZZ_CORPUS_INLINE int make_corpus(const Options& o, const fs::path& self_
                       p.string(), "-o", ll.string()}))
                 continue;
             if (auto d = read_file(ll)) put(o.out / "ll", *d, ".ll");
-            if (opt && run({opt->string(), "-S", "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer",
+            if (opt && run({opt->string(), "-S", "-passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer",
                             ll.string(), "-o", lo.string()}))
                 if (auto d = read_file(lo)) put(o.out / "ll", *d, ".ll");
         }

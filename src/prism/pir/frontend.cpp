@@ -115,7 +115,7 @@ bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
         if (notrun_reason) {
             *notrun_reason =
                 "NOTRUN: pir needs clang to lower for target " + std::string(lp64_target_triple())
-                + " (LP64); probe failed (install LLVM 18 clang with that target)";
+                + " (LP64); probe failed (install the pinned LLVM clang: scripts/fetch_llvm.py)";
         }
         return false;
     }

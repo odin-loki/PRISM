@@ -86,6 +86,21 @@ def emitAll (k : Nat) : List Chk → List PStmt × List Nat
 
 def opt (b : Bool) (c : Chk) : List Chk := if b then [c] else []
 
+/-- The flags a cast may carry: `nneg` on `zext` only, `nuw`/`nsw` on a
+narrowing `trunc` only (to a width ≥ 1), nothing else. -/
+def castFlagsOk (ck : CastK) (fl fw tw : Nat) : Bool :=
+  decide (fl < 8) && (!fl.testBit 0 || ck == .zext) &&
+  (!(fl.testBit 1 || fl.testBit 2) || (ck == .trunc && decide (0 < tw) && decide (tw < fw)))
+
+/-- The checks `Tr` inserts for a cast, in order: `zext nneg` tests
+`slt a, 0`; `trunc nuw` tests `uge a, 2^tw`; `trunc nsw` tests
+`sge a, 2^(tw-1)` and `slt a, -2^(tw-1)` (as an `fw`-bit constant). -/
+def castChecks (ck : CastK) (fl fw tw : Nat) (A : Arg) : List Chk :=
+  opt (ck == .zext && fl.testBit 0) (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON") ++
+  opt (ck == .trunc && fl.testBit 1) (.p (.cmp .uge) A (.c fw (2 ^ tw)) "nuw" "UB-POISON") ++
+  opt (ck == .trunc && fl.testBit 2) (.p (.cmp .sge) A (.c fw (2 ^ (tw - 1))) "nsw" "UB-POISON") ++
+  opt (ck == .trunc && fl.testBit 2) (.p (.cmp .slt) A (.c fw (2 ^ fw - 2 ^ (tw - 1))) "nsw" "UB-POISON")
+
 /-- The checks `Tr::binop` inserts, in order. -/
 def checks (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg) : List Chk :=
   let zero := Arg.c w 0
@@ -159,12 +174,12 @@ def trInst (names : List (String × Nat)) (sh : String → Option Arg) (k : Nat)
     let i ← dstIdx names d w
     need (sh d).isNone "outside fragment: result with a shadow"
     pure (sc ++ sa ++ sb ++ [.assign i .select [C, A, B]], tc ++ ta ++ tb)
-  | .cast d ck nneg fw tw a => do
+  | .cast d ck fl fw tw a => do
     need (okW fw && okW tw) "UNENCODED: width"
-    need (!nneg || ck == .zext) "outside fragment: flags"
+    need (castFlagsOk ck fl fw tw) "outside fragment: flags"
     let (sa, ta, A) ← trOpnd names sh fw false k a
     let (sc, tc) := emitAll (k + ta.length)
-      (opt nneg (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON"))
+      (castChecks ck fl fw tw A)
     let i ← dstIdx names d tw
     need (sh d).isNone "outside fragment: result with a shadow"
     pure (sa ++ sc ++ [.assign i (.cast ck) [A]], ta ++ tc)

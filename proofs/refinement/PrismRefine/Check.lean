@@ -171,7 +171,7 @@ def parseLlvm (name : String) (ls : List (List String)) : Except String LFunc :=
     | ["cast", d, k, nn, fw, tw, a] =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw "instruction outside a block"
       let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"
-      cur := some (bn, ps, .cast (← reg? d) ck (nn == "1") (← nat? fw) (← nat? tw) (← opnd? a) :: is)
+      cur := some (bn, ps, .cast (← reg? d) ck (← nat? nn) (← nat? fw) (← nat? tw) (← opnd? a) :: is)
     | _ =>
       let (bn, ps, is) ← match cur with | some c => pure c | none => throw s!"bad line {l}"
       let t ← match l with
@@ -399,7 +399,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let (bn, ps, sg, is) ← inBlock
       let ck ← match castK? k with | some c => pure c | none => throw s!"cast {k}"
       f := { f with cur := some (bn, ps, sg,
-        .i (.cast (← reg? d) ck (nn == "1") (← nat? fw) (← nat? tw) (← opnd? a)) :: is) }
+        .i (.cast (← reg? d) ck (← nat? nn) (← nat? fw) (← nat? tw) (← opnd? a)) :: is) }
     | ["freeze", d, w, a] =>
       let (bn, ps, sg, is) ← inBlock
       f := { f with cur := some (bn, ps, sg, .freeze (← reg? d) (← nat? w) (← fopnd? a) :: is) }

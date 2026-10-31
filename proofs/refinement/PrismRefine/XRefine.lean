@@ -999,7 +999,7 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       subst htb
       simp only [Res.bind, SimX, xStmts, hwd, evalOpM, evalOp, hAx, hBy, hCz, Inst.draws, Nat.add_zero]
       exact ⟨_, rfl, assignX hR hdi hsh _ (selVal_lt w z x y), agree_set ha0 (dstX_lo hdi) _⟩
-    | cast d ck nneg fw tw a =>
+    | cast d ck fl fw tw a =>
       simp only [trSInstX, trInstX] at h
       obtain ⟨u1, hu1, h⟩ := Except.bind_ok h
       obtain ⟨u2, hu2, h⟩ := Except.bind_ok h
@@ -1017,22 +1017,19 @@ theorem sinstX_sim {P : PFunc} {ω : Nat → Nat} {c : Ctx} (hc : CtxOK P c) {R 
       intro x _ hta hAx hAb hAw
       subst hta
       simp only [List.nil_append, List.length_nil, Nat.add_zero] at hT ⊢
-      have hbad := nneg_bad σ fw A (hAw rfl) nneg
+      have hbad := cast_bad σ ck fl fw tw A (hAw rfl) hnn
       rw [hAx] at hbad
-      have hcp : castPoison ck nneg fw x = castPoison .zext nneg fw x := by
-        cases nneg
-        · simp [castPoison]
-        · simp at hnn; subst hnn; rfl
-      rw [← hcp] at hbad
       have hem := emitX_all P ω _ σ k t hT (by
         intro c' hc'
-        cases nneg <;> simp [opt] at hc'
-        subst hc'; exact ⟨hAb, trivial⟩) (by
+        simp only [castChecks, List.mem_append] at hc'
+        rcases hc' with ((h | h) | h) | h <;> (simp only [opt] at h; split at h <;> simp at h) <;>
+          subst h <;> exact ⟨hAb, trivial⟩) (by
         intro c' hc'
-        cases nneg <;> simp [opt] at hc'
-        subst hc'; rfl)
+        simp only [castChecks, List.mem_append] at hc'
+        rcases hc' with ((h | h) | h) | h <;> (simp only [opt] at h; split at h <;> simp at h) <;>
+          subst h <;> rfl)
       rw [xStmts_append]
-      cases hcnd : castPoison ck nneg fw x
+      cases hcnd : castPoison ck fl fw tw x
       · rw [hcnd] at hbad
         obtain ⟨σ', e, hag⟩ := hem.2 hbad
         simp only [hcnd, Bool.false_eq_true, ite_false, Res.bind, SimX, e, XPRes.then, xStmts, hwd, evalOpM,

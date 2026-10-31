@@ -29,7 +29,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* IR_PASSES = "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
+constexpr const char* IR_PASSES = "-passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer";
 
 struct Record {
     std::string block;

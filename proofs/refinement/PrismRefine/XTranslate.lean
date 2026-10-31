@@ -144,12 +144,12 @@ def trInstX (c : Ctx) (k : Nat) : Inst → Except String (List PStmt × List Nat
     let i ← dstX c d w
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     pure (sc ++ sa ++ sb ++ [.assign i .select [C, A, B]], tc ++ ta ++ tb)
-  | .cast d ck nneg fw tw a => do
+  | .cast d ck fl fw tw a => do
     need (okW fw && okW tw) "UNENCODED: width"
-    need (!nneg || ck == .zext) "outside fragment: flags"
+    need (castFlagsOk ck fl fw tw) "outside fragment: flags"
     let (sa, ta, A) ← trOpndX c fw false k a
     let (sc, tc) := emitAll (k + ta.length)
-      (opt nneg (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON"))
+      (castChecks ck fl fw tw A)
     let i ← dstX c d tw
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     pure (sa ++ sc ++ [.assign i (.cast ck) [A]], ta ++ tc)

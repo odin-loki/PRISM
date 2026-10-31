@@ -746,7 +746,7 @@ struct Tr final : pirmem::TrApi {
 
     void terminator(Frame& fr, const ir::Inst& in, int& cur, int line, bool noreturn) {
         auto& T = out.blocks[static_cast<std::size_t>(cur)].term;
-        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lowerswitch did not run)"};
+        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lower-switch did not run)"};
         if (!in.parsed) throw Unenc{"UNENCODED: " + in.op};
         if (in.op == "resume") {
             // re-throw after cleanup code: the exception continues to the next handler

@@ -28,12 +28,12 @@ nothing is linked yet. For every `.c` unit:
 ```
 clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone -fno-discard-value-names \
       -gline-tables-only -std=c17 <UB-folding warnings on> file.c
-opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer -S
+opt -passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer -S
 ```
 
 `.cc/.cpp/.cxx` units use `clang++ -std=c++23` and the same passes with
 LLVM's coroutine lowering in between (roadmap 2.3):
-`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)`
+`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lower-switch,fix-irreducible,loop-simplify,lcssa,instnamer)`
 ("Coroutines" below). `invoke`/`landingpad` are lowered to explicit
 exception edges by the translator itself ("Exceptions"). No
 optimising pass runs (they may exploit the UB being checked) and no
@@ -180,7 +180,7 @@ Everything else makes the function `NEEDS-HARNESS` with
 half/float/double (`long double` = x86_fp80, `__float128`, bfloat),
 fast-math flags, fused multiply-add on half, integers wider than 64 bits,
 external calls without a library model (`UNENCODED: call @f`), `switch` if
-lowerswitch did not run, irreducible control flow (e.g. a `longjmp` from
+lower-switch did not run, irreducible control flow (e.g. a `longjmp` from
 code the `setjmp` does not dominate), vectors and first-class aggregates
 other than the `{ ptr, i32 }` exception pair, `ptrtoint` other than pointer
 differences, `inttoptr` other than of 0, volatile/atomic loads and stores,
@@ -1233,7 +1233,7 @@ template, admitted only by Houdini and the induction check).
 
 ## Roadmap 2.3 / 2.6 coverage
 
-Normalisation (2.3): `mem2reg`, `lowerswitch`, `loop-simplify`, `lcssa`
+Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
 (all units); coroutine lowering `coro-early`, `cgscc(coro-split)`,
 `coro-cleanup` and `fix-irreducible` (C++ units); `invoke`/`landingpad` →
 explicit exception edges (in the translator, "Exceptions"). No optimising

@@ -17,7 +17,7 @@ engine code was out of scope for the change that added the harnesses.
 Seeds (`prism_fuzz_corpus`, `src/tools/fuzz_corpus.cpp`): the C/C++ files of
 `testdata/` and `testdata/conformance/prism/`, their LLVM IR compiled the way the
 `pir` stage compiles it (`clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone`,
-then `opt -passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer`), the
+then `opt -passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer`), the
 `report.json` / `stages.jsonl` / `functions.json` of a PRISM run on
 `testdata/`, hand-written JSON edge cases, `third_party/MANIFEST.toml` and
 `proofs/lakefile.toml`. A missing clang, opt or prism binary is printed as

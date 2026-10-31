@@ -1,4 +1,4 @@
-/* PIR tasks: switch (lowered by lowerswitch). */
+/* PIR tasks: switch (lowered by lower-switch). */
 int sw_bad(int x) {
     switch (x) {
     case 1: return 10;

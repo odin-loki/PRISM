@@ -526,8 +526,8 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // fix-irreducible gives their resume functions (loops re-entered at a
     // suspend point) a single loop header.
     const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
-                               "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
-                             : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
+                               "function(lower-switch,fix-irreducible,loop-simplify,lcssa,instnamer)"
+                             : "-passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer";
     auto ro = detail::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
                                   timeout_s);

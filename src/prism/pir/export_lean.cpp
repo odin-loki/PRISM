@@ -885,8 +885,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
             } else if (op == "zext" || op == "sext" || op == "trunc") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{op + " shape"};
-                if (op == "trunc" && (has(in, "nuw") || has(in, "nsw"))) throw Unsupported{"trunc nuw/nsw"};
-                b << "L cast %" << name(in.result) << " " << op << " " << (has(in, "nneg") ? 1 : 0) << " "
+                // flag set as Lean's Inst.cast reads it: bit 0 nneg, bit 1 nuw, bit 2 nsw
+                // (trunc nuw/nsw: PrismRefine.castChecks / cast_bad).
+                const int cfl = (has(in, "nneg") ? 1 : 0) | (has(in, "nuw") ? 2 : 0) | (has(in, "nsw") ? 4 : 0);
+                b << "L cast %" << name(in.result) << " " << op << " " << cfl << " "
                   << width(in.ops[0].ty) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
             } else if (op == "br") {
                 if (in.targets.size() == 1) {
