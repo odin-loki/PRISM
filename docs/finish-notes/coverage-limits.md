@@ -106,9 +106,24 @@ below.
   - The shim and prism_fpfmt.h are embedded (CMake PRISM_PIR_MODELS) and
     written to the per-run model directory, which is now created for C
     runs too, so installed builds have them.
-  Precise remaining limits (each is a semantic gap of the shim, not an
-  unwritten feature): the sign of a decimal zero is not kept; printf
-  rounding of dropped digits is half-even regardless of the dynamic mode;
+  Session 7 (written; header host-smoked, stage.cpp compile-checked):
+  - Signed zero: decimal zeros keep their sign (IEEE 754 6.3): -0, x*-0,
+    0/-x, x/-inf, exact x + -x (= -0 only under FE_DEC_DOWNWARD), rounding
+    to zero, BID sign bit, signbit/copysign/fabs, printf '-0'.
+  - printf %H/%D/%DD rounding of dropped digits honours the current
+    FE_DEC_* mode (prism_fpfmt::round_to takes a mode and sign; directed
+    modes step a nonzero tail, also below the first kept place).
+  - The file-scope `#pragma STDC FENV_DEC_ROUND` is lexical: every
+    function body after it (to the next file-scope pragma or the end of
+    the unit) opens with a scoped mode; nothing before it is affected.
+    FE_DEC_DYNAMIC at file scope ends the region. Remaining nuance:
+    file-scope decimal initialisers after the pragma are evaluated by the
+    shim at startup in the dynamic mode (default nearest), not the
+    pragma's mode.
+  - Fixed: the shim did not compile against glibc's <math.h> macros
+    (signbit/isnan/... macros bypassed the decimal overloads); the macros
+    are now #undef'd after <math.h>.
+  Still open after session 7 (not yet written; next session):
   transcendental functions are not correctly rounded for _Decimal128
   (long double has ~19 digits; a correctly rounded 34-digit libm is a
   project of its own, as libdfp shows); v*printf/v*scanf with a va_list
@@ -117,7 +132,7 @@ below.
   `[static N]` parameters in some positions, designated-initializer
   reordering, VLA typedefs) still fail and the error says the shim was
   tried; the file-scope pragma is dynamic (affects the whole program from
-  startup) where C23 makes it lexical.
+  startup) where C23 makes it lexical [closed in session 7, above].
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route

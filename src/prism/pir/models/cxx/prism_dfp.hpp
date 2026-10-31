@@ -37,8 +37,7 @@
 //   %DD (e f g a E F G A) as variadic templates, so arguments stay typed;
 //   other conversions go to the C library unchanged. Missing precision
 //   prints the exact coefficient (quantum preserved, C23 7.23.6.1p8).
-// Stated limits: the sign of a decimal zero is not kept (-0.DD prints 0),
-// v*printf with a va_list holding decimal arguments is not rewritten.
+// Zeros keep their sign (IEEE 754 6.3); printf rounds in the current mode.
 // This is not PROVED and not CLEAN.
 #ifndef PRISM_DFP_HPP
 #define PRISM_DFP_HPP 1
@@ -46,6 +45,13 @@
 #include "prism_fpfmt.h"
 #include <stdio.h>
 #include <math.h>
+// C's classification macros would bypass the decimal overloads below.
+#undef signbit
+#undef isnan
+#undef isinf
+#undef isfinite
+#undef isnormal
+#undef fpclassify
 
 extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 inline void __prism_dfp_cast_check(int __ok) {
@@ -79,6 +85,8 @@ struct __prism_decw {
     __int128 _M_c = 0;
     int _M_e = 0;
     int _M_k = 0;
+    bool _M_n = false;  // sign of a zero coefficient (IEEE 754 -0)
+    bool _M_neg() const { return _M_c < 0 || (_M_c == 0 && _M_n); }
     static constexpr int _Emin = 1 - _Emax;  // smallest normal exponent
     static constexpr __int128 _S_pow(int __n) { __int128 __r = 1; while (__n-- > 0) __r *= 10; return __r; }
     static constexpr __int128 _S_lim = _S_pow(_P);
@@ -94,6 +102,7 @@ struct __prism_decw {
     // via a scaled integer (correct to within the double's own precision).
     __prism_decw(double __d) {
         if (__d != __d) { _M_k = 2; return; }
+        if (__d == 0) { _M_n = __builtin_signbit(__d); return; }
         if (__d > 1e300 || __d < -1e300) { _M_k = 1; _M_c = __d < 0 ? -1 : 1; return; }
         int __e = 0;
         double __a = __d < 0 ? -__d : __d;
@@ -102,12 +111,13 @@ struct __prism_decw {
         *this = _S_make(static_cast<__int128>(__d < 0 ? -__a : __a), __e);
     }
     template <int _P2, int _E2>
-    __prism_decw(const __prism_decw<_P2, _E2>& __o) { _M_k = __o._M_k; if (!_M_k) *this = _S_make(__o._M_c, __o._M_e); else _M_c = __o._M_c; }
+    __prism_decw(const __prism_decw<_P2, _E2>& __o) { _M_k = __o._M_k; if (!_M_k) *this = _S_make(__o._M_c, __o._M_e, __o._M_n); else _M_c = __o._M_c; }
 
     // Round __c*10^__e to _P digits in the current decimal rounding mode.
     // A caller's sticky digit (a trailing 1 after the exact digits) marks
     // inexact tails. Overflow -> inf or the largest finite (directed modes).
-    static __prism_decw _S_make(__int128 __c, int __e) {
+    // __nz: the sign to give an exact zero result (C23 / IEEE 754 6.3).
+    static __prism_decw _S_make(__int128 __c, int __e, bool __nz = false) {
         __prism_decw __r;
         bool __neg = __c < 0;
         unsigned __int128 __u = __neg ? (unsigned __int128)(-(__c + 1)) + 1 : (unsigned __int128)__c;
@@ -142,6 +152,7 @@ struct __prism_decw {
         }
         __r._M_c = __neg ? -(__int128)__u : (__int128)__u;
         __r._M_e = __u == 0 ? (__e < __qmin ? __qmin : __e) : __e;
+        if (__u == 0) __r._M_n = __neg || __nz;
         return __r;
     }
     static __prism_decw _S_nan() { __prism_decw __r; __r._M_k = 2; return __r; }
@@ -154,6 +165,12 @@ struct __prism_decw {
             if (__a._M_k == 1 && __b._M_k == 1 && (__a._M_c < 0) != (__b._M_c < 0)) return _S_nan();
             return __a._M_k == 1 ? __a : __b;
         }
+        if (__a._M_c == 0 && __b._M_c == 0) {
+            // +0 + -0 is +0 except toward -inf; equal signs keep the sign
+            __prism_decw __z = __a._M_e < __b._M_e ? __a : __b;
+            __z._M_n = __a._M_n == __b._M_n ? __a._M_n : __prism_dfp_rnd == 1;
+            return __z;
+        }
         if (__a._M_c == 0) return __b;
         if (__b._M_c == 0) return __a;
         if (__a._M_e < __b._M_e) { __prism_decw __t = __a; __a = __b; __b = __t; }
@@ -163,9 +180,9 @@ struct __prism_decw {
         while (__b._M_e < __a._M_e) { if (__b._M_c % 10) __sticky = true; __b._M_c /= 10; ++__b._M_e; }
         __int128 __s = __a._M_c + __b._M_c;
         if (__sticky) { __s = __s * 10 + (__b._M_c < 0 ? -1 : 1); return _S_make(__s, __a._M_e - 1); }
-        return _S_make(__s, __a._M_e);
+        return _S_make(__s, __a._M_e, __prism_dfp_rnd == 1);  // exact x + -x: -0 only toward -inf
     }
-    friend __prism_decw operator-(__prism_decw __a) { if (__a._M_k != 2) __a._M_c = -__a._M_c; return __a; }
+    friend __prism_decw operator-(__prism_decw __a) { if (__a._M_k != 2) { __a._M_c = -__a._M_c; if (__a._M_c == 0) __a._M_n = !__a._M_n; } return __a; }
     friend __prism_decw operator+(__prism_decw __a) { return __a; }
     friend __prism_decw operator-(__prism_decw __a, __prism_decw __b) { return __a + (-__b); }
     friend __prism_decw operator*(__prism_decw __a, __prism_decw __b) {
@@ -180,13 +197,13 @@ struct __prism_decw {
         __cut(__x); __cut(__y);
         __int128 __p = __x * __y;
         if (__sticky) { __p = __p * 10 + (__neg ? -1 : 1); --__e; }
-        return _S_make(__p, __e);
+        return _S_make(__p, __e, __neg);
     }
     friend __prism_decw operator/(__prism_decw __a, __prism_decw __b) {
         if (__a._M_k == 2 || __b._M_k == 2) return _S_nan();
         bool __neg = (__a._M_c < 0) != (__b._M_c < 0);
         if (__a._M_k == 1) return __b._M_k == 1 ? _S_nan() : _S_inf(__neg);
-        if (__b._M_k == 1) return __prism_decw{};
+        if (__b._M_k == 1) { __prism_decw __z; __z._M_n = __neg; return __z; }
         if (__b._M_c == 0) return __a._M_c == 0 ? _S_nan() : _S_inf(__neg);
         unsigned __int128 __n = __a._M_c < 0 ? -__a._M_c : __a._M_c, __d = __b._M_c < 0 ? -__b._M_c : __b._M_c;
         int __e = __a._M_e - __b._M_e;
@@ -201,7 +218,7 @@ struct __prism_decw {
         ++__e;
         __int128 __r = (__int128)__q;
         if (__n != 0) { __r = __r * 10 + 1; --__e; }
-        return _S_make(__neg ? -__r : __r, __e);
+        return _S_make(__neg ? -__r : __r, __e, __neg);
     }
     __prism_decw& operator+=(__prism_decw __o) { return *this = *this + __o; }
     __prism_decw& operator-=(__prism_decw __o) { return *this = *this - __o; }
@@ -247,6 +264,7 @@ struct __prism_decw {
     operator double() const {
         if (_M_k == 2) return __builtin_nan("");
         if (_M_k == 1) return _M_c < 0 ? -__builtin_inf() : __builtin_inf();
+        if (_M_c == 0) return _M_n ? -0.0 : 0.0;
         double __r = (double)_M_c;
         for (int __i = 0; __i < _M_e; ++__i) __r *= 10;
         for (int __i = 0; __i > _M_e; --__i) __r /= 10;
@@ -264,7 +282,7 @@ struct __prism_dbid {
     _St _M_b;  // the only member: sizeof == _K / 8, memcpy sees the BID bits
     static constexpr int _Eb = _K - 1 - 3 - _T;   // exponent field bits
     static _St _S_enc(const _W& __w) {
-        const _St __sg = (_St)(__w._M_c < 0 ? 1 : 0) << (_K - 1);
+        const _St __sg = (_St)(__w._M_neg() ? 1 : 0) << (_K - 1);
         if (__w._M_k == 2) return ((_St)0x7c << (_K - 8));
         if (__w._M_k == 1) return __sg | ((_St)0x78 << (_K - 8));
         unsigned __int128 __c = __w._M_c < 0 ? (unsigned __int128)(-__w._M_c) : (unsigned __int128)__w._M_c;
@@ -289,6 +307,7 @@ struct __prism_dbid {
         }
         if (__c >= (unsigned __int128)_W::_S_lim) __c = 0;  // non-canonical -> 0
         __w._M_c = __neg ? -(__int128)__c : (__int128)__c;
+        __w._M_n = __neg;
         __w._M_e = __E - _Bias;
         return __w;
     }
@@ -416,10 +435,10 @@ template <typename _D> inline _D _rint(_D __x, int __m) {
     }
     if (__inc) ++__c;
     __prism_dfp_rnd = __o;
-    return _D(_Wt<_D>::_S_make(__neg ? -__c : __c, 0));
+    return _D(_Wt<_D>::_S_make(__neg ? -__c : __c, 0, __neg));
 }
-template <typename _D> inline _D _fabs(_D __x) { auto __w = __x._M_w(); if (__w._M_c < 0) __w._M_c = -__w._M_c; return __w; }
-template <typename _D> inline _D _copysign(_D __x, _D __y) { auto __w = _fabs(__x)._M_w(); if (__y._M_w()._M_c < 0 && __w._M_k != 2) __w._M_c = __w._M_k ? -1 : -__w._M_c; return __w; }
+template <typename _D> inline _D _fabs(_D __x) { auto __w = __x._M_w(); if (__w._M_c < 0) __w._M_c = -__w._M_c; __w._M_n = false; return __w; }
+template <typename _D> inline _D _copysign(_D __x, _D __y) { auto __w = _fabs(__x)._M_w(); if (__y._M_w()._M_neg() && __w._M_k != 2) { __w._M_c = __w._M_k ? -1 : -__w._M_c; __w._M_n = true; } return __w; }
 template <typename _D> inline _D _sqrt(_D __x) {
     auto __w = __x._M_w();
     if (__w._M_k == 2 || __w._M_c == 0) return __x;
@@ -524,13 +543,14 @@ __PRISM_DFPM(__prism_dec128, d128)
     inline bool (isnan)(T __x) { return __x._M_w()._M_k == 2; }                                       \
     inline bool (isinf)(T __x) { return __x._M_w()._M_k == 1; }                                       \
     inline bool (isfinite)(T __x) { return __x._M_w()._M_k == 0; }                                    \
-    inline bool (signbit)(T __x) { return __x._M_w()._M_c < 0; }                                      \
+    inline bool (signbit)(T __x) { return __x._M_w()._M_neg(); }                                       \
     inline bool (iszero)(T __x) { auto __w = __x._M_w(); return __w._M_k == 0 && __w._M_c == 0; }     \
-    inline bool (isnormal)(T __x) { auto __w = __x._M_w(); if (__w._M_k || __w._M_c == 0) return false; \
+    inline bool __prism_dfp_isnormal(T __x) { auto __w = __x._M_w(); if (__w._M_k || __w._M_c == 0) return false; \
         int __d = 0; for (__int128 __c = __w._M_c < 0 ? -__w._M_c : __w._M_c; __c; __c /= 10) ++__d;  \
         return __w._M_e + __d - 1 >= T::_W::_Emin; }                                                \
-    inline bool (issubnormal)(T __x) { return isfinite(__x) && !iszero(__x) && !isnormal(__x); }     \
-    inline int (fpclassify)(T __x) { return isnan(__x) ? FP_NAN : isinf(__x) ? FP_INFINITE : iszero(__x) ? FP_ZERO : isnormal(__x) ? FP_NORMAL : FP_SUBNORMAL; }
+    inline bool (isnormal)(T __x) { return __prism_dfp_isnormal(__x); }                              \
+    inline bool (issubnormal)(T __x) { auto __w = __x._M_w(); return __w._M_k == 0 && __w._M_c != 0 && !__prism_dfp_isnormal(__x); }     \
+    inline int (fpclassify)(T __x) { auto __w = __x._M_w(); return __w._M_k == 2 ? FP_NAN : __w._M_k == 1 ? FP_INFINITE : __w._M_c == 0 ? FP_ZERO : __prism_dfp_isnormal(__x) ? FP_NORMAL : FP_SUBNORMAL; }
 __PRISM_DFPC(__prism_dec32)
 __PRISM_DFPC(__prism_dec64)
 __PRISM_DFPC(__prism_dec128)
@@ -567,18 +587,17 @@ inline __prism_dfp_arg __prism_dfp_mk(decltype(nullptr)) { return __prism_dfp_mk
 template <int _P, int _E, typename _S, int _K, int _T, int _B>
 inline __prism_dfp_arg __prism_dfp_mk(__prism_dbid<_P, _E, _S, _K, _T, _B> __v) {
     __prism_dfp_arg __a{__prism_dfp_arg::_D}; auto __w = __v._M_w();
-    __a._M_d._M_c = __w._M_c; __a._M_d._M_e = __w._M_e; __a._M_d._M_k = __w._M_k; __a._M_dw = _K; return __a;
+    __a._M_d._M_c = __w._M_c; __a._M_d._M_e = __w._M_e; __a._M_d._M_k = __w._M_k; __a._M_d._M_n = __w._M_n; __a._M_dw = _K; return __a;
 }
 
 // Decimal text: digits from the coefficient. When a precision drops
-// digits, the text is rounded half-even (FE_DEC_TONEAREST); C23 7.23.6.1
-// says the current decimal mode applies, so under another mode printf
-// rounding may differ in the last printed digit (stated limit).
+// digits, the text is rounded in the current decimal rounding mode
+// (C23 7.23.6.1), and a negative zero prints its '-'.
 inline int __prism_dfp_fmt_dec(char* __o, int __cap, const __prism_decw<34, 6144>& __w, char __c, int __prec, unsigned __fl) {
     prism_fpfmt::Out __out{__o, __cap};
     const bool __up = __c >= 'A' && __c <= 'Z';
     const char __lc = __up ? char(__c + 32) : __c;
-    if (__w._M_c < 0) __out.put('-'); else if (__fl & prism_fpfmt::kPlus) __out.put('+'); else if (__fl & prism_fpfmt::kSpace) __out.put(' ');
+    if (__w._M_neg()) __out.put('-'); else if (__fl & prism_fpfmt::kPlus) __out.put('+'); else if (__fl & prism_fpfmt::kSpace) __out.put(' ');
     if (__w._M_k) { __out.puts(__w._M_k == 1 ? (__up ? "INF" : "inf") : (__up ? "NAN" : "nan")); return __out.len; }
     prism_fpfmt::Dec __v;
     unsigned __int128 __u = __w._M_c < 0 ? (unsigned __int128)(-__w._M_c) : (unsigned __int128)__w._M_c;
@@ -591,7 +610,7 @@ inline int __prism_dfp_fmt_dec(char* __o, int __cap, const __prism_decw<34, 6144
     if (__lc == 'e' || __lc == 'a') {
         int __p = __prec >= 0 ? __prec : __v.n - 1;
         prism_fpfmt::Dec __r = __v;
-        if (!__zero) prism_fpfmt::round_to(__r, __p + 1);
+        if (!__zero) prism_fpfmt::round_to(__r, __p + 1, __prism_dfp_rnd, __w._M_neg());
         // keep quantum digits: round_to strips trailing zeros; put_sci pads them back
         if (__zero) { __r.x = 0; }
         prism_fpfmt::put_sci(__out, __r, __p, __alt, __up);
@@ -601,17 +620,17 @@ inline int __prism_dfp_fmt_dec(char* __o, int __cap, const __prism_decw<34, 6144
     if (__lc == 'f') {
         int __p = __prec >= 0 ? __prec : (__v.x < 0 ? -__v.x : 0);
         prism_fpfmt::Dec __r = __v;
-        if (!__zero) prism_fpfmt::round_to(__r, __r.n + __r.x + __p); else __r.x = 0;
+        if (!__zero) prism_fpfmt::round_to(__r, __r.n + __r.x + __p, __prism_dfp_rnd, __w._M_neg()); else __r.x = 0;
         prism_fpfmt::put_fixed(__out, __r, __p, __alt);
         return __out.len;
     }
     // g
     int __P = __prec < 0 ? 6 : (__prec == 0 ? 1 : __prec);
     prism_fpfmt::Dec __r = __v;
-    if (!__zero) prism_fpfmt::round_to(__r, __P); else __r.x = 0;
+    if (!__zero) prism_fpfmt::round_to(__r, __P, __prism_dfp_rnd, __w._M_neg()); else __r.x = 0;
     int __X = __zero ? 0 : __r.n - 1 + __r.x;
     char __b[400]; prism_fpfmt::Out __q{__b, 400};
-    if (__P > __X && __X >= -4) { prism_fpfmt::Dec __f = __v; if (!__zero) prism_fpfmt::round_to(__f, __f.n + __f.x + (__P - 1 - __X)); else __f.x = 0; prism_fpfmt::put_fixed(__q, __f, __P - 1 - __X, __alt); }
+    if (__P > __X && __X >= -4) { prism_fpfmt::Dec __f = __v; if (!__zero) prism_fpfmt::round_to(__f, __f.n + __f.x + (__P - 1 - __X), __prism_dfp_rnd, __w._M_neg()); else __f.x = 0; prism_fpfmt::put_fixed(__q, __f, __P - 1 - __X, __alt); }
     else prism_fpfmt::put_sci(__q, __r, __P - 1, __alt, __up);
     int __n = __q.len < 400 ? __q.len : 400, __ep = __n, __dot = -1;
     for (int __i = 0; __i < __n; ++__i) if (__b[__i] == 'e' || __b[__i] == 'E') { __ep = __i; break; }

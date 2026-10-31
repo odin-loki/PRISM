@@ -499,6 +499,8 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
     size_t line = 0, pos = 0;
     int body_line = -3;  // the first three lines are the prologue
     int depth = 0;
+    std::string file_mode;  // active file-scope FENV_DEC_ROUND, "" = dynamic
+    char last_top = 0;      // last non-space char seen at file scope
     while (pos < out.size()) {
         size_t e = out.find('\n', pos);
         e = e == std::string::npos ? out.size() : e + 1;
@@ -520,10 +522,28 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
             std::string mode = l.substr(m);
             while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.back()))) mode.pop_back();
             while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.front()))) mode.erase(0, 1);
-            fixed += (depth > 1 ? "__PRISM_DFP_ROUND_BLOCK(" : "__PRISM_DFP_ROUND_FILE(") + mode + ")\n";
+            if (depth > 1) fixed += "__PRISM_DFP_ROUND_BLOCK(" + mode + ")\n";
+            else { file_mode = mode == "FE_DEC_DYNAMIC" ? "" : mode; fixed += "\n"; }  // keep line numbers
             continue;
         }
-        for (char ch : l) depth += ch == '{' ? 1 : ch == '}' ? -1 : 0;
+        // C23 7.6.3: a file-scope FENV_DEC_ROUND is lexical, from the pragma
+        // to the end of the unit (or the next file-scope one). Each function
+        // body opened after it starts with a scoped mode, so code before the
+        // pragma and functions called from elsewhere keep the dynamic mode.
+        // A body is a depth-1 '{' whose preceding top-level text ends in ')'.
+        {
+            std::string nl;
+            for (char ch : l) {
+                nl.push_back(ch);
+                if (ch == '{') {
+                    if (depth == 1 && !file_mode.empty() && last_top == ')')
+                        nl += " __PRISM_DFP_ROUND_BLOCK(" + file_mode + ")";
+                    ++depth;
+                } else if (ch == '}') --depth;
+                if (depth == 1 && !std::isspace(static_cast<unsigned char>(ch))) last_top = ch;
+            }
+            l = nl;
+        }
         if (inc)
             fixed += "}\n" + l + (l.ends_with("\n") ? "" : "\n") + "extern \"C\" {\n#line " +
                      std::to_string(body_line + 1) + " \"" + orig.string() + "\"\n";

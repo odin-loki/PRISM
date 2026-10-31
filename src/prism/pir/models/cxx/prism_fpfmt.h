@@ -66,13 +66,26 @@ inline void exact(unsigned long long m, int e, Dec& out) {
 // Keep `keep` leading significant digits, rounding half-even. keep <= 0
 // rounds to zero or to one unit at that position. Returns false when the
 // value rounds to zero (keep < 0 or a tie to even zero).
-inline void round_to(Dec& v, int keep) {
+// mode: 0 nearest-even, 1 toward -inf, 2 toward +inf, 3 toward zero,
+// 4 nearest-away (the C23 FE_DEC_* order); neg is the sign of the value.
+inline void round_to(Dec& v, int keep, int mode = 0, bool neg = false) {
     if (keep >= v.n) return;
     int sci = v.n - 1 + v.x;
-    if (keep < 0) { v.n = 1; v.d[0] = '0'; v.x = 0; return; }
+    bool any = false;
+    for (int i = keep < 0 ? 0 : keep; i < v.n; ++i) if (v.d[i] != '0') any = true;
+    if (keep < 0) {
+        // every digit is below the kept position: directed modes still step
+        bool st = any && ((mode == 1 && neg) || (mode == 2 && !neg));
+        if (st) { v.n = 1; v.d[0] = '1'; v.x = sci - keep + 1; return; }  // one unit of the kept place
+        v.n = 1; v.d[0] = '0'; v.x = 0; return;
+    }
     bool up;
     char f = v.d[keep];
-    if (f > '5') up = true;
+    if (mode == 1) up = any && neg;
+    else if (mode == 2) up = any && !neg;
+    else if (mode == 3) up = false;
+    else if (mode == 4) up = f >= '5';
+    else if (f > '5') up = true;
     else if (f < '5') up = false;
     else {
         bool rest = false;
