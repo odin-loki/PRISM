@@ -61,10 +61,10 @@ std::string last_bytes(const std::string& s, std::size_t n) {
 }
 
 // failed -> missing-tool NOTRUN. timed_out -> TIMEOUT. rc 0 -> CLEAN.
-std::string run_shape(const prism::detail::RunOut& r) {
+std::string run_shape(const prism::exec::Result& r) {
     if (r.failed) return std::string(prism::laws::NOTRUN);
     if (r.timed_out) return std::string(prism::laws::TIMEOUT);
-    if (r.rc == 0) return std::string(prism::laws::CLEAN);
+    if (r.rc() == 0) return std::string(prism::laws::CLEAN);
     return std::string(prism::laws::FAILED);
 }
 
@@ -85,16 +85,16 @@ TEST_CASE("sandbox: a timeout keeps the tail of stdout and stderr") {
 
     // A missing executable never started. That is NOTRUN, not a timeout and not rc 0.
     {
-        prism::detail::RunSpec miss;
+        prism::exec::Spec miss;
         miss.argv = {(td.dir / "no-such-prism-sandbox-tool").string()};
-        miss.timeout_s = 2.0;
-        miss.limits = prism::sandbox::limits_for(miss.timeout_s);
-        REQUIRE(miss.limits.enabled);
-        auto m = prism::detail::run(miss);
+        miss.timeout_ms = 2000;
+        const auto lim = prism::sandbox::limits_for(2.0);
+        REQUIRE(lim.enabled);
+        prism::exec::apply_limits(miss, lim.enabled, lim.cpu_seconds, lim.limit_as);
+        auto m = prism::exec::run(miss);
         CHECK(m.failed);
         CHECK_FALSE(m.timed_out);
-        CHECK(m.rc == 127);
-        CHECK(m.rc != 0);
+        CHECK(m.rc() == 127);
         CHECK(run_shape(m) == prism::laws::NOTRUN);
         CHECK(run_shape(m) != prism::laws::CLEAN);
         CHECK(run_shape(m) != prism::laws::TIMEOUT);
@@ -128,28 +128,29 @@ TEST_CASE("sandbox: a timeout keeps the tail of stdout and stderr") {
     argv = {"sh", script.string()};
 #endif
 
-    prism::detail::RunSpec spec;
+    prism::exec::Spec spec;
     spec.argv = prism::sandbox::wrap_argv(argv, td.dir);
-    spec.timeout_s = 2.0;
-    spec.limits = prism::sandbox::limits_for(spec.timeout_s);
-    spec.cwd = td.dir;
-    REQUIRE(spec.limits.enabled);
-    REQUIRE(spec.limits.limit_as);
+    spec.timeout_ms = 2000;
+    const auto lim = prism::sandbox::limits_for(2.0);
+    REQUIRE(lim.enabled);
+    REQUIRE(lim.limit_as);
+    prism::exec::apply_limits(spec, lim.enabled, lim.cpu_seconds, lim.limit_as);
+    spec.cwd = td.dir.string();
 
-    auto r = prism::detail::run(spec);
+    auto r = prism::exec::run(spec);
     const auto out_tail = last_bytes(r.out, 400);
     const auto err_tail = last_bytes(r.err, 400);
-    CAPTURE(r.rc);
+    CAPTURE(r.rc());
     CAPTURE(r.timed_out);
     CAPTURE(r.failed);
-    CAPTURE(r.crashed);
+    CAPTURE(r.crashed());
     CAPTURE(out_tail);
     CAPTURE(err_tail);
 
     CHECK(r.timed_out);
     CHECK_FALSE(r.failed);
-    CHECK_FALSE(r.crashed);
-    CHECK(r.rc != 0);
+    CHECK_FALSE(r.crashed());
+    CHECK(r.rc() != 0);
     CHECK(run_shape(r) == prism::laws::TIMEOUT);
     CHECK(run_shape(r) != prism::laws::CLEAN);
     CHECK(run_shape(r) != prism::laws::NOTRUN);

@@ -1004,9 +1004,9 @@ TEST_CASE("certificate store: work directories of dead solver processes are swep
 #  ifdef _WIN32
 // WIN32: the cake_lpr half uses fake_cake_lpr.exe (tests/cpp/fake_cake_lpr.cpp)
 // copied to <dir>/cake_lpr.exe. The resident-memory cap of any other checker
-// is the Windows counterpart of the Linux /proc/<pid>/statm watchdog
-// (RunSpec::rss_cap_bytes in src/prism/proc.cpp samples the working set and
-// terminates the Job Object); fake_mem_hog.exe stands in for the checker.
+// is the Windows side of the FORGE memory watchdog
+// (exec::Spec::watch_memory_bytes; forge::os::spawn_wait samples the job's
+// working set and terminates the Job Object); fake_mem_hog.exe stands in for the checker.
 #    ifndef PRISM_FAKE_CAKE_LPR
 #      define PRISM_FAKE_CAKE_LPR ""
 #    endif

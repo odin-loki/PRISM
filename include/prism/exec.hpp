@@ -51,6 +51,8 @@ struct Result {
     bool failed = false;  // could not start; err says why
     bool cancelled = false;      // Spec::stop or an interrupt of PRISM killed it
     bool memory_killed = false;  // Spec::watch_memory_bytes passed
+    bool unreaped = false;       // killed but not reaped within 2 s; FORGE left it to a detached reaper
+    std::uint64_t peak_rss_bytes = 0;  // child peak resident set (rusage / job accounting); 0: unknown
     bool crashed() const { return term_signal != 0 && !timed_out && !cancelled && !memory_killed; }
     // PRISM's rc convention: 127 when it could not start, -signal when killed, else the exit code.
     int rc() const { return failed ? 127 : term_signal ? -term_signal : exit_code; }

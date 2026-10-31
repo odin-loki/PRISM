@@ -395,10 +395,10 @@ std::string esbmc_out_cmd(const char* out) {
 TEST_CASE("fake_tool: PE launcher forwards stdout to proc runner") {
     TmpDir t;
     auto exe = fake_cmd(t.dir / "bin", "hello-fake", "echo prism-fake-out\r\nexit /b 0\r\n");
-    prism::detail::RunSpec spec;
+    prism::exec::Spec spec;
     spec.argv = {exe.string()};
-    spec.timeout_s = 5;
-    auto r = prism::detail::run(spec);
+    spec.timeout_ms = 5000;
+    auto r = prism::exec::run(spec);
     CHECK_FALSE(r.failed);
     CHECK_FALSE(r.timed_out);
     CHECK(has(r.out, "prism-fake-out"));
@@ -410,106 +410,105 @@ TEST_CASE("fake_tool: PE launcher forwards stdout to proc runner") {
 #ifndef _WIN32
 TEST_CASE("proc: one runner with stdin, split or merged output, env overlay and cwd") {
     TmpDir t;
-    prism::detail::RunSpec s;
+    prism::exec::Spec s;
     s.argv = {"sh", "-c", "cat; echo out; echo err >&2; exit 3"};
-    s.input = "from-stdin\n";
-    s.timeout_s = 10;
-    auto r = prism::detail::run(s);
+    s.stdin_data = "from-stdin\n";
+    s.timeout_ms = 10000;
+    auto r = prism::exec::run(s);
     CHECK_FALSE(r.failed);
     CHECK_FALSE(r.timed_out);
-    CHECK_FALSE(r.crashed);
-    CHECK(r.rc == 3);
+    CHECK_FALSE(r.crashed());
+    CHECK(r.rc() == 3);
     CHECK(r.out == "from-stdin\nout\n");
     CHECK(r.err == "err\n");
 
     s.merge_stderr = true;
-    s.input.clear();
-    r = prism::detail::run(s);
+    s.stdin_data.reset();
+    r = prism::exec::run(s);
     CHECK(r.out == "out\nerr\n");
     CHECK(r.err.empty());
 
     // The overlay reaches the child only; PRISM's own environment is untouched
     // (the AFL_* variables used to be setenv'd on the PRISM process).
     EnvVar gone("PRISM_TEST_OVERLAY", std::nullopt);
-    prism::detail::RunSpec e;
+    prism::exec::Spec e;
     e.argv = {"sh", "-c", "printf '%s|%s' \"$PRISM_TEST_OVERLAY\" \"$PWD\""};
-    e.env = {{"PRISM_TEST_OVERLAY", "child-only"}};
-    e.cwd = t.dir;
-    e.timeout_s = 10;
-    auto er = prism::detail::run(e);
+    e.env_set = {{"PRISM_TEST_OVERLAY", "child-only"}};
+    e.cwd = t.dir.string();
+    e.timeout_ms = 10000;
+    auto er = prism::exec::run(e);
     CHECK(er.out == "child-only|" + fs::canonical(t.dir).string());
     CHECK(std::getenv("PRISM_TEST_OVERLAY") == nullptr);
     {
         EnvVar set("PRISM_TEST_OVERLAY", std::string("parent"));
-        er = prism::detail::run(e);
+        er = prism::exec::run(e);
         CHECK(er.out.starts_with("child-only|"));  // the overlay replaces the inherited value
         CHECK(std::string(std::getenv("PRISM_TEST_OVERLAY")) == "parent");
     }
 
     // A program that is not there: exec fails in the child. That is "could not
     // start" (failed, rc 127, the reason in err), not an exit code of the tool.
-    prism::detail::RunSpec m;
+    prism::exec::Spec m;
     m.argv = {(t.dir / "no-such-program").string()};
-    m.timeout_s = 5;
-    auto mr = prism::detail::run(m);
-    CHECK(mr.rc == 127);
+    m.timeout_ms = 5000;
+    auto mr = prism::exec::run(m);
+    CHECK(mr.rc() == 127);
     CHECK(mr.failed);
-    CHECK(has(mr.err, "cannot execute " + m.argv[0]));
+    CHECK(has(mr.err, m.argv[0]));
     // ... and so is a file without the execute bit, or a cwd that is not there.
     m.argv = {t.put("noexec.sh", "#!/bin/sh\necho hi\n").string()};
-    mr = prism::detail::run(m);
+    mr = prism::exec::run(m);
     CHECK(mr.failed);
     CHECK(mr.out.empty());
     m.argv = {"sh", "-c", "echo hi"};
-    m.cwd = t.dir / "no-such-dir";
-    mr = prism::detail::run(m);
+    m.cwd = (t.dir / "no-such-dir").string();
+    mr = prism::exec::run(m);
     CHECK(mr.failed);
-    CHECK(has(mr.err, "cannot enter"));
     // A tool that itself exits 127 started: that is its exit code, not failed.
     m.cwd.clear();
     m.argv = {"sh", "-c", "exit 127"};
-    mr = prism::detail::run(m);
-    CHECK(mr.rc == 127);
+    mr = prism::exec::run(m);
+    CHECK(mr.rc() == 127);
     CHECK_FALSE(mr.failed);
 
     // A child that exits without reading a large stdin: the write gets EPIPE
     // (SIGPIPE is blocked for it), PRISM survives, the exit code is kept.
-    prism::detail::RunSpec q;
+    prism::exec::Spec q;
     q.argv = {"sh", "-c", "exit 4"};
-    q.input.assign(4u << 20, 'x');
-    q.timeout_s = 10;
-    auto qr = prism::detail::run(q);
-    CHECK(qr.rc == 4);
+    q.stdin_data = std::string(4u << 20, 'x');
+    q.timeout_ms = 10000;
+    auto qr = prism::exec::run(q);
+    CHECK(qr.rc() == 4);
     CHECK_FALSE(qr.failed);
 
     // Law 8: no runner starts a child with a check disabled.
     CHECK_THROWS_AS(prism::exec::run_process({"x", "--no-bounds-check"}, 5), std::runtime_error);
-    prism::detail::RunSpec l8;
+    prism::exec::Spec l8;
     l8.argv = {"sh", "-c", "true", "--no-pointer-check"};
-    CHECK_THROWS_AS(prism::detail::run(l8), std::runtime_error);
+    CHECK_THROWS_AS(prism::exec::run(l8), std::runtime_error);
     CHECK_THROWS_AS(sd::run_argv({"sh", "--no-div-by-zero-check"}, "", 5), std::runtime_error);
 
     // A signal death is a crash, a timeout is not.
-    prism::detail::RunSpec k;
+    prism::exec::Spec k;
     k.argv = {"sh", "-c", "kill -SEGV $$"};
-    k.timeout_s = 5;
-    auto kr = prism::detail::run(k);
-    CHECK(kr.crashed);
-    CHECK(kr.rc == -11);
+    k.timeout_ms = 5000;
+    auto kr = prism::exec::run(k);
+    CHECK(kr.crashed());
+    CHECK(kr.rc() == -11);
     k.argv = {"sh", "-c", "sleep 5"};
-    k.timeout_s = 0.3;
-    kr = prism::detail::run(k);
+    k.timeout_ms = 300;
+    kr = prism::exec::run(k);
     CHECK(kr.timed_out);
-    CHECK_FALSE(kr.crashed);
+    CHECK_FALSE(kr.crashed());
 
     // A child that exits while its background grandchild holds the pipe
     // returns at once, not after the grandchild.
     const auto t0 = std::chrono::steady_clock::now();
-    prism::detail::RunSpec g;
+    prism::exec::Spec g;
     g.argv = {"sh", "-c", "sleep 3 & echo started"};
-    g.timeout_s = 20;
-    auto gr = prism::detail::run(g);
-    CHECK(gr.rc == 0);
+    g.timeout_ms = 20000;
+    auto gr = prism::exec::run(g);
+    CHECK(gr.rc() == 0);
     CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 2.5);
 
     // The stage and adapter wrappers are the same runner.

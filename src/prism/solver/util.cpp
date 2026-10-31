@@ -230,6 +230,8 @@ Proc run(const std::vector<std::string>& argv, double timeout_s, const std::atom
     r.timed_out = ro.timed_out;
     r.cancelled = ro.cancelled;
     r.mem_exceeded = ro.memory_killed;
+    r.unreaped = ro.unreaped;
+    r.peak_rss = ro.peak_rss_bytes;
     r.rc = ro.rc();
     if (ro.failed) {
         r.out = "cannot start " + argv.at(0) + ": " + ro.err;

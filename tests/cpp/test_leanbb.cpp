@@ -95,13 +95,13 @@ std::vector<int> lean_eval(const ps::ToolInfo& bb, const ps::LeanDag& dag, const
     std::ostringstream input;
     input << dag.text;
     for (const auto& r : rhos) input << r << "\n";
-    prism::detail::RunSpec spec;
+    prism::exec::Spec spec;
     spec.argv = {bb.path.string(), "--eval"};
-    spec.input = input.str();
-    spec.cwd = dir;
-    spec.timeout_s = 120;
-    auto run = prism::detail::run(spec);
-    if (run.rc != 0 || run.failed) return {};
+    spec.stdin_data = input.str();
+    spec.cwd = dir.string();
+    spec.timeout_ms = 120000;
+    auto run = prism::exec::run(spec);
+    if (run.rc() != 0 || run.failed) return {};
     std::vector<int> res;
     std::istringstream out(run.out);
     std::string line;
@@ -174,12 +174,12 @@ TEST_CASE("leanbb: the serializer round-trips against Z3 on random assignments")
     ps::SolveOptions def;
     std::optional<ps::ToolInfo> bb = ps::find_tool("prism-bitblast", def);
     if (bb) {
-        prism::detail::RunSpec probe;
+        prism::exec::Spec probe;
         probe.argv = {bb->path.string(), "--eval"};
-        probe.input = "(assert true)\n";
-        probe.timeout_s = 30;
-        auto pr = prism::detail::run(probe);
-        if (pr.rc != 0 || pr.failed) {
+        probe.stdin_data = "(assert true)\n";
+        probe.timeout_ms = 30000;
+        auto pr = prism::exec::run(probe);
+        if (pr.rc() != 0 || pr.failed) {
             MESSAGE("NOTRUN: prism-bitblast --eval did not run (need a Windows PE build, not a Linux artefact)");
             bb = std::nullopt;
         }

@@ -12,10 +12,6 @@
 #include <cctype>
 #include <mutex>
 
-#ifndef _WIN32
-#  include <sys/resource.h>
-#endif
-
 namespace prism::sandbox {
 namespace fs = std::filesystem;
 
@@ -114,37 +110,6 @@ Limits limits_for(double timeout_s, bool limit_as) {
     l.cpu_seconds = timeout_s;
     l.limit_as = limit_as;
     return l;
-}
-
-void apply_child_limits(const Limits& limits) noexcept {
-#ifndef _WIN32
-    if (!limits.enabled) return;
-    // One second over the wall-clock timeout: the parent's timeout fires
-    // first, so SIGXCPU never masquerades as a crash of the code under test.
-    auto cpu = static_cast<rlim_t>(limits.cpu_seconds + 0.999);
-    if (cpu < 1) cpu = 1;
-    cpu += 1;
-    auto set = [](int which, rlim_t soft, rlim_t hard) {
-        struct rlimit cur {};
-        if (::getrlimit(which, &cur) == 0 && cur.rlim_max != RLIM_INFINITY) {
-            if (hard > cur.rlim_max) hard = cur.rlim_max;
-            if (soft > hard) soft = hard;
-        }
-        struct rlimit rl {};
-        rl.rlim_cur = soft;
-        rl.rlim_max = hard;
-        (void)::setrlimit(which, &rl);
-    };
-    set(RLIMIT_CPU, cpu, cpu + 1);
-    set(RLIMIT_NOFILE, static_cast<rlim_t>(LIMIT_NOFILE), static_cast<rlim_t>(LIMIT_NOFILE));
-    set(RLIMIT_FSIZE, static_cast<rlim_t>(LIMIT_FSIZE_BYTES),
-        static_cast<rlim_t>(LIMIT_FSIZE_BYTES));
-    set(RLIMIT_CORE, 0, 0);
-    if (limits.limit_as)
-        set(RLIMIT_AS, static_cast<rlim_t>(LIMIT_AS_BYTES), static_cast<rlim_t>(LIMIT_AS_BYTES));
-#else
-    (void)limits;
-#endif
 }
 
 std::string quote_windows_arg(std::string_view arg, bool force) {

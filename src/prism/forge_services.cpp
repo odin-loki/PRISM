@@ -110,6 +110,8 @@ Result run(const Spec& s) {
     res.wall_ms = r.value.wall_ms;
     res.cancelled = r.value.cancelled;
     res.memory_killed = r.value.memory_killed;
+    res.unreaped = r.value.unreaped;
+    res.peak_rss_bytes = r.value.peak_rss_bytes;
     return res;
 }
 

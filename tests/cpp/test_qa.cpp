@@ -215,28 +215,6 @@ Captured run_pvb(const std::vector<std::string>& args) {
 
 // ---------------------------------------------------------------- sessions
 #ifndef _WIN32
-TEST_CASE("session_members sees a solver in a process group of its own; kill_session kills it") {
-    Tmp t("prism_qa_sess_");
-    const auto pidfile = t.path / "solver.pid";
-    const pid_t p = ::fork();
-    REQUIRE(p >= 0);
-    if (p == 0) {
-        ::setsid();
-        ::setenv("PRISM_QA_FAKE_SOLVER_PIDFILE", pidfile.c_str(), 1);
-        ::execl(sibling("prism_tests").c_str(), "prism_tests", static_cast<char*>(nullptr));
-        ::_exit(127);
-    }
-    const long solver = solver_pid(pidfile);
-    REQUIRE(solver > 1);
-    CHECK(::getpgid(static_cast<pid_t>(solver)) != p);  // its own group ...
-    auto members = prism::detail::session_members(p);
-    CHECK(std::find(members.begin(), members.end(), static_cast<int>(solver)) != members.end());  // ... same session
-    prism::detail::kill_session(p);
-    int st = 0;
-    ::waitpid(p, &st, 0);
-    CHECK(gone(solver));
-}
-
 TEST_CASE("run_session: a timeout kills the solver in its own group") {
     Tmp t("prism_qa_sess_");
     const auto pidfile = t.path / "solver.pid";

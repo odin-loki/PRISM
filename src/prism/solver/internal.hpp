@@ -20,7 +20,7 @@ struct Proc {
     bool unreaped = false;   // killed but not reaped within 2 s: left to a detached reaper (watchdog)
     bool mem_exceeded = false;       // killed: resident memory passed mem_cap
     std::uint64_t mem_cap = 0;       // the cap that applied (bytes; 0: none)
-    std::uint64_t peak_rss = 0;      // bytes, sampled (Linux /proc, Windows working set; 0: not sampled)
+    std::uint64_t peak_rss = 0;      // bytes, from FORGE (wait4 rusage, Windows job accounting; 0: unknown)
     double secs = 0.0;
 };
 
