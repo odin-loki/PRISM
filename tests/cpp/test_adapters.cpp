@@ -2337,7 +2337,5 @@ TEST_CASE("fuzz_function: the binary oracle runs after the concrete one and befo
 // ---------------------------------------------------------------- rlef_repair
 
 #ifndef _WIN32
-namespace {
-}  // namespace
 
 #endif
