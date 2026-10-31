@@ -86,16 +86,20 @@ slot for `T0`. That allows up to `K·N` context switches.
 Not modelled. Each of these gives `NEEDS-HARNESS` with an `UNENCODED:`
 reason:
 
-- `memory_order_relaxed`, `acquire`, `release` and `acq_rel`, and
-  `syncscope`. The message names the order. For example, `relaxed.c` gives
-  "UNENCODED: memory_order_relaxed (SC only: relaxed/acquire/release atomics
-  are not encoded yet)".
+- `syncscope`. (`memory_order_relaxed`, `acquire`, `release` and `acq_rel`
+  are encoded as seq_cst and recorded in `Program::weak_order`: every SC run
+  is a run the C/C++ model allows, so a failure found, a data race included,
+  is kept; a clean result is withheld as NEEDS-HARNESS "UNENCODED:
+  memory_order_relaxed (encoded as seq_cst: ...)", since it is no proof
+  under the weaker order. relaxed.c shows this.)
 - Shared data that is not a scalar integer global: heap, arrays, structs,
   pointers, and mutexes that are not globals. These wait for the PIR memory
   model (roadmap 2.5). See "Memory model hook" below.
 - A thread argument that the thread entry uses, and a join result pointer.
-- A creation site inside a loop, or in a function called more than once
-  (dynamic thread sets), and threads created by threads.
+- A creation site inside a loop, or in a function called more than once, or
+  reached by several threads (dynamic thread sets). Threads created by
+  threads are encoded when each such site runs in one thread at most once
+  (nested_race.c).
 - libstdc++'s own `std::thread` / `std::jthread` (a virtual `_State` object),
   and OpenMP. The stage lowers C++ units against the PRISM models with
   `-D__PRISM_CONC_THREADS=1 -fignore-exceptions` (models/cxx/bits/prism_conc.h),
@@ -106,9 +110,13 @@ reason:
   This is the complete-within-K-rounds path for C++ threads (every thread has
   its own saved pc, so a resumed thread can itself be preempted again). The
   pir stage's in-model scheduler (bits/prism_sched.h) is still an
-  under-approximation. A condition-variable wait is unlock, switch, lock, so
-  a wait that never returns is cut by the unwind bound, not reported as a
-  deadlock here; the pir stage's scheduler reports it.
+  under-approximation.
+- Condition variables: a wait is "unlock and join the wait set; block until a
+  signal or broadcast on that variable after the release; lock". Every
+  signal wakes every waiter (POSIX allows the extra wake-ups), so a wait
+  that never returns, a lost wake-up, is CONC-DEADLOCK when every live thread
+  is blocked (lost_wakeup.c; condvar_ok.c is BOUNDED). Spurious wake-ups that
+  could rescue such a run are not counted.
 - Everything `pir::translate` does not encode, such as floating point, calls
   to unknown externals, and memory. Its own `UNENCODED:` reason is passed
   through, with the thread named.

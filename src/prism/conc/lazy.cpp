@@ -361,6 +361,9 @@ std::string op_text(const Program& p, const VisOp& o) {
         case VisOp::MutexInit: return o.what + "(" + p.mutexes[static_cast<std::size_t>(o.mutex)] + ")";
         case VisOp::Create: return o.what + " T" + std::to_string(o.thread);
         case VisOp::Join: return o.what;
+        case VisOp::CondWait:
+            [[fallthrough]];
+        case VisOp::CondSignal: return o.what + "(" + p.conds[static_cast<std::size_t>(o.cond)] + ")";
     }
     return o.what;
 }
@@ -409,6 +412,7 @@ std::string lazy_text(const Program& prog, const Options& opt) {
     o << "/* shared:";
     for (auto& v : prog.vars) o << " i" << v.width << " " << v.name << " = " << v.init << ";";
     for (auto& m : prog.mutexes) o << " mutex " << m << " (owner 0 = free);";
+    for (auto& cv : prog.conds) o << " cond " << cv << " (signal count);";
     o << " */\n";
     o << "_Bool active[" << N << "] = {1};  unsigned pc[" << N << "];  _Bool exited;\n";
     for (int t = 0; t < N; ++t) {
@@ -496,6 +500,8 @@ struct Enc {
     std::vector<Graph> g;
     std::vector<std::map<std::pair<int, std::vector<int>>, z3::expr>> vals;  // per thread: value instances
     std::vector<z3::expr> G, owner, pc, active;
+    std::vector<z3::expr> cgen;                 // per condition variable: signals so far
+    std::vector<std::vector<z3::expr>> ticket;  // [thread][cond]: cgen when the thread began its wait
     z3::expr exited, last_tid, last_var, last_w, last_at, last_op, ok;
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
@@ -773,6 +779,20 @@ struct Enc {
                           "unlock of mutex " + mn + " that " + tname(p, t) + " does not hold" + at_line(o.line), o.line,
                           t, "unlock:" + mn + ":" + std::to_string(o.line));
                 ow = z3::ite(e, bv(0, 8), ow);
+                if (o.cond >= 0) {
+                    auto& tk = ticket[static_cast<std::size_t>(t)][static_cast<std::size_t>(o.cond)];
+                    tk = z3::ite(e, cgen[static_cast<std::size_t>(o.cond)], tk);
+                }
+                break;
+            }
+            case VisOp::CondWait: {
+                const auto ci = static_cast<std::size_t>(o.cond);
+                ok = ok && z3::implies(e, cgen[ci] != ticket[static_cast<std::size_t>(t)][ci]);
+                break;
+            }
+            case VisOp::CondSignal: {
+                auto& gn = cgen[static_cast<std::size_t>(o.cond)];
+                gn = z3::ite(e, gn + bv(1, 16), gn);
                 break;
             }
             case VisOp::MutexInit: {
@@ -781,7 +801,6 @@ struct Enc {
                 break;
             }
             case VisOp::Create: {
-                if (t != 0) throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: thread created by a thread"};
                 auto& a = active[static_cast<std::size_t>(o.thread)];
                 a = a || e;
                 break;
@@ -938,6 +957,9 @@ struct Enc {
                 auto at = pc[t] == c.bv_val(static_cast<uint64_t>(n), 16);
                 if (o.kind == VisOp::Lock) {
                     blocked = blocked || (at && owner[static_cast<std::size_t>(o.mutex)] != bv(0, 8));
+                } else if (o.kind == VisOp::CondWait) {
+                    const auto ci = static_cast<std::size_t>(o.cond);
+                    blocked = blocked || (at && cgen[ci] == ticket[t][ci]);
                 } else if (o.kind == VisOp::Join) {
                     const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts.at(0);
                     blocked = blocked || (at && !joinable(lookup(ti, static_cast<int>(n), s.args.at(0))));
@@ -966,13 +988,27 @@ struct Enc {
         std::size_t N = p.threads.size();
         for (auto& th : p.threads) g.push_back(build_graph(th.fn, opt));
         vals.resize(N);
-        // a creation site must run at most once (no loops of threads yet)
+        // a creation site must run at most once (no loops of threads yet):
+        // once per graph, and in one thread only. A thread may create
+        // threads (nested creation) when the created index is above its own,
+        // so the static set of slots is well founded.
+        std::map<int, std::size_t> create_in;
         for (std::size_t t = 0; t < N; ++t)
             for (auto& nd : g[t].nodes) {
                 if (nd.head < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
                 if (o.kind != VisOp::Create) continue;
-                if (t != 0) throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: thread created by a thread"};
+                auto [it, fresh] = create_in.emplace(nd.head, t);
+                if ((!fresh && it->second != t) || o.thread <= static_cast<int>(t))
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " reached by several threads, or a thread that (indirectly) "
+                               "creates itself" + at_line(o.line)};
+            }
+        for (std::size_t t = 0; t < N; ++t)
+            for (auto& nd : g[t].nodes) {
+                if (nd.head < 0) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
+                if (o.kind != VisOp::Create) continue;
                 int cnt = 0;
                 for (auto& m : g[t].nodes)
                     if (m.head == nd.head) ++cnt;
@@ -983,6 +1019,8 @@ struct Enc {
             }
         for (auto& v : p.vars) G.push_back(bv(v.init, v.width));
         for (std::size_t m = 0; m < p.mutexes.size(); ++m) owner.push_back(bv(0, 8));
+        for (std::size_t k = 0; k < p.conds.size(); ++k) cgen.push_back(bv(0, 16));
+        ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
         for (std::size_t t = 0; t < N; ++t) {
             pc.push_back(c.bv_val(0, 16));
             active.push_back(c.bool_val(t == 0));

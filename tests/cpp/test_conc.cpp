@@ -102,6 +102,26 @@ TEST_CASE("conc: opposite lock order deadlocks") {
         if (v.cls == "CONC-DEADLOCK") CHECK(v.msg.find("pthread_mutex_lock") != std::string::npos);
 }
 
+TEST_CASE("conc: a lost wake-up is a deadlock") {
+    if (!have_frontend()) return;
+    auto r = run_main("lost_wakeup.c");
+    CHECK(r.status == prism::laws::FAILED);
+    CHECK(has_cls(r, "CONC-DEADLOCK"));
+}
+
+TEST_CASE("conc: a wait guarded by its predicate is BOUNDED") {
+    if (!have_frontend()) return;
+    auto r = run_main("condvar_ok.c");
+    CHECK(r.status == prism::laws::BOUNDED);
+}
+
+TEST_CASE("conc: a thread created by a thread races with main") {
+    if (!have_frontend()) return;
+    auto r = run_main("nested_race.c");
+    CHECK(r.status == prism::laws::FAILED);
+    CHECK(has_cls(r, "CONC-DATA-RACE"));
+}
+
 TEST_CASE("conc: SC atomic_fetch_add is race free and BOUNDED") {
     if (!have_frontend()) return;
     if (!conc_c11_atomics_on_host()) {
@@ -178,7 +198,7 @@ TEST_CASE("conc: relaxed atomics are NEEDS-HARNESS (SC only)") {
     CHECK(saw);
 }
 
-TEST_CASE("conc: relaxed, acquire and release atomics are NEEDS-HARNESS") {
+TEST_CASE("conc: relaxed, acquire and release atomics are encoded as seq_cst and recorded") {
     struct Case {
         const char* ir;
         const char* order;
@@ -194,12 +214,11 @@ TEST_CASE("conc: relaxed, acquire and release atomics are NEEDS-HARNESS") {
     };
     for (auto& c : cases) {
         auto b = build_atomic(c.ir);
-        CHECK(b.status == prism::laws::NEEDS_HARNESS);
-        CHECK(b.reason.find(std::string("UNENCODED: ") + c.order) != std::string::npos);
-        CHECK(!b.prog);
+        REQUIRE(b.prog);
+        CHECK(b.prog->weak_order == c.order);
     }
     auto sc = build_atomic("store atomic i32 1, ptr @flag seq_cst, align 4");
-    CHECK(sc.reason.find("not encoded yet") == std::string::npos);
+    if (sc.prog) CHECK(sc.prog->weak_order.empty());
     CHECK(sc.status != prism::laws::PROVED);
     CHECK(sc.status != prism::laws::BOUNDED);
 }

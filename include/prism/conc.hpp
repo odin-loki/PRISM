@@ -49,11 +49,12 @@ struct Options {
 
 // A visible operation: a context-switch point is placed before each one.
 struct VisOp {
-    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join };
+    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal };
     Kind kind = Load;
     int var = -1;            // Load/Store/Rmw: shared variable
     int mutex = -1;          // Lock/TryLock/Unlock/MutexInit
     int thread = -1;         // Create: index of the created thread (>= 1)
+    int cond = -1;           // CondWait/CondSignal; Unlock: the wait that this release starts
     bool atomic = false;     // Load/Store/Rmw: an atomic (seq_cst) access
     unsigned width = 0;      // Load/Store/Rmw: access width; TryLock: result width
     uint64_t busy = 16;      // TryLock: result when the mutex is held (EBUSY / thrd_busy)
@@ -79,6 +80,8 @@ struct Program {
     std::string harness;              // IR name of the harness function
     std::vector<Shared> vars;
     std::vector<std::string> mutexes; // IR global names
+    std::vector<std::string> conds;   // condition variables (IR global names)
+    std::string weak_order;           // first non-seq_cst order seen (encoded as seq_cst), "" if none
     std::vector<VisOp> ops;
     std::vector<Thread> threads;      // [0] is the harness
     int atomic_mutex = -1;            // pseudo-mutex of SV-COMP atomic sections (-1: none)

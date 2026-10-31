@@ -1,4 +1,4 @@
-// NEEDS-HARNESS: relaxed atomics are not encoded yet (SC only).
+// NEEDS-HARNESS: relaxed atomics are encoded as seq_cst, so a clean result is withheld.
 #include <pthread.h>
 #include <stdatomic.h>
 

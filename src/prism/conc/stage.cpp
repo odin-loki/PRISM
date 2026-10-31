@@ -117,6 +117,13 @@ std::optional<std::string> weak_memory_order(const std::string& text) {
         {"__ATOMIC_RELEASE", "memory_order_release"},
         {"memory_order_acq_rel", "memory_order_acq_rel"},
         {"__ATOMIC_ACQ_REL", "memory_order_acq_rel"},
+        // C++20 scoped forms: the PRISM <atomic> model of the conc stage
+        // emits seq_cst whatever the argument, so only the source shows them
+        {"memory_order::relaxed", "memory_order_relaxed"},
+        {"memory_order::consume", "memory_order_acquire (or consume)"},
+        {"memory_order::acquire", "memory_order_acquire (or consume)"},
+        {"memory_order::release", "memory_order_release"},
+        {"memory_order::acq_rel", "memory_order_acq_rel"},
     };
     std::optional<std::string> shown;
     std::size_t at = std::string::npos;
@@ -139,7 +146,8 @@ std::optional<std::string> weak_memory_order(const std::string& text) {
 }
 
 std::string weak_order_message(const std::string& name) {
-    return "UNENCODED: " + name + " (SC only: relaxed/acquire/release atomics are not encoded yet)";
+    return "UNENCODED: " + name + " (encoded as seq_cst: a failure found is a real run, but a clean result "
+           "is no proof under the weaker order)";
 }
 
 bool only_data_races(const Result& r) {
@@ -151,10 +159,12 @@ bool only_data_races(const Result& r) {
 
 // A clean result, or a data race found only after the order was erased, is not
 // a verdict on a weak atomic. A deadlock or a failed assertion is kept.
-void refuse_weak_order(Result& r, const std::string& name) {
+// keep_races: the order is in the IR (the atomic access itself is encoded, so
+// a race reported is on other data and is real in an SC run).
+void refuse_weak_order(Result& r, const std::string& name, bool keep_races = false) {
     if (r.status == laws::NEEDS_HARNESS && r.message.find("UNENCODED:") != std::string::npos) return;
     const bool clean = r.status.empty() || r.status == laws::CLEAN || laws::is_formal(r.status);
-    const bool stripped_race = r.status == laws::FAILED && only_data_races(r);
+    const bool stripped_race = !keep_races && r.status == laws::FAILED && only_data_races(r);
     if (!clean && !stripped_race) return;
     r.status = std::string(laws::NEEDS_HARNESS);
     r.violations.clear();
@@ -228,6 +238,7 @@ std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
             h.res.message = b.reason;
         } else {
             h.res = check(*b.prog, opt);
+            if (!b.prog->weak_order.empty()) refuse_weak_order(h.res, b.prog->weak_order, true);
         }
         out.push_back(std::move(h));
     }

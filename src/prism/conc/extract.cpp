@@ -19,12 +19,14 @@
 //
 // Not modelled (NEEDS-HARNESS "UNENCODED: ..."): shared data that is not a
 // scalar integer global (heap, arrays, structs, pointers: waits for the PIR
-// memory model, roadmap 2.5), non-seq_cst atomics, thread arguments,
+// memory model, roadmap 2.5), syncscope atomics (weaker orders are encoded as seq_cst; stage.cpp
+// withholds a clean result), thread arguments,
 // libstdc++'s std::thread (the stage lowers C++ with the PRISM models under
 // __PRISM_CONC_THREADS, whose std::thread / mutex / condition_variable /
 // atomic inline to the pthread / __atomic calls above; a callable with
 // captures or arguments then reaches pthread_create as a thread argument),
-// mutexes that are not globals, nested thread creation.
+// mutexes that are not globals, a creation site run more than once or by
+// several threads.
 
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
@@ -138,11 +140,16 @@ std::string c_order_name(const std::string& w) {
     return w;
 }
 
+// Weaker orders are encoded as seq_cst. Every SC run is a run the C/C++
+// memory model allows, so a failure found is real; a clean result proves
+// nothing about the weaker order, and the stage withholds it (Program::
+// weak_order, refuse_weak_order in stage.cpp).
+thread_local std::string tl_weak_order;
+
 void require_sc(const std::vector<std::string>& ws) {
     for (auto& w : ws) {
         if (w.starts_with("syncscope(")) throw Unenc{"UNENCODED: atomic syncscope " + w};
-        if (is_order(w) && w != "seq_cst")
-            throw Unenc{"UNENCODED: " + c_order_name(w) + " (SC only: relaxed/acquire/release atomics are not encoded yet)"};
+        if (is_order(w) && w != "seq_cst" && tl_weak_order.empty()) tl_weak_order = c_order_name(w);
     }
 }
 
@@ -334,6 +341,15 @@ struct Rewriter {
         prog.mutexes.push_back(o.v.name);
         mutex_index[o.v.name] = static_cast<int>(prog.mutexes.size()) - 1;
         return mutex_index[o.v.name];
+    }
+
+    int cond(const ir::Operand& o, const std::string& fn) {
+        if (o.v.kind != ir::Value::Global)
+            throw Unenc{"UNENCODED: " + fn + " on a condition variable that is not a global"};
+        for (std::size_t i = 0; i < prog.conds.size(); ++i)
+            if (prog.conds[i] == o.v.name) return static_cast<int>(i);
+        prog.conds.push_back(o.v.name);
+        return static_cast<int>(prog.conds.size()) - 1;
     }
 
     int atomic_mutex() {
@@ -679,12 +695,22 @@ struct Rewriter {
             return;
         }
         if (n == "pthread_cond_wait") {
-            // POSIX allows spurious wake-ups, so "unlock; <switch point>; lock"
-            // is an exact over-approximation of every wait.
+            // unlock (and join the wait set, atomically); block until a
+            // signal or broadcast on the same variable after that; lock.
+            // Every signal wakes every waiter (a spurious wake-up of the
+            // others, which POSIX allows), so the waits that never return
+            // are those with no signal at all after the release: a lost
+            // wake-up, reported as CONC-DEADLOCK when every thread is stuck.
+            // Spurious wake-ups that would rescue such a run are not counted.
             auto u = mk(VisOp::Unlock, n + " (release)");
             u.mutex = mutex(arg(1), n);
+            u.cond = cond(arg(0), n);
             int k1 = add_op(u);
             out.push_back(copy(in, marker(k1), cint(0, i64)));
+            auto w = mk(VisOp::CondWait, n + " (block)");
+            w.cond = u.cond;
+            int kw = add_op(w);
+            out.push_back(copy(in, marker(kw), cint(0, i64)));
             auto l = mk(VisOp::Lock, n + " (re-acquire)");
             l.mutex = u.mutex;
             int k2 = add_op(l);
@@ -715,8 +741,15 @@ struct Rewriter {
             out.push_back(copy(in, marker(k2), cint(0, i64)));
             return;
         }
-        if (n == "pthread_mutex_destroy" || n == "mtx_destroy" || n == "pthread_cond_signal" ||
-            n == "pthread_cond_broadcast" || n == "pthread_cond_destroy" || n == "sched_yield" ||
+        if (n == "pthread_cond_signal" || n == "pthread_cond_broadcast") {
+            auto vo = mk(VisOp::CondSignal, n);
+            vo.cond = cond(arg(0), n);
+            int k = add_op(vo);
+            out.push_back(copy(in, marker(k), cint(0, i64)));
+            zero_result(in, out);
+            return;
+        }
+        if (n == "pthread_mutex_destroy" || n == "mtx_destroy" || n == "pthread_cond_destroy" || n == "sched_yield" ||
             n == "thrd_yield" || n == "cnd_signal" || n == "cnd_broadcast" || n == "cnd_destroy") {
             zero_result(in, out);  // no effect under interleaving semantics (every schedule is explored)
             return;
@@ -901,6 +934,7 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
         b.reason = "harness @" + harness + " not in module";
         return b;
     }
+    tl_weak_order.clear();
     try {
         Rewriter rw(m, ir_text);
         Thread main;
@@ -922,13 +956,22 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
             }
             return seen;
         };
-        auto scope = closure(harness);
-        rw.find_creates(scope);
-        // creation sites the harness can reach; nested creation is not modelled
-        for (auto& [e, _] : rw.entry_of) {
-            if (reaches(cg, e, is_create) || std::any_of(cg[e].begin(), cg[e].end(), is_create))
-                throw Unenc{"UNENCODED: thread " + e + " creates threads (nested creation)"};
-            for (auto& f : closure(e)) scope.insert(f);
+        // creation sites the harness can reach, then (nested creation) those
+        // the created threads reach, to a fixpoint. Each function is scanned
+        // once; lazy.cpp checks that every creation site runs in one thread
+        // at most once, so the thread set stays static.
+        std::set<std::string> scope, scanned;
+        std::set<std::string> todo = closure(harness);
+        while (!todo.empty()) {
+            std::set<std::string> fresh;
+            for (auto& f : todo)
+                if (scanned.insert(f).second) fresh.insert(f);
+            scope.insert(fresh.begin(), fresh.end());
+            rw.find_creates(fresh);
+            todo.clear();
+            for (auto& [e, _] : rw.entry_of)
+                for (auto& f : closure(e))
+                    if (!scanned.count(f)) todo.insert(f);
         }
         int created = static_cast<int>(rw.prog.threads.size()) - 1;
         if (created > opt.max_threads)
@@ -967,6 +1010,7 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
             }
             th.fn = it->second;
         }
+        rw.prog.weak_order = tl_weak_order;
         b.prog = std::move(rw.prog);
         b.status.clear();
     } catch (const Unenc& u) {
