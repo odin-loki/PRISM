@@ -1,0 +1,17 @@
+{'bmc': 5790, 'pir': 6111}
+functions: 6046 (bmc 5766, pir 5842)
+rows = bmc, columns = pir
+                       PROVED*        BOUNDED         FAILED  NEEDS-HARNESS          ERROR        UNKNOWN         absent
+PROVED*                   1472              7              0              0              0              3              0
+BOUNDED                      2             24              0              0              0              1              0
+FAILED                       0              0            354              0              0              0              0
+NEEDS-HARNESS              700             79            580           2299              1             28            204
+ERROR                        6              0              5              0              0              0              0
+UNKNOWN                      1              0              0              0              0              0              0
+absent                       3              0              5            272              0              0              0
+same bucket where both report: 4149/5562
+superset gaps (bmc PROVED*, pir absent or NEEDS-HARNESS): 0
+retirement gate (hard conflicts): PASS (0)
+retirement gate (pir superset): PASS (0)
+retirement gate (overall): PASS
+hard conflicts (PROVED* vs FAILED): 0
