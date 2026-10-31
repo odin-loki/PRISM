@@ -34,7 +34,7 @@ PRISM_API std::string sha256_file(const std::filesystem::path& path);  // "" whe
 // locks the embedded copy to the file). Names: invariants, harness, contract, explain,
 // lean_proof, assumption_audit (include/prism/ai_proof.hpp).
 PRISM_API const std::string& grammar_text(const std::string& name);
-// JSON schema used for Ollama's "format" parameter (same shape as the grammar).
+// JSON schema of the grammar (same shape as the GBNF; used by docs and tests).
 PRISM_API std::string grammar_json_schema(const std::string& name);
 
 // Post-decoding validation. A grammar constrains the sampler, but the decoded
@@ -69,8 +69,8 @@ struct ModelRequest {
     std::string feature;   // invariants | harness | contract | explain
     std::string system;
     std::string user;
-    std::string grammar;       // grammar name (audit log, Ollama schema)
-    std::string grammar_text;  // GBNF sent to llama-server (ident rule narrowed)
+    std::string grammar;       // grammar name (audit log)
+    std::string grammar_text;  // GBNF for FORGE mind constrained sampling (ident rule narrowed)
 };
 struct ModelReply {
     std::string text;
@@ -79,15 +79,13 @@ struct ModelReply {
 class PRISM_API ModelBackend {
 public:
     virtual ~ModelBackend();
-    virtual std::string name() const = 0;          // e.g. "llama-server:qwen3.5:9b"
+    virtual std::string name() const = 0;          // e.g. "forge:qwen3.5-9b"
     virtual std::string model_sha256() const = 0;  // "unknown" for HTTP backends
     virtual ModelReply complete(const ModelRequest& req) = 0;
 };
 
-// llama-server /completion with "grammar" (GBNF) and Ollama /api/generate
-// with "format" (JSON schema). Returns nullptr (and a reason) when neither is
-// reachable, or when --no-llm. The native in-process GGUF path has no grammar
-// sampler wired, so it is not used for AI features (reason says so).
+// FORGE mind in process on cfg.fpk, with GBNF-constrained sampling. Returns
+// nullptr (and a reason) when no .fpk is configured, or when --no-llm.
 PRISM_API std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* why);
 
 // ---------------------------------------------------------------- session

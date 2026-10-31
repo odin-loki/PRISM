@@ -261,9 +261,7 @@ struct AssistRun {
         out = td / "out";
         fs::create_directories(src);
         std::ofstream(src / "calc.c") << kCalc;
-        env.set("OLLAMA_HOST", "http://127.0.0.1:1");
-        env.set("PRISM_LLAMA_SERVER", "http://127.0.0.1:1");
-        env.set("PRISM_EMBED_SERVER", std::nullopt);
+        env.set("PRISM_EMBED_FPK", std::nullopt);
         prism::Config cfg = prism::default_config();
         cfg.root = src;
         cfg.out = out;
@@ -328,57 +326,7 @@ TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
 }
 
 #ifndef _WIN32
-TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked draft claim is rejected") {
-    AssistRun run;
-    FakeModelServer srv;
-    run.env.set("PRISM_LLAMA_SERVER", srv.url());
-    auto a = run_cli(prism::ai::ask_main,
-                     {"division problems from model checking", "--report", run.out.string(), "--json"});
-    CAPTURE(a.out);
-    auto j = json::parse(a.out);
-    CHECK(j["translator"].get<std::string>().rfind("llm:", 0) == 0);
-    std::vector<std::string> fns;
-    for (const auto& m : j["matches"]) fns.push_back(m["function"].get<std::string>());
-    CHECK(fns == std::vector<std::string>{"divide"});
-    std::vector<json> audit;
-    std::istringstream al(slurp(run.out / "ai_audit.jsonl"));
-    for (std::string l; std::getline(al, l);)
-        if (l.find_first_not_of(" \t\r") != std::string::npos) audit.push_back(json::parse(l));
-    std::vector<json> ask;
-    for (auto& x : audit)
-        if (x["feature"] == "ask") ask.push_back(x);
-    REQUIRE(!ask.empty());
-    CHECK(ask.back()["checker_result"] == "accepted");
-    CHECK(ask.back()["verdict_effect"] == "none");
-    // Drafting with the model: the unlinked "proved" claim is rejected.
-    auto d = run_cli(prism::ai::draft_main, {"--report", run.out.string(), "--out", (run.out / "d.md").string()});
-    CHECK(d.rc == 0);
-    auto dj = json::parse(slurp(run.out / "d.json"));
-    CHECK(dj["author"].get<std::string>().rfind("llm:", 0) == 0);
-    CHECK(dj["rejected"].size() == 1);
-    const auto dmd = slurp(run.out / "d.md");
-    CHECK(dmd.substr(0, dmd.find("## Rejected")).find("Everything else is proved") == std::string::npos);
-    CHECK(slurp(run.out / "report.json") == run.report_text);
-    bool completion = false;
-    for (const auto& p : srv.paths()) completion = completion || p == "/completion";
-    CHECK(completion);
-}
 
-TEST_CASE("ai-assist cli: triage uses the embedding endpoint when PRISM_EMBED_SERVER is set") {
-    AssistRun run;
-    FakeModelServer srv;
-    run.env.set("PRISM_EMBED_SERVER", srv.url());
-    const auto dir = run.td / "copy";
-    fs::create_directories(dir);
-    std::ofstream(dir / "report.json", std::ios::binary) << run.report_text;
-    auto r = run_cli(prism::ai::triage_main, {dir.string()});
-    CHECK(r.rc == 0);
-    const auto tri = json::parse(slurp(dir / "triage.json"));
-    CHECK(tri["embedder"].get<std::string>().find("llama-server-embedding") != std::string::npos);
-    bool embedding = false;
-    for (const auto& p : srv.paths()) embedding = embedding || p == "/embedding";
-    CHECK(embedding);
-}
 #endif
 
 TEST_CASE("ai-assist cli: `prism regress` writes under <out> only; --run without --allow-exec runs nothing") {

@@ -40,16 +40,16 @@ static fs::path default_pbsd() {
     return {};
 }
 
-static fs::path default_gguf() {
-    if (const char* env = std::getenv("PRISM_GGUF"); env && *env) return env;
+// The FORGE model: PRISM_FPK, else ~/.prism/models/qwen3.5-9b.fpk.
+static fs::path default_fpk() {
+    if (const char* env = std::getenv("PRISM_FPK"); env && *env) return env;
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;
 #else
     if (const char* u = std::getenv("HOME")) home = u;
 #endif
-    return home / ".ollama" / "models" / "blobs" /
-           "sha256-dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c";
+    return home / ".prism" / "models" / "qwen3.5-9b.fpk";
 }
 
 static std::string env_or(const char* name, const char* def) {
@@ -60,10 +60,8 @@ static std::string env_or(const char* name, const char* def) {
 Config default_config() {
     Config c;
     c.pbsd_root = default_pbsd();
-    c.gguf = default_gguf();
-    c.model = env_or("PRISM_MODEL", "qwen3.5:9b");
-    c.ollama_host = env_or("OLLAMA_HOST", "http://127.0.0.1:11434");
-    c.llama_server = env_or("PRISM_LLAMA_SERVER", "http://127.0.0.1:8080");
+    c.fpk = default_fpk();
+    c.model = env_or("PRISM_MODEL", "qwen3.5-9b");
     unsigned n = std::max(2u, std::thread::hardware_concurrency());
     c.jobs = static_cast<int>(std::max(1u, n / 2));
     return c;
@@ -452,13 +450,12 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_CERT_CACHE_MAX", "maximum entries kept in the proof-certificate cache"},
     {"PRISM_CHECKER_MEM", "memory cap (MB) for external certificate checkers"},
     {"PRISM_CONF_KEEP", "qa conformance/soundness: keep per-task scratch dirs"},
-    {"PRISM_EMBED_SERVER", "URL of the embedding server used by ai helpers"},
+    {"PRISM_EMBED_FPK", "FORGE embedding model (.fpk) used by ai triage"},
+    {"PRISM_FPK", "FORGE assistant model (.fpk), default ~/.prism/models/qwen3.5-9b.fpk"},
+    {"PRISM_DEVICE", "FORGE device for the models (cpu, cuda, vulkan, ...)"},
     {"PRISM_FUNCTION_BUDGET", "per-function time budget (seconds)"},
-    {"PRISM_GGUF", "path of the default GGUF model"},
     {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},
     {"PRISM_LAKE", "path of Lean's lake for proof search"},
-    {"PRISM_LLAMA_SERVER", "URL of a running llama server"},
-    {"PRISM_LLAMA_SERVER_BIN", "path of the llama-server binary"},
     {"PRISM_MEM_BUDGET_MB", "process-tree memory budget (MB); 0 = unlimited"},
     {"PRISM_MEM_RESERVE_MB", "memory held back from the budget for the main process"},
     {"PRISM_MEM_STUCK_MS", "time over the hard limit before the stuck hook fires"},
@@ -471,9 +468,8 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (removed with bmc)"},
     {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},
     {"PRISM_PROOF_CACHE", "directory of the proof cache"},
-    {"PRISM_PROVER_GGUF", "path of the prover GGUF model"},
+    {"PRISM_PROVER_FPK", "path of the FORGE prover model (.fpk)"},
     {"PRISM_PROVER_MODEL", "prover LLM model name"},
-    {"PRISM_PROVER_SERVER", "URL of the prover LLM server"},
     {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
     {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
     {"PRISM_TOOLS_DIR", "directory of vendored external tools"},
@@ -481,7 +477,6 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_VERSION", "override the reported version string"},
     {"PRISM_Z3_GENERATED_ROOT", "z3gen: output root for generated Z3 sources (build time)"},
     {"PRISM_Z3_WORKER", "path of the executable used for killable Z3 child queries"},
-    {"OLLAMA_HOST", "Ollama endpoint"},
     {"CC_SAN", "qa replay: C compiler for sanitizer builds"},
     {"CXX_SAN", "qa replay: C++ compiler for sanitizer builds"},
     {"MALLOC_ARENA_MAX", "glibc; if unset PRISM caps arenas at 2"},

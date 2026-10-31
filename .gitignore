@@ -22,8 +22,6 @@ _tmp_*.txt
 /*.ll
 /*.zip
 
-# Model weights are never vendored (llama.cpp's vocab test files included).
-third_party/llama.cpp/models/*.gguf
 
 # scripts/fetch_deps.py installs external tools under ~/.prism/tools, never in the repo.
 .prism/
@@ -36,3 +34,7 @@ prism-self-ci/
 prism-self-san/
 svcomp-out/
 soundness-out/
+
+# Model weights are never vendored (FORGE .fpk, GGUF).
+*.fpk
+*.gguf

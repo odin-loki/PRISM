@@ -1,7 +1,6 @@
 #pragma once
 
-// Internal to prism_core: the LLM chat engine (llama-server, Ollama or linked
-// llama.cpp) and the sandboxed compile+run of LLM-written C
+// Internal to prism_core: the LLM chat engine (FORGE mind on a .fpk model) and the sandboxed compile+run of LLM-written C
 // (src/prism/stages/llm.cpp). Used by hypothesize, fuse, execute and repair.
 
 #include "common.hpp"
@@ -12,8 +11,8 @@
 
 namespace prism::stages_detail {
 
-inline const char* LLM_UNAVAILABLE_MSG = "llama.cpp/Ollama not reachable";
-inline const char* LLM_INSTALL = "ollama serve  (qwen3.5:9b) or build prism with -DPRISM_LLAMA=ON";
+inline const char* LLM_UNAVAILABLE_MSG = "no FORGE model (.fpk) configured";
+inline const char* LLM_INSTALL = "convert Qwen 3.5 9B with FORGE (forge convert) and set PRISM_FPK=/path/qwen3.5-9b.fpk";
 
 // Python engine llm_complete_unavailable: HTTP/connection is a missing backend.
 bool llm_httpish(const std::string& err);
@@ -27,16 +26,16 @@ struct ChatResult {
     nlohmann::json raw = nlohmann::json::object();  // the backend's JSON answer, when there is one
 };
 
-// Test seam: while set, every LlamaEngine binds to this chat function
-// (backend name "test-double") instead of a server or a GGUF. nullptr clears it.
+// Test seam: while set, every LlmEngine binds to this chat function
+// (backend name "test-double") instead of a server or a .fpk. nullptr clears it.
 using ChatBackend =
     std::function<ChatResult(const std::vector<std::pair<std::string, std::string>>& messages, double timeout)>;
 void set_chat_backend_for_testing(ChatBackend backend);
 
-struct LlamaEngine {
+struct LlmEngine {
     Config cfg;
     std::string backend = "none";
-    explicit LlamaEngine(Config c);
+    explicit LlmEngine(Config c);
     void bind();
     bool available() const;
     // Roadmap 9.6: every model interaction goes to <out>/ai_audit.jsonl.

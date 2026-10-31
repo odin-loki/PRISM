@@ -179,11 +179,9 @@ TEST_CASE("designated-init regex stays exact") {
     CHECK_FALSE(re.search("{ dst[i] = 1 }"));
 }
 
-TEST_CASE("hypothesize missing GGUF is NOTRUN") {
+TEST_CASE("hypothesize missing FORGE model is NOTRUN") {
     prism::Config cfg = prism::default_config();
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto fn = load_fn("abs_ok.c", "abs_ok");
     auto findings = prism::hypothesize({fn}, 1, cfg);
     REQUIRE_FALSE(findings.empty());
@@ -683,9 +681,7 @@ TEST_CASE("execute_cex llm down is NOTRUN for llm half") {
     fail.counterexample = "x=1,y=0";
     prism::Config cfg = prism::default_config();
     cfg.llm = true;
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto out = prism::execute_cex({fail}, {fn}, cfg);
     bool saw_nr = false;
     for (auto& f : out) {
@@ -709,9 +705,7 @@ TEST_CASE("rlef_repair missing llm is NOTRUN never CLEAN") {
     fail.cls = "INT-DIV-ZERO";
     fail.message = "div by zero";
     prism::Config cfg = prism::default_config();
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto out = prism::rlef_repair(fail, cfg);
     REQUIRE_FALSE(out.empty());
     CHECK(out[0].stage == "repair");
@@ -4097,9 +4091,7 @@ TEST_CASE("execute_cex LLM half down is NOTRUN never CLEAN") {
     fail.counterexample = "x=0";
     prism::Config cfg = prism::default_config();
     cfg.llm = true;
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto recs = prism::execute_cex({fail}, {fn}, cfg);
     REQUIRE_FALSE(recs.empty());
     bool saw_llm_half = false;
@@ -5107,8 +5099,6 @@ TEST_CASE("ai no model outside a session is NOTRUN, never a backend") {
     CHECK(prism::ai::session_backend(&why) == nullptr);
     CHECK_FALSE(why.empty());
     prism::Config cfg = prism::default_config();
-    cfg.llama_server = "http://127.0.0.1:1";
-    cfg.ollama_host = "http://127.0.0.1:1";
     CHECK(prism::ai::connect_backend(cfg, &why) == nullptr);
     CHECK(why.find("not reachable") != std::string::npos);
     cfg.llm = false;
@@ -5442,8 +5432,6 @@ TEST_CASE("ai explanation and repair: NOTRUN without a model, verified only when
     fail.message = "div by zero";
     fail.counterexample = "b=0";
     prism::Config cfg = prism::default_config();
-    cfg.llama_server = "http://127.0.0.1:1";
-    cfg.ollama_host.clear();
     auto none = prism::ai::explain_failed(fail, cfg);
     REQUIRE(none.size() == 1);
     CHECK(none[0].status == std::string(prism::laws::NOTRUN));

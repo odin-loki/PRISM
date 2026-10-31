@@ -19,6 +19,7 @@
 // --allow-exec and runs Lean in the bwrap jail when one is available.
 // Every model call is in <out>/ai_audit.jsonl.
 
+#include "prism/forge_llm.hpp"
 #include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
@@ -592,50 +593,8 @@ bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {
 }
 
 // ---------------------------------------------------------------- prover backends
-class ProverServer final : public ModelBackend {
-public:
-    ProverServer(std::string url, std::string model) : url_(std::move(url)), model_(std::move(model)) {}
-    std::string name() const override { return "llama-server:" + model_; }
-    std::string model_sha256() const override { return sha_.empty() ? "unknown" : sha_; }
-    void set_sha(std::string s) { sha_ = std::move(s); }
-    ModelReply complete(const ModelRequest& req) override {
-        nlohmann::json body{{"prompt", req.system + "\n\n" + req.user + "\n"},
-                            {"n_predict", 1024},
-                            {"temperature", 0.6},
-                            {"cache_prompt", false},
-                            {"grammar", req.grammar_text}};
-        auto resp = http_request_raw("POST", url_ + "/completion", body.dump(), 300000);
-        if (!resp) return {"", "HTTP error (prover llama-server /completion)"};
-        try {
-            auto j = nlohmann::json::parse(*resp);
-            return {j.value("content", ""), ""};
-        } catch (const std::exception& ex) {
-            return {"", std::string("bad prover reply: ") + ex.what()};
-        }
-    }
-
-private:
-    std::string url_, model_, sha_;
-};
-
-// A llama-server this process started for the prover GGUF (swapped out at exit).
-struct SpawnedServer {
-    int pid = -1;
-    ~SpawnedServer() {
-#ifndef _WIN32
-        if (pid > 0) {
-            ::kill(pid, SIGTERM);
-            int st = 0;
-            for (int i = 0; i < 50 && ::waitpid(pid, &st, WNOHANG) == 0; ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            ::kill(pid, SIGKILL);
-            ::waitpid(pid, &st, WNOHANG);
-        }
-#endif
-    }
-};
-
-std::vector<fs::path> default_prover_ggufs() {
+// The prover is a FORGE .fpk (e.g. Goedel-Prover converted with FORGE), run in process.
+std::vector<fs::path> default_prover_fpks() {
     std::vector<fs::path> out;
     auto home = env_or("HOME");
     if (home.empty()) return out;
@@ -646,84 +605,29 @@ std::vector<fs::path> default_prover_ggufs() {
         auto n = e.path().filename().string();
         std::string low;
         for (char c : n) low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (e.path().extension() == ".gguf" && low.find("prover") != std::string::npos) out.push_back(e.path());
+        if (e.path().extension() == ".fpk" && (low.find("prover") != std::string::npos || low.find("goedel") != std::string::npos))
+            out.push_back(e.path());
     }
     std::sort(out.begin(), out.end());
     return out;
 }
 
-std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, SpawnedServer& spawned, std::string* why) {
+std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::string* why) {
     if (opt.backend) return opt.backend;
-    auto model = !opt.prover_model.empty() ? opt.prover_model : env_or("PRISM_PROVER_MODEL", "prover");
-    auto url = !opt.prover_server.empty() ? opt.prover_server : env_or("PRISM_PROVER_SERVER");
-    if (!url.empty()) {
-        if (http_request_raw("GET", url + "/health", {}, 2000) || http_request_raw("GET", url + "/v1/models", {}, 2000))
-            return std::make_shared<ProverServer>(url, model);
-        if (why) *why = "prover server " + url + " not reachable";
-        return nullptr;
+    auto model = !opt.prover_model.empty() ? opt.prover_model : env_or("PRISM_PROVER_MODEL", "");
+    fs::path fpk = !opt.prover_fpk.empty() ? opt.prover_fpk : fs::path(env_or("PRISM_PROVER_FPK"));
+    if (fpk.empty()) {
+        auto found = default_prover_fpks();
+        if (!found.empty()) fpk = found.front();
     }
-    fs::path gguf = !opt.prover_gguf.empty() ? opt.prover_gguf : fs::path(env_or("PRISM_PROVER_GGUF"));
-    if (gguf.empty()) {
-        auto found = default_prover_ggufs();
-        if (!found.empty()) gguf = found.front();
-    }
-    std::error_code ec;
-    if (gguf.empty() || !fs::is_regular_file(gguf, ec)) {
+    if (!forge_llm::is_fpk(fpk)) {
         if (why)
-            *why = "no prover model: set PRISM_PROVER_SERVER (llama-server URL) or PRISM_PROVER_GGUF (a "
-                   "DeepSeek-Prover / Goedel-Prover / Kimina-Prover GGUF), or put one in ~/.prism/models"
-                   + (gguf.empty() ? std::string{} : " (missing: " + gguf.string() + ")");
+            *why = "no prover model: set PRISM_PROVER_FPK to a FORGE .fpk (Goedel-Prover / DeepSeek-Prover / "
+                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models"
+                   + (fpk.empty() ? std::string{} : " (not a .fpk: " + fpk.string() + ")");
         return nullptr;
     }
-#ifdef _WIN32
-    if (why) *why = "spawning llama-server for the prover GGUF is POSIX only; set PRISM_PROVER_SERVER";
-    return nullptr;
-#else
-    auto bin_env = env_or("PRISM_LLAMA_SERVER_BIN");
-    std::optional<fs::path> bin = bin_env.empty() ? Config{}.which({"llama-server"}) : std::optional<fs::path>(bin_env);
-    if (!bin) {
-        if (why) *why = "prover GGUF " + gguf.string() + " found but no llama-server binary (PATH or PRISM_LLAMA_SERVER_BIN)";
-        return nullptr;
-    }
-    if (!fs::is_regular_file(*bin, ec)) {
-        if (why) *why = "prover GGUF " + gguf.string() + " found but no llama-server binary (PATH or PRISM_LLAMA_SERVER_BIN)";
-        return nullptr;
-    }
-    int port = 18000 + static_cast<int>(::getpid() % 2000);
-    auto port_s = std::to_string(port);
-    pid_t pid = ::fork();
-    if (pid == 0) {
-        auto m = gguf.string();
-        auto b = bin->string();
-        ::execl(b.c_str(), b.c_str(), "-m", m.c_str(), "--host", "127.0.0.1", "--port", port_s.c_str(), "-c",
-                "8192", static_cast<char*>(nullptr));
-        ::_exit(127);
-    }
-    if (pid < 0) {
-        if (why) *why = "fork failed for llama-server";
-        return nullptr;
-    }
-    spawned.pid = pid;
-    auto base = "http://127.0.0.1:" + port_s;
-    for (int i = 0; i < 600; ++i) {
-        int st = 0;
-        if (::waitpid(pid, &st, WNOHANG) == pid) {
-            spawned.pid = -1;
-            if (why) *why = "llama-server exited while loading " + gguf.string();
-            return nullptr;
-        }
-        if (http_request_raw("GET", base + "/health", {}, 1000)) {
-            auto be = std::make_shared<ProverServer>(base, model.empty() || model == "prover"
-                                                               ? gguf.filename().string()
-                                                               : model);
-            be->set_sha(sha256_file(gguf));
-            return be;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    if (why) *why = "llama-server did not become healthy within 300 s";
-    return nullptr;
-#endif
+    return std::make_shared<forge_llm::Backend>(fpk, model.empty() ? fpk.filename().string() : model, 0.6f, 1024);
 }
 
 std::vector<LemmaEntry> relevant_lemmas(const std::vector<LemmaEntry>& lib, const std::string& statement, std::size_t k) {
@@ -811,8 +715,7 @@ ProveResult prove_theorem(const ProveOptions& opt) {
         c.resume = true;  // append to ai_audit.jsonl, never truncate a pipeline run's log
         own_session.emplace(c);
     }
-    SpawnedServer spawned;
-    auto backend = resolve_prover(opt, spawned, &why);
+        auto backend = resolve_prover(opt, &why);
     if (!backend) {
         res.status = std::string(laws::NOTRUN);
         res.reason = why;
@@ -1153,13 +1056,12 @@ int prove_main(int argc, char** argv) {
         else if (a == "--beam") opt.beam = std::max(1, std::atoi(next().c_str()));
         else if (a == "--timeout") opt.lean_timeout = std::max(5.0, std::atof(next().c_str()));
         else if (a == "--out") opt.out = next();
-        else if (a == "--prover-server") opt.prover_server = next();
-        else if (a == "--prover-gguf") opt.prover_gguf = next();
+        else if (a == "--prover-fpk") opt.prover_fpk = next();
         else if (a == "--prover-model") opt.prover_model = next();
         else if (a == "-h" || a == "--help") {
             std::cout << "prism prove FILE.lean THEOREM [--write] [--allow-exec] [--project DIR]\n"
                          "            [--lemmas PATH] [--budget N] [--beam N] [--timeout S] [--out DIR]\n"
-                         "            [--prover-server URL] [--prover-gguf PATH] [--prover-model NAME] [--json]\n"
+                         "            [--prover-fpk PATH] [--prover-model NAME] [--json]\n"
                          "prism prove FILE.lean --list      theorems with a sorry\n"
                          "prism prove --all [ROOTS...] [--list] [--allow-exec] [--write] [--budget N]\n"
                          "            every theorem with a sorry under ROOTS (default proofs,\n"
@@ -1169,7 +1071,7 @@ int prove_main(int argc, char** argv) {
                          "checks each one, #print axioms must stay within propext/Classical.choice/Quot.sound,\n"
                          "and lake build of the module gates acceptance. --write writes the proof back and adds\n"
                          "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
-                         "elaborating Lean runs code). Prover: PRISM_PROVER_SERVER or PRISM_PROVER_GGUF.\n"
+                         "elaborating Lean runs code). Prover: a FORGE .fpk, PRISM_PROVER_FPK.\n"
                          "Exit 0 proved (--all: every one), 1 not proved, 3 NOTRUN (--all: every one), 2 error.\n";
             return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) pos.push_back(a);

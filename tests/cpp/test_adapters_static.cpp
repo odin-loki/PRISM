@@ -145,7 +145,7 @@ TEST_CASE("llm_httpish: connection errors are a missing backend, not a failed re
     CHECK(sd::llm_httpish("Connection aborted."));
     CHECK(sd::llm_httpish("connection refused"));
     CHECK(sd::llm_httpish("[Errno 111] Connection refused"));
-    CHECK(sd::llm_httpish("llama.cpp/Ollama not reachable"));
+    CHECK(sd::llm_httpish("no FORGE model (.fpk) configured"));
     CHECK_FALSE(sd::llm_httpish("candidate did not compile"));
     CHECK_FALSE(sd::llm_httpish(""));
 }
@@ -173,9 +173,7 @@ TEST_CASE("execute_cex replays concretely (not a proof); rlef_repair without a m
     CHECK((out[0].status == laws::CRASH || out[0].status == laws::CLEAN));
     for (const auto& f : out) CHECK_FALSE(laws::is_proof(f.status));
 
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto rep = prism::rlef_repair(fail, cfg);
     REQUIRE_FALSE(rep.empty());
     CHECK(rep[0].stage == "repair");

@@ -118,7 +118,7 @@ void note_sandbox_output(Finding& f, const nlohmann::json& result, bool crash) {
 
 }  // namespace
 
-std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& prompt, int rounds,
+std::vector<Finding> interpreter_loop(LlmEngine& engine, const std::string& prompt, int rounds,
                                       bool allow_exec) {
     if (!engine.available()) {
         auto f = nr("execute", LLM_UNAVAILABLE_MSG);
@@ -294,7 +294,7 @@ std::vector<Finding> execute_cex(const std::vector<Finding>& fails, const std::v
         out.push_back(std::move(f));
     }
     if (cfg.llm && !fails.empty()) {
-        LlamaEngine engine(cfg);
+        LlmEngine engine(cfg);
         // Python engine execute_cex: LLM half down is NOTRUN with extra.half=llm, never CLEAN.
         if (!engine.available()) {
             auto f = nr("execute", LLM_UNAVAILABLE_MSG);

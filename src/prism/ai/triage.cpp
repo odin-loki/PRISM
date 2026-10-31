@@ -15,11 +15,12 @@
 // similarity edges are only drawn within one file (blocking), so large
 // reports stay near-linear and unrelated functions are not chained together.
 //
-// When a small code embedding model is reachable (llama.cpp /embedding at
-// PRISM_EMBED_SERVER), the similarity is the mean of the TF-IDF cosine and
+// When a small code embedding model is reachable (a FORGE embedding
+// .fpk at PRISM_EMBED_FPK), the similarity is the mean of the TF-IDF cosine and
 // the model cosine. Without it the TF-IDF result is used and triage.json says
 // why (Law 7).
 
+#include "prism/forge_llm.hpp"
 #include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
@@ -84,37 +85,16 @@ std::mutex g_embed_mu;
 std::shared_ptr<Embedder> g_embed_test;
 bool g_embed_test_set = false;
 
-class LlamaEmbedder final : public Embedder {
+class ForgeEmbedder final : public Embedder {
 public:
-    explicit LlamaEmbedder(std::string url) : url_(std::move(url)) {}
-    std::string name() const override { return "llama-server-embedding:" + url_; }
+    explicit ForgeEmbedder(std::filesystem::path fpk) : fpk_(std::move(fpk)) {}
+    std::string name() const override { return "forge:" + fpk_.filename().string(); }
     std::optional<std::vector<double>> embed(const std::string& text) override {
-        nlohmann::json body{{"content", text}};
-        auto resp = http_request_raw("POST", url_ + "/embedding", body.dump(), 30000);
-        if (!resp) return std::nullopt;
-        try {
-            auto j = nlohmann::json::parse(*resp);
-            // {"embedding": [...]}, or [{"index":0,"embedding":[[...]]}] (newer servers)
-            const nlohmann::json* e = nullptr;
-            if (j.is_object() && j.contains("embedding")) e = &j["embedding"];
-            else if (j.is_array() && !j.empty() && j[0].is_object() && j[0].contains("embedding")) e = &j[0]["embedding"];
-            if (!e) return std::nullopt;
-            const nlohmann::json* v = e;
-            if (v->is_array() && !v->empty() && (*v)[0].is_array()) v = &(*v)[0];
-            std::vector<double> out;
-            for (auto& x : *v) {
-                if (!x.is_number()) return std::nullopt;
-                out.push_back(x.get<double>());
-            }
-            if (out.empty()) return std::nullopt;
-            return out;
-        } catch (...) {
-            return std::nullopt;
-        }
+        return forge_llm::embed(fpk_, text, nullptr);
     }
 
 private:
-    std::string url_;
+    std::filesystem::path fpk_;
 };
 
 }  // namespace
@@ -127,19 +107,18 @@ std::shared_ptr<Embedder> connect_embedder(std::string* why) {
             return g_embed_test;
         }
     }
-    const char* url = std::getenv("PRISM_EMBED_SERVER");
-    if (!url || !*url) {
-        if (why) *why = "NOTRUN: no embedding model (set PRISM_EMBED_SERVER to a llama.cpp server started with "
-                        "--embedding); deterministic TF-IDF embedding used";
+    const char* p = std::getenv("PRISM_EMBED_FPK");
+    if (!p || !*p) {
+        if (why) *why = "NOTRUN: no embedding model (set PRISM_EMBED_FPK to a FORGE embedding .fpk); "
+                        "deterministic TF-IDF embedding used";
         return nullptr;
     }
-    std::string u = url;
-    while (!u.empty() && u.back() == '/') u.pop_back();
-    if (!http_request_raw("GET", u + "/health", {}, 1500)) {
-        if (why) *why = "NOTRUN: embedding server " + u + " not reachable; deterministic TF-IDF embedding used";
+    if (!forge_llm::is_fpk(p)) {
+        if (why) *why = std::string("NOTRUN: PRISM_EMBED_FPK is not a FORGE .fpk: ") + p +
+                        "; deterministic TF-IDF embedding used";
         return nullptr;
     }
-    return std::make_shared<LlamaEmbedder>(u);
+    return std::make_shared<ForgeEmbedder>(p);
 }
 
 void set_embedder_for_testing(std::shared_ptr<Embedder> e) {

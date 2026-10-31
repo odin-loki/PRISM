@@ -24,9 +24,6 @@ the few line-ending differences). Their licence texts ship in their trees.
   third_party/nlohmann/json.hpp (SPDX header)
 - doctest 2.4.11 — Copyright (c) 2016-2023 Viktor Kirilov. MIT License.
   third_party/doctest/doctest.h (header). Used by the test binary only.
-- llama.cpp b6875 (ggml 0.9.4) — Copyright (c) 2023-2024 The ggml authors.
-  MIT License. third_party/llama.cpp/LICENSE (bundled sub-licences in
-  third_party/llama.cpp/licenses/). Linked only when PRISM_LLAMA=ON.
 
 ======================================================================
 2. External tools (kind = "external"; never linked, never shipped)

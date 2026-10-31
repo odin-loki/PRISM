@@ -18,7 +18,6 @@ if(WIN32)
 endif()
 
 option(PRISM_CUDA "Build CUDA mutation kernels" ON)
-option(PRISM_LLAMA "Build in-tree llama.cpp inference" ON)
 option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
@@ -53,8 +52,8 @@ endif()
 
 set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# third_party/ holds only the six linked libraries (xsimd, z3, pcre2, nlohmann,
-# doctest, llama.cpp), each pinned in third_party/MANIFEST.toml. External tools
+# third_party/ holds only the five linked libraries (xsimd, z3, pcre2, nlohmann,
+# doctest), each pinned in third_party/MANIFEST.toml. External tools
 # are fetched by `prism-deps tool NAME` into ~/.prism/tools/, never built here.
 # Never file(GLOB) third_party/.
 
@@ -171,7 +170,7 @@ target_include_directories(xsimd INTERFACE "${_xsimd_inc}")
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE "${PRISM_ROOT}/third_party")
 
-# Static in-tree deps. CACHE FORCE so llama.cpp's option(BUILD_SHARED_LIBS) cannot
+# Static in-tree deps. CACHE FORCE so a dependency's option(BUILD_SHARED_LIBS) cannot
 # flip this to ON on a fresh configure.
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
@@ -193,6 +192,7 @@ set(PRISM_SRC
   src/prism/astlint_libclang.cpp
   src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
+  src/prism/ai/forge_llm.cpp
   src/prism/ai/draft.cpp
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
@@ -676,41 +676,8 @@ else()
   message(WARNING "PRISM_CUDA=OFF — CUDA kernel skipped (NOTRUN, not a silent disable)")
 endif()
 
-if(PRISM_LLAMA AND EXISTS "${PRISM_ROOT}/third_party/llama.cpp/CMakeLists.txt")
-  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
-  set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
-  # CPU-only unless PRISM_CUDA actually enabled the language; nvcc+clang host often fails.
-  # check_language(CUDA) may still set CMAKE_CUDA_COMPILER to nvcc — do not let llama use it.
-  if(_prism_cuda_lang)
-    set(GGML_CUDA ON CACHE BOOL "" FORCE)
-    message(STATUS "llama.cpp GGML_CUDA ON (host ${CMAKE_CUDA_HOST_COMPILER})")
-  else()
-    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-    message(WARNING "llama.cpp GGML_CUDA OFF — CUDA language not enabled (NOTRUN, not a silent disable)")
-  endif()
-  set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
-  set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-  set(GGML_HIP OFF CACHE BOOL "" FORCE)
-  set(GGML_METAL OFF CACHE BOOL "" FORCE)
-  # llama.cpp rewrites CMAKE_*_OUTPUT_DIRECTORY to ${CMAKE_BINARY_DIR}/bin; keep prism next to build/.
-  set(_prism_saved_runtime_outdir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-  set(_prism_saved_library_outdir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
-  add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${_prism_saved_runtime_outdir}")
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${_prism_saved_library_outdir}")
-  if(TARGET llama)
-    target_link_libraries(prism_core PUBLIC llama)
-    target_compile_definitions(prism_core PUBLIC PRISM_HAS_LLAMA)
-  else()
-    message(WARNING "llama.cpp configured but target llama missing — hypothesize GGUF path is NOTRUN")
-  endif()
-elseif(PRISM_LLAMA)
-  message(WARNING "third_party/llama.cpp missing — hypothesize GGUF path is NOTRUN")
-endif()
+include(cmake/forge_mind.cmake)
+target_link_libraries(prism_core PUBLIC prism_forge_mind)
 
 if(PRISM_QT)
   find_package(Qt6 COMPONENTS Widgets QUIET)
@@ -911,7 +878,7 @@ if(PRISM_TESTS)
     tests/cpp/test_repo_tools.cpp
     # The offline AI analytics (prism_ai, the GBDT trainer, the built-in model).
     tests/cpp/test_prism_ai.cpp
-    # The assistant subcommands end to end, with a fake llama-server.
+    # The assistant subcommands end to end, with a test-double model backend.
     tests/cpp/test_ai_assist_cli.cpp
     # The model-driven stage pieces: chat engine, reply parsing, sandbox and repair loops.
     tests/cpp/test_agent.cpp
@@ -960,7 +927,7 @@ if(PRISM_TESTS)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()
   if(WIN32)
-    # test_repair's fake llama-server listens on a Winsock loopback socket.
+    # test_repair's fake model server listens on a Winsock loopback socket.
     target_link_libraries(prism_tests PRIVATE ws2_32)
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)

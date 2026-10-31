@@ -247,7 +247,7 @@ TEST_CASE("repolint: solver sources are listed and certified status is one liter
     const auto at = cmake.find("src/cuda/probsat.cu");
     CHECK(at != std::string::npos);
     CHECK(cmake.find("if(PRISM_CUDA)") < at);
-    CHECK(cmake.find("if(PRISM_LLAMA)") > at);
+    CHECK(cmake.find("include(cmake/forge_mind.cmake)") > at);
     const auto hdr = slurp(repo() / "include" / "prism" / "solver.hpp");
     CHECK(hdr.find("kProvedCertified = laws::PROVED_CERTIFIED") != std::string::npos);
     CHECK(hdr.find("\"PROVED-CERTIFIED\"") == std::string::npos);

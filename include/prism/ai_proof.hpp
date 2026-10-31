@@ -104,8 +104,7 @@ struct ProveOptions {
     int beam = 4;                           // partial proofs kept
     double lean_timeout = 120.0;
     std::filesystem::path out{"prism-out"};
-    std::string prover_server;              // llama-server URL ($PRISM_PROVER_SERVER)
-    std::filesystem::path prover_gguf;      // GGUF to serve ($PRISM_PROVER_GGUF)
+    std::filesystem::path prover_fpk;       // FORGE prover model ($PRISM_PROVER_FPK)
     std::string prover_model;               // name recorded in the audit ($PRISM_PROVER_MODEL)
     std::shared_ptr<ModelBackend> backend;  // tests: injected prover (else resolved from the above)
 };

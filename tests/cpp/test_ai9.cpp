@@ -345,7 +345,7 @@ TEST_CASE("ai9 lean: no prover model is NOTRUN, never a proof") {
     o.file = dir / "T.lean";
     o.theorem = "t";
     o.out = dir / "out";
-    o.prover_gguf = dir / "missing-prover.gguf";
+    o.prover_fpk = dir / "missing-prover.fpk";
     auto r = ai::prove_theorem(o);
     CHECK(r.status == std::string(laws::NOTRUN));
     CHECK_FALSE(r.reason.empty());

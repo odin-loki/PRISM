@@ -28,7 +28,7 @@ RlefScore rlef_reward(const nlohmann::json& result, std::string_view bmc_status)
 
 // The OpenCodeInterpreter loop: the model writes a C main(), the sandbox runs
 // it (only with allow_exec, Law 9).
-std::vector<Finding> interpreter_loop(LlamaEngine& engine, const std::string& prompt, int rounds, bool allow_exec);
+std::vector<Finding> interpreter_loop(LlmEngine& engine, const std::string& prompt, int rounds, bool allow_exec);
 
 // Status of the first SCALAR function of a candidate at a small unwind, or ""
 // when BMC gives no answer (NOTRUN, ERROR, TIMEOUT, NEEDS-HARNESS, UNKNOWN).

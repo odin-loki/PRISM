@@ -32,11 +32,9 @@ struct ReplyGuard {
 };
 
 prism::Config offline() {
-    // Config{}, not default_config(): the latter fills gguf from PRISM_GGUF.
+    // Config{}, not default_config(): the latter fills fpk from PRISM_FPK.
     prism::Config cfg;
-    cfg.gguf.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
-    cfg.ollama_host = "http://127.0.0.1:1";
+    cfg.fpk.clear();
     cfg.llm = true;
     return cfg;
 }

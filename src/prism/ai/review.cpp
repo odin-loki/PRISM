@@ -54,7 +54,7 @@ std::vector<Finding> run_review(const std::vector<FunctionInfo>& functions, cons
                     "audit, proof repair) not run: " + why + "; the Z3 vacuity audit, approved contracts and the "
                     "proof-regression check ran";
         f.strength = std::string(laws::STRENGTH_READS);
-        f.extra["install"] = "start llama-server (PRISM_LLAMA_SERVER) or Ollama with a local model";
+        f.extra["install"] = "set PRISM_FPK to a FORGE .fpk (Qwen 3.5 9B converted with FORGE)";
         out.push_back(std::move(f));
     }
     return out;

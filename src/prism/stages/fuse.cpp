@@ -529,19 +529,19 @@ std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const s
 
 namespace {
 
-bool llama_engine_up(LlamaEngine* e);
+bool llm_engine_up(LlmEngine* e);
 
-std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const FunctionInfo& fn, int nbytes);
+std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlmEngine& engine, const FunctionInfo& fn, int nbytes);
 
-std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex);
 
-std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlmEngine& engine, const FunctionInfo& fn,
                                                               const std::string& seed_hex,
                                                               const std::string& prev_hex = {},
                                                               int strategy = 1);
 
-std::vector<std::vector<uint8_t>> fuzz4all_combine(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_combine(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex, const std::string& prev_hex);
 
 void pad_seed_nbytes(std::vector<uint8_t>& b, int n) {
@@ -1021,7 +1021,7 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
 }
 
 Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings, const fs::path& root,
-                 double budget, int iters, int rounds, LlamaEngine* engine, const Config& cfg) {
+                 double budget, int iters, int rounds, LlmEngine* engine, const Config& cfg) {
     auto nh = [&](std::string msg) {
         return make_find("fuse", laws::NEEDS_HARNESS, fn, "", std::move(msg), laws::STRENGTH_FINDS);
     };
@@ -1078,11 +1078,11 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     } else if (afl_on_path && !use_afl) {
         extra["afl_available"] = "true";
     }
-    bool llm_up = llama_engine_up(engine);
+    bool llm_up = llm_engine_up(engine);
     if (engine && !llm_up) {
         extra["autoprompt"] = "NOTRUN";
         extra["chatfuzz"] = "NOTRUN";
-        extra["install"] = "ollama serve  (qwen3.5:9b) or build prism with -DPRISM_LLAMA=ON";
+        extra["install"] = LLM_INSTALL;
     }
     if (llm_up) {
         try {
@@ -1370,9 +1370,9 @@ std::string fn_source_text(const FunctionInfo& fn, const fs::path& root) {
     return fn.signature + "\n{" + fn.body + "\n}";
 }
 
-const char* LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
+const char* LLM_SKIP_FUSE_MSG = "no FORGE model (.fpk); stall mutants / autoprompt skipped";
 
-bool llama_engine_up(LlamaEngine* e) { return e && e->available(); }
+bool llm_engine_up(LlmEngine* e) { return e && e->available(); }
 
 }  // namespace
 
@@ -1512,7 +1512,7 @@ FuzzPrompt create_prompt_from_source(const std::string& name, const std::string&
 
 namespace {
 
-std::string fuzz4all_autoprompt_text(LlamaEngine& engine, const FunctionInfo& fn) {
+std::string fuzz4all_autoprompt_text(LlmEngine& engine, const FunctionInfo& fn) {
     if (!engine.available()) return {};
     auto src_file = read_fn_source(fn);
     auto docs = documentation_from_comments(src_file);
@@ -1538,7 +1538,7 @@ std::string fuzz4all_update_strategy(const std::string& new_hex, const std::stri
 
 namespace {
 
-std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const FunctionInfo& fn, int nbytes) {
+std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlmEngine& engine, const FunctionInfo& fn, int nbytes) {
     if (!engine.available()) return {};
     auto user = "nbytes=" + std::to_string(nbytes) + "\n" + fn.signature + "\n{" + fn.body + "\n}";
     auto r = engine.complete({{"system", SYSTEM_FUZZ4ALL}, {"user", user}}, 90.0);
@@ -1555,7 +1555,7 @@ std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const Func
     return pick_best_prompt(candidates, nbytes).seeds;
 }
 
-std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlmEngine& engine, const FunctionInfo& fn,
                                                               const std::string& seed_hex,
                                                               const std::string& prev_hex, int strategy) {
     if (!engine.available()) return {};
@@ -1567,12 +1567,12 @@ std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engin
     return json_hex_list(extract_json(r.text), "mutants");
 }
 
-std::vector<std::vector<uint8_t>> fuzz4all_combine(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_combine(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex, const std::string& prev_hex) {
     return fuzz4all_mutate_interesting(engine, fn, seed_hex, prev_hex, 3);
 }
 
-std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex) {
     if (!engine.available()) return {};
     auto r = engine.complete({{"system", SYSTEM_CHATFUZZ},
@@ -1598,11 +1598,11 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     // budget still gets a floor so a short round does some concrete fuzzing.
     double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
-    std::optional<LlamaEngine> eng;
-    // The run's model settings (PRISM_MODEL, PRISM_LLAMA_SERVER, OLLAMA_HOST,
-    // PRISM_GGUF, and its output directory for the audit log).
+    std::optional<LlmEngine> eng;
+    // The run's model settings (PRISM_MODEL, PRISM_FPK,
+    // and its output directory for the audit log).
     if (llm) eng.emplace(cfg);
-    LlamaEngine* ep = eng.has_value() ? &eng.value() : nullptr;
+    LlmEngine* ep = eng.has_value() ? &eng.value() : nullptr;
     for (auto& fn : functions)
         out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
     if (ep && !ep->available() && !functions.empty()) {

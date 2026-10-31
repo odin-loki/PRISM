@@ -84,7 +84,7 @@ PRISM_API int regress_main(int argc, char** argv);
 
 // ---------------------------------------------------------------- triage + dedup (9.3)
 // Optional embedding model (roadmap 9.1: a small code embedding model through
-// llama.cpp's /embedding endpoint, PRISM_EMBED_SERVER). Without it the
+// a FORGE one-shot embedding .fpk, PRISM_EMBED_FPK). Without it the
 // deterministic TF-IDF embedding is used, and triage.json says so.
 class PRISM_API Embedder {
 public:

@@ -163,31 +163,6 @@ tree_version_regex = 'DOCTEST_VERSION_MAJOR (\d+)\s*#define DOCTEST_VERSION_MINO
 tree_version = "2.4.11"
 drift = []
 
-[[component]]
-name = "llama.cpp"
-kind = "linked"
-version = "b6875"
-url = "https://github.com/ggml-org/llama.cpp"
-tag = "b6875"
-commit = "3eb2be1ca5f37480aeb16102970d9e65f43347fe"
-archive_sha256 = "8ec335a2254ca0393c5471c3df84fe758ca63e9aa2f7ddc216bcf8cceb5e070b"
-spdx = "MIT"
-licence_file = "LICENSE"
-path = "third_party/llama.cpp"
-tree_sha256 = "2af497071fc799683f82530c5225540d5ec37e0f823ae30f6d45e2769c064e40"
-# No release number in tree; the ggml version is the in-tree marker.
-tree_version_file = "ggml/CMakeLists.txt"
-tree_version_regex = 'GGML_VERSION_MAJOR (\d+)\)\s*set\(GGML_VERSION_MINOR (\d+)\)\s*set\(GGML_VERSION_PATCH (\d+)\)'
-tree_version = "0.9.4"
-# *.gguf vocab files are ignored on both sides (never vendored, .gitignore).
-drift = [
-  "D build-xcframework.sh",
-  "D docs/build-riscv64-spacemit.md",
-  "D docs/build-s390x.md",
-  "D examples/llama.swiftui/llama.swiftui.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist",
-  "M models/templates/moonshotai-Kimi-K2.jinja",
-]
-
 # -------------------------------------------------------------- external ----
 # Run as separate processes only (licence firewall, roadmap 1.2).
 

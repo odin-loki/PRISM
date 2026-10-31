@@ -134,7 +134,7 @@ const deps::Table& row(const deps::Manifest& m, const std::string& name) {
     throw;
 }
 
-const std::vector<std::string> kLinked = {"z3", "pcre2", "xsimd", "nlohmann_json", "doctest", "llama.cpp"};
+const std::vector<std::string> kLinked = {"z3", "pcre2", "xsimd", "nlohmann_json", "doctest"};
 const std::vector<std::string> kMined = {"AFLplusplus", "Frama-C", "FuSeBMC", "Fuzz4All", "cbmc",
                                          "coccinelle", "codeql", "cppcheck", "dafny", "esbmc",
                                          "infer", "klee", "rapidcheck", "semgrep", "strix"};

@@ -4,7 +4,7 @@ Slice on `src/prism/stages/llm.cpp`. No llama doctest file exists under `tests/c
 
 ## GGUF size
 
-`gguf_is_model` requires a regular file of at least 1 MiB (`kMinRealGguf`, `1 << 20`, 1048576 bytes). `LlamaEngine::bind` and `native_llama_complete` both use it.
+`gguf_is_model` requires a regular file of at least 1 MiB (`kMinRealGguf`, `1 << 20`, 1048576 bytes). `LlmEngine::bind` and `native_llama_complete` both use it.
 
 A missing path, a non-file, an unreadable size, or a file smaller than 1 MiB does not select backend `llama.cpp`. `bind` leaves `backend` as `"none"` (unless llama-server, Ollama, or the test double already won). `hypothesize` then returns one `NOTRUN` row with `LLM_UNAVAILABLE_MSG`, the same row it already returns when the GGUF path is absent. The loader's own miss string stays `missing GGUF (set PRISM_GGUF)`.
 

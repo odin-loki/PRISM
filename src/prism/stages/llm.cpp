@@ -1,12 +1,10 @@
-// The LLM chat engine (llama-server, Ollama or linked llama.cpp) and the
+// The LLM chat engine (FORGE mind, in process, on a .fpk model) and the
 // sandboxed compile+run of LLM-written C (declared in llm.hpp).
 #include "llm.hpp"
 
 #include "prism/ai.hpp"
 
-#ifdef PRISM_HAS_LLAMA
-#  include "llama.h"
-#endif
+#include "prism/forge_llm.hpp"
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -70,197 +68,20 @@ void set_chat_backend_for_testing(ChatBackend backend) {
 
 }  // namespace stages_detail
 
-namespace {
-#ifdef PRISM_HAS_LLAMA
-// Smaller than 1 MiB: the file can exist and still not be a model. Those
-// paths stay on the missing-model path (backend "none", stage NOTRUN).
-constexpr std::uintmax_t kMinRealGguf = std::uintmax_t{1} << 20;
-
-bool gguf_is_model(const fs::path& path) {
-    std::error_code ec;
-    if (path.empty() || !fs::is_regular_file(path, ec) || ec) return false;
-    const auto n = fs::file_size(path, ec);
-    return !ec && n >= kMinRealGguf;
-}
-
-// PRISM_N_GPU_LAYERS is written to llama_model_params.n_gpu_layers.
-// Unset returns -1. Windows without MSVC's cl returns 0 so the load does
-// not require a GPU. llama_context_params has no n_gpu_layers field.
-int native_gpu_layers() {
-#ifdef _WIN32
-    if (!Config{}.which({"cl"})) return 0;
-#endif
-    if (const char* e = std::getenv("PRISM_N_GPU_LAYERS"); e && *e) {
-        try {
-            return std::stoi(e);
-        } catch (...) {
-            return -1;
-        }
-    }
-    return -1;
-}
-
-// Context of the linked model: prompt and reply together (the servers use 8192 too).
-constexpr int kNativeCtx = 8192;
-
-struct NativeLlama {
-    std::mutex mu;
-    llama_model* model = nullptr;
-    std::string loaded_path;
-    bool backends = false;
-
-    ~NativeLlama() {
-        if (model) llama_model_free(model);
-    }
-
-    llama_model* get(const fs::path& path, std::string& err) {
-        std::lock_guard<std::mutex> lock(mu);
-        if (!backends) {
-            llama_log_set(
-                [](enum ggml_log_level level, const char* text, void*) {
-                    if (level >= GGML_LOG_LEVEL_ERROR) std::fputs(text, stderr);
-                },
-                nullptr);
-            ggml_backend_load_all();
-            llama_backend_init();
-            backends = true;
-        }
-        auto s = path.string();
-        if (model && loaded_path == s) return model;
-        if (model) {
-            llama_model_free(model);
-            model = nullptr;
-        }
-        auto params = llama_model_default_params();
-        params.n_gpu_layers = native_gpu_layers();
-        model = llama_model_load_from_file(s.c_str(), params);
-        if (!model) {
-            err = "failed to load GGUF " + s;
-            return nullptr;
-        }
-        loaded_path = std::move(s);
-        return model;
-    }
-};
-
-static NativeLlama g_native_llama;
-
-static ChatResult native_llama_complete(const Config& cfg,
-                                        const std::vector<std::pair<std::string, std::string>>& messages) {
-    if (!gguf_is_model(cfg.gguf)) {
-        return {"", "llama.cpp", "missing GGUF (set PRISM_GGUF)"};
-    }
-    std::string err;
-    llama_model* model = g_native_llama.get(cfg.gguf, err);
-    if (!model) return {"", "llama.cpp", err};
-
-    const llama_vocab* vocab = llama_model_get_vocab(model);
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = kNativeCtx;
-    ctx_params.n_batch = kNativeCtx;
-    // No n_gpu_layers on llama_context_params (llama.h). PRISM_N_GPU_LAYERS
-    // is applied in NativeLlama::get. Unset keeps native_gpu_layers().
-    llama_context* ctx = llama_init_from_model(model, ctx_params);
-    if (!ctx) return {"", "llama.cpp", "failed to create llama_context"};
-
-    std::vector<llama_chat_message> chat;
-    chat.reserve(messages.size());
-    for (auto& [role, content] : messages) chat.push_back({role.c_str(), content.c_str()});
-    const char* tmpl = llama_model_chat_template(model, nullptr);
-    std::vector<char> formatted(llama_n_ctx(ctx));
-    int n = llama_chat_apply_template(tmpl, chat.data(), chat.size(), true, formatted.data(),
-                                      static_cast<int32_t>(formatted.size()));
-    if (n > static_cast<int>(formatted.size())) {
-        formatted.resize(static_cast<std::size_t>(n));
-        n = llama_chat_apply_template(tmpl, chat.data(), chat.size(), true, formatted.data(),
-                                      static_cast<int32_t>(formatted.size()));
-    }
-    std::string prompt;
-    if (n < 0) {
-        for (auto& [role, content] : messages) {
-            prompt += role;
-            prompt += ": ";
-            prompt += content;
-            prompt += "\n";
-        }
-        prompt += "assistant:";
-    } else {
-        prompt.assign(formatted.data(), static_cast<std::size_t>(n));
-    }
-
-    const int n_prompt = -llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0,
-                                         true, true);
-    if (n_prompt <= 0) {
-        llama_free(ctx);
-        return {"", "llama.cpp", "failed to tokenize prompt"};
-    }
-    std::vector<llama_token> prompt_tokens(static_cast<std::size_t>(n_prompt));
-    if (llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), prompt_tokens.data(),
-                       static_cast<int32_t>(prompt_tokens.size()), true, true) < 0) {
-        llama_free(ctx);
-        return {"", "llama.cpp", "failed to tokenize prompt"};
-    }
-
-    llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.2f));
-    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
-    std::string text;
-    // The reply may use the rest of the context (a repaired C file is long);
-    // generation stops at end of generation or when the context is full.
-    const int max_new = static_cast<int>(llama_n_ctx(ctx)) - n_prompt;
-    if (max_new <= 0) {
-        llama_sampler_free(smpl);
-        llama_free(ctx);
-        return {"", "llama.cpp", "prompt longer than the context (" + std::to_string(n_prompt) + " tokens)"};
-    }
-    for (int i = 0; i < max_new; ++i) {
-        if (llama_decode(ctx, batch) != 0) {
-            llama_sampler_free(smpl);
-            llama_free(ctx);
-            return {"", "llama.cpp", "llama_decode failed"};
-        }
-        llama_token id = llama_sampler_sample(smpl, ctx, -1);
-        if (llama_vocab_is_eog(vocab, id)) break;
-        char buf[256];
-        int n_piece = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
-        if (n_piece < 0) break;
-        text.append(buf, static_cast<std::size_t>(n_piece));
-        batch = llama_batch_get_one(&id, 1);
-    }
-    llama_sampler_free(smpl);
-    llama_free(ctx);
-    return {text, "llama.cpp", ""};
-}
-#endif
-
-}  // namespace
-
 namespace stages_detail {
-LlamaEngine::LlamaEngine(Config c) : cfg(std::move(c)) { bind(); }
-void LlamaEngine::bind() {
+LlmEngine::LlmEngine(Config c) : cfg(std::move(c)) { bind(); }
+void LlmEngine::bind() {
     if (chat_backend()) {
         backend = "test-double";
         return;
     }
-    if (http_ok(cfg.llama_server + "/health") || http_ok(cfg.llama_server + "/v1/models")) {
-        backend = "llama-server";
+    if (forge_llm::is_fpk(cfg.fpk)) {
+        backend = "forge";
         return;
     }
-    if (!cfg.ollama_host.empty() && http_ok(cfg.ollama_host + "/api/tags")) {
-        backend = "ollama-llamacpp";
-        return;
-    }
-#ifdef PRISM_HAS_LLAMA
-    if (gguf_is_model(cfg.gguf)) {
-        backend = "llama.cpp";
-        return;
-    }
-#endif
     backend = "none";
 }
-bool LlamaEngine::available() const {
+bool LlmEngine::available() const {
     if (backend != "none") return true;
     if (ai::session_config()) {
         std::string why;
@@ -271,7 +92,7 @@ bool LlamaEngine::available() const {
 // Roadmap 9.6: every model interaction goes to <out>/ai_audit.jsonl.
 // These chats never set a verdict by themselves (checker "none"); a caller
 // that checks the output (RLEF BMC) logs its own checked record.
-ChatResult LlamaEngine::complete(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
+ChatResult LlmEngine::complete(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
     auto r = complete_raw(messages, timeout);
     std::string prompt;
     for (auto& [role, content] : messages) prompt += role + ":\n" + content + "\n";
@@ -279,13 +100,9 @@ ChatResult LlamaEngine::complete(const std::vector<std::pair<std::string, std::s
     rec.feature = "chat";
     rec.model = r.backend + ":" + cfg.model;
     rec.model_sha256 = "unknown";
-    if (r.backend == "llama.cpp" && !cfg.gguf.empty()) {
-        static std::map<std::string, std::string> cache;
-        static std::mutex mu;
-        std::lock_guard<std::mutex> lock(mu);
-        auto key = cfg.gguf.string();
-        if (!cache.count(key)) cache[key] = ai::sha256_file(cfg.gguf);
-        if (!cache[key].empty()) rec.model_sha256 = cache[key];
+    if (r.backend == "forge") {
+        auto d = forge_llm::model_digest(cfg.fpk);
+        if (!d.empty()) rec.model_sha256 = d;
     }
     rec.grammar = "none";
     rec.output_valid = r.error.empty();
@@ -296,7 +113,7 @@ ChatResult LlamaEngine::complete(const std::vector<std::pair<std::string, std::s
     last_prompt = prompt;
     return r;
 }
-ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
+ChatResult LlmEngine::complete_raw(const std::vector<std::pair<std::string, std::string>>& messages, double timeout) {
     if (ai::session_config()) {
         std::string why;
         if (auto injected = ai::session_backend(&why)) {
@@ -319,55 +136,17 @@ ChatResult LlamaEngine::complete_raw(const std::vector<std::pair<std::string, st
         }
     }
     if (backend == "none")
-        return {"", "none", "llama.cpp not loaded and Ollama not reachable"};
+        return {"", "none", "no FORGE model (set PRISM_FPK to a .fpk)"};
     if (backend == "test-double") {
         if (auto fn = chat_backend()) return fn(messages, timeout);
         return {"", "test-double", "test chat backend cleared"};
     }
-#ifdef PRISM_HAS_LLAMA
-    if (backend == "llama.cpp") return native_llama_complete(cfg, messages);
-#endif
-    nlohmann::json msgs = nlohmann::json::array();
-    for (auto& [role, content] : messages) msgs.push_back({{"role", role}, {"content", content}});
-    int ms = static_cast<int>(timeout * 1000);
-    if (backend == "llama-server") {
-        nlohmann::json body{{"model", cfg.model}, {"messages", msgs}, {"temperature", 0.2}};
-        std::string herr;
-        auto resp = http_request("POST", cfg.llama_server + "/v1/chat/completions", body.dump(), ms, &herr);
-        if (!resp) return {"", "llama-server", herr.empty() ? "HTTP error" : herr};
-        try {
-            auto raw = nlohmann::json::parse(*resp);
-            std::string text;
-            if (raw.contains("choices") && raw["choices"].is_array() && !raw["choices"].empty() &&
-                raw["choices"][0].is_object() && raw["choices"][0].contains("message") &&
-                raw["choices"][0]["message"].is_object() && raw["choices"][0]["message"].contains("content") &&
-                raw["choices"][0]["message"]["content"].is_string())
-                text = raw["choices"][0]["message"]["content"].get<std::string>();
-            return {text, "llama-server", "", raw};
-        } catch (const std::exception& ex) {
-            return {"", "llama-server", ex.what()};
-        }
-    }
-    nlohmann::json body{{"model", cfg.model},
-                        {"messages", msgs},
-                        {"stream", false},
-                        {"think", false},
-                        {"options", {{"temperature", 0.2}, {"num_ctx", 8192}}}};
-    std::string herr;
-    auto host = cfg.ollama_host;
-    while (!host.empty() && host.back() == '/') host.pop_back();
-    auto resp = http_request("POST", host + "/api/chat", body.dump(), ms, &herr);
-    if (!resp) return {"", "ollama-llamacpp", herr.empty() ? "HTTP error" : herr};
-    try {
-        auto raw = nlohmann::json::parse(*resp);
-        std::string text;
-        if (raw.contains("message") && raw["message"].is_object() && raw["message"].contains("content") &&
-            raw["message"]["content"].is_string())
-            text = raw["message"]["content"].get<std::string>();
-        return {text, "ollama-llamacpp", "", raw};
-    } catch (const std::exception& ex) {
-        return {"", "ollama-llamacpp", ex.what()};
-    }
+    forge_llm::Request req;
+    req.messages = messages;
+    req.timeout_s = timeout;
+    auto rep = forge_llm::complete(cfg.fpk, req);
+    nlohmann::json raw{{"prompt_tokens", rep.prompt_tokens}, {"new_tokens", rep.new_tokens}};
+    return {rep.text, "forge", rep.error, raw};
 }
 
 // Law 9: the program is LLM-written; it runs only with --allow-exec and then

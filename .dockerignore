@@ -9,6 +9,5 @@ prism-out*/
 **/*.pyc
 .venv
 venv
-third_party/llama.cpp/models/*.gguf
 **/.lake
 conformance-out

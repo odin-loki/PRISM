@@ -545,7 +545,7 @@ TEST_CASE("llm_httpish: connection errors are a missing backend, not a failed re
     CHECK(sd::llm_httpish("Connection aborted."));
     CHECK(sd::llm_httpish("connection refused"));
     CHECK(sd::llm_httpish("[Errno 111] Connection refused"));
-    CHECK(sd::llm_httpish("llama.cpp/Ollama not reachable"));
+    CHECK(sd::llm_httpish("no FORGE model (.fpk) configured"));
     CHECK_FALSE(sd::llm_httpish("candidate did not compile"));
     CHECK_FALSE(sd::llm_httpish(""));
 }
@@ -573,9 +573,7 @@ TEST_CASE("execute_cex replays concretely (not a proof); rlef_repair without a m
     CHECK((out[0].status == laws::CRASH || out[0].status == laws::CLEAN));
     for (const auto& f : out) CHECK_FALSE(laws::is_proof(f.status));
 
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto rep = prism::rlef_repair(fail, cfg);
     REQUIRE_FALSE(rep.empty());
     CHECK(rep[0].stage == "repair");
@@ -2340,151 +2338,6 @@ TEST_CASE("fuzz_function: the binary oracle runs after the concrete one and befo
 
 #ifndef _WIN32
 namespace {
-// A scripted llama-server: GET /health answers 200; each POST
-// /v1/chat/completions takes the next reply ("" closes the connection
-// without an answer, as a server that went away does).
-struct FakeLlama {
-    int lfd = -1;
-    int port = 0;
-    std::deque<std::string> replies;
-    std::atomic<bool> stop{false};
-    std::atomic<int> chats{0};
-    std::thread th;
-
-    explicit FakeLlama(std::deque<std::string> r) : replies(std::move(r)) {
-        lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-        REQUIRE(lfd >= 0);
-        int one = 1;
-        ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = 0;
-        REQUIRE(::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0);
-        REQUIRE(::listen(lfd, 8) == 0);
-        socklen_t len = sizeof a;
-        ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
-        port = ntohs(a.sin_port);
-        th = std::thread([this] { serve(); });
-    }
-    ~FakeLlama() {
-        stop = true;
-        th.join();
-        ::close(lfd);
-    }
-    FakeLlama(const FakeLlama&) = delete;
-    FakeLlama& operator=(const FakeLlama&) = delete;
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port); }
-
-    static std::string chat_json(const std::string& content) {
-        return nlohmann::json{{"choices", {{{"message", {{"role", "assistant"}, {"content", content}}}}}}}.dump();
-    }
-
-    void serve() {
-        while (!stop) {
-            pollfd p{lfd, POLLIN, 0};
-            if (::poll(&p, 1, 50) <= 0) continue;
-            int c = ::accept(lfd, nullptr, nullptr);
-            if (c < 0) continue;
-            std::string req;
-            char buf[4096];
-            std::size_t need = std::string::npos;
-            for (;;) {
-                auto he = req.find("\r\n\r\n");
-                if (he != std::string::npos && need == std::string::npos) {
-                    need = he + 4;
-                    auto low = lower(req.substr(0, he));
-                    auto cl = low.find("content-length:");
-                    if (cl != std::string::npos) need += std::stoul(low.substr(cl + 15));
-                }
-                if (need != std::string::npos && req.size() >= need) break;
-                pollfd q{c, POLLIN, 0};
-                if (::poll(&q, 1, 2000) <= 0) break;
-                auto n = ::recv(c, buf, sizeof buf, 0);
-                if (n <= 0) break;
-                req.append(buf, static_cast<std::size_t>(n));
-            }
-            std::string body;
-            if (req.starts_with("GET /health") || req.starts_with("GET /v1/models")) {
-                body = "{}";
-            } else if (req.starts_with("POST /v1/chat/completions")) {
-                ++chats;
-                if (!replies.empty()) {
-                    body = replies.front();
-                    replies.pop_front();
-                }
-            }
-            if (!body.empty()) {
-                auto resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                            std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-                (void)::send(c, resp.data(), resp.size(), MSG_NOSIGNAL);
-            }
-            ::close(c);
-        }
-    }
-};
 }  // namespace
 
-TEST_CASE("rlef_repair: a lost connection is NOTRUN only before any candidate scored") {
-    if (!prism::Config{}.which({"gcc", "clang"})) {
-        MESSAGE("no C compiler: RLEF candidates cannot be built here");
-        return;
-    }
-    TmpDir t;
-    auto src = t.put("div.c", "int div_param(int x, int y) { return x / y; }\n");
-    prism::Finding fail;
-    fail.stage = "bmc";
-    fail.status = std::string(laws::FAILED);
-    fail.file = src.string();
-    fail.function = "div_param";
-    fail.line = 1;
-    fail.cls = "INT-DIV-ZERO";
-    fail.message = "div by zero";
-    auto cfg = prism::default_config();
-    cfg.root = t.dir;
-    cfg.allow_exec = true;
-    cfg.repair_rounds = 3;
-    cfg.gguf.clear();
-    cfg.ollama_host.clear();
-    // A candidate that builds and runs but exits 3: scored (1), not accepted,
-    // so the loop asks again. main(argc, argv) has a pointer parameter, so no
-    // BMC verdict is attached to it.
-    const std::string cand = "int main(int argc, char **argv) { (void)argv; return argc + 2; }\n";
-
-    SUBCASE("the server goes away after a scored candidate: the best candidate stands") {
-        FakeLlama srv({FakeLlama::chat_json(cand), ""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 2);
-        CHECK(out[0].stage == "repair");
-        CHECK(out[0].status != laws::NOTRUN);
-        CHECK(out[0].status == laws::HYPOTHESIS);
-        CHECK(has(out[0].message, "RLEF best score 1 over 2 rounds (not a proof)"));
-        CHECK(has(xget(out[0], "history"), "HTTP error"));
-        CHECK(has(xget(out[0], "best"), "argc + 2"));
-        CHECK_FALSE(laws::is_proof(out[0].status));
-    }
-    SUBCASE("the server goes away before any candidate: NOTRUN, never a verdict") {
-        FakeLlama srv({""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 1);
-        CHECK(out[0].status == laws::NOTRUN);
-        CHECK(has(out[0].message, "HTTP error"));
-        CHECK(xget(out[0], "backend") == "llama-server");
-    }
-    SUBCASE("a silent reply scores nothing: a later lost connection is still NOTRUN") {
-        // history holds a row for the silent round, so a history-size test
-        // would wrongly keep going; best_score is what counts.
-        FakeLlama srv({FakeLlama::chat_json("  \n"), ""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 2);
-        CHECK(out[0].status == laws::NOTRUN);
-        CHECK(has(xget(out[0], "history"), "silent"));
-    }
-}
 #endif

@@ -61,7 +61,7 @@ std::string bmc_status_of_source(const std::string& source, int unwind) {
 }
 
 std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, const BmcOracle& oracle) {
-    LlamaEngine engine(cfg);
+    LlmEngine engine(cfg);
     if (!engine.available()) {
         auto f = nr("repair", LLM_UNAVAILABLE_MSG);
         f.extra["install"] = LLM_INSTALL;

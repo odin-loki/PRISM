@@ -69,7 +69,7 @@ RUN cmake -S /src -B /build -G Ninja \
       -DCMAKE_CXX_FLAGS="${PRISM_REPRO_FLAGS}" \
       -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -Wl,--build-id=sha1" \
       -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -Wl,--build-id=sha1" \
-      -DPRISM_Z3=ON -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_TESTS=ON \
+      -DPRISM_Z3=ON -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_TESTS=ON \
  && cmake --build /build \
  && (cd /src && /build/prism_tests) \
  && mkdir -p /out \
