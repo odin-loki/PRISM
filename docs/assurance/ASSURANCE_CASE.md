@@ -58,8 +58,8 @@ several goals are undeveloped.
             E06: `thm:KInduction.kinduction_sound`,
             `thm:Houdini.houdini_sound`, `thm:Contracts.modular_sound`.
         - **G3.2** The C++ encoders implement the design.
-          - **UNDEVELOPED** No proof connects `src/prism/pir/` or
-            `src/prism/bmc.cpp` to the Lean model
+          - **UNDEVELOPED** No proof connects `src/prism/pir/` to the
+            Lean model
             (`docs/PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder`).
             Interim evidence only:
           - **Sn5** E09: conformance suite and release gate (wrong proofs
