@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cstring>
 #include <algorithm>
+#include <functional>
 #include <tuple>
 #include <nlohmann/json.hpp>
 #include <map>
@@ -787,6 +788,16 @@ std::string rename_tokens(const std::string& in, const std::map<std::string, std
     std::vector<bool> member_scope{false};  // per brace depth: inside a struct/union body
     bool pending_aggr = false;               // saw struct/union, awaiting '{' or ';'
     char prev = 0, prev2 = 0;                // last two non-space characters emitted
+    // Scope awareness: a block-scope declaration or a parameter with the
+    // static's name shadows it until the end of that block.
+    std::vector<std::set<std::string>> shadow{{}};
+    std::set<std::string> params;            // parameters of the function head being read
+    int paren = 0;
+    std::string last_tok, tok_before_star;
+    static const std::set<std::string> kNotType = {"return", "case", "sizeof", "goto", "else", "do", "_Alignof", "alignof", "typeof", "__typeof__", "_Generic", "if", "while", "for", "switch"};
+    static const std::set<std::string> kTypeKw = {"int", "char", "short", "long", "float", "double", "void", "signed", "unsigned", "_Bool", "bool", "const", "volatile", "restrict", "__restrict", "_Decimal32", "_Decimal64", "_Decimal128", "_Complex", "struct", "union", "enum"};
+    auto next_char = [&](size_t e) { size_t k = in.find_first_not_of(" \t\r\n", e); return k == std::string::npos ? '\0' : in[k]; };
+    auto shadowed = [&](const std::string& t) { for (auto& sc : shadow) if (sc.count(t)) return true; return false; };
     for (size_t i = 0; i < n;) {
         const char c = in[i];
         if (c == '/' && i + 1 < n && (in[i + 1] == '/' || in[i + 1] == '*')) {
@@ -815,8 +826,17 @@ std::string rename_tokens(const std::string& in, const std::map<std::string, std
             if (tok == "struct" || tok == "union") pending_aggr = true;
             auto it = ren.find(tok);
             const bool member = prev == '.' || (prev == '>' && prev2 == '-');
-            if (it != ren.end() && !member && !member_scope.back()) out += it->second;
+            bool decl = false;
+            if (it != ren.end() && !member && !member_scope.back() && (shadow.size() > 1 || paren > 0)) {
+                const char nc = next_char(e);
+                const bool after_type = (prev == 'a' && !last_tok.empty() && !kNotType.count(last_tok) && !ren.count(last_tok)) ||
+                                        (prev == '*' && kTypeKw.count(tok_before_star));
+                if (after_type && nc && std::strchr("=,;[)", nc)) decl = true;
+            }
+            if (decl) { if (shadow.size() > 1) shadow.back().insert(tok); else params.insert(tok); out += tok; }
+            else if (it != ren.end() && !member && !member_scope.back() && !shadowed(tok)) out += it->second;
             else out += tok;
+            last_tok = tok;
             prev2 = prev; prev = 'a'; i = e; continue;
         }
         if (std::isdigit(static_cast<unsigned char>(c))) {  // pp-number: 1e5f, 0x1p3 ...
@@ -825,8 +845,16 @@ std::string rename_tokens(const std::string& in, const std::map<std::string, std
                              ((in[e] == '+' || in[e] == '-') && std::strchr("eEpP", in[e - 1])))) ++e;
             out.append(in, i, e - i); i = e; prev2 = prev; prev = '0'; continue;
         }
-        if (c == '{') { member_scope.push_back(pending_aggr); pending_aggr = false; }
-        else if (c == '}') { if (member_scope.size() > 1) member_scope.pop_back(); }
+        if (c == '*' && prev == 'a') tok_before_star = last_tok;
+        if (c == '(') ++paren;
+        else if (c == ')') { if (paren) --paren; }
+        if (c == '{') {
+            member_scope.push_back(pending_aggr);
+            shadow.push_back(shadow.size() == 1 ? params : std::set<std::string>{});
+            if (shadow.size() == 2) params.clear();
+            pending_aggr = false;
+        } else if (c == '}') { if (member_scope.size() > 1) member_scope.pop_back(); if (shadow.size() > 1) shadow.pop_back(); }
+        else if (c == ';' && shadow.size() == 1 && paren == 0) params.clear();
         else if (c == ';' || c == ')' || c == '(' || c == '=' || c == ',') pending_aggr = false;
         out += c;
         if (!std::isspace(static_cast<unsigned char>(c))) { prev2 = prev; prev = c; }
@@ -874,6 +902,76 @@ std::vector<std::vector<std::string>> collect_field_orders(const std::string& sr
     }
     return r;
 }
+// Integer constant expressions in array designators: literals, enum
+// constants of the unit (headers included), sizeof-free operators.
+std::map<std::string, long long>& designator_enums() { static std::map<std::string, long long> m; return m; }
+std::optional<long long> eval_const(const std::string& e, const std::map<std::string, long long>& en) {
+    size_t i = 0;
+    auto ws = [&] { while (i < e.size() && std::isspace(static_cast<unsigned char>(e[i]))) ++i; };
+    std::function<std::optional<long long>(int)> bin;
+    std::function<std::optional<long long>()> un = [&]() -> std::optional<long long> {
+        ws();
+        if (i >= e.size()) return std::nullopt;
+        char c = e[i];
+        if (c == '(') { ++i; auto v = bin(0); ws(); if (!v || i >= e.size() || e[i] != ')') return std::nullopt; ++i; return v; }
+        if (c == '-' || c == '+' || c == '~' || c == '!') { ++i; auto v = un(); if (!v) return v; return c == '-' ? -*v : c == '+' ? *v : c == '~' ? ~*v : (long long)!*v; }
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            size_t k = 0; long long v;
+            try { v = static_cast<long long>(std::stoull(e.substr(i), &k, 0)); } catch (...) { return std::nullopt; }
+            i += k; while (i < e.size() && std::strchr("uUlL", e[i])) ++i; return v;
+        }
+        if (c == '\'' && i + 2 < e.size() && e[i + 2] == '\'' && e[i + 1] != '\\') { long long v = static_cast<unsigned char>(e[i + 1]); i += 3; return v; }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            size_t k = i; while (k < e.size() && (std::isalnum(static_cast<unsigned char>(e[k])) || e[k] == '_')) ++k;
+            auto f = en.find(e.substr(i, k - i)); if (f == en.end()) return std::nullopt; i = k; return f->second;
+        }
+        return std::nullopt;
+    };
+    static const std::vector<std::pair<std::string, int>> ops = {{"||", 1}, {"&&", 2}, {"|", 3}, {"^", 4}, {"&", 5}, {"==", 6}, {"!=", 6}, {"<=", 7}, {">=", 7}, {"<<", 8}, {">>", 8}, {"<", 7}, {">", 7}, {"+", 9}, {"-", 9}, {"*", 10}, {"/", 10}, {"%", 10}};
+    bin = [&](int minp) -> std::optional<long long> {
+        auto l = un();
+        for (;;) {
+            if (!l) return l;
+            ws();
+            const std::pair<std::string, int>* op = nullptr;
+            for (auto& o : ops) if (e.compare(i, o.first.size(), o.first) == 0) { op = &o; break; }
+            if (!op || op->second <= minp) return l;
+            i += op->first.size();
+            auto r = bin(op->second);
+            if (!r) return r;
+            const long long a = *l, b = *r;
+            const std::string& o = op->first;
+            if ((o == "/" || o == "%") && b == 0) return std::nullopt;
+            l = o == "||" ? (a || b) : o == "&&" ? (a && b) : o == "|" ? (a | b) : o == "^" ? (a ^ b) : o == "&" ? (a & b) : o == "==" ? (a == b) : o == "!=" ? (a != b) :
+                o == "<=" ? (a <= b) : o == ">=" ? (a >= b) : o == "<<" ? (a << b) : o == ">>" ? (a >> b) : o == "<" ? (a < b) : o == ">" ? (a > b) :
+                o == "+" ? a + b : o == "-" ? a - b : o == "*" ? a * b : o == "/" ? a / b : a % b;
+        }
+    };
+    auto v = bin(0);
+    ws();
+    if (!v || i != e.size()) return std::nullopt;
+    return v;
+}
+std::map<std::string, long long> collect_enum_values(const std::string& src) {
+    std::map<std::string, long long> en;
+    static const std::regex kEnum(R"(\benum\s*(?:\w+\s*)?\{)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kEnum); it != std::sregex_iterator(); ++it) {
+        size_t b = static_cast<size_t>(it->position() + it->length()), e = src.find('}', b);
+        if (e == std::string::npos) break;
+        long long next = 0;
+        std::string cur; int d = 0;
+        auto take = [&](const std::string& q) {
+            std::smatch m;
+            if (!std::regex_match(q, m, std::regex(R"(\s*([A-Za-z_]\w*)\s*(?:=([\s\S]*))?)"))) return;
+            if (m[2].matched) { auto v = eval_const(m[2], en); if (!v) return; next = *v; }
+            en[m[1]] = next++;
+        };
+        for (size_t z = b; z < e; ++z) { char ch = src[z]; if (ch == '(') ++d; if (ch == ')') --d; if (ch == ',' && !d) { take(cur); cur.clear(); } else cur += ch; }
+        if (cur.find_first_not_of(" \t\r\n") != std::string::npos) take(cur);
+    }
+    return en;
+}
+
 std::string reorder_designators(const std::string& t, const std::vector<std::vector<std::string>>& orders);
 std::string reorder_list(const std::string& inner, const std::vector<std::vector<std::string>>& orders) {
     // inner: text between '{' and '}', already processed recursively
@@ -889,6 +987,46 @@ std::string reorder_list(const std::string& inner, const std::vector<std::vector
     }
     if (cur.find_first_not_of(" \t\r\n") != std::string::npos) el.push_back(cur);
     if (el.empty()) return inner;
+    // Nested designators (.a.b = x, [i].x = y, .arr[2] = z): group by the
+    // first designator into a nested braced list, which is then reordered
+    // like any other; non-literal indices are evaluated (enum constants,
+    // operators) so they can be placed.
+    {
+        static const std::regex kNest(R"(^\s*(\.\s*[A-Za-z_]\w*|\[[^\]]+\])\s*((?:\.\s*[A-Za-z_]\w*|\[[^\]]+\])+)\s*=([\s\S]*)$)");
+        std::vector<std::string> head_order;
+        std::map<std::string, std::vector<std::string>> sub;
+        std::vector<std::string> flat;
+        bool nested = false;
+        auto norm = [&](std::string h) {
+            if (h[0] == '[') { auto v = eval_const(h.substr(1, h.size() - 2), designator_enums()); if (v) return "[" + std::to_string(*v) + "]"; }
+            h.erase(std::remove_if(h.begin(), h.end(), [](char ch) { return std::isspace(static_cast<unsigned char>(ch)); }), h.end());
+            return h;
+        };
+        for (auto& e : el) {
+            std::smatch mm;
+            if (std::regex_match(e, mm, kNest)) {
+                nested = true;
+                const std::string h = norm(mm[1]);
+                if (!sub.count(h)) { head_order.push_back(h); flat.push_back("\x01" + h); }
+                sub[h].push_back(std::string(mm[2]) + " =" + std::string(mm[3]));
+            } else flat.push_back(e);
+        }
+        if (nested) {
+            el.clear();
+            for (auto& f : flat) {
+                if (f[0] != '\x01') { el.push_back(f); continue; }
+                const std::string h = f.substr(1);
+                std::string inner2;
+                for (size_t z = 0; z < sub[h].size(); ++z) inner2 += (z ? ", " : " ") + sub[h][z];
+                el.push_back(" " + h + " = {" + reorder_list(inner2, orders) + "}");
+            }
+        }
+    }
+    for (auto& e : el) {  // [expr] = v with a constant expression: literal index
+        std::smatch mm;
+        if (std::regex_match(e, mm, std::regex(R"(^\s*\[([^\]]+)\]\s*=([\s\S]*)$)")))
+            if (auto v = eval_const(mm[1], designator_enums()); v && *v >= 0) e = " [" + std::to_string(*v) + "] =" + std::string(mm[2]);
+    }
     static const std::regex kField(R"(^\s*\.\s*([A-Za-z_]\w*)\s*=([\s\S]*)$)");
     static const std::regex kIndex(R"(^\s*\[\s*(\d+)[uUlL]*\s*\]\s*=([\s\S]*)$)");
     std::smatch m;
@@ -959,7 +1097,61 @@ std::string reorder_designators(const std::string& t, const std::vector<std::vec
     }
     return out;
 }
-std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt = "") {
+// Preprocessed view of a unit for the decimal split (coverage item 6):
+// `full` is the whole -E output (header struct/enum definitions for the
+// designator reordering), `main` keeps only the lines of the main file,
+// macro-expanded (token pasting resolved, so renaming sees every use),
+// with each header the main file entered put back as one #include and
+// #line markers so diagnostics keep the source lines.
+struct PreUnit { std::string main, full; };
+std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std::string>& fl, const fs::path& src, double timeout_s) {
+    const fs::path out = fs::temp_directory_path() / ("prism-pre-" + std::to_string(::getpid()) + "-" + src.stem().string() + ".i");
+    std::vector<std::string> av{cc.string()};
+    for (size_t k = 0; k < fl.size(); ++k) {
+        const auto& t = fl[k];
+        if (t == "-S" || t == "-c" || t == "-emit-llvm" || t == "-g" || t.rfind("-W", 0) == 0) continue;
+        if (t == "-o") { ++k; continue; }
+        av.push_back(t);
+    }
+    av.insert(av.end(), {"-E", "-I", src.parent_path().string(), "-o", out.string(), src.string()});
+    auto r = detail::run_process(av, timeout_s);
+    if (r.failed || r.timed_out || r.rc != 0) return std::nullopt;
+    PreUnit u;
+    u.full = read_file(out);
+    std::error_code ec;
+    fs::remove(out, ec);
+    const std::string me = src.string();
+    std::string cur = me;
+    bool in_main = true;
+    std::set<std::string> included;
+    size_t i = 0;
+    static const std::regex kMark(R"re(^#\s*(\d+)\s+"((?:[^"\\]|\\.)*)"((?:\s+\d)*)\s*$)re");
+    while (i < u.full.size()) {
+        size_t e = u.full.find('\n', i);
+        if (e == std::string::npos) e = u.full.size();
+        const std::string line = u.full.substr(i, e - i);
+        i = e + 1;
+        std::smatch m;
+        if (std::regex_match(line, m, kMark)) {
+            const std::string file = m[2];
+            const bool enter = std::string(m[3]).find('1') != std::string::npos;
+            const bool now_main = file == me || fs::path(file).filename() == src.filename();
+            if (in_main && !now_main && enter && file.front() != '<' && !included.count(file)) {
+                u.main += "#include \"" + file + "\"\n";
+                included.insert(file);
+            }
+            if (now_main && !in_main) u.main += "#line " + std::string(m[1]) + " \"" + me + "\"\n";
+            in_main = now_main;
+            cur = file;
+            continue;
+        }
+        if (in_main) u.main += line + "\n";
+    }
+    if (u.main.empty()) return std::nullopt;
+    return u;
+}
+
+std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt = "", const std::string& full = "") {
     struct Item { std::string text; bool fn = false, pp = false; std::string name, head; };
     std::vector<Item> items;
     const size_t n = in.size();
@@ -1075,7 +1267,8 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
     if (!ren.empty())
         for (auto& it : items) { it.text = rename_tokens(it.text, ren); if (!it.head.empty()) it.head = rename_tokens(it.head, ren); it.name = ren.count(it.name) ? ren[it.name] : it.name; }
     (void)defs;
-    const auto orders = collect_field_orders(in);
+    const auto orders = collect_field_orders(full.empty() ? in : full);
+    designator_enums() = collect_enum_values(full.empty() ? in : full);
     auto cx = [&](const std::string& t) { return reorder_designators(c_only_to_cxx(t), orders); };
     // extern declarations for every declarator, initialisers dropped
     auto externs = [](const std::string& text) {
@@ -1284,7 +1477,8 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 // Item 6: split decimal functions into their own C++ file,
                 // keep the rest as C, and link the two modules.
                 bool split_ok = false;
-                if (auto sp = dfp_split(read_file(src), std::to_string(std::hash<std::string>{}(src.string()) % 1000000007u)); sp && sp->any) {
+                const auto pre = preprocess_unit(*cc, fl, src, timeout_s);
+                if (auto sp = dfp_split(pre ? pre->main : read_file(src), std::to_string(std::hash<std::string>{}(src.string()) % 1000000007u), pre ? pre->full : std::string()); sp && sp->any) {
                     const fs::path cpart = o0.parent_path() / (o0.stem().string() + ".split.c");
                     const fs::path xpart = o0.parent_path() / (o0.stem().string() + ".split.cpp");
                     const fs::path cll = o0.parent_path() / (o0.stem().string() + ".split.c.ll");

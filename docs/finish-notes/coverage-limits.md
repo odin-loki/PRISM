@@ -293,6 +293,41 @@ below.
   renamer treats a same-named local or label as the static (consistent,
   so semantics are kept) and does not look inside macro bodies built by
   token pasting.
+  Session 13 (written; compile-checked only) closes the session 12 list:
+  - CLOSED (unverified): locale-aware printf. A setlocale model (in the
+    __prism_fmtv unit) tracks LC_CTYPE / LC_NUMERIC for C, POSIX,
+    C.UTF-8 and en_US.UTF-8 (other names: NULL; "" is the empty analysed
+    environment, i.e. C; NULL queries the category's name). %lc/%ls encode
+    UTF-8 under a UTF-8 LC_CTYPE (surrogates and > 0x10FFFF: -1/EILSEQ;
+    %ls precision counts bytes of whole characters) and ' groups the
+    integer digits of d i u f F g G with ',' every 3 under en_US. Formats
+    using %ls/%lc/' go through __prism_fmtv even without a double.
+  - CLOSED (unverified): __int128 varargs (class 5: two consecutive
+    integer reads, low then high, as va_arg sees the GP register pair) and
+    byval struct varargs (class 6: the pointer to the copy travels in a
+    pointer slot; integer reads take its eightbytes). Structs <= 16 bytes
+    are already coerced to i64/double operands by the ABI and use those
+    classes. The per-window class map is a 3-bit-per-argument operand.
+  - CLOSED (unverified): designators from header-defined structs — the
+    split runs on the preprocessed unit (-E): field orders and enum values
+    come from the whole -E output, headers included.
+  - CLOSED (unverified): nested designators (.a.b =, [i].x =, .arr[2] =)
+    are grouped into nested braced lists and reordered recursively;
+    non-literal array indices are evaluated (integer literals, character
+    constants, enum constants, C operators).
+  - CLOSED (unverified): static renaming runs after preprocessing (the
+    main file's lines of the -E output, headers put back as #include,
+    #line markers kept), so token-pasted identifiers are seen; the renamer
+    is scope-aware (block-scope declarations and parameters with the
+    static's name shadow it until their block ends).
+  Still open after session 13: byval structs larger than 8 bytes give only
+  their first eightbyte to an integer read (printf has no conversion for
+  a struct, so the call is undefined anyway); locales beyond the four
+  names; the -E path falls back to the raw source when preprocessing
+  fails; a static shadowed by a typedef-named declaration with a pointer
+  declarator (`T *tbl;` with T a typedef) is not recognised as a
+  declaration.
+
 
 
 ## Exact binary floating-point text (session 6)
