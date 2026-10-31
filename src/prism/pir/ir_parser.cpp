@@ -449,7 +449,15 @@ struct P {
         v.kind = Value::ConstExpr;
         v.ce_op = op;
         v.text = op;
-        while (peek().kind == Tok::Word) v.ce_flags.push_back(next().text);
+        while (peek().kind == Tok::Word) {
+            v.ce_flags.push_back(next().text);
+            // LLVM 19+: `getelementptr inbounds inrange(lo, hi) (T, ...)`; the
+            // range only bounds later derived accesses, so it is dropped.
+            if (v.ce_flags.back() == "inrange" && is_punct('(')) {
+                v.ce_flags.pop_back();
+                skip_group();
+            }
+        }
         if (!is_punct('(')) throw ParseError("constant expression without operands");
         ++i;
         if (op == "getelementptr") {
