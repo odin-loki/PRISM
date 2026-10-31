@@ -957,7 +957,7 @@ struct Encoding {
             }
             std::optional<z3::expr> acc;
             std::optional<uint64_t> prov;
-            bool prov_ok = mem && w == 64;
+            bool prov_ok = mem && w == ptr_w();
             for (auto it = guards.rbegin(); it != guards.rend(); ++it) {
                 int pb = nodes.at(static_cast<std::size_t>(it->second)).block;
                 const Arg* src = nullptr;
@@ -995,7 +995,7 @@ struct Encoding {
                 CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init);
                 if (!fpL.all) {
                     std::vector<z3::expr> ptrs;
-                    for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, 64), id));
+                    for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, ptr_w()), id));
                     CL.havocked += mem->havoc_pointed(reach.at(static_cast<std::size_t>(id)), ptrs, fpL.keep_init);
                 }
             }
@@ -1568,6 +1568,7 @@ static void cap_z3_memory_once() {
 
 static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in);
 Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
+    PtrModelScope pms(fn.ptr);
     // this function's contexts and encoder state are gone when it returns:
     // hand the heap back so the next function's RSS check starts clean
     struct Trim {
@@ -1659,7 +1660,13 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
 
 namespace {
 
-Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
+Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
+    PtrModelScope pms(fn.ptr);
+    // Lean certificates are LP64-only (PrismSem Memory.lean: BitVec 64
+    // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
+    CheckOptions opt_ilp = opt_in;
+    if (fn.ptr.w != 64) opt_ilp.certified = false;
+    const CheckOptions& opt = opt_ilp;
     const EncodeOptions& eo = opt.encode;
     Verdict v;
     const int unwind = std::max(1, opt.unwind);
@@ -1715,7 +1722,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     VcBook book;
     auto finish = [&](Verdict& r) -> Verdict {
         r.extra["solver"] = book.summary();
-        r.extra["certified_mode"] = opt.certified ? "on" : "off";
+        r.extra["certified_mode"] = opt.certified ? "on" : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)" : "off";
         return r;
     };
     try {
@@ -2431,6 +2438,7 @@ std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
 }
 
 std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo) {
+    PtrModelScope pms(fn.ptr);
     std::vector<Vc> out;
     auto g = analyze(fn);
     if (!g.unencoded.empty()) return out;

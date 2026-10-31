@@ -3,7 +3,7 @@
 // PIR memory model internals (docs/PIR.md "Memory model"; Lean:
 // proofs/semantics/PrismSem/Memory.lean, MemEncode.lean).
 //
-// A pointer is one 64-bit value: object id in bits 63..48 (0 = the null
+// A pointer is one ptr_w()-bit value (PtrModel; LP64: object id in bits 63..48, 0 = the null
 // object, never allocated), byte offset in bits 47..0. Every byte of memory
 // is a *cell*: bits 7..0 value, bit 8 "initialised", bits 12..9 the
 // effective-type tag (only with --strict-aliasing). Objects carry size,
@@ -39,9 +39,9 @@
 
 namespace prism::pir::mem {
 
-inline uint64_t make_ptr(uint64_t obj, uint64_t off) { return (obj << kObjShift) | (off & kOffMask); }
-inline uint64_t obj_of(uint64_t p) { return p >> kObjShift; }
-inline uint64_t off_of(uint64_t p) { return p & kOffMask; }
+inline uint64_t make_ptr(uint64_t obj, uint64_t off) { return (obj << obj_shift()) | (off & off_mask()); }
+inline uint64_t obj_of(uint64_t p) { return p >> obj_shift(); }
+inline uint64_t off_of(uint64_t p) { return p & off_mask(); }
 
 inline constexpr unsigned kCellInit = 8;   // bit index of "initialised"
 inline constexpr unsigned kTagLo = 9;      // effective-type tag bits 12..9
@@ -207,8 +207,8 @@ private:
     std::optional<std::vector<uint64_t>> objs_of(const z3::expr& p) const;
 
     z3::expr bv(uint64_t v, unsigned w) { return c_.bv_val(v, w); }
-    z3::expr objid(const z3::expr& p) { return p.extract(63, kObjShift); }
-    z3::expr off(const z3::expr& p) { return z3::zext(p.extract(kObjShift - 1, 0), 64 - kObjShift); }
+    z3::expr objid(const z3::expr& p) { return p.extract(ptr_w() - 1, obj_shift()); }
+    z3::expr off(const z3::expr& p) { return z3::zext(p.extract(obj_shift() - 1, 0), ptr_w() - obj_shift()); }
     std::optional<uint64_t> const_obj(const z3::expr& p);
     z3::expr in_range(const z3::expr& a, const z3::expr& base, const z3::expr& len);
     z3::expr cell_of(const z3::expr& byte, const z3::expr& init, unsigned tag);

@@ -1462,3 +1462,79 @@ done:
     }
 }
 #endif
+
+// ILP32 (sv-comp 32-bit tasks): long, size_t and pointers are 32 bits; the
+// same source is checked under both data models (twins), and certificates
+// stay LP64-only (an ILP32 proof is solver-only).
+TEST_CASE("pir ILP32: 32-bit long, size_t and pointers, twins under LP64 (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
+    const auto dir = std::filesystem::temp_directory_path() / ("prism_pir_ilp32_" + std::to_string(test_pid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    // no system headers: a 32-bit glibc need not be installed
+    std::ofstream(dir / "w.c") << R"(typedef __SIZE_TYPE__ size_t;
+void *malloc(size_t);
+void free(void *);
+void *memset(void *, int, size_t);
+int long_is_32(void) { return 100 / ((int)sizeof(long) - 4); }          /* ILP32: div by 0 */
+int ptr_is_32(void) { return 100 / ((int)sizeof(void *) - 4); }         /* ILP32: div by 0 */
+long dbl_long(long x) { if (x > 1500000000L || x < -1500000000L) return 0; return x + x; } /* ILP32: ovf */
+long dbl_long_ok(long x) { if (x > 1000000000L || x < -1000000000L) return 0; return x + x; }
+int heap_ok(unsigned n) {
+    if (n == 0 || n > 64) return 0;
+    char *p = malloc(n);
+    if (!p) return 0;
+    memset(p, 1, n);
+    int r = p[n - 1];
+    free(p);
+    return r;
+}
+int heap_bad(unsigned n) {
+    if (n == 0 || n > 64) return 0;
+    char *p = malloc(n);
+    if (!p) return 0;
+    int r = p[n];
+    free(p);
+    return r;
+}
+int arr_ok(int i) { int a[8]; memset(a, 0, sizeof a); if (i < 0 || i >= 8) return 0; return a[i]; }
+int arr_bad(int i) { int a[8]; memset(a, 0, sizeof a); if (i < 0 || i > 8) return 0; return a[i]; }
+int null_bad(int *p) { return *p; }
+)";
+    auto run = [&](const char* dm) {
+        auto cfg = prism::default_config();
+        cfg.root = dir;
+        cfg.jobs = 1;
+        cfg.data_model = dm;
+        cfg.solver_cache = dir / (std::string("cache_") + dm);
+        std::map<std::string, prism::Finding> by;
+        for (auto& f : pp::run_pir({dir / "w.c"}, cfg))
+            if (f.function) by[*f.function] = f;
+        return by;
+    };
+    auto proved = [](const prism::Finding& f) { return prism::laws::is_proof(f.status); };
+    auto i32 = run("ILP32");
+    auto l64 = run("LP64");
+    CHECK(i32["long_is_32"].status == prism::laws::FAILED);
+    CHECK(i32["long_is_32"].cls == "INT-DIV-ZERO");
+    CHECK(i32["ptr_is_32"].status == prism::laws::FAILED);
+    CHECK(proved(l64["long_is_32"]));
+    CHECK(proved(l64["ptr_is_32"]));
+    CHECK(i32["dbl_long"].status == prism::laws::FAILED);
+    CHECK(i32["dbl_long"].cls == "INT-SIGNED-OVF");
+    CHECK(proved(l64["dbl_long"]));
+    for (auto* m : {&i32, &l64}) {
+        auto& by = *m;
+        CHECK(proved(by["dbl_long_ok"]));
+        CHECK(proved(by["heap_ok"]));
+        CHECK(by["heap_bad"].status == prism::laws::FAILED);
+        CHECK(by["heap_bad"].cls == "MEM-OOB-READ");
+        CHECK(proved(by["arr_ok"]));
+        CHECK(by["arr_bad"].status == prism::laws::FAILED);
+        CHECK(by["arr_bad"].cls == "MEM-OOB-READ");
+        CHECK_FALSE(proved(by["null_bad"]));
+    }
+    // certificates are LP64-only: no ILP32 proof claims PROVED-CERTIFIED
+    for (auto& [n, f] : i32) CHECK(f.status != prism::laws::PROVED_CERTIFIED);
+    std::filesystem::remove_all(dir);
+}

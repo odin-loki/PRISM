@@ -501,7 +501,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                 std::set<int> lv;
                                 leaves(L, d->args[1], lv);
                                 for (int x : lv)
-                                    if (fn_.vars[static_cast<std::size_t>(x)].width == 64) offs.insert(x);
+                                    if (fn_.vars[static_cast<std::size_t>(x)].width == ptr_w()) offs.insert(x);
                             }
                             if (!(d->ptr_arith || d->op == Op::Copy)) break;
                             v = d->args[0].var;
@@ -523,10 +523,10 @@ void Houdini::generate(std::vector<InvCand>& out) {
             cs.insert(0);
             cs.insert(1);
             for (auto c : cs) bs.push_back({InvTerm::Const, -1, c & wmask(w), w});
-            if (w == 64)
+            if (w == ptr_w())
                 for (int p : bases_r)
                     bs.push_back({InvTerm::Size, p, 0, w});
-            if (w == 64)
+            if (w == ptr_w())
                 for (int p : bases_w)
                     if (!bases_r.count(p)) bs.push_back({InvTerm::Size, p, 0, w});
             bs.push_back({InvTerm::Entry, i, 0, w});
@@ -577,12 +577,12 @@ void Houdini::generate(std::vector<InvCand>& out) {
         // pointer below the index into an accessed object, at the value
         for (int r : phis) {
             int rv = phi_var(r);
-            if (fn_.vars[static_cast<std::size_t>(rv)].width != 64 || !ptr_[static_cast<std::size_t>(rv)]) continue;
+            if (fn_.vars[static_cast<std::size_t>(rv)].width != ptr_w() || !ptr_[static_cast<std::size_t>(rv)]) continue;
             for (int i : phis) {
                 int iv = phi_var(i);
                 if (i == r || ptr_[static_cast<std::size_t>(iv)] || fn_.vars[static_cast<std::size_t>(iv)].width < 8) continue;
                 std::set<bool> exts;
-                if (fn_.vars[static_cast<std::size_t>(iv)].width == 64) exts.insert(false);
+                if (fn_.vars[static_cast<std::size_t>(iv)].width == ptr_w()) exts.insert(false);
                 else exts = ext[iv];
                 for (bool sx : exts)
                     for (int p : bases_r) {
@@ -609,7 +609,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
             unsigned w = fn_.vars[static_cast<std::size_t>(pv)].width;
             if (w < 8) continue;
             std::set<bool> exts;
-            if (w == 64) exts.insert(false);
+            if (w == ptr_w()) exts.insert(false);
             else exts = ext[pv];
             for (bool sx : exts)
                 for (unsigned eb : ebs)
@@ -807,11 +807,13 @@ HoudiniOut Houdini::run() {
         }
 
     auto& cands = out.cands;
-    const z3::expr x0 = c.bv_const("inv!x", 64);
+    const z3::expr x0 = c.bv_const("inv!x", ptr_w());
     auto ext64 = [&](const z3::expr& v, bool sx) {
         unsigned w = v.get_sort().bv_size();
-        if (w >= 64) return v;
-        return sx ? z3::sext(v, 64 - w) : z3::zext(v, 64 - w);
+        const unsigned pw = ptr_w();
+        if (w == pw) return v;
+        if (w > pw) return v.extract(pw - 1, 0);  // a candidate only; admitted when proved
+        return sx ? z3::sext(v, pw - w) : z3::zext(v, pw - w);
     };
     // index terms at which the universal templates are assumed
     std::vector<z3::expr> T{x0};
@@ -838,12 +840,12 @@ HoudiniOut Houdini::run() {
         auto& CL = e.cut_loops[static_cast<std::size_t>(cand.loop)];
         if (CL.node < 0) continue;
         try {
-            z3::expr off = e.lookup(Arg::v(cand.off, 64), CL.node);
-            if (!off.is_bv() || off.get_sort().bv_size() != 64) continue;
+            z3::expr off = e.lookup(Arg::v(cand.off, ptr_w()), CL.node);
+            if (!off.is_bv() || off.get_sort().bv_size() != ptr_w()) continue;
             for (auto& pe : e.params) {
                 unsigned w = pe.get_sort().bv_size();
-                if (w < 8 || w > 64) continue;
-                addT((w == 64 ? pe : z3::zext(pe, 64 - w)) - off);
+                if (w < 8 || w > ptr_w()) continue;
+                addT((w == ptr_w() ? pe : z3::zext(pe, ptr_w() - w)) - off);
             }
         } catch (const EncodeFail&) {
             continue;
@@ -860,7 +862,7 @@ HoudiniOut Houdini::run() {
             case InvTerm::Scope: return e.lookup(Arg::v(t.idx, t.w), node);
             case InvTerm::Const: return e.bv(t.c, t.w);
             case InvTerm::Entry: return e.cut_loops[static_cast<std::size_t>(L)].entry[static_cast<std::size_t>(t.idx)];
-            case InvTerm::Size: return e.M().size(e.lookup(Arg::v(t.idx, 64), node));
+            case InvTerm::Size: return e.M().size(e.lookup(Arg::v(t.idx, ptr_w()), node));
         }
         return e.bv(0, 1);
     };
@@ -897,11 +899,11 @@ HoudiniOut Houdini::run() {
         }
         if (k.kind == InvCand::PtrIn || k.kind == InvCand::PtrAt) {
             auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
-            auto null = r == e.bv(0, 64);
+            auto null = r == e.bv(0, ptr_w());
             if (k.kind == InvCand::PtrIn) {
-                auto p = e.lookup(Arg::v(k.p, 64), node);
+                auto p = e.lookup(Arg::v(k.p, ptr_w()), node);
                 auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
-                return null || (r.extract(63, kObjShift) == p.extract(63, kObjShift) && z3::uge(r, p) && z3::ult(r - p, idx));
+                return null || (r.extract(63, obj_shift()) == p.extract(63, obj_shift()) && z3::uge(r, p) && z3::ult(r - p, idx));
             }
             auto v = e.lookup(Arg::v(k.v.idx, k.v.w), node);
             if (k.v.w > 8) v = v.extract(7, 0);
@@ -914,14 +916,14 @@ HoudiniOut Houdini::run() {
         if (k.kind == InvCand::MemScopeAt && k.sum) in = z3::ule(x, idx);
         if (k.kind == InvCand::MemFrame) {
             z3::expr hi = ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext);
-            if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, 64), node);
+            if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, ptr_w()), node);
             in = z3::ult(x, hi);
         }
         if (k.lo_entry) in = in && z3::ule(ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext), x);
-        auto scale = k.eb == 1 ? x : x * e.bv(k.eb, 64);
+        auto scale = k.eb == 1 ? x : x * e.bv(k.eb, ptr_w());
         auto ptr = [&](int p, int off) {
-            z3::expr a = e.lookup(Arg::v(p, 64), node);
-            if (off >= 0) a = a + e.lookup(Arg::v(off, 64), node);
+            z3::expr a = e.lookup(Arg::v(p, ptr_w()), node);
+            if (off >= 0) a = a + e.lookup(Arg::v(off, ptr_w()), node);
             return a + scale;
         };
         auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb); };
@@ -932,9 +934,9 @@ HoudiniOut Houdini::run() {
             case InvCand::MemInit: body = ld(k.p, k.off).uninit == e.bv(0, 1); break;
             case InvCand::MemConst: body = ld(k.p, -1).val == e.bv(k.v.c, 8 * k.eb); break;
             case InvCand::MemScopeAt: {
-                auto sz = e.M().size(e.lookup(Arg::v(k.p, 64), node));
+                auto sz = e.M().size(e.lookup(Arg::v(k.p, ptr_w()), node));
                 z3::expr at = scale;
-                if (k.off >= 0) at = e.lookup(Arg::v(k.off, 64), node) + scale;
+                if (k.off >= 0) at = e.lookup(Arg::v(k.off, ptr_w()), node) + scale;
                 body = z3::ult(at, sz);
                 break;
             }
@@ -949,8 +951,8 @@ HoudiniOut Houdini::run() {
                 if (k.v.w > 8) v = v.extract(7, 0);
                 else if (k.v.w < 8) v = z3::zext(v, 8 - k.v.w);
                 auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
-                auto p = e.lookup(Arg::v(k.p, 64), node);
-                body = z3::implies(ld(k.p, -1).val == v, r != e.bv(0, 64) && z3::ule(x, r - p));
+                auto p = e.lookup(Arg::v(k.p, ptr_w()), node);
+                body = z3::implies(ld(k.p, -1).val == v, r != e.bv(0, ptr_w()) && z3::ule(x, r - p));
                 break;
             }
             case InvCand::MemNeC: {

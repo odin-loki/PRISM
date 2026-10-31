@@ -43,7 +43,7 @@ namespace prism::pir {
 namespace {
 
 using pirmem::Unenc;
-using pirmem::kPtrW;
+using pirmem::ptr_w;
 
 bool has_flag(const ir::Inst& in, std::string_view f) {
     return std::find(in.flags.begin(), in.flags.end(), f) != in.flags.end();
@@ -276,7 +276,7 @@ struct Tr final : pirmem::TrApi {
     static std::optional<std::pair<unsigned, unsigned>> scalar_pair(const ir::Type& t) {
         if (t.kind != ir::Type::Struct || t.elems.size() != 2) return std::nullopt;
         auto w = [](const ir::Type& e) -> unsigned {
-            if (e.kind == ir::Type::Ptr && e.text == "ptr") return kPtrW;
+            if (e.kind == ir::Type::Ptr && e.text == "ptr") return ptr_w();
             if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
             if (e.kind == ir::Type::Float && e.text == "double") return 64u;  // std::complex<double>
             if (e.kind == ir::Type::Float && e.text == "float") return 32u;
@@ -341,10 +341,10 @@ struct Tr final : pirmem::TrApi {
                 return havoc(b, w, false, false);
             }
             case ir::Value::Null:
-                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(ptr_w(), 0);
                 break;
             case ir::Value::Zero:
-                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(ptr_w(), 0);
                 if (auto w = fp::width_of(o.ty)) return Arg::c(*w, 0);
                 break;
             case ir::Value::Fp: return Arg::c(vwidth(o.ty, "operand type"), o.v.bits);
@@ -355,7 +355,7 @@ struct Tr final : pirmem::TrApi {
                 if (o.v.ce_op == "getelementptr") return mt.const_gep(b, o.v, line);
                 if ((o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast") && o.ty.kind == ir::Type::Ptr &&
                     !o.v.elems.empty() && o.v.elems[0].v.kind == ir::Value::Int && o.v.elems[0].v.bits == 0)
-                    return Arg::c(kPtrW, 0);
+                    return Arg::c(ptr_w(), 0);
                 throw Unenc{"UNENCODED: constant expression " + o.v.ce_op +
                             (o.v.ce_op == "ptrtoint" ? " (address values are not modelled)" : "")};
             default: break;
@@ -514,7 +514,7 @@ struct Tr final : pirmem::TrApi {
             // the hidden allocation-failed flag, when a model can set it: its
             // variable after the globals', its object after theirs (run_frame)
             if (pirmem::reaches_alloc_failed(m, f)) {
-                oom_ = Arg::v(newvar("_oom", kPtrW), kPtrW);
+                oom_ = Arg::v(newvar("_oom", ptr_w()), ptr_w());
                 oom_pending_ = true;
             }
         }
@@ -536,7 +536,7 @@ struct Tr final : pirmem::TrApi {
                     in.ty.elems.size() == 2 && in.ty.elems[0].kind == ir::Type::Ptr &&
                     in.ty.elems[1].kind == ir::Type::Int && in.ty.elems[1].bits == 32) {
                     // { ptr, i32 }: exception pointer and selector (translate_ctl.inc)
-                    int a = newvar(fr.prefix + in.result + ".exn", kPtrW);
+                    int a = newvar(fr.prefix + in.result + ".exn", ptr_w());
                     int s = newvar(fr.prefix + in.result + ".sel", 32);
                     fr.pairs[in.result] = {a, s};
                     fr.defs[in.result] = &in;
@@ -555,7 +555,7 @@ struct Tr final : pirmem::TrApi {
                     }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
-                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, kPtrW, "ptr", {}};
+                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
                 bool is_fp = false;
                 if (auto fw = fp::width_of(ty)) {
                     ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
@@ -756,7 +756,7 @@ struct Tr final : pirmem::TrApi {
                 check(cur, Arg::c(1, 1), "undef", "UB-POISON", "resume of an undef exception (undefined behaviour)",
                       line);
             int ev = fr.pairs[in.ops[0].v.name].first;
-            raise(cur, Arg::v(ev, kPtrW), std::nullopt, line);
+            raise(cur, Arg::v(ev, ptr_w()), std::nullopt, line);
             return;
         }
         if (in.op == "unreachable") {
@@ -867,7 +867,7 @@ struct Tr final : pirmem::TrApi {
             }
         }
         if (v && !in.ops.empty() && in.ops[0].ty.kind == ir::Type::Ptr) {
-            v->width = kPtrW;
+            v->width = ptr_w();
             mt.stack_escape_check(cur, *v, fr.allocas, line);
         }
         if (fr.ret_block >= 0)
@@ -1223,8 +1223,8 @@ struct Tr final : pirmem::TrApi {
                 // offset 0). Not a pointer into the program's data, so it does
                 // not alias a local (no stack escape) and a dereference is
                 // checked like a wild pointer.
-                Arg h = havoc(cur, kPtrW, false, true);
-                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(kPtrW, (uint64_t{1} << 48) - 1)});
+                Arg h = havoc(cur, ptr_w(), false, true);
+                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(ptr_w(), off_mask())});
                 return;
             }
             if (starts(n, "llvm.is.constant.")) {
@@ -1533,9 +1533,9 @@ struct Tr final : pirmem::TrApi {
         unsigned a1 = a0;
         while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
         fn(0, p, a0);
-        int q = newvar(tmpname("pair.f1"), kPtrW);
+        int q = newvar(tmpname("pair.f1"), ptr_w());
         mt.gep(cur, q, p, ty, {Arg::c(32, 0), Arg::c(32, 1)}, true, line, 1);
-        fn(1, Arg::v(q, kPtrW), a1);
+        fn(1, Arg::v(q, ptr_w()), a1);
     }
 
     bool mem_inst(Frame& fr, const ir::Inst& in, int cur, int line) {
@@ -1557,7 +1557,7 @@ struct Tr final : pirmem::TrApi {
             }
             mt.alloca_(cur, dst, in.ety, in.align, count, src, in.result, line);
             if (!count && fr.f && !fr.f->blocks.empty() && cur == head[fr.prefix + fr.f->blocks.front().name])
-                fr.allocas.push_back(Arg::v(dst, kPtrW));
+                fr.allocas.push_back(Arg::v(dst, ptr_w()));
             return true;
         }
         if (op == "load" && fr.pairs.count(in.result)) {
@@ -1714,7 +1714,7 @@ struct Tr final : pirmem::TrApi {
         if (op == "ptrtoint") {
             // Only pointer differences are modelled: every use must be a sub
             // of two ptrtoint values (checked to be in the same object).
-            if (in.ty.kind != ir::Type::Int || in.ty.bits != 64)
+            if (in.ty.kind != ir::Type::Int || in.ty.bits != ptr_w())
                 throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
             for (auto& bl : fr.f->blocks)
                 for (auto& u : bl.insts) {
@@ -1735,7 +1735,7 @@ struct Tr final : pirmem::TrApi {
         if (op == "inttoptr") {
             const auto& o = in.ops[0];
             if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
-                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(kPtrW, 0)});
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), 0)});
                 return true;
             }
             throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
@@ -1918,43 +1918,43 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     for (auto& [cls, msg] : plan.violations) check(cur, Arg::c(1, 1), "format", cls, msg, line);
     for (auto i : plan.cstr_args) {
         Arg a = args.at(i);
-        a.width = kPtrW;
-        check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, 64, {a, Arg::c(64, kObjShift)}), Arg::c(64, 0)}),
+        a.width = ptr_w();
+        check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, ptr_w(), {a, Arg::c(ptr_w(), obj_shift())}), Arg::c(ptr_w(), 0)}),
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
     }
     if (plan.buf_arg >= 0) {
         Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));
-        buf.width = kPtrW;
-        Arg len = havoc(cur, 64, false, false);
+        buf.width = ptr_w();
+        Arg len = havoc(cur, ptr_w(), false, false);
         if (plan.size_arg >= 0) {
             Arg sz = args.at(static_cast<std::size_t>(plan.size_arg));
-            if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
+            if (sz.width < ptr_w()) sz = assign(cur, Op::ZExt, ptr_w(), {sz});
             // snprintf(buf, 0, ...) writes nothing; otherwise at most size-1 characters and a NUL
             int wb = newblock("snprintf.write"), done = newblock("snprintf.done");
             Term t;
             t.kind = Term::Br;
-            t.cond = assign(cur, Op::Ne, 1, {sz, Arg::c(64, 0)});
+            t.cond = assign(cur, Op::Ne, 1, {sz, Arg::c(ptr_w(), 0)});
             t.t = wb;
             t.f = done;
             out.blocks[static_cast<std::size_t>(cur)].term = t;
             cur = wb;
             assume(cur, assign(cur, Op::Ult, 1, {len, sz}));
             mt.write_havoc(cur, buf, len, line);
-            int end = newvar(tmpname("end"), kPtrW);
+            int end = newvar(tmpname("end"), ptr_w());
             mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
-            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+            mt.store(cur, Arg::v(end, ptr_w()), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
             Term j;
             j.kind = Term::Jmp;
             j.t = done;
             out.blocks[static_cast<std::size_t>(cur)].term = j;
             cur = done;
         } else {
-            assume(cur, assign(cur, Op::Ule, 1, {len, Arg::c(64, plan.max_len)}));
+            assume(cur, assign(cur, Op::Ule, 1, {len, Arg::c(ptr_w(), plan.max_len)}));
             mt.write_havoc(cur, buf, len, line);
-            int end = newvar(tmpname("end"), kPtrW);
+            int end = newvar(tmpname("end"), ptr_w());
             mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
-            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+            mt.store(cur, Arg::v(end, ptr_w()), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
         }
     }
     if (int dst = in.result.empty() ? -1 : result_var(fr, in); dst >= 0)
@@ -1970,7 +1970,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
     Arg size;
     std::string count_text;
     if (c.count >= 0) {
-        if (static_cast<uint64_t>(c.count) > kMaxObjSize / esz) throw Unenc{"UNENCODED: contract object too large"};
+        if (static_cast<uint64_t>(c.count) > max_obj_size() / esz) throw Unenc{"UNENCODED: contract object too large"};
         size = Arg::c(64, static_cast<uint64_t>(c.count) * esz);
         count_text = std::to_string(c.count);
     } else {
@@ -1993,7 +1993,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
         }
         Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
         Arg nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
-        tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, kMaxObjSize / esz)}));
+        tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, max_obj_size() / esz)}));
         size = tr.assign(-1, Op::Mul, 64, {nn, Arg::c(64, esz)});
         count_text = c.count_param + (c.count_add ? (c.count_add > 0 ? "+" : "") + std::to_string(c.count_add) : "");
         tr.out.assumptions.push_back(count_text + " * " + std::to_string(esz) + " < 2^47 (object size fits the model)");
@@ -2009,6 +2009,8 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
 }  // namespace
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
+    const PtrModel pm = ptr_model_of(m);
+    PtrModelScope pms(pm);
     Translation t;
     t.status = std::string(laws::NEEDS_HARNESS);
     if (!f.parse_error.empty()) {
@@ -2080,6 +2082,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
             auto& b0 = tr.out.blocks.front().stmts;
             b0.insert(b0.begin(), tr.prologue.begin(), tr.prologue.end());
         }
+        tr.out.ptr = pm;
         t.fn = std::move(tr.out);
         t.folded_used.assign(tr.folded_used.begin(), tr.folded_used.end());
         t.status.clear();

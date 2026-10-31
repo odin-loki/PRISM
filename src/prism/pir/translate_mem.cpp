@@ -161,7 +161,7 @@ uint64_t Layout::alloc_size(const ir::Type& t0) const {
         case ir::Type::Array: {
             auto n = count_of(t);
             auto e = alloc_size(t.elems.at(0));
-            if (e && n > kMaxObjSize / e) throw Unenc{"UNENCODED: object larger than 2^47 bytes (" + t.text + ")"};
+            if (e && n > max_obj_size() / e) throw Unenc{"UNENCODED: object larger than the pointer model allows (" + t.text + ")"};
             return n * e;
         }
         case ir::Type::Struct: {
@@ -204,7 +204,7 @@ MemTr::MemTr(TrApi& t, const ir::Module& m) : t_(t), lay_(m) {}
 unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
     if (t.kind == ir::Type::Ptr) {
         if (t.text != "ptr") throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
-        return kPtrW;
+        return ptr_w();
     }
     if (t.kind == ir::Type::Float) {
         // half / float / double: IEEE bits (docs/PIR.md "Floating point")
@@ -223,18 +223,37 @@ unsigned MemTr::tag_of(const ir::Type& ty) const {
     return mem::type_tag(ty.kind == ir::Type::Int ? ty.bits : 64, ty.kind == ir::Type::Ptr);
 }
 
-Arg MemTr::obj(int b, Arg p) { return t_.assign(b, Op::LShr, 64, {p, c64(kObjShift)}, "obj"); }
-Arg MemTr::off(int b, Arg p) { return t_.assign(b, Op::And, 64, {p, c64(kOffMask)}, "off"); }
+Arg MemTr::obj(int b, Arg p) { return t_.assign(b, Op::LShr, ptr_w(), {p, c64(obj_shift())}, "obj"); }
+Arg MemTr::to_pw(int b, Arg a, bool sgn, const char* prop, const char* cls, const std::string& msg, int line) {
+    const unsigned pw = ptr_w();
+    if (a.width == pw) return a;
+    if (a.width < pw) {
+        if (a.is_const) return c64(sgn ? static_cast<uint64_t>(sext64(a.bits, a.width)) : a.bits);
+        return t_.assign(b, sgn ? Op::SExt : Op::ZExt, pw, {a}, "pw");
+    }
+    if (a.is_const) {
+        const uint64_t lo = a.bits & ((uint64_t{1} << pw) - 1);
+        const bool keeps = sgn ? sext64(lo, pw) == sext64(a.bits, a.width) : lo == a.bits;
+        if (!keeps) throw Unenc{std::string("UNENCODED: ") + msg + " (constant does not fit the pointer width)"};
+        return c64(lo);
+    }
+    Arg tr = t_.assign(b, Op::Trunc, pw, {a}, "pw");
+    Arg back = t_.assign(b, sgn ? Op::SExt : Op::ZExt, a.width, {tr}, "pw");
+    t_.check(b, p2(b, Op::Ne, back, a), prop, cls, msg + " (value does not fit the pointer width)", line);
+    return tr;
+}
+
+Arg MemTr::off(int b, Arg p) { return t_.assign(b, Op::And, ptr_w(), {p, c64(off_mask())}, "off"); }
 
 Arg MemTr::ptr_add(int b, Arg p, Arg delta, int dst) {
     Stmt s;
     s.kind = Stmt::Assign;
     s.op = Op::Add;
-    s.dst = dst >= 0 ? dst : t_.newvar("_p" + std::to_string(t_.fn().vars.size()), kPtrW);
+    s.dst = dst >= 0 ? dst : t_.newvar("_p" + std::to_string(t_.fn().vars.size()), ptr_w());
     s.args = {p, delta};
     s.ptr_arith = true;
     t_.push(b, s);
-    return Arg::v(s.dst, kPtrW);
+    return Arg::v(s.dst, ptr_w());
 }
 
 // Past this many non-zero initialiser stores a large (> 4096-byte) global is
@@ -403,7 +422,7 @@ uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir:
 void MemTr::preassign_globals(const ir::Function& f) {
     for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
         if (globals_.count(name)) continue;
-        globals_[name] = Arg::v(t_.newvar("@" + name, kPtrW), kPtrW);
+        globals_[name] = Arg::v(t_.newvar("@" + name, ptr_w()), ptr_w());
         pending_.push_back(name);
     }
 }
@@ -456,26 +475,26 @@ Arg MemTr::global(const std::string& name) {
         mark_memory();
         Stmt s;
         s.kind = Stmt::Alloc;
-        s.dst = t_.newvar("@" + name, kPtrW);
+        s.dst = t_.newvar("@" + name, ptr_w());
         s.args = {c64(16)};
         s.mkind = MemKind::Const;
         s.init = 2;
         s.align = 8;
         s.msg = "@" + name + " (C++ runtime type_info)";
         t_.push(-1, s);
-        Arg p = Arg::v(s.dst, kPtrW);
+        Arg p = Arg::v(s.dst, ptr_w());
         globals_[name] = p;
         const std::string nm = name.substr(4);
         Stmt n;
         n.kind = Stmt::Alloc;
-        n.dst = t_.newvar("@_ZTS" + nm, kPtrW);
+        n.dst = t_.newvar("@_ZTS" + nm, ptr_w());
         n.args = {c64(nm.size() + 1)};
         n.mkind = MemKind::Const;
         n.init = 1;
         n.align = 1;
         n.msg = "@_ZTS" + nm + " (C++ runtime type name)";
         t_.push(-1, n);
-        Arg np = Arg::v(n.dst, kPtrW);
+        Arg np = Arg::v(n.dst, ptr_w());
         ir::Value str;
         str.kind = ir::Value::Str;
         str.bytes = nm;
@@ -496,14 +515,14 @@ Arg MemTr::global(const std::string& name) {
         mark_memory();
         Stmt s;
         s.kind = Stmt::Alloc;
-        s.dst = t_.newvar("@" + name, kPtrW);
+        s.dst = t_.newvar("@" + name, ptr_w());
         s.args = {c64(0)};
         s.mkind = MemKind::Const;
         s.init = 1;
         s.align = 16;
         s.msg = "@" + name + " (C++ runtime, contents not modelled)";
         t_.push(-1, s);
-        return globals_[name] = Arg::v(s.dst, kPtrW);
+        return globals_[name] = Arg::v(s.dst, ptr_w());
     }
     mark_memory();
     const bool stream = g->external && (name == "stdin" || name == "stdout" || name == "stderr");
@@ -521,14 +540,14 @@ Arg MemTr::global(const std::string& name) {
     if (big) init = 2;
     Stmt s;
     s.kind = Stmt::Alloc;
-    s.dst = t_.newvar("@" + name, kPtrW);
+    s.dst = t_.newvar("@" + name, ptr_w());
     s.args = {c64(size)};
     s.mkind = g->is_const ? MemKind::Const : MemKind::Static;
     s.init = init;
     s.align = std::max(g->align, lay_.align(g->ty));
     s.msg = "@" + name;
     t_.push(-1, s);
-    Arg p = Arg::v(s.dst, kPtrW);
+    Arg p = Arg::v(s.dst, ptr_w());
     globals_[name] = p;
     if (stream) {
         // stdin/stdout/stderr point to valid FILE objects
@@ -645,7 +664,7 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
         }
     }
     if (total == i128(0)) return base;
-    const i128 lim = i128_from_i64(kMaxObjSize);
+    const i128 lim = i128_from_i64(max_obj_size());
     if (total > lim || total < i128_neg(lim))
         throw Unenc{"UNENCODED: constant pointer offset out of range"};
     mark_memory();
@@ -686,10 +705,10 @@ void MemTr::alloca_(int b, int dst, const ir::Type& ety, unsigned al, std::optio
     s.msg = name;
     if (!count || count->is_const) {
         uint64_t n = count ? count->bits : 1;
-        if (esz && n > kMaxObjSize / esz) throw Unenc{"UNENCODED: stack object larger than 2^47 bytes"};
+        if (esz && n > max_obj_size() / esz) throw Unenc{"UNENCODED: stack object larger than the pointer model allows"};
         s.args = {c64(esz * n)};
     } else {
-        Arg cnt = count->width < 64 ? t_.assign(b, Op::ZExt, 64, {*count}, "vla") : *count;
+        Arg cnt = to_pw(b, *count, false, "vla", "MEM-VLA-SIZE", "variable-length array size", line);
         if (count_src)
             t_.check(b, p2(b, Op::Sle, *count_src, Arg::c(count_src->width, 0)), "vla", "MEM-VLA-SIZE",
                      "variable-length array size is not positive (C17 6.7.6.2p5)", line);
@@ -699,10 +718,10 @@ void MemTr::alloca_(int b, int dst, const ir::Type& ety, unsigned al, std::optio
         if (esz != 1) {
             t_.check(b, p2(b, Op::UMulOvf, cnt, c64(esz)), "vla", "MEM-VLA-SIZE",
                      "variable-length array size in bytes overflows", line);
-            bytes = t_.assign(b, Op::Mul, 64, {cnt, c64(esz)}, "vla");
+            bytes = t_.assign(b, Op::Mul, ptr_w(), {cnt, c64(esz)}, "vla");
         }
-        t_.check(b, p2(b, Op::Uge, bytes, c64(kMaxObjSize)), "vla", "MEM-VLA-SIZE",
-                 "variable-length array larger than 2^47 bytes", line);
+        t_.check(b, p2(b, Op::Uge, bytes, c64(max_obj_size())), "vla", "MEM-VLA-SIZE",
+                 "variable-length array larger than the pointer model allows", line);
         s.args = {bytes};
     }
     t_.push(b, s);
@@ -717,7 +736,7 @@ void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line
     Arg f = off(b, p);
     Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
     Arg live = t_.assign(b, Op::ObjLive, 1, {p}, "live");
-    Arg size = t_.assign(b, Op::ObjSize, 64, {p}, "size");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {p}, "size");
     Arg k0 = Arg::c(8, 0);
     const char* rw = write ? "write" : "read";
     t_.check(b, G(p2(b, Op::Eq, o, c64(0))), "null", "PTR-NULL-DEREF",
@@ -727,13 +746,13 @@ void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line
     Arg known = p2(b, Op::Ne, kind, k0);
     t_.check(b, G(band(b, known, p2(b, Op::Eq, live, Arg::c(1, 0)))), "uaf", "MEM-UAF",
              std::string(rw) + " of an object after free or after the end of its lifetime", line);
-    Arg end = t_.assign(b, Op::Add, 64, {f, n}, "end");
+    Arg end = t_.assign(b, Op::Add, ptr_w(), {f, n}, "end");
     Arg oob = bor(b, p2(b, Op::Ugt, end, size), p2(b, Op::UAddOvf, f, n));
     t_.check(b, G(band(b, live, oob)), write ? "oob-write" : "oob-read", write ? "MEM-OOB-WRITE" : "MEM-OOB-READ",
              std::string(rw) + " out of the bounds of its object", line);
     if (al > 1) {
-        Arg low = t_.assign(b, Op::And, 64, {f, c64(al - 1)}, "al");
-        Arg oal = t_.assign(b, Op::ObjAlign, 64, {p}, "oal");
+        Arg low = t_.assign(b, Op::And, ptr_w(), {f, c64(al - 1)}, "al");
+        Arg oal = t_.assign(b, Op::ObjAlign, ptr_w(), {p}, "oal");
         Arg mis = bor(b, p2(b, Op::Ne, low, c64(0)), p2(b, Op::Ult, oal, c64(al)));
         t_.check(b, G(band(b, live, mis)), "align", "MEM-MISALIGNED",
                  std::string(rw) + " at an address that is not a multiple of " + std::to_string(al), line);
@@ -792,7 +811,7 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         }
         t_.check(b, p2(b, Op::SAddOvf, *var, x), "ptr-arith", "MEM-PTR-ARITH", "pointer offset computation overflows",
                  line);
-        var = t_.assign(b, Op::Add, 64, {*var, x}, "delta");
+        var = t_.assign(b, Op::Add, ptr_w(), {*var, x}, "delta");
     };
     for (std::size_t k = 0; k < idx.size(); ++k) {
         uint64_t scale = 0;
@@ -816,9 +835,7 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
             uint64_t n = count_of(rt);
             if (!last_field && n > 0) {
                 const Arg& ix = idx.at(k);
-                Arg s64 = ix.width < 64 ? (ix.is_const ? c64(static_cast<uint64_t>(sext64(ix.bits, ix.width)))
-                                                       : t_.assign(b, Op::SExt, 64, {ix}, "idx"))
-                                        : ix;
+                Arg s64 = to_pw(b, ix, true, "ptr-arith", "MEM-PTR-ARITH", "array index", line);
                 Arg bad = p2(b, use ? Op::Uge : Op::Ugt, s64, c64(n));
                 const char* cls = use == 1 ? "MEM-OOB-READ" : use == 2 ? "MEM-OOB-WRITE" : "MEM-PTR-ARITH";
                 t_.check(b, bad, use == 1 ? "oob-read" : use == 2 ? "oob-write" : "ptr-arith", cls,
@@ -831,16 +848,17 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         const Arg& ix = idx.at(k);
         if (ix.is_const) {
             cst = i128_add(cst, i128_mul(i128_from_i64(sext64(ix.bits, ix.width)), i128_from_i64(scale)));
-            if (cst > i128_from_i64(INT64_MAX) || cst < i128_from_i64(INT64_MIN))
+            const int64_t hi = ptr_w() >= 64 ? INT64_MAX : (int64_t{1} << (ptr_w() - 1)) - 1;
+            if (cst > i128_from_i64(hi) || cst < i128_from_i64(-hi - 1))
                 throw Unenc{"UNENCODED: constant pointer offset overflows"};
             continue;
         }
-        Arg s = ix.width < 64 ? t_.assign(b, Op::SExt, 64, {ix}, "idx") : ix;
+        Arg s = to_pw(b, ix, true, "ptr-arith", "MEM-PTR-ARITH", "pointer offset", line);
         if (scale == 0) continue;
         if (scale != 1) {
             t_.check(b, p2(b, Op::SMulOvf, s, c64(scale)), "ptr-arith", "MEM-PTR-ARITH",
                      "pointer offset computation overflows", line);
-            s = t_.assign(b, Op::Mul, 64, {s, c64(scale)}, "idx");
+            s = t_.assign(b, Op::Mul, ptr_w(), {s, c64(scale)}, "idx");
         }
         add_var(s);
     }
@@ -860,14 +878,14 @@ void MemTr::gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector
         return;
     }
     ptr_add(b, base, delta, dst);
-    Arg res = Arg::v(dst, kPtrW);
+    Arg res = Arg::v(dst, ptr_w());
     Arg o0 = obj(b, base);
     Arg o1 = obj(b, res);
     if (inbounds) {
         t_.check(b, band(b, p2(b, Op::Eq, o0, c64(0)), p2(b, Op::Ne, delta, c64(0))), "ptr-arith", "MEM-PTR-ARITH",
                  "pointer arithmetic on a null pointer", line);
         Arg kind = t_.assign(b, Op::ObjKind, 8, {base}, "kind");
-        Arg size = t_.assign(b, Op::ObjSize, 64, {base}, "size");
+        Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {base}, "size");
         Arg bad = bor(b, p2(b, Op::Ne, o1, o0), p2(b, Op::Ugt, off(b, res), size));
         t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), bad), "ptr-arith", "MEM-PTR-ARITH",
                  "pointer arithmetic beyond one past the end of the object (or before its start)", line);
@@ -883,7 +901,7 @@ void MemTr::icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line
         {"ule", Op::Ule}, {"sgt", Op::Ugt}, {"sge", Op::Uge}, {"slt", Op::Ult}, {"sle", Op::Ule}};
     auto it = preds.find(pred);
     if (it == preds.end()) throw Unenc{"UNENCODED: icmp " + pred + " ptr"};
-    x.width = y.width = kPtrW;
+    x.width = y.width = ptr_w();
     if (pred != "eq" && pred != "ne")
         t_.check(b, p2(b, Op::Ne, obj(b, x), obj(b, y)), "ptr-cmp", "PTR-COMPARE",
                  "relational comparison of pointers into different objects (C17 6.5.8p5)", line);
@@ -901,7 +919,7 @@ void MemTr::addr_cmp(int b, int dst, const std::string& pred, Arg x, Arg y) {
         {"ule", Op::Ule}};
     auto it = preds.find(pred);
     if (it == preds.end()) throw Unenc{"UNENCODED: signed icmp " + pred + " of address values"};
-    x.width = y.width = kPtrW;
+    x.width = y.width = ptr_w();
     Arg raw = p2(b, it->second, x, y);
     Arg r = raw;
     if (pred != "eq" && pred != "ne") {
@@ -926,14 +944,14 @@ void MemTr::ptr_sub_check(int b, Arg x, Arg y, int line) {
 
 void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok) {
     mark_memory();
-    Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
+    Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     Arg nz = p2(b, Op::Ne, n, c64(0));
     access_checks(b, dst, n, true, 1, line, nz);
     access_checks(b, src, n, false, 1, line, nz);
     if (!move) {
         Arg fd = off(b, dst), fs = off(b, src);
-        Arg a = p2(b, Op::Ult, fd, t_.assign(b, Op::Add, 64, {fs, n}, "e"));
-        Arg c = p2(b, Op::Ult, fs, t_.assign(b, Op::Add, 64, {fd, n}, "e"));
+        Arg a = p2(b, Op::Ult, fd, t_.assign(b, Op::Add, ptr_w(), {fs, n}, "e"));
+        Arg c = p2(b, Op::Ult, fs, t_.assign(b, Op::Add, ptr_w(), {fd, n}, "e"));
         Arg same = p2(b, Op::Eq, obj(b, dst), obj(b, src));
         Arg ov = band(b, same, band(b, a, c));
         if (self_ok) {
@@ -957,7 +975,7 @@ void MemTr::memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool 
 
 void MemTr::memset_(int b, Arg dst, Arg byte, Arg len, int line) {
     mark_memory();
-    Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
+    Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     Arg nz = p2(b, Op::Ne, n, c64(0));
     access_checks(b, dst, n, true, 1, line, nz);
     if (byte.width != 8) byte = byte.width > 8 ? t_.assign(b, Op::Trunc, 8, {byte}, "byte")
@@ -971,19 +989,19 @@ void MemTr::memset_(int b, Arg dst, Arg byte, Arg len, int line) {
 Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst) {
     (void)line;
     mark_memory();
-    Arg n = size.width < 64 ? t_.assign(b, Op::ZExt, 64, {size}, "sz") : size;
-    if (!n.is_const) t_.assume(b, p2(b, Op::Ult, n, c64(kMaxObjSize)));
-    else if (n.bits >= kMaxObjSize) throw Unenc{"UNENCODED: allocation larger than 2^47 bytes"};
+    Arg n = to_pw(b, size, false, "oob", "MEM-OOB-READ", "length", line);
+    if (!n.is_const) t_.assume(b, p2(b, Op::Ult, n, c64(max_obj_size())));
+    else if (n.bits >= max_obj_size()) throw Unenc{"UNENCODED: allocation larger than the pointer model allows"};
     Stmt s;
     s.kind = Stmt::Alloc;
-    s.dst = dst >= 0 ? dst : t_.newvar("_obj" + std::to_string(t_.fn().vars.size()), kPtrW);
+    s.dst = dst >= 0 ? dst : t_.newvar("_obj" + std::to_string(t_.fn().vars.size()), ptr_w());
     s.args = {n};
     s.mkind = k;
     s.init = init;
     s.align = 16;
     s.msg = what;
     t_.push(b, s);
-    return Arg::v(s.dst, kPtrW);
+    return Arg::v(s.dst, ptr_w());
 }
 
 void MemTr::dealloc(int b, Arg ptr, MemKind expected, const std::string& what, int line, bool kill) {
@@ -1043,7 +1061,7 @@ void MemTr::lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int lin
         return;
     }
     Arg n = size ? c64(*size) : obj_size_remaining(b, ptr);
-    if (size && *size >= kMaxObjSize) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
+    if (size && *size >= max_obj_size()) throw Unenc{"UNENCODED: llvm.lifetime.start of more than 2^47 bytes"};
     Arg nz = p2(b, Op::Ne, n, c64(0));
     access_checks(b, ptr, n, true, 1, line, nz);
     // the bytes: copied from a fresh uninitialised object of the same size
@@ -1070,19 +1088,19 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
 
 Arg MemTr::obj_size_remaining(int b, Arg ptr) {
     mark_memory();
-    Arg size = t_.assign(b, Op::ObjSize, 64, {ptr}, "size");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {ptr}, "size");
     Arg f = off(b, ptr);
-    Arg rem = t_.assign(b, Op::Sub, 64, {size, f}, "rem");
-    return t_.assign(b, Op::Select, 64, {p2(b, Op::Ugt, f, size), c64(0), rem}, "rem");
+    Arg rem = t_.assign(b, Op::Sub, ptr_w(), {size, f}, "rem");
+    return t_.assign(b, Op::Select, ptr_w(), {p2(b, Op::Ugt, f, size), c64(0), rem}, "rem");
 }
 
 void MemTr::read_range(int b, Arg ptr, Arg len, int line) {
-    Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
+    Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     access_checks(b, ptr, n, false, 1, line, p2(b, Op::Ne, n, c64(0)));
 }
 
 void MemTr::write_havoc(int b, Arg ptr, Arg len, int line) {
-    Arg n = len.width < 64 ? t_.assign(b, Op::ZExt, 64, {len}, "len") : len;
+    Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     access_checks(b, ptr, n, true, 1, line, p2(b, Op::Ne, n, c64(0)));
     Arg tmp = alloc(b, n, MemKind::Extern, 2, "input bytes", line);
     Stmt s;
@@ -1093,10 +1111,10 @@ void MemTr::write_havoc(int b, Arg ptr, Arg len, int line) {
 }
 
 Arg MemTr::fresh_cstr(int b, MemKind k, int line) {
-    Arg n = t_.havoc(b, 64, false, true);
+    Arg n = t_.havoc(b, ptr_w(), false, true);
     t_.fn().nondet = true;
     t_.assume(b, p2(b, Op::Ult, n, c64(4096)));
-    Arg p = alloc(b, t_.assign(b, Op::Add, 64, {n, c64(1)}, "len"), k, 2, "environment string", line);
+    Arg p = alloc(b, t_.assign(b, Op::Add, ptr_w(), {n, c64(1)}, "len"), k, 2, "environment string", line);
     Stmt st;
     st.kind = Stmt::Store;
     st.args = {ptr_add(b, p, n), Arg::c(8, 0), Arg::c(1, 1)};
@@ -1108,9 +1126,9 @@ Arg MemTr::stack_save(int b) {
     mark_memory();
     Stmt s;
     s.kind = Stmt::StackSave;
-    s.dst = t_.newvar("_ss" + std::to_string(t_.fn().vars.size()), 64);
+    s.dst = t_.newvar("_ss" + std::to_string(t_.fn().vars.size()), ptr_w());
     t_.push(b, s);
-    return Arg::v(s.dst, 64);
+    return Arg::v(s.dst, ptr_w());
 }
 
 void MemTr::stack_restore(int b, Arg token) {

@@ -721,14 +721,14 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } catch (const pirmem::Unenc& u) {
                 throw Unsupported{"parameter object: " + u.reason};
             }
-            if (sz >= kMaxObjSize) throw Unsupported{"parameter object larger than 2^47 bytes"};
+            if (sz >= max_obj_size()) throw Unsupported{"parameter object larger than 2^47 bytes"};
             harness << "L glob %" << name(p.name) << " " << sz << " 16 1 " << (bt ? 2 : 0) << " 0\n";
             continue;
         }
         if (c->count < 0) throw Unsupported{"pointer parameter with a symbolic-size contract (assumptions on the size)"};
         const uint64_t esz = pirmem::contract_elem_bytes(lay, f, p, *c);
-        if (!esz || static_cast<uint64_t>(c->count) > kMaxObjSize / esz ||
-            static_cast<uint64_t>(c->count) * esz >= kMaxObjSize)
+        if (!esz || static_cast<uint64_t>(c->count) > max_obj_size() / esz ||
+            static_cast<uint64_t>(c->count) * esz >= max_obj_size())
             throw Unsupported{"contract object of unknown or too large size"};
         harness << "L glob %" << name(p.name) << " " << static_cast<uint64_t>(c->count) * esz << " 16 "
                 << (c->read_only ? 4 : 7) << " 2 0\n";

@@ -17,8 +17,8 @@
 extern "C" {
 #endif
 
-typedef unsigned long size_t;
-typedef long ssize_t;
+typedef __SIZE_TYPE__ size_t; /* unsigned long (LP64) or unsigned int (ILP32) */
+typedef __PTRDIFF_TYPE__ ssize_t;
 typedef struct PRISM_FILE FILE;
 
 /* allocation kinds (include/prism/pir.hpp MemKind) */

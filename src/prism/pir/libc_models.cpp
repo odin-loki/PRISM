@@ -113,7 +113,7 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     auto src = dir / ("prism_model_" + name);
     auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
     std::vector<std::string> argv{fe.clang->string(), "-S"};
-    for (auto& t : lp64_target_flags()) argv.push_back(t);
+    for (auto& t : frontend_target_flags()) argv.push_back(t);
     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
                              "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
                              src.string()});
@@ -140,6 +140,11 @@ std::size_t model_source_lowered_count() {
 bool cached_model_ir_ok(const std::string& ll) {
     if (ll.empty()) return false;
 #ifdef _WIN32
+    if (frontend_ilp32()) {
+        // ILP32 models: their own cache key (triple); a 64-bit tree never matches
+        if (ll.find(std::string("target triple = \"") + ilp32_target_triple() + "\"") == std::string::npos) return false;
+        return true;
+    }
     const std::string triple_line = lp64_llvm_triple_metadata_line();
     if (ll.find(triple_line) == std::string::npos) return false;
     if (ll.find("target triple = \"x86_64-pc-windows") != std::string::npos) return false;
@@ -183,6 +188,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
 #else
     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
 #endif
+    if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;

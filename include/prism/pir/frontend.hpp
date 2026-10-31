@@ -21,6 +21,26 @@ PRISM_API std::vector<std::string> lp64_target_flags();
 // LP64 target plus, on _WIN32, -idirafter the libc name-header shim (conc, testdata/pir, debug_ir).
 PRISM_API std::vector<std::string> lp64_clang_driver_flags();
 
+// Target of the unit and library-model lowering: LP64 (above) or, with
+// --data-model ILP32, i386-unknown-linux-gnu (32-bit long, size_t and
+// pointers; pir's PtrModel follows the datalayout). Set for a pir run by
+// FrontendTargetScope; the library-model cache is keyed by the triple.
+PRISM_API bool frontend_ilp32();
+PRISM_API const char* ilp32_target_triple();
+PRISM_API const char* frontend_target_triple();
+// target flags for the current frontend target ({} for native LP64 off _WIN32)
+PRISM_API std::vector<std::string> frontend_target_flags();
+class PRISM_API FrontendTargetScope {
+public:
+    explicit FrontendTargetScope(bool ilp32);
+    ~FrontendTargetScope();
+    FrontendTargetScope(const FrontendTargetScope&) = delete;
+    FrontendTargetScope& operator=(const FrontendTargetScope&) = delete;
+
+private:
+    bool prev_;
+};
+
 // True when find_frontend has clang and opt and the LP64 triple probe succeeds.
 // When false and notrun_reason is non-null, set to a Law-1 MESSAGE ("NOTRUN: ...").
 PRISM_API bool frontend_usable(const Config& cfg, std::string* notrun_reason = nullptr);

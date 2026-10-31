@@ -1396,7 +1396,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
         auto fopt = pirmem::function_options(topt, irf, uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
         auto tr = translate(mod, irf, fopt);
-        export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);
+        if (!tr.fn || tr.fn->ptr.w == 64) export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 only
         for (int k : tr.folded_used) used_folded.insert(k);
         if (!tr.fn) {
             f.status = tr.status.empty() ? std::string(laws::NEEDS_HARNESS) : tr.status;
@@ -1529,15 +1529,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // the child budgets project this process's growth from its peak in pir,
     // not from earlier stages (bmc) that have released their memory
     membudget::reset_peak();
-    // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task here.
-    if (is_ilp32(cfg.data_model)) {
-        Finding f;
-        f.stage = "pir";
-        f.status = std::string(laws::NOTRUN);
-        f.message = "pir is LP64-only; ILP32 tasks are analysed by the bmc stage (32-bit long, size_t, pointers)";
-        f.strength = std::string(laws::STRENGTH_PROVES);
-        return {f};
-    }
+    // SVCOMP-ILP32: units and library models are lowered for i386 (32-bit
+    // long, size_t, pointers); the translator takes PtrModel kILP32 from the
+    // datalayout. Lean certificates stay LP64-only (Memory.lean is BitVec 64).
+    FrontendTargetScope target(is_ilp32(cfg.data_model));
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});

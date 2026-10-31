@@ -1,3 +1,4 @@
+#include <atomic>
 #include "prism/pir/frontend.hpp"
 
 #include "prism/pir.hpp"
@@ -75,8 +76,21 @@ std::vector<std::string> lp64_target_flags() {
 #endif
 }
 
+namespace {
+std::atomic<bool> g_ilp32{false};
+}
+bool frontend_ilp32() { return g_ilp32.load(); }
+const char* ilp32_target_triple() { return "i386-unknown-linux-gnu"; }
+const char* frontend_target_triple() { return frontend_ilp32() ? ilp32_target_triple() : lp64_target_triple(); }
+std::vector<std::string> frontend_target_flags() {
+    if (frontend_ilp32()) return {"--target=" + std::string(ilp32_target_triple())};
+    return lp64_target_flags();
+}
+FrontendTargetScope::FrontendTargetScope(bool ilp32) : prev_(g_ilp32.exchange(ilp32)) {}
+FrontendTargetScope::~FrontendTargetScope() { g_ilp32.store(prev_); }
+
 std::vector<std::string> lp64_clang_driver_flags() {
-    std::vector<std::string> f = lp64_target_flags();
+    std::vector<std::string> f = frontend_target_flags();
 #ifdef _WIN32
     const std::filesystem::path shim =
         std::filesystem::path(__FILE__).parent_path() / "models" / "libc" / "shim";
