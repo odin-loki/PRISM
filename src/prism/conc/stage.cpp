@@ -55,8 +55,11 @@ std::string read_text(const fs::path& p);
 // address, and only once they are split does each pthread call name the
 // global mutex the encoder needs (it does not follow loads of pointers).
 // The shared pir stage pipeline (pir::lower_to_ir) is left unchanged.
+// fold_orders: the source names a weaker memory order; sccp folds the
+// constant order argument of the <atomic> model (clang lowers a non-constant
+// order to a switch over every order), so each atomic keeps exactly its order.
 std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& src, double timeout_s,
-                                      std::string& err) {
+                                      std::string& err, bool fold_orders = false) {
     auto ir = pir::lower_to_ir(fe, src, timeout_s, err, nullptr, nullptr, nullptr, conc_flags(src));
     if (!ir || !is_cxx(src) || !fe.opt) return ir;
     static std::atomic<unsigned> seq{0};
@@ -69,7 +72,8 @@ std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& s
         std::ofstream o(in, std::ios::binary);
         o << *ir;
     }
-    auto r = detail::run_process({fe.opt->string(), "-passes=function(sroa,mem2reg,lower-switch,loop-simplify,lcssa,instnamer)",
+    auto r = detail::run_process({fe.opt->string(), fold_orders ? "-passes=function(sroa,mem2reg,sccp,lower-switch,loop-simplify,lcssa,instnamer)"
+                                              : "-passes=function(sroa,mem2reg,lower-switch,loop-simplify,lcssa,instnamer)",
                                   "-S", "-o", outp.string(), in.string()},
                                  timeout_s);
     std::optional<std::string> res = ir;  // sroa failing keeps the unsplit IR (the encoder then says UNENCODED)
@@ -217,7 +221,12 @@ struct Harnessed {
     std::string name;       // source name
     std::optional<int> line;
     Result res;
+    bool views = false;     // the C11 view model encoded its weak orders
 };
+
+bool any_views(const std::vector<Harnessed>& hs) {
+    return std::any_of(hs.begin(), hs.end(), [](const Harnessed& h) { return h.views; });
+}
 
 std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
     std::vector<Harnessed> out;
@@ -240,6 +249,7 @@ std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
             h.res.message = b.reason;
         } else {
             h.res = check(*b.prog, opt);
+            h.views = b.prog->views;
             if (!b.prog->weak_order.empty()) refuse_weak_order(h.res, b.prog->weak_order, true);
         }
         out.push_back(std::move(h));
@@ -254,7 +264,7 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
     const auto weak = weak_memory_order(read_text(src));
     auto fe = pir::find_frontend(cfg);
     std::string err;
-    auto ir = lower_unit(fe, src, std::max(10.0, cfg.timeout), err);
+    auto ir = lower_unit(fe, src, std::max(10.0, cfg.timeout), err, weak.has_value());
     if (!ir) {
         Result r;
         r.status = std::string(laws::ERROR);
@@ -262,8 +272,11 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
         out[""] = r;
         return out;
     }
-    for (auto& h : analyse_ir(*ir, opt)) out[h.name] = std::move(h.res);
-    if (weak) {
+    auto hs = analyse_ir(*ir, opt);
+    for (auto& h : hs) out[h.name] = h.res;
+    // the IR carries every order the source names (C builtins, the <atomic>
+    // model); the source scan only guards a unit whose IR shows none of them
+    if (weak && !any_views(hs)) {
         if (out.empty()) {
             Result r;
             r.status = std::string(laws::NEEDS_HARNESS);
@@ -304,7 +317,8 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
     std::vector<std::string> errs(units.size());
     for (std::size_t i = 0; i < units.size(); ++i) {
         try {
-            irs.at(i) = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i));
+            irs.at(i) = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i),
+                                   weak_memory_order(read_text(units.at(i))).has_value());
         } catch (const std::exception& ex) {
             irs.at(i).reset();
             errs.at(i) = std::string("internal error: ") + ex.what();
@@ -334,7 +348,7 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
             out.push_back(std::move(f));
             continue;
         }
-        if (const auto weak = weak_memory_order(read_text(units.at(i)))) {
+        if (const auto weak = weak_memory_order(read_text(units.at(i))); weak && !any_views(hs)) {
             if (hs.empty()) {
                 auto f = base(rel);
                 f.status = std::string(laws::NEEDS_HARNESS);

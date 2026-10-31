@@ -3,7 +3,8 @@
 Roadmap 2.6, "Threads and atomics". This is a separate stage that checks
 programs that create threads. It uses lazy sequentialisation, the Lazy-CSeq
 method, which bounds the number of context switches. Atomics are sequentially
-consistent (SC) for now; relaxed, acquire and release orders come later. A
+consistent (SC) unless a scalar atomic names a weaker order, which selects
+the C11 view model (section 6). A
 data race counts as a property violation.
 
 | | |
@@ -86,12 +87,10 @@ slot for `T0`. That allows up to `K·N` context switches.
 Not modelled. Each of these gives `NEEDS-HARNESS` with an `UNENCODED:`
 reason:
 
-- `syncscope`. (`memory_order_relaxed`, `acquire`, `release` and `acq_rel`
-  are encoded as seq_cst and recorded in `Program::weak_order`: every SC run
-  is a run the C/C++ model allows, so a failure found, a data race included,
-  is kept; a clean result is withheld as NEEDS-HARNESS "UNENCODED:
-  memory_order_relaxed (encoded as seq_cst: ...)", since it is no proof
-  under the weaker order. relaxed.c shows this.)
+- `syncscope`. (Weaker orders on scalar globals are encoded by the C11 view
+  model, section 6. A weaker order on an atomic in the bounded memory
+  (arrays, structs, heap, address-taken globals) is still encoded as seq_cst
+  and recorded in `Program::weak_order`; a clean result there is withheld.)
 - Shared data that is not a scalar integer global: heap, arrays, structs,
   pointers, and mutexes that are not globals. These wait for the PIR memory
   model (roadmap 2.5). See "Memory model hook" below.
@@ -363,5 +362,39 @@ before every visible step each buffer may commit its oldest entry
 nondeterministically. A bounded k under-approximates TSO; litmus tests such
 as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding matches on
 the start address only (mixed-width overlap is not forwarded).
-C11 release/acquire/relaxed atomics are not modelled by views; weaker orders
-are still encoded as seq_cst with clean verdicts withheld.
+The race check of a buffered plain store runs when it commits (it becomes
+visible then), not when it is issued; loads are checked when issued. TSO and
+the C11 view model are exclusive (NEEDS-HARNESS when both apply).
+
+## 6. C11 orders (view model)
+
+When a scalar global (including a one-field wrapper such as `std::atomic<int>`)
+has an atomic access with `relaxed`, `acquire`, `release` or `acq_rel`
+(Program::views), lazy.cpp runs a promise-free view machine in the style of
+the Promising semantics restricted to RC11 (no load buffering, as RC11
+forbids po;rf cycles):
+
+- each such location keeps one message per store-site execution plus its
+  initial message: symbolic distinct bv16 timestamps (the modification
+  order), value, and the view released with it;
+- a thread's view has one timestamp per location and one clock per thread;
+  a store takes a timestamp above its view, a load reads any written message
+  at or above it; acquire (or a later acquire fence) joins the message view,
+  release (or an earlier release fence) attaches the thread view, a relaxed
+  store carries the last release fence / release store to that location
+  (release sequences); an RMW reads message ts and writes ts + 1 and carries
+  the read view on; a failed compare-exchange is a load with the failure
+  order;
+- create, join and mutexes (by name or address) transfer views;
+- non-atomic accesses keep SC values but their race check is
+  happens-before (epochs against the view clocks), for scalars and the
+  bounded memory.
+
+Approximations (each only adds behaviours, so clean results stand):
+seq_cst accesses to a location that also has weaker accesses, and seq_cst
+fences, are treated as acq_rel; locations with only seq_cst accesses stay
+SC. A plain access to an atomic location is relaxed and is not race-checked
+against the atomic accesses. The C++ `<atomic>` model passes the order
+through and the stage folds it with sccp (only for sources naming a weaker
+order). extra["method"] names the model, extra["c11_locations"] counts the
+locations.

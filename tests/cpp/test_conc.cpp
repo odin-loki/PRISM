@@ -183,49 +183,45 @@ prism::conc::Program one_thread(prism::pir::Function fn) {
 
 }  // namespace
 
-TEST_CASE("conc: relaxed atomics are NEEDS-HARNESS (SC only)") {
+TEST_CASE("conc: relaxed atomics are encoded by the C11 view model") {
     if (!have_frontend()) return;
     auto r = run_main("relaxed.c");
-    CHECK(r.status == prism::laws::NEEDS_HARNESS);
-    CHECK(r.message.find("UNENCODED: memory_order_relaxed") != std::string::npos);
-    CHECK(r.status != prism::laws::PROVED);
-    CHECK(r.status != prism::laws::BOUNDED);
+    CHECK(r.status != prism::laws::NEEDS_HARNESS);
+    CHECK(r.message.find("UNENCODED") == std::string::npos);
+    CHECK(r.violations.empty());
+    CHECK(r.extra["method"].find("C11") != std::string::npos);
     prism::Config cfg;
     cfg.root = conc_dir();
     cfg.timeout = 60;
     auto rows = prism::conc::run_conc({conc_dir() / "relaxed.c"}, cfg);
     REQUIRE(!rows.empty());
-    bool saw = false;
     for (auto& f : rows) {
-        CHECK(f.status != prism::laws::PROVED);
-        CHECK(f.status != prism::laws::BOUNDED);
-        CHECK(!f.status.empty());
-        if (f.message.find("UNENCODED: memory_order_relaxed") != std::string::npos) saw = true;
+        CHECK(f.status != prism::laws::NEEDS_HARNESS);
+        CHECK(f.message.find("UNENCODED: memory_order_relaxed") == std::string::npos);
     }
-    CHECK(saw);
 }
 
-TEST_CASE("conc: relaxed, acquire and release atomics are encoded as seq_cst and recorded") {
-    struct Case {
-        const char* ir;
-        const char* order;
+TEST_CASE("conc: relaxed, acquire and release atomics on scalars select the view model") {
+    const char* cases[] = {
+        "store atomic i32 1, ptr @flag monotonic, align 4",
+        "%v = load atomic i32, ptr @flag unordered, align 4",
+        "%v = load atomic i32, ptr @flag acquire, align 4",
+        "store atomic i32 1, ptr @flag release, align 4",
+        "%old = atomicrmw add ptr @flag, i32 1 acq_rel, align 4",
+        "fence release",
+        "%p = cmpxchg ptr @flag, i32 0, i32 1 seq_cst monotonic, align 4",
     };
-    const Case cases[] = {
-        {"store atomic i32 1, ptr @flag monotonic, align 4", "memory_order_relaxed"},
-        {"%v = load atomic i32, ptr @flag unordered, align 4", "memory_order_relaxed"},
-        {"%v = load atomic i32, ptr @flag acquire, align 4", "memory_order_acquire (or consume)"},
-        {"store atomic i32 1, ptr @flag release, align 4", "memory_order_release"},
-        {"%old = atomicrmw add ptr @flag, i32 1 acq_rel, align 4", "memory_order_acq_rel"},
-        {"fence release", "memory_order_release"},
-        {"%p = cmpxchg ptr @flag, i32 0, i32 1 seq_cst monotonic, align 4", "memory_order_relaxed"},
-    };
-    for (auto& c : cases) {
-        auto b = build_atomic(c.ir);
+    for (auto* c : cases) {
+        auto b = build_atomic(c);
         REQUIRE(b.prog);
-        CHECK(b.prog->weak_order == c.order);
+        CHECK(b.prog->weak_order.empty());
+        CHECK(b.prog->views);
     }
     auto sc = build_atomic("store atomic i32 1, ptr @flag seq_cst, align 4");
-    if (sc.prog) CHECK(sc.prog->weak_order.empty());
+    if (sc.prog) {
+        CHECK(sc.prog->weak_order.empty());
+        CHECK(!sc.prog->views);
+    }
     CHECK(sc.status != prism::laws::PROVED);
     CHECK(sc.status != prism::laws::BOUNDED);
 }

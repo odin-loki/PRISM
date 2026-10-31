@@ -59,7 +59,7 @@ struct Options {
 
 // A visible operation: a context-switch point is placed before each one.
 struct VisOp {
-    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free, Arg };
+    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free, Arg, Fence };
     Kind kind = Load;
     int var = -1;            // Load/Store/Rmw: shared variable
     int mutex = -1;          // Lock/TryLock/Unlock/MutexInit
@@ -84,6 +84,7 @@ struct VisOp {
     // marker's result is the argument its creating call passed.
     uint64_t size = 0;       // Alloc: constant size, 0 when symbolic (the marker copies it)
     bool zero = false;
+    bool stack = false;      // Alloc / Free: an escaping local (its frame's slot; free() of it is invalid)
     // Lock/Unlock/MutexInit (mutex == -1) and CondWait/CondSignal (cond == -1):
     // a mutex / condition variable that is not a global (struct field, array
     // element, heap): the head marker copies its i64 address. An Unlock that
@@ -95,6 +96,13 @@ struct VisOp {
     // slots thread .. thread + copies - 1, one per unrolled execution; the
     // head marker copies the handle's address, the tail marker the argument.
     int copies = 1;
+    // C11 order (Load/Store/Rmw/Fence): -1 non-atomic, 0 relaxed, 1 acquire,
+    // 2 release, 3 acq_rel, 4 seq_cst. Rmw from cmpxchg: order is the success
+    // order, order_fail the failure order, and a flag marker ("c") carries
+    // whether it succeeded (a failed compare-exchange writes nothing).
+    int order = -1;
+    int order_fail = -1;
+    bool cas = false;
     bool looped = false;     // Create: handle in an array (slots as above)       // Alloc: calloc (memory is zero either way: M starts at 0)
 };
 
@@ -129,7 +137,8 @@ struct Program {
     std::vector<MemObject> objects;   // bounded memory (aggregate globals)
     std::vector<std::string> mutexes; // IR global names
     std::vector<std::string> conds;   // condition variables (IR global names)
-    std::string weak_order;           // first non-seq_cst order seen (encoded as seq_cst), "" if none
+    std::string weak_order;           // first non-seq_cst order the view model does not cover, "" if none
+    bool views = false;               // a weaker order on a scalar global: the C11 view model (lazy.cpp)
     std::vector<VisOp> ops;
     std::vector<Thread> threads;      // [0] is the harness
     int atomic_mutex = -1;            // pseudo-mutex of SV-COMP atomic sections (-1: none)

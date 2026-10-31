@@ -20,10 +20,10 @@
 //    the pthread argument, which the conc encoder reports as UNENCODED
 //    (thread arguments need the PIR memory model): NEEDS-HARNESS, never a
 //    verdict;
-//  * atomics are __atomic builtins with __ATOMIC_SEQ_CST (atomicrmw /
-//    cmpxchg / atomic load-store on the object), whatever order the caller
-//    names. The conc stage separately refuses sources that name a weaker
-//    order.
+//  * atomics are __atomic builtins with the order the caller names
+//    (atomicrmw / cmpxchg / atomic load-store / fence on the object); the
+//    conc stage folds the constant order (sccp) and encodes it in its C11
+//    view model (docs/CONCURRENCY.md "C11 orders").
 // Not modelled here (the units fall back to UNENCODED or fail to compile):
 // timed waits, try_lock_for, recursive/timed mutexes, jthread stop tokens,
 // atomic wait/notify.
@@ -219,7 +219,7 @@ inline constexpr memory_order memory_order_acquire = memory_order::acquire;
 inline constexpr memory_order memory_order_release = memory_order::release;
 inline constexpr memory_order memory_order_acq_rel = memory_order::acq_rel;
 inline constexpr memory_order memory_order_seq_cst = memory_order::seq_cst;
-_PRISM_AI inline void atomic_thread_fence(memory_order) noexcept { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+_PRISM_AI inline void atomic_thread_fence(memory_order __mo1) noexcept { __atomic_thread_fence(static_cast<int>(__mo1)); }
 _PRISM_AI inline void atomic_signal_fence(memory_order) noexcept {}
 
 template <class _Tp>
@@ -233,28 +233,28 @@ struct atomic {
     atomic(const atomic&) = delete;
     atomic& operator=(const atomic&) = delete;
 
-    _PRISM_AI _Tp load(memory_order = memory_order_seq_cst) const noexcept { return __atomic_load_n(&_M_v, __ATOMIC_SEQ_CST); }
-    _PRISM_AI void store(_Tp __v, memory_order = memory_order_seq_cst) noexcept { __atomic_store_n(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp load(memory_order __mo1 = memory_order_seq_cst) const noexcept { return __atomic_load_n(&_M_v, static_cast<int>(__mo1)); }
+    _PRISM_AI void store(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { __atomic_store_n(&_M_v, __v, static_cast<int>(__mo1)); }
     _PRISM_AI operator _Tp() const noexcept { return load(); }
     _PRISM_AI _Tp operator=(_Tp __v) noexcept { store(__v); return __v; }
-    _PRISM_AI _Tp exchange(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_exchange_n(&_M_v, __v, __ATOMIC_SEQ_CST); }
-    _PRISM_AI bool compare_exchange_strong(_Tp& __e, _Tp __d, memory_order = memory_order_seq_cst, memory_order = memory_order_seq_cst) noexcept {
-        return __atomic_compare_exchange_n(&_M_v, &__e, __d, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    _PRISM_AI _Tp exchange(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_exchange_n(&_M_v, __v, static_cast<int>(__mo1)); }
+    _PRISM_AI bool compare_exchange_strong(_Tp& __e, _Tp __d, memory_order __mo1 = memory_order_seq_cst, memory_order __mo2 = memory_order_seq_cst) noexcept {
+        return __atomic_compare_exchange_n(&_M_v, &__e, __d, false, static_cast<int>(__mo1), static_cast<int>(__mo2));
     }
     // No spurious failure here (strong): the pir-stage model covers that.
-    _PRISM_AI bool compare_exchange_weak(_Tp& __e, _Tp __d, memory_order __o = memory_order_seq_cst, memory_order __f = memory_order_seq_cst) noexcept {
-        return compare_exchange_strong(__e, __d, __o, __f);
+    _PRISM_AI bool compare_exchange_weak(_Tp& __e, _Tp __d, memory_order __mo1 = memory_order_seq_cst, memory_order __mo2 = memory_order_seq_cst) noexcept {
+        return compare_exchange_strong(__e, __d, __mo1, __mo2);
     }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
-    _PRISM_AI _Tp fetch_add(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_fetch_add(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp fetch_add(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_fetch_add(&_M_v, __v, static_cast<int>(__mo1)); }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
-    _PRISM_AI _Tp fetch_sub(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_fetch_sub(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp fetch_sub(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_fetch_sub(&_M_v, __v, static_cast<int>(__mo1)); }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
-    _PRISM_AI _Tp fetch_and(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_fetch_and(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp fetch_and(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_fetch_and(&_M_v, __v, static_cast<int>(__mo1)); }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
-    _PRISM_AI _Tp fetch_or(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_fetch_or(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp fetch_or(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_fetch_or(&_M_v, __v, static_cast<int>(__mo1)); }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
-    _PRISM_AI _Tp fetch_xor(_Tp __v, memory_order = memory_order_seq_cst) noexcept { return __atomic_fetch_xor(&_M_v, __v, __ATOMIC_SEQ_CST); }
+    _PRISM_AI _Tp fetch_xor(_Tp __v, memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_fetch_xor(&_M_v, __v, static_cast<int>(__mo1)); }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
     _PRISM_AI _Tp operator++() noexcept { return fetch_add(1) + 1; }
     template <class _U = _Tp, class = enable_if_t<is_integral_v<_U>>>
@@ -274,9 +274,9 @@ struct atomic {
 struct atomic_flag {
     bool _M_f = false;
     constexpr atomic_flag() noexcept = default;
-    _PRISM_AI bool test_and_set(memory_order = memory_order_seq_cst) noexcept { return __atomic_exchange_n(&_M_f, true, __ATOMIC_SEQ_CST); }
-    _PRISM_AI void clear(memory_order = memory_order_seq_cst) noexcept { __atomic_store_n(&_M_f, false, __ATOMIC_SEQ_CST); }
-    _PRISM_AI bool test(memory_order = memory_order_seq_cst) const noexcept { return __atomic_load_n(&_M_f, __ATOMIC_SEQ_CST); }
+    _PRISM_AI bool test_and_set(memory_order __mo1 = memory_order_seq_cst) noexcept { return __atomic_exchange_n(&_M_f, true, static_cast<int>(__mo1)); }
+    _PRISM_AI void clear(memory_order __mo1 = memory_order_seq_cst) noexcept { __atomic_store_n(&_M_f, false, static_cast<int>(__mo1)); }
+    _PRISM_AI bool test(memory_order __mo1 = memory_order_seq_cst) const noexcept { return __atomic_load_n(&_M_f, static_cast<int>(__mo1)); }
 };
 #define ATOMIC_FLAG_INIT {}
 

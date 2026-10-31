@@ -1,4 +1,4 @@
-// NEEDS-HARNESS: relaxed atomics are encoded as seq_cst, so a clean result is withheld.
+// BOUNDED: relaxed atomics run in the C11 view model (no violation: the flag is atomic).
 #include <pthread.h>
 #include <stdatomic.h>
 

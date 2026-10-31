@@ -148,6 +148,31 @@ std::string c_order_name(const std::string& w) {
 // nothing about the weaker order, and the stage withholds it (Program::
 // weak_order, refuse_weak_order in stage.cpp).
 thread_local std::string tl_weak_order;
+thread_local bool tl_views = false;
+
+// C11 order code (VisOp::order) of an IR order word
+int order_code(const std::string& w) {
+    if (w == "monotonic" || w == "unordered") return 0;
+    if (w == "acquire") return 1;
+    if (w == "release") return 2;
+    if (w == "acq_rel") return 3;
+    return 4;
+}
+
+// The orders of an atomic access on a scalar global, which the C11 view model
+// of lazy.cpp encodes (Program::views): the order words in sequence.
+std::vector<int> scalar_orders(const std::vector<std::string>& ws) {
+    std::vector<int> r;
+    for (auto& w : ws) {
+        if (w.starts_with("syncscope(")) throw Unenc{"UNENCODED: atomic syncscope " + w};
+        if (is_order(w)) {
+            r.push_back(order_code(w));
+            if (r.back() < 4) tl_views = true;
+        }
+    }
+    if (r.empty()) r.push_back(4);
+    return r;
+}
 
 void require_sc(const std::vector<std::string>& ws) {
     for (auto& w : ws) {
@@ -342,6 +367,13 @@ struct Rewriter {
         return static_cast<int>(prog.ops.size()) - 1;
     }
 
+    // a struct of one scalar (std::atomic<int>, a C++ wrapper): the scalar
+    ir::Type unwrap(const ir::Type& t) const {
+        ir::Type r = lay.resolve(t);
+        for (int d = 0; d < 8 && r.kind == ir::Type::Struct && r.elems.size() == 1; ++d) r = lay.resolve(r.elems[0]);
+        return r;
+    }
+
     int shared_var(const std::string& g, const ir::Type& ty) {
         if (addr_taken.count(g))
             throw Unenc{"UNENCODED: atomic read-modify-write on @" + g + ", whose address is taken (bounded memory RMW)"};
@@ -353,7 +385,13 @@ struct Rewriter {
         auto git = globals.find(g);
         if (git == globals.end()) throw Unenc{"UNENCODED: access to external global @" + g};
         const auto& def = git->second;
-        auto gt = ir::parse_type(def.type);
+        auto gt = unwrap(ir::parse_type(def.type));
+        std::string init = def.init;
+        if (init.size() > 2 && init.front() == '{' && init.back() == '}') {  // { i32 5 }: the wrapped scalar
+            auto w = words(init.substr(1, init.size() - 2));
+            init = w.empty() ? std::string("zeroinitializer") : w.back();
+            if (!init.empty() && init.front() == '{') throw Unenc{"UNENCODED: initialiser of @" + g + " (" + def.init + ")"};
+        }
         if (gt.kind != ir::Type::Int || gt.bits == 0 || gt.bits > 64)
             throw Unenc{"UNENCODED: shared " + def.type + " global @" + g +
                         " (only scalar integer globals until the PIR memory model lands)"};
@@ -362,8 +400,8 @@ struct Rewriter {
         Shared s;
         s.name = g;
         s.width = gt.bits;
-        auto iv = parse_value(def.init, gt);
-        if (def.init == "zeroinitializer" || def.init == "undef" || def.init == "poison") {
+        auto iv = parse_value(init, gt);
+        if (init == "zeroinitializer" || init == "undef" || init == "poison") {
             s.init = 0;
         } else if (iv.kind == ir::Value::Int) {
             s.init = iv.bits;
@@ -384,7 +422,7 @@ struct Rewriter {
         if (var_index.count(g) || mutex_index.count(g) || handle_thread.count("@" + g)) return -1;
         const auto* gl = src.find_global(g);
         if (!gl) return -1;
-        const auto& rt = lay.resolve(gl->ty);
+        const auto rt = unwrap(gl->ty);
         if ((rt.kind == ir::Type::Int || rt.kind == ir::Type::Ptr) && !addr_taken.count(g)) return -1;
         if (src.find(g)) return -1;  // a function
         if (gl->thread_local_) throw Unenc{"UNENCODED: thread_local aggregate @" + g};
@@ -535,9 +573,7 @@ struct Rewriter {
                         yes = true;
                     } else if (in.op == "alloca" && escapes(f, in.result) && !handle_thread.count(key) &&
                                harness_stack_object(fn, in.result) < 0) {
-                        if (!in.ops.empty() && in.ops[0].v.kind != ir::Value::Int)
-                            throw Unenc{"UNENCODED: variable-length alloca whose address escapes"};
-                        yes = true;
+                        yes = true;  // a variable-length alloca gets a symbolic size (bounded by max_alloc)
                     }
                     if (yes) {
                         caddr[key] = paddr(in.result);
@@ -897,10 +933,31 @@ struct Rewriter {
                 vo.kind = VisOp::Alloc;
                 vo.what = "stack object %" + in.result;
                 vo.line = line;
-                vo.size = lay.alloc_size(in.ety) * (in.ops.empty() ? 1 : in.ops[0].v.bits);
-                if (vo.size == 0) vo.size = 1;
+                vo.stack = true;
+                ir::Operand sz = cint(0, int_type(64));
+                if (!in.ops.empty() && in.ops[0].v.kind != ir::Value::Int) {
+                    // variable-length: element size * count, zero-extended to i64 (symbolic size)
+                    const auto& n = in.ops[0];
+                    if (n.ty.kind != ir::Type::Int) throw Unenc{"UNENCODED: alloca count of type " + n.ty.text};
+                    ir::Operand n64 = n;
+                    if (n.ty.bits != 64) {
+                        auto r = "__prism.conc.z" + std::to_string(fresh++);
+                        auto z = base(in, r, "zext", int_type(64));
+                        z.ops = {n};
+                        out.push_back(z);
+                        n64 = local(r, int_type(64));
+                    }
+                    auto r = "__prism.conc.z" + std::to_string(fresh++);
+                    out.push_back(bin(in, r, "mul", n64, cint(lay.alloc_size(in.ety), int_type(64))));
+                    sz = local(r, int_type(64));
+                    vo.size = 0;
+                } else {
+                    vo.size = lay.alloc_size(in.ety) * (in.ops.empty() ? 1 : in.ops[0].v.bits);
+                    if (vo.size == 0) vo.size = 1;
+                    sz = cint(vo.size, int_type(64));
+                }
                 int k = add_op(vo);
-                out.push_back(copy(in, marker(k), cint(vo.size, int_type(64))));
+                out.push_back(copy(in, marker(k), sz));
                 out.push_back(freeze(in, paddr(in.result), local(marker(k), int_type(64))));
                 frame_slots[fn].push_back(paddr(in.result));
                 return;
@@ -912,6 +969,7 @@ struct Rewriter {
             for (auto& a : frame_slots[fn]) {
                 VisOp vo;
                 vo.kind = VisOp::Free;
+                vo.stack = true;
                 vo.what = "end of " + fn + "'s frame";
                 vo.line = line;
                 int k = add_op(vo);
@@ -921,8 +979,18 @@ struct Rewriter {
             return;
         }
         if (op == "fence") {
-            require_sc(words(inst_parts(in.text)[0]));
-            return;  // a seq_cst fence orders nothing more under SC
+            // a seq_cst fence orders nothing more under SC; the view model
+            // (Program::views) reads every fence's order
+            auto ords = scalar_orders(words(inst_parts(in.text)[0]));
+            VisOp vo;
+            vo.kind = VisOp::Fence;
+            vo.order = ords.at(0);
+            vo.atomic = true;
+            vo.line = line;
+            vo.what = "atomic_thread_fence";
+            int k = add_op(vo);
+            out.push_back(nondet(in, marker(k), int_type(1)));
+            return;
         }
         if (op == "getelementptr" && rewrite_gep(fn, in, out)) return;
         if ((op == "phi" || op == "select") && rewrite_ptr_merge(fn, in, out)) return;
@@ -958,12 +1026,13 @@ struct Rewriter {
                 throw Unenc{"UNENCODED: load from " + w1[1].substr(0, 40) +
                             " (shared aggregates need the PIR memory model)"};
             }
-            if (atomic) require_sc(w1);
+            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Load;
             vo.var = v;
             vo.atomic = atomic;
+            vo.order = ord;
             vo.width = ty.bits;
             vo.line = line;
             vo.what = atomic ? "atomic load" : "load";
@@ -997,12 +1066,13 @@ struct Rewriter {
                             " (shared aggregates / thread handles need the PIR memory model)"};
             if (ty.kind != ir::Type::Int)
                 throw Unenc{"UNENCODED: store of " + ty.text + " to @" + g + " (memory model)"};
-            if (atomic) require_sc(w1);
+            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Store;
             vo.var = v;
             vo.atomic = atomic;
+            vo.order = ord;
             vo.width = ty.bits;
             vo.line = line;
             vo.what = atomic ? "atomic store" : "store";
@@ -1020,16 +1090,23 @@ struct Rewriter {
             auto w1 = words(parts[1]);  // T V [syncscope] ORDER
             std::erase(w0, "volatile");
             if (w0.size() < 4 || w1.size() < 2) throw Unenc{"UNENCODED: atomicrmw form " + in.text};
-            require_sc(w1);
             auto rop = w0[1];
             auto g = global_ref(w0[3]);
             auto ty = ir::parse_type(w1[0]);
-            if (g.empty()) throw Unenc{"UNENCODED: atomicrmw on " + w0[3].substr(0, 40) + " (memory model)"};
             if (ty.kind != ir::Type::Int) throw Unenc{"UNENCODED: atomicrmw " + rop + " " + ty.text};
-            int v = shared_var(g, ty);
+            int mobj = -1;
+            auto maddr = mem_addr(fn, ir::Operand{ir::parse_type("ptr"), parse_value(w0[3], ir::parse_type("ptr")), {}}, mobj);
+            if (!maddr && g.empty())
+                throw Unenc{"UNENCODED: atomicrmw on " + w0[3].substr(0, 40) + " (outside the bounded memory)"};
+            if (maddr) require_sc(w1);
+            const int ord = maddr ? 4 : scalar_orders(w1).at(0);
+            int v = maddr ? -1 : shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Rmw;
             vo.var = v;
+            vo.mem = maddr.has_value();
+            vo.obj = mobj;
+            vo.order = ord;
             vo.atomic = true;
             vo.width = ty.bits;
             vo.line = line;
@@ -1038,8 +1115,15 @@ struct Rewriter {
             ir::Operand val;
             val.ty = ty;
             val.v = parse_value(w1[1], ty);
-            auto old = local(marker(k), ty);
-            out.push_back(nondet(in, marker(k), ty));
+            // scalar: the head reads the old value; bounded memory: the head
+            // copies the address and a read marker ("r") the old value
+            auto old = local(maddr ? marker(k) + "r" : marker(k), ty);
+            if (maddr) {
+                out.push_back(copy(in, marker(k), *maddr));
+                out.push_back(nondet(in, marker(k) + "r", ty));
+            } else {
+                out.push_back(nondet(in, marker(k), ty));
+            }
             std::string nv = marker(k) + ".n";
             static const std::map<std::string, std::string> bins{
                 {"add", "add"}, {"sub", "sub"}, {"and", "and"}, {"or", "or"}, {"xor", "xor"}};
@@ -1071,23 +1155,37 @@ struct Rewriter {
             std::erase(w0, "weak");
             std::erase(w0, "volatile");
             if (w0.size() < 3 || w1.size() < 2 || w2.size() < 2) throw Unenc{"UNENCODED: cmpxchg form " + in.text};
-            require_sc(w2);
             auto g = global_ref(w0[2]);
             auto ty = ir::parse_type(w1[0]);
-            if (g.empty()) throw Unenc{"UNENCODED: cmpxchg on " + w0[2].substr(0, 40) + " (memory model)"};
             if (ty.kind != ir::Type::Int) throw Unenc{"UNENCODED: cmpxchg " + ty.text};
-            int v = shared_var(g, ty);
+            int mobj = -1;
+            auto maddr = mem_addr(fn, ir::Operand{ir::parse_type("ptr"), parse_value(w0[2], ir::parse_type("ptr")), {}}, mobj);
+            if (!maddr && g.empty())
+                throw Unenc{"UNENCODED: cmpxchg on " + w0[2].substr(0, 40) + " (outside the bounded memory)"};
+            if (maddr) require_sc(w2);
+            auto ords = maddr ? std::vector<int>{4, 4} : scalar_orders(w2);
+            int v = maddr ? -1 : shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Rmw;
             vo.var = v;
+            vo.mem = maddr.has_value();
+            vo.obj = mobj;
+            vo.order = ords.at(0);
+            vo.order_fail = ords.size() > 1 ? ords.at(1) : ords.at(0);
+            vo.cas = !maddr;
             vo.atomic = true;
             vo.width = ty.bits;
             vo.line = line;
             vo.what = weak ? "cmpxchg weak" : "cmpxchg";
             int k = add_op(vo);
             ir::Operand cmp{ty, parse_value(w1[1], ty), {}}, nv{ty, parse_value(w2[1], ty), {}};
-            auto old = local(marker(k), ty);
-            out.push_back(nondet(in, marker(k), ty));
+            auto old = local(maddr ? marker(k) + "r" : marker(k), ty);
+            if (maddr) {
+                out.push_back(copy(in, marker(k), *maddr));
+                out.push_back(nondet(in, marker(k) + "r", ty));
+            } else {
+                out.push_back(nondet(in, marker(k), ty));
+            }
             std::string eq = marker(k) + ".eq", ok = marker(k) + ".ok", n = marker(k) + ".n";
             auto ic = bin(in, eq, "icmp", old, cmp);
             ic.pred = "eq";
@@ -1102,6 +1200,8 @@ struct Rewriter {
             auto sel = base(in, n, "select", ty);
             sel.ops = {local(ok, int_type(1)), nv, old};
             out.push_back(sel);
+            // success flag for the view model: a failed compare-exchange is a load
+            if (!maddr) out.push_back(copy(in, marker(k) + "c", local(ok, int_type(1))));
             out.push_back(copy(in, marker(k, true), local(n, ty)));
             if (!in.result.empty()) cmpx.insert_or_assign(in.result, std::pair{marker(k), ok});
             return;
@@ -1500,6 +1600,7 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
         return b;
     }
     tl_weak_order.clear();
+    tl_views = false;
     try {
         Rewriter rw(m, ir_text);
         rw.loop_copies = std::max(1, opt.unwind);
@@ -1559,7 +1660,9 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
                             if (in.ops[i].ty.kind != ir::Type::Ptr) continue;
                             auto& c = sites[{in.callee, static_cast<int>(i)}];
                             ++c.first;
-                            if (rw.mem_resolvable(f.name, in.ops[i])) ++c.second;
+                            const auto vk = in.ops[i].v.kind;  // null: address 0 (a dereference is out of bounds)
+                            if (vk == ir::Value::Null || vk == ir::Value::Zero || rw.mem_resolvable(f.name, in.ops[i]))
+                                ++c.second;
                         }
                     }
             }
@@ -1590,7 +1693,10 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
                     for (int i : rw.mem_params[in.callee]) {
                         if (static_cast<std::size_t>(i) >= in.ops.size()) throw Unenc{"UNENCODED: call @" + in.callee + " arity"};
                         int obj = -1;
-                        auto a = rw.mem_addr(f.name, in.ops[static_cast<std::size_t>(i)], obj);
+                        const auto& po = in.ops[static_cast<std::size_t>(i)];
+                        auto a = po.v.kind == ir::Value::Null || po.v.kind == ir::Value::Zero
+                                     ? std::optional<ir::Operand>{cint(0, int_type(64))}
+                                     : rw.mem_addr(f.name, po, obj);
                         if (!a) throw Unenc{"UNENCODED: pointer argument of @" + in.callee};
                         in.ops.push_back(*a);
                     }
@@ -1633,6 +1739,7 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
             th.fn = it->second;
         }
         rw.prog.weak_order = tl_weak_order;
+        rw.prog.views = tl_views;
         b.prog = std::move(rw.prog);
         b.status.clear();
     } catch (const Unenc& u) {
