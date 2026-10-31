@@ -53,6 +53,8 @@ struct Options {
     // buffer may drain nondeterministically. Depth 1 under-approximates TSO
     // (it finds store-buffering outcomes such as the SB litmus test).
     bool tso = false;
+    int tso_buffer = 2;          // TSO: store-buffer entries per thread (k)
+    uint64_t max_alloc = 4096;   // largest symbolic malloc size (bytes); larger -> bound reported
 };
 
 // A visible operation: a context-switch point is placed before each one.
@@ -80,7 +82,7 @@ struct VisOp {
     // Create: the marker copies the thread argument (i64 address into the
     // bounded memory, 0 for null); Arg: at the entry of a thread function, the
     // marker's result is the argument its creating call passed.
-    uint64_t size = 0;
+    uint64_t size = 0;       // Alloc: constant size, 0 when symbolic (the marker copies it)
     bool zero = false;
     // Lock/Unlock/MutexInit (mutex == -1) and CondWait/CondSignal (cond == -1):
     // a mutex / condition variable that is not a global (struct field, array

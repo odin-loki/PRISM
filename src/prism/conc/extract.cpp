@@ -644,7 +644,20 @@ struct Rewriter {
     // A mutex / condition variable that is not a global: its address in the
     // bounded memory (nullopt for a global, which keeps its static index).
     std::optional<ir::Operand> sync_addr(const std::string& fn, const ir::Operand& o, const std::string& what) {
-        if (o.v.kind == ir::Value::Global) return std::nullopt;
+        if (o.v.kind == ir::Value::Global) {
+            // a global pthread_mutex_t / pthread_cond_t / mtx_t / cnd_t is an
+            // aggregate: identify it by its address so that using it by name
+            // and through a pointer is the same object
+            if (mutex_index.count(o.v.name)) return std::nullopt;
+            for (auto& cn : prog.conds)
+                if (cn == o.v.name) return std::nullopt;
+            int obj = -1;
+            try {
+                return mem_addr(fn, o, obj);
+            } catch (const Unenc&) {
+                return std::nullopt;  // e.g. an initialiser flat_init cannot read: keep the static index
+            }
+        }
         int obj = -1;
         auto a = mem_addr(fn, o, obj);
         if (!a) throw Unenc{"UNENCODED: " + what + " on a sync object outside the bounded memory (stack)"};
@@ -1060,16 +1073,30 @@ struct Rewriter {
             return;
         }
         if (is_alloc_fn(n)) {
-            auto lit = [&](const ir::Operand& o) -> uint64_t {
-                if (o.v.kind != ir::Value::Int) throw Unenc{"UNENCODED: " + n + " with a non-constant size (bounded heap)"};
-                return o.v.bits;
+            // the size (constant or symbolic) as i64; the encoder bounds a
+            // symbolic size by Options::max_alloc (larger: NEEDS-HARNESS bound hit)
+            auto to64 = [&](const ir::Operand& o) -> ir::Operand {
+                if (o.v.kind == ir::Value::Int) return cint(o.v.bits, i64);
+                if (o.ty.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + n + " size of type " + o.ty.text};
+                if (o.ty.bits == 64) return o;
+                auto r = "__prism.conc.z" + std::to_string(fresh++);
+                auto z = base(in, r, "zext", i64);
+                z.ops = {o};
+                out.push_back(z);
+                return local(r, i64);
             };
             auto vo = mk(VisOp::Alloc, n);
-            vo.size = n == "calloc" ? lit(arg(0)) * lit(arg(1)) : lit(arg(0));
+            ir::Operand sz = to64(arg(0));
+            if (n == "calloc") {
+                auto r = "__prism.conc.z" + std::to_string(fresh++);
+                out.push_back(bin(in, r, "mul", sz, to64(arg(1))));
+                sz = local(r, i64);
+            }
+            vo.size = sz.v.kind == ir::Value::Int ? sz.v.bits : 0;  // 0: symbolic
             vo.zero = n == "calloc";
-            if (vo.size == 0 || vo.size > (uint64_t{1} << 31)) throw Unenc{"UNENCODED: " + n + " size"};
+            if (vo.size > (uint64_t{1} << 31)) throw Unenc{"UNENCODED: " + n + " size"};
             int k = add_op(vo);
-            out.push_back(copy(in, marker(k), cint(vo.size, i64)));
+            out.push_back(copy(in, marker(k), sz));
             if (!in.result.empty()) out.push_back(freeze(in, paddr(in.result), local(marker(k), i64)));
             return;
         }
@@ -1105,12 +1132,19 @@ struct Rewriter {
         }
         if (n == "pthread_mutex_trylock" || n == "mtx_trylock") {
             auto vo = mk(VisOp::TryLock, n);
-            if (sync_addr(fn, arg(0), n)) throw Unenc{"UNENCODED: " + n + " on a mutex that is not a global"};
-            vo.mutex = mutex(arg(0), n);
+            auto da = sync_addr(fn, arg(0), n);
+            vo.dyn = da.has_value();
+            vo.mutex = da ? -1 : mutex(arg(0), n);
             auto rty = in.ty.kind == ir::Type::Int ? in.ty : int_type(32);
             vo.width = rty.bits;
             vo.busy = n == "mtx_trylock" ? 1 : 16;  // thrd_busy / EBUSY (glibc)
             int k = add_op(vo);
+            if (da) {  // head: the mutex address; tail: the result
+                out.push_back(copy(in, marker(k), *da));
+                out.push_back(nondet(in, marker(k, true), rty));
+                if (!in.result.empty()) out.push_back(freeze(in, in.result, local(marker(k, true), rty)));
+                return;
+            }
             out.push_back(nondet(in, marker(k), rty));
             if (!in.result.empty()) out.push_back(freeze(in, in.result, local(marker(k), rty)));
             return;

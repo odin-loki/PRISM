@@ -517,7 +517,7 @@ struct Enc {
     // bounded memory: byte address -> word (the whole access, zero-extended)
     z3::expr M, maddr, last_addr, last_mem;
     // bounded heap: one slot per unrolled execution of an allocation site
-    struct HeapSlot { uint64_t id; uint64_t size; z3::expr live; std::string name; };
+    struct HeapSlot { uint64_t id; z3::expr size; z3::expr live; std::string name; };
     std::vector<HeapSlot> heap;
     std::vector<z3::expr> targ;
     // TSO store buffers (Options::tso): per thread pending / variable / value
@@ -525,6 +525,7 @@ struct Enc {
     std::map<std::pair<int, int>, int> create_slot;  // (thread, node) of a looped Create -> created thread
     // mutexes / condition variables addressed through the bounded memory
     z3::expr OwnA, CgenA;
+    z3::expr try_free{c};  // dyn trylock: the head's "was free" for its tail (same step)
     std::vector<z3::expr> tkd;  // per thread: CgenA[cv] when it released for a wait on a non-global cv  // per thread: the argument its creating call passed
     std::map<std::pair<int, int>, std::size_t> heap_of;  // (thread, node) -> heap index
     std::vector<z3::expr> hard;
@@ -757,7 +758,7 @@ struct Enc {
         for (auto& h : heap) {
             auto here = id == c.bv_val(h.id, 64);
             inb = inb || (here && h.live &&
-                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), c.bv_val(h.size, 64)));
+                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), h.size));
             freed = freed || (here && !h.live);
         }
         auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
@@ -904,6 +905,20 @@ struct Enc {
             define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
             return;
         }
+        if (o.dyn && o.kind == VisOp::TryLock) {
+            if (!mk.tail) {
+                event(e, r, t, mk.op, std::nullopt, 0);
+                auto a = lookup(t, node, s.args.at(0));
+                auto fr = z3::select(OwnA, a) == bv(0, 8);
+                try_free = fr;
+                OwnA = z3::ite(e && fr, z3::store(OwnA, a, tid), OwnA);
+                define(t, node, s.dst, e, a);
+                touch(t, e, mk.op, -1, false, false);
+            } else {
+                define(t, node, s.dst, e, z3::ite(try_free, bv(0, o.width), bv(o.busy, o.width)));
+            }
+            return;
+        }
         if (o.dyn && (o.kind == VisOp::Lock || o.kind == VisOp::Unlock || o.kind == VisOp::MutexInit ||
                       o.kind == VisOp::CondWait || o.kind == VisOp::CondSignal)) {
             event(e, r, t, mk.op, std::nullopt, 0);
@@ -1011,6 +1026,12 @@ struct Enc {
             case VisOp::Alloc: {
                 auto& h = heap.at(heap_of.at({t, node}));
                 h.live = z3::ite(e, c.bool_val(true), h.live);
+                if (o.size == 0) {  // symbolic size, bounded by Options::max_alloc
+                    auto n = lookup(t, node, s.args.at(0));
+                    h.size = z3::ite(e, n, h.size);
+                    // sizes above the bound are not explored (reported in extra["max_alloc"])
+                    ok = ok && z3::implies(e, z3::ule(n, c.bv_val(opt.max_alloc, 64)));
+                }
                 define(t, node, s.dst, e, c.bv_val(h.id << 32, 64));
                 touch(t, e, mk.op, -1, false, false);
                 return;
@@ -1229,7 +1250,7 @@ struct Enc {
                 if (h < 0 || p.ops[static_cast<std::size_t>(h)].kind != VisOp::Alloc) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(h)];
                 heap_of[{static_cast<int>(t), static_cast<int>(nd)}] = heap.size();
-                heap.push_back({p.objects.size() + 1 + heap.size(), o.size, c.bool_val(false),
+                heap.push_back({p.objects.size() + 1 + heap.size(), c.bv_val(o.size, 64), c.bool_val(false),
                                 o.what + "#" + std::to_string(heap.size()) + at_line(o.line)});
             }
         // a creation site must run at most once (no loops of threads yet):
@@ -1403,6 +1424,7 @@ Result check(const Program& prog, const Options& opt) {
         Enc enc(prog, opt);
         enc.encode();
         res.extra["heap_slots"] = std::to_string(enc.heap.size());
+        res.extra["max_alloc"] = std::to_string(opt.max_alloc);
         for (auto& o : prog.ops)
             if (o.kind == VisOp::Create && o.copies > 1)
                 res.extra["loop_thread_slots"] = std::to_string(o.copies) + " per looped creation site";
