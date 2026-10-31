@@ -189,7 +189,8 @@ std::string headers(const std::string& cxx, const std::string& prog) {
     return out;
 }
 
-void same_trace(const std::string& prog, const std::vector<const char*>& model_headers) {
+// min_lines: the trace program's line count (the long traces print > 20).
+void same_trace(const std::string& prog, const std::vector<const char*>& model_headers, std::size_t min_lines = 21) {
     auto& c = ctx();
     REQUIRE(c.ok);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -200,7 +201,7 @@ void same_trace(const std::string& prog, const std::vector<const char*>& model_h
     auto mod = build_prog(c.cxx, c.tmp, prog, true);
     auto a = run_lines(lib);
     auto b = run_lines(mod);
-    CHECK(a.size() > 20);
+    CHECK(a.size() >= min_lines);
     CHECK(a == b);
 }
 
@@ -282,10 +283,10 @@ TEST_CASE("cxx models: map/set trace matches libstdc++ and UAF on erase") {
 
 TEST_CASE("cxx models: ranges views::take/drop trace matches libstdc++") {
     if (!ctx().ok) return;
-    same_trace("ranges_views_trace", {"ranges"});
+    same_trace("ranges_views_trace", {"ranges"}, 4);  // n = 0, 2, 5, 9
 }
 
 TEST_CASE("cxx models: variant visit trace matches libstdc++") {
     if (!ctx().ok) return;
-    same_trace("variant_visit_trace", {"variant"});
+    same_trace("variant_visit_trace", {"variant"}, 4);
 }

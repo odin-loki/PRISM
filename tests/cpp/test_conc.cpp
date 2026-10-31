@@ -295,11 +295,13 @@ TEST_CASE("conc: the sequentialised program is printable") {
     auto b = prism::conc::build_program(m, *ir, "main");
     REQUIRE(b.prog);
     CHECK(b.prog->threads.size() == 3);
-    CHECK(b.prog->mutexes.size() == 1);
+    // A global pthread_mutex_t is identified by its address in the bounded
+    // memory (extract.cpp sync_addr), so it has no static mutex index.
+    CHECK(b.prog->mutexes.empty());
     CHECK(b.prog->vars.size() == 1);
     auto text = prism::conc::lazy_text(*b.prog);
     CHECK(text.find("seq_T1_worker") != std::string::npos);
-    CHECK(text.find("pthread_mutex_lock(lock)") != std::string::npos);
+    CHECK(text.find("pthread_mutex_lock(*ptr)") != std::string::npos);
     CHECK(text.find("if (") != std::string::npos);
 }
 

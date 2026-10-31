@@ -4,24 +4,26 @@
 // It is a file, not a directory: a directory of this name would make the
 // include fail with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. std::condition_variable stores one bool in the object.
-// There is no heap allocation and no thread. This header is not a
-// concurrency proof.
+// std::condition_variable stores one bool in the object (no heap allocation)
+// and runs on the thread-interleaving scheduler of bits/prism_sched.h, whose
+// schedule bounds (preemptions, queued threads) are an under-approximation.
+// Under the conc stage (__PRISM_CONC_THREADS) bits/prism_conc.h maps it onto
+// the pthread model instead.
 //
-// notify_one() and notify_all() set that flag. They do not run a waiter.
+// notify_one() and notify_all() set that flag and are a switch point: the
+// solver may run a queued thread there. They do not invent a woken thread.
 // A default condition_variable has the flag false.
 //
-// wait(lock) returns at once. That is a spurious wakeup, which
-// [thread.condition.condvar] permits, so it is not a fake wakeup: every
-// program correct against the standard already re-checks its condition.
-// wait(lock, pred) returns only with pred() true: the model evaluates pred()
-// once and __prism_assume()s it, the standard's postcondition on return. A
-// path where pred() stays false forever never returns, so no later step of
-// that path is checked (a hang is not a memory error here).
-// wait_for / wait_until with a predicate return pred() (true or a timeout
-// with pred() false, both allowed). Without a predicate they return
-// cv_status::no_timeout or cv_status::timeout from havoc:
-// the returned status is an unconstrained choice of the two.
+// wait(lock) releases the lock, lets the solver run zero or one queued thread
+// and relocks. Returning with nothing run is a spurious wakeup, which
+// [thread.condition.condvar] permits. wait(lock, pred) returns only with
+// pred() true: while pred() is false it releases the lock and some queued
+// thread must run; with none left the wait can never return (CXX-DEADLOCK:
+// a lost wakeup, or a predicate no thread makes true).
+// wait_for / wait_until with a predicate run queued threads while pred() is
+// false and, with none left, time out and return pred(). Without a predicate
+// they wait once and return cv_status::no_timeout or cv_status::timeout from
+// havoc (an unconstrained choice of the two).
 // condition_variable_any has the same members over any BasicLockable.
 // notify_all_at_thread_exit is not declared, so a use of it fails to compile
 // against this header and the pir stage lowers that unit again with
