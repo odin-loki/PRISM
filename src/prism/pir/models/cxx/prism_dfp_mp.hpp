@@ -470,3 +470,100 @@ template <typename _D> inline _D _cr_pow(_D x, _D y) {
         return e;
     }, 0);
 }
+
+// ---- erf / erfc (session 11) ----
+// erf x = 2/sqrt(pi) e^{-x^2} sum 2^n x^{2n+1} / (1*3*...*(2n+1)): all
+// terms positive, so no cancellation; erfc = 1 - erf (cancellation counted
+// in *lost, Ziv raises W) for x > 0, 1 + erf|x| for x < 0.
+inline _Mp _mp_erf_pos(const _Mp& x, int L) {
+    _Mp x2 = _mp_mul(x, x, L + 2), t = x, s = x, two_x2 = _mp_muls(x2, 2, L + 2);
+    for (uint32_t n = 1; ; ++n) {
+        t = _mp_divs(_mp_mul(t, two_x2, L + 2), 2 * n + 1, L + 2);
+        if (t.zero() || (_mp_cmpabs(t, s) < 0 && _mp_top(t) < _mp_top(s) - L - 2)) break;
+        s = _mp_add(s, t, L + 2);
+    }
+    int o; _Mp e = _mp_exp(_mp_neg(x2), L + 2, &o);
+    if (o) return _mp_u(1);
+    _Mp r = _mp_mul(_mp_mul(s, e, L + 2), _mp_div(_mp_u(2), _mp_sqrt(_mp_pi(L + 2), L + 2), L + 2), L + 1);
+    return r;
+}
+template <typename _D> inline _D _cr_erf(_D x, bool c) {
+    _Mp X = _mp_from(x._M_w()); const bool ng = X.neg; X.neg = false;
+    const int P = _mp_P<_D>();
+    long ex; double xd = _mp_dbl(X, &ex); if (ex > 0) xd = 1e300; else if (ex < 0) xd = 0;
+    const double lim = __builtin_sqrt((P + 5) * 2.3026);  // erfc(lim) < 10^-(P+5)
+    if (!c && xd > lim) return _mp_nudge(_D(ng ? -1 : 1), -1);           // just inside +-1
+    if (c && !ng && xd > 120) return _D(_Wt<_D>::_S_make(1, -20000));  // below every subnormal
+    if (c && ng && xd > lim) return _mp_nudge(_D(2), -1);               // just below 2
+    const long extra = c && !ng ? (long)(xd * xd / 2.3026) + 10 : 0;   // digits lost to 1 - erf
+    return _mp_ziv<_D>([&](int L, long* lost, int*) {
+        _Mp e = _mp_erf_pos(X, L + (int)(extra / 9) + 1);
+        if (!c) return ng ? _mp_neg(e) : e;
+        _Mp r = ng ? _mp_add(_mp_u(1), e, L + 1) : _mp_sub(_mp_u(1), e, L + (int)(extra / 9) + 1);
+        *lost = (!r.zero() && _mp_dexp(r) < 0) ? -_mp_dexp(r) : 0;
+        if (*lost > extra + 20) *lost = extra + 20;
+        _mp_trunc(r, L);
+        return r;
+    }, 2 * extra);
+}
+
+// ---- lgamma / tgamma (session 11) ----
+// Stirling series with Bernoulli numbers B2..B34 after shifting z up to Z
+// (z(z+1)...(Z-1) accumulated exactly-ish in MP, one log at the end);
+// x < 0 by reflection Gamma(x) = pi / (sin(pi x) Gamma(1 - x)).
+inline _Mp _mp_lgamma_pos(const _Mp& x, int L) {
+    static const long long bn[17] = {1, -1, 1, -1, 5, -691, 7, -3617, 43867, -174611, 854513, -236364091, 8553103, -23749461029LL, 8615841276005LL, -7709321041217LL, 2577687858367LL};
+    static const unsigned bd[17] = {6, 30, 42, 30, 66, 2730, 6, 510, 798, 330, 138, 2730, 6, 870, 14322, 510, 6};
+    const int LL = L + 2;
+    double Zd = 1; for (int i = 0; i < (9 * L) / 32 + 1 && Zd < 2e5; ++i) Zd *= 10;
+    if (Zd > 2e5) Zd = 2e5;
+    long ex; double xd = _mp_dbl(x, &ex); if (ex > 0) xd = 1e300; else if (ex < 0) xd = 0;
+    _Mp z = x, prod = _mp_u(1);
+    bool shifted = false;
+    for (; xd < Zd; xd += 1) { prod = _mp_mul(prod, z, LL); z = _mp_add(z, _mp_u(1), LL); shifted = true; }
+    _Mp lz = _mp_log(z, LL);
+    _Mp half = _mp_divs(_mp_u(1), 2, LL);
+    _Mp r = _mp_sub(_mp_mul(_mp_sub(z, half, LL), lz, LL), z, LL);
+    r = _mp_add(r, _mp_mul(half, _mp_log(_mp_muls(_mp_pi(LL), 2, LL), LL), LL), LL);
+    _Mp iz = _mp_div(_mp_u(1), z, LL), iz2 = _mp_mul(iz, iz, LL), zp = iz;
+    for (int k = 1; k <= 17; ++k) {
+        _Mp t = _mp_divs(_mp_mul(_mp_u((unsigned long long)(bn[k - 1] < 0 ? -bn[k - 1] : bn[k - 1])), zp, LL), bd[k - 1] * (unsigned)(2 * k) * (unsigned)(2 * k - 1), LL);
+        r = bn[k - 1] < 0 ? _mp_sub(r, t, LL) : _mp_add(r, t, LL);
+        zp = _mp_mul(zp, iz2, LL);
+    }
+    if (shifted) r = _mp_sub(r, _mp_log(prod, LL), LL);
+    return r;
+}
+// sin(pi x) for exact x
+inline _Mp _mp_sinpi(const _Mp& x, int L, long* lost) {
+    _Mp r; int n = _mp_reduce(_mp_mul(x, _mp_pi(L + 4), L + 4), L + 1, &r, lost);
+    _Mp s, c; _mp_sincos_small(r, L + 1, &s, &c);
+    _Mp v = (n & 1) ? c : s; return (n & 2) ? _mp_neg(v) : v;
+}
+template <typename _D> inline bool _mp_isint(const _Mp& X) { return X.q >= 0; }
+template <typename _D> inline _D _cr_gamma(_D x, bool lg) {
+    _Mp X = _mp_from(x._M_w());
+    if (X.zero() || (X.neg && X.q >= 0)) return _ld<_D>(lg ? ::lgammal((long double)x) : ::tgammal((long double)x));  // poles
+    if (lg && !X.neg && X.q == 0 && X.d.size() == 1 && (X.d[0] == 1 || X.d[0] == 2)) return _D(0);
+    return _mp_ziv<_D>([&](int L, long* lost, int* sp) {
+        _Mp l;
+        if (!X.neg) l = _mp_lgamma_pos(X, L + 1);
+        else {
+            long ls = 0;
+            _Mp s = _mp_sinpi(X, L + 2, &ls);
+            _Mp a = s; a.neg = false;
+            l = _mp_sub(_mp_log(_mp_div(_mp_pi(L + 2), a, L + 2), L + 2), _mp_lgamma_pos(_mp_sub(_mp_u(1), X, L + 4), L + 2), L + 1);
+            *lost = ls > 0 && ls < 100000 ? ls : 0;
+            if (!lg) {
+                int o; _Mp g = _mp_exp(l, L, &o);
+                if (o) { *sp = o > 0 ? (s.neg ? 1 : 2) : -1; return _Mp(); }
+                // sign of Gamma(x) = sign of sin(pi x)
+                return s.neg ? _mp_neg(g) : g;
+            }
+        }
+        if (lg) { long d = l.zero() ? 0 : _mp_dexp(l); if (d < 0) *lost += -d; return l; }
+        int o; _Mp g = _mp_exp(l, L, &o);
+        if (o) { *sp = o; return _Mp(); }
+        return g;
+    }, 0);
+}

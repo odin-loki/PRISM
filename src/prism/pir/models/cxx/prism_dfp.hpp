@@ -550,9 +550,12 @@ template <typename _D> inline _D _ld(long double __v) { char __s[64]; snprintf(_
     __PRISM_DFPM_CR1(T, S, atan, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : __prism_dfpm::_cr_atan(__x))) \
     __PRISM_DFPM_CR1(T, S, sinh, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, 1) : __prism_dfpm::_cr_hyp(__x, 0))) \
     __PRISM_DFPM_CR1(T, S, cosh, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(T(1), 1) : __prism_dfpm::_cr_hyp(__x, 1))) \
-    __PRISM_DFPM_CR1(T, S, tanh, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : __prism_dfpm::_cr_hyp(__x, 2))) \
+    __PRISM_DFPM_CR1(T, S, tanh, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_mp_tiny(__x, 2) ? __prism_dfpm::_mp_nudge(__x, -1) : (__x > T(2 * __prism_dfpm::_mp_P<T>() + 10) || __x < T(-2 * __prism_dfpm::_mp_P<T>() - 10)) ? __prism_dfpm::_mp_nudge(T(__x < T(0) ? -1 : 1), -1) : __prism_dfpm::_cr_hyp(__x, 2))) \
     __PRISM_DFPM_CR1(T, S, cbrt, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_cr_cbrt(__x))) \
-    __PRISM_DFPM_LD1(T, S, erf) __PRISM_DFPM_LD1(T, S, erfc) __PRISM_DFPM_LD1(T, S, tgamma) __PRISM_DFPM_LD1(T, S, lgamma) \
+    __PRISM_DFPM_CR1(T, S, erf, (__prism_dfpm::_mp_z(__x) ? __x : __prism_dfpm::_cr_erf(__x, false))) \
+    __PRISM_DFPM_CR1(T, S, erfc, (__prism_dfpm::_mp_z(__x) ? T(1) : __prism_dfpm::_cr_erf(__x, true))) \
+    __PRISM_DFPM_CR1(T, S, tgamma, (__prism_dfpm::_cr_gamma(__x, false))) \
+    __PRISM_DFPM_CR1(T, S, lgamma, (__prism_dfpm::_cr_gamma(__x, true))) \
     __PRISM_DFPM_CR2(T, S, pow, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) && __x > T(0) && !__prism_dfpm::_mp_z(__y) && __x != T(1) ? __prism_dfpm::_cr_pow(__x, __y) : __prism_dfpm::_ld<T>(::powl((long double)__x, (long double)__y)))) \
     __PRISM_DFPM_CR2(T, S, atan2, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) && !__prism_dfpm::_mp_z(__x) && !__prism_dfpm::_mp_z(__y) ? __prism_dfpm::_cr_atan2(__y, __x) : __prism_dfpm::_ld<T>(::atan2l((long double)__y, (long double)__x)))) \
     __PRISM_DFPM_CR2(T, S, hypot, (__prism_dfpm::_mp_fin(__x) && __prism_dfpm::_mp_fin(__y) ? __prism_dfpm::_cr_hypot(__x, __y) : __prism_dfpm::_ld<T>(::hypotl((long double)__x, (long double)__y))))
