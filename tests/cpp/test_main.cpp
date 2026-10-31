@@ -7492,6 +7492,27 @@ TEST_CASE("process runners kill the child's whole process tree on timeout") {
     MESSAGE("POSIX-only (fork); Windows: see the Job Object cases in tests/cpp/test_qa.cpp");
 }
 #else
+#include <cerrno>
+#include <csignal>
+#include <sys/wait.h>
+#include <thread>
+
+namespace {
+namespace fs = std::filesystem;
+
+// The process is gone (or a zombie): kill(pid, 0) fails with ESRCH or /proc says Z.
+bool proc_gone(long pid) {
+    for (int i = 0; i < 250; ++i) {
+        if (::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) return true;
+        std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
+        std::string s((std::istreambuf_iterator<char>(st)), std::istreambuf_iterator<char>());
+        auto rp = s.rfind(')');
+        if (s.empty() || (rp != std::string::npos && rp + 2 < s.size() && s[rp + 2] == 'Z')) return true;
+        ::usleep(20000);
+    }
+    return false;
+}
+}  // namespace
 
 TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
     const auto pidfile = fs::temp_directory_path() / ("prism_sigterm_" + std::to_string(::getpid()) + ".pid");
