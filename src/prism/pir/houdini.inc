@@ -625,6 +625,20 @@ void Houdini::generate(std::vector<InvCand>& out) {
                         c.sext = sg;
                         out.push_back(c);
                     }
+                // Unit-bounded accumulation (kindmem_alloc_true: s += q[1] with
+                // q[1] == 1 per iteration): a - entry(a) <= / >= b - entry(b).
+                // The Eq form is Lin's; only the inequalities are new.
+                for (Op r : {Op::Sle, Op::Sge}) {
+                    InvCand c;
+                    c.kind = InvCand::Scale;
+                    c.loop = L;
+                    c.rel = r;
+                    c.a = a;
+                    c.b = b;
+                    c.mask = 1;
+                    c.sext = sg;
+                    out.push_back(c);
+                }
                 std::size_t nv = 0;
                 for (int v : scope) {
                     if (fn_.vars[static_cast<std::size_t>(v)].width != w || nv >= kArithScope) continue;
