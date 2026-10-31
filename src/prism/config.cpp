@@ -485,7 +485,6 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_MEM_STUCK_MS", "time over the hard limit before the stuck hook fires"},
     {"PRISM_MEM_TRACE", "diagnostics: memory-budget, Z3 and pir memory trace lines on stderr"},
     {"PRISM_MODEL", "default LLM model name"},
-    {"PRISM_N_GPU_LAYERS", "GPU layers for local LLM inference"},
     {"PRISM_PBSD", "path of the pbsd tool"},
     {"PRISM_PIR_BATCH", "pir: functions per fresh-process batch"},
     {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
