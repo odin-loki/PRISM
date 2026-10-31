@@ -55,7 +55,7 @@ extern "C" void __prism_check(int, const char*, const char*);
 
 // cl does not provide __builtin_trap. clang, which the pir stage uses, does.
 // The stand-in is abort, so a failed contract still does not return.
-#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(PRISM_MSVC_BUILTIN_TRAP)
 // Declared exactly as the UCRT declares it: dllimport under /MD (_DLL), else
 // cl reports C2375 (redefinition; different linkage) once <stdlib.h> is seen.
 #  if defined(_DLL)

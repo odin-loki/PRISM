@@ -3,7 +3,7 @@
 // use __builtin_trap on contract-violation arms; several tests include them
 // by path. MSVC cl has no such builtin, so this gives the same no-return
 // stand-in models/cxx/complex defines for itself (which then skips its own
-// copy, see PRISM_MSVC_BUILTIN_TRAP). abort is declared exactly as the UCRT
+// copy, see PRISM_MSVC_BUILTIN_TRAP; random does the same). abort is declared exactly as the UCRT
 // declares it, so a later <stdlib.h> does not conflict.
 #pragma once
 #define PRISM_MSVC_BUILTIN_TRAP 1
