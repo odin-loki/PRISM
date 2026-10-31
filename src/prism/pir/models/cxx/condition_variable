@@ -11,11 +11,21 @@
 // notify_one() and notify_all() set that flag. They do not run a waiter.
 // A default condition_variable has the flag false.
 //
-// wait, wait_for, and wait_until are not declared. A blocking wait that
-// returned immediately would be a fake wakeup. condition_variable_any,
-// cv_status, and notify_all_at_thread_exit are not declared either, so a
-// use of those names fails to compile against this header and the pir stage
-// lowers that translation unit again with libstdc++.
+// wait(lock) returns at once. That is a spurious wakeup, which
+// [thread.condition.condvar] permits, so it is not a fake wakeup: every
+// program correct against the standard already re-checks its condition.
+// wait(lock, pred) returns only with pred() true: the model evaluates pred()
+// once and __prism_assume()s it, the standard's postcondition on return. A
+// path where pred() stays false forever never returns, so no later step of
+// that path is checked (a hang is not a memory error here).
+// wait_for / wait_until with a predicate return pred() (true or a timeout
+// with pred() false, both allowed). Without a predicate they return
+// cv_status::no_timeout or cv_status::timeout from havoc:
+// the returned status is an unconstrained choice of the two.
+// condition_variable_any has the same members over any BasicLockable.
+// notify_all_at_thread_exit is not declared, so a use of it fails to compile
+// against this header and the pir stage lowers that unit again with
+// libstdc++.
 //
 // The include guard is _GLIBCXX_CONDITION_VARIABLE, the usual libstdc++
 // guard. This file does not include a libstdc++ header to learn that name.
@@ -30,8 +40,25 @@
 // Nothing in this header calls it. notify has no failing operation, and a
 // woken thread is not invented.
 extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+extern "C" void __prism_assume(int __cond);
+extern "C" void __prism_havoc_bytes(void* __p, unsigned long __n);
 
 namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+namespace __prism_cv {
+// An unconstrained choice between the two statuses.
+inline cv_status __any_status() noexcept {
+    unsigned char __b = 0;
+    __prism_havoc_bytes(&__b, 1);
+    return (__b & 1u) ? cv_status::timeout : cv_status::no_timeout;
+}
+template <class _Pred>
+inline void __wait_pred(_Pred& __p) {
+    __prism_assume(static_cast<bool>(__p()) ? 1 : 0);
+}
+}  // namespace __prism_cv
 
 class condition_variable {
     bool _M_flag;
@@ -46,8 +73,26 @@ public:
     // The flag is a member, not a heap object. Nothing is freed.
     ~condition_variable() = default;
 
-    // wait, wait_for, and wait_until are not declared. A blocking wait that
-    // returned immediately would be a fake wakeup.
+
+    // Spurious wakeup: allowed by the standard, so returning is sound.
+    template <class _Lock>
+    void wait(_Lock&) noexcept {}
+
+    // Returns only with pred() true (the standard's postcondition).
+    template <class _Lock, class _Pred>
+    void wait(_Lock&, _Pred __p) { __prism_cv::__wait_pred(__p); }
+
+    template <class _Lock, class _Dur>
+    cv_status wait_for(_Lock&, const _Dur&) noexcept { return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Dur, class _Pred>
+    bool wait_for(_Lock&, const _Dur&, _Pred __p) { return static_cast<bool>(__p()); }
+
+    template <class _Lock, class _Tp>
+    cv_status wait_until(_Lock&, const _Tp&) noexcept { return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Tp, class _Pred>
+    bool wait_until(_Lock&, const _Tp&, _Pred __p) { return static_cast<bool>(__p()); }
 
     // Sets the flag. Does not run a waiter and does not invent a woken thread.
     void notify_one() noexcept { _M_flag = true; }
@@ -60,6 +105,41 @@ public:
     // free, as with libstdc++'s handle (a pointer into the object).
     using native_handle_type = condition_variable*;
     native_handle_type native_handle() noexcept { return this; }
+};
+
+
+// Same model over any BasicLockable.
+class condition_variable_any {
+    bool _M_flag;
+
+public:
+    condition_variable_any() : _M_flag(false) {}
+    condition_variable_any(const condition_variable_any&) = delete;
+    condition_variable_any& operator=(const condition_variable_any&) = delete;
+    ~condition_variable_any() = default;
+
+    void notify_one() noexcept { _M_flag = true; }
+    void notify_all() noexcept { _M_flag = true; }
+
+    // Spurious wakeup: allowed by the standard, so returning is sound.
+    template <class _Lock>
+    void wait(_Lock&) noexcept {}
+
+    // Returns only with pred() true (the standard's postcondition).
+    template <class _Lock, class _Pred>
+    void wait(_Lock&, _Pred __p) { __prism_cv::__wait_pred(__p); }
+
+    template <class _Lock, class _Dur>
+    cv_status wait_for(_Lock&, const _Dur&) noexcept { return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Dur, class _Pred>
+    bool wait_for(_Lock&, const _Dur&, _Pred __p) { return static_cast<bool>(__p()); }
+
+    template <class _Lock, class _Tp>
+    cv_status wait_until(_Lock&, const _Tp&) noexcept { return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Tp, class _Pred>
+    bool wait_until(_Lock&, const _Tp&, _Pred __p) { return static_cast<bool>(__p()); }
 };
 
 }  // namespace std

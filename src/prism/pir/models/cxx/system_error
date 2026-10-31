@@ -15,8 +15,9 @@
 // does not include. error_code(n, generic_category()) still stores n.
 //
 // operator== is true only when the stored int and the stored category id
-// are both equal. error_code() stores category id 0. error_code(0,
-// generic_category()) stores category id 1. Those two codes compare
+// are both equal. error_code() stores category id 2, system_category(), as
+// the standard requires, so error_code() == error_code(0, system_category()).
+// error_code(0, generic_category()) stores category id 1. Those two codes compare
 // unequal. Two error_code(5, generic_category()) values compare equal.
 // The comparison reads the stored ids. It does not read a category name.
 // A zero value with a different category id is unequal. operator!= is
@@ -50,13 +51,26 @@ struct __generic_category_tag {};
 
 inline __generic_category_tag generic_category() noexcept { return {}; }
 
+// Empty tag for system_category(), category id 2. Distinct from generic:
+// error_code(5, system_category()) != error_code(5, generic_category()).
+struct __system_category_tag {};
+inline __system_category_tag system_category() noexcept { return {}; }
+
 class error_code {
 public:
     // value 0, category id 0. operator bool is false.
-    error_code() noexcept : _M_value(0), _M_cat(0) {}
+    error_code() noexcept : _M_value(0), _M_cat(2) {}  // system_category, per [syserr.errcode.constructors]
 
     // Stores n in _M_value. The tag selects generic_category's id.
     error_code(int __v, const __generic_category_tag&) noexcept : _M_value(__v), _M_cat(1) {}
+    error_code(int __v, const __system_category_tag&) noexcept : _M_value(__v), _M_cat(2) {}
+
+    // assign() stores both fields, as the constructors do.
+    void assign(int __v, const __generic_category_tag&) noexcept { _M_value = __v; _M_cat = 1; }
+    void assign(int __v, const __system_category_tag&) noexcept { _M_value = __v; _M_cat = 2; }
+
+    // clear(): value 0 with system_category ([syserr.errcode.modifiers]).
+    void clear() noexcept { _M_value = 0; _M_cat = 2; }
 
     // The int passed to the constructor. Not a constant 0.
     int value() const noexcept { return _M_value; }
@@ -77,8 +91,8 @@ public:
 
 private:
     int _M_value = 0;
-    // Category id stored beside the value. 0 is the default code; 1 is
-    // generic_category(). operator== reads this id. It is not returned
+    // Category id stored beside the value. 1 is generic_category(), 2 is
+    // system_category() (also the default code). operator== reads this id. It is not returned
     // as an error_category object.
     int _M_cat = 0;
 };
