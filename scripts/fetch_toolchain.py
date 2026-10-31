@@ -2,6 +2,8 @@
 """Fetch a pinned toolchain artifact from third_party/TOOLCHAIN_PINS.toml and verify SHA-256.
 
 usage: fetch_toolchain.py NAME [--platform P] [--dest DIR]
+Also fetches the lint tools (kind = "lint": ruff, shellcheck, mypy, pyflakes, yamllint,
+typescript, eslint; clang-tidy comes from the pinned LLVM archive).
 Refuses (exit 2) any download whose SHA-256 differs from the pin. Extracts into
 DEST/NAME/VERSION (default ~/.prism/toolchain) and prints that directory.
 """
@@ -21,10 +23,14 @@ def main():
     a = ap.parse_args()
     pins = tomllib.loads((ROOT / "third_party" / "TOOLCHAIN_PINS.toml").read_text())
     pin = next((p for p in pins["pin"] if p["name"] == a.name), None)
+    if pin and "from_pin" in pin:
+        # Ships inside another pinned archive (clang-tidy in LLVM): fetch that one.
+        sys.exit(f"{a.name} {pin['version']} comes from {pin['from_pin']} ({pin.get('bin', '')}); fetch that pin")
     if not pin or "artifacts" not in pin:
         sys.exit(f"no fetchable pin named {a.name}")
     arts = pin["artifacts"]
-    plat = a.platform or ("source" if "source" in arts else host_platform())
+    default = next((k for k in ("source", "python", "node") if k in arts), None)
+    plat = a.platform or default or host_platform()
     if plat not in arts:
         sys.exit(f"{a.name} {pin['version']}: no artifact for {plat} (have {', '.join(arts)})")
     art = arts[plat]
@@ -41,7 +47,11 @@ def main():
             print(f"SHA-256 mismatch for {art['url']}: got {h.hexdigest()}, pinned {art['sha256']}", file=sys.stderr)
             sys.exit(2)
         shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
-        if f.suffix == ".zip":
+        if pin.get("install") in ("pip", "npm"):
+            # Wheels / npm tarballs stay packed: install with
+            #   pip install --no-deps OUT/<file>   or   npm install OUT/<file>
+            shutil.copy2(f, out / f.name)
+        elif f.suffix == ".zip":
             zipfile.ZipFile(f).extractall(out)
         else:
             with tarfile.open(f) as t:

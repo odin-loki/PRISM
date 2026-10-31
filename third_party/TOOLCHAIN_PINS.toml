@@ -56,3 +56,78 @@ source = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12
 name = "lean4"
 version = "v4.34.0"
 source = "proofs/lean-toolchain + proofs/**/lake-manifest.json"
+
+# --- Lint tools (polyglot / CI). Exact versions + SHA-256; kind = "lint". ---
+# clang-tidy is not a separate download: it ships inside the pinned LLVM archive
+# (third_party/llvm/PIN.toml, LLVM 23.1.4 on prism-llvm) and is verified with it.
+[[pin]]
+name = "clang-tidy"
+version = "23.1.4"
+kind = "lint"
+from_pin = "third_party/llvm/PIN.toml"
+bin = "bin/clang-tidy"
+
+[[pin]]
+name = "ruff"
+version = "0.17.3"
+source = "https://github.com/astral-sh/ruff/releases/download/0.17.3/<artifact>.sha256"
+kind = "lint"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://github.com/astral-sh/ruff/releases/download/0.17.3/ruff-x86_64-unknown-linux-gnu.tar.gz", sha256 = "2b0890f5a55900af741f133918c2656919bbf18c2ab7741b4ca8403a90e647a9" }
+"macos-universal" = { url = "https://github.com/astral-sh/ruff/releases/download/0.17.3/ruff-aarch64-apple-darwin.tar.gz", sha256 = "118f7121aa838785672bf612487f755a89108bb5f44e0f3df96c5967a72614f9" }
+"windows-x86_64" = { url = "https://github.com/astral-sh/ruff/releases/download/0.17.3/ruff-x86_64-pc-windows-msvc.zip", sha256 = "a84d9ac74af8ef5bac84a1888a1634df18e6e985e2f930d35c052beacd00e813" }
+
+[[pin]]
+name = "shellcheck"
+version = "v0.11.0"
+source = "computed from the upstream release asset (no upstream checksum file)"
+kind = "lint"
+[pin.artifacts]
+"linux-x86_64" = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz", sha256 = "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198" }
+"macos-universal" = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.xz", sha256 = "56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79" }
+"windows-x86_64" = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.zip", sha256 = "8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e" }
+
+[[pin]]
+name = "mypy"
+version = "2.4.1"
+source = "https://pypi.org/pypi/mypy/2.4.1/json"
+kind = "lint"
+install = "pip"
+[pin.artifacts]
+"python" = { url = "https://files.pythonhosted.org/packages/21/5c/6e8010f8f2c4ad817364592d4b3883633417269b913fc9d5174fdeb7e565/mypy-2.4.1-py3-none-any.whl", sha256 = "1784648d6ec8c2b5465e3f26241b845a0b3cb4e56c993c64abe16989e7698999" }
+
+[[pin]]
+name = "pyflakes"
+version = "4.1.0"
+source = "https://pypi.org/pypi/pyflakes/4.1.0/json"
+kind = "lint"
+install = "pip"
+[pin.artifacts]
+"python" = { url = "https://files.pythonhosted.org/packages/fd/52/98c9a0e4718abe887121279457bc7140115df22d714b7183880eb61e359f/pyflakes-4.1.0-py2.py3-none-any.whl", sha256 = "b2e05e6bac8e49b67be2a6ffa63422c60f7193fc72e8180255907b41ec997dc1" }
+
+[[pin]]
+name = "yamllint"
+version = "1.38.0"
+source = "https://pypi.org/pypi/yamllint/1.38.0/json"
+kind = "lint"
+install = "pip"
+[pin.artifacts]
+"python" = { url = "https://files.pythonhosted.org/packages/05/92/aed08e68de6e6a3d7c2328ce7388072cd6affc26e2917197430b646aed02/yamllint-1.38.0-py3-none-any.whl", sha256 = "fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220" }
+
+[[pin]]
+name = "typescript"
+version = "7.0.2"
+source = "https://registry.npmjs.org/typescript/7.0.2 (dist.integrity sha512; sha256 computed)"
+kind = "lint"
+install = "npm"
+[pin.artifacts]
+"node" = { url = "https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz", sha256 = "da2513f4b95176d6dde8b51aab7afe8a927656c9d277369793f77f7e59371c08" }
+
+[[pin]]
+name = "eslint"
+version = "10.14.0"
+source = "https://registry.npmjs.org/eslint/10.14.0 (dist.integrity sha512; sha256 computed)"
+kind = "lint"
+install = "npm"
+[pin.artifacts]
+"node" = { url = "https://registry.npmjs.org/eslint/-/eslint-10.14.0.tgz", sha256 = "e15ffa02262a7d359f9385e2d468f289dd309715261b2e3aa276ccd26ed14720" }

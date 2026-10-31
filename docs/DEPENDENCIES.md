@@ -18,7 +18,7 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 | Lean 4 v4.34.0 + Mathlib | proofs | lean-toolchain + lake-manifest.json git revs | proofs/ | fetched by lake |
 | External analysers (esbmc, cbmc, klee, cppcheck, frama-c, infer, semgrep, coccinelle, AFL++, dafny, strix, cadical, kissat, bitwuzla, cake_lpr, lean4export, nanoda) | separate processes | commit + SHA-256 | MANIFEST.toml `kind = "external"` | fetched by `prism-deps tool NAME` |
 | Docker base | build image | ubuntu:24.04 by digest | Dockerfile | n/a |
-| Lint tools (clang-tidy, ruff, mypy, eslint, shellcheck, ...) | `kind = "system"` | recorded by path + file SHA-256 at run time | MANIFEST.toml | no |
+| Lint tools (clang-tidy, ruff, mypy, pyflakes, yamllint, eslint, typescript, shellcheck) | pinned, `kind = "lint"` | exact version + SHA-256; clang-tidy via the LLVM pin | TOOLCHAIN_PINS.toml (`scripts/fetch_toolchain.py NAME`) | no (fetched) |
 | Python | scripts only | none required beyond stdlib (3.11+, tomllib) | — | — |
 
 Fetch a pinned toolchain: `python3 scripts/fetch_toolchain.py cmake` (or `qtbase`, `cuda_nvcc`, ...).
