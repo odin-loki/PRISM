@@ -719,7 +719,62 @@ Frontend find_frontend(const Config& cfg) {
 // sides is duplicated (each side gets its own copy); a declaration with
 // several initialised declarators keeps only the first declarator extern.
 struct DfpSplit { std::string c, cxx; bool any = false; };
-std::optional<DfpSplit> dfp_split(const std::string& in) {
+// K&R head "T f(a, b) int a; char *b;" -> "T f(int a, char *b)"
+std::string knr_to_prototype(const std::string& head) {
+    const size_t lp = head.find('('), rp = head.find(')', lp == std::string::npos ? 0 : lp);
+    if (lp == std::string::npos || rp == std::string::npos) return head;
+    std::vector<std::string> ids;
+    {
+        std::string cur;
+        for (size_t k = lp + 1; k < rp; ++k) {
+            if (head[k] == ',') { ids.push_back(cur); cur.clear(); }
+            else if (!std::isspace(static_cast<unsigned char>(head[k]))) cur += head[k];
+        }
+        if (!cur.empty()) ids.push_back(cur);
+    }
+    std::map<std::string, std::string> decl;
+    const std::string rest = head.substr(rp + 1);
+    size_t a = 0;
+    while (a < rest.size()) {
+        size_t e = rest.find(';', a);
+        if (e == std::string::npos) break;
+        std::string d = rest.substr(a, e - a);
+        a = e + 1;
+        // base type = text before the first declarator: up to the last identifier token
+        // preceding the first ',' / '*' / identifier list; split declarators at commas
+        std::vector<std::string> parts;
+        std::string cur; int pd = 0;
+        for (char ch : d) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && pd == 0) { parts.push_back(cur); cur.clear(); } else cur += ch; }
+        parts.push_back(cur);
+        static const std::regex kLastId(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*\)*\s*$)");
+        std::smatch m0;
+        if (!std::regex_search(parts[0], m0, kLastId)) continue;
+        // base: parts[0] up to the start of its declarator (the leading '*'s and '(' before the id)
+        size_t ds = static_cast<size_t>(m0.position(1));
+        while (ds > 0 && (parts[0][ds - 1] == '*' || parts[0][ds - 1] == '(' || std::isspace(static_cast<unsigned char>(parts[0][ds - 1])))) --ds;
+        const std::string base = parts[0].substr(0, ds);
+        for (size_t k = 0; k < parts.size(); ++k) {
+            std::string dcl = k == 0 ? parts[0].substr(ds) : parts[k];
+            std::smatch m;
+            if (std::regex_search(dcl, m, kLastId)) decl[m[1]] = base + " " + dcl;
+        }
+    }
+    std::string out = head.substr(0, lp + 1);
+    for (size_t k = 0; k < ids.size(); ++k) {
+        if (k) out += ", ";
+        auto it = decl.find(ids[k]);
+        out += it != decl.end() ? it->second : "int " + ids[k];  // C89 implicit int
+    }
+    if (ids.empty()) out += "void";
+    return out + ")";
+}
+// C-only declarator syntax in the C++ part: [static N], [const N], [*]
+std::string c_only_to_cxx(std::string t) {
+    t = std::regex_replace(t, std::regex(R"(\[\s*(?:(?:static|const|volatile|restrict)\s+)+)"), "[");
+    t = std::regex_replace(t, std::regex(R"(\[\s*\*\s*\])"), "[]");
+    return t;
+}
+std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt = "") {
     struct Item { std::string text; bool fn = false, pp = false; std::string name, head; };
     std::vector<Item> items;
     const size_t n = in.size();
@@ -801,6 +856,50 @@ std::optional<DfpSplit> dfp_split(const std::string& in) {
         }
     }
     DfpSplit out;
+    // Non-decimal file-scope statics shared with the C++ part: external
+    // linkage under a unit-unique name (#define in both parts), defined
+    // once on the C side.
+    static const std::regex kStatic(R"(^(\s*(?:(?:inline|const|volatile|_Thread_local|__inline__)\s+)*)static\b)");
+    static const std::regex kDeclName(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*(?:\)\s*\([^)]*\))?\s*(?:=|,|;|\(|$))");
+    std::string defs;
+    std::set<std::string> renamed;
+    for (size_t k = 0; k < items.size(); ++k) {
+        Item& it = items[k];
+        if (it.pp || dec[k] || std::regex_search(it.text, kDec)) continue;
+        const std::string& hd = it.fn ? it.head : it.text;
+        if (!std::regex_search(hd, kStatic)) continue;
+        std::string nm = it.fn ? it.name : "";
+        if (!it.fn) {
+            // first declarator's name (functions prototypes: the name before '(')
+            std::string body = std::regex_replace(it.text, kStatic, "$1");
+            std::smatch m;
+            if (std::regex_search(body, m, std::regex(R"(([A-Za-z_]\w*)\s*\()")) && body.find('=') == std::string::npos) nm = m[1];
+            else if (std::regex_search(body, m, kDeclName)) nm = m[1];
+            if (body.find(',') != std::string::npos && body.find('(') == std::string::npos) {
+                // several declarators: rename them all
+                std::string cur; int pd = 0;
+                for (char ch : body) { if (ch == '(' || ch == '[' || ch == '{') ++pd; if (ch == ')' || ch == ']' || ch == '}') --pd; if ((ch == ',' || ch == ';') && pd == 0) { std::smatch mm; std::string c2 = cur.substr(0, cur.find('=')); if (std::regex_search(c2, mm, std::regex(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$)"))) renamed.insert(mm[1]); cur.clear(); } else cur += ch; }
+            }
+        }
+        if (!nm.empty()) renamed.insert(nm);
+        if (it.fn) { it.text = std::regex_replace(it.text, kStatic, "$1"); it.head = std::regex_replace(it.head, kStatic, "$1"); }
+        else it.text = std::regex_replace(it.text, kStatic, "$1");
+    }
+    for (const auto& nm : renamed) defs += "#define " + nm + " __prism_split_" + salt + "_" + nm + "\n";
+    out.c += defs;
+    out.cxx += defs;
+    // extern declarations for every declarator, initialisers dropped
+    auto externs = [](const std::string& text) {
+        std::string body = text.substr(0, text.rfind(';'));
+        std::vector<std::string> parts;
+        std::string cur; int pd = 0;
+        for (char ch : body) { if (ch == '(' || ch == '[' || ch == '{') ++pd; if (ch == ')' || ch == ']' || ch == '}') --pd; if (ch == ',' && pd == 0) { parts.push_back(cur); cur.clear(); } else cur += ch; }
+        parts.push_back(cur);
+        for (auto& q : parts) { int d2 = 0; for (size_t z = 0; z < q.size(); ++z) { char ch = q[z]; if (ch == '(' || ch == '[' || ch == '{') ++d2; if (ch == ')' || ch == ']' || ch == '}') --d2; if (ch == '=' && d2 == 0) { q = q.substr(0, z); break; } } }
+        std::string r = "extern ";
+        for (size_t z = 0; z < parts.size(); ++z) r += (z ? "," : "") + parts[z];
+        return r.substr(0, 7) + r.substr(7 + std::min(r.size() - 7, r.substr(7).find_first_not_of(" \t\r\n"))) + ";\n";
+    };
     for (size_t k = 0; k < items.size(); ++k) {
         const Item& it = items[k];
         const bool d = std::regex_search(it.text, kDec);
@@ -809,12 +908,15 @@ std::optional<DfpSplit> dfp_split(const std::string& in) {
             const std::string proto = it.head + ";\n";
             if (dec[k]) {
                 out.any = true;
-                out.cxx += it.text;
+                // C-only spellings: K&R head -> prototype, [static N] -> [N]
+                std::string body = it.text.substr(it.head.size());
+                std::string head = it.head.find(';') != std::string::npos ? knr_to_prototype(it.head) : it.head;
+                out.cxx += c_only_to_cxx(head + body);
                 if (!std::regex_search(it.head, kDec)) out.c += proto;
             } else {
                 out.c += it.text;
                 // a K&R head has no C++ spelling: the C++ side gets no prototype
-                if (it.head.find(';') == std::string::npos) out.cxx += proto;
+                out.cxx += c_only_to_cxx((it.head.find(';') == std::string::npos ? it.head : knr_to_prototype(it.head)) + ";\n");
             }
             continue;
         }
@@ -822,12 +924,8 @@ std::optional<DfpSplit> dfp_split(const std::string& in) {
         static const std::regex kObjDef(R"(^\s*(?!typedef\b|extern\b|static\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\b)[^(){};]*(?:=[^;]*)?;\s*$)");
         if (d) { out.cxx += it.text; continue; }
         out.c += it.text;
-        if (std::regex_match(it.text, kObjDef)) {
-            std::string t = it.text;
-            const size_t eq = t.find('=');
-            if (eq != std::string::npos) t = t.substr(0, eq) + ";\n";
-            out.cxx += "extern " + t.substr(t.find_first_not_of(" \t\r\n"));
-        } else out.cxx += it.text;
+        if (std::regex_match(it.text, kObjDef)) out.cxx += externs(it.text);
+        else out.cxx += c_only_to_cxx(it.text);
     }
     return out;
 }
@@ -997,7 +1095,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 // Item 6: split decimal functions into their own C++ file,
                 // keep the rest as C, and link the two modules.
                 bool split_ok = false;
-                if (auto sp = dfp_split(read_file(src)); sp && sp->any) {
+                if (auto sp = dfp_split(read_file(src), std::to_string(std::hash<std::string>{}(src.string()) % 1000000007u)); sp && sp->any) {
                     const fs::path cpart = o0.parent_path() / (o0.stem().string() + ".split.c");
                     const fs::path xpart = o0.parent_path() / (o0.stem().string() + ".split.cpp");
                     const fs::path cll = o0.parent_path() / (o0.stem().string() + ".split.c.ll");
@@ -1016,7 +1114,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                     cv.insert(cv.end(), {"-I", src.parent_path().string(), "-o", cll.string(), cpart.string()});
                     std::vector<std::string> xv{cc->string()};
                     xv.insert(xv.end(), dfl.begin(), dfl.end());
-                    xv.insert(xv.end(), {"-o", xll.string(), "-x", "c++", xpart.string()});
+                    xv.insert(xv.end(), {"-Wno-reorder-init-list", "-Wno-vla-cxx-extension", "-o", xll.string(), "-x", "c++", xpart.string()});
                     auto rc1 = detail::run_process(cv, timeout_s);
                     auto rc2 = detail::run_process(xv, timeout_s);
                     if (!rc1.failed && !rc1.timed_out && rc1.rc == 0 && !rc2.failed && !rc2.timed_out && rc2.rc == 0) {

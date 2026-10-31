@@ -207,6 +207,37 @@ below.
   tgamma, lgamma on long double; tanh of huge |x| under toward-zero
   modes); item 1 with two or more conversions alongside a symbolic
   double, '*' width/precision, or %Lf (those keep the bounded havoc).
+  Session 11 (written; compile-checked only):
+  - CLOSED (unverified): erf/erfc (positive-term series times e^{-x^2},
+    erfc = 1 -+ erf with the cancellation counted; saturating tails nudged
+    inside +-1 / 2 or underflowed), tgamma/lgamma (Stirling with B2..B34
+    after shifting z up to 10^(W/32) capped at 2e5, reflection for x < 0;
+    poles and lgamma(1), lgamma(2) exact) in the multi-limb library.
+  - CLOSED (unverified): tanh(|x| > 2P+10) is +-1 nudged toward zero, so
+    the toward-zero / downward (for x > 0) modes give 0.99..9.
+  - CLOSED (unverified), item 1 generalised: __prism_fmtv renders the whole
+    format (d i u o x X with h/hh/l/ll/j/z/t, c, s, p, all double
+    conversions, flags, width/precision incl. '*') from typed argument
+    slots (8 each of int, long long, double, pointer); sprintf with '*'
+    or %s is now modelled exactly instead of being UNENCODED.
+  - CLOSED (unverified), item 6 gaps: non-decimal file-scope statics
+    (objects and functions) lose `static` and get a unit-unique name via
+    #define in both parts, so they are defined once (C side) and extern
+    on the C++ side; extern declarations keep every declarator and drop
+    each initialiser; decimal functions with K&R heads are rewritten to
+    prototypes (implicit int for undeclared parameters), [static N] /
+    [const N] / [*] become [N] / [], and out-of-order designators and VLA
+    parameters compile under clang's C++ extensions
+    (-Wno-reorder-init-list, -Wno-vla-cxx-extension).
+  Still open after session 11: %Lf (long double) in item 1 (needs a
+  ~1200-limb fpfmt for x86 80-bit; keeps the bounded havoc), %n / %ls /
+  the ' flag alongside a symbolic double (bounded havoc), more than 8
+  arguments of one class; out-of-order designators rely on clang's C++
+  extension rather than an actual reorder (array designators `[i] =` in
+  C++ are accepted the same way); a renamed static whose name is also a
+  macro or appears in a string is affected by the #define; lgamma for
+  10^5 < x where W needs a larger shift than the 2e5 cap is rounded at
+  the Ziv cap.
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route
