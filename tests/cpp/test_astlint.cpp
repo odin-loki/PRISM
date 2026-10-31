@@ -1043,7 +1043,7 @@ void atom_ok(void) {
 
 // Kernel-style malloc(size, flags) cannot be declared next to <stdlib.h>, so
 // the M_NOWAIT plants are their own unit without libc headers.
-const char* kNowaitC = R"(typedef unsigned long size_t;
+const char* kNowaitC = R"(typedef __SIZE_TYPE__ size_t;
 #define M_NOWAIT 0x02
 #define M_NOWAIT 0x02
 void *malloc(size_t, int);

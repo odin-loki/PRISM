@@ -709,6 +709,11 @@ TEST_CASE("config: --tool beats the pinned build, which beats PATH; PATH is last
     fs::rename(nt.tools / "klee" / *commit, nt.tools / "klee" / std::string(40, '0'));
     CHECK(cfg.which_adapter("klee", {"klee"}) == onpath);
     fs::remove(onpath);
+#ifdef _WIN32
+    // fake() on Windows is klee.exe plus the klee.cmd it runs; PATHEXT finds
+    // the .cmd too, so both go (PATH is already only nt.bin).
+    fs::remove(fs::path(onpath).replace_extension(".cmd"));
+#endif
     CHECK_FALSE(cfg.which_adapter("klee", {"klee"}).has_value());
     // --tool NAME=~/... is expanded like Path.expanduser.
 #ifdef _WIN32
