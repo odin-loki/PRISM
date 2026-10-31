@@ -15,7 +15,8 @@
 // in size_t is __prism_check and then __builtin_trap, and nothing is
 // written. This header is not a proof. This is not PROVED and not CLEAN.
 //
-// std::format and format_to return or allocate std::string. Those names are
+// Session 4 adds double/float, chrono::duration and range overloads (see
+// below). std::format and format_to return or allocate std::string. Those names are
 // not declared. Those names fail to compile and pir falls back to libstdc++.
 #ifndef _GLIBCXX_FORMAT
 #define _GLIBCXX_FORMAT 1
@@ -141,6 +142,190 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     __r.out = __prism_format_write(__out, __n, __tmp, __len);
     // Full untruncated length, not 0 for a non-zero value.
     // The unwritten tail was not stored.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    return __r;
+}
+
+
+// ---- Session 4: floating-point specs, chrono durations, range formatting.
+//
+// Floating point ({}, {:f}, {:.Nf}, {:e}, {:.Ne}, {:g}, {:.Ng}, optional
+// sign '+'): the text is NOT computed. Binary-to-decimal rounding is not
+// modelled, so the characters are havoc (__prism_havoc_bytes) and the
+// untruncated length is a havoc value assumed to lie in the bound
+// [__lo, __hi] that the spec allows for any finite or non-finite double
+// ("inf"/"nan" included). This over-approximates libstdc++: a program
+// that only relies on "at most n bytes are written" and on size's range is
+// checked soundly; a program that relies on the digits is not provable.
+// Unsupported specs (fill/align, width, '#', 'a', 'L', precision > 99)
+// are FUNC-CONTRACT + trap, as for the integer overloads.
+//
+// chrono::duration ({}): the exact text "<count><suffix>" with the
+// [time.format] suffixes s, ms, us (UTF-8 "\xC2\xB5s" as libstdc++ prints),
+// ns, min, h, d, and "[num/den]s" or "[num]s" for any other period.
+//
+// Ranges ({} and the C++23 "{::}" / "{:n}"): any type with begin()/end()
+// whose elements are int or long long. Text is "[a, b, c]" ("{:n}" drops
+// the brackets). Element specs other than empty are not accepted.
+extern "C" void __prism_assume(int __cond);
+extern "C" void __prism_havoc_bytes(void* __p, unsigned long __n);
+
+inline std::size_t __prism_format_int_text(char* __tmp, long long __v) {
+    const bool __neg = __v < 0;
+    unsigned long long __mag =
+        __neg ? 0ull - static_cast<unsigned long long>(__v) : static_cast<unsigned long long>(__v);
+    char __rev[24];
+    std::size_t __nd = 0;
+    do {
+        __rev[__nd++] = static_cast<char>('0' + static_cast<int>(__mag % 10ull));
+        __mag /= 10ull;
+    } while (__mag != 0ull);
+    std::size_t __i = 0;
+    if (__neg) __tmp[__i++] = '-';
+    while (__nd > 0) __tmp[__i++] = __rev[--__nd];
+    return __i;
+}
+
+inline format_to_n_result __prism_format_emit(char* __out, std::size_t __n, const char* __tmp, std::size_t __len) {
+    format_to_n_result __r;
+    __r.out = __out;
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    if (__n == 0) return __r;
+    __prism_check(__out != nullptr ? 1 : 0, "PTR-NULL-DEREF", "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    return __r;
+}
+
+inline void __prism_format_reject(const char* __msg) {
+    __prism_check(0, "FUNC-CONTRACT", __msg);
+    __builtin_trap();
+}
+
+// Parses "{}" / "{:[+][.P](f|e|g)}" . Returns the presentation type
+// ('\0' for none), sets precision (-1 when absent) and the sign flag.
+inline char __prism_format_float_spec(const char* __f, int& __prec, bool& __plus) {
+    __prec = -1;
+    __plus = false;
+    if (__f == nullptr || __f[0] != '{') __prism_format_reject("format_to_n model: unsupported format string");
+    std::size_t __i = 1;
+    char __type = '\0';
+    if (__f[__i] == ':') {
+        ++__i;
+        if (__f[__i] == '+') { __plus = true; ++__i; }
+        if (__f[__i] == '.') {
+            ++__i;
+            if (__f[__i] < '0' || __f[__i] > '9') __prism_format_reject("format_to_n model: bad precision");
+            __prec = __f[__i++] - '0';
+            if (__f[__i] >= '0' && __f[__i] <= '9') __prec = __prec * 10 + (__f[__i++] - '0');
+        }
+        if (__f[__i] == 'f' || __f[__i] == 'e' || __f[__i] == 'g') __type = __f[__i++];
+    }
+    if (__f[__i] != '}' || __f[__i + 1] != '\0')
+        __prism_format_reject("format_to_n model: unsupported floating-point spec");
+    return __type;
+}
+
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, double __v) {
+    int __prec;
+    bool __plus;
+    const char __type = __prism_format_float_spec(__fmt, __prec, __plus);
+    const std::size_t __sign = 1;  // '-' or '+', worst case
+    std::size_t __lo = 3, __hi;    // "inf"/"nan"/"0.0e+00" etc.: never below 1 char; 3 covers inf/nan
+    const std::size_t __p = __prec < 0 ? 6 : static_cast<std::size_t>(__prec);
+    if (__type == 'f')
+        __hi = __sign + 309 + 1 + __p;              // DBL_MAX has 309 integer digits
+    else if (__type == 'e')
+        __hi = __sign + 1 + 1 + __p + 5;            // d.ddd e+308
+    else if (__type == 'g' || __prec >= 0)
+        __hi = __sign + 1 + 1 + (__p == 0 ? 1 : __p) + 5 + 309;  // fixed or exponent form
+    else
+        __hi = __sign + 17 + 1 + 5;                 // shortest round-trip: <= 17 digits + '.' + e-308
+    __lo = 1;                                       // "0" is one character
+    (void)__v;
+    std::size_t __len;
+    __prism_havoc_bytes(&__len, sizeof(__len));
+    __prism_assume(__len >= __lo && __len <= __hi ? 1 : 0);
+    char __tmp[460];
+    __prism_havoc_bytes(__tmp, __len);
+    return __prism_format_emit(__out, __n, __tmp, __len);
+}
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, float __v) {
+    return format_to_n(__out, __n, __fmt, static_cast<double>(__v));
+}
+
+namespace chrono {
+template <typename _Rep, typename _Period> class duration;
+}
+
+template <typename _Rep, typename _Period>
+format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt,
+                               const chrono::duration<_Rep, _Period>& __d) {
+    if (__fmt == nullptr || __fmt[0] != '{' || __fmt[1] != '}' || __fmt[2] != '\0')
+        __prism_format_reject("format_to_n model: duration accepts only {}");
+    char __tmp[64];
+    std::size_t __len = __prism_format_int_text(__tmp, static_cast<long long>(__d.count()));
+    constexpr long long __num = _Period::num, __den = _Period::den;
+    auto __put = [&](const char* __s) { while (*__s) __tmp[__len++] = *__s++; };
+    if (__num == 1 && __den == 1) __put("s");
+    else if (__num == 1 && __den == 1000) __put("ms");
+    else if (__num == 1 && __den == 1000000) __put("\xC2\xB5s");
+    else if (__num == 1 && __den == 1000000000) __put("ns");
+    else if (__num == 60 && __den == 1) __put("min");
+    else if (__num == 3600 && __den == 1) __put("h");
+    else if (__num == 86400 && __den == 1) __put("d");
+    else {
+        __tmp[__len++] = '[';
+        __len += __prism_format_int_text(__tmp + __len, __num);
+        if (__den != 1) {
+            __tmp[__len++] = '/';
+            __len += __prism_format_int_text(__tmp + __len, __den);
+        }
+        __put("]s");
+    }
+    return __prism_format_emit(__out, __n, __tmp, __len);
+}
+
+// Range overload. Streams elements straight into the bounded output, so
+// no temporary sized by the range is needed; size is the full length.
+template <typename _Range>
+    requires requires(const _Range& __r) {
+        __r.begin();
+        __r.end();
+        static_cast<long long>(*__r.begin());
+    }
+format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, const _Range& __rg) {
+    bool __brackets = true;
+    if (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') {
+    } else if (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == ':' && __fmt[2] == ':' && __fmt[3] == '}' &&
+               __fmt[4] == '\0') {
+    } else if (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == ':' && __fmt[2] == 'n' && __fmt[3] == '}' &&
+               __fmt[4] == '\0') {
+        __brackets = false;
+    } else {
+        __prism_format_reject("format_to_n model: range accepts only {}, {::}, {:n}");
+    }
+    if (__n > 0) {
+        __prism_check(__out != nullptr ? 1 : 0, "PTR-NULL-DEREF", "format_to_n called with a null output pointer");
+        if (__out == nullptr) __builtin_trap();
+    }
+    std::size_t __len = 0;
+    auto __emit = [&](const char* __s, std::size_t __k) {
+        for (std::size_t __j = 0; __j < __k; ++__j, ++__len)
+            if (__len < __n) __out[__len] = __s[__j];
+    };
+    if (__brackets) __emit("[", 1);
+    bool __first = true;
+    for (auto __it = __rg.begin(); __it != __rg.end(); ++__it) {
+        if (!__first) __emit(", ", 2);
+        __first = false;
+        char __tmp[24];
+        const std::size_t __k = __prism_format_int_text(__tmp, static_cast<long long>(*__it));
+        __emit(__tmp, __k);
+    }
+    if (__brackets) __emit("]", 1);
+    format_to_n_result __r;
+    __r.out = __out + (__len < __n ? __len : __n);
     __r.size = static_cast<std::ptrdiff_t>(__len);
     return __r;
 }
