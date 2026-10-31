@@ -1936,6 +1936,25 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
     }
+    if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmt1d")) {
+        // exact output bytes for a symbolic double (coverage item 1)
+        ir::Inst call;
+        call.op = "call";
+        call.callee = "__prism_fmt1d";
+        call.result = in.result;
+        call.ty = ir::Type{ir::Type::Int, 32, "i32", {}};
+        ir::Operand cap;
+        if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
+        else {
+            cap.ty = ir::Type{ir::Type::Int, 64, "i64", {}};
+            cap.v.kind = ir::Value::Int;
+            cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
+        }
+        call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi],
+                    in.ops[static_cast<std::size_t>(plan.exact_double_arg)]};
+        inline_call(fr, call, cur, line);
+        return true;
+    }
     if (plan.buf_arg >= 0) {
         Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));
         buf.width = kPtrW;

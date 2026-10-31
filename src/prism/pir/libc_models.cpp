@@ -218,6 +218,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
             return lib;
         }
         for (auto& [name, text] : model_sources()) {
+            if (name == "cxx/prism_fpfmt.h") { std::ofstream(dir / "prism_fpfmt.h", std::ios::binary) << text; continue; }  // fmtdouble.cpp
             if (name.starts_with("cxx/")) continue;  // C++ headers: write_cxx_models
             auto dst = dir / (name.ends_with(".h") ? name : "prism_model_" + name);
             std::ofstream(dst, std::ios::binary) << text;
@@ -268,6 +269,7 @@ std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib) {
     for (auto* f : {"printf", "fprintf", "dprintf", "sprintf", "snprintf"})
         if (std::find(m.declarations.begin(), m.declarations.end(), f) != m.declarations.end()) {
             want.push_back("strlen");
+            want.push_back("__prism_fmt1d");  // exact bytes for a symbolic double
             break;
         }
     int uniq = 0;

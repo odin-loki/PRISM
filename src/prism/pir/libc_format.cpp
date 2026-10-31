@@ -59,6 +59,9 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     }
     const std::string& f = *fmt;
     std::size_t next = static_cast<std::size_t>(p.fmt_arg) + 1;
+    int nconv = 0;           // conversions (not %%)
+    int float_arg = -1;      // the argument of a non-literal double conversion
+    bool float_star = false; // that conversion uses '*' or the ' flag
     uint64_t len = 0;
     bool bounded = true;
     auto take = [&](const char* what, std::string_view conv, auto&& ok) {
@@ -192,6 +195,10 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                     return t.kind == ir::Type::Float && t.text == (ld ? "x86_fp80" : "double");
                 });
                 m = (c == 'f' || c == 'F') ? 330 + prec : 32 + prec;
+                if (!ld && next > 0 && !(next - 1 < consts.size() && consts.at(next - 1))) {
+                    float_arg = static_cast<int>(next - 1);
+                    float_star = f.substr(start, i - start).find_first_of("*'") != std::string::npos;
+                }
                 // A literal double: the exact text length (models/cxx/prism_fpfmt.h,
                 // the same digits glibc prints), so digit-dependent lengths are exact.
                 if (!ld && next > 0 && next - 1 < args.size() && next - 1 < consts.size() && consts.at(next - 1) &&
@@ -211,8 +218,14 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                 p.unencoded = "UNENCODED: " + callee + " conversion '%" + std::string(conv) + "'";
                 return p;
         }
+        ++nconv;
         len += std::max<uint64_t>({m, width, has_prec ? prec + 1 : 0});
     }
+    // Item 1: one symbolic double conversion and nothing else but literal
+    // text: the output bytes are produced exactly by the __prism_fmt1d
+    // model (models/libc/fmtdouble.cpp, the prism_fpfmt algorithm run on
+    // the symbolic value) instead of havoc bytes.
+    if (p.buf_arg >= 0 && nconv == 1 && float_arg >= 0 && !float_star) p.exact_double_arg = float_arg;
     if (p.buf_arg >= 0 && p.size_arg < 0) {
         if (!bounded) {
             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";

@@ -194,6 +194,7 @@ struct FormatPlan {
     int buf_arg = -1;            // sprintf / snprintf destination
     int size_arg = -1;           // snprintf size
     uint64_t max_len = 0;        // sprintf: upper bound of the output length (without NUL)
+    int exact_double_arg = -1;   // >= 0: lower via the __prism_fmt1d model (exact bytes)
     std::vector<std::pair<std::string, std::string>> violations;  // (class, message), always reached
     std::vector<std::size_t> cstr_args;  // %s arguments (NUL-terminated string required)
 };

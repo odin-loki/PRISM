@@ -195,8 +195,18 @@ below.
     non-finite arguments (exact special values); tanh of huge |x| returns
     +-1 as exact (it is just inside 1: wrong under FE_DEC_TOWARDZERO /
     the mode toward zero).
-  Still open after session 10: item 1 (not written), and the item-4
-  remainders listed above.
+  - CLOSED (unverified), item 1: sprintf/snprintf whose literal format has
+    exactly one conversion, a non-literal double (%f/%e/%g/%a, any case,
+    flags, width, precision; not '*' or the ' flag), is lowered to the new
+    libc model __prism_fmt1d (models/libc/fmtdouble.cpp), which runs the
+    prism_fpfmt algorithm on the symbolic value and writes the exact bytes
+    and return value (snprintf truncation included). The model is linked
+    whenever a printf-family function is declared; prism_fpfmt.h is
+    written next to the libc models when they are lowered.
+  Still open after session 10: the item-4 remainders above (erf, erfc,
+  tgamma, lgamma on long double; tanh of huge |x| under toward-zero
+  modes); item 1 with two or more conversions alongside a symbolic
+  double, '*' width/precision, or %Lf (those keep the bounded havoc).
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route
