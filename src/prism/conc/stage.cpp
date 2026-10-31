@@ -208,6 +208,7 @@ Options options_of(const Config& cfg) {
     Options o;
     o.unwind = std::max(1, cfg.unwind);
     o.timeout_s = cfg.timeout;
+    o.tso = cfg.conc_tso;
     return o;
 }
 

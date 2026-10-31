@@ -25,6 +25,7 @@ struct Config {
     int jobs = 2;
     double timeout = 30.0;
     int unwind = 8;
+    bool conc_tso = false;  // --memory-model tso: conc stage checks x86-TSO (store buffers) instead of SC
     double fuzz_budget = 8.0;
     int fuzz_iters = 2048;
     bool llm = true;

@@ -214,6 +214,10 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
                     cfg.skip.insert(cfg.skip.end(), names.begin(), names.end());
                 }
             }
+        } else if (a == "--memory-model") {
+            auto v = in.take();
+            ok = v.has_value() && (*v == "sc" || *v == "tso");
+            if (ok) cfg.conc_tso = *v == "tso";
         } else if (a == "--unwind") {
             auto v = in.take_int(1);
             if ((ok = v.has_value())) cfg.unwind = *v;

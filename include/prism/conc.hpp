@@ -45,6 +45,14 @@ struct Options {
     double timeout_s = 30.0; // per solver query
     int max_findings = 8;    // distinct violations reported per harness
     std::size_t max_nodes = 20000;  // unrolled nodes per thread
+    // Weak memory: x86-TSO for the scalar shared variables. Each thread has a
+    // one-entry FIFO store buffer: a plain store goes to the buffer (an older
+    // buffered store is committed first), the thread's own loads forward from
+    // it, any other visible operation of the thread (atomics, locks, fences,
+    // create/join) drains it first, and before every visible step each
+    // buffer may drain nondeterministically. Depth 1 under-approximates TSO
+    // (it finds store-buffering outcomes such as the SB litmus test).
+    bool tso = false;
 };
 
 // A visible operation: a context-switch point is placed before each one.

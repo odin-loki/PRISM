@@ -348,3 +348,17 @@ through the stage, with defaults `K = 2` and unwind 4:
   `assume_abort_if_not`: PIR treats `abort` as a crash, not an assumption.
   This is PIR's policy, and a later row carries the property-specific
   finding.
+
+## 5. Weak memory (x86-TSO)
+
+`--memory-model tso` (Config::conc_tso, conc::Options::tso) checks the scalar
+shared globals under x86-TSO instead of sequential consistency. Each thread
+has a one-entry FIFO store buffer: a plain store is buffered (an older
+buffered store commits first), the thread's own loads forward from it, any
+other visible operation of that thread (atomics, locks, fences, create, join)
+drains it, a join drains the joined thread's buffer, and before every visible
+step every buffer may drain nondeterministically. Depth 1 under-approximates
+TSO (it finds the store-buffering outcomes, e.g. tests/conc/tso_sb.c).
+Not covered: the bounded memory (arrays, structs, heap) stays SC, and C11
+release/acquire/relaxed is not modelled by views; weaker orders are still
+encoded as seq_cst with clean verdicts withheld.
