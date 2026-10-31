@@ -51,16 +51,6 @@ namespace {
 constexpr int kTvVectors = 64;
 constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch_llvm.py; see third_party/llvm/PIN.toml) or set PRISM_LLVM_BIN";
 
-std::optional<fs::path> tool(const Config& cfg, std::initializer_list<std::string_view> names) {
-    for (auto n : names) {
-        auto it = cfg.tools.find(std::string(n));
-        if (it != cfg.tools.end()) {
-            std::error_code ec;
-            if (fs::is_regular_file(it->second, ec)) return it->second;
-        }
-    }
-    return cfg.which(names);
-}
 
 std::string read_file(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
