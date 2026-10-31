@@ -62,6 +62,8 @@
 #include <type_traits>
 #include <utility>
 
+extern "C" void __prism_memcpy(void* __d, const void* __s, unsigned long __n, int __overlap);
+
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
@@ -243,17 +245,16 @@ private:
 
     void _M_reserve(size_type __n) {
         if (__n <= _M_cap) return;
-        size_type __cap = _M_cap == 0 ? __n : _M_cap;
-        while (__cap < __n) {
-            if (__cap > static_cast<size_type>(-1) / 2) {
-                __cap = __n;
-                break;
-            }
-            __cap *= 2;
-        }
+        // Lighter than a doubling loop (one unwind per doubling): the next
+        // capacity is max(n, 2*cap) in one step, with the same overflow cut.
+        // Growth is still geometric, so amortised push stays O(1).
+        size_type __cap = _M_cap == 0 ? __n
+                          : (_M_cap > static_cast<size_type>(-1) / 2 ? __n
+                             : (_M_cap * 2 < __n ? __n : _M_cap * 2));
         if (__cap > static_cast<size_type>(-1) / sizeof(_Node*)) throw std::bad_alloc();
         _Node** __neu = static_cast<_Node**>(::operator new(__cap * sizeof(_Node*)));
-        for (size_type __i = 0; __i < _M_size; ++__i) __neu[__i] = _M_heap[__i];
+        // One block copy, not a per-element loop the pir has to unwind.
+        if (_M_size != 0) __prism_memcpy(__neu, _M_heap, _M_size * sizeof(_Node*), 0);
         if (_M_heap != nullptr) ::operator delete(_M_heap);
         _M_heap = __neu;
         _M_cap = __cap;
