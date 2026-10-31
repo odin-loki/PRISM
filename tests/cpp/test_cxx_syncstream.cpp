@@ -134,7 +134,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
@@ -355,8 +358,8 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     const auto sungetc_at = src.find("int sungetc(", sgetc_at);
     REQUIRE(sungetc_at != std::string::npos);
     const std::string sgetc = src.substr(sgetc_at, sungetc_at - sgetc_at);
-    CHECK(sgetc.find("const int __in = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
-    CHECK(sgetc.find("__prism_check(__in, \"MEM-OOB-READ\", \"basic_syncbuf::sgetc would read past the caller "
+    CHECK(sgetc.find("const int __inv = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
+    CHECK(sgetc.find("__prism_check(__inv, \"MEM-OOB-READ\", \"basic_syncbuf::sgetc would read past the caller "
                      "buffer\")") != std::string::npos);
     const auto gcheck = sgetc.find("__prism_check");
     const auto gread = sgetc.find("static_cast<unsigned char>(_M_buf[_M_off])");
@@ -372,7 +375,7 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(gread < gadv);
     CHECK(gadv < gret);
     CHECK(gret < geof);
-    CHECK(sgetc.find("if (__in) {") != std::string::npos);
+    CHECK(sgetc.find("if (__inv) {") != std::string::npos);
     CHECK(sgetc.find("_M_buf[", sgetc.find("_M_buf[") + 1) == std::string::npos);
     CHECK(sgetc.find("return -1;", geof + 1) == std::string::npos);
     CHECK(sgetc.find("_M_off =") == std::string::npos);

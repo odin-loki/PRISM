@@ -111,7 +111,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif

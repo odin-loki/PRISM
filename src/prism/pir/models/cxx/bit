@@ -193,13 +193,13 @@ constexpr _Tp byteswap(_Tp __x) noexcept {
         constexpr int _Cb = numeric_limits<unsigned char>::digits;
         constexpr int _Nb = static_cast<int>(sizeof(_Tp));
         constexpr _Tp __mask = static_cast<_Tp>(numeric_limits<unsigned char>::max());
-        _Tp __out = 0;
+        _Tp __outv = 0;
         for (int __i = 0; __i < _Nb; ++__i) {
             const _Tp __byte = static_cast<_Tp>(__x & __mask);
-            __out = static_cast<_Tp>(static_cast<_Tp>(__out << _Cb) | __byte);
+            __outv = static_cast<_Tp>(static_cast<_Tp>(__outv << _Cb) | __byte);
             __x >>= _Cb;
         }
-        return __out;
+        return __outv;
     }
 }
 
