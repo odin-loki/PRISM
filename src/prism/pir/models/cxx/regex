@@ -143,6 +143,25 @@ public:
     // and 0 is not a claim that the pattern matches.
     [[nodiscard]] unsigned flags() const noexcept { return _M_flags; }
 
+    // Locale. The model matches with "C"-locale (ASCII) classes. imbue takes
+    // any locale type without including <locale> (a template, so the name
+    // std::locale is only needed at the call site) and returns a
+    // default-constructed one: the global locale, which is what a regex that
+    // was never imbued holds, so the returned "previous" locale is right on
+    // the first call. Matching after imbue still uses the "C" classes; a
+    // program whose matches depend on a non-"C" locale's classification is
+    // outside this model and its verdict is not a proof of that behaviour.
+    // [re.regex.locale]: after imbue the regex matches no sequence and
+    // flags() is 0. The model resets to the default (empty) regex, which can
+    // still match "": an extra match path, never a missing one. getloc is not
+    // declared (it would need <locale>); a use falls back to libstdc++.
+    template <class _Loc>
+    _Loc imbue(const _Loc&) {
+        regex __e;
+        *this = static_cast<regex&&>(__e);
+        return _Loc();
+    }
+
 private:
     char* _M_str;
     std::size_t _M_len;

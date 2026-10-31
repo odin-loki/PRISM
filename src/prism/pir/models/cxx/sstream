@@ -220,6 +220,37 @@ public:
         _M_stringbuf._M_append(__s);
         return *this;
     }
+
+    // Wider integers: decimal text via std::to_string, as num_put does in
+    // the "C" locale with default flags. bool prints 0/1 (noboolalpha).
+    basic_ostringstream& operator<<(long __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(long long __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(unsigned __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(unsigned long __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(unsigned long long __v) { return _M_text(std::to_string(__v)); }
+    basic_ostringstream& operator<<(short __v) { return *this << static_cast<int>(__v); }
+    basic_ostringstream& operator<<(unsigned short __v) { return *this << static_cast<int>(__v); }
+    basic_ostringstream& operator<<(bool __v) { return *this << (__v ? '1' : '0'); }
+
+    // Unformatted output.
+    basic_ostringstream& put(char_type __c) { return *this << __c; }
+    basic_ostringstream& write(const char_type* __s, std::streamsize __n) {
+        _M_stringbuf.sputn(__s, __n);
+        return *this;
+    }
+    basic_ostringstream& flush() { return *this; }
+
+    void swap(basic_ostringstream& __o) noexcept {
+        basic_ostringstream __t(std::move(__o));
+        __o = std::move(*this);
+        *this = std::move(__t);
+    }
+
+private:
+    basic_ostringstream& _M_text(const __string_type& __t) {
+        _M_stringbuf._M_append(__t);
+        return *this;
+    }
 };
 
 typedef basic_stringbuf<char> stringbuf;
