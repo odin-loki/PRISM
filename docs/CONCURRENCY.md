@@ -413,12 +413,56 @@ forbids po;rf cycles):
   read / write clock per location is kept); an atomic access races only with
   non-atomic ones. Values of non-atomic locations stay SC.
 
+Atomics in the bounded memory (arrays, struct fields, the heap,
+address-taken globals) use the same machine: one message per atomic store /
+RMW site execution with a symbolic address, the plain value in M as the
+message of timestamp Pts[addr] (0 initially; a plain store takes a timestamp
+above its view), and a view entry that maps addresses to timestamps (joined
+pointwise). Plain loads read a message like relaxed loads, so a value written
+atomically is seen by a later plain access. A failed compare-exchange is a
+load (flag marker "c") on both paths.
+
+seq_cst fences follow RC11's psc_F: the fences' order (the interleaving)
+carries an SC view, joined into the fence's thread view and replaced by it.
+
+Race checks: a non-atomic access races with every conflicting access it does
+not happen after, atomic or not; an atomic access only with non-atomic ones
+(per thread epochs of the last atomic write / read, for scalars and per
+address).
+
+Condition variables: pthread_cond_wait is unlock, block, re-acquire; the
+re-acquire is a Lock and acquires the mutex view of the last unlock (the
+signaller's), so a hand-over through the mutex synchronises
+(c11_condvar_sync.c).
+
 Approximations (each only adds behaviours, so clean results stand):
-seq_cst loads, stores and RMWs on a location that also has weaker accesses
-are treated as acq_rel (RC11's psc over SC accesses is not encoded; locations
-with only seq_cst accesses stay SC). A plain access to an atomic location
-reads / writes like a relaxed one (and is race-checked). Memory atomics are
-keyed by start address: an atomic location must be accessed at one width. The C++ `<atomic>` model passes the order
-through and the stage folds it with sccp (only for sources naming a weaker
-order). extra["method"] names the model, extra["c11_locations"] counts the
-locations.
+seq_cst accesses (not fences) to a location that also has weaker accesses
+are acq_rel; RC11's psc constraints for SC accesses are not encoded (an
+operational encoding stronger than acq_rel would exceed RC11, e.g. the
+C++20 SC-access strengthening, and could drop behaviours). Locations with
+only seq_cst accesses stay SC. An atomic location in the memory is
+identified by its start address, so atomic accesses of different widths or
+overlapping starts to one location are distinct locations. --memory-model tso
+together with C11 weaker orders is refused as NEEDS-HARNESS ("UNENCODED:
+--memory-model tso together with C11 weaker orders"): TSO is a hardware model
+for SC-compiled programs, and a C11 program is checked against C11 alone.
+extract.cpp records the order of every atomic; the C++ `<atomic>` model
+passes it through and the stage folds it with sccp (only for sources naming
+a weaker order). extra["method"] names the model, extra["c11_locations"]
+counts the scalar locations.
+
+### Bounded memory, byte addressed
+
+M maps byte addresses to bytes (little-endian): an access of w bits reads or
+writes ceil(w/8) bytes from its address, so mixed-width and overlapping
+accesses agree; a scalar global accessed at two types lives in the memory.
+Under TSO a buffered store keeps its byte count, and a load takes each byte
+from the newest buffered store covering it (overlap forwarding), else M.
+Race checks and the adjacent-access check still key on the start address.
+
+### Mixed pointer call sites
+
+When a function's pointer parameter receives bounded-memory pointers at some
+call sites and other pointers at others, extract.cpp clones it
+(`name__prism_mem`) for the bounded-memory sites and rebuilds (up to three
+rounds), so each copy carries one pointer kind per parameter.
