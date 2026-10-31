@@ -602,6 +602,16 @@ struct Rewriter {
         return true;
     }
 
+    // A mutex / condition variable that is not a global: its address in the
+    // bounded memory (nullopt for a global, which keeps its static index).
+    std::optional<ir::Operand> sync_addr(const std::string& fn, const ir::Operand& o, const std::string& what) {
+        if (o.v.kind == ir::Value::Global) return std::nullopt;
+        int obj = -1;
+        auto a = mem_addr(fn, o, obj);
+        if (!a) throw Unenc{"UNENCODED: " + what + " on a sync object outside the bounded memory (stack)"};
+        return a;
+    }
+
     int mutex(const ir::Operand& o, const std::string& fn) {
         if (o.v.kind != ir::Value::Global)
             throw Unenc{"UNENCODED: " + fn + " on a mutex that is not a global (needs the PIR memory model)"};
@@ -1002,14 +1012,17 @@ struct Rewriter {
         if (n == "pthread_mutex_lock" || n == "mtx_lock" || n == "pthread_mutex_unlock" || n == "mtx_unlock") {
             bool lock = n.ends_with("_lock");
             auto vo = mk(lock ? VisOp::Lock : VisOp::Unlock, n);
-            vo.mutex = mutex(arg(0), n);
+            auto da = sync_addr(fn, arg(0), n);
+            vo.dyn = da.has_value();
+            vo.mutex = da ? -1 : mutex(arg(0), n);
             int k = add_op(vo);
-            out.push_back(copy(in, marker(k), cint(0, i64)));
+            out.push_back(copy(in, marker(k), da ? *da : cint(0, i64)));
             zero_result(in, out);
             return;
         }
         if (n == "pthread_mutex_trylock" || n == "mtx_trylock") {
             auto vo = mk(VisOp::TryLock, n);
+            if (sync_addr(fn, arg(0), n)) throw Unenc{"UNENCODED: " + n + " on a mutex that is not a global"};
             vo.mutex = mutex(arg(0), n);
             auto rty = in.ty.kind == ir::Type::Int ? in.ty : int_type(32);
             vo.width = rty.bits;
@@ -1023,9 +1036,11 @@ struct Rewriter {
             if (n == "pthread_mutex_init" && arg(1).v.kind != ir::Value::Null)
                 throw Unenc{"UNENCODED: pthread_mutex_init with attributes"};
             auto vo = mk(VisOp::MutexInit, n);
-            vo.mutex = mutex(arg(0), n);
+            auto da = sync_addr(fn, arg(0), n);
+            vo.dyn = da.has_value();
+            vo.mutex = da ? -1 : mutex(arg(0), n);
             int k = add_op(vo);
-            out.push_back(copy(in, marker(k), cint(0, i64)));
+            out.push_back(copy(in, marker(k), da ? *da : cint(0, i64)));
             zero_result(in, out);
             return;
         }
@@ -1037,19 +1052,25 @@ struct Rewriter {
             // are those with no signal at all after the release: a lost
             // wake-up, reported as CONC-DEADLOCK when every thread is stuck.
             // Spurious wake-ups that would rescue such a run are not counted.
+            auto dm = sync_addr(fn, arg(1), n), dc = sync_addr(fn, arg(0), n);
             auto u = mk(VisOp::Unlock, n + " (release)");
-            u.mutex = mutex(arg(1), n);
-            u.cond = cond(arg(0), n);
+            u.dyn = dm.has_value();
+            u.mutex = dm ? -1 : mutex(arg(1), n);
+            u.cond_dyn = dc.has_value();
+            u.cond = dc ? -1 : cond(arg(0), n);
             int k1 = add_op(u);
-            out.push_back(copy(in, marker(k1), cint(0, i64)));
+            out.push_back(copy(in, marker(k1), dm ? *dm : cint(0, i64)));
+            if (dc) out.push_back(copy(in, marker(k1, true), *dc));
             auto w = mk(VisOp::CondWait, n + " (block)");
+            w.dyn = u.cond_dyn;
             w.cond = u.cond;
             int kw = add_op(w);
-            out.push_back(copy(in, marker(kw), cint(0, i64)));
+            out.push_back(copy(in, marker(kw), dc ? *dc : cint(0, i64)));
             auto l = mk(VisOp::Lock, n + " (re-acquire)");
+            l.dyn = u.dyn;
             l.mutex = u.mutex;
             int k2 = add_op(l);
-            out.push_back(copy(in, marker(k2), cint(0, i64)));
+            out.push_back(copy(in, marker(k2), dm ? *dm : cint(0, i64)));
             zero_result(in, out);
             return;
         }
@@ -1078,9 +1099,11 @@ struct Rewriter {
         }
         if (n == "pthread_cond_signal" || n == "pthread_cond_broadcast" || n == "cnd_signal" || n == "cnd_broadcast") {
             auto vo = mk(VisOp::CondSignal, n);
-            vo.cond = cond(arg(0), n);
+            auto dc = sync_addr(fn, arg(0), n);
+            vo.dyn = dc.has_value();
+            vo.cond = dc ? -1 : cond(arg(0), n);
             int k = add_op(vo);
-            out.push_back(copy(in, marker(k), cint(0, i64)));
+            out.push_back(copy(in, marker(k), dc ? *dc : cint(0, i64)));
             zero_result(in, out);
             return;
         }
@@ -1090,7 +1113,7 @@ struct Rewriter {
             return;
         }
         if (n == "cnd_init") {  // thrd_success (0); the variable is identified by its global
-            (void)cond(arg(0), n);
+            if (!sync_addr(fn, arg(0), n)) (void)cond(arg(0), n);
             zero_result(in, out);
             return;
         }

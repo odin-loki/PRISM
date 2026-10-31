@@ -364,12 +364,14 @@ std::string op_text(const Program& p, const VisOp& o) {
             [[fallthrough]];
         case VisOp::Unlock:
             [[fallthrough]];
-        case VisOp::MutexInit: return o.what + "(" + p.mutexes[static_cast<std::size_t>(o.mutex)] + ")";
+        case VisOp::MutexInit:
+            return o.what + "(" + (o.mutex >= 0 ? p.mutexes[static_cast<std::size_t>(o.mutex)] : std::string("*ptr")) + ")";
         case VisOp::Create: return o.what + " T" + std::to_string(o.thread);
         case VisOp::Join: return o.what;
         case VisOp::CondWait:
             [[fallthrough]];
-        case VisOp::CondSignal: return o.what + "(" + p.conds[static_cast<std::size_t>(o.cond)] + ")";
+        case VisOp::CondSignal:
+            return o.what + "(" + (o.cond >= 0 ? p.conds[static_cast<std::size_t>(o.cond)] : std::string("*ptr")) + ")";
         case VisOp::Alloc: return o.what + "(" + std::to_string(o.size) + ")";
         case VisOp::Free: return o.what;
         case VisOp::Arg: return o.what;
@@ -517,7 +519,10 @@ struct Enc {
     // bounded heap: one slot per unrolled execution of an allocation site
     struct HeapSlot { uint64_t id; uint64_t size; z3::expr live; std::string name; };
     std::vector<HeapSlot> heap;
-    std::vector<z3::expr> targ;  // per thread: the argument its creating call passed
+    std::vector<z3::expr> targ;
+    // mutexes / condition variables addressed through the bounded memory
+    z3::expr OwnA, CgenA;
+    std::vector<z3::expr> tkd;  // per thread: CgenA[cv] when it released for a wait on a non-global cv  // per thread: the argument its creating call passed
     std::map<std::pair<int, int>, std::size_t> heap_of;  // (thread, node) -> heap index
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
@@ -528,7 +533,8 @@ struct Enc {
         : p(prog), opt(o), exited(c.bool_val(false)), last_tid(c.bv_val(0, 8)), last_var(c.bv_val(0, 16)),
           last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)),
           M(z3::const_array(c.bv_sort(64), c.bv_val(0, 64))), maddr(c.bv_val(0, 64)), last_addr(c.bv_val(0, 64)),
-          last_mem(c.bool_val(false)) {}
+          last_mem(c.bool_val(false)), OwnA(z3::const_array(c.bv_sort(64), c.bv_val(0, 8))),
+          CgenA(z3::const_array(c.bv_sort(64), c.bv_val(0, 16))) {}
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
@@ -845,6 +851,44 @@ struct Enc {
             touch(t, e, mk.op, o.var, write, o.atomic);
             return;
         }
+        if (o.kind == VisOp::Unlock && o.cond_dyn && mk.tail) {  // wait release: remember the cv generation
+            auto& tk = tkd[static_cast<std::size_t>(t)];
+            tk = z3::ite(e, z3::select(CgenA, lookup(t, node, s.args.at(0))), tk);
+            define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
+            return;
+        }
+        if (o.dyn && (o.kind == VisOp::Lock || o.kind == VisOp::Unlock || o.kind == VisOp::MutexInit ||
+                      o.kind == VisOp::CondWait || o.kind == VisOp::CondSignal)) {
+            event(e, r, t, mk.op, std::nullopt, 0);
+            auto a = lookup(t, node, s.args.at(0));
+            switch (o.kind) {
+                case VisOp::Lock:
+                    ok = ok && z3::implies(e, z3::select(OwnA, a) == bv(0, 8));
+                    OwnA = z3::ite(e, z3::store(OwnA, a, tid), OwnA);
+                    break;
+                case VisOp::Unlock:
+                    violation(e && z3::select(OwnA, a) != tid, "unlock", "LOCK-DOUBLE-UNLOCK",
+                              "unlock of a mutex that " + tname(p, t) + " does not hold" + at_line(o.line), o.line, t,
+                              "unlock:*:" + std::to_string(o.line));
+                    OwnA = z3::ite(e, z3::store(OwnA, a, bv(0, 8)), OwnA);
+                    if (o.cond >= 0) {
+                        auto& tk = ticket[static_cast<std::size_t>(t)][static_cast<std::size_t>(o.cond)];
+                        tk = z3::ite(e, cgen[static_cast<std::size_t>(o.cond)], tk);
+                    }
+                    break;
+                case VisOp::MutexInit: OwnA = z3::ite(e, z3::store(OwnA, a, bv(0, 8)), OwnA); break;
+                case VisOp::CondWait:
+                    ok = ok && z3::implies(e, z3::select(CgenA, a) != tkd[static_cast<std::size_t>(t)]);
+                    break;
+                case VisOp::CondSignal:
+                    CgenA = z3::ite(e, z3::store(CgenA, a, z3::select(CgenA, a) + bv(1, 16)), CgenA);
+                    break;
+                default: break;
+            }
+            define(t, node, s.dst, e, a);
+            touch(t, e, mk.op, -1, false, false);
+            return;
+        }
         event(e, r, t, mk.op, std::nullopt, 0);
         switch (o.kind) {
             case VisOp::Lock: {
@@ -1075,7 +1119,12 @@ struct Enc {
                 if (op < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(op)];
                 auto at = pc[t] == c.bv_val(static_cast<uint64_t>(n), 16);
-                if (o.kind == VisOp::Lock) {
+                if (o.dyn && (o.kind == VisOp::Lock || o.kind == VisOp::CondWait)) {
+                    const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts.at(0);
+                    auto a = lookup(ti, static_cast<int>(n), s.args.at(0));
+                    blocked = blocked || (at && (o.kind == VisOp::Lock ? z3::select(OwnA, a) != bv(0, 8)
+                                                                       : z3::select(CgenA, a) == tkd[t]));
+                } else if (o.kind == VisOp::Lock) {
                     blocked = blocked || (at && owner[static_cast<std::size_t>(o.mutex)] != bv(0, 8));
                 } else if (o.kind == VisOp::CondWait) {
                     const auto ci = static_cast<std::size_t>(o.cond);
@@ -1157,6 +1206,7 @@ struct Enc {
         ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
         for (std::size_t t = 0; t < N; ++t) {
             targ.push_back(c.bv_val(0, 64));
+            tkd.push_back(c.bv_val(0, 16));
             pc.push_back(c.bv_val(0, 16));
             active.push_back(c.bool_val(t == 0));
         }

@@ -73,7 +73,14 @@ struct VisOp {
     // bounded memory, 0 for null); Arg: at the entry of a thread function, the
     // marker's result is the argument its creating call passed.
     uint64_t size = 0;
-    bool zero = false;       // Alloc: calloc (memory is zero either way: M starts at 0)
+    bool zero = false;
+    // Lock/Unlock/MutexInit (mutex == -1) and CondWait/CondSignal (cond == -1):
+    // a mutex / condition variable that is not a global (struct field, array
+    // element, heap): the head marker copies its i64 address. An Unlock that
+    // releases for a wait on such a condition variable has cond_dyn set and a
+    // tail marker copying the condition variable's address.
+    bool dyn = false;
+    bool cond_dyn = false;       // Alloc: calloc (memory is zero either way: M starts at 0)
 };
 
 // An object of the bounded memory (docs/CONCURRENCY.md "Memory"): a shared
