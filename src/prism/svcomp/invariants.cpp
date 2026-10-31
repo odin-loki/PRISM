@@ -10,6 +10,7 @@
 // out a conjunct keeps the witness valid (each proved conjunct holds by
 // itself); it only gives the validator less to work with.
 #include "internal.hpp"
+#include "prism/laws.hpp"
 
 #include <algorithm>
 #include <map>
@@ -185,7 +186,8 @@ std::vector<std::string> exportable_conjuncts(const std::vector<std::string>& co
 std::pair<std::vector<Invariant>, std::string> correctness_invariants(const fs::path& task, const json& finding) {
     const json& extra = extra_of(finding);
     const std::string st = get_str(finding, "status", "");
-    const bool proved = st == "PROVED-UNBOUNDED" || st == "PROVED" || st == "PROVED-CERTIFIED";
+    // A proof that does not rest on an assumption.
+    const bool proved = prism::laws::is_proof(st) && st != prism::laws::PROVED_ASSUMING;
     if (!proved || get_str(extra, "k_induction", "None") != "closed-invariants" ||
         !(has(extra, "invariants") || has(extra, "invariant_conjuncts")))
         return {{}, "no loop invariant exported by the proving stage (empty invariant set)"};

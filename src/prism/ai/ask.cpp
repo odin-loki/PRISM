@@ -16,6 +16,7 @@
 
 #include "prism/ai_assist.hpp"
 #include "prism/laws.hpp"
+#include "prism/verdict.hpp"
 #include "prism/pipeline.hpp"
 
 #include <nlohmann/json.hpp>
@@ -41,15 +42,19 @@ std::string upper(std::string s) {
     return s;
 }
 
-const std::vector<std::string>& all_statuses() {
-    static const std::vector<std::string> v = {
-        "PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING", "BOUNDED", "FAILED",
-        "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "CLEAN", "SANFAIL",
-        "HYPOTHESIS", "READS", "NOFUNC", "NOSEED"};
+// Status groups come from the verdict lattice (prism/verdict.hpp), not local lists.
+std::vector<std::string> statuses_where(bool (*pred)(prism::verdict::Verdict)) {
+    std::vector<std::string> v;
+    for (auto x : prism::verdict::all_verdicts())
+        if (pred(x)) v.emplace_back(prism::verdict::name(x));
     return v;
 }
-const std::vector<std::string> kProof = {"PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"};
-const std::vector<std::string> kDefect = {"FAILED", "CRASH", "SANFAIL"};
+const std::vector<std::string>& all_statuses() {
+    static const std::vector<std::string> v = statuses_where([](prism::verdict::Verdict) { return true; });
+    return v;
+}
+const std::vector<std::string> kProof = statuses_where(prism::verdict::is_proof);
+const std::vector<std::string> kDefect = statuses_where(prism::verdict::is_defect);
 const std::vector<std::string> kUnproved = {"BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN",
                                             "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"};
 

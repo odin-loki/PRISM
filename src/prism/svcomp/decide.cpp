@@ -1,6 +1,7 @@
 // report.json -> SV-COMP answer (`prism svcomp`). docs/SVCOMP.md has the
 // mapping rules; include/prism/svcomp.hpp summarises them.
 #include "internal.hpp"
+#include "prism/laws.hpp"
 
 #include <algorithm>
 #include <map>
@@ -12,9 +13,13 @@ using namespace detail;
 
 namespace {
 
+// A proof that does not rest on an assumption (PROVED-ASSUMING cannot answer TRUE).
+bool is_unconditional_proof(const std::string& st) {
+    return prism::laws::is_proof(st) && st != prism::laws::PROVED_ASSUMING;
+}
+
 const std::vector<std::string> VERDICT_STAGES = {"bmc", "pir"};
 // never PROVED-ASSUMING / BOUNDED (Law 2)
-const std::set<std::string> PROOF_TRUE = {"PROVED", "PROVED-UNBOUNDED", "PROVED-CERTIFIED"};
 
 // property -> which stages' proofs of main cover it, which finding classes refute it
 struct PropSpec {
@@ -125,7 +130,7 @@ Decision decide(const json& report, const std::string& prop, const std::function
     const auto& prove = properties().at(prop).prove;
     for (const auto& [st, rows] : per)
         for (const auto& f : rows)
-            if (PROOF_TRUE.contains(get_str(f, "status")) && prove.contains(st)) proofs.emplace_back(st, f);
+            if (is_unconditional_proof(get_str(f, "status")) && prove.contains(st)) proofs.emplace_back(st, f);
     json last_replay = json::object();
     for (const auto& [st, f] : refutations) {
         json rp = replay_fn(f);

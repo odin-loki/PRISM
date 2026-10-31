@@ -15,7 +15,6 @@
 
 namespace prism::qa {
 
-const std::set<std::string> PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"};
 const std::vector<std::string> BASE_STAGES = {"inventory", "classify", "bmc", "harness"};
 const std::vector<std::string> VERDICT_STAGES = {"bmc", "harness", "pir", "conc"};
 const std::set<std::string> SCOPED_STAGES = {"harness"};
