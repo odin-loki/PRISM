@@ -61,6 +61,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     std::size_t next = static_cast<std::size_t>(p.fmt_arg) + 1;
     int nconv = 0;           // conversions (not %%)
     int float_arg = -1;      // the argument of a non-literal double conversion
+    bool loc_dep = false;    // %ls / %lc / ' (LC_CTYPE, LC_NUMERIC)
     bool float_star = false; // that conversion uses '*' or the ' flag
     uint64_t len = 0;
     bool bounded = true;
@@ -121,6 +122,8 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
         }
         char c = f[i];
         auto conv = f.substr(start + 1, i - start);
+        if ((lenmod == "l" && (c == 's' || c == 'c')) || f.substr(start, i - start).find('\'') != std::string::npos)
+            loc_dep = true;  // depends on setlocale: rendered by __prism_fmtv
         if (lenmod == "L" && std::string_view("fFeEgGaA").find(c) == std::string_view::npos)
             float_star = true;  // not modelled by __prism_fmtv: keep the bounded havoc
         bool wide = lenmod == "l" || lenmod == "ll" || lenmod == "j" || lenmod == "z" || lenmod == "t" || lenmod == "q";
@@ -229,7 +232,7 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     // the symbolic value) instead of havoc bytes.
     // Session 11: any number of conversions (ints, chars, strings,
     // pointers, doubles, '*' width/precision) via __prism_fmtv.
-    if (p.buf_arg >= 0 && float_arg >= 0 && !float_star) p.exact_double_arg = float_arg;
+    if (p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star) p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
     if (p.buf_arg >= 0 && p.size_arg < 0) {
         if (!bounded && p.exact_double_arg < 0) {
             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";

@@ -57,12 +57,65 @@ static int __prism_ldhex(char* t, long double v, int prec, bool upper, bool alt,
 // typed slots hold the arguments with indices [ab, ab + 8) in order of
 // their class. The translator chains calls over windows of the argument
 // list, so there is no fixed cap on the number of arguments.
-extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int ae, int pos0,
+// Locale state for the printf model (setlocale below): LC_CTYPE UTF-8
+// (C.UTF-8, en_US.UTF-8) and LC_NUMERIC grouping (en_US: ',' every 3).
+extern "C" int __prism_lc_utf8 = 0;
+extern "C" int __prism_lc_group = 0;
+static const char* __prism_lc_names[13] = {"C", "C", "C", "C", "C", "C", "C", "C", "C", "C", "C", "C", "C"};
+static int __prism_lc_eq(const char* a, const char* b) { while (*a && *a == *b) { ++a; ++b; } return *a == *b; }
+// glibc categories: CTYPE 0, NUMERIC 1, TIME 2, COLLATE 3, MONETARY 4,
+// MESSAGES 5, ALL 6, then PAPER .. IDENTIFICATION 7..12. The environment
+// of an analysed run is empty, so "" selects "C". Locales other than C,
+// POSIX, C.UTF-8 and en_US.UTF-8 are not installed: NULL.
+extern "C" char* setlocale(int cat, const char* name) {
+    if (cat < 0 || cat > 12) return nullptr;
+    if (!name) return (char*)__prism_lc_names[cat];
+    const char* canon;
+    int utf8 = 0, group = 0;
+    if (!*name || __prism_lc_eq(name, "C") || __prism_lc_eq(name, "POSIX")) canon = "C";
+    else if (__prism_lc_eq(name, "C.UTF-8") || __prism_lc_eq(name, "C.utf8")) { canon = "C.UTF-8"; utf8 = 1; }
+    else if (__prism_lc_eq(name, "en_US.UTF-8") || __prism_lc_eq(name, "en_US.utf8")) { canon = "en_US.UTF-8"; utf8 = 1; group = 1; }
+    else return nullptr;
+    if (cat == 6) { for (int k = 0; k < 13; ++k) __prism_lc_names[k] = canon; __prism_lc_utf8 = utf8; __prism_lc_group = group; }
+    else { __prism_lc_names[cat] = canon; if (cat == 0) __prism_lc_utf8 = utf8; if (cat == 1) __prism_lc_group = group; }
+    return (char*)canon;
+}
+// UTF-8 bytes of one wide character (wcrtomb): 0 for an invalid one.
+static int __prism_wc8(unsigned w, char* o) {
+    if (!__prism_lc_utf8) { if (w > 0x7f) return 0; o[0] = (char)w; return 1; }
+    if (w < 0x80) { o[0] = (char)w; return 1; }
+    if (w < 0x800) { o[0] = char(0xc0 | (w >> 6)); o[1] = char(0x80 | (w & 63)); return 2; }
+    if (w >= 0xd800 && w < 0xe000) return 0;
+    if (w < 0x10000) { o[0] = char(0xe0 | (w >> 12)); o[1] = char(0x80 | ((w >> 6) & 63)); o[2] = char(0x80 | (w & 63)); return 3; }
+    if (w < 0x110000) { o[0] = char(0xf0 | (w >> 18)); o[1] = char(0x80 | ((w >> 12) & 63)); o[2] = char(0x80 | ((w >> 6) & 63)); o[3] = char(0x80 | (w & 63)); return 4; }
+    return 0;
+}
+// ' grouping: insert ',' every 3 digits into the integer digits t[a, b).
+static int __prism_group(char* t, int len, int a, int b, int capt) {
+    const int nd = b - a;
+    if (nd <= 3) return len;
+    const int nc = (nd - 1) / 3;
+    if (len + nc > capt) return len;
+    for (int z = len - 1; z >= b; --z) t[z + nc] = t[z];
+    int w = b + nc - 1;
+    for (int z = b - 1, cnt = 0; z >= a; --z) { t[w--] = t[z]; if (++cnt % 3 == 0 && z > a) t[w--] = ','; }
+    return len + nc;
+}
+
+// Argument classes per window (cls, 3 bits per argument from the
+// translator): 0 i32, 1 i64, 2 double, 3 x86_fp80, 4 ptr, 5 __int128
+// (two consecutive integer reads, low then high, as va_arg sees the pair
+// of GP registers), 6 struct passed byval (its eightbytes, in order, from
+// the copy the pointer slot addresses).
+extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int ae, int pos0, int clsw,
                             int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7,
                             long long j0, long long j1, long long j2, long long j3, long long j4, long long j5, long long j6, long long j7,
                             double d0, double d1, double d2, double d3, double d4, double d5, double d6, double d7,
                             long double l0, long double l1, long double l2, long double l3, long double l4, long double l5, long double l6, long double l7,
-                            const char* p0, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5, const char* p6, const char* p7) {
+                            const char* p0, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5, const char* p6, const char* p7,
+                            __int128 q0, __int128 q1, __int128 q2, __int128 q3, __int128 q4, __int128 q5, __int128 q6, __int128 q7) {
+    const __int128 qs[8] = {q0, q1, q2, q3, q4, q5, q6, q7};
+    int nq = 0;
     const int is[8] = {i0, i1, i2, i3, i4, i5, i6, i7};
     const long long js[8] = {j0, j1, j2, j3, j4, j5, j6, j7};
     const double ds[8] = {d0, d1, d2, d3, d4, d5, d6, d7};
@@ -75,8 +128,23 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
     int ai = 0;          // global index of the next argument
     bool on = ab == 0;   // the current conversion (and its trailing text) is ours
     auto win = [&]() { int a = ai++; return a >= ab && a < ab + 8; };
-    auto gi = [&]() -> int { bool w = win(); return w && ni < 8 ? is[ni++] : 0; };
-    auto gj = [&]() -> long long { bool w = win(); return w && nj < 8 ? js[nj++] : 0; };
+    auto clsof = [&](int a) { return (a >= ab && a < ab + 8) ? (clsw >> (3 * (a - ab))) & 7 : -1; };
+    // a pending eightbyte from a __int128 (high half) or a byval struct
+    bool pend = false; unsigned long long pendv = 0;
+    const unsigned long long* bv = nullptr; int bvn = 0;
+    // an integer read: i128 and byval arguments feed several reads
+    auto gint = [&](bool wide) -> long long {
+        if (pend) { pend = false; return (long long)pendv; }
+        if (bv && bvn > 0) { --bvn; long long v = (long long)*bv++; if (!bvn) bv = nullptr; return v; }
+        const int k = clsof(ai);
+        if (k == 5) { win(); __int128 v = nq < 8 ? qs[nq++] : 0; pend = true; pendv = (unsigned long long)((unsigned __int128)v >> 64); return (long long)(unsigned long long)v; }
+        if (k == 6) { win(); const char* sp = np < 8 ? ps[np++] : nullptr; if (!sp) return 0; bv = (const unsigned long long*)sp; bvn = 1; long long v = (long long)*bv++; return v; }
+        if (k == 4) { win(); return (long long)(size_t)(np < 8 ? ps[np++] : nullptr); }
+        if (k == 1 || (wide && k != 0)) { bool w = win(); return w && nj < 8 ? js[nj++] : 0; }
+        bool w = win(); return w && ni < 8 ? is[ni++] : 0;
+    };
+    auto gi = [&]() -> int { return (int)gint(false); };
+    auto gj = [&]() -> long long { return gint(true); };
     auto gd = [&]() -> double { bool w = win(); return w && nd < 8 ? ds[nd++] : 0.0; };
     auto gl = [&]() -> long double { bool w = win(); return w && nl < 8 ? ls[nl++] : 0.0L; };
     auto gp = [&]() -> const char* { bool w = win(); return w && np < 8 ? ps[np++] : nullptr; };
@@ -86,11 +154,11 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
         ++p;
         if (*p == '%') { put('%'); continue; }
         on = ai >= ab && ai < ae;
-        bool left = false, zero = false, plus = false, space = false, alt = false;
+        bool left = false, zero = false, plus = false, space = false, alt = false, group = false;
         for (;; ++p) {
             if (*p == '-') left = true; else if (*p == '0') zero = true; else if (*p == '+') plus = true;
             else if (*p == ' ') space = true; else if (*p == '#') alt = true;
-            else if (*p == '\'') {}  // thousands grouping: empty in the C locale
+            else if (*p == '\'') group = __prism_lc_group;  // thousands grouping (en_US: ',' / 3)
             else break;
         }
         int width = 0;
@@ -136,6 +204,7 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
             k = len;  // zero padding goes here
             for (int z = 0; z < zeros; ++z) t[len++] = '0';
             while (nr) t[len++] = r[--nr];
+            if (group && base == 10) len = __prism_group(t, len, k, len, (int)sizeof t);
             if (prec >= 0) zero = false;
         } else if (c == 'n') {
             void* q = (void*)gp();
@@ -146,19 +215,26 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
                 else *(int*)q = (int)n;
             }
             continue;
-        } else if (c == 'c' && lm == 1) {  // %lc: wcrtomb in the C locale (ASCII only, else EILSEQ)
+        } else if (c == 'c' && lm == 1) {  // %lc: wcrtomb in the current LC_CTYPE (C: ASCII; UTF-8), else EILSEQ
             const int w = gi(); numeric = false;
-            if (w < 0 || w > 0x7f) { if (on) return -1; continue; }
-            t[len++] = (char)w;
+            char mb[4]; const int k8 = __prism_wc8((unsigned)w, mb);
+            if (!k8) { if (on) return -1; continue; }
+            for (int z = 0; z < k8; ++z) t[len++] = mb[z];
         } else if (c == 's' && lm == 1) {  // %ls: precision counts bytes
             const int* ws = (const int*)gp(); numeric = false;
             static const int nulls[] = {'(', 'n', 'u', 'l', 'l', ')', 0};
             if (!ws) ws = nulls;
-            int sl = 0;
-            for (; ws[sl] && (prec < 0 || sl < prec); ++sl) if (ws[sl] < 0 || ws[sl] > 0x7f) { if (on) return -1; break; }
+            // bytes: whole characters only, up to the precision
+            int sl = 0, nw = 0;
+            for (; ws[nw]; ++nw) {
+                char mb[4]; const int k8 = __prism_wc8((unsigned)ws[nw], mb);
+                if (!k8) { if (on) return -1; break; }
+                if (prec >= 0 && sl + k8 > prec) break;
+                sl += k8;
+            }
             const int pad = width > sl ? width - sl : 0;
             if (!left) for (int z = 0; z < pad; ++z) put(' ');
-            for (int z = 0; z < sl; ++z) put((char)ws[z]);
+            for (int z = 0, b = 0; b < sl; ++z) { char mb[4]; const int k8 = __prism_wc8((unsigned)ws[z], mb); for (int y = 0; y < k8; ++y) put(mb[y]); b += k8; }
             if (left) for (int z = 0; z < pad; ++z) put(' ');
             continue;
         } else if (c == 'c') {
@@ -192,6 +268,11 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
             finite = ldv ? lv - lv == 0 : v - v == 0;
             if (k < len && (t[k] == '-' || t[k] == '+' || t[k] == ' ')) ++k;
             if ((c == 'a' || c == 'A') && k + 1 < len && t[k] == '0' && (t[k + 1] == 'x' || t[k + 1] == 'X')) k += 2;
+            if (group && finite && (c == 'f' || c == 'F' || c == 'g' || c == 'G')) {
+                int e = k; while (e < len && t[e] >= '0' && t[e] <= '9') ++e;
+                if (e == len || t[e] != 'e' && t[e] != 'E') len = __prism_group(t, len, k, e, (int)sizeof t);
+                else if (true) {}  // %g in exponent form: one integer digit
+            }
             (void)hexpfx;
         } else {
             continue;  // not reached: the planner rejects other conversions

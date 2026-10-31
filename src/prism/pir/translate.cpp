@@ -1957,7 +1957,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
             if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) return 1;
             if (o.ty.kind == ir::Type::Float && o.ty.text == "double") return 2;
             if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") return 3;
+            if (o.ty.kind == ir::Type::Ptr && o.attrs.find("byval") != std::string::npos) return 6;
             if (o.ty.kind == ir::Type::Ptr) return 4;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 128) return 5;
             return -1;
         };
         bool fits = true;
@@ -1983,11 +1985,20 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
                 ir::Operand oab = zero(ti32), oae = zero(ti32);
                 oab.v.bits = ab;
                 oae.v.bits = last ? 0x7fffffffu : ab + 6;
-                call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi], oab, oae, pos};
-                std::vector<ir::Operand> sv[5];
-                for (std::size_t k = ab; k < std::min(na, ab + 8); ++k) sv[cls(in.ops[fi + 1 + k])].push_back(in.ops[fi + 1 + k]);
-                const ir::Type* tys[5] = {&ti32, &ti64, &tdbl, &tld, &tptr};
-                for (int c = 0; c < 5; ++c)
+                ir::Operand ocl = zero(ti32);
+                std::vector<ir::Operand> sv[6];
+                for (std::size_t k = ab; k < std::min(na, ab + 8); ++k) {
+                    const int c = cls(in.ops[fi + 1 + k]);
+                    ocl.v.bits |= static_cast<uint64_t>(c) << (3 * (k - ab));
+                    // byval structs travel in the pointer slots (the model reads their eightbytes)
+                    ir::Operand o = in.ops[fi + 1 + k];
+                    if (c == 6) o.attrs.clear();
+                    sv[c == 6 ? 4 : c].push_back(o);
+                }
+                call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi], oab, oae, pos, ocl};
+                const ir::Type ti128{ir::Type::Int, 128, "i128", {}};
+                const ir::Type* tys[6] = {&ti32, &ti64, &tdbl, &tld, &tptr, &ti128};
+                for (int c = 0; c < 6; ++c)
                     for (std::size_t k = 0; k < 8u; ++k) call.ops.push_back(k < sv[c].size() ? sv[c][k] : zero(*tys[c]));
                 inline_call(fr, call, cur, line);
                 if (last) return true;
