@@ -1941,7 +1941,7 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         // to a typed slot of __prism_fmtv (8 x i32, 8 x i64, 8 x double,
         // 8 x ptr), which renders the whole format with prism_fpfmt.
         const ir::Type ti32{ir::Type::Int, 32, "i32", {}}, ti64{ir::Type::Int, 64, "i64", {}},
-            tdbl{ir::Type::Float, 0, "double", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
+            tdbl{ir::Type::Float, 0, "double", {}}, tld{ir::Type::Float, 0, "x86_fp80", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
         auto zero = [](const ir::Type& t) {
             ir::Operand o;
             o.ty = t;
@@ -1949,17 +1949,18 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
             o.v.bits = 0;
             return o;
         };
-        std::vector<ir::Operand> si, sj, sd, sp;
+        std::vector<ir::Operand> si, sj, sd, sl, sp;
         bool fits = true;
         for (std::size_t k = fi + 1; k < in.ops.size(); ++k) {
             const auto& o = in.ops[k];
             if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) si.push_back(o);
             else if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) sj.push_back(o);
             else if (o.ty.kind == ir::Type::Float && o.ty.text == "double") sd.push_back(o);
+            else if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") sl.push_back(o);
             else if (o.ty.kind == ir::Type::Ptr) sp.push_back(o);
             else fits = false;
         }
-        if (fits && si.size() <= 8 && sj.size() <= 8 && sd.size() <= 8 && sp.size() <= 8) {
+        if (fits && si.size() <= 8 && sj.size() <= 8 && sd.size() <= 8 && sl.size() <= 4 && sp.size() <= 8) {
             ir::Inst call;
             call.op = "call";
             call.callee = "__prism_fmtv";
@@ -1972,9 +1973,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
                 cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
             }
             call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi]};
-            for (auto* v : {&si, &sj, &sd, &sp}) {
-                const ir::Type& t = v == &si ? ti32 : v == &sj ? ti64 : v == &sd ? tdbl : tptr;
-                for (std::size_t k = 0; k < 8; ++k) call.ops.push_back(k < v->size() ? (*v)[k] : zero(t));
+            for (auto* v : {&si, &sj, &sd, &sl, &sp}) {
+                const ir::Type& t = v == &si ? ti32 : v == &sj ? ti64 : v == &sd ? tdbl : v == &sl ? tld : tptr;
+                for (std::size_t k = 0; k < (v == &sl ? 4u : 8u); ++k) call.ops.push_back(k < v->size() ? (*v)[k] : zero(t));
             }
             inline_call(fr, call, cur, line);
             return true;

@@ -16,10 +16,13 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
                             int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7,
                             long long j0, long long j1, long long j2, long long j3, long long j4, long long j5, long long j6, long long j7,
                             double d0, double d1, double d2, double d3, double d4, double d5, double d6, double d7,
+                            long double l0, long double l1, long double l2, long double l3,
                             const char* p0, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5, const char* p6, const char* p7) {
     const int is[8] = {i0, i1, i2, i3, i4, i5, i6, i7};
     const long long js[8] = {j0, j1, j2, j3, j4, j5, j6, j7};
     const double ds[8] = {d0, d1, d2, d3, d4, d5, d6, d7};
+    const long double ls[4] = {l0, l1, l2, l3};
+    int nl = 0;
     const char* const ps[8] = {p0, p1, p2, p3, p4, p5, p6, p7};
     int ni = 0, nj = 0, nd = 0, np = 0;
     size_t n = 0;
@@ -45,12 +48,13 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
         int lm = 0;  // 0 int, -1 h, -2 hh, 1 long (64), 
         for (;; ++p) {
             if (*p == 'h') lm = lm == -1 ? -2 : -1;
+            else if (*p == 'L') lm = 2;
             else if (*p == 'l' || *p == 'j' || *p == 'z' || *p == 't' || *p == 'q') lm = 1;
             else break;
         }
         const char c = *p;
         if (!c) break;
-        char t[400];
+        char t[5000];  // %Lf of LDBL_MAX is 4933 integer digits
         int len = 0, k = 0;
         bool numeric = true, finite = true, hexpfx = false;
         if (c == 'd' || c == 'i' || c == 'u' || c == 'o' || c == 'x' || c == 'X') {
@@ -94,13 +98,15 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt,
             if (!u) { const char* nl = "(nil)"; while (*nl) t[len++] = *nl++; }
             else { t[len++] = '0'; t[len++] = 'x'; char r[20]; int nr = 0; for (; u; u >>= 4) r[nr++] = "0123456789abcdef"[u & 15]; while (nr) t[len++] = r[--nr]; }
         } else if (c == 'f' || c == 'F' || c == 'e' || c == 'E' || c == 'g' || c == 'G' || c == 'a' || c == 'A') {
-            const double v = nd < 8 ? ds[nd++] : 0;
+            const bool ldv = lm == 2;  // %Lf %Le %Lg (the planner keeps %La as havoc)
+            const long double lv = ldv ? (nl < 4 ? ls[nl++] : 0.0L) : 0.0L;
+            const double v = ldv ? 0.0 : (nd < 8 ? ds[nd++] : 0);
             unsigned fl = (alt ? prism_fpfmt::kAlt : 0u) | ((c == 'a' || c == 'A') ? prism_fpfmt::kPrintfExp : 0u);
             if (plus) fl |= prism_fpfmt::kPlus; else if (space) fl |= prism_fpfmt::kSpace;
             const int pr = prec >= 0 ? prec : ((c == 'a' || c == 'A') ? -1 : 6);
-            len = prism_fpfmt::to_chars(t, (int)sizeof t, v, c, pr, fl);
-            if (len > (int)sizeof t) len = (int)sizeof t;  // %.400f and wider: bytes past 400 are not exact
-            finite = v - v == 0;
+            len = ldv ? prism_fpfmt::to_chars(t, (int)sizeof t, lv, c, pr, fl) : prism_fpfmt::to_chars(t, (int)sizeof t, v, c, pr, fl);
+            if (len > (int)sizeof t) len = (int)sizeof t;  // precision past ~4990: bytes past the buffer are not exact
+            finite = ldv ? lv - lv == 0 : v - v == 0;
             if (k < len && (t[k] == '-' || t[k] == '+' || t[k] == ' ')) ++k;
             if ((c == 'a' || c == 'A') && k + 1 < len && t[k] == '0' && (t[k + 1] == 'x' || t[k + 1] == 'X')) k += 2;
             (void)hexpfx;

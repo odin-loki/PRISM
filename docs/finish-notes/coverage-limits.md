@@ -229,8 +229,15 @@ below.
     [const N] / [*] become [N] / [], and out-of-order designators and VLA
     parameters compile under clang's C++ extensions
     (-Wno-reorder-init-list, -Wno-vla-cxx-extension).
-  Still open after session 11: %Lf (long double) in item 1 (needs a
-  ~1200-limb fpfmt for x86 80-bit; keeps the bounded havoc), %n / %ls /
+  - CLOSED (unverified): %Lf %Le %Lg — prism_fpfmt is templated on the
+    digit/limb capacity (DecT<12000>, BigT<1200> for x86 80-bit long
+    double; double keeps 800/96, and BigT no longer zero-fills its limbs),
+    decompose(long double) reads the explicit-integer-bit format, and
+    __prism_fmtv takes 4 x86_fp80 slots; the %Lf length bound is now
+    4950+prec.
+  Still open after session 11: %La (glibc's 4-bit leading hex digit for
+  long double is not modelled; bounded havoc), more than 4 long double
+  arguments, %n / %ls /
   the ' flag alongside a symbolic double (bounded havoc), more than 8
   arguments of one class; out-of-order designators rely on clang's C++
   extension rather than an actual reorder (array designators `[i] =` in

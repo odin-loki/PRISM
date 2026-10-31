@@ -17,20 +17,26 @@
 
 namespace prism_fpfmt {
 
-struct Dec {           // value = digits * 10^x, digits[0] != '0' unless zero
-    char d[800];
+template <int N = 800>
+struct DecT {          // value = digits * 10^x, digits[0] != '0' unless zero
+    char d[N];
     int n = 0;
     int x = 0;
 };
 
-struct Big {           // little-endian base 2^32
-    unsigned w[96];
+using Dec = DecT<800>;
+// long double (x86 80-bit): up to ~11500 significant digits, 5^16445 * 2^64
+using DecL = DecT<12000>;
+
+template <int NW = 96>
+struct BigT {          // little-endian base 2^32
+    unsigned w[NW];
     int n = 1;
-    Big() { for (int i = 0; i < 96; ++i) w[i] = 0; }
+    BigT() { w[0] = w[1] = 0; }  // limbs at and above n are written before they are read
     void mul(unsigned k) {
         unsigned long long c = 0;
         for (int i = 0; i < n; ++i) { c += (unsigned long long)w[i] * k; w[i] = (unsigned)c; c >>= 32; }
-        if (c && n < 96) w[n++] = (unsigned)c;
+        if (c && n < NW) w[n++] = (unsigned)c;
     }
     unsigned divmod(unsigned k) {   // this /= k, returns remainder
         unsigned long long r = 0;
@@ -42,8 +48,9 @@ struct Big {           // little-endian base 2^32
 };
 
 // Exact decimal of m * 2^e (m < 2^62).
-inline void exact(unsigned long long m, int e, Dec& out) {
-    Big b;
+template <int N>
+inline void exact(unsigned long long m, int e, DecT<N>& out) {
+    BigT<(N > 800 ? 1200 : 96)> b;
     b.w[0] = (unsigned)m; b.w[1] = (unsigned)(m >> 32); b.n = b.w[1] ? 2 : 1;
     out.x = 0;
     // Bounded trip counts for the translator's unwinder: multiply by 2^31
@@ -52,12 +59,12 @@ inline void exact(unsigned long long m, int e, Dec& out) {
     // largest double (e = 971) 32 + 30 instead of 971.
     if (e >= 0) { int r = e; for (; r >= 31; r -= 31) b.mul(1u << 31); if (r) b.mul(1u << r); }
     else { int r = -e; for (; r >= 13; r -= 13) b.mul(1220703125u); unsigned p5 = 1; for (; r > 0; --r) p5 *= 5; if (p5 > 1) b.mul(p5); out.x = e; }
-    char tmp[800];
+    char tmp[N];
     int k = 0;
     if (b.zero()) tmp[k++] = '0';
-    while (!b.zero() && k < 790) {
+    while (!b.zero() && k < N - 10) {
         unsigned r = b.divmod(1000000000u);
-        for (int j = 0; j < 9 && k < 799; ++j) { tmp[k++] = char('0' + r % 10); r /= 10; }
+        for (int j = 0; j < 9 && k < N - 1; ++j) { tmp[k++] = char('0' + r % 10); r /= 10; }
     }
     while (k > 1 && tmp[k - 1] == '0') --k;
     out.n = k;
@@ -72,7 +79,8 @@ inline void exact(unsigned long long m, int e, Dec& out) {
 // value rounds to zero (keep < 0 or a tie to even zero).
 // mode: 0 nearest-even, 1 toward -inf, 2 toward +inf, 3 toward zero,
 // 4 nearest-away (the C23 FE_DEC_* order); neg is the sign of the value.
-inline void round_to(Dec& v, int keep, int mode = 0, bool neg = false) {
+template <int N>
+inline void round_to(DecT<N>& v, int keep, int mode = 0, bool neg = false) {
     if (keep >= v.n) return;
     int sci = v.n - 1 + v.x;
     bool any = false;
@@ -113,7 +121,8 @@ inline void round_to(Dec& v, int keep, int mode = 0, bool neg = false) {
 }
 
 // -1/0/1 comparing two non-negative exact decimals.
-inline int cmp(const Dec& a, const Dec& b) {
+template <int N>
+inline int cmp(const DecT<N>& a, const DecT<N>& b) {
     bool az = a.n == 1 && a.d[0] == '0', bz = b.n == 1 && b.d[0] == '0';
     if (az || bz) return az && bz ? 0 : az ? -1 : 1;
     int ea = a.n - 1 + a.x, eb = b.n - 1 + b.x;
@@ -137,6 +146,17 @@ inline Bits decompose(double v) {
     else { r.m |= 1ull << 52; r.e = be - 1075; }
     return r;
 }
+// x86 80-bit long double: explicit integer bit, 15-bit exponent
+inline Bits decompose(long double v) {
+    struct X { unsigned long long m; unsigned short se; unsigned short pad[3]; };
+    static_assert(sizeof(long double) == sizeof(X), "x86 80-bit long double expected");
+    X x = __builtin_bit_cast(X, v);
+    Bits r{(x.se >> 15) != 0, 0, x.m, 0, 64};
+    int be = x.se & 0x7fff;
+    if (be == 0x7fff) { r.kind = (x.m << 1) ? 2 : 1; return r; }
+    r.e = (be == 0 ? 1 : be) - 16383 - 63;
+    return r;
+}
 inline Bits decompose(float v) {
     unsigned u = __builtin_bit_cast(unsigned, v);
     Bits r{(u >> 31) != 0, 0, u & ((1u << 23) - 1), 0, 24};
@@ -148,18 +168,19 @@ inline Bits decompose(float v) {
 }
 
 // Shortest digits that read back to the same binary value.
-inline void shortest(const Bits& b, Dec& out) {
+template <int N>
+inline void shortest(const Bits& b, DecT<N>& out) {
     exact(b.m, b.e, out);
     if (b.m == 0) return;
-    Dec lo, hi;
+    DecT<N> lo, hi;
     // lower neighbour gap halves at a power of two (not for the smallest normal's subnormal side)
-    bool pow2 = b.m == (1ull << (b.bits - 1)) && b.e > (b.bits == 53 ? -1074 : -149);
+    bool pow2 = b.m == (1ull << (b.bits - 1)) && b.e > (b.bits == 64 ? -16445 : b.bits == 53 ? -1074 : -149);
     if (pow2) exact(4 * b.m - 1, b.e - 2, lo); else exact(2 * b.m - 1, b.e - 1, lo);
     exact(2 * b.m + 1, b.e - 1, hi);
     const bool closed = (b.m & 1) == 0;
-    Dec full = out;
+    DecT<N> full = out;
     for (int p = 1; p <= full.n; ++p) {
-        Dec c = full;
+        DecT<N> c = full;
         round_to(c, p);
         int a = cmp(c, lo), z = cmp(c, hi);
         if ((a > 0 || (closed && a == 0)) && (z < 0 || (closed && z == 0))) { out = c; return; }
@@ -184,7 +205,8 @@ inline void put_exp(Out& o, int x, bool upper, char ch) {
     while (k) o.put(t[--k]);
 }
 // digits of v in fixed notation with exactly `frac` fraction digits (frac < 0: as many as v has)
-inline void put_fixed(Out& o, const Dec& v, int frac, bool alt) {
+template <int N>
+inline void put_fixed(Out& o, const DecT<N>& v, int frac, bool alt) {
     int ip = v.n + v.x;  // number of integer digits (may be <= 0)
     if (ip <= 0) o.put('0');
     else for (int i = 0; i < ip; ++i) o.put(i < v.n ? v.d[i] : '0');
@@ -193,7 +215,8 @@ inline void put_fixed(Out& o, const Dec& v, int frac, bool alt) {
     if (f > 0 || alt) o.put('.');
     for (int i = 0; i < f; ++i) { int idx = ip + i; o.put(idx >= 0 && idx < v.n ? v.d[idx] : '0'); }
 }
-inline void put_sci(Out& o, const Dec& v, int frac, bool alt, bool upper) {
+template <int N>
+inline void put_sci(Out& o, const DecT<N>& v, int frac, bool alt, bool upper) {
     bool z = v.n == 1 && v.d[0] == '0';
     o.put(v.d[0]);
     int f = frac < 0 ? v.n - 1 : frac;
@@ -240,7 +263,7 @@ inline int to_chars(char* buf, int cap, F val, char type, int prec, unsigned fla
         put_exp(o, ex, up, 'p');
         return o.len;
     }
-    Dec v;
+    DecT<(sizeof(F) > 8 ? 12000 : 800)> v;
     if (type == 0 && prec < 0) {
         shortest(b, v);
         bool z = v.n == 1 && v.d[0] == '0';
@@ -272,13 +295,13 @@ inline int to_chars(char* buf, int cap, F val, char type, int prec, unsigned fla
     }
     // 'g' (C17 7.21.6.1p8)
     int P = prec == 0 ? 1 : prec;
-    Dec r = v;
+    auto r = v;
     if (!z) round_to(r, P);
     int X = z ? 0 : r.n - 1 + r.x;
     char t[1100];
     Out q{t, 1100};
     if (P > X && X >= -4) {
-        Dec f = v;
+        auto f = v;
         if (!z) round_to(f, f.n + f.x + (P - 1 - X));
         put_fixed(q, f, P - 1 - X, alt);
     } else put_sci(q, r, P - 1, alt, up);
