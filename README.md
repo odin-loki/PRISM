@@ -25,7 +25,7 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 ```
 # C++ engine (primary)
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build
 ./build/prism path/to/code --no-llm --jobs 8
 ./build/prism path/to/code --resume
@@ -33,7 +33,7 @@ cmake --build build
 
 # Native MSVC (cl), from a VS/x64 Native Tools prompt — build under
 # C:\Temp\prism-build-* (not OneDrive); see docs/MSVC_PORT.md
-cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build
 ```
 
@@ -136,15 +136,17 @@ is skipped quietly. Reports are emitted at the end (`report.json`, `report.md`,
 | Corpora & conformance | `testdata/` — see [testdata/README.md](testdata/README.md) |
 
 `prism-qa` (`src/tools/qa/`) runs conformance scoring, docs drift checks, and
-PIR-vs-BMC retirement gates described in [docs/ENGINEERING_BACKLOG.md](docs/ENGINEERING_BACKLOG.md).
+the release gate (0 wrong proofs) described in [docs/ENGINEERING_BACKLOG.md](docs/ENGINEERING_BACKLOG.md).
 
 ## Stack
 
-GUI is Qt. Inference is llama.cpp (Ollama fallback). SIMD is vendored xsimd.
-GPU mutation is CUDA. SMT is vendored Z3. Regex is vendored PCRE2.
+GUI is Qt. The platform layer (log, exec, pool, settings, OS) and the only
+language-model engine are FORGE (odin-loki/FORGE, mandatory, tracks `main`;
+models are FORGE `.fpk` files). GPU mutation is CUDA. SMT is vendored Z3.
+Regex is vendored PCRE2. clang/LLVM is pinned in `third_party/llvm/PIN.toml`.
 
-`third_party/` holds only the six linked libraries (xsimd, Z3, PCRE2,
-nlohmann/json, doctest, llama.cpp), about 140 MB of source. They are unmodified
+`third_party/` holds only the four linked libraries (Z3, PCRE2,
+nlohmann/json, doctest), about 50 MB of source. They are unmodified
 upstream copies, each pinned by commit and SHA-256 in
 [`third_party/MANIFEST.toml`](third_party/MANIFEST.toml). External tools are
 not in the repo: `build/prism-deps tool NAME` fetches the pinned

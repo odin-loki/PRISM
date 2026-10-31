@@ -17,20 +17,24 @@ see [MSVC_PORT.md](MSVC_PORT.md). WSL also works).
 
 ### Build
 
-Requirements: CMake 3.20+, Ninja, clang 18 (or GCC 13), Python 3.11 for the
-tooling. Z3, PCRE2, xsimd and nlohmann/json are vendored under `third_party/`
-and built with PRISM; nothing is downloaded at build time.
+Requirements: CMake 3.20+, Ninja, clang (the pinned release is
+`third_party/llvm/PIN.toml`; GCC 13 also builds), Python 3.11 for the tooling.
+Z3, PCRE2, nlohmann/json and doctest are vendored under `third_party/` and
+built with PRISM. FORGE is the one dependency that is not vendored: pass
+`-DFORGE_SOURCE_DIR=PATH`, or leave it empty and CMake fetches odin-loki/FORGE
+`main`.
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build            # the first build compiles Z3 and is slow
 ./build/prism_tests            # unit tests
 ./build/prism --list-stages
 ```
 
-Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_LLAMA=ON`
-links llama.cpp for the LLM stage, `-DPRISM_CUDA=ON` builds the GPU mutator.
+Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_CUDA=ON`
+builds the GPU mutator. FORGE is always linked (`-DFORGE_SOURCE_DIR=PATH` uses a
+local checkout; empty fetches odin-loki/FORGE `main`); it is also the LLM engine.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
 to make rebuilds cheap.
 
@@ -60,7 +64,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | fuzzers | AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`) |
 | other languages | ruff or pyflakes, mypy, node, tsc, eslint, bash, shellcheck, gofmt, cargo clippy, ruby, php, perl, luac, yamllint |
 | sandbox | bubblewrap (`bwrap`) for `--allow-exec` |
-| LLM | a GGUF model (`PRISM_GGUF`, `PRISM_MODEL`) or a llama.cpp server (`PRISM_LLAMA_SERVER`) |
+| LLM | a FORGE `.fpk` model (`PRISM_FPK`, default `~/.prism/models/qwen3.5-9b.fpk`; `PRISM_DEVICE` picks cpu/cuda/vulkan) |
 
 ## 2. Run
 
@@ -341,7 +345,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ninja-build clang
           git clone --depth 1 <your PRISM mirror> prism-src
           cmake -S prism-src -B prism-build -G Ninja -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF \
+            -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF \
             -DPRISM_QT=OFF -DPRISM_Z3=ON
           cmake --build prism-build --target prism
       - name: Check
