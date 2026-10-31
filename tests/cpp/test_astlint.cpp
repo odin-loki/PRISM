@@ -385,6 +385,19 @@ std::set<std::pair<int, std::string>> expected_marks(const std::string& text) {
     return out;
 }
 
+// The UCRT has no <unistd.h>, <strings.h> or <pthread.h>; on Windows copy the
+// declaration-only stand-ins from testdata/win-posix next to the fixtures (the
+// AST front end puts the fixture's directory on the include path). Elsewhere
+// the fixtures parse against the real system headers.
+void put_win_posix([[maybe_unused]] const fs::path& dir) {
+#ifdef _WIN32
+    const auto shims = fs::path(PRISM_SOURCE_DIR) / "testdata" / "win-posix";
+    for (const auto& e : fs::directory_iterator(shims))
+        if (e.path().extension() == ".h")
+            fs::copy_file(e.path(), dir / e.path().filename(), fs::copy_options::overwrite_existing);
+#endif
+}
+
 // Lint `name` (plus `extra` files: path, text, path, text...) on every front
 // end and compare the AST rows of the file named `report` (default `name`)
 // with its `// expect:` marks.
@@ -398,6 +411,7 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
     }
     Tree t;
     std::vector<fs::path> files{t.put(name, text)};
+    put_win_posix(files.front().parent_path());
     std::string marked = text;
     for (std::size_t i = 0; i + 1 < extra.size(); i += 2) {
         files.push_back(t.put(extra[i], extra[i + 1]));
@@ -779,7 +793,7 @@ void ptr_chain_null_plant(struct ast_link *a, int v) {
 size_t str_null_arg_plant(char *s) {
     return strlen(s); // expect: STR-NULL-ARG
 }
-void *alloca(unsigned long);
+void *alloca(__SIZE_TYPE__);
 void alloca_bad(int n) {
     char *p = alloca(n); // expect: MEM-ALLOCA
     (void)p;
@@ -804,7 +818,7 @@ void snprintf_ok(void) {
     char b[4];
     snprintf(b, sizeof b, "x");
 }
-typedef int wchar_t;
+#include <wchar.h> /* the platform's wchar_t: int on glibc, unsigned short on UCRT */
 wchar_t *wcscpy(wchar_t *dst, const wchar_t *src);
 void wcs_bad(void) {
     wchar_t b[4];
@@ -817,8 +831,8 @@ void crypto_key_bad(char *key) {
         key[i] = rand(); // expect: CRYPTO-MISUSE, INT-TRUNC
 }
 void srand(unsigned);
-typedef long time_t;
-time_t time(time_t *);
+#include <time.h>
+/* time() and the platform's own time_t (long on glibc, long long on UCRT) */
 void srand_bad(void) {
     srand((unsigned)time(0)); // expect: CRYPTO-SRAND
 }
@@ -1043,7 +1057,7 @@ void atom_ok(void) {
 
 // Kernel-style malloc(size, flags) cannot be declared next to <stdlib.h>, so
 // the M_NOWAIT plants are their own unit without libc headers.
-const char* kNowaitC = R"(typedef unsigned long size_t;
+const char* kNowaitC = R"(typedef __SIZE_TYPE__ size_t;
 #define M_NOWAIT 0x02
 #define M_NOWAIT 0x02
 void *malloc(size_t, int);
@@ -1178,7 +1192,7 @@ int other_ok(long n) {
 )";
 
 // MEM-CAPACITY-FIRST: cap doubled before realloc; failure arm keeps it.
-const char* kCapacityC = R"(typedef unsigned long size_t;
+const char* kCapacityC = R"(typedef __SIZE_TYPE__ size_t;
 void *realloc(void *, size_t);
 void free(void *);
 #define NULL ((void *)0)
@@ -1229,7 +1243,14 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         MESSAGE("clang not installed: testdata string/memory astlint skipped");
         return;
     }
+#ifdef _WIN32
+    Tree planted; // a copy of testdata/planted plus the POSIX stand-ins
+    fs::copy(fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted", planted.dir, fs::copy_options::recursive);
+    put_win_posix(planted.dir);
+    const auto root = planted.dir;
+#else
     const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+#endif
     prism::Config cfg;
     cfg.jobs = 1;
     cfg.root = root;

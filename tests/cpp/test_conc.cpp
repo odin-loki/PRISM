@@ -24,15 +24,6 @@ bool have_frontend() {
     return prism::pir::frontend_usable(cfg) && prism::pir::z3_available();
 }
 
-bool conc_c11_atomics_on_host() {
-#ifndef _WIN32
-    return true;
-#else
-    // The LP64 libc shim supplies pthread names only; atomics are compile stubs, not SC/relaxed models.
-    return false;
-#endif
-}
-
 prism::conc::Result run_main(const char* file, prism::conc::Options opt = {}) {
     prism::Config cfg;
     cfg.timeout = 60;
@@ -104,10 +95,6 @@ TEST_CASE("conc: opposite lock order deadlocks") {
 
 TEST_CASE("conc: SC atomic_fetch_add is race free and BOUNDED") {
     if (!have_frontend()) return;
-    if (!conc_c11_atomics_on_host()) {
-        MESSAGE("NOTRUN: Windows LP64 libc shim does not model C11 atomics for the conc stage");
-        return;
-    }
     auto r = run_main("atomic_counter.c");
     CHECK(r.status == prism::laws::BOUNDED);
 }
