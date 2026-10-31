@@ -1526,6 +1526,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 }  // namespace
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
+    // the child budgets project this process's growth from its peak in pir,
+    // not from earlier stages (bmc) that have released their memory
+    membudget::reset_peak();
     // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task here.
     if (is_ilp32(cfg.data_model)) {
         Finding f;
