@@ -214,6 +214,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
                     cfg.skip.insert(cfg.skip.end(), names.begin(), names.end());
                 }
             }
+        } else if (a == "--store-buffer") {
+            auto v = in.take_int(1);
+            if ((ok = v.has_value())) cfg.conc_store_buffer = *v;
         } else if (a == "--memory-model") {
             auto v = in.take();
             ok = v.has_value() && (*v == "sc" || *v == "tso");

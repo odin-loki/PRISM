@@ -351,14 +351,17 @@ through the stage, with defaults `K = 2` and unwind 4:
 
 ## 5. Weak memory (x86-TSO)
 
-`--memory-model tso` (Config::conc_tso, conc::Options::tso) checks the scalar
-shared globals under x86-TSO instead of sequential consistency. Each thread
-has a one-entry FIFO store buffer: a plain store is buffered (an older
-buffered store commits first), the thread's own loads forward from it, any
-other visible operation of that thread (atomics, locks, fences, create, join)
-drains it, a join drains the joined thread's buffer, and before every visible
-step every buffer may drain nondeterministically. Depth 1 under-approximates
-TSO (it finds the store-buffering outcomes, e.g. tests/conc/tso_sb.c).
-Not covered: the bounded memory (arrays, structs, heap) stays SC, and C11
-release/acquire/relaxed is not modelled by views; weaker orders are still
-encoded as seq_cst with clean verdicts withheld.
+`--memory-model tso` (Config::conc_tso, conc::Options::tso) checks x86-TSO
+instead of sequential consistency, for scalar globals and the bounded memory
+(arrays, structs, heap, escaping locals). Each thread has a FIFO store buffer
+of `--store-buffer k` entries (default 2; Options::tso_buffer). A plain store
+is appended (when the buffer is full the oldest entry commits first), the
+thread's own plain loads forward from the newest matching entry, any other
+visible operation of the thread (atomics, locks, fences, create, join,
+alloc/free) drains its buffer, a join drains the joined thread's buffer, and
+before every visible step each buffer may commit its oldest entry
+nondeterministically. A bounded k under-approximates TSO; litmus tests such
+as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding matches on
+the start address only (mixed-width overlap is not forwarded).
+C11 release/acquire/relaxed atomics are not modelled by views; weaker orders
+are still encoded as seq_cst with clean verdicts withheld.

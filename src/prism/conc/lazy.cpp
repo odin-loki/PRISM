@@ -521,7 +521,10 @@ struct Enc {
     std::vector<HeapSlot> heap;
     std::vector<z3::expr> targ;
     // TSO store buffers (Options::tso): per thread pending / variable / value
-    std::vector<z3::expr> sb_pend, sb_var, sb_val;
+    // per thread: k entries (key, value) oldest first and a count; key =
+    // byte address for the bounded memory, 2^63 | var for a scalar global
+    std::vector<std::vector<z3::expr>> sb_key, sb_val;
+    std::vector<z3::expr> sb_cnt;
     std::map<std::pair<int, int>, int> create_slot;  // (thread, node) of a looped Create -> created thread
     // mutexes / condition variables addressed through the bounded memory
     z3::expr OwnA, CgenA;
@@ -810,28 +813,71 @@ struct Enc {
     }
 
     // commit thread u's buffered store when `when`
-    void sb_flush(std::size_t u, const z3::expr& when) {
-        auto go = when && sb_pend[u];
+    z3::expr sb_skey(std::size_t v) { return c.bv_val((uint64_t{1} << 63) | v, 64); }
+
+    // commit thread u's oldest buffered store when `when`
+    void sb_commit(std::size_t u, const z3::expr& when) {
+        auto& K = sb_key[u];
+        auto& V = sb_val[u];
+        auto go = when && z3::ugt(sb_cnt[u], bv(0, 8));
         for (std::size_t v = 0; v < p.vars.size(); ++v) {
             unsigned w = p.vars[v].width;
-            auto val = w < 64 ? sb_val[u].extract(w - 1, 0) : sb_val[u];
-            G[v] = z3::ite(go && sb_var[u] == bv(v, 16), val, G[v]);
+            G[v] = z3::ite(go && K[0] == sb_skey(v), w < 64 ? V[0].extract(w - 1, 0) : V[0], G[v]);
         }
-        sb_pend[u] = z3::ite(when, c.bool_val(false), sb_pend[u]);
+        M = z3::ite(go && K[0].extract(63, 63) == c.bv_val(0, 1), z3::store(M, K[0], V[0]), M);
+        for (std::size_t i = 0; i + 1 < K.size(); ++i) {
+            K[i] = z3::ite(go, K[i + 1], K[i]);
+            V[i] = z3::ite(go, V[i + 1], V[i]);
+        }
+        sb_cnt[u] = z3::ite(go, sb_cnt[u] - bv(1, 8), sb_cnt[u]);
+    }
+    void sb_drain(std::size_t u, const z3::expr& when) {
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i) sb_commit(u, when);
+    }
+    void sb_push(std::size_t u, const z3::expr& e, const z3::expr& key, const z3::expr& val) {
+        auto k = static_cast<uint64_t>(sb_key[u].size());
+        sb_commit(u, e && sb_cnt[u] == bv(k, 8));  // full: the oldest commits first
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i) {
+            auto here = e && sb_cnt[u] == bv(i, 8);
+            sb_key[u][i] = z3::ite(here, key, sb_key[u][i]);
+            sb_val[u][i] = z3::ite(here, val, sb_val[u][i]);
+        }
+        sb_cnt[u] = z3::ite(e, sb_cnt[u] + bv(1, 8), sb_cnt[u]);
+    }
+    // the newest buffered value for key, else `mem`
+    z3::expr sb_forward(std::size_t u, const z3::expr& key, const z3::expr& mem) {
+        z3::expr r = mem;
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i)
+            r = z3::ite(z3::ult(bv(i, 8), sb_cnt[u]) && sb_key[u][i] == key, sb_val[u][i], r);
+        return r;
     }
 
     void visible(int r, int t, int node, const Stmt& s, const Mark& mk, const z3::expr& e) {
         const auto& o = p.ops[static_cast<std::size_t>(mk.op)];
         auto tid = bv(static_cast<uint64_t>(t + 1), 8);
-        bool plain_scalar = (o.kind == VisOp::Load || o.kind == VisOp::Store) && !o.mem && !o.atomic;
+        bool plain = (o.kind == VisOp::Load || o.kind == VisOp::Store) && !o.atomic;
+        bool plain_scalar = plain && !o.mem;
         if (opt.tso && !mk.tail) {
-            for (std::size_t u = 0; u < sb_pend.size(); ++u) sb_flush(u, e && c.bool_const(("sbf!" + std::to_string(fresh++)).c_str()));
-            if (!plain_scalar) sb_flush(static_cast<std::size_t>(t), e);
+            for (std::size_t u = 0; u < sb_cnt.size(); ++u)
+                sb_commit(u, e && c.bool_const(("sbf!" + std::to_string(fresh++)).c_str()));
+            if (!plain) sb_drain(static_cast<std::size_t>(t), e);
             if (o.kind == VisOp::Join) {  // a finished thread has drained its buffer
                 auto h = lookup(t, node, s.args.at(0));
                 unsigned hw = h.get_sort().bv_size();
-                for (std::size_t u = 1; u < sb_pend.size(); ++u) sb_flush(u, e && h == bv(u, hw));
+                for (std::size_t u = 1; u < sb_cnt.size(); ++u) sb_drain(u, e && h == bv(u, hw));
             }
+        }
+        if (opt.tso && o.mem && plain && mk.tail) {  // bounded memory through the store buffer
+            const auto ti = static_cast<std::size_t>(t);
+            if (o.kind == VisOp::Store) {
+                auto nv = lookup(t, node, s.args.at(0));
+                sb_push(ti, e, maddr, o.width < 64 ? z3::zext(nv, 64 - o.width) : nv);
+                define(t, node, s.dst, e, nv);
+            } else {
+                auto word = sb_forward(ti, maddr, z3::select(M, maddr));
+                define(t, node, s.dst, e, o.width < 64 ? word.extract(o.width - 1, 0) : word);
+            }
+            return;
         }
         if (opt.tso && plain_scalar) {
             const auto vi = static_cast<std::size_t>(o.var);
@@ -842,14 +888,11 @@ struct Enc {
             if (o.kind == VisOp::Store) {
                 auto nv = lookup(t, node, s.args.at(0));
                 event(e, r, t, mk.op, nv, o.width);
-                sb_flush(ti, e);  // one entry: the older store commits first
-                sb_pend[ti] = z3::ite(e, c.bool_val(true), sb_pend[ti]);
-                sb_var[ti] = z3::ite(e, bv(vi, 16), sb_var[ti]);
-                sb_val[ti] = z3::ite(e, w < 64 ? z3::zext(nv, 64 - w) : nv, sb_val[ti]);
+                sb_push(ti, e, sb_skey(vi), w < 64 ? z3::zext(nv, 64 - w) : nv);
                 define(t, node, s.dst, e, nv);
             } else {
-                auto fwd = sb_pend[ti] && sb_var[ti] == bv(vi, 16);
-                auto val = z3::ite(fwd, w < 64 ? sb_val[ti].extract(w - 1, 0) : sb_val[ti], gv);
+                auto fw = sb_forward(ti, sb_skey(vi), w < 64 ? z3::zext(gv, 64 - w) : gv);
+                auto val = w < 64 ? fw.extract(w - 1, 0) : fw;
                 event(e, r, t, mk.op, val, o.width);
                 define(t, node, s.dst, e, val);
             }
@@ -1313,9 +1356,13 @@ struct Enc {
         ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
         for (std::size_t t = 0; t < N; ++t) {
             targ.push_back(c.bv_val(0, 64));
-            sb_pend.push_back(c.bool_val(false));
-            sb_var.push_back(c.bv_val(0, 16));
-            sb_val.push_back(c.bv_val(0, 64));
+            sb_cnt.push_back(c.bv_val(0, 8));
+            sb_key.emplace_back();
+            sb_val.emplace_back();
+            for (int i = 0; i < std::max(1, opt.tso_buffer); ++i) {
+                sb_key.back().push_back(c.bv_val(0, 64));
+                sb_val.back().push_back(c.bv_val(0, 64));
+            }
             tkd.push_back(c.bv_val(0, 16));
             pc.push_back(c.bv_val(0, 16));
             active.push_back(c.bool_val(t == 0));
@@ -1412,7 +1459,7 @@ Result check(const Program& prog, const Options& opt) {
     res.extra["rounds"] = std::to_string(opt.rounds);
     res.extra["unwind"] = std::to_string(opt.unwind);
     res.extra["threads"] = std::to_string(N);
-    res.extra["method"] = opt.tso ? "lazy sequentialisation (Lazy-CSeq), x86-TSO (1-entry store buffers, scalar globals)"
+    res.extra["method"] = opt.tso ? "lazy sequentialisation (Lazy-CSeq), x86-TSO (" + std::to_string(opt.tso_buffer) + "-entry store buffers)"
                                   : "lazy sequentialisation (Lazy-CSeq), sequentially consistent";
     res.extra["context_switch_bound"] = std::to_string(opt.rounds * N);  // K*N slots + main's final slot
     if (auto why = escaping_throw(prog); !why.empty()) {
