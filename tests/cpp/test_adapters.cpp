@@ -1838,7 +1838,7 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     CHECK(has(out[0].message, noexec.string()));
     CHECK(out[0].message.find("is not cppcheck") == std::string::npos);
 #ifdef _WIN32
-    CHECK(has(out[0].message, "CreateProcess failed"));
+    CHECK(has(out[0].message, "CreateProcess"));  // FORGE spawn: "CreateProcess <exe>: <system message>"
 #else
     CHECK(has(out[0].message, "cannot execute"));
 #endif

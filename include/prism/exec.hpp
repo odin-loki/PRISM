@@ -87,7 +87,8 @@ struct SessionOptions {
 };
 struct SessionOut {
     std::string out, err;
-    int rc = -1;  // exit status, -signal when killed by a signal
+    int rc = -1;  // exit status, -signal when killed by a signal, 127 when it could not start,
+                  // -1 when a timeout ended it without a signal (Windows)
     bool timed_out = false;
     bool failed = false;
     double seconds = 0;

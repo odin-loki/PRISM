@@ -145,7 +145,10 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     SessionOut o;
     o.out = std::move(r.out);
     o.err = std::move(r.err);
-    o.rc = r.failed ? -1 : r.rc();
+    // exec.hpp: 127 when it could not start (as a POSIX shell reports it, so a
+    // missing program is 127 on every host), -1 for a timeout that ended the
+    // tree without a signal (a Windows Job Object kill), else Result::rc().
+    o.rc = r.failed ? 127 : (r.timed_out && r.term_signal == 0) ? -1 : r.rc();
     o.timed_out = r.timed_out;
     o.failed = r.failed;
     o.seconds = static_cast<double>(r.wall_ms) / 1000.0;

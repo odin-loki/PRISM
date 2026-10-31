@@ -9,6 +9,7 @@
 #include "prism/cparse.hpp"
 #include "prism/regex.hpp"
 #include "prism/config.hpp"
+#include <forge/os/settings.hpp>
 #include "prism/stages.hpp"
 #include "prism/journal.hpp"
 #include "prism/pipeline.hpp"
@@ -97,6 +98,7 @@ static void tm_setenv(const char* name, const char* value) {
 #else
     setenv(name, value, 1);
 #endif
+    forge::os::settings::reload();  // PRISM_* reads are cached until reload
 }
 static void tm_unsetenv(const char* name) {
 #ifdef _WIN32
@@ -104,6 +106,7 @@ static void tm_unsetenv(const char* name) {
 #else
     unsetenv(name);
 #endif
+    forge::os::settings::reload();
 }
 
 #ifdef _WIN32

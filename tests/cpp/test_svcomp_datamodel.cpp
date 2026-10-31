@@ -11,21 +11,41 @@
 #  undef ERROR
 #endif
 
+#include "prism/log.hpp"
 #include "prism/svcomp.hpp"
 
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
+
+// svcomp_main reports through prism::log (include/prism/log.hpp), not
+// std::cerr, so the capture swaps the log sink as well as the streams.
+std::string g_log;
+void capture_sink(prism::log::Level lv, std::string_view component, std::string_view message) {
+    if (lv != prism::log::Level::Plain) {
+        g_log += "prism ";
+        g_log += component;
+        g_log += ": ";
+    }
+    g_log += message;
+    g_log += '\n';
+}
 
 struct Capture {
     std::ostringstream out, err;
     std::streambuf* prev_out = nullptr;
     std::streambuf* prev_err = nullptr;
-    Capture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {}
+    prism::log::Sink prev_sink = nullptr;
+    Capture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {
+        g_log.clear();
+        prev_sink = prism::log::set_sink(&capture_sink);
+    }
     ~Capture() {
+        prism::log::set_sink(prev_sink);
         std::cout.rdbuf(prev_out);
         std::cerr.rdbuf(prev_err);
     }
@@ -46,7 +66,7 @@ Call invoke(std::vector<std::string> args) {
     Call c;
     c.rc = prism::svcomp::svcomp_main(static_cast<int>(argv.size()), argv.empty() ? nullptr : argv.data());
     c.out = cap.out.str();
-    c.err = cap.err.str();
+    c.err = cap.err.str() + g_log;
     return c;
 }
 

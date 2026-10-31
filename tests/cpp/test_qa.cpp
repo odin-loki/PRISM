@@ -21,6 +21,7 @@
 
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
+#include "prism/log.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "prism/shipdocs.hpp"
@@ -38,6 +39,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -184,12 +186,36 @@ int pvb_cell(const prism::qa::PvbResult& r, const char* row, const char* col) {
     return it == r.matrix.end() ? 0 : it->second;
 }
 
+// prism-qa reports through prism::log, not std::cerr: the capture swaps the
+// log sink too and formats lines the way prism-qa prints them.
+std::ostringstream* g_qa_log = nullptr;
+void qa_capture_sink(prism::log::Level lv, std::string_view component, std::string_view message) {
+    if (!g_qa_log) return;
+    std::ostringstream& o = *g_qa_log;
+    if (lv == prism::log::Level::Plain) {
+        o << message;
+        return;
+    }
+    o << "prism-qa";
+    if (!component.empty()) o << ' ' << component;
+    o << ": ";
+    if (lv == prism::log::Level::Error) o << "error: ";
+    if (lv == prism::log::Level::Warn) o << "warning: ";
+    o << message << '\n';
+}
+
 struct StreamCapture {
     std::ostringstream out, err;
     std::streambuf* prev_out = nullptr;
     std::streambuf* prev_err = nullptr;
-    StreamCapture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {}
+    prism::log::Sink prev_sink = nullptr;
+    StreamCapture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {
+        g_qa_log = &err;
+        prev_sink = prism::log::set_sink(&qa_capture_sink);
+    }
     ~StreamCapture() {
+        prism::log::set_sink(prev_sink);
+        g_qa_log = nullptr;
         std::cout.rdbuf(prev_out);
         std::cerr.rdbuf(prev_err);
     }
