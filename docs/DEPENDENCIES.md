@@ -7,7 +7,7 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 | FORGE (odin-loki/FORGE) | linked, **mandatory** | **unpinned**, tracks `main` | `FORGE_SOURCE_DIR` or FetchContent `main` (cmake/forge.cmake) | no (by design) |
 | Z3 4.13.4 | linked | commit + archive/tree SHA-256 | third_party/MANIFEST.toml | yes, third_party/z3 |
 | PCRE2 | linked | commit + SHA-256 | MANIFEST.toml | yes |
-| xsimd | linked | commit + SHA-256 | MANIFEST.toml | yes |
+| ~~xsimd~~ | **retired** | removed | hash/havoc lanes were load/store only; plain C++ | deleted |
 | nlohmann/json | linked | commit + SHA-256 | MANIFEST.toml | yes |
 | doctest 2.4.11 | linked (tests) | commit + SHA-256 | MANIFEST.toml | yes |
 | ~~llama.cpp b6875~~ | **retired** | removed | replaced by FORGE mind | deleted |
