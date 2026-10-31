@@ -860,7 +860,8 @@ TEST_CASE("optional tools: every missing tool is NOTRUN with its install hint") 
             CHECK(f.status == laws::NOTRUN);
             never_clean_or_proof(f);
             auto install = xget(f, "install");
-            CHECK(has(install, "third_party/MANIFEST.toml"));
+            // libFuzzer comes with the pinned LLVM (third_party/llvm/PIN.toml), the rest with prism-deps.
+            CHECK(has(install, f.stage == "libfuzzer" ? "third_party/llvm/PIN.toml" : "third_party/MANIFEST.toml"));
             if (f.stage != "clang-tidy" && f.stage != "libfuzzer")
                 CHECK(has(install, "prism-deps tool"));
             if (f.stage == "libfuzzer") {
@@ -1610,7 +1611,7 @@ TEST_CASE("libfuzzer probe: missing clang or no -fsanitize=fuzzer is NOTRUN; sup
     auto lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
     CHECK(lf.status == laws::NOTRUN);
     never_clean_or_proof(lf);
-    CHECK(has(xget(lf, "install"), "third_party/MANIFEST.toml"));
+    CHECK(has(xget(lf, "install"), "third_party/llvm/PIN.toml"));
 
     fake(nt.bin, "clang", "echo \"error: unsupported argument '-fsanitize=fuzzer'\" >&2; exit 1");
     lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");

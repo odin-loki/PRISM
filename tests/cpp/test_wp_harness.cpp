@@ -357,12 +357,13 @@ TEST_CASE("wp: the false twin of the unbounded loop is not a proof") {
 
 // ---- harness
 
-TEST_CASE("harness: the stage runs after bmc, pir and conc") {
-    auto b = stage_index("bmc");
+TEST_CASE("harness: the stage runs after wp, pir and conc") {
+    auto b = stage_index("wp");
     REQUIRE(b >= 0);
     CHECK(stage_index("pir") == b + 1);
     CHECK(stage_index("conc") == b + 2);
     CHECK(stage_index("harness") == b + 3);
+    CHECK(stage_index("bmc") < 0);
 }
 
 TEST_CASE("harness: materialize needs an honest requires on a POINTER function") {
@@ -398,7 +399,7 @@ TEST_CASE("harness: POINTER without requires is NEEDS-HARNESS, not ERROR") {
     CHECK(has(r.message, "no honest requires"));
 }
 
-TEST_CASE("harness: SCALAR functions are left to bmc") {
+TEST_CASE("harness: SCALAR functions are left to pir") {
     CHECK(prism::run_harness({scalar_inc()}, 8).empty());
     auto f = fn_in("null_branch.c", "null_branch");
     auto recs = prism::run_harness({scalar_inc(), f}, 8);

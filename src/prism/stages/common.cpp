@@ -337,7 +337,16 @@ Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::strin
     std::string unit = "#include <assert.h>\n" + prelude + "#line 1\n";
     if (ctx)
         for (int i = 0; i < start - 1; ++i) unit += lines[static_cast<std::size_t>(i)] + "\n";
-    unit += "#line " + std::to_string(std::max(1, start)) + "\n" + fn.signature + " {\n" + fn.body + "\n}\n";
+    // A signature with no named parameters ("int f(...)", or none at all) but
+    // known params is rebuilt from them, so the body's names are declared.
+    std::string sig = fn.signature;
+    if (!fn.params.empty() && (sig.empty() || sig.find("(...)") != std::string::npos)) {
+        sig = (fn.return_type.empty() ? std::string("int") : fn.return_type) + " " + fn.name + "(";
+        for (std::size_t i = 0; i < fn.params.size(); ++i)
+            sig += (i ? ", " : "") + fn.params[i].first + " " + fn.params[i].second;
+        sig += ")";
+    }
+    unit += "#line " + std::to_string(std::max(1, start)) + "\n" + sig + " {\n" + fn.body + "\n}\n";
     if (ctx) {
         unit += "#line " + std::to_string(end + 1) + "\n";
         for (std::size_t i = static_cast<std::size_t>(end); i < lines.size(); ++i) unit += lines[i] + "\n";
@@ -503,7 +512,9 @@ Spec parse_comments(const FunctionInfo& fn) {
 
 }  // namespace stages_detail
 
-Finding check_function_pir(const FunctionInfo& fn, int unwind) { return stages_detail::pir_one(fn, unwind); }
+Finding check_function_pir(const FunctionInfo& fn, int unwind) {
+    return stages_detail::pir_one(fn, unwind, {}, stages_detail::kPirHookPrelude);
+}
 
 int cxx_std_year(std::string_view flag) {
     if (flag.starts_with("-std=")) flag.remove_prefix(5);

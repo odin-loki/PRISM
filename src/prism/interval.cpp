@@ -34,7 +34,7 @@ constexpr int64_t kIntMin = -(int64_t{1} << (kWidth - 1));
 constexpr int64_t kIntMax = (int64_t{1} << (kWidth - 1)) - 1;
 
 // A range of values of a type of width w (32, or 64 for long, long long,
-// size_t and the 64-bit typedefs: LP64, as the bmc encoder). An unsigned
+// size_t and the 64-bit typedefs: LP64, as pir by default). An unsigned
 // range is kept in the signed range of its width (the domain never alarms on
 // unsigned wrap).
 struct R {

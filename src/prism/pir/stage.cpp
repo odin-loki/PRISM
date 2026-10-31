@@ -2622,7 +2622,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
     // the child budgets project this process's growth from its peak in pir,
-    // not from earlier stages (bmc) that have released their memory
+    // not from earlier stages that have released their memory
     membudget::reset_peak();
     // SVCOMP-ILP32: units and library models are lowered for i386 (32-bit
     // long, size_t, pointers); the translator takes PtrModel kILP32 from the

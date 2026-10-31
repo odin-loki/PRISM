@@ -34,9 +34,23 @@ std::stop_source& interrupt_source() {
     return s;
 }
 void on_interrupt_signal(int sig) { g_signal.store(sig); }
+// After an interrupt: cancel the runs, wait up to 2 s for them to reap their
+// trees, then die of the same signal. Never returns.
+[[noreturn]] void die_of_interrupt(int sig) {
+    interrupt_source().request_stop();
+    for (int i = 0; i < 100 && g_active.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+    std::_Exit(128 + sig);
+}
 struct ActiveRun {
+    bool held = true;
     ActiveRun() { ++g_active; }
-    ~ActiveRun() { --g_active; }
+    ~ActiveRun() { release(); }
+    void release() {
+        if (held) --g_active;
+        held = false;
+    }
 };
 }  // namespace
 
@@ -96,6 +110,12 @@ Result run(const Spec& s) {
     sp.limits.cpu_seconds = s.cpu_seconds;
     sp.limits.open_files = s.open_files;
     auto r = forge::os::spawn_wait(sp);
+    // An interrupted run must not hand its caller a result to carry on with (it
+    // could exit 0 before the cleanup thread re-raises): die of the signal here.
+    if (const int sig = g_signal.load(); sig != 0) {
+        active.release();
+        die_of_interrupt(sig);
+    }
     Result res;
     if (r.err) {
         res.failed = true;
@@ -197,15 +217,7 @@ void install_interrupt_cleanup() noexcept {
         // 2 s for them to reap their trees, then die of the same signal.
         std::thread([] {
             for (;;) {
-                const int sig = g_signal.load();
-                if (sig != 0) {
-                    interrupt_source().request_stop();
-                    for (int i = 0; i < 100 && g_active.load() > 0; ++i)
-                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                    std::signal(sig, SIG_DFL);
-                    std::raise(sig);
-                    std::_Exit(128 + sig);
-                }
+                if (const int sig = g_signal.load(); sig != 0) die_of_interrupt(sig);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
         }).detach();

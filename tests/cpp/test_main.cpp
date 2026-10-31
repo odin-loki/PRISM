@@ -2059,17 +2059,17 @@ TEST_CASE("failed jsonl does not resume stale report.json ok rows") {
 
     prism::RunReport stale;
     stale.root = "stale";
-    prism::StageResult fake_bmc;
-    fake_bmc.name = "bmc";
-    fake_bmc.status = "ok";
+    prism::StageResult fake_pir;
+    fake_pir.name = "pir";
+    fake_pir.status = "ok";
     prism::Finding lie;
-    lie.stage = "bmc";
+    lie.stage = "pir";
     lie.status = std::string(prism::laws::CLEAN);
     lie.function = "abs_ok";
     lie.message = "stale report.json must not resume";
-    fake_bmc.findings = {lie};
-    fake_bmc.records = 1;
-    stale.stages = {fake_bmc};
+    fake_pir.findings = {lie};
+    fake_pir.records = 1;
+    stale.stages = {fake_pir};
     stale.save(out / "report.json");
 
     prism::Config cfg = prism::default_config();
@@ -2086,20 +2086,20 @@ TEST_CASE("failed jsonl does not resume stale report.json ok rows") {
     for (auto& n : report.notes)
         if (n.find("report.json") != std::string::npos) resumed_report_json = true;
     CHECK_FALSE(resumed_report_json);
-    bool bmc_stale = false;
-    bool bmc_proved = false;
+    bool pir_stale = false;
+    bool pir_proved = false;
     for (auto& s : report.stages) {
-        if (s.name != "bmc") continue;
+        if (s.name != "pir") continue;
         for (auto& f : s.findings) {
-            if (f.message.find("stale report.json") != std::string::npos) bmc_stale = true;
-            if (f.status == std::string(prism::laws::PROVED_UNBOUNDED)) bmc_proved = true;
+            if (f.message.find("stale report.json") != std::string::npos) pir_stale = true;
+            if (f.status == std::string(prism::laws::PROVED_UNBOUNDED)) pir_proved = true;
         }
     }
-    CHECK_FALSE(bmc_stale);
+    CHECK_FALSE(pir_stale);
 #ifdef PRISM_HAS_Z3
-    CHECK(bmc_proved);
+    CHECK(pir_proved);
 #else
-    CHECK_FALSE(bmc_proved);  // no solver: never a proof (Law 1)
+    CHECK_FALSE(pir_proved);  // no solver: never a proof (Law 1)
 #endif
     std::error_code ec;
     std::filesystem::remove_all(out, ec);
@@ -2238,10 +2238,10 @@ TEST_CASE("failed jsonl does not revive stale report.json functions") {
     lie.signature = "int stale_fn(int x)";
     lie.body = "return x;";
     stale.functions = {lie};
-    prism::StageResult fake_bmc;
-    fake_bmc.name = "bmc";
-    fake_bmc.status = "ok";
-    stale.stages = {cls, fake_bmc};
+    prism::StageResult fake_pir;
+    fake_pir.name = "pir";
+    fake_pir.status = "ok";
+    stale.stages = {cls, fake_pir};
     stale.save(out / "report.json");
 
     prism::Config cfg = prism::default_config();
@@ -2252,7 +2252,7 @@ TEST_CASE("failed jsonl does not revive stale report.json functions") {
     cfg.skip = {"llm", "execute", "repair", "optional", "fuzz", "sanitize", "pbsd",
                 "esbmc", "dafny", "ltl", "rapid", "muttest", "diff", "concolic",
                 "harness", "wp", "contracts", "interval", "taint", "thread",
-                "lints", "warnings", "cppcheck", "bmc"};
+                "lints", "warnings", "cppcheck", "pir"};
     auto report = prism::run_pipeline(cfg);
     bool resumed_report_json = false;
     for (auto& n : report.notes)
@@ -3318,7 +3318,7 @@ TEST_CASE("ai no model outside a session is NOTRUN, never a backend") {
     CHECK_FALSE(why.empty());
     prism::Config cfg = prism::default_config();
     CHECK(prism::ai::connect_backend(cfg, &why) == nullptr);
-    CHECK(why.find("not reachable") != std::string::npos);
+    CHECK(why.find("no FORGE model") != std::string::npos);
     cfg.llm = false;
     CHECK(prism::ai::connect_backend(cfg, &why) == nullptr);
     CHECK(why == "--no-llm");
@@ -3439,7 +3439,7 @@ TEST_CASE("ai model harness draft is built, checked by BMC and logged") {
     REQUIRE(lines.size() == 1);
     auto j = nlohmann::json::parse(lines[0]);
     CHECK(j["id"] == r.extra["ai_audit_id"]);
-    CHECK(j["checker"] == "bmc(drafted harness)");
+    CHECK(j["checker"] == "pir(drafted harness)");
     CHECK(j["checker_result"] == std::string(prism::laws::PROVED_ASSUMING) + " (drafted, unconfirmed)");
     CHECK(j["verdict_effect"] == "none");  // a drafted harness never raises a verdict
     // A draft that is too small is caught by BMC, not believed.
@@ -3560,7 +3560,7 @@ TEST_CASE("ai explanation and repair: NOTRUN without a model, verified only when
     for (auto& l : lines) {
         auto j = nlohmann::json::parse(l);
         CHECK(j["verdict_effect"] == "none");
-        CHECK(j["checker"] == "bmc(patched function)");
+        CHECK(j["checker"] == "pir(patched function)");
     }
 }
 
@@ -5204,17 +5204,17 @@ TEST_CASE("verdict audit demotes a non-proving stage and records an ERROR") {
                              "lying fuzzer", std::string(prism::laws::STRENGTH_PROVES), "", "", {}});
     fuzz.findings.push_back({"fuzz", std::string(prism::laws::CLEAN), "a.c", std::string("g"), 9, "",
                              "no crash", std::string(prism::laws::STRENGTH_SOME), "", "", {}});
-    prism::StageResult bmc;
-    bmc.name = "bmc";
-    prism::Finding cert{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
+    prism::StageResult pirs;
+    pirs.name = "pir";
+    prism::Finding cert{"pir", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
                         "uncertified", std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     prism::Finding ok = cert;
     ok.function = std::string("k");
     ok.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
-    prism::Finding bounded{"bmc", std::string(prism::laws::BOUNDED), "a.c", std::string("m"), 2, "",
+    prism::Finding bounded{"pir", std::string(prism::laws::BOUNDED), "a.c", std::string("m"), 2, "",
                            "k=4", std::string(prism::laws::STRENGTH_SOME), "", "", {}};
-    bmc.findings = {cert, ok, bounded};
-    rep.stages = {fuzz, bmc};
+    pirs.findings = {cert, ok, bounded};
+    rep.stages = {fuzz, pirs};
 
     CHECK(prism::laws::audit_report(rep) == 2);
     auto& fz = rep.stages[0].findings;
@@ -5229,7 +5229,7 @@ TEST_CASE("verdict audit demotes a non-proving stage and records an ERROR") {
     CHECK(bm[0].status == prism::laws::PROVED);  // falls back, never upward
     CHECK(bm[1].status == prism::laws::PROVED_CERTIFIED);
     CHECK(bm[2].status == prism::laws::BOUNDED);
-    CHECK(bm[3].message == "verdict audit: bmc may not emit PROVED-CERTIFIED without a checked certificate");
+    CHECK(bm[3].message == "verdict audit: pir may not emit PROVED-CERTIFIED without a checked certificate");
     // Idempotent.
     CHECK(prism::laws::audit_report(rep) == 0);
     CHECK(rep.stages[0].findings.size() == 3);
@@ -5237,13 +5237,13 @@ TEST_CASE("verdict audit demotes a non-proving stage and records an ERROR") {
 
 TEST_CASE("PROVED-CERTIFIED is counted in SARIF run properties, never a result") {
     prism::RunReport rep;
-    prism::StageResult bmc;
-    bmc.name = "bmc";
-    prism::Finding f{"bmc", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
+    prism::StageResult pirs;
+    pirs.name = "pir";
+    prism::Finding f{"pir", std::string(prism::laws::PROVED_CERTIFIED), "a.c", std::string("h"), 1, "",
                      "certified", std::string(prism::laws::STRENGTH_PROVES), "", "", {}};
     f.extra[std::string(prism::laws::CERTIFICATE_KEY)] = std::string(prism::laws::CERTIFICATE_CHECKED);
-    bmc.findings = {f};
-    rep.stages = {bmc};
+    pirs.findings = {f};
+    rep.stages = {pirs};
     auto doc = nlohmann::json::parse(prism::to_sarif(rep));
     CHECK(doc["runs"][0]["results"].empty());
     CHECK(doc["runs"][0]["properties"]["certified"] == 1);

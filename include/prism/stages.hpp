@@ -15,8 +15,6 @@
 
 namespace prism {
 
-std::vector<FunctionInfo> inline_static(const std::vector<FunctionInfo>& functions);
-
 std::vector<Finding> run_taint(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions);

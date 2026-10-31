@@ -700,7 +700,7 @@ struct Parser {
                 attrs.find('&') != std::string::npos || attrs.find("->") != std::string::npos ||
                 cxx_mods.search(mods) || !knr.empty() || !m->named("cc").empty()) {
                 // A method, template, K&R, calling-convention or C++-typed
-                // definition: BMC must not model it as a plain C function.
+                // definition: the checkers must not model it as a plain C function.
                 kind = "OTHER";
             }
             int head_start = m->spans[0].first;

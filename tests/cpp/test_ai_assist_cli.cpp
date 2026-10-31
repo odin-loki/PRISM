@@ -53,9 +53,9 @@ using json = nlohmann::json;
 namespace {
 
 #ifdef PRISM_HAS_Z3
-constexpr bool kHasBmc = true;
+constexpr bool kHasZ3 = true;
 #else
-constexpr bool kHasBmc = false;  // Law 1: no Z3, no BMC verdicts
+constexpr bool kHasZ3 = false;  // Law 1: no Z3, no BMC verdicts
 #endif
 
 fs::path repo_root() { return fs::path(__FILE__).parent_path().parent_path().parent_path(); }
@@ -130,7 +130,7 @@ int ok(int x) {
 }
 )";
 
-// One pipeline run over calc.c (inventory, classify, bmc; no model) shared by
+// One pipeline run over calc.c (inventory, classify, pir; no model) shared by
 // the cases below; the model endpoints point at a closed port.
 struct AssistRun {
     fs::path td, src, out;
@@ -149,7 +149,7 @@ struct AssistRun {
         cfg.root = src;
         cfg.out = out;
         cfg.llm = false;
-        cfg.stages = std::vector<std::string>{"inventory", "classify", "bmc"};
+        cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
         prism::run_pipeline(cfg);
         report_text = slurp(out / "report.json");
     }
@@ -158,8 +158,8 @@ struct AssistRun {
 }  // namespace
 
 TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keeps report.json") {
-    if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+    if (!kHasZ3) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -187,8 +187,8 @@ TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keep
 }
 
 TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
-    if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+    if (!kHasZ3) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -204,7 +204,7 @@ TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
     CHECK(j["translator"] == "grammar");
     CHECK(j["query"]["count_only"] == true);
     CHECK(j["count"].get<int>() >= 2);
-    auto e = run_cli(prism::ai::ask_main, {"explain", "bmc#0", "--report", run.out.string(), "--no-llm"});
+    auto e = run_cli(prism::ai::ask_main, {"explain", "pir#0", "--report", run.out.string(), "--no-llm"});
     CHECK(e.out.find("what") != std::string::npos);
 }
 
@@ -213,8 +213,8 @@ TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
 #endif
 
 TEST_CASE("ai-assist cli: `prism regress` writes under <out> only; --run without --allow-exec runs nothing") {
-    if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+    if (!kHasZ3) {
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -262,15 +262,15 @@ TEST_CASE("ai-assist gui: the Qt assistant panel keeps its contract; assistant_r
     // What the panel shows for a question: the structured query and the findings.
     const auto dir = fs::temp_directory_path() / "prism-assist-gui";
     fs::create_directories(dir);
-    std::ofstream(dir / "report.json", std::ios::binary) << R"({"root": "x", "stages": [{"name": "bmc", "status": "ok", "findings": [
-        {"stage": "bmc", "status": "FAILED", "file": "a.c", "function": "f", "line": 1, "cls": "INT-DIV-ZERO",
+    std::ofstream(dir / "report.json", std::ios::binary) << R"({"root": "x", "stages": [{"name": "pir", "status": "ok", "findings": [
+        {"stage": "pir", "status": "FAILED", "file": "a.c", "function": "f", "line": 1, "cls": "INT-DIV-ZERO",
          "message": "div0", "strength": "PROVES", "evidence": "", "counterexample": "x=0", "extra": {}}]}]})";
     auto rep = prism::RunReport::load(dir / "report.json");
     REQUIRE(rep);
     const auto reply = prism::ai::assistant_reply(*rep, "failed division", false);
     CAPTURE(reply);
     CHECK(reply.find("query (grammar)") != std::string::npos);
-    CHECK(reply.find("bmc#0 FAILED a.c:1") != std::string::npos);
+    CHECK(reply.find("pir#0 FAILED a.c:1") != std::string::npos);
 }
 
 // ---- FORGE-era replacements for the llama-server fakes (in-process model seams) ----
@@ -284,15 +284,15 @@ public:
     prism::ai::ModelReply complete(const prism::ai::ModelRequest& req) override {
         ++calls;
         if (req.grammar_text.find("statuses") != std::string::npos)
-            return {json{{"stages", {"bmc"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
+            return {json{{"stages", {"pir"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
                          {"function_glob", ""}, {"text", ""}, {"group_by", ""}, {"count_only", false}}
                         .dump(),
                     ""};
         if (req.grammar_text.find("links") != std::string::npos)
             return {json::array({{{"section", "Defects"},
                                   {"text", "Dividing by a zero parameter is undefined."},
-                                  {"links", {"verdict:bmc#1"}}},
-                                 {{"section", "Defects"}, {"text", "Everything else is proved."}, {"links", {"stage:bmc"}}}})
+                                  {"links", {"verdict:pir#1"}}},
+                                 {{"section", "Defects"}, {"text", "Everything else is proved."}, {"links", {"stage:pir"}}}})
                         .dump(),
                     ""};
         return {"{}", ""};
@@ -316,7 +316,7 @@ public:
 }  // namespace
 
 TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked draft claim is rejected") {
-    if (!kHasBmc) {
+    if (!kHasZ3) {
         MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no FAILED rows to query");
         return;
     }
@@ -352,7 +352,7 @@ TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked
 }
 
 TEST_CASE("ai-assist cli: triage uses the FORGE embedder when one is configured") {
-    if (!kHasBmc) {
+    if (!kHasZ3) {
         MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no findings to embed");
         return;
     }

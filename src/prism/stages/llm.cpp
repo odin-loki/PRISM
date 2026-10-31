@@ -22,6 +22,7 @@ bool llm_httpish(const std::string& err) {
            low.find("connection aborted") != std::string::npos ||
            low.find("not reachable") != std::string::npos ||
            low.find("not loaded") != std::string::npos ||
+           low.find("no forge model") != std::string::npos ||
            low.find("failed to connect") != std::string::npos ||
            low.find("name or service not known") != std::string::npos ||
            low.find("winerror") != std::string::npos || low.find("errno 111") != std::string::npos ||

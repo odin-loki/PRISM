@@ -100,11 +100,11 @@ const std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>>
 
 const std::map<std::string, std::string>& stage_synonyms() {
     static const std::map<std::string, std::string> m = {
-        {"model checking", "bmc"}, {"model checker", "bmc"}, {"bounded model checking", "bmc"},
+        {"model checking", "pir"}, {"model checker", "pir"}, {"bounded model checking", "pir"},
         {"fuzzer", "fuzz"}, {"fuzzing", "fuzz"}, {"fuzzers", "fuzz"},
         {"sanitizer", "sanitize"}, {"sanitizers", "sanitize"}, {"sanitiser", "sanitize"},
         {"lint", "lints"}, {"linter", "lints"}, {"linters", "polyglot"},
-        {"compiler warnings", "warnings"}, {"k-induction", "bmc"},
+        {"compiler warnings", "warnings"}, {"k-induction", "pir"},
         {"llvm", "pir"}, {"ir", "pir"}, {"symbolic execution", "concolic"}, {"mutation", "muttest"},
         {"repairs", "repair"}, {"explanations", "repair"}, {"model", "llm"}, {"taxonomy", "unify"}};
     return m;
