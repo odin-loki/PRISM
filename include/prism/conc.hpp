@@ -49,7 +49,7 @@ struct Options {
 
 // A visible operation: a context-switch point is placed before each one.
 struct VisOp {
-    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal };
+    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free };
     Kind kind = Load;
     int var = -1;            // Load/Store/Rmw: shared variable
     int mutex = -1;          // Lock/TryLock/Unlock/MutexInit
@@ -65,6 +65,12 @@ struct VisOp {
     // read (nondet) or written (copy) in the same step.
     bool mem = false;
     int obj = -1;            // the object when statically known, else -1
+    // Alloc (malloc/calloc/operator new with a constant size): the marker's
+    // result is the i64 address of a fresh heap slot (one per unrolled
+    // execution of the call, so the allocation count is bounded by the
+    // unwinding); Free: the marker copies the freed address.
+    uint64_t size = 0;
+    bool zero = false;       // Alloc: calloc (memory is zero either way: M starts at 0)
 };
 
 // An object of the bounded memory (docs/CONCURRENCY.md "Memory"): a shared

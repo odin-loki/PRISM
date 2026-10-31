@@ -370,6 +370,8 @@ std::string op_text(const Program& p, const VisOp& o) {
         case VisOp::CondWait:
             [[fallthrough]];
         case VisOp::CondSignal: return o.what + "(" + p.conds[static_cast<std::size_t>(o.cond)] + ")";
+        case VisOp::Alloc: return o.what + "(" + std::to_string(o.size) + ")";
+        case VisOp::Free: return o.what;
     }
     return o.what;
 }
@@ -511,6 +513,10 @@ struct Enc {
     z3::expr exited, last_tid, last_var, last_w, last_at, last_op, ok;
     // bounded memory: byte address -> word (the whole access, zero-extended)
     z3::expr M, maddr, last_addr, last_mem;
+    // bounded heap: one slot per unrolled execution of an allocation site
+    struct HeapSlot { uint64_t id; uint64_t size; z3::expr live; std::string name; };
+    std::vector<HeapSlot> heap;
+    std::map<std::pair<int, int>, std::size_t> heap_of;  // (thread, node) -> heap index
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
     std::vector<ERec> events;
@@ -736,8 +742,18 @@ struct Enc {
         for (std::size_t k = 0; k < p.objects.size(); ++k)
             inb = inb || (id == c.bv_val(static_cast<uint64_t>(k + 1), 64) &&
                           z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), c.bv_val(p.objects[k].size, 64)));
+        z3::expr freed = c.bool_val(false);
+        for (auto& h : heap) {
+            auto here = id == c.bv_val(h.id, 64);
+            inb = inb || (here && h.live &&
+                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), c.bv_val(h.size, 64)));
+            freed = freed || (here && !h.live);
+        }
         auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
-        violation(e && !inb, write ? "oob-write" : "oob-read", write ? "MEM-OOB-WRITE" : "MEM-OOB-READ",
+        violation(e && freed, write ? "uaf-write" : "uaf-read", "MEM-USE-AFTER-FREE",
+                  "use after free: " + o.what + " by " + tname(p, t) + at_line(o.line), o.line, t,
+                  "uaf:" + std::to_string(op));
+        violation(e && !freed && !inb, write ? "oob-write" : "oob-read", write ? "MEM-OOB-WRITE" : "MEM-OOB-READ",
                   "out-of-bounds " + o.what + " of " + what + " by " + tname(p, t) + at_line(o.line), o.line, t,
                   "oob:" + std::to_string(op));
         auto conflict = e && last_mem && last_addr == addr && last_tid != bv(0, 8) &&
@@ -873,6 +889,31 @@ struct Enc {
             case VisOp::Create: {
                 auto& a = active[static_cast<std::size_t>(o.thread)];
                 a = a || e;
+                break;
+            }
+            case VisOp::Alloc: {
+                auto& h = heap.at(heap_of.at({t, node}));
+                h.live = z3::ite(e, c.bool_val(true), h.live);
+                define(t, node, s.dst, e, c.bv_val(h.id << 32, 64));
+                touch(t, e, mk.op, -1, false, false);
+                return;
+            }
+            case VisOp::Free: {
+                auto a = lookup(t, node, s.args.at(0));
+                z3::expr base_live = c.bool_val(false), base_dead = c.bool_val(false);
+                for (auto& h : heap) {
+                    auto at = a == c.bv_val(h.id << 32, 64);
+                    base_live = base_live || (at && h.live);
+                    base_dead = base_dead || (at && !h.live);
+                }
+                auto null = a == c.bv_val(0, 64);
+                violation(e && base_dead, "double-free", "MEM-DOUBLE-FREE",
+                          "double free by " + tname(p, t) + at_line(o.line), o.line, t, "dfree:" + std::to_string(mk.op));
+                violation(e && !null && !base_live && !base_dead, "invalid-free", "MEM-INVALID-FREE",
+                          o.what + " of a pointer that is not the start of a heap allocation by " + tname(p, t) +
+                              at_line(o.line),
+                          o.line, t, "ifree:" + std::to_string(mk.op));
+                for (auto& h : heap) h.live = z3::ite(e && a == c.bv_val(h.id << 32, 64), c.bool_val(false), h.live);
                 break;
             }
             case VisOp::Join: {
@@ -1058,6 +1099,17 @@ struct Enc {
         std::size_t N = p.threads.size();
         for (auto& th : p.threads) g.push_back(build_graph(th.fn, opt));
         vals.resize(N);
+        // heap slots: one per (thread, node) running an allocation site;
+        // their number is the allocation bound (reported in extra["heap_slots"]).
+        for (std::size_t t = 0; t < N; ++t)
+            for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                int h = g[t].nodes[nd].head;
+                if (h < 0 || p.ops[static_cast<std::size_t>(h)].kind != VisOp::Alloc) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(h)];
+                heap_of[{static_cast<int>(t), static_cast<int>(nd)}] = heap.size();
+                heap.push_back({p.objects.size() + 1 + heap.size(), o.size, c.bool_val(false),
+                                o.what + "#" + std::to_string(heap.size()) + at_line(o.line)});
+            }
         // a creation site must run at most once (no loops of threads yet):
         // once per graph, and in one thread only. A thread may create
         // threads (nested creation) when the created index is above its own,
@@ -1205,6 +1257,7 @@ Result check(const Program& prog, const Options& opt) {
     try {
         Enc enc(prog, opt);
         enc.encode();
+        res.extra["heap_slots"] = std::to_string(enc.heap.size());
         z3::solver s(enc.c);
         z3::params prm(enc.c);
         prm.set("timeout", static_cast<unsigned>(std::max(1.0, opt.timeout_s) * 1000));

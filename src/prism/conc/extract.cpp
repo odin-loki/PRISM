@@ -422,6 +422,84 @@ struct Rewriter {
         return std::nullopt;
     }
 
+    // ---- symbolic pointers into the bounded memory ----
+    // A pointer-typed local that only ever points into the bounded memory is
+    // carried as its i64 address in "__prism.conc.p.<name>". The name is fixed
+    // so that phis can refer to addresses defined later (back edges).
+    static std::string paddr(const std::string& local_name) { return "__prism.conc.p." + local_name; }
+
+    bool mem_resolvable(const std::string& fn, const ir::Operand& o) {
+        if (o.v.kind == ir::Value::Global) return mem_object(o.v.name) >= 0;
+        if (o.v.kind == ir::Value::ConstExpr && !o.v.elems.empty() &&
+            (o.v.ce_op == "getelementptr" || o.v.ce_op == "bitcast"))
+            return mem_resolvable(fn, o.v.elems[0]);
+        if (o.v.kind == ir::Value::Local) return caddr.count(handle_key(fn, "%" + o.v.name)) > 0;
+        return false;
+    }
+
+    // Pre-pass (fixpoint): which pointer locals of `f` point into the bounded
+    // memory: GEPs off it, phis/selects whose every input does, and pointers
+    // loaded from it (pointers stored in memory are stored as their address).
+    void find_mem_pointers(const std::string& fn, const ir::Function& f) {
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto& bl : f.blocks)
+                for (auto& in : bl.insts) {
+                    if (in.result.empty()) continue;
+                    auto key = handle_key(fn, "%" + in.result);
+                    if (caddr.count(key)) continue;
+                    bool yes = false;
+                    if (in.op == "getelementptr" && !in.ops.empty()) {
+                        yes = mem_resolvable(fn, in.ops[0]);
+                    } else if (in.op == "phi" && in.ty.kind == ir::Type::Ptr && !in.incoming.empty()) {
+                        yes = true;
+                        for (auto& [o, _] : in.incoming) yes = yes && mem_resolvable(fn, o);
+                    } else if (in.op == "select" && in.ty.kind == ir::Type::Ptr && in.ops.size() == 3) {
+                        yes = mem_resolvable(fn, in.ops[1]) && mem_resolvable(fn, in.ops[2]);
+                    } else if (in.op == "load" && in.ty.kind == ir::Type::Ptr && !in.ops.empty()) {
+                        yes = mem_resolvable(fn, in.ops[0]);
+                    } else if (in.op == "call" && in.ty.kind == ir::Type::Ptr && is_alloc_fn(in.callee)) {
+                        yes = true;
+                    }
+                    if (yes) {
+                        caddr[key] = paddr(in.result);
+                        changed = true;
+                    }
+                }
+        }
+    }
+
+    static bool is_alloc_fn(const std::string& n) {
+        return n == "malloc" || n == "calloc" || n == "_Znwm" || n == "_Znam";
+    }
+    static bool is_free_fn(const std::string& n) {
+        return n == "free" || n == "_ZdlPv" || n == "_ZdlPvm" || n == "_ZdaPv" || n == "_ZdaPvm";
+    }
+
+    // phi / select of memory pointers -> the same over their i64 addresses.
+    bool rewrite_ptr_merge(const std::string& fn, const ir::Inst& in, std::vector<ir::Inst>& out) {
+        if (in.ty.kind != ir::Type::Ptr || !caddr.count(handle_key(fn, "%" + in.result))) return false;
+        auto i64 = int_type(64);
+        int obj = -1;
+        auto addr = [&](const ir::Operand& o) {
+            auto a = mem_addr(fn, o, obj);
+            if (!a) throw Unenc{"UNENCODED: pointer " + in.op + " input outside the bounded memory"};
+            return *a;
+        };
+        auto r = base(in, paddr(in.result), in.op, i64);
+        if (in.op == "phi") {
+            for (auto& [o, b] : in.incoming) {
+                // a not-yet-rewritten local: its fixed address name
+                if (o.v.kind == ir::Value::Local) r.incoming.push_back({local(paddr(o.v.name), i64), b});
+                else r.incoming.push_back({addr(o), b});
+            }
+        } else {
+            r.ops = {in.ops[0], addr(in.ops[1]), addr(in.ops[2])};
+        }
+        out.push_back(r);
+        return true;
+    }
+
     // getelementptr into the bounded memory: integer address arithmetic. The
     // original pointer is dropped; using it other than as a load/store/GEP
     // address leaves it undefined in PIR (reported there).
@@ -473,7 +551,7 @@ struct Rewriter {
                 throw Unenc{"UNENCODED: getelementptr through " + rt.text + " (bounded memory)"};
             }
         }
-        auto r = "__prism.conc.a" + std::to_string(fresh++);
+        auto r = paddr(in.result);
         out.push_back(bin(in, r, "add", acc, cint(0, i64)));
         caddr[handle_key(fn, "%" + in.result)] = r;
         return true;
@@ -488,7 +566,18 @@ struct Rewriter {
         int obj = -1;
         auto a = mem_addr(fn, in.ops[store ? 1 : 0], obj);
         if (!a) return false;
-        const auto& ty = store ? in.ops[0].ty : in.ty;
+        auto i64p = int_type(64);
+        bool ptrv = (store ? in.ops[0].ty : in.ty).kind == ir::Type::Ptr;
+        std::optional<ir::Operand> pval;
+        if (ptrv && store) {
+            int o2 = -1;
+            pval = mem_addr(fn, in.ops[0], o2);
+            if (!pval) {
+                if (in.ops[0].v.kind == ir::Value::Null || in.ops[0].v.kind == ir::Value::Zero) pval = cint(0, i64p);
+                else throw Unenc{"UNENCODED: store of a pointer outside the bounded memory into it"};
+            }
+        }
+        const auto& ty = ptrv ? i64p : (store ? in.ops[0].ty : in.ty);
         if (ty.kind != ir::Type::Int || ty.bits == 0 || ty.bits > 64)
             throw Unenc{"UNENCODED: " + std::string(store ? "store of " : "load of ") + ty.text +
                         " through the bounded memory"};
@@ -503,10 +592,11 @@ struct Rewriter {
         int k = add_op(vo);
         out.push_back(copy(in, marker(k), *a));
         if (store) {
-            out.push_back(copy(in, marker(k, true), in.ops[0]));
+            out.push_back(copy(in, marker(k, true), pval ? *pval : in.ops[0]));
         } else {
             out.push_back(nondet(in, marker(k, true), ty));
-            if (!in.result.empty()) out.push_back(freeze(in, in.result, local(marker(k, true), ty)));
+            if (!in.result.empty())
+                out.push_back(freeze(in, ptrv ? paddr(in.result) : in.result, local(marker(k, true), ty)));
         }
         return true;
     }
@@ -595,6 +685,7 @@ struct Rewriter {
 
     void rewrite_function(ir::Function& f, const std::string& orig_name) {
         std::map<std::string, std::pair<std::string, std::string>> cmpx;  // result -> (old, ok)
+        find_mem_pointers(orig_name, f);
         for (auto& bl : f.blocks) {
             std::vector<ir::Inst> out;
             bool cut = false;
@@ -633,6 +724,7 @@ struct Rewriter {
             return;  // a seq_cst fence orders nothing more under SC
         }
         if (op == "getelementptr" && rewrite_gep(fn, in, out)) return;
+        if ((op == "phi" || op == "select") && rewrite_ptr_merge(fn, in, out)) return;
         if (op == "load") {
             if (rewrite_mem_access(fn, in, out, false, in.text.find(" atomic ") != std::string::npos, line)) {
                 if (in.text.find(" atomic ") != std::string::npos) require_sc(words(in.text));
@@ -839,6 +931,29 @@ struct Rewriter {
             int k = create_op_for(fn, in);
             out.push_back(copy(in, marker(k), cint(0, i64)));
             zero_result(in, out);
+            return;
+        }
+        if (is_alloc_fn(n)) {
+            auto lit = [&](const ir::Operand& o) -> uint64_t {
+                if (o.v.kind != ir::Value::Int) throw Unenc{"UNENCODED: " + n + " with a non-constant size (bounded heap)"};
+                return o.v.bits;
+            };
+            auto vo = mk(VisOp::Alloc, n);
+            vo.size = n == "calloc" ? lit(arg(0)) * lit(arg(1)) : lit(arg(0));
+            vo.zero = n == "calloc";
+            if (vo.size == 0 || vo.size > (uint64_t{1} << 31)) throw Unenc{"UNENCODED: " + n + " size"};
+            int k = add_op(vo);
+            out.push_back(copy(in, marker(k), cint(vo.size, i64)));
+            if (!in.result.empty()) out.push_back(freeze(in, paddr(in.result), local(marker(k), i64)));
+            return;
+        }
+        if (is_free_fn(n)) {
+            int obj = -1;
+            const auto& pa = arg(0);
+            std::optional<ir::Operand> a = pa.v.kind == ir::Value::Null ? std::optional{cint(0, i64)} : mem_addr(fn, pa, obj);
+            if (!a) throw Unenc{"UNENCODED: " + n + " of a pointer outside the bounded memory"};
+            int k = add_op(mk(VisOp::Free, n));
+            out.push_back(copy(in, marker(k), *a));
             return;
         }
         if (n == "pthread_join" || n == "thrd_join") {
