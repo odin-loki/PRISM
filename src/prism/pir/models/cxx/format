@@ -16,8 +16,7 @@
 // written. This header is not a proof. This is not PROVED and not CLEAN.
 //
 // Session 4 adds double/float, chrono::duration and range overloads (see
-// below). std::format and format_to return or allocate std::string. Those names are
-// not declared. Those names fail to compile and pir falls back to libstdc++.
+// below). Session 5 adds std::format / format_to / formatted_size (end of file).
 #ifndef _GLIBCXX_FORMAT
 #define _GLIBCXX_FORMAT 1
 
@@ -328,6 +327,234 @@ format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, 
     __r.out = __out + (__len < __n ? __len : __n);
     __r.size = static_cast<std::ptrdiff_t>(__len);
     return __r;
+}
+
+// ---- Session 5: std::format / format_to / formatted_size returning text.
+//
+// Arguments: bool, char, signed/unsigned integers up to 64 bits, float,
+// double, const char*, std::string_view, std::string. Replacement fields
+// "{}", "{N}", "{:spec}", "{N:spec}"; "{{" and "}}" are literal braces.
+// spec = [[fill]align][sign]['#']['0'][width]['.'prec]['L'][type], align
+// '<' '>' '^'; width/prec are literal digits (nested "{}" width is
+// FUNC-CONTRACT + trap). Integer text is exact for types d b B o x X c,
+// '#' adds the 0b/0B/0/0x/0X prefix, '0' pads after sign and prefix.
+// Strings/chars/bools are exact ("true"/"false"; 's' type; '.prec'
+// truncates a string). 'L' uses the locale; the analysed program's global
+// locale is "C" unless it calls std::locale::global, and in "C" 'L'
+// changes nothing, so 'L' is accepted with that meaning (a program that
+// installs another global locale is outside this model: <locale> calls
+// are not modelled). Floating point (types none a A e E f F g G) keeps the
+// session-4 approach: characters are havoc, length is a havoc value in the
+// range the spec allows (for 'a': [-]h[.hhh]p[+-]d, no "0x", as
+// [format.string.std]), then width/fill apply exactly. A bad spec, an index
+// past the arguments, or mixing automatic and manual indexing is
+// FUNC-CONTRACT + trap (the standard makes these compile errors or
+// format_error). This is not PROVED and not CLEAN.
+}  // namespace std
+#include <string>
+#include <string_view>
+namespace std {
+
+struct __prism_fmt_arg {
+    enum _Kind { _Int, _Uint, _Bool, _Char, _Flt, _Str } _M_k;
+    long long _M_i = 0;
+    unsigned long long _M_u = 0;
+    double _M_d = 0;
+    const char* _M_s = nullptr;
+    size_t _M_n = 0;
+};
+inline __prism_fmt_arg __prism_fmt_make(bool __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Bool}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(char __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Char}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(signed char __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Int}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(short __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Int}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(int __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Int}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(long __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Int}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(long long __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Int}; __a._M_i = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(unsigned char __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Uint}; __a._M_u = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(unsigned short __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Uint}; __a._M_u = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(unsigned __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Uint}; __a._M_u = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(unsigned long __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Uint}; __a._M_u = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(unsigned long long __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Uint}; __a._M_u = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(float __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Flt}; __a._M_d = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(double __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Flt}; __a._M_d = __v; return __a; }
+inline __prism_fmt_arg __prism_fmt_make(const char* __v) {
+    __prism_check(__v != nullptr ? 1 : 0, "PTR-NULL-DEREF", "std::format: null const char* argument");
+    __prism_fmt_arg __a{__prism_fmt_arg::_Str}; __a._M_s = __v; __a._M_n = __builtin_strlen(__v); return __a;
+}
+inline __prism_fmt_arg __prism_fmt_make(string_view __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Str}; __a._M_s = __v.data(); __a._M_n = __v.size(); return __a; }
+inline __prism_fmt_arg __prism_fmt_make(const string& __v) { __prism_fmt_arg __a{__prism_fmt_arg::_Str}; __a._M_s = __v.data(); __a._M_n = __v.size(); return __a; }
+
+struct __prism_fmt_spec {
+    char _M_fill = ' ', _M_align = 0, _M_sign = '-', _M_type = 0;
+    bool _M_alt = false, _M_zero = false, _M_loc = false;
+    size_t _M_width = 0;
+    int _M_prec = -1;
+};
+
+inline const char* __prism_fmt_parse(const char* __f, __prism_fmt_spec& __s) {
+    auto __is_align = [](char __c) { return __c == '<' || __c == '>' || __c == '^'; };
+    if (__f[0] != '\0' && __f[0] != '}' && __is_align(__f[1])) { __s._M_fill = __f[0]; __s._M_align = __f[1]; __f += 2; }
+    else if (__is_align(__f[0])) { __s._M_align = __f[0]; ++__f; }
+    if (*__f == '+' || *__f == '-' || *__f == ' ') __s._M_sign = *__f++;
+    if (*__f == '#') { __s._M_alt = true; ++__f; }
+    if (*__f == '0') { __s._M_zero = true; ++__f; }
+    if (*__f == '{') __prism_format_reject("std::format model: nested width/precision not supported");
+    while (*__f >= '0' && *__f <= '9') { __s._M_width = __s._M_width * 10 + size_t(*__f - '0'); ++__f; }
+    if (*__f == '.') {
+        ++__f;
+        if (*__f < '0' || *__f > '9') __prism_format_reject("std::format model: bad precision");
+        __s._M_prec = 0;
+        while (*__f >= '0' && *__f <= '9') { __s._M_prec = __s._M_prec * 10 + (*__f - '0'); if (__s._M_prec > 99) __prism_format_reject("std::format model: precision > 99"); ++__f; }
+    }
+    if (*__f == 'L') { __s._M_loc = true; ++__f; }
+    if (*__f != '}' && *__f != '\0') __s._M_type = *__f++;
+    if (*__f != '}') __prism_format_reject("std::format model: bad format spec");
+    return __f + 1;
+}
+
+inline void __prism_fmt_pad(string& __out, const char* __body, size_t __len, const __prism_fmt_spec& __s,
+                            char __defalign, size_t __zero_after) {
+    if (__s._M_width <= __len) { __out.append(__body, __len); return; }
+    size_t __pad = __s._M_width - __len;
+    if (__s._M_zero && __s._M_align == 0) {  // sign/prefix, zeros, digits
+        __out.append(__body, __zero_after);
+        __out.append(__pad, '0');
+        __out.append(__body + __zero_after, __len - __zero_after);
+        return;
+    }
+    char __al = __s._M_align ? __s._M_align : __defalign;
+    size_t __l = __al == '<' ? 0 : __al == '>' ? __pad : __pad / 2;
+    __out.append(__l, __s._M_fill);
+    __out.append(__body, __len);
+    __out.append(__pad - __l, __s._M_fill);
+}
+
+inline void __prism_fmt_one(string& __out, const __prism_fmt_arg& __a, const __prism_fmt_spec& __s) {
+    char __buf[80];
+    size_t __n = 0;
+    char __t = __s._M_type;
+    if (__a._M_k == __prism_fmt_arg::_Str) {
+        if (__t != 0 && __t != 's') __prism_format_reject("std::format model: bad type for string");
+        size_t __len = __a._M_n;
+        if (__s._M_prec >= 0 && size_t(__s._M_prec) < __len) __len = size_t(__s._M_prec);
+        __prism_fmt_pad(__out, __a._M_s, __len, __s, '<', 0);
+        return;
+    }
+    if (__a._M_k == __prism_fmt_arg::_Bool && (__t == 0 || __t == 's')) {
+        __prism_fmt_pad(__out, __a._M_i ? "true" : "false", __a._M_i ? 4 : 5, __s, '<', 0);
+        return;
+    }
+    if (__a._M_k == __prism_fmt_arg::_Char && (__t == 0 || __t == 'c')) {
+        __buf[0] = char(__a._M_i);
+        __prism_fmt_pad(__out, __buf, 1, __s, '<', 0);
+        return;
+    }
+    if (__a._M_k == __prism_fmt_arg::_Flt) {
+        if (!(__t == 0 || __t == 'a' || __t == 'A' || __t == 'e' || __t == 'E' || __t == 'f' || __t == 'F' || __t == 'g' || __t == 'G'))
+            __prism_format_reject("std::format model: bad type for floating point");
+        const size_t __p = __s._M_prec < 0 ? 6 : size_t(__s._M_prec);
+        size_t __hi;
+        if (__t == 'f' || __t == 'F') __hi = 1 + 309 + 1 + __p;
+        else if (__t == 'e' || __t == 'E') __hi = 1 + 1 + 1 + __p + 5;
+        else if (__t == 'a' || __t == 'A') __hi = 1 + 1 + 1 + (__s._M_prec < 0 ? 13 : __p) + 2 + 4;
+        else if (__t == 'g' || __t == 'G' || __s._M_prec >= 0) __hi = 1 + 1 + 1 + (__p == 0 ? 1 : __p) + 5 + 309;
+        else __hi = 1 + 17 + 1 + 5;
+        if (__s._M_alt) __hi += 1;  // '#' forces the decimal point
+        if (__hi > sizeof __buf - 1) __hi = sizeof __buf - 1;  // big 'f' widths: still bounded below
+        size_t __len;
+        __prism_havoc_bytes(&__len, sizeof(__len));
+        __prism_assume(__len >= 1 && __len <= __hi ? 1 : 0);
+        __prism_havoc_bytes(__buf, __len);
+        __prism_fmt_pad(__out, __buf, __len, __s, '>', 0);
+        return;
+    }
+    // Integers (and bool/char with an integer type).
+    bool __neg = false;
+    unsigned long long __u;
+    if (__a._M_k == __prism_fmt_arg::_Uint) __u = __a._M_u;
+    else { __neg = __a._M_i < 0; __u = __neg ? 0ULL - (unsigned long long)__a._M_i : (unsigned long long)__a._M_i; }
+    if (__t == 'c') {
+        __prism_check(!__neg && __u <= 127 ? 1 : 0, "FUNC-CONTRACT", "std::format: {:c} value not representable as char");
+        __buf[0] = char(__u);
+        __prism_fmt_pad(__out, __buf, 1, __s, '<', 0);
+        return;
+    }
+    unsigned __base = 10;
+    const char* __pre = "";
+    const char* __dig = "0123456789abcdef";
+    switch (__t) {
+        case 0: case 'd': break;
+        case 'b': __base = 2; __pre = "0b"; break;
+        case 'B': __base = 2; __pre = "0B"; break;
+        case 'o': __base = 8; __pre = "0"; break;
+        case 'x': __base = 16; __pre = "0x"; break;
+        case 'X': __base = 16; __pre = "0X"; __dig = "0123456789ABCDEF"; break;
+        default: __prism_format_reject("std::format model: bad type for integer");
+    }
+    if (__neg) __buf[__n++] = '-';
+    else if (__s._M_sign == '+') __buf[__n++] = '+';
+    else if (__s._M_sign == ' ') __buf[__n++] = ' ';
+    if (__s._M_alt && !(__base == 8 && __u == 0))
+        for (const char* __q = __pre; *__q; ++__q) __buf[__n++] = *__q;
+    size_t __zero_after = __n;
+    char __rev[66];
+    size_t __r = 0;
+    do { __rev[__r++] = __dig[__u % __base]; __u /= __base; } while (__u != 0);
+    while (__r > 0) __buf[__n++] = __rev[--__r];
+    __prism_fmt_pad(__out, __buf, __n, __s, '>', __zero_after);
+}
+
+inline void __prism_vformat(string& __out, const char* __f, const __prism_fmt_arg* __args, size_t __nargs) {
+    __prism_check(__f != nullptr ? 1 : 0, "PTR-NULL-DEREF", "std::format: null format string");
+    size_t __next = 0;
+    int __mode = 0;  // 0 unknown, 1 automatic, 2 manual
+    while (*__f) {
+        if (*__f == '{' && __f[1] == '{') { __out.push_back('{'); __f += 2; continue; }
+        if (*__f == '}') {
+            if (__f[1] != '}') __prism_format_reject("std::format model: unmatched '}'");
+            __out.push_back('}'); __f += 2; continue;
+        }
+        if (*__f != '{') { __out.push_back(*__f++); continue; }
+        ++__f;
+        size_t __idx;
+        if (*__f >= '0' && *__f <= '9') {
+            if (__mode == 1) __prism_format_reject("std::format model: mixed automatic and manual indexing");
+            __mode = 2; __idx = 0;
+            while (*__f >= '0' && *__f <= '9') { __idx = __idx * 10 + size_t(*__f - '0'); ++__f; }
+        } else {
+            if (__mode == 2) __prism_format_reject("std::format model: mixed automatic and manual indexing");
+            __mode = 1; __idx = __next++;
+        }
+        if (__idx >= __nargs) __prism_format_reject("std::format model: argument index out of range");
+        __prism_fmt_spec __s;
+        if (*__f == ':') __f = __prism_fmt_parse(__f + 1, __s);
+        else if (*__f == '}') ++__f;
+        else __prism_format_reject("std::format model: bad replacement field");
+        __prism_fmt_one(__out, __args[__idx], __s);
+    }
+}
+
+// format_string is accepted as a plain const char* / string_view: the
+// compile-time check of [format.fmt.string] is not modelled; the same
+// errors are found at analysis time as FUNC-CONTRACT above.
+template <typename... _Args>
+string format(string_view __fmt, const _Args&... __args) {
+    string __fs(__fmt);
+    __prism_fmt_arg __a[sizeof...(_Args) + 1] = {__prism_fmt_make(__args)...};
+    string __out;
+    __prism_vformat(__out, __fs.c_str(), __a, sizeof...(_Args));
+    return __out;
+}
+inline string vformat(string_view __fmt) { return format(__fmt); }
+template <typename _Out, typename... _Args>
+_Out format_to(_Out __out, string_view __fmt, const _Args&... __args) {
+    string __s = format(__fmt, __args...);
+    for (char __c : __s) *__out++ = __c;
+    return __out;
+}
+template <typename... _Args>
+size_t formatted_size(string_view __fmt, const _Args&... __args) {
+    return format(__fmt, __args...).size();
 }
 
 }  // namespace std

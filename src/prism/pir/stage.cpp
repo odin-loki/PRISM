@@ -345,6 +345,157 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
     return out;
 }
 
+// C23 (N3038) storage-class specifiers in compound literals:
+// (static T){...}, (constexpr T){...}, (static constexpr T){...},
+// (thread_local static T){...}, (register T){...}. clang (checked through
+// 23.1.4) rejects them ("expected expression"). This rewrites each one into
+// an equivalent clang accepts:
+//   block scope:  (*({ static T __prism_clN = {...}; &__prism_clN; }))
+//                 (a GNU statement expression; an lvalue of type T, arrays
+//                 included, with static storage, as the literal has)
+//   constexpr without static at block scope becomes static constexpr: the
+//   value and constness are the same, only the object's address is shared
+//   across calls (observable only by comparing addresses of two
+//   evaluations, which C23 leaves unspecified for const literals anyway,
+//   6.5.2.5p8). register is dropped (it only forbids taking the address).
+//   file scope:   the specifier is dropped (file-scope literals already
+//                 have static storage); constexpr becomes const.
+// Returns the input unchanged when it has no such literal.
+std::string c23_compound_literal_rewrite(const std::string& in, bool* changed) {
+    std::string out;
+    size_t i = 0, n = in.size();
+    int depth = 0, counter = 0;
+    if (changed) *changed = false;
+    auto skip_ws = [&](size_t j) { while (j < n && std::isspace(static_cast<unsigned char>(in[j]))) ++j; return j; };
+    auto word_at = [&](size_t j, const char* w) {
+        size_t L = std::strlen(w);
+        return in.compare(j, L, w) == 0 && (j + L >= n || !(std::isalnum(static_cast<unsigned char>(in[j + L])) || in[j + L] == '_'));
+    };
+    while (i < n) {
+        char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { size_t e = in.find('\n', i); e = e == std::string::npos ? n : e; out.append(in, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { size_t e = in.find("*/", i + 2); e = e == std::string::npos ? n : e + 2; out.append(in, i, e - i); i = e; continue; }
+        if (c == '"' || c == '\'') {
+            size_t j = i + 1;
+            while (j < n && in[j] != c) { if (in[j] == '\\') ++j; ++j; }
+            j = std::min(n, j + 1);
+            out.append(in, i, j - i); i = j; continue;
+        }
+        if (c == '{') ++depth;
+        if (c == '}') --depth;
+        if (c == '(') {
+            size_t j = skip_ws(i + 1);
+            bool st = false, cx = false, tl = false, any = false;
+            for (;;) {
+                if (word_at(j, "static")) { st = true; j = skip_ws(j + 6); }
+                else if (word_at(j, "constexpr")) { cx = true; j = skip_ws(j + 9); }
+                else if (word_at(j, "thread_local")) { tl = true; j = skip_ws(j + 12); }
+                else if (word_at(j, "_Thread_local")) { tl = true; j = skip_ws(j + 13); }
+                else if (word_at(j, "register")) { j = skip_ws(j + 8); }
+                else break;
+                any = true;
+            }
+            if (any) {
+                // type name up to the matching ')'
+                size_t k = j;
+                int pd = 1;
+                while (k < n && pd > 0) { if (in[k] == '(') ++pd; else if (in[k] == ')') --pd; if (pd > 0) ++k; }
+                size_t b = k < n ? skip_ws(k + 1) : n;
+                if (k < n && b < n && in[b] == '{') {
+                    size_t e = b;
+                    int bd = 0;
+                    for (; e < n; ++e) { if (in[e] == '{') ++bd; else if (in[e] == '}' && --bd == 0) break; }
+                    if (e < n) {
+                        std::string type = in.substr(j, k - j);
+                        std::string init = in.substr(b, e - b + 1);
+                        std::string quals = std::string(tl ? "_Thread_local " : "") + (cx ? "constexpr " : "");
+                        if (depth > 0) {
+                            // declarator: an array type "int[3]" -> "int __n[3]"
+                            std::string name = "__prism_cl" + std::to_string(counter++);
+                            size_t br = type.find('[');
+                            std::string decl = br == std::string::npos ? type + " " + name : type.substr(0, br) + " " + name + type.substr(br);
+                            (void)st;
+                            out += "(*({ static " + quals + decl + " = " + init + "; &" + name + "; }))";
+                        } else {
+                            out += "(" + std::string(tl ? "_Thread_local " : "") + (cx ? "const " : "") + type + ")" + init;
+                        }
+                        if (changed) *changed = true;
+                        i = e + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_back(c);
+        ++i;
+    }
+    return out;
+}
+
+// C23 decimal floating point (models/dfp/prism_dfp.hpp explains the route).
+// Rewrites decimal literal suffixes DF/DD/DL to the shim's user-defined
+// literals and wraps the unit in extern "C" so its functions keep C names;
+// #line keeps diagnostics and debug info on the original file. Text in
+// string/char literals and comments is left alone.
+std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
+    std::string out = "#line 1 \"" + orig.string() + "\"\nextern \"C\" {\n#line 1 \"" + orig.string() + "\"\n";
+    size_t i = 0;
+    const size_t n = in.size();
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    while (i < n) {
+        char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { size_t e = in.find('\n', i); e = e == std::string::npos ? n : e; out.append(in, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { size_t e = in.find("*/", i + 2); e = e == std::string::npos ? n : e + 2; out.append(in, i, e - i); i = e; continue; }
+        if (c == '"' || c == '\'') {
+            size_t j = i + 1;
+            while (j < n && in[j] != c) { if (in[j] == '\\') ++j; ++j; }
+            j = std::min(n, j + 1);
+            out.append(in, i, j - i); i = j; continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c)) || (c == '.' && i + 1 < n && std::isdigit(static_cast<unsigned char>(in[i + 1])))) {
+            if (i > 0 && ident(in[i - 1])) { out.push_back(c); ++i; continue; }
+            size_t j = i;
+            while (j < n && (ident(in[j]) || in[j] == '.' || in[j] == '\'' ||
+                             ((in[j] == '+' || in[j] == '-') && (in[j - 1] == 'e' || in[j - 1] == 'E')))) ++j;
+            std::string tok = in.substr(i, j - i);
+            if (tok.size() > 2 && !(tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X'))) {
+                std::string suf = tok.substr(tok.size() - 2);
+                for (auto& ch : suf) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                if (suf == "DF" || suf == "DD" || suf == "DL") {
+                    std::string lo = suf == "DF" ? "_prism_df" : suf == "DD" ? "_prism_dd" : "_prism_dl";
+                    tok = tok.substr(0, tok.size() - 2) + lo;
+                }
+            }
+            out += tok; i = j; continue;
+        }
+        out.push_back(c); ++i;
+    }
+    out += "\n}\n";
+    // #include lines leave the extern "C" block (a C++ header such as
+    // libstdc++'s <math.h> wrapper declares templates, which need C++ linkage).
+    std::string fixed;
+    size_t line = 0, pos = 0;
+    int body_line = -3;  // the first three lines are the prologue
+    while (pos < out.size()) {
+        size_t e = out.find('\n', pos);
+        e = e == std::string::npos ? out.size() : e + 1;
+        std::string l = out.substr(pos, e - pos);
+        pos = e;
+        ++line;
+        ++body_line;
+        size_t f = l.find_first_not_of(" \t");
+        const bool inc = body_line >= 1 && f != std::string::npos && l[f] == '#' &&
+                         l.find_first_not_of(" \t", f + 1) != std::string::npos &&
+                         l.compare(l.find_first_not_of(" \t", f + 1), 7, "include") == 0;
+        if (inc)
+            fixed += "}\n" + l + (l.ends_with("\n") ? "" : "\n") + "extern \"C\" {\n#line " +
+                     std::to_string(body_line + 1) + " \"" + orig.string() + "\"\n";
+        else
+            fixed += l;
+    }
+    return fixed;
+}
+
 std::vector<std::string> base_flags(const fs::path& src) {
     std::vector<std::string> f{"-S"};
     for (auto& t : lp64_clang_driver_flags()) f.push_back(t);
@@ -498,6 +649,61 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             r = std::move(r2);
             fl = std::move(c14);
             cxx_std = std::min(cxx_std, 14);
+        }
+    }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // C23 storage-class compound literals: rewrite, then retry as C23.
+        bool changed = false;
+        const std::string rw = c23_compound_literal_rewrite(read_file(src), &changed);
+        if (changed) {
+            const fs::path csrc = o0.parent_path() / (o0.stem().string() + ".cl.c");
+            {
+                std::ofstream os(csrc, std::ios::binary);
+                os << "#line 1 \"" << src.string() << "\"\n" << rw;
+            }
+            auto c23 = fl;
+            std::replace(c23.begin(), c23.end(), std::string("-std=c17"), std::string("-std=c23"));
+            c23.insert(c23.end(), {"-I", src.parent_path().string(), "-Wno-gnu-statement-expression"});
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), c23.begin(), c23.end());
+            av.insert(av.end(), {"-o", o0.string(), csrc.string()});
+            auto r2 = detail::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(c23);
+            }
+        }
+    }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0) &&
+        r.text.find("decimal type extension not supported") != std::string::npos) {
+        // C23 _Decimal32/64/128: clang has no decimal floating point. Lower
+        // the unit as C++23 against the PRISM decimal shim instead.
+        const fs::path shim = fs::path(__FILE__).parent_path() / "models" / "dfp" / "prism_dfp.hpp";
+        const fs::path dsrc = o0.parent_path() / (o0.stem().string() + ".dfp.cpp");
+        std::error_code dec;
+        if (fs::is_regular_file(shim, dec)) {
+            {
+                std::ofstream os(dsrc, std::ios::binary);
+                os << dfp_rewrite(read_file(src), src);
+            }
+            std::vector<std::string> dfl;
+            for (size_t k = 0; k < fl.size(); ++k) {
+                if (fl[k].starts_with("-std=")) { dfl.push_back("-std=c++23"); continue; }
+                dfl.push_back(fl[k]);
+            }
+            dfl.insert(dfl.end(), {"-I", src.parent_path().string(), "-include", shim.string(),
+                                   "-Wno-c99-designator", "-Wno-writable-strings"});
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), dfl.begin(), dfl.end());
+            av.insert(av.end(), {"-o", o0.string(), "-x", "c++", dsrc.string()});
+            auto r2 = detail::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(dfl);
+                if (cxx_models) *cxx_models = "dfp shim: C23 decimal floating point lowered as C++ (models/dfp)";
+            } else {
+                r.text += "\nprism: C23 decimal floating point shim also failed: " + first_error(r2.text);
+            }
         }
     }
     if (r.failed || r.timed_out || r.rc != 0) {

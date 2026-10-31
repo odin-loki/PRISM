@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_static_cl_false.c
+language: C
+property: memsafety
+expected:
+  c23_static_cl_false: false
+witness:
+  c23_static_cl_false: [3]
