@@ -63,12 +63,20 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
+    enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
         Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
     bool sum = false;      // Lin: a + b (else a - b). MemScopeAt: x <= index (else x < index)
+    // Arithmetic templates, evaluated over mathematical integers (both sides
+    // extended to 2w+4 bits, so nothing wraps; sext: the values are signed):
+    //   MaxLe:  a <= max(entry(a), b)            (b a scope value; rel Sle/Ule)
+    //   Scale:  a - entry(a) rel mask * (b - entry(b))      (rel Eq/Sle/Sge)
+    //   ScaleV: a - entry(a) == v * (b - entry(b))           (v a scope value)
+    //   Tri:    2 * (a - entry(a)) == b*(b+d) - entry(b)*(entry(b)+d), d = mask - 1
+    // Like every template they are only admitted through Houdini's base and
+    // step checks; none is assumed.
     uint64_t mask = 0;
     // memory: for every x with lo <= x < ext(phi idx): P(x)
     int ip = -1;           // index phi
@@ -377,6 +385,21 @@ std::string Houdini::text(const InvCand& c) const {
             const char* o = c.sum ? " + " : " - ";
             return tt(c.a) + o + tt(c.b) + " == entry(" + phi(c.a.idx) + ")" + o + "entry(" + phi(c.b.idx) + ")";
         }
+        case InvCand::MaxLe:
+            return tt(c.a) + (c.sext ? " sle" : " ule") + " max(entry(" + phi(c.a.idx) + "), " + tt(c.b) + ")";
+        case InvCand::Scale:
+            return tt(c.a) + " - entry(" + phi(c.a.idx) + ") " + op_name(c.rel) + " " +
+                   std::to_string(as_signed(c.mask, c.a.w)) + " * (" + tt(c.b) + " - entry(" + phi(c.b.idx) +
+                   "))" + (c.sext ? " [int]" : " [nat]");
+        case InvCand::ScaleV:
+            return tt(c.a) + " - entry(" + phi(c.a.idx) + ") == " + tt(c.v) + " * (" + tt(c.b) + " - entry(" +
+                   phi(c.b.idx) + "))" + (c.sext ? " [int]" : " [nat]");
+        case InvCand::Tri: {
+            const std::string d = std::to_string(static_cast<int>(c.mask) - 1);
+            return "2 * (" + tt(c.a) + " - entry(" + phi(c.a.idx) + ")) == " + tt(c.b) + " * (" + tt(c.b) + " + " + d +
+                   ") - entry(" + phi(c.b.idx) + ") * (entry(" + phi(c.b.idx) + ") + " + d + ")" +
+                   (c.sext ? " [int]" : " [nat]");
+        }
         case InvCand::MemNZ: return "forall " + range + ": " + at(c.p, -1) + " != 0";
         case InvCand::MemEq: return "forall " + range + ": " + at(c.p, c.off) + " == " + at(c.q, -1);
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
@@ -404,7 +427,7 @@ std::string Houdini::text(const InvCand& c) const {
 }
 
 void Houdini::generate(std::vector<InvCand>& out) {
-    constexpr std::size_t kScope = 16, kConsts = 8, kGhostPerLoop = 160;
+    constexpr std::size_t kScope = 16, kConsts = 8, kGhostPerLoop = 160, kSteps = 4, kArithPhis = 6, kArithScope = 4;
     static const Op kRel[] = {Op::Eq, Op::Ne, Op::Ule, Op::Ult, Op::Uge, Op::Ugt,
                               Op::Sle, Op::Slt, Op::Sge, Op::Sgt};
     for (std::size_t Li = 0; Li < g_.loops.size(); ++Li) {
@@ -464,6 +487,13 @@ void Houdini::generate(std::vector<InvCand>& out) {
         std::set<int> offs;                 // scope offsets in written addresses
         std::set<unsigned> ebs;
         std::map<int, std::set<bool>> ext;  // phi var -> sext?
+        // step constants (k >= 2) of the loop's arithmetic: Scale templates
+        std::map<unsigned, std::set<uint64_t>> steps;
+        auto note_step = [&](const Arg& a) {
+            if (!a.is_const || a.width <= 1 || a.width > 64) return;
+            const int64_t sv = as_signed(a.bits, a.width);
+            if ((sv >= 2 || sv <= -2) && steps[a.width].size() < kSteps) steps[a.width].insert(a.bits);
+        };
         auto note_const = [&](const Arg& a) {
             if (a.is_const && a.width > 1 && a.width <= 64 && consts[a.width].size() < kConsts) consts[a.width].insert(a.bits);
         };
@@ -473,6 +503,8 @@ void Houdini::generate(std::vector<InvCand>& out) {
                 if (s.kind == Stmt::Assign) {
                     if ((s.op >= Op::Eq && s.op <= Op::Sge) || s.op == Op::Add || s.op == Op::Sub)
                         for (auto& a : s.args) note_const(a);
+                    if (s.op == Op::Add || s.op == Op::Sub || s.op == Op::Mul || s.op == Op::SDiv || s.op == Op::UDiv)
+                        for (auto& a : s.args) note_step(a);
                     if ((s.op == Op::Eq || s.op == Op::Ne) && s.args.size() == 2)
                         for (auto& a : s.args) {
                             std::set<int> lv;
@@ -564,6 +596,59 @@ void Houdini::generate(std::vector<InvCand>& out) {
                         c.sum = sum;
                         out.push_back(c);
                     }
+            // a <= max(entry(a), b): a counter bounded by a guard value that
+            // may lie below its start
+            for (int v : scope)
+                if (fn_.vars[static_cast<std::size_t>(v)].width == w) {
+                    InvCand c;
+                    c.kind = InvCand::MaxLe;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = {InvTerm::Scope, v, 0, w};
+                    c.sext = sgn;
+                    out.push_back(c);
+                }
+            if (phis.size() > kArithPhis) continue;
+            for (int j : phis) {
+                if (j == i || fn_.vars[static_cast<std::size_t>(phi_var(j))].width != w) continue;
+                const InvTerm b{InvTerm::Phi, j, 0, w};
+                const bool sg = sgn || signed_use_[static_cast<std::size_t>(phi_var(j))] != 0;
+                for (uint64_t k : steps[w])
+                    for (Op r : {Op::Eq, Op::Sle, Op::Sge}) {
+                        InvCand c;
+                        c.kind = InvCand::Scale;
+                        c.loop = L;
+                        c.rel = r;
+                        c.a = a;
+                        c.b = b;
+                        c.mask = k & wmask(w);
+                        c.sext = sg;
+                        out.push_back(c);
+                    }
+                std::size_t nv = 0;
+                for (int v : scope) {
+                    if (fn_.vars[static_cast<std::size_t>(v)].width != w || nv >= kArithScope) continue;
+                    ++nv;
+                    InvCand c;
+                    c.kind = InvCand::ScaleV;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = b;
+                    c.v = {InvTerm::Scope, v, 0, w};
+                    c.sext = sg;
+                    out.push_back(c);
+                }
+                for (uint64_t d1 : {0u, 1u, 2u}) {  // d = -1, 0, +1
+                    InvCand c;
+                    c.kind = InvCand::Tri;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = b;
+                    c.mask = d1;
+                    c.sext = sg;
+                    out.push_back(c);
+                }
+            }
         }
         // ---- memory templates (universally quantified over the index x)
         std::size_t ghosts = 0;
@@ -892,6 +977,35 @@ HoudiniOut Houdini::run() {
                 auto a = term(k.a, st, node, k.loop), b = term(k.b, st, node, k.loop);
                 auto ea = CL.entry[static_cast<std::size_t>(k.a.idx)], eb = CL.entry[static_cast<std::size_t>(k.b.idx)];
                 return k.sum ? a + b == ea + eb : a - b == ea - eb;
+            }
+            case InvCand::MaxLe: {
+                auto a = term(k.a, st, node, k.loop), b = term(k.b, st, node, k.loop);
+                auto ea = CL.entry[static_cast<std::size_t>(k.a.idx)];
+                if (k.sext) return a <= z3::ite(ea >= b, ea, b);
+                return z3::ule(a, z3::ite(z3::uge(ea, b), ea, b));
+            }
+            case InvCand::Scale:
+            case InvCand::ScaleV:
+            case InvCand::Tri: {
+                const unsigned w = k.a.w, W = 2 * w + 4;
+                auto X = [&](const z3::expr& x) {
+                    const unsigned xw = x.get_sort().bv_size();
+                    return k.sext ? z3::sext(x, W - xw) : z3::zext(x, W - xw);
+                };
+                auto a = X(term(k.a, st, node, k.loop)), b = X(term(k.b, st, node, k.loop));
+                auto ea = X(CL.entry[static_cast<std::size_t>(k.a.idx)]);
+                auto eb = X(CL.entry[static_cast<std::size_t>(k.b.idx)]);
+                if (k.kind == InvCand::Tri) {
+                    auto d = c.bv_val(static_cast<int>(k.mask) - 1, W);
+                    return c.bv_val(2, W) * (a - ea) == b * (b + d) - eb * (eb + d);
+                }
+                auto m = k.kind == InvCand::Scale
+                             ? (k.sext ? c.bv_val(static_cast<int64_t>(as_signed(k.mask, w)), W) : c.bv_val(k.mask, W))
+                             : X(term(k.v, st, node, k.loop));
+                auto lhs = a - ea, rhs = m * (b - eb);
+                if (k.rel == Op::Sle) return lhs <= rhs;
+                if (k.rel == Op::Sge) return lhs >= rhs;
+                return lhs == rhs;
             }
             default: break;
         }
@@ -1348,6 +1462,10 @@ HoudiniOut Houdini::run() {
     // the final query keeps a minimum of its own (the run's Houdini budget
     // does not cut it), but never runs past the function budget
     const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
+    // the optimistic solver is not asked again: hand its memory back before
+    // the final query (nested loops: both together crossed the budget)
+    sopt.reset();
+    membudget::release_free_memory();
     const int r = final_query(final_budget, true);
     if (r == -1) out.undecided = true;
     return finish_out(r == 0);

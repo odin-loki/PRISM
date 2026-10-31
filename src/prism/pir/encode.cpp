@@ -1749,6 +1749,100 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         r.extra["certified_mode"] = opt.certified ? "on" : "off";
         return r;
     };
+    // Loop invariants (houdini.inc): tried when k-induction does not
+    // close. Loops that allocate, free or restore the stack are not
+    // attempted (the havoc of a header state does not cover a change in
+    // the number or liveness of objects).
+    auto loops_allocate = [&]() {
+        for (auto& L : g.loops)
+            for (std::size_t b = 0; b < L.body.size(); ++b) {
+                if (!L.body.at(b)) continue;
+                for (auto& s : fn.blocks[b].stmts)
+                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
+                        s.kind == Stmt::Revive) return true;
+            }
+        return false;
+    };
+    auto try_invariants = [&](Verdict& r) -> bool {
+        if (g.loops.empty()) return false;
+        if (loops_allocate()) {
+            r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
+            return false;
+        }
+        // Every VC is answered (the verdict is BOUNDED): a spent function
+        // budget leaves it BOUNDED and says what was not tried.
+        if (fn_budget && fn_budget->exhausted()) {
+            r.extra["invariants_note"] = fn_budget_note(r);
+            return false;
+        }
+        // The run's Houdini budget (CheckOptions::houdini_budget): spent,
+        // the function is not attempted; less left than the search's own
+        // limit, the search gets what is left.
+        double search_s = -1;
+        if (opt.houdini_budget) {
+            const double left = opt.houdini_budget->left();
+            if (left <= 0) {
+                r.extra["invariants_note"] =
+                    "not attempted (the run's Houdini budget of " +
+                    std::to_string(static_cast<long>(opt.houdini_budget->total_s)) +
+                    " s is spent; PRISM_HOUDINI_BUDGET)";
+                return false;
+            }
+            search_s = search_s < 0 ? left : std::min(search_s, left);
+        }
+        HoudiniEnv henv;
+        if (opt.use_cache)
+            henv.cache_dir = opt.cache_dir.empty() ? solver::default_cache_dir() : opt.cache_dir;
+        if (opt.debug_before_query) opt.debug_before_query("houdini");
+        // the function budget is a hard cap: no query of the search, its
+        // final query included, runs past it (docs/PIR.md "Solving")
+        const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
+        if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
+        const auto th = std::chrono::steady_clock::now();
+        Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
+        auto h = hd.run();
+        const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
+        if (opt.houdini_budget) opt.houdini_budget->spend(hs);
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.2f", hs);
+            r.extra["houdini_seconds"] = buf;
+        }
+        r.extra["houdini_rounds"] = std::to_string(h.rounds);
+        r.extra["houdini_candidates"] = std::to_string(h.candidates);
+        if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
+        if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
+        if (!h.proved) {
+            r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
+            if (fn_budget && fn_budget->exhausted())
+                r.extra["invariants_note"] += " (pir function budget of " + fn_budget_n +
+                                              " s spent; PRISM_FUNCTION_BUDGET)";
+            std::size_t kept = 0;
+            for (auto& l : h.invariants) kept += l.size();
+            if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
+            return false;
+        }
+        std::size_t n = 0;
+        nlohmann::json inv = nlohmann::json::array();
+        for (auto& l : h.invariants) {
+            n += l.size();
+            inv.push_back(l);
+        }
+        r.status = std::string(laws::PROVED_UNBOUNDED);
+        r.message = "every loop cut by " + std::to_string(n) +
+                    " inductive invariant(s) (Houdini: base and step proved); no property violated in the cut "
+                    "program; not a bounded-only result";
+        r.extra["k_induction"] = "closed-invariants";
+        r.extra["pir_invariants"] = inv.dump();
+        r.extra["invariant_checker"] = "z3: Houdini over PIR templates + loop-cut induction (base and step)";
+        r.extra["invariant_footprint"] = h.footprint;
+        r.extra["unwind_closed"] = "true";
+        export_invariants(fn, g, h, r);
+        if (opt.certified)
+            r.extra["certify_note"] =
+                "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
+        return true;
+    };
     try {
         z3::context c;
         membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
@@ -2251,100 +2345,6 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             v.extra["k_induction"] = "not-attempted (first unwind)";
             return finish(v);
         }
-        // Loop invariants (houdini.inc): tried when k-induction does not
-        // close. Loops that allocate, free or restore the stack are not
-        // attempted (the havoc of a header state does not cover a change in
-        // the number or liveness of objects).
-        auto loops_allocate = [&]() {
-            for (auto& L : g.loops)
-                for (std::size_t b = 0; b < L.body.size(); ++b) {
-                    if (!L.body.at(b)) continue;
-                    for (auto& s : fn.blocks[b].stmts)
-                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
-                            s.kind == Stmt::Revive) return true;
-                }
-            return false;
-        };
-        auto try_invariants = [&](Verdict& r) -> bool {
-            if (g.loops.empty()) return false;
-            if (loops_allocate()) {
-                r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
-                return false;
-            }
-            // Every VC is answered (the verdict is BOUNDED): a spent function
-            // budget leaves it BOUNDED and says what was not tried.
-            if (fn_budget && fn_budget->exhausted()) {
-                r.extra["invariants_note"] = fn_budget_note(r);
-                return false;
-            }
-            // The run's Houdini budget (CheckOptions::houdini_budget): spent,
-            // the function is not attempted; less left than the search's own
-            // limit, the search gets what is left.
-            double search_s = -1;
-            if (opt.houdini_budget) {
-                const double left = opt.houdini_budget->left();
-                if (left <= 0) {
-                    r.extra["invariants_note"] =
-                        "not attempted (the run's Houdini budget of " +
-                        std::to_string(static_cast<long>(opt.houdini_budget->total_s)) +
-                        " s is spent; PRISM_HOUDINI_BUDGET)";
-                    return false;
-                }
-                search_s = search_s < 0 ? left : std::min(search_s, left);
-            }
-            HoudiniEnv henv;
-            if (opt.use_cache)
-                henv.cache_dir = opt.cache_dir.empty() ? solver::default_cache_dir() : opt.cache_dir;
-            if (opt.debug_before_query) opt.debug_before_query("houdini");
-            // the function budget is a hard cap: no query of the search, its
-            // final query included, runs past it (docs/PIR.md "Solving")
-            const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
-            if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
-            const auto th = std::chrono::steady_clock::now();
-            Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
-            auto h = hd.run();
-            const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
-            if (opt.houdini_budget) opt.houdini_budget->spend(hs);
-            {
-                char buf[32];
-                std::snprintf(buf, sizeof buf, "%.2f", hs);
-                r.extra["houdini_seconds"] = buf;
-            }
-            r.extra["houdini_rounds"] = std::to_string(h.rounds);
-            r.extra["houdini_candidates"] = std::to_string(h.candidates);
-            if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
-            if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
-            if (!h.proved) {
-                r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
-                if (fn_budget && fn_budget->exhausted())
-                    r.extra["invariants_note"] += " (pir function budget of " + fn_budget_n +
-                                                  " s spent; PRISM_FUNCTION_BUDGET)";
-                std::size_t kept = 0;
-                for (auto& l : h.invariants) kept += l.size();
-                if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
-                return false;
-            }
-            std::size_t n = 0;
-            nlohmann::json inv = nlohmann::json::array();
-            for (auto& l : h.invariants) {
-                n += l.size();
-                inv.push_back(l);
-            }
-            r.status = std::string(laws::PROVED_UNBOUNDED);
-            r.message = "every loop cut by " + std::to_string(n) +
-                        " inductive invariant(s) (Houdini: base and step proved); no property violated in the cut "
-                        "program; not a bounded-only result";
-            r.extra["k_induction"] = "closed-invariants";
-            r.extra["pir_invariants"] = inv.dump();
-            r.extra["invariant_checker"] = "z3: Houdini over PIR templates + loop-cut induction (base and step)";
-            r.extra["invariant_footprint"] = h.footprint;
-            r.extra["unwind_closed"] = "true";
-            export_invariants(fn, g, h, r);
-            if (opt.certified)
-                r.extra["certify_note"] =
-                    "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
-            return true;
-        };
         if (g.loops.size() != 1) {
             v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
             try_invariants(v);
@@ -2428,6 +2428,21 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
     } catch (const EncodeFail& f) {
         v.status = f.status;
         v.message = f.msg;
+        // Unrolling too large for bounded checking: the loop-cut encoding
+        // (Houdini, base and step) does not unroll, so it is still tried.
+        // Only its full inductive proof changes the verdict; otherwise the
+        // UNKNOWN stands.
+        if (f.msg.rfind("unrolling exceeds ", 0) == 0 && !g.loops.empty()) {
+            v.extra["k_induction"] = "not-attempted (unrolling exceeds the instance limit)";
+            bool ok = false;
+            try {
+                ok = try_invariants(v);
+            } catch (...) {
+            }
+            if (ok) return finish(v);
+            v.status = f.status;
+            v.message = f.msg;
+        }
         return v;
     } catch (const mem::EncodeError& f) {
         v.status = f.status;

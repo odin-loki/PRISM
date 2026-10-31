@@ -1060,10 +1060,10 @@ TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)")
         s += 1;
     return s + (n & 1);
 }
-int loop_long_bounded(int n) {
+int loop_long_cubic(int n) {
     int s = 0;
     for (int i = 0; i < 100; i++)
-        s += i;
+        s += i * i;
     return s + (n & 1);
 }
 )";
@@ -1081,23 +1081,23 @@ int loop_long_bounded(int n) {
     auto a = run("cache");
     CHECK(a["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
     CHECK(a["loop_long_inv"].extra["houdini_cache"] == "stored");
-    CHECK(a["loop_long_bounded"].status == prism::laws::BOUNDED);
-    CHECK(a["loop_long_bounded"].extra["houdini_cache"] == "stored");
+    CHECK(a["loop_long_cubic"].status == prism::laws::BOUNDED);
+    CHECK(a["loop_long_cubic"].extra["houdini_cache"] == "stored");
     // second run: the proof is re-checked from its survivors, the no-proof is taken
     auto b = run("cache");
     CHECK(b["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
     CHECK(b["loop_long_inv"].extra["houdini_cache"] == "hit (proof re-checked)");
     CHECK(b["loop_long_inv"].extra["pir_invariants"] == a["loop_long_inv"].extra["pir_invariants"]);
-    CHECK(b["loop_long_bounded"].status == prism::laws::BOUNDED);
-    CHECK(b["loop_long_bounded"].extra["houdini_cache"] == "hit (no proof)");
+    CHECK(b["loop_long_cubic"].status == prism::laws::BOUNDED);
+    CHECK(b["loop_long_cubic"].extra["houdini_cache"] == "hit (no proof)");
     // a spent run budget: no proof, and a function that finds it spent says so
     test_setenv("PRISM_HOUDINI_BUDGET", "0.000001");
     auto c = run("cache2");
     test_unsetenv("PRISM_HOUDINI_BUDGET");
     CHECK(c["loop_long_inv"].status == prism::laws::BOUNDED);
-    CHECK(c["loop_long_bounded"].status == prism::laws::BOUNDED);
+    CHECK(c["loop_long_cubic"].status == prism::laws::BOUNDED);
     int spent = 0;
-    for (auto* f : {&c["loop_long_inv"], &c["loop_long_bounded"]})
+    for (auto* f : {&c["loop_long_inv"], &c["loop_long_cubic"]})
         if (f->extra["invariants_note"].find("Houdini budget") != std::string::npos) ++spent;
     CHECK(spent >= 1);
 }
@@ -1478,3 +1478,54 @@ done:
     }
 }
 #endif
+
+TEST_CASE("pir: arithmetic invariant templates (max bound, scaled, variable multiplier, triangular), twins not proved (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_arith_inv";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "ar.c") << R"(extern void __assert_fail(const char *, const char *, unsigned int, const char *);
+void reach_error() { __assert_fail("0", "ar.c", 1, "reach_error"); }
+int post_loop_ok(int n) { int i = 0; if (n > 1000) return 0; while (i < n) i++; return 100 / (i - 5000); }
+int post_loop_bad(int n) { int i = 0; if (n > 6000) return 0; while (i < n) i++; return 100 / (i - 5000); }
+int scaled_ok(int n) { int i = 0, s = 0; if (n < 0 || n > 100) return 0; while (i < n) { s += 3; i++; } return s; }
+int scaled_bad(int n) { int i = 0, s = 0; if (n < 0 || n > 1000000000) return 0; while (i < n) { s += 3; i++; } return s; }
+int varmul_ok(int x) { int s = 0; if (x < 0 || x > 1000) return 0; for (int i = 0; i < 10; i++) s += x; return s; }
+int varmul_bad(int x) { int s = 0; if (x < 0 || x > 1000000000) return 0; for (int i = 0; i < 10; i++) s += x; return s; }
+int tri_ok(int n) { int s = 0; if (n < 0 || n > 1000) return 0; for (int i = 0; i < n; i++) s += i; return s; }
+int tri_bad(int n) { int s = 0; if (n < 0 || n > 100000) return 0; for (int i = 0; i < n; i++) s += i; return s; }
+int nested_ok(void) {
+    int a = 6, b = 6, c = 6, d = 6;
+    for (a = 0; a < 6; ++a) for (b = 0; b < 6; ++b) for (c = 0; c < 6; ++c) for (d = 0; d < 6; ++d) {}
+    if (!(a == 6 && b == 6 && c == 6 && d == 6)) reach_error();
+    return 1;
+}
+int nested_bad(void) {
+    int a = 6, b = 6, c = 6, d = 6;
+    for (a = 0; a < 6; ++a) for (b = 0; b < 6; ++b) for (c = 0; c < 6; ++c) for (d = 0; d < 6; ++d) {}
+    if (!(a == 6 && b == 6 && c == 6 && d == 5)) reach_error();
+    return 1;
+}
+)";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    cfg.solver_cache = dir / "cache";
+    std::map<std::string, prism::Finding> got;
+    for (auto& f : pp::run_pir({dir / "ar.c"}, cfg))
+        if (f.function) got[*f.function] = f;
+    // nested_ok (4 nested loops, D: Houdini after "unrolling exceeds") is proved
+    // only with ~780 MB (peak 781 MB at a 2500 MB budget); under the suite's
+    // 788 MB budget it stops UNKNOWN on the memory trip, never wrongly
+    for (const char* ok : {"post_loop_ok", "scaled_ok", "varmul_ok", "tri_ok"}) {
+        INFO(ok);
+        CHECK(got[ok].status == prism::laws::PROVED_UNBOUNDED);
+        CHECK(got[ok].extra["k_induction"] == "closed-invariants");
+    }
+    // the twins violate a property: an invariant template must never prove them
+    for (const char* bad : {"post_loop_bad", "scaled_bad", "varmul_bad", "tri_bad", "nested_bad"}) {
+        INFO(bad);
+        CHECK(got[bad].status != prism::laws::PROVED_UNBOUNDED);
+        CHECK(got[bad].status != prism::laws::PROVED);
+    }
+}
