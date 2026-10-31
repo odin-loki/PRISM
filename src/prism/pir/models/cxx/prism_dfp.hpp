@@ -44,6 +44,7 @@
 #ifdef __cplusplus
 #include "prism_fpfmt.h"
 #include <stdio.h>
+#include <stdarg.h>
 #include <math.h>
 // C's classification macros would bypass the decimal overloads below.
 #undef signbit
@@ -74,9 +75,19 @@ struct __prism_dfp_round_scope {
     ~__prism_dfp_round_scope() { __prism_dfp_rnd = _M_old; }
 };
 struct __prism_dfp_round_global { explicit __prism_dfp_round_global(int __m) { if (__m >= 0) __prism_dfp_rnd = __m; } };
+// C23 7.6.3: a file-scope initialiser after a file-scope FENV_DEC_ROUND
+// is evaluated in the pragma's mode. The translator brackets each such
+// file-scope declaration with an enter/leave pair of static objects; in
+// one unit, dynamic initialisation follows declaration order, so the mode
+// is set exactly while that declaration's initialiser runs.
+inline int __prism_dfp_file_saved = -1;
+struct __prism_dfp_file_enter { explicit __prism_dfp_file_enter(int __m) { if (__prism_dfp_file_saved < 0) __prism_dfp_file_saved = __prism_dfp_rnd; if (__m >= 0) __prism_dfp_rnd = __m; } };
+struct __prism_dfp_file_leave { __prism_dfp_file_leave() { if (__prism_dfp_file_saved >= 0) __prism_dfp_rnd = __prism_dfp_file_saved; __prism_dfp_file_saved = -1; } };
 #define __PRISM_DFP_CAT2(a, b) a##b
 #define __PRISM_DFP_CAT(a, b) __PRISM_DFP_CAT2(a, b)
 #define __PRISM_DFP_ROUND_BLOCK(m) __prism_dfp_round_scope __PRISM_DFP_CAT(__prism_dfp_rs_, __COUNTER__)(m);
+#define __PRISM_DFP_FILE_INIT_BEGIN(m) static __prism_dfp_file_enter __PRISM_DFP_CAT(__prism_dfp_fe_, __COUNTER__)(m);
+#define __PRISM_DFP_FILE_INIT_END static __prism_dfp_file_leave __PRISM_DFP_CAT(__prism_dfp_fl_, __COUNTER__);
 #define __PRISM_DFP_ROUND_FILE(m) static __prism_dfp_round_global __PRISM_DFP_CAT(__prism_dfp_rg_, __COUNTER__)(m);
 
 template <int _P, int _Emax>
@@ -704,6 +715,58 @@ template <typename... _A> inline int __prism_dfp_fprintf(FILE* __s, const char* 
     return fputs(__b, __s) < 0 ? -1 : __n;
 }
 template <typename... _A> inline int __prism_dfp_printf(const char* __f, _A... __a) { return __prism_dfp_fprintf(stdout, __f, __a...); }
+// v*printf: the va_list erased the argument types, so they are recovered
+// from the format itself (C23 7.23.6.1: the conversion and length modifier
+// fix each argument's promoted type; %H/%D/%DD are _Decimal32/64/128, which
+// the shim passes through `...` as trivially copyable class objects).
+inline int __prism_dfp_vsnprintf(char* __o, size_t __n, const char* __f, va_list __ap) {
+    enum { _Max = 256 };
+    __prism_dfp_arg __v[_Max + 1];
+    int __c = 0;
+    for (const char* __p = __f; *__p && __c < _Max; ++__p) {
+        if (*__p != '%') continue;
+        ++__p;
+        if (*__p == '%') continue;
+        while (*__p && __builtin_strchr("-+ #0'", *__p)) ++__p;
+        if (*__p == '*') { __v[__c++] = __prism_dfp_mk(va_arg(__ap, int)); ++__p; } else while (*__p >= '0' && *__p <= '9') ++__p;
+        if (*__p == '.') { ++__p; if (*__p == '*') { __v[__c++] = __prism_dfp_mk(va_arg(__ap, int)); ++__p; } else while (*__p >= '0' && *__p <= '9') ++__p; }
+        int __l = 0;  // 1 hh/h, 2 l, 3 ll/j/z/t, 4 L, 5 H, 6 D, 7 DD
+        if (*__p == 'h') { __l = 1; ++__p; if (*__p == 'h') ++__p; }
+        else if (*__p == 'l') { __l = 2; ++__p; if (*__p == 'l') { __l = 3; ++__p; } }
+        else if (*__p == 'j' || *__p == 'z' || *__p == 't') { __l = 3; ++__p; }
+        else if (*__p == 'L') { __l = 4; ++__p; }
+        else if (*__p == 'H') { __l = 5; ++__p; }
+        else if (*__p == 'D') { __l = 6; ++__p; if (*__p == 'D') { __l = 7; ++__p; } }
+        const char __k = *__p;
+        if (!__k) break;
+        if (__l >= 5) {
+            if (__l == 5) __v[__c++] = __prism_dfp_mk(va_arg(__ap, __prism_dec32));
+            else if (__l == 6) __v[__c++] = __prism_dfp_mk(va_arg(__ap, __prism_dec64));
+            else __v[__c++] = __prism_dfp_mk(va_arg(__ap, __prism_dec128));
+        } else if (__k == 'd' || __k == 'i' || __k == 'c') {
+            __v[__c++] = __l == 3 ? __prism_dfp_mk(va_arg(__ap, long long)) : __l == 2 ? __prism_dfp_mk(va_arg(__ap, long)) : __prism_dfp_mk(va_arg(__ap, int));
+        } else if (__k == 'u' || __k == 'o' || __k == 'x' || __k == 'X' || __k == 'b' || __k == 'B') {
+            __v[__c++] = __l == 3 ? __prism_dfp_mk(va_arg(__ap, unsigned long long)) : __l == 2 ? __prism_dfp_mk(va_arg(__ap, unsigned long)) : __prism_dfp_mk(va_arg(__ap, unsigned));
+        } else if (__builtin_strchr("fFeEgGaA", __k)) {
+            __v[__c++] = __l == 4 ? __prism_dfp_mk(va_arg(__ap, long double)) : __prism_dfp_mk(va_arg(__ap, double));
+        } else {
+            __v[__c++] = __prism_dfp_mk((const void*)va_arg(__ap, void*));  // s, p, n
+        }
+    }
+    __v[__c] = __prism_dfp_mk(0);
+    return __prism_dfp_vformat(__o, __n, __f, __v, __c);
+}
+inline int __prism_dfp_vsprintf(char* __o, const char* __f, va_list __ap) { return __prism_dfp_vsnprintf(__o, (size_t)-1 / 2, __f, __ap); }
+inline int __prism_dfp_vfprintf(FILE* __s, const char* __f, va_list __ap) {
+    va_list __a2; va_copy(__a2, __ap);
+    int __n = __prism_dfp_vsnprintf((char*)nullptr, 0, __f, __a2);
+    va_end(__a2);
+    if (__n < 0) return __n;
+    char* __b = (char*)__builtin_alloca((size_t)__n + 1);
+    __prism_dfp_vsnprintf(__b, (size_t)__n + 1, __f, __ap);
+    return fputs(__b, __s) < 0 ? -1 : __n;
+}
+inline int __prism_dfp_vprintf(const char* __f, va_list __ap) { return __prism_dfp_vfprintf(stdout, __f, __ap); }
 
 // scanf: decimal conversions parsed here, the rest by the C library per spec.
 struct __prism_dfp_src { const char* _M_s; FILE* _M_f; int get() { if (_M_s) return *_M_s ? (unsigned char)*_M_s++ : -1; return getc(_M_f); } void unget(int __c) { if (__c < 0) return; if (_M_s) --_M_s; else ungetc(__c, _M_f); } };

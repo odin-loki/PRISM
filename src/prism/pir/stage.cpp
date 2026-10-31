@@ -406,7 +406,12 @@ std::string c23_compound_literal_rewrite(const std::string& in, bool* changed) {
                 if (k < n && b < n && in[b] == '{') {
                     size_t e = b;
                     int bd = 0;
-                    for (; e < n; ++e) { if (in[e] == '{') ++bd; else if (in[e] == '}' && --bd == 0) break; }
+                    for (; e < n; ++e) {
+                        if (in[e] == '"' || in[e] == '\'') { const char q = in[e]; for (++e; e < n && in[e] != q; ++e) if (in[e] == '\\') ++e; continue; }
+                        if (in[e] == '/' && e + 1 < n && in[e + 1] == '*') { e = in.find("*/", e + 2); if (e == std::string::npos) e = n; else ++e; continue; }
+                        if (in[e] == '/' && e + 1 < n && in[e + 1] == '/') { e = in.find('\n', e); if (e == std::string::npos) e = n; continue; }
+                        if (in[e] == '{') ++bd; else if (in[e] == '}' && --bd == 0) break;
+                    }
                     if (e < n) {
                         std::string type = in.substr(j, k - j);
                         std::string init = in.substr(b, e - b + 1);
@@ -476,7 +481,7 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
             std::string id = in.substr(i, j - i);
             size_t k = j;
             while (k < n && (in[k] == ' ' || in[k] == '\t')) ++k;
-            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf"};
+            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf", "vprintf", "vfprintf", "vsprintf", "vsnprintf"};
             // C++-only keywords are ordinary identifiers in C
             static const std::set<std::string> kKw{
                 "class", "new", "delete", "this", "template", "typename", "namespace", "operator", "private",
@@ -501,6 +506,7 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
     int depth = 0;
     std::string file_mode;  // active file-scope FENV_DEC_ROUND, "" = dynamic
     char last_top = 0;      // last non-space char seen at file scope
+    bool in_bcomment = false, stmt_start = false, init_open = false, fn_body = false;
     while (pos < out.size()) {
         size_t e = out.find('\n', pos);
         e = e == std::string::npos ? out.size() : e + 1;
@@ -531,17 +537,59 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
         // body opened after it starts with a scoped mode, so code before the
         // pragma and functions called from elsewhere keep the dynamic mode.
         // A body is a depth-1 '{' whose preceding top-level text ends in ')'.
+        // Braces are counted outside comments, string and character
+        // literals (block comments span lines). After a file-scope pragma,
+        // each top-level declaration is bracketed by FILE_INIT_BEGIN/END so
+        // its initialiser runs in the pragma's mode (C23 7.6.3).
         {
             std::string nl;
-            for (char ch : l) {
+            const bool pp = f != std::string::npos && l[f] == '#' && !in_bcomment;
+            for (size_t ci = 0; ci < l.size(); ++ci) {
+                const char ch = l[ci];
+                if (in_bcomment) {
+                    nl.push_back(ch);
+                    if (ch == '*' && ci + 1 < l.size() && l[ci + 1] == '/') { nl.push_back('/'); ++ci; in_bcomment = false; }
+                    continue;
+                }
+                if (pp) { nl.push_back(ch); continue; }
+                if (ch == '/' && ci + 1 < l.size() && l[ci + 1] == '/') { nl.append(l, ci, std::string::npos); break; }
+                if (ch == '/' && ci + 1 < l.size() && l[ci + 1] == '*') { nl += "/*"; ++ci; in_bcomment = true; continue; }
+                if (depth == 1 && stmt_start && !file_mode.empty() && !std::isspace(static_cast<unsigned char>(ch)) && ch != '}') {
+                    nl += "__PRISM_DFP_FILE_INIT_BEGIN(" + file_mode + ") ";
+                    init_open = true;
+                }
+                if (depth == 1 && !std::isspace(static_cast<unsigned char>(ch))) stmt_start = false;
+                if (ch == '"' || ch == '\'') {
+                    size_t j = ci + 1;
+                    while (j < l.size() && l[j] != ch && l[j] != '\n') { if (l[j] == '\\') ++j; ++j; }
+                    j = std::min(l.size(), j + 1);
+                    nl.append(l, ci, j - ci);
+                    ci = j - 1;
+                    last_top = ch;
+                    continue;
+                }
                 nl.push_back(ch);
                 if (ch == '{') {
-                    if (depth == 1 && !file_mode.empty() && last_top == ')')
+                    if (depth == 1 && !file_mode.empty() && last_top == ')') {
                         nl += " __PRISM_DFP_ROUND_BLOCK(" + file_mode + ")";
+                        fn_body = true;
+                    }
+                    if (depth == 0) stmt_start = true;  // the extern "C" wrapper
                     ++depth;
-                } else if (ch == '}') --depth;
+                } else if (ch == '}') {
+                    --depth;
+                    if (depth == 1 && fn_body) {
+                        fn_body = false;
+                        stmt_start = true;
+                        if (init_open) { nl += " __PRISM_DFP_FILE_INIT_END"; init_open = false; }
+                    }
+                } else if (ch == ';' && depth == 1) {
+                    stmt_start = true;
+                    if (init_open) { nl += " __PRISM_DFP_FILE_INIT_END"; init_open = false; }
+                }
                 if (depth == 1 && !std::isspace(static_cast<unsigned char>(ch))) last_top = ch;
             }
+            if (pp) stmt_start = true;
             l = nl;
         }
         if (inc)

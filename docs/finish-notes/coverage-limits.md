@@ -133,6 +133,25 @@ below.
   reordering, VLA typedefs) still fail and the error says the shim was
   tried; the file-scope pragma is dynamic (affects the whole program from
   startup) where C23 makes it lexical [closed in session 7, above].
+  Session 8 (written; header and stage.cpp compile-checked only):
+  - CLOSED (unverified): file-scope decimal initialisers after a
+    file-scope FENV_DEC_ROUND use the pragma's mode: each top-level
+    declaration after the pragma is bracketed by
+    __PRISM_DFP_FILE_INIT_BEGIN(mode)/__PRISM_DFP_FILE_INIT_END static
+    objects (declaration-order dynamic initialisation in one unit).
+  - CLOSED (unverified): stage.cpp's file-scope brace counter and the
+    compound-literal initialiser scan skip string/char literals and
+    // and /* */ comments (block comments across lines).
+  - CLOSED (unverified), item 5: vprintf/vfprintf/vsprintf/vsnprintf are
+    rewritten to __prism_dfp_v*; the shim recovers each argument's type
+    from the format (conversion + length modifier, %H/%D/%DD as decimal
+    classes passed through `...`). v*scanf is still not rewritten.
+  Still open after session 8: item 1 (exact sprintf bytes for symbolic
+  doubles), item 4 (correctly rounded _Decimal128 transcendentals via a
+  wider type and precision-raising loop), item 6 (K&R definitions,
+  designated-initializer reordering, [static N]/VLA forms via a split C++
+  file), item 8 (unwind-limit guards on the tiny-double exact-text loops),
+  v*scanf with decimal pointers.
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route
