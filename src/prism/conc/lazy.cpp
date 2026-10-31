@@ -995,7 +995,7 @@ struct Enc {
                 break;
             }
             case VisOp::Create: {
-                if (o.copies > 1 || create_slot.count({t, node})) {
+                if (o.looped) {
                     // looped creation: head = handle address, tail = argument
                     int u = create_slot.at({t, node});
                     if (mk.tail) {
@@ -1262,7 +1262,7 @@ struct Enc {
             for (auto& nd : g[t].nodes) {
                 if (nd.head < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
-                if (o.kind != VisOp::Create) continue;
+                if (o.kind != VisOp::Create || o.looped) continue;
                 auto [it, fresh] = create_in.emplace(nd.head, t);
                 if ((!fresh && it->second != t) || o.thread <= static_cast<int>(t))
                     throw Fail{std::string(laws::NEEDS_HARNESS),
@@ -1271,18 +1271,23 @@ struct Enc {
             }
         // looped creation sites: the k-th unrolled execution creates slot
         // thread + k; more executions than slots is a bound hit (reported)
+        // (any thread may run a looped site; slots are shared by all its
+        // executions, and a slot must be above its creator's index)
+        std::map<int, int> used;
         for (std::size_t t = 0; t < N; ++t) {
-            std::map<int, int> used;
             for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
                 int h = g[t].nodes[nd].head;
                 if (h < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(h)];
-                if (o.kind != VisOp::Create || o.copies <= 1) continue;
+                if (o.kind != VisOp::Create || !o.looped) continue;
                 int k = used[h]++;
                 if (k >= o.copies)
                     throw Fail{std::string(laws::NEEDS_HARNESS),
                                "UNENCODED: " + o.what + " runs more than " + std::to_string(o.copies) +
                                    " times (thread slots per looped creation site = unwind)" + at_line(o.line)};
+                if (o.thread + k <= static_cast<int>(t))
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " creates a thread slot at or below its creator" + at_line(o.line)};
                 create_slot[{static_cast<int>(t), static_cast<int>(nd)}] = o.thread + k;
             }
         }
@@ -1290,7 +1295,7 @@ struct Enc {
             for (auto& nd : g[t].nodes) {
                 if (nd.head < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
-                if (o.kind != VisOp::Create || o.copies > 1) continue;
+                if (o.kind != VisOp::Create || o.looped) continue;
                 int cnt = 0;
                 for (auto& m : g[t].nodes)
                     if (m.head == nd.head) ++cnt;
@@ -1426,7 +1431,7 @@ Result check(const Program& prog, const Options& opt) {
         res.extra["heap_slots"] = std::to_string(enc.heap.size());
         res.extra["max_alloc"] = std::to_string(opt.max_alloc);
         for (auto& o : prog.ops)
-            if (o.kind == VisOp::Create && o.copies > 1)
+            if (o.kind == VisOp::Create && o.looped)
                 res.extra["loop_thread_slots"] = std::to_string(o.copies) + " per looped creation site";
         z3::solver s(enc.c);
         z3::params prm(enc.c);

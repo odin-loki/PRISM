@@ -256,7 +256,37 @@ struct Rewriter {
 
     Rewriter(const ir::Module& s, std::string_view ir_text) : src(s), m(s), lay(s) {
         for (auto& g : parse_globals(ir_text)) globals[g.name] = g;
+        // scalar globals whose address is taken (passed, stored, compared,
+        // GEP'd, inside a constant expression): they live in the bounded
+        // memory so that by-name and through-pointer accesses agree
+        std::function<void(const ir::Operand&)> ce = [&](const ir::Operand& o) {
+            if (o.v.kind == ir::Value::Global) addr_taken.insert(o.v.name);
+            for (auto& e : o.v.elems) ce(e);
+        };
+        for (auto& f : src.functions)
+            for (auto& bl : f.blocks)
+                for (auto& in : bl.insts) {
+                    if (in.op == "call" && (in.callee == "pthread_join" || in.callee == "thrd_join" ||
+                                            in.callee == "pthread_create" || in.callee == "thrd_create")) {
+                        // the handle operand is not an address use; the argument is
+                        auto ai = in.callee == "pthread_create" ? 3u : in.callee == "thrd_create" ? 2u : 99u;
+                        if (ai < in.ops.size()) ce(in.ops[ai]);
+                        continue;
+                    }
+                    for (std::size_t i = 0; i < in.ops.size(); ++i) {
+                        const auto& o = in.ops[i];
+                        bool ptr_pos = (in.op == "load" && i == 0) || (in.op == "store" && i == 1) ||
+                                       (in.op == "atomicrmw" && i == 0) || (in.op == "cmpxchg" && i == 0);
+                        if (o.v.kind == ir::Value::ConstExpr) ce(o);
+                        else if (!ptr_pos && o.v.kind == ir::Value::Global && o.ty.kind == ir::Type::Ptr)
+                            addr_taken.insert(o.v.name);
+                    }
+                    for (auto& [o, _] : in.incoming) ce(o);
+                }
     }
+    std::set<std::string> addr_taken;                 // scalar globals that live in the bounded memory
+    std::map<std::string, std::vector<std::string>> frame_slots;  // fn -> escaping allocas (paddr names)
+    std::map<std::string, std::vector<int>> mem_params;           // defined fn -> pointer params carried as i64
 
     int line_of(const ir::Inst& in) const {
         auto it = src.locs.find(in.dbg);
@@ -313,6 +343,8 @@ struct Rewriter {
     }
 
     int shared_var(const std::string& g, const ir::Type& ty) {
+        if (addr_taken.count(g))
+            throw Unenc{"UNENCODED: atomic read-modify-write on @" + g + ", whose address is taken (bounded memory RMW)"};
         if (auto it = var_index.find(g); it != var_index.end()) {
             if (prog.vars[static_cast<std::size_t>(it->second)].width != ty.bits)
                 throw Unenc{"UNENCODED: @" + g + " accessed at different widths (memory model)"};
@@ -353,7 +385,8 @@ struct Rewriter {
         const auto* gl = src.find_global(g);
         if (!gl) return -1;
         const auto& rt = lay.resolve(gl->ty);
-        if (rt.kind == ir::Type::Int || rt.kind == ir::Type::Ptr) return -1;
+        if ((rt.kind == ir::Type::Int || rt.kind == ir::Type::Ptr) && !addr_taken.count(g)) return -1;
+        if (src.find(g)) return -1;  // a function
         if (gl->thread_local_) throw Unenc{"UNENCODED: thread_local aggregate @" + g};
         MemObject o;
         o.name = g;
@@ -500,6 +533,11 @@ struct Rewriter {
                         yes = mem_resolvable(fn, in.ops[0]);
                     } else if (in.op == "call" && in.ty.kind == ir::Type::Ptr && is_alloc_fn(in.callee)) {
                         yes = true;
+                    } else if (in.op == "alloca" && escapes(f, in.result) && !handle_thread.count(key) &&
+                               harness_stack_object(fn, in.result) < 0) {
+                        if (!in.ops.empty() && in.ops[0].v.kind != ir::Value::Int)
+                            throw Unenc{"UNENCODED: variable-length alloca whose address escapes"};
+                        yes = true;
                     }
                     if (yes) {
                         caddr[key] = paddr(in.result);
@@ -514,6 +552,27 @@ struct Rewriter {
     }
     static bool is_free_fn(const std::string& n) {
         return n == "free" || n == "_ZdlPv" || n == "_ZdlPvm" || n == "_ZdaPv" || n == "_ZdaPvm";
+    }
+
+    // an alloca whose address is used other than as a plain load/store
+    // pointer (passed to a call or a thread, stored, GEP'd, merged): its
+    // object may be shared, so it lives in the bounded memory (a heap slot
+    // per activation, freed at the function's return)
+    static bool escapes(const ir::Function& f, const std::string& name) {
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                for (std::size_t i = 0; i < in.ops.size(); ++i) {
+                    const auto& o = in.ops[i];
+                    if (o.v.kind != ir::Value::Local || o.v.name != name) continue;
+                    bool ptr_pos = (in.op == "load" && i == 0) || (in.op == "store" && i == 1);
+                    if (in.op == "call" && (in.callee.starts_with("llvm.lifetime") || in.callee.starts_with("llvm.dbg")))
+                        ptr_pos = true;
+                    if (!ptr_pos) return true;
+                }
+                for (auto& [o, _] : in.incoming)
+                    if (o.v.kind == ir::Value::Local && o.v.name == name) return true;
+            }
+        return false;
     }
 
     // phi / select of memory pointers -> the same over their i64 addresses.
@@ -727,6 +786,7 @@ struct Rewriter {
                         op.kind = VisOp::Create;
                         op.thread = static_cast<int>(prog.threads.size());
                         op.copies = loop_copies;
+                        op.looped = true;
                         op.line = line_of(in);
                         op.what = in.callee;
                         int k = add_op(op);
@@ -832,6 +892,31 @@ struct Rewriter {
             // thread handles live in allocas: drop them (their loads become constants)
             if (handle_thread.count(handle_key(fn, "%" + in.result))) return;
             if (obj_index.count(fn + "/%" + in.result)) return;  // a memory object (harness_stack_object)
+            if (caddr.count(handle_key(fn, "%" + in.result))) {  // escaping: a heap slot per activation
+                VisOp vo;
+                vo.kind = VisOp::Alloc;
+                vo.what = "stack object %" + in.result;
+                vo.line = line;
+                vo.size = lay.alloc_size(in.ety) * (in.ops.empty() ? 1 : in.ops[0].v.bits);
+                if (vo.size == 0) vo.size = 1;
+                int k = add_op(vo);
+                out.push_back(copy(in, marker(k), cint(vo.size, int_type(64))));
+                out.push_back(freeze(in, paddr(in.result), local(marker(k), int_type(64))));
+                frame_slots[fn].push_back(paddr(in.result));
+                return;
+            }
+            out.push_back(in);
+            return;
+        }
+        if (op == "ret" && frame_slots.count(fn)) {  // the frame ends: its escaping locals die
+            for (auto& a : frame_slots[fn]) {
+                VisOp vo;
+                vo.kind = VisOp::Free;
+                vo.what = "end of " + fn + "'s frame";
+                vo.line = line;
+                int k = add_op(vo);
+                out.push_back(copy(in, marker(k), local(a, int_type(64))));
+            }
             out.push_back(in);
             return;
         }
@@ -1458,9 +1543,65 @@ Build build_program(const ir::Module& m, std::string_view ir_text, const std::st
         if (created > opt.max_threads)
             throw Unenc{"UNENCODED: " + std::to_string(created) + " thread creation sites (bound " +
                         std::to_string(opt.max_threads) + ")"};
+        // pointer parameters of defined functions that receive bounded-memory
+        // pointers at every call site: carried as an extra i64 parameter
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto& f : rw.src.functions)
+                if (scope.count(f.name)) rw.find_mem_pointers(f.name, f);
+            std::map<std::pair<std::string, int>, std::pair<int, int>> sites;  // (callee, i) -> (all, mem)
+            for (auto& f : rw.src.functions) {
+                if (!scope.count(f.name)) continue;
+                for (auto& bl : f.blocks)
+                    for (auto& in : bl.insts) {
+                        if (in.op != "call" || in.callee.empty() || !rw.src.find(in.callee)) continue;
+                        for (std::size_t i = 0; i < in.ops.size(); ++i) {
+                            if (in.ops[i].ty.kind != ir::Type::Ptr) continue;
+                            auto& c = sites[{in.callee, static_cast<int>(i)}];
+                            ++c.first;
+                            if (rw.mem_resolvable(f.name, in.ops[i])) ++c.second;
+                        }
+                    }
+            }
+            for (auto& [k, c] : sites) {
+                const auto* g = rw.src.find(k.first);
+                if (c.first != c.second || rw.entry_of.count(k.first) || !g ||
+                    static_cast<std::size_t>(k.second) >= g->params.size())
+                    continue;
+                const auto& pn = g->params[static_cast<std::size_t>(k.second)].name;
+                if (pn.empty()) continue;
+                auto key = rw.handle_key(k.first, "%" + pn);
+                if (rw.caddr.count(key)) continue;
+                rw.caddr[key] = Rewriter::paddr(pn);
+                rw.mem_params[k.first].push_back(k.second);
+                changed = true;
+            }
+        }
         for (auto& f : rw.m.functions) {
             if (!scope.count(f.name) || !f.parse_error.empty()) continue;  // translate reports it if reached
             rw.rewrite_function(f, f.name);
+        }
+        // append the i64 address parameters / arguments
+        for (auto& f : rw.m.functions) {
+            if (!scope.count(f.name)) continue;
+            for (auto& bl : f.blocks)
+                for (auto& in : bl.insts) {
+                    if (in.op != "call" || !rw.mem_params.count(in.callee)) continue;
+                    for (int i : rw.mem_params[in.callee]) {
+                        if (static_cast<std::size_t>(i) >= in.ops.size()) throw Unenc{"UNENCODED: call @" + in.callee + " arity"};
+                        int obj = -1;
+                        auto a = rw.mem_addr(f.name, in.ops[static_cast<std::size_t>(i)], obj);
+                        if (!a) throw Unenc{"UNENCODED: pointer argument of @" + in.callee};
+                        in.ops.push_back(*a);
+                    }
+                }
+            if (auto it = rw.mem_params.find(f.name); it != rw.mem_params.end())
+                for (int i : it->second) {
+                    ir::Param p;
+                    p.ty = int_type(64);
+                    p.name = Rewriter::paddr(f.params[static_cast<std::size_t>(i)].name);
+                    f.params.push_back(p);
+                }
         }
         for (auto& f : rw.m.functions)
             if (rw.entry_of.count(f.name)) rw.prepare_entry(f);
