@@ -930,7 +930,23 @@ struct Parser {
     // Drops preprocessor directive lines. A directive starts its line
     // (C11 6.10p2); a `#` inside a string or character literal (a printf
     // flag, '#') is code and stays.
+    // Conditional inclusion (#if/#ifdef/#ifndef/#elif/#else) is not modelled:
+    // dropping the lines would encode both branches as one sequence (a
+    // `return` in the #ifdef arm hid the #else arm's overflow,
+    // tp/realworld_twins.c no_return_in_else), so such a body is UNENCODED.
     static std::string prep(std::string body) {
+        for (std::size_t i = 0; i < body.size();) {
+            std::size_t e = body.find('\n', i);
+            if (e == std::string::npos) e = body.size();
+            std::size_t k = body.find_first_not_of(" \t", i);
+            if (k < e && body[k] == '#') {
+                k = body.find_first_not_of(" \t", k + 1);
+                const std::string_view d = k < e ? std::string_view(body).substr(k, e - k) : std::string_view{};
+                if (d.starts_with("if") || d.starts_with("elif") || d.starts_with("else"))
+                    throw ParseFail("UNENCODED: conditional inclusion (#if/#else) in the body");
+            }
+            i = e + 1;
+        }
         return rx_sub("^[ \\t]*#.*", " ", body, true);
     }
 

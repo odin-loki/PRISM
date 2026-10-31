@@ -1,3 +1,5 @@
+#include "prism/solver.hpp"
+#include "prism/membudget.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/cli.hpp"
@@ -190,6 +192,7 @@ static int launch_gui(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    (void)prism::membudget::budget_mb();  // fix the budget and malloc arenas before any thread starts
     using namespace prism;
     // Ctrl-C / SIGTERM (a scorer's timeout) also kills the solvers, checkers
     // and compilers PRISM started: they run in process groups of their own
@@ -200,6 +203,7 @@ int main(int argc, char** argv) {
     // never change a verdict.
     if (argc > 1) {
         const std::string sub = argv[1];
+        if (sub == "z3-worker") return solver::z3_worker_main(argc - 1, argv + 1);
         if (sub == "regress") return ai::regress_main(argc - 2, argv + 2);
         if (sub == "ask") return ai::ask_main(argc - 2, argv + 2);
         if (sub == "draft") return ai::draft_main(argc - 2, argv + 2);

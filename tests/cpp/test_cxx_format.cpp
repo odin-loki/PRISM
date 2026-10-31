@@ -110,7 +110,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
@@ -229,9 +232,9 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     CHECK(text.find("std::format(") == std::string::npos);
 
     const auto write_at = text.find("inline char* __prism_format_write(");
-    const auto int_at = text.find("format_to_n(char* __out, std::size_t __n, const char* __fmt, int __v)");
+    const auto int_at = text.find("format_to_n(char* __outv, std::size_t __n, const char* __fmt, int __v)");
     const auto ll_at =
-        text.find("format_to_n(char* __out, std::size_t __n, const char* __fmt, long long __v)");
+        text.find("format_to_n(char* __outv, std::size_t __n, const char* __fmt, long long __v)");
     REQUIRE(write_at != std::string::npos);
     REQUIRE(int_at != std::string::npos);
     REQUIRE(ll_at != std::string::npos);
@@ -242,7 +245,7 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     const std::string ibody = text.substr(int_at, ll_at - int_at);
     const std::string lbody = text.substr(ll_at);
     CHECK(writer.find("The unwritten tail is not stored.") != std::string::npos);
-    CHECK(writer.find("for (std::size_t __k = 0; __k < __put; ++__k) __out[__k] = __tmp[__k];") !=
+    CHECK(writer.find("for (std::size_t __k = 0; __k < __put; ++__k) __outv[__k] = __tmp[__k];") !=
           std::string::npos);
     CHECK(writer.find("__k < __len") == std::string::npos);
     CHECK(writer.find("__k < __n") == std::string::npos);
@@ -250,7 +253,7 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
                      "static_cast<unsigned>(__v);") != std::string::npos);
     CHECK(ibody.find("PTR-NULL-DEREF") != std::string::npos);
     CHECK(ibody.find("__prism_format_write(") != std::string::npos);
-    CHECK(ibody.find("__out[__k]") == std::string::npos);
+    CHECK(ibody.find("__outv[__k]") == std::string::npos);
     CHECK(ibody.find("__r.size = static_cast<std::ptrdiff_t>(__len);") != std::string::npos);
     CHECK(ibody.find("format_to_n length does not fit in size_t") == std::string::npos);
 
@@ -259,13 +262,13 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     REQUIRE(brace != std::string::npos);
     REQUIRE(zero != std::string::npos);
     const std::string before_zero = lbody.substr(brace, zero - brace);
-    CHECK(before_zero.find("__out") == std::string::npos);
+    CHECK(before_zero.find("__outv") == std::string::npos);
     CHECK(before_zero.find("__prism_format_write") == std::string::npos);
     const auto zero_ret = lbody.find("return __r;", zero);
     REQUIRE(zero_ret != std::string::npos);
     const std::string zero_arm = lbody.substr(zero, zero_ret - zero);
-    CHECK(zero_arm.find("__r.out = __out;") != std::string::npos);
-    CHECK(zero_arm.find("__out[") == std::string::npos);
+    CHECK(zero_arm.find("__r.out = __outv;") != std::string::npos);
+    CHECK(zero_arm.find("__outv[") == std::string::npos);
     CHECK(zero_arm.find("__prism_format_write") == std::string::npos);
     CHECK(zero_arm.find("__r.size = static_cast<std::ptrdiff_t>(__len);") != std::string::npos);
 
@@ -284,7 +287,7 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     CHECK(len_add < zero);
     const std::string len_arm = lbody.substr(len_check, len_trap - len_check);
     CHECK(len_arm.find("__prism_format_write") == std::string::npos);
-    CHECK(len_arm.find("__out") == std::string::npos);
+    CHECK(len_arm.find("__outv") == std::string::npos);
     CHECK(len_arm.find("__nd + __sign") == std::string::npos);
     CHECK(len_arm.find("return") == std::string::npos);
 
@@ -300,7 +303,7 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     CHECK(null_txt.find("FUNC-CONTRACT") != std::string::npos);
     CHECK(null_txt.find("nullptr") != std::string::npos);
     CHECK(null_txt.find("null") != std::string::npos);
-    const auto null_trap = lbody.find("if (__out == nullptr) __builtin_trap();", null_end);
+    const auto null_trap = lbody.find("if (__outv == nullptr) __builtin_trap();", null_end);
     const auto call = lbody.find("__prism_format_write(");
     REQUIRE(null_trap != std::string::npos);
     REQUIRE(call != std::string::npos);
@@ -310,7 +313,7 @@ TEST_CASE("cxx format model: long long shares the writer and traps a length that
     CHECK(null_trap < call);
     const std::string null_arm = lbody.substr(null_call, null_trap - null_call);
     CHECK(null_arm.find("__prism_format_write") == std::string::npos);
-    CHECK(null_arm.find("__out[") == std::string::npos);
+    CHECK(null_arm.find("__outv[") == std::string::npos);
     CHECK(lbody.find("if (__neg) __tmp[__i++] = '-';") != std::string::npos);
     CHECK(lbody.find("__r.size = 0") == std::string::npos);
     CHECK(lbody.find("__r.size = static_cast<std::ptrdiff_t>(__put)") == std::string::npos);

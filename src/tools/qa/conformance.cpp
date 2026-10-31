@@ -56,6 +56,7 @@
 // This executes task code: only the trusted suite in this repository (or the
 // pinned Juliet archive, whose hash is checked) is ever compiled and run.
 
+#include "prism/membudget.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
 #include "support/fetch.hpp"
@@ -250,7 +251,7 @@ int conformance_main(const std::vector<std::string>& argv) {
         {"--jobs", "-j", true, false, "parallel PRISM runs (default: CPU count)"},
         {"--mem-limit-mb", "", true, false,
          "address-space cap per PRISM run in MB, inherited by its children (0: none); a run over it is scored as "
-         "no answer, never as a proof (default 4096)"},
+         "no answer, never as a proof (default 0: memory is bounded by PRISM_MEM_BUDGET_MB instead)"},
         {"--timeout", "", true, false, "seconds per PRISM run (default 180)"},
         {"--unwind", "", true, false, "--unwind for every PRISM run"},
         {"--filter", "", true, false, "regex on task ident"},
@@ -267,7 +268,9 @@ int conformance_main(const std::vector<std::string>& argv) {
     if (!parse_args("prism-qa conformance", "PRISM conformance suite runner (roadmap 2.7) and release gate (roadmap 6.1).",
                     specs, argv, args, rc))
         return rc;
-    long jobs = hw, mem_limit = 4096, unwind = 0;
+    // --mem-limit-mb (RLIMIT_AS) is opt-in: address space is not memory, and a 4 GB cap killed
+    // 37 libc runs with no report. Memory is bounded by PRISM_MEM_BUDGET_MB (UNKNOWN per function).
+    long jobs = hw, mem_limit = 0, unwind = 0;
     double timeout = 180.0;
     if ((args.has("--jobs") && !parse_int(args.get("--jobs"), jobs)) ||
         (args.has("--mem-limit-mb") && !parse_int(args.get("--mem-limit-mb"), mem_limit)) ||
@@ -278,6 +281,41 @@ int conformance_main(const std::vector<std::string>& argv) {
     }
     jobs = std::max(1L, jobs);
     mem_limit = std::max(0L, mem_limit);
+    // Box safety (Law 7, docs/PIR.md "Memory budget"): --mem-limit-mb caps
+    // address space per run, not memory, so `jobs` runs could together ask
+    // for jobs x 4 GB of a machine that has far less (the kernel then kills
+    // some prism, or something else). Each run gets an RSS budget (its share
+    // of 75% of MemAvailable, never more than half the address-space cap),
+    // which PRISM enforces per function as UNKNOWN; runs are cut to what
+    // fits at ~1 GB each.
+    // A PRISM_MEM_BUDGET_MB from the environment (prism-run) is the budget of
+    // the whole run tree, so it is split among the jobs too, not inherited whole.
+    {
+        const uint64_t avail = prism::membudget::base_budget_mb();  // env, else 75% of the tightest limit
+        if (avail > 0) {
+            // Floor: a run below ~2.5 GB turns provable functions UNKNOWN
+            // (a loaded box gave 169/202 vs 181). Cut jobs instead of budgets.
+            constexpr uint64_t kFloorMb = 2500;
+            const long fit = std::max(1L, static_cast<long>(avail / kFloorMb));
+            if (jobs > fit) {
+                std::cerr << "prism-qa conformance: --jobs " << jobs << " cut to " << fit << " (" << avail
+                          << " MB to share, at least " << kFloorMb << " MB per run)\n";
+                jobs = fit;
+            }
+            uint64_t per = std::max<uint64_t>(kFloorMb, avail / static_cast<uint64_t>(jobs));
+            if (mem_limit > 0) per = std::min<uint64_t>(per, static_cast<uint64_t>(mem_limit) * 3 / 4);
+            per = std::max<uint64_t>(per, std::min<uint64_t>(kFloorMb, mem_limit > 0 ? static_cast<uint64_t>(mem_limit) : kFloorMb));
+            // Under prism-run the tree is killed at 1.25x its budget, and one PRISM run can
+            // overshoot its own budget by ~30% before the stop lands (libc conf4: 3883 MB tree
+            // with 3000 MB): give each run 3/4 of its share.
+            if (std::getenv("PRISM_MEM_BUDGET_MB")) per = std::max<uint64_t>(512, avail * 3 / 4 / static_cast<uint64_t>(jobs));
+#ifdef _WIN32
+            _putenv_s("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str());
+#else
+            ::setenv("PRISM_MEM_BUDGET_MB", std::to_string(per).c_str(), 1);
+#endif
+        }
+    }
 
     try {
         if (args.has("--fetch-juliet")) {

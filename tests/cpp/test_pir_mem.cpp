@@ -25,6 +25,7 @@
 #endif
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -35,6 +36,10 @@ bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
         MESSAGE(why);
+        return true;
+    }
+    if (!pp::z3_available()) {
+        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;
@@ -1043,10 +1048,10 @@ TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)")
         s += 1;
     return s + (n & 1);
 }
-int loop_long_bounded(int n) {
+int loop_long_cubic(int n) {
     int s = 0;
     for (int i = 0; i < 100; i++)
-        s += i;
+        s += i * i;
     return s + (n & 1);
 }
 )";
@@ -1064,23 +1069,23 @@ int loop_long_bounded(int n) {
     auto a = run("cache");
     CHECK(a["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
     CHECK(a["loop_long_inv"].extra["houdini_cache"] == "stored");
-    CHECK(a["loop_long_bounded"].status == prism::laws::BOUNDED);
-    CHECK(a["loop_long_bounded"].extra["houdini_cache"] == "stored");
+    CHECK(a["loop_long_cubic"].status == prism::laws::BOUNDED);
+    CHECK(a["loop_long_cubic"].extra["houdini_cache"] == "stored");
     // second run: the proof is re-checked from its survivors, the no-proof is taken
     auto b = run("cache");
     CHECK(b["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
     CHECK(b["loop_long_inv"].extra["houdini_cache"] == "hit (proof re-checked)");
     CHECK(b["loop_long_inv"].extra["pir_invariants"] == a["loop_long_inv"].extra["pir_invariants"]);
-    CHECK(b["loop_long_bounded"].status == prism::laws::BOUNDED);
-    CHECK(b["loop_long_bounded"].extra["houdini_cache"] == "hit (no proof)");
+    CHECK(b["loop_long_cubic"].status == prism::laws::BOUNDED);
+    CHECK(b["loop_long_cubic"].extra["houdini_cache"] == "hit (no proof)");
     // a spent run budget: no proof, and a function that finds it spent says so
     test_setenv("PRISM_HOUDINI_BUDGET", "0.000001");
     auto c = run("cache2");
     test_unsetenv("PRISM_HOUDINI_BUDGET");
     CHECK(c["loop_long_inv"].status == prism::laws::BOUNDED);
-    CHECK(c["loop_long_bounded"].status == prism::laws::BOUNDED);
+    CHECK(c["loop_long_cubic"].status == prism::laws::BOUNDED);
     int spent = 0;
-    for (auto* f : {&c["loop_long_inv"], &c["loop_long_bounded"]})
+    for (auto* f : {&c["loop_long_inv"], &c["loop_long_cubic"]})
         if (f->extra["invariants_note"].find("Houdini budget") != std::string::npos) ++spent;
     CHECK(spent >= 1);
 }
@@ -1164,4 +1169,351 @@ entry:
     CHECK(v.message.find("PRISM_FUNCTION_BUDGET") != std::string::npos);
     REQUIRE(v.extra.count("function_budget_s") == 1);
 #endif
+}
+
+#ifdef PRISM_HAS_Z3
+// Value sets (Bv encoding) survive a 40-option address select (more than the
+// old kVsMax of 32) and an ite nested under its own condition (peel_ite): the
+// store and load through the same pointer agree, and the false twin fails.
+TEST_CASE("pir mem: Bv value sets over wide selects and nested same-condition ites") {
+    const char* ok = R"IR(define i32 @vs_wide_ok(i32 %i, i32 %d) {
+entry:
+  %a = alloca [40 x i8], align 16
+  call void @llvm.memset.p0.i64(ptr align 16 %a, i8 0, i64 40, i1 false)
+  %b0 = getelementptr inbounds i8, ptr %a, i64 0
+  %c1 = icmp eq i32 %i, 1
+  %g1 = getelementptr inbounds i8, ptr %a, i64 1
+  %b1 = select i1 %c1, ptr %g1, ptr %b0
+  %c2 = icmp eq i32 %i, 2
+  %g2 = getelementptr inbounds i8, ptr %a, i64 2
+  %b2 = select i1 %c2, ptr %g2, ptr %b1
+  %c3 = icmp eq i32 %i, 3
+  %g3 = getelementptr inbounds i8, ptr %a, i64 3
+  %b3 = select i1 %c3, ptr %g3, ptr %b2
+  %c4 = icmp eq i32 %i, 4
+  %g4 = getelementptr inbounds i8, ptr %a, i64 4
+  %b4 = select i1 %c4, ptr %g4, ptr %b3
+  %c5 = icmp eq i32 %i, 5
+  %g5 = getelementptr inbounds i8, ptr %a, i64 5
+  %b5 = select i1 %c5, ptr %g5, ptr %b4
+  %c6 = icmp eq i32 %i, 6
+  %g6 = getelementptr inbounds i8, ptr %a, i64 6
+  %b6 = select i1 %c6, ptr %g6, ptr %b5
+  %c7 = icmp eq i32 %i, 7
+  %g7 = getelementptr inbounds i8, ptr %a, i64 7
+  %b7 = select i1 %c7, ptr %g7, ptr %b6
+  %c8 = icmp eq i32 %i, 8
+  %g8 = getelementptr inbounds i8, ptr %a, i64 8
+  %b8 = select i1 %c8, ptr %g8, ptr %b7
+  %c9 = icmp eq i32 %i, 9
+  %g9 = getelementptr inbounds i8, ptr %a, i64 9
+  %b9 = select i1 %c9, ptr %g9, ptr %b8
+  %c10 = icmp eq i32 %i, 10
+  %g10 = getelementptr inbounds i8, ptr %a, i64 10
+  %b10 = select i1 %c10, ptr %g10, ptr %b9
+  %c11 = icmp eq i32 %i, 11
+  %g11 = getelementptr inbounds i8, ptr %a, i64 11
+  %b11 = select i1 %c11, ptr %g11, ptr %b10
+  %c12 = icmp eq i32 %i, 12
+  %g12 = getelementptr inbounds i8, ptr %a, i64 12
+  %b12 = select i1 %c12, ptr %g12, ptr %b11
+  %c13 = icmp eq i32 %i, 13
+  %g13 = getelementptr inbounds i8, ptr %a, i64 13
+  %b13 = select i1 %c13, ptr %g13, ptr %b12
+  %c14 = icmp eq i32 %i, 14
+  %g14 = getelementptr inbounds i8, ptr %a, i64 14
+  %b14 = select i1 %c14, ptr %g14, ptr %b13
+  %c15 = icmp eq i32 %i, 15
+  %g15 = getelementptr inbounds i8, ptr %a, i64 15
+  %b15 = select i1 %c15, ptr %g15, ptr %b14
+  %c16 = icmp eq i32 %i, 16
+  %g16 = getelementptr inbounds i8, ptr %a, i64 16
+  %b16 = select i1 %c16, ptr %g16, ptr %b15
+  %c17 = icmp eq i32 %i, 17
+  %g17 = getelementptr inbounds i8, ptr %a, i64 17
+  %b17 = select i1 %c17, ptr %g17, ptr %b16
+  %c18 = icmp eq i32 %i, 18
+  %g18 = getelementptr inbounds i8, ptr %a, i64 18
+  %b18 = select i1 %c18, ptr %g18, ptr %b17
+  %c19 = icmp eq i32 %i, 19
+  %g19 = getelementptr inbounds i8, ptr %a, i64 19
+  %b19 = select i1 %c19, ptr %g19, ptr %b18
+  %c20 = icmp eq i32 %i, 20
+  %g20 = getelementptr inbounds i8, ptr %a, i64 20
+  %b20 = select i1 %c20, ptr %g20, ptr %b19
+  %c21 = icmp eq i32 %i, 21
+  %g21 = getelementptr inbounds i8, ptr %a, i64 21
+  %b21 = select i1 %c21, ptr %g21, ptr %b20
+  %c22 = icmp eq i32 %i, 22
+  %g22 = getelementptr inbounds i8, ptr %a, i64 22
+  %b22 = select i1 %c22, ptr %g22, ptr %b21
+  %c23 = icmp eq i32 %i, 23
+  %g23 = getelementptr inbounds i8, ptr %a, i64 23
+  %b23 = select i1 %c23, ptr %g23, ptr %b22
+  %c24 = icmp eq i32 %i, 24
+  %g24 = getelementptr inbounds i8, ptr %a, i64 24
+  %b24 = select i1 %c24, ptr %g24, ptr %b23
+  %c25 = icmp eq i32 %i, 25
+  %g25 = getelementptr inbounds i8, ptr %a, i64 25
+  %b25 = select i1 %c25, ptr %g25, ptr %b24
+  %c26 = icmp eq i32 %i, 26
+  %g26 = getelementptr inbounds i8, ptr %a, i64 26
+  %b26 = select i1 %c26, ptr %g26, ptr %b25
+  %c27 = icmp eq i32 %i, 27
+  %g27 = getelementptr inbounds i8, ptr %a, i64 27
+  %b27 = select i1 %c27, ptr %g27, ptr %b26
+  %c28 = icmp eq i32 %i, 28
+  %g28 = getelementptr inbounds i8, ptr %a, i64 28
+  %b28 = select i1 %c28, ptr %g28, ptr %b27
+  %c29 = icmp eq i32 %i, 29
+  %g29 = getelementptr inbounds i8, ptr %a, i64 29
+  %b29 = select i1 %c29, ptr %g29, ptr %b28
+  %c30 = icmp eq i32 %i, 30
+  %g30 = getelementptr inbounds i8, ptr %a, i64 30
+  %b30 = select i1 %c30, ptr %g30, ptr %b29
+  %c31 = icmp eq i32 %i, 31
+  %g31 = getelementptr inbounds i8, ptr %a, i64 31
+  %b31 = select i1 %c31, ptr %g31, ptr %b30
+  %c32 = icmp eq i32 %i, 32
+  %g32 = getelementptr inbounds i8, ptr %a, i64 32
+  %b32 = select i1 %c32, ptr %g32, ptr %b31
+  %c33 = icmp eq i32 %i, 33
+  %g33 = getelementptr inbounds i8, ptr %a, i64 33
+  %b33 = select i1 %c33, ptr %g33, ptr %b32
+  %c34 = icmp eq i32 %i, 34
+  %g34 = getelementptr inbounds i8, ptr %a, i64 34
+  %b34 = select i1 %c34, ptr %g34, ptr %b33
+  %c35 = icmp eq i32 %i, 35
+  %g35 = getelementptr inbounds i8, ptr %a, i64 35
+  %b35 = select i1 %c35, ptr %g35, ptr %b34
+  %c36 = icmp eq i32 %i, 36
+  %g36 = getelementptr inbounds i8, ptr %a, i64 36
+  %b36 = select i1 %c36, ptr %g36, ptr %b35
+  %c37 = icmp eq i32 %i, 37
+  %g37 = getelementptr inbounds i8, ptr %a, i64 37
+  %b37 = select i1 %c37, ptr %g37, ptr %b36
+  %c38 = icmp eq i32 %i, 38
+  %g38 = getelementptr inbounds i8, ptr %a, i64 38
+  %b38 = select i1 %c38, ptr %g38, ptr %b37
+  %c39 = icmp eq i32 %i, 39
+  %g39 = getelementptr inbounds i8, ptr %a, i64 39
+  %b39 = select i1 %c39, ptr %g39, ptr %b38
+  %t = icmp sgt i32 %d, 0
+  %h = getelementptr inbounds i8, ptr %a, i64 39
+  %in = select i1 %t, ptr %b39, ptr %h
+  %p = select i1 %t, ptr %in, ptr %h
+  store i8 7, ptr %p, align 1
+  %v = load i8, ptr %p, align 1
+  %w = load i8, ptr %a, align 1
+  %ok = icmp eq i8 %v, 7
+  br i1 %ok, label %done, label %err
+err:
+  call void @reach_error()
+  unreachable
+done:
+  %r = zext i8 %w to i32
+  ret i32 %r
+}
+)IR";
+    const char* bad = R"IR(define i32 @vs_wide_bad(i32 %i, i32 %d) {
+entry:
+  %a = alloca [40 x i8], align 16
+  call void @llvm.memset.p0.i64(ptr align 16 %a, i8 0, i64 40, i1 false)
+  %b0 = getelementptr inbounds i8, ptr %a, i64 0
+  %c1 = icmp eq i32 %i, 1
+  %g1 = getelementptr inbounds i8, ptr %a, i64 1
+  %b1 = select i1 %c1, ptr %g1, ptr %b0
+  %c2 = icmp eq i32 %i, 2
+  %g2 = getelementptr inbounds i8, ptr %a, i64 2
+  %b2 = select i1 %c2, ptr %g2, ptr %b1
+  %c3 = icmp eq i32 %i, 3
+  %g3 = getelementptr inbounds i8, ptr %a, i64 3
+  %b3 = select i1 %c3, ptr %g3, ptr %b2
+  %c4 = icmp eq i32 %i, 4
+  %g4 = getelementptr inbounds i8, ptr %a, i64 4
+  %b4 = select i1 %c4, ptr %g4, ptr %b3
+  %c5 = icmp eq i32 %i, 5
+  %g5 = getelementptr inbounds i8, ptr %a, i64 5
+  %b5 = select i1 %c5, ptr %g5, ptr %b4
+  %c6 = icmp eq i32 %i, 6
+  %g6 = getelementptr inbounds i8, ptr %a, i64 6
+  %b6 = select i1 %c6, ptr %g6, ptr %b5
+  %c7 = icmp eq i32 %i, 7
+  %g7 = getelementptr inbounds i8, ptr %a, i64 7
+  %b7 = select i1 %c7, ptr %g7, ptr %b6
+  %c8 = icmp eq i32 %i, 8
+  %g8 = getelementptr inbounds i8, ptr %a, i64 8
+  %b8 = select i1 %c8, ptr %g8, ptr %b7
+  %c9 = icmp eq i32 %i, 9
+  %g9 = getelementptr inbounds i8, ptr %a, i64 9
+  %b9 = select i1 %c9, ptr %g9, ptr %b8
+  %c10 = icmp eq i32 %i, 10
+  %g10 = getelementptr inbounds i8, ptr %a, i64 10
+  %b10 = select i1 %c10, ptr %g10, ptr %b9
+  %c11 = icmp eq i32 %i, 11
+  %g11 = getelementptr inbounds i8, ptr %a, i64 11
+  %b11 = select i1 %c11, ptr %g11, ptr %b10
+  %c12 = icmp eq i32 %i, 12
+  %g12 = getelementptr inbounds i8, ptr %a, i64 12
+  %b12 = select i1 %c12, ptr %g12, ptr %b11
+  %c13 = icmp eq i32 %i, 13
+  %g13 = getelementptr inbounds i8, ptr %a, i64 13
+  %b13 = select i1 %c13, ptr %g13, ptr %b12
+  %c14 = icmp eq i32 %i, 14
+  %g14 = getelementptr inbounds i8, ptr %a, i64 14
+  %b14 = select i1 %c14, ptr %g14, ptr %b13
+  %c15 = icmp eq i32 %i, 15
+  %g15 = getelementptr inbounds i8, ptr %a, i64 15
+  %b15 = select i1 %c15, ptr %g15, ptr %b14
+  %c16 = icmp eq i32 %i, 16
+  %g16 = getelementptr inbounds i8, ptr %a, i64 16
+  %b16 = select i1 %c16, ptr %g16, ptr %b15
+  %c17 = icmp eq i32 %i, 17
+  %g17 = getelementptr inbounds i8, ptr %a, i64 17
+  %b17 = select i1 %c17, ptr %g17, ptr %b16
+  %c18 = icmp eq i32 %i, 18
+  %g18 = getelementptr inbounds i8, ptr %a, i64 18
+  %b18 = select i1 %c18, ptr %g18, ptr %b17
+  %c19 = icmp eq i32 %i, 19
+  %g19 = getelementptr inbounds i8, ptr %a, i64 19
+  %b19 = select i1 %c19, ptr %g19, ptr %b18
+  %c20 = icmp eq i32 %i, 20
+  %g20 = getelementptr inbounds i8, ptr %a, i64 20
+  %b20 = select i1 %c20, ptr %g20, ptr %b19
+  %c21 = icmp eq i32 %i, 21
+  %g21 = getelementptr inbounds i8, ptr %a, i64 21
+  %b21 = select i1 %c21, ptr %g21, ptr %b20
+  %c22 = icmp eq i32 %i, 22
+  %g22 = getelementptr inbounds i8, ptr %a, i64 22
+  %b22 = select i1 %c22, ptr %g22, ptr %b21
+  %c23 = icmp eq i32 %i, 23
+  %g23 = getelementptr inbounds i8, ptr %a, i64 23
+  %b23 = select i1 %c23, ptr %g23, ptr %b22
+  %c24 = icmp eq i32 %i, 24
+  %g24 = getelementptr inbounds i8, ptr %a, i64 24
+  %b24 = select i1 %c24, ptr %g24, ptr %b23
+  %c25 = icmp eq i32 %i, 25
+  %g25 = getelementptr inbounds i8, ptr %a, i64 25
+  %b25 = select i1 %c25, ptr %g25, ptr %b24
+  %c26 = icmp eq i32 %i, 26
+  %g26 = getelementptr inbounds i8, ptr %a, i64 26
+  %b26 = select i1 %c26, ptr %g26, ptr %b25
+  %c27 = icmp eq i32 %i, 27
+  %g27 = getelementptr inbounds i8, ptr %a, i64 27
+  %b27 = select i1 %c27, ptr %g27, ptr %b26
+  %c28 = icmp eq i32 %i, 28
+  %g28 = getelementptr inbounds i8, ptr %a, i64 28
+  %b28 = select i1 %c28, ptr %g28, ptr %b27
+  %c29 = icmp eq i32 %i, 29
+  %g29 = getelementptr inbounds i8, ptr %a, i64 29
+  %b29 = select i1 %c29, ptr %g29, ptr %b28
+  %c30 = icmp eq i32 %i, 30
+  %g30 = getelementptr inbounds i8, ptr %a, i64 30
+  %b30 = select i1 %c30, ptr %g30, ptr %b29
+  %c31 = icmp eq i32 %i, 31
+  %g31 = getelementptr inbounds i8, ptr %a, i64 31
+  %b31 = select i1 %c31, ptr %g31, ptr %b30
+  %c32 = icmp eq i32 %i, 32
+  %g32 = getelementptr inbounds i8, ptr %a, i64 32
+  %b32 = select i1 %c32, ptr %g32, ptr %b31
+  %c33 = icmp eq i32 %i, 33
+  %g33 = getelementptr inbounds i8, ptr %a, i64 33
+  %b33 = select i1 %c33, ptr %g33, ptr %b32
+  %c34 = icmp eq i32 %i, 34
+  %g34 = getelementptr inbounds i8, ptr %a, i64 34
+  %b34 = select i1 %c34, ptr %g34, ptr %b33
+  %c35 = icmp eq i32 %i, 35
+  %g35 = getelementptr inbounds i8, ptr %a, i64 35
+  %b35 = select i1 %c35, ptr %g35, ptr %b34
+  %c36 = icmp eq i32 %i, 36
+  %g36 = getelementptr inbounds i8, ptr %a, i64 36
+  %b36 = select i1 %c36, ptr %g36, ptr %b35
+  %c37 = icmp eq i32 %i, 37
+  %g37 = getelementptr inbounds i8, ptr %a, i64 37
+  %b37 = select i1 %c37, ptr %g37, ptr %b36
+  %c38 = icmp eq i32 %i, 38
+  %g38 = getelementptr inbounds i8, ptr %a, i64 38
+  %b38 = select i1 %c38, ptr %g38, ptr %b37
+  %c39 = icmp eq i32 %i, 39
+  %g39 = getelementptr inbounds i8, ptr %a, i64 39
+  %b39 = select i1 %c39, ptr %g39, ptr %b38
+  %t = icmp sgt i32 %d, 0
+  %h = getelementptr inbounds i8, ptr %a, i64 39
+  %in = select i1 %t, ptr %b39, ptr %h
+  %p = select i1 %t, ptr %in, ptr %h
+  store i8 7, ptr %p, align 1
+  %v = load i8, ptr %p, align 1
+  %w = load i8, ptr %a, align 1
+  %ok = icmp ne i8 %v, 7
+  br i1 %ok, label %done, label %err
+err:
+  call void @reach_error()
+  unreachable
+done:
+  %r = zext i8 %w to i32
+  ret i32 %r
+}
+)IR";
+    for (auto [ir, name, status] : {std::tuple{ok, "vs_wide_ok", "PROVED"}, std::tuple{bad, "vs_wide_bad", "FAILED"}}) {
+        CAPTURE(name);
+        auto t = mem_tr(with_decls(ir), name);
+        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+        pp::EncodeOptions eo;
+        eo.memory = pp::MemEncoding::Bv;
+        auto v = pp::check_function(*t.fn, 8, 30, eo);
+        CAPTURE(v.message);
+        CHECK(v.status == std::string(status));
+    }
+}
+#endif
+
+TEST_CASE("pir: arithmetic invariant templates (max bound, scaled, variable multiplier, triangular), twins not proved (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    auto dir = std::filesystem::temp_directory_path() / "prism_pir_arith_inv";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "ar.c") << R"(extern void __assert_fail(const char *, const char *, unsigned int, const char *);
+void reach_error() { __assert_fail("0", "ar.c", 1, "reach_error"); }
+int post_loop_ok(int n) { int i = 0; if (n > 1000) return 0; while (i < n) i++; return 100 / (i - 5000); }
+int post_loop_bad(int n) { int i = 0; if (n > 6000) return 0; while (i < n) i++; return 100 / (i - 5000); }
+int scaled_ok(int n) { int i = 0, s = 0; if (n < 0 || n > 100) return 0; while (i < n) { s += 3; i++; } return s; }
+int scaled_bad(int n) { int i = 0, s = 0; if (n < 0 || n > 1000000000) return 0; while (i < n) { s += 3; i++; } return s; }
+int varmul_ok(int x) { int s = 0; if (x < 0 || x > 1000) return 0; for (int i = 0; i < 10; i++) s += x; return s; }
+int varmul_bad(int x) { int s = 0; if (x < 0 || x > 1000000000) return 0; for (int i = 0; i < 10; i++) s += x; return s; }
+int tri_ok(int n) { int s = 0; if (n < 0 || n > 1000) return 0; for (int i = 0; i < n; i++) s += i; return s; }
+int tri_bad(int n) { int s = 0; if (n < 0 || n > 100000) return 0; for (int i = 0; i < n; i++) s += i; return s; }
+int nested_ok(void) {
+    int a = 6, b = 6, c = 6, d = 6;
+    for (a = 0; a < 6; ++a) for (b = 0; b < 6; ++b) for (c = 0; c < 6; ++c) for (d = 0; d < 6; ++d) {}
+    if (!(a == 6 && b == 6 && c == 6 && d == 6)) reach_error();
+    return 1;
+}
+int nested_bad(void) {
+    int a = 6, b = 6, c = 6, d = 6;
+    for (a = 0; a < 6; ++a) for (b = 0; b < 6; ++b) for (c = 0; c < 6; ++c) for (d = 0; d < 6; ++d) {}
+    if (!(a == 6 && b == 6 && c == 6 && d == 5)) reach_error();
+    return 1;
+}
+)";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    cfg.solver_cache = dir / "cache";
+    std::map<std::string, prism::Finding> got;
+    for (auto& f : pp::run_pir({dir / "ar.c"}, cfg))
+        if (f.function) got[*f.function] = f;
+    // nested_ok (4 nested loops, D: Houdini after "unrolling exceeds") is proved
+    // only with ~780 MB (peak 781 MB at a 2500 MB budget); under the suite's
+    // 788 MB budget it stops UNKNOWN on the memory trip, never wrongly
+    for (const char* ok : {"post_loop_ok", "scaled_ok", "varmul_ok", "tri_ok"}) {
+        INFO(ok);
+        CHECK(got[ok].status == prism::laws::PROVED_UNBOUNDED);
+        CHECK(got[ok].extra["k_induction"] == "closed-invariants");
+    }
+    // the twins violate a property: an invariant template must never prove them
+    for (const char* bad : {"post_loop_bad", "scaled_bad", "varmul_bad", "tri_bad", "nested_bad"}) {
+        INFO(bad);
+        CHECK(got[bad].status != prism::laws::PROVED_UNBOUNDED);
+        CHECK(got[bad].status != prism::laws::PROVED);
+    }
 }

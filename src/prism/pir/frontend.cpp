@@ -6,6 +6,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <random>
 #include <set>
 
@@ -87,6 +89,28 @@ std::vector<std::string> lp64_clang_driver_flags() {
     }
 #endif
     return f;
+}
+
+std::string lowerswitch_pass(const std::filesystem::path& opt) {
+    static std::mutex mu;
+    static std::map<std::string, std::string> cache;
+    const std::string key = opt.string();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (auto it = cache.find(key); it != cache.end()) return it->second;
+    }
+    std::string name = "lowerswitch";
+    auto r = detail::run_process({key, "--print-passes"}, 30.0);
+    if (!r.failed && !r.timed_out && r.rc == 0 && r.text.find("lowerswitch") == std::string::npos &&
+        r.text.find("lower-switch") != std::string::npos)
+        name = "lower-switch";
+    std::lock_guard<std::mutex> lock(mu);
+    cache[key] = name;
+    return name;
+}
+
+std::string c_ir_passes(const std::filesystem::path& opt) {
+    return "-passes=mem2reg," + lowerswitch_pass(opt) + ",loop-simplify,lcssa,instnamer";
 }
 
 bool frontend_usable(const Config& cfg, std::string* notrun_reason) {

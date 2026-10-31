@@ -57,7 +57,9 @@ class tuple<_T0> {
 public:
     constexpr tuple() : _M_0() {}
     constexpr tuple(const _T0& __x) : _M_0(__x) {}
-    constexpr tuple(_T0&& __x) : _M_0(static_cast<_T0&&>(__x)) {}
+    constexpr tuple(_T0&& __x)
+        requires(!(__is_lvalue_reference(_T0)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__x)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -75,7 +77,9 @@ class tuple<_T0, _T1> {
 public:
     constexpr tuple() : _M_0(), _M_1() {}
     constexpr tuple(const _T0& __a, const _T1& __b) : _M_0(__a), _M_1(__b) {}
-    constexpr tuple(_T0&& __a, _T1&& __b) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -94,7 +98,9 @@ class tuple<_T0, _T1, _T2> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c) : _M_0(__a), _M_1(__b), _M_2(__c) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -114,7 +120,9 @@ class tuple<_T0, _T1, _T2, _T3> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2) && __is_lvalue_reference(_T3)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -135,7 +143,9 @@ class tuple<_T0, _T1, _T2, _T3, _T4> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2) && __is_lvalue_reference(_T3) && __is_lvalue_reference(_T4)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -157,7 +167,9 @@ class tuple<_T0, _T1, _T2, _T3, _T4, _T5> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4(), _M_5() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e, const _T5& __f) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e), _M_5(__f) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2) && __is_lvalue_reference(_T3) && __is_lvalue_reference(_T4) && __is_lvalue_reference(_T5)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -180,7 +192,9 @@ class tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4(), _M_5(), _M_6() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e, const _T5& __f, const _T6& __g) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e), _M_5(__f), _M_6(__g) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f, _T6&& __g) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)), _M_6(static_cast<_T6&&>(__g)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f, _T6&& __g)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2) && __is_lvalue_reference(_T3) && __is_lvalue_reference(_T4) && __is_lvalue_reference(_T5) && __is_lvalue_reference(_T6)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)), _M_6(static_cast<_T6&&>(__g)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;
@@ -204,7 +218,9 @@ class tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7> {
 public:
     constexpr tuple() : _M_0(), _M_1(), _M_2(), _M_3(), _M_4(), _M_5(), _M_6(), _M_7() {}
     constexpr tuple(const _T0& __a, const _T1& __b, const _T2& __c, const _T3& __d, const _T4& __e, const _T5& __f, const _T6& __g, const _T7& __h) : _M_0(__a), _M_1(__b), _M_2(__c), _M_3(__d), _M_4(__e), _M_5(__f), _M_6(__g), _M_7(__h) {}
-    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f, _T6&& __g, _T7&& __h) : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)), _M_6(static_cast<_T6&&>(__g)), _M_7(static_cast<_T7&&>(__h)) {}
+    constexpr tuple(_T0&& __a, _T1&& __b, _T2&& __c, _T3&& __d, _T4&& __e, _T5&& __f, _T6&& __g, _T7&& __h)
+        requires(!(__is_lvalue_reference(_T0) && __is_lvalue_reference(_T1) && __is_lvalue_reference(_T2) && __is_lvalue_reference(_T3) && __is_lvalue_reference(_T4) && __is_lvalue_reference(_T5) && __is_lvalue_reference(_T6) && __is_lvalue_reference(_T7)))  // all lvalue references: the const& overload is the same signature
+        : _M_0(static_cast<_T0&&>(__a)), _M_1(static_cast<_T1&&>(__b)), _M_2(static_cast<_T2&&>(__c)), _M_3(static_cast<_T3&&>(__d)), _M_4(static_cast<_T4&&>(__e)), _M_5(static_cast<_T5&&>(__f)), _M_6(static_cast<_T6&&>(__g)), _M_7(static_cast<_T7&&>(__h)) {}
     constexpr tuple(const tuple&) = default;
     constexpr tuple(tuple&&) = default;
     constexpr tuple& operator=(const tuple&) = default;

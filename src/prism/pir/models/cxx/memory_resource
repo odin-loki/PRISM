@@ -123,7 +123,10 @@ private:
     size_t _M_size;
     size_t _M_used;
     size_t _M_nhand;
-    void* _M_hand[_S_max_hand] = {};
+    // Entries [0, _M_nhand) are written by allocate before deallocate reads
+    // them; no initialiser (a 32-element zeroing loop would not close at the
+    // default unwind and every harness would stay BOUNDED).
+    void* _M_hand[_S_max_hand];
 };
 
 }  // namespace pmr

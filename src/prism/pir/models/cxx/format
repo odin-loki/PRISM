@@ -39,15 +39,15 @@ struct format_to_n_result {
 
 // Shared by the int and long long overloads. __tmp holds the decimal text
 // of length __len. At most __n characters are stored. The unwritten tail is
-// not stored. A zero __n does not index __out.
-inline char* __prism_format_write(char* __out, std::size_t __n, const char* __tmp, std::size_t __len) {
+// not stored. A zero __n does not index __outv.
+inline char* __prism_format_write(char* __outv, std::size_t __n, const char* __tmp, std::size_t __len) {
     // The unwritten tail is not stored.
     const std::size_t __put = __len < __n ? __len : __n;
-    for (std::size_t __k = 0; __k < __put; ++__k) __out[__k] = __tmp[__k];
-    return __out + __put;
+    for (std::size_t __k = 0; __k < __put; ++__k) __outv[__k] = __tmp[__k];
+    return __outv + __put;
 }
 
-inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, int __v) {
+inline format_to_n_result format_to_n(char* __outv, std::size_t __n, const char* __fmt, int __v) {
     (void)__fmt;
     const bool __neg = __v < 0;
     // Magnitude via unsigned wrap, so INT_MIN is not a signed negation.
@@ -69,7 +69,7 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     }
     // n == 0 writes nothing and does not require an output pointer.
     if (__n > 0)
-        __prism_check(__out != nullptr ? 1 : 0, "PTR-NULL-DEREF",
+        __prism_check(__outv != nullptr ? 1 : 0, "PTR-NULL-DEREF",
                       "format_to_n called with a null output pointer");
     // This model writes decimal for "{}" only. Any other format is not a
     // successful conversion of the int.
@@ -80,17 +80,17 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     format_to_n_result __r;
     // Full length, not the truncated count and not 0 for a non-zero int.
     __r.size = static_cast<std::ptrdiff_t>(__len);
-    if (__n == 0 || __out == nullptr) {
-        __r.out = __out;
+    if (__n == 0 || __outv == nullptr) {
+        __r.out = __outv;
         return __r;
     }
-    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    __r.out = __prism_format_write(__outv, __n, __tmp, __len);
     return __r;
 }
 
 // Decimal, same writer as int, and only for "{}". This is not PROVED and
 // not CLEAN.
-inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, long long __v) {
+inline format_to_n_result format_to_n(char* __outv, std::size_t __n, const char* __fmt, long long __v) {
     const bool __neg = __v < 0;
     // Magnitude via unsigned wrap, so LLONG_MIN is not a signed negation.
     unsigned long long __mag =
@@ -129,16 +129,16 @@ inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* 
     if (__n == 0) {
         format_to_n_result __r;
         // Same pointer, not a null stand-in. The count is zero, so this does
-        // not index __out and does not write.
-        __r.out = __out;
+        // not index __outv and does not write.
+        __r.out = __outv;
         __r.size = static_cast<std::ptrdiff_t>(__len);
         return __r;
     }
-    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+    __prism_check(__outv != nullptr ? 1 : 0, "FUNC-CONTRACT",
                   "format_to_n called with a null output pointer");
-    if (__out == nullptr) __builtin_trap();
+    if (__outv == nullptr) __builtin_trap();
     format_to_n_result __r;
-    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    __r.out = __prism_format_write(__outv, __n, __tmp, __len);
     // Full untruncated length, not 0 for a non-zero value.
     // The unwritten tail was not stored.
     __r.size = static_cast<std::ptrdiff_t>(__len);

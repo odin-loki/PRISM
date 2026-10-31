@@ -136,6 +136,19 @@ inductive SInst where
   object; the value is the comparison of the 64-bit pointers (as LLVM compares
   addresses).  Pointer `eq`/`ne` is the integer `icmp` at width 64. -/
   | pcmp (dst : String) (p : Pred) (a b : Opnd)
+  /-- `%dst = sub i64 a, b` of two `ptrtoint` results (`Tr::binop`'s
+  `MemTr::ptr_sub_check`): PRISM's rule is C's (C17 6.5.6p9), the two
+  pointers must point into the same object; the value is the subtraction of
+  the 64-bit pointers (`ptrtoint` of a 64-bit pointer is the pointer, as
+  `Tr::inst` copies it). -/
+  | psub (dst : String) (fl : LFlags) (a b : Opnd)
+  /-- `%dst = icmp p i64 a, b` of two `ptrtoint` results (`MemTr::addr_cmp`,
+  e.g. `std::less<T*>`): `eq`/`ne` and the order of two addresses in one
+  object are the comparison of the 64-bit pointers; the order of addresses
+  of two different objects is not specified by C or C++ (and PRISM does not
+  model the layout), so it is an arbitrary bit, drawn from the oracle.  Only
+  `eq`, `ne` and the unsigned predicates. -/
+  | acmp (dst : String) (p : Pred) (a b : Opnd)
   /-- `%dst = call iw @__VERIFIER_nondet_*()` (or `nondet_*`, not defined in
   the module): an arbitrary value, drawn from the oracle. -/
   | nondet (dst : String) (w : Nat)
@@ -159,6 +172,23 @@ inductive SInst where
   of its object (`MemTr::obj_size_remaining`; 0 when the offset is past the
   size). -/
   | hobjsz (dst : Option String) (p : Opnd)
+  /-- `call void @__prism_havoc_bytes(ptr p, i64 n)` (`MemTr::write_havoc`, the
+  stdio models' input, D136): undefined unless the `n` bytes at `p` may be
+  written (`n ≠ 0`); then they receive arbitrary bytes — the model copies them
+  from a fresh `extern` object of arbitrary contents, whose lifetime then
+  ends. PRISM's model has no object of `2^47` bytes or more (stuck). -/
+  | hhavoc (p n : Opnd)
+  /-- `call void @__prism_read_range(ptr p, i64 n)` (`MemTr::read_range`):
+  undefined unless the `n` bytes at `p` may be read (`n ≠ 0`); no effect. -/
+  | hread (p n : Opnd)
+  /-- `d = __prism_fresh_cstr(kind)`: a fresh NUL-terminated string object of an
+  arbitrary length below 4096 and arbitrary (uninitialised) contents. -/
+  | hfresh (d : Option String) (kd : Nat)
+  /-- `__prism_memset(d, int c, size_t n)`: an `i32` byte, truncated after the checks. -/
+  | hmemset (d b n : Opnd)
+  /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
+  class `cls` (literal strings): undefined (the property fails) when `a` is 0. -/
+  | vcheck (a : Opnd) (w : Nat) (cls : String)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -186,6 +216,9 @@ structure CallI where
   rw : Nat
   f : String
   args : List (Opnd × Nat)
+  /-- the call an `invoke` became (translator only): while the callee runs,
+  `Tr::handlers` holds the invoke's landing pad -/
+  inv : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 /-- A block split at its calls: phis, then segments each ending in a call,
@@ -196,6 +229,23 @@ structure XBlock where
   segs : List (List SInst × CallI)
   last : List SInst
   term : LTerm
+  /-- a call of a noreturn failure (`__assert_fail`, ...) ends the block: the
+  PIR check's property and class; the rest of the block is dead -/
+  nr : Option (String × String) := none
+  /-- a block the exporter left out (`L stub`: `normal_blocks` does not reach
+  it, e.g. a landing pad); its instructions are `nondet` placeholders that only
+  number `Tr::enter_frame`'s variables. `runFrame` refuses one it finds
+  reachable. -/
+  stub : Bool := false
+  /-- the block ends in a call of `std::__throw_*` (`Tr::raise`): the
+  exception leaves the instruction sequence, which this semantics does not
+  follow (the run is stuck there: no claim about what happens next) -/
+  thr : Bool := false
+  /-- the typeinfo symbol of the thrown class (translator only) -/
+  thrT : String := ""
+  /-- the non-float arguments of the `std::__throw_*` call (operand, width;
+  translator only: `Tr::eh_call` evaluates them before raising) -/
+  thrA : List (Opnd × Nat) := []
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
@@ -379,6 +429,19 @@ def sPcmpV (R : SRegs) (p : Pred) (a b : Opnd) : Res Nat :=
   (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
     if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then .ok (icmpVal p 64 x y) else .ub
 
+def sPsubV (R : SRegs) (fl : LFlags) (a b : Opnd) : Res Nat :=
+  (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
+    if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then
+      (if binPoison .sub fl 64 x y then .ub else .ok (binVal .sub 64 x y))
+    else .ub
+
+/-- `acmp`: the value and the world after the draw (an ordered predicate
+always draws, as `MemTr::addr_cmp` havocs its unknown bit). -/
+def sAcmpV (ω : Nat → Nat) (R : SRegs) (W : World) (p : Pred) (a b : Opnd) : Res (Nat × World) :=
+  (sOpnd R 64 a).bind fun x => (sOpnd R 64 b).bind fun y =>
+    if p = .eq ∨ p = .ne then .ok (icmpVal p 64 x y, W)
+    else .ok (if ptrObj (x % 2 ^ 64) = ptrObj (y % 2 ^ 64) then icmpVal p 64 x y else ω W.t % 2 ^ 1, W.adv 1)
+
 /-- Whether pointer `v` points into the object of one of the registers `ns`
 (each a use; a missing register: stuck). -/
 def escHit (R : SRegs) (v : Nat) : List String → Res Bool
@@ -483,6 +546,44 @@ def sMemset (R : SRegs) (W : World) (d b len : Opnd) (lw : Nat) : Res World :=
     if n != 0 && accessBad W.mem (dv % 2 ^ 64) n true 1 then .ub
     else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) n }
 
+/-- The world after `__prism_havoc_bytes` of `n` bytes at `d`: a fresh
+`extern` (kind 7) object of arbitrary bytes (`init = 2`), copied to `d`, then
+released (`MemTr::write_havoc`). -/
+def havocW (ω : Nat → Nat) (W : World) (d n : Nat) : World :=
+  let W1 := (W.allocW ω n 7 16 2).1
+  let q := (W.allocW ω n 7 16 2).2 % 2 ^ 64
+  let W2 := { W1 with mem := W1.mem.copy d q n }
+  { W2 with mem := W2.mem.free q }
+
+def sHavoc (ω : Nat → Nat) (R : SRegs) (W : World) (p n : Opnd) : Res World :=
+  (sOpnd R 64 p).bind fun pv => (sOpnd R 64 n).bind fun v =>
+    if (v % 2 ^ 64 != 0 && accessBad W.mem (pv % 2 ^ 64) (v % 2 ^ 64) true 1) then .ub
+    else if v % 2 ^ 64 < 2 ^ 47 then .ok (havocW ω W (pv % 2 ^ 64) (v % 2 ^ 64))
+    else .stuck
+
+def sHread (R : SRegs) (W : World) (p n : Opnd) : Res World :=
+  (sOpnd R 64 p).bind fun pv => (sOpnd R 64 n).bind fun v =>
+    if (v % 2 ^ 64 != 0 && accessBad W.mem (pv % 2 ^ 64) (v % 2 ^ 64) false 1) then .ub else .ok W
+
+/-- `__prism_memset`: `memset` with an `i32` byte operand. -/
+def sHmemset (R : SRegs) (W : World) (d b len : Opnd) : Res World :=
+  (sOpnd R 64 d).bind fun dv => (sOpnd R 32 b).bind fun bv => (sOpnd R 64 len).bind fun v =>
+    if v % 2 ^ 64 != 0 && accessBad W.mem (dv % 2 ^ 64) (v % 2 ^ 64) true 1 then .ub
+    else .ok { W with mem := W.mem.fill (dv % 2 ^ 64) (bv % 256) (v % 2 ^ 64) }
+
+/-- `MemTr::fresh_cstr`: draw the length `n`, assume `n < 4096`, allocate
+`n + 1` arbitrary bytes of kind `kd`, store the terminating NUL at `p + n`. -/
+def sFresh (ω : Nat → Nat) (W : World) (kd : Nat) : Res (Nat × World) :=
+  let n := ω W.t % 2 ^ 64
+  if n < 4096 then
+    let A := (W.adv 1).allocW ω (n + 1) kd 16 2
+    .ok (A.2 % 2 ^ 64, A.1.store ((A.2 % 2 ^ 64 + n) % 2 ^ 64) 0 8 true)
+  else .stuck
+
+/-- `__prism_check`: UB when the value is 0. -/
+def sVcheck (R : SRegs) (w : Nat) (a : Opnd) : Res Unit :=
+  (sOpnd R w a).bind fun v => if v % 2 ^ w != 0 then .ok () else .ub
+
 /-- One non-call instruction; `t` is the number of values drawn so far. -/
 def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × World)
   | .i x => (sInst R x).bind fun R' => .ok (R', W.adv x.draws)
@@ -516,11 +617,18 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .glob d size al kd ini st =>
     .ok (R.set d (globAlloc ω W size al kd ini st).1, (globAlloc ω W size al kd ini st).2)
   | .pcmp d p a b => (sPcmpV R p a b).bind fun v => .ok (R.set d v, W)
+  | .psub d fl a b => (sPsubV R fl a b).bind fun v => .ok (R.set d v, W)
+  | .acmp d p a b => (sAcmpV ω R W p a b).bind fun (v, W') => .ok (R.set d v, W')
   | .nondet d w => .ok (R.set d (ω W.t % 2 ^ w), W.adv 1)
   | .vassume a w => (sVassume R w a).bind fun _ => .ok (R, W)
   | .halloc d n kd ini => (sHallocW ω R W n kd ini).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .hfree p kd kill => (sFree R W p kd kill).bind fun W' => .ok (R, W')
   | .hobjsz d p => (sHobjszV R W p).bind fun v => .ok (R.setOpt d v, W)
+  | .hhavoc p n => (sHavoc ω R W p n).bind fun W' => .ok (R, W')
+  | .hread p n => (sHread R W p n).bind fun W' => .ok (R, W')
+  | .hmemset d b n => (sHmemset R W d b n).bind fun W' => .ok (R, W')
+  | .hfresh d kd => (sFresh ω W kd).bind fun (p, W') => .ok (R.setOpt d p, W')
+  | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -576,6 +684,17 @@ def retTo : List Frame → Option Nat → World → Step
   | [], v, _ => .ret v
   | c :: cs, v, t => .next ({ c with pend := v } :: cs) t
 
+/-- The stack objects `ns` of a returning callee end (LangRef: `alloca`
+memory is released when the function returns; `Tr::call`'s `end_lifetime`). -/
+def freeAll (R : SRegs) (W : World) : List String → Res World
+  | [] => .ok W
+  | a :: t => (sOpnd R 64 (.reg a)).bind fun pa => freeAll R { W with mem := W.mem.free (pa % 2 ^ 64) } t
+
+/-- Return from frame `F`: a callee's own stack objects end first. -/
+def retFree (F : XFunc) (R : SRegs) : List Frame → Option Nat → World → Step
+  | [], v, _ => .ret v
+  | c :: cs, v, t => (freeAll R t F.escNames).step fun t' => retTo (c :: cs) v t'
+
 def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t : World) : Step :=
   match B.segs[fr.seg]? with
   | some (_, c) =>
@@ -588,6 +707,10 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         else .stuck
       | none => .stuck
   | none =>
+    if B.thr then .stuck else
+    match B.nr with
+    | some _ => .ub
+    | none =>
     match B.term with
     | .br tn =>
       match lookupBlock fr.F.shape tn with
@@ -598,14 +721,14 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         match lookupBlock fr.F.shape (if truthN v then tn else fn) with
         | some j => .next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t
         | none => .stuck
-    | .ret none => retTo rest none t
+    | .ret none => retFree fr.F R rest none t
     | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
       -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
       -- into one of its own stack objects returns a dangling pointer
       if rest.isEmpty && fr.F.retPtr then
         (escHit R v fr.F.escNames).step fun hit =>
           if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retTo rest (some v) t
-      else retTo rest (some v) t
+      else retFree fr.F R rest (some v) t
     | .unreachable => .ub
 
 /-- One step: the current segment of the top frame. -/
@@ -646,6 +769,12 @@ def lower (R : LRegs) : SRegs := fun n => (R n).map fun
 result, flagged (poison was created, or was already there). -/
 def lOne (S : LSt) (W : World) (d : String) : Res Nat → Res (LSt × World)
   | .ok v => .ok (⟨S.R.set d (.val v), S.c⟩, W)
+  | .ub => .ok (⟨S.R.set d .poison, true⟩, W)
+  | .stuck => .stuck
+
+/-- `lOne` for a result that also advances the world (an oracle draw). -/
+def lOneW (S : LSt) (W : World) (d : String) : Res (Nat × World) → Res (LSt × World)
+  | .ok (v, W') => .ok (⟨S.R.set d (.val v), S.c⟩, W')
   | .ub => .ok (⟨S.R.set d .poison, true⟩, W)
   | .stuck => .stuck
 
@@ -717,6 +846,8 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     .ok (⟨S.R.set d (.val (globAlloc ω W size al kd ini st).1), S.c⟩, (globAlloc ω W size al kd ini st).2)
   -- pointers into different objects: C UB (not LLVM poison), flagged like a C array bound
   | .pcmp d p a b => lOne S W d (sPcmpV (lower S.R) p a b)
+  | .psub d fl a b => lOne S W d (sPsubV (lower S.R) fl a b)
+  | .acmp d p a b => lOneW S W d (sAcmpV ω (lower S.R) W p a b)
   | .nondet d w => .ok (⟨S.R.set d (.val (ω W.t % 2 ^ w)), S.c⟩, W.adv 1)
   -- a poison or indeterminate argument of these calls is a use of it: UB
   | .vassume a w =>
@@ -733,6 +864,19 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
   | .hobjsz d p =>
     match sHobjszV (lower S.R) W p with
     | .ok v => .ok (⟨(match d with | some d => S.R.set d (.val v) | none => S.R), S.c⟩, W)
+    | .ub => .ub
+    | .stuck => .stuck
+  | .hhavoc p n => lMem S (sHavoc ω (lower S.R) W p n)
+  | .hread p n => lMem S (sHread (lower S.R) W p n)
+  | .hmemset d b n => lMem S (sHmemset (lower S.R) W d b n)
+  | .hfresh d kd =>
+    match sFresh ω W kd with
+    | .ok (p, W') => .ok (⟨(match d with | some d => S.R.set d (.val p) | none => S.R), S.c⟩, W')
+    | .ub => .ub
+    | .stuck => .stuck
+  | .vcheck a w _ =>
+    match sVcheck (lower S.R) w a with
+    | .ok _ => .ok (S, W)
     | .ub => .ub
     | .stuck => .stuck
 
@@ -785,6 +929,10 @@ def lRetTo : List LFrame → Option Nat → World → Bool → LStep
   | [], v, _, c => .ret v c
   | f :: fs, v, t, c => .next ({ f with pend := v } :: fs) t c
 
+def lRetFree (F : XFunc) (R : LRegs) : List LFrame → Option Nat → World → Bool → LStep
+  | [], v, _, c => .ret v c
+  | f :: fs, v, t, c => (freeAll (lower R) t F.escNames).lstep fun t' => lRetTo (f :: fs) v t' c
+
 def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World) : LStep :=
   match B.segs[fr.seg]? with
   | some (_, cl) =>
@@ -797,6 +945,10 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
         else .stuck
       | none => .stuck
   | none =>
+    if B.thr then .stuck else
+    match B.nr with
+    | some _ => .ub
+    | none =>
     match B.term with
     | .br tn =>
       match lookupBlock fr.F.shape tn with
@@ -812,14 +964,14 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       | .ok (.ind, _) => .ub
       | .ub => .ub
       | .stuck => .stuck
-    | .ret none => lRetTo rest none t S.c
+    | .ret none => lRetFree fr.F S.R rest none t S.c
     | .ret (some o) =>
       match lOpnd S.R fr.F.retw o with
       | .ok (.val v, cv) =>
         if rest.isEmpty && fr.F.retPtr then
           (escHit (lower S.R) v fr.F.escNames).lstep fun hit =>
             if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetTo rest (some v) t (S.c || cv)
-        else lRetTo rest (some v) t (S.c || cv)
+        else lRetFree fr.F S.R rest (some v) t (S.c || cv)
       | .ok (.poison, _) => .ub
       | .ok (.ind, _) => .ub
       | .ub => .ub

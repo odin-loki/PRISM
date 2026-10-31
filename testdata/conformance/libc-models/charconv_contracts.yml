@@ -3,6 +3,9 @@ input_files: charconv_contracts.cpp
 language: C++
 property: libc-contract
 timeout: 300
+# from_chars on "2147483648" runs 10 digit iterations; the default unwind (8) leaves
+# charconv_overflow_false BOUNDED. A deeper unwind only removes the bound.
+unwind: 12
 expected:
   charconv_small_true: true
   charconv_overflow_false: false

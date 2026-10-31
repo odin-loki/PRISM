@@ -46,6 +46,15 @@
 // memory state exactly (SymMem::load_exact: no provenance shortcut), so a
 // template means the bytes of that state for every x.
 
+// PRISM_HOUDINI_TRACE=1: one stderr line per Houdini goal query (diagnostics only)
+static bool houdini_trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("PRISM_HOUDINI_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
 struct InvTerm {
     enum Kind { Phi, Scope, Const, Entry, Size } kind = Const;
     int idx = -1;  // Phi/Entry: phi index in the header; Scope/Size: variable
@@ -54,12 +63,20 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
+    enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
         Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
     bool sum = false;      // Lin: a + b (else a - b). MemScopeAt: x <= index (else x < index)
+    // Arithmetic templates, evaluated over mathematical integers (both sides
+    // extended to 2w+4 bits, so nothing wraps; sext: the values are signed):
+    //   MaxLe:  a <= max(entry(a), b)            (b a scope value; rel Sle/Ule)
+    //   Scale:  a - entry(a) rel mask * (b - entry(b))      (rel Eq/Sle/Sge)
+    //   ScaleV: a - entry(a) == v * (b - entry(b))           (v a scope value)
+    //   Tri:    2 * (a - entry(a)) == b*(b+d) - entry(b)*(entry(b)+d), d = mask - 1
+    // Like every template they are only admitted through Houdini's base and
+    // step checks; none is assumed.
     uint64_t mask = 0;
     // memory: for every x with lo <= x < ext(phi idx): P(x)
     int ip = -1;           // index phi
@@ -155,6 +172,7 @@ private:
     double per_query_;
     double deadline_;
     double hard_s_;
+    mutable bool mem_out_ = false;  // left() saw the soft memory cap
     HoudiniEnv env_;
     std::string cache_file_;   // "" : no cache
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
@@ -165,7 +183,15 @@ private:
     std::vector<const Stmt*> def_;
     std::vector<char> signed_use_;
 
+    // Over the encoder's soft memory cap (encode.cpp z3_over_soft_cap) the
+    // search ends as if out of time: every unanswered goal is dropped, and no
+    // query can push Z3 past its hard limit, after which Z3 is unusable for
+    // every later function of the process (Law 7: one UNKNOWN, not many).
     double left() const {
+        if (z3_over_soft_cap()) {
+            mem_out_ = true;
+            return 0;
+        }
         return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
@@ -359,6 +385,21 @@ std::string Houdini::text(const InvCand& c) const {
             const char* o = c.sum ? " + " : " - ";
             return tt(c.a) + o + tt(c.b) + " == entry(" + phi(c.a.idx) + ")" + o + "entry(" + phi(c.b.idx) + ")";
         }
+        case InvCand::MaxLe:
+            return tt(c.a) + (c.sext ? " sle" : " ule") + " max(entry(" + phi(c.a.idx) + "), " + tt(c.b) + ")";
+        case InvCand::Scale:
+            return tt(c.a) + " - entry(" + phi(c.a.idx) + ") " + op_name(c.rel) + " " +
+                   std::to_string(as_signed(c.mask, c.a.w)) + " * (" + tt(c.b) + " - entry(" + phi(c.b.idx) +
+                   "))" + (c.sext ? " [int]" : " [nat]");
+        case InvCand::ScaleV:
+            return tt(c.a) + " - entry(" + phi(c.a.idx) + ") == " + tt(c.v) + " * (" + tt(c.b) + " - entry(" +
+                   phi(c.b.idx) + "))" + (c.sext ? " [int]" : " [nat]");
+        case InvCand::Tri: {
+            const std::string d = std::to_string(static_cast<int>(c.mask) - 1);
+            return "2 * (" + tt(c.a) + " - entry(" + phi(c.a.idx) + ")) == " + tt(c.b) + " * (" + tt(c.b) + " + " + d +
+                   ") - entry(" + phi(c.b.idx) + ") * (entry(" + phi(c.b.idx) + ") + " + d + ")" +
+                   (c.sext ? " [int]" : " [nat]");
+        }
         case InvCand::MemNZ: return "forall " + range + ": " + at(c.p, -1) + " != 0";
         case InvCand::MemEq: return "forall " + range + ": " + at(c.p, c.off) + " == " + at(c.q, -1);
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
@@ -386,13 +427,24 @@ std::string Houdini::text(const InvCand& c) const {
 }
 
 void Houdini::generate(std::vector<InvCand>& out) {
-    constexpr std::size_t kScope = 16, kConsts = 8, kGhostPerLoop = 160;
+    constexpr std::size_t kScopeFlat = 16, kConstsFlat = 8, kScopeNested = 6, kConstsNested = 3, kGhostPerLoop = 160, kSteps = 4, kArithPhis = 6, kArithScope = 4;
     static const Op kRel[] = {Op::Eq, Op::Ne, Op::Ule, Op::Ult, Op::Uge, Op::Ugt,
                               Op::Sle, Op::Slt, Op::Sge, Op::Sgt};
     for (std::size_t Li = 0; Li < g_.loops.size(); ++Li) {
         const int L = static_cast<int>(Li);
         const auto& loop = g_.loops[Li];
         const auto& H = fn_.blocks[static_cast<std::size_t>(loop.header)];
+        // Nested loops (this loop contains or is contained in another) get a
+        // smaller scope and constant set: their candidates multiply across the
+        // loop nest and nested_4 needed ~780 MB of a 788 MB budget.
+        bool nested = false;
+        for (std::size_t Lj = 0; Lj < g_.loops.size() && !nested; ++Lj) {
+            if (Lj == Li) continue;
+            const auto& o = g_.loops[Lj];
+            nested = loop.body[static_cast<std::size_t>(o.header)] || o.body[static_cast<std::size_t>(loop.header)];
+        }
+        const std::size_t kScope = nested ? kScopeNested : kScopeFlat;
+        const std::size_t kConsts = nested ? kConstsNested : kConstsFlat;
         // header phis (integer, not floating point)
         std::vector<int> phis;
         for (std::size_t i = 0; i < H.phis.size(); ++i) {
@@ -446,6 +498,13 @@ void Houdini::generate(std::vector<InvCand>& out) {
         std::set<int> offs;                 // scope offsets in written addresses
         std::set<unsigned> ebs;
         std::map<int, std::set<bool>> ext;  // phi var -> sext?
+        // step constants (k >= 2) of the loop's arithmetic: Scale templates
+        std::map<unsigned, std::set<uint64_t>> steps;
+        auto note_step = [&](const Arg& a) {
+            if (!a.is_const || a.width <= 1 || a.width > 64) return;
+            const int64_t sv = as_signed(a.bits, a.width);
+            if ((sv >= 2 || sv <= -2) && steps[a.width].size() < kSteps) steps[a.width].insert(a.bits);
+        };
         auto note_const = [&](const Arg& a) {
             if (a.is_const && a.width > 1 && a.width <= 64 && consts[a.width].size() < kConsts) consts[a.width].insert(a.bits);
         };
@@ -455,6 +514,8 @@ void Houdini::generate(std::vector<InvCand>& out) {
                 if (s.kind == Stmt::Assign) {
                     if ((s.op >= Op::Eq && s.op <= Op::Sge) || s.op == Op::Add || s.op == Op::Sub)
                         for (auto& a : s.args) note_const(a);
+                    if (s.op == Op::Add || s.op == Op::Sub || s.op == Op::Mul || s.op == Op::SDiv || s.op == Op::UDiv)
+                        for (auto& a : s.args) note_step(a);
                     if ((s.op == Op::Eq || s.op == Op::Ne) && s.args.size() == 2)
                         for (auto& a : s.args) {
                             std::set<int> lv;
@@ -546,6 +607,59 @@ void Houdini::generate(std::vector<InvCand>& out) {
                         c.sum = sum;
                         out.push_back(c);
                     }
+            // a <= max(entry(a), b): a counter bounded by a guard value that
+            // may lie below its start
+            for (int v : scope)
+                if (fn_.vars[static_cast<std::size_t>(v)].width == w) {
+                    InvCand c;
+                    c.kind = InvCand::MaxLe;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = {InvTerm::Scope, v, 0, w};
+                    c.sext = sgn;
+                    out.push_back(c);
+                }
+            if (phis.size() > kArithPhis) continue;
+            for (int j : phis) {
+                if (j == i || fn_.vars[static_cast<std::size_t>(phi_var(j))].width != w) continue;
+                const InvTerm b{InvTerm::Phi, j, 0, w};
+                const bool sg = sgn || signed_use_[static_cast<std::size_t>(phi_var(j))] != 0;
+                for (uint64_t k : steps[w])
+                    for (Op r : {Op::Eq, Op::Sle, Op::Sge}) {
+                        InvCand c;
+                        c.kind = InvCand::Scale;
+                        c.loop = L;
+                        c.rel = r;
+                        c.a = a;
+                        c.b = b;
+                        c.mask = k & wmask(w);
+                        c.sext = sg;
+                        out.push_back(c);
+                    }
+                std::size_t nv = 0;
+                for (int v : scope) {
+                    if (fn_.vars[static_cast<std::size_t>(v)].width != w || nv >= kArithScope) continue;
+                    ++nv;
+                    InvCand c;
+                    c.kind = InvCand::ScaleV;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = b;
+                    c.v = {InvTerm::Scope, v, 0, w};
+                    c.sext = sg;
+                    out.push_back(c);
+                }
+                for (uint64_t d1 : {0u, 1u, 2u}) {  // d = -1, 0, +1
+                    InvCand c;
+                    c.kind = InvCand::Tri;
+                    c.loop = L;
+                    c.a = a;
+                    c.b = b;
+                    c.mask = d1;
+                    c.sext = sg;
+                    out.push_back(c);
+                }
+            }
         }
         // ---- memory templates (universally quantified over the index x)
         std::size_t ghosts = 0;
@@ -729,6 +843,10 @@ HoudiniOut Houdini::run() {
     std::vector<Footprint> fps(g_.loops.size());
     for (int attempt = 0;; ++attempt) {
         z3::context c;
+        // the in-process Houdini checks bypass the portfolio's z3-worker
+        // child (PRISM_Z3_CHILD_NODES): stop them at the budget watchdog's
+        // trip; an interrupted check is unknown, never unsat
+        membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn_, g_, 1, eo_);
         e.cut_mode = true;
         e.loop_fp = fps;
@@ -772,6 +890,7 @@ HoudiniOut Houdini::run() {
     }
 
     z3::context c;
+    membudget::Watch mem_watch([&c] { Z3_interrupt(c); });  // see the footprint loop above
     Encoding e(c, fn_, g_, 1, eo_);
     e.cut_mode = true;
     e.loop_fp = fps;
@@ -869,6 +988,35 @@ HoudiniOut Houdini::run() {
                 auto a = term(k.a, st, node, k.loop), b = term(k.b, st, node, k.loop);
                 auto ea = CL.entry[static_cast<std::size_t>(k.a.idx)], eb = CL.entry[static_cast<std::size_t>(k.b.idx)];
                 return k.sum ? a + b == ea + eb : a - b == ea - eb;
+            }
+            case InvCand::MaxLe: {
+                auto a = term(k.a, st, node, k.loop), b = term(k.b, st, node, k.loop);
+                auto ea = CL.entry[static_cast<std::size_t>(k.a.idx)];
+                if (k.sext) return a <= z3::ite(ea >= b, ea, b);
+                return z3::ule(a, z3::ite(z3::uge(ea, b), ea, b));
+            }
+            case InvCand::Scale:
+            case InvCand::ScaleV:
+            case InvCand::Tri: {
+                const unsigned w = k.a.w, W = 2 * w + 4;
+                auto X = [&](const z3::expr& x) {
+                    const unsigned xw = x.get_sort().bv_size();
+                    return k.sext ? z3::sext(x, W - xw) : z3::zext(x, W - xw);
+                };
+                auto a = X(term(k.a, st, node, k.loop)), b = X(term(k.b, st, node, k.loop));
+                auto ea = X(CL.entry[static_cast<std::size_t>(k.a.idx)]);
+                auto eb = X(CL.entry[static_cast<std::size_t>(k.b.idx)]);
+                if (k.kind == InvCand::Tri) {
+                    auto d = c.bv_val(static_cast<int>(k.mask) - 1, W);
+                    return c.bv_val(2, W) * (a - ea) == b * (b + d) - eb * (eb + d);
+                }
+                auto m = k.kind == InvCand::Scale
+                             ? (k.sext ? c.bv_val(static_cast<int64_t>(as_signed(k.mask, w)), W) : c.bv_val(k.mask, W))
+                             : X(term(k.v, st, node, k.loop));
+                auto lhs = a - ea, rhs = m * (b - eb);
+                if (k.rel == Op::Sle) return lhs <= rhs;
+                if (k.rel == Op::Sge) return lhs >= rhs;
+                return lhs == rhs;
             }
             default: break;
         }
@@ -1069,10 +1217,22 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
+                const auto tq0 = std::chrono::steady_clock::now();
                 auto r = s.check(as);
+                std::optional<z3::model> qm;
+                if (r == z3::sat) qm = s.get_model();
+                // the activation literal is never assumed again: retire its clause
+                // (after the model is read: adding a clause discards it)
+                s.add(!act);
+                if (houdini_trace())
+                    std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
+                                 r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
+                if (houdini_trace() && live.size() == 1 && r != z3::unsat)
+                    std::fprintf(stderr, "houdini   goal: %s\n", text(cands[live[0]]).c_str());
                 if (r == z3::unsat) return;
                 if (r == z3::sat) {
-                    auto m = s.get_model();
+                    auto& m = *qm;
                     bool any = false;
                     for (auto i : live)
                         if (!m.eval(*goal_of(i), true).is_true()) {
@@ -1180,6 +1340,10 @@ HoudiniOut Houdini::run() {
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
+            if (z3_over_soft_cap()) {
+                fail = "cut program: encoder memory over the soft cap (PRISM_PIR_MEM_MB)";
+                return -1;
+            }
             if (fleft() <= 0) {
                 fail = "cut program: out of time";
                 return -1;
@@ -1280,7 +1444,7 @@ HoudiniOut Houdini::run() {
     while (changed) {
         if (left() <= 0) {
             out.undecided = true;
-            fail = "Houdini ran out of time";
+            fail = mem_out_ ? "Houdini stopped: encoder memory over the soft cap (PRISM_PIR_MEM_MB)" : "Houdini ran out of time";
             return finish_out(false);
         }
         ++out.rounds;
@@ -1309,6 +1473,10 @@ HoudiniOut Houdini::run() {
     // the final query keeps a minimum of its own (the run's Houdini budget
     // does not cut it), but never runs past the function budget
     const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
+    // the optimistic solver is not asked again: hand its memory back before
+    // the final query (nested loops: both together crossed the budget)
+    sopt.reset();
+    membudget::release_free_memory();
     const int r = final_query(final_budget, true);
     if (r == -1) out.undecided = true;
     return finish_out(r == 0);

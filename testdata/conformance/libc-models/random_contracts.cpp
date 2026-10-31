@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <random> so the C++ model-header conformance case sees this include.
 // The scored check is testdata/conformance/prism/cxx/cxx_random_true.cpp.
 // There is no false twin: random_device::operator() may be nondeterministic.

@@ -122,9 +122,9 @@ public:
     // after the check, not a character from the buffer. A null buffer whose
     // size was forced to 0 takes that path.
     int sgetc() noexcept {
-        const int __in = (_M_off < _M_size) ? 1 : 0;
-        __prism_check(__in, "MEM-OOB-READ", "basic_syncbuf::sgetc would read past the caller buffer");
-        if (__in) {
+        const int __inv = (_M_off < _M_size) ? 1 : 0;
+        __prism_check(__inv, "MEM-OOB-READ", "basic_syncbuf::sgetc would read past the caller buffer");
+        if (__inv) {
             const unsigned char __ch = static_cast<unsigned char>(_M_buf[_M_off]);
             ++_M_off;
             return static_cast<int>(__ch);

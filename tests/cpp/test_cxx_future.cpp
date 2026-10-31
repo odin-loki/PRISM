@@ -165,7 +165,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
@@ -260,7 +263,7 @@ TEST_CASE("cxx future model: empty get() is a check and the header does not defi
 
     const std::string get = function_body(src, "_Tp get()");
     const auto check = get.find("__prism_check(");
-    const auto ret = get.find("return __out");
+    const auto ret = get.find("return __outv");
     REQUIRE(check != std::string::npos);
     REQUIRE(ret != std::string::npos);
     CHECK(check < ret);

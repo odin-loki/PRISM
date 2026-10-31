@@ -108,7 +108,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
@@ -129,6 +132,7 @@ constexpr const char* kProbeExe = "probe";
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     auto probe = tmp / "probe.cpp";
     std::ofstream(probe) << "#include <tuple>\n"
+                            "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
                             "int main() {\n"
                             "  std::tuple<int> t(42);\n"
                             "  return (std::get<0>(t) == 42 && std::tuple_size<std::tuple<>>::value == 0) ? 0 : 1;\n"

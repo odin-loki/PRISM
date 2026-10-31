@@ -1172,12 +1172,67 @@ void cd_again_ok(void) {
 }
 )";
 
+// CTRL-SIBLING-ASYMMETRY: idx is range-checked in get_ok, not in get_bad.
+const char* kSiblingC = R"(int table[16];
+int get_ok(int idx) {
+    if (idx >= 16)
+        return -1;
+    return table[idx];
+}
+int get_bad(int idx) {
+    return table[idx]; // expect: CTRL-SIBLING-ASYMMETRY
+}
+int get_tested_ok(int idx) {
+    if (idx == 3) return 0;
+    return table[idx];
+}
+int other_ok(long n) {
+    return table[n];
+}
+)";
+
+// MEM-CAPACITY-FIRST: cap doubled before realloc; failure arm keeps it.
+const char* kCapacityC = R"(typedef __SIZE_TYPE__ size_t;
+void *realloc(void *, size_t);
+void free(void *);
+#define NULL ((void *)0)
+struct buf { int *data; size_t cap; };
+int grow_bad(struct buf *b) {
+    b->cap *= 2; // expect: MEM-CAPACITY-FIRST
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL)
+        return -1;
+    b->data = p;
+    return 0;
+}
+int grow_undo_ok(struct buf *b) {
+    b->cap *= 2;
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL) {
+        b->cap /= 2;
+        return -1;
+    }
+    b->data = p;
+    return 0;
+}
+int grow_after_ok(struct buf *b) {
+    int *p = realloc(b->data, b->cap + 64);
+    if (p == NULL)
+        return -1;
+    b->cap *= 2;
+    b->data = p;
+    return 0;
+}
+)";
+
 }  // namespace
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
     check_marks("nowait.c", kNowaitC);
     check_marks("lock_order.c", kLockOrderC);
+    check_marks("sibling.c", kSiblingC);
+    check_marks("capacity.c", kCapacityC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "

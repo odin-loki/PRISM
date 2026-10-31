@@ -275,4 +275,7 @@ bool cuda_probsat(const Cnf& cnf, std::uint64_t seed, std::uint64_t max_flips_pe
                   unsigned walkers, std::vector<std::int8_t>& assignment);
 #endif
 
+// `prism z3-worker FILE MB` (portfolio.cpp): Z3 in a killable child.
+PRISM_API int z3_worker_main(int argc, char** argv);
+
 }  // namespace prism::solver

@@ -100,6 +100,7 @@ Proc run_proc(const std::vector<std::string>& argv) {
     p.ran = !r.start_failed && !r.timed_out;
     p.rc = r.rc;
     p.out = r.out;
+    std::erase(p.out, '\r');  // text-mode stdout on Windows is CRLF
     p.err = r.err;
 #endif
     return p;
@@ -162,6 +163,7 @@ MdCtx& ctx() {
                                          (repo() / "src" / "prism" / "pir" / "models" / "cxx").string()};
     auto probe = c.tmp / "probe.cpp";
     std::ofstream(probe) << "#include <mdspan>\n"
+                            "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
                             "int main() {\n"
                             "  int a[1] = {7};\n"
                             "  std::mdspan<int> m(a, 1);\n"
@@ -313,7 +315,7 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
 TEST_CASE("cxx mdspan model: in-range call reads the real element and the view does not own") {
     auto& c = ctx();
     if (!c.ok) {
-        MESSAGE("NOTRUN: clang++ with ASan/UBSan not usable here");
+        MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
         return;
     }
     std::vector<std::string> deps{c.cxx, "-std=c++23", "-M", "-isystem",

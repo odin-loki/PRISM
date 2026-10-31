@@ -212,7 +212,20 @@ private:
     template <int _Mode>
     constexpr pointer _M_transfer_around(pointer __pos, pointer __ns, size_type __before, size_type __gap,
                                          size_type __len) {
-        if constexpr (_S_nothrow_move) {
+        if constexpr (is_trivially_copyable_v<_Tp>) {
+            // One loop over the old elements (its trip count is size(), not
+            // the symbolic split at __pos): element __k lands at __k, or
+            // __k + __gap from __before on. Trivially copyable elements have
+            // no observable construction order, so this is the same result
+            // as the two ranged transfers below.
+            (void)__pos;
+            const size_type __old = size_type(_M_finish - _M_start);
+            for (size_type __k = 0; __k != __old; ++__k) {
+                _Traits::construct(_M_alloc, __ns + (__k < __before ? __k : __k + __gap), std::move(_M_start[__k]));
+                if constexpr (_S_relocates<_Mode>) _Traits::destroy(_M_alloc, _M_start + __k);
+            }
+            return __ns + __old + __gap;
+        } else if constexpr (_S_nothrow_move) {
             pointer __nf = _M_transfer<_Mode>(_M_start, __pos, __ns);
             return _M_transfer<_Mode>(__pos, _M_finish, __nf + __gap);
         } else {

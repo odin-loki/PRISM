@@ -24,7 +24,9 @@ using prism::i128_shl;
 using prism::i128_sub;
 using prism::u128;
 
-const std::vector<std::string> SAN_FLAGS = {"-g", "-O0", "-w", "-fsanitize=undefined,address",
+// -fno-wrapv: clang for the MSVC target defaults to -fwrapv, which makes signed shifts defined and
+// silently drops UBSan's shift-base checks (shl of a negative value, 1 << 31)
+const std::vector<std::string> SAN_FLAGS = {"-g", "-O0", "-w", "-fno-wrapv", "-fsanitize=undefined,address",
                                             "-fno-sanitize-recover=all"};
 const std::vector<std::pair<std::string, std::string>> SAN_ENV = {
     {"ASAN_OPTIONS",

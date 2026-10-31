@@ -389,9 +389,9 @@ inline path& path::operator/=(const path& __p) {
 }
 
 inline path operator/(const path& __lhs, const path& __rhs) {
-    path __out(__lhs);
-    __out /= __rhs;
-    return __out;
+    path __outv(__lhs);
+    __outv /= __rhs;
+    return __outv;
 }
 
 }  // namespace std::filesystem

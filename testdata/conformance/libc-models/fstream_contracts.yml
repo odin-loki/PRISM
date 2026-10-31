@@ -1,0 +1,11 @@
+format_version: 1
+input_files: fstream_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  ifstream_closed_true: true
+  ifstream_read_closed_false: false
+  ifstream_get_closed_false: false
+expect_class:  # the violation each false harness plants
+  ifstream_read_closed_false: "FUNC-CONTRACT"
+  ifstream_get_closed_false: "FUNC-CONTRACT"
