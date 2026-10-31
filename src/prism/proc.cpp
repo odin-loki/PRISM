@@ -372,9 +372,15 @@ RunOut run(const RunSpec& spec) {
     CloseHandle(job);
     drain(out_r, r.out);
     drain(err_r, r.err);
-    // The child has exited or been terminated, so its end of stdin is closed
-    // and a pending WriteFile fails: the join cannot hang.
-    if (writer.joinable()) writer.join();
+    // A pending WriteFile normally fails once the child is gone, but a
+    // descendant left running (or a crashed ASan child whose handles linger)
+    // can keep the read end open and block the writer for ever. Cancel its
+    // synchronous I/O until it ends, so the join is bounded.
+    if (writer.joinable()) {
+        HANDLE wt = static_cast<HANDLE>(writer.native_handle());
+        while (WaitForSingleObject(wt, 50) == WAIT_TIMEOUT) CancelSynchronousIo(wt);
+        writer.join();
+    }
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     r.rc = r.timed_out ? -1 : static_cast<int>(code);
