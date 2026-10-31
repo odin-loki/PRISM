@@ -19,6 +19,7 @@
 //     specification, so it stays HYPOTHESIS until a human approves it.
 // Detection needs no model.
 
+#include "prism/settings.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/ai_proof.hpp"
@@ -113,7 +114,7 @@ void save_proof_store(const fs::path& path, const std::vector<ProofEntry>& entri
 
 fs::path persistent_store_path(const fs::path& root) {
     fs::path dir;
-    if (const char* v = std::getenv("PRISM_PROOF_CACHE"); v && *v) dir = v;
+    if (auto v = settings::proof_cache().get(); !v.empty()) dir = v;
     else if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) dir = fs::path(x) / "prism" / "proofs";
     else if (const char* h = std::getenv("HOME"); h && *h) dir = fs::path(h) / ".cache" / "prism" / "proofs";
     else return {};
@@ -363,7 +364,7 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
                                           const std::vector<StageResult>& stages, const Config& cfg) {
     std::vector<Finding> out;
     auto store_path = cfg.out / "proof_store.json";
-    auto persistent = std::getenv("PRISM_PROOF_CACHE") ? persistent_store_path(cfg.root) : fs::path{};
+    auto persistent = settings::proof_cache().is_set() ? persistent_store_path(cfg.root) : fs::path{};
     std::error_code ec;
     auto previous = load_proof_store(store_path);
     if (previous.empty() && !persistent.empty() && fs::exists(persistent, ec)) previous = load_proof_store(persistent);

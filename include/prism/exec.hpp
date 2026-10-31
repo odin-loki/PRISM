@@ -1,14 +1,9 @@
 #pragma once
 
-// PRISM's thin process-runner interface, built like log.hpp: one spec, one
-// result, one replaceable backend. The default backend is prism::detail::run
-// (src/prism/proc.cpp). The fields map one-to-one onto FORGE's
-// forge::os::spawn_spec / proc_limits / proc_result (os/process.hpp), so the
-// FORGE switch is set_backend(&forge_backend) with a field copy:
-//   Spec::argv/cwd/env_set/env_unset/stdin_data/timeout_ms/max_output -> spawn_spec
-//   Spec::memory_bytes/cpu_seconds/open_files                         -> proc_limits
-//   Result::exit_code/term_signal/timed_out/truncated/out/err/wall_ms  <- proc_result
-// failed (could not start) comes from FORGE's result<> error branch.
+// PRISM's process runner: a thin interface over FORGE's
+// forge::os::spawn_wait (os/process.hpp). Spec and Result map field for field
+// onto spawn_spec / proc_limits / proc_result; failed (could not start) is
+// FORGE's result<> error branch, with the reason in err.
 
 #include "prism/export.hpp"
 
@@ -42,11 +37,6 @@ struct Result {
     std::string out, err;
     std::uint64_t wall_ms = 0;
 };
-
-using Backend = Result (*)(const Spec&);
-
-// Replace the backend (nullptr restores the default). Returns the old one.
-PRISM_API Backend set_backend(Backend b);
 
 PRISM_API Result run(const Spec& spec);
 

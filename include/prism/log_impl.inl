@@ -49,6 +49,7 @@ void stderr_sink(Level level, std::string_view component, std::string_view messa
     std::fflush(stderr);
 }
 
+std::atomic<Sink> g_default{&stderr_sink};  // the library build sets FORGE's sink (log.cpp)
 std::atomic<Sink> g_sink{&stderr_sink};
 
 }  // namespace
@@ -105,7 +106,7 @@ PRISM_LOG_DEF std::ostream& err_stream() {
     return os;
 }
 
-PRISM_LOG_DEF Sink set_sink(Sink s) { return g_sink.exchange(s ? s : &stderr_sink); }
+PRISM_LOG_DEF Sink set_sink(Sink s) { return g_sink.exchange(s ? s : g_default.load()); }
 
 PRISM_LOG_DEF void write(Level level, std::string_view component, std::string_view message) {
     g_sink.load()(level, component, message);

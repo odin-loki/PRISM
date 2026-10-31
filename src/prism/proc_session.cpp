@@ -1,5 +1,6 @@
 // run_session (src/prism/proc.hpp): a command in a session of its own whose
 // whole process tree is killed on a timeout.
+#include "prism/clock.hpp"
 #include "proc.hpp"
 
 #include <algorithm>
@@ -71,8 +72,7 @@ SessionOut run_session(const std::vector<std::string>& args, double timeout_s,
 
 SessionOut run_session(const std::vector<std::string>& args, const SessionOptions& opt) {
     SessionOut r;
-    using clock = std::chrono::steady_clock;
-    const auto t0 = clock::now();
+    const prism::clock::Stopwatch t0;
 #ifdef _WIN32
     RunSpec spec;
     spec.argv = args;
@@ -89,12 +89,12 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     r.rc = p.rc;
     r.timed_out = p.timed_out;
     r.failed = p.failed;
-    r.seconds = std::chrono::duration<double>(clock::now() - t0).count();
+    r.seconds = t0.elapsed_s();
     return r;
 #else
     if (args.empty()) {
         r.failed = true;
-        r.seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        r.seconds = t0.elapsed_s();
         return r;
     }
     int out_p[2] = {-1, -1}, err_p[2] = {-1, -1}, in_p[2] = {-1, -1};
@@ -104,7 +104,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         if (err_p[0] >= 0) ::close(err_p[0]), ::close(err_p[1]);
         if (in_p[0] >= 0) ::close(in_p[0]), ::close(in_p[1]);
         r.failed = true;
-        r.seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        r.seconds = t0.elapsed_s();
         return r;
     }
     std::vector<char*> argv;
@@ -119,7 +119,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         ::close(err_p[1]);
         if (use_in) ::close(in_p[0]), ::close(in_p[1]);
         r.failed = true;
-        r.seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        r.seconds = t0.elapsed_s();
         return r;
     }
     if (pid == 0) {
@@ -173,8 +173,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
     const bool bounded = opt.timeout_s > 0;
-    const auto deadline = clock::now() + std::chrono::duration_cast<clock::duration>(
-                                             std::chrono::duration<double>(bounded ? opt.timeout_s : 0.0));
+    const auto deadline = prism::clock::after_s(bounded ? opt.timeout_s : 0.0);
     bool out_eof = false, err_eof = false, exited = false;
     int st = 0;
     // the leader stays a zombie until reaped, so its pid (= the session id)
@@ -202,13 +201,13 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         if (!err_eof) drain(err_p[0], r.err, err_eof);
         if (!exited) exited = leader_exited();
         if (exited) break;
-        if (bounded && clock::now() >= deadline) {
+        if (bounded && deadline.expired()) {
             r.timed_out = true;
             break;
         }
         int wait_ms = 50;
         if (bounded) {
-            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - clock::now()).count();
+            auto left = static_cast<long long>(deadline.remaining_ms());
             wait_ms = static_cast<int>(std::max<long long>(1, std::min<long long>(50, left)));
         }
         pollfd pfds[2];
@@ -221,8 +220,8 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     // whatever the leader left behind (background children, solvers in groups
     // of their own) dies with the session; then read what is left in the pipes
     kill_session(pid);
-    const auto until = clock::now() + std::chrono::seconds(5);
-    while (!(out_eof && err_eof) && clock::now() < until) {
+    const auto until = prism::clock::Deadline::after_ms(5000);
+    while (!(out_eof && err_eof) && !until.expired()) {
         if (!out_eof) drain(out_p[0], r.out, out_eof);
         if (!err_eof) drain(err_p[0], r.err, err_eof);
         if (!(out_eof && err_eof)) ::usleep(5000);
@@ -240,7 +239,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         else if (WIFSIGNALED(st)) r.rc = -WTERMSIG(st);
     }
     if (r.rc == 127 && !r.timed_out && r.out.empty()) r.failed = true;
-    r.seconds = std::chrono::duration<double>(clock::now() - t0).count();
+    r.seconds = t0.elapsed_s();
     return r;
 #endif  // !_WIN32
 }

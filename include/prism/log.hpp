@@ -1,8 +1,9 @@
 #pragma once
 
 // PRISM's one logging interface. Deliberately thin: a level, a component
-// name and a message go to one sink. The default sink writes stderr; a host
-// (later FORGE's logger) replaces it with set_sink(). Nothing else in PRISM
+// name and a message go to one sink. The default sink writes PRISM's stderr
+// lines and forwards every record to FORGE's logger (src/prism/log.cpp);
+// tests capture with set_sink(). Nothing else in PRISM
 // should write diagnostics to stderr directly.
 //
 //   error / warn  user-facing problems: "prism <component>: error: <msg>"

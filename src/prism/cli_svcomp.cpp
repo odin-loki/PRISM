@@ -1,6 +1,7 @@
 // `prism svcomp`: PRISM as an SV-COMP verifier (include/prism/svcomp.hpp,
 // docs/SVCOMP.md). One task, the subset scorer (`svcomp score`) and the
 // tool archive (`svcomp pack`).
+#include "prism/clock.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "prism/svcomp.hpp"
@@ -415,9 +416,9 @@ int score_main(int argc, char** argv) {
                 cmd.push_back(t.data_model);
             }
             cmd.push_back(t.input.string());
-            const auto t0 = std::chrono::steady_clock::now();
+            const prism::clock::Stopwatch sw;
             auto r = prism::detail::run_session(cmd, timeout);
-            const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            const double secs = sw.elapsed_s();
             std::vector<std::string> lines = splitlines(r.out);
             std::string answer;
             for (const auto& ln : lines)

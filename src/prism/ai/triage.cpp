@@ -20,6 +20,7 @@
 // the model cosine. Without it the TF-IDF result is used and triage.json says
 // why (Law 7).
 
+#include "prism/settings.hpp"
 #include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
@@ -127,8 +128,9 @@ std::shared_ptr<Embedder> connect_embedder(std::string* why) {
             return g_embed_test;
         }
     }
-    const char* url = std::getenv("PRISM_EMBED_SERVER");
-    if (!url || !*url) {
+    const std::string url_s = settings::embed_server().get();
+    const char* url = url_s.c_str();
+    if (url_s.empty()) {
         if (why) *why = "NOTRUN: no embedding model (set PRISM_EMBED_SERVER to a llama.cpp server started with "
                         "--embedding); deterministic TF-IDF embedding used";
         return nullptr;

@@ -64,9 +64,43 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # third_party/ code, so CI and the Docker build compile and run it to verify
 # third_party/ before anything from there is built. -DPRISM_DEPS_ONLY=ON
 # configures this target alone (no Z3, no PCRE2).
-option(PRISM_DEPS_ONLY "Configure only the std-only prism-deps tool" OFF)
+# --- FORGE (required, unpinned: tracks odin-loki/FORGE main) ---
+# PRISM's runtime services (log, exec, pool, cache, clock, settings) are
+# FORGE's. FORGE is header-only for these modules, so only its include
+# directories are used; FORGE's own build is never configured. Point
+# FORGE_SOURCE_DIR at a checkout, or leave it empty to fetch FORGE main.
+set(FORGE_SOURCE_DIR "" CACHE PATH "FORGE checkout (empty: fetch odin-loki/FORGE main)")
+if(NOT FORGE_SOURCE_DIR)
+  include(FetchContent)
+  FetchContent_Declare(forge GIT_REPOSITORY https://github.com/odin-loki/FORGE.git GIT_TAG main GIT_SHALLOW TRUE)
+  FetchContent_GetProperties(forge)
+  if(NOT forge_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(SET CMP0169 OLD)  # populate only: FORGE's own build is not configured
+    endif()
+    FetchContent_Populate(forge)
+  endif()
+  set(FORGE_SOURCE_DIR "${forge_SOURCE_DIR}")
+endif()
+if(NOT EXISTS "${FORGE_SOURCE_DIR}/core/include/forge/core/log.hpp")
+  message(FATAL_ERROR "PRISM requires FORGE (odin-loki/FORGE main). Not found at '${FORGE_SOURCE_DIR}'. "
+                      "Set -DFORGE_SOURCE_DIR=/path/to/FORGE, or allow the configure step to fetch it.")
+endif()
+message(STATUS "PRISM: FORGE from ${FORGE_SOURCE_DIR}")
+add_library(prism_forge INTERFACE)
+target_include_directories(prism_forge SYSTEM INTERFACE
+  "${FORGE_SOURCE_DIR}/core/include" "${FORGE_SOURCE_DIR}/os/include" "${FORGE_SOURCE_DIR}/support/include")
+find_package(Threads REQUIRED)
+target_link_libraries(prism_forge INTERFACE Threads::Threads)
+if(WIN32)
+  target_link_libraries(prism_forge INTERFACE ws2_32 bcrypt)
+elseif(UNIX AND NOT APPLE)
+  target_link_libraries(prism_forge INTERFACE ${CMAKE_DL_LIBS})
+endif()
+
+option(PRISM_DEPS_ONLY "Configure only the prism-deps tool (std + FORGE headers)" OFF)
 add_library(prism_deps_lib STATIC
-  src/prism/log.cpp  # prism::log: std-only, shared by prism-deps and (through this lib) prism_core
+  src/prism/log.cpp  # prism::log on FORGE's logger, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
   src/tools/prism_deps/fetch.cpp
   src/tools/prism_deps/licence.cpp
@@ -76,6 +110,7 @@ add_library(prism_deps_lib STATIC
   src/tools/prism_deps/tar.cpp
   src/tools/prism_deps/toml.cpp)
 target_include_directories(prism_deps_lib PUBLIC "${PRISM_ROOT}/include")
+target_link_libraries(prism_deps_lib PUBLIC prism_forge)
 add_executable(prism-deps src/tools/prism_deps/main.cpp)
 target_link_libraries(prism-deps PRIVATE prism_deps_lib)
 
@@ -223,7 +258,7 @@ set(PRISM_SRC
   src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
-  src/prism/backends.cpp
+  src/prism/forge_services.cpp
   src/prism/membudget.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
@@ -387,6 +422,7 @@ file(CONFIGURE OUTPUT "${_pir_models_cpp}" CONTENT "${_pir_models_txt}" @ONLY)
 list(APPEND PRISM_SRC "${_pir_models_cpp}")
 
 add_library(prism_core STATIC ${PRISM_SRC} "${_pins_hdr}")
+target_link_libraries(prism_core PUBLIC prism_forge)
 
 # --- src/prism/checkers_*.cpp -> prism/astlint_discard.inc (build time) ---
 # The Clang-AST layer's "<fn>() return is discarded" table is read out of
@@ -592,9 +628,9 @@ endif()
 add_executable(prism_docs_check
   src/tools/qa/docs_main.cpp
   src/tools/qa/docscan.cpp
-  src/prism/log.cpp
   src/prism/regex.cpp)
 target_include_directories(prism_docs_check PRIVATE "${PRISM_ROOT}/include")
+target_link_libraries(prism_docs_check PRIVATE prism_deps_lib)  # prism::log on FORGE
 target_compile_definitions(prism_docs_check PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
 if(TARGET pcre2-8-static)
   target_link_libraries(prism_docs_check PRIVATE pcre2-8-static)

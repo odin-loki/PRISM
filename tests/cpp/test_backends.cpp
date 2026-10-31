@@ -1,15 +1,15 @@
-// prism::exec / prism::pool / prism::cache / prism::fail: the thin
-// replaceable-backend interfaces (exec.hpp, pool.hpp, cache.hpp, exit.hpp).
-#include "doctest.h"
+// prism::exec / prism::pool / prism::cache / prism::clock / prism::fail:
+// the thin interfaces over FORGE (exec.hpp, pool.hpp, cache.hpp, clock.hpp, exit.hpp).
+#include <doctest/doctest.h>
 
 #include "prism/cache.hpp"
+#include "prism/clock.hpp"
 #include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "prism/pool.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <filesystem>
 #include <string>
 #include <fstream>
@@ -21,12 +21,6 @@ namespace {
 std::vector<std::string> g_seen;
 void capture(prism::log::Level l, std::string_view c, std::string_view m) {
     g_seen.push_back(std::to_string(static_cast<int>(l)) + "|" + std::string(c) + "|" + std::string(m));
-}
-prism::exec::Result fake_run(const prism::exec::Spec& s) {
-    prism::exec::Result r;
-    r.exit_code = 7;
-    r.out = s.argv.empty() ? "" : s.argv[0];
-    return r;
 }
 }  // namespace
 
@@ -51,7 +45,7 @@ TEST_CASE("log: program prefix, empty component and plain lines on the default s
     CHECK(prism::log::cat("a", 1, 'b') == "a1b");
 }
 
-TEST_CASE("exec: the default backend runs a process; set_backend swaps it") {
+TEST_CASE("exec: runs a process on FORGE, with timeout") {
 #ifndef _WIN32
     prism::exec::Spec s;
     s.argv = {"sh", "-c", "printf hi; exit 4"};
@@ -64,13 +58,6 @@ TEST_CASE("exec: the default backend runs a process; set_backend swaps it") {
     s.timeout_ms = 200;
     CHECK(prism::exec::run(s).timed_out);
 #endif
-    auto old = prism::exec::set_backend(&fake_run);
-    prism::exec::Spec f;
-    f.argv = {"anything"};
-    auto r2 = prism::exec::run(f);
-    CHECK(r2.exit_code == 7);
-    CHECK(r2.out == "anything");
-    prism::exec::set_backend(old);
 }
 
 TEST_CASE("pool: parallel_for covers [0, n) exactly once") {
@@ -83,7 +70,7 @@ TEST_CASE("pool: parallel_for covers [0, n) exactly once") {
 }
 
 TEST_CASE("cache: put/get/contains/erase/prune and corruption is a miss") {
-    const fs::path dir = fs::temp_directory_path() / ("prism-cache-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const fs::path dir = fs::temp_directory_path() / ("prism-cache-test-" + std::to_string(prism::clock::now_ns()));
     fs::remove_all(dir);
     const auto k = prism::cache::put(dir, std::string_view("hello"));
     CHECK(k.size() == 64);
@@ -101,4 +88,12 @@ TEST_CASE("cache: put/get/contains/erase/prune and corruption is a miss") {
     CHECK(prism::cache::prune(dir, 0) > 0);
     CHECK(prism::cache::stats(dir).entries == 0);
     fs::remove_all(dir);
+}
+
+TEST_CASE("clock: stopwatch and deadline") {
+    const prism::clock::Stopwatch sw;
+    CHECK(prism::clock::after_s(0).is_never());
+    CHECK_FALSE(prism::clock::after_s(60).expired());
+    CHECK(prism::clock::Deadline::after_ms(0).expired());
+    CHECK(sw.elapsed_s() >= 0.0);
 }

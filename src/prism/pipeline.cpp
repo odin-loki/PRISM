@@ -1,4 +1,5 @@
 #ifdef __linux__
+#include "prism/settings.hpp"
 #include <malloc.h>
 #endif
 #include "prism/astlint.hpp"
@@ -571,7 +572,7 @@ RunReport run_pipeline(const Config& cfg) {
     // Roadmap 9.3 triage: triage.json + the report.md "Clusters" section.
     // Ordering only: the report (and so every status) is const here.
     // PRISM_TRIAGE=0 switches it off (docs/AI.md: its measured value).
-    if (const char* t = std::getenv("PRISM_TRIAGE"); !t || std::string(t) != "0") ai::write_triage(report, cfg.out);
+    if (settings::triage().get()) ai::write_triage(report, cfg.out);
     write_sarif(report, cfg.out / "report.sarif");
     return report;
 }

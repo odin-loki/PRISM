@@ -1,10 +1,8 @@
 #pragma once
 
-// PRISM's thin thread-pool interface, built like log.hpp. Work goes through
-// parallel_for(n, grain, fn(begin, end)), the same shape as FORGE's
-// forge::task::pool::parallel_for (support/task/pool.hpp); the FORGE switch is
-// set_backend({forge_parallel_for, forge_size}). The default backend is ISO
-// std::jthread workers sized by prism::clamp_jobs (threads.hpp).
+// PRISM's thread pool: a thin interface over FORGE's forge::task::pool
+// (support/task/pool.hpp). One process-wide pool sized by prism::clamp_jobs;
+// a call with an explicit jobs count runs on a pool of that size.
 
 #include "prism/export.hpp"
 
@@ -14,16 +12,6 @@
 namespace prism::pool {
 
 using RangeFn = std::function<void(std::size_t begin, std::size_t end)>;
-
-struct Backend {
-    // Run fn over [0, n) in chunks of about `grain`, on up to `jobs` threads
-    // (jobs <= 0: the backend's default). Returns when every chunk is done.
-    void (*parallel_for)(int jobs, std::size_t n, std::size_t grain, const RangeFn& fn) = nullptr;
-    unsigned (*size)() = nullptr;  // worker count at jobs <= 0
-};
-
-// Replace the backend (a default-constructed Backend restores the default).
-PRISM_API Backend set_backend(Backend b);
 
 PRISM_API void parallel_for(int jobs, std::size_t n, std::size_t grain, const RangeFn& fn);
 PRISM_API unsigned size();

@@ -1,3 +1,4 @@
+#include "prism/settings.hpp"
 #include "prism/config.hpp"
 #include "prism/deps.hpp"
 #include "prism/manifest_pins.hpp"  // generated from third_party/MANIFEST.toml by prism-deps pins
@@ -36,12 +37,12 @@ namespace fs = std::filesystem;
 // PRISM_PBSD only. No guessed location: the ParanoidBSD tree is used when
 // named explicitly (PRISM_PBSD or --pbsd PATH). Empty = not configured.
 static fs::path default_pbsd() {
-    if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return env;
+    if (auto v = settings::pbsd().get(); !v.empty()) return v;
     return {};
 }
 
 static fs::path default_gguf() {
-    if (const char* env = std::getenv("PRISM_GGUF"); env && *env) return env;
+    if (auto v = settings::gguf().get(); !v.empty()) return v;
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;
@@ -286,7 +287,7 @@ fs::path expand_user(const fs::path& p) {
 }
 
 fs::path tools_home() {
-    if (const char* env = std::getenv("PRISM_TOOLS_DIR"); env && *env) return fs::path(env);
+    if (auto v = settings::tools_dir().get(); !v.empty()) return fs::path(v);
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;

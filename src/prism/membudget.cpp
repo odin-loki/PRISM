@@ -1,3 +1,6 @@
+#include "prism/clock.hpp"
+#include <optional>
+#include "prism/settings.hpp"
 #include <filesystem>
 #include <cstring>
 #include "prism/log.hpp"
@@ -203,8 +206,7 @@ uint64_t tree_rss_mb() {
 bool system_low() {
 #ifdef __linux__
     static const uint64_t reserve = [] {
-        const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
-        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{1500};
+        return static_cast<uint64_t>(std::max<std::int64_t>(0, settings::mem_reserve_mb().get()));
     }();
     if (reserve == 0) return false;
     const uint64_t avail = meminfo_mb("MemAvailable:");
@@ -230,12 +232,12 @@ bool over_budget() {
     // 3379 MB): trip at 70% so the stop latency still lands under budget.
     static std::mutex mu;
     static uint64_t last_rss = 0;
-    static std::chrono::steady_clock::time_point last_t{};
+    static uint64_t last_t = 0;  // clock::now_ns()
     static bool fast = false;
     {
         std::lock_guard<std::mutex> lk(mu);
-        const auto now = std::chrono::steady_clock::now();
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_t).count();
+        const uint64_t now = clock::now_ns();
+        const auto ms = static_cast<long long>((now - last_t) / 1000000);
         if (ms >= 50) {
             fast = last_rss > 0 && rss > last_rss && (rss - last_rss) * 1000 / static_cast<uint64_t>(ms) >= 1024;
             last_rss = rss;
@@ -261,12 +263,10 @@ std::mutex g_hmu;
 std::function<void()> g_stuck_hook;
 
 void watchdog() {
-    using clk = std::chrono::steady_clock;
-    clk::time_point streak{};
+    std::optional<clock::Stopwatch> streak;  // running while over budget
     bool hooked = false;
     const long stuck_ms = [] {
-        const char* e = std::getenv("PRISM_MEM_STUCK_MS");
-        return e && *e ? std::strtol(e, nullptr, 10) : 1000L;
+        return static_cast<long>(settings::mem_stuck_ms().get());
     }();
     for (;;) {
         // 20 ms near the limit (from 60% of budget): a Z3 query or an encoder
@@ -281,22 +281,22 @@ void watchdog() {
             if (g_watches.empty()) continue;
         }
         if (!over_budget()) {
-            streak = {};
+            streak.reset();
             hooked = false;
             continue;
         }
-        if (streak == clk::time_point{}) streak = clk::now();
-        if (!hooked && stuck_ms > 0 && clk::now() - streak >= std::chrono::milliseconds(stuck_ms)) {
+        if (!streak) streak.emplace();
+        if (!hooked && stuck_ms > 0 && streak->elapsed_ms() >= static_cast<uint64_t>(stuck_ms)) {
             hooked = true;
             std::function<void()> h;
             { std::lock_guard<std::mutex> lk(g_hmu); h = g_stuck_hook; }
-            if (std::getenv("PRISM_MEM_TRACE"))
+            if (settings::mem_trace().get())
                 prism::log::trace("memtrace", "stuck " + std::to_string(stuck_ms) + " ms rss=" + std::to_string(rss_mb()) +
                                                   " phases=" + phases() + ": hard stop");
             if (h) h();
         }
         g_trips.fetch_add(1);
-        if (std::getenv("PRISM_MEM_TRACE")) {
+        if (settings::mem_trace().get()) {
             std::size_t n = 0;
             { std::lock_guard<std::mutex> lk(g_wmu); n = g_watches.size(); }
             prism::log::trace("memtrace", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(

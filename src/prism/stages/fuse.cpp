@@ -1,5 +1,6 @@
 ﻿// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
+#include "prism/clock.hpp"
 #include "agent.hpp"
 #include "fuse.hpp"
 #include "llm.hpp"
@@ -185,7 +186,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         }
     if (corpus.empty()) corpus.push_back(random_seed_row(static_cast<std::size_t>(nbytes)));
     bool noseed = !seeds;
-    auto t0 = std::chrono::steady_clock::now();
+    const prism::clock::Stopwatch t0;
     std::set<uint64_t> seen;
     int new_cov = 0, stall = 0, i = 0;
     // The interpreter's reason when it could not run the function (a parse
@@ -245,7 +246,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     };
     std::deque<std::vector<uint8_t>> queue(corpus.begin(), corpus.end());
     while (!queue.empty() && interp_err.empty()) {
-        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        auto elapsed = t0.elapsed_s();
         if (elapsed >= std::max(budget, 1.0)) break;
         auto child = queue.front();
         queue.pop_front();
@@ -254,7 +255,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     }
     uint64_t hseed = 1;
     while (i < iters && interp_err.empty()) {
-        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        auto elapsed = t0.elapsed_s();
         if (elapsed >= budget) break;
         auto child = corpus[static_cast<std::size_t>(i) % corpus.size()];
         havoc(child.data(), child.size(), ++hseed);
@@ -279,7 +280,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         fill(f, "concrete");
         return f;
     };
-    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    auto elapsed = t0.elapsed_s();
     double remain = std::max(0.05, budget - elapsed);
     int bin_iters = std::min(32, std::max(1, iters));
     // Law 9: the compiled harness runs the scanned function; without
@@ -395,8 +396,8 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         }
         return hit;
     };
-    auto tbin = std::chrono::steady_clock::now();
-    auto bin_elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tbin).count(); };
+    const prism::clock::Stopwatch tbin;
+    auto bin_elapsed = [&] { return tbin.elapsed_s(); };
     int n = 0;
     int take = std::max(1, std::min(bin_iters, static_cast<int>(corpus.size())));
     for (int k = 0; k < take;) {
@@ -1108,7 +1109,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         // inputs to the same results, so it adds no check.
         if (r > 0 && seeds == prev_seeds && !sandbox::allowed()) break;
         prev_seeds = seeds;
-        const auto round_t0 = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch round_t0;
         extra["rounds"] = std::to_string(r + 1);
         try {
             last = fuzz_function(fn, src, budget, iters, seeds.empty() ? nullptr : &seeds);
@@ -1275,7 +1276,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             // proof, Law 3). zlib: one goal query per branch of every scalar
             // function took the fuzz stage past 700 s; the bmc stage checks
             // each function in full on its own.
-            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - round_t0).count() >= budget) {
+            if (round_t0.elapsed_s() >= budget) {
                 ++goals_skipped;
                 continue;
             }

@@ -1,3 +1,4 @@
+#include "prism/settings.hpp"
 #include "prism/stages.hpp"
 #include "prism/astlint.hpp"
 #include "prism/threads.hpp"
@@ -2201,7 +2202,7 @@ constexpr PbsdHeavy kPbsdHeavy[] = {
 // guessed default location. prism/pbsd.py _looked_root.
 fs::path pbsd_looked_root(const Config& cfg) {
     if (!cfg.pbsd_root.empty()) return cfg.pbsd_root;
-    if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return fs::path(env);
+    if (auto v = settings::pbsd().get(); !v.empty()) return fs::path(v);
     return {};
 }
 
