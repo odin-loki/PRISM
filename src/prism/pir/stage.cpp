@@ -351,6 +351,15 @@ std::vector<std::string> base_flags(const fs::path& src) {
     f.insert(f.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names",
                        "-gline-tables-only"});
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
+    if (!is_cxx(src)) {
+        // C23 library declarations the libc may lack (memset_explicit)
+        const fs::path forced = fs::path(__FILE__).parent_path() / "models" / "libc" / "forced" / "prism_c23_decls.h";
+        std::error_code fec;
+        if (fs::is_regular_file(forced, fec)) {
+            f.push_back("-include");
+            f.push_back(forced.string());
+        }
+    }
     // A C/C++ memcpy call stays a call to memcpy (its library model checks
     // C's rule: no overlap at all, C17 7.24.2.1) instead of becoming the
     // llvm.memcpy intrinsic, which the LangRef lets copy an object exactly

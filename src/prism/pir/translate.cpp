@@ -1788,6 +1788,17 @@ struct Tr final : pirmem::TrApi {
             check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
             return;
         }
+        // __prism_incomplete(msg): a library model's path that PRISM does not
+        // follow (e.g. regex syntax the matcher does not implement). Reaching
+        // it is a soft stop (translate_ctl.inc): NEEDS-HARNESS when reachable,
+        // never FAILED, never PROVED; an unreachable one is no obstacle.
+        if (n == "__prism_incomplete") {
+            auto msg = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!msg) throw Unenc{"UNENCODED: __prism_incomplete without a literal message"};
+            soft_stop(cur, "model incomplete: " + *msg, line);
+            cur = newblock("incomplete.after");  // unreachable
+            return;
+        }
         if (n == "__prism_assume") {
             Arg c = arg(0);
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));

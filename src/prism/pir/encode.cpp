@@ -1613,9 +1613,11 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     if (opt.function_budget_s > 0 && !opt.function_budget)
         opt.function_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
     if (opt.certified || opt.unwind <= kFirstUnwind + 1) return check_function_at(fn, opt);
+    std::size_t n_loops = 0;
     {
         auto g = analyze(fn);
         if (!g.unencoded.empty() || g.loops.empty()) return check_function_at(fn, opt);
+        n_loops = g.loops.size();
     }
     CheckOptions first = opt;
     first.unwind = kFirstUnwind;
@@ -1654,6 +1656,35 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
         return v;
     }
     full.extra["unwind_first_tried"] = std::to_string(kFirstUnwind) + " (" + v.status + ")";
+    // Deepening: a single loop still BOUNDED at the requested unwind is
+    // re-checked at twice the unwind, up to PRISM_PIR_DEEPEN_MAX (default 64,
+    // 0 = off), while the function budget lasts. arr_loop_false writes a[10]
+    // on the 11th iteration, past unwind 8: BOUNDED there, FAILED at 16.
+    // Only a FAILED (a path that exists at any larger unwind) or a PROVED
+    // with every loop closed replaces the answer; anything else keeps it.
+    static const int deepen_env = [] {
+        const char* e = std::getenv("PRISM_PIR_DEEPEN_MAX");
+        return (e && *e) ? std::atoi(e) : 64;
+    }();
+    const int deepen_max = opt.deepen_max >= 0 ? opt.deepen_max : deepen_env;
+    if (full.status == std::string(laws::BOUNDED) && n_loops == 1 && deepen_max > opt.unwind) {
+        for (int u = opt.unwind * 2; u <= deepen_max; u *= 2) {
+            if (opt.function_budget && opt.function_budget->left() < opt.timeout_s) break;
+            if (z3_exhausted()) break;
+            CheckOptions d = opt;
+            d.unwind = u;
+            Verdict dv = check_function_at(fn, d);
+            auto dc = dv.extra.find("unwind_closed");
+            const bool dproved = dv.status == std::string(laws::PROVED) && dc != dv.extra.end() && dc->second == "true";
+            if (dproved || dv.status == std::string(laws::FAILED)) {
+                dv.extra["unwind_requested"] = std::to_string(opt.unwind);
+                dv.extra["unwind_deepened_to"] = std::to_string(u);
+                return dv;
+            }
+            if (dv.status != std::string(laws::BOUNDED)) break;
+            full.extra["unwind_deepened_to"] = std::to_string(u) + " (BOUNDED)";
+        }
+    }
     return full;
 }
 

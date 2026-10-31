@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <mutex>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -390,6 +391,12 @@ RunOut run(const RunSpec& spec) {
 
 #else
 
+int serialized_fork() {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lk(m);
+    return static_cast<int>(::fork());
+}
+
 RunOut run(const RunSpec& spec) {
     refuse_disabled_checks(spec.argv);
     RunOut r;
@@ -462,7 +469,7 @@ RunOut run(const RunSpec& spec) {
         envp.push_back(nullptr);
     }
     const std::string cwd = spec.cwd.string();
-    pid_t pid = ::fork();
+    pid_t pid = serialized_fork();
     if (pid < 0) {
         close_fd(exec_p[0]), close_fd(exec_p[1]);
         close_all();

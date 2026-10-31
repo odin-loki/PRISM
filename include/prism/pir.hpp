@@ -501,6 +501,9 @@ struct FunctionBudget {
 
 struct CheckOptions {
     int unwind = 8;
+    // Deepening of a single still-BOUNDED loop (doubling the unwind) up to
+    // this bound; -1: PRISM_PIR_DEEPEN_MAX (default 64); 0: off.
+    int deepen_max = -1;
     double timeout_s = 30.0;    // per verification condition
     bool portfolio = true;      // false: Z3 alone (plus CaDiCaL when certified)
     bool certified = false;     // roadmap 3.2: PROVED-CERTIFIED when every VC is certified

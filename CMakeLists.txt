@@ -901,6 +901,10 @@ if(PRISM_TESTS)
     # sanitizers_usable() probe otherwise reports NOTRUN.
     tests/cpp/test_qa_conformance.cpp
     tests/cpp/test_pir_e2e.cpp
+    tests/cpp/test_pir_incomplete.cpp
+    tests/cpp/test_c23_stdbit.cpp
+    tests/cpp/test_c23_memset_explicit.cpp
+    tests/cpp/test_fork_serial.cpp
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).
     tests/cpp/test_repo_tools.cpp
     # The offline AI analytics (prism_ai, the GBDT trainer, the built-in model).

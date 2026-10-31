@@ -884,7 +884,11 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         return in;
     }
     if (op == "load") {
-        if (p.is_word("atomic") || p.is_word("volatile")) {
+        // volatile: the program's own object, read and written in program
+        // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
+        // like any other. The flag is kept. atomic stays unencoded.
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        if (p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;
@@ -896,7 +900,11 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         return in;
     }
     if (op == "store") {
-        if (p.is_word("atomic") || p.is_word("volatile")) {
+        // volatile: the program's own object, read and written in program
+        // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
+        // like any other. The flag is kept. atomic stays unencoded.
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        if (p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;

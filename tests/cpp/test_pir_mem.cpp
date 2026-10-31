@@ -406,9 +406,13 @@ TEST_CASE("pir mem: every property, true and false, in both memory encodings") {
         REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
         CHECK(t.fn->uses_memory);
         for (auto enc : {pp::MemEncoding::Array, pp::MemEncoding::Bv}) {
-            pp::EncodeOptions eo;
-            eo.memory = enc;
-            auto v = pp::check_function(*t.fn, 8, 30, eo);
+            pp::CheckOptions o;
+            o.unwind = 8;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.encode.memory = enc;
+            o.deepen_max = 0;  // the k-induction step itself, at unwind 8
+            auto v = pp::check_function(*t.fn, o);
             CAPTURE(v.message);
             CHECK(v.status == c.status);
             if (*c.cls) CHECK(v.cls == c.cls);
@@ -878,14 +882,26 @@ TEST_CASE("pir mem: k-induction havocs the write footprint of a memory-writing l
         REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
         for (auto enc : {pp::MemEncoding::Array, pp::MemEncoding::Bv}) {
             CAPTURE(static_cast<int>(enc));
-            pp::EncodeOptions eo;
-            eo.memory = enc;
-            auto v = pp::check_function(*t.fn, 8, 30, eo);
+            pp::CheckOptions o;
+            o.unwind = 8;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.encode.memory = enc;
+            o.deepen_max = 0;  // the k-induction step itself, at unwind 8
+            auto v = pp::check_function(*t.fn, o);
             CAPTURE(v.message);
             CHECK(v.status == c.status);
             CHECK(v.extra["k_induction"] == c.kind);
             CHECK(v.extra["k_induction_memory"] == "write footprint havocked");
             CHECK(v.extra["k_induction_footprint"].find(c.footprint) != std::string::npos);
+            if (!c.witness.empty()) {
+                // with deepening (best effort, budget-limited) the real bug
+                // past unwind 8 may be found; it is never PROVED
+                o.deepen_max = 64;
+                auto d = pp::check_function(*t.fn, o);
+                CAPTURE(d.message);
+                CHECK((d.status == "FAILED" || d.status == "BOUNDED"));
+            }
         }
         if (!c.witness.empty()) {
             // the false cases are real: the interpreter hits the violation

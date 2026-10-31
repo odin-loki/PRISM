@@ -83,6 +83,68 @@ private:
     int _M_cat = 0;
 };
 
+// std::errc with the Linux errno values (C++ [syserr]: errc's values are the
+// <cerrno> macros; fixed here so this header does not include <cerrno>).
+enum class errc {
+    address_family_not_supported = 97,
+    address_in_use = 98,
+    address_not_available = 99,
+    already_connected = 106,
+    argument_list_too_long = 7,
+    argument_out_of_domain = 33,
+    bad_address = 14,
+    bad_file_descriptor = 9,
+    broken_pipe = 32,
+    connection_aborted = 103,
+    connection_already_in_progress = 114,
+    connection_refused = 111,
+    connection_reset = 104,
+    device_or_resource_busy = 16,
+    directory_not_empty = 39,
+    file_exists = 17,
+    file_too_large = 27,
+    filename_too_long = 36,
+    function_not_supported = 38,
+    host_unreachable = 113,
+    illegal_byte_sequence = 84,
+    interrupted = 4,
+    invalid_argument = 22,
+    invalid_seek = 29,
+    io_error = 5,
+    is_a_directory = 21,
+    message_size = 90,
+    network_down = 100,
+    network_unreachable = 101,
+    no_buffer_space = 105,
+    no_child_process = 10,
+    no_such_device = 19,
+    no_such_file_or_directory = 2,
+    no_such_process = 3,
+    not_a_directory = 20,
+    not_a_socket = 88,
+    not_connected = 107,
+    not_enough_memory = 12,
+    not_supported = 95,
+    operation_canceled = 125,
+    operation_in_progress = 115,
+    operation_not_permitted = 1,
+    operation_not_supported = 95,
+    operation_would_block = 11,
+    permission_denied = 13,
+    read_only_file_system = 30,
+    resource_deadlock_would_occur = 35,
+    resource_unavailable_try_again = 11,
+    result_out_of_range = 34,
+    timed_out = 110,
+    too_many_files_open = 24,
+    too_many_files_open_in_system = 23,
+    too_many_links = 31,
+    value_too_large = 75,
+};
+
+// make_error_code(errc): generic category, value = the errno number.
+inline error_code make_error_code(errc __e) noexcept { return error_code(static_cast<int>(__e), generic_category()); }
+
 }  // namespace std
 
 #endif

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_has_include_false.c
+language: C
+property: no-div0
+expected:
+  c23_has_include_false: false
+witness:
+  c23_has_include_false: [1]

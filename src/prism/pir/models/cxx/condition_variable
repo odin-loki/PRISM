@@ -54,6 +54,12 @@ public:
 
     // Sets the same flag. Does not run a waiter and does not invent a woken thread.
     void notify_all() noexcept { _M_flag = true; }
+
+    // The handle is the object's own address: it lives exactly as long as the
+    // condition_variable, so a read through it after delete is a use after
+    // free, as with libstdc++'s handle (a pointer into the object).
+    using native_handle_type = condition_variable*;
+    native_handle_type native_handle() noexcept { return this; }
 };
 
 }  // namespace std

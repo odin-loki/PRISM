@@ -147,6 +147,8 @@ public:
 
 private:
     __stringbuf_type _M_stringbuf;
+    ios_base::iostate _M_state = ios_base::goodbit;
+    ios_base::iostate _M_except = ios_base::goodbit;
 
 public:
     basic_ostringstream() : _M_stringbuf(ios_base::out) {}
@@ -157,17 +159,40 @@ public:
         : _M_stringbuf(__str, __mode | ios_base::out) {}
 
     basic_ostringstream(const basic_ostringstream&) = delete;
-    basic_ostringstream(basic_ostringstream&& __rhs) noexcept : _M_stringbuf(std::move(__rhs._M_stringbuf)) {}
+    basic_ostringstream(basic_ostringstream&& __rhs) noexcept : _M_stringbuf(std::move(__rhs._M_stringbuf)), _M_state(__rhs._M_state), _M_except(__rhs._M_except) {}
 
     ~basic_ostringstream() = default;
 
     basic_ostringstream& operator=(const basic_ostringstream&) = delete;
     basic_ostringstream& operator=(basic_ostringstream&& __rhs) noexcept {
         _M_stringbuf = std::move(__rhs._M_stringbuf);
+        _M_state = __rhs._M_state;
+        _M_except = __rhs._M_except;
         return *this;
     }
 
     __stringbuf_type* rdbuf() const { return const_cast<__stringbuf_type*>(&_M_stringbuf); }
+
+    // [iostate.flags] Stream state and exception mask, as basic_ios keeps
+    // them. clear() throws ios_base::failure when the new state meets the
+    // mask (std::__throw_ios_failure: pir maps it to that type).
+    ios_base::iostate rdstate() const { return _M_state; }
+    void clear(ios_base::iostate __s = ios_base::goodbit) {
+        _M_state = __s;
+        if ((_M_state & _M_except) != 0) std::__throw_ios_failure("basic_ios::clear");
+    }
+    void setstate(ios_base::iostate __s) { clear(_M_state | __s); }
+    bool good() const { return _M_state == ios_base::goodbit; }
+    bool eof() const { return (_M_state & ios_base::eofbit) != 0; }
+    bool fail() const { return (_M_state & (ios_base::badbit | ios_base::failbit)) != 0; }
+    bool bad() const { return (_M_state & ios_base::badbit) != 0; }
+    explicit operator bool() const { return !fail(); }
+    bool operator!() const { return fail(); }
+    ios_base::iostate exceptions() const { return _M_except; }
+    void exceptions(ios_base::iostate __e) {
+        _M_except = __e;
+        clear(_M_state);
+    }
 
     __string_type str() const { return _M_stringbuf.str(); }
 

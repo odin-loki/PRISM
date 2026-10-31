@@ -1,0 +1,6 @@
+format_version: 1
+input_files: c99_hexfloat_true.c
+language: C
+property: no-fp-cast
+expected:
+  c99_hexfloat_true: true

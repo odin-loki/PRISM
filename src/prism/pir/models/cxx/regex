@@ -24,13 +24,21 @@
 // after that check. Copy and move copy the flag.
 // This is not PROVED and not CLEAN.
 //
-// regex_match, regex_search, and regex_replace are not declared. A true
-// return from any of them would be a fake match. A use fails to compile
-// against this header and pir falls back to libstdc++ (extra.cxx_models).
-// They are not stubbed. basic_regex, wregex, regex_traits, match_results,
-// and the iterators are omitted the same way.
+// regex_search and regex_match run a real matcher (__prism_re_*, below):
+// ECMAScript literals, '.', bracket classes ([abc], [a-z], [^...]), the
+// escapes \d \w \s \D \W \S and escaped punctuation, the quantifiers
+// * + ? (greedy, with backtracking), and the anchors ^ and $. The matcher is
+// iterative (PIR does not encode recursion) and bounded by the subject and
+// pattern lengths. Any other syntax (groups, alternation, {m,n}, back
+// references) or a nonzero flag reaches __prism_incomplete: that path is
+// NEEDS-HARNESS when reachable, never FAILED or PROVED. No answer is
+// invented for a pattern this matcher does not understand. smatch / cmatch keep the
+// whole-match position and length only (sub-match 0); size() is 1 after a
+// match. regex_replace, wregex, regex_traits, and the iterators are not
+// declared: a use fails to compile and pir falls back to libstdc++.
 //
-// This header does not include <string>, <string_view>, <memory>, or
+// This header includes <string> (the PRISM model) for std::smatch and the
+// std::string overloads. It does not include <string_view>, <memory>, or
 // <locale>. It includes <utility> so std::move can bind the move
 // constructor. The characters live in storage this regex allocates itself.
 //
@@ -43,11 +51,15 @@
 #include <cstddef>
 #include <new>
 #include <utility>
+#include <string>
 
 // PIR intrinsics (translate.cpp, prism_model.h). Literal class and message.
 // Declared, not defined: the analysed program does not link a body.
 extern "C" void __prism_check(int, const char*, const char*);
 extern "C" unsigned long __prism_obj_size(const void*);
+// PIR intrinsic (translate.cpp): a path this model does not follow.
+// Reachable => NEEDS-HARNESS; never FAILED, never PROVED.
+extern "C" void __prism_incomplete(const char*);
 
 namespace std {
 
@@ -191,6 +203,176 @@ inline void regex::_M_from_cstr(const char* __s) {
     // A terminated empty pattern stays empty. It is not rewritten.
     if (__n != 0) _M_own(__s, static_cast<std::size_t>(__n));
 }
+
+
+// ---- matcher -------------------------------------------------------------
+struct __prism_re_tok {
+    unsigned char kind;  // 0 literal, 1 any, 2 class, 3 \d, 4 \w, 5 \s
+    bool neg;            // [^...], \D \W \S
+    char q;              // 0, '*', '+', '?'
+    char ch;             // literal
+    std::size_t b, e;    // class body [b, e) in the pattern
+};
+
+inline constexpr std::size_t __prism_re_max = 32;
+
+inline bool __prism_re_is_digit(char c) { return c >= '0' && c <= '9'; }
+inline bool __prism_re_is_word(char c) {
+    return __prism_re_is_digit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+inline bool __prism_re_is_space(char c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+
+[[noreturn]] inline void __prism_re_unsup() {
+    __prism_incomplete("std::regex syntax outside the PRISM matcher");
+    __builtin_trap();
+}
+
+// Parses p[0, n) into t. Returns the token count; sets bol / eol for the
+// anchors. Unsupported syntax does not return.
+inline std::size_t __prism_re_parse(const char* p, std::size_t n, __prism_re_tok* t, bool& bol, bool& eol) {
+    std::size_t k = 0, i = 0;
+    bol = eol = false;
+    if (n != 0 && p[0] == '^') { bol = true; i = 1; }
+    while (i < n) {
+        const char c = p[i];
+        if (c == '$' && i + 1 == n) { eol = true; break; }
+        if (k == __prism_re_max || c == '(' || c == ')' || c == '|' || c == '{' || c == '}' || c == '^' || c == '$' ||
+            c == '*' || c == '+' || c == '?')
+            __prism_re_unsup();
+        __prism_re_tok& x = t[k];
+        x.kind = 0; x.neg = false; x.q = 0; x.ch = c; x.b = x.e = 0;
+        if (c == '.') { x.kind = 1; ++i; }
+        else if (c == '\\') {
+            if (i + 1 >= n) __prism_re_unsup();
+            const char d = p[i + 1];
+            if (d == 'd' || d == 'D') { x.kind = 3; x.neg = d == 'D'; }
+            else if (d == 'w' || d == 'W') { x.kind = 4; x.neg = d == 'W'; }
+            else if (d == 's' || d == 'S') { x.kind = 5; x.neg = d == 'S'; }
+            else if (__prism_re_is_word(d)) __prism_re_unsup();  // \b \1 \n ...
+            else x.ch = d;
+            i += 2;
+        } else if (c == '[') {
+            std::size_t j = i + 1;
+            if (j < n && p[j] == '^') { x.neg = true; ++j; }
+            const std::size_t b = j;
+            while (j < n && p[j] != ']') {
+                if (p[j] == '\\' || p[j] == '[') __prism_re_unsup();
+                ++j;
+            }
+            if (j >= n || j == b) __prism_re_unsup();
+            x.kind = 2; x.b = b; x.e = j;
+            i = j + 1;
+        } else ++i;
+        if (i < n && (p[i] == '*' || p[i] == '+' || p[i] == '?')) { x.q = p[i]; ++i; }
+        ++k;
+    }
+    return k;
+}
+
+inline bool __prism_re_atom(const char* p, const __prism_re_tok& x, char c) {
+    bool r = false;
+    if (x.kind == 0) return c == x.ch;
+    if (x.kind == 1) return c != '\n' && c != '\r';
+    if (x.kind == 3) r = __prism_re_is_digit(c);
+    else if (x.kind == 4) r = __prism_re_is_word(c);
+    else if (x.kind == 5) r = __prism_re_is_space(c);
+    else {
+        for (std::size_t j = x.b; j < x.e; ++j) {
+            if (j + 2 < x.e && p[j + 1] == '-') {
+                if (c >= p[j] && c <= p[j + 2]) r = true;
+                j += 2;
+            } else if (c == p[j]) r = true;
+        }
+    }
+    return x.neg ? !r : r;
+}
+
+// Matches the tokens at s[at, len). Returns the end of the greedy match in
+// ECMAScript backtracking order, or -1.
+inline long __prism_re_here(const char* p, const __prism_re_tok* t, std::size_t k, bool eol, const char* s,
+                            std::size_t len, std::size_t at) {
+    std::size_t from[__prism_re_max], cnt[__prism_re_max];
+    std::size_t i = 0, pos = at;
+    for (;;) {
+        bool back = false;
+        if (i == k) {
+            if (!eol || pos == len) return static_cast<long>(pos);
+            back = true;
+        } else {
+            const __prism_re_tok& x = t[i];
+            const std::size_t lim = (x.q == '*' || x.q == '+') ? len - pos : (pos < len ? 1 : 0);
+            std::size_t m = 0;
+            while (m < lim && __prism_re_atom(p, x, s[pos + m])) ++m;
+            const std::size_t lo = (x.q == '*' || x.q == '?') ? 0 : 1;
+            if (m < lo) back = true;
+            else { from[i] = pos; cnt[i] = m; pos += m; ++i; }
+        }
+        if (back) {
+            for (;;) {
+                if (i == 0) return -1;
+                --i;
+                const std::size_t lo = (t[i].q == '*' || t[i].q == '?') ? 0 : 1;
+                if (cnt[i] > lo) { --cnt[i]; pos = from[i] + cnt[i]; ++i; break; }
+            }
+        }
+    }
+}
+
+template <class _It>
+class match_results {
+public:
+    match_results() noexcept : _M_ready(false), _M_matched(false), _M_pos(0), _M_len(0), _M_base(nullptr) {}
+    [[nodiscard]] bool ready() const noexcept { return _M_ready; }
+    [[nodiscard]] std::size_t size() const noexcept { return _M_matched ? 1 : 0; }
+    [[nodiscard]] bool empty() const noexcept { return !_M_matched; }
+    // Sub-match 0 only; another index, or no match, is a contract failure.
+    [[nodiscard]] long length(std::size_t __n = 0) const { _M_index(__n); return static_cast<long>(_M_len); }
+    [[nodiscard]] long position(std::size_t __n = 0) const { _M_index(__n); return static_cast<long>(_M_pos); }
+    [[nodiscard]] std::string str(std::size_t __n = 0) const { _M_index(__n); return std::string(_M_base + _M_pos, _M_len); }
+    bool _M_ready, _M_matched;
+    std::size_t _M_pos, _M_len;
+    const char* _M_base;
+
+private:
+    void _M_index(std::size_t __n) const {
+        __prism_check(_M_matched && __n == 0, "FUNC-CONTRACT", "std::match_results sub-match index out of range");
+    }
+};
+using smatch = match_results<std::string::const_iterator>;
+using cmatch = match_results<const char*>;
+
+// __whole: regex_match (the match must cover the subject); else leftmost search.
+template <class _It>
+inline bool __prism_re_run(const regex& __re, const char* __s, std::size_t __len, match_results<_It>* __m, bool __whole) {
+    if (__re.flags() != 0) __prism_re_unsup();
+    __prism_re_tok __t[__prism_re_max];
+    bool __bol = false, __eol = false;
+    const char* __p = __re.data();
+    const std::size_t __k = __re.size() != 0 ? __prism_re_parse(__p, __re.size(), __t, __bol, __eol) : 0;
+    if (__whole) { __bol = true; __eol = true; }
+    const std::size_t __last = __bol ? 0 : __len;
+    for (std::size_t __at = 0; __at <= __last; ++__at) {
+        const long __e = __prism_re_here(__p, __t, __k, __eol, __s, __len, __at);
+        if (__e >= 0) {
+            if (__m) {
+                __m->_M_ready = true; __m->_M_matched = true; __m->_M_base = __s;
+                __m->_M_pos = __at; __m->_M_len = static_cast<std::size_t>(__e) - __at;
+            }
+            return true;
+        }
+    }
+    if (__m) { __m->_M_ready = true; __m->_M_matched = false; __m->_M_pos = 0; __m->_M_len = 0; }
+    return false;
+}
+
+inline bool regex_search(const std::string& __s, smatch& __m, const regex& __re) { return __prism_re_run(__re, __s.data(), __s.size(), &__m, false); }
+inline bool regex_search(const std::string& __s, const regex& __re) { return __prism_re_run<const char*>(__re, __s.data(), __s.size(), nullptr, false); }
+inline bool regex_search(const char* __s, cmatch& __m, const regex& __re) { return __prism_re_run(__re, __s, __builtin_strlen(__s), &__m, false); }
+inline bool regex_search(const char* __s, const regex& __re) { return __prism_re_run<const char*>(__re, __s, __builtin_strlen(__s), nullptr, false); }
+inline bool regex_match(const std::string& __s, smatch& __m, const regex& __re) { return __prism_re_run(__re, __s.data(), __s.size(), &__m, true); }
+inline bool regex_match(const std::string& __s, const regex& __re) { return __prism_re_run<const char*>(__re, __s.data(), __s.size(), nullptr, true); }
+inline bool regex_match(const char* __s, cmatch& __m, const regex& __re) { return __prism_re_run(__re, __s, __builtin_strlen(__s), &__m, true); }
+inline bool regex_match(const char* __s, const regex& __re) { return __prism_re_run<const char*>(__re, __s, __builtin_strlen(__s), nullptr, true); }
 
 }  // namespace std
 

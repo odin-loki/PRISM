@@ -86,6 +86,17 @@ std::vector<std::string> lp64_clang_driver_flags() {
         f.push_back(shim.string());
     }
 #endif
+    // C23 headers the frontend's libc may lack (<stdbit.h>); searched after
+    // the system headers, so a libc that has them wins
+    {
+        const std::filesystem::path c23 =
+            std::filesystem::path(__FILE__).parent_path() / "models" / "libc" / "c23";
+        std::error_code ec2;
+        if (std::filesystem::is_directory(c23, ec2)) {
+            f.push_back("-idirafter");
+            f.push_back(c23.string());
+        }
+    }
     return f;
 }
 

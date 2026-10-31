@@ -214,6 +214,7 @@ std::string std_throw_type(const std::string& fn) {
         {"__throw_bad_variant_access", "_ZTISt18bad_variant_access"},
         {"__throw_bad_cast", "_ZTISt8bad_cast"},
         {"__throw_bad_typeid", "_ZTISt10bad_typeid"},
+        {"__throw_ios_failure", "_ZTINSt8ios_base7failureB5cxx11E"},
     };
     for (auto& [pre, ti] : k) {
         auto p = fn.find(pre);

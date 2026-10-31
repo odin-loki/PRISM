@@ -239,6 +239,14 @@ void *memset(void *d, int c, size_t n) {
     return d;
 }
 
+/* C23 7.26.6.2: memset that is not optimised away; same contract as memset */
+void *memset_explicit(void *d, int c, size_t n) {
+    if (n == 0) return d;
+    __prism_check(d != 0, "STR-NULL-ARG", "memset_explicit() called with unchecked pointer parameter d");
+    __prism_memset(d, c, n);
+    return d;
+}
+
 int memcmp(const void *a, const void *b, size_t n) {
     if (n == 0) return 0;
     __prism_check(a != 0, "STR-NULL-ARG", "memcmp() called with unchecked pointer parameter a");

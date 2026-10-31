@@ -78,6 +78,16 @@ void refuse_disabled_checks(const std::vector<std::string>& argv);
 // Windows), not an exit code of the tool.
 RunOut run(const RunSpec& spec);
 
+#if !defined(_WIN32)
+// fork() for every PRISM child, one thread at a time. Z3's scoped_timer
+// registers a pthread_atfork prepare handler (scoped_timer::finalize) that
+// takes its timer-pool locks; two --jobs workers forking at once both run it
+// and livelock, spinning forever (pir over several units with --jobs 2).
+// Returns ::fork()'s result; the lock is released in the parent and the
+// child alike (the child's copy is never touched again before exec).
+int serialized_fork();
+#endif
+
 struct ProcOut {
     std::string text;  // stdout and stderr, merged
     int rc = -1;

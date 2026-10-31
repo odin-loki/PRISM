@@ -41,6 +41,8 @@ void __prism_free(void *p, int kind);
 void __prism_free_check(void *p, int kind);
 void __prism_check(int ok, const char *cls, const char *msg);
 void __prism_assume(int cond);
+/* A path this model does not follow: reachable => NEEDS-HARNESS, never FAILED or PROVED. */
+void __prism_incomplete(const char *msg);
 /* this execution saw an allocation fail: a later abort() is out-of-memory
  * handling, not a defect (translate.cpp, abort) */
 void __prism_alloc_failed(void);

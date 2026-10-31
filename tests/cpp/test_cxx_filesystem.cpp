@@ -108,7 +108,7 @@ TEST_CASE("cxx filesystem model: empty filename is empty and exists is not defin
     CHECK(src.find("_GLIBCXX_FILESYSTEM") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std::filesystem") != std::string::npos);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <mutex>") == std::string::npos);
@@ -169,7 +169,7 @@ TEST_CASE("cxx filesystem model: compare orders stored characters") {
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
 
@@ -200,7 +200,7 @@ TEST_CASE("cxx filesystem model: replace_extension rewrites stored characters") 
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     for (const char* name : {"exists", "lexically_normal", "lexically_relative"}) {

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c99_flexible_array_false.c
+language: C
+property: memsafety
+expected:
+  c99_flexible_array_false: false
+witness:
+  c99_flexible_array_false: [1]

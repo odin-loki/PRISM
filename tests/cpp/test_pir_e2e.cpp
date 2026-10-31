@@ -364,6 +364,17 @@ TEST_CASE("pir e2e: testdata/pir verdict table (NOTRUN without clang/opt/LP64 pr
             continue;
         }
         auto& f = *it->second;
+        // real bugs past unwind 8 (kind_open overflows at n = 31, a[1] of
+        // kind_mem_write_uninit stays uninitialised): unwind deepening may
+        // find them within the budget. FAILED (validated, with the deepened
+        // unwind recorded) or BOUNDED are both right; PROVED never is.
+        const std::string fn_name = r.function;
+        const bool deep_bug = fn_name == "kind_open" || fn_name == "kind_mem_write_uninit";
+        if (deep_bug && f.status == prism::laws::FAILED && f.extra.count("unwind_deepened_to")) {
+            if (f.counterexample.empty())
+                wrong.push_back(std::string(r.file) + ":" + r.function + " FAILED without counterexample");
+            continue;
+        }
         if (f.status != r.status) {
 #ifdef _WIN32
             // clang-cl + Z3 on CI can leave this multiply proof UNKNOWN; the MSVC cl Z3 smoke covers casts.c.
