@@ -841,6 +841,32 @@ template <typename... _A> inline int __prism_dfp_fscanf(FILE* __s, const char* _
     return __prism_dfp_vscan(__prism_dfp_src{nullptr, __s}, __f, __v, (int)sizeof...(_A));
 }
 template <typename... _A> inline int __prism_dfp_scanf(const char* __f, _A... __a) { return __prism_dfp_fscanf(stdin, __f, __a...); }
+// v*scanf: one pointer per non-suppressed conversion, typed by the format
+// (%H/%D/%DD -> decimal; every other pointer is handed on as void*).
+inline int __prism_dfp_vscan_va(__prism_dfp_src __in, const char* __f, va_list __ap) {
+    enum { _Max = 256 };
+    __prism_dfp_ptr __v[_Max + 1];
+    int __c = 0;
+    for (const char* __p = __f; *__p && __c < _Max; ++__p) {
+        if (*__p != '%') continue;
+        ++__p;
+        if (*__p == '%') continue;
+        const bool __sup = *__p == '*'; if (__sup) ++__p;
+        while (*__p >= '0' && *__p <= '9') ++__p;
+        int __dw = 0;
+        if (*__p == 'H') { __dw = 32; ++__p; }
+        else if (*__p == 'D') { __dw = 64; ++__p; if (*__p == 'D') { __dw = 128; ++__p; } }
+        else while (*__p && __builtin_strchr("hlLjzt", *__p)) ++__p;
+        if (!*__p) break;
+        if (*__p == '[') { ++__p; if (*__p == '^') ++__p; if (*__p == ']') ++__p; while (*__p && *__p != ']') ++__p; if (!*__p) --__p; }
+        if (!__sup) __v[__c++] = __prism_dfp_ptr{va_arg(__ap, void*), __dw};
+    }
+    __v[__c] = __prism_dfp_ptr{nullptr, 0};
+    return __prism_dfp_vscan(__in, __f, __v, __c);
+}
+inline int __prism_dfp_vsscanf(const char* __s, const char* __f, va_list __ap) { return __prism_dfp_vscan_va(__prism_dfp_src{__s, nullptr}, __f, __ap); }
+inline int __prism_dfp_vfscanf(FILE* __s, const char* __f, va_list __ap) { return __prism_dfp_vscan_va(__prism_dfp_src{nullptr, __s}, __f, __ap); }
+inline int __prism_dfp_vscanf(const char* __f, va_list __ap) { return __prism_dfp_vfscanf(stdin, __f, __ap); }
 
 // C spellings C++ lacks (only for C units lowered through this shim).
 #ifdef __PRISM_DFP_C_UNIT

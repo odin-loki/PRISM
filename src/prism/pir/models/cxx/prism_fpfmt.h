@@ -46,8 +46,12 @@ inline void exact(unsigned long long m, int e, Dec& out) {
     Big b;
     b.w[0] = (unsigned)m; b.w[1] = (unsigned)(m >> 32); b.n = b.w[1] ? 2 : 1;
     out.x = 0;
-    if (e >= 0) for (int i = 0; i < e; ++i) b.mul(2);
-    else { for (int i = 0; i < -e; ++i) b.mul(5); out.x = e; }
+    // Bounded trip counts for the translator's unwinder: multiply by 2^31
+    // or 5^13 per step (both fit one 32-bit limb), so the tiniest
+    // subnormal (e = -1074) takes 83 + 12 steps instead of 1074, and the
+    // largest double (e = 971) 32 + 30 instead of 971.
+    if (e >= 0) { int r = e; for (; r >= 31; r -= 31) b.mul(1u << 31); if (r) b.mul(1u << r); }
+    else { int r = -e; for (; r >= 13; r -= 13) b.mul(1220703125u); unsigned p5 = 1; for (; r > 0; --r) p5 *= 5; if (p5 > 1) b.mul(p5); out.x = e; }
     char tmp[800];
     int k = 0;
     if (b.zero()) tmp[k++] = '0';

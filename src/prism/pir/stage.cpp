@@ -481,7 +481,7 @@ std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
             std::string id = in.substr(i, j - i);
             size_t k = j;
             while (k < n && (in[k] == ' ' || in[k] == '\t')) ++k;
-            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf", "vprintf", "vfprintf", "vsprintf", "vsnprintf"};
+            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf", "vprintf", "vfprintf", "vsprintf", "vsnprintf", "vscanf", "vfscanf", "vsscanf"};
             // C++-only keywords are ordinary identifiers in C
             static const std::set<std::string> kKw{
                 "class", "new", "delete", "this", "template", "typename", "namespace", "operator", "private",

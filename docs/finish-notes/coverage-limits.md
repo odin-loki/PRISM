@@ -152,6 +152,21 @@ below.
   designated-initializer reordering, [static N]/VLA forms via a split C++
   file), item 8 (unwind-limit guards on the tiny-double exact-text loops),
   v*scanf with decimal pointers.
+  Session 9 (written; header and stage.cpp compile-checked only):
+  - CLOSED (unverified): v*scanf. vscanf/vfscanf/vsscanf are rewritten to
+    __prism_dfp_v*scanf; one pointer per non-suppressed conversion is
+    taken from the va_list (scansets skipped), typed decimal for
+    %H/%D/%DD, and handed to the existing scanner.
+  - CLOSED (unverified), item 8: prism_fpfmt exact() scales by 5^13 / 2^31
+    per step, so the tiny-double loop is at most 83+1 iterations (was 1074)
+    and the large-double loop 32+1 (was 971); the digit loop was already
+    <= 89 steps of /1e9.
+  Still open after session 9 (not written): item 1, item 4, item 6.
+  Item 4 plan: the decw coefficient is __int128 (<= 38 digits), too narrow
+  for a Ziv loop; it needs a base-1e9 limb fixed-point type, exp/log by
+  argument reduction + Taylor series at W digits, W = 40, 60, 100, ...
+  until rounding r-err and r+err to 34 digits agree; the other functions
+  derive from exp/log/sin/cos with their own exact cases.
 - C23 storage-class compound literals (N3038, `(static T){..}`,
   `(constexpr T){..}`, `thread_local`, `register`): clang 23.1.4 still
   rejects all of them, so the LLVM bump alone does not fix this. Route
