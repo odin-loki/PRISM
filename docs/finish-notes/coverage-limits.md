@@ -369,3 +369,40 @@ re-exports the model headers.
   pred() on return; a forever-false pred is a hang, not a checked path.
 - regex under a non-"C" locale: imbue resets the regex per [re.regex.locale]
   but classification stays ASCII; `getloc` is not declared.
+
+## Final summary (coverage sessions 8–14)
+
+Session 14 (compile-checked only): typedef names are collected from the
+preprocessed unit, so `T *name;` with T a typedef shadows a renamed static;
+a failing `-E` is now reported in the compile log ("prism: decimal split:
+preprocessing the unit (-E) failed (...)") before the split falls back to
+the raw source.
+
+Done (code written and compile-checked; runtime verification is the final
+test pass, see /workspace/PRISM-cov-FINAL_TESTS.md):
+- Item 1, printf exact bytes: __prism_fmtv renders whole formats (all
+  integer, char, string, pointer and floating conversions incl. %Lf/%Le/
+  %Lg/%La, flags, '*' width/precision, %n, %lc/%ls, ' grouping) with no
+  argument cap (windows of 8 chained by running length), __int128 and
+  byval classes, and a setlocale model (C, POSIX, C.UTF-8, en_US.UTF-8).
+- Item 4, decimal math: correctly rounded exp/log/trig/hyperbolic/cbrt/
+  hypot/pow/erf/erfc/tgamma/lgamma in the multi-limb library (adaptive
+  asymptotic Stirling for large x), tanh saturation in directed modes.
+- Item 5/8 and the pragma/brace-counting gaps (sessions 8–9).
+- Item 6, decimal split: shim fallback to a C/C++ split joined with
+  llvm-link, run on the preprocessed unit; scope- and typedef-aware
+  token-level renaming of shared statics; extern declarations for every
+  declarator; K&R and [static N] rewrites; real reordering of designated
+  initialisers (header structs, nested and constant-expression
+  designators).
+
+Deliberately left:
+- Structs larger than 8 bytes passed by value to printf: no conversion
+  reads a struct, so the call is undefined behaviour; the model gives an
+  integer read the first eightbyte and does not try to be more exact.
+- Locales other than C, POSIX, C.UTF-8 and en_US.UTF-8: an analysed run
+  has an empty environment, so setlocale(…, "") is C and other named
+  locales are reported as not installed (NULL), which is what glibc does
+  when they are absent. Out of scope.
+- When -E fails, the split works on the raw source (now reported, see
+  above).

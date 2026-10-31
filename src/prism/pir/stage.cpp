@@ -780,6 +780,38 @@ std::string c_only_to_cxx(std::string t) {
 // Token-level renaming of file-scope identifiers (coverage item 6): strings,
 // character literals, comments, member accesses (. and ->), struct/union
 // member declarations and #include lines are left alone.
+// typedef names of the unit (headers included, from the -E output): a
+// `T *name` with T a typedef is a declaration for the shadowing check.
+std::set<std::string>& unit_typedefs() { static std::set<std::string> s; return s; }
+std::set<std::string> collect_typedefs(const std::string& src) {
+    std::set<std::string> r;
+    static const std::regex kTd(R"(\btypedef\b)");
+    static const std::regex kFp(R"(\(\s*\*\s*([A-Za-z_]\w*)\s*\))");
+    static const std::regex kLast(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kTd); it != std::sregex_iterator(); ++it) {
+        size_t z = static_cast<size_t>(it->position() + it->length());
+        int d = 0;
+        std::string decl;
+        for (; z < src.size(); ++z) {
+            const char ch = src[z];
+            if (ch == '{') { ++d; continue; }
+            if (ch == '}') { --d; continue; }
+            if (d) continue;
+            if (ch == ';') break;
+            decl += ch;
+        }
+        // every declarator: typedef int a, *b, (*fn)(int);
+        std::string cur; int pd = 0;
+        auto take = [&](const std::string& q) {
+            std::smatch m;
+            if (std::regex_search(q, m, kFp)) r.insert(m[1]);
+            else if (std::regex_search(q, m, kLast)) r.insert(m[1]);
+        };
+        for (char ch : decl) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && !pd) { take(cur); cur.clear(); } else cur += ch; }
+        take(cur);
+    }
+    return r;
+}
 std::string rename_tokens(const std::string& in, const std::map<std::string, std::string>& ren) {
     if (ren.empty()) return in;
     std::string out;
@@ -830,7 +862,7 @@ std::string rename_tokens(const std::string& in, const std::map<std::string, std
             if (it != ren.end() && !member && !member_scope.back() && (shadow.size() > 1 || paren > 0)) {
                 const char nc = next_char(e);
                 const bool after_type = (prev == 'a' && !last_tok.empty() && !kNotType.count(last_tok) && !ren.count(last_tok)) ||
-                                        (prev == '*' && kTypeKw.count(tok_before_star));
+                                        (prev == '*' && (kTypeKw.count(tok_before_star) || unit_typedefs().count(tok_before_star)));
                 if (after_type && nc && std::strchr("=,;[)", nc)) decl = true;
             }
             if (decl) { if (shadow.size() > 1) shadow.back().insert(tok); else params.insert(tok); out += tok; }
@@ -1104,7 +1136,7 @@ std::string reorder_designators(const std::string& t, const std::vector<std::vec
 // with each header the main file entered put back as one #include and
 // #line markers so diagnostics keep the source lines.
 struct PreUnit { std::string main, full; };
-std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std::string>& fl, const fs::path& src, double timeout_s) {
+std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std::string>& fl, const fs::path& src, double timeout_s, std::string* err = nullptr) {
     const fs::path out = fs::temp_directory_path() / ("prism-pre-" + std::to_string(::getpid()) + "-" + src.stem().string() + ".i");
     std::vector<std::string> av{cc.string()};
     for (size_t k = 0; k < fl.size(); ++k) {
@@ -1115,7 +1147,10 @@ std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std
     }
     av.insert(av.end(), {"-E", "-I", src.parent_path().string(), "-o", out.string(), src.string()});
     auto r = detail::run_process(av, timeout_s);
-    if (r.failed || r.timed_out || r.rc != 0) return std::nullopt;
+    if (r.failed || r.timed_out || r.rc != 0) {
+        if (err) *err = r.timed_out ? "timed out" : r.failed ? "could not run the compiler" : first_error(r.text);
+        return std::nullopt;
+    }
     PreUnit u;
     u.full = read_file(out);
     std::error_code ec;
@@ -1264,6 +1299,7 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
     }
     std::map<std::string, std::string> ren;
     for (const auto& nm : renamed) ren[nm] = "__prism_split_" + salt + "_" + nm;
+    unit_typedefs() = collect_typedefs(full.empty() ? in : full);
     if (!ren.empty())
         for (auto& it : items) { it.text = rename_tokens(it.text, ren); if (!it.head.empty()) it.head = rename_tokens(it.head, ren); it.name = ren.count(it.name) ? ren[it.name] : it.name; }
     (void)defs;
@@ -1477,7 +1513,14 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 // Item 6: split decimal functions into their own C++ file,
                 // keep the rest as C, and link the two modules.
                 bool split_ok = false;
-                const auto pre = preprocess_unit(*cc, fl, src, timeout_s);
+                std::string pre_err;
+                const auto pre = preprocess_unit(*cc, fl, src, timeout_s, &pre_err);
+                if (!pre)
+                    // not silent: the split then works on the raw source (no header field
+                    // orders or typedefs, no token-pasted names), which the report says
+                    r.text += "\nprism: decimal split: preprocessing the unit (-E) failed (" + pre_err +
+                              "); splitting the raw source: designators from headers, typedef shadows and "
+                              "token-pasted names of renamed statics are not handled for this unit";
                 if (auto sp = dfp_split(pre ? pre->main : read_file(src), std::to_string(std::hash<std::string>{}(src.string()) % 1000000007u), pre ? pre->full : std::string()); sp && sp->any) {
                     const fs::path cpart = o0.parent_path() / (o0.stem().string() + ".split.c");
                     const fs::path xpart = o0.parent_path() / (o0.stem().string() + ".split.cpp");
