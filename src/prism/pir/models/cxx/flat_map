@@ -30,6 +30,9 @@
 // insert and no iterators, so try_emplace returns bool: false when the key
 // was already present, true when a node was inserted.
 //
+// Session 4: Compare parameter (default less<Key>), sorted_unique and
+// container constructors (sorted_unique precondition CHECKED), extract() &&
+// / replace() via vector<Key>/vector<T>, transparent contains/count/at.
 // insert ranges and the rest are not declared. Omitted names
 // fail to compile against this header and pir falls back to libstdc++
 // (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
@@ -47,16 +50,39 @@
 #include <bits/functexcept.h>
 #include <cstddef>
 #include <new>
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+#include <initializer_list>
+#include <bits/stl_function.h>
+#include <vector>
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
-template <typename _Key, typename _Tp>
+#ifndef _PRISM_SORTED_UNIQUE
+#define _PRISM_SORTED_UNIQUE 1
+// [flat.map.syn] tag: the caller promises the input is sorted and has no
+// duplicate keys. The model CHECKS that promise (FUNC-CONTRACT, a
+// precondition violation is UB in the standard), it does not trust it.
+struct sorted_unique_t {
+    explicit sorted_unique_t() = default;
+};
+inline constexpr sorted_unique_t sorted_unique{};
+#endif
+
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>>
 class flat_map {
 public:
     using key_type = _Key;
     using mapped_type = _Tp;
+    using key_compare = _Compare;
     using size_type = size_t;
+    using key_container_type = vector<_Key>;
+    using mapped_container_type = vector<_Tp>;
+    // [flat.map.defn] extract() returns both containers, keys sorted.
+    struct containers {
+        key_container_type keys;
+        mapped_container_type values;
+    };
 
 private:
     // One pair. The mapped object lives in this allocation, so freeing the
@@ -78,7 +104,39 @@ private:
     _Node* _M_head = nullptr;
     size_type _M_size = 0;
 
-    static bool _M_eq(const key_type& __a, const key_type& __b) { return !(__a < __b) && !(__b < __a); }
+    static bool _M_eq(const key_type& __a, const key_type& __b) {
+        return !_Compare{}(__a, __b) && !_Compare{}(__b, __a);
+    }
+    // Heterogeneous equivalence: only reachable when _Compare::is_transparent.
+    template <typename _Kx>
+    static bool _M_eqx(const key_type& __a, const _Kx& __b) {
+        return !_Compare{}(__a, __b) && !_Compare{}(__b, __a);
+    }
+    template <typename _Kx>
+    const _Node* _M_findx(const _Kx& __k) const noexcept {
+        for (const _Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
+            if (_M_eqx(__p->_M_key, __k)) return __p;
+        return nullptr;
+    }
+    // Build from parallel key/value sequences. __sorted: check the
+    // sorted_unique precondition; otherwise later duplicates are dropped
+    // (first one wins, as insert does).
+    template <typename _KIt, typename _VIt>
+    void _M_build(_KIt __k, _KIt __ke, _VIt __v, bool __sorted) {
+        try {
+            const key_type* __prev = nullptr;
+            for (; __k != __ke; ++__k, ++__v) {
+                if (__sorted && __prev != nullptr)
+                    __prism_check(_Compare{}(*__prev, *__k) ? 1 : 0, "FUNC-CONTRACT",
+                                  "flat_map sorted_unique input is not strictly sorted");
+                __prev = &*__k;
+                if (_M_find(*__k) == nullptr) _M_link(_M_make(*__k, *__v));
+            }
+        } catch (...) {
+            _M_clear();
+            throw;
+        }
+    }
 
     _Node* _M_find(const key_type& __k) noexcept {
         for (_Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
@@ -169,6 +227,92 @@ public:
         return *this;
     }
     ~flat_map() { _M_clear(); }
+
+    template <typename _Pair>
+    struct __pair_key_it {
+        const _Pair* _M_p;
+        const key_type& operator*() const { return _M_p->first; }
+        __pair_key_it& operator++() { ++_M_p; return *this; }
+        bool operator!=(const __pair_key_it& __o) const { return _M_p != __o._M_p; }
+    };
+    template <typename _Pair>
+    struct __pair_val_it {
+        const _Pair* _M_p;
+        const mapped_type& operator*() const { return _M_p->second; }
+        __pair_val_it& operator++() { ++_M_p; return *this; }
+    };
+
+    // Initializer-list constructors ({{k, v}, ...}); value_type pairs.
+    template <typename _Pair = pair<key_type, mapped_type>>
+    flat_map(initializer_list<_Pair> __il) {
+        _M_build(__pair_key_it<_Pair>{__il.begin()}, __pair_key_it<_Pair>{__il.end()},
+                 __pair_val_it<_Pair>{__il.begin()}, false);
+    }
+    template <typename _Pair = pair<key_type, mapped_type>>
+    flat_map(sorted_unique_t, initializer_list<_Pair> __il) {
+        _M_build(__pair_key_it<_Pair>{__il.begin()}, __pair_key_it<_Pair>{__il.end()},
+                 __pair_val_it<_Pair>{__il.begin()}, true);
+    }
+    // Container constructors. Sizes must match ([flat.map.cons] precondition).
+    flat_map(key_container_type __keys, mapped_container_type __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map key and mapped containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), false);
+    }
+    flat_map(sorted_unique_t, key_container_type __keys, mapped_container_type __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map key and mapped containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), true);
+    }
+
+    // [flat.map.modifiers] extract: move the contents out as two containers
+    // sorted by key; *this is left empty. Selection sort over the node list
+    // (O(n^2) compares, no extra allocation besides the two vectors).
+    containers extract() && {
+        containers __c;
+        __c.keys.reserve(_M_size);
+        __c.values.reserve(_M_size);
+        while (_M_head != nullptr) {
+            _Node** __min = &_M_head;
+            for (_Node** __pp = &(*__min)->_M_next; *__pp != nullptr; __pp = &(*__pp)->_M_next)
+                if (_Compare{}((*__pp)->_M_key, (*__min)->_M_key)) __min = __pp;
+            _Node* __n = *__min;
+            *__min = __n->_M_next;
+            --_M_size;
+            __c.keys.push_back(static_cast<key_type&&>(__n->_M_key));
+            __c.values.push_back(static_cast<mapped_type&&>(__n->_M_mapped));
+            __n->~_Node();
+            ::operator delete(__n);
+        }
+        return __c;
+    }
+    // replace: precondition sizes equal and keys sorted-unique (checked).
+    void replace(key_container_type&& __keys, mapped_container_type&& __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map::replace containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_clear();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), true);
+    }
+
+    // Heterogeneous lookup ([flat.map.overview]): only with a transparent
+    // comparator, as in the standard.
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    bool contains(const _Kx& __k) const { return _M_findx(__k) != nullptr; }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    size_type count(const _Kx& __k) const { return _M_findx(__k) != nullptr ? 1 : 0; }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    const mapped_type& at(const _Kx& __k) const {
+        if (const _Node* __n = _M_findx(__k)) return __n->_M_mapped;
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    mapped_type& at(const _Kx& __k) {
+        if (const _Node* __n = _M_findx(__k)) return const_cast<_Node*>(__n)->_M_mapped;
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
 
     // Missing key: insert a node and return its mapped object.
     mapped_type& operator[](const key_type& __k) {
