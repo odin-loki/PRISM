@@ -24,7 +24,6 @@ inline const auto& gguf() { static auto s = fs::define("PRISM_GGUF", "", "model 
 inline const auto& tools_dir() { static auto s = fs::define("PRISM_TOOLS_DIR", "", "directory holding PRISM's helper tools"); return s; }
 inline const auto& embed_server() { static auto s = fs::define("PRISM_EMBED_SERVER", "", "embedding server URL for triage"); return s; }
 inline const auto& proof_cache() { static auto s = fs::define("PRISM_PROOF_CACHE", "", "persistent proof-repair cache directory"); return s; }
-inline const auto& n_gpu_layers() { static auto s = fs::define("PRISM_N_GPU_LAYERS", std::int64_t{-1}, "model layers offloaded to the GPU; -1: all"); return s; }
 
 inline const auto& pir_lean_export() { static auto s = fs::define("PRISM_PIR_LEAN_EXPORT", "", "export PIR to Lean (path)"); return s; }
 inline const auto& pir_progress() { static auto s = fs::define("PRISM_PIR_PROGRESS", "", "PIR progress-note file"); return s; }
