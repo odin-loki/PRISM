@@ -6,6 +6,8 @@
 // soundness bug (docs/PIR.md). --gate exits 1 when hard conflicts are nonzero
 // or bmc PROVED* meets pir absent / NEEDS-HARNESS. It does not retire bmc.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -184,25 +186,25 @@ int pir_vs_bmc_main(const Args& args) {
                          "conflict (PROVED* vs FAILED). --gate exits 1 when hard conflicts are\n"
                          "nonzero or a bmc PROVED* function is pir-absent or NEEDS-HARNESS.\n"
                          "Agreement is printed and is not an exit condition. Default TREE: testdata.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) tree = a;
         else {
-            std::cerr << "pir-vs-bmc: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("pir-vs-bmc", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     std::optional<nlohmann::json> report;
     if (!report_path.empty()) {
         report = load_json(report_path);
         if (!report) {
-            std::cerr << "pir-vs-bmc: cannot read " << report_path << "\n";
-            return 2;
+            prism::log::error("pir-vs-bmc", prism::log::cat("cannot read ", report_path));
+            return prism::code(prism::Exit::Usage);
         }
     } else {
         auto exe = find_prism(bin, repo);
         if (!exe) {
             std::cout << "pir-vs-bmc: NOTRUN: no PRISM binary (build it, or pass --bin / PRISM_BIN)\n";
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
         TempDir td("prism_pir_vs_bmc_");
         const auto out = td.path / "out";
@@ -215,10 +217,8 @@ int pir_vs_bmc_main(const Args& args) {
                                      so);
         report = load_json(out / "report.json");
         if (!report) {
-            std::cerr << "pir-vs-bmc: PRISM wrote no report.json (rc " << r.rc
-                      << (r.timed_out ? ", timed out" : "") << ")\n"
-                      << r.err.substr(r.err.size() > 2000 ? r.err.size() - 2000 : 0) << "\n";
-            return 2;
+            prism::log::error("pir-vs-bmc", prism::log::cat("PRISM wrote no report.json (rc ", r.rc, (r.timed_out ? ", timed out" : ""), ")\n", r.err.substr(r.err.size() > 2000 ? r.err.size() - 2000 : 0)));
+            return prism::code(prism::Exit::Usage);
         }
     }
     const auto res = pir_vs_bmc(*report);
@@ -228,14 +228,13 @@ int pir_vs_bmc_main(const Args& args) {
         const auto g = pir_vs_bmc_gate(res);
         if (!g.pass) {
             if (!g.hard_conflicts_ok)
-                std::cerr << "PIR-vs-BMC GATE FAILED: " << res.conflicts.size() << " hard conflict(s)\n";
+                prism::log::plain(prism::log::cat("PIR-vs-BMC GATE FAILED: ", res.conflicts.size(), " hard conflict(s)\n"));
             if (!g.superset_ok)
-                std::cerr << "PIR-vs-BMC GATE FAILED: " << res.superset_gaps
-                          << " bmc PROVED* function(s) with pir absent or NEEDS-HARNESS\n";
-            return 1;
+                prism::log::plain(prism::log::cat("PIR-vs-BMC GATE FAILED: ", res.superset_gaps, " bmc PROVED* function(s) with pir absent or NEEDS-HARNESS\n"));
+            return prism::code(prism::Exit::Failed);
         }
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

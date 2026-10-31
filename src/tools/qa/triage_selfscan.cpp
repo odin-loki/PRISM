@@ -8,6 +8,8 @@
 //                                       except a sanitize CRASH (real)
 //   anything else                       real
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include <iostream>
@@ -109,20 +111,20 @@ int triage_selfscan_main(const Args& args) {
     if (args.size() != 1 || args[0] == "-h" || args[0] == "--help") {
         std::cout << "prism-qa triage-selfscan OUT/\n"
                      "Buckets the defects of OUT/report.sarif into real / false_alarm / out_of_scope.\n";
-        return args.size() == 1 ? 0 : 2;
+        return args.size() == 1 ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Usage);
     }
     const auto sarif = load_json(fs::path(args[0]) / "report.sarif");
     if (!sarif) {
-        std::cerr << "triage-selfscan: cannot read " << (fs::path(args[0]) / "report.sarif").string() << "\n";
-        return 2;
+        prism::log::error("triage-selfscan", prism::log::cat("cannot read ", (fs::path(args[0]) / "report.sarif").string()));
+        return prism::code(prism::Exit::Usage);
     }
     try {
         std::cout << triage_text(triage_selfscan(*sarif));
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "triage-selfscan: not a SARIF log (" << e.what() << ")\n";
-        return 2;
+        prism::log::error("triage-selfscan", prism::log::cat("not a SARIF log (", e.what(), ")"));
+        return prism::code(prism::Exit::Usage);
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

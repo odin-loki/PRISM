@@ -66,6 +66,7 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # configures this target alone (no Z3, no PCRE2).
 option(PRISM_DEPS_ONLY "Configure only the std-only prism-deps tool" OFF)
 add_library(prism_deps_lib STATIC
+  src/prism/log.cpp  # prism::log: std-only, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
   src/tools/prism_deps/fetch.cpp
   src/tools/prism_deps/licence.cpp
@@ -222,7 +223,7 @@ set(PRISM_SRC
   src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
-  src/prism/log.cpp
+  src/prism/backends.cpp
   src/prism/membudget.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
@@ -591,6 +592,7 @@ endif()
 add_executable(prism_docs_check
   src/tools/qa/docs_main.cpp
   src/tools/qa/docscan.cpp
+  src/prism/log.cpp
   src/prism/regex.cpp)
 target_include_directories(prism_docs_check PRIVATE "${PRISM_ROOT}/include")
 target_compile_definitions(prism_docs_check PRIVATE PRISM_SOURCE_DIR="${PRISM_ROOT}")
@@ -744,6 +746,7 @@ if(PRISM_TESTS)
   set(_prism_test_sources
     tests/cpp/test_env_registry.cpp
     tests/cpp/test_log.cpp
+    tests/cpp/test_backends.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp

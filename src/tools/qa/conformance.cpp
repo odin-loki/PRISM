@@ -56,6 +56,8 @@
 // This executes task code: only the trusted suite in this repository (or the
 // pinned Juliet archive, whose hash is checked) is ever compiled and run.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "prism/membudget.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
@@ -116,7 +118,7 @@ struct WorkDir {
     fs::path path;
     ~WorkDir() {
         if (std::getenv("PRISM_CONF_KEEP")) {
-            std::cerr << "work dir kept: " << path.string() << "\n";
+            prism::log::plain(prism::log::cat("work dir kept: ", path.string(), "\n"));
         } else {
             std::error_code ec;
             fs::remove_all(path, ec);
@@ -276,8 +278,8 @@ int conformance_main(const std::vector<std::string>& argv) {
         (args.has("--mem-limit-mb") && !parse_int(args.get("--mem-limit-mb"), mem_limit)) ||
         (args.has("--unwind") && !parse_int(args.get("--unwind"), unwind)) ||
         (args.has("--timeout") && !parse_float(args.get("--timeout"), timeout))) {
-        std::cerr << "prism-qa conformance: error: invalid number\n";
-        return 2;
+        prism::log::error("conformance", "invalid number");
+        return prism::code(prism::Exit::Usage);
     }
     jobs = std::max(1L, jobs);
     mem_limit = std::max(0L, mem_limit);
@@ -298,8 +300,7 @@ int conformance_main(const std::vector<std::string>& argv) {
             constexpr uint64_t kFloorMb = 2500;
             const long fit = std::max(1L, static_cast<long>(avail / kFloorMb));
             if (jobs > fit) {
-                std::cerr << "prism-qa conformance: --jobs " << jobs << " cut to " << fit << " (" << avail
-                          << " MB to share, at least " << kFloorMb << " MB per run)\n";
+                prism::log::info("conformance", prism::log::cat("--jobs ", jobs, " cut to ", fit, " (", avail, " MB to share, at least ", kFloorMb, " MB per run)"));
                 jobs = fit;
             }
             uint64_t per = std::max<uint64_t>(kFloorMb, avail / static_cast<uint64_t>(jobs));
@@ -320,22 +321,22 @@ int conformance_main(const std::vector<std::string>& argv) {
     try {
         if (args.has("--fetch-juliet")) {
             fetch_juliet(args.get("--fetch-juliet"), split(args.get("--juliet-flows", "01"), ','));
-            return 0;
+            return prism::code(prism::Exit::Ok);
         }
         if (args.has("--fetch-esbmc")) {
             fetch_esbmc(args.get("--fetch-esbmc"), args.flags.count("--esbmc-thorough") > 0);
-            return 0;
+            return prism::code(prism::Exit::Ok);
         }
         if (args.has("--curate-esbmc")) {
             fs::path d = args.get("--curate-esbmc");
             fs::path src = fs::exists(d / "esbmc-cpp") ? d / "esbmc-cpp" : d;
             WorkDir wd{make_work_dir("prism-curate-")};
             int n = curate_esbmc(src, suite_root() / "esbmc-cpp", 32, 3, wd.path);
-            return n ? 0 : 1;
+            return n ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
         }
     } catch (const std::exception& e) {
-        std::cerr << e.what() << "\n";
-        return 1;
+        prism::log::error("conformance", e.what());
+        return prism::code(prism::Exit::Failed);
     }
 
     std::vector<Task> tasks;
@@ -375,14 +376,14 @@ int conformance_main(const std::vector<std::string>& argv) {
             }
         }
     } catch (const yaml::Error& e) {
-        std::cerr << "cannot load conformance tasks: " << e.what() << "\n";
-        return 2;
+        prism::log::error("conformance", prism::log::cat("cannot load conformance tasks: ", e.what()));
+        return prism::code(prism::Exit::Usage);
     }
     if (args.has("--filter")) {
         Regex rx(args.get("--filter"));
         if (!rx.valid()) {
-            std::cerr << "prism-qa conformance: error: bad --filter regex\n";
-            return 2;
+            prism::log::error("conformance", "bad --filter regex");
+            return prism::code(prism::Exit::Usage);
         }
         std::vector<Task> keep;
         for (auto& t : tasks)
@@ -416,7 +417,7 @@ int conformance_main(const std::vector<std::string>& argv) {
                       << r.value("outcome", "") << " " << r.value("why", "") << " "
                       << py_head(r.value("detail", ""), 200) << "\n";
         }
-        return bad ? 1 : 0;
+        return bad ? prism::code(prism::Exit::Failed) : prism::code(prism::Exit::Ok);
     }
 
     const std::vector<std::string> cmd = prism_command(args.get("--prism"));
@@ -424,9 +425,8 @@ int conformance_main(const std::vector<std::string>& argv) {
     if (listed.empty()) {
         std::string c;
         for (const auto& x : cmd) c += (c.empty() ? "" : " ") + x;
-        std::cerr << "cannot run PRISM: " << (c.empty() ? "(no --prism, $PRISM_BIN or build/prism)" : c)
-                  << " --list-stages gave nothing\n";
-        return 3;
+        prism::log::error("conformance", prism::log::cat("cannot run PRISM: ", (c.empty() ? "(no --prism, $PRISM_BIN or build/prism)" : c), " --list-stages gave nothing"));
+        return prism::code(prism::Exit::Error);
     }
     auto is_listed = [&](const std::string& s) { return std::find(listed.begin(), listed.end(), s) != listed.end(); };
     std::vector<std::string> vstages;
@@ -598,10 +598,10 @@ int conformance_main(const std::vector<std::string>& argv) {
     write_file(out_dir / "metrics.md", md);
     std::cout << md << "\n";
     if (wrong) {
-        std::cerr << "RELEASE GATE FAILED: " << wrong << " wrong proof(s)\n";
-        return 1;
+        prism::log::plain(prism::log::cat("RELEASE GATE FAILED: ", wrong, " wrong proof(s)\n"));
+        return prism::code(prism::Exit::Failed);
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

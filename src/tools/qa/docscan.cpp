@@ -1,3 +1,5 @@
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "docscan.hpp"
 
 #include "prism/regex.hpp"
@@ -240,7 +242,7 @@ std::vector<fs::path> files_under(const fs::path& root, std::string_view ext) {
 }
 
 bool usage(const std::string& msg) {
-    std::cerr << msg << "\n";
+    prism::log::plain(prism::log::cat(msg, "\n"));
     return false;
 }
 
@@ -354,23 +356,23 @@ int assurance_main(const std::vector<std::string>& args, const fs::path& repo_in
             std::cout << "assurance-check [--docs DIR] [--repo DIR]\n"
                          "Every artefact docs/assurance/*.md cites (backticked paths, path::name,\n"
                          "docs/<doc>.md#<anchor>, thm:Name) exists. Exit 1 with one line per missing one.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             usage("assurance-check: unknown argument " + args[i]);
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (docs.empty()) docs = repo / "docs" / "assurance";
     std::error_code ec;
     if (!fs::is_directory(docs, ec)) {
-        std::cerr << "assurance_check: " << docs.string() << " does not exist\n";
-        return 2;
+        prism::log::error("assurance-check", docs.string() + " does not exist");
+        return prism::code(prism::Exit::Usage);
     }
     auto r = assurance_scan(docs, repo);
     for (const auto& e : r.errors) std::cout << e << "\n";
     std::cout << "assurance_check: " << r.counts.files << " documents, " << r.counts.paths << " artefact paths, "
               << r.counts.theorems << " theorem references, " << r.errors.size() << " missing\n";
-    return r.errors.empty() ? 0 : 1;
+    return r.errors.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 std::vector<std::string> anchor_errors(const fs::path& repo) {
@@ -423,16 +425,16 @@ int anchors_main(const std::vector<std::string>& args, const fs::path& repo_in) 
             std::cout << "anchors [--repo DIR]\n"
                          "Every Markdown anchor link in docs/, README.md and the report writers\n"
                          "(src/**/*.cpp, include/**/*.hpp) points at a heading or <a id> that exists.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             usage("anchors: unknown argument " + args[i]);
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     auto bad = anchor_errors(repo);
     for (const auto& b : bad) std::cout << b << "\n";
     std::cout << "anchors: " << bad.size() << " broken\n";
-    return bad.empty() ? 0 : 1;
+    return bad.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 std::set<std::string> flags_of(std::string help_text) {

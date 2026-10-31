@@ -1,6 +1,8 @@
 // PRISM z3gen: Python-free driver for vendored Z3's CMake codegen scripts.
 // Invoked as Python3_EXECUTABLE with the upstream script path as argv[1].
 // Copies pre-generated outputs from cmake/z3-generated/ (see cmake/z3.cmake).
+#define PRISM_LOG_STANDALONE  // single-file tool: inline prism::log, no library
+#include "../../../include/prism/log.hpp"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -15,7 +17,7 @@ namespace fs = std::filesystem;
 namespace {
 
 [[noreturn]] void die(std::string_view msg) {
-  std::cerr << "z3gen: " << msg << "\n";
+  prism::log::error("", msg);
   std::exit(1);
 }
 
@@ -41,7 +43,7 @@ bool copy_pregen(const fs::path& from, const fs::path& to) {
   fs::create_directories(to.parent_path(), ec);
   fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
   if (ec) {
-    std::cerr << "z3gen: copy " << from << " -> " << to << ": " << ec.message() << "\n";
+    prism::log::error("", prism::log::cat("copy ", from, " -> ", to, ": ", ec.message()));
     return false;
   }
   return true;
@@ -72,7 +74,7 @@ int emulate_python_c(int argc, char** argv) {
   if (code.find("sys.abiflags") != std::string_view::npos) {
     return 0;
   }
-  std::cerr << "z3gen: unsupported -c snippet\n";
+  prism::log::error("", "unsupported -c snippet");
   return 1;
 }
 
@@ -183,10 +185,11 @@ int dispatch_script(const std::vector<std::string>& args) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    prism::log::set_program("z3gen");
   g_exe_dir = fs::absolute(fs::path(argv[0])).parent_path();
   if (argc >= 2 && std::string_view(argv[1]) == "-c") return emulate_python_c(argc, argv);
   if (argc < 2) {
-    std::cerr << "usage: z3gen [-c CODE | SCRIPT.py ...]\n";
+    prism::log::plain("usage: z3gen [-c CODE | SCRIPT.py ...]\n");
     return 1;
   }
   std::vector<std::string> args;

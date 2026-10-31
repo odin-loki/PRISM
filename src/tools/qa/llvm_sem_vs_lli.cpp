@@ -18,6 +18,8 @@
 // Exit 1 on any disagreement, 2 when a tool is missing (NOTRUN). Runs the
 // given programs under lli: use it on trusted test programs only.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -178,11 +180,11 @@ int llvm_sem_vs_lli_main(const Args& args) {
                          "pir stage's IR. Default files: testdata/pir/*.c. --pairs: existing .pirl files\n"
                          "(<dir>/*<file name>*.pirl) instead of running PRISM. Exit 1 on a\n"
                          "disagreement, 2 NOTRUN. Runs the programs: trusted test programs only.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) files.emplace_back(a);
         else {
-            std::cerr << "llvm-sem-vs-lli: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("llvm-sem-vs-lli", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     std::mt19937_64 rng(seed);
@@ -205,7 +207,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
         for (std::size_t i = 0; i < missing.size(); ++i) m += (i ? ", " : "") + missing[i];
         std::cout << "llvm_sem_vs_lli: NOTRUN: missing " << m
                   << " (build prism; cd proofs/refinement && lake build llvm_eval)\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     if (files.empty()) {
         for (auto& e : fs::directory_iterator(repo / "testdata" / "pir", ec))
@@ -318,7 +320,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
     std::cout << "summary";
     for (auto& [k, v] : stats) std::cout << " " << k << "=" << v;
     std::cout << " disagree=" << bad.size() << "\n";
-    return bad.empty() ? 0 : 1;
+    return bad.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::qa

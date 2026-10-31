@@ -8,6 +8,8 @@
 //   resolves (docscan.hpp anchor_errors);
 // - every verdict has the docs/VERDICTS.md anchor the reports link to.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -39,10 +41,10 @@ int docs_check_main(const Args& args) {
             std::cout << "prism-qa docs-check [--bin PRISM]\n"
                          "Every --help flag is in docs/USER_GUIDE.md, the stage order is listed, every\n"
                          "Markdown anchor link resolves and every verdict has its VERDICTS anchor.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "docs-check: unknown option " << args[i] << "\n";
-            return 2;
+            prism::log::error("docs-check", prism::log::cat("unknown option ", args[i]));
+            return prism::code(prism::Exit::Usage);
         }
     }
     int bad = 0;
@@ -94,7 +96,7 @@ int docs_check_main(const Args& args) {
         }
     }
     std::cout << "docs-check: " << bad << " problem" << (bad == 1 ? "" : "s") << "\n";
-    return bad ? 1 : 0;
+    return bad ? prism::code(prism::Exit::Failed) : prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

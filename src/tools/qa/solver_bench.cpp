@@ -21,6 +21,8 @@
 //
 // Output: <out>/solver_bench.json and <out>/solver_bench.md.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -215,10 +217,10 @@ int solver_bench_main(const Args& args) {
                          "Portfolio vs Z3 alone on the pir VCs of the conformance suite (default suites:\n"
                          "testdata/conformance/prism and testdata/conformance/sv-comp). Writes\n"
                          "<out>/solver_bench.json and <out>/solver_bench.md; exit 1 on a disagreement.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "solver-bench: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("solver-bench", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (roots.empty()) roots = {suite / "prism", suite / "sv-comp"};
@@ -230,12 +232,12 @@ int solver_bench_main(const Args& args) {
     }
     if (list_tasks) {
         for (const auto& t : tasks) std::cout << t.ident << " " << t.source.string() << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     auto prism = find_prism(bin, repo);
     if (!prism) {
-        std::cerr << "C++ prism binary not found: pass --prism or set PRISM_BIN\n";
-        return 2;
+        prism::log::error("solver-bench", "C++ prism binary not found: pass --prism or set PRISM_BIN");
+        return prism::code(prism::Exit::Usage);
     }
     std::error_code ec;
     fs::create_directories(out, ec);
@@ -272,7 +274,7 @@ int solver_bench_main(const Args& args) {
             }
         }
     }
-    std::cerr << tasks.size() << " tasks, " << vcs.size() << " VCs (" << unencoded << " functions not encoded)\n";
+    prism::log::plain(prism::log::cat(tasks.size(), " tasks, ", vcs.size(), " VCs (", unencoded, " functions not encoded)\n"));
     std::vector<std::string> passes;
     for (auto& p : PASSES)
         if (("," + passes_arg + ",").find("," + p + ",") != std::string::npos) passes.push_back(p);
@@ -299,7 +301,7 @@ int solver_bench_main(const Args& args) {
     for (const auto& p : passes) {
         double s = 0;
         for (auto& r : res) s += charged(r[p], timeout);
-        std::cerr << "pass " << p << ": " << std::format("{:.2f}", s) << " s\n";
+        prism::log::plain(prism::log::cat("pass ", p, ": ", std::format("{:.2f}", s), " s\n"));
     }
     std::vector<nlohmann::json> rows, disagreements;
     for (std::size_t i = 0; i < vcs.size(); ++i) {
@@ -412,7 +414,7 @@ int solver_bench_main(const Args& args) {
     for (auto& l : md) text += l + "\n";
     std::ofstream(out / "solver_bench.md", std::ios::binary) << text;
     std::cout << text;
-    return disagreements.empty() ? 0 : 1;
+    return disagreements.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::qa

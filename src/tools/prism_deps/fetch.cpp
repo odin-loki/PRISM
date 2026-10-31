@@ -3,6 +3,7 @@
 //
 // Archive format: the uncompressed tar of `git archive --format=tar
 // --prefix=<name>-<commit>/ <commit>` after `git fetch --depth 1 <url> <commit>`.
+#include "prism/log.hpp"
 #include "prism/deps.hpp"
 
 #include <algorithm>
@@ -152,7 +153,7 @@ ProcResult run_process(const std::vector<std::string>& argv, const fs::path& cwd
     r.code = std::system(("\"" + cmd + "\"").c_str());
 #else
     std::cout.flush();
-    std::cerr.flush();
+    prism::log::err_stream().flush();
     pid_t pid = ::fork();
     if (pid < 0) throw FetchError("fork failed: " + std::string(std::strerror(errno)));
     if (pid == 0) {

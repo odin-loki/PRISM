@@ -20,6 +20,7 @@
 // the model cosine. Without it the TF-IDF result is used and triage.json says
 // why (Law 7).
 
+#include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/log.hpp"
@@ -562,7 +563,7 @@ int triage_main(int argc, char** argv) {
     auto parsed = parse_triage_cli(std::span<const char* const>(argv, static_cast<std::size_t>(argc)));
     if (!parsed.value) {
         prism::log::error("triage", parsed.message);
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     fs::path rp = parsed.value->report_dir;
     TriageOptions topt;
@@ -572,12 +573,12 @@ int triage_main(int argc, char** argv) {
     auto rep = RunReport::load(rp / "report.json");
     if (!rep) {
         prism::log::error("triage", "cannot read " + (rp / "report.json").string());
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     auto t = triage(*rep, topt);
     std::ofstream(rp / "triage.json", std::ios::binary) << triage_json(t);
     std::cout << triage_markdown(t, *rep);
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

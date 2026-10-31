@@ -22,6 +22,8 @@
 // prism binary is printed as NOTRUN for that part, never skipped quietly.
 // Seed file names are the first 16 hex digits of a 64-bit FNV-1a hash.
 
+#define PRISM_LOG_STANDALONE  // single-file tool: inline prism::log, no library
+#include "../../include/prism/log.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -244,6 +246,7 @@ PRISM_FUZZ_CORPUS_INLINE int make_corpus(const Options& o, const fs::path& self_
 #define PRISM_REPO_DIR "."
 #endif
 int main(int argc, char** argv) {
+    prism::log::set_program("prism_fuzz_corpus");
     namespace fz = prism_fuzz_corpus;
     namespace fs = std::filesystem;
     fz::Options o;
@@ -255,12 +258,12 @@ int main(int argc, char** argv) {
         else if (a == "--limit" && i + 1 < argc) o.limit = static_cast<std::size_t>(std::strtoul(argv[++i], nullptr, 10));
         else if (a == "--repo" && i + 1 < argc) o.repo = argv[++i];
         else if (a.rfind("--", 0) == 0 || !o.out.empty()) {
-            std::cerr << "usage: prism_fuzz_corpus OUT_DIR [--prism BIN] [--limit N] [--repo DIR]\n";
+            prism::log::plain("usage: prism_fuzz_corpus OUT_DIR [--prism BIN] [--limit N] [--repo DIR]\n");
             return 2;
         } else o.out = a;
     }
     if (o.out.empty()) {
-        std::cerr << "usage: prism_fuzz_corpus OUT_DIR [--prism BIN] [--limit N] [--repo DIR]\n";
+        prism::log::plain("usage: prism_fuzz_corpus OUT_DIR [--prism BIN] [--limit N] [--repo DIR]\n");
         return 2;
     }
     std::error_code ec;

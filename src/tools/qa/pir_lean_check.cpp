@@ -15,6 +15,8 @@
 // Exit 1 when any function is a MISMATCH, 2 when a tool is missing or no
 // tree exported a pair (NOTRUN, never a silent pass).
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -125,24 +127,24 @@ int pir_lean_check_main(const Args& args) {
                          "                        [--json OUT.json] [--keep DIR]\n"
                          "C++ LLVM->PIR translator vs the proved Lean translator (proofs/refinement).\n"
                          "Default trees: testdata/pir and testdata/planted. Exit 1 on a MISMATCH, 2 NOTRUN.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) trees.emplace_back(a);
         else {
-            std::cerr << "pir-lean-check: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("pir-lean-check", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     auto exe = find_prism(bin, repo);
     if (!exe) {
         std::cout << "pir_lean_check: NOTRUN: no PRISM binary" << (bin.empty() ? "" : " at " + bin)
                   << " (build it or pass --bin)\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     auto checker = find_pir_lean_checker(checker_arg, repo);
     if (!checker) {
         std::cout << "pir_lean_check: NOTRUN: pir_lean_check not built and lake not found "
                      "(cd proofs/refinement && lake build)\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     if (trees.empty()) trees = {repo / "testdata" / "pir", repo / "testdata" / "planted"};
 
@@ -222,12 +224,12 @@ int pir_lean_check_main(const Args& args) {
         for (auto& [k, n] : total) tj[k] = n;
         std::ofstream(json_out, std::ios::binary) << nlohmann::json{{"trees", summary}, {"total", tj}}.dump(2) << "\n";
     }
-    if (total["MISMATCH"]) return 1;
+    if (total["MISMATCH"]) return prism::code(prism::Exit::Failed);
     if (exported_trees == 0) {
         std::cout << "pir_lean_check: NOTRUN: no tree exported a pair; nothing was checked\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

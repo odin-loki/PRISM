@@ -19,6 +19,7 @@
 // --allow-exec and runs Lean in the bwrap jail when one is available.
 // Every model call is in <out>/ai_audit.jsonl.
 
+#include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/log.hpp"
@@ -1170,11 +1171,11 @@ int prove_main(int argc, char** argv) {
                          "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
                          "elaborating Lean runs code). Prover: PRISM_PROVER_SERVER or PRISM_PROVER_GGUF.\n"
                          "Exit 0 proved (--all: every one), 1 not proved, 3 NOTRUN (--all: every one), 2 error.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) pos.push_back(a);
         else {
             prism::log::error("prove", "unrecognized arguments: " + std::string(a));
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (all) {
@@ -1183,11 +1184,11 @@ int prove_main(int argc, char** argv) {
     }
     if (list && !pos.empty()) {
         for (auto& n : lean_sorry_theorems(pos.at(0))) std::cout << n << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (pos.size() != 2) {
         prism::log::error("prove", "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     opt.file = fs::absolute(pos.at(0));
     opt.theorem = pos.at(1);
@@ -1203,10 +1204,10 @@ int prove_main(int argc, char** argv) {
             for (auto& l : r.proof) std::cout << "  " << l << "\n";
         }
     }
-    if (r.status == laws::PROVED) return 0;
-    if (r.status == laws::NOTRUN) return 3;
-    if (r.status == laws::ERROR) return 2;
-    return 1;
+    if (r.status == laws::PROVED) return prism::code(prism::Exit::Ok);
+    if (r.status == laws::NOTRUN) return prism::code(prism::Exit::Error);
+    if (r.status == laws::ERROR) return prism::code(prism::Exit::Usage);
+    return prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::ai

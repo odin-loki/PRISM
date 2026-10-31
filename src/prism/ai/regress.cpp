@@ -14,6 +14,7 @@
 // A finding that cannot become a test is listed as "unsupported" with the
 // reason (Law 7: nothing is dropped quietly).
 
+#include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 
@@ -746,7 +747,7 @@ int regress_main(int argc, char** argv) {
                          "that fails while the defect is present (UBSan+ASan build). Tests go to\n"
                          "<report dir>/regression_tests/ unless --write-tests DIR. --run compiles and runs\n"
                          "them now (executes scanned code: needs --allow-exec, Law 9).\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-") && !report_given) {
             fs::path p(a);
             report_path = fs::is_directory(p) ? p / "report.json" : p;
@@ -754,20 +755,20 @@ int regress_main(int argc, char** argv) {
         } else {
             // An option this command does not know is an error, never ignored.
             prism::log::error("regress", "unrecognized arguments: " + std::string(a));
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     auto report = RunReport::load(report_path);
     if (!report) {
         prism::log::error("regress", "cannot read " + report_path.string());
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     opt.relative_includes = !write_dir.empty();
     opt.out_dir = write_dir.empty() ? fs::absolute(report_path).parent_path() / "regression_tests" : fs::absolute(write_dir);
     if (opt.framework != "auto" && opt.framework != "gtest" && opt.framework != "catch2" &&
         opt.framework != "ctest" && opt.framework != "pytest" && opt.framework != "plain") {
         prism::log::error("regress", "--framework expects auto|gtest|catch2|ctest|pytest|plain");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     auto res = generate_regression_tests(*report, opt);
     std::map<std::string, int> by;
@@ -778,7 +779,7 @@ int regress_main(int argc, char** argv) {
     for (auto& t : res.tests)
         if (t.status != "written")
             std::cout << "  " << t.status << " " << t.finding_id << " " << t.function << ": " << t.detail << "\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

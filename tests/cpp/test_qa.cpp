@@ -702,7 +702,7 @@ TEST_CASE("pir-vs-bmc retirement gates, superset cells and exit codes") {
 
     auto unknown = run_pvb({"--no-such"});
     CHECK(unknown.rc == 2);
-    CHECK(has_line(unknown.err, "pir-vs-bmc: unknown option --no-such"));
+    CHECK(has_line(unknown.err, "prism-qa pir-vs-bmc: error: unknown option --no-such"));
 
     auto missing = run_pvb({"--gate", "--report", (td.path / "missing.json").string()});
     CHECK(missing.rc == 2);

@@ -1,3 +1,5 @@
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "prism/solver.hpp"
 #include "prism/membudget.hpp"
 #include "prism/ai_proof.hpp"
@@ -218,20 +220,19 @@ int main(int argc, char** argv) {
 
     auto parsed = parse_cli(std::span<const char* const>(argv + 1, argc - 1));
     if (!parsed.value) {
-        std::cerr << "prism: error: " << parsed.message << "\n(prism --help lists the options)\n";
-        return 2;
+        return prism::fail_usage("", parsed.message, "(prism --help lists the options)");
     }
     if (parsed->help) {
         std::cout << cli_usage();
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (parsed->version) {
         std::cout << "prism " << PRISM_VERSION << " (C++ engine)\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (parsed->list_stages) {
         for (auto* p = STAGE_ORDER; *p; ++p) std::cout << *p << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     auto& cfg = parsed->cfg;
     const auto& fail_on = parsed->fail_on;
@@ -243,26 +244,24 @@ int main(int argc, char** argv) {
         std::cout << prism::pir::unit_vcs_json(std::filesystem::absolute(pir_vcs_src), cfg,
                                                std::filesystem::absolute(cfg.out))
                   << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (!solve_smt2.empty()) {
         std::ifstream in(solve_smt2, std::ios::binary);
         if (!in) {
-            std::cerr << "cannot read " << solve_smt2 << "\n";
-            return 2;
+            return prism::fail("", prism::log::cat("cannot read ", solve_smt2));
         }
         std::ostringstream ss;
         ss << in.rdbuf();
         std::cout << prism::pir::solve_smt2_json(ss.str(), cfg, z3_only) << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
 
     cfg.root = std::filesystem::absolute(parsed->path);
     cfg.out = std::filesystem::absolute(cfg.out);
     // A mistyped PATH is not an empty, clean tree (Laws 1 and 7).
     if (std::error_code ec; !std::filesystem::exists(cfg.root, ec)) {
-        std::cerr << "prism: error: PATH does not exist: " << cfg.root.string() << "\n";
-        return 2;
+        return prism::fail("", "PATH does not exist: " + cfg.root.string());
     }
 
     auto report = run_pipeline(cfg);
@@ -286,8 +285,8 @@ int main(int argc, char** argv) {
         for (auto& f : s.findings)
             if (f.status == "FAILED" || f.status == "CRASH") failed.push_back(&f);
     std::sort(failed.begin(), failed.end(), [](auto* a, auto* b) {
-        int ka = a->status == "CRASH" ? 0 : 1;
-        int kb = b->status == "CRASH" ? 0 : 1;
+        int ka = a->status == "CRASH" ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
+        int kb = b->status == "CRASH" ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
         if (ka != kb) return ka < kb;
         if (a->stage != b->stage) return a->stage < b->stage;
         return a->file < b->file;

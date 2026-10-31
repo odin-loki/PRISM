@@ -12,6 +12,7 @@
 // Answers are computed by run_query over report.json. Nothing here can
 // change a status: the report is only read.
 
+#include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/log.hpp"
@@ -714,7 +715,7 @@ int ask_main(int argc, char** argv) {
                          "Translates the question into a structured query over report.json (keyword grammar;\n"
                          "a local model when reachable, grammar-constrained and validated) and prints the\n"
                          "query with the answer. \"explain <id>\" and \"trusted base\" are understood too.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             question += (question.empty() ? "" : " ") + a;
         }
@@ -722,7 +723,7 @@ int ask_main(int argc, char** argv) {
     auto report = RunReport::load(report_path);
     if (!report) {
         prism::log::error("ask", "cannot read " + report_path.string());
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     Config cfg = default_config();
     cfg.llm = use_model;
@@ -741,7 +742,7 @@ int ask_main(int argc, char** argv) {
     } else {
         std::cout << "question: " << question << "\n" << assistant_reply(*report, question, use_model);
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

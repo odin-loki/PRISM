@@ -1,4 +1,6 @@
 // prism-deps command line (see deps.hpp for the commands and exit codes).
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "prism/deps.hpp"
 
 #include <cstdlib>
@@ -31,8 +33,8 @@ constexpr const char* kUsage =
     "Exit codes: 0 ok, 1 check failed, 2 usage or bad manifest, 3 hash mismatch.\n";
 
 int usage(const std::string& why) {
-    if (!why.empty()) std::cerr << "prism-deps: " << why << "\n";
-    std::cerr << kUsage;
+    if (!why.empty()) prism::log::error("", why);
+    prism::log::plain(kUsage);
     return 2;
 }
 
@@ -65,7 +67,7 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
     const std::string cmd = args[0];
     if (cmd == "-h" || cmd == "--help" || cmd == "help") {
         std::cout << kUsage;
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     std::optional<fs::path> manifest, tools, output;
     std::optional<std::string> version;
@@ -121,16 +123,16 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
     if (cmd == "tree-digest") {
         std::error_code ec;
         if (!fs::is_directory(pos[0], ec)) {
-            std::cerr << "prism-deps: " << pos[0] << " is not a directory\n";
-            return 2;
+            prism::log::plain(prism::log::cat("prism-deps: ", pos[0], " is not a directory\n"));
+            return prism::code(prism::Exit::Usage);
         }
         try {
             std::cout << tree_digest(pos[0]) << "\n";
         } catch (const FetchError& e) {
-            std::cerr << "prism-deps: " << e.what() << "\n";
-            return 1;
+            prism::log::error("", e.what());
+            return prism::code(prism::Exit::Failed);
         }
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
 
     if (!manifest) {
@@ -138,9 +140,9 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
         manifest = find_manifest(fs::current_path(ec));
         if (!manifest && !argv0.empty()) manifest = find_manifest(fs::absolute(argv0, ec).parent_path());
         if (!manifest) {
-            std::cerr << "prism-deps: third_party/MANIFEST.toml not found above the current directory; "
-                         "pass --manifest PATH\n";
-            return 2;
+            prism::log::plain("prism-deps: third_party/MANIFEST.toml not found above the current directory; "
+                         "pass --manifest PATH\n");
+            return prism::code(prism::Exit::Usage);
         }
     }
 
@@ -148,8 +150,8 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
     try {
         m = (cmd == "licence-check" || cmd == "sbom") ? read_manifest(*manifest) : load_manifest(*manifest);
     } catch (const std::exception& e) {
-        std::cerr << "prism-deps: bad manifest: " << e.what() << "\n";
-        return 2;
+        prism::log::error("", prism::log::cat("bad manifest: ", e.what()));
+        return prism::code(prism::Exit::Usage);
     }
 
     if (cmd == "list") {
@@ -158,7 +160,7 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
             std::cout << pad(c->str("kind"), 8) << " " << pad(c->str("name"), 14) << " "
                       << pad(c->str("version"), 10) << " " << pad(commit, 12) << " " << c->str("spdx") << "\n";
         }
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (cmd == "linked") return run_linked(m, refetch);
     if (cmd == "licence-check") {
@@ -171,11 +173,11 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
             }
         if (!problems.empty()) {
             std::cout.flush();
-            for (const auto& p : problems) std::cerr << "FAIL " << p << "\n";
-            return 1;
+            for (const auto& p : problems) prism::log::plain(prism::log::cat("FAIL ", p, "\n"));
+            return prism::code(prism::Exit::Failed);
         }
         std::cout << "licence check OK: " << n << " linked components, none copyleft\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (cmd == "sbom") {
         std::string v = version ? *version : [] {
@@ -186,22 +188,22 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
         try {
             text = build_sbom(m.bytes, v);
         } catch (const std::exception& e) {
-            std::cerr << "prism-deps: " << e.what() << "\n";
-            return 2;
+            prism::log::error("", e.what());
+            return prism::code(prism::Exit::Usage);
         }
         if (output) {
             std::ofstream o(*output, std::ios::binary | std::ios::trunc);
             o << text;
             o.close();
             if (!o) {
-                std::cerr << "prism-deps: cannot write " << output->string() << "\n";
-                return 1;
+                prism::log::error("", prism::log::cat("cannot write ", output->string()));
+                return prism::code(prism::Exit::Failed);
             }
             std::cout << "wrote " << output->string() << " (" << m.components().size() << " components)\n";
         } else {
             std::cout << text;
         }
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (cmd == "pins") {
         std::string text =
@@ -213,10 +215,10 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
             text += "    {\"" + c->str("name") + "\", \"" + c->str("commit") + "\"},\n";
         text += "};\n}  // namespace prism\n";
         if (!write_if_changed(*output, text)) {
-            std::cerr << "prism-deps: cannot write " << output->string() << "\n";
-            return 1;
+            prism::log::error("", prism::log::cat("cannot write ", output->string()));
+            return prism::code(prism::Exit::Failed);
         }
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     // tool NAME...
     int rc = 0;
@@ -225,13 +227,13 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
         try {
             fetch_tool(find_component(m, name), base, !no_build);
         } catch (const HashMismatch& e) {
-            std::cerr << "prism-deps: " << e.what() << "\n";
-            return 3;
+            prism::log::error("", e.what());
+            return prism::code(prism::Exit::Error);
         } catch (const FetchError& e) {
-            std::cerr << "prism-deps: " << e.what() << "\n";
+            prism::log::error("", e.what());
             rc = 1;
         } catch (const fs::filesystem_error& e) {
-            std::cerr << "prism-deps: " << e.what() << "\n";
+            prism::log::error("", e.what());
             rc = 1;
         }
     }

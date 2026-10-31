@@ -1,6 +1,7 @@
 // `prism svcomp`: PRISM as an SV-COMP verifier (include/prism/svcomp.hpp,
 // docs/SVCOMP.md). One task, the subset scorer (`svcomp score`) and the
 // tool archive (`svcomp pack`).
+#include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "prism/svcomp.hpp"
 
@@ -367,22 +368,22 @@ int score_main(int argc, char** argv) {
                          "upper bound. Replay executes the benchmark programs: the tasks run with\n"
                          "--allow-exec because the pinned suite in this repository is trusted (Law 9).\n"
                          "Writes DIR/score.md and DIR/results.json; exit 1 on any incorrect answer.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             log::error("svcomp score", "unknown argument " + std::string(a));
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (property != "no-overflow" && property != "unreach-call") {
         log::error("svcomp score", "--property expects no-overflow or unreach-call");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     if (suite.empty()) {
         auto repo = find_repo(fs::current_path());
         if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
         if (!repo) {
             log::error("svcomp score", "no testdata/conformance/sv-comp here; pass --suite DIR");
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
         suite = *repo / "testdata" / "conformance" / "sv-comp";
     }
@@ -466,8 +467,8 @@ int score_main(int argc, char** argv) {
     write_text(work / "score.md", md);
     std::cout << md << "\n";
     for (const auto& r : all_rows)
-        if (r.at("outcome").get<std::string>() == "wrong") return 1;
-    return 0;
+        if (r.at("outcome").get<std::string>() == "wrong") return prism::code(prism::Exit::Failed);
+    return prism::code(prism::Exit::Ok);
 }
 
 // ---------------------------------------------------------------- pack
@@ -497,26 +498,26 @@ int pack_main(int argc, char** argv) {
                          "(BIN, default this executable), the BenchExec tool-info module prism.py,\n"
                          "README.md, fm-tools.yml (from DIR/tools/svcomp), LICENSE, MANIFEST.json and\n"
                          "dependencies.json (the clang/opt seen here, which are not bundled).\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             log::error("svcomp pack", "unknown argument " + std::string(a));
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (!repo) repo = find_repo(fs::current_path());
     if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
     if (!repo) {
         log::error("svcomp pack", "tools/svcomp/prism.py not found above the working directory; pass --repo DIR");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     auto res = pack(prism, *repo, fs::absolute(out));
     if (!res.ok) {
         log::error("svcomp pack", res.error);
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     std::cout << "wrote " << out.string() << " (" << res.manifest.at("files").size() << " files, prism "
               << res.manifest.at("prism_version").dump() << ")\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace
@@ -667,7 +668,7 @@ int svcomp_main(int argc, char** argv) {
             if (!v) {
                 usage();
                 log::error("svcomp", std::string(a) + " expects a value");
-                return 2;
+                return prism::code(prism::Exit::Usage);
             }
             if (a == "--prop") prop = *v;
             else if (a == "--out") opt.out = *v;
@@ -676,7 +677,7 @@ int svcomp_main(int argc, char** argv) {
                 if (upper(*v) != "LP64" && upper(*v) != "ILP32") {
                     usage();
                     log::error("svcomp", "--data-model expects LP64 or ILP32");
-                    return 2;
+                    return prism::code(prism::Exit::Usage);
                 }
                 opt.data_model = *v;
             }
@@ -695,28 +696,28 @@ int svcomp_main(int argc, char** argv) {
                          "every refutation is unknown. docs/SVCOMP.md has the rules.\n"
                          "  prism svcomp score --help   score the pinned subset (testdata/conformance/sv-comp)\n"
                          "  prism svcomp pack --help    build the SV-COMP tool archive\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-") && !task) {
             task = a;
         } else {
             usage();
             log::error("svcomp", "unrecognized argument " + std::string(a));
-            return 2;
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (version) {
         std::cout << version_string() << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (!task) {
         usage();
         log::error("svcomp", "TASK and --prop are required");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     if (!prop) {
         usage();
         log::error("svcomp", "TASK and --prop are required");
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     Outcome oc;
     try {
@@ -729,7 +730,7 @@ int svcomp_main(int argc, char** argv) {
     std::replace(reason.begin(), reason.end(), '\n', ' ');
     std::cout << RESULT_PREFIX << oc.decision.answer << "\n" << REASON_PREFIX << reason << "\n";
     if (oc.witness_path) std::cout << WITNESS_PREFIX << oc.witness_path->string() << "\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::svcomp

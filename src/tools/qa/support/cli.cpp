@@ -1,3 +1,4 @@
+#include "prism/log.hpp"
 #include "cli.hpp"
 
 #include <iostream>
@@ -53,8 +54,8 @@ bool parse_args(const std::string& prog, const std::string& desc, const std::vec
             }
         }
         if (!spec) {
-            usage(std::cerr);
-            std::cerr << prog << ": error: unrecognized argument: " << a << "\n";
+            usage(prism::log::err_stream());
+            prism::log::plain(prism::log::cat(prog, ": error: unrecognized argument: ", a));
             rc = 2;
             return false;
         }
@@ -64,7 +65,7 @@ bool parse_args(const std::string& prog, const std::string& desc, const std::vec
         }
         if (!inline_value) {
             if (i + 1 >= argv.size()) {
-                std::cerr << prog << ": error: argument " << spec->long_name << ": expected one argument\n";
+                prism::log::plain(prism::log::cat(prog, ": error: argument ", spec->long_name, ": expected one argument\n"));
                 rc = 2;
                 return false;
             }

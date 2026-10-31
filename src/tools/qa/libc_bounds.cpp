@@ -12,6 +12,8 @@
 // result, docs/PIR.md "Library models verified by PRISM"), never a proof for
 // all sizes (Law 2), and it is reported as such.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
 #include "../../prism/proc.hpp"
@@ -181,10 +183,10 @@ int libc_bounds_main(const Args& args) {
                          "                     [--filter RE] [--json OUT.json]\n"
                          "Largest object size N for which each libc model contract harness is still\n"
                          "PROVED (a proof for objects up to N bytes only, never for all sizes).\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "libc-bounds: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("libc-bounds", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     std::vector<int> sizes;
@@ -196,7 +198,7 @@ int libc_bounds_main(const Args& args) {
     auto prism = find_prism(bin, repo);
     if (!prism) {
         std::cout << "libc-bounds: NOTRUN: no PRISM binary (pass --prism or set PRISM_BIN)\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     std::optional<Regex> rx;
     if (!filter.empty()) rx.emplace(filter);
@@ -283,7 +285,7 @@ int libc_bounds_main(const Args& args) {
     }
     pool.clear();
     if (!json_out.empty()) std::ofstream(json_out, std::ios::binary) << results.dump(1) << "\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa
