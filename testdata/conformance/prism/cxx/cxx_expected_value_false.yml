@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_expected_value_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_expected_value_false: false
+witness:
+  cxx_expected_value_false: [2147483647]

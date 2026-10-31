@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c99_long_long_false.c
+language: C
+property: no-overflow
+expected:
+  c99_long_long_false: false
+witness:
+  c99_long_long_false: [1073741824]

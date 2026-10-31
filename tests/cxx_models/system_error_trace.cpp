@@ -9,7 +9,7 @@
 // to compile and pir falls back.
 //
 // Equality uses the stored int and the stored category. A default
-// error_code (value 0, category id 0 in the model; system_category in
+// error_code (value 0, category id 2 = system_category in the model and in
 // libstdc++) is not equal to error_code(0, generic_category()). Two
 // error_code(5, generic_category()) values are equal.
 #include <cstdio>

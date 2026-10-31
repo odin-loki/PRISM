@@ -111,7 +111,7 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
     for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
     const std::string dir = opt.cwd.empty() ? std::string() : opt.cwd.string();
-    pid_t pid = ::fork();
+    pid_t pid = prism::detail::serialized_fork();
     if (pid < 0) {
         ::close(out_p[0]);
         ::close(out_p[1]);

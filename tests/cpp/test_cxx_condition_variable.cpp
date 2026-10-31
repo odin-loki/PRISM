@@ -1,7 +1,7 @@
 // The <condition_variable> model is one bool in the object. notify_one and
 // notify_all set that flag and do not run a waiter. A default object has the
-// flag false. wait, wait_for, and wait_until are not declared: a blocking
-// wait that returned immediately would be a fake wakeup.
+// flag false. wait returns at once (a spurious wakeup the standard permits);
+// wait(lock, pred) assumes pred() on return.
 //
 // Included by path so prism_tests does not put the model directory on the
 // include path for every TU. `#include <condition_variable>` here would be
@@ -78,7 +78,7 @@ bool defines_call(std::string_view src, std::string_view name) {
 
 }  // namespace
 
-TEST_CASE("cxx condition_variable model: notify sets a flag, wait is omitted") {
+TEST_CASE("cxx condition_variable model: notify sets a flag, wait is a spurious wakeup or assumes pred") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -90,7 +90,7 @@ TEST_CASE("cxx condition_variable model: notify sets a flag, wait is omitted") {
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);
     CHECK(src.find("namespace std {") != std::string::npos);
     CHECK(src.find("not a concurrency proof") != std::string::npos);
-    CHECK(src.find("fake wakeup") != std::string::npos);
+    CHECK(src.find("spurious wakeup") != std::string::npos);
     CHECK(src.find("#include <mutex>") == std::string::npos);
     CHECK(src.find("#include <thread>") == std::string::npos);
     CHECK(src.find("#include <atomic>") == std::string::npos);
@@ -99,7 +99,7 @@ TEST_CASE("cxx condition_variable model: notify sets a flag, wait is omitted") {
     CHECK(src.find("#include <functional>") == std::string::npos);
     CHECK(src.find("std::thread") == std::string::npos);
     CHECK(src.find("new ") == std::string::npos);
-    CHECK(src.find("class condition_variable_any") == std::string::npos);
+    CHECK(src.find("class condition_variable_any") != std::string::npos);
 
     CHECK(src.find("bool _M_flag;") != std::string::npos);
     CHECK(src.find("condition_variable() noexcept : _M_flag(false) {}") != std::string::npos);
@@ -127,9 +127,9 @@ TEST_CASE("cxx condition_variable model: notify sets a flag, wait is omitted") {
     CHECK(one.find("_M_flag = false") == std::string::npos);
     CHECK(all.find("_M_flag = false") == std::string::npos);
 
-    CHECK_FALSE(defines_call(src, "wait"));
-    CHECK_FALSE(defines_call(src, "wait_for"));
-    CHECK_FALSE(defines_call(src, "wait_until"));
+    CHECK(defines_call(src, "wait"));
+    CHECK(defines_call(src, "wait_for"));
+    CHECK(defines_call(src, "wait_until"));
     CHECK_FALSE(defines_call(src, "notify_all_at_thread_exit"));
 
     static_assert(sizeof(std::condition_variable) == sizeof(bool));

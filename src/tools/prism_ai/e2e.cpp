@@ -23,6 +23,7 @@
 #include "pycompat.hpp"
 
 #include "prism/solver_predict.hpp"
+#include "prism/serialized_fork.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -57,7 +58,7 @@ ProcResult run_with_env(const std::vector<std::string>& argv, const std::vector<
     if (argv.empty()) return r;
     int fds[2];
     if (::pipe(fds) != 0) return r;
-    const pid_t pid = ::fork();
+    const pid_t pid = prism::detail::serialized_fork();
     if (pid < 0) {
         ::close(fds[0]);
         ::close(fds[1]);

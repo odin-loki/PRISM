@@ -689,7 +689,7 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, SpawnedSer
     }
     int port = 18000 + static_cast<int>(::getpid() % 2000);
     auto port_s = std::to_string(port);
-    pid_t pid = ::fork();
+    pid_t pid = prism::detail::serialized_fork();
     if (pid == 0) {
         auto m = gguf.string();
         auto b = bin->string();

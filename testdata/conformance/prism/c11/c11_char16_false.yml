@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c11_char16_false.c
+language: C
+property: no-oob
+expected:
+  c11_char16_false: false
+witness:
+  c11_char16_false: [4]

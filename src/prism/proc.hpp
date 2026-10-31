@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "prism/serialized_fork.hpp"
+
 namespace prism::detail {
 
 struct RunSpec {
@@ -77,6 +79,8 @@ void refuse_disabled_checks(const std::vector<std::string>& argv);
 // is failed = true, rc = 127, err = why (the same as CreateProcess failing on
 // Windows), not an exit code of the tool.
 RunOut run(const RunSpec& spec);
+
+// serialized_fork() lives in prism/serialized_fork.hpp (included above).
 
 struct ProcOut {
     std::string text;  // stdout and stderr, merged
