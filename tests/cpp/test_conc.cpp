@@ -109,6 +109,13 @@ TEST_CASE("conc: a lost wake-up is a deadlock") {
     CHECK(has_cls(r, "CONC-DEADLOCK"));
 }
 
+TEST_CASE("conc: a C11 cnd_wait lost wake-up is a deadlock") {
+    if (!have_frontend()) return;
+    auto r = run_main("c11_lost_wakeup.c");
+    CHECK(r.status == prism::laws::FAILED);
+    CHECK(has_cls(r, "CONC-DEADLOCK"));
+}
+
 TEST_CASE("conc: a wait guarded by its predicate is BOUNDED") {
     if (!have_frontend()) return;
     auto r = run_main("condvar_ok.c");

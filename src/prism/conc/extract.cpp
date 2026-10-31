@@ -694,7 +694,7 @@ struct Rewriter {
             zero_result(in, out);
             return;
         }
-        if (n == "pthread_cond_wait") {
+        if (n == "pthread_cond_wait" || n == "cnd_wait") {  // C11 cnd_wait(cnd, mtx): same argument order
             // unlock (and join the wait set, atomically); block until a
             // signal or broadcast on the same variable after that; lock.
             // Every signal wakes every waiter (a spurious wake-up of the
@@ -741,7 +741,7 @@ struct Rewriter {
             out.push_back(copy(in, marker(k2), cint(0, i64)));
             return;
         }
-        if (n == "pthread_cond_signal" || n == "pthread_cond_broadcast") {
+        if (n == "pthread_cond_signal" || n == "pthread_cond_broadcast" || n == "cnd_signal" || n == "cnd_broadcast") {
             auto vo = mk(VisOp::CondSignal, n);
             vo.cond = cond(arg(0), n);
             int k = add_op(vo);
@@ -750,8 +750,13 @@ struct Rewriter {
             return;
         }
         if (n == "pthread_mutex_destroy" || n == "mtx_destroy" || n == "pthread_cond_destroy" || n == "sched_yield" ||
-            n == "thrd_yield" || n == "cnd_signal" || n == "cnd_broadcast" || n == "cnd_destroy") {
+            n == "thrd_yield" || n == "cnd_destroy") {
             zero_result(in, out);  // no effect under interleaving semantics (every schedule is explored)
+            return;
+        }
+        if (n == "cnd_init") {  // thrd_success (0); the variable is identified by its global
+            (void)cond(arg(0), n);
+            zero_result(in, out);
             return;
         }
         if (n == "pthread_cond_init") {
