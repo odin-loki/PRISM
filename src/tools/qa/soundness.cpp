@@ -29,6 +29,7 @@
 // available), never code from elsewhere.
 
 #include "gen_random.hpp"
+#include "prism/laws.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
 #include "support/pool.hpp"
@@ -118,8 +119,8 @@ std::set<std::string> statuses(const ojson& found) {
 }
 
 bool any_proof(const std::set<std::string>& st) {
-    for (const auto& p : PROOF)
-        if (st.count(p)) return true;
+    for (const auto& s : st)
+        if (prism::laws::is_proof(s)) return true;
     return false;
 }
 

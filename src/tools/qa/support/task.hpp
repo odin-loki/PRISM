@@ -22,7 +22,6 @@ namespace fs = std::filesystem;
 using i128 = prism::i128;
 
 // ---- fixed tables
-extern const std::set<std::string> PROOF;             // PROVED, PROVED-UNBOUNDED, PROVED-ASSUMING, PROVED-CERTIFIED
 extern const std::vector<std::string> BASE_STAGES;    // inventory, classify, bmc, harness
 extern const std::vector<std::string> VERDICT_STAGES; // bmc, harness, pir, conc
 // Stages that only speak about part of the functions (harness: POINTER

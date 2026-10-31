@@ -1,4 +1,5 @@
 #include "report.hpp"
+#include "prism/laws.hpp"
 
 #include "prism/regex.hpp"
 
@@ -58,8 +59,8 @@ std::set<std::string> statuses(const ojson& found) {
 }
 
 bool any_proof(const std::set<std::string>& st) {
-    for (const auto& p : PROOF)
-        if (st.count(p)) return true;
+    for (const auto& s : st)
+        if (prism::laws::is_proof(s)) return true;
     return false;
 }
 
