@@ -1141,11 +1141,43 @@ void tnew() {
 }
 )";
 
+// LOCK-ORDER: a/b taken in opposite orders by two functions; c/d agree.
+const char* kLockOrderC = R"(typedef struct { int x; } pthread_mutex_t;
+int pthread_mutex_lock(pthread_mutex_t *m);
+int pthread_mutex_unlock(pthread_mutex_t *m);
+pthread_mutex_t a, b, c, d;
+void ab_bad(void) {
+    pthread_mutex_lock(&a); // expect: LOCK-ORDER
+    pthread_mutex_lock(&b);
+    pthread_mutex_unlock(&b);
+    pthread_mutex_unlock(&a);
+}
+void ba_bad(void) {
+    pthread_mutex_lock(&b); // expect: LOCK-ORDER
+    pthread_mutex_lock(&a);
+    pthread_mutex_unlock(&a);
+    pthread_mutex_unlock(&b);
+}
+void cd_ok(void) {
+    pthread_mutex_lock(&c);
+    pthread_mutex_lock(&d);
+    pthread_mutex_unlock(&d);
+    pthread_mutex_unlock(&c);
+}
+void cd_again_ok(void) {
+    pthread_mutex_lock(&c);
+    pthread_mutex_lock(&d);
+    pthread_mutex_unlock(&d);
+    pthread_mutex_unlock(&c);
+}
+)";
+
 }  // namespace
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
     check_marks("nowait.c", kNowaitC);
+    check_marks("lock_order.c", kLockOrderC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "

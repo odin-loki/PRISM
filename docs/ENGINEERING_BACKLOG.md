@@ -28,14 +28,15 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 
 | Gap | Next action | Primary paths |
 |-----|-------------|---------------|
-| ~287 regex-only classes | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
+| Regex-only classes (was ~287; 4 left, see Next) | Port high-impact rules with `testdata/` plants | `checkers_core.cpp` → `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`STR-UNBOUNDED-COPY`**, **`API-GETS`** doctest in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-STRTOK`**, **`API-TMPNAM`**, **`API-MKTEMP`**, **`API-UMASK`** AST ports (+ prior batch) | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **STR-MISSING-NUL** / **MEM-MEMSET-SWAP** / **STR-STRNCPY-NUL** / **MEM-REALLOC-SELF** testdata doctests | `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-MKSTEMP`**, **`API-CHMOD-WORLD`**, **`API-SETUID`** AST ports in `kPortedC` | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`API-SYSTEM`**, **`API-SIGNAL`**, **`API-GETENV-NULL`**, **`API-STRDUP-NULL`**, **`PTR-UNCHECKED-ALLOC`** AST + testdata doctests | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Done (2026-10-25) | **`INT-SHIFT-UB`**, **`PTR-NULL-DEREF`**, **`MEM-STACK-ESCAPE`** testdata doctests; **`return buf`** after `strip_casts` | `astlint_checks.cpp`, `test_astlint.cpp` |
-| Next | Pick from regex-only table (~265 left) | `checkers_core.cpp` → `astlint_checks.cpp` |
+| Done (2026-10-30) | **`LOCK-ORDER`** AST port (`lock_order.c` plants); libclang front end: driver-derived system includes (`clang -###`), C11 `_Noreturn`, sugared `wchar_t` — lint suite agrees across both front ends | `astlint.cpp`, `astlint_libclang.cpp`, `astlint_checks.cpp` |
+| Next | Recount (2026-10-30): only **`API-PRECONDITION`**, **`INTENT`** (comment/contract, text by nature), **`CTRL-SIBLING-ASYMMETRY`**, **`MEM-CAPACITY-FIRST`** have no AST rule (`API-IGNORED-ERROR` / `API-SCANF-UNCHECKED` ride the generated `astlint_discard.inc`) | `checkers_core.cpp` → `astlint_checks.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
 ## 2.8 / D2 — Retire hand `bmc` encoder
