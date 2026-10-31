@@ -1936,24 +1936,49 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
     }
-    if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmt1d")) {
-        // exact output bytes for a symbolic double (coverage item 1)
-        ir::Inst call;
-        call.op = "call";
-        call.callee = "__prism_fmt1d";
-        call.result = in.result;
-        call.ty = ir::Type{ir::Type::Int, 32, "i32", {}};
-        ir::Operand cap;
-        if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
-        else {
-            cap.ty = ir::Type{ir::Type::Int, 64, "i64", {}};
-            cap.v.kind = ir::Value::Int;
-            cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
+    if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmtv")) {
+        // exact output bytes (coverage item 1): every variadic argument goes
+        // to a typed slot of __prism_fmtv (8 x i32, 8 x i64, 8 x double,
+        // 8 x ptr), which renders the whole format with prism_fpfmt.
+        const ir::Type ti32{ir::Type::Int, 32, "i32", {}}, ti64{ir::Type::Int, 64, "i64", {}},
+            tdbl{ir::Type::Float, 0, "double", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
+        auto zero = [](const ir::Type& t) {
+            ir::Operand o;
+            o.ty = t;
+            o.v.kind = t.kind == ir::Type::Ptr ? ir::Value::Null : t.kind == ir::Type::Float ? ir::Value::Fp : ir::Value::Int;
+            o.v.bits = 0;
+            return o;
+        };
+        std::vector<ir::Operand> si, sj, sd, sp;
+        bool fits = true;
+        for (std::size_t k = fi + 1; k < in.ops.size(); ++k) {
+            const auto& o = in.ops[k];
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) si.push_back(o);
+            else if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) sj.push_back(o);
+            else if (o.ty.kind == ir::Type::Float && o.ty.text == "double") sd.push_back(o);
+            else if (o.ty.kind == ir::Type::Ptr) sp.push_back(o);
+            else fits = false;
         }
-        call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi],
-                    in.ops[static_cast<std::size_t>(plan.exact_double_arg)]};
-        inline_call(fr, call, cur, line);
-        return true;
+        if (fits && si.size() <= 8 && sj.size() <= 8 && sd.size() <= 8 && sp.size() <= 8) {
+            ir::Inst call;
+            call.op = "call";
+            call.callee = "__prism_fmtv";
+            call.result = in.result;
+            call.ty = ti32;
+            ir::Operand cap;
+            if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
+            else {
+                cap = zero(ti64);
+                cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
+            }
+            call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi]};
+            for (auto* v : {&si, &sj, &sd, &sp}) {
+                const ir::Type& t = v == &si ? ti32 : v == &sj ? ti64 : v == &sd ? tdbl : tptr;
+                for (std::size_t k = 0; k < 8; ++k) call.ops.push_back(k < v->size() ? (*v)[k] : zero(t));
+            }
+            inline_call(fr, call, cur, line);
+            return true;
+        }
     }
     if (plan.buf_arg >= 0) {
         Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));

@@ -269,7 +269,7 @@ std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib) {
     for (auto* f : {"printf", "fprintf", "dprintf", "sprintf", "snprintf"})
         if (std::find(m.declarations.begin(), m.declarations.end(), f) != m.declarations.end()) {
             want.push_back("strlen");
-            want.push_back("__prism_fmt1d");  // exact bytes for a symbolic double
+            want.push_back("__prism_fmtv");  // exact bytes for a symbolic double
             break;
         }
     int uniq = 0;
