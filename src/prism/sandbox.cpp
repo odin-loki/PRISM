@@ -6,6 +6,8 @@
 #include "prism/laws.hpp"
 #include "proc.hpp"
 
+#include <forge/os/process.hpp>
+
 #include <atomic>
 #include <cctype>
 #include <mutex>
@@ -119,27 +121,16 @@ void apply_child_limits(const Limits& limits) noexcept {
     if (!limits.enabled) return;
     // One second over the wall-clock timeout: the parent's timeout fires
     // first, so SIGXCPU never masquerades as a crash of the code under test.
-    auto cpu = static_cast<rlim_t>(limits.cpu_seconds + 0.999);
+    // forge::os::apply_limits lowers each request to an existing hard limit.
+    auto cpu = static_cast<std::uint64_t>(limits.cpu_seconds + 0.999);
     if (cpu < 1) cpu = 1;
-    cpu += 1;
-    auto set = [](int which, rlim_t soft, rlim_t hard) {
-        struct rlimit cur {};
-        if (::getrlimit(which, &cur) == 0 && cur.rlim_max != RLIM_INFINITY) {
-            if (hard > cur.rlim_max) hard = cur.rlim_max;
-            if (soft > hard) soft = hard;
-        }
-        struct rlimit rl {};
-        rl.rlim_cur = soft;
-        rl.rlim_max = hard;
-        (void)::setrlimit(which, &rl);
-    };
-    set(RLIMIT_CPU, cpu, cpu + 1);
-    set(RLIMIT_NOFILE, static_cast<rlim_t>(LIMIT_NOFILE), static_cast<rlim_t>(LIMIT_NOFILE));
-    set(RLIMIT_FSIZE, static_cast<rlim_t>(LIMIT_FSIZE_BYTES),
-        static_cast<rlim_t>(LIMIT_FSIZE_BYTES));
-    set(RLIMIT_CORE, 0, 0);
-    if (limits.limit_as)
-        set(RLIMIT_AS, static_cast<rlim_t>(LIMIT_AS_BYTES), static_cast<rlim_t>(LIMIT_AS_BYTES));
+    forge::os::proc_limits l;
+    l.cpu_seconds = cpu + 1;
+    l.open_files = LIMIT_NOFILE;
+    l.file_size_bytes = LIMIT_FSIZE_BYTES;
+    l.no_core = true;
+    if (limits.limit_as) l.memory_bytes = LIMIT_AS_BYTES;
+    (void)forge::os::apply_limits(l);
 #else
     (void)limits;
 #endif

@@ -9,6 +9,8 @@
 
 #include "proc.hpp"
 
+#include <forge/task/pool.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -74,26 +76,19 @@ Result run(const Spec& spec) { return g_exec.load()(spec); }
 namespace prism::pool {
 namespace {
 
+// FORGE's task pool, sized by PRISM's --jobs policy (clamp_jobs); the caller
+// is one of the workers.
 void default_parallel_for(int jobs, std::size_t n, std::size_t grain, const RangeFn& fn) {
     if (n == 0) return;
     grain = std::max<std::size_t>(grain, 1);
     const std::size_t chunks = (n + grain - 1) / grain;
-    const int threads = static_cast<int>(std::min<std::size_t>(chunks, static_cast<std::size_t>(clamp_jobs(jobs))));
+    const auto threads = static_cast<unsigned>(std::min<std::size_t>(chunks, static_cast<std::size_t>(clamp_jobs(jobs))));
     if (threads <= 1) {
         fn(0, n);
         return;
     }
-    std::atomic<std::size_t> next{0};
-    std::vector<std::jthread> workers;
-    workers.reserve(static_cast<std::size_t>(threads));
-    for (int w = 0; w < threads; ++w)
-        workers.emplace_back([&] {
-            for (;;) {
-                const std::size_t c = next.fetch_add(1, std::memory_order_relaxed);
-                if (c >= chunks) break;
-                fn(c * grain, std::min(n, (c + 1) * grain));
-            }
-        });
+    forge::task::pool p(threads);
+    p.parallel_for(n, grain, fn);
 }
 
 unsigned default_size() { return static_cast<unsigned>(clamp_jobs(0)); }

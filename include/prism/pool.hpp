@@ -2,9 +2,8 @@
 
 // PRISM's thin thread-pool interface, built like log.hpp. Work goes through
 // parallel_for(n, grain, fn(begin, end)), the same shape as FORGE's
-// forge::task::pool::parallel_for (support/task/pool.hpp); the FORGE switch is
-// set_backend({forge_parallel_for, forge_size}). The default backend is ISO
-// std::jthread workers sized by prism::clamp_jobs (threads.hpp).
+// forge::task::pool::parallel_for (support/task/pool.hpp). The default backend
+// is a forge::task::pool sized by prism::clamp_jobs (threads.hpp).
 
 #include "prism/export.hpp"
 

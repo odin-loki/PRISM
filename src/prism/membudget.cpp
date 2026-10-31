@@ -99,18 +99,7 @@ uint64_t per_job_mb(int jobs) {
     return jobs > 1 ? b / static_cast<uint64_t>(jobs) : b;
 }
 
-uint64_t rss_mb() {
-#ifdef __linux__
-    long pages = 0, rss = 0;
-    if (FILE* f = std::fopen("/proc/self/statm", "r")) {
-        if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0;
-        std::fclose(f);
-    }
-    return static_cast<uint64_t>(rss) * static_cast<uint64_t>(forge::os::page_size()) / (1024 * 1024);
-#else
-    return 0;
-#endif
-}
+uint64_t rss_mb() { return forge::os::current_rss() / (1024 * 1024); }
 
 #ifdef __linux__
 namespace {
