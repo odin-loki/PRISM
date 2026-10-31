@@ -7484,6 +7484,7 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
 TEST_CASE("process runners kill the child's whole process tree on timeout") {
     MESSAGE("POSIX-only (fork); Windows: see the Job Object cases in tests/cpp/test_qa.cpp");
 }
+#else
 
 TEST_CASE("a SIGTERM to PRISM kills the child process groups it started") {
     const auto pidfile = fs::temp_directory_path() / ("prism_sigterm_" + std::to_string(::getpid()) + ".pid");
