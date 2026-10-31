@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_strndup_false.c
+language: C
+property: memsafety
+expected:
+  c23_strndup_false: false
+witness:
+  c23_strndup_false: [3]

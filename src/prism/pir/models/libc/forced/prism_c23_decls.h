@@ -8,5 +8,11 @@
 #ifndef __cplusplus
 /* C23 7.26.6.2 */
 void *memset_explicit(void *, int, __SIZE_TYPE__);
+/* C23 7.26.2.2, 7.26.2.7, 7.24.3.1/4/5 (models in ../string.cpp, ../stdlib.cpp) */
+void *memccpy(void *__restrict, const void *__restrict, int, __SIZE_TYPE__);
+char *strndup(const char *, __SIZE_TYPE__);
+void free_sized(void *, __SIZE_TYPE__);
+void free_aligned_sized(void *, __SIZE_TYPE__, __SIZE_TYPE__);
+__SIZE_TYPE__ memalignment(const void *);
 #endif
 #endif

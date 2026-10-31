@@ -1,0 +1,6 @@
+format_version: 1
+input_files: c17_aligned_alloc_badalign_true.c
+language: C
+property: no-null-deref
+expected:
+  c17_aligned_alloc_badalign_true: true

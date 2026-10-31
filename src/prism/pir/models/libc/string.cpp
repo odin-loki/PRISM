@@ -300,5 +300,35 @@ char *strdup(const char *s) {
     return p;
 }
 
+
+/* C23 7.26.2.2 memccpy: copy up to n bytes, stopping after the first c. */
+void *memccpy(void *d, const void *s, int c, size_t n) {
+    if (n == 0) return 0;
+    __prism_check(d != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter d");
+    __prism_check(s != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter s");
+    unsigned char *x = (unsigned char *)d;
+    const unsigned char *y = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    for (size_t i = 0; i < n; i++) {
+        x[i] = y[i];
+        if (y[i] == want) return x + i + 1;
+    }
+    return 0;
+}
+
+/* C23 7.26.2.7 strndup: at most n bytes of s, always NUL-terminated. s
+ * need not be terminated within n bytes, so only n bytes are read. */
+char *strndup(const char *s, size_t n) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strndup() called with unchecked pointer parameter s");
+    size_t k = 0;
+    while (k < n && s[k] != 0) k++;
+    if (k + 1 == 0) return 0;
+    char *p = (char *)malloc(k + 1);
+    if (!p) return 0;
+    if (k) __prism_memcpy(p, s, k, 0);
+    p[k] = 0;
+    return p;
+}
+
 }  // extern "C"
 

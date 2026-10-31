@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c11_atomic_explicit_false.c
+language: C
+property: no-overflow
+expected:
+  c11_atomic_explicit_false: false
+witness:
+  c11_atomic_explicit_false: [2147483646]
