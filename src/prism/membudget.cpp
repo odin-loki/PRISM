@@ -161,6 +161,36 @@ uint64_t children_rss_kb(const std::string& pid, int depth) {
 // This process and every process it started (solver children, z3-worker):
 // the budget is for the whole tree, as prism-run measures it (pir6 peaked at
 // 3439 MB of tree RSS with a 3000 MB budget while the process alone was under).
+uint64_t peak_rss_mb() {
+#ifdef __linux__
+    if (FILE* f = std::fopen("/proc/self/status", "r")) {
+        char line[256];
+        unsigned long long kb = 0;
+        while (std::fgets(line, sizeof line, f))
+            if (std::sscanf(line, "VmHWM: %llu kB", &kb) == 1) break;
+        std::fclose(f);
+        if (kb > 0) return std::max<uint64_t>(kb / 1024, rss_mb());
+    }
+#endif
+    return rss_mb();
+}
+
+void reset_peak() {
+#ifdef __linux__
+    if (FILE* f = std::fopen("/proc/self/clear_refs", "w")) {
+        std::fputs("5", f);
+        std::fclose(f);
+    }
+#endif
+}
+
+namespace {
+std::atomic<uint64_t> g_granted{0};
+}  // namespace
+uint64_t granted_mb() { return g_granted.load(); }
+Grant::Grant(uint64_t mb) : mb_(mb) { g_granted.fetch_add(mb); }
+Grant::~Grant() { g_granted.fetch_sub(mb_); }
+
 uint64_t tree_rss_mb() {
 #ifdef __linux__
     return rss_mb() + children_rss_kb(std::to_string(::getpid()), 0) / 1024;

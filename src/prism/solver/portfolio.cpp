@@ -358,8 +358,10 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
         return fs::exists(sib, ec) ? sib.string() : std::string();
     }();
     if (exe.empty()) return {};
-    const uint64_t rss = rss0;
-    const uint64_t child_mb = std::max<uint64_t>(64, mb > rss ? mb - rss : 0);  // keep the process tree in budget
+    // keep the process tree in budget: this process at its peak plus the
+    // caps granted to live children (the spawn's own cap bounds it further)
+    const uint64_t used = prism::membudget::peak_rss_mb() + prism::membudget::granted_mb();
+    const uint64_t child_mb = std::max<uint64_t>(64, mb > used ? mb - used : 0);
     return {exe, "z3-worker", "{input}", std::to_string(child_mb)};
 }
 
@@ -418,8 +420,13 @@ double check_budget(const SolveOptions& o) {
 std::uint64_t solver_child_cap(std::size_t children) {
     const uint64_t mb = prism::membudget::budget_mb();
     if (mb == 0) return 0;
-    const uint64_t tree = prism::membudget::tree_rss_mb();
-    const uint64_t room = mb > tree ? mb - tree : 0;
+    // Room against the projection, not the current size: this process can
+    // grow back to its peak (VmHWM, reset when pir starts), and every live
+    // child may grow to the cap it was granted. Budgeting against the current
+    // tree let children started together, and the main process growing
+    // under them, carry conformance/libc-models to 2385 MB at 2000.
+    const uint64_t used = prism::membudget::peak_rss_mb() + prism::membudget::granted_mb();
+    const uint64_t room = mb > used ? mb - used : 0;
     return std::max<uint64_t>(256, room / std::max<std::size_t>(1, children)) << 20;
 }
 
@@ -1166,6 +1173,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 for (const auto& a : slot.argv) argv.push_back(subst(a, smt_path, lrat_path));
                 const auto mcap = solver_child_cap(slots);
                 spawn(slot.name, [J = J.get(), argv, i, left, stop, mcap] {
+                    prism::membudget::Grant grant(mcap >> 20);
                     J->board.post(smt_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap)));
                 });
                 break;
@@ -1176,6 +1184,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 auto cp = cnf;
                 const auto mcap = solver_child_cap(slots);
                 spawn(slot.name, [J = J.get(), argv, i, left, stop, cp, mcap] {
+                    prism::membudget::Grant grant(mcap >> 20);
                     J->board.post(dimacs_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap), *cp));
                 });
                 break;

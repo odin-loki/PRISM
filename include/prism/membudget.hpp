@@ -26,6 +26,24 @@ PRISM_API uint64_t per_job_mb(int jobs);
 PRISM_API uint64_t rss_mb();
 // rss_mb() plus every descendant process (Linux; else rss_mb()).
 PRISM_API uint64_t tree_rss_mb();
+// Peak resident set of this process (VmHWM) since start or the last
+// reset_peak(), MB; rss_mb() if unknown. The projected size of this
+// process when budgeting a child: it can grow back to its peak.
+PRISM_API uint64_t peak_rss_mb();
+// Restart the peak from the current RSS (Linux /proc/self/clear_refs 5).
+PRISM_API void reset_peak();
+// Child budgets: MB of the budget promised to live children; grant() adds,
+// the returned Grant gives it back when it goes out of scope.
+PRISM_API uint64_t granted_mb();
+class PRISM_API Grant {
+public:
+    explicit Grant(uint64_t mb);
+    ~Grant();
+    Grant(const Grant&) = delete;
+    Grant& operator=(const Grant&) = delete;
+private:
+    uint64_t mb_;
+};
 // RSS at or over 80% of the budget (headroom for the stop latency), or
 // system_low(). Cheap enough to call every few thousand steps.
 PRISM_API bool over_budget();
