@@ -13,6 +13,26 @@
 
 namespace prism::pir {
 
+namespace {
+thread_local PtrModel g_ptr_model = kLP64;
+}
+const PtrModel& ptr_model() { return g_ptr_model; }
+PtrModelScope::PtrModelScope(const PtrModel& m) : prev_(g_ptr_model) { g_ptr_model = m; }
+PtrModelScope::~PtrModelScope() { g_ptr_model = prev_; }
+PtrModel ptr_model_of(const ir::Module& m) {
+    // datalayout pointer spec "p:32:32" / "p0:32:32..." (default LP64)
+    const std::string& dl = m.datalayout;
+    std::size_t pos = 0;
+    while (pos <= dl.size()) {
+        auto e = dl.find('-', pos);
+        if (e == std::string::npos) e = dl.size();
+        std::string spec = dl.substr(pos, e - pos);
+        pos = e + 1;
+        if (spec.starts_with("p:32") || spec.starts_with("p0:32")) return kILP32;
+    }
+    return kLP64;
+}
+
 using prism::i128;
 using prism::u128;
 using prism::i128_add;
@@ -472,6 +492,7 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
 }
 
 InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit) {
+    PtrModelScope pms(fn.ptr);
     InterpResult r;
     mem::ConcMem M;
     // a store/copy/set whose address or length depends on a havoc makes every
