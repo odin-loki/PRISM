@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <set>
 #include <string>
@@ -1254,9 +1255,16 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
     prism::Config cfg;
     cfg.jobs = 1;
     cfg.root = root;
+    // One clang run per (file, front end): the checks below ask about several classes and functions of
+    // the same file, and each run re-parses the platform headers (minutes on a small Windows runner).
+    std::map<std::pair<std::string, int>, std::vector<prism::Finding>> runs;
     auto ast_lines = [&](const char* file, const char* cls, const char* func, Backend b) {
         std::set<int> lines;
-        for (auto& f : prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)) {
+        auto key = std::make_pair(std::string(file), static_cast<int>(b));
+        auto it_run = runs.find(key);
+        if (it_run == runs.end())
+            it_run = runs.emplace(key, prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)).first;
+        for (auto& f : it_run->second) {
             auto it = f.extra.find("engine");
             if (it == f.extra.end() || it->second != "clang-ast") continue;
             if (f.status != prism::laws::FAILED || f.cls != cls) continue;
