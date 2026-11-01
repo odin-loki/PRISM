@@ -207,12 +207,14 @@ said nothing about unreach-call. `loop-simple/deep-nested` (expected
 `PROVED-UNBOUNDED` for it, which the mapping correctly ignored for
 unreach-call.
 
-Now both engines' `bmc` encode such a call as a property (`bmc_encoder.inc`
-`model_call`, BMC `model_call` encoding): reaching it is a violation, a
-`FAILED` `FUNC-CONTRACT` with the check name `reach_error` (message
-`reach_error: FUNC-CONTRACT`), as in `pir`; the path still ends there.
+`pir` (`src/prism/pir/translate.cpp`) encodes such a call as a property, as
+the retired `bmc` stage did: reaching it is a violation, a `FAILED`
+`FUNC-CONTRACT` with the check name `reach_error` (message
+`reach_error: FUNC-CONTRACT`); the path still ends there.
 A static definition of the error function in the unit is never inlined over
-the call (`src/prism/inline.cpp` `inlineable_callee`), so an empty
+the call (the retired `bmc` inliner excluded it; `pir` models `reach_error`
+by name, doctest "pir: a reachable reach_error() call is a FUNC-CONTRACT
+violation"), so an empty
 `static void reach_error(void) {}` cannot make the violation disappear.
 `abort()`, `exit()` and `__assert_fail()` still only end the path (SV-COMP's
 unreach-call is about `reach_error` alone). The Python engine also gained

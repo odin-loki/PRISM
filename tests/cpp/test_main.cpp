@@ -748,7 +748,7 @@ static std::map<std::string, prism::Finding> pir_source(const std::string& name,
     return by;
 }
 
-TEST_CASE("bmc: unsized array initialisers have exactly as many elements as items") {
+TEST_CASE("pir: unsized array initialisers have exactly as many elements as items") {
     auto by = pir_source("unsized.c",
                          "int u_true(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i >= 4) return 0; return a[i]; }\n"
                          "int u_false(int i) { int a[] = {1, 2, 3, 4}; if (i < 0 || i > 4) return 0; return a[i]; }\n"
@@ -762,7 +762,7 @@ TEST_CASE("bmc: unsized array initialisers have exactly as many elements as item
     CHECK_FALSE(prism::laws::is_proof(by["u_zero"].status));
 }
 
-TEST_CASE("bmc: C23 digit separators are one literal; a 2-D array is encoded") {
+TEST_CASE("pir: C23 digit separators are one literal; a 2-D array is encoded") {
     auto by = pir_source("digitsep.c",
                          "int d_true(int a) { if (a < 0 || a > 1'000) return 0; return a * 1'000'000; }\n"
                          "int d_false(int a) { if (a < 0 || a > 10'000) return 0; return a * 1'000'000; }\n"
@@ -777,7 +777,7 @@ TEST_CASE("bmc: C23 digit separators are one literal; a 2-D array is encoded") {
     CHECK(prism::laws::is_proof(by["m2"].status));
 }
 
-TEST_CASE("bmc: assume_abort_if_not is an assumption only when its definition stops the run") {
+TEST_CASE("pir: assume_abort_if_not is an assumption only when its definition stops the run") {
     const std::string main_src = R"(extern int __VERIFIER_nondet_int(void);
 int main(void) {
   int x = __VERIFIER_nondet_int();
@@ -805,7 +805,7 @@ int main(void) {
     }
 }
 
-TEST_CASE("bmc: two asserts in one block parse, and the second is checked") {
+TEST_CASE("pir: two asserts in one block parse, and the second is checked") {
     const std::string pre = "#include <assert.h>\nextern int __VERIFIER_nondet_int(void);\n";
     auto bad = pir_source("two_asserts_bad.c", pre + R"(int main(void) {
   int x = __VERIFIER_nondet_int();
@@ -827,7 +827,7 @@ TEST_CASE("bmc: two asserts in one block parse, and the second is checked") {
     CHECK(prism::laws::is_proof(ok["main"].status));
 }
 
-TEST_CASE("bmc: a canonical __VERIFIER_assert call is checked as an assertion (SV-COMP)") {
+TEST_CASE("pir: a canonical __VERIFIER_assert call is checked as an assertion (SV-COMP)") {
     const std::string defs = R"(extern void abort(void);
 void reach_error() { abort(); }
 extern unsigned int __VERIFIER_nondet_uint(void);
@@ -902,7 +902,7 @@ int main(void) {
     CHECK(prism::laws::is_proof(ext["main"].status));
 }
 
-TEST_CASE("bmc: a reachable reach_error() call is a FUNC-CONTRACT violation (SV-COMP unreach-call)") {
+TEST_CASE("pir: a reachable reach_error() call is a FUNC-CONTRACT violation (SV-COMP unreach-call)") {
     // Mirrored by the Python engine (tests/test_bmc_reach_error.py).
     const std::string defs = R"(extern void abort(void);
 void reach_error() { abort(); }
@@ -967,7 +967,7 @@ int main(void) {
     CHECK(ab["main"].status != prism::laws::FAILED);
 }
 
-TEST_CASE("bmc: a refutation reports the nondet values its path reads, in call order") {
+TEST_CASE("pir: a refutation reports the nondet values its path reads, in call order") {
     auto by = pir_source("nondet_trace.c", R"(extern int __VERIFIER_nondet_int(void);
 extern unsigned char __VERIFIER_nondet_uchar(void);
 extern char __VERIFIER_nondet_char(void);
@@ -1002,7 +1002,7 @@ int nothing(int x) { return x / 2; }
     CHECK(f.extra["nondet_loc_kind"] == "physical");
 }
 
-TEST_CASE("bmc: nondet call sites survive inlining and several calls on a line") {
+TEST_CASE("pir: nondet call sites survive inlining and several calls on a line") {
     auto by = pir_source("nondet_sites.c", R"(extern int __VERIFIER_nondet_int(void);
 static int get(void) { return __VERIFIER_nondet_int(); }
 int main(void) {
