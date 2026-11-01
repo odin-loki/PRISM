@@ -94,9 +94,9 @@ verdict::Score confidence_score(const RunReport& report) {
     auto n_fun = report.functions.size();
     // Empty scope: the product is 0, never n/a or skipped.
     if (n_fun == 0) return {0, 0, 0, 0};
-    // The instruments that answer per function: pir counts like bmc. One
-    // record per function per stage: the first one that stage wrote for it.
-    static const std::set<std::string> kFormalStages{"bmc", "pir"};
+    // The instrument that answers per function: pir. One record per
+    // function: the first one the stage wrote for it.
+    static const std::set<std::string> kFormalStages{"pir"};
     bool any_formal = false;
     std::map<std::string, std::vector<const Finding*>> by_fn;
     for (auto& s : report.stages) {
@@ -284,8 +284,8 @@ RunReport run_pipeline(const Config& cfg) {
 
     auto emit = [&](StageResult rec) -> StageResult {
 #ifdef __linux__
-        // Hand freed heap back after each stage: bmc left ~1.1 GB resident
-        // that pir's memory budget then counted (conformance/libc-models).
+        // Hand freed heap back after each stage, so a stage's freed memory
+        // is not counted against the next stage's memory budget.
         ::malloc_trim(0);
 #endif
         report.stages.push_back(rec);
@@ -440,20 +440,17 @@ RunReport run_pipeline(const Config& cfg) {
         return out;
     });
     stage("wp", [&] { return run_wp(functions, cfg.unwind); });
-    auto bmc_rec = stage("bmc", [&] {
-        return run_bmc(inline_static(with_cxx_std(functions, cfg.root)), cfg.unwind, false, cfg.data_model);
-    });
-    stage("pir", [&] { return pir::run_pir(sources, cfg); });
+    auto pir_rec = stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
-    stage("harness", [&] { return run_harness_bmc(functions, cfg.unwind); });
     // Roadmap 9.2/9.3/4.2: vacuity audit, approved/drafted contracts, model
     // assumption audit, proof store and PROOF-REGRESSION (src/prism/ai/review.cpp).
     stage("review", [&] { return ai::run_review(functions, report.stages, cfg); });
+    stage("harness", [&] { return run_harness(functions, cfg.unwind); });
     stage("concolic", [&] { return run_concolic(functions, 32); });
     stage("fuzz", [&] {
         return exec_gate_note(
             "fuzz",
-            run_fuse(functions, bmc_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, cfg),
+            run_fuse(functions, pir_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, cfg),
             "fuzz (compiled harness, AFL++, libFuzzer)");
     });
     stage("diff", [&] { return run_diff(functions, src_root); });
@@ -508,7 +505,7 @@ RunReport run_pipeline(const Config& cfg) {
             for (auto& f : s.findings)
                 if ((f.status == laws::FAILED || f.status == laws::CRASH) && !f.file.empty()) {
                     auto out = rlef_repair(f, cfg);
-                    // Roadmap 9.3: counterexample explanation + BMC-verified fix
+                    // Roadmap 9.3: counterexample explanation + PIR-verified fix
                     // for up to 4 FAILED findings (HYPOTHESIS / READS; one NOTRUN
                     // row without a model). Never a verdict change.
                     int explained = 0;

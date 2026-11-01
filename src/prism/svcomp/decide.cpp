@@ -12,7 +12,7 @@ using namespace detail;
 
 namespace {
 
-const std::vector<std::string> VERDICT_STAGES = {"bmc", "pir"};
+const std::vector<std::string> VERDICT_STAGES = {"pir"};
 // never PROVED-ASSUMING / BOUNDED (Law 2)
 const std::set<std::string> PROOF_TRUE = {"PROVED", "PROVED-UNBOUNDED", "PROVED-CERTIFIED"};
 
@@ -33,18 +33,17 @@ const std::map<std::string, PropSpec>& properties() {
         // C11 6.5.7p4); a negative or too large shift count, or a negative left
         // operand, is not. refute_props names the INT-SHIFT-UB checks that can
         // be such an overflow (pir: shift-base, which also covers a negative
-        // base; bmc: shift31); the replay under -fsanitize=shift-base then has to
+        // base); the replay under -fsanitize=shift-base then has to
         // show "left shift of N by M places cannot be represented".
-        m["no-overflow"] = PropSpec{{"bmc", "pir"},
+        m["no-overflow"] = PropSpec{{"pir"},
                                     {"INT-SIGNED-OVF", "INT-SHIFT-UB"},
                                     std::nullopt,
-                                    {{"INT-SHIFT-UB", {"shift-base", "shift31"}}}};
-        // Both verdict stages encode a reach_error() / __VERIFIER_error() call as
-        // a FUNC-CONTRACT property "reach_error" (pir translate.cpp, bmc
-        // model_call) and a canonical __VERIFIER_assert as "assert"; a proof of
-        // main by either covers unreach-call.
+                                    {{"INT-SHIFT-UB", {"shift-base"}}}};
+        // pir encodes a reach_error() / __VERIFIER_error() call as a
+        // FUNC-CONTRACT property "reach_error" (translate.cpp) and a canonical
+        // __VERIFIER_assert as "assert"; a proof of main covers unreach-call.
         m["unreach-call"] =
-            PropSpec{{"bmc", "pir"}, {"FUNC-CONTRACT"}, std::set<std::string>{"reach_error", "assert"}, {}};
+            PropSpec{{"pir"}, {"FUNC-CONTRACT"}, std::set<std::string>{"reach_error", "assert"}, {}};
         // valid-memtrack (leaks) and valid-free are not encoded by any verdict
         // stage: a proof never covers the whole property, so no `true`.
         m["valid-memsafety"] = PropSpec{{}, {"MEM-OOB-READ", "MEM-OOB-WRITE", "PTR-NULL-DEREF"}, std::nullopt, {}};
@@ -114,8 +113,7 @@ Decision decide(const json& report, const std::string& prop, const std::function
         for (const auto& f : rows)
             if (refutes(f, prop)) refutations.emplace_back(st, f);
     // Replay first a refutation that also gives the nondet calls' source
-    // positions (its witness can place every function_return waypoint), pir's
-    // before bmc's (pir's trace stops at the violated check itself).
+    // positions (its witness can place every function_return waypoint).
     std::stable_sort(refutations.begin(), refutations.end(), [](const auto& a, const auto& b) {
         auto key = [](const auto& sf) {
             return std::pair<bool, bool>{!has(extra_of(sf.second), "nondet_loc"), sf.first != "pir"};

@@ -1574,7 +1574,16 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
         ~Trim() { membudget::release_free_memory(); }
     } trim;
     const uint64_t trips0 = membudget::trips();
-    Verdict mv = check_function_mem(fn, opt_in);
+    std::optional<Function> filtered;
+    if (!opt_in.only_props.empty()) {
+        filtered = fn;
+        for (auto& b : filtered->blocks)
+            std::erase_if(b.stmts, [&](const Stmt& s) {
+                return s.kind == Stmt::Check &&
+                       std::find(opt_in.only_props.begin(), opt_in.only_props.end(), s.prop) == opt_in.only_props.end();
+            });
+    }
+    Verdict mv = check_function_mem(filtered ? *filtered : fn, opt_in);
     if (membudget::trips() != trips0 && mv.status != std::string(laws::PROVED) &&
         mv.status != std::string(laws::FAILED)) {
         // a query was interrupted by the memory watchdog: say so (Law 7)

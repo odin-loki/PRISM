@@ -1,7 +1,20 @@
 // Helpers shared by the stages (declared in common.hpp): text and regex
-// helpers, findings, source lookup, argument decoding and seeds, bmc_one and
+// helpers, findings, source lookup, argument decoding and seeds, pir_one and
 // the ACSL / comment contract parser.
 #include "common.hpp"
+#include "prism/config.hpp"
+#include "prism/pir.hpp"
+#include "prism/astlint.hpp"
+
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#ifdef _WIN32
+#  include <process.h>
+#  define getpid _getpid
+#else
+#  include <unistd.h>
+#endif
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -304,17 +317,55 @@ std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn) {
     return out;
 }
 
-Finding bmc_one(const FunctionInfo& fn, int unwind) {
-    auto recs = run_bmc({fn}, unwind);
-    if (recs.empty()) {
-        auto f = make_find("bmc", laws::ERROR, fn, "", "BMC produced no result", laws::STRENGTH_READS);
-        return f;
+// One function through the pir stage: fn's file with fn's body (possibly
+// instrumented: requires as an early return, ensures as assert) spliced in
+// at its span, so types, globals and callees keep their context. #line keeps
+// the reported lines on the original source.
+const char* const kPirHookPrelude =
+    "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
+    "void __VERIFIER_assume(int);\n"
+    "void __prism_havoc_bytes(void*, unsigned long);\n"
+    "#ifdef __cplusplus\n}\n#endif\n";
+
+Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::string>& only_props,
+                const std::string& prelude) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> lines;
+    if (std::ifstream in{fn.file}; in) for (std::string l; std::getline(in, l);) lines.push_back(l);
+    const int start = fn.span.first, end = fn.span.second;
+    const bool ctx = start >= 1 && end >= start && static_cast<std::size_t>(end) <= lines.size();
+    std::string unit = "#include <assert.h>\n" + prelude + "#line 1\n";
+    if (ctx)
+        for (int i = 0; i < start - 1; ++i) unit += lines[static_cast<std::size_t>(i)] + "\n";
+    unit += "#line " + std::to_string(std::max(1, start)) + "\n" + fn.signature + " {\n" + fn.body + "\n}\n";
+    if (ctx) {
+        unit += "#line " + std::to_string(end + 1) + "\n";
+        for (std::size_t i = static_cast<std::size_t>(end); i < lines.size(); ++i) unit += lines[i] + "\n";
     }
-    auto r = recs[0];
-    if (!r.function) r.function = fn.name;
-    if (r.file.empty()) r.file = fn.file;
-    if (!r.line) r.line = fn.line;
-    return r;
+    static std::atomic<unsigned> seq{0};
+    const auto dir = fs::temp_directory_path() /
+                     ("prism_pir_one_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+    fs::create_directories(dir);
+    const auto ext = fs::path(fn.file).extension().string();
+    const auto src = dir / (fs::path(fn.file).stem().string() + (ext.empty() ? std::string(".c") : ext));
+    std::ofstream(src) << unit;
+    auto cfg = default_config();
+    cfg.root = dir;
+    cfg.jobs = 1;
+    cfg.unwind = unwind;
+    cfg.pir_only_props = only_props;
+    std::optional<Finding> out;
+    for (auto& f : pir::run_pir({src}, cfg))
+        if (f.function && *f.function == fn.name) {
+            out = f;
+            break;
+        }
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    if (!out) return make_find("pir", laws::ERROR, fn, "", "pir produced no result for the function", laws::STRENGTH_READS);
+    out->file = fn.file;
+    if (!out->line) out->line = fn.line;
+    return *out;
 }
 
 }  // namespace stages_detail
@@ -451,5 +502,37 @@ Spec parse_comments(const FunctionInfo& fn) {
 }
 
 }  // namespace stages_detail
+
+Finding check_function_pir(const FunctionInfo& fn, int unwind) { return stages_detail::pir_one(fn, unwind); }
+
+int cxx_std_year(std::string_view flag) {
+    if (flag.starts_with("-std=")) flag.remove_prefix(5);
+    if (flag.starts_with("gnu++")) flag.remove_prefix(5);
+    else if (flag.starts_with("c++")) flag.remove_prefix(3);
+    else return 0;
+    static const std::map<std::string, int, std::less<>> years = {
+        {"98", 3}, {"03", 3}, {"0x", 11}, {"11", 11}, {"1y", 14}, {"14", 14}, {"1z", 17}, {"17", 17},
+        {"2a", 20}, {"20", 20}, {"2b", 23}, {"23", 23}, {"2c", 26}, {"26", 26}};
+    auto it = years.find(flag);
+    return it == years.end() ? 0 : it->second;
+}
+
+std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, const std::filesystem::path& root) {
+    std::error_code ec;
+    const bool dir = std::filesystem::is_directory(root, ec);
+    std::map<std::string, int> seen;
+    for (auto& fn : functions) {
+        auto it = seen.find(fn.file);
+        if (it == seen.end()) {
+            int year = 0;
+            auto src = dir ? root / fn.file : root;
+            for (auto& f : astlint::compile_db_flags(root, src))
+                if (f.starts_with("-std=")) year = cxx_std_year(f);  // the last one wins, as in the compiler
+            it = seen.emplace(fn.file, year).first;
+        }
+        fn.cxx_std = it->second;
+    }
+    return functions;
+}
 
 }  // namespace prism

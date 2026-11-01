@@ -1,5 +1,5 @@
 // Stage contracts: requires/ensures/invariant/decreases comments proved by
-// BMC (prove_contracts, prove_with_contract; bmc_with_assume is shared with wp).
+// the PIR checker (prove_contracts, prove_with_contract; check_with_assume is shared with wp).
 #include "common.hpp"
 
 namespace prism {
@@ -22,7 +22,7 @@ bool encode_decreases(const std::string& expr) {
     // A linear integer measure: identifiers and decimal constants joined by
     // binary + / - (`i`, `n - i`, `hi - lo + 1`). wrap_loop_dec only adds
     // asserts (measure >= 0 at entry, strictly smaller after the body), and
-    // the BMC checks signed overflow in evaluating it, so an overflowing or
+    // the checker checks signed overflow in evaluating it, so an overflowing or
     // non-decreasing measure is FAILED, never assumed; accepting a measure
     // can refute, it cannot prove anything. `*`, calls, products, unary
     // minus and tuples stay ERROR (decreases_unencoded).
@@ -165,7 +165,7 @@ std::pair<std::string, bool> instrument_decreases(const std::string& body, const
 
 // Every `return` is matched, including `return(x);` and `return;`: a return
 // the regex missed would leave its path without the ensures assert, and the
-// BMC would prove a contract that path breaks.
+// the checker would prove a contract that path breaks.
 const Regex& return_stmt_re() {
     static Regex re("\\breturn\\b\\s*([^;]*);");
     return re;
@@ -188,7 +188,7 @@ std::string rewrite_returns(const std::string& body, const std::string& ensures)
         if (a < i) continue;
         out.append(body, i, a - i);
         auto expr = strip(m.group(1));
-        // An empty return is refused before this (bmc_with_assume); kept
+        // An empty return is refused before this (check_with_assume); kept
         // verbatim only so the text stays well-formed.
         if (expr.empty()) out.append(body, a, b - a);
         else
@@ -213,7 +213,7 @@ std::string instrument_body(const std::string& body, const std::optional<std::st
 }  // namespace
 
 namespace stages_detail {
-Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
+Finding check_with_assume(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
                         const std::optional<std::string>& ensures, const std::optional<std::string>& decreases,
                         const std::optional<std::string>& invariant) {
     auto core = fn.body;
@@ -227,7 +227,7 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
     };
     if (invariant && has_loop(core)) {
         if (!encode_invariant(*invariant))
-            return fail("cannot encode invariant (" + *invariant + ") for BMC",
+            return fail("cannot encode invariant (" + *invariant + ") for the checker",
                         {{"invariant", *invariant}, {"invariant_unencoded", "true"}});
         bool ok = false;
         std::tie(core, ok) = instrument_invariant(core, *invariant);
@@ -241,7 +241,7 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
         // Honesty: a non-identifier measure is ERROR even when there is no
         // loop to instrument. Never silently drop it into PROVED-ASSUMING.
         if (!encode_decreases(*decreases))
-            return fail("cannot encode decreases (" + *decreases + ") for BMC",
+            return fail("cannot encode decreases (" + *decreases + ") for the checker",
                         {{"decreases", *decreases}, {"decreases_unencoded", "true"}});
         if (has_loop(core)) {
             bool ok = false;
@@ -262,7 +262,7 @@ Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<
                     {{"empty_return", "true"}});
     auto cloned = fn;
     cloned.body = instrument_body(core, requires_, ensures);
-    auto r = bmc_one(cloned, unwind);
+    auto r = pir_one(cloned, unwind);
     r.stage = "contracts";
     if (r.cls.empty()) r.cls = "FUNC-CONTRACT";
     r.extra["requires"] = requires_ ? *requires_ : "";
@@ -294,7 +294,7 @@ Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optio
         if (ensures) f.extra["ensures"] = *ensures;
         return f;
     }
-    return bmc_with_assume(fn, unwind, requires_, ensures, std::nullopt, std::nullopt);
+    return check_with_assume(fn, unwind, requires_, ensures, std::nullopt, std::nullopt);
 }
 
 std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind) {
@@ -314,7 +314,7 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
         if (fn.kind == "POINTER" || ptr_body || fn.kind != "SCALAR") {
             std::string why = (fn.kind == "POINTER" || ptr_body) ? "POINTER" : fn.kind;
             std::string msg = why == "POINTER"
-                                  ? "POINTER: contract BMC would invent a buffer; not a proof"
+                                  ? "POINTER: the contract check would invent a buffer; not a proof"
                                   : why + ": contract scalar subset only; not a proof";
             auto f = make_find("contracts", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", std::move(msg),
                                laws::STRENGTH_PROVES);
@@ -325,9 +325,9 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
             out.push_back(std::move(f));
             continue;
         }
-        auto rec = bmc_with_assume(fn, unwind, requires_, ensures, decreases, invariant);
+        auto rec = check_with_assume(fn, unwind, requires_, ensures, decreases, invariant);
         if (rec.status != laws::ERROR && invariant && has_loop(fn.body)) {
-            auto baseline = bmc_with_assume(fn, unwind, requires_, ensures, decreases, std::nullopt);
+            auto baseline = check_with_assume(fn, unwind, requires_, ensures, decreases, std::nullopt);
             bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
             auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
             if (laws::is_proof(orig)) {
@@ -347,11 +347,11 @@ std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions,
             // decreases=None) leaves invariant at its default None, so that
             // baseline drops the invariant too. Copying that default is not
             // done: the main query still instruments decreases. When an
-            // invariant is present, bmc_with_assume rewrites a proof to
+            // invariant is present, check_with_assume rewrites a proof to
             // PROVED-ASSUMING, so this baseline is not PROVED-UNBOUNDED.
             // decreases_assumed can only lower a status. It does not skip the
             // decreases check.
-            auto baseline = bmc_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
+            auto baseline = check_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
             bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
             auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
             bool assumed = laws::is_proof(orig) && !closed_without;

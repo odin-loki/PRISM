@@ -173,7 +173,7 @@ int soundness_main(const std::vector<std::string>& argv) {
         return 3;
     }
     std::vector<std::string> stages;
-    for (const auto& s : {"inventory", "classify", "bmc", "pir"})
+    for (const auto& s : {"inventory", "classify", "pir"})
         if (std::find(listed.begin(), listed.end(), s) != listed.end()) stages.push_back(s);
 
     const fs::path out_dir = args.get("--out", "soundness-out");
@@ -235,7 +235,6 @@ int soundness_main(const std::vector<std::string>& argv) {
         }
         for (const auto& fn : pf.second) {
             ojson found = ojson::array();
-            for (const auto& f : res.found("bmc", fn)) found.push_back(f);
             for (const auto& f : res.found("pir", fn)) found.push_back(f);
             a.functions.emplace_back(fn, found);
         }

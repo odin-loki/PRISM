@@ -1,5 +1,6 @@
-// Stage repair: RLEF repair loop (LLM candidate, sandbox run, BMC reward).
+// Stage repair: RLEF repair loop (LLM candidate, sandbox run, PIR reward).
 #include "agent.hpp"
+#include "common.hpp"
 #include "llm.hpp"
 
 namespace prism {
@@ -8,7 +9,7 @@ using namespace stages_detail;
 
 namespace {
 const char* SYSTEM_REPAIR =
-    "You receive C source plus compiler/sanitizer/BMC output. Reply with "
+    "You receive C source plus compiler/sanitizer/checker output. Reply with "
     "a full corrected C file only, no markdown fences unless the file itself "
     "needs them. Preserve function names.";
 
@@ -16,24 +17,24 @@ const char* SYSTEM_REPAIR =
 
 namespace stages_detail {
 
-RlefScore rlef_reward(const nlohmann::json& result, std::string_view bmc_status) {
+RlefScore rlef_reward(const nlohmann::json& result, std::string_view checker_status) {
     RlefScore s;
     auto err = sandbox_err(result);
     if (err != "compile" && err != "compile-timeout" && err != "no compiler") s.score += 1;
     if (result.value("ok", false)) s.score += 2;
     if (err == "crash") s.score -= 1;
-    if (laws::is_proof(bmc_status)) {
-        s.proved = std::string(bmc_status);
+    if (laws::is_proof(checker_status)) {
+        s.proved = std::string(checker_status);
         return s;
     }
-    if (bmc_status == laws::FAILED) s.score -= 2;
+    if (checker_status == laws::FAILED) s.score -= 2;
     return s;
 }
 
-std::string bmc_status_of_source(const std::string& source, int unwind) {
+std::string checker_status_of_source(const std::string& source, int unwind) {
     auto src = strip(source);
     if (src.empty()) return {};
-    auto td = fs::temp_directory_path() / ("prism_rlef_bmc_" + std::to_string(std::random_device{}()));
+    auto td = fs::temp_directory_path() / ("prism_rlef_check_" + std::to_string(std::random_device{}()));
     std::error_code ec;
     fs::create_directories(td, ec);
     auto p = td / "cand.c";
@@ -43,24 +44,26 @@ std::string bmc_status_of_source(const std::string& source, int unwind) {
         out << src;
     }
     auto fns = extract_functions(p, "cand.c");
-    fs::remove_all(td, ec);
     const FunctionInfo* fn = nullptr;
     for (auto& f : fns)
         if (f.kind == "SCALAR") {
             fn = &f;
             break;
         }
-    if (!fn) return {};
-    auto recs = run_bmc({*fn}, unwind);
-    if (recs.empty()) return {};
-    auto st = recs[0].status;
+    if (!fn) {
+        fs::remove_all(td, ec);
+        return {};
+    }
+    // pir_one reads the function's file: removed only after the check
+    auto st = pir_one(*fn, unwind).status;
+    fs::remove_all(td, ec);
     if (st == laws::NOTRUN || st == laws::ERROR || st == laws::TIMEOUT || st == laws::NEEDS_HARNESS ||
         st == laws::UNKNOWN || st == laws::CLEAN)
         return {};
     return st;
 }
 
-std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, const BmcOracle& oracle) {
+std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, const CheckOracle& oracle) {
     LlamaEngine engine(cfg);
     if (!engine.available()) {
         auto f = nr("repair", LLM_UNAVAILABLE_MSG);
@@ -138,25 +141,25 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
             f.extra["history"] = history.dump();
             return {f};
         }
-        std::string bmc_st;
+        std::string checker_st;
         if (err != "compile" && err != "compile-timeout") {
             try {
-                bmc_st = oracle ? oracle(src) : bmc_status_of_source(src, 2);
+                checker_st = oracle ? oracle(src) : checker_status_of_source(src, 2);
             } catch (const std::exception&) {
-                bmc_st.clear();  // no BMC answer is no reward, never a proof
+                checker_st.clear();  // no checker answer is no reward, never a proof
             }
         }
-        auto scored = rlef_reward(result, bmc_st);
+        auto scored = rlef_reward(result, checker_st);
         history.push_back({{"round", i + 1},
                            {"score", scored.score},
                            {"error", err.empty() ? nlohmann::json(nullptr) : nlohmann::json(err)},
-                           {"bmc", bmc_st.empty() ? nlohmann::json(nullptr) : nlohmann::json(bmc_st)}});
+                           {"checker", checker_st.empty() ? nlohmann::json(nullptr) : nlohmann::json(checker_st)}});
         if (scored.score > best_score) {
             best_score = scored.score;
             best_src = src;
         }
         if (!scored.proved.empty()) {
-            // The proof comes from BMC on the candidate, never from the model:
+            // The proof comes from the PIR checker on the candidate, never from the model:
             // log the checked record the finding points at (roadmap 9.6).
             ai::AuditRecord checked;
             checked.feature = "repair";
@@ -165,7 +168,7 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
             checked.model_sha256 = "unknown";
             checked.grammar = "none";
             checked.output_valid = true;
-            checked.checker = "bmc(rlef candidate)";
+            checked.checker = "pir(rlef candidate)";
             checked.checker_result = scored.proved;
             // The proof is about the LLM-written patch, not the scanned code:
             // the finding stays HYPOTHESIS (Law 4), so no verdict changes.
@@ -181,18 +184,18 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
             f.extra["ai_audit_id"] = checked.id;
             f.extra["ai_checker"] = checked.checker;
             f.extra["ai_checker_result"] = checked.checker_result;
-            f.message = "verified fix: BMC " + scored.proved + " on the LLM-written patch, round " +
+            f.message = "verified fix: PIR " + scored.proved + " on the LLM-written patch, round " +
                         std::to_string(i + 1) +
                         " (terminal success; a claim about the patch, not the scanned code)";
             f.strength = std::string(laws::STRENGTH_READS);
             f.extra["history"] = history.dump();
             f.extra["best"] = best_src.substr(0, 1000);
-            f.extra["bmc"] = scored.proved;
+            f.extra["checker"] = scored.proved;
             f.extra["patch_verdict"] = scored.proved;
             f.extra["fix_label"] = "verified fix";
             return {f};
         }
-        if (result.value("ok", false) && bmc_st != laws::FAILED) break;
+        if (result.value("ok", false) && checker_st != laws::FAILED) break;
         messages.push_back({"assistant", r.text});
         messages.push_back({"user", result.dump().substr(0, 1500)});
     }

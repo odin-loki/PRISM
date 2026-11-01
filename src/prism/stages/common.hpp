@@ -5,9 +5,9 @@
 // stays file-local (anonymous namespace) in that stage's .cpp.
 //
 //   common.cpp    string/regex helpers, findings, source lookup, ACSL spec
-//                 comments, argument decoding and seeds, bmc_one
+//                 comments, argument decoding and seeds, pir_one
 //   platform.cpp  run_argv (process spawning) and the plain-HTTP client
-//   contracts.cpp bmc_with_assume (also used by wp.cpp)
+//   contracts.cpp check_with_assume (also used by wp.cpp)
 //   interp.hpp    the concrete C interpreter (interp.cpp)
 //   llm.hpp       the LLM engine and the sandboxed run of LLM-written C (llm.cpp)
 
@@ -117,8 +117,13 @@ int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params)
 Args decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data);
 std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn);
 
-// ---- common.cpp: BMC of one function; ACSL / comment contracts
-Finding bmc_one(const FunctionInfo& fn, int unwind);
+// ---- common.cpp: pir check of one function; ACSL / comment contracts
+// prelude: top-level declarations put before the file (after <assert.h>).
+Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::string>& only_props = {},
+                const std::string& prelude = "");
+// The C/C++ declarations of the hooks a rewritten body may call:
+// __VERIFIER_assume(int) and __prism_havoc_bytes(void*, size).
+extern const char* const kPirHookPrelude;
 
 struct Spec {
     std::vector<std::string> requires_;
@@ -131,10 +136,10 @@ Spec parse_comments(const FunctionInfo& fn);
 
 // ---- fuse.cpp: FuSeBMC branch goals and BMC counterexample seeds
 using ::prism::branch_goals;  // public: include/prism/stages.hpp
-std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings);
+std::vector<std::vector<uint8_t>> seeds_from_findings(const FunctionInfo& fn, const std::vector<Finding>& checker_findings);
 
 // ---- contracts.cpp
-Finding bmc_with_assume(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
+Finding check_with_assume(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
                         const std::optional<std::string>& ensures, const std::optional<std::string>& decreases,
                         const std::optional<std::string>& invariant);
 

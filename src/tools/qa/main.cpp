@@ -5,7 +5,6 @@
 //   prism-qa conformance [...]     conformance suite and release gate
 //   prism-qa soundness [...]       random-program soundness campaign
 //   prism-qa triage-selfscan ...   bucket a self-scan report.sarif
-//   prism-qa pir-vs-bmc ...        bmc vs pir agreement matrix
 //   (see usage below for the rest)
 
 #include "qa.hpp"
@@ -37,7 +36,6 @@ constexpr Command COMMANDS[] = {
     {"soundness", soundness, "random-program soundness campaign"},
     {"triage-selfscan", prism::qa::triage_selfscan_main,
      "bucket a self-scan report.sarif (real / false alarm / out of scope)"},
-    {"pir-vs-bmc", prism::qa::pir_vs_bmc_main, "bmc encoder vs pir stage agreement matrix and hard conflicts"},
     {"pir-lean-check", prism::qa::pir_lean_check_main, "C++ LLVM->PIR translator vs the proved Lean translator"},
     {"llvm-sem-vs-lli", prism::qa::llvm_sem_vs_lli_main, "formal LLVM semantics (Lean) vs lli"},
     {"libc-bounds", prism::qa::libc_bounds_main, "size-bound sweep of the libc model contract harnesses"},

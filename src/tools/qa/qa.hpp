@@ -8,7 +8,6 @@
 //   conformance [...]         conformance suite and release gate
 //   soundness [...]           random-program soundness campaign
 //   triage-selfscan OUT/      bucket a self-scan report.sarif
-//   pir-vs-bmc [TREE]         bmc encoder vs pir stage agreement matrix
 //   pir-lean-check [TREE...]  C++ LLVM->PIR translator vs the proved Lean one
 //   llvm-sem-vs-lli [FILE.c]  formal LLVM semantics (Lean) vs lli
 //   libc-bounds               size-bound sweep of the libc model harnesses
@@ -60,32 +59,6 @@ std::string triage_classify(const std::string& path, const std::string& status, 
 TriageSummary triage_selfscan(const nlohmann::json& sarif);
 std::string triage_text(const TriageSummary& s);
 int triage_selfscan_main(const Args& args);
-
-// ---- pir-vs-bmc
-// PROVED* (every proof class) | BOUNDED | FAILED | NEEDS-HARNESS | ERROR |
-// UNKNOWN (UNKNOWN / TIMEOUT / NOFUNC / NOTRUN / anything else) | absent (null)
-std::string pvb_bucket(const std::string* status);
-struct PvbResult {
-    std::map<std::pair<std::string, std::string>, int> matrix;  // (bmc bucket, pir bucket) -> functions
-    nlohmann::json conflicts = nlohmann::json::array();         // PROVED* vs FAILED
-    std::size_t functions = 0, bmc = 0, pir = 0;
-    int agree_both = 0;     // same bucket, and that bucket is not absent
-    int both_report = 0;    // neither bucket is absent
-    int superset_gaps = 0;  // matrix[PROVED*, absent] + matrix[PROVED*, NEEDS-HARNESS]
-};
-// Hand-bmc retirement counters. pass is hard conflicts == 0 and superset_gaps == 0.
-// Agreement is reported (agree_both/both_report) and is not part of pass.
-// Counters at 0 on an empty report are not a testdata result.
-struct PvbGate {
-    bool hard_conflicts_ok = false;
-    bool superset_ok = false;
-    bool pass = false;
-};
-PvbGate pir_vs_bmc_gate(const PvbResult& r);
-PvbResult pir_vs_bmc(const nlohmann::json& report);
-std::string pir_vs_bmc_text(const PvbResult& r);
-nlohmann::json pir_vs_bmc_json(const PvbResult& r);
-int pir_vs_bmc_main(const Args& args);
 
 // ---- pir-lean-check
 struct CheckerRows {

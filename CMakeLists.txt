@@ -20,7 +20,7 @@ endif()
 option(PRISM_CUDA "Build CUDA mutation kernels" ON)
 option(PRISM_LLAMA "Build in-tree llama.cpp inference" ON)
 option(PRISM_QT "Build native Qt GUI" ON)
-option(PRISM_Z3 "Build in-tree Z3 for BMC" ON)
+option(PRISM_Z3 "Build in-tree Z3 (the PIR solver)" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
 # Windows CI: portable doctest TUs only (no unistd-heavy integration tests).
 option(PRISM_TESTS_WIN_SUBSET "On WIN32, build the fake_* stand-ins prism_tests needs (sources are shared with Linux)" OFF)
@@ -196,6 +196,7 @@ set(PRISM_SRC
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
   src/prism/ai/invariants.cpp
+  src/prism/ai/program_check.cpp
   src/prism/ai/proof_search.cpp
   src/prism/ai/proof_repair.cpp
   src/prism/ai/contracts.cpp
@@ -204,7 +205,7 @@ set(PRISM_SRC
   src/prism/ai/regress.cpp
   src/prism/ai/triage.cpp
   src/prism/abi_model.cpp # svcomp-ilp32
-  src/prism/bmc.cpp
+  src/prism/syntax_gates.cpp
   src/prism/checkers_api.cpp
   src/prism/checkers_core.cpp
   src/prism/checkers_cxx.cpp
@@ -254,11 +255,12 @@ set(PRISM_SRC
   src/prism/shipdocs.cpp
   src/prism/stages/common.cpp
   src/prism/stages/concolic.cpp
+  src/prism/stages/fork_flip.cpp
+  src/prism/stages/harness.cpp
   src/prism/stages/contracts.cpp
   src/prism/stages/diff.cpp
   src/prism/stages/execute_cex.cpp
   src/prism/stages/fuse.cpp
-  src/prism/stages/harness_bmc.cpp
   src/prism/stages/hypothesize.cpp
   src/prism/stages/interp.cpp
   src/prism/stages/llm.cpp
@@ -536,14 +538,13 @@ if(PRISM_NATIVE)
 endif()
 
 # --- prism-qa: developer QA tools (src/tools/qa; built by default, not shipped) ---
-# Conformance / soundness (Unix process tree) plus pir-vs-bmc, triage-selfscan,
+# Conformance / soundness (Unix process tree) plus triage-selfscan,
 # docs-check, assurance-check, etc. The library is shared with prism_tests.
 set(_prism_qa_sources
   src/tools/qa/common.cpp
   src/tools/qa/docscan.cpp
   src/tools/qa/docs_check.cpp
   src/tools/qa/triage_selfscan.cpp
-  src/tools/qa/pir_vs_bmc.cpp
   src/tools/qa/pir_lean_check.cpp
   src/tools/qa/llvm_sem_vs_lli.cpp
   src/tools/qa/libc_bounds.cpp
@@ -775,12 +776,9 @@ if(PRISM_TESTS)
     tests/cpp/test_contracts.cpp
     tests/cpp/test_contracts_gap.cpp
     tests/cpp/test_gap_strength.cpp
-    tests/cpp/test_bmc.cpp
     tests/cpp/test_checkers_cxx.cpp
     tests/cpp/test_checkers_c.cpp
     tests/cpp/test_gen_tables.cpp
-    tests/cpp/test_bmc_svcomp.cpp
-    tests/cpp/test_bmc_harness.cpp
     tests/cpp/test_havoc.cpp
     tests/cpp/test_verdict_repo.cpp
     tests/cpp/test_laws_status.cpp
