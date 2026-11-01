@@ -162,7 +162,12 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
             auto s = plan.size_of.at(p);
             int n = is_identifier(s) ? k : std::stoi(s);
             // the caller's object: element values unconstrained but written
-            pre += "int " + p + "[" + std::to_string(n) + "] = __prism_unconstrained;\n";
+            // (a local array with havocked bytes, and p a local pointer to it:
+            // the harnessed signature has the scalars only, as the harness
+            // stage materializes a requires)
+            const std::string obj = "__prism_obj_" + p;
+            pre += "int " + obj + "[" + std::to_string(n) + "];\n__prism_havoc_bytes((void*)" + obj + ", sizeof(" +
+                   obj + "));\nint *" + p + " = " + obj + ";\n";
         }
         if (!lenvar.empty()) pre += "if (!(" + lenvar + " == " + std::to_string(k) + ")) return 0;\n";
         for (auto& [v, r] : plan.range)
@@ -172,6 +177,12 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
         HarnessDraft d;
         d.harnessed = fn;
         d.harnessed.params = scalars;
+        {
+            std::string sig = (fn.return_type.empty() ? std::string("int") : fn.return_type) + " " + fn.name + "(";
+            for (std::size_t i = 0; i < scalars.size(); ++i)
+                sig += (i ? ", " : "") + scalars[i].first + " " + scalars[i].second;
+            d.harnessed.signature = sig + (scalars.empty() ? "void)" : ")");
+        }
         d.harnessed.kind = scalars.empty() ? "VOID" : "SCALAR";
         d.harnessed.body = pre + body;
         d.assumptions = plan.assumptions;

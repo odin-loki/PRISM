@@ -93,7 +93,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `thm:instr_encode_sound`, `thm:loopFree_encode_exact`); the same for the
   memory model (`thm:Mem.mbmc_sound`, `thm:Mem.mbmc_complete`,
   `thm:Mem.minstr_fail_ub_iff`, `thm:Mem.oob_is_ub`, `thm:Mem.uaf_is_ub`).
-- Does not show: that `src/prism/pir/` or `src/prism/bmc.cpp` implement
+- Does not show: that `src/prism/pir/` implements
   this design correctly. The C++ encoder is not proved; the remaining steps
   are listed in
   `docs/PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder`.
@@ -202,7 +202,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 ### E11 Differential testing between engines and encoders
 
 - Artefacts: `tests/cpp/test_sarif.cpp` (polyglot SARIF), `tests/cpp/test_main.cpp` (inventory/warnings),
-  `src/tools/qa/pir_vs_bmc.cpp` (`prism-qa pir-vs-bmc`),
+  `docs/retirement/pvb9.txt` (the final `prism-qa pir-vs-bmc` report, before bmc was retired),
   `docs/PIR.md#differential-oracle-vs-the-old-encoder-roadmap-28`,
   `tests/cpp/test_cli.cpp::every STAGE_ORDER name is run, in order`.
 - Shows: the C++ engine and the frozen Python engine (roadmap D8) agree on

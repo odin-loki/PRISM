@@ -1332,7 +1332,30 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         const bool defined = m.find(n) != nullptr;
+        // SV-COMP error sinks: a reachable call is the violation whatever the
+        // unit's definition does (a static no-op reach_error included).
+        if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty()) {
+            check(cur, Arg::c(1, 1), "reach_error", "FUNC-CONTRACT", n + "() is reachable", line);
+            // the call site is checked here, as if the sink were inlined: a
+            // defined sink is discharged to this caller (caller_discharged_asserts)
+            if (defined) out.inlined.push_back(n);
+            noreturn = true;
+            return;
+        }
         if (!defined) {
+            if (n == "assume_abort_if_not" && in.ops.size() == 1) {
+                // SV-COMP helper declared without a body: assume(cond)
+                Arg c = arg(0);
+                assume(cur, p2(cur, Op::Ne, c, Arg::c(c.width, 0)));
+                return;
+            }
+            if (n == "__VERIFIER_assert" && in.ops.size() == 1) {
+                // declared without a body: SV-COMP semantics at the call site
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(c.width, 0)), "assert", "FUNC-CONTRACT",
+                      "__VERIFIER_assert can fail", line);
+                return;
+            }
             if (starts(n, "__VERIFIER_nondet_") || starts(n, "nondet_")) {
                 int dst = result_var(fr, in);
                 if (in.ty.kind != ir::Type::Void && dst < 0) throw Unenc{"UNENCODED: call @" + n};
@@ -1382,6 +1405,12 @@ struct Tr final : pirmem::TrApi {
                       "C++ library precondition violated" + (where.empty() ? "" : " in " + where) +
                           (cond.empty() ? "" : ": " + cond),
                       line);
+                noreturn = true;
+                return;
+            }
+            if (n == "abort" && std::ranges::find(stack, std::string("assume_abort_if_not")) != stack.end()) {
+                // inside SV-COMP's assume_abort_if_not: abort() ends the path
+                // (an assumption, as SV-COMP defines it), not a crash
                 noreturn = true;
                 return;
             }

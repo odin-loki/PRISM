@@ -234,7 +234,8 @@ SessionOut run_session(const std::vector<std::string>& args, const SessionOption
         w = ::waitpid(pid, &st, 0);
     } while (w < 0 && errno == EINTR);
     if (r.timed_out) {
-        r.rc = -1;
+        // the timeout signalled the group: -signal, as for any signalled child
+        r.rc = w == pid && WIFSIGNALED(st) ? -WTERMSIG(st) : -SIGKILL;
     } else if (w == pid) {
         if (WIFEXITED(st)) r.rc = WEXITSTATUS(st);
         else if (WIFSIGNALED(st)) r.rc = -WTERMSIG(st);

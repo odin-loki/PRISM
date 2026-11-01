@@ -820,14 +820,14 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
     CHECK_MESSAGE(rc == 1, "a wrong proof must fail the release gate");
     CHECK(m["meta"]["wrong_proofs"] == 2);
     CHECK(m["meta"]["release_gate"] == "FAIL");
-    CHECK(m["metrics"]["bmc"]["prism"]["completeness"].get<double>() == 1.0);
+    CHECK(m["metrics"]["pir"]["prism"]["completeness"].get<double>() == 1.0);
     std::tie(rc, m) = run("NEEDS-HARNESS");
     CHECK(rc == 0);
-    CHECK(m["metrics"]["bmc"]["prism"]["completeness"].get<double>() == 0.0);
+    CHECK(m["metrics"]["pir"]["prism"]["completeness"].get<double>() == 0.0);
     std::tie(rc, m) = run("FAILED");
     CHECK(rc == 0);
-    CHECK(m["metrics"]["bmc"]["prism"]["false_alarms"] == 2);
-    CHECK(m["metrics"]["bmc"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
+    CHECK(m["metrics"]["pir"]["prism"]["false_alarms"] == 2);
+    CHECK(m["metrics"]["pir"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
     // an engine that cannot run is NOTRUN (exit 3), never a pass
     CHECK(qa::conformance_main({"--prism", (tmp.dir / "missing").string(), "--out", (tmp.dir / "o").string()}) == 3);
 }

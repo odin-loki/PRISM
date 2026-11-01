@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <regex>
 #include <set>
 #include <string_view>
 
@@ -618,18 +619,27 @@ std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loop
     for (std::size_t j = loops.size(); j-- > 0;) {
         auto& L = loops.at(j);
         const auto& I = j < inv.size() ? inv.at(j) : std::vector<std::pair<int, std::string>>{};
-        std::string asserts, assume;
+        // The invariants are assumed one by one, the variable-vs-constant
+        // bounds first: after the havoc, a relation such as `s == 2 * i` is
+        // evaluated only once `i` is bounded, so assuming it is not itself a
+        // signed overflow of the cut program (the loop's own code is checked).
+        static const std::regex bound_re(R"(^\s*[A-Za-z_]\w*\s*(<=|>=|<|>|==|!=)\s*-?\d+\s*$)");
+        // Then the definitions `v == expr`, which bound `v` before a relation
+        // such as `x <= 100 * v` is evaluated.
+        static const std::regex def_re(R"(^\s*[A-Za-z_]\w*\s*==[^=].*$)");
+        std::string asserts, assume, assume_def, assume_rel;
         for (auto& [tag, e] : I) {
             asserts += "__prism_assert(" + std::to_string(tag) + ", (" + e + "));\n";
-            if (!assume.empty()) assume += " && ";
-            assume += "(" + e + ")";
+            (std::regex_match(e, bound_re) ? assume : std::regex_match(e, def_re) ? assume_def : assume_rel) +=
+                "__prism_assume(" + e + ");\n";
         }
+        assume += assume_def + assume_rel;
         std::string havoc;
         for (auto& v : L.havoc) havoc += "__prism_havoc(" + v + ");\n";
         std::string cut = "{\n";
         if (!L.init.empty()) cut += L.init + ";\n";
         cut += asserts + havoc;
-        if (!assume.empty()) cut += "__prism_assume(" + assume + ");\n";
+        cut += assume;
         if (L.kind == "do") {
             cut += "{\n" + L.body + "\n}\n";
             cut += "__prism_step (" + L.cond + ") {\n" + asserts + "}\n";
