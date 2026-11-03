@@ -394,9 +394,12 @@ std::set<std::pair<int, std::string>> expected_marks(const std::string& text) {
 void put_win_posix([[maybe_unused]] const fs::path& dir) {
 #ifdef _WIN32
     const auto shims = fs::path(PRISM_SOURCE_DIR) / "testdata" / "win-posix";
-    for (const auto& e : fs::directory_iterator(shims))
-        if (e.path().extension() == ".h")
-            fs::copy_file(e.path(), dir / e.path().filename(), fs::copy_options::overwrite_existing);
+    for (const auto& e : fs::recursive_directory_iterator(shims))
+        if (e.path().extension() == ".h") {
+            const auto to = dir / fs::relative(e.path(), shims);
+            fs::create_directories(to.parent_path());
+            fs::copy_file(e.path(), to, fs::copy_options::overwrite_existing);
+        }
 #endif
 }
 
@@ -420,6 +423,20 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
         if (extra[i] == report) marked = extra[i + 1];
     }
     const std::string target = report.empty() ? name : report;
+#ifdef _WIN32
+    // MSVC's STL drops auto_ptr / random_shuffle / unary_function under C++17
+    // unless asked; the ported C++ fixtures plant those removed APIs. A db
+    // entry replaces the default -I<fixture dir>, so it is passed here too.
+    {
+        std::string db = "[";
+        for (std::size_t i = 0; i < files.size(); ++i)
+            db += std::string(i ? "," : "") + "{\"directory\": \"" + t.dir.generic_string() +
+                  "\", \"command\": \"cc -I" + files[i].parent_path().generic_string() + " -I" +
+                  t.dir.generic_string() + " -D_HAS_AUTO_PTR_ETC=1 -c " + files[i].generic_string() +
+                  "\", \"file\": \"" + files[i].generic_string() + "\"}";
+        t.put("compile_commands.json", db + "]");
+    }
+#endif
     auto want = expected_marks(marked);
     for (auto& [fe, b] : fes) {
         INFO("front end: " << fe << ", file " << target);
