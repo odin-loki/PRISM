@@ -57,6 +57,14 @@ inline constexpr const char* WITNESS_PREFIX = "PRISM-SVCOMP-WITNESS: ";
 // "no-overflow", "unreach-call", "valid-memsafety" or "unsupported".
 PRISM_API std::string parse_property(const std::string& prp_text);
 PRISM_API bool supported_property(const std::string& prop);
+// For no-overflow only: every call statement `reach_error()`,
+// `__VERIFIER_error()` or `abort()` becomes `exit(0)`. All three end the
+// execution (reach_error's body is a noreturn __assert_fail), so the set of
+// reachable overflows is unchanged, but the verdict stages no longer need
+// the error call to be unreachable to prove main. Line numbers are kept.
+// Returns nullopt (no rewrite) when nothing matches or the task defines its
+// own exit().
+PRISM_API std::optional<std::string> neutralize_error_calls(const std::string& source);
 // Does a function body use a type whose width differs between ILP32 and
 // LP64 (long, size_t, sizeof, ... or a typedef / struct built from one)?
 // Unused declarations from preprocessed headers do not count.
@@ -95,6 +103,11 @@ PRISM_API std::string stub_source(const std::string& source, const std::vector<N
 PRISM_API json replay(const std::filesystem::path& src, const std::string& prop, bool allow_exec,
                       const std::optional<std::vector<Num>>& nondet_values, const std::filesystem::path& work,
                       std::string_view data_model = "LP64", double timeout_s = 10.0);
+// Seeded random inputs, compiled once with the property's sanitizer; returns
+// "replayed" only when a run shows the violation (same check as replay).
+PRISM_API json fuzz_replay(const std::filesystem::path& src, const std::string& prop, bool allow_exec,
+                           const std::filesystem::path& work, std::string_view data_model = "LP64",
+                           double budget_s = 60.0, int max_seeds = 400);
 
 // ---------------------------------------------------------------- waypoints
 using LineCol = std::pair<long, long>;

@@ -241,6 +241,43 @@ unreach-call): no-overflow `true` → `unknown` (−2), unreach-call unchanged.
 
 ## Results (local)
 
+### Full pinned set, 2026-10-29 (`work/svcomp`)
+
+Built from `work/svcomp` (clang 18.1.8, Release, Z3 on), on the shared box:
+`build/prism svcomp score --jobs 6` and `build/prism svcomp score --property unreach-call --jobs 6`.
+The witnesses were not validated in this run, so these are unvalidated upper bounds.
+
+| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown/error |
+|---|---|---|---|---|---|---|---|
+| no-overflow | 117 (75 / 42) | **118** | 192 | 38 | 42 | **0** | 37 |
+| unreach-call | 127 (98 / 29) | **130** | 225 | 53 | 24 | **0** | 50 |
+
+no-overflow is 118 on the latest rescore (`--jobs 2`, under a 4 GB address-space cap; fuzz witnesses now carry nondet values). unreach-call is 127 on the same rescore (was 125; 3 tasks hit the per-task timeout at `--jobs 2`). no-overflow went from 114 before that, from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
+from 36 on the earlier baseline. One `true` answer (`bitvector/gcd_3`) dropped to unknown
+because bmc returned UNKNOWN under heavier load; that is a solver timeout, not a logic change.
+
+**Fuzz fallback** (`fuzz_replay`, `src/prism/svcomp/replay.cpp`). When every stage leaves a
+task `unknown` and `--allow-exec` is given, the task is compiled once with the property's
+sanitizer and run on up to 400 seeded input streams (60 s budget, 2 s per run). Odd seeds
+draw small values and even seeds mix in type extremes. The answer becomes `false` only when
+a run shows the violation under the same check replay uses (a UBSan overflow report, or a
+`reach_error()` abort). It never produces `true`. It decided 17 no-overflow tasks (the
+`s3_*` CIL tasks whose gotos bmc cannot encode, plus `soft_float_1-*`) and 12 unreach-call
+tasks. The violation witness gives the target only, with no nondet waypoints.
+
+**Remaining unknowns, by cause.**
+- no-overflow (40). 38 are expected `true` and need a proof. The causes are bmc BOUNDED
+  (loops not closed: loop-acceleration, loop-invgen, loop-new, sum02, jain_7-2), unencoded
+  CIL gotos into a loop body (`s3_*a` variants and `soft_float_*a`, NEEDS-HARNESS), and
+  timeouts (`nested6`, `nested9`). 2 are expected `false` (`s3_clnt_1*-1a/-2a`): the
+  overflow lies behind a deep protocol-state path, and 20,000 fuzz seeds did not reach it.
+- unreach-call (53). 47 are expected `true`: 25 BOUNDED, 12 NEEDS-HARNESS, 6 bmc UNKNOWN
+  and 5 timeouts. 6 are expected `false` and fuzzing did not reach them.
+- The largest sound next steps are general `goto` encoding in bmc (about 23 tasks across
+  both properties) and loop-invariant inference for BOUNDED mains.
+
+### Earlier subset results
+
 Run on 2026-09-24 with the C++ engine built from `claude/svcomp-2`
 (binary SHA-256 prefix `4cab37bffd21`), clang 18.1.3, bubblewrap available,
 BenchExec 3.35 installed (so the answers went through the tool-info
@@ -719,3 +756,44 @@ vendored code). Re-running needs Java 21 and the two archives above.
   definition (extern only) are rewritten like the canonical SV-COMP shape;
   a non-`static` definition in the same file is still not inlined, so
   Houdini invariants on `main` may not see it.
+
+## Proof-yield work (work/svcomp, 2026-10-29)
+
+Each change only lets an existing sound engine see more of the program;
+none relaxes what counts as a proof or a refutation.
+
+- **ILP32 replay environment:** UBSan replay of ILP32 tasks needs 32-bit
+  glibc headers and the i386 `libclang_rt.ubsan_standalone`/`asan` from the
+  same LLVM (18). Without them every `-m32` replay failed to build, so true
+  refutations stayed `unknown`. Debian: `libc6-dev-i386 lib32gcc-14-dev`
+  plus the i386 clang_rt files of `libclang-rt-18-dev` in
+  `<resource-dir>/lib/linux/`.
+- **Inlining callees with loops and several returns** (`inline.cpp`
+  `adapt_callee_body`): each `return` becomes `{ ret = X; goto <site>_end; }`,
+  a forward jump out of the callee's block that the bmc goto model encodes.
+- **Inlining goto-bearing (CIL) callees:** the callee's labels are renamed
+  per call site (`<site>_L_<label>`); a label name the caller also uses
+  blocks inlining.
+- **Deepening** (`cli_svcomp.cpp` `solve`): when the answer is `unknown`
+  because bmc's main is only `BOUNDED`, bmc is re-run with unwind 32, then
+  128. A deeper run proves only if its loops close and refutes only with a
+  counterexample that replays.
+- **Main-only globals** (`bmc.cpp` `localize_main_globals`): an integer
+  file-scope scalar with a literal or no initialiser that only main names
+  (one declaration, every other mention in main) becomes a local of main
+  with that initialiser, when every mention of `main` in the unit is its
+  definition head or a prototype (main runs once).
+- **Shadowed declarations** (`bmc.cpp` `rename_shadowed`): a block
+  declaration that shadows a visible name is alpha-renamed for the rest of
+  its block. Bodies with declarations the scan does not type (typedef
+  names, struct, float, for-headers, literals) are left unchanged.
+- **pir on data-model-neutral ILP32 units** (`pir/stage.cpp`
+  `ilp32_neutral`): a C unit that spells no `long`, `size_t`, `ptr*`,
+  `wchar`, `time_t`, `off_t`, `sizeof`/`alignof`/`offsetof`, struct/union,
+  `->`, pointer declaration (except the SV-COMP `__assert_fail`
+  prototype) or allocator computes the same under ILP32 and LP64, so pir's
+  LP64 proof holds. Refutations replay with `-m32` as before.
+
+### goto into a block (bmc)
+
+bmc now encodes a forward goto into a block that comes later in the text, which is how CIL writes a `switch` (`goto L; ... if (0) { L: ... }`). The jump stays unencoded (NEEDS-HARNESS) in three cases: it would enter a loop-body pass or switch arm from outside, it would enter a block past a declaration, or it would skip a declaration in a block the goto and the label share. The `s3_*` tasks now get past the goto. They are still unknown because of other gaps: an unbounded state-machine loop, calls to bounded callees, `void *` casts and uninit reads. Rescore with this change: no-overflow 118/192, 0 incorrect, unchanged. unreach-call (goto plus `(void *)0` as 0, `--jobs 2`, 2026-10-30): **130**/225 (53 true, 24 false, 0 incorrect, 50 unknown), was 127. Rescore with the Houdini changes (nondet calls in loop bodies, congruence and non-linear templates, two-phase candidates; build at 90ea52eb6): no-overflow **124**/192 (41 true, 42 false, 0 incorrect, 34 unknown), was 118. A rewrite of goto-built loops (`L:; if (c) { B goto L; }` to `while`) for Houdini now proves `gauss_sum.i.p+cfa-reducer` and `+lhb-reducer` (not yet in a rescore). unreach-call rescore 6 (same build): **143**/225 (60 true, 23 false, 0 incorrect, 44 unknown), was 130. New trues: gcd_3, half_2, up, count_by_2, count_by_k, count_by_nondet, gauss_sum. Regressions: nested_1-2 went from false to unknown, and s3_srvr_1a and seq-3 now time out. unreach-call rescore 7 (frozen 4252890f4: goto-loop rewrite, phase-guard templates): **151**/225 (64 true, 23 false, 0 incorrect, 40 unknown), was 143. no-overflow rescore 7 (frozen e4deccc86: step fact, som retry, fuzz before deepening): **124**/192 (41 true, 42 false, 0 incorrect, 34 unknown), unchanged. unreach-call rescore 8 (frozen e4deccc86): **152**/225 (64 true, 24 false, 0 incorrect, 39 unknown), was 151. no-overflow rescore 8 (frozen 237a3b309: reach_error/abort as exit(0) and canonical __VERIFIER_assert as assume, no-overflow only): **156**/192 (57 true, 42 false, 0 incorrect, 18 unknown), was 124.

@@ -1,0 +1,26 @@
+- entry_type: invariant_set
+  metadata:
+    format_version: "2.0"
+    uuid: eb5a7b18-23c9-4fa2-92fc-f44b674932d6
+    creation_time: "2026-10-29T14:22:33Z"
+    producer:
+      name: PRISM
+      version: "0.1.0"
+    task:
+      input_files:
+        - gauss_sum.i
+      input_file_hashes:
+        gauss_sum.i: ac0c39e955880a6b0806ad5f8add28438e78eb47defb435342badf7c95feaa91
+      specification: "CHECK( init(main()), LTL(G ! call(reach_error())) )"
+      data_model: ILP32
+      language: C
+  content:
+    - invariant:
+        type: loop_invariant
+        location:
+          file_name: gauss_sum.i
+          line: 29
+          column: 5
+          function: main
+        value: "(sum >= 0) && (i >= 0) && (i > 0) && (i >= 1)"
+        format: c_expression

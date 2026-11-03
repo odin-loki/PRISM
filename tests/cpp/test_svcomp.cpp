@@ -787,6 +787,41 @@ TEST_CASE("svcomp replay: --allow-exec with a fake compiler decides replayed / n
 }
 #endif
 
+TEST_CASE("svcomp fuzz_replay: Law 9, scope, and sanitizer-confirmed answers only") {
+    TempDir d;
+    auto ovf = d.write("f.c", "extern int __VERIFIER_nondet_int(void);\n"
+                              "int main(void) { int x = __VERIFIER_nondet_int();\n"
+                              "  if (x > 2147483000) { x = x + 1000; }\n  return 0; }\n");
+    // Law 9: nothing compiled or run without --allow-exec
+    CHECK(fuzz_replay(ovf, "no-overflow", false, d.path / "w0")["replay"] == "notrun");
+    CHECK_FALSE(fs::exists(d.path / "w0" / "fuzz.bin"));
+    CHECK(fuzz_replay(ovf, "valid-memsafety", true, d.path / "w1")["replay"] == "unsupported");
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: fuzz_replay with a real compiler + UBSan");
+        return;
+    }
+    auto r = fuzz_replay(ovf, "no-overflow", true, d.path / "w2", "LP64", 30.0, 50);
+    INFO(r.dump());
+    CHECK(r["replay"] == "replayed");
+    CHECK(r["line"] == 3);
+    CHECK(r.contains("fuzz_seed"));
+    // the run's nondet values, in call order, for the witness waypoints
+    CHECK(r["nondet"].get<std::string>().starts_with("__VERIFIER_nondet_int="));
+    // a safe program is never refuted
+    auto safe = d.write("s.c", "extern int __VERIFIER_nondet_int(void);\n"
+                               "int main(void) { int x = __VERIFIER_nondet_int();\n"
+                               "  if (x < 1000 && x > -1000) x = x * 2;\n  return 0; }\n");
+    CHECK(fuzz_replay(safe, "no-overflow", true, d.path / "w3", "LP64", 10.0, 30)["replay"] == "not-replayed");
+    // assume-filtered inputs end the run cleanly
+    auto as = d.write("a.c", "extern int __VERIFIER_nondet_int(void); extern void __VERIFIER_assume(int);\n"
+                             "int main(void) { int x = __VERIFIER_nondet_int(); __VERIFIER_assume(x < 10);\n"
+                             "  x = x + 1;\n  return 0; }\n");
+    CHECK(fuzz_replay(as, "no-overflow", true, d.path / "w4", "LP64", 10.0, 30)["replay"] == "not-replayed");
+    auto ur = d.write("u.c", "extern int __VERIFIER_nondet_int(void); void reach_error();\n"
+                             "int main(void) { if (__VERIFIER_nondet_int() == 7) reach_error();\n  return 0; }\n");
+    CHECK(fuzz_replay(ur, "unreach-call", true, d.path / "w5", "LP64", 30.0, 200)["replay"] == "replayed");
+}
+
 TEST_CASE("svcomp replay: sanitizer runs decide replayed / not-replayed") {
     if (!svcomp_exec_portable()) {
         MESSAGE("NOTRUN: SV-COMP replay with a real compiler + UBSan: the stub is POSIX C and MSVC-target "
@@ -1229,3 +1264,145 @@ TEST_CASE("run_session: normal exit returns stdout and the exit status") {
     CHECK(r.out == "ok\n");
 }
 #endif
+
+TEST_CASE("svcomp fuzz_replay: a loop longer than the 2 s run limit gets one long run; a safe long loop is not refuted") {
+    if (!svcomp_exec_portable()) {
+        MESSAGE("NOTRUN: fuzz_replay with a real compiler");
+        return;
+    }
+    TempDir d;
+    // about 4e9 increments at -O0: every 2 s run times out
+    const char* body = "extern void __assert_fail(const char*, const char*, unsigned, const char*);\n"
+                       "void reach_error(void) { __assert_fail(\"0\", \"l.c\", 2, \"reach_error\"); }\n"
+                       "int main(void) { volatile unsigned x = 0; unsigned i, j;\n"
+                       "  for (i = 0; i < 400000000u; i++) for (j = 0; j < 10; j++) x++;\n"
+                       "  if (x %s 4000000000u) reach_error();\n  return 0; }\n";
+    char bad[512], ok[512];
+    std::snprintf(bad, sizeof bad, body, "==");
+    std::snprintf(ok, sizeof ok, body, "!=");
+    auto rb = fuzz_replay(d.write("lb.c", bad), "unreach-call", true, d.path / "wb", "LP64", 60.0, 50);
+    INFO(rb.dump());
+    CHECK(rb["replay"] == "replayed");
+    CHECK(fuzz_replay(d.write("lo.c", ok), "unreach-call", true, d.path / "wo", "LP64", 60.0, 50)["replay"] == "not-replayed");
+}
+
+TEST_CASE("svcomp neutralize_error_calls: call statements only, definitions and declarations kept") {
+    const std::string src = "void reach_error();\nvoid reach_error() { __assert_fail(\"0\", \"f\", 3, \"g\"); }\n"
+                            "void f(int c) { if (!c) { ERROR: {reach_error();abort();} } }\n"
+                            "int main() { const char* s = \"abort();\"; if (0) abort(); else abort (); }\n";
+    auto out = prism::svcomp::neutralize_error_calls(src);
+    REQUIRE(out.has_value());
+    CHECK(out->find("void reach_error();") != std::string::npos);
+    CHECK(out->find("void reach_error() {") != std::string::npos);
+    CHECK(out->find("{exit(0);exit(0);}") != std::string::npos);
+    CHECK(out->find("\"abort();\"") != std::string::npos);
+    CHECK(out->find("if (0) exit(0); else exit(0);") != std::string::npos);
+    CHECK(out->rfind("extern void exit(int); ", 0) == 0);
+    CHECK(std::count(out->begin(), out->end(), '\n') == std::count(src.begin(), src.end(), '\n'));
+    // nothing to rewrite, or a task-defined exit(): no rewrite
+    CHECK_FALSE(prism::svcomp::neutralize_error_calls("int main() { return 0; }").has_value());
+    CHECK_FALSE(prism::svcomp::neutralize_error_calls("void exit(int s) { }\nint main() { abort(); }").has_value());
+}
+
+TEST_CASE("svcomp solve no-overflow: a reachable reach_error() does not block the proof; an overflow is still found") {
+    if (!svcomp_exec_portable() || !cc_with_ubsan()) {
+        MESSAGE("NOTRUN: needs POSIX engines and a C compiler with UBSan");
+        return;
+    }
+    TempDir d;
+    SolveOptions opt;
+    opt.allow_exec = true;
+    const std::string head = "extern void abort(void);\nextern void __assert_fail(const char*, const char*, unsigned int, const char*);\n"
+                             "void reach_error() { __assert_fail(\"0\", \"t.c\", 3, \"reach_error\"); }\n"
+                             "void __VERIFIER_assert(int cond) { if (!(cond)) { ERROR: {reach_error();abort();} } }\n";
+    SUBCASE("proving: the assert fails, no overflow") {
+        auto t = d.path / "ok.c";
+        std::ofstream(t) << head << "int main(void) { int A[64] = {0}; int i; for (i = 0; i < 64; i++) A[i] = i;\n"
+                                    "  __VERIFIER_assert(A[3] != 3); return 0; }\n";
+        opt.out = d.path / "o1";
+        opt.witness = d.path / "w1.yml";
+        auto oc = solve(t, props_dir() / "no-overflow.prp", opt);
+        INFO(oc.decision.reason);
+        CHECK(oc.decision.answer == "true");
+    }
+    SUBCASE("must-fail: an overflow before the error call") {
+        auto t = d.path / "bad.c";
+        std::ofstream(t) << head << "extern int __VERIFIER_nondet_int(void);\n"
+                                    "int main(void) { int x = __VERIFIER_nondet_int(); int y = x + 1;\n"
+                                    "  __VERIFIER_assert(y != 0); return y; }\n";
+        opt.out = d.path / "o2";
+        opt.witness = d.path / "w2.yml";
+        auto oc = solve(t, props_dir() / "no-overflow.prp", opt);
+        INFO(oc.decision.reason);
+        CHECK(oc.decision.answer != "true");
+    }
+}
+
+TEST_CASE("svcomp neutralize_error_calls: a canonical __VERIFIER_assert becomes an assume; any other body is kept") {
+    const std::string ok = "void reach_error() { }\nvoid __VERIFIER_assert(int cond) {\n  if (!(cond)) {\n    ERROR: {reach_error();abort();}\n  }\n  return;\n}\n"
+                           "int main() { __VERIFIER_assert(1 > 0); return 0; }\n";
+    auto out = prism::svcomp::neutralize_error_calls(ok);
+    REQUIRE(out.has_value());
+    CHECK(out->find("void __VERIFIER_assert(int cond) {") != std::string::npos);
+    CHECK(out->find("__VERIFIER_assume(1 > 0);") != std::string::npos);
+    CHECK(out->find("extern void __VERIFIER_assume(int); ") != std::string::npos);
+    CHECK(out->size() == ok.size() + std::string("extern void exit(int); extern void __VERIFIER_assume(int); ").size() +
+                             2 * (std::string("exit(0)").size()) - std::string("reach_error()abort()").size());
+    // the body does more than end the run: calls stay asserts
+    const std::string other = "int g;\nvoid __VERIFIER_assert(int cond) { g++; if (!(cond)) { abort(); } }\n"
+                              "int main() { __VERIFIER_assert(g == 0); return 0; }\n";
+    auto o2 = prism::svcomp::neutralize_error_calls(other);
+    REQUIRE(o2.has_value());
+    CHECK(o2->find("__VERIFIER_assume") == std::string::npos);
+    // the task names __VERIFIER_assume itself: no rename
+    auto o3 = prism::svcomp::neutralize_error_calls("void __VERIFIER_assume(int c);\n" + ok);
+    REQUIRE(o3.has_value());
+    CHECK(o3->find("__VERIFIER_assume(1 > 0)") == std::string::npos);
+}
+
+TEST_CASE("svcomp ILP32: the glibc assert preamble does not keep pir off; a pointer still does") {
+    TempDir d;
+    const std::string pre =
+        "extern void __assert_fail (const char *__assertion, const char *__file,\n"
+        "      unsigned int __line, const char *__function) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "extern void __assert_perror_fail (int __errnum, const char *__file,\n"
+        "      unsigned int __line, const char *__function) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "extern void __assert (const char *__assertion, const char *__file, int __line) __attribute__ ((__nothrow__ , __leaf__)) __attribute__ ((__noreturn__));\n"
+        "void reach_error() { ((void) sizeof ((0) ? 1 : 0), __extension__ ({ if (0) ; else __assert_fail (\"0\", \"t.c\", 3, __extension__ __PRETTY_FUNCTION__); })); }\n";
+    SolveOptions opt;
+    opt.data_model = "ilp32";
+    auto pir_notrun = [](const fs::path& out) {
+        return slurp(out / "prism-out" / "report.md").find("pir is LP64-only") != std::string::npos;
+    };
+    auto ok = d.write("ok.c", pre + "int main(void) { int i = 0; while (i < 10) i++; if (i != 10) reach_error(); return 0; }\n");
+    opt.out = d.path / "o1";
+    opt.witness = d.path / "w1.yml";
+    solve(ok, props_dir() / "no-overflow.prp", opt);
+    CHECK_FALSE(pir_notrun(opt.out));
+    auto bad = d.write("bad.c", pre + "int main(void) { int a[2]; int *p = a; *p = 1; return 0; }\n");
+    opt.out = d.path / "o2";
+    opt.witness = d.path / "w2.yml";
+    solve(bad, props_dir() / "no-overflow.prp", opt);
+    CHECK(pir_notrun(opt.out));
+}
+
+TEST_CASE("svcomp ILP32: CIL's (unsigned long)((void *)0) null test does not keep pir off; a real pointer cast does") {
+    TempDir d;
+    SolveOptions opt;
+    opt.data_model = "ilp32";
+    auto pir_notrun = [](const fs::path& out) {
+        return slurp(out / "prism-out" / "report.md").find("pir is LP64-only") != std::string::npos;
+    };
+    auto ok = d.write("ok.c", "int main(void) { int b = 0; unsigned long l = 1UL;\n"
+                              "  if ((unsigned long )b == (unsigned long )((void *)0)) l = l + 1UL; return (int)l; }\n");
+    opt.out = d.path / "o1";
+    opt.witness = d.path / "w1.yml";
+    auto oc = solve(ok, props_dir() / "no-overflow.prp", opt);
+    CHECK_FALSE(pir_notrun(opt.out));
+    CHECK(oc.decision.answer != "false(no-overflow)");
+    auto bad = d.write("bad.c", "int main(void) { int b = 0; if ((unsigned long )b == (unsigned long )((void *)&b)) return 1; return 0; }\n");
+    opt.out = d.path / "o2";
+    opt.witness = d.path / "w2.yml";
+    solve(bad, props_dir() / "no-overflow.prp", opt);
+    CHECK(pir_notrun(opt.out));
+}

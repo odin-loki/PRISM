@@ -653,10 +653,11 @@ TEST_CASE("ai9 proof repair: model invariants for the changed loop are accepted 
     cfg.root = dir;
     cfg.out = dir / "out";
     ai::Session session(cfg);
-    // v1 was proved with y == 7 * x; the new code steps y by 9.
+    // v1 was proved with y == 7 * x; the new code steps y by 11. (A step of 9
+    // is now closed by the template y % 3 == 0 alone, without the model.)
     auto v2 = scalar("grow",
-                     "int x; int y; x = 0; y = 0; if (n > 300) return 0; while (x < n) { y = y + 4; y = y + 5; "
-                     "x = x + 1; } return 100 / (y - x - x - x - x - x - x - x - x - x + 1);");
+                     "int x; int y; x = 0; y = 0; if (n > 300) return 0; while (x < n) { y = y + 5; y = y + 6; "
+                     "x = x + 1; } return 100 / (y - x - x - x - x - x - x - x - x - x - x - x + 1);");
     ai::ProofEntry e;
     e.file = v2.file;
     e.function = v2.name;
@@ -671,7 +672,7 @@ TEST_CASE("ai9 proof repair: model invariants for the changed loop are accepted 
     ai::save_proof_store(cfg.out / "proof_store.json", {e});
     auto fake = std::make_shared<Fake>();
     // First a wrong repair (Houdini drops it, the proof stays open), then a right one.
-    fake->queue = {R"(["y == 8 * x"])", R"(["y == 9 * x", "x >= 0", "x <= 300"])"};
+    fake->queue = {R"(["y == 8 * x"])", R"(["y == 11 * x", "x >= 0", "x <= 300"])"};
     ai::set_session_backend_for_testing(fake);
     auto out = ai::run_proof_regression({v2}, {}, cfg);
     REQUIRE(out.size() == 1);

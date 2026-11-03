@@ -102,8 +102,9 @@ fs::path make_temp_dir(const fs::path& parent, const std::string& prefix) {
 // and no execution of task code (allow_exec stays off: replay is the only
 // step that runs the task, and it is gated separately).
 std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const std::string& data_model,
-                              std::string& error) {
+                              std::string& error, int unwind = 0) {
     Config cfg = default_config();
+    if (unwind > 0) cfg.unwind = unwind;
     cfg.llm = false;
     cfg.allow_exec = false;
     std::vector<std::string> stages;
@@ -163,8 +164,24 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         oc.decision = Decision{"error", "cannot copy " + task.string() + ": " + ec.message(), std::nullopt, json::object()};
         return oc;
     }
+    if (prop == "no-overflow") {
+        // reach_error()/abort() end the execution; for no-overflow they are
+        // exit(0), so a proof of main need not show them unreachable.
+        // Replay, fuzzing and the witness use the original task.
+        std::ifstream tin(task, std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(tin)), std::istreambuf_iterator<char>());
+        if (auto rew = neutralize_error_calls(text)) {
+            std::ofstream tout(task_c, std::ios::binary | std::ios::trunc);
+            tout << *rew;
+        }
+    }
     std::string error;
+    const auto t_start = std::chrono::steady_clock::now();
+    auto since = [](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+    };
     auto report = run_prism(task_c, opt.out / "prism-out", dm, error);
+    double last_run_s = since(t_start);
     if (!report) {
         oc.decision = Decision{"error", error, std::nullopt, json::object()};
         return oc;
@@ -183,6 +200,53 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return r;
     };
     Decision dec = decide(*report, prop, rp);
+    // Fuzzing: a refutation only when a seeded run shows the violation under
+    // the same sanitizer check as replay. Never a proof. It runs before the
+    // deepening below, so the deeper (Houdini-heavy) runs cannot use up the
+    // task's time before a cheap concrete counterexample is tried.
+    bool fuzzed = false;
+    auto try_fuzz = [&] {
+        if (fuzzed || dec.answer != "unknown" || !opt.allow_exec || (prop != "no-overflow" && prop != "unreach-call")) return;
+        fuzzed = true;
+        fs::path fd = make_temp_dir(opt.out, "prism-fuzz-");
+        json r = fuzz_replay(task, prop, true, fd, dm);
+        std::error_code rm;
+        fs::remove_all(fd, rm);
+        if (get_str(r, "replay") == "replayed") {
+            // a finding of main carrying the run's nondet values (witness waypoints)
+            json f = {{"function", "main"}, {"stage", "fuzz"}, {"extra", {{"nondet", get_str(r, "nondet")}}}};
+            if (has(r, "nondet_loc")) {
+                f["extra"]["nondet_loc"] = r.at("nondet_loc");
+                f["extra"]["nondet_loc_kind"] = "physical";
+            }
+            if (has(r, "line")) f["line"] = r.at("line");
+            dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
+        }
+    };
+    try_fuzz();
+    // Deepening: a main that is only BOUNDED (no violation within the
+    // unwind, loops not closed) is re-run with a deeper unwind. A deeper
+    // run can only prove (its loops close) or refute with a counterexample
+    // that must still replay; BOUNDED stays unknown. Never weaker evidence.
+    // A deeper run costs about 4x the previous one (seq-3: 12 min base; s3_srvr_1a:
+    // 20 s, 3 min at 32, over 13 min at 128): skip it when that would overrun
+    // the SV-COMP 900 s limit, so the task answers unknown instead of TIMEOUT.
+    constexpr double kTaskBudgetS = 840.0;
+    for (int deeper : {32, 128}) {
+        if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
+        if (since(t_start) + 4.0 * last_run_s > kTaskBudgetS) {
+            dec.reason += " (bmc unwind " + std::to_string(deeper) + " skipped: time budget)";
+            break;
+        }
+        std::string err2;
+        const auto t_run = std::chrono::steady_clock::now();
+        auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
+        last_run_s = since(t_run);
+        if (!rep2) break;
+        Decision d2 = decide(*rep2, prop, rp);
+        if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
+        dec = std::move(d2);
+    }
     oc.decision = dec;
     Decision& d = oc.decision;
     WitnessMeta meta;
