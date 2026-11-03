@@ -1092,6 +1092,10 @@ long long mul_ll(long long a) { return a * 3; }
 }
 
 TEST_CASE("pir soundness: dynamic initialisation before main (S8)") {
+    if (std::string why; !prism::pir::pir_cxx_usable(prism::default_config(), &why)) {
+        MESSAGE(why);
+        return;
+    }
     // a global's constructor throws before main: main's proof is not the program's
     auto by = pir_source("sound_s8.cpp", R"(struct C { C() { throw 1; } };
 C global_c;
@@ -1103,6 +1107,10 @@ int main() { return 0; }
 }
 
 TEST_CASE("pir soundness: an unmodelled C++ callee may write reference arguments (F10)") {
+    if (std::string why; !prism::pir::pir_cxx_usable(prism::default_config(), &why)) {
+        MESSAGE(why);
+        return;
+    }
     // f is a function-try-block that pir inlines: v is 10 after f(v), so
     // main is proved. g is unmodelled: a call to it is UNENCODED and the
     // function is never a proof, whatever its arguments.
@@ -5604,6 +5612,10 @@ TEST_CASE("pir shift rules follow the C++ standard of the unit (F7)") {
     };
     CHECK(checker_status(fns_of("t.c", pos)[0]) == prism::laws::FAILED);         // C
     CHECK(checker_status(fns_of("t.h", pos)[0]) == prism::laws::FAILED);         // a header may be C
+    if (std::string why; !prism::pir::pir_cxx_usable(prism::default_config(), &why)) {
+        MESSAGE(why);
+        return;
+    }
     CHECK(proved(checker_status(fns_of("t.cpp", pos)[0])));                      // default gnu++17
     CHECK(checker_status(fns_of("t.cpp", neg)[0]) == prism::laws::FAILED);
     CHECK(checker_status(fns_of("t.cpp", three)[0]) == prism::laws::FAILED);     // 3 * 2^31
@@ -5658,6 +5670,7 @@ TEST_CASE("cparse extracts a function-try-block with its handlers (F10)") {
     CHECK(fns[0].body_line == 1);
     CHECK(fns[1].name == "user");
 #ifdef PRISM_HAS_Z3
+    if (!prism::pir::pir_cxx_usable(prism::default_config(), nullptr)) return;
     // set_ten writes through its reference (Law 6: a pointer parameter is a
     // missing precondition); user inlines it, v == 10, so 100 / v is proved
     CHECK(checker_status(fns[0]) == prism::laws::NEEDS_HARNESS);
