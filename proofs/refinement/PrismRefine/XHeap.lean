@@ -88,7 +88,7 @@ theorem hobjszMachine (sz off : Nat) (hsz : sz < 2 ^ 64) (hoff : off < 2 ^ 64) :
   by_cases hlt : sz < off
   · rw [decide_eq_true hlt, truthN_boolToNat]
     split
-    · simp only [if_pos hlt, Nat.zero_mod, Nat.mod_mod]
+    · simp only [ite_eq_left hlt, Nat.zero_mod, Nat.mod_mod]
     · rename_i hf
       first | nomatch hf | exact absurd rfl hf
   · rw [decide_eq_false hlt, truthN_boolToNat]
@@ -97,7 +97,7 @@ theorem hobjszMachine (sz off : Nat) (hsz : sz < 2 ^ 64) (hoff : off < 2 ^ 64) :
     split
     · rename_i ht
       first | nomatch ht | exact absurd rfl ht
-    · simp only [if_neg hlt, sub64_ge sz off hsz hoff hle, Nat.mod_eq_of_lt hsub, Nat.mod_mod]
+    · simp only [ite_eq_right hlt, sub64_ge sz off hsz hoff hle, Nat.mod_eq_of_lt hsub, Nat.mod_mod]
 
 /-- `MemTr::obj_size_remaining` (`__prism_obj_size`): temporaries `k..k+4` hold the
 bytes from `p` to the end of its object; no memory is changed. -/
@@ -124,7 +124,7 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
       evalOpM t.mem σ .objSize (P.wd k) [A] % 2 ^ P.wd k = t.mem.size q := by
     simp only [evalOpM, w0, hq, hsz]
   rw [step1]
-  set σ1 := σ.set k (t.mem.size q)
+  let σ1 := σ.set k (t.mem.size q)
   have hA1 : A.get σ1 = A.get σ := Arg.get_set_ge hA σ (j := k) (t.mem.size q) (Nat.le_refl k)
   rw [xStmts_assign]
   have step2 :
@@ -132,7 +132,7 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
         ptrOff q := by
     simp only [evalOpM, evalOp, w1, hA1, c64_get, hq, mask48, hoff]
   rw [step2]
-  set σ2 := σ1.set (k + 1) (ptrOff q)
+  let σ2 := σ1.set (k + 1) (ptrOff q)
   have hk2 : σ2 k = t.mem.size q := by
     simp only [σ2, Store.set_other _ _ (show k ≠ k + 1 by omega), σ1, Store.set_same]
   have h12 : σ2 (k + 1) = ptrOff q := by
@@ -143,7 +143,7 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
         binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64 := by
     simp only [evalOpM, evalOp, w2, Arg.get_v', hk2, h12]
   rw [step3]
-  set σ3 := σ2.set (k + 2) (binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64)
+  let σ3 := σ2.set (k + 2) (binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64)
   have hk3 : σ3 k = t.mem.size q := by
     simp only [σ3, Store.set_other _ _ (show k ≠ k + 2 by omega), hk2]
   have h13 : σ3 (k + 1) = ptrOff q := by
@@ -155,7 +155,7 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
     simp only [evalOpM, evalOp, w3, Arg.get_v', Arg.width_v', hk3, h13, icmpVal_eq', pred_ugt, hsz,
       hoff, boolToNat_mod1]
   rw [step4]
-  set σ4 := σ3.set (k + 3) ((decide (t.mem.size q < ptrOff q)).toNat)
+  let σ4 := σ3.set (k + 3) ((decide (t.mem.size q < ptrOff q)).toNat)
   have h43 : σ4 (k + 3) = (decide (t.mem.size q < ptrOff q)).toNat := by
     simp only [σ4, Store.set_same]
   have h42 : σ4 (k + 2) = binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64 := by
@@ -168,7 +168,7 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
           (binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64) % 2 ^ 64 := by
     simp only [evalOpM, evalOp, w4, Arg.get_v', Arg.get_c', h43, h42]
   rw [step5]
-  set σ5 := σ4.set (k + 4)
+  let σ5 := σ4.set (k + 4)
     (selVal 64 ((decide (t.mem.size q < ptrOff q)).toNat) 0
         (binVal .sub 64 (t.mem.size q) (ptrOff q) % 2 ^ 64) % 2 ^ 64)
   refine ⟨σ5, rfl, ?_, ?_⟩
@@ -182,6 +182,6 @@ theorem hobjszCore_run (P : PFunc) (ω : Nat → Nat) (σ : Store) (t : World) (
     have hne0 : i ≠ k := by omega
     simp only [σ5, σ4, σ3, σ2, σ1, set_apply, ite_false hne4, ite_false hne3, ite_false hne2,
       ite_false hne1, ite_false hne0]
-    rfl
+    simp [hne4, hne3, hne2, hne1, hne0]
 
 end PrismRefine
