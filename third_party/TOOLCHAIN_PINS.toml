@@ -131,3 +131,23 @@ kind = "lint"
 install = "npm"
 [pin.artifacts]
 "node" = { url = "https://registry.npmjs.org/eslint/-/eslint-10.14.0.tgz", sha256 = "e15ffa02262a7d359f9385e2d468f289dd309715261b2e3aa276ccd26ed14720" }
+
+[[pin]]
+# Linux x86_64/i386 headers + GCC 14 install dir for PIR on non-Linux hosts (Windows):
+# pir always lowers for x86_64-unknown-linux-gnu (or i386-unknown-linux-gnu), so clang
+# needs a glibc + libstdc++ sysroot. Same packages as the ubuntu-24.04 CI runners
+# (gcc-14 14.2.0-4ubuntu2~24.04.1, glibc 2.39-0ubuntu8.9). Headers and crt objects only:
+# PIR never links. Unpacked into DEST/linux-sysroot/VERSION/root (pass --sysroot).
+name = "linux-sysroot"
+version = "noble-gcc14.2.0-4ubuntu2-glibc2.39-0ubuntu8.9"
+source = "http://archive.ubuntu.com/ubuntu/dists/noble-updates/{main,universe}/binary-amd64/Packages.xz (SHA256 fields, 2026-11-04)"
+debs = [
+  { url = "http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-14/libstdc++-14-dev_14.2.0-4ubuntu2~24.04.1_amd64.deb", sha256 = "6d223262b8cbe6d5150435056d58dffa8159d8582fc0df47fb45ea550cd37424" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgcc-14-dev_14.2.0-4ubuntu2~24.04.1_amd64.deb", sha256 = "055dfa5fa7448fe20ad2f3832df2edd2b0ffca7f8a6c5fbbc5576dc61b2eb8b7" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/universe/g/gcc-14/lib32stdc++-14-dev_14.2.0-4ubuntu2~24.04.1_amd64.deb", sha256 = "27c481b7dcbc3daf316104060e99200a010d3d5558783bbf71677eb46125f2d6" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/lib32gcc-14-dev_14.2.0-4ubuntu2~24.04.1_amd64.deb", sha256 = "acc0321178df1a17400122500c44f141a7c0d1b89e879978bc25f718d5da9a96" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.9_amd64.deb", sha256 = "e13d5fcc1b2a86f75bca8e0026a8e39f24fe97ca86e92be79991f8697eb1306f" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6-dev-i386_2.39-0ubuntu8.9_amd64.deb", sha256 = "44b85dd652192b23c6979b3f8c240b33105520fdba64024cbba0d818af33258b" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux-libc-dev_6.8.0-147.147_amd64.deb", sha256 = "fec8e4a308c03cd98dace67370a8d5a8031c36741796065c9f6e3f9548ab0cd2" },
+  { url = "http://archive.ubuntu.com/ubuntu/pool/main/libx/libxcrypt/libcrypt-dev_4.4.36-4build1_amd64.deb", sha256 = "2edff420ef80b4a3f3751e65c33423ef30e563122a58b759e4854ea8d84ba1b1" },
+]
