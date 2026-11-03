@@ -497,6 +497,11 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     FileResult r;
     bool has_db = false;
     auto flags = unit_flags(src, root, has_db);
+    // clang 23 makes std::forward_like a builtin and then rejects libstdc++ 14's
+    // deduced-return definition ("deduced return type cannot be used before it
+    // is defined", also via <ranges>), so the unit does not parse. As a plain
+    // function it parses and the call stays in the AST.
+    if (is_cxx_unit(src)) flags.push_back("-fno-builtin-std-forward_like");
     std::string why;
     const bool use_lib = backend != Backend::Process && detail::libclang_load(clang, &why);
     if (backend == Backend::LibClang && !use_lib) {
