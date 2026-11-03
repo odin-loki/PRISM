@@ -80,6 +80,11 @@ int forward_to_python(int argc, char** argv, const std::string& why) {
   std::string cmd = shell_quote(py.string());
   for (int i = 1; i < argc; ++i) cmd += " " + shell_quote(argv[i]);
 #ifdef _WIN32
+  // cmd.exe cuts an argument at a newline, so a multi-line -c snippet would
+  // run truncated and "succeed" with no output (FindPython's sysconfig probe
+  // then fails with "list GET given empty list"). Fail it like main did.
+  for (int i = 1; i < argc; ++i)
+    if (std::string_view(argv[i]).find_first_of("\r\n") != std::string_view::npos) return 1;
   cmd = "\"" + cmd + "\"";  // cmd.exe strips one outer pair of quotes
   return std::system(cmd.c_str());
 #else
