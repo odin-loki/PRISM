@@ -6,3 +6,5 @@ expected:
   c23_constexpr_cl_false: false
 witness:
   c23_constexpr_cl_false: [0]
+native_unsupported:
+  c23_constexpr_cl_false: "clang lacks C23 storage-class specifiers in compound literals"

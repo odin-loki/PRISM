@@ -5,3 +5,5 @@ property: noassert
 timeout: 600  # item 4 (prism-llvm), not yet run
 expected:
   cxx_generator_false: false
+witness:
+  cxx_generator_false: [0]

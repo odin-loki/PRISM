@@ -1,0 +1,11 @@
+format_version: 1
+input_files: cxx_atomic_false.cpp
+language: C++
+property: noassert
+timeout: 600  # prism-llvm, not yet run
+expected:
+  cxx_atomic_false: false
+witness:
+  cxx_atomic_false: [0]
+sanitizer_blind:  # the lost update needs the load/store split by the other thread; a native run cannot force it
+  - cxx_atomic_false

@@ -58,6 +58,9 @@ struct Task {
     std::map<std::string, std::vector<i128>> witness;
     std::map<std::string, std::string> expect_status;
     std::set<std::string> sanitizer_blind;
+    // function -> why the native self-check toolchain cannot build it (C23/C++26
+    // features clang or glibc lack); self-check reports it skipped with the reason
+    std::map<std::string, std::string> native_unsupported;
     std::string data_model;
     std::string std;  // whole-program tasks (esbmc-cpp): language standard of the native self-check
     bool deterministic = false;  // whole program whose one run is its only behaviour

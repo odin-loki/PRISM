@@ -161,6 +161,11 @@ std::pair<std::vector<ojson>, int> self_check(const std::vector<Task>& tasks, co
             rec["detail"] = res.detail;
             return rec;
         }
+        if (auto u = t.native_unsupported.find(it.fn); u != t.native_unsupported.end()) {
+            rec["check"] = "skipped";
+            rec["why"] = "native toolchain: " + u->second;
+            return rec;
+        }
         if (t.expect_status.count(it.fn)) {
             rec["check"] = "skipped";
             rec["why"] = "non-scalar parameters (expect_status)";

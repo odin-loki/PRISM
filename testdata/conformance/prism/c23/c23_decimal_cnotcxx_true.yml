@@ -4,3 +4,5 @@ language: C
 property: no-oob
 expected:
   c23_decimal_cnotcxx_true: true
+native_unsupported:
+  c23_decimal_cnotcxx_true: "clang has no _Decimal types (PRISM lowers them through models/cxx/prism_dfp.hpp)"

@@ -5,3 +5,5 @@ property: noassert
 timeout: 600  # item 4 (prism-llvm), not yet run
 expected:
   cxx_import_std_true: true
+native_unsupported:
+  cxx_import_std_true: "no std module for the native clang (PRISM models it in std.cppm)"

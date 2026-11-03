@@ -6,3 +6,5 @@ expected:
   c23_decimal_printf_false: false
 witness:
   c23_decimal_printf_false: [0]
+native_unsupported:
+  c23_decimal_printf_false: "clang has no _Decimal types (PRISM lowers them through models/cxx/prism_dfp.hpp)"

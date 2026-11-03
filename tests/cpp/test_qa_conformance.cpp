@@ -56,7 +56,7 @@ using i128 = prism::qa::i128;
 const std::set<std::string> kProperties = {"no-overflow", "no-div0",       "no-shift-ub", "no-oob",
                                            "no-null-deref", "memsafety", "no-fp-cast",  "no-uncaught",
                                            // qa task.cpp maps noassert to FUNC-CONTRACT (cxx any_cast tasks)
-                                           "noassert"};
+                                           "noassert", "nodeadlock"};
 
 fs::path suite() { return qa::suite_root(); }
 
@@ -321,7 +321,10 @@ TEST_CASE("qa conformance: in-house tasks come in labelled true/false pairs") {
         const std::string text = slurp(t.source);
         for (const auto& [fn, exp] : t.expected) {
             CHECK(text.find(fn) != std::string::npos);
-            if (!exp && !t.expect_status.count(fn)) CHECK_MESSAGE(t.witness.count(fn), "false function needs a witness");
+            // the self-check replays a witness through scalar inputs; pointer-parameter
+            // functions (ptrparam contracts) have none and are skipped there too
+            if (!exp && !t.expect_status.count(fn) && qa::scalar_params(t, fn))
+                CHECK_MESSAGE(t.witness.count(fn), "false function needs a witness");
             (exp ? n_true : n_false)++;
             if (t.expect_status.count(fn) && t.expect_status.at(fn) == "NEEDS-HARNESS") law6 = true;
         }

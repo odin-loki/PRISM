@@ -6,3 +6,5 @@ expected:
   c23_bitint_ops_false: false
 witness:
   c23_bitint_ops_false: [127]
+sanitizer_blind:  # UBSan does not check _BitInt arithmetic overflow
+  - c23_bitint_ops_false

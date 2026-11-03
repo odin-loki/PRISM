@@ -6,3 +6,4 @@ expected:
   c17_stdc_version_false: false
 witness:
   c17_stdc_version_false: [0]
+std: c17  # PRISM compiles C as C17: __STDC_VERSION__ == 201710L

@@ -6,3 +6,5 @@ expected:
   cxx_chrono_time_point_false: false
 witness:
   cxx_chrono_time_point_false: []
+sanitizer_blind:  # a native now() is never max()
+  - cxx_chrono_time_point_false

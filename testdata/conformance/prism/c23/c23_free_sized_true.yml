@@ -4,3 +4,5 @@ language: C
 property: memsafety
 expected:
   c23_free_sized_true: true
+native_unsupported:
+  c23_free_sized_true: "glibc does not declare this C23 function"

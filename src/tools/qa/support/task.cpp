@@ -227,6 +227,13 @@ std::optional<Task> load_task(const fs::path& yml, const fs::path& root) {
             if (!b->is_seq()) throw yaml::Error(yml.string() + ": `sanitizer_blind` is not a list");
             for (const auto& x : b->seq) t.sanitizer_blind.insert(x.py_str());
         }
+        if (const auto* u = data.get("native_unsupported"); !falsy(u)) {
+            if (!u->is_map()) throw yaml::Error(yml.string() + ": `native_unsupported` is not a mapping");
+            for (const auto& [k, v] : u->map) {
+                if (falsy(&v)) throw yaml::Error(yml.string() + ": native_unsupported " + k + " needs a reason");
+                t.native_unsupported[k] = v.py_str();
+            }
+        }
         t.std = node_str(data.get("std"), "");
         if (const auto* d = data.get("deterministic")) t.deterministic = d->truthy_label();
         if (const auto* u = data.get("unwind"); !falsy(u))

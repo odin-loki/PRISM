@@ -6,3 +6,5 @@ expected:
   c23_free_sized_false: false
 witness:
   c23_free_sized_false: [0]
+native_unsupported:
+  c23_free_sized_false: "glibc does not declare this C23 function"

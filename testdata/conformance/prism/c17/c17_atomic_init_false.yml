@@ -5,4 +5,4 @@ property: no-overflow
 expected:
   c17_atomic_init_false: false
 witness:
-  c17_atomic_init_false: [2147483]
+  c17_atomic_init_false: [2147484]  # 2147484000 > INT_MAX

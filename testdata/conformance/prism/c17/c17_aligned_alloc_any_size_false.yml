@@ -6,3 +6,5 @@ expected:
   c17_aligned_alloc_any_size_false: false
 witness:
   c17_aligned_alloc_any_size_false: [0]
+sanitizer_blind:  # ASan rejects aligned_alloc(8, 5) (pre-DR460) and returns NULL, so the OOB write is never reached natively
+  - c17_aligned_alloc_any_size_false

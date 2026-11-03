@@ -4,3 +4,5 @@ language: C
 property: no-div0
 expected:
   c23_constexpr_cl_true: true
+native_unsupported:
+  c23_constexpr_cl_true: "clang lacks C23 storage-class specifiers in compound literals"

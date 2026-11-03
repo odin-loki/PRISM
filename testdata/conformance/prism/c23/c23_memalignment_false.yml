@@ -6,3 +6,5 @@ expected:
   c23_memalignment_false: false
 witness:
   c23_memalignment_false: [1]
+native_unsupported:
+  c23_memalignment_false: "glibc does not declare this C23 function"

@@ -4,3 +4,5 @@ language: C++
 property: no-oob
 expected:
   cxx_format_float_false: false
+witness:
+  cxx_format_float_false: [1]  # "1.000000e+00": r.size 12 > 8

@@ -6,3 +6,5 @@ expected:
   c23_memccpy_false: false
 witness:
   c23_memccpy_false: [5]
+sanitizer_blind:  # ASan does not intercept memccpy
+  - c23_memccpy_false

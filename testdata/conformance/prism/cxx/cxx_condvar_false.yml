@@ -5,3 +5,5 @@ property: nodeadlock
 timeout: 600  # item 4 (prism-llvm), not yet run
 expected:
   cxx_condvar_false: false
+witness:
+  cxx_condvar_false: [1]

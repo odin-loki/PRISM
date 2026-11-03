@@ -5,3 +5,7 @@ property: noassert
 timeout: 600  # item 4 (prism-llvm), not yet run
 expected:
   cxx_thread_race_false: false
+witness:
+  cxx_thread_race_false: [0]
+sanitizer_blind:  # the failing interleaving needs the worker to lock first; a native run cannot force it
+  - cxx_thread_race_false
