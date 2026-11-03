@@ -10,7 +10,7 @@
 
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
-#include "../proc.hpp"
+#include "prism/exec.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -72,7 +72,7 @@ std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& s
         std::ofstream o(in, std::ios::binary);
         o << *ir;
     }
-    auto r = detail::run_process({fe.opt->string(), fold_orders ? "-passes=function(sroa,mem2reg,sccp,lower-switch,loop-simplify,lcssa,instnamer)"
+    auto r = prism::exec::run_process({fe.opt->string(), fold_orders ? "-passes=function(sroa,mem2reg,sccp,lower-switch,loop-simplify,lcssa,instnamer)"
                                               : "-passes=function(sroa,mem2reg,lower-switch,loop-simplify,lcssa,instnamer)",
                                   "-S", "-o", outp.string(), in.string()},
                                  timeout_s);

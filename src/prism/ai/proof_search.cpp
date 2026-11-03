@@ -19,13 +19,18 @@
 // --allow-exec and runs Lean in the bwrap jail when one is available.
 // Every model call is in <out>/ai_audit.jsonl.
 
+#include "prism/exec.hpp"
+#include "prism/exit.hpp"
+#include "prism/clock.hpp"
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_proof.hpp"
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -553,11 +558,11 @@ struct PathGuard {
     }
 };
 
-detail::ProcOut run_lake(const fs::path& lake, const std::vector<std::string>& args, const fs::path& cwd,
+prism::exec::ProcOut run_lake(const fs::path& lake, const std::vector<std::string>& args, const fs::path& cwd,
                          double timeout, const fs::path& writable) {
     std::vector<std::string> argv{lake.string()};
     argv.insert(argv.end(), args.begin(), args.end());
-    return detail::run_process(sandbox::wrap_argv(argv, writable), timeout, cwd);
+    return prism::exec::run_process(sandbox::wrap_argv(argv, writable), timeout, cwd);
 }
 
 bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {
@@ -820,7 +825,7 @@ ProveResult prove_theorem(const ProveOptions& opt) {
     PathGuard path_guard(*lake);
 
     // Scratch copy of the package (the source tree is never touched unless --write).
-    auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    auto stamp = std::to_string(prism::clock::now_ns());
     auto scratch = fs::temp_directory_path() / ("prism-prove-" + sha256_hex(t.file.string() + stamp).substr(0, 12));
     struct Cleanup {
         fs::path p;
@@ -1169,11 +1174,11 @@ int prove_main(int argc, char** argv) {
                          "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
                          "elaborating Lean runs code). Prover: PRISM_PROVER_SERVER or PRISM_PROVER_GGUF.\n"
                          "Exit 0 proved (--all: every one), 1 not proved, 3 NOTRUN (--all: every one), 2 error.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) pos.push_back(a);
         else {
-            std::cerr << "prism prove: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("prove", "unrecognized arguments: " + std::string(a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (all) {
@@ -1182,11 +1187,11 @@ int prove_main(int argc, char** argv) {
     }
     if (list && !pos.empty()) {
         for (auto& n : lean_sorry_theorems(pos.at(0))) std::cout << n << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (pos.size() != 2) {
-        std::cerr << "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)\n";
-        return 2;
+        prism::log::error("prove", "usage: prism prove FILE.lean THEOREM [--write] [--allow-exec] (see --help)");
+        return prism::code(prism::Exit::Usage);
     }
     opt.file = fs::absolute(pos.at(0));
     opt.theorem = pos.at(1);
@@ -1202,10 +1207,10 @@ int prove_main(int argc, char** argv) {
             for (auto& l : r.proof) std::cout << "  " << l << "\n";
         }
     }
-    if (r.status == laws::PROVED) return 0;
-    if (r.status == laws::NOTRUN) return 3;
-    if (r.status == laws::ERROR) return 2;
-    return 1;
+    if (r.status == laws::PROVED) return prism::code(prism::Exit::Ok);
+    if (r.status == laws::NOTRUN) return prism::code(prism::Exit::Error);
+    if (r.status == laws::ERROR) return prism::code(prism::Exit::Usage);
+    return prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::ai

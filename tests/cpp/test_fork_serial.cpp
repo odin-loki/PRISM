@@ -6,7 +6,7 @@
 // scoped_timer workers), and fails instead of hanging if it livelocks.
 #include <doctest/doctest.h>
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
 
 #include <z3++.h>
 
@@ -48,11 +48,11 @@ TEST_CASE("proc: concurrent forks with live Z3 timers do not livelock") {
     for (int t = 0; t < 3; ++t)
         ts.emplace_back([&] {
             for (int i = 0; i < 60; ++i) {
-                prism::detail::RunSpec sp;
+                prism::exec::Spec sp;
                 sp.argv = {"/bin/true"};
-                auto r = prism::detail::run(sp);
+                auto r = prism::exec::run(sp);
                 ++runs;
-                if (r.rc != 0) ++fails;
+                if (r.rc() != 0) ++fails;
             }
         });
     for (std::size_t i = 2; i < ts.size(); ++i) ts[i].join();

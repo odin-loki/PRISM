@@ -20,8 +20,11 @@
 // the model cosine. Without it the TF-IDF result is used and triage.json says
 // why (Law 7).
 
+#include "prism/settings.hpp"
+#include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/cli.hpp"
 #include "prism/laws.hpp"
@@ -125,8 +128,9 @@ std::shared_ptr<Embedder> connect_embedder(std::string* why) {
             return g_embed_test;
         }
     }
-    const char* url = std::getenv("PRISM_EMBED_SERVER");
-    if (!url || !*url) {
+    const std::string url_s = settings::embed_server().get();
+    const char* url = url_s.c_str();
+    if (url_s.empty()) {
         if (why) *why = "NOTRUN: no embedding model (set PRISM_EMBED_SERVER to a llama.cpp server started with "
                         "--embedding); deterministic TF-IDF embedding used";
         return nullptr;
@@ -560,8 +564,8 @@ void write_triage(const RunReport& report, const fs::path& out, const TriageOpti
 int triage_main(int argc, char** argv) {
     auto parsed = parse_triage_cli(std::span<const char* const>(argv, static_cast<std::size_t>(argc)));
     if (!parsed.value) {
-        std::cerr << "prism triage: error: " << parsed.message << "\n";
-        return 2;
+        prism::log::error("triage", parsed.message);
+        return prism::code(prism::Exit::Usage);
     }
     fs::path rp = parsed.value->report_dir;
     TriageOptions topt;
@@ -570,13 +574,13 @@ int triage_main(int argc, char** argv) {
     if (fs::is_regular_file(rp)) rp = rp.parent_path();
     auto rep = RunReport::load(rp / "report.json");
     if (!rep) {
-        std::cerr << "ERROR triage: cannot read " << (rp / "report.json").string() << "\n";
-        return 2;
+        prism::log::error("triage", "cannot read " + (rp / "report.json").string());
+        return prism::code(prism::Exit::Usage);
     }
     auto t = triage(*rep, topt);
     std::ofstream(rp / "triage.json", std::ios::binary) << triage_json(t);
     std::cout << triage_markdown(t, *rep);
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

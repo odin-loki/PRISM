@@ -18,9 +18,13 @@
 // Exit 1 on any disagreement, 2 when a tool is missing (NOTRUN). Runs the
 // given programs under lli: use it on trusted test programs only.
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/config.hpp"
 #include "prism/pir.hpp"
 
@@ -178,11 +182,11 @@ int llvm_sem_vs_lli_main(const Args& args) {
                          "pir stage's IR. Default files: testdata/pir/*.c. --pairs: existing .pirl files\n"
                          "(<dir>/*<file name>*.pirl) instead of running PRISM. Exit 1 on a\n"
                          "disagreement, 2 NOTRUN. Runs the programs: trusted test programs only.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-")) files.emplace_back(a);
         else {
-            std::cerr << "llvm-sem-vs-lli: unknown option " << a << "\n";
-            return 2;
+            prism::log::error("llvm-sem-vs-lli", prism::log::cat("unknown option ", a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     std::mt19937_64 rng(seed);
@@ -205,7 +209,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
         for (std::size_t i = 0; i < missing.size(); ++i) m += (i ? ", " : "") + missing[i];
         std::cout << "llvm_sem_vs_lli: NOTRUN: missing " << m
                   << " (build prism; cd proofs/refinement && lake build llvm_eval)\n";
-        return 2;
+        return prism::code(prism::Exit::Usage);
     }
     if (files.empty()) {
         for (auto& e : fs::directory_iterator(repo / "testdata" / "pir", ec))
@@ -222,9 +226,9 @@ int llvm_sem_vs_lli_main(const Args& args) {
         std::vector<fs::path> pirls;
         const auto dir = pairs_dir.empty() ? t.path / "pairs" / stem : pairs_dir;
         if (pairs_dir.empty()) {
-            detail::SessionOptions so;
+            prism::exec::SessionOptions so;
             so.env = {{"PRISM_PIR_LEAN_EXPORT", dir.string()}};
-            detail::run_session({exe->string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
+            prism::exec::run_session({exe->string(), src.string(), "--no-llm", "--stage", "inventory,classify,pir",
                                  "--out", (t.path / "out" / stem).string()},
                                 so);
         }
@@ -253,11 +257,11 @@ int llvm_sem_vs_lli_main(const Args& args) {
                 const auto vecs = input_vectors(rec.params, nvec, rng);
                 std::string q;
                 for (auto& v : vecs) q += rec.name + (v.empty() ? "" : " " + join_u64(v, " ")) + "\n";
-                detail::RunSpec spec;
+                exec::Spec spec;
                 spec.argv = {eval.string(), pirl.string()};
-                spec.input = q;
-                spec.timeout_s = 600;
-                auto ev = detail::run(spec);
+                spec.stdin_data = q;
+                spec.timeout_ms = 600000;
+                auto ev = exec::run(spec);
                 std::istringstream lines(ev.out);
                 for (std::string line; std::getline(lines, line);) {
                     const auto bar = line.find(" | ");
@@ -284,9 +288,9 @@ int llvm_sem_vs_lli_main(const Args& args) {
                         continue;
                     }
                     std::ofstream(prog, std::ios::binary) << lli_harness(*ir, rec.name, rec.params, rec.ret, vals);
-                    detail::SessionOptions lo;
+                    prism::exec::SessionOptions lo;
                     lo.timeout_s = 60;
-                    auto li = detail::run_session(
+                    auto li = prism::exec::run_session(
                         {fe.lli->string(), "--entry-function=__prism_lli_main", prog.string()}, lo);
                     auto out_words = words(li.out);
                     if (li.rc != 0 || out_words.empty()) {
@@ -318,7 +322,7 @@ int llvm_sem_vs_lli_main(const Args& args) {
     std::cout << "summary";
     for (auto& [k, v] : stats) std::cout << " " << k << "=" << v;
     std::cout << " disagree=" << bad.size() << "\n";
-    return bad.empty() ? 0 : 1;
+    return bad.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::qa

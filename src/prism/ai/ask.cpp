@@ -12,10 +12,13 @@
 // Answers are computed by run_query over report.json. Nothing here can
 // change a status: the report is only read.
 
+#include "prism/exit.hpp"
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/laws.hpp"
+#include "prism/verdict.hpp"
 #include "prism/pipeline.hpp"
 
 #include <nlohmann/json.hpp>
@@ -41,15 +44,19 @@ std::string upper(std::string s) {
     return s;
 }
 
-const std::vector<std::string>& all_statuses() {
-    static const std::vector<std::string> v = {
-        "PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING", "BOUNDED", "FAILED",
-        "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN", "NEEDS-HARNESS", "CRASH", "CLEAN", "SANFAIL",
-        "HYPOTHESIS", "READS", "NOFUNC", "NOSEED"};
+// Status groups come from the verdict lattice (prism/verdict.hpp), not local lists.
+std::vector<std::string> statuses_where(bool (*pred)(prism::verdict::Verdict)) {
+    std::vector<std::string> v;
+    for (auto x : prism::verdict::all_verdicts())
+        if (pred(x)) v.emplace_back(prism::verdict::name(x));
     return v;
 }
-const std::vector<std::string> kProof = {"PROVED-CERTIFIED", "PROVED-UNBOUNDED", "PROVED", "PROVED-ASSUMING"};
-const std::vector<std::string> kDefect = {"FAILED", "CRASH", "SANFAIL"};
+const std::vector<std::string>& all_statuses() {
+    static const std::vector<std::string> v = statuses_where([](prism::verdict::Verdict) { return true; });
+    return v;
+}
+const std::vector<std::string> kProof = statuses_where(prism::verdict::is_proof);
+const std::vector<std::string> kDefect = statuses_where(prism::verdict::is_defect);
 const std::vector<std::string> kUnproved = {"BOUNDED", "FAILED", "UNKNOWN", "TIMEOUT", "ERROR", "NOTRUN",
                                             "NEEDS-HARNESS", "CRASH", "SANFAIL", "HYPOTHESIS"};
 
@@ -708,15 +715,15 @@ int ask_main(int argc, char** argv) {
                          "Translates the question into a structured query over report.json (keyword grammar;\n"
                          "a local model when reachable, grammar-constrained and validated) and prints the\n"
                          "query with the answer. \"explain <id>\" and \"trusted base\" are understood too.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
             question += (question.empty() ? "" : " ") + a;
         }
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR ask: cannot read " << report_path.string() << "\n";
-        return 2;
+        prism::log::error("ask", "cannot read " + report_path.string());
+        return prism::code(prism::Exit::Usage);
     }
     Config cfg = default_config();
     cfg.llm = use_model;
@@ -735,7 +742,7 @@ int ask_main(int argc, char** argv) {
     } else {
         std::cout << "question: " << question << "\n" << assistant_reply(*report, question, use_model);
     }
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

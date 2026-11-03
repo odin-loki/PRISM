@@ -1,5 +1,5 @@
 // prism-qa (src/tools/qa) and the session runner it uses
-// (src/prism/proc_session.cpp). Part of prism_tests.
+// (prism::exec::run_session). Part of prism_tests.
 // Same source list on WIN32 (PRISM_TESTS_WIN_SUBSET builds the fakes): sibling() finds the tools as
 // .exe, run_session is checked with tests/cpp/fake_session_probe.cpp
 // (PRISM_FAKE_SESSION_PROBE) instead of sh, and the fork / session-kill cases
@@ -9,16 +9,19 @@
 // A tool that needs something this machine lacks (the Lean checkers built by
 // lake, lli) says NOTRUN in a doctest MESSAGE and checks what it can without
 // it; nothing is skipped quietly.
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
 #endif
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "../../src/tools/qa/qa.hpp"
 
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
+#include "prism/log.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "prism/shipdocs.hpp"
@@ -36,6 +39,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -169,45 +173,65 @@ bool gone(long pid) {
     return false;
 }
 
-prism::detail::SessionOptions fake_prism(const fs::path& pidfile, double timeout) {
-    prism::detail::SessionOptions so;
+prism::exec::SessionOptions fake_prism(const fs::path& pidfile, double timeout) {
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_FAKE_SOLVER_PIDFILE", pidfile.string()}};
     so.timeout_s = timeout;
     return so;
 }
 #endif
 
+// prism-qa reports through prism::log, not std::cerr: the capture swaps the
+// log sink too and formats lines the way prism-qa prints them.
+std::ostringstream* g_qa_log = nullptr;
+void qa_capture_sink(prism::log::Level lv, std::string_view component, std::string_view message) {
+    if (!g_qa_log) return;
+    std::ostringstream& o = *g_qa_log;
+    if (lv == prism::log::Level::Plain) {
+        o << message;
+        return;
+    }
+    o << "prism-qa";
+    if (!component.empty()) o << ' ' << component;
+    o << ": ";
+    if (lv == prism::log::Level::Error) o << "error: ";
+    if (lv == prism::log::Level::Warn) o << "warning: ";
+    o << message << '\n';
+}
+
+struct StreamCapture {
+    std::ostringstream out, err;
+    std::streambuf* prev_out = nullptr;
+    std::streambuf* prev_err = nullptr;
+    prism::log::Sink prev_sink = nullptr;
+    StreamCapture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {
+        g_qa_log = &err;
+        prev_sink = prism::log::set_sink(&qa_capture_sink);
+    }
+    ~StreamCapture() {
+        prism::log::set_sink(prev_sink);
+        g_qa_log = nullptr;
+        std::cout.rdbuf(prev_out);
+        std::cerr.rdbuf(prev_err);
+    }
+    StreamCapture(const StreamCapture&) = delete;
+    StreamCapture& operator=(const StreamCapture&) = delete;
+};
+
+struct Captured {
+    int rc = 0;
+    std::string out, err;
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------- sessions
 #ifndef _WIN32
-TEST_CASE("session_members sees a solver in a process group of its own; kill_session kills it") {
-    Tmp t("prism_qa_sess_");
-    const auto pidfile = t.path / "solver.pid";
-    const pid_t p = ::fork();
-    REQUIRE(p >= 0);
-    if (p == 0) {
-        ::setsid();
-        ::setenv("PRISM_QA_FAKE_SOLVER_PIDFILE", pidfile.c_str(), 1);
-        ::execl(sibling("prism_tests").c_str(), "prism_tests", static_cast<char*>(nullptr));
-        ::_exit(127);
-    }
-    const long solver = solver_pid(pidfile);
-    REQUIRE(solver > 1);
-    CHECK(::getpgid(static_cast<pid_t>(solver)) != p);  // its own group ...
-    auto members = prism::detail::session_members(p);
-    CHECK(std::find(members.begin(), members.end(), static_cast<int>(solver)) != members.end());  // ... same session
-    prism::detail::kill_session(p);
-    int st = 0;
-    ::waitpid(p, &st, 0);
-    CHECK(gone(solver));
-}
-
 TEST_CASE("run_session: a timeout kills the solver in its own group") {
     Tmp t("prism_qa_sess_");
     const auto pidfile = t.path / "solver.pid";
     const auto t0 = std::chrono::steady_clock::now();
-    auto r = prism::detail::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 2.0));
+    auto r = prism::exec::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 2.0));
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(r.timed_out);
     CHECK((r.rc == -SIGKILL || r.rc == -SIGTERM));  // -signal: the timeout signalled the group
@@ -224,8 +248,8 @@ TEST_CASE("run_session: a SIGTERM to the runner kills the session it started") {
     const pid_t p = ::fork();
     REQUIRE(p >= 0);
     if (p == 0) {
-        prism::detail::install_child_cleanup();
-        prism::detail::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 60.0));
+        prism::exec::install_interrupt_cleanup();
+        prism::exec::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 60.0));
         ::_exit(0);
     }
     const long solver = solver_pid(pidfile);
@@ -251,9 +275,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     const std::string probe = PRISM_FAKE_SESSION_PROBE;
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     REQUIRE(fs::exists(probe));
-    auto run = [&](std::vector<std::string> args, const prism::detail::SessionOptions& so = {}) {
+    auto run = [&](std::vector<std::string> args, const prism::exec::SessionOptions& so = {}) {
         args.insert(args.begin(), probe);
-        return prism::detail::run_session(args, so);
+        return prism::exec::run_session(args, so);
     };
 
     // stdout, stderr and the exit code come back separately
@@ -275,7 +299,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
 
     Tmp t("prism_qa_sess_");
     // the env overlay reaches the child (and only the child) ...
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_PROBE", "v1"}};
     auto ev = run({"echo-env", "PRISM_QA_PROBE"}, so);
     CHECK(ev.rc == 0);
@@ -283,7 +307,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(std::getenv("PRISM_QA_PROBE") == nullptr);
     CHECK(run({"echo-env", "PRISM_QA_PROBE"}).rc == 3);  // unset without the overlay: the probe says 3
     // ... the working directory is the one asked for ...
-    prism::detail::SessionOptions in_dir;
+    prism::exec::SessionOptions in_dir;
     in_dir.cwd = t.path;
     auto cw = run({"echo-cwd"}, in_dir);
     CHECK(cw.rc == 0);
@@ -291,7 +315,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     REQUIRE(cl.size() == 1);
     CHECK(fs::equivalent(cl[0], t.path));
     // ... and stdin is the given input, byte for byte
-    prism::detail::SessionOptions with_in;
+    prism::exec::SessionOptions with_in;
     const std::string input = "line1\nline2\n";
     with_in.input = input;
     with_in.timeout_s = 30;
@@ -301,7 +325,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(ci.out == input);
 
     // no input: stdin is empty (EOF), so copy-stdin ends at once
-    prism::detail::SessionOptions bounded;
+    prism::exec::SessionOptions bounded;
     bounded.timeout_s = 30;
     auto n = run({"copy-stdin"}, bounded);
     CHECK_FALSE(n.timed_out);
@@ -309,9 +333,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(n.out.empty());
 
     // a missing program is 127
-    CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
+    CHECK(prism::exec::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
     // a memory cap reaches the child (RLIMIT_AS on POSIX, a Job Object limit here)
-    prism::detail::SessionOptions capped;
+    prism::exec::SessionOptions capped;
     capped.rlimit_as_mb = 64;
     CHECK(run({"alloc", "8"}, capped).rc == 0);
     CHECK(run({"alloc", "256"}, capped).rc == 4);
@@ -343,10 +367,10 @@ TEST_CASE("run_session: a timeout kills the child and the process it started (Jo
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     Tmp t("prism_qa_sess_");
     const auto pidfile = t.path / "solver.pid";
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.timeout_s = 2.0;
     const auto t0 = std::chrono::steady_clock::now();
-    auto r = prism::detail::run_session({probe, "spawn-sleep", "120", pidfile.string()}, so);
+    auto r = prism::exec::run_session({probe, "spawn-sleep", "120", pidfile.string()}, so);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(r.timed_out);
     CHECK(r.rc == -1);
@@ -361,7 +385,7 @@ TEST_CASE("run_session: a background grandchild left behind dies with its sessio
     const std::string probe = PRISM_FAKE_SESSION_PROBE;
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     // the child exits at once, leaving "sleep 120" running; run_session ends it
-    auto bg = prism::detail::run_session({probe, "spawn-bg", "120"});
+    auto bg = prism::exec::run_session({probe, "spawn-bg", "120"});
     CHECK(bg.rc == 0);
     CHECK_FALSE(bg.timed_out);
     const long gc = std::atol(bg.out.c_str());
@@ -370,7 +394,7 @@ TEST_CASE("run_session: a background grandchild left behind dies with its sessio
 }
 #else
 TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, cwd and stdin") {
-    auto r = prism::detail::run_session({"sh", "-c", "echo ok; echo err >&2; exit 3"});
+    auto r = prism::exec::run_session({"sh", "-c", "echo ok; echo err >&2; exit 3"});
     CHECK_FALSE(r.timed_out);
     CHECK_FALSE(r.failed);
     CHECK(r.rc == 3);
@@ -378,12 +402,12 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(r.err == "err\n");
 
     Tmp t("prism_qa_sess_");
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_PROBE", "v1"}, {"PATH", std::getenv("PATH") ? std::getenv("PATH") : "/usr/bin:/bin"}};
     so.cwd = t.path;
     const std::string input = "line1\nline2\n";
     so.input = input;
-    auto e = prism::detail::run_session({"sh", "-c", "echo $PRISM_QA_PROBE; pwd; cat"}, so);
+    auto e = prism::exec::run_session({"sh", "-c", "echo $PRISM_QA_PROBE; pwd; cat"}, so);
     CHECK(e.rc == 0);
     auto ls = lines_of(e.out);
     REQUIRE(ls.size() == 4);
@@ -393,13 +417,13 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(ls[3] == "line2");
 
     // no input: stdin is /dev/null, not the test runner's terminal
-    auto n = prism::detail::run_session({"sh", "-c", "cat; echo done"});
+    auto n = prism::exec::run_session({"sh", "-c", "cat; echo done"});
     CHECK(n.out == "done\n");
     // a killed child reports the signal; a missing program is 127
-    CHECK(prism::detail::run_session({"sh", "-c", "kill -9 $$"}).rc == -9);
-    CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
+    CHECK(prism::exec::run_session({"sh", "-c", "kill -9 $$"}).rc == -9);
+    CHECK(prism::exec::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
     // a background grandchild left behind by a finished child dies with its session
-    auto bg = prism::detail::run_session({"sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"});
+    auto bg = prism::exec::run_session({"sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"});
     const long gc = std::atol(bg.out.c_str());
     REQUIRE(gc > 1);
     CHECK(gone(gc));
@@ -408,9 +432,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
 
 #ifndef _WIN32
 TEST_CASE("run_session: RLIMIT_AS applies to the child") {
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.rlimit_as_mb = 64;
-    auto r = prism::detail::run_session({"sh", "-c", "ulimit -v"}, so);
+    auto r = prism::exec::run_session({"sh", "-c", "ulimit -v"}, so);
     CHECK(r.rc == 0);
     CHECK(r.out == std::to_string(64 * 1024) + "\n");
 }
@@ -451,14 +475,14 @@ TEST_CASE("triage-selfscan buckets the self-scan fixture") {
 }
 
 TEST_CASE("prism-qa triage-selfscan prints the same lines") {
-    auto r = prism::detail::run_session(
+    auto r = prism::exec::run_session(
         {sibling("prism-qa").string(), "triage-selfscan", (repo() / "testdata" / "fixtures" / "selfscan_min").string()});
     REQUIRE(r.rc == 0);
     CHECK(has_line(lf(r.out), "total FAILED: 4"));
     CHECK(has_line(lf(r.out), "summary: 1 / 3 / 1"));
-    auto bad = prism::detail::run_session({sibling("prism-qa").string(), "triage-selfscan", "/nonexistent"});
+    auto bad = prism::exec::run_session({sibling("prism-qa").string(), "triage-selfscan", "/nonexistent"});
     CHECK(bad.rc == 2);
-    CHECK(prism::detail::run_session({sibling("prism-qa").string(), "no-such-command"}).rc == 2);
+    CHECK(prism::exec::run_session({sibling("prism-qa").string(), "no-such-command"}).rc == 2);
 }
 
 // ---------------------------------------------------------------- pir-lean-check
@@ -513,7 +537,7 @@ TEST_CASE("pir_lean_check fixtures give their expected verdicts") {
         auto want = prism::qa::read_text(fs::path(f).replace_extension(".expected"));
         while (!want.empty() && (want.back() == '\n' || want.back() == '\r' || want.back() == ' '))
             want.pop_back();
-        auto r = prism::detail::run_session({checker->string(), f.string()});
+        auto r = prism::exec::run_session({checker->string(), f.string()});
         auto ls = lines_of(r.out);
         REQUIRE_FALSE(ls.empty());
         CHECK_MESSAGE(ls.back() == want, f.filename().string());
@@ -525,7 +549,7 @@ TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
     auto checker = built_checker();
     if (!checker) {
         // the driver itself reports NOTRUN (exit 2), never a pass
-        auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
+        auto r = prism::exec::run_session({sibling("prism-qa").string(), "pir-lean-check",
                                              (repo() / "testdata" / "pir").string(), "--checker",
                                              "/nonexistent/pir_lean_check"});
         CHECK(r.rc == 2);
@@ -533,7 +557,7 @@ TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
         MESSAGE("NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)");
         return;
     }
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "pir-lean-check",
                                          (repo() / "testdata" / "pir").string(), "--bin", sibling("prism").string(),
                                          "--checker", checker->string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
@@ -630,9 +654,9 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     REQUIRE_MESSAGE(ir, err);
     auto run = [&](const std::string& fn, int w, int ret, std::uint64_t a) {
         std::ofstream(t.path / "h.ll") << prism::qa::lli_harness(*ir, fn, {w}, ret, {a});
-        prism::detail::SessionOptions so;
+        prism::exec::SessionOptions so;
         so.timeout_s = 60;
-        auto r = prism::detail::run_session(
+        auto r = prism::exec::run_session(
             {fe.lli->string(), "--entry-function=__prism_lli_main", (t.path / "h.ll").string()}, so);
         auto ls = lines_of(r.out);
         return ls.empty() ? std::string("rc ") + std::to_string(r.rc) + " " + r.err : ls.back();
@@ -641,7 +665,7 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     CHECK(run("add1", 8, 8, 255) == "0");               // i8 wraps; printed zero-extended
     CHECK(run("neg", 32, 32, 1) == "4294967295");       // -1 as an unsigned 32-bit value
     // the driver without the Lean evaluator: NOTRUN, exit 2
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "llvm-sem-vs-lli", src.string()});
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "llvm-sem-vs-lli", src.string()});
     if (!fs::exists(repo() / "proofs" / "refinement" / ".lake" / "build" / "bin" / "llvm_eval")) {
         CHECK(r.rc == 2);
         CHECK(r.out.find("NOTRUN: missing llvm_eval") != std::string::npos);
@@ -780,15 +804,15 @@ TEST_CASE("assurance-check catches missing artefacts") {
     CHECK_FALSE(prism::qa::is_path_ref("build/prism"));
 
     // the standalone checker (the docs CI job) agrees: exit 0 on the package, 1 here
-    auto ok = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
+    auto ok = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                           repo().string()});
     CHECK_MESSAGE(ok.rc == 0, (ok.out + ok.err));
     CHECK(ok.out.find(" 0 missing") != std::string::npos);
-    auto bad = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
+    auto bad = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                            repo().string(), "--docs", t.path.string()});
     CHECK(bad.rc == 1);
     CHECK(bad.out.find("5 missing") != std::string::npos);
-    auto missing = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--docs",
+    auto missing = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--docs",
                                                (t.path / "nope").string()});
     CHECK(missing.rc == 2);
 }
@@ -820,7 +844,7 @@ TEST_CASE("docs: every --help flag of prism and prism prove is in docs/USER_GUID
     for (const auto& sub : std::vector<std::vector<std::string>>{{"--help"}, {"prove", "--help"}}) {
         std::vector<std::string> argv{sibling("prism").string()};
         argv.insert(argv.end(), sub.begin(), sub.end());
-        auto r = prism::detail::run_session(argv);
+        auto r = prism::exec::run_session(argv);
         REQUIRE(r.rc == 0);
         CHECK_FALSE(prism::qa::flags_of(r.out).empty());
         auto missing = prism::qa::undocumented_flags(r.out, guide);
@@ -859,7 +883,7 @@ TEST_CASE("docs: every verdict has the VERDICTS.md anchor reports link to") {
 }
 
 TEST_CASE("prism-qa docs-check passes on this repository") {
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "docs-check", "--bin", sibling("prism").string()});
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "docs-check", "--bin", sibling("prism").string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
     CHECK(has_line(lf(r.out), "docs-check: 0 problems"));
 }

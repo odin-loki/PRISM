@@ -22,6 +22,8 @@
 // scanned, so the scan errs towards reporting a word, never towards hiding
 // one. Exit 2 on a usage or read error.
 
+#define PRISM_LOG_STANDALONE  // single-file tool: inline prism::log, no library
+#include "../../include/prism/log.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -211,8 +213,8 @@ LEAN_AUDIT_INLINE std::vector<std::string> axiom_offenders(std::string_view log,
 }
 
 LEAN_AUDIT_INLINE int usage() {
-    std::cerr << "usage: lean_audit scan --words W1,W2 [--toplevel K1,K2] PATH...\n"
-                 "       lean_audit axioms LOG [--allowed A1,A2]\n";
+    prism::log::plain("usage: lean_audit scan --words W1,W2 [--toplevel K1,K2] PATH...\n"
+                 "       lean_audit axioms LOG [--allowed A1,A2]\n");
     return 2;
 }
 
@@ -282,5 +284,8 @@ LEAN_AUDIT_INLINE int run(int argc, char** argv, std::ostream& out, std::ostream
 }  // namespace lean_audit
 
 #ifndef LEAN_AUDIT_NO_MAIN
-int main(int argc, char** argv) { return lean_audit::run(argc, argv, std::cout, std::cerr); }
+int main(int argc, char** argv) {
+    prism::log::set_program("lean_audit");
+    return lean_audit::run(argc, argv, std::cout, prism::log::err_stream());
+}
 #endif

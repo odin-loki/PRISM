@@ -1,9 +1,11 @@
 #include <atomic>
+#include "prism/exec.hpp"
 #include "prism/pir/frontend.hpp"
 
 #include "prism/pir.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -35,7 +37,7 @@ bool lp64_clang_probe(const std::filesystem::path& clang) {
         }
         f << kProbeSrc;
     }
-    auto r = detail::run_process({clang.string(), "--target=" + std::string(lp64_target_triple()), "-S", "-emit-llvm", "-x",
+    auto r = prism::exec::run_process({clang.string(), "--target=" + std::string(lp64_target_triple()), "-S", "-emit-llvm", "-x",
                                   "c", "-o", out.string(), src.string()},
                                  20.0);
     std::string ir;
@@ -125,7 +127,7 @@ std::string lowerswitch_pass(const std::filesystem::path& opt) {
         if (auto it = cache.find(key); it != cache.end()) return it->second;
     }
     std::string name = "lowerswitch";
-    auto r = detail::run_process({key, "--print-passes"}, 30.0);
+    auto r = prism::exec::run_process({key, "--print-passes"}, 30.0);
     if (!r.failed && !r.timed_out && r.rc == 0 && r.text.find("lowerswitch") == std::string::npos &&
         r.text.find("lower-switch") != std::string::npos)
         name = "lower-switch";

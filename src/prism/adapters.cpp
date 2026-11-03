@@ -1,3 +1,4 @@
+#include "prism/settings.hpp"
 #include "prism/stages.hpp"
 #include "prism/astlint.hpp"
 #include "prism/threads.hpp"
@@ -6,7 +7,9 @@
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
 #include "prism/sandbox.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "sanitize_detail.hpp"
 #include "adapters_internal.hpp"
 
@@ -101,7 +104,7 @@ std::string tail(const std::string& s, std::size_t n) {
     return s.substr(s.size() - n);
 }
 
-void refuse_disabled_checks(const std::vector<std::string>& cmd) { detail::refuse_disabled_checks(cmd); }
+void refuse_disabled_checks(const std::vector<std::string>& cmd) { exec::refuse_disabled_checks(cmd); }
 
 Finding finding(std::string stage, std::string_view status, std::string file, std::string cls,
                 std::string message, std::string_view strength) {
@@ -167,17 +170,18 @@ struct TempDir {
 ProcResult run_argv(const std::vector<std::string>& args, double timeout_s, const fs::path& cwd = {},
                     const sandbox::Limits& limits = sandbox::Limits()) {
     refuse_disabled_checks(args);
-    detail::RunSpec spec;
+    exec::Spec spec;
     spec.argv = args;
-    spec.timeout_s = timeout_s;
-    spec.cwd = cwd;
-    spec.limits = limits;
+    spec.timeout_ms = timeout_s > 0 ? static_cast<std::uint64_t>(timeout_s * 1000) : 0;
+    spec.cwd = cwd.string();
+    exec::apply_limits(spec, limits.enabled, limits.cpu_seconds, limits.limit_as);
     spec.merge_stderr = true;
-    auto r = detail::run(spec);
+    spec.max_output = ~0ull;
+    auto r = exec::run(spec);
     ProcResult out;
     out.text = std::move(r.out);
     out.err = std::move(r.err);
-    out.rc = r.rc;
+    out.rc = r.failed ? 127 : (r.term_signal ? -r.term_signal : r.exit_code);
     out.timed_out = r.timed_out;
     out.failed = r.failed;
     return out;
@@ -2201,7 +2205,7 @@ constexpr PbsdHeavy kPbsdHeavy[] = {
 // guessed default location. prism/pbsd.py _looked_root.
 fs::path pbsd_looked_root(const Config& cfg) {
     if (!cfg.pbsd_root.empty()) return cfg.pbsd_root;
-    if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return fs::path(env);
+    if (auto v = settings::pbsd().get(); !v.empty()) return fs::path(v);
     return {};
 }
 
