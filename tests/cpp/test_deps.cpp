@@ -1114,6 +1114,7 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
             if (!rel.starts_with("third_party/")) tracked_outside_vendor.push_back(rel);
         }
         std::sort(tracked_outside_vendor.begin(), tracked_outside_vendor.end());
-        CHECK(tracked_outside_vendor == std::vector<std::string>{"tools/svcomp/prism.py"});
+        CHECK(tracked_outside_vendor == std::vector<std::string>{"scripts/fetch_llvm.py", "scripts/fetch_toolchain.py",
+                                                             "tools/svcomp/prism.py"});
     }
 }

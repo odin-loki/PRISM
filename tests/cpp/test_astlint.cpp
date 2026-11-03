@@ -19,6 +19,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <sstream>
 
 namespace {
 namespace fs = std::filesystem;
@@ -455,6 +456,24 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
                 CHECK(f.extra.at("ast_backend") == fe);
             }
         }
+#ifdef _WIN32
+        // Lines in `#ifndef _WIN32` blocks are preprocessed out here: the AST
+        // never sees them and the regex layer may or may not, so neither
+        // direction is checked for them on Windows.
+        {
+            std::set<int> posix_only;
+            int ln = 1;
+            bool in = false;
+            std::istringstream ss(marked);
+            for (std::string l; std::getline(ss, l); ++ln) {
+                if (l.rfind("#ifndef _WIN32", 0) == 0) in = true;
+                else if (in && l.rfind("#endif", 0) == 0) in = false;
+                else if (in) posix_only.insert(ln);
+            }
+            std::erase_if(want, [&](auto& w) { return posix_only.contains(w.first); });
+            std::erase_if(got, [&](auto& g) { return posix_only.contains(g.first); });
+        }
+#endif
         for (auto& w : want)
             if (!got.contains(w)) FAIL_CHECK("missed: line " << w.first << " " << w.second);
         for (auto& g : got)
