@@ -1,3 +1,6 @@
+#include <chrono>
+#include <mutex>
+#include <thread>
 int tthread_g;
 
 void tthread_bad(void) {

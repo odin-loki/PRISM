@@ -1,3 +1,4 @@
+#include <tuple>
 int tuple_unenc_bad(int n) {
     std::tuple<int> t;
     return n;

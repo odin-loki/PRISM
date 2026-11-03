@@ -1,3 +1,4 @@
+#include <thread>
 int g;
 
 void jrace_t1(void) { g = 1; }

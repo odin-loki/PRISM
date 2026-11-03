@@ -1,3 +1,4 @@
+#include <set>
 int mset_unenc_bad(int n) {
     std::multiset<int> s;
     return n;

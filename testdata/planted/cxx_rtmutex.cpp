@@ -1,3 +1,4 @@
+#include <mutex>
 int rtmutex_unenc_bad(int n) {
     std::recursive_timed_mutex x;
     return n;

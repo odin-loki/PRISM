@@ -1,3 +1,4 @@
+#include <utility>
 enum E { A, B };
 void to_under_bad(E e) {
     auto x = std::to_underlying(e);

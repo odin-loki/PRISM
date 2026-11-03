@@ -1,3 +1,4 @@
+#include <exception>
 struct U {
     ~U() { if (std::uncaught_exceptions()) throw 1; }
 };

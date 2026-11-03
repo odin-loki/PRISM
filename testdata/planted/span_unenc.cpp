@@ -1,3 +1,4 @@
+#include <span>
 int span_unenc_bad(int n) {
     std::span<int> s;
     (void)s;

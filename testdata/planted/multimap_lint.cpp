@@ -1,3 +1,4 @@
+#include <map>
 void mmap_find_bad(void) {
     std::multimap<int,int> m;
     auto it=m.find(1);

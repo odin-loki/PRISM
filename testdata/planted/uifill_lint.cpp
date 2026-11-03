@@ -1,3 +1,4 @@
+#include <memory>
 int uifill_bad(int *out) {
     std::uninitialized_fill(out, out + 4, 0);
     return out[9];

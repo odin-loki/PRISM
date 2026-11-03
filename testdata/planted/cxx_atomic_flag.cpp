@@ -1,3 +1,4 @@
+#include <atomic>
 int aflag_unenc_bad(int n) {
     std::atomic_flag x;
     return n;

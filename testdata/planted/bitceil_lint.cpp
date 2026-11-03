@@ -1,3 +1,4 @@
+#include <bit>
 int bitceil_bad(unsigned n, int *p) {
     return p[std::bit_ceil(n)];
 }

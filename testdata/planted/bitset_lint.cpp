@@ -1,3 +1,4 @@
+#include <bitset>
 bool bitset_bad(unsigned n) {
     std::bitset<8> b;
     return b.test(n);

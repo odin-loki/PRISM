@@ -1,3 +1,4 @@
+#include <exception>
 void curexc_bad(void) {
     std::rethrow_exception(std::current_exception());
 }

@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include "prism/astlint.hpp"
+#include "prism/checkers.hpp"
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
@@ -707,8 +708,8 @@ void unchecked_malloc_plant(void) {
 }
 int missing_ret_bad(void) {
     int x = 1;
-    x = 2; // expect: CTRL-MISSING-RETURN, CTRL-DEAD-STORE
-}
+    x = 2; // expect: CTRL-DEAD-STORE
+} // expect: CTRL-MISSING-RETURN
 int missing_ret_ok(void) { return 1; }
 void noreturn_bad(void) { exit(1); } // expect: FUNC-NORETURN
 _Noreturn void noreturn_ok(void) { exit(1); }
@@ -732,7 +733,14 @@ int masked_bad(int f) {
     }
     return d;
 }
-#include <pthread.h> /* the real types: <sys/types.h> already brings glibc's pthread_mutex_t */
+#include <pthread.h>
+#include <threads.h>
+// pthread_mutex_t / mtx_t and their lock, unlock and init
+// functions come from the system headers above: a local typedef
+// clashes with glibc's union pthread_mutex_t, which stdlib.h
+// already pulls in on some hosts.
+//
+//
 void prism_mtx_lock(int *m);
 void prism_mtx_unlock(int *m);
 void double_unlock_bad(int *m) {
@@ -783,6 +791,30 @@ void lock_init_ok(void) {
     pthread_mutex_init(&m, 0);
     pthread_mutex_lock(&m);
 }
+void order_ab(int *la, int *lb) {
+    prism_mtx_lock(la); // expect: LOCK-ORDER
+    prism_mtx_lock(lb);
+    prism_mtx_unlock(lb);
+    prism_mtx_unlock(la);
+}
+void order_ab_same(int *la, int *lb) {
+    prism_mtx_lock(la); // expect: LOCK-ORDER
+    prism_mtx_lock(lb);
+    prism_mtx_unlock(lb);
+    prism_mtx_unlock(la);
+}
+void order_ab_only(int *la, int *lc) {
+    prism_mtx_lock(la);
+    prism_mtx_lock(lc);
+    prism_mtx_unlock(lc);
+    prism_mtx_unlock(la);
+}
+void order_ba(int *la, int *lb) {
+    prism_mtx_lock(lb); // expect: LOCK-ORDER
+    prism_mtx_lock(la);
+    prism_mtx_unlock(la);
+    prism_mtx_unlock(lb);
+}
 struct ast_item { char *name; };
 size_t str_null_member_plant(struct ast_item *it) {
     return strlen(it->name); // expect: STR-NULL-MEMBER
@@ -794,6 +826,17 @@ void ptr_chain_null_plant(struct ast_link *a, int v) {
 size_t str_null_arg_plant(char *s) {
     return strlen(s); // expect: STR-NULL-ARG
 }
+#define M_NOWAIT 0x02
+// Hosted malloc takes one argument: the flag rides in the size expression.
+void nowait_bad(unsigned n) {
+    char *p = malloc(n | M_NOWAIT);
+    p[0] = 1; // expect: MEM-NOWAIT
+}
+void nowait_ok(unsigned n) {
+    char *p = malloc(n | M_NOWAIT);
+    if (!p) return;
+    p[0] = 1;
+}
 void *alloca(__SIZE_TYPE__);
 void alloca_bad(int n) {
     char *p = alloca(n); // expect: MEM-ALLOCA
@@ -803,6 +846,35 @@ void alloca_ok(void) {
     char *p = alloca(16);
     (void)p;
 }
+struct cap_buf { char *data; unsigned cap; };
+int cap_first_bad(struct cap_buf *b) {
+    char *n;
+    b->cap *= 2; // expect: MEM-CAPACITY-FIRST
+    n = realloc(b->data, b->cap);
+    if (n == NULL)
+        return -1;
+    b->data = n;
+    return 0;
+}
+int cap_first_restored(struct cap_buf *b) {
+    char *n;
+    b->cap *= 2;
+    n = realloc(b->data, b->cap);
+    if (n == NULL) {
+        b->cap /= 2;
+        return -1;
+    }
+    b->data = n;
+    return 0;
+}
+int cap_after_ok(struct cap_buf *b) {
+    char *n = realloc(b->data, b->cap * 2);
+    if (!n)
+        return -1;
+    b->data = n;
+    b->cap *= 2;
+    return 0;
+}
 void sprintf_bad(const char *s) {
     char b[8];
     sprintf(b, "%s", s); // expect: STR-SPRINTF
@@ -811,6 +883,7 @@ void sprintf_ok(const char *s) {
     char b[8];
     snprintf(b, sizeof b, "%s", s);
 }
+// snprintf comes from <stdio.h>.
 void snprintf_bad(void) {
     char b[4];
     snprintf(b, 64, "%s", "x"); // expect: STR-SNPRINTF
@@ -1054,6 +1127,113 @@ void atom_ok(void) {
     g_counter = g_counter + 1;
     prism_mtx_unlock(0);
 }
+void atom_inc_bad(void) {
+    ++g_counter; // expect: CONC-ATOMICITY
+}
+void atom_local_ok(void) {
+    int g_counter = 0;
+    g_counter++;
+    (void)g_counter;
+}
+int toctou_other_path_ok(const char *path, const char *other) {
+    if (access(path, 0) != 0)
+        return -1;
+    return open(other, 0);
+}
+int fd_assign_guard_ok(const char *path) {
+    FILE *fp;
+    if ((fp = fopen(path, "r")) == NULL)
+        return -1;
+    fclose(fp);
+    return 0;
+}
+int fd_open_bad(const char *path, int err) {
+    int fd = open(path, 0);
+    if (fd < 0)
+        return -1;
+    if (err)
+        return 1; // expect: RES-FD-LEAK
+    close(fd);
+    return 0;
+}
+enum { VLA_K = 4 };
+#define VLA_N 8
+void vla_const_ok(void) {
+    int a[VLA_K];
+    char b[VLA_N * 2];
+    (void)a;
+    (void)b;
+}
+void vla_2d_bad(int n) {
+    int m[n][4]; // expect: MEM-VLA-SIZE
+    (void)m;
+}
+int sib_read(int sib_idx) {
+    if (sib_idx < 0)
+        return -1;
+    return sib_idx;
+}
+int sib_write_bad(int sib_idx) {
+    int buf[4];
+    buf[sib_idx] = 1; // expect: CTRL-SIBLING-ASYMMETRY
+    return buf[0];
+}
+int sib_write_ok(int sib_idx) {
+    int buf[4];
+    if (sib_idx > 3)
+        return 0;
+    buf[sib_idx] = 1;
+    return buf[0];
+}
+long sib_other_type(long sib_idx) {
+    long buf[4];
+    buf[sib_idx] = 1;
+    return buf[0];
+}
+#include <pwd.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+int sock_bad(void) {
+    int s;
+    s = socket(2, 1, 0); // expect: API-SOCKET
+    return s + 1;
+}
+int sock_ok(void) {
+    int s = socket(2, 1, 0);
+    if (s < 0)
+        return -1;
+    return s + 1;
+}
+int sock_cond_ok(void) {
+    int s;
+    if ((s = socket(2, 1, 0)) < 0)
+        return -1;
+    return s + 1;
+}
+const char *pw_bad(void) {
+    struct passwd *pw = getpwuid(0); // expect: API-GETPWUID
+    return pw->pw_name;
+}
+const char *pw_ok(void) {
+    struct passwd *pw = getpwuid(0);
+    if (!pw)
+        return 0;
+    return pw->pw_name;
+}
+int map_bad(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0); // expect: API-MMAP
+    return m[0];
+}
+int map_ok(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (m == MAP_FAILED)
+        return -1;
+    return m[0];
+}
+int map_sizeof_ok(int fd) {
+    char *m = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+    return (int)sizeof(*m);
+}
 )";
 
 // Kernel-style malloc(size, flags) cannot be declared next to <stdlib.h>, so
@@ -1139,6 +1319,839 @@ void nx() noexcept {
 }
 void tnew() {
     throw new int(1); // expect: CXX-THROW-NEW
+}
+#include <algorithm>
+#include <bit>
+#include <numeric>
+int tok_gcd_bad(int x, int y) {
+    int a[8] = {};
+    int g = std::gcd(x, y);
+    return a[g]; // expect: CXX-GCD
+}
+int tok_gcd_ok(int x, int y) {
+    int a[8] = {};
+    int g = std::gcd(x, y);
+    if (g >= 8)
+        return 0;
+    return a[g];
+}
+int tok_clamp_direct(int x) {
+    std::vector<int> v(4);
+    return v[std::clamp(x, 0, 9)]; // expect: CXX-CLAMP, CXX-VECTOR-INDEX
+}
+int tok_bitwidth_bad(unsigned x) {
+    int a[8] = {};
+    int w = std::bit_width(x);
+    return a[w]; // expect: CXX-BIT-WIDTH
+}
+int tok_rotl_unused(unsigned x) {
+    int a[8] = {};
+    unsigned r = std::rotl(x, 3);
+    return a[0] + static_cast<int>(r);
+}
+#include <list>
+#include <map>
+#include <queue>
+#include <set>
+#include <unordered_map>
+int cont_set_bad(const std::set<int> &s) {
+    return *s.find(3); // expect: CXX-SET-FIND
+}
+int cont_set_ok(const std::set<int> &s) {
+    auto it = s.find(3);
+    return it != s.end() ? *it : 0;
+}
+int cont_map_bad(const std::map<int, int> &m) {
+    return m.at(1); // expect: CXX-MAP-AT
+}
+int cont_umap_ok(const std::unordered_map<int, int> &m) {
+    return m.contains(1) ? m.at(1) : 0;
+}
+int cont_list_bad() {
+    std::list<int> l;
+    return l.front(); // expect: CXX-LIST-FRONT
+}
+int cont_pq_ok() {
+    std::priority_queue<int> q;
+    if (q.empty())
+        return 0;
+    return q.top();
+}
+#include <ranges>
+int view_take_bad(const std::vector<int> &v, int i) {
+    auto t = v | std::views::take(2);
+    (void)t;
+    return v[i]; // expect: CXX-TAKE, CXX-VECTOR-INDEX
+}
+int view_take_ok(const std::vector<int> &v, int i) {
+    auto t = v | std::views::take(2);
+    (void)t;
+    if (i < 0 || i >= 2)
+        return 0;
+    return v[i]; // expect: CXX-VECTOR-INDEX
+}
+int view_none(const std::vector<int> &v, int i) {
+    return v[i]; // expect: CXX-VECTOR-INDEX
+}
+#include <deque>
+#include <stack>
+int deque_bad(const std::deque<int> &d, unsigned i) {
+    return d[i]; // expect: CXX-DEQUE-INDEX
+}
+int deque_ok(const std::deque<int> &d, unsigned i) {
+    if (i < d.size())
+        return d[i];
+    return 0;
+}
+int stack_bad() {
+    std::stack<int> st;
+    return st.top(); // expect: CXX-STACK-TOP
+}
+#include <functional>
+#include <future>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <exception>
+#include <stdexcept>
+#include <cstdlib>
+#include <memory>
+#include <initializer_list>
+int bind_target(int a, int b) { return a + b; }
+int bind_bad() {
+    auto f = std::bind(bind_target, 1, std::placeholders::_1); // expect: CXX-STD-BIND
+    return f(2);
+}
+int bind_ok() {
+    auto f = [](int x) { return bind_target(1, x); };
+    return f(2);
+}
+std::condition_variable g_cv;
+std::mutex g_m;
+void notify_bad() {
+    std::unique_lock<std::mutex> lk(g_m);
+    std::notify_all_at_thread_exit(g_cv, std::move(lk)); // expect: CXX-NOTIFY-THREAD-EXIT
+}
+void notify_ok(bool &ready) {
+    std::unique_lock<std::mutex> lk(g_m);
+    std::notify_all_at_thread_exit(g_cv, std::move(lk));
+    std::unique_lock<std::mutex> lk2(g_m);
+    g_cv.wait(lk2, [&] { return ready; });
+}
+void nested_bad() {
+    std::throw_with_nested(std::runtime_error("x")); // expect: CXX-NESTED-EXCEPTION
+}
+void nested_ok() {
+    try {
+        throw std::runtime_error("a");
+    } catch (...) {
+        std::throw_with_nested(std::runtime_error("b"));
+    }
+}
+void qe_handler() {}
+void quick_bad() {
+    std::quick_exit(1); // expect: CXX-QUICK-EXIT
+}
+void quick_ok() {
+    std::at_quick_exit(qe_handler);
+    std::quick_exit(1);
+}
+int async_work() { return 1; }
+void async_bad() {
+    std::async(std::launch::async, async_work); // expect: CXX-STD-ASYNC
+}
+int async_ok() {
+    auto fut = std::async(std::launch::async, async_work);
+    return fut.get();
+}
+const int *ilist_bad() {
+    return std::initializer_list<int>{1, 2, 3}.begin(); // expect: CXX-INIT-LIST-DANGLE
+}
+int ilist_ok(std::initializer_list<int> il) {
+    return *il.begin();
+}
+template <class T> struct task {
+    T v;
+};
+template <class T> T sync_wait(task<T> t) { return t.v; }
+int task_bad() {
+    task<int> t = {1}; // expect: CXX-TASK
+    return t.v;
+}
+int task_ok() {
+    task<int> t = {1};
+    return sync_wait(t);
+}
+int auto_ptr_bad() {
+    std::auto_ptr<int> p(new int(1)); // expect: CXX-AUTO-PTR
+    return *p;
+}
+#include <optional>
+#include <variant>
+#include <vector>
+#include <string>
+void may_throw();
+void catch_all_bad() {
+    try {
+        may_throw();
+    } catch (...) { // expect: CXX-CATCH-ALL
+    }
+}
+void catch_all_ok() {
+    try {
+        may_throw();
+    } catch (...) {
+        throw;
+    }
+}
+void thread_body() {}
+void thread_bad() {
+    std::thread th(thread_body); // expect: CXX-STD-THREAD
+}
+void thread_ok() {
+    std::thread th(thread_body);
+    th.join();
+}
+std::optional<int> maybe_int();
+int optional_bad() {
+    std::optional<int> o = maybe_int();
+    return *o; // expect: CXX-OPTIONAL-NULL
+}
+int optional_ok() {
+    std::optional<int> o = maybe_int();
+    if (o.has_value())
+        return *o;
+    return 0;
+}
+int variant_bad(std::variant<int, float> v) {
+    return std::get<int>(v); // expect: CXX-VARIANT-GET
+}
+int variant_ok(std::variant<int, float> v) {
+    if (std::holds_alternative<int>(v))
+        return std::get<int>(v);
+    return 0;
+}
+int vec_index_bad(const std::vector<int> &v, unsigned k) {
+    return v[k]; // expect: CXX-VECTOR-INDEX
+}
+int vec_index_ok(const std::vector<int> &v, unsigned k) {
+    if (k < v.size())
+        return v[k];
+    return 0;
+}
+struct DynBase {
+    virtual ~DynBase() = default;
+};
+struct DynDerived : DynBase {
+    int x = 0;
+};
+int dyn_bad(DynBase *b) {
+    DynDerived *d = dynamic_cast<DynDerived *>(b);
+    return d->x; // expect: CXX-DYNAMIC-CAST-NULL
+}
+int dyn_ok(DynBase *b) {
+    DynDerived *d = dynamic_cast<DynDerived *>(b);
+    if (d)
+        return d->x;
+    return 0;
+}
+#include <bit>
+#include <cstdint>
+int unique_reset_bad() {
+    std::unique_ptr<int> up(new int(1));
+    int *raw = up.get();
+    up.reset();
+    return *raw; // expect: CXX-UNIQUE-RESET
+}
+int unique_reset_ok() {
+    std::unique_ptr<int> up(new int(1));
+    int *raw = up.get();
+    int v = *raw;
+    up.reset();
+    return v;
+}
+int shared_get_bad() {
+    std::shared_ptr<int> sp = std::make_shared<int>(1);
+    int *raw = sp.get();
+    sp = nullptr;
+    return *raw; // expect: CXX-SHARED-PTR-GET
+}
+char string_data_bad() {
+    std::string s = "abc";
+    const char *raw = s.c_str();
+    s += "defghijklmnopqrstuvwxyz";
+    return raw[0]; // expect: CXX-STRING-DATA
+}
+char string_data_ok() {
+    std::string s = "abc";
+    const char *raw = s.c_str();
+    char c = raw[0];
+    s.clear();
+    return c;
+}
+int unique_release_bad() {
+    std::unique_ptr<int> up(new int(1));
+    int *p = up.release();
+    delete p;
+    return up.get() != nullptr; // expect: CXX-UNIQUE-RELEASE
+}
+int optional_value_bad() {
+    std::optional<int> o = maybe_int();
+    return o.value(); // expect: CXX-OPTIONAL-VALUE
+}
+int optional_value_ok() {
+    std::optional<int> o = maybe_int();
+    return o.has_value() ? o.value() : 0;
+}
+void fwd_ref_bad(std::vector<std::string> &out, std::string &&s) {
+    out.push_back(s); // expect: CXX-FORWARDING-REF
+}
+void fwd_ref_ok(std::vector<std::string> &out, std::string &&s) {
+    out.push_back(std::move(s));
+}
+std::uintptr_t bit_cast_ok(char *p) {
+    return std::bit_cast<std::uintptr_t>(p);
+}
+float *bit_cast_bad(int *p) {
+    return std::bit_cast<float *>(p); // expect: CXX-BIT-CAST
+}
+#include <any>
+#include <latch>
+#include <shared_mutex>
+#include <stop_token>
+void jthread_bad() {
+    std::jthread jt(thread_body); // expect: CXX-STD-JTHREAD
+}
+void jthread_ok() {
+    std::jthread jt(thread_body);
+    jt.request_stop();
+}
+int smx_bad(int &v) {
+    std::shared_mutex smx;
+    smx.lock(); // expect: CXX-SHARED-MUTEX
+    return v;
+}
+int smx_ok(int &v) {
+    std::shared_mutex smx;
+    smx.lock();
+    int r = v;
+    smx.unlock();
+    return r;
+}
+void latch_bad() {
+    std::latch lt(1);
+    lt.wait(); // expect: CXX-LATCH
+}
+void latch_ok() {
+    std::latch lt(1);
+    lt.count_down();
+    lt.wait();
+}
+void cv_bad() {
+    std::unique_lock<std::mutex> lk(g_m);
+    g_cv.wait(lk); // expect: CXX-CONDITION-WAIT
+}
+void cv_ok(bool &ready) {
+    std::unique_lock<std::mutex> lk(g_m);
+    g_cv.wait(lk, [&] { return ready; });
+}
+int fn_null_bad(std::function<int()> make) {
+    std::function<int()> f = make;
+    return f(); // expect: CXX-STD-FUNCTION-NULL
+}
+int fn_null_ok(std::function<int()> make) {
+    std::function<int()> f = make;
+    if (f)
+        return f();
+    return 0;
+}
+int future_bad() {
+    std::future<int> fu;
+    return fu.get(); // expect: CXX-FUTURE-GET
+}
+int future_ok() {
+    std::future<int> fu = std::async(std::launch::async, async_work);
+    return fu.get();
+}
+int any_bad(const std::any &a) {
+    return std::any_cast<int>(a); // expect: CXX-ANY-CAST
+}
+int any_ok(const std::any &a) {
+    const int *p = std::any_cast<int>(&a);
+    return p ? *p : 0;
+}
+#include <semaphore>
+#include <syncstream>
+#include <iostream>
+void sem_bad() {
+    std::counting_semaphore<4> sem(2);
+    sem.acquire(); // expect: CXX-SEMAPHORE
+}
+void sem_ok() {
+    std::counting_semaphore<4> sem(2);
+    sem.acquire();
+    sem.release();
+}
+void binsem_bad() {
+    std::binary_semaphore bs(0);
+    bs.acquire(); // expect: CXX-BINARY-SEMAPHORE
+}
+void binsem_ok() {
+    std::binary_semaphore bs(0);
+    if (bs.try_acquire())
+        bs.release();
+}
+void syncbuf_bad() {
+    std::syncbuf sb(std::cout.rdbuf()); // expect: CXX-SYNCBUF
+}
+void syncbuf_ok() {
+    std::syncbuf sb(std::cout.rdbuf());
+    sb.emit();
+}
+int ptask_bad() {
+    std::packaged_task<int()> pt(async_work);
+    pt(); // expect: CXX-PACKAGED-TASK
+    return 0;
+}
+int ptask_ok() {
+    std::packaged_task<int()> pt(async_work);
+    if (pt.valid())
+        pt();
+    return 0;
+}
+int promise_bad() {
+    std::promise<int> pr;
+    std::future<int> fu = pr.get_future();
+    return fu.get(); // expect: CXX-PROMISE
+}
+int promise_ok() {
+    std::promise<int> pr;
+    std::future<int> fu = pr.get_future();
+    pr.set_value(1);
+    return fu.get();
+}
+int weak_bad(std::weak_ptr<int> w) {
+    std::shared_ptr<int> sp = w.lock(); // expect: CXX-WEAK-PTR
+    return *sp;
+}
+int weak_ok(std::weak_ptr<int> w) {
+    std::shared_ptr<int> sp = w.lock();
+    if (sp)
+        return *sp;
+    return 0;
+}
+void stop_bad(std::stop_token st, int &n) {
+    while (true) { // expect: CXX-STOP-TOKEN
+        ++n;
+    }
+}
+void stop_ok(std::stop_token st, int &n) {
+    while (!st.stop_requested()) {
+        ++n;
+    }
+}
+#include <regex>
+#include <random>
+#include <chrono>
+#include <stacktrace>
+#include <iterator>
+void vol_bad() {
+    volatile int vreg = 0;
+    *(int *)&vreg = 5; // expect: CXX-VOLATILE-CAST
+}
+void vol_ok() {
+    volatile int vreg = 0;
+    vreg = 5;
+}
+void cc_bad() {
+    const int ci = 1;
+    *const_cast<int *>(&ci) = 2; // expect: CXX-CONST-CAST
+}
+void cc_ok(int &x) {
+    *const_cast<int *>(&x) = 2;
+}
+float pun_bad(int *ip) {
+    return *reinterpret_cast<float *>(ip); // expect: CXX-REINTERPRET
+}
+unsigned char pun_ok(int *ip) {
+    return *reinterpret_cast<unsigned char *>(ip);
+}
+bool rx_bad(const std::string &pat, const std::string &s) {
+    std::regex re(pat); // expect: CXX-REGEX
+    return std::regex_match(s, re);
+}
+bool rx_ok(const std::string &s) {
+    std::regex re("[a-z]+");
+    return std::regex_match(s, re);
+}
+unsigned seed_bad() {
+    auto t = std::chrono::system_clock::now().time_since_epoch().count(); // expect: CXX-CHRONO-SEED
+    std::mt19937 g(static_cast<unsigned>(t));
+    return g();
+}
+unsigned seed_ok() {
+    std::random_device rd;
+    std::mt19937 g(rd());
+    return g();
+}
+int st_bad() {
+    auto st = std::stacktrace::current();
+    return static_cast<int>(st[0].source_line()); // expect: CXX-STACKTRACE
+}
+int st_ok() {
+    auto st = std::stacktrace::current();
+    if (st.empty())
+        return 0;
+    return static_cast<int>(st[0].source_line());
+}
+int counted_bad(std::vector<int> &v, int n) {
+    std::counted_iterator it(v.begin(), n); // expect: CXX-COUNTED-ITERATOR
+    return *it;
+}
+int counted_ok(std::vector<int> &v, int n) {
+    if (n > static_cast<int>(v.size()))
+        return 0;
+    std::counted_iterator it(v.begin(), n);
+    return *it;
+}
+#include <array>
+#include <tuple>
+#include <memory>
+#include <atomic>
+#include <utility>
+int apply_bad(std::function<int(int)> f, std::tuple<int> t) {
+    return std::apply(f, t); // expect: CXX-APPLY
+}
+int apply_ok(std::function<int(int)> f, std::tuple<int> t) {
+    if (!f)
+        return 0;
+    return std::apply(f, t);
+}
+int arr_bad(int i) {
+    std::array<int, 4> a{};
+    return a[i]; // expect: CXX-ARRAY-INDEX
+}
+int arr_ok(int i) {
+    std::array<int, 4> a{};
+    if (i < 0 || i >= 4)
+        return 0;
+    return a[i];
+}
+const int &asc_bad() {
+    int loc = 3;
+    return std::as_const(loc); // expect: CXX-AS-CONST
+}
+const int &asc_ok(const int &x) {
+    return std::as_const(x);
+}
+float aa_bad(float *buf, int i) {
+    float *p = std::assume_aligned<16>(buf);
+    return p[i]; // expect: CXX-ASSUME-ALIGNED
+}
+float aa_ok(float *buf, int i) {
+    float *p = std::assume_aligned<16>(buf);
+    if (i < 0 || i > 15)
+        return 0;
+    return p[i];
+}
+bool flag_bad() {
+    std::atomic_flag fl;
+    return fl.test_and_set(); // expect: CXX-ATOMIC-FLAG
+}
+bool flag_ok() {
+    std::atomic_flag fl;
+    fl.clear();
+    return fl.test_and_set();
+}
+int addr_bad(int *tab, int k) {
+    int *p = std::addressof(k);
+    return tab[*p]; // expect: CXX-ADDRESSOF
+}
+int addr_ok(int *tab, int k) {
+    int *p = std::addressof(k);
+    if (*p < 0 || *p > 7)
+        return 0;
+    return tab[*p];
+}
+#include <barrier>
+#include <bit>
+#include <bitset>
+#include <condition_variable>
+std::atomic_ref<int> aref_bad() {
+    int loc = 0;
+    std::atomic_ref<int> r(loc);
+    return r; // expect: CXX-ATOMIC-REF
+}
+std::atomic_ref<int> aref_ok(int &x) {
+    std::atomic_ref<int> r(x);
+    return r;
+}
+void barrier_bad() {
+    std::barrier<> bar(2);
+    (void)bar.arrive(); // expect: CXX-BARRIER
+}
+void barrier_ok() {
+    std::barrier<> bar(2);
+    bar.arrive_and_wait();
+}
+int bitceil_bad(int *tab, unsigned x) {
+    return tab[std::bit_ceil(x)]; // expect: CXX-BIT-CEIL
+}
+int bitceil_ok(int *tab, unsigned x) {
+    unsigned k = std::bit_ceil(x);
+    if (k >= 16)
+        return 0;
+    return tab[k];
+}
+bool bitset_bad(std::size_t pos) {
+    std::bitset<8> bs;
+    return bs.test(pos); // expect: CXX-BITSET-INDEX
+}
+bool bitset_ok(std::size_t pos) {
+    std::bitset<8> bs;
+    if (pos >= 8)
+        return false;
+    return bs.test(pos);
+}
+void once_bad(std::once_flag &f) {
+    std::call_once(f, [] {}); // expect: CXX-CALL-ONCE
+}
+void once_ok() {
+    static std::once_flag of;
+    std::call_once(of, [] {});
+}
+int cmpless_bad(int *tab, int a, unsigned b) {
+    return tab[std::cmp_less(a, b)]; // expect: CXX-CMP-LESS
+}
+int cmpless_ok(int *tab, int a, unsigned b) {
+    return std::cmp_less(a, b) ? tab[0] : tab[1];
+}
+void cva_bad(std::mutex &m) {
+    std::condition_variable_any cv;
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk); // expect: CXX-CONDVAR-ANY, CXX-CONDITION-WAIT
+}
+void cva_ok(std::mutex &m, bool &ready) {
+    std::condition_variable_any cv;
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk, [&] { return ready; });
+}
+int cat_bad(int *p) {
+    std::destroy_at(p);
+    return *p; // expect: CXX-CONSTRUCT-AT
+}
+int cat_ok(int *p) {
+    std::destroy_at(p);
+    std::construct_at(p, 1);
+    return *p;
+}
+#include <exception>
+#include <system_error>
+void cexc_bad() {
+    std::exception_ptr ep = std::current_exception();
+    std::rethrow_exception(ep); // expect: CXX-CURRENT-EXCEPTION
+}
+void cexc_ok() {
+    std::exception_ptr ep = std::current_exception();
+    if (ep)
+        std::rethrow_exception(ep);
+}
+void eptr_bad(std::exception_ptr src) {
+    std::exception_ptr held = src;
+    std::rethrow_exception(held); // expect: CXX-EXCEPTION-PTR
+}
+void eptr_ok(std::exception_ptr src) {
+    std::exception_ptr held = src;
+    if (held != nullptr)
+        std::rethrow_exception(held);
+}
+void dn_bad(std::string *p, std::size_t n) {
+    std::destroy_n(p, n); // expect: CXX-DESTROY-N
+}
+void dn_ok(std::string *p, std::size_t n) {
+    if (n > 4)
+        return;
+    std::destroy_n(p, n);
+}
+std::string ec_bad() {
+    std::error_code ec;
+    return ec.message(); // expect: CXX-ERROR-CODE
+}
+std::string ec_ok() {
+    std::error_code ec;
+    if (ec)
+        return ec.message();
+    return {};
+}
+int may_throw(int);
+int leak_bad() {
+    int *p = new int(3);
+    int r = may_throw(*p); // expect: CXX-EXCEPTION-LEAK
+    delete p;
+    return r;
+}
+int leak_ok() {
+    int *p = new int(3);
+    int r = *p;
+    delete p;
+    return may_throw(r);
+}
+int xchg_bad(int *tab, int &cur) {
+    int old = std::exchange(cur, 0);
+    return tab[old]; // expect: CXX-EXCHANGE
+}
+int xchg_ok(int *tab, int &cur) {
+    int old = std::exchange(cur, 0);
+    if (old < 0 || old > 7)
+        return 0;
+    return tab[old];
+}
+#include <numeric>
+#include <filesystem>
+#include <format>
+#include <charconv>
+void exscan_bad(std::vector<int> &v) {
+    std::exclusive_scan(v.begin(), v.end(), v.begin(), 0); // expect: CXX-EXCLUSIVE-SCAN
+}
+void exscan_ok(const std::vector<int> &v, std::vector<int> &o) {
+    std::exclusive_scan(v.begin(), v.end(), o.begin(), 0);
+}
+int inscan_bad(const std::vector<int> &v, int *o, int i) {
+    std::inclusive_scan(v.begin(), v.end(), o);
+    return o[i]; // expect: CXX-INCLUSIVE-SCAN, MEM-PTR-ARITH
+}
+int inscan_ok(const std::vector<int> &v, int *o, int i) {
+    std::inclusive_scan(v.begin(), v.end(), o);
+    if (i < 0 || i >= 4)
+        return 0;
+    return o[i]; // expect: MEM-PTR-ARITH
+}
+int tscan_bad(const std::vector<int> &v, int *o, int i) {
+    std::transform_inclusive_scan(v.begin(), v.end(), o, std::plus<>{}, [](int x) { return x; });
+    return o[i]; // expect: CXX-TRANSFORM-SCAN, MEM-PTR-ARITH
+}
+int tscan_ok(const std::vector<int> &v, int *o) {
+    std::transform_inclusive_scan(v.begin(), v.end(), o, std::plus<>{}, [](int x) { return x; });
+    return o[0];
+}
+bool fs_bad(const std::filesystem::path &p) {
+    std::filesystem::remove(p); // expect: API-UNLINK
+    return std::filesystem::exists(p); // expect: CXX-FILESYSTEM
+}
+bool fs_ok(const std::filesystem::path &p) {
+    return std::filesystem::remove(p);
+}
+void fmt_bad(int x) {
+    char buf[8];
+    std::format_to(buf, "{}", x); // expect: CXX-FORMAT-TO
+}
+void fmt_ok(int x) {
+    char buf[8];
+    std::format_to_n(buf, sizeof buf, "{}", x);
+}
+int fc_bad(const char *s, const char *e) {
+    int v;
+    std::from_chars(s, e, v);
+    return v; // expect: CXX-FROM-CHARS
+}
+int fc_ok(const char *s, const char *e) {
+    int v = 0;
+    auto r = std::from_chars(s, e, v);
+    if (r.ec != std::errc())
+        return 0;
+    return v;
+}
+char tc_bad(int x) {
+    char out[4];
+    std::to_chars(out, out + 4, x);
+    return out[0]; // expect: CXX-TO-CHARS
+}
+char tc_ok(int x) {
+    char out[4] = {};
+    auto r = std::to_chars(out, out + 4, x);
+    if (r.ec != std::errc())
+        return 0;
+    return out[0];
+}
+#include <fstream>
+#include <cmath>
+#include <cstdio>
+int fstream_bad(const char *path) {
+    std::ifstream in(path);
+    int v = 0;
+    in >> v; // expect: CXX-FSTREAM
+    return v;
+}
+int fstream_ok(const char *path) {
+    std::ifstream in(path);
+    int v = 0;
+    if (!in.is_open())
+        return 0;
+    in >> v;
+    return v;
+}
+int invoke_bad(int (*cb)(int)) {
+    return std::invoke(cb, 1); // expect: CXX-INVOKE
+}
+int invoke_ok(int (*cb)(int)) {
+    if (!cb)
+        return 0;
+    return std::invoke(cb, 1);
+}
+int iterinv_bad(std::vector<int> &v) {
+    auto it = v.begin();
+    v.push_back(1); // expect: CXX-ITERATOR-INVALID
+    return *it;
+}
+int iterinv_ok(std::vector<int> &v) {
+    v.push_back(1);
+    auto it = v.begin();
+    return *it;
+}
+int killdep_bad(int *tab, int x) {
+    int k = std::kill_dependency(x);
+    return tab[k]; // expect: CXX-KILL-DEPENDENCY
+}
+int lerp_bad(int *tab, double a, double b, double t) {
+    int k = static_cast<int>(std::lerp(a, b, t));
+    return tab[k]; // expect: CXX-LERP
+}
+int lerp_ok(int *tab, double a, double b, double t) {
+    int k = static_cast<int>(std::lerp(a, b, t));
+    if (k < 0 || k > 7)
+        return 0;
+    return tab[k];
+}
+void mkeptr_bad() {
+    std::exception_ptr e = std::make_exception_ptr(1);
+    std::rethrow_exception(e); // expect: CXX-MAKE-EXCEPTION-PTR, CXX-EXCEPTION-PTR
+}
+void mkeptr_ok() {
+    std::exception_ptr e = std::make_exception_ptr(1);
+    if (e)
+        std::rethrow_exception(e);
+}
+void osync_bad() {
+    std::osyncstream os(std::cout); // expect: CXX-OSYNCSTREAM
+    os << 1;
+}
+void osync_ok() {
+    std::osyncstream os(std::cout);
+    os << 1;
+    os.emit();
+}
+void open_handle(int **out);
+int outptr_bad() {
+    std::unique_ptr<int> up;
+    open_handle(std::out_ptr(up));
+    return *up; // expect: CXX-OUT-PTR
+}
+int outptr_ok() {
+    std::unique_ptr<int> up;
+    open_handle(std::out_ptr(up));
+    if (!up)
+        return 0;
+    return *up;
 }
 )";
 
@@ -1375,6 +2388,855 @@ TEST_CASE("astlint: ported regex classes on C++ (planted + guards, both front en
     check_marks("ported.cpp", kPortedCxx);
 }
 
+// Twelfth batch, in its own unit so the file-level sibling check does not
+// pair these fixtures with the ones above.
+const char* kPortedCxx12 = R"(#include <string>
+#include <utility>
+#include <vector>
+#include <memory>
+#include <array>
+#include <iterator>
+#include <exception>
+#include <chrono>
+#include <codecvt>
+#include <coroutine>
+#include <deque>
+#include <format>
+#include <functional>
+#include <locale>
+#include <memory_resource>
+#include <mutex>
+#include <queue>
+#include <ranges>
+#include <shared_mutex>
+#include <span>
+#include <spanstream>
+#include <sstream>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <variant>
+int pmr_bad(std::pmr::vector<int> &v, int i) {
+    return v[i]; // expect: CXX-PMR, CXX-VECTOR-INDEX
+}
+int pmr_ok(std::pmr::vector<int> &v, int j) {
+    if (j < 0 || static_cast<std::size_t>(j) >= v.size())
+        return 0;
+    return v[j];
+}
+int rto_bad(int i) {
+    auto v = std::views::iota(0, 4) | std::ranges::to<std::vector<int>>();
+    return v[i]; // expect: CXX-RANGES-TO, CXX-IOTA
+}
+int rto_ok(int j) {
+    auto v = std::views::iota(0, 4) | std::ranges::to<std::vector<int>>();
+    if (j < 0 || j >= 4)
+        return 0;
+    return v[j];
+}
+int rzip_bad(std::vector<int> &a, std::vector<int> &b, int i) {
+    auto z = std::views::zip(a, b);
+    return std::get<0>(z[i]); // expect: CXX-RANGES-ZIP
+}
+int rzip_ok(std::vector<int> &a, std::vector<int> &b, int j) {
+    auto z = std::views::zip(a, b);
+    if (j >= static_cast<int>(z.size()))
+        return 0;
+    return std::get<0>(z[j]);
+}
+int rjoin_bad(std::vector<std::vector<int>> &vv) {
+    auto j = vv | std::views::join;
+    return j.front(); // expect: CXX-RANGES-JOIN
+}
+int rjoin_ok(std::vector<std::vector<int>> &vv) {
+    auto j = vv | std::views::join;
+    if (j.empty())
+        return 0;
+    return j.front();
+}
+int toarr_bad(int i) {
+    int raw[3] = {1, 2, 3};
+    auto a = std::to_array(raw);
+    return a[i]; // expect: CXX-TO-ARRAY, CXX-ARRAY-INDEX
+}
+int toarr_ok(int j) {
+    int raw[3] = {1, 2, 3};
+    auto a = std::to_array(raw);
+    if (j < 0 || j > 2)
+        return 0;
+    return a[j];
+}
+int toaddr_bad(std::unique_ptr<int[]> &up, int i) {
+    int *p = std::to_address(up.get());
+    return p[i]; // expect: CXX-TO-ADDRESS
+}
+int toaddr_ok(std::unique_ptr<int[]> &up, int j) {
+    int *p = std::to_address(up.get());
+    if (j < 0 || j > 3)
+        return 0;
+    return p[j];
+}
+int tid_bad(void *raw, int i) {
+    std::type_identity_t<int> *p = static_cast<int *>(raw);
+    return p[i]; // expect: CXX-TYPE-IDENTITY
+}
+int tid_ok(void *raw, int j) {
+    std::type_identity_t<int> *p = static_cast<int *>(raw);
+    if (j < 0 || j > 3)
+        return 0;
+    return p[j];
+}
+int citer_bad(std::vector<int> &v, int i) {
+    std::basic_const_iterator<std::vector<int>::iterator> it(v.begin());
+    return it[i]; // expect: CXX-CONST-ITERATOR
+}
+int citer_ok(std::vector<int> &v, int j) {
+    std::basic_const_iterator<std::vector<int>::iterator> it(v.begin());
+    if (j < 0 || j >= 4)
+        return 0;
+    return it[j];
+}
+int ucopy_bad(const int *src, int *dst, int i) {
+    std::uninitialized_copy(src, src + 4, dst);
+    return dst[i]; // expect: CXX-UNINITIALIZED-COPY, MEM-PTR-ARITH
+}
+int ucopy_ok(const int *src, int *dst, int j) {
+    std::uninitialized_copy(src, src + 4, dst);
+    if (j < 0 || j > 3)
+        return 0;
+    return dst[j]; // expect: MEM-PTR-ARITH
+}
+int ufill_bad(int *dst, int i) {
+    std::uninitialized_fill(dst, dst + 4, 0);
+    return dst[i]; // expect: CXX-UNINITIALIZED-FILL, MEM-PTR-ARITH
+}
+int ufill_ok(int *dst, int j) {
+    std::uninitialized_fill(dst, dst + 4, 0);
+    if (j < 0 || j > 3)
+        return 0;
+    return dst[j]; // expect: MEM-PTR-ARITH
+}
+int uval_bad(int *dst, int i) {
+    std::uninitialized_value_construct(dst, dst + 4);
+    return dst[i]; // expect: CXX-UNINITIALIZED-VALUE, MEM-PTR-ARITH
+}
+int uval_ok(int *dst, int j) {
+    std::uninitialized_value_construct(dst, dst + 4);
+    if (j < 0 || j > 3)
+        return 0;
+    return dst[j]; // expect: MEM-PTR-ARITH
+}
+enum class Slot : int { A, B };
+int tounder_bad(int *tab, Slot s) {
+    return tab[std::to_underlying(s)]; // expect: CXX-TO-UNDERLYING
+}
+int tounder_ok(int *tab, Slot s) {
+    int k = std::to_underlying(s);
+    if (k < 0 || k > 1)
+        return 0;
+    return tab[k];
+}
+constexpr int ice_bad(const int *tab, int i) {
+    if (std::is_constant_evaluated())
+        return 0;
+    else
+        return tab[i]; // expect: CXX-IS-CONSTANT-EVALUATED, MEM-PTR-ARITH
+}
+constexpr int ice_ok(const int *tab, int j) {
+    if (std::is_constant_evaluated())
+        return 0;
+    if (j < 0 || j > 3)
+        return 0;
+    return tab[j]; // expect: MEM-PTR-ARITH
+}
+std::recursive_mutex g_rm;
+std::recursive_timed_mutex g_rtm;
+std::timed_mutex g_tm;
+std::shared_timed_mutex g_stm;
+void rmutex_bad() {
+    g_rm.lock(); // expect: CXX-RECURSIVE-MUTEX
+}
+void rmutex_ok() {
+    g_rm.lock();
+    g_rm.unlock();
+}
+void rtmutex_bad() {
+    g_rtm.lock(); // expect: CXX-RECURSIVE-TIMED-MUTEX
+}
+void rtmutex_ok() {
+    std::lock_guard<std::recursive_timed_mutex> g(g_rtm);
+}
+void tmutex_bad() {
+    g_tm.lock(); // expect: CXX-TIMED-MUTEX
+}
+void tmutex_ok() {
+    if (g_tm.try_lock())
+        g_tm.unlock();
+}
+void stmutex_bad() {
+    g_stm.lock_shared(); // expect: CXX-SHARED-TIMED-MUTEX
+}
+void stmutex_ok() {
+    g_stm.lock_shared();
+    g_stm.unlock_shared();
+}
+std::shared_mutex g_sm;
+int g_shared_val;
+int slock_bad() {
+    std::shared_lock<std::shared_mutex> l(g_sm, std::try_to_lock); // expect: CXX-SHARED-LOCK
+    return g_shared_val;
+}
+int slock_ok() {
+    std::shared_lock<std::shared_mutex> l(g_sm, std::try_to_lock);
+    if (!l.owns_lock())
+        return 0;
+    return g_shared_val;
+}
+int queue_bad(std::queue<int> &q) {
+    return q.front(); // expect: CXX-QUEUE-FRONT
+}
+int queue_ok(std::queue<int> &q) {
+    if (q.empty())
+        return 0;
+    return q.front();
+}
+int rdangle_bad(int j) {
+    auto v = std::string("hi") | std::views::take(1);  // expect: CXX-RANGES-DANGLE
+    return *v.begin() + j;
+}
+int rdangle_ok(int j) {
+    auto v = std::string("hi") | std::views::take(1);
+    std::string out(v.begin(), v.end());
+    return (int)out.size() + j;
+}
+int rdangle_named_ok(const std::string &s, int j) {
+    auto v = s | std::views::take(1);
+    return *v.begin() + j;
+}
+int queue_pushed_ok() {
+    std::queue<int> q;
+    q.push(1);
+    return q.front();
+}
+void coro_bad(std::coroutine_handle<> h) {
+    h.resume(); // expect: CXX-CORO-HANDLE
+}
+void coro_ok(std::coroutine_handle<> h) {
+    if (!h.done())
+        h.resume();
+}
+std::string wconv_bad(const std::wstring &w) {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> c;
+    return c.to_bytes(w); // expect: CXX-WSTRING-CONVERT
+}
+std::string wconv_ok(const std::wstring &w) {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> c;
+    std::string s = c.to_bytes(w);
+    if (c.converted() != w.size())
+        return {};
+    return s;
+}
+std::string syserr_bad() {
+    try {
+        throw std::system_error(std::make_error_code(std::errc::io_error));
+    } catch (const std::system_error &e) {
+        return e.what(); // expect: CXX-SYSTEM-ERROR
+    }
+    return {};
+}
+int syserr_ok() {
+    try {
+        throw std::system_error(std::make_error_code(std::errc::io_error));
+    } catch (const std::system_error &e) {
+        return e.code().value();
+    }
+    return 0;
+}
+int mof_bad(std::move_only_function<int()> &f) {
+    return f(); // expect: CXX-MOVE-ONLY-FUNCTION
+}
+int mof_ok(std::move_only_function<int()> &f) {
+    if (!f)
+        return 0;
+    return f();
+}
+int variant_bad(std::variant<int, std::string> &v) {
+    v.emplace<0>(3);
+    return std::get<0>(v); // expect: CXX-VARIANT-VALUELSS
+}
+int variant_ok(std::variant<int, std::string> &v) {
+    v.emplace<0>(3);
+    if (v.valueless_by_exception())
+        return 0;
+    return std::get<0>(v);
+}
+std::string_view tzdb_bad() {
+    return std::chrono::current_zone()->name(); // expect: CXX-CHRONO-TZDB
+}
+std::string_view tzdb_ok() {
+    const std::chrono::time_zone *z = std::chrono::current_zone();
+    if (!z)
+        return {};
+    return z->name();
+}
+void zoned_bad(std::string_view name) {
+    std::chrono::zoned_time zt{std::chrono::locate_zone(name), std::chrono::system_clock::now()}; // expect: CXX-ZONED-TIME
+    (void)zt;
+}
+void zoned_ok(std::string_view name) {
+    const std::chrono::time_zone *z = std::chrono::locate_zone(name);
+    if (z == nullptr)
+        return;
+    std::chrono::zoned_time zt{z, std::chrono::system_clock::now()};
+    (void)zt;
+}
+void on_term();
+void setterm_bad() {
+    std::set_terminate(on_term); // expect: CXX-SET-TERMINATE
+}
+std::terminate_handler setterm_ok() {
+    std::terminate_handler old = std::set_terminate(on_term);
+    return old;
+}
+struct Txn {
+    int saved = std::uncaught_exceptions();
+    bool bad_flag() {
+        if (std::uncaught_exceptions()) // expect: CXX-UNCAUGHT-EXCEPTIONS
+            return true;
+        return false;
+    }
+    bool ok_flag() {
+        int now = std::uncaught_exceptions();
+        return now > saved;
+    }
+};
+int unreach_bad(int k) {
+    if (k == 0)
+        return 1;
+    std::unreachable(); // expect: CXX-UNREACHABLE
+}
+[[noreturn]] void unreach_ok() {
+    std::unreachable();
+}
+std::string vfmt_bad(std::string_view f, int x) {
+    return std::vformat(f, std::make_format_args(x)); // expect: CXX-STD-FORMAT
+}
+std::string vfmt_ok(int x) {
+    return std::vformat("{}", std::make_format_args(x));
+}
+int g_ready_flag;
+void sleep_bad() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1)); // expect: CXX-THIS-THREAD
+    g_ready_flag = 1;
+}
+std::mutex g_ready_mu;
+void sleep_ok() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::lock_guard<std::mutex> g(g_ready_mu);
+    g_ready_flag = 1;
+}
+std::span<int> span_bad() {
+    std::vector<int> v(4);
+    return std::span<int>(v); // expect: CXX-SPAN-DANGLE, CXX-DANGLING-REF
+}
+std::span<int> span_ok(std::vector<int> &v) {
+    return std::span<int>(v);
+}
+std::reference_wrapper<int> refw_bad() {
+    int x = 3;
+    return std::ref(x); // expect: CXX-REFERENCE-WRAPPER
+}
+std::reference_wrapper<int> refw_ok(int &x) {
+    return std::ref(x);
+}
+std::u8string_view u8v_bad() {
+    std::u8string s(u8"abc");
+    return std::u8string_view(s); // expect: CXX-U8STRING-VIEW, CXX-DANGLING-REF
+}
+std::u8string_view u8v_ok(const std::u8string &s) {
+    return std::u8string_view(s);
+}
+std::wstring_view wsv_bad() {
+    std::wstring s(L"abc");
+    return std::wstring_view(s); // expect: CXX-WSTRING-VIEW, CXX-DANGLING-REF
+}
+std::wstring_view wsv_ok(const std::wstring &s) {
+    return std::wstring_view(s);
+}
+std::span<char> spanstream_bad(std::span<char> buf) {
+    std::ospanstream os(buf);
+    os << 1;
+    return os.span(); // expect: CXX-SPANSTREAM
+}
+std::size_t spanstream_ok(std::span<char> buf) {
+    std::ospanstream os(buf);
+    os << 1;
+    return os.span().size();
+}
+std::size_t sview_bad(std::stringstream &ss) {
+    std::string_view v = ss.str(); // expect: CXX-SSTREAM-VIEW
+    return v.size();
+}
+std::size_t sview_ok(std::stringstream &ss) {
+    std::string v = ss.str();
+    return v.size();
+}
+struct Widget {
+    int w = 0;
+    std::function<int()> cb_bad() {
+        return [this] { return w; }; // expect: CXX-THIS-CAPTURE
+    }
+    std::function<int()> cb_ok() {
+        return [self = *this] { return self.w; };
+    }
+};
+struct PlA {
+    int a;
+};
+struct PlB {
+    double b;
+};
+void pnew_bad(PlA *p) {
+    new (p) PlB(); // expect: CXX-PLACEMENT-NEW
+}
+void pnew_ok(unsigned char *buf) {
+    new (buf) PlB();
+}
+#pragma pack(push, 1)
+struct PackedRec {
+    char tag;
+    int value;
+};
+#pragma pack(pop)
+int *packed_bad(PackedRec &r) {
+    return &r.value; // expect: CXX-PACK-PRAGMA
+}
+char *packed_ok(PackedRec &r) {
+    return &r.tag;
+}
+struct Animal {
+    virtual ~Animal() = default;
+    int legs = 4;
+};
+struct Dog : Animal {
+    int bark = 1;
+};
+int count_legs(Animal a);
+int slice_bad(Dog &d) {
+    return count_legs(d); // expect: CXX-SLICING
+}
+int slice_ok(Animal &a) {
+    return count_legs(a);
+}
+struct Buf {
+    int *data = nullptr;
+    Buf &operator=(const Buf &o) {
+        delete data; // expect: CXX-SELF-ASSIGN
+        data = new int(*o.data);
+        return *this;
+    }
+};
+struct BufOk {
+    int *data = nullptr;
+    BufOk &operator=(const BufOk &o) {
+        if (this == &o)
+            return *this;
+        delete data;
+        data = new int(*o.data);
+        return *this;
+    }
+};
+struct Shallow {
+    int *data = nullptr;
+    Shallow &operator=(const Shallow &o) {
+        data = o.data; // expect: CXX-COPY-ASSIGN-PTR
+        return *this;
+    }
+};
+struct Deep {
+    int *data = nullptr;
+    Deep &operator=(const Deep &o) {
+        data = new int(*o.data);
+        return *this;
+    }
+};
+struct Flag {
+    int v = 0;
+    operator bool() const { return v != 0; } // expect: CXX-EXPLICIT-CTOR
+};
+struct FlagOk {
+    int v = 0;
+    explicit operator bool() const { return v != 0; }
+};
+struct Node {
+    int *next;
+    auto operator<=>(const Node &) const = default; // expect: CXX-SPACESHIP-DEFAULT
+};
+struct NodeOk {
+    int id;
+    auto operator<=>(const NodeOk &) const = default;
+};
+struct Counter {
+    int n;
+    Counter() {} // expect: CXX-UNINIT-MEMBER
+};
+struct CounterOk {
+    int n;
+    CounterOk() : n(0) {}
+};
+void old_spec() throw(); // expect: CXX-THROW-SPEC
+void new_spec() noexcept;
+)";
+
+TEST_CASE("astlint: ported regex classes on C++, batch 12 (planted + guards, both front ends)") {
+    check_marks("ported12.cpp", kPortedCxx12);
+}
+
+// Batch 13: the security / lifetime rules that were still regex-only.
+const char* kPortedC13 = R"(#include <unistd.h>
+#include <stdio.h>
+void exec_bad(char *cmd, char **argv) {
+    execv(cmd, argv); // expect: API-EXEC
+}
+void execvp_bad(const char *prog, char **argv) {
+    execvp(prog, argv); // expect: API-EXEC
+}
+void exec_ok(char **argv) {
+    execv("/bin/true", argv);
+}
+int pipe_bad(void) {
+    int fds[2];
+    pipe(fds); // expect: API-PIPE
+    return fds[0];
+}
+int pipe_assign_bad(void) {
+    int fds[2];
+    int r = pipe(fds); // expect: API-PIPE
+    close(fds[1]);
+    return fds[0] + r * 0;
+}
+int pipe_ok(void) {
+    int fds[2];
+    if (pipe(fds) < 0)
+        return -1;
+    return fds[0];
+}
+int pipe_assign_ok(void) {
+    int fds[2];
+    int r = pipe(fds);
+    if (r == -1)
+        return -1;
+    return fds[0];
+}
+void pipe_void_ok(void) {
+    int fds[2];
+    (void)pipe(fds);
+}
+int pipe_unused_ok(void) {
+    int fds[2];
+    pipe(fds);
+    return 0;
+}
+)";
+
+const char* kPortedCxx13 = R"(#include <functional>
+#include <memory>
+std::function<int()> lam_bad() {
+    int x = 1;
+    return [&] { return x; }; // expect: CXX-LAMBDA-DANGLE
+}
+auto lam_named_bad(int n) {
+    auto f = [&n] { return n; };
+    return f; // expect: CXX-LAMBDA-DANGLE
+}
+auto lam_copy_ok() {
+    int x = 1;
+    return [=] { return x; };
+}
+auto lam_mixed_ok() {
+    int x = 1;
+    return [&, x] { return x; };
+}
+auto lam_ref_param_ok(int &r) {
+    return [&] { return r; };
+}
+int lam_called_ok() {
+    int x = 1;
+    auto f = [&] { return x; };
+    return f();
+}
+int lam_static_ok() {
+    static int s = 0;
+    return [&] { return s; }();
+}
+struct Node : std::enable_shared_from_this<Node> {
+    std::shared_ptr<Node> self;
+    Node() {
+        self = shared_from_this(); // expect: CXX-ENABLE-SHARED
+    }
+    std::shared_ptr<Node> get() { return shared_from_this(); }
+};
+class Hidden : std::enable_shared_from_this<Hidden> { // expect: CXX-ENABLE-SHARED
+public:
+    int v = 0;
+};
+class Shown : public std::enable_shared_from_this<Shown> {
+public:
+    int v = 0;
+};
+std::shared_ptr<Node> local_sft_bad() {
+    Node n;
+    return n.shared_from_this(); // expect: CXX-ENABLE-SHARED
+}
+std::shared_ptr<Node> owned_sft_ok() {
+    auto p = std::make_shared<Node>();
+    return p->shared_from_this();
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 13 (API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-SHARED)") {
+    check_marks("ported13.c", kPortedC13);
+    check_marks("ported13.cpp", kPortedCxx13);
+}
+
+// Lines in testdata/planted/ for the rules ported from batch 13 on, on both
+// front ends (the planted regex rows on the same lines are superseded).
+std::set<int> planted_ast_lines(const char* file, const char* cls, const char* func,
+                                const std::optional<fs::path>& clang, Backend b) {
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+    prism::Config cfg;
+    cfg.jobs = 1;
+    cfg.root = root;
+    std::set<int> lines;
+    for (auto& f : prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)) {
+        auto it = f.extra.find("engine");
+        if (it == f.extra.end() || it->second != "clang-ast") continue;
+        if (f.status != prism::laws::FAILED || f.cls != cls) continue;
+        if (f.function.value_or("") != func) continue;
+        lines.insert(f.line.value_or(0));
+    }
+    return lines;
+}
+
+TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-SHARED (both front ends)") {
+    auto clang = find_clang();
+    if (!clang) {
+        MESSAGE("clang not installed: testdata batch 13 astlint skipped");
+        return;
+    }
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("exec_api.c", "API-EXEC", "exec_bad", clang, b) == std::set<int>{4});
+        CHECK(planted_ast_lines("exec_api.c", "API-EXEC", "exec_ok", clang, b).empty());
+        CHECK(planted_ast_lines("pipe_api.c", "API-PIPE", "pipe_bad", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("pipe_api.c", "API-PIPE", "pipe_ok", clang, b).empty());
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_ok", clang, b).empty());
+        CHECK(planted_ast_lines("lambda_dangle.cpp", "CXX-LAMBDA-DANGLE", "dangle_ref_ok", clang, b).empty());
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Conn::Conn", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Conn::handle", clang, b).empty());
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "Session", clang, b) == std::set<int>{9});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_local_bad", clang, b) ==
+              std::set<int>{15});
+        CHECK(planted_ast_lines("enable_shared_ast.cpp", "CXX-ENABLE-SHARED", "enable_shared_owned_ok", clang, b).empty());
+        // No regex row either: Conn::handle is a member of an
+        // enable_shared_from_this class and is not its ctor/dtor (line 7 used
+        // to be a regex false positive the AST row could not supersede).
+        const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+        prism::Config cfg;
+        cfg.jobs = 1;
+        cfg.root = root;
+        std::set<int> any;
+        const auto es = prism::astlint::run_lints_ast({root / "enable_shared_ast.cpp"}, root, cfg, clang, b);
+        if (clang_ast_timed_out(es)) {
+            MESSAGE("clang timed out on this runner: enable_shared_ast.cpp row check skipped");
+            continue;
+        }
+        std::string rows;
+        for (auto& f : es)
+            if (f.status == prism::laws::FAILED && f.cls == "CXX-ENABLE-SHARED") {
+                rows += std::to_string(f.line.value_or(0)) + " " + f.function.value_or("") + "; ";
+                any.insert(f.line.value_or(0));
+            }
+        INFO("rows: " << rows);
+        CHECK(any == std::set<int>{5, 9, 15});
+    }
+    // The regex plant (no class, no base) still fires.
+    {
+        const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+        std::set<std::string> fns;
+        for (auto& f : prism::run_lints({root / "enable_shared.cpp"}, root, 1))
+            if (f.status == prism::laws::FAILED && f.cls == "CXX-ENABLE-SHARED") fns.insert(f.function.value_or(""));
+        CHECK(fns == std::set<std::string>{"enable_shared_bad"});
+    }
+}
+
+// testdata/fp files reduced from src/prism self-lint false positives: no AST
+// row on either front end (libclang drops the list initialiser of
+// `vector<T> v{a, b}`, so its element count is read from the source).
+TEST_CASE("astlint: testdata/fp vector guards, move reuse, scoped case labels are silent (both front ends)") {
+    auto clang = find_clang();
+    if (!clang) {
+        MESSAGE("clang not installed: testdata/fp astlint rows skipped");
+        return;
+    }
+    const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "fp";
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        for (const char* name : {"vector_guards.cpp", "move_reuse.cpp", "scoped_case_labels.cpp"}) {
+            INFO(std::string(name));
+            prism::Config cfg;
+            cfg.jobs = 1;
+            cfg.root = root;
+            const auto out = prism::astlint::run_lints_ast({root / name}, root, cfg, clang, b);
+            if (clang_ast_timed_out(out)) {
+                MESSAGE("clang timed out on this runner: " << name << " skipped");
+                continue;
+            }
+            std::string rows;
+            for (auto& f : out)
+                if (f.status == prism::laws::FAILED)
+                    rows += f.cls + " " + std::to_string(f.line.value_or(0)) + " " + f.function.value_or("") + "; ";
+            CHECK_MESSAGE(rows.empty(), rows);
+        }
+    }
+}
+
+// Batch 14: index and synchronisation rules that were still regex-only.
+const char* kPortedCxx14 = R"(#include <atomic>
+#include <bit>
+#include <system_error>
+#include <utility>
+int g_ready;
+int g_data;
+void fence_bad() {
+    g_data = 42;
+    std::atomic_thread_fence(std::memory_order_release); // expect: CXX-ATOMIC-FENCE
+    g_ready = 1;
+}
+void fence_ok(std::atomic<int> &flag) {
+    g_data = 42;
+    std::atomic_thread_fence(std::memory_order_release);
+    flag.store(1, std::memory_order_relaxed);
+}
+void fence_local_ok() {
+    int x = 1;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    (void)x;
+}
+int endian_bad(const int *tbl) {
+    return tbl[(int)std::endian::native]; // expect: CXX-ENDIAN
+}
+int endian_local_bad(const int *tbl) {
+    auto e = std::endian::native;
+    return tbl[static_cast<int>(e)]; // expect: CXX-ENDIAN
+}
+int endian_ok(const int *tbl) {
+    auto e = std::endian::native;
+    if (e != std::endian::little && e != std::endian::big)
+        return 0;
+    return tbl[static_cast<int>(e)];
+}
+int fwdlike_bad(const int *p) {
+    int x = 9;
+    auto y = std::forward_like<int>(x);
+    return p[y]; // expect: CXX-FORWARD-LIKE
+}
+int fwdlike_ok(const int *p) {
+    int x = 3;
+    auto y = std::forward_like<int>(x);
+    if (y < 0 || y > 8)
+        return 0;
+    return p[y];
+}
+void errcat_bad() {
+    const std::error_category &c = std::generic_category(); // expect: CXX-ERROR-CATEGORY
+    (void)c;
+}
+bool errcat_cmp_ok() {
+    const std::error_category &c = std::generic_category();
+    return c == std::system_category();
+}
+const char *errcat_name_ok() {
+    const std::error_category &c = std::system_category();
+    return c.name();
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 14 (CXX-ATOMIC-FENCE, CXX-ENDIAN, CXX-FORWARD-LIKE, "
+          "CXX-ERROR-CATEGORY)") {
+    check_marks("ported14.cpp", kPortedCxx14);
+    auto clang = find_clang();
+    if (!clang) return;
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("fence_lint.cpp", "CXX-ATOMIC-FENCE", "fence_bad", clang, b) == std::set<int>{5});
+        CHECK(planted_ast_lines("fence_lint.cpp", "CXX-ATOMIC-FENCE", "fence_ok", clang, b).empty());
+        CHECK(planted_ast_lines("endian_lint.cpp", "CXX-ENDIAN", "endian_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("endian_lint.cpp", "CXX-ENDIAN", "endian_ok", clang, b).empty());
+        CHECK(planted_ast_lines("fwdlike_lint.cpp", "CXX-FORWARD-LIKE", "fwdlike_bad", clang, b) == std::set<int>{17});
+        CHECK(planted_ast_lines("fwdlike_lint.cpp", "CXX-FORWARD-LIKE", "fwdlike_ok", clang, b).empty());
+        CHECK(planted_ast_lines("errcat_lint.cpp", "CXX-ERROR-CATEGORY", "errcat_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("errcat_lint.cpp", "CXX-ERROR-CATEGORY", "errcat_ok", clang, b).empty());
+    }
+}
+
+// Batch 15: the comment-contract rules (API-PRECONDITION, INTENT).
+const char* kPortedC15 = R"(#include <assert.h>
+/* requires n > 0 */
+int precond_bad(int n) { // expect: API-PRECONDITION
+    return 100 / n;
+}
+/* requires n > 0 */
+int precond_ok(int n) {
+    if (n <= 0)
+        return 0;
+    return 100 / n;
+}
+// count must be positive
+int precond_assert_ok(int count) {
+    assert(count > 0);
+    return 10 / count;
+}
+/* requires k > 0 */
+int precond_not_param_ok(int n) {
+    return n;
+}
+/* returns x+1 */
+int intent_bad(int x) {
+    return x; // expect: INTENT
+}
+/* returns x+1 */
+int intent_ok(int x) {
+    return x + 1;
+}
+// increments the counter and returns it
+int intent_bumped_ok(int c) {
+    c++;
+    return c;
+}
+/* returns x+1 */
+int intent_expr_ok(int x) {
+    int y = x;
+    return y + 1;
+}
+)";
+
+TEST_CASE("astlint: ported regex classes, batch 15 (API-PRECONDITION, INTENT)") {
+    check_marks("ported15.c", kPortedC15);
+    auto clang = find_clang();
+    if (!clang) return;
+    for (auto& [fe, b] : front_ends(clang)) {
+        INFO("front end: " << fe);
+        CHECK(planted_ast_lines("api_precond.c", "API-PRECONDITION", "precond_bad", clang, b) == std::set<int>{2});
+        CHECK(planted_ast_lines("api_precond.c", "API-PRECONDITION", "precond_ok", clang, b).empty());
+        CHECK(planted_ast_lines("intent.c", "INTENT", "intent_bad", clang, b) == std::set<int>{3});
+        CHECK(planted_ast_lines("intent.c", "INTENT", "intent_ok", clang, b).empty());
+    }
+}
+
 TEST_CASE("astlint: project headers, nested enums and non-dependent template code are checked") {
     const std::string hdr = R"(#pragma once
 struct Shape {
@@ -1476,4 +3338,211 @@ TEST_CASE("astlint: an AST row of a ported class supersedes the regex row") {
             CHECK_MESSAGE(n == 1, "line " << row.first << " " << row.second);
         }
     }
+}
+
+// Flow checks follow both arms of an if and join the paths that leave it
+// (must-analysis: a state survives only when every falling-through arm agrees).
+const std::string kFlowBranchC = R"(#include <stdlib.h>
+int g(int);
+int uaf_in_arm(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    if (c) {
+        return *p; // expect: MEM-UAF
+    }
+    return 0;
+}
+int uaf_after_both_arms(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        g(1);
+        free(p);
+    } else {
+        g(2);
+        free(p);
+    }
+    return *p; // expect: MEM-UAF
+}
+int uninit_in_arm(int c) {
+    int x;
+    if (c) {
+        return x; // expect: UNINIT-RETURN
+    }
+    return 0;
+}
+int double_free_after_arm(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        free(p);
+        return 1;
+    } else {
+        g(3);
+    }
+    free(p);
+    free(p); // expect: MEM-DOUBLE-FREE
+    return 0;
+}
+int freed_on_one_arm_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    if (c) {
+        free(p);
+        p = 0;
+    } else {
+        *p = 1;
+    }
+    if (p) free(p);
+    return 0;
+}
+int assigned_on_both_arms_ok(int c) {
+    int x;
+    if (c) {
+        x = 1;
+    } else {
+        x = 2;
+    }
+    return x;
+}
+int assigned_on_one_arm_ok(int c) {
+    int x;
+    if (c) x = 1;
+    else return 0;
+    return x;
+}
+int tested_in_condition_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (p && c) {
+        *p = c;
+    }
+    if (p) {
+        int v = *p;
+        free(p);
+        return v;
+    }
+    return 0;
+}
+int abort_guard_ok(int n) {
+    int *p = (int *)malloc(sizeof(int));
+    if (!p)
+        abort();
+    *p = n & 7;
+    int r = *p;
+    free(p);
+    return r;
+}
+int both_arms_leave_ok(int c) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    if (c) return 1;
+    else return 2;
+}
+)";
+
+TEST_CASE("astlint: flow checks follow if arms and join the paths that leave them") {
+    check_marks("flow_branch.c", kFlowBranchC);
+}
+
+// Loop bodies keep the pre-loop state of the variables the loop never changes; the ones it
+// writes, frees, moves or takes the address of are forgotten for the whole body.
+const std::string kFlowLoopC = R"(#include <stdlib.h>
+int g(int);
+void h(int *);
+int uaf_in_while(int n) {
+    int *p = malloc(sizeof *p);
+    if (!p) return 0;
+    free(p);
+    int s = 0;
+    while (n-- > 0) {
+        s += *p; // expect: MEM-UAF
+    }
+    return s;
+}
+int uaf_in_for_single_stmt(int n) {
+    int *p = malloc(4 * sizeof *p);
+    if (!p) return 0;
+    free(p);
+    int s = 0;
+    for (int i = 0; i < n; i++)
+        s += p[i]; // expect: MEM-UAF
+    return s;
+}
+int unchecked_in_for(int n) {
+    int *p = malloc(8 * sizeof *p);
+    for (int i = 0; i < 8; i++) {
+        p[i] = n; // expect: PTR-UNCHECKED-ALLOC
+    }
+    free(p);
+    return 0;
+}
+int uninit_in_do(int n) {
+    int x;
+    int s = 0;
+    do {
+        s += x; // expect: UNINIT-READ
+    } while (--n > 0);
+    return s;
+}
+int written_in_loop_ok(int n) {
+    int x;
+    int s = 0;
+    for (int i = 0; i < n; i++) {
+        if (i > 0) s += x;
+        x = i;
+    }
+    return s;
+}
+int address_taken_in_loop_ok(int n) {
+    int x;
+    int s = 0;
+    while (n-- > 0) {
+        h(&x);
+        s += x;
+    }
+    return s;
+}
+int freed_in_loop_ok(int n) {
+    int *p = 0;
+    for (int i = 0; i < n; i++) {
+        if (p) free(p);
+        p = malloc(sizeof *p);
+        if (!p) return 0;
+        *p = i;
+    }
+    if (p) free(p);
+    return 0;
+}
+int tested_in_condition_ok(int n) {
+    int *p = malloc(sizeof *p);
+    while (p && n-- > 0) {
+        *p = n;
+    }
+    free(p);
+    return 0;
+}
+int guarded_in_body_ok(int n) {
+    int *p = malloc(sizeof *p);
+    for (int i = 0; i < n; i++) {
+        if (!p) break;
+        *p = i;
+    }
+    free(p);
+    return 0;
+}
+int reassigned_in_cond_ok(int *a) {
+    int *p = 0;
+    int s = 0;
+    while ((p = a) != 0) {
+        s += *p;
+        a = 0;
+    }
+    return s;
+}
+)";
+
+TEST_CASE("astlint: flow checks carry the pre-loop state into loop bodies") {
+    check_marks("flow_loop.c", kFlowLoopC);
 }

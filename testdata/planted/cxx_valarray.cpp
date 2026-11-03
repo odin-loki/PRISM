@@ -1,3 +1,4 @@
+#include <valarray>
 int valarray_unenc_bad(int n) {
     std::valarray<int> v;
     return n;

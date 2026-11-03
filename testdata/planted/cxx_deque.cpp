@@ -1,3 +1,4 @@
+#include <deque>
 int deque_unenc_bad(int n) {
     std::deque<int> d;
     return n;

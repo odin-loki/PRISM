@@ -1,3 +1,4 @@
+#include <chrono>
 int chrono_unenc_bad(int n) {
     std::chrono::seconds s;
     return n;

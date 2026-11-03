@@ -1,3 +1,4 @@
+#include <ranges>
 void vzip_bad(int i) {
     int a[2] = {0, 1};
     int b[3] = {0, 1, 2};

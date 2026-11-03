@@ -1,3 +1,4 @@
+#include <stack>
 int stack_unenc_bad(int n) {
     std::stack<int> s;
     return n;
