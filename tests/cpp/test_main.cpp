@@ -3357,7 +3357,7 @@ TEST_CASE("ai no model outside a session is NOTRUN, never a backend") {
     CHECK_FALSE(why.empty());
     prism::Config cfg = prism::default_config();
     CHECK(prism::ai::connect_backend(cfg, &why) == nullptr);
-    CHECK(why.find("not reachable") != std::string::npos);
+    CHECK(why.find("no FORGE model") != std::string::npos);
     cfg.llm = false;
     CHECK(prism::ai::connect_backend(cfg, &why) == nullptr);
     CHECK(why == "--no-llm");
