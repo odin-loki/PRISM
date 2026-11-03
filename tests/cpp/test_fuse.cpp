@@ -476,7 +476,6 @@ TEST_CASE("fuse: libFuzzer without clang is NOTRUN and does not claim the engine
     CHECK(lower(r.message).find("not a proof") != std::string::npos);
     CHECK_FALSE(prism::laws::is_proof(r.status));
 }
-#endif
 
 // ---- FORGE-era replacements for the llama-server fakes (ScriptedChat seam) ----
 TEST_CASE("fuse: an interesting input is mutated once by the model") {
@@ -524,3 +523,4 @@ TEST_CASE("fuse: the distilled prompt is a HYPOTHESIS with the documentation, no
     CHECK_FALSE(any_proof(recs));
     CHECK(llm.count(kAuto) >= 1);
 }
+#endif  // !_WIN32
