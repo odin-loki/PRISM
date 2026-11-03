@@ -2464,11 +2464,11 @@ int pmr_ok(std::pmr::vector<int> &v, int j) {
 }
 int rto_bad(int i) {
     auto v = std::views::iota(0, 4) | std::ranges::to<std::vector<int>>();
-    return v[i]; // expect: CXX-RANGES-TO, CXX-IOTA
+    return v[i]; // expect: CXX-RANGES-TO, CXX-IOTA, CXX-VECTOR-INDEX
 }
 int rto_ok(int j) {
     auto v = std::views::iota(0, 4) | std::ranges::to<std::vector<int>>();
-    if (j < 0 || j >= 4)
+    if (j < 0 || j >= static_cast<int>(v.size()))
         return 0;
     return v[j];
 }
@@ -2639,8 +2639,8 @@ int queue_ok(std::queue<int> &q) {
     return q.front();
 }
 int rdangle_bad(int j) {
-    auto v = std::string("hi") | std::views::take(1);  // expect: CXX-RANGES-DANGLE
-    return *v.begin() + j;
+    auto it = (std::string("hi") | std::views::take(1)).begin();  // expect: CXX-RANGES-DANGLE
+    return *it + j;
 }
 int rdangle_ok(int j) {
     auto v = std::string("hi") | std::views::take(1);

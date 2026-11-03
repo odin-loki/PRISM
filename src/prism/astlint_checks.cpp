@@ -6075,6 +6075,9 @@ void cxx_value_rule_checks(const json& body, const Fn& fn, Checker& ck) {
     std::map<std::string, std::string> vname;
     auto class_name = [](const json& d) {
         auto qt = std::string(qual_type(d));
+        // a `typename X<...>::type` alias (libstdc++'s ranges::to result is
+        // `typename __invoke_result<...>::type`) names X, not the class: desugar it
+        if (qt.starts_with("typename ")) qt = type_of(d);
         auto t = template_name(qt);
         if (!t.empty()) return t;
         while (!qt.empty() && (qt.back() == '&' || qt.back() == ' ')) qt.pop_back();
@@ -8650,6 +8653,14 @@ void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
                                   kind(*l) == "MaterializeTemporaryExpr" || is_call_kind(lk);
                 auto c = cls_of_type(type_of(*l));
                 if (!temp || ref_id(*u).size() || !one_of(c, {"basic_string", "string", "vector"}) || !ok_pos(*n)) continue;
+                // C++23 (P2415): an rvalue string/vector is moved into an owning_view, so a
+                // pipeline bound to a variable owns its range; it dangles only when the
+                // pipeline object is itself a temporary whose member (.begin() ...) escapes
+                if (type_of(*n).find("owning_view") != std::string::npos) {
+                    const json* p = up(*n);
+                    while (p && (is_implicit_wrapper(kind(*p)) || kind(*p) == "ParenExpr")) p = up(*p);
+                    if (!p || kind(*p) != "MemberExpr") continue;
+                }
                 ck.add(*n, "CXX-RANGES-DANGLE", "views pipeline over a temporary range");
                 break;
             }
