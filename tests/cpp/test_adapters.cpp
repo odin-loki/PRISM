@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -2145,6 +2146,19 @@ TEST_CASE("afl: a planted crash is CRASH, a quiet run CLEAN (not a proof); env a
     CHECK(trim_crlf(slurp(work / "env.txt")) == "0 1 1");
 }
 
+// Windows CI hang diagnosis: which block of the fuse opt-in test is running
+// (the per-test-case trace shows the hang is inside this test).
+static void fuse_trace(const char* what) {
+#ifdef _WIN32
+    if (std::getenv("PRISM_TEST_TRACE") || std::getenv("GITHUB_ACTIONS")) {
+        std::fprintf(stderr, "[trace]   fuse opt-in: %s\n", what);
+        std::fflush(stderr);
+    }
+#else
+    (void)what;
+#endif
+}
+
 TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but missing") {
     const std::string real_path = std::getenv("PATH") ? std::getenv("PATH") : "";
     NoTools nt;
@@ -2158,6 +2172,7 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         // AFL available, PRISM_AFL unset: the concrete fuzz loop still runs and
         // the row says AFL could have run; AFL itself does not.
         EnvVar afl("PRISM_AFL", std::nullopt);
+        fuse_trace("block 1: AFL on PATH, not opted in");
         auto recs = prism::run_fuse({fn}, {}, testdata(), 0.2, 4, false, with_afl);
         REQUIRE_FALSE(recs.empty());
         CHECK(recs[0].status == laws::CLEAN);
@@ -2171,6 +2186,7 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         // PRISM_AFL=1 and afl-fuzz missing: NOTRUN for the AFL half, the row
         // stays the concrete CLEAN (not a proof), never engine=afl.
         EnvVar afl("PRISM_AFL", std::string("1"));
+        fuse_trace("block 2: opted in, AFL missing");
         auto recs = prism::run_fuse({fn}, {}, testdata(), 0.2, 4, false, nt.cfg);
         REQUIRE_FALSE(recs.empty());
         CHECK(recs[0].status == laws::CLEAN);
@@ -2181,6 +2197,7 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         CHECK_FALSE(laws::is_proof(recs[0].status));
     }
     EnvVar path("PATH", real_path);  // the harness needs the real gcc/clang
+    fuse_trace("which gcc/clang");
     if (!prism::Config{}.which({"gcc", "clang"})) {
         MESSAGE("no C compiler: the PRISM_AFL=1 run with afl-fuzz present is not exercised");
         return;
@@ -2189,7 +2206,9 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         // PRISM_AFL=1 with afl-fuzz present and --allow-exec: AFL runs once.
         EnvVar afl("PRISM_AFL", std::string("1"));
         prism::sandbox::Policy allow(true);
+        fuse_trace("block 3: opted in, AFL present, --allow-exec");
         auto recs = prism::run_fuse({fn}, {}, testdata(), 0.2, 4, false, with_afl);
+        fuse_trace("block 3: run_fuse returned");
         REQUIRE_FALSE(recs.empty());
         CHECK(recs[0].status == laws::CLEAN);
         CHECK(xget(recs[0], "engine") == "afl");
