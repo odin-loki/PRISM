@@ -33,6 +33,17 @@
 
 namespace std {
 
+// libstdc++'s byte hash behind type_info::hash_code (libsupc++
+// hash_bytes.cc, declared in <typeinfo>). Its value is unspecified; only
+// "equal bytes give equal hashes" is relied on, which any deterministic
+// function of (bytes, seed) gives: FNV-1a here.
+inline size_t _Hash_bytes(const void* __p, size_t __n, size_t __seed) {
+    const unsigned char* __b = static_cast<const unsigned char*>(__p);
+    size_t __h = __seed ^ static_cast<size_t>(14695981039346656037ull);
+    for (size_t __i = 0; __i < __n; ++__i) __h = (__h ^ __b[__i]) * static_cast<size_t>(1099511628211ull);
+    return __h;
+}
+
 class type_index {
 public:
     // Stores that object's address. Not a copy of its name.

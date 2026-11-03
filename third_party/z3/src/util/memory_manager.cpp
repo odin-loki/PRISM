@@ -247,6 +247,7 @@ void * memory::allocate(char const* file, int line, char const* obj, size_t s) {
 
 thread_local long long g_memory_thread_alloc_size    = 0;
 thread_local long long g_memory_thread_alloc_count   = 0;
+thread_local long long g_memory_pending_alloc        = 0;  // PRISM: size of the request being synchronised
 
 static void synchronize_counters(bool allocating) {
 #ifdef PROFILE_MEMORY
@@ -268,8 +269,17 @@ static void synchronize_counters(bool allocating) {
     }
     g_memory_thread_alloc_size = 0;
     if (out_of_mem && allocating) {
+        // PRISM: the request that crossed the limit is never allocated; take
+        // it back out of the global count (callers pass it in pending_alloc),
+        // else every later context of the process starts over the limit.
+        if (g_memory_pending_alloc != 0) {
+            lock_guard lock(*g_memory_mux);
+            g_memory_alloc_size -= g_memory_pending_alloc;
+        }
+        g_memory_pending_alloc = 0;
         throw_out_of_memory();
     }
+    g_memory_pending_alloc = 0;
     if (counts_exceeded && allocating) {
         throw_alloc_counts_exceeded();
     }
@@ -298,6 +308,7 @@ void * memory::allocate(size_t s) {
     g_memory_thread_alloc_size += s;
     g_memory_thread_alloc_count += 1;
     if (g_memory_thread_alloc_size > SYNCH_THRESHOLD) {
+        g_memory_pending_alloc = static_cast<long long>(s);
         synchronize_counters(true);
     }
     void * r = malloc(s);
@@ -330,6 +341,7 @@ void* memory::reallocate(void *p, size_t s) {
     g_memory_thread_alloc_size += s - sz;
     g_memory_thread_alloc_count += 1;
     if (g_memory_thread_alloc_size > SYNCH_THRESHOLD) {
+        g_memory_pending_alloc = static_cast<long long>(s) - static_cast<long long>(sz);
         synchronize_counters(true);
     }
 

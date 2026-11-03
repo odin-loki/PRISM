@@ -5,6 +5,7 @@
 // translation-validated: the PIR interpreter and `lli` (sandboxed) run the
 // same concrete inputs and must agree wherever PIR reports no UB.
 
+#include "prism/membudget.hpp"
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/laws.hpp"
@@ -21,6 +22,13 @@
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
 
+#include <cctype>
+#include <tuple>
+#include <nlohmann/json.hpp>
+#include <map>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <cstdlib>
 #include <atomic>
@@ -393,7 +401,7 @@ Frontend find_frontend(const Config& cfg) {
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
                                        std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
-                                       const std::vector<std::string>& include_flags) {
+                                       const std::vector<std::string>& include_flags, int cxx_std) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -449,7 +457,10 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     argv.insert(argv.end(), fl.begin(), fl.end());
     argv.insert(argv.end(), {"-o", o0.string(), src.string()});
     auto r = modelled.has_value() ? std::move(*modelled) : detail::run_process(argv, timeout_s);
-    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+    // C23's static_assert keyword (no <assert.h>) compiles as C17 only as an
+    // implicit call to a function named static_assert: also a C23 unit.
+    const bool c23_kw = !r.failed && r.rc == 0 && r.text.find("function 'static_assert'") != std::string::npos;
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0 || c23_kw)) {
         // C23 code (bool, nullptr, typeof, digit separators ...) does not
         // compile as C17: try once more as C23 before giving up. Only the
         // language level changes; every check flag stays.
@@ -464,9 +475,36 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             fl = std::move(c23);
         }
     }
+    if (cxx && !r.timed_out && (r.failed || r.rc != 0) &&
+        r.text.find("ISO C++17 does not allow") != std::string::npos) {
+        // Code from before C++17 (dynamic exception specifications,
+        // `register`): try once more as C++14. Only the language level changes.
+        auto c14 = fl;
+        std::replace(c14.begin(), c14.end(), std::string("-std=c++23"), std::string("-std=c++14"));
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), c14.begin(), c14.end());
+        av.insert(av.end(), {"-o", o0.string(), src.string()});
+        auto r2 = detail::run_process(av, timeout_s);
+        if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+            r = std::move(r2);
+            fl = std::move(c14);
+            cxx_std = std::min(cxx_std, 14);
+        }
+    }
     if (r.failed || r.timed_out || r.rc != 0) {
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
+    }
+    // Nothing defined: the unit's functions are all inline, constexpr or
+    // static and unused, so clang emitted none. Emit them anyway to check them
+    // (only then: in other units it would pull in every unused library inline).
+    if (read_file(o0).find("\ndefine ") == std::string::npos) {
+        // clang writes -o through a temporary file, so a failed run leaves
+        // o0 as it was.
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), fl.begin(), fl.end());
+        av.insert(av.end(), {"-femit-all-decls", "-o", o0.string(), src.string()});
+        (void)detail::run_process(av, timeout_s);
     }
     auto diags = parse_folded_clang_diagnostics(r.text, src);
     std::vector<int> placed;
@@ -488,9 +526,9 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // passes (roadmap 2.3), then encoded like any other code (docs/PIR.md "Coroutines");
     // fix-irreducible gives their resume functions (loops re-entered at a
     // suspend point) a single loop header.
-    const char* passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
-                               "function(lowerswitch,fix-irreducible,loop-simplify,lcssa,instnamer)"
-                             : "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
+    const std::string passes = cxx ? "-passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,"
+                                     "function(" + lowerswitch_pass(*fe.opt) + ",fix-irreducible,loop-simplify,lcssa,instnamer)"
+                                   : c_ir_passes(*fe.opt);
     auto ro = detail::run_process({fe.opt->string(), passes,
                                    "-S", "-o", o2.string(), o1.string()},
                                   timeout_s);
@@ -508,23 +546,42 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 want_shift_loc = true;
                 break;
             }
-        if (!cxx && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
+        // C++ before C++20 (P1236) has the C++11 rule (CWG 1457): the result
+        // must fit the unsigned counterpart. clang's shift-base check follows
+        // the -std it is given, so the locator runs at the unit's standard.
+        const bool shl_ub = !cxx || cxx_std < 20;
+        if (shl_ub && (out.find(" = shl ") != std::string::npos || want_shift_loc)) {
             std::vector<std::string> av{cc->string()};
             av.insert(av.end(), fl.begin(), fl.end());
+            if (cxx)
+                for (auto& a : av)
+                    if (a.starts_with("-std=")) a = "-std=c++" + std::to_string(cxx_std < 11 ? 98 : cxx_std);
             auto os = td.path / "shift.ll";
             av.insert(av.end(), {"-fsanitize=shift-base", "-o", os.string(), src.string()});
             auto rs = detail::run_process(av, timeout_s);
-            if (rs.failed || rs.timed_out || rs.rc != 0) {
+            if (cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
+                // The unit needs a later standard than it declares: C++20 rules.
+            } else if (rs.failed || rs.timed_out || rs.rc != 0) {
                 err = "clang (signed-shift locator): " + first_error(rs.text);
                 return std::nullopt;
+            } else {
+                *signed_shl = parse_ubsan_locs(read_file(os));
             }
-            *signed_shl = parse_ubsan_locs(read_file(os));
         }
     }
     return out;
 }
 
 namespace {
+
+// "17", "1z", "20", "2a", "23", "2b", "2c", "98", "03", "0x" -> 17, 20, ...
+int cxx_std_number(const std::string& v) {
+    static const std::map<std::string, int> m{{"98", 98}, {"03", 98}, {"0x", 11}, {"11", 11}, {"1y", 14}, {"14", 14},
+                                              {"1z", 17}, {"17", 17}, {"2a", 20}, {"20", 20}, {"2b", 23},
+                                              {"23", 23}, {"2c", 26}, {"26", 26}};
+    auto it = m.find(v.substr(0, 2));
+    return it == m.end() ? 17 : it->second == 98 ? 3 : it->second;
+}
 
 std::string rel_of(const fs::path& p, const fs::path& root) {
     std::error_code ec;
@@ -595,6 +652,7 @@ std::string ll_const(uint64_t v, unsigned w) {
 struct Unit {
     fs::path path;
     std::string rel;
+    bool header = false;  // a C header lowered alone for its unused inline functions
 };
 
 struct FnRec {
@@ -860,6 +918,25 @@ std::string rejected_budget_env() {
     return out;
 }
 
+// $PRISM_PIR_PROGRESS=FILE: one line per unit analysed ("start PATH" and
+// "done SECONDS PATH"), appended and flushed, so a slow or stuck unit in a
+// long run can be named from outside the process.
+void progress_note(const char* what, const fs::path& unit, double secs) {
+    static std::mutex m;
+    const char* f = std::getenv("PRISM_PIR_PROGRESS");
+    if (!f || !*f) return;
+    std::lock_guard<std::mutex> lk(m);
+    std::ofstream o(f, std::ios::app);
+    o << what << ' ';
+    if (secs > 0) o << secs << ' ';
+    o << unit.string() << '\n';
+}
+
+}  // namespace
+
+double default_function_budget_s(const Config& cfg) { return std::max(300.0, 10.0 * cfg.timeout); }
+
+namespace {
 std::shared_ptr<HoudiniBudget> houdini_budget(const Config& cfg) {
     double b = std::max(3600.0, 120.0 * cfg.timeout);
     (void)env_seconds("PRISM_HOUDINI_BUDGET", b);  // a rejected value: rejected_budget_env
@@ -883,6 +960,11 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     // Per-function pir budget (docs/PIR.md "Solving"): $PRISM_FUNCTION_BUDGET
     // seconds (0: none). Spent before every VC is answered: TIMEOUT with the
     // budget message and extra.function_budget_s (CheckOptions).
+    // Default: max(300 s, 10 x timeout). With none, one function whose Z3
+    // query grows without tripping the memory budget (filesystem_contracts.cpp
+    // fs_stem_dots_true under a 3000 MB budget) held its whole batch, and the
+    // other workers idle, for 10+ minutes; with 60 s the unit took 192 s.
+    o.function_budget_s = default_function_budget_s(cfg);
     (void)env_seconds("PRISM_FUNCTION_BUDGET", o.function_budget_s);
     o.cache_dir = cfg.solver_cache.string();
     // Solver and checker binaries: --tool NAME=PATH first, then the pinned
@@ -914,13 +996,329 @@ struct Lowered {
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
+    // Functions the front end rejected, cut out so the rest of the unit could
+    // be lowered (salvage_unit): name, line, the first clang error.
+    std::vector<std::tuple<std::string, int, std::string>> dropped;
 };
+
+// ---- Front-end salvage ----
+// The bmc front end checks each function on its own, so one function clang
+// rejects (an undeclared name, a construct clang does not support) costs only
+// that function. Clang rejects the whole unit. When every error clang reports
+// lies inside top-level function bodies, those definitions are turned into
+// declarations (same line numbers, the file's own name via #line) and the
+// unit is lowered again; each cut function is reported NEEDS-HARNESS.
+struct Salvage {
+    std::string text;
+    std::vector<std::tuple<std::string, int, std::string>> dropped;
+};
+
+std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err, bool hoist = true) {
+    const std::string text = read_file(src);
+    if (text.empty()) return std::nullopt;
+    // error lines in this file
+    std::vector<std::pair<int, std::string>> errs;
+    {
+        const std::string tag = src.string() + ":";
+        std::size_t pos = 0;
+        while ((pos = err.find(tag, pos)) != std::string::npos) {
+            std::size_t q = pos + tag.size();
+            int line = 0;
+            while (q < err.size() && std::isdigit(static_cast<unsigned char>(err[q]))) line = line * 10 + (err[q++] - '0');
+            const std::size_t eol = err.find('\n', q);
+            const std::string rest = err.substr(q, eol == std::string::npos ? std::string::npos : eol - q);
+            if (line > 0 && rest.find(" error: ") != std::string::npos) {
+                const auto e = rest.find("error: ");
+                errs.emplace_back(line, rest.substr(e + 7));
+            }
+            pos = q;
+        }
+    }
+    if (errs.empty() || err.find("fatal error") != std::string::npos) return std::nullopt;
+    // top-level { } blocks, skipping comments, strings and preprocessor lines
+    struct Block { std::size_t head, open, close; int l0, l1; };
+    std::vector<Block> blocks;
+    int depth = 0, line = 1, open_line = 0;
+    std::size_t head = 0, open = 0;
+    bool bol = true;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char ch = text[i];
+        if (ch == '\n') { ++line; bol = true; continue; }
+        if (bol && ch == '#' && depth == 0) {  // directive: to end of line (with continuations)
+            while (i < text.size() && !(text[i] == '\n' && text[i - 1] != '\\')) ++i;
+            ++line;
+            head = i + 1;
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(ch))) bol = false;
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+            while (i + 1 < text.size() && text[i + 1] != '\n') ++i;
+            continue;
+        }
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) { if (text[i] == '\n') ++line; ++i; }
+            ++i;
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            for (++i; i < text.size() && text[i] != ch; ++i) {
+                if (text[i] == '\\') ++i;
+                else if (text[i] == '\n') ++line;
+            }
+            continue;
+        }
+        if (ch == '{') {
+            if (depth == 0) { open = i; open_line = line; }
+            ++depth;
+        } else if (ch == '}') {
+            if (--depth < 0) return std::nullopt;
+            if (depth == 0) {
+                blocks.push_back({head, open, i, open_line, line});
+                head = i + 1;
+            }
+        } else if (ch == ';' && depth == 0) {
+            head = i + 1;
+        }
+    }
+    if (depth != 0) return std::nullopt;
+    static const Regex fn_head(R"(([A-Za-z_][A-Za-z_0-9]*)\s*\([^{};]*\)[^{};()]*$)");
+    static const Regex not_fn(R"(^\s*(?:struct|class|union|enum|namespace|extern|template|typedef)\b|=\s*$)");
+    std::string out = text;
+    Salvage sv;
+    std::set<std::size_t> cut;
+    std::vector<std::pair<int, std::string>> hoisted;
+    for (auto& [eline, msg] : errs) {
+        const Block* hit = nullptr;
+        for (auto& b : blocks)
+            if (b.l0 <= eline && eline <= b.l1) { hit = &b; break; }
+        if (!hit) return std::nullopt;  // an error outside every function body
+        // the error is in the head (the signature itself): not salvageable
+        const std::string hd = text.substr(hit->head, hit->open - hit->head);
+        if (eline < hit->l0) return std::nullopt;
+        if (not_fn.search_match(hd)) return std::nullopt;
+        auto m = fn_head.search_match(hd);
+        if (!m) return std::nullopt;
+        // A GNU C nested function (clang: "function definition is not allowed
+        // here"): besides cutting the outer function, hoist the nested one to
+        // file scope at its own lines, so it is checked when it uses nothing
+        // of the outer frame (if it does, the next round's error cuts it).
+        if (hoist && msg.find("function definition is not allowed here") != std::string::npos) {
+            std::size_t ls = 0;
+            for (int ln = 1; ln < eline && ls != std::string::npos; ++ln) ls = text.find('\n', ls) + 1;
+            const std::size_t ob = ls < text.size() ? text.find('{', ls) : std::string::npos;
+            if (ob != std::string::npos && ob < hit->close) {
+                int d = 0;
+                std::size_t k = ob;
+                for (; k < hit->close; ++k) {
+                    if (text[k] == '{') ++d;
+                    else if (text[k] == '}' && --d == 0) break;
+                }
+                if (d == 0 && k < hit->close && !std::any_of(hoisted.begin(), hoisted.end(), [&](auto& h) { return h.first == eline; }))
+                    hoisted.emplace_back(eline, text.substr(ls, k + 1 - ls));
+            }
+        }
+        if (!cut.insert(hit->open).second) continue;
+        sv.dropped.emplace_back(m->group(1), hit->l0, msg);
+        // body -> ';' keeping every newline
+        out[hit->open] = ';';
+        for (std::size_t k = hit->open + 1; k <= hit->close; ++k)
+            if (out[k] != '\n') out[k] = ' ';
+    }
+    if (sv.dropped.empty()) return std::nullopt;
+    std::string esc;
+    for (char c2 : src.string()) { if (c2 == '"' || c2 == '\\') esc += '\\'; esc += c2; }
+    sv.text = "#line 1 \"" + esc + "\"\n" + out;
+    for (auto& [ln, code] : hoisted) sv.text += "\n#line " + std::to_string(ln) + " \"" + esc + "\"\n" + code + "\n";
+    return sv;
+}
+
 
 struct Analyzed {
     std::vector<FnRec> recs;
     std::unique_ptr<ir::Module> mod;  // FnRec::irf points into it
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
 };
+
+
+// ---- Fresh-process continuation after a hard Z3 out-of-memory ----
+// Past Z3's hard memory limit Z3 is not usable again in this process
+// (encode.cpp z3_hard_oom), so every later function of the run would be
+// UNKNOWN. Those functions are checked again by a child PRISM (this binary,
+// the same command line, pir stage only, PRISM_PIR_ONLY=<unit>\t<fn>,...),
+// whose verdicts replace the UNKNOWN rows. The child re-runs the same
+// deterministic checks; a child that runs out of memory again does the same
+// for its own remaining functions. Linux only (/proc/self); elsewhere the
+// rows stay UNKNOWN (Law 7: said, not dropped).
+bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
+    static const std::optional<std::set<std::string>> only = []() -> std::optional<std::set<std::string>> {
+        const char* e = std::getenv("PRISM_PIR_ONLY");
+        if (!e || !*e) return std::nullopt;
+        std::set<std::string> r;
+        std::string cur;
+        for (const char* p = e;; ++p) {
+            if (*p == '\n' || *p == '\0') {
+                if (!cur.empty()) r.insert(cur);
+                cur.clear();
+                if (!*p) break;
+            } else {
+                cur += *p;
+            }
+        }
+        return r;
+    }();
+    return !only || only->count(unit + "\t" + fn) > 0;
+}
+
+std::vector<std::string> self_cmdline() {
+    std::vector<std::string> av;
+#ifdef __linux__
+    std::ifstream in("/proc/self/cmdline", std::ios::binary);
+    std::string a;
+    while (std::getline(in, a, '\0')) av.push_back(a);
+#endif
+    return av;
+}
+
+void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg) {
+    std::vector<FnRec*> pend;
+    for (auto& r : recs)
+        if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") pend.push_back(&r);
+    if (pend.empty()) return;
+    auto note = [&](const std::string& why) {
+        for (auto* r : pend) r->f.extra["pir_rerun"] = why;
+    };
+    auto av = self_cmdline();
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (av.empty() || ec) return note("not possible here (no /proc/self): stays UNKNOWN");
+    static std::atomic<int> seq{0};
+    const fs::path out = fs::temp_directory_path() /
+                         ("prism_pir_rerun_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+    std::string only;
+    for (auto* r : pend) only += u.rel + "\t" + r->f.function.value_or("") + "\n";
+    std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only};
+    // The child gets what the tree leaves of the budget, so parent + child stay in it.
+    if (const uint64_t mb = membudget::budget_mb(); mb > 0) {
+        const uint64_t rss = membudget::tree_rss_mb();
+        cmd.push_back("PRISM_MEM_BUDGET_MB=" + std::to_string(std::max<uint64_t>(256, mb > rss ? mb - rss : 0)));
+    }
+    cmd.push_back(exe.string());
+    for (std::size_t i = 1; i < av.size(); ++i) {
+        const std::string& a = av[i];
+        if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
+        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
+            a == "--gui")
+            continue;
+        cmd.push_back(a);
+    }
+    cmd.insert(cmd.end(), {std::string("--stage"), std::string("inventory,classify,pir"), std::string("--out"), out.string()});
+    const double t = 120 + 3.0 * std::max(60.0, cfg.timeout) * static_cast<double>(pend.size());
+    auto r = detail::run_process(cmd, t);
+    std::map<std::string, nlohmann::json> got;
+    {
+        std::ifstream in(out / "stages.jsonl");
+        std::string line;
+        while (std::getline(in, line)) {
+            auto j = nlohmann::json::parse(line, nullptr, false);
+            if (j.is_discarded() || j.value("name", "") != "pir" || !j.contains("findings")) continue;
+            for (auto& x : j["findings"])
+                if (x.contains("file") && x["file"].is_string() && x["file"] == u.rel && x.contains("function") &&
+                    x["function"].is_string())
+                    got[x["function"].get<std::string>()] = x;
+        }
+    }
+    fs::remove_all(out, ec);
+    for (auto* rp : pend) {
+        auto& f = rp->f;
+        auto it = got.find(f.function.value_or(""));
+        if (it == got.end()) {
+            f.extra["pir_rerun"] = std::string("fresh process gave no verdict (") +
+                                   (r.timed_out ? "timed out" : "rc " + std::to_string(r.rc)) + "): stays UNKNOWN";
+            continue;
+        }
+        auto& x = it->second;
+        f.status = x.value("status", f.status);
+        f.message = x.value("message", f.message);
+        f.cls = x.value("cls", f.cls);
+        f.strength = x.value("strength", f.strength);
+        f.counterexample = x.value("counterexample", std::string());
+        if (x.contains("line") && x["line"].is_number_integer()) f.line = x["line"].get<int>();
+        if (x.contains("extra") && x["extra"].is_object())
+            for (auto& [k, v] : x["extra"].items())
+                if (v.is_string()) f.extra[k] = v.get<std::string>();
+        if (!f.extra.count("pir_rerun") || f.extra["pir_rerun"] == "pending")
+            f.extra["pir_rerun"] = "fresh process (Z3 memory used up earlier in this one)";
+        rp->cex.clear();
+        if (f.status != laws::FAILED) rp->fn.reset();  // nothing to replay
+    }
+}
+
+// An error sink without parameters (SV-COMP's reach_error: its assertion
+// fails whenever it is called) is FAILED when checked alone, though whether
+// it fails is decided only by its callers: most of the pir-vs-bmc hard
+// conflicts. When every caller in the unit inlined it (so each call site was
+// checked, and a reachable call is FAILED in that caller), the sink becomes
+// PROVED-ASSUMING "called only from those checked call sites", as bmc treats
+// it. A sink with no caller in the unit keeps FAILED (an outside caller may
+// reach it); a function with parameters (__VERIFIER_assert(cond)) keeps
+// FAILED (some argument fails it), as do failures that are not assertions.
+void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) {
+    std::map<std::string, std::set<std::string>> callers;  // IR callee -> IR callers
+    for (const auto& fn : mod.functions) {
+        if (fn.is_declaration || fn.is_model) continue;
+        for (const auto& b : fn.blocks)
+            for (const auto& in : b.insts)
+                if (!in.callee.empty() && in.callee != fn.name) callers[in.callee].insert(fn.name);
+    }
+    std::map<std::string, FnRec*> by_ir;
+    for (auto& r : recs)
+        if (r.irf) by_ir[r.irf->name] = &r;
+    auto split = [](const std::string& csv) {
+        std::set<std::string> out;
+        std::string cur;
+        for (char ch : csv + ",") {
+            if (ch == ',') { if (!cur.empty()) out.insert(cur); cur.clear(); }
+            else cur += ch;
+        }
+        return out;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto& r : recs) {
+            if (!r.irf || r.f.status != laws::FAILED || !r.f.message.starts_with("assert:")) continue;
+            // Only a sink without parameters (reach_error): whether it fails is
+            // decided entirely by whether it is called. A function with
+            // parameters (__VERIFIER_assert(cond)) can fail for some caller's
+            // argument and keeps FAILED alone, as bmc reports it.
+            if (!r.irf->params.empty()) continue;
+            auto it = callers.find(r.irf->name);
+            if (it == callers.end() || it->second.empty()) continue;
+            const std::string src_name = r.f.function.value_or(r.irf->name);
+            bool ok = true;
+            std::string names;
+            for (const auto& cn : it->second) {
+                auto c = by_ir.find(cn);
+                if (c == by_ir.end()) { ok = false; break; }
+                auto inl = c->second->f.extra.find("inlined");
+                if (inl == c->second->f.extra.end() || !split(inl->second).count(src_name)) { ok = false; break; }
+                names += (names.empty() ? "" : ", ") + c->second->f.function.value_or(cn);
+            }
+            if (!ok) continue;
+            r.f.extra["verdict_alone"] = r.f.status + ": " + r.f.message;
+            r.f.status = std::string(laws::PROVED_ASSUMING);
+            r.f.strength = std::string(laws::STRENGTH_SOME);
+            r.f.message = "error sink: it fails exactly when called; every caller in this unit (" + names +
+                          ") inlined it, so reaching it is checked (and reported) at each call site";
+            r.f.extra["assumption"] = "called only from the call sites in this unit, which are checked";
+            r.f.counterexample.clear();
+            r.f.extra.erase("cex");
+            r.cex.clear();
+            r.fn.reset();
+            changed = true;
+        }
+    }
+}
 
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
@@ -950,12 +1348,25 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         out.push_back(std::move(f));
         return res;
     }
+    for (const auto& [name, line, why] : low.dropped) {
+        auto f = base_finding(u);
+        f.function = name;
+        f.line = line;
+        f.status = std::string(laws::NEEDS_HARNESS);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "the clang front end rejects this function (" + why +
+                    "); it was cut out and the rest of the unit checked";
+        f.extra["frontend"] = fe.version;
+        f.extra["frontend_salvage"] = "cut";
+        out.push_back(std::move(f));
+    }
     res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
     auto& mod = *res.mod;
     // library operational models for what the unit declares (docs/PIR.md "Library models")
     link_models(mod, models);
     TranslateOptions topt;
     topt.signed_shl = sshl;
+    topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
     std::set<int> used_folded;
     const auto unit_name = u.path.filename().string();
@@ -979,6 +1390,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         auto& f = rec.f;
         f = base_finding(u);
         f.function = sub.name.empty() ? irf.name : sub.name;
+        if (!rerun_only_wanted(u.rel, *f.function)) continue;  // fresh-process re-run of other functions
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
@@ -1035,8 +1447,33 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         }
         // one function budget for the check and the policy's re-checks of this row
         auto copt = check_options(cfg, budget);
+        // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
+        // function gets at most N seconds; one that is still UNKNOWN at the
+        // cap is re-checked with its full budget in a fresh child
+        // (rerun_after_oom), whose memory the budget bounds and the kernel
+        // reclaims. The child (PRISM_PIR_ONLY) is never capped. A capped
+        // check only ever stops early: UNKNOWN, never PROVED.
+        static const double divert_s = [] {
+            const char* e = std::getenv("PRISM_PIR_DIVERT_S");
+            return (e && *e && !std::getenv("PRISM_PIR_ONLY")) ? std::strtod(e, nullptr) : 0.0;
+        }();
+        const bool capped = divert_s > 0 && (copt.function_budget_s <= 0 || copt.function_budget_s > divert_s);
+        if (capped) copt.function_budget_s = divert_s;
         if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+        const auto t_fn0 = std::chrono::steady_clock::now();
         auto v = check_function(fn, copt);
+        const double fn_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count();
+        if (capped && v.status == laws::UNKNOWN && fn_s >= 0.9 * divert_s) {
+            f.extra["pir_rerun"] = "pending";
+            f.extra["pir_diverted_after_s"] = std::to_string(static_cast<int>(fn_s));
+        }
+        // Re-checked fresh only when this process already checked another
+        // function (its Z3 memory, or a hard out-of-memory, is what stopped
+        // this one), so the child processes always make progress.
+        static std::atomic<int> g_checked{0};
+        const bool fresh_helps = g_checked++ > 0;
+        if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
+            f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
@@ -1092,6 +1529,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                            " not attributable to an IR instruction (" + folded_msg + ")";
         owner->fn.reset();
     }
+    caller_discharged_asserts(recs, mod);
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);
@@ -1106,6 +1544,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
 }  // namespace
 
 std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config& cfg) {
+    // the child budgets project this process's growth from its peak in pir,
+    // not from earlier stages (bmc) that have released their memory
+    membudget::reset_peak();
     // SVCOMP-ILP32: pir's pointer model is LP64. Do not prove an ILP32 task here.
     if (is_ilp32(cfg.data_model)) {
         Finding f;
@@ -1118,6 +1559,16 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});
+    // A C header in the tree that defines functions (static inline helpers):
+    // a helper no unit calls is emitted by none, so it would have no verdict.
+    // The header is lowered alone as C with every declaration emitted, after
+    // the units; only functions no unit reported are kept from it.
+    if (!units.empty() && std::getenv("PRISM_PIR_NO_HEADERS") == nullptr) {
+        static const Regex has_body(R"(\)\s*\{)");
+        for (auto& p : sources)
+            if (p.extension() == ".h" && has_body.search(read_file(p)))
+                units.push_back(Unit{p, rel_of(p, cfg.root), true});
+    }
     if (!z3_available()) {
         Finding f;
         f.stage = "pir";
@@ -1172,8 +1623,40 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         else
             cxx_models_error = "libstdc++ (the PRISM C++ model headers could not be written)";
     }
-    std::vector<Lowered> low(units.size());
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
+    // Units go through lower/analyse/re-run/validate in batches, and each
+    // batch's LLVM IR is freed before the next is lowered. Lowering every unit
+    // first kept the whole corpus's IR alive at once: RSS grew with the corpus
+    // (4.9 GB on testdata, OOM-killed at 12.8 GB with --jobs 8), and no
+    // per-function budget check can see memory held between phases.
+    const std::vector<Unit>& units_all = units;
+    std::vector<std::vector<Finding>> per_all(units_all.size());
+    const auto budget = houdini_budget(cfg);
+    // One pipeline per unit (lower, analyse, validate, free its IR) on a work
+    // queue: no phase barrier, so a slow unit holds one worker, not the batch.
+    std::size_t batch_n = std::max<std::size_t>(1, units_all.size());
+    if (const char* e = std::getenv("PRISM_PIR_BATCH")) batch_n = std::max<std::size_t>(1, std::strtoull(e, nullptr, 10));
+    for (std::size_t b0 = 0; b0 < units_all.size(); b0 += batch_n) {
+    const std::vector<Unit> batch(units_all.begin() + static_cast<std::ptrdiff_t>(b0),
+                                  units_all.begin() + static_cast<std::ptrdiff_t>(std::min(units_all.size(), b0 + batch_n)));
+    std::vector<Lowered> low(batch.size());
+    std::vector<Analyzed> an(batch.size());
+    std::vector<std::vector<Finding>> per(batch.size());
+    std::vector<char> pending(batch.size(), 0);
+    auto finish = [&](std::size_t i) {
+        auto& a = an.at(i);
+        const auto vt0 = std::chrono::steady_clock::now();
+        progress_note("validate-start", batch.at(i).path, 0.0);
+        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
+        progress_note("validate-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - vt0).count());
+        per.at(i) = std::move(a.out);
+        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
+        if (!low.at(i).cxx_models.empty())
+            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+        low.at(i).ir.reset();
+        a = Analyzed{};
+    };
+    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
+        {
         auto& l = low.at(i);
         try {
             // The unit's include path: its compile_commands.json entry (without
@@ -1182,25 +1665,69 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             // shadows a system header), as the Clang-AST lints guess it.
             std::vector<std::string> inc;
             const fs::path root = fs::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path();
-            for (auto& f : astlint::compile_db_flags(root, u.path))
+            int cxx_std = 17;
+            for (auto& f : astlint::compile_db_flags(root, u.path)) {
                 if (!f.starts_with("-std=")) inc.push_back(f);
+                else if (auto k = f.find("++"); k != std::string::npos) cxx_std = cxx_std_number(f.substr(k + 2));
+            }
             if (inc.empty() && !root.empty()) {
                 std::error_code ec;
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc);
+            if (u.header) inc.insert(inc.begin(), {"-x", "c", "-femit-all-decls"});
+            const auto lt0 = std::chrono::steady_clock::now();
+            progress_note("lower-start", u.path, 0.0);
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
+            if (!l.ir && !u.header && std::getenv("PRISM_PIR_NO_SALVAGE") == nullptr) {
+                // clang reports the first error only (first_error): cut the
+                // functions it names, re-lower, and repeat with the errors
+                // gathered so far (the salvaged copy keeps the original file
+                // name and lines through #line), a few rounds at most.
+                std::string errs = l.err;
+                bool hoist = true;
+                for (int round = 0; round < 8; ++round) {
+                    auto sv = salvage_unit(u.path, errs, hoist);
+                    if (!sv) break;
+                    TmpDir td;
+                    const fs::path cp = td.path / u.path.filename();
+                    write_file(cp, sv->text);
+                    auto inc2 = inc;
+                    inc2.insert(inc2.begin(), {"-iquote", u.path.parent_path().string()});
+                    std::string err2;
+                    Lowered l2;
+                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std);
+                    if (l2.ir) {
+                        l.ir = std::move(l2.ir);
+                        l.folded = std::move(l2.folded);
+                        l.sshl = std::move(l2.sshl);
+                        l.cxx_models = std::move(l2.cxx_models);
+                        l.dropped = std::move(sv->dropped);
+                        l.err.clear();
+                        break;
+                    }
+                    if (errs.find(err2) != std::string::npos) {
+                        // No new error: a hoisted nested function uses the
+                        // outer frame. Try once more without hoisting.
+                        if (!hoist) break;
+                        hoist = false;
+                        continue;
+                    }
+                    errs += "\n" + err2;
+                }
+            }
+            progress_note("lower-done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - lt0).count());
             if (is_cxx(u.path) && l.cxx_models.empty() && !cxx_models_error.empty()) l.cxx_models = cxx_models_error;
         } catch (const std::exception& ex) {
             l.ir.reset();
             l.err = std::string("internal error: ") + ex.what();
         }
-    });
-    std::vector<Analyzed> an(units.size());
-    const auto budget = houdini_budget(cfg);
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit& u) {
+        }
         try {
+            const auto t0 = std::chrono::steady_clock::now();
+            progress_note("start", u.path, 0.0);
             an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
+            progress_note("done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         } catch (const std::exception& ex) {
             auto f = base_finding(u);
             f.status = std::string(laws::ERROR);
@@ -1209,16 +1736,27 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             an.at(i).recs.clear();
             an.at(i).out = {f};
         }
+        // Functions Z3 could no longer check are re-run in fresh processes,
+        // sequentially, after the queue; every other unit finishes here.
+        bool needs_rerun = false;
+        for (auto& r : an.at(i).recs)
+            if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") needs_rerun = true;
+        if (needs_rerun) pending.at(i) = 1;
+        else finish(i);
+        prism::membudget::release_free_memory();
     });
-    std::vector<std::vector<Finding>> per(units.size());
-    parallel_for(cfg.jobs, units, [&](std::size_t i, const Unit&) {
-        auto& a = an.at(i);
-        if (low.at(i).ir && !a.recs.empty()) validate(a.recs, *low.at(i).ir, fe, cfg);
-        per.at(i) = std::move(a.out);
-        for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
-        if (!low.at(i).cxx_models.empty())
-            for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
-    });
+    for (std::size_t i = 0; i < batch.size(); ++i) {
+        if (!pending.at(i)) continue;
+        const auto rt0 = std::chrono::steady_clock::now();
+        rerun_after_oom(batch.at(i), an.at(i).recs, cfg);
+        progress_note("rerun-done", batch.at(i).path, std::chrono::duration<double>(std::chrono::steady_clock::now() - rt0).count());
+        finish(i);
+    }
+    for (std::size_t i = 0; i < per.size(); ++i) per_all.at(b0 + i) = std::move(per.at(i));
+    low.clear();
+    an.clear();
+    prism::membudget::release_free_memory();
+    }  // batch: its IR (low) and analyses are freed here
     std::vector<Finding> out;
     if (!models.error.empty()) {
         // Law 7: without the models every library call stays UNENCODED; say why
@@ -1229,8 +1767,21 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.message = "library models could not be built: " + models.error;
         out.push_back(std::move(f));
     }
-    for (auto& v : per)
-        for (auto& f : v) out.push_back(std::move(f));
+    std::set<std::pair<std::string, std::string>> seen;
+    for (std::size_t i = 0; i < per_all.size(); ++i)
+        if (!units_all.at(i).header)
+            for (auto& f : per_all.at(i))
+                if (f.function) seen.emplace(f.file, *f.function);
+    for (std::size_t i = 0; i < per_all.size(); ++i)
+        for (auto& f : per_all.at(i)) {
+            if (units_all.at(i).header) {
+                // only functions of the header itself that no unit reported;
+                // a header that does not compile alone says nothing
+                if (!f.function || f.file != units_all.at(i).rel || seen.count({f.file, *f.function})) continue;
+                f.extra["lowered_as"] = "the header alone (no unit calls this function)";
+            }
+            out.push_back(std::move(f));
+        }
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
 }
 

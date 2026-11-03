@@ -360,6 +360,9 @@ struct PtrContract {
 };
 
 struct TranslateOptions {
+    // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
+    // is negative or the result does not fit the unsigned type; C: past the sign bit.
+    bool shl_cxx = false;
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
@@ -541,6 +544,10 @@ struct CheckOptions {
     std::shared_ptr<HoudiniBudget> houdini_budget;
 };
 PRISM_API Verdict check_function(const Function& fn, const CheckOptions& opt);
+// True once Z3 hit its hard memory limit in this process: every later
+// check_function is UNKNOWN "not checked" (pir stage re-runs those in a
+// fresh process).
+PRISM_API bool z3_hard_oom();
 // The portfolio without the query cache (library callers and tests).
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s = 30.0);
 PRISM_API Verdict check_function(const Function& fn, int unwind, double timeout_s, const EncodeOptions& eo);
@@ -569,7 +576,12 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  std::vector<FoldedUb>* folded = nullptr,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr,
                                                  std::string* cxx_models = nullptr,
-                                                 const std::vector<std::string>& include_flags = {});
+                                                 const std::vector<std::string>& include_flags = {},
+                                                 int cxx_std = 17);
+// cxx_std: the C++ standard the unit is built with (its compile_commands.json
+// -std=, else 17, the default of the compilers PRISM runs). Below 20 a signed
+// left shift whose result does not fit is UB (C++11..17, CWG 1457), so the
+// signed-shift locator also runs for C++ with that standard.
 // include_flags: the unit's -I/-D/... from compile_commands.json (never -std=,
 // which stays PRISM's own), or a search path guess; appended to every clang run.
 // cxx_models receives which C++ library the unit was lowered with when
@@ -624,5 +636,9 @@ PRISM_API std::string unit_vcs_json(const std::filesystem::path& src, const Conf
 // cfg.certified). The query cache is off (a timing tool); cfg.solver_cache
 // is where the scheduler's solve-time history is kept.
 PRISM_API std::string solve_smt2_json(const std::string& smt2, const Config& cfg, bool z3_only);
+
+// The pir stage's default per-function budget in seconds when
+// $PRISM_FUNCTION_BUDGET is unset: max(300, 10 x cfg.timeout).
+double default_function_budget_s(const Config& cfg);
 
 }  // namespace prism::pir

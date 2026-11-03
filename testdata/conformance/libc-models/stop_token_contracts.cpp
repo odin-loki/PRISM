@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <stop_token> so the C++ model-header conformance case sees this
 // include. request_stop is true once and false the second time.
 // stop_requested stays true. A default token is not stop_requested.

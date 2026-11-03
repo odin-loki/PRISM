@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
 #include "prism/solver_certs.hpp"
 #include "internal.hpp"
@@ -35,6 +36,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <fstream>
@@ -258,6 +260,7 @@ private:
 struct Jobs {
     Board board;
     std::deque<std::unique_ptr<z3::context>> ctxs;  // private contexts
+    std::deque<prism::membudget::Watch> watches;    // memory watchdog: interrupts each context
     std::deque<z3::expr> exprs;                     // the formula translated into each
     std::deque<std::atomic<bool>> done;             // one per thread, raised last
     std::shared_ptr<const Cnf> cnf;
@@ -331,6 +334,37 @@ Msg smt_result(std::size_t idx, const detail::Proc& p) {
     return m;
 }
 
+// argv for a Z3 child (`prism z3-worker {input} MB`), or empty to stay in
+// process: only under a memory budget and for a query of at least
+// PRISM_Z3_CHILD_NODES nodes (default 20000; 0 = always, -1 = never).
+std::vector<std::string> z3_worker_argv(std::size_t nodes) {
+    const uint64_t mb = prism::membudget::budget_mb();
+    if (mb == 0) return {};
+    long min_nodes = 20000;
+    if (const char* e = std::getenv("PRISM_Z3_CHILD_NODES"); e && *e) min_nodes = std::strtol(e, nullptr, 10);
+    // Once the tree holds half the budget, every query goes to the killable
+    // child: an in-process Z3 call can ignore Z3_interrupt and carry the tree
+    // past the budget (full corpus, budget 2000: 2098 MB at the kill).
+    const uint64_t rss0 = prism::membudget::tree_rss_mb();
+    if (min_nodes > 2000 && rss0 * 2 >= mb) min_nodes = 2000;  // not every query: a child per tiny query costs more than it saves
+    if (min_nodes < 0 || nodes < static_cast<std::size_t>(min_nodes)) return {};
+    static const std::string exe = [] {
+        if (const char* e = std::getenv("PRISM_Z3_WORKER"); e && *e) return std::string(e);
+        std::error_code ec;
+        const fs::path self = fs::read_symlink("/proc/self/exe", ec);
+        if (ec) return std::string();
+        if (self.filename() == "prism") return self.string();
+        const fs::path sib = self.parent_path() / "prism";  // prism_tests next to prism
+        return fs::exists(sib, ec) ? sib.string() : std::string();
+    }();
+    if (exe.empty()) return {};
+    // keep the process tree in budget: this process at its peak plus the
+    // caps granted to live children (the spawn's own cap bounds it further)
+    const uint64_t used = prism::membudget::peak_rss_mb() + prism::membudget::granted_mb();
+    const uint64_t child_mb = std::max<uint64_t>(64, mb > used ? mb - used : 0);
+    return {exe, "z3-worker", "{input}", std::to_string(child_mb)};
+}
+
 // Rule-based expected seconds (lower starts first), before history.
 double rule_estimate(const std::string& solver, const Features& ft) {
     const bool wide = ft.max_bv_width > 32;
@@ -379,6 +413,23 @@ double check_budget(const SolveOptions& o) {
 // Memory cap (MB) of the certificate tools: the option, else
 // $PRISM_CHECKER_MEM, else 4096 (cake_lpr's own default heap, stated
 // explicitly so a note can name it).
+// Resident-memory cap for one solver child under a memory budget: the room
+// left in the process tree, shared by the children that may run at once.
+// Without it bitwuzla/cadical/kissat ran uncapped next to in-process Z3
+// (pir6: 3439 MB tree peak with a 3000 MB budget). 0: no budget, no cap.
+std::uint64_t solver_child_cap(std::size_t children) {
+    const uint64_t mb = prism::membudget::budget_mb();
+    if (mb == 0) return 0;
+    // Room against the projection, not the current size: this process can
+    // grow back to its peak (VmHWM, reset when pir starts), and every live
+    // child may grow to the cap it was granted. Budgeting against the current
+    // tree let children started together, and the main process growing
+    // under them, carry conformance/libc-models to 2385 MB at 2000.
+    const uint64_t used = prism::membudget::peak_rss_mb() + prism::membudget::granted_mb();
+    const uint64_t room = mb > used ? mb - used : 0;
+    return std::max<uint64_t>(256, room / std::max<std::size_t>(1, children)) << 20;
+}
+
 unsigned checker_mem_mb(const SolveOptions& o) {
     if (o.checker_mem_mb > 0) return o.checker_mem_mb;
     if (const char* e = std::getenv("PRISM_CHECKER_MEM"); e && *e) {
@@ -537,11 +588,43 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         return finish(res);
     }
 
+    prism::membudget::Phase phase_pre("portfolio: features + cache key");
     const Features ft = features(formula);
     res.bucket = ft.bucket();
+    // A query too big for the memory budget is an UNKNOWN up front. Neither
+    // Z3's solver, its SMT-LIB printer nor the cache key's translate +
+    // simplify polls Z3_interrupt while working on
+    // it: priority_queue_contracts.cpp gave a 9.3M-node query whose
+    // query.smt2 write alone took the process from 2.1 to 3.5 GB (budget
+    // 3000 MB). Cap: PRISM_MAX_QUERY_NODES, default 1000 nodes per budget MB.
+    if (const uint64_t bmb = prism::membudget::budget_mb(); bmb > 0) {
+        uint64_t cap = bmb * 1000;
+        if (const char* e = std::getenv("PRISM_MAX_QUERY_NODES"); e && *e) cap = std::strtoull(e, nullptr, 10);
+        if (cap > 0 && static_cast<uint64_t>(ft.nodes) > cap) {
+            res.kind = Kind::Unknown;
+            notes.push_back("memory budget: query has " + std::to_string(ft.nodes) + " nodes, over the " +
+                         std::to_string(cap) + " a " + std::to_string(bmb) +
+                         " MB budget allows (PRISM_MAX_QUERY_NODES)");
+            return finish(res);
+        }
+    }
+
     std::vector<std::string> canonical;
     std::string norm;
-    try {
+    // The cache key copies the formula into a fresh context, simplifies it
+    // and prints it: three to four times the formula's memory (Z3_translate
+    // of priority_queue_contracts.cpp's queries pushed a 2 GB process past
+    // 3.6 GB and into the kernel's OOM killer). Past half the memory budget
+    // the query is solved without the cache, under a key no other query has.
+    const uint64_t budget = prism::membudget::budget_mb();
+    const bool skip_norm = budget > 0 && prism::membudget::rss_mb() * 2 >= budget;
+    if (skip_norm) {
+        static std::atomic<uint64_t> uniq{0};
+        norm = "prism-solver-query uncached (memory budget) " + std::to_string(::getpid()) + " " +
+               std::to_string(uniq.fetch_add(1)) + " " + std::to_string(now_s());
+        notes.push_back("not cached: the process is over half its memory budget (" +
+                        std::to_string(prism::membudget::rss_mb()) + " of " + std::to_string(budget) + " MB)");
+    } else try {
         norm = normalized_query(c, formula, &canonical);
     } catch (const z3::exception& e) {
         res.kind = Kind::Error;
@@ -717,7 +800,20 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         members.push_back(std::move(new_member));
     };
     const bool smt_ok = !ft.quant && !ft.arith && !ft.other_sort;
-    if (opt.z3_in_process) add("z3", MemberKind::Z3, {}, Z3_get_full_version());
+    // Z3 does not poll Z3_interrupt everywhere: on priority_queue_contracts.cpp
+    // a job's s.check() (its context registered with the memory watchdog and
+    // interrupted every 20 ms) grew 2.1 -> 3.6 GB over the trip point. A big
+    // query under a memory budget therefore runs Z3 in a child process
+    // (`prism z3-worker`) with its own hard limit: killable, and an
+    // out-of-memory there is that query's UNKNOWN, not this process's.
+    const auto z3_proc = z3_worker_argv(ft.nodes);
+    if (std::getenv("PRISM_MEM_TRACE"))
+        std::fprintf(stderr, "[memtrace] query nodes=%zu z3=%s\n", static_cast<std::size_t>(ft.nodes),
+                     z3_proc.empty() ? "in-process" : "child");
+    if (opt.z3_in_process && !z3_proc.empty())
+        add("z3", MemberKind::Smt2, z3_proc, Z3_get_full_version());
+    else if (opt.z3_in_process)
+        add("z3", MemberKind::Z3, {}, Z3_get_full_version());
     if (opt.portfolio) {
         if (smt_ok) {
             if (auto t = find_tool("bitwuzla", opt))
@@ -874,7 +970,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     const fs::path cnf_path = work / "query.cnf";
     const fs::path lrat_path = work / "proof.lrat";
     const bool need_smt = std::any_of(members.begin(), members.end(), [](const Member& mem) { return mem.kind == MemberKind::Smt2; });
-    if (need_smt) detail::write_file(smt_path, detail::external_smt2(formula, ft.logic()));
+    if (need_smt) {
+        prism::membudget::Phase phase_smt("portfolio: write query.smt2");
+        detail::write_file(smt_path, detail::external_smt2(formula, ft.logic()));
+    }
 
     const double t_files = now_s();
     auto J = std::make_shared<Jobs>();
@@ -884,7 +983,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::shared_ptr<const Cnf>& cnf = J->cnf;
     enum class CnfState { None, Running, Ready, Failed } cnf_state = CnfState::None;
     z3::context* blast_ctx = nullptr;
-    const unsigned slots = opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency());
+    // Every in-process member solves its own copy of the formula: past half
+    // the memory budget, one member at a time (prism/membudget.hpp).
+    const unsigned slots = skip_norm ? 1u
+                                     : (opt.max_parallel ? opt.max_parallel : std::max(2u, std::thread::hardware_concurrency()));
+    if (skip_norm) notes.push_back("one solver at a time: memory budget");
     unsigned running = 0;
 
     // Stop every job and wait for it. A Z3 interrupt that lands before
@@ -944,7 +1047,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
     auto new_ctx = [&]() -> z3::context& {
         J->ctxs.push_back(std::make_unique<z3::context>());
-        return *J->ctxs.back();
+        z3::context* zc = J->ctxs.back().get();
+        J->watches.emplace_back([zc] { Z3_interrupt(*zc); });
+        return *zc;
     };
     // The formula in context zc, kept in Jobs (a job thread only refers to it).
     auto translated = [&](z3::context& zc) -> const z3::expr& {
@@ -1038,6 +1143,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         p.set("timeout", static_cast<unsigned>(std::min(left * 1000.0, 4.0e9)));
                         s.set(p);
                         s.add(*f2);
+                        prism::membudget::Phase phase_job("portfolio: z3 job check");
                         auto r = stop->load() ? z3::unknown : s.check();
                         if (r == z3::sat) {
                             worker_msg.kind = Kind::Sat;
@@ -1065,8 +1171,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             case MemberKind::Smt2: {
                 std::vector<std::string> argv;
                 for (const auto& a : slot.argv) argv.push_back(subst(a, smt_path, lrat_path));
-                spawn(slot.name, [J = J.get(), argv, i, left, stop] {
-                    J->board.post(smt_result(i, detail::run(argv, left, stop.get())));
+                const auto mcap = solver_child_cap(slots);
+                spawn(slot.name, [J = J.get(), argv, i, left, stop, mcap] {
+                    prism::membudget::Grant grant(mcap >> 20);
+                    J->board.post(smt_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap)));
                 });
                 break;
             }
@@ -1074,8 +1182,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 std::vector<std::string> argv;
                 for (const auto& a : slot.argv) argv.push_back(subst(a, cnf_path, lrat_path));
                 auto cp = cnf;
-                spawn(slot.name, [J = J.get(), argv, i, left, stop, cp] {
-                    J->board.post(dimacs_result(i, detail::run(argv, left, stop.get()), *cp));
+                const auto mcap = solver_child_cap(slots);
+                spawn(slot.name, [J = J.get(), argv, i, left, stop, cp, mcap] {
+                    prism::membudget::Grant grant(mcap >> 20);
+                    J->board.post(dimacs_result(i, detail::run(argv, left, stop.get(), 64u << 20, {}, {}, mcap), *cp));
                 });
                 break;
             }
@@ -1391,6 +1501,54 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
     }
 }
 
+// `prism z3-worker FILE MB`: run an SMT-LIB script with Z3 and print its
+// output (check-sat, then get-value), the format parse_smt_output reads.
+// Hard limits: Z3 memory_max_size at 80% of MB, and a 20 ms watchdog that
+// leaves (rc 137) once the resident set passes MB, because Z3 can ignore both
+// its interrupt and, while growing in places it does not count, its limit.
+int z3_worker_main(int argc, char** argv) {
+    if (argc < 2) { std::fprintf(stderr, "usage: prism z3-worker FILE [MB]\n"); return 2; }
+    const uint64_t mb = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 0;
+    std::ifstream in(argv[1]);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    if (!in) { std::fprintf(stderr, "z3-worker: cannot read %s\n", argv[1]); return 2; }
+    if (mb > 0) {
+        Z3_global_param_set("memory_max_size", std::to_string(std::max<uint64_t>(64, mb * 4 / 5)).c_str());
+        std::thread([mb] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                if (prism::membudget::rss_mb() > mb) {
+                    std::fputs("unknown\n", stdout);
+                    std::fflush(stdout);
+                    std::_Exit(137);
+                }
+            }
+        }).detach();
+    }
+    try {
+        z3::context c;
+        const char* out = Z3_eval_smtlib2_string(c, ss.str().c_str());
+        std::fputs(out ? out : "unknown\n", stdout);
+    } catch (const z3::exception& e) {
+        std::printf("unknown\n(error \"%s\")\n", e.msg());
+    }
+    std::fflush(stdout);
+    std::_Exit(0);  // skip Z3 teardown of a large context
+}
+
+}  // namespace prism::solver
+
+#else  // !PRISM_HAS_Z3
+
+#include <cstdio>
+
+namespace prism::solver {
+// Built without Z3: the `prism z3-worker` subcommand has nothing to run.
+int z3_worker_main(int, char**) {
+    std::fprintf(stderr, "prism z3-worker: this build has no Z3\n");
+    return 2;
+}
 }  // namespace prism::solver
 
 #endif  // PRISM_HAS_Z3

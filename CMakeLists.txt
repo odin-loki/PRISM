@@ -222,6 +222,7 @@ set(PRISM_SRC
   src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
+  src/prism/membudget.cpp
   src/prism/models.cpp
   src/prism/pipeline.cpp
   src/prism/pir/bench.cpp
@@ -310,6 +311,7 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/cxx/bits/basic_string.tcc
   src/prism/pir/models/cxx/sstream
   src/prism/pir/models/cxx/list
+  src/prism/pir/models/cxx/deque
   src/prism/pir/models/cxx/array
   src/prism/pir/models/cxx/bitset
   src/prism/pir/models/cxx/stack
@@ -828,6 +830,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
     tests/cpp/test_cxx_models.cpp
+    tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_iostream.cpp
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_list.cpp
@@ -913,7 +916,7 @@ if(PRISM_TESTS)
     tests/cpp/test_llm_hypothesis.cpp)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-      tests/cpp/test_pir_budget.cpp tests/cpp/test_certified.cpp
+      tests/cpp/test_pir_budget.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
       tests/cpp/test_solver_cert.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
