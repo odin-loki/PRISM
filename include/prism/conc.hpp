@@ -45,20 +45,76 @@ struct Options {
     double timeout_s = 30.0; // per solver query
     int max_findings = 8;    // distinct violations reported per harness
     std::size_t max_nodes = 20000;  // unrolled nodes per thread
+    // Weak memory: x86-TSO for the scalar shared variables. Each thread has a
+    // one-entry FIFO store buffer: a plain store goes to the buffer (an older
+    // buffered store is committed first), the thread's own loads forward from
+    // it, any other visible operation of the thread (atomics, locks, fences,
+    // create/join) drains it first, and before every visible step each
+    // buffer may drain nondeterministically. Depth 1 under-approximates TSO
+    // (it finds store-buffering outcomes such as the SB litmus test).
+    bool tso = false;
+    int tso_buffer = 2;          // TSO: store-buffer entries per thread (k)
+    uint64_t max_alloc = 4096;   // largest symbolic malloc size (bytes); larger -> bound reported
 };
 
 // A visible operation: a context-switch point is placed before each one.
 struct VisOp {
-    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join };
+    enum Kind { Load, Store, Rmw, Lock, TryLock, Unlock, MutexInit, Create, Join, CondWait, CondSignal, Alloc, Free, Arg, Fence };
     Kind kind = Load;
     int var = -1;            // Load/Store/Rmw: shared variable
     int mutex = -1;          // Lock/TryLock/Unlock/MutexInit
     int thread = -1;         // Create: index of the created thread (>= 1)
+    int cond = -1;           // CondWait/CondSignal; Unlock: the wait that this release starts
     bool atomic = false;     // Load/Store/Rmw: an atomic (seq_cst) access
     unsigned width = 0;      // Load/Store/Rmw: access width; TryLock: result width
     uint64_t busy = 16;      // TryLock: result when the mutex is held (EBUSY / thrd_busy)
     int line = 0;
     std::string what;        // "load", "store", "atomicrmw add", "pthread_mutex_lock", ...
+    // Load/Store through the bounded memory (Program::objects): var == -1, the
+    // head marker copies the i64 address, the tail marker ("s") is the value
+    // read (nondet) or written (copy) in the same step.
+    bool mem = false;
+    int obj = -1;            // the object when statically known, else -1
+    // Alloc (malloc/calloc/operator new with a constant size): the marker's
+    // result is the i64 address of a fresh heap slot (one per unrolled
+    // execution of the call, so the allocation count is bounded by the
+    // unwinding); Free: the marker copies the freed address.
+    // Create: the marker copies the thread argument (i64 address into the
+    // bounded memory, 0 for null); Arg: at the entry of a thread function, the
+    // marker's result is the argument its creating call passed.
+    uint64_t size = 0;       // Alloc: constant size, 0 when symbolic (the marker copies it)
+    bool zero = false;
+    bool stack = false;      // Alloc / Free: an escaping local (its frame's slot; free() of it is invalid)
+    // Lock/Unlock/MutexInit (mutex == -1) and CondWait/CondSignal (cond == -1):
+    // a mutex / condition variable that is not a global (struct field, array
+    // element, heap): the head marker copies its i64 address. An Unlock that
+    // releases for a wait on such a condition variable has cond_dyn set and a
+    // tail marker copying the condition variable's address.
+    bool dyn = false;
+    bool cond_dyn = false;
+    // Create in a loop (handle stored through the bounded memory): thread
+    // slots thread .. thread + copies - 1, one per unrolled execution; the
+    // head marker copies the handle's address, the tail marker the argument.
+    int copies = 1;
+    // C11 order (Load/Store/Rmw/Fence): -1 non-atomic, 0 relaxed, 1 acquire,
+    // 2 release, 3 acq_rel, 4 seq_cst. Rmw from cmpxchg: order is the success
+    // order, order_fail the failure order, and a flag marker ("c") carries
+    // whether it succeeded (a failed compare-exchange writes nothing).
+    int order = -1;
+    int order_fail = -1;
+    bool cas = false;
+    bool looped = false;     // Create: handle in an array (slots as above)       // Alloc: calloc (memory is zero either way: M starts at 0)
+};
+
+// An object of the bounded memory (docs/CONCURRENCY.md "Memory"): a shared
+// aggregate global. Addresses are i64 `((index + 1) << 32) | byte offset`, so
+// objects never alias; memory is word-addressed (one SMT array element per
+// byte address accessed, holding the whole access).
+struct MemObject {
+    std::string name;        // IR global name
+    uint64_t size = 0;       // bytes
+    struct Init { uint64_t off = 0; unsigned w = 0; uint64_t bits = 0; };
+    std::vector<Init> init;  // non-zero initial words
 };
 
 struct Shared {
@@ -78,7 +134,11 @@ struct Thread {
 struct Program {
     std::string harness;              // IR name of the harness function
     std::vector<Shared> vars;
+    std::vector<MemObject> objects;   // bounded memory (aggregate globals)
     std::vector<std::string> mutexes; // IR global names
+    std::vector<std::string> conds;   // condition variables (IR global names)
+    std::string weak_order;           // first non-seq_cst order the view model does not cover, "" if none
+    bool views = false;               // a weaker order on a scalar global: the C11 view model (lazy.cpp)
     std::vector<VisOp> ops;
     std::vector<Thread> threads;      // [0] is the harness
     int atomic_mutex = -1;            // pseudo-mutex of SV-COMP atomic sections (-1: none)

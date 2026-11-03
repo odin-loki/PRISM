@@ -107,8 +107,11 @@ TEST_CASE("cxx memory model: empty operator* checks, reset frees, move does not 
 
     CHECK(count_sub(src, "pointer get() const noexcept { return _M_ptr; }") == 2);
     CHECK(count_sub(src, "unique_ptr() noexcept : _M_ptr(nullptr) {}") == 2);
-    CHECK(src.find("class shared_ptr") == std::string::npos);
-    CHECK(src.find("class weak_ptr") == std::string::npos);
+    // shared_ptr/weak_ptr are modelled: the last owner deletes the object
+    CHECK(src.find("class shared_ptr {") != std::string::npos);
+    CHECK(src.find("class weak_ptr {") != std::string::npos);
+    CHECK(src.find("__b->_M_del(__b->_M_ptr);") != std::string::npos);
+    CHECK(src.find("shared_ptr<_Tp> make_shared(_Args&&... __args)") != std::string::npos);
     CHECK(src.find("class allocator") == std::string::npos);
     CHECK(src.find("pointer_traits") != std::string::npos);
     CHECK(src.find("shared_ptr") != std::string::npos);
@@ -149,6 +152,5 @@ TEST_CASE("cxx memory model: make_unique owns a new object, array overflow traps
     CHECK(arr.find("allocator") == std::string::npos);
 
     CHECK(src.find("make_unique_for_overwrite(") == std::string::npos);
-    CHECK(src.find("class shared_ptr") == std::string::npos);
     CHECK(src.find("shared_ptr") != std::string::npos);
 }

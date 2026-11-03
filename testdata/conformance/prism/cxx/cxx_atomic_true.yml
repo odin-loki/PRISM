@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_atomic_true.cpp
+language: C++
+property: noassert
+timeout: 600  # prism-llvm task 2, not yet run
+expected:
+  cxx_atomic_true: true

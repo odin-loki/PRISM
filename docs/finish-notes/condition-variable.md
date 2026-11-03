@@ -92,3 +92,8 @@ lowered text contains `condition_variable unencoded` or `shared_mutex`.
 those tokens. Those files were not edited. Until that gate is gone,
 `cxx_condition_variable_true` does not reach this header through bmc.
 `docs/PIR.md` was not edited.
+
+## Update (prism-llvm, LLVM 23 session)
+Superseded in part: wait/wait_for/wait_until now release the lock and run
+queued threads through bits/prism_sched.h (interleaving exploration), and
+<mutex> gained lock(), lock_guard and unique_lock. See coverage-limits.md.

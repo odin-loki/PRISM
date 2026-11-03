@@ -1,0 +1,7 @@
+format_version: 1
+input_files: cxx_import_std_true.cpp
+language: C++
+property: noassert
+timeout: 600  # item 4 (prism-llvm), not yet run
+expected:
+  cxx_import_std_true: true

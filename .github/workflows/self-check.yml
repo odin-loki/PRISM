@@ -27,14 +27,25 @@ jobs:
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     steps:
       - uses: actions/checkout@v4
+      - name: Cache pinned LLVM 23.1.4
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
+        shell: bash
+        run: |
+          bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
+          echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang-18 llvm-18 libclang-rt-18-dev libclang-18-dev bubblewrap
+          sudo apt-get install -y ninja-build bubblewrap
       - name: Configure (ASan + UBSan)
         run: >
           cmake -B build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DPRISM_SANITIZE=ON -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build-san

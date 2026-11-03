@@ -17,6 +17,7 @@
 #include <ios>
 #include <string>
 #include <type_traits>
+#include <iomanip>
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
@@ -71,6 +72,22 @@ protected:
     }
 
     void _M_append(const __string_type& __s) { _M_append(__s.data(), __s.size()); }
+
+    // [ostream.formatted.reqmts] padding for setw: where the next write
+    // starts, and after it, right-align what was written to __w with __fill.
+    __size_type _M_mark() const {
+        if (!_M_put_started) return (_M_mode & (ios_base::ate | ios_base::app)) ? _M_string.size() : 0;
+        return (_M_mode & ios_base::app) ? _M_string.size() : _M_out;
+    }
+    void _M_pad(__size_type __b, long __w, char_type __fill) {
+        if (__w <= 0 || !(_M_mode & ios_base::out) || _M_out < __b) return;
+        const __size_type __len = _M_out - __b;
+        if (__len >= static_cast<__size_type>(__w)) return;
+        const __size_type __k = static_cast<__size_type>(__w) - __len;
+        _M_string.insert(__b, __k, __fill);
+        _M_out += __k;
+        _M_put_started = true;
+    }
 
     // Lighter integer text (session 4): digits into a stack buffer, then
     // one _M_append. No temporary std::string (std::to_string allocated and
@@ -164,6 +181,20 @@ private:
     __stringbuf_type _M_stringbuf;
     ios_base::iostate _M_state = ios_base::goodbit;
     ios_base::iostate _M_except = ios_base::goodbit;
+    std::streamsize _M_width = 0;  // setw / width(): reset after one formatted output
+    char_type _M_fill = ' ';
+
+    // One formatted output: pads to _M_width on destruction, then clears it.
+    // A negative or zero width means no padding ([ios.base]).
+    struct _Pad {
+        basic_ostringstream* _M_o;
+        typename __stringbuf_type::__size_type _M_b;
+        explicit _Pad(basic_ostringstream* __o) : _M_o(__o), _M_b(__o->_M_stringbuf._M_mark()) {}
+        ~_Pad() {
+            if (_M_o->_M_width > 0) _M_o->_M_stringbuf._M_pad(_M_b, static_cast<long>(_M_o->_M_width), _M_o->_M_fill);
+            _M_o->_M_width = 0;
+        }
+    };
 
 public:
     basic_ostringstream() : _M_stringbuf(ios_base::out) {}
@@ -215,37 +246,45 @@ public:
 
     void str(__string_type&& __s) { _M_stringbuf.str(std::move(__s)); }
 
-    basic_ostringstream& operator<<(int __v) {
+    basic_ostringstream& operator<<(int __v) { _Pad __pad(this);
         _M_stringbuf._M_append_int(__v);
         return *this;
     }
 
     // Exact match so a char (e.g. ':') is not promoted to operator<<(int).
-    basic_ostringstream& operator<<(char __c) {
+    basic_ostringstream& operator<<(char __c) { _Pad __pad(this);
         _M_stringbuf._M_append(&__c, 1);
         return *this;
     }
 
-    basic_ostringstream& operator<<(const char* __s) {
+    basic_ostringstream& operator<<(const char* __s) { _Pad __pad(this);
         if (__s) _M_stringbuf._M_append(__s, traits_type::length(__s));
         return *this;
     }
 
-    basic_ostringstream& operator<<(const __string_type& __s) {
+    basic_ostringstream& operator<<(const __string_type& __s) { _Pad __pad(this);
         _M_stringbuf._M_append(__s);
         return *this;
     }
 
     // Wider integers: decimal text from a stack buffer, as num_put does in
     // the "C" locale with default flags. bool prints 0/1 (noboolalpha).
-    basic_ostringstream& operator<<(long __v) { _M_stringbuf._M_append_ll(__v); return *this; }
-    basic_ostringstream& operator<<(long long __v) { _M_stringbuf._M_append_ll(__v); return *this; }
-    basic_ostringstream& operator<<(unsigned __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
-    basic_ostringstream& operator<<(unsigned long __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
-    basic_ostringstream& operator<<(unsigned long long __v) { _M_stringbuf._M_append_ull(__v, false); return *this; }
-    basic_ostringstream& operator<<(short __v) { return *this << static_cast<int>(__v); }
-    basic_ostringstream& operator<<(unsigned short __v) { return *this << static_cast<int>(__v); }
-    basic_ostringstream& operator<<(bool __v) { return *this << (__v ? '1' : '0'); }
+    basic_ostringstream& operator<<(long __v) { _Pad __pad(this); _M_stringbuf._M_append_ll(__v); return *this; }
+    basic_ostringstream& operator<<(long long __v) { _Pad __pad(this); _M_stringbuf._M_append_ll(__v); return *this; }
+    basic_ostringstream& operator<<(unsigned __v) { _Pad __pad(this); _M_stringbuf._M_append_ull(__v, false); return *this; }
+    basic_ostringstream& operator<<(unsigned long __v) { _Pad __pad(this); _M_stringbuf._M_append_ull(__v, false); return *this; }
+    basic_ostringstream& operator<<(unsigned long long __v) { _Pad __pad(this); _M_stringbuf._M_append_ull(__v, false); return *this; }
+    basic_ostringstream& operator<<(short __v) { _Pad __pad(this); return *this << static_cast<int>(__v); }
+    basic_ostringstream& operator<<(unsigned short __v) { _Pad __pad(this); return *this << static_cast<int>(__v); }
+    basic_ostringstream& operator<<(bool __v) { _Pad __pad(this); return *this << (__v ? '1' : '0'); }
+
+    // <iomanip> setw / setfill, and the width/fill accessors of basic_ios.
+    basic_ostringstream& operator<<(_Setw __m) { _M_width = __m._M_n; return *this; }
+    basic_ostringstream& operator<<(_Setfill<char_type> __m) { _M_fill = __m._M_c; return *this; }
+    std::streamsize width() const { return _M_width; }
+    std::streamsize width(std::streamsize __w) { std::streamsize __o = _M_width; _M_width = __w; return __o; }
+    char_type fill() const { return _M_fill; }
+    char_type fill(char_type __c) { char_type __o = _M_fill; _M_fill = __c; return __o; }
 
     // Unformatted output.
     basic_ostringstream& put(char_type __c) { return *this << __c; }

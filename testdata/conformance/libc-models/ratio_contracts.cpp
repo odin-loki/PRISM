@@ -5,9 +5,9 @@
 #include <cassert>
 
 int ratio_reduced_true() {
-    assert(std::ratio<1, 2>::num == 1);
-    assert(std::ratio<1, 2>::den == 2);
-    assert(std::ratio<2, 4>::num == 1);
-    assert(std::ratio<2, 4>::den == 2);
+    assert((std::ratio<1, 2>::num == 1));
+    assert((std::ratio<1, 2>::den == 2));
+    assert((std::ratio<2, 4>::num == 1));
+    assert((std::ratio<2, 4>::den == 2));
     return 0;
 }

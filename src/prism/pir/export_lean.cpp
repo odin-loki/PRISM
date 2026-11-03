@@ -156,14 +156,18 @@ bool aggregate_load(const pirmem::Layout& lay, const ir::Function& f, const ir::
     }
 }
 
-// `L gep %d INB BASE N` then per index `f OPND W SCALE` (the first), `s OFF`
+// `L gep %d FL BASE N` (FL: bit 0 inbounds, bit 1 nuw) then per index `f OPND W SCALE` (the first), `s OFF`
 // (a struct field), `a OPND W SCALE BOUND USE` (an array index; BOUND 0: no C
 // array-bound check), computed as MemTr::gep and Tr::mem_inst do.
 void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f, const ir::Inst& in) {
     if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr" || in.result.empty())
         throw Unsupported{"vector getelementptr"};
     for (auto& fl : in.flags)
-        if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};
+        // nusw is implied by inbounds (LLVM 19+); nuw is the Lean gep flag
+        // (PrismRefine.gNuwBad / nuwChecks).
+        if (fl != "inbounds" && fl != "nuw" &&
+            !(fl == "nusw" && std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end()))
+            throw Unsupported{"getelementptr " + fl};
     int use = 0;  // 0 address, 1 loaded, 2 stored through, 3 deeper GEP
     for (auto& bl : f.blocks)
         for (auto& u : bl.insts) {
@@ -194,8 +198,10 @@ void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f,
             } catch (const pirmem::Unenc&) {
                 base_last = true;
             }
-    b << "L gep %" << name(in.result) << " " << (std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end())
-      << " " << ptr_opnd(in.ops[0]) << " " << in.ops.size() - 1;
+    // flag set: bit 0 inbounds, bit 1 nuw (Check.lean reads it)
+    const bool inb = std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end();
+    const bool nuw = std::find(in.flags.begin(), in.flags.end(), "nuw") != in.flags.end();
+    b << "L gep %" << name(in.result) << " " << ((inb ? 1 : 0) | (nuw ? 2 : 0)) << " " << ptr_opnd(in.ops[0]) << " " << in.ops.size() - 1;
     const ir::Type* t = &in.ety;
     bool last_field = base_last;
     for (std::size_t k = 1; k < in.ops.size(); ++k) {
@@ -882,8 +888,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
             } else if (op == "zext" || op == "sext" || op == "trunc") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{op + " shape"};
-                if (op == "trunc" && (has(in, "nuw") || has(in, "nsw"))) throw Unsupported{"trunc nuw/nsw"};
-                b << "L cast %" << name(in.result) << " " << op << " " << (has(in, "nneg") ? 1 : 0) << " "
+                // flag set as Lean's Inst.cast reads it: bit 0 nneg, bit 1 nuw, bit 2 nsw
+                // (trunc nuw/nsw: PrismRefine.castChecks / cast_bad).
+                const int cfl = (has(in, "nneg") ? 1 : 0) | (has(in, "nuw") ? 2 : 0) | (has(in, "nsw") ? 4 : 0);
+                b << "L cast %" << name(in.result) << " " << op << " " << cfl << " "
                   << width(in.ops[0].ty) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
             } else if (op == "br") {
                 if (in.targets.size() == 1) {

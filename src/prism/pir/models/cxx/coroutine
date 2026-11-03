@@ -1,105 +1,120 @@
-// PRISM operational model of <coroutine>. The pir stage puts this directory
-// first on the C++ include path, so `#include <coroutine>` reaches this file
-// instead of libstdc++'s. It is a file, not a directory: a directory of this
-// name would make the include fail with EISDIR and every such unit would
-// fall back to libstdc++.
+// PRISM model of <coroutine>.
 //
-// This header is not a proof that a coroutine runs.
-//
-// operator== is address() == address(). operator!= negates that comparison.
-// Two default handles compare equal. A default handle is not equal to
-// from_address of a non-null pointer. Comparing two handles does not resume
-// a frame. This is not a proof that a coroutine ran.
-//
-// Partial std::coroutine_handle<void> only. A default handle stores nullptr.
-// address() of that handle is nullptr. from_address(nullptr) is a null
-// handle. resume(), destroy(), and done() on a null handle are
-// __prism_check (FUNC-CONTRACT) then __builtin_trap. They do not invent a
-// resumed frame and they do not return a value. done() does not return
-// true: true would look like a finished coroutine. A non-null address is
-// not a frame this header can run, so those three still trap after the
-// check instead of reporting success.
-//
-// An await expression, a promise member type, and a no-op handle are not
-// declared. A body for any of those that returned as if a coroutine had run
-// would be a pretence. A use of them fails to compile against this header,
-// so pir falls back to libstdc++. Other template arguments are only
-// declared, not defined, for the same reason. The always/never suspend
-// types, coroutine traits, and a handle built from a promise object are
-// omitted the same way.
-//
-// This file does not include the memory, thread, exception, or atomic
-// headers.
+// resume/destroy/done lower to the clang coroutine builtins. lower_to_ir runs
+// coro-early, coro-split and coro-cleanup on every C++ unit, so by the time
+// the pir sees the module a resume is an ordinary indirect call through the
+// frame's resume pointer and the pir follows it like any function pointer.
+// A null handle is FUNC-CONTRACT; resuming a coroutine that is done is
+// FUNC-CONTRACT ([coroutine.handle.resumption]: undefined behaviour).
 #ifndef _GLIBCXX_COROUTINE
 #define _GLIBCXX_COROUTINE 1
 
 #pragma GCC system_header
 
-// PIR intrinsic (translate.cpp). A literal class and message, as in the libc
-// models. Not defined here: the analysed program does not link a body.
 extern "C" void __prism_check(int ok, const char* cls, const char* msg);
 
 namespace std {
+
+template <class _Ret, class... _Args>
+struct __prism_coro_traits_base {};
+template <class _Ret, class... _Args>
+    requires requires { typename _Ret::promise_type; }
+struct __prism_coro_traits_base<_Ret, _Args...> {
+    using promise_type = typename _Ret::promise_type;
+};
+template <class _Ret, class... _Args>
+struct coroutine_traits : __prism_coro_traits_base<_Ret, _Args...> {};
 
 template <typename _Promise = void>
 struct coroutine_handle;
 
 template <>
 struct coroutine_handle<void> {
-    // Stores nullptr. This is not a coroutine frame.
     constexpr coroutine_handle() noexcept : _M_fr_ptr(nullptr) {}
-
     constexpr coroutine_handle(decltype(nullptr)) noexcept : _M_fr_ptr(nullptr) {}
+    coroutine_handle& operator=(decltype(nullptr)) noexcept { _M_fr_ptr = nullptr; return *this; }
 
-    // The stored address. A default handle yields nullptr.
     constexpr void* address() const noexcept { return _M_fr_ptr; }
-
-    // from_address(nullptr) is a null handle. The pointer is stored and is
-    // not turned into a frame.
     static constexpr coroutine_handle from_address(void* __a) noexcept {
         coroutine_handle __h;
         __h._M_fr_ptr = __a;
         return __h;
     }
-
-    // False when the stored address is nullptr. This is not done().
     constexpr explicit operator bool() const noexcept { return _M_fr_ptr != nullptr; }
+    friend constexpr bool operator==(coroutine_handle __a, coroutine_handle __b) noexcept { return __a.address() == __b.address(); }
 
-    // Equality is address() == address(). Two default handles compare equal.
-    // A default handle is not equal to from_address of a non-null pointer.
-    // This is not a proof that a coroutine ran.
-    friend constexpr bool operator==(coroutine_handle __a, coroutine_handle __b) noexcept {
-        return __a.address() == __b.address();
+    bool done() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "coroutine_handle::done() on a null handle");
+        return __builtin_coro_done(_M_fr_ptr);
+    }
+    void operator()() const { resume(); }
+    void resume() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "coroutine_handle::resume() on a null handle");
+        __prism_check(!__builtin_coro_done(_M_fr_ptr) ? 1 : 0, "FUNC-CONTRACT", "coroutine_handle::resume() on a coroutine suspended at its final point");
+        __builtin_coro_resume(_M_fr_ptr);
+    }
+    void destroy() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "coroutine_handle::destroy() on a null handle");
+        __builtin_coro_destroy(_M_fr_ptr);
     }
 
-    friend constexpr bool operator!=(coroutine_handle __a, coroutine_handle __b) noexcept {
-        return !(__a == __b);
-    }
-
-    // Null: failed check, then trap. No frame is resumed. No value comes back.
-    [[noreturn]] void resume() const {
-        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
-                      "coroutine_handle::resume() on a null handle");
-        __builtin_trap();
-    }
-
-    // The member destroy(), not the C++ destructor. Null: failed check,
-    // then trap. No frame is destroyed.
-    [[noreturn]] void destroy() const {
-        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
-                      "coroutine_handle::destroy() on a null handle");
-        __builtin_trap();
-    }
-
-    // Same check, then trap. true would look like a finished coroutine.
-    [[noreturn]] bool done() const {
-        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT",
-                      "coroutine_handle::done() on a null handle");
-        __builtin_trap();
-    }
-
-private:
+protected:
     void* _M_fr_ptr = nullptr;
+};
+
+template <typename _Promise>
+struct coroutine_handle : coroutine_handle<void> {
+    constexpr coroutine_handle() noexcept = default;
+    constexpr coroutine_handle(decltype(nullptr)) noexcept {}
+    static coroutine_handle from_promise(_Promise& __p) {
+        coroutine_handle __h;
+        __h._M_fr_ptr = __builtin_coro_promise((char*)&__p, __alignof(_Promise), true);
+        return __h;
+    }
+    static constexpr coroutine_handle from_address(void* __a) noexcept {
+        coroutine_handle __h;
+        __h._M_fr_ptr = __a;
+        return __h;
+    }
+    _Promise& promise() const {
+        __prism_check(_M_fr_ptr != nullptr ? 1 : 0, "FUNC-CONTRACT", "coroutine_handle::promise() on a null handle");
+        return *static_cast<_Promise*>(__builtin_coro_promise(_M_fr_ptr, __alignof(_Promise), false));
+    }
+};
+
+struct noop_coroutine_promise {};
+template <>
+struct coroutine_handle<noop_coroutine_promise> : coroutine_handle<void> {
+    constexpr explicit operator bool() const noexcept { return true; }
+    constexpr bool done() const noexcept { return false; }
+    void operator()() const noexcept {}
+    void resume() const noexcept {}
+    void destroy() const noexcept {}
+    noop_coroutine_promise& promise() const noexcept {
+        return *static_cast<noop_coroutine_promise*>(__builtin_coro_promise(_M_fr_ptr, __alignof(noop_coroutine_promise), false));
+    }
+private:
+    friend coroutine_handle<noop_coroutine_promise> noop_coroutine() noexcept;
+    explicit coroutine_handle(void* __p) noexcept { _M_fr_ptr = __p; }
+};
+using noop_coroutine_handle = coroutine_handle<noop_coroutine_promise>;
+inline noop_coroutine_handle noop_coroutine() noexcept { return noop_coroutine_handle(__builtin_coro_noop()); }
+
+struct suspend_always {
+    constexpr bool await_ready() const noexcept { return false; }
+    constexpr void await_suspend(coroutine_handle<>) const noexcept {}
+    constexpr void await_resume() const noexcept {}
+};
+struct suspend_never {
+    constexpr bool await_ready() const noexcept { return true; }
+    constexpr void await_suspend(coroutine_handle<>) const noexcept {}
+    constexpr void await_resume() const noexcept {}
+};
+
+template <class _Tp> struct hash;
+template <class _Pr>
+struct hash<coroutine_handle<_Pr>> {
+    unsigned long operator()(const coroutine_handle<_Pr>& __h) const noexcept { return reinterpret_cast<unsigned long>(__h.address()); }
 };
 
 }  // namespace std
