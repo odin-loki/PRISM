@@ -68,7 +68,10 @@ bool have_cc() {
 
 // ---- FORGE-era replacements for the llama-server fake (ScriptedChat seam) ----
 namespace {
-const char* kDivFix = "```c\nint div_param(int a, int b) {\n    if (b == 0) return 0;\n    return a / b;\n}\n```\n";
+// A whole program: the sandbox links and runs the candidate before PIR checks it.
+const char* kDivFix =
+    "```c\nint div_param(int a, int b) {\n    if (b == 0) return 0;\n    return a / b;\n}\n"
+    "int main(void) { return div_param(4, 2) == 2 ? 0 : 1; }\n```\n";
 struct RepairCase {
     std::filesystem::path td;
     prism::Finding fail;
