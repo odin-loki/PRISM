@@ -11,6 +11,12 @@
 #include <string>
 #include <utility>
 
+// The models call __prism_check, the precondition intrinsic. libstdc++ never
+// calls it. A failed check aborts so the model and libstdc++ runs still differ.
+extern "C" __attribute__((weak)) void __prism_check(int ok, const char*, const char*) {
+    if (!ok) __builtin_abort();
+}
+
 static int g_throw_in = -1;
 
 struct E {

@@ -752,6 +752,16 @@ struct Conv {
             if (k == CXCursor_LabelStmt) n["kind"] = "LabelStmt";
             json inner = conv_all(ch);
             add_attrs(inner);
+            if (k == CXCursor_FunctionDecl) {
+                // C11 _Noreturn is a keyword, not an attribute cursor: read it
+                // from the declaration text before the name.
+                auto [db, de] = extent(c);
+                auto t = text_at(db, de);
+                auto nm = where(A.clang_getCursorLocation(c));
+                if (!t.empty() && nm.file == db.file && nm.offset >= db.offset &&
+                    t.substr(0, std::min<size_t>(t.size(), nm.offset - db.offset)).find("_Noreturn") != std::string_view::npos)
+                    inner.push_back({{"kind", "C11NoReturnAttr"}});
+            }
             if (!inner.empty()) n["inner"] = std::move(inner);
             return n;
         }

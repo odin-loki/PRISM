@@ -1067,8 +1067,15 @@ TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks run
     oc = solve(task, props_dir() / "no-overflow.prp", opt);
     CHECK(fs::exists(d.path / "out" / "prism-out" / "report.json"));
     // No overflow on either model. The proof has to come from bmc: pir is NOTRUN.
+#ifdef PRISM_HAS_Z3
     CHECK(oc.decision.answer == "true");
     CHECK(oc.decision.reason.find("bmc:") == 0);
+#else
+    // bmc is the Z3 engine; a build without Z3 has no stage that can prove the
+    // ILP32 task, so the answer must stay unknown (never an unproved true).
+    MESSAGE("NOTRUN: ILP32 bmc proof needs a Z3 build (PRISM_HAS_Z3)");
+    CHECK(oc.decision.answer == "unknown");
+#endif
     auto ovf = d.write("ovf.c",
                        "long __VERIFIER_nondet_long(void);\n"
                        "void __VERIFIER_assume(int);\n"

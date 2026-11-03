@@ -84,7 +84,7 @@ TEST_CASE("stdio buffer: fread overflow is a check and does not return 0") {
     const auto arm = brace_block_after(body, mul);
     REQUIRE(!arm.empty());
     CHECK(arm.find("__prism_check(") != std::string::npos);
-    CHECK(arm.find("MEM-OOB-WRITE") != std::string::npos || arm.find("MEM-OOB-READ") != std::string::npos);
+    CHECK((arm.find("MEM-OOB-WRITE") != std::string::npos || arm.find("MEM-OOB-READ") != std::string::npos));
     CHECK(arm.find("return 0") == std::string::npos);
 }
 

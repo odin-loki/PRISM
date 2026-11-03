@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -191,7 +193,7 @@ TEST_CASE("cxx spanstream model: sungetc at offset 0 is a read check and does no
 
 TEST_CASE("cxx spanstream model: sputn stores min(count, room) and traps on a bad count") {
     const auto header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "spanstream";
-    const auto src = slurp(header);
+    const auto src = prism_test::unwrap_prose(slurp(header));
     REQUIRE(!src.empty());
     CHECK(src.find("sputn is not PROVED and not CLEAN") != std::string::npos);
 

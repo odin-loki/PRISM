@@ -5,6 +5,7 @@
 
 #ifdef PRISM_HAS_Z3
 
+#include "prism/membudget.hpp"
 #include "prism/solver.hpp"
 #include "query.hpp"
 
@@ -412,6 +413,7 @@ std::optional<Cnf> bitblast_fresh(z3::context& c, const z3::expr& f, std::string
     g.add(g0);
     z3::tactic t = z3::tactic(c, "simplify") & z3::tactic(c, "bit-blast") &
                    z3::tactic(c, "simplify") & z3::tactic(c, "tseitin-cnf");
+    prism::membudget::Phase phase_29793("query: bit-blast tactics (to CNF)");
     z3::apply_result ar = t(g);
     if (ar.size() != 1) return fail("bit-blast produced " + std::to_string(ar.size()) + " goals");
     z3::goal out = ar[0];
@@ -473,6 +475,22 @@ std::optional<z3::expr> parse_literal(z3::context& c, const z3::sort& s, std::st
         if (v == "true") return c.bool_val(true);
         if (v == "false") return c.bool_val(false);
         return std::nullopt;
+    }
+    if (s.is_array()) {
+        // An array value as Z3 prints it, e.g. ((as const (Array ..)) #x01)
+        // or a store chain over one: parse it with the SMT-LIB2 reader and
+        // keep it only when it is closed (no free constants).
+        try {
+            const std::string text = "(declare-const |prism!v| " + s.to_string() + ")(assert (= |prism!v| " +
+                                     std::string(v) + "))";
+            z3::expr_vector as = c.parse_string(text.c_str());
+            if (as.size() != 1 || as[0].num_args() != 2) return std::nullopt;
+            z3::expr val = as[0].arg(1);
+            if (!z3::eq(val.get_sort(), s) || !collect_consts(val).empty()) return std::nullopt;
+            return val;
+        } catch (const z3::exception&) {
+            return std::nullopt;
+        }
     }
     if (!s.is_bv()) return std::nullopt;
     const unsigned w = s.bv_size();

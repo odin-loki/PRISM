@@ -138,6 +138,10 @@ public:
     void gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector<Arg>& idx, bool inbounds, int line,
              int use = 3, bool base_last_field = false);
     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
+    // Integer comparison of two ptrtoint values (std::less<T*>): exact within
+    // one object (offset order) and for ==/!=; the order of addresses of two
+    // different objects is not modelled, so it is a fresh unknown bit.
+    void addr_cmp(int b, int dst, const std::string& pred, Arg x, Arg y);
     void ptr_sub_check(int b, Arg x, Arg y, int line);
     // self_ok: an exact self-copy (dst == src) is not an overlap: llvm.memcpy
     // (LangRef), not the C memcpy function (its model passes false)

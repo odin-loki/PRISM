@@ -120,7 +120,7 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     auto r = detail::run_process(argv, timeout_s);
     if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
     if (r.failed || r.rc != 0) return "model " + name + ": " + first_error_line(r.text);
-    auto ro = detail::run_process({fe.opt->string(), "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer", "-S",
+    auto ro = detail::run_process({fe.opt->string(), c_ir_passes(*fe.opt), "-S",
                                    "-o", o1.string(), o0.string()},
                                   timeout_s);
     if (ro.timed_out) return "model " + name + " (opt): timed out after " + std::to_string(int(timeout_s)) + " s";

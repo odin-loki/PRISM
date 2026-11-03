@@ -887,7 +887,7 @@ TEST_CASE("deps: CycloneDX 1.5 SBOM from the manifest") {
     for (auto& p : refs.at("linked:z3")["properties"])
         if (p["name"] == "prism:drift")
             drift = p["value"] == "D src/api/js/package-lock.json; D src/api/js/package.json; "
-                                  "M src/math/simplex/model_based_opt.cpp";
+                                  "M src/math/simplex/model_based_opt.cpp; M src/util/memory_manager.cpp";
     CHECK(drift);
     auto dep = bom["dependencies"][0];
     CHECK(dep["ref"] == "prism");

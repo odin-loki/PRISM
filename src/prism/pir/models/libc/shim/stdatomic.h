@@ -1,35 +1,32 @@
 /* Minimal <stdatomic.h> for PIR LP64 lowering on Windows (tests/conc). */
 /*
- * Windows PIR compile shim. It lowers C11 atomics to plain stores.
- * memory_order is ignored. Relaxed, acquire, and release are not modeled.
- * It is not a concurrency proof and it is not sequentially consistent.
- * The conc stage is what refuses those orders as NEEDS-HARNESS. This
- * header must not be read as PROVED or as CLEAN. It is not a proof.
+ * Windows PIR compile shim. The MSVC C runtime has no usable C11
+ * <stdatomic.h> for this lowering, so the operations map straight onto
+ * clang's __c11_atomic builtins (PIR always compiles with clang). The IR
+ * therefore carries the real memory order, exactly as with glibc:
+ * seq_cst stays SC, and relaxed/acquire/release reach the conc stage as
+ * monotonic/acquire/release, which it refuses as NEEDS-HARNESS. This header
+ * is a declaration shim, not a proof.
  */
 #ifndef PRISM_PIR_SHIM_STDATOMIC_H
 #define PRISM_PIR_SHIM_STDATOMIC_H
 
-typedef enum { memory_order_relaxed, memory_order_consume, memory_order_acquire, memory_order_release,
-               memory_order_acq_rel, memory_order_seq_cst } memory_order;
+typedef enum {
+    memory_order_relaxed = __ATOMIC_RELAXED,
+    memory_order_consume = __ATOMIC_CONSUME,
+    memory_order_acquire = __ATOMIC_ACQUIRE,
+    memory_order_release = __ATOMIC_RELEASE,
+    memory_order_acq_rel = __ATOMIC_ACQ_REL,
+    memory_order_seq_cst = __ATOMIC_SEQ_CST
+} memory_order;
 
-typedef int atomic_int;
+typedef _Atomic(int) atomic_int;
 
-static inline void atomic_store_explicit(volatile atomic_int* obj, int desired, memory_order order) {
-    (void)order;
-    *obj = desired;
-}
-
-static inline int atomic_load_explicit(const volatile atomic_int* obj, memory_order order) {
-    (void)order;
-    return *obj;
-}
-
-static inline int atomic_fetch_add(volatile atomic_int* obj, int arg) {
-    int old = *obj;
-    *obj = old + arg;
-    return old;
-}
-
-#define atomic_load(obj) atomic_load_explicit(obj, memory_order_seq_cst)
+#define atomic_store_explicit(obj, desired, order) __c11_atomic_store((obj), (desired), (order))
+#define atomic_load_explicit(obj, order) __c11_atomic_load((obj), (order))
+#define atomic_fetch_add_explicit(obj, arg, order) __c11_atomic_fetch_add((obj), (arg), (order))
+#define atomic_store(obj, desired) atomic_store_explicit((obj), (desired), memory_order_seq_cst)
+#define atomic_load(obj) atomic_load_explicit((obj), memory_order_seq_cst)
+#define atomic_fetch_add(obj, arg) atomic_fetch_add_explicit((obj), (arg), memory_order_seq_cst)
 
 #endif

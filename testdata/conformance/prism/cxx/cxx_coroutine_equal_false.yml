@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_coroutine_equal_false.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_coroutine_equal_false: false
+witness:
+  cxx_coroutine_equal_false: [2]

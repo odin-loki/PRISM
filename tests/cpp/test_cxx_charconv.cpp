@@ -73,7 +73,7 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
         posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
     }
     pid_t pid = 0;
-    extern char** environ;
+    // environ comes from <unistd.h> (a block-scope extern here would get internal linkage).
     if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
         posix_spawn_file_actions_destroy(&actions);
         if (out) {
@@ -110,7 +110,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif

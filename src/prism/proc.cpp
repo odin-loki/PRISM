@@ -372,13 +372,31 @@ RunOut run(const RunSpec& spec) {
     CloseHandle(job);
     drain(out_r, r.out);
     drain(err_r, r.err);
-    // The child has exited or been terminated, so its end of stdin is closed
-    // and a pending WriteFile fails: the join cannot hang.
-    if (writer.joinable()) writer.join();
+    // A pending WriteFile normally fails once the child is gone, but a
+    // descendant left running (or a crashed ASan child whose handles linger)
+    // can keep the read end open and block the writer for ever. Cancel its
+    // synchronous I/O until it ends, so the join is bounded.
+    if (writer.joinable()) {
+        HANDLE wt = static_cast<HANDLE>(writer.native_handle());
+        while (WaitForSingleObject(wt, 50) == WAIT_TIMEOUT) CancelSynchronousIo(wt);
+        writer.join();
+    }
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     r.rc = r.timed_out ? -1 : static_cast<int>(code);
-    if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
+    // The loader's own NTSTATUS codes mean the child never ran its code (a
+    // missing DLL such as the ASan runtime, a bad image, a failed DLL init):
+    // that is a start failure, not a crash of the program under test.
+    const bool loader_failed = code == 0xC0000135u /* DLL_NOT_FOUND */ || code == 0xC0000139u /* ENTRYPOINT_NOT_FOUND */ ||
+                               code == 0xC000007Bu /* INVALID_IMAGE_FORMAT */ || code == 0xC0000142u /* DLL_INIT_FAILED */;
+    if (!r.timed_out && loader_failed) {
+        r.failed = true;
+        if (r.err.empty()) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "process did not start: loader status 0x%08lX", static_cast<unsigned long>(code));
+            r.err = buf;
+        }
+    } else if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
     close_h(out_r);
     close_h(err_r);
     close_h(stdout_file);
@@ -619,6 +637,14 @@ RunOut run(const RunSpec& spec) {
     close_fd(err_p[0]);
     if (WIFEXITED(st)) {
         r.rc = WEXITSTATUS(st);
+        // bwrap (the sandbox wrapper) runs the command as a child and exits
+        // 128 + N when that child is killed by signal N, so a crash inside
+        // the sandbox would otherwise read as a plain nonzero exit.
+        if (!r.timed_out && !args.empty() && fs::path(args[0]).filename() == "bwrap" && r.rc > 128 &&
+            r.rc < 128 + 65) {
+            r.rc = -(r.rc - 128);
+            r.crashed = true;
+        }
     } else if (WIFSIGNALED(st)) {
         r.rc = -WTERMSIG(st);
         if (!r.timed_out) r.crashed = true;

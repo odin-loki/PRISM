@@ -69,7 +69,9 @@ void check_abs(std::string_view src, std::string_view sig, std::string_view min_
     REQUIRE(trap != std::string::npos);
     CHECK(check < trap);
     CHECK(arm.find(message) != std::string::npos);
-    CHECK(arm.find("-") == std::string::npos);
+    // The class string "FUNC-CONTRACT" has a hyphen; the arm must not negate x.
+    CHECK(arm.find("-x") == std::string::npos);
+    CHECK(arm.find("- x") == std::string::npos);
     CHECK(arm.find("return") == std::string::npos);
 
     const auto neg = body.find("return -x;");

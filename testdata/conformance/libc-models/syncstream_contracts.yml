@@ -1,0 +1,6 @@
+format_version: 1
+input_files: syncstream_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  syncstream_putc_true: true

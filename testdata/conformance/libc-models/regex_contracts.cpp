@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <regex> so the C++ model-header conformance case sees this include.
 // The scored task is testdata/conformance/prism/cxx/cxx_regex_true.cpp.
 // regex_match, regex_search, and regex_replace are not called. A true

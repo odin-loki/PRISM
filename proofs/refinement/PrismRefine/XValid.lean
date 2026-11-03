@@ -9,7 +9,9 @@ proof (`XRefine.lean`) needs of a PIR function `P`:
   widths, and its entry block is PIR block `0`;
 * per instance: every variable its names and shadows read is below `hi`,
   the PIR blocks that end its LLVM blocks are distinct;
-* per LLVM block and segment: the PIR block exists and *is* the per-segment
+* the reachable blocks (`xLive`) contain the entry and are closed under
+  the terminators' successors; the unreachable ones have one PIR block;
+* per reachable LLVM block and segment: the PIR block exists and *is* the per-segment
   translation (`XTranslate.lean`) of the segment in the instance's context,
   with temporaries from `k ≥ hi` of the declared widths: the phis (segment
   0) or the continuation phis (later segments: the `_retu` and result
@@ -84,8 +86,8 @@ def callOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) (c : 
 
 /-- The last segment (the terminator). -/
 def termOK (P : PFunc) (I : IInfo) (c : Ctx) (k : Nat) (s1 : List PStmt) (t1 : List Nat)
-    (pb : Nat) (PB : PBlock) (t : LTerm) : Bool :=
-  match trTermX I.fn c I.heads I.retTo (k + t1.length) t with
+    (pb : Nat) (PB : PBlock) (nr : Option (String × String)) (t : LTerm) : Bool :=
+  match trTermN I.fn c I.heads I.retTo (k + t1.length) nr t with
   | .error _ => false
   | .ok (s2, t2, T, A?) =>
     tempsOKB P (k + t1.length) t2 &&
@@ -123,7 +125,10 @@ def segOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) (b s : Nat) : Bool
            | none => false)) &&
         match B.segs[s]? with
         | some (_, cl) => callOK M P C I b s c k s1 t1 PB cl
-        | none => termOK P I c k s1 t1 pb PB B.term
+        | none =>
+          -- a throw: the run stops claiming anything there; the PIR block
+          -- starts with the instructions before it (`Tr::raise` follows)
+          if B.thr then s1.isPrefixOf PB.stmts else termOK P I c k s1 t1 pb PB B.nr B.term
   | _, _, _ => false
 
 /-- An instance.  (The lengths of `ks` and `kids` are not checked: `segOK`
@@ -133,11 +138,14 @@ def instOK (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) : Bool :=
   decide (I.lo ≤ I.hi) && allLtB I.hi I.env && allLtB I.hi I.sh &&
   I.blks.length == I.fn.blocks.length &&
   nodupNat I.tails &&
+  xLiveClosed I.fn &&
   (List.range I.fn.blocks.length).all fun b =>
     match I.fn.blocks[b]? with
     | some B =>
-      (I.blks.getD b []).length == B.segs.length + 1 &&
-      (List.range (B.segs.length + 1)).all fun s => segOK M P C I b s
+      if (xLive I.fn).contains b then
+        (I.blks.getD b []).length == B.segs.length + 1 &&
+        (List.range (B.segs.length + 1)).all fun s => segOK M P C I b s
+      else (I.blks.getD b []).length == 1
     | none => false
 
 /-- The analysed function's parameters are its first variables. -/

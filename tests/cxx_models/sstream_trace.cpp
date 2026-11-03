@@ -54,7 +54,7 @@ int main() {
     show("move-dst", dst.str());
     show("move-src", moved.str());
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 8; ++i) {
         std::ostringstream line;
         line << "row=" << i << " val=" << (i * 10);
         std::printf("loop: %s\n", line.str().c_str());

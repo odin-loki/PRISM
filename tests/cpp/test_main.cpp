@@ -21,6 +21,36 @@
 #include "prism/cuda_mutate.h"
 #endif
 
+#include <cstdio>
+// CI hang diagnosis: name each test case as it starts, flushed, so a hung or
+// cancelled run shows which case it was in. On with PRISM_TEST_TRACE=1, and by
+// default on Windows GitHub Actions runners (where a run hung with no output).
+namespace {
+struct TraceListener : doctest::IReporter {
+#ifdef _WIN32
+    bool on = std::getenv("PRISM_TEST_TRACE") != nullptr || std::getenv("GITHUB_ACTIONS") != nullptr;
+#else
+    bool on = std::getenv("PRISM_TEST_TRACE") != nullptr;
+#endif
+    explicit TraceListener(const doctest::ContextOptions&) {}
+    void report_query(const doctest::QueryData&) override {}
+    void test_run_start() override {}
+    void test_run_end(const doctest::TestRunStats&) override {}
+    void test_case_start(const doctest::TestCaseData& tc) override {
+        if (on) { std::fprintf(stderr, "[trace] %s (%s)\n", tc.m_name, tc.m_file.c_str()); std::fflush(stderr); }
+    }
+    void test_case_reenter(const doctest::TestCaseData&) override {}
+    void test_case_end(const doctest::CurrentTestCaseStats&) override {}
+    void test_case_exception(const doctest::TestCaseException&) override {}
+    void subcase_start(const doctest::SubcaseSignature&) override {}
+    void subcase_end() override {}
+    void log_assert(const doctest::AssertData&) override {}
+    void log_message(const doctest::MessageData&) override {}
+    void test_case_skipped(const doctest::TestCaseData&) override {}
+};
+}  // namespace
+DOCTEST_REGISTER_LISTENER("prism_trace", 1, TraceListener);
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -504,6 +534,10 @@ TEST_CASE("real-world: pir finds root/include headers; a missing header is NOTRU
     // include/ and was pir ERROR "clang front end failed".
     prism::Config cfg;
     if (!prism::pir::frontend_usable(cfg)) return;
+    if (!prism::pir::z3_available()) {
+        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        return;
+    }
     auto td = std::filesystem::temp_directory_path() / "prism_rw_pir_inc";
     std::filesystem::remove_all(td);
     std::filesystem::create_directories(td / "include");

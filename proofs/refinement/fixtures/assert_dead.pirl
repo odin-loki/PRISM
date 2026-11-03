@@ -1,0 +1,222 @@
+func f
+L params 1 x 32
+L ret 32
+L block entry
+L glob %@.str 7 1 4 1 6 0 8 120 1 8 32 2 8 33 3 8 61 4 8 32 5 8 51
+L glob %@.str.1 24 1 4 1 23 0 8 47 1 8 116 2 8 109 3 8 112 4 8 47 5 8 100 6 8 49 7 8 51 8 8 54 9 8 47 10 8 97 11 8 115 12 8 115 13 8 101 14 8 114 15 8 116 16 8 95 17 8 100 18 8 101 19 8 97 20 8 100 21 8 46 22 8 99
+L glob %@__PRETTY_FUNCTION__.f 11 1 4 1 10 0 8 105 1 8 110 2 8 116 3 8 32 4 8 102 5 8 40 6 8 105 7 8 110 8 8 116 9 8 41
+L uninit %__prism_uninit.0 32
+L icmp %cmp ne 32 %x #3
+L cbr %cmp cond.true cond.false
+L block cond.true
+L br cond.end
+L block cond.false
+L afail assert FUNC-CONTRACT
+L block bb
+L br cond.end
+L block cond.end
+L bin %add add nsw 32 %x #1
+L ret %add
+status ok
+P vars 44 32 64 64 64 32 1 32 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 64 1
+P params 1 0
+P retw 32
+P block
+P alloc 1 c64:7 4 1 1
+P store v1:64 c8:120 c1:1 0
+P assign 7 add 2 v1:64 c64:1
+P store v7:64 c8:32 c1:1 0
+P assign 8 add 2 v1:64 c64:2
+P store v8:64 c8:33 c1:1 0
+P assign 9 add 2 v1:64 c64:3
+P store v9:64 c8:61 c1:1 0
+P assign 10 add 2 v1:64 c64:4
+P store v10:64 c8:32 c1:1 0
+P assign 11 add 2 v1:64 c64:5
+P store v11:64 c8:51 c1:1 0
+P alloc 2 c64:24 4 1 1
+P store v2:64 c8:47 c1:1 0
+P assign 12 add 2 v2:64 c64:1
+P store v12:64 c8:116 c1:1 0
+P assign 13 add 2 v2:64 c64:2
+P store v13:64 c8:109 c1:1 0
+P assign 14 add 2 v2:64 c64:3
+P store v14:64 c8:112 c1:1 0
+P assign 15 add 2 v2:64 c64:4
+P store v15:64 c8:47 c1:1 0
+P assign 16 add 2 v2:64 c64:5
+P store v16:64 c8:100 c1:1 0
+P assign 17 add 2 v2:64 c64:6
+P store v17:64 c8:49 c1:1 0
+P assign 18 add 2 v2:64 c64:7
+P store v18:64 c8:51 c1:1 0
+P assign 19 add 2 v2:64 c64:8
+P store v19:64 c8:54 c1:1 0
+P assign 20 add 2 v2:64 c64:9
+P store v20:64 c8:47 c1:1 0
+P assign 21 add 2 v2:64 c64:10
+P store v21:64 c8:97 c1:1 0
+P assign 22 add 2 v2:64 c64:11
+P store v22:64 c8:115 c1:1 0
+P assign 23 add 2 v2:64 c64:12
+P store v23:64 c8:115 c1:1 0
+P assign 24 add 2 v2:64 c64:13
+P store v24:64 c8:101 c1:1 0
+P assign 25 add 2 v2:64 c64:14
+P store v25:64 c8:114 c1:1 0
+P assign 26 add 2 v2:64 c64:15
+P store v26:64 c8:116 c1:1 0
+P assign 27 add 2 v2:64 c64:16
+P store v27:64 c8:95 c1:1 0
+P assign 28 add 2 v2:64 c64:17
+P store v28:64 c8:100 c1:1 0
+P assign 29 add 2 v2:64 c64:18
+P store v29:64 c8:101 c1:1 0
+P assign 30 add 2 v2:64 c64:19
+P store v30:64 c8:97 c1:1 0
+P assign 31 add 2 v2:64 c64:20
+P store v31:64 c8:100 c1:1 0
+P assign 32 add 2 v2:64 c64:21
+P store v32:64 c8:46 c1:1 0
+P assign 33 add 2 v2:64 c64:22
+P store v33:64 c8:99 c1:1 0
+P alloc 3 c64:11 4 1 1
+P store v3:64 c8:105 c1:1 0
+P assign 34 add 2 v3:64 c64:1
+P store v34:64 c8:110 c1:1 0
+P assign 35 add 2 v3:64 c64:2
+P store v35:64 c8:116 c1:1 0
+P assign 36 add 2 v3:64 c64:3
+P store v36:64 c8:32 c1:1 0
+P assign 37 add 2 v3:64 c64:4
+P store v37:64 c8:102 c1:1 0
+P assign 38 add 2 v3:64 c64:5
+P store v38:64 c8:40 c1:1 0
+P assign 39 add 2 v3:64 c64:6
+P store v39:64 c8:105 c1:1 0
+P assign 40 add 2 v3:64 c64:7
+P store v40:64 c8:110 c1:1 0
+P assign 41 add 2 v3:64 c64:8
+P store v41:64 c8:116 c1:1 0
+P assign 42 add 2 v3:64 c64:9
+P store v42:64 c8:41 c1:1 0
+P havoc 4
+P assign 5 ne 2 v0:32 c32:3
+P br v5:1 1 2
+P block
+P jmp 4
+P block
+P check c1:1 assert FUNC-CONTRACT
+P stop
+P block
+P stop
+P block
+P assign 43 sadd.ovf 2 v0:32 c32:1
+P check v43:1 ovf+ INT-SIGNED-OVF
+P assign 6 add 2 v0:32 c32:1
+P ret v6:32
+end
+func g
+L params 1 x 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.1 32
+L icmp %cmp sgt 32 %x #10
+L cbr %cmp if.then if.end
+L block if.then
+L afail reach_error FUNC-CONTRACT br if.end
+L block if.end
+L ret %x
+status ok
+P vars 3 32 32 1
+P params 1 0
+P retw 32
+P block
+P havoc 1
+P assign 2 sgt 2 v0:32 c32:10
+P br v2:1 1 2
+P block
+P check c1:1 reach_error FUNC-CONTRACT
+P stop
+P block
+P ret v0:32
+end
+func main
+L depth 4
+L params 0
+L ret 32
+L block entry
+L call %call 32 f 1 #1 32
+L call %call1 32 g 1 #2 32
+L bin %add add nsw 32 %call %call1
+L ret %add
+L fn f
+L params 1 x 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.0 32
+L icmp %cmp ne 32 %x #3
+L cbr %cmp cond.true cond.false
+L block cond.true
+L br cond.end
+L block cond.false
+L afail assert FUNC-CONTRACT
+L block bb
+L br cond.end
+L block cond.end
+L bin %add add nsw 32 %x #1
+L ret %add
+L fn g
+L params 1 x 32
+L ret 32
+L block entry
+L uninit %__prism_uninit.1 32
+L icmp %cmp sgt 32 %x #10
+L cbr %cmp if.then if.end
+L block if.then
+L afail reach_error FUNC-CONTRACT br if.end
+L block if.end
+L ret %x
+status ok
+P vars 12 32 32 32 4 32 1 32 1 4 32 1 1
+P params 0
+P retw 32
+P block
+P jmp 2
+P block
+P phi 3 1 6 c4:0
+P phi 0 1 6 v6:32
+P jmp 8
+P block
+P havoc 4
+P assign 5 ne 2 c32:1 c32:3
+P br v5:1 3 4
+P block
+P jmp 6
+P block
+P check c1:1 assert FUNC-CONTRACT
+P stop
+P block
+P stop
+P block
+P assign 7 sadd.ovf 2 c32:1 c32:1
+P check v7:1 ovf+ INT-SIGNED-OVF
+P assign 6 add 2 c32:1 c32:1
+P jmp 1
+P block
+P phi 8 1 10 c4:0
+P phi 1 1 10 c32:2
+P assign 11 sadd.ovf 2 v0:32 v1:32
+P check v11:1 ovf+ INT-SIGNED-OVF
+P assign 2 add 2 v0:32 v1:32
+P ret v2:32
+P block
+P havoc 9
+P assign 10 sgt 2 c32:2 c32:10
+P br v10:1 9 10
+P block
+P check c1:1 reach_error FUNC-CONTRACT
+P stop
+P block
+P jmp 7
+end

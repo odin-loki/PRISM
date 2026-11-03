@@ -17,8 +17,9 @@ int loop_long_inv(int n) {
         s += 1;
     return s + (n & 1);
 }
-/* s == i * (i - 1) / 2 is not a template: stays BOUNDED (Law 2) */
-int loop_long_bounded(int n) {
+/* s == i * (i - 1) / 2: the bounded triangular template (Houdini + induction)
+ * proves it (it was BOUNDED before that template) */
+int loop_long_sum(int n) {
     int s = 0;
     for (int i = 0; i < 100; i++)
         s += i;

@@ -51,24 +51,33 @@ structure InstFacts (M : XMod) (P : PFunc) (C : List IInfo) (I : IInfo) : Prop w
   lohi : I.lo ≤ I.hi
   tails : nodupNat I.tails = true
   blks : I.blks.length = I.fn.blocks.length
-  seg : ∀ (b : Nat) (bl : List Nat) (s pb : Nat), I.blks[b]? = some bl → bl[s]? = some pb →
+  seg : ∀ (b : Nat) (bl : List Nat) (s pb : Nat), (xLive I.fn).contains b = true →
+    I.blks[b]? = some bl → bl[s]? = some pb →
     ∃ B, I.fn.blocks[b]? = some B ∧ bl.length = B.segs.length + 1 ∧ s ≤ B.segs.length ∧
       segOK M P C I b s = true
-  blen : ∀ (b : Nat) (B : XBlock), I.fn.blocks[b]? = some B → ∃ bl, I.blks[b]? = some bl ∧ bl.length = B.segs.length + 1
+  blen : ∀ (b : Nat) (B : XBlock), I.fn.blocks[b]? = some B → ∃ bl, I.blks[b]? = some bl ∧ 0 < bl.length
+  live0 : (xLive I.fn).contains 0 = true
+  closed : ∀ (j : Nat) (B : XBlock), (xLive I.fn).contains j = true → I.fn.blocks[j]? = some B →
+    ∀ x ∈ xSucc I.fn B, (xLive I.fn).contains x = true
 
 theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : instOK M P C I = true) :
     InstFacts M P C I := by
   unfold instOK at h
   simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq, List.all_eq_true, List.mem_range] at h
-  obtain ⟨⟨⟨⟨⟨hlo, henv⟩, hsh⟩, hbl⟩, htl⟩, hall⟩ := h
-  refine ⟨⟨rfl, fun n a hl => allLtB_look henv hl, fun n s hl => allLtB_look hsh hl, hlo⟩, hlo, htl, hbl, ?_, ?_⟩
-  · intro b bl s pb hb hs
+  obtain ⟨⟨⟨⟨⟨⟨hlo, henv⟩, hsh⟩, hbl⟩, htl⟩, hcl⟩, hall⟩ := h
+  have hcl' := hcl
+  unfold xLiveClosed at hcl'
+  simp only [Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.or_eq_true, Bool.not_eq_true'] at hcl'
+  obtain ⟨hl0, hclo⟩ := hcl'
+  refine ⟨⟨rfl, fun n a hl => allLtB_look henv hl, fun n s hl => allLtB_look hsh hl, hlo⟩, hlo, htl, hbl,
+    ?_, ?_, hl0, ?_⟩
+  · intro b bl s pb hlive hb hs
     have hbb : b < I.fn.blocks.length := by
       rw [← hbl]; exact (List.getElem?_eq_some_iff.mp hb).1
     have := hall b hbb
     obtain ⟨B, hB⟩ : ∃ B, I.fn.blocks[b]? = some B := ⟨_, List.getElem?_eq_getElem hbb⟩
     rw [hB] at this
-    simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
+    simp only [hlive, ite_true, Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
     obtain ⟨h1, h4⟩ := this
     rw [List.getD_eq_getElem?_getD, hb, Option.getD_some] at h1
     have hsl : s < bl.length := (List.getElem?_eq_some_iff.mp hs).1
@@ -77,12 +86,20 @@ theorem instOK_facts {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} (h : in
     have hbb : b < I.fn.blocks.length := (List.getElem?_eq_some_iff.mp hB).1
     have := hall b hbb
     rw [hB] at this
-    simp only [Bool.and_eq_true, beq_iff_eq, List.all_eq_true, List.mem_range] at this
-    obtain ⟨h1, _⟩ := this
     have hbb' : b < I.blks.length := by rw [hbl]; exact hbb
     refine ⟨I.blks[b], List.getElem?_eq_getElem hbb', ?_⟩
-    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hbb', Option.getD_some] at h1
-    exact h1
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hbb', Option.getD_some] at this
+    dsimp only at this
+    by_cases hlv : (xLive I.fn).contains b = true
+    · simp only [hlv, ite_true, Bool.and_eq_true, beq_iff_eq] at this; omega
+    · simp only [hlv, Bool.false_eq_true, ite_false, beq_iff_eq] at this; omega
+  · intro j B hj hB x hx
+    have hjb : j < I.fn.blocks.length := (List.getElem?_eq_some_iff.mp hB).1
+    rcases hclo j hjb with h | h
+    · rw [hj] at h; cases h
+    · rw [hB] at h
+      simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
+      exact h x hx
 
 /-- Facts about the whole certificate. -/
 structure ValidFacts (M : XMod) (F : XFunc) (P : PFunc) (C : List IInfo) : Prop where
@@ -118,7 +135,8 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
       (s = 0 → trPhisX I.fn (I.ctx P.vars) I.tails B.phis = .ok PB.phis) ∧
       (0 < s → ∃ is cl, B.segs[s - 1]? = some (is, cl) ∧ contOK (I.ctx P.vars) cl PB.phis = true) ∧
       (∀ is cl, B.segs[s]? = some (is, cl) → callOK M P C I b s (I.ctx P.vars) k s1 t1 PB cl = true) ∧
-      (B.segs[s]? = none → termOK P I (I.ctx P.vars) k s1 t1 pb PB B.term = true) := by
+      (B.segs[s]? = none → B.thr = false → termOK P I (I.ctx P.vars) k s1 t1 pb PB B.nr B.term = true) ∧
+      (B.segs[s]? = none → B.thr = true → ∃ s2, PB.stmts = s1 ++ s2) := by
   unfold segOK at h
   rw [hB, hpb] at h
   split at h
@@ -135,7 +153,7 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
       · rename_i s1 t1 hins
         simp only [Bool.and_eq_true] at h
         obtain ⟨⟨hT, hph⟩, hend⟩ := h
-        refine ⟨k, PB, s1, t1, hk, hPB, hhk, hins, tempsOKB_ok hT, ?_, ?_, ?_, ?_⟩
+        refine ⟨k, PB, s1, t1, hk, hPB, hhk, hins, tempsOKB_ok hT, ?_, ?_, ?_, ?_, ?_⟩
         · intro hs0; subst hs0
           simp only [ite_true] at hph
           split at hph
@@ -149,8 +167,13 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
           · simp at hph
         · intro is cl hsg
           rw [hsg] at hend; exact hend
-        · intro hsg
-          rw [hsg] at hend; exact hend
+        · intro hsg hth
+          rw [hsg] at hend; simpa [hth] using hend
+        · intro hsg hth
+          rw [hsg] at hend
+          simp only [hth, ite_true, List.isPrefixOf_iff_prefix] at hend
+          obtain ⟨s2, e⟩ := hend
+          exact ⟨s2, e.symm⟩
   · simp at h
 
 theorem contOK_spec {c : Ctx} {cl : CallI} {phis : List PPhi} (h : contOK c cl phis = true) :
@@ -214,8 +237,8 @@ theorem callOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : N
         · simp at hterm
 
 theorem termOK_spec {P : PFunc} {I : IInfo} {c : Ctx} {k : Nat} {s1 : List PStmt} {t1 : List Nat}
-    {pb : Nat} {PB : PBlock} {t : LTerm} (h : termOK P I c k s1 t1 pb PB t = true) :
-    ∃ s2 t2 T A?, trTermX I.fn c I.heads I.retTo (k + t1.length) t = .ok (s2, t2, T, A?) ∧
+    {pb : Nat} {PB : PBlock} {nr : Option (String × String)} {t : LTerm} (h : termOK P I c k s1 t1 pb PB nr t = true) :
+    ∃ s2 t2 T A?, trTermN I.fn c I.heads I.retTo (k + t1.length) nr t = .ok (s2, t2, T, A?) ∧
       TempsOK P (k + t1.length) t2 ∧ PB.stmts = s1 ++ s2 ∧ PB.term = T ∧
       (∀ cb A, I.retTo = some cb → A? = some A → ∃ CB pu pr u, P.blocks[cb]? = some CB ∧
         CB.phis = [pu, pr] ∧ pickInc pb pr.inc = some A ∧ pickInc pb pu.inc = some u) := by

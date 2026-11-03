@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <barrier> so the C++ model-header conformance case sees this
 // include. The scored tasks are
 // testdata/conformance/prism/cxx/cxx_barrier_true.cpp and

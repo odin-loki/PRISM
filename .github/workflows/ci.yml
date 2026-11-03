@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   supply-chain:
     name: Licence firewall + manifest + SBOM
@@ -104,6 +108,7 @@ jobs:
   windows-compile-smoke-cl:
     name: Windows compile smoke (MSVC cl)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -139,6 +144,7 @@ jobs:
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -152,6 +158,7 @@ jobs:
       - name: Configure (Ninja + clang-cl)
         run: >
           cmake -B build-win -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
@@ -209,6 +216,7 @@ jobs:
       - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-z3 -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
           -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF

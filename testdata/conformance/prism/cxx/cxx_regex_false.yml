@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_regex_false.cpp
+language: C++
+property: memsafety
+expected:
+  cxx_regex_false: false
+witness:
+  cxx_regex_false: [0]

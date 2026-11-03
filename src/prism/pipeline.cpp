@@ -1,3 +1,6 @@
+#ifdef __linux__
+#include <malloc.h>
+#endif
 #include "prism/astlint.hpp"
 #include "prism/pipeline.hpp"
 
@@ -280,6 +283,11 @@ RunReport run_pipeline(const Config& cfg) {
     };
 
     auto emit = [&](StageResult rec) -> StageResult {
+#ifdef __linux__
+        // Hand freed heap back after each stage: bmc left ~1.1 GB resident
+        // that pir's memory budget then counted (conformance/libc-models).
+        ::malloc_trim(0);
+#endif
         report.stages.push_back(rec);
         journal_append_stage(cfg.out, rec);
         return rec;

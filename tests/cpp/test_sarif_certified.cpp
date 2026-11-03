@@ -58,7 +58,7 @@ TEST_CASE("sarif: PROVED-CERTIFIED is counted and FAILED stays a result") {
                                       text.find("checked certificate") != std::string::npos;
         const bool defect_level = level == "error" || level == "warning";
         // Message or level must not present the certificate-checked proof as a defect.
-        CHECK_FALSE(about_certified && defect_level);
+        CHECK_FALSE((about_certified && defect_level));
         CHECK_FALSE(about_certified);
 
         if (status == std::string(prism::laws::FAILED)) {

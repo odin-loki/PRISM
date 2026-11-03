@@ -94,9 +94,21 @@ PrismRun run_prism(const std::vector<std::string>& cmd, const Task& task, const 
     std::vector<std::string> argv = cmd;
     argv.insert(argv.end(), {task.source.string(), "--no-llm", "--stage", st_list, "--out", out.string()});
     if (task.unwind || unwind) argv.insert(argv.end(), {"--unwind", std::to_string(task.unwind ? task.unwind : unwind)});
+    if (task.query_timeout > 0) argv.insert(argv.end(), {"--timeout", std::to_string(task.query_timeout)});
     argv.insert(argv.end(), extra_args.begin(), extra_args.end());
     res.argv = argv;
     timeout = std::max(timeout, task.timeout);
+#ifndef _WIN32
+    // One slow function must not turn a whole file into TIMEOUT (no report at
+    // all): each function gets a quarter of the file's time, at least 120 s
+    // (unbounded_string_contracts: strcat/strncat take > 300 s each and hid the
+    // 8 other invariants proofs). Past it the function is TIMEOUT, never a proof.
+    if (!std::getenv("PRISM_FUNCTION_BUDGET")) {
+        const long fb = std::max(120L, static_cast<long>(timeout / 4));
+        argv.insert(argv.begin(), {"env", "PRISM_FUNCTION_BUDGET=" + std::to_string(fb)});
+        res.argv = argv;
+    }
+#endif
     const auto t0 = std::chrono::steady_clock::now();
     // Own session (so a timeout kills prism's solver/clang/checker children
     // too) and an address-space cap every child inherits: a task that needs

@@ -1,3 +1,4 @@
+// no-false-twin: this harness labels positive contracts of a C++ header model only (no planted defect).
 // Names <system_error> so the C++ model-header conformance case sees
 // this include. The scored check is
 // testdata/conformance/prism/cxx/cxx_system_error_true.cpp.

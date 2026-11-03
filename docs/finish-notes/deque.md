@@ -52,3 +52,7 @@ Do not edit `src/prism/pir/stage.cpp` for this. The include path is already `-is
 5. `docs/PIR.md` still lists `std::deque` under "Not modelled". Update that paragraph when the header is wired. Not in this slice.
 
 Until (1) and (3), `cxx_deque_true` / `cxx_deque_false` still take the unmodelled-deque NEEDS-HARNESS path. After wiring, the false task is an iterator used after `push_back` (MEM-UAF on the anchor) and the true task is a reference kept across `push_back`.
+
+## Wired (work/libc-models, 2026-10-29)
+
+Steps 1, 2, 4 and 5 are done: the header is the file `src/prism/pir/models/cxx/deque` (embedded as `cxx/deque`), `tests/cpp/test_cxx_deque.cpp` is in `prism_tests` (it copies the header alone into a temp include dir), `test_qa_conformance` checks `<deque>` like the other models, and `testdata/conformance/libc-models/deque_contracts.{cpp,yml}` exists. Measured: pir proves 4/4 true (3 libc-models + `cxx_deque_true`) and refutes 5/5 false, 0 wrong proofs. Step 3 (the bmc-stage early exits) is left: the bmc engines do not use the pir models, so their NEEDS-HARNESS stays honest.

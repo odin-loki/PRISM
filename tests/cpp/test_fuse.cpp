@@ -16,6 +16,7 @@
 #include "prism/stages.hpp"
 
 #include "../../src/prism/stages/common.hpp"
+#include "../../src/prism/stages/fuse.hpp"
 
 #include <nlohmann/json.hpp>
 

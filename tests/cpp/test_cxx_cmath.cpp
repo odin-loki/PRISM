@@ -15,6 +15,8 @@
 
 #include <doctest/doctest.h>
 
+#include "prose_text.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -121,7 +123,10 @@ bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, s
     prism::qa::RunOpts o;
     o.timeout_s = 300;
     auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
+    if (out) {
+        *out = r.out;
+        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
+    }
     if (err) *err = r.err;
     return !r.start_failed && !r.timed_out && r.rc == 0;
 #endif
@@ -217,7 +222,7 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
     const fs::path header = cmath_header();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
-    const std::string src = slurp(header);
+    const std::string src = prism_test::unwrap_prose(slurp(header));
     REQUIRE_FALSE(src.empty());
     CHECK(src.find("_GLIBCXX_CMATH") != std::string::npos);
     CHECK(src.find("#pragma GCC system_header") != std::string::npos);

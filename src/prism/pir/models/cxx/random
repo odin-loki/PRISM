@@ -55,8 +55,14 @@ extern "C" void __prism_check(int, const char*, const char*);
 
 // cl does not provide __builtin_trap. clang, which the pir stage uses, does.
 // The stand-in is abort, so a failed contract still does not return.
-#if defined(_MSC_VER) && !defined(__clang__)
-extern "C" __declspec(noreturn) void abort(void);
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(PRISM_MSVC_BUILTIN_TRAP)
+// Declared exactly as the UCRT declares it: dllimport under /MD (_DLL), else
+// cl reports C2375 (redefinition; different linkage) once <stdlib.h> is seen.
+#  if defined(_DLL)
+extern "C" __declspec(dllimport) __declspec(noreturn) void __cdecl abort(void);
+#  else
+extern "C" __declspec(noreturn) void __cdecl abort(void);
+#  endif
 __declspec(noreturn) inline void __builtin_trap() { abort(); }
 #endif
 
@@ -158,11 +164,17 @@ public:
     result_type operator()() { return __VERIFIER_nondet_uint(); }
 };
 
-// Only the int specialization. uniform_int_distribution<long> and the other
+// Only the int specialization. The long specialization and the other
 // distributions are not defined. a > b does not store the inverted pair.
 // operator() on that range does not return a value. This is not a proof of
 // uniformity.
+// libstdc++ >= 14 can pull bits/uniform_int_dist.h in through other host
+// headers (with its own default argument); do not redeclare the default then.
+#ifdef _GLIBCXX_BITS_UNIFORM_INT_DIST_H
+template <class IntType>
+#else
 template <class IntType = int>
+#endif
 class uniform_int_distribution;
 
 template <>

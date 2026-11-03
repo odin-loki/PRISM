@@ -6,6 +6,12 @@
 #include <cstdio>
 #include <flat_set>
 
+// The models call __prism_check, the precondition intrinsic. libstdc++ never
+// calls it. A failed check aborts so the model and libstdc++ runs still differ.
+extern "C" __attribute__((weak)) void __prism_check(int ok, const char*, const char*) {
+    if (!ok) __builtin_abort();
+}
+
 int main() {
     std::flat_set<int> empty;
     std::printf("empty_eq %d\n", empty.begin() == empty.end() ? 1 : 0);

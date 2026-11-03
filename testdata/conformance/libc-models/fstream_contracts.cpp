@@ -14,7 +14,7 @@ int ifstream_closed_true(int) {
 }
 
 // read on a stream that is not open does not store into the buffer.
-int ifstream_read_closed(int) {
+int ifstream_read_closed_false(int) {
     std::ifstream in;
     char buf[4] = {'a', 'b', 'c', 'd'};
     in.read(buf, 4);
@@ -23,7 +23,7 @@ int ifstream_read_closed(int) {
 }
 
 // get on a stream that is not open does not store a character.
-int ifstream_get_closed(int) {
+int ifstream_get_closed_false(int) {
     std::ifstream in;
     char c = 'Q';
     in.get(c);

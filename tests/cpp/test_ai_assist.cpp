@@ -420,14 +420,19 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
 #ifndef _WIN32
     CHECK(std::system(("sh " + (opt.out_dir / "run_tests.sh").string() + " >/dev/null 2>&1").c_str()) == 0);
     // ctest project: build and run with cmake when available.
-    if (std::system("cmake --version >/dev/null 2>&1") == 0) {
+    // CMake's default generator needs make; use Ninja when only it is on hand.
+    const bool have_make = std::system("make --version >/dev/null 2>&1") == 0;
+    const bool have_ninja = std::system("ninja --version >/dev/null 2>&1") == 0;
+    const std::string gen = have_make ? "" : " -G Ninja";
+    if (!have_make && !have_ninja) MESSAGE("NOTRUN: no make or ninja: the ctest project is not built");
+    if ((have_make || have_ninja) && std::system("cmake --version >/dev/null 2>&1") == 0) {
         prism::ai::RegressOptions c = opt;
         c.run = false;
         c.framework = "ctest";
         c.out_dir = root / "ctest";
         prism::ai::generate_regression_tests(report, c);
         auto b = root / "ctest-build";
-        std::string cmd = "cmake -S " + c.out_dir.string() + " -B " + b.string() +
+        std::string cmd = "cmake -S " + c.out_dir.string() + " -B " + b.string() + gen +
                           " -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null 2>&1 && cmake --build " +
                           b.string() + " >/dev/null 2>&1 && ctest --test-dir " + b.string() + " >/dev/null 2>&1";
         CHECK(std::system(cmd.c_str()) == 0);  // fixed code: ctest passes
