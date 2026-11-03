@@ -29,7 +29,7 @@
 // function has returned is C11 7.13.2.1p2 UB: CTRL-LONGJMP-INVALID.
 //
 // Indirect calls. A function's address is a constant pointer whose object id
-// lies in [kFnObjBase, kMaxObjects) (never allocated, never dereferenceable).
+// lies in [fn_obj_base(), max_objects()) (never allocated, never dereferenceable).
 // A call through a pointer dispatches over the candidate targets with the
 // call's signature: the functions stored in the module's vtables when the
 // pointer is loaded from a vtable slot (class hierarchy analysis), otherwise
@@ -129,33 +129,32 @@ void Tr::add_phi(int block, int dst, int pred, Arg v) {
 Arg Tr::fn_addr(const std::string& name) {
     auto it = fn_ids.find(name);
     if (it == fn_ids.end()) {
-        uint64_t id = kFnObjBase + fn_ids.size();
-        if (id >= kMaxObjects) throw Unenc{"UNENCODED: more than " + std::to_string(kMaxObjects - kFnObjBase) +
+        uint64_t id = fn_obj_base() + fn_ids.size();
+        if (id >= max_objects()) throw Unenc{"UNENCODED: more than " + std::to_string(max_objects() - fn_obj_base()) +
                                            " function addresses"};
         it = fn_ids.emplace(name, id).first;
     }
-    return Arg::c(kPtrW, it->second << kObjShift);
+    return Arg::c(ptr_w(), it->second << obj_shift());
 }
 
 // ---- memory helpers (checked accesses through MemTr) ------------------------
 
 Arg Tr::ld(int b, Arg p, unsigned w, int line) {
     int v = newvar(tmpname("ld"), w);
-    ir::Type ty = w == kPtrW ? ir::Type{ir::Type::Ptr, 0, "ptr", {}} : ir::Type{ir::Type::Int, w, "i" + std::to_string(w), {}};
+    ir::Type ty = w == ptr_w() ? ir::Type{ir::Type::Ptr, 0, "ptr", {}} : ir::Type{ir::Type::Int, w, "i" + std::to_string(w), {}};
     mt.load(b, v, ty, p, 8, line);
     return Arg::v(v, w);
 }
 
 void Tr::st(int b, Arg p, Arg v, int line) {
-    ir::Type ty = v.width == kPtrW && !v.is_const ? ir::Type{ir::Type::Int, 64, "i64", {}}
-                                                  : ir::Type{ir::Type::Int, v.width, "i" + std::to_string(v.width), {}};
+    ir::Type ty{ir::Type::Int, v.width, "i" + std::to_string(v.width), {}};
     mt.store(b, p, v, Arg::c(1, 1), ty, 8, line);
 }
 
 Arg Tr::at(int b, Arg p, int64_t off, int line) {
-    int v = newvar(tmpname("p"), kPtrW);
+    int v = newvar(tmpname("p"), ptr_w());
     mt.gep(b, v, p, ir::Type{ir::Type::Int, 8, "i8", {}}, {Arg::c(64, static_cast<uint64_t>(off))}, true, line, 3);
-    return Arg::v(v, kPtrW);
+    return Arg::v(v, ptr_w());
 }
 
 // ---- exceptions ---------------------------------------------------------------
@@ -392,7 +391,7 @@ void Tr::dispatch_type(int cur, Arg exn, const std::string& t, int line) {
             // the pointer this handler binds (Itanium ABI adjustedPtr): the
             // thrown pointer's value, or the caught base subobject
             Arg payload = at(cur, exn, kEhHeader, line);
-            Arg adj = bind == kBindPointer ? ld(cur, payload, kPtrW, line) : bind == 0 ? payload : at(cur, payload, bind, line);
+            Arg adj = bind == kBindPointer ? ld(cur, payload, ptr_w(), line) : bind == 0 ? payload : at(cur, payload, bind, line);
             st(cur, at(cur, exn, 16, line), adj, line);
         }
         // frames between the throw and the handler are unwound: their locals end
@@ -479,8 +478,8 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
     };
     if (n == "__cxa_allocate_exception") {
         Arg sz = arg(0);
-        if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
-        Arg base = mt.alloc(cur, assign(cur, Op::Add, 64, {sz, Arg::c(64, kEhHeader)}), MemKind::Extern, 0,
+        if (sz.width < ptr_w()) sz = assign(cur, Op::ZExt, ptr_w(), {sz});
+        Arg base = mt.alloc(cur, assign(cur, Op::Add, ptr_w(), {sz, Arg::c(ptr_w(), kEhHeader)}), MemKind::Extern, 0,
                             "exception object", line);
         st(cur, base, Arg::c(64, 0), line);                // type id (set by the throw)
         st(cur, at(cur, base, 8, line), Arg::c(64, 0), line);  // handler count
@@ -536,17 +535,17 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
             Arg abs = assign(cur, Op::Select, 64, {neg, assign(cur, Op::Sub, 64, {Arg::c(64, 0), c}), c});
             st(cur, cnt_p, assign(cur, Op::Add, 64, {abs, Arg::c(64, 1)}), line);
             // slot[d] is the top (slot[0] is the depth itself, never an exception pointer)
-            int te = newvar(tmpname("p"), kPtrW);
+            int te = newvar(tmpname("p"), ptr_w());
             mt.gep(cur, te, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {d}, true, line, 1);
-            Arg top = ld(cur, Arg::v(te, kPtrW), kPtrW, line);
+            Arg top = ld(cur, Arg::v(te, ptr_w()), ptr_w(), line);
             Arg push = assign(cur, Op::Ne, 1, {top, exn}, "c");
             Arg nd = assign(cur, Op::Add, 64, {d, assign(cur, Op::ZExt, 64, {push})});
-            int e = newvar(tmpname("p"), kPtrW);
+            int e = newvar(tmpname("p"), ptr_w());
             mt.gep(cur, e, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {nd}, true, line, 2);
-            st(cur, Arg::v(e, kPtrW), exn, line);
+            st(cur, Arg::v(e, ptr_w()), exn, line);
             st(cur, slot, nd, line);
         }
-        set_result(ld(cur, at(cur, exn, 16, line), kPtrW, line));  // the pointer the handler binds
+        set_result(ld(cur, at(cur, exn, 16, line), ptr_w(), line));  // the pointer the handler binds
         return true;
     }
     if (n == "__cxa_end_catch" || n == "__cxa_rethrow") {
@@ -557,9 +556,9 @@ bool Tr::eh_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noretu
                   "throw; without an exception being handled calls std::terminate", line);
         else
             soft_guard(assign(cur, Op::Ne, 1, {d, Arg::c(64, 0)}, "c"), "__cxa_end_catch without a caught exception");
-        int e = newvar(tmpname("p"), kPtrW);
+        int e = newvar(tmpname("p"), ptr_w());
         mt.gep(cur, e, slot, ir::Type{ir::Type::Int, 64, "i64", {}}, {d}, true, line, 1);
-        Arg exn = ld(cur, Arg::v(e, kPtrW), kPtrW, line);
+        Arg exn = ld(cur, Arg::v(e, ptr_w()), ptr_w(), line);
         Arg cnt_p = at(cur, exn, 8, line);
         Arg c = ld(cur, cnt_p, 64, line);
         if (n == "__cxa_rethrow") {
@@ -779,8 +778,8 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
     int line = l.line;
     if (!in.callee_op) throw Unenc{"UNENCODED: indirect call"};
     Arg fp = operand(fr, *in.callee_op, cur, line);
-    fp.width = kPtrW;
-    check(cur, assign(cur, Op::Eq, 1, {fp, Arg::c(kPtrW, 0)}, "c"), "null-call", "PTR-NULL-DEREF",
+    fp.width = ptr_w();
+    check(cur, assign(cur, Op::Eq, 1, {fp, Arg::c(ptr_w(), 0)}, "c"), "null-call", "PTR-NULL-DEREF",
           "call through a null function pointer", line);
     // Is the pointer loaded from a vtable slot? (load (gep ptr (load this), K) or load (load this))
     auto def = [&](const ir::Operand& o) -> const ir::Inst* {

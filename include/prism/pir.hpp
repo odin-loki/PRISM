@@ -210,18 +210,50 @@ enum class Op {
 enum class MemKind : uint8_t { None = 0, Stack = 1, Heap = 2, Static = 3, Const = 4, New = 5, NewArr = 6, Extern = 7, File = 8 };
 PRISM_API const char* mem_kind_name(MemKind k);
 
-// Pointer encoding: bits 63..48 object id (0 = null object), bits 47..0 byte
-// offset. Object sizes stay below 2^47, and every pointer arithmetic step is
+// Pointer encoding (LP64; ILP32 in PtrModel below): bits 63..48 object id
+// (0 = null object), bits 47..0 byte offset. Object sizes stay below 2^47, and every pointer arithmetic step is
 // checked to stay inside its object (or one past the end), so the packed
 // value and the (object, offset) pair of the Lean model coincide on every
 // execution without a reported violation (docs/PIR.md).
-inline constexpr unsigned kObjShift = 48;
-inline constexpr uint64_t kOffMask = (uint64_t{1} << kObjShift) - 1;
-inline constexpr uint64_t kMaxObjSize = uint64_t{1} << 47;
-inline constexpr uint64_t kMaxObjects = 0xFFFF;
-// Object ids [kFnObjBase, kMaxObjects) are function addresses (never
-// allocated, never dereferenceable); allocations stay below kFnObjBase.
-inline constexpr uint64_t kFnObjBase = 0xF000;
+// Pointer model of a function (LP64 = the constants below). ILP32
+// (--data-model ILP32, i386 datalayout `p:32:32`) packs a 32-bit pointer:
+// object id in bits 31..22, byte offset in bits 21..0. An object of 2^21
+// bytes or more, or more objects than the id space holds, is UNKNOWN (never
+// a proof): every such limit is checked where an object is allocated.
+struct PtrModel {
+    unsigned w;              // pointer width in bits (= size_t, ptrdiff_t)
+    unsigned obj_shift;      // object id in bits w-1..obj_shift
+    uint64_t max_obj_size;   // exclusive bound on an object's size
+    uint64_t max_objects;    // ids [1, fn_obj_base) allocations, [fn_obj_base, max_objects) functions
+    uint64_t fn_obj_base;
+    uint64_t off_mask() const { return (uint64_t{1} << obj_shift) - 1; }
+    uint64_t make(uint64_t obj, uint64_t off) const { return (obj << obj_shift) | (off & off_mask()); }
+    uint64_t obj_of(uint64_t p) const { return p >> obj_shift; }
+    uint64_t off_of(uint64_t p) const { return p & off_mask(); }
+};
+inline constexpr PtrModel kLP64{64, 48, uint64_t{1} << 47, 0xFFFF, 0xF000};
+inline constexpr PtrModel kILP32{32, 22, uint64_t{1} << 21, 0x3FF, 0x3C0};
+// The pointer model of the function being translated or encoded (thread
+// local; LP64 outside a PtrModelScope). translate() and the encoder open a
+// scope with fn.ptr, so the helpers below follow the function.
+PRISM_API const PtrModel& ptr_model();
+class PRISM_API PtrModelScope {
+public:
+    explicit PtrModelScope(const PtrModel& m);
+    ~PtrModelScope();
+    PtrModelScope(const PtrModelScope&) = delete;
+    PtrModelScope& operator=(const PtrModelScope&) = delete;
+
+private:
+    PtrModel prev_;
+};
+inline unsigned ptr_w() { return ptr_model().w; }
+inline unsigned obj_shift() { return ptr_model().obj_shift; }
+inline uint64_t off_mask() { return ptr_model().off_mask(); }
+inline uint64_t max_obj_size() { return ptr_model().max_obj_size; }
+inline uint64_t max_objects() { return ptr_model().max_objects; }
+inline uint64_t fn_obj_base() { return ptr_model().fn_obj_base; }
+
 
 PRISM_API const char* op_name(Op op);
 
@@ -316,6 +348,7 @@ struct Function {
     bool nondet = false;       // uses a nondet source (translation validation partial)
     std::vector<std::string> inlined;
     bool uses_memory = false;  // has memory statements (k-induction is not attempted)
+    PtrModel ptr = kLP64;      // from the module's datalayout (translate)
     bool mutable_globals = false;  // reads/writes a mutable global (translation validation partial)
     bool returns_ptr = false;
     std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
@@ -379,6 +412,8 @@ struct TranslateOptions {
     std::map<int, std::string> asm_contracts;
 };
 
+// LP64 unless the module's datalayout has 32-bit pointers (ILP32).
+PRISM_API PtrModel ptr_model_of(const ir::Module& m);
 PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,
                                 const TranslateOptions& opt = {});
 PRISM_API std::string to_text(const Function& fn);
