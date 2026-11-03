@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_decimal_printf_false.c
+language: C
+property: no-oob
+expected:
+  c23_decimal_printf_false: false
+witness:
+  c23_decimal_printf_false: [0]

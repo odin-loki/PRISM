@@ -6,8 +6,10 @@
 // destination buffer (bounded by the maximal output length).
 
 #include "translate_mem.hpp"
+#include "models/cxx/prism_fpfmt.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <map>
 
@@ -57,6 +59,10 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     }
     const std::string& f = *fmt;
     std::size_t next = static_cast<std::size_t>(p.fmt_arg) + 1;
+    int nconv = 0;           // conversions (not %%)
+    int float_arg = -1;      // the argument of a non-literal double conversion
+    bool loc_dep = false;    // %ls / %lc / ' (LC_CTYPE, LC_NUMERIC)
+    bool float_star = false; // that conversion uses '*' or the ' flag
     uint64_t len = 0;
     bool bounded = true;
     auto take = [&](const char* what, std::string_view conv, auto&& ok) {
@@ -116,6 +122,10 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
         }
         char c = f[i];
         auto conv = f.substr(start + 1, i - start);
+        if ((lenmod == "l" && (c == 's' || c == 'c')) || f.substr(start, i - start).find('\'') != std::string::npos)
+            loc_dep = true;  // depends on setlocale: rendered by __prism_fmtv
+        if (lenmod == "L" && std::string_view("fFeEgGaA").find(c) == std::string_view::npos)
+            float_star = true;  // not modelled by __prism_fmtv: keep the bounded havoc
         bool wide = lenmod == "l" || lenmod == "ll" || lenmod == "j" || lenmod == "z" || lenmod == "t" || lenmod == "q";
         unsigned ib = wide ? 64 : 32;
         uint64_t m = 0;
@@ -189,17 +199,42 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
                 take(ld ? "long double" : "double", conv, [&](const ir::Type& t) {
                     return t.kind == ir::Type::Float && t.text == (ld ? "x86_fp80" : "double");
                 });
-                m = (c == 'f' || c == 'F') ? 330 + prec : 32 + prec;
+                m = (c == 'f' || c == 'F') ? (ld ? 4950 : 330) + prec : 32 + prec;
+                if (next > 0 && !(next - 1 < consts.size() && consts.at(next - 1))) {
+                    float_arg = static_cast<int>(next - 1);
+                    
+                }
+                // A literal double: the exact text length (models/cxx/prism_fpfmt.h,
+                // the same digits glibc prints), so digit-dependent lengths are exact.
+                if (!ld && next > 0 && next - 1 < args.size() && next - 1 < consts.size() && consts.at(next - 1) &&
+                    args.at(next - 1).kind == ir::Type::Float && args.at(next - 1).text == "double" &&
+                    f.substr(start, i - start).find('\'') == std::string::npos) {
+                    const double dv = std::bit_cast<double>(*consts.at(next - 1));
+                    unsigned fl = (alt_flag ? prism_fpfmt::kAlt : 0u) | ((c == 'a' || c == 'A') ? prism_fpfmt::kPrintfExp : 0u);
+                    const std::string flags = f.substr(start + 1, i - start);
+                    if (flags.find('+') != std::string::npos) fl |= prism_fpfmt::kPlus;
+                    else if (flags.find(' ') != std::string::npos) fl |= prism_fpfmt::kSpace;
+                    const int pr = has_prec ? static_cast<int>(prec) : ((c == 'a' || c == 'A') ? -1 : 6);
+                    m = static_cast<uint64_t>(prism_fpfmt::to_chars(nullptr, 0, dv, c, pr, fl));
+                }
                 break;
             }
             default:
                 p.unencoded = "UNENCODED: " + callee + " conversion '%" + std::string(conv) + "'";
                 return p;
         }
+        ++nconv;
         len += std::max<uint64_t>({m, width, has_prec ? prec + 1 : 0});
     }
+    // Item 1: one symbolic double conversion and nothing else but literal
+    // text: the output bytes are produced exactly by the __prism_fmt1d
+    // model (models/libc/fmtdouble.cpp, the prism_fpfmt algorithm run on
+    // the symbolic value) instead of havoc bytes.
+    // Session 11: any number of conversions (ints, chars, strings,
+    // pointers, doubles, '*' width/precision) via __prism_fmtv.
+    if (p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star) p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
     if (p.buf_arg >= 0 && p.size_arg < 0) {
-        if (!bounded) {
+        if (!bounded && p.exact_double_arg < 0) {
             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";
             return p;
         }

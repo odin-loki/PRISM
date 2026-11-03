@@ -1817,6 +1817,17 @@ struct Tr final : pirmem::TrApi {
             check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
             return;
         }
+        // __prism_incomplete(msg): a library model's path that PRISM does not
+        // follow (e.g. regex syntax the matcher does not implement). Reaching
+        // it is a soft stop (translate_ctl.inc): NEEDS-HARNESS when reachable,
+        // never FAILED, never PROVED; an unreachable one is no obstacle.
+        if (n == "__prism_incomplete") {
+            auto msg = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!msg) throw Unenc{"UNENCODED: __prism_incomplete without a literal message"};
+            soft_stop(cur, "model incomplete: " + *msg, line);
+            cur = newblock("incomplete.after");  // unreachable
+            return;
+        }
         if (n == "__prism_assume") {
             Arg c = arg(0);
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
@@ -1932,7 +1943,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     auto fi = n == "printf" ? 0u : n == "snprintf" ? 2u : 1u;
     if (fi < in.ops.size()) fmt = mt.const_string(in.ops[fi].v);
     std::vector<std::optional<uint64_t>> lits;
-    for (auto& o : in.ops) lits.push_back(o.v.kind == ir::Value::Int ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
+    // Int: two's complement bits; Fp: IEEE bits (libc_format.cpp tells them apart by the IR type)
+    for (auto& o : in.ops)
+        lits.push_back(o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Fp ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
     auto plan = pirmem::plan_format(n, fmt, tys, lits);
     if (!plan.handled) return false;
     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
@@ -1951,6 +1964,79 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, ptr_w(), {a, Arg::c(ptr_w(), obj_shift())}), Arg::c(ptr_w(), 0)}),
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
+    }
+    if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmtv")) {
+        // exact output bytes (coverage item 1): every variadic argument goes
+        // to a typed slot of __prism_fmtv (8 each of i32, i64, double,
+        // x86_fp80, ptr), which renders the whole format with prism_fpfmt.
+        const ir::Type ti32{ir::Type::Int, 32, "i32", {}}, ti64{ir::Type::Int, 64, "i64", {}},
+            tdbl{ir::Type::Float, 0, "double", {}}, tld{ir::Type::Float, 0, "x86_fp80", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
+        auto zero = [](const ir::Type& t) {
+            ir::Operand o;
+            o.ty = t;
+            o.v.kind = t.kind == ir::Type::Ptr ? ir::Value::Null : t.kind == ir::Type::Float ? ir::Value::Fp : ir::Value::Int;
+            o.v.bits = 0;
+            return o;
+        };
+        // Windows of 8 arguments (conversions starting in the first 6 of them,
+        // so '*' width, '*' precision and the value always fit), chained
+        // through the running length: no cap on the argument count.
+        auto cls = [](const ir::Operand& o) {
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) return 0;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) return 1;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "double") return 2;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") return 3;
+            if (o.ty.kind == ir::Type::Ptr && o.attrs.find("byval") != std::string::npos) return 6;
+            if (o.ty.kind == ir::Type::Ptr) return 4;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 128) return 5;
+            return -1;
+        };
+        bool fits = true;
+        const std::size_t na = in.ops.size() - (fi + 1);
+        for (std::size_t k = fi + 1; k < in.ops.size(); ++k) if (cls(in.ops[k]) < 0) fits = false;
+        if (fits) {
+            ir::Operand cap;
+            if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
+            else {
+                cap = zero(ti64);
+                cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
+            }
+            ir::Operand pos = zero(ti32);
+            static unsigned fmt_seq = 0;
+            const std::string base = (in.result.empty() ? std::string("prism.fmtv") : in.result) + ".w" + std::to_string(fmt_seq++) + ".";
+            for (std::size_t ab = 0;; ab += 6) {
+                const bool last = ab + 6 >= na;
+                ir::Inst call;
+                call.op = "call";
+                call.callee = "__prism_fmtv";
+                call.result = last && !in.result.empty() ? in.result : base + std::to_string(ab);
+                call.ty = ti32;
+                ir::Operand oab = zero(ti32), oae = zero(ti32);
+                oab.v.bits = ab;
+                oae.v.bits = last ? 0x7fffffffu : ab + 6;
+                ir::Operand ocl = zero(ti32);
+                std::vector<ir::Operand> sv[6];
+                for (std::size_t k = ab; k < std::min(na, ab + 8); ++k) {
+                    const int c = cls(in.ops[fi + 1 + k]);
+                    ocl.v.bits |= static_cast<uint64_t>(c) << (3 * (k - ab));
+                    // byval structs travel in the pointer slots (the model reads their eightbytes)
+                    ir::Operand o = in.ops[fi + 1 + k];
+                    if (c == 6) o.attrs.clear();
+                    sv[c == 6 ? 4 : c].push_back(o);
+                }
+                call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi], oab, oae, pos, ocl};
+                const ir::Type ti128{ir::Type::Int, 128, "i128", {}};
+                const ir::Type* tys[6] = {&ti32, &ti64, &tdbl, &tld, &tptr, &ti128};
+                for (int c = 0; c < 6; ++c)
+                    for (std::size_t k = 0; k < 8u; ++k) call.ops.push_back(k < sv[c].size() ? sv[c][k] : zero(*tys[c]));
+                inline_call(fr, call, cur, line);
+                if (last) return true;
+                pos = ir::Operand{};
+                pos.ty = ti32;
+                pos.v.kind = ir::Value::Local;
+                pos.v.name = call.result;
+            }
+        }
     }
     if (plan.buf_arg >= 0) {
         Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));

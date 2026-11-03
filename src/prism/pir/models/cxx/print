@@ -1,0 +1,40 @@
+// PRISM operational model of <print> (C++23). The pir stage puts this
+// directory first on the C++ include path, so `#include <print>` reaches this
+// file instead of libstdc++'s. It is a file, not a directory.
+//
+// std::print and std::println take a format string and arguments by const
+// reference and write to an output stream PRISM does not track. The model
+// reads nothing through the arguments and has no effect on program state, so
+// a defect in the caller's arithmetic stays visible. The format string is not
+// parsed (a mismatched format is a compile-time error under the real header,
+// so a program that compiles against libstdc++ cannot hit it at run time).
+// The FILE* overloads are the same no-op, with a null stream PTR-NULL-DEREF.
+// vprint_* and format_string are not declared and fall back to libstdc++.
+// This header is not a proof. This is not PROVED and not CLEAN.
+#ifndef _GLIBCXX_PRINT
+#define _GLIBCXX_PRINT 1
+
+#pragma GCC system_header
+
+#include <cstdio>
+
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+
+namespace std {
+
+template <typename... _Args>
+inline void print(const char*, const _Args&...) noexcept {}
+template <typename... _Args>
+inline void println(const char*, const _Args&...) noexcept {}
+template <typename... _Args>
+inline void print(std::FILE* __f, const char*, const _Args&...) noexcept {
+    __prism_check(__f != nullptr, "PTR-NULL-DEREF", "std::print to a null FILE*");
+}
+template <typename... _Args>
+inline void println(std::FILE* __f, const char*, const _Args&...) noexcept {
+    __prism_check(__f != nullptr, "PTR-NULL-DEREF", "std::println to a null FILE*");
+}
+
+}  // namespace std
+
+#endif

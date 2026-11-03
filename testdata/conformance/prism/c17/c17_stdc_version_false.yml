@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c17_stdc_version_false.c
+language: C
+property: no-div0
+expected:
+  c17_stdc_version_false: false
+witness:
+  c17_stdc_version_false: [0]

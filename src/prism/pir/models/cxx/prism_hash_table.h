@@ -791,7 +791,33 @@ public:
     _Prism_hashtable(const _Prism_hashtable& __x)
         : _M_hash(__x._M_hash), _M_eq(__x._M_eq), _M_rehash_policy(__x._M_rehash_policy) {
         _M_reset_buckets();
-        for (const _Node* __s = __x._M_iter_head; __s; __s = __s->_M_next_iter) (void)emplace(*__s->_M_valptr());
+        // Lighter copy (session 4): libstdc++'s _Hashtable copy keeps the
+        // source bucket count, so allocate it once (no 13/29/59/... rehash
+        // chain) and, for unique keys, link each node without the duplicate
+        // lookup (the source already has unique keys) and reuse the cached
+        // hash code. Iteration order is the source's insertion order.
+        if (__x._M_bucket_count > 1) {
+            _M_buckets = _M_allocate_buckets(__x._M_bucket_count);
+            _M_bucket_count = __x._M_bucket_count;
+        }
+        try {
+            for (const _Node* __s = __x._M_iter_head; __s; __s = __s->_M_next_iter) {
+                if constexpr (_Unique) {
+                    _Node* __n = _M_create(*__s->_M_valptr());
+                    __n->_M_hash = __s->_M_hash;
+                    _M_insert_bucket_begin(_M_bucket_index(__s->_M_hash), __n);
+                    _M_link_iter(__n);
+                    ++_M_element_count;
+                } else {
+                    (void)emplace(*__s->_M_valptr());
+                }
+            }
+        } catch (...) {
+            clear();
+            _M_deallocate_buckets();
+            _M_reset_buckets();
+            throw;
+        }
     }
 
     _Prism_hashtable(_Prism_hashtable&& __x) noexcept

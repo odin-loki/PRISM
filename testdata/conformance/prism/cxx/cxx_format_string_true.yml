@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_format_string_true.cpp
+language: C++
+property: no-oob
+expected:
+  cxx_format_string_true: true

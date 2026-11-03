@@ -23,6 +23,9 @@
 #include "stage_mem.hpp"
 
 #include <cctype>
+#include <cstring>
+#include <algorithm>
+#include <functional>
 #include <tuple>
 #include <nlohmann/json.hpp>
 #include <map>
@@ -30,6 +33,8 @@
 #include <unistd.h>
 #endif
 #include <algorithm>
+#include <functional>
+#include <regex>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -345,12 +350,319 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
     return out;
 }
 
+// C23 (N3038) storage-class specifiers in compound literals:
+// (static T){...}, (constexpr T){...}, (static constexpr T){...},
+// (thread_local static T){...}, (register T){...}. clang (checked through
+// 23.1.4) rejects them ("expected expression"). This rewrites each one into
+// an equivalent clang accepts:
+//   block scope:  (*({ static T __prism_clN = {...}; &__prism_clN; }))
+//                 (a GNU statement expression; an lvalue of type T, arrays
+//                 included, with static storage, as the literal has)
+//   constexpr without static at block scope becomes static constexpr: the
+//   value and constness are the same, only the object's address is shared
+//   across calls (observable only by comparing addresses of two
+//   evaluations, which C23 leaves unspecified for const literals anyway,
+//   6.5.2.5p8). register is dropped (it only forbids taking the address).
+//   file scope:   the specifier is dropped (file-scope literals already
+//                 have static storage); constexpr becomes const.
+// Returns the input unchanged when it has no such literal.
+std::string c23_compound_literal_rewrite(const std::string& in, bool* changed) {
+    std::string out;
+    size_t i = 0, n = in.size();
+    int depth = 0, counter = 0;
+    if (changed) *changed = false;
+    auto skip_ws = [&](size_t j) { while (j < n && std::isspace(static_cast<unsigned char>(in[j]))) ++j; return j; };
+    auto word_at = [&](size_t j, const char* w) {
+        size_t L = std::strlen(w);
+        return in.compare(j, L, w) == 0 && (j + L >= n || !(std::isalnum(static_cast<unsigned char>(in[j + L])) || in[j + L] == '_'));
+    };
+    while (i < n) {
+        char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { size_t e = in.find('\n', i); e = e == std::string::npos ? n : e; out.append(in, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { size_t e = in.find("*/", i + 2); e = e == std::string::npos ? n : e + 2; out.append(in, i, e - i); i = e; continue; }
+        if (c == '"' || c == '\'') {
+            size_t j = i + 1;
+            while (j < n && in[j] != c) { if (in[j] == '\\') ++j; ++j; }
+            j = std::min(n, j + 1);
+            out.append(in, i, j - i); i = j; continue;
+        }
+        if (c == '{') ++depth;
+        if (c == '}') --depth;
+        if (c == '(') {
+            size_t j = skip_ws(i + 1);
+            bool st = false, cx = false, tl = false, any = false;
+            for (;;) {
+                if (word_at(j, "static")) { st = true; j = skip_ws(j + 6); }
+                else if (word_at(j, "constexpr")) { cx = true; j = skip_ws(j + 9); }
+                else if (word_at(j, "thread_local")) { tl = true; j = skip_ws(j + 12); }
+                else if (word_at(j, "_Thread_local")) { tl = true; j = skip_ws(j + 13); }
+                else if (word_at(j, "register")) { j = skip_ws(j + 8); }
+                else break;
+                any = true;
+            }
+            if (any) {
+                // type name up to the matching ')'
+                size_t k = j;
+                int pd = 1;
+                while (k < n && pd > 0) { if (in[k] == '(') ++pd; else if (in[k] == ')') --pd; if (pd > 0) ++k; }
+                size_t b = k < n ? skip_ws(k + 1) : n;
+                if (k < n && b < n && in[b] == '{') {
+                    size_t e = b;
+                    int bd = 0;
+                    for (; e < n; ++e) {
+                        if (in[e] == '"' || in[e] == '\'') { const char q = in[e]; for (++e; e < n && in[e] != q; ++e) if (in[e] == '\\') ++e; continue; }
+                        if (in[e] == '/' && e + 1 < n && in[e + 1] == '*') { e = in.find("*/", e + 2); if (e == std::string::npos) e = n; else ++e; continue; }
+                        if (in[e] == '/' && e + 1 < n && in[e + 1] == '/') { e = in.find('\n', e); if (e == std::string::npos) e = n; continue; }
+                        if (in[e] == '{') ++bd; else if (in[e] == '}' && --bd == 0) break;
+                    }
+                    if (e < n) {
+                        std::string type = in.substr(j, k - j);
+                        std::string init = in.substr(b, e - b + 1);
+                        std::string quals = std::string(tl ? "_Thread_local " : "") + (cx ? "constexpr " : "");
+                        if (depth > 0) {
+                            // declarator: an array type "int[3]" -> "int __n[3]"
+                            std::string name = "__prism_cl" + std::to_string(counter++);
+                            size_t br = type.find('[');
+                            std::string decl = br == std::string::npos ? type + " " + name : type.substr(0, br) + " " + name + type.substr(br);
+                            (void)st;
+                            out += "(*({ static " + quals + decl + " = " + init + "; &" + name + "; }))";
+                        } else {
+                            out += "(" + std::string(tl ? "_Thread_local " : "") + (cx ? "const " : "") + type + ")" + init;
+                        }
+                        if (changed) *changed = true;
+                        i = e + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_back(c);
+        ++i;
+    }
+    return out;
+}
+
+// C23 decimal floating point (models/dfp/prism_dfp.hpp explains the route).
+// Rewrites decimal literal suffixes DF/DD/DL to the shim's user-defined
+// literals and wraps the unit in extern "C" so its functions keep C names;
+// #line keeps diagnostics and debug info on the original file. Text in
+// string/char literals and comments is left alone.
+std::string dfp_rewrite(const std::string& in, const fs::path& orig) {
+    std::string out = "#line 1 \"" + orig.string() + "\"\nextern \"C\" {\n#line 1 \"" + orig.string() + "\"\n";
+    size_t i = 0;
+    const size_t n = in.size();
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    while (i < n) {
+        char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { size_t e = in.find('\n', i); e = e == std::string::npos ? n : e; out.append(in, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { size_t e = in.find("*/", i + 2); e = e == std::string::npos ? n : e + 2; out.append(in, i, e - i); i = e; continue; }
+        if (c == '"' || c == '\'') {
+            size_t j = i + 1;
+            while (j < n && in[j] != c) { if (in[j] == '\\') ++j; ++j; }
+            j = std::min(n, j + 1);
+            out.append(in, i, j - i); i = j; continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c)) || (c == '.' && i + 1 < n && std::isdigit(static_cast<unsigned char>(in[i + 1])))) {
+            if (i > 0 && ident(in[i - 1])) { out.push_back(c); ++i; continue; }
+            size_t j = i;
+            while (j < n && (ident(in[j]) || in[j] == '.' || in[j] == '\'' ||
+                             ((in[j] == '+' || in[j] == '-') && (in[j - 1] == 'e' || in[j - 1] == 'E')))) ++j;
+            std::string tok = in.substr(i, j - i);
+            if (tok.size() > 2 && !(tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X'))) {
+                std::string suf = tok.substr(tok.size() - 2);
+                for (auto& ch : suf) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                if (suf == "DF" || suf == "DD" || suf == "DL") {
+                    std::string lo = suf == "DF" ? "_prism_df" : suf == "DD" ? "_prism_dd" : "_prism_dl";
+                    tok = tok.substr(0, tok.size() - 2) + lo;
+                }
+            }
+            out += tok; i = j; continue;
+        }
+        if ((std::isalpha(static_cast<unsigned char>(c)) || c == '_') && !(i > 0 && ident(in[i - 1]))) {
+            size_t j = i;
+            while (j < n && ident(in[j])) ++j;
+            std::string id = in.substr(i, j - i);
+            size_t k = j;
+            while (k < n && (in[k] == ' ' || in[k] == '\t')) ++k;
+            static const std::set<std::string> kIo{"printf", "fprintf", "sprintf", "snprintf", "scanf", "fscanf", "sscanf", "vprintf", "vfprintf", "vsprintf", "vsnprintf", "vscanf", "vfscanf", "vsscanf"};
+            // C++-only keywords are ordinary identifiers in C
+            static const std::set<std::string> kKw{
+                "class", "new", "delete", "this", "template", "typename", "namespace", "operator", "private",
+                "public", "protected", "virtual", "friend", "using", "throw", "try", "catch", "explicit",
+                "mutable", "export", "typeid", "reinterpret_cast", "static_cast", "dynamic_cast", "const_cast",
+                "concept", "requires", "co_await", "co_yield", "co_return", "char8_t", "consteval", "constinit",
+                "noexcept", "decltype", "final", "override", "import", "module"};
+            if (kIo.count(id) && k < n && in[k] == '(') out += "__prism_dfp_" + id;
+            else if (kKw.count(id) && id != "final" && id != "override" && id != "import" && id != "module") out += "__prism_c_" + id;
+            else out += id;
+            i = j;
+            continue;
+        }
+        out.push_back(c); ++i;
+    }
+    out += "\n}\n";
+    // #include lines leave the extern "C" block (a C++ header such as
+    // libstdc++'s <math.h> wrapper declares templates, which need C++ linkage).
+    std::string fixed;
+    size_t line = 0, pos = 0;
+    int body_line = -3;  // the first three lines are the prologue
+    int depth = 0;
+    std::string file_mode;  // active file-scope FENV_DEC_ROUND, "" = dynamic
+    char last_top = 0;      // last non-space char seen at file scope
+    bool in_bcomment = false, stmt_start = false, init_open = false, fn_body = false;
+    while (pos < out.size()) {
+        size_t e = out.find('\n', pos);
+        e = e == std::string::npos ? out.size() : e + 1;
+        std::string l = out.substr(pos, e - pos);
+        pos = e;
+        ++line;
+        ++body_line;
+        size_t f = l.find_first_not_of(" \t");
+        const bool inc = body_line >= 1 && f != std::string::npos && l[f] == '#' &&
+                         l.find_first_not_of(" \t", f + 1) != std::string::npos &&
+                         l.compare(l.find_first_not_of(" \t", f + 1), 7, "include") == 0;
+        // #pragma STDC FENV_DEC_ROUND <mode>: block scope -> scoped mode,
+        // file scope -> static initialiser (braces counted per line; the
+        // extern "C" wrapper itself is depth 1).
+        const bool prag = f != std::string::npos && l.compare(f, 7, "#pragma") == 0 &&
+                          l.find("STDC") != std::string::npos && l.find("FENV_DEC_ROUND") != std::string::npos;
+        if (prag) {
+            size_t m = l.find("FENV_DEC_ROUND") + 14;
+            std::string mode = l.substr(m);
+            while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.back()))) mode.pop_back();
+            while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.front()))) mode.erase(0, 1);
+            if (depth > 1) fixed += "__PRISM_DFP_ROUND_BLOCK(" + mode + ")\n";
+            else { file_mode = mode == "FE_DEC_DYNAMIC" ? "" : mode; fixed += "\n"; }  // keep line numbers
+            continue;
+        }
+        // C23 7.6.3: a file-scope FENV_DEC_ROUND is lexical, from the pragma
+        // to the end of the unit (or the next file-scope one). Each function
+        // body opened after it starts with a scoped mode, so code before the
+        // pragma and functions called from elsewhere keep the dynamic mode.
+        // A body is a depth-1 '{' whose preceding top-level text ends in ')'.
+        // Braces are counted outside comments, string and character
+        // literals (block comments span lines). After a file-scope pragma,
+        // each top-level declaration is bracketed by FILE_INIT_BEGIN/END so
+        // its initialiser runs in the pragma's mode (C23 7.6.3).
+        {
+            std::string nl;
+            const bool pp = f != std::string::npos && l[f] == '#' && !in_bcomment;
+            for (size_t ci = 0; ci < l.size(); ++ci) {
+                const char ch = l[ci];
+                if (in_bcomment) {
+                    nl.push_back(ch);
+                    if (ch == '*' && ci + 1 < l.size() && l[ci + 1] == '/') { nl.push_back('/'); ++ci; in_bcomment = false; }
+                    continue;
+                }
+                if (pp) { nl.push_back(ch); continue; }
+                if (ch == '/' && ci + 1 < l.size() && l[ci + 1] == '/') { nl.append(l, ci, std::string::npos); break; }
+                if (ch == '/' && ci + 1 < l.size() && l[ci + 1] == '*') { nl += "/*"; ++ci; in_bcomment = true; continue; }
+                if (depth == 1 && stmt_start && !file_mode.empty() && !std::isspace(static_cast<unsigned char>(ch)) && ch != '}') {
+                    nl += "__PRISM_DFP_FILE_INIT_BEGIN(" + file_mode + ") ";
+                    init_open = true;
+                }
+                if (depth == 1 && !std::isspace(static_cast<unsigned char>(ch))) stmt_start = false;
+                if (ch == '"' || ch == '\'') {
+                    size_t j = ci + 1;
+                    while (j < l.size() && l[j] != ch && l[j] != '\n') { if (l[j] == '\\') ++j; ++j; }
+                    j = std::min(l.size(), j + 1);
+                    nl.append(l, ci, j - ci);
+                    ci = j - 1;
+                    last_top = ch;
+                    continue;
+                }
+                nl.push_back(ch);
+                if (ch == '{') {
+                    if (depth == 1 && !file_mode.empty() && last_top == ')') {
+                        nl += " __PRISM_DFP_ROUND_BLOCK(" + file_mode + ")";
+                        fn_body = true;
+                    }
+                    if (depth == 0) stmt_start = true;  // the extern "C" wrapper
+                    ++depth;
+                } else if (ch == '}') {
+                    --depth;
+                    if (depth == 1 && fn_body) {
+                        fn_body = false;
+                        stmt_start = true;
+                        if (init_open) { nl += " __PRISM_DFP_FILE_INIT_END"; init_open = false; }
+                    }
+                } else if (ch == ';' && depth == 1) {
+                    stmt_start = true;
+                    if (init_open) { nl += " __PRISM_DFP_FILE_INIT_END"; init_open = false; }
+                }
+                if (depth == 1 && !std::isspace(static_cast<unsigned char>(ch))) last_top = ch;
+            }
+            if (pp) stmt_start = true;
+            l = nl;
+        }
+        if (inc)
+            fixed += "}\n" + l + (l.ends_with("\n") ? "" : "\n") + "extern \"C\" {\n#line " +
+                     std::to_string(body_line + 1) + " \"" + orig.string() + "\"\n";
+        else
+            fixed += l;
+    }
+    return fixed;
+}
+
+// C is not C++: the implicit conversions C allows (void* -> T*, int ->
+// enum, T* -> unrelated T*) are errors in C++. clang names each one with
+// the target type and the expression's source range, so the cast C performs
+// implicitly is inserted explicitly: "((T)(expr))". Diagnostics are read
+// from a probe copy whose #line directives are neutralised, so lines and
+// columns are those of the text being edited. Up to 8 rounds.
+std::string dfp_cxx_fixups(std::string text, const std::function<std::string(const std::string&)>& diagnose) {
+    static const std::regex kDiag(
+        R"([^:]*:(\d+):\d+:\{(\d+):(\d+)-(\d+):(\d+)\}.*: error: (?:cannot initialize .* of type '([^']+)' with an [lr]value of type '[^']+'|assigning to '([^']+)' from incompatible type '[^']+').*)");
+    for (int round = 0; round < 8; ++round) {
+        std::string probe;
+        {
+            std::istringstream is(text);
+            std::string l;
+            while (std::getline(is, l)) probe += (l.rfind("#line", 0) == 0 ? "// " + l : l) + "\n";
+        }
+        const std::string d = diagnose(probe);
+        struct Edit { size_t at; std::string s; };
+        std::vector<Edit> edits;
+        std::vector<size_t> starts{0};
+        for (size_t k = 0; k < text.size(); ++k) if (text[k] == '\n') starts.push_back(k + 1);
+        auto off = [&](int line, int col) -> std::optional<size_t> {
+            if (line < 1 || static_cast<size_t>(line) > starts.size()) return std::nullopt;
+            return starts[line - 1] + static_cast<size_t>(col - 1);
+        };
+        std::istringstream ds(d);
+        std::string dl;
+        while (std::getline(ds, dl)) {
+            std::smatch m;
+            if (dl.find(".dfp.probe.cpp:") == std::string::npos || !std::regex_match(dl, m, kDiag)) continue;
+            const std::string ty = m[6].matched ? m[6].str() : m[7].str();
+            auto b = off(std::stoi(m[2]), std::stoi(m[3]));
+            auto e = off(std::stoi(m[4]), std::stoi(m[5]));
+            if (!b || !e || *e < *b || *e > text.size()) continue;
+            edits.push_back({*e, "))"});
+            edits.push_back({*b, "((" + ty + ")("});
+        }
+        if (edits.empty()) break;
+        std::stable_sort(edits.begin(), edits.end(), [](const Edit& x, const Edit& y) { return x.at > y.at; });
+        for (auto& ed : edits) text.insert(ed.at, ed.s);
+    }
+    return text;
+}
+
 std::vector<std::string> base_flags(const fs::path& src) {
     std::vector<std::string> f{"-S"};
     for (auto& t : lp64_clang_driver_flags()) f.push_back(t);
     f.insert(f.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-discard-value-names",
                        "-gline-tables-only"});
     f.push_back(is_cxx(src) ? "-std=c++23" : "-std=c17");
+    if (!is_cxx(src)) {
+        // C23 library declarations the libc may lack (memset_explicit)
+        const fs::path forced = fs::path(__FILE__).parent_path() / "models" / "libc" / "forced" / "prism_c23_decls.h";
+        std::error_code fec;
+        if (fs::is_regular_file(forced, fec)) {
+            f.push_back("-include");
+            f.push_back(forced.string());
+        }
+    }
     // A C/C++ memcpy call stays a call to memcpy (its library model checks
     // C's rule: no overlap at all, C17 7.24.2.1) instead of becoming the
     // llvm.memcpy intrinsic, which the LangRef lets copy an object exactly
@@ -396,6 +708,644 @@ Frontend find_frontend(const Config& cfg) {
         }
     }
     return fe;
+}
+
+
+// Item 6: C with no C++ spelling (K&R definitions, reordered designated
+// initialisers, [static N], VLA forms) cannot go through the C++ shim. The
+// unit is split at file scope instead: function definitions that use a
+// decimal type (directly or by calling one that does) go to a C++ file
+// lowered against the shim; everything else stays C. Both sides see every
+// type, prototype and object declaration; objects are defined only on the
+// C side (the C++ side gets `extern` declarations) unless their type is
+// decimal. Limits: a file-scope `static` non-decimal object used by both
+// sides is duplicated (each side gets its own copy); a declaration with
+// several initialised declarators keeps only the first declarator extern.
+struct DfpSplit { std::string c, cxx; bool any = false; };
+// K&R head "T f(a, b) int a; char *b;" -> "T f(int a, char *b)"
+std::string knr_to_prototype(const std::string& head) {
+    const size_t lp = head.find('('), rp = head.find(')', lp == std::string::npos ? 0 : lp);
+    if (lp == std::string::npos || rp == std::string::npos) return head;
+    std::vector<std::string> ids;
+    {
+        std::string cur;
+        for (size_t k = lp + 1; k < rp; ++k) {
+            if (head[k] == ',') { ids.push_back(cur); cur.clear(); }
+            else if (!std::isspace(static_cast<unsigned char>(head[k]))) cur += head[k];
+        }
+        if (!cur.empty()) ids.push_back(cur);
+    }
+    std::map<std::string, std::string> decl;
+    const std::string rest = head.substr(rp + 1);
+    size_t a = 0;
+    while (a < rest.size()) {
+        size_t e = rest.find(';', a);
+        if (e == std::string::npos) break;
+        std::string d = rest.substr(a, e - a);
+        a = e + 1;
+        // base type = text before the first declarator: up to the last identifier token
+        // preceding the first ',' / '*' / identifier list; split declarators at commas
+        std::vector<std::string> parts;
+        std::string cur; int pd = 0;
+        for (char ch : d) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && pd == 0) { parts.push_back(cur); cur.clear(); } else cur += ch; }
+        parts.push_back(cur);
+        static const std::regex kLastId(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*\)*\s*$)");
+        std::smatch m0;
+        if (!std::regex_search(parts[0], m0, kLastId)) continue;
+        // base: parts[0] up to the start of its declarator (the leading '*'s and '(' before the id)
+        size_t ds = static_cast<size_t>(m0.position(1));
+        while (ds > 0 && (parts[0][ds - 1] == '*' || parts[0][ds - 1] == '(' || std::isspace(static_cast<unsigned char>(parts[0][ds - 1])))) --ds;
+        const std::string base = parts[0].substr(0, ds);
+        for (size_t k = 0; k < parts.size(); ++k) {
+            std::string dcl = k == 0 ? parts[0].substr(ds) : parts[k];
+            std::smatch m;
+            if (std::regex_search(dcl, m, kLastId)) decl[m[1]] = base + " " + dcl;
+        }
+    }
+    std::string out = head.substr(0, lp + 1);
+    for (size_t k = 0; k < ids.size(); ++k) {
+        if (k) out += ", ";
+        auto it = decl.find(ids[k]);
+        out += it != decl.end() ? it->second : "int " + ids[k];  // C89 implicit int
+    }
+    if (ids.empty()) out += "void";
+    return out + ")";
+}
+// C-only declarator syntax in the C++ part: [static N], [const N], [*]
+std::string c_only_to_cxx(std::string t) {
+    t = std::regex_replace(t, std::regex(R"(\[\s*(?:(?:static|const|volatile|restrict)\s+)+)"), "[");
+    t = std::regex_replace(t, std::regex(R"(\[\s*\*\s*\])"), "[]");
+    return t;
+}
+// Token-level renaming of file-scope identifiers (coverage item 6): strings,
+// character literals, comments, member accesses (. and ->), struct/union
+// member declarations and #include lines are left alone.
+// typedef names of the unit (headers included, from the -E output): a
+// `T *name` with T a typedef is a declaration for the shadowing check.
+std::set<std::string>& unit_typedefs() { static std::set<std::string> s; return s; }
+std::set<std::string> collect_typedefs(const std::string& src) {
+    std::set<std::string> r;
+    static const std::regex kTd(R"(\btypedef\b)");
+    static const std::regex kFp(R"(\(\s*\*\s*([A-Za-z_]\w*)\s*\))");
+    static const std::regex kLast(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kTd); it != std::sregex_iterator(); ++it) {
+        size_t z = static_cast<size_t>(it->position() + it->length());
+        int d = 0;
+        std::string decl;
+        for (; z < src.size(); ++z) {
+            const char ch = src[z];
+            if (ch == '{') { ++d; continue; }
+            if (ch == '}') { --d; continue; }
+            if (d) continue;
+            if (ch == ';') break;
+            decl += ch;
+        }
+        // every declarator: typedef int a, *b, (*fn)(int);
+        std::string cur; int pd = 0;
+        auto take = [&](const std::string& q) {
+            std::smatch m;
+            if (std::regex_search(q, m, kFp)) r.insert(m[1]);
+            else if (std::regex_search(q, m, kLast)) r.insert(m[1]);
+        };
+        for (char ch : decl) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && !pd) { take(cur); cur.clear(); } else cur += ch; }
+        take(cur);
+    }
+    return r;
+}
+std::string rename_tokens(const std::string& in, const std::map<std::string, std::string>& ren) {
+    if (ren.empty()) return in;
+    std::string out;
+    out.reserve(in.size() + 64);
+    const size_t n = in.size();
+    std::vector<bool> member_scope{false};  // per brace depth: inside a struct/union body
+    bool pending_aggr = false;               // saw struct/union, awaiting '{' or ';'
+    char prev = 0, prev2 = 0;                // last two non-space characters emitted
+    // Scope awareness: a block-scope declaration or a parameter with the
+    // static's name shadows it until the end of that block.
+    std::vector<std::set<std::string>> shadow{{}};
+    std::set<std::string> params;            // parameters of the function head being read
+    int paren = 0;
+    std::string last_tok, tok_before_star;
+    static const std::set<std::string> kNotType = {"return", "case", "sizeof", "goto", "else", "do", "_Alignof", "alignof", "typeof", "__typeof__", "_Generic", "if", "while", "for", "switch"};
+    static const std::set<std::string> kTypeKw = {"int", "char", "short", "long", "float", "double", "void", "signed", "unsigned", "_Bool", "bool", "const", "volatile", "restrict", "__restrict", "_Decimal32", "_Decimal64", "_Decimal128", "_Complex", "struct", "union", "enum"};
+    auto next_char = [&](size_t e) { size_t k = in.find_first_not_of(" \t\r\n", e); return k == std::string::npos ? '\0' : in[k]; };
+    auto shadowed = [&](const std::string& t) { for (auto& sc : shadow) if (sc.count(t)) return true; return false; };
+    for (size_t i = 0; i < n;) {
+        const char c = in[i];
+        if (c == '/' && i + 1 < n && (in[i + 1] == '/' || in[i + 1] == '*')) {
+            size_t e = in[i + 1] == '/' ? in.find('\n', i) : in.find("*/", i + 2);
+            e = e == std::string::npos ? n : (in[i + 1] == '/' ? e : e + 2);
+            out.append(in, i, e - i); i = e; continue;
+        }
+        if (c == '"' || c == '\'') {
+            size_t e = i + 1;
+            for (; e < n && in[e] != c; ++e) if (in[e] == '\\') ++e;
+            e = std::min(n, e + 1);
+            out.append(in, i, e - i); i = e; prev2 = prev; prev = c; continue;
+        }
+        if (c == '#') {  // #include <...> / "..." : copy the line verbatim
+            size_t ls = in.rfind('\n', i == 0 ? 0 : i - 1);
+            ls = (ls == std::string::npos || i == 0) ? 0 : ls + 1;
+            if (in.find_first_not_of(" \t", ls) == i && in.compare(in.find_first_not_of(" \t", i + 1), 7, "include") == 0) {
+                size_t e = in.find('\n', i); e = e == std::string::npos ? n : e;
+                out.append(in, i, e - i); i = e; continue;
+            }
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            size_t e = i;
+            while (e < n && (std::isalnum(static_cast<unsigned char>(in[e])) || in[e] == '_')) ++e;
+            const std::string tok = in.substr(i, e - i);
+            if (tok == "struct" || tok == "union") pending_aggr = true;
+            auto it = ren.find(tok);
+            const bool member = prev == '.' || (prev == '>' && prev2 == '-');
+            bool decl = false;
+            if (it != ren.end() && !member && !member_scope.back() && (shadow.size() > 1 || paren > 0)) {
+                const char nc = next_char(e);
+                const bool after_type = (prev == 'a' && !last_tok.empty() && !kNotType.count(last_tok) && !ren.count(last_tok)) ||
+                                        (prev == '*' && (kTypeKw.count(tok_before_star) || unit_typedefs().count(tok_before_star)));
+                if (after_type && nc && std::strchr("=,;[)", nc)) decl = true;
+            }
+            if (decl) { if (shadow.size() > 1) shadow.back().insert(tok); else params.insert(tok); out += tok; }
+            else if (it != ren.end() && !member && !member_scope.back() && !shadowed(tok)) out += it->second;
+            else out += tok;
+            last_tok = tok;
+            prev2 = prev; prev = 'a'; i = e; continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c))) {  // pp-number: 1e5f, 0x1p3 ...
+            size_t e = i;
+            while (e < n && (std::isalnum(static_cast<unsigned char>(in[e])) || in[e] == '_' || in[e] == '.' ||
+                             ((in[e] == '+' || in[e] == '-') && std::strchr("eEpP", in[e - 1])))) ++e;
+            out.append(in, i, e - i); i = e; prev2 = prev; prev = '0'; continue;
+        }
+        if (c == '*' && prev == 'a') tok_before_star = last_tok;
+        if (c == '(') ++paren;
+        else if (c == ')') { if (paren) --paren; }
+        if (c == '{') {
+            member_scope.push_back(pending_aggr);
+            shadow.push_back(shadow.size() == 1 ? params : std::set<std::string>{});
+            if (shadow.size() == 2) params.clear();
+            pending_aggr = false;
+        } else if (c == '}') { if (member_scope.size() > 1) member_scope.pop_back(); if (shadow.size() > 1) shadow.pop_back(); }
+        else if (c == ';' && shadow.size() == 1 && paren == 0) params.clear();
+        else if (c == ';' || c == ')' || c == '(' || c == '=' || c == ',') pending_aggr = false;
+        out += c;
+        if (!std::isspace(static_cast<unsigned char>(c))) { prev2 = prev; prev = c; }
+        ++i;
+    }
+    return out;
+}
+
+// Real reordering of designated initialisers for the C++ part (C++20 wants
+// declaration order; C allows any order). Field orders come from the
+// struct/union definitions in the unit; a list is reordered by the unique
+// field order that covers all its designators (lists that match none, or
+// several orders that disagree, are left to clang's extension). Array
+// designators [N] = v with integer-literal N become positional elements,
+// gaps filled with {} (value-initialised, as C zero-initialises them).
+std::vector<std::vector<std::string>> collect_field_orders(const std::string& src) {
+    std::vector<std::vector<std::string>> r;
+    static const std::regex kAggr(R"(\b(?:struct|union)\s*(?:\w+\s*)?\{)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kAggr); it != std::sregex_iterator(); ++it) {
+        size_t b = static_cast<size_t>(it->position() + it->length()), e = b;
+        int d = 1;
+        for (; e < src.size() && d; ++e) { if (src[e] == '{') ++d; else if (src[e] == '}') --d; }
+        std::string body = src.substr(b, e - b - 1);
+        // drop nested aggregate bodies (their members are not ours)
+        std::string flat; int dd = 0;
+        for (char ch : body) { if (ch == '{') { ++dd; continue; } if (ch == '}') { --dd; continue; } if (!dd) flat += ch; }
+        std::vector<std::string> f;
+        size_t s0 = 0;
+        for (size_t z = 0; z <= flat.size(); ++z) {
+            if (z == flat.size() || flat[z] == ';') {
+                std::string decl = flat.substr(s0, z - s0);
+                s0 = z + 1;
+                // every declarator: name before [..], :bits, or end
+                std::string cur; int pd = 0;
+                auto take = [&](const std::string& q) {
+                    std::smatch m;
+                    std::string q2 = q.substr(0, q.find(':'));
+                    if (std::regex_search(q2, m, std::regex(R"(([A-Za-z_]\w*)\s*\)?\s*(?:\[[^\]]*\]\s*)*(?:\([^)]*\)\s*)?$)"))) f.push_back(m[1]);
+                };
+                for (char ch : decl) { if (ch == '(' || ch == '[') ++pd; if (ch == ')' || ch == ']') --pd; if (ch == ',' && !pd) { take(cur); cur.clear(); } else cur += ch; }
+                if (cur.find_first_not_of(" \t\r\n") != std::string::npos) take(cur);
+            }
+        }
+        if (!f.empty()) r.push_back(std::move(f));
+    }
+    return r;
+}
+// Integer constant expressions in array designators: literals, enum
+// constants of the unit (headers included), sizeof-free operators.
+std::map<std::string, long long>& designator_enums() { static std::map<std::string, long long> m; return m; }
+std::optional<long long> eval_const(const std::string& e, const std::map<std::string, long long>& en) {
+    size_t i = 0;
+    auto ws = [&] { while (i < e.size() && std::isspace(static_cast<unsigned char>(e[i]))) ++i; };
+    std::function<std::optional<long long>(int)> bin;
+    std::function<std::optional<long long>()> un = [&]() -> std::optional<long long> {
+        ws();
+        if (i >= e.size()) return std::nullopt;
+        char c = e[i];
+        if (c == '(') { ++i; auto v = bin(0); ws(); if (!v || i >= e.size() || e[i] != ')') return std::nullopt; ++i; return v; }
+        if (c == '-' || c == '+' || c == '~' || c == '!') { ++i; auto v = un(); if (!v) return v; return c == '-' ? -*v : c == '+' ? *v : c == '~' ? ~*v : (long long)!*v; }
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            size_t k = 0; long long v;
+            try { v = static_cast<long long>(std::stoull(e.substr(i), &k, 0)); } catch (...) { return std::nullopt; }
+            i += k; while (i < e.size() && std::strchr("uUlL", e[i])) ++i; return v;
+        }
+        if (c == '\'' && i + 2 < e.size() && e[i + 2] == '\'' && e[i + 1] != '\\') { long long v = static_cast<unsigned char>(e[i + 1]); i += 3; return v; }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            size_t k = i; while (k < e.size() && (std::isalnum(static_cast<unsigned char>(e[k])) || e[k] == '_')) ++k;
+            auto f = en.find(e.substr(i, k - i)); if (f == en.end()) return std::nullopt; i = k; return f->second;
+        }
+        return std::nullopt;
+    };
+    static const std::vector<std::pair<std::string, int>> ops = {{"||", 1}, {"&&", 2}, {"|", 3}, {"^", 4}, {"&", 5}, {"==", 6}, {"!=", 6}, {"<=", 7}, {">=", 7}, {"<<", 8}, {">>", 8}, {"<", 7}, {">", 7}, {"+", 9}, {"-", 9}, {"*", 10}, {"/", 10}, {"%", 10}};
+    bin = [&](int minp) -> std::optional<long long> {
+        auto l = un();
+        for (;;) {
+            if (!l) return l;
+            ws();
+            const std::pair<std::string, int>* op = nullptr;
+            for (auto& o : ops) if (e.compare(i, o.first.size(), o.first) == 0) { op = &o; break; }
+            if (!op || op->second <= minp) return l;
+            i += op->first.size();
+            auto r = bin(op->second);
+            if (!r) return r;
+            const long long a = *l, b = *r;
+            const std::string& o = op->first;
+            if ((o == "/" || o == "%") && b == 0) return std::nullopt;
+            l = o == "||" ? (a || b) : o == "&&" ? (a && b) : o == "|" ? (a | b) : o == "^" ? (a ^ b) : o == "&" ? (a & b) : o == "==" ? (a == b) : o == "!=" ? (a != b) :
+                o == "<=" ? (a <= b) : o == ">=" ? (a >= b) : o == "<<" ? (a << b) : o == ">>" ? (a >> b) : o == "<" ? (a < b) : o == ">" ? (a > b) :
+                o == "+" ? a + b : o == "-" ? a - b : o == "*" ? a * b : o == "/" ? a / b : a % b;
+        }
+    };
+    auto v = bin(0);
+    ws();
+    if (!v || i != e.size()) return std::nullopt;
+    return v;
+}
+std::map<std::string, long long> collect_enum_values(const std::string& src) {
+    std::map<std::string, long long> en;
+    static const std::regex kEnum(R"(\benum\s*(?:\w+\s*)?\{)");
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), kEnum); it != std::sregex_iterator(); ++it) {
+        size_t b = static_cast<size_t>(it->position() + it->length()), e = src.find('}', b);
+        if (e == std::string::npos) break;
+        long long next = 0;
+        std::string cur; int d = 0;
+        auto take = [&](const std::string& q) {
+            std::smatch m;
+            if (!std::regex_match(q, m, std::regex(R"(\s*([A-Za-z_]\w*)\s*(?:=([\s\S]*))?)"))) return;
+            if (m[2].matched) { auto v = eval_const(m[2], en); if (!v) return; next = *v; }
+            en[m[1]] = next++;
+        };
+        for (size_t z = b; z < e; ++z) { char ch = src[z]; if (ch == '(') ++d; if (ch == ')') --d; if (ch == ',' && !d) { take(cur); cur.clear(); } else cur += ch; }
+        if (cur.find_first_not_of(" \t\r\n") != std::string::npos) take(cur);
+    }
+    return en;
+}
+
+std::string reorder_designators(const std::string& t, const std::vector<std::vector<std::string>>& orders);
+std::string reorder_list(const std::string& inner, const std::vector<std::vector<std::string>>& orders) {
+    // inner: text between '{' and '}', already processed recursively
+    std::vector<std::string> el;
+    std::string cur; int d = 0; char q = 0;
+    for (size_t z = 0; z < inner.size(); ++z) {
+        char ch = inner[z];
+        if (q) { cur += ch; if (ch == '\\' && z + 1 < inner.size()) cur += inner[++z]; else if (ch == q) q = 0; continue; }
+        if (ch == '"' || ch == '\'') q = ch;
+        if (ch == '(' || ch == '[' || ch == '{') ++d;
+        if (ch == ')' || ch == ']' || ch == '}') --d;
+        if (ch == ',' && !d) { el.push_back(cur); cur.clear(); } else cur += ch;
+    }
+    if (cur.find_first_not_of(" \t\r\n") != std::string::npos) el.push_back(cur);
+    if (el.empty()) return inner;
+    // Nested designators (.a.b = x, [i].x = y, .arr[2] = z): group by the
+    // first designator into a nested braced list, which is then reordered
+    // like any other; non-literal indices are evaluated (enum constants,
+    // operators) so they can be placed.
+    {
+        static const std::regex kNest(R"(^\s*(\.\s*[A-Za-z_]\w*|\[[^\]]+\])\s*((?:\.\s*[A-Za-z_]\w*|\[[^\]]+\])+)\s*=([\s\S]*)$)");
+        std::vector<std::string> head_order;
+        std::map<std::string, std::vector<std::string>> sub;
+        std::vector<std::string> flat;
+        bool nested = false;
+        auto norm = [&](std::string h) {
+            if (h[0] == '[') { auto v = eval_const(h.substr(1, h.size() - 2), designator_enums()); if (v) return "[" + std::to_string(*v) + "]"; }
+            h.erase(std::remove_if(h.begin(), h.end(), [](char ch) { return std::isspace(static_cast<unsigned char>(ch)); }), h.end());
+            return h;
+        };
+        for (auto& e : el) {
+            std::smatch mm;
+            if (std::regex_match(e, mm, kNest)) {
+                nested = true;
+                const std::string h = norm(mm[1]);
+                if (!sub.count(h)) { head_order.push_back(h); flat.push_back("\x01" + h); }
+                sub[h].push_back(std::string(mm[2]) + " =" + std::string(mm[3]));
+            } else flat.push_back(e);
+        }
+        if (nested) {
+            el.clear();
+            for (auto& f : flat) {
+                if (f[0] != '\x01') { el.push_back(f); continue; }
+                const std::string h = f.substr(1);
+                std::string inner2;
+                for (size_t z = 0; z < sub[h].size(); ++z) inner2 += (z ? ", " : " ") + sub[h][z];
+                el.push_back(" " + h + " = {" + reorder_list(inner2, orders) + "}");
+            }
+        }
+    }
+    for (auto& e : el) {  // [expr] = v with a constant expression: literal index
+        std::smatch mm;
+        if (std::regex_match(e, mm, std::regex(R"(^\s*\[([^\]]+)\]\s*=([\s\S]*)$)")))
+            if (auto v = eval_const(mm[1], designator_enums()); v && *v >= 0) e = " [" + std::to_string(*v) + "] =" + std::string(mm[2]);
+    }
+    static const std::regex kField(R"(^\s*\.\s*([A-Za-z_]\w*)\s*=([\s\S]*)$)");
+    static const std::regex kIndex(R"(^\s*\[\s*(\d+)[uUlL]*\s*\]\s*=([\s\S]*)$)");
+    std::smatch m;
+    bool all_field = true, any_index = false, idx_ok = true;
+    for (auto& e : el) {
+        if (!std::regex_match(e, m, kField)) all_field = false;
+        if (std::regex_match(e, m, kIndex)) any_index = true;
+        else if (std::regex_search(e, std::regex(R"(^\s*[.\[])"))) idx_ok = false;  // .x or [i+1] mixed in
+    }
+    if (all_field) {
+        std::vector<std::pair<std::string, std::string>> kv;
+        for (auto& e : el) { std::regex_match(e, m, kField); kv.emplace_back(m[1], m[2]); }
+        const std::vector<std::string>* pick = nullptr;
+        for (const auto& o : orders) {
+            bool cover = true;
+            for (auto& [k, v] : kv) if (std::find(o.begin(), o.end(), k) == o.end()) { cover = false; break; }
+            if (!cover) continue;
+            if (pick) {
+                // a second candidate: fine only when it orders these names the same way
+                auto pos = [&](const std::vector<std::string>& oo, const std::string& k) { return std::find(oo.begin(), oo.end(), k) - oo.begin(); };
+                for (size_t a = 0; a < kv.size(); ++a) for (size_t b = a + 1; b < kv.size(); ++b)
+                    if ((pos(*pick, kv[a].first) < pos(*pick, kv[b].first)) != (pos(o, kv[a].first) < pos(o, kv[b].first))) return inner;
+            } else pick = &o;
+        }
+        if (!pick) return inner;
+        std::stable_sort(kv.begin(), kv.end(), [&](auto& a, auto& b) {
+            return std::find(pick->begin(), pick->end(), a.first) < std::find(pick->begin(), pick->end(), b.first);
+        });
+        std::string r;
+        for (size_t z = 0; z < kv.size(); ++z) r += (z ? ", ." : " .") + kv[z].first + " =" + kv[z].second;
+        return r + " ";
+    }
+    if (any_index && idx_ok) {
+        std::map<unsigned long, std::string> at;
+        unsigned long nx = 0;
+        for (auto& e : el) {
+            if (std::regex_match(e, m, kIndex)) { nx = std::stoul(m[1]); at[nx++] = m[2]; }
+            else at[nx++] = e;  // positional continues after the last designator
+        }
+        if (at.rbegin()->first > 4096) return inner;
+        std::string r;
+        for (unsigned long z = 0; z <= at.rbegin()->first; ++z) {
+            auto f = at.find(z);
+            r += (z ? ", " : " ") + (f == at.end() ? std::string("{}") : f->second);
+        }
+        return r + " ";
+    }
+    return inner;
+}
+std::string reorder_designators(const std::string& t, const std::vector<std::vector<std::string>>& orders) {
+    if (orders.empty() && t.find('[') == std::string::npos) return t;
+    std::string out;
+    size_t i = 0;
+    while (i < t.size()) {
+        char c = t[i];
+        if (c == '"' || c == '\'') { size_t e = i + 1; for (; e < t.size() && t[e] != c; ++e) if (t[e] == '\\') ++e; e = std::min(t.size(), e + 1); out.append(t, i, e - i); i = e; continue; }
+        if (c == '/' && i + 1 < t.size() && (t[i + 1] == '/' || t[i + 1] == '*')) { size_t e = t[i + 1] == '/' ? t.find('\n', i) : t.find("*/", i + 2); e = e == std::string::npos ? t.size() : (t[i + 1] == '/' ? e : e + 2); out.append(t, i, e - i); i = e; continue; }
+        if (c == '{') {
+            size_t e = i + 1; int d = 1;
+            for (; e < t.size() && d; ++e) { if (t[e] == '"' || t[e] == '\'') { char q = t[e]; for (++e; e < t.size() && t[e] != q; ++e) if (t[e] == '\\') ++e; continue; } if (t[e] == '{') ++d; else if (t[e] == '}') --d; }
+            if (d) { out.append(t, i, std::string::npos); break; }
+            std::string inner = reorder_designators(t.substr(i + 1, e - i - 2), orders);
+            out += "{" + reorder_list(inner, orders) + "}";
+            i = e;
+            continue;
+        }
+        out += c; ++i;
+    }
+    return out;
+}
+// Preprocessed view of a unit for the decimal split (coverage item 6):
+// `full` is the whole -E output (header struct/enum definitions for the
+// designator reordering), `main` keeps only the lines of the main file,
+// macro-expanded (token pasting resolved, so renaming sees every use),
+// with each header the main file entered put back as one #include and
+// #line markers so diagnostics keep the source lines.
+struct PreUnit { std::string main, full; };
+std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std::string>& fl, const fs::path& src, double timeout_s, std::string* err = nullptr) {
+    const fs::path out = fs::temp_directory_path() / ("prism-pre-" + std::to_string(::getpid()) + "-" + src.stem().string() + ".i");
+    std::vector<std::string> av{cc.string()};
+    for (size_t k = 0; k < fl.size(); ++k) {
+        const auto& t = fl[k];
+        if (t == "-S" || t == "-c" || t == "-emit-llvm" || t == "-g" || t.rfind("-W", 0) == 0) continue;
+        if (t == "-o") { ++k; continue; }
+        av.push_back(t);
+    }
+    av.insert(av.end(), {"-E", "-I", src.parent_path().string(), "-o", out.string(), src.string()});
+    auto r = detail::run_process(av, timeout_s);
+    if (r.failed || r.timed_out || r.rc != 0) {
+        if (err) *err = r.timed_out ? "timed out" : r.failed ? "could not run the compiler" : first_error(r.text);
+        return std::nullopt;
+    }
+    PreUnit u;
+    u.full = read_file(out);
+    std::error_code ec;
+    fs::remove(out, ec);
+    const std::string me = src.string();
+    std::string cur = me;
+    bool in_main = true;
+    std::set<std::string> included;
+    size_t i = 0;
+    static const std::regex kMark(R"re(^#\s*(\d+)\s+"((?:[^"\\]|\\.)*)"((?:\s+\d)*)\s*$)re");
+    while (i < u.full.size()) {
+        size_t e = u.full.find('\n', i);
+        if (e == std::string::npos) e = u.full.size();
+        const std::string line = u.full.substr(i, e - i);
+        i = e + 1;
+        std::smatch m;
+        if (std::regex_match(line, m, kMark)) {
+            const std::string file = m[2];
+            const bool enter = std::string(m[3]).find('1') != std::string::npos;
+            const bool now_main = file == me || fs::path(file).filename() == src.filename();
+            if (in_main && !now_main && enter && file.front() != '<' && !included.count(file)) {
+                u.main += "#include \"" + file + "\"\n";
+                included.insert(file);
+            }
+            if (now_main && !in_main) u.main += "#line " + std::string(m[1]) + " \"" + me + "\"\n";
+            in_main = now_main;
+            cur = file;
+            continue;
+        }
+        if (in_main) u.main += line + "\n";
+    }
+    if (u.main.empty()) return std::nullopt;
+    return u;
+}
+
+std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt = "", const std::string& full = "") {
+    struct Item { std::string text; bool fn = false, pp = false; std::string name, head; };
+    std::vector<Item> items;
+    const size_t n = in.size();
+    size_t i = 0, start = 0;
+    int depth = 0, paren = 0;
+    auto push = [&](size_t end, bool fn, size_t body) {
+        Item it;
+        it.text = in.substr(start, end - start);
+        it.fn = fn;
+        if (fn) {
+            it.head = in.substr(start, body - start);
+            static const std::regex kName(R"(([A-Za-z_]\w*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)[^()]*$)");
+            std::smatch m;
+            if (std::regex_search(it.head, m, kName)) it.name = m[1];
+        }
+        items.push_back(std::move(it));
+        start = end;
+    };
+    size_t body = 0;
+    char last = 0;
+    while (i < n) {
+        const char c = in[i];
+        if (c == '/' && i + 1 < n && in[i + 1] == '/') { i = in.find('\n', i); if (i == std::string::npos) i = n; continue; }
+        if (c == '/' && i + 1 < n && in[i + 1] == '*') { i = in.find("*/", i + 2); i = i == std::string::npos ? n : i + 2; continue; }
+        if (c == '"' || c == '\'') { for (++i; i < n && in[i] != c; ++i) if (in[i] == '\\') ++i; ++i; continue; }
+        if (c == '#' && depth == 0) {
+            // a preprocessor line (with continuations) is its own item
+            size_t ls = in.rfind('\n', i);
+            ls = ls == std::string::npos ? 0 : ls + 1;
+            if (in.find_first_not_of(" \t", ls) == i) {
+                if (ls > start && in.find_first_not_of(" \t\r\n", start) < ls) push(ls, false, 0);
+                start = ls;
+                size_t e = i;
+                for (;;) { e = in.find('\n', e); if (e == std::string::npos) { e = n; break; } if (e > 0 && in[e - 1] == '\\') { ++e; continue; } ++e; break; }
+                push(e, false, 0);
+                items.back().pp = true;
+                i = e;
+                continue;
+            }
+        }
+        if (c == '(') ++paren;
+        else if (c == ')') --paren;
+        else if (c == '{') {
+            // a function body: '{' at file scope after ')' or after K&R parameter declarations ending ';'
+            if (depth == 0 && paren == 0 && (last == ')' || last == ';')) {
+                // K&R: last==';' only counts if a ')' precedes the parameter declarations in this item
+                const std::string pre = in.substr(start, i - start);
+                if (last == ')' || (pre.find(')') != std::string::npos && pre.find('=') == std::string::npos && pre.find("struct") == std::string::npos))
+                    body = i;
+                else body = 0;
+            } else if (depth == 0) body = 0;
+            ++depth;
+        } else if (c == '}') {
+            if (--depth == 0 && body) { push(i + 1, true, body); body = 0; last = '}'; ++i; continue; }
+        } else if (c == ';' && depth == 0 && paren == 0) {
+            // a ';' between ')' and '{' belongs to K&R parameter declarations
+            size_t k = in.find_first_not_of(" \t\r\n", i + 1);
+            const std::string pre = in.substr(start, i - start);
+            const bool knr = pre.find(')') != std::string::npos && pre.find('=') == std::string::npos &&
+                             std::regex_search(pre, std::regex(R"(^\s*(?:\w+\s+)*\w+\s*\(\s*\w+(?:\s*,\s*\w+)*\s*\))"));
+            if (!knr || k == std::string::npos) { push(i + 1, false, 0); last = ';'; ++i; continue; }
+            (void)k;
+        }
+        if (!std::isspace(static_cast<unsigned char>(c))) last = c;
+        ++i;
+    }
+    if (depth != 0) return std::nullopt;
+    if (start < n) push(n, false, 0);
+    static const std::regex kDec(R"(\b_Decimal(?:32|64|128)\b|\b\d[\d.eE+-]*(?:df|dd|dl|DF|DD|DL)\b|FENV_DEC_ROUND|\bfe_dec_)");
+    std::vector<bool> dec(items.size(), false);
+    for (size_t k = 0; k < items.size(); ++k) if (items[k].fn && std::regex_search(items[k].text, kDec)) dec[k] = true;
+    for (bool grew = true; grew;) {  // callers of decimal functions are decimal
+        grew = false;
+        for (size_t k = 0; k < items.size(); ++k) {
+            if (!items[k].fn || dec[k]) continue;
+            for (size_t j = 0; j < items.size() && !dec[k]; ++j)
+                if (dec[j] && !items[j].name.empty() && std::regex_search(items[k].text, std::regex("\\b" + items[j].name + "\\s*\\(")))
+                    dec[k] = grew = true;
+        }
+    }
+    DfpSplit out;
+    // Non-decimal file-scope statics shared with the C++ part: external
+    // linkage under a unit-unique name (token-level rename in both parts), defined
+    // once on the C side.
+    static const std::regex kStatic(R"(^(\s*(?:(?:inline|const|volatile|_Thread_local|__inline__)\s+)*)static\b)");
+    static const std::regex kDeclName(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*(?:\)\s*\([^)]*\))?\s*(?:=|,|;|\(|$))");
+    std::string defs;
+    std::set<std::string> renamed;
+    for (size_t k = 0; k < items.size(); ++k) {
+        Item& it = items[k];
+        if (it.pp || dec[k] || std::regex_search(it.text, kDec)) continue;
+        const std::string& hd = it.fn ? it.head : it.text;
+        if (!std::regex_search(hd, kStatic)) continue;
+        std::string nm = it.fn ? it.name : "";
+        if (!it.fn) {
+            // first declarator's name (functions prototypes: the name before '(')
+            std::string body = std::regex_replace(it.text, kStatic, "$1");
+            std::smatch m;
+            if (std::regex_search(body, m, std::regex(R"(([A-Za-z_]\w*)\s*\()")) && body.find('=') == std::string::npos) nm = m[1];
+            else if (std::regex_search(body, m, kDeclName)) nm = m[1];
+            if (body.find(',') != std::string::npos && body.find('(') == std::string::npos) {
+                // several declarators: rename them all
+                std::string cur; int pd = 0;
+                for (char ch : body) { if (ch == '(' || ch == '[' || ch == '{') ++pd; if (ch == ')' || ch == ']' || ch == '}') --pd; if ((ch == ',' || ch == ';') && pd == 0) { std::smatch mm; std::string c2 = cur.substr(0, cur.find('=')); if (std::regex_search(c2, mm, std::regex(R"(([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$)"))) renamed.insert(mm[1]); cur.clear(); } else cur += ch; }
+            }
+        }
+        if (!nm.empty()) renamed.insert(nm);
+        if (it.fn) { it.text = std::regex_replace(it.text, kStatic, "$1"); it.head = std::regex_replace(it.head, kStatic, "$1"); }
+        else it.text = std::regex_replace(it.text, kStatic, "$1");
+    }
+    std::map<std::string, std::string> ren;
+    for (const auto& nm : renamed) ren[nm] = "__prism_split_" + salt + "_" + nm;
+    unit_typedefs() = collect_typedefs(full.empty() ? in : full);
+    if (!ren.empty())
+        for (auto& it : items) { it.text = rename_tokens(it.text, ren); if (!it.head.empty()) it.head = rename_tokens(it.head, ren); it.name = ren.count(it.name) ? ren[it.name] : it.name; }
+    (void)defs;
+    const auto orders = collect_field_orders(full.empty() ? in : full);
+    designator_enums() = collect_enum_values(full.empty() ? in : full);
+    auto cx = [&](const std::string& t) { return reorder_designators(c_only_to_cxx(t), orders); };
+    // extern declarations for every declarator, initialisers dropped
+    auto externs = [](const std::string& text) {
+        std::string body = text.substr(0, text.rfind(';'));
+        std::vector<std::string> parts;
+        std::string cur; int pd = 0;
+        for (char ch : body) { if (ch == '(' || ch == '[' || ch == '{') ++pd; if (ch == ')' || ch == ']' || ch == '}') --pd; if (ch == ',' && pd == 0) { parts.push_back(cur); cur.clear(); } else cur += ch; }
+        parts.push_back(cur);
+        for (auto& q : parts) { int d2 = 0; for (size_t z = 0; z < q.size(); ++z) { char ch = q[z]; if (ch == '(' || ch == '[' || ch == '{') ++d2; if (ch == ')' || ch == ']' || ch == '}') --d2; if (ch == '=' && d2 == 0) { q = q.substr(0, z); break; } } }
+        std::string r = "extern ";
+        for (size_t z = 0; z < parts.size(); ++z) r += (z ? "," : "") + parts[z];
+        return r.substr(0, 7) + r.substr(7 + std::min(r.size() - 7, r.substr(7).find_first_not_of(" \t\r\n"))) + ";\n";
+    };
+    for (size_t k = 0; k < items.size(); ++k) {
+        const Item& it = items[k];
+        const bool d = std::regex_search(it.text, kDec);
+        if (it.pp) { out.c += it.text; out.cxx += it.text; continue; }
+        if (it.fn) {
+            const std::string proto = it.head + ";\n";
+            if (dec[k]) {
+                out.any = true;
+                // C-only spellings: K&R head -> prototype, [static N] -> [N]
+                std::string body = it.text.substr(it.head.size());
+                std::string head = it.head.find(';') != std::string::npos ? knr_to_prototype(it.head) : it.head;
+                out.cxx += cx(head + body);
+                if (!std::regex_search(it.head, kDec)) out.c += proto;
+            } else {
+                out.c += it.text;
+                // a K&R head has no C++ spelling: the C++ side gets no prototype
+                out.cxx += c_only_to_cxx((it.head.find(';') == std::string::npos ? it.head : knr_to_prototype(it.head)) + ";\n");
+            }
+            continue;
+        }
+        // declarations, types, prototypes
+        static const std::regex kObjDef(R"(^\s*(?!typedef\b|extern\b|static\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\b)[^(){};]*(?:=[^;]*)?;\s*$)");
+        if (d) { out.cxx += cx(it.text); continue; }
+        out.c += it.text;
+        if (std::regex_match(it.text, kObjDef)) out.cxx += externs(it.text);
+        else out.cxx += c_only_to_cxx(it.text);
+    }
+    return out;
 }
 
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
@@ -489,6 +1439,125 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             r = std::move(r2);
             fl = std::move(c14);
             cxx_std = std::min(cxx_std, 14);
+        }
+    }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // C23 storage-class compound literals: rewrite, then retry as C23.
+        bool changed = false;
+        const std::string rw = c23_compound_literal_rewrite(read_file(src), &changed);
+        if (changed) {
+            const fs::path csrc = o0.parent_path() / (o0.stem().string() + ".cl.c");
+            {
+                std::ofstream os(csrc, std::ios::binary);
+                os << "#line 1 \"" << src.string() << "\"\n" << rw;
+            }
+            auto c23 = fl;
+            std::replace(c23.begin(), c23.end(), std::string("-std=c17"), std::string("-std=c23"));
+            c23.insert(c23.end(), {"-I", src.parent_path().string(), "-Wno-gnu-statement-expression"});
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), c23.begin(), c23.end());
+            av.insert(av.end(), {"-o", o0.string(), csrc.string()});
+            auto r2 = detail::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(c23);
+            }
+        }
+    }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0) &&
+        r.text.find("decimal type extension not supported") != std::string::npos) {
+        // C23 _Decimal32/64/128: clang has no decimal floating point. Lower
+        // the unit as C++23 against the PRISM decimal shim instead.
+        const fs::path shim = !fe.cxx_models.empty() ? fe.cxx_models / "prism_dfp.hpp"
+                                                     : fs::path(__FILE__).parent_path() / "models" / "cxx" / "prism_dfp.hpp";
+        const fs::path dsrc = o0.parent_path() / (o0.stem().string() + ".dfp.cpp");
+        std::error_code dec;
+        if (fs::is_regular_file(shim, dec)) {
+            std::string dtext = dfp_rewrite(read_file(src), src);
+            std::vector<std::string> dfl;
+            for (size_t k = 0; k < fl.size(); ++k) {
+                if (fl[k].starts_with("-std=")) { dfl.push_back("-std=c++23"); continue; }
+                dfl.push_back(fl[k]);
+            }
+            dfl.insert(dfl.end(), {"-I", src.parent_path().string(), "-include", shim.string(),
+                                   "-D__PRISM_DFP_C_UNIT=1", "-Wno-c99-designator", "-Wno-writable-strings"});
+            dtext = dfp_cxx_fixups(std::move(dtext), [&](const std::string& probe) {
+                const fs::path pf = o0.parent_path() / (o0.stem().string() + ".dfp.probe.cpp");
+                {
+                    std::ofstream ps(pf, std::ios::binary);
+                    ps << probe;
+                }
+                std::vector<std::string> pv{cc->string()};
+                for (auto& t : dfl)
+                    if (t != "-S") pv.push_back(t);
+                pv.insert(pv.end(), {"-fsyntax-only", "-fdiagnostics-print-source-range-info", "-fno-caret-diagnostics",
+                                     "-fno-color-diagnostics", "-ferror-limit=0", "-x", "c++", pf.string()});
+                auto pr = detail::run_process(pv, timeout_s);
+                std::error_code rmec;
+                fs::remove(pf, rmec);
+                return pr.text;
+            });
+            {
+                std::ofstream os(dsrc, std::ios::binary);
+                os << dtext;
+            }
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), dfl.begin(), dfl.end());
+            av.insert(av.end(), {"-o", o0.string(), "-x", "c++", dsrc.string()});
+            auto r2 = detail::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(dfl);
+                if (cxx_models) *cxx_models = "dfp shim: C23 decimal floating point lowered as C++ (models/cxx/prism_dfp.hpp)";
+            } else {
+                // Item 6: split decimal functions into their own C++ file,
+                // keep the rest as C, and link the two modules.
+                bool split_ok = false;
+                std::string pre_err;
+                const auto pre = preprocess_unit(*cc, fl, src, timeout_s, &pre_err);
+                if (!pre)
+                    // not silent: the split then works on the raw source (no header field
+                    // orders or typedefs, no token-pasted names), which the report says
+                    r.text += "\nprism: decimal split: preprocessing the unit (-E) failed (" + pre_err +
+                              "); splitting the raw source: designators from headers, typedef shadows and "
+                              "token-pasted names of renamed statics are not handled for this unit";
+                if (auto sp = dfp_split(pre ? pre->main : read_file(src), std::to_string(std::hash<std::string>{}(src.string()) % 1000000007u), pre ? pre->full : std::string()); sp && sp->any) {
+                    const fs::path cpart = o0.parent_path() / (o0.stem().string() + ".split.c");
+                    const fs::path xpart = o0.parent_path() / (o0.stem().string() + ".split.cpp");
+                    const fs::path cll = o0.parent_path() / (o0.stem().string() + ".split.c.ll");
+                    const fs::path xll = o0.parent_path() / (o0.stem().string() + ".split.cpp.ll");
+                    {
+                        std::ofstream a1(cpart, std::ios::binary);
+                        a1 << "#line 1 \"" << src.string() << "\"\n" << sp->c;
+                    }
+                    std::string xt = dfp_rewrite(sp->cxx, src);
+                    {
+                        std::ofstream a2(xpart, std::ios::binary);
+                        a2 << xt;
+                    }
+                    std::vector<std::string> cv{cc->string()};
+                    cv.insert(cv.end(), fl.begin(), fl.end());
+                    cv.insert(cv.end(), {"-I", src.parent_path().string(), "-o", cll.string(), cpart.string()});
+                    std::vector<std::string> xv{cc->string()};
+                    xv.insert(xv.end(), dfl.begin(), dfl.end());
+                    xv.insert(xv.end(), {"-Wno-reorder-init-list", "-Wno-vla-cxx-extension", "-o", xll.string(), "-x", "c++", xpart.string()});
+                    auto rc1 = detail::run_process(cv, timeout_s);
+                    auto rc2 = detail::run_process(xv, timeout_s);
+                    if (!rc1.failed && !rc1.timed_out && rc1.rc == 0 && !rc2.failed && !rc2.timed_out && rc2.rc == 0) {
+                        const fs::path link = fs::path(*cc).parent_path() / "llvm-link";
+                        auto rl = detail::run_process({link.string(), "-S", "-o", o0.string(), cll.string(), xll.string()}, timeout_s);
+                        if (!rl.failed && !rl.timed_out && rl.rc == 0) {
+                            r = std::move(rc1);
+                            r.text += rc2.text;
+                            split_ok = true;
+                            if (cxx_models) *cxx_models = "dfp shim (split): decimal functions lowered as C++, the rest as C, linked";
+                        } else r.text += "\nprism: decimal split link failed: " + first_error(rl.text);
+                    } else {
+                        r.text += "\nprism: decimal split failed: " + first_error(rc1.rc ? rc1.text : rc2.text);
+                    }
+                }
+                if (!split_ok) r.text += "\nprism: C23 decimal floating point shim also failed: " + first_error(r2.text);
+            }
         }
     }
     if (r.failed || r.timed_out || r.rc != 0) {
@@ -1613,7 +2682,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // every C++ function says which one it was checked against.
     std::optional<TmpDir> cxx_dir;
     std::string cxx_models_error;
-    if (std::any_of(units.begin(), units.end(), [](auto& u) { return is_cxx(u.path); })) {
+    // C units need the directory too: the C23 decimal route force-includes
+    // prism_dfp.hpp from it (embedded, so installed builds have it).
+    if (!units.empty()) {
         cxx_dir.emplace();
         if (cxx_dir.has_value() && write_cxx_models(cxx_dir->path / "prism_cxx"))
             fe.cxx_models = cxx_dir->path / "prism_cxx";

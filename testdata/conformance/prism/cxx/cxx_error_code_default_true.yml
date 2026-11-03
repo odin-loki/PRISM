@@ -1,0 +1,6 @@
+format_version: 1
+input_files: cxx_error_code_default_true.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_error_code_default_true: true
