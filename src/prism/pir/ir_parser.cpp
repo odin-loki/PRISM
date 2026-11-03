@@ -101,7 +101,10 @@ std::vector<Tok> lex(std::string_view s) {
             out.push_back(std::move(t));
             continue;
         }
-        if (std::isdigit(static_cast<unsigned char>(c)) ||
+        // LLVM 23 floating-point literal: f0x<IEEE bits of the type>
+        const bool fhex = c == 'f' && i + 3 < s.size() && s[i + 1] == '0' && s[i + 2] == 'x' &&
+                          std::isxdigit(static_cast<unsigned char>(s[i + 3]));
+        if (fhex || std::isdigit(static_cast<unsigned char>(c)) ||
             (c == '-' && i + 1 < s.size() && std::isdigit(static_cast<unsigned char>(s[i + 1])))) {
             Tok t;
             t.kind = Tok::Num;
@@ -168,6 +171,11 @@ std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
     if (s.starts_with("0xH")) {
         if (w != 16) return std::nullopt;
         return hex(s.substr(3));
+    }
+    if (s.starts_with("f0x")) {  // LLVM 23: the type's own IEEE bits
+        auto h = s.substr(3);
+        if (h.size() > w / 4) return std::nullopt;
+        return hex(h);
     }
     uint64_t dbits = 0;
     if (s.starts_with("0x")) {
