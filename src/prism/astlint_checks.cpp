@@ -8650,7 +8650,9 @@ void cxx_misc_rule_checks(const json& body, const Fn& fn, Checker& ck) {
                 const auto& lk = kind(*u);
                 const bool temp = lk == "CXXTemporaryObjectExpr" || lk == "CXXFunctionalCastExpr" ||
                                   lk == "CXXConstructExpr" || lk == "InitListExpr" || lk == "CXXStdInitializerListExpr" ||
-                                  kind(*l) == "MaterializeTemporaryExpr" || is_call_kind(lk);
+                                  kind(*l) == "MaterializeTemporaryExpr" || is_call_kind(lk) ||
+                                  // MSVC STL: unwrap() walks std::string("hi") down to the literal
+                                  kind(*l) == "CXXFunctionalCastExpr" || kind(*l) == "CXXTemporaryObjectExpr";
                 auto c = cls_of_type(type_of(*l));
                 if (!temp || ref_id(*u).size() || !one_of(c, {"basic_string", "string", "vector"}) || !ok_pos(*n)) continue;
                 // C++23 (P2415): an rvalue string/vector is moved into an owning_view, so a
