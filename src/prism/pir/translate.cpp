@@ -1658,18 +1658,33 @@ struct Tr final : pirmem::TrApi {
                     }
                     return false;
                 };
+                // Only byte/scalar pointer arithmetic lowers the alignment
+                // below the C type's: a struct passed by value is loaded as
+                // its ABI coercion type (i64 at the struct's align 4), which
+                // is no C access and keeps the IR value.
+                auto scalar = [](const ir::Type& t) {
+                    return t.kind == ir::Type::Int || t.kind == ir::Type::Float || t.kind == ir::Type::Ptr;
+                };
+                auto moves = [](const auto& o) { return o.v.kind != ir::Value::Int || o.v.bits != 0; };
+                bool arith = false;
                 const ir::Value* v = &pv;
                 for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
                     auto it = fr.defs.find(v->name);
-                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.empty()) break;
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.size() < 2) break;
+                    const auto* d = it->second;
                     try {
-                        if (packed_in(it->second->ety)) return ir_al;
+                        if (packed_in(d->ety)) return ir_al;
+                        const auto& rt = mt.layout().resolve(d->ety);
+                        if (scalar(rt) && moves(d->ops[1])) arith = true;
+                        if (rt.kind == ir::Type::Array && !rt.elems.empty() &&
+                            scalar(mt.layout().resolve(rt.elems.at(0))) && moves(d->ops.back()))
+                            arith = true;
                     } catch (const Unenc&) {
                         return ir_al;
                     }
-                    v = &it->second->ops[0].v;
+                    v = &d->ops[0].v;
                 }
-                return nat;
+                return arith ? nat : ir_al;
             };
             Arg p = operand(fr, in.ops[0], cur, line);
             vwidth(in.ty, "load of");
@@ -1752,18 +1767,33 @@ struct Tr final : pirmem::TrApi {
                     }
                     return false;
                 };
+                // Only byte/scalar pointer arithmetic lowers the alignment
+                // below the C type's: a struct passed by value is loaded as
+                // its ABI coercion type (i64 at the struct's align 4), which
+                // is no C access and keeps the IR value.
+                auto scalar = [](const ir::Type& t) {
+                    return t.kind == ir::Type::Int || t.kind == ir::Type::Float || t.kind == ir::Type::Ptr;
+                };
+                auto moves = [](const auto& o) { return o.v.kind != ir::Value::Int || o.v.bits != 0; };
+                bool arith = false;
                 const ir::Value* v = &pv;
                 for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
                     auto it = fr.defs.find(v->name);
-                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.empty()) break;
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.size() < 2) break;
+                    const auto* d = it->second;
                     try {
-                        if (packed_in(it->second->ety)) return ir_al;
+                        if (packed_in(d->ety)) return ir_al;
+                        const auto& rt = mt.layout().resolve(d->ety);
+                        if (scalar(rt) && moves(d->ops[1])) arith = true;
+                        if (rt.kind == ir::Type::Array && !rt.elems.empty() &&
+                            scalar(mt.layout().resolve(rt.elems.at(0))) && moves(d->ops.back()))
+                            arith = true;
                     } catch (const Unenc&) {
                         return ir_al;
                     }
-                    v = &it->second->ops[0].v;
+                    v = &d->ops[0].v;
                 }
-                return nat;
+                return arith ? nat : ir_al;
             };
             auto w = vwidth(in.ops[0].ty, "store of");
             Arg init = Arg::c(1, 1);
