@@ -68,9 +68,10 @@ several goals are undeveloped.
           - **Sn6** E10: random programs, every proof executed under UBSan,
             `src/tools/qa/soundness.cpp`.
           - **Sn7** E11: engine and encoder differential testing,
-            `tests/cpp/test_sarif.cpp` (the pir-vs-bmc differential was
-            retired with the bmc encoder; its final report is in
-            `docs/retirement/`).
+            `tests/cpp/test_sarif.cpp`, `src/tools/qa/llvm_sem_vs_lli.cpp`
+            (`prism-qa llvm-sem-vs-lli`); the pir-vs-bmc differential that
+            cleared `bmc` for retirement is recorded in
+            `docs/retirement/README.md`.
         - **G3.3** The front end presents the program PRISM analyses
           faithfully.
           - **Sn8** E12: translation validation against `lli`,

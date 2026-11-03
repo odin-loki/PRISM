@@ -41,17 +41,11 @@ Latest green **PRISM CI** on `main` is `4eb0b4ab1` (run [`40163391068`](https://
 | Done (2026-10-30) | **`CTRL-SIBLING-ASYMMETRY`**, **`MEM-CAPACITY-FIRST`** AST ports (`sibling.c`, `capacity.c` plants). Remaining regex-only: **`API-PRECONDITION`** and **`INTENT`** — both compare a comment preamble with the body, so they stay text rules by design | `astlint_checks.cpp`, `test_astlint.cpp` |
 | Template / flow limits | Document NOTRUN; defer dependent-template rules | `astlint.hpp` |
 
-## 2.8 / D2 — Retire hand `bmc` encoder
+## 2.8 / D2 — Retire hand `bmc` encoder (done)
 
-Retirement **blocked** until PIR is a **superset** of bmc reach on `testdata/`.
-
-| Gate | Baseline (`docs/PIR.md`) |
-|------|---------------------------|
-| Hard conflicts | 0 (investigate new `PROVED*` vs `FAILED`) |
-| Superset | `matrix[PROVED*, absent] + [PROVED*, NEEDS-HARNESS] → 0` (was **353**) |
-| Agreement | Raise `same bucket where both report` (was **2398/2462**) |
-
-Tool: `prism-qa pir-vs-bmc`. Doctest: synthetic only in `test_qa.cpp` — **no CI gate** yet.
+Retired 2026-10-31 after the superset gate passed (`docs/retirement/README.md`,
+`docs/retirement/pvb9.txt`). `bmc`, its encoder and `prism-qa pir-vs-bmc` were
+deleted; `pir` is the verdict stage.
 
 ## 3.1 Portfolio vs Z3 alone
 

@@ -56,6 +56,8 @@ TEST_CASE("cli stages: an unknown stage name is CliError") {
     CHECK(error_of({"--stage", "wp", "--stage", "nope"})
               .starts_with("argument --stage: unknown stage 'nope' (stages: "));
     CHECK(error_of({"--stage=wp,,nope"}).starts_with("argument --stage: unknown stage 'nope' (stages: "));
+    // bmc was retired (pir is the verdict stage): its name is no longer a stage.
+    CHECK(error_of({"--stage", "bmc"}).starts_with("argument --stage: unknown stage 'bmc' (stages: "));
 }
 
 TEST_CASE("cli stages: repeating --stage accumulates") {

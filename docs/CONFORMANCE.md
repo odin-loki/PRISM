@@ -639,11 +639,12 @@ the old encoding).
 
 
 Every wrong proof found, reduced to a minimal reproducer. Run any of them
-with `./build/prism FILE --no-llm --stage inventory,classify,bmc`.
+with `./build/prism FILE --no-llm --stage inventory,classify,pir`.
 
-**Status: S1–S7, R1, R2, F1–F6 are fixed in both engines** (typed encoder:
-`src/prism/bmc_encoder.inc`; inliner `src/prism/inline.cpp`). Every reproducer below is a regression test
-(doctest `bmc soundness: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
+**Status: S1–S7, R1, R2, F1–F6 were found against the retired `bmc` stage
+and fixed there; `pir` (the verdict stage since `bmc` was retired) must refute
+the same reproducers.** Every reproducer below is a regression test
+(doctest `pir soundness: ...` and `pir: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
 `testdata/conformance/prism/regress/`). F7 (a false alarm, not a soundness
 issue) is fixed too. The fix, in one paragraph: every value carries its C type
 (width, signedness; LP64), integer promotions and the usual arithmetic
@@ -808,11 +809,10 @@ static-initialisation function listed in `llvm.global_ctors`; unless each is
 proved, `main` is `NEEDS-HARNESS` naming it. When they are proved, `main`
 keeps a verdict only if it holds for *arbitrary* values of the mutable
 globals (the constructors' stores are not carried into `main`); otherwise
-`NEEDS-HARNESS`. `bmc` (`dynamic_init_before_main` in `src/prism/bmc.cpp`,
-`src/prism/bmc.cpp`) turns a proof or BOUNDED of `main` into `NEEDS-HARNESS` when
-the file defines a constructor. Tasks: ESBMC
+`NEEDS-HARNESS`. (The retired `bmc` stage turned a proof or BOUNDED of
+`main` into `NEEDS-HARNESS` whenever the file defined a constructor.) Tasks: ESBMC
 `try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
-`testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "bmc soundness:
+`testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "pir soundness:
 dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
 
 ### Robustness (no verdict where one was possible)
