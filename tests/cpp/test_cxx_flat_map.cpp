@@ -67,7 +67,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(src.find("#include <vector>") != std::string::npos);  // extract()/replace() containers
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <initializer_list>") != std::string::npos);  // initializer_list constructors
-    CHECK(src.find("fail to compile") != std::string::npos);
+    CHECK(src.find("fails to compile") != std::string::npos);
     CHECK(src.find("pir falls back") != std::string::npos);
 
     // Both at() overloads. The miss throws (or is a check) and the only

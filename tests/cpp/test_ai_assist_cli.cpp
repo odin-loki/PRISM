@@ -262,15 +262,15 @@ TEST_CASE("ai-assist gui: the Qt assistant panel keeps its contract; assistant_r
     // What the panel shows for a question: the structured query and the findings.
     const auto dir = fs::temp_directory_path() / "prism-assist-gui";
     fs::create_directories(dir);
-    std::ofstream(dir / "report.json", std::ios::binary) << R"({"root": "x", "stages": [{"name": "bmc", "status": "ok", "findings": [
-        {"stage": "bmc", "status": "FAILED", "file": "a.c", "function": "f", "line": 1, "cls": "INT-DIV-ZERO",
+    std::ofstream(dir / "report.json", std::ios::binary) << R"({"root": "x", "stages": [{"name": "pir", "status": "ok", "findings": [
+        {"stage": "pir", "status": "FAILED", "file": "a.c", "function": "f", "line": 1, "cls": "INT-DIV-ZERO",
          "message": "div0", "strength": "PROVES", "evidence": "", "counterexample": "x=0", "extra": {}}]}]})";
     auto rep = prism::RunReport::load(dir / "report.json");
     REQUIRE(rep);
     const auto reply = prism::ai::assistant_reply(*rep, "failed division", false);
     CAPTURE(reply);
     CHECK(reply.find("query (grammar)") != std::string::npos);
-    CHECK(reply.find("bmc#0 FAILED a.c:1") != std::string::npos);
+    CHECK(reply.find("pir#0 FAILED a.c:1") != std::string::npos);
 }
 
 // ---- FORGE-era replacements for the llama-server fakes (in-process model seams) ----
@@ -284,15 +284,15 @@ public:
     prism::ai::ModelReply complete(const prism::ai::ModelRequest& req) override {
         ++calls;
         if (req.grammar_text.find("statuses") != std::string::npos)
-            return {json{{"stages", {"bmc"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
+            return {json{{"stages", {"pir"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
                          {"function_glob", ""}, {"text", ""}, {"group_by", ""}, {"count_only", false}}
                         .dump(),
                     ""};
         if (req.grammar_text.find("links") != std::string::npos)
             return {json::array({{{"section", "Defects"},
                                   {"text", "Dividing by a zero parameter is undefined."},
-                                  {"links", {"verdict:bmc#1"}}},
-                                 {{"section", "Defects"}, {"text", "Everything else is proved."}, {"links", {"stage:bmc"}}}})
+                                  {"links", {"verdict:pir#1"}}},
+                                 {{"section", "Defects"}, {"text", "Everything else is proved."}, {"links", {"stage:pir"}}}})
                         .dump(),
                     ""};
         return {"{}", ""};
