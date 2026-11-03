@@ -1351,12 +1351,6 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         err = std::string(cxx ? "clang++" : "clang") + "/opt not found";
         return std::nullopt;
     }
-#ifdef _WIN32
-    if (cxx) {
-        err = "C++ PIR needs libstdc++ (not available on Windows)";
-        return std::nullopt;
-    }
-#endif
     TmpDir td;
     auto o0 = td.path / "o0.ll", o1 = td.path / "o1.ll", o2 = td.path / "o2.ll";
     std::vector<std::string> argv{cc->string()};

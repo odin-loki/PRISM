@@ -12,7 +12,9 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <optional>
 #include <set>
+#include <cstdlib>
 
 namespace prism::pir {
 namespace {
@@ -51,14 +53,6 @@ bool lp64_clang_probe(const std::filesystem::path& clang) {
     return ir.find(want) != std::string::npos;
 }
 
-const std::set<std::string>& pir_win_c_files() {
-    static const std::set<std::string> k = {
-        "asm_contract.c", "calls.c",       "casts.c",      "div0.c",      "folded.c",     "kinduct.c",
-        "loops.c",        "mem_alias.c",   "mem_array.c",  "mem_contract.c", "mem_ptr.c", "overflow.c",
-        "select.c",       "shift.c",       "switch.c",     "unencoded.c", "uninit.c",
-    };
-    return k;
-}
 #endif
 
 }  // namespace
@@ -93,17 +87,42 @@ std::vector<std::string> frontend_target_flags() {
 FrontendTargetScope::FrontendTargetScope(bool ilp32) : prev_(g_ilp32.exchange(ilp32)) {}
 FrontendTargetScope::~FrontendTargetScope() { g_ilp32.store(prev_); }
 
+std::optional<std::filesystem::path> linux_sysroot() {
+#ifdef __linux__
+    return std::nullopt;  // native glibc + libstdc++
+#else
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (const char* e = std::getenv("PRISM_LINUX_SYSROOT"); e && *e) {
+        if (fs::is_directory(fs::path(e) / "usr" / "include", ec)) return fs::path(e);
+        return std::nullopt;
+    }
+    // scripts/fetch_toolchain.py linux-sysroot (third_party/TOOLCHAIN_PINS.toml):
+    // ~/.prism/toolchain/linux-sysroot/<version>/root
+    const char* home = std::getenv("USERPROFILE");
+    if (!home || !*home) home = std::getenv("HOME");
+    if (!home || !*home) return std::nullopt;
+    const fs::path base = fs::path(home) / ".prism" / "toolchain" / "linux-sysroot";
+    std::optional<fs::path> best;
+    for (auto it = fs::directory_iterator(base, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (fs::exists(it->path() / ".verified", ec) && fs::is_directory(it->path() / "root" / "usr" / "include", ec))
+            if (!best || it->path().filename() > best->parent_path().filename()) best = it->path() / "root";
+    }
+    return best;
+#endif
+}
+
 std::vector<std::string> lp64_clang_driver_flags() {
     std::vector<std::string> f = frontend_target_flags();
-#ifdef _WIN32
-    const std::filesystem::path shim =
-        std::filesystem::path(__FILE__).parent_path() / "models" / "libc" / "shim";
-    std::error_code ec;
-    if (std::filesystem::is_directory(shim, ec)) {
-        f.push_back("-idirafter");
-        f.push_back(shim.string());
+    if (auto sr = linux_sysroot()) {
+        f.push_back("--sysroot=" + sr->string());
+        // i386 on an x86_64 Ubuntu root: like gcc -m32, glibc's bits/ live in the
+        // x86_64 multiarch dir (libc6-dev-i386 adds gnu/stubs-32.h there)
+        if (frontend_ilp32()) {
+            f.push_back("-isystem");
+            f.push_back((*sr / "usr" / "include" / "x86_64-linux-gnu").string());
+        }
     }
-#endif
     // C23 headers the frontend's libc may lack (<stdbit.h>); searched after
     // the system headers, so a libc that has them wins
     {
@@ -150,6 +169,14 @@ bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
         }
         return false;
     }
+#ifndef __linux__
+    if (!linux_sysroot()) {
+        if (notrun_reason)
+            *notrun_reason = "NOTRUN: pir lowers for x86_64-unknown-linux-gnu and needs the pinned Linux "
+                             "sysroot (python scripts/fetch_toolchain.py linux-sysroot, or PRISM_LINUX_SYSROOT)";
+        return false;
+    }
+#endif
 #ifdef _WIN32
     if (!lp64_clang_probe(*fe.clang)) {
         if (notrun_reason) {
@@ -163,23 +190,9 @@ bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
     return true;
 }
 
-bool pir_test_c_file_supported(const char* basename) {
-#ifndef _WIN32
-    (void)basename;
-    return true;
-#else
-    if (!basename) return false;
-    return pir_win_c_files().count(basename) > 0;
-#endif
-}
+bool pir_test_c_file_supported(const char* basename) { return basename != nullptr; }
 
 bool pir_cxx_usable(const Config& cfg, std::string* notrun_reason) {
-#ifdef _WIN32
-    if (notrun_reason) {
-        *notrun_reason = "NOTRUN: C++ PIR needs libstdc++ (not available on Windows)";
-    }
-    return false;
-#else
     if (!frontend_usable(cfg, notrun_reason)) return false;
     auto fe = find_frontend(cfg);
     if (!fe.clangxx) {
@@ -187,7 +200,6 @@ bool pir_cxx_usable(const Config& cfg, std::string* notrun_reason) {
         return false;
     }
     return true;
-#endif
 }
 
 }  // namespace prism::pir
