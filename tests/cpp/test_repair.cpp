@@ -70,7 +70,7 @@ bool have_cc() {
 namespace {
 // A whole program: the sandbox links and runs the candidate before PIR checks it.
 const char* kDivFix =
-    "```c\n#include <limits.h>\nint div_param(int a, int b) {\n    if (b == 0 || (a == INT_MIN && b == -1)) return 0;\n    return a / b;\n}\n"
+    "```c\nint div_param(int a, int b) {\n    if (b == 0 || (a == -2147483647 - 1 && b == -1)) return 0;\n    return a / b;\n}\n"
     "int main(void) { return div_param(4, 2) == 2 ? 0 : 1; }\n```\n";
 struct RepairCase {
     std::filesystem::path td;
