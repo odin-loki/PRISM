@@ -1,0 +1,27 @@
+format_version: 1
+input_files: c23_memory_contracts.cpp
+language: C
+property: libc-contract
+expected:
+  aligned_alloc_true: true
+  aligned_alloc_badalign_false: false
+  free_sized_true: true
+  free_sized_wrong_false: false
+  free_aligned_sized_true: true
+  free_aligned_sized_align_false: false
+  memalignment_true: true
+  memalignment_fixed_false: false
+  memccpy_true: true
+  memccpy_oob_false: false
+  memset_explicit_true: true
+  memset_explicit_oob_false: false
+  strndup_true: true
+  strndup_oob_false: false
+expect_class:  # the violation each false harness plants
+  aligned_alloc_badalign_false: "PTR-NULL-DEREF|MEM-NULL-DEREF|NULL-DEREF"
+  free_sized_wrong_false: "FUNC-CONTRACT"
+  free_aligned_sized_align_false: "FUNC-CONTRACT"
+  memalignment_fixed_false: "FUNC-CONTRACT"
+  memccpy_oob_false: "MEM-OOB-WRITE"
+  memset_explicit_oob_false: "MEM-OOB-WRITE"
+  strndup_oob_false: "MEM-OOB-READ"

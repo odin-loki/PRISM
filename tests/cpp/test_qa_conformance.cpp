@@ -617,14 +617,17 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
         }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
         if (f == "std.cppm") continue;  // imported by `import std`, built by build_cxx_std_module
+        // force-included by pir/stage.cpp on the C23 decimal route (dfp_rewrite), not by a public header
+        if (f == "prism_dfp.hpp") continue;
         if (pub.count(f)) {
             CHECK(harnesses.find("#include <" + pub[f] + ">") != std::string::npos);
             CHECK(tasks.find("#include <" + pub[f] + ">") != std::string::npos);
         } else {  // an internal header: some public model header includes it
             bool any = false;
-            for (const auto& h : headers)
-                if (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos ||
-                    slurp(cxx / h).find("#include \"" + f + "\"") != std::string::npos)
+            // public headers, or another internal one (prism_dfp.hpp includes prism_dfp_mp.hpp)
+            for (const auto& h : files)
+                if (h != f && (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos ||
+                               slurp(cxx / h).find("#include \"" + f + "\"") != std::string::npos))
                     any = true;
             CHECK(any);
         }

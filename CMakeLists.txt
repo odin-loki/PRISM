@@ -363,6 +363,8 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/cxx/thread
   src/prism/pir/models/cxx/atomic
   src/prism/pir/models/cxx/bits/prism_sched.h
+  src/prism/pir/models/cxx/bits/prism_conc.h
+  src/prism/pir/models/cxx/print
   src/prism/pir/models/cxx/std.cppm
   src/prism/pir/models/cxx/iterator
   src/prism/pir/models/cxx/ranges

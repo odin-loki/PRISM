@@ -6,3 +6,5 @@ expected:
   generator_order_true: true
   generator_elements_of_true: true
   generator_sum_false: false
+expect_class:  # the violation each false harness plants
+  generator_sum_false: "FUNC-CONTRACT"

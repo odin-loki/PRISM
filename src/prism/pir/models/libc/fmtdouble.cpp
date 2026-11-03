@@ -10,7 +10,13 @@
  * ASCII, else -1/EILSEQ) and the ' flag (no grouping in the C locale).
  */
 #include "prism_model.h"
+// written beside this file when the model is linked (libc_models.cpp); the
+// source-tree path is for contract harnesses that #include this file
+#if __has_include("prism_fpfmt.h")
 #include "prism_fpfmt.h"
+#else
+#include "../cxx/prism_fpfmt.h"
+#endif
 
 // __int128 arguments (class 5) exist only where the target has the type:
 // an ILP32 (i386) build of this model has no __int128, and no call passes one.
