@@ -149,6 +149,9 @@ std::optional<std::vector<double>> embed(const fs::path& fpk, const std::string&
         if (ids.empty()) return fail("empty input");
         std::vector<float> in(ids.begin(), ids.end());
         forge::mind::session sess(model);
+        // A decoder's output is next-token logits, not an embedding.
+        if (sess.blueprint().session == "generative_sequence")
+            return fail(fpk.string() + ": a generative model, not an embedding model (PRISM_EMBED_FPK wants an encoder .fpk)");
         // FORGE's one_shot infer() has no fixed input name: it binds the names the
         // .fpk blueprint declares (pack::blueprint::inputs, from the ONNX import) and
         // raises on any missing one. Bind token ids to the id input and fill the
