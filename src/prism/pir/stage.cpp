@@ -1563,8 +1563,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // A C header in the tree that defines functions (static inline helpers):
     // a helper no unit calls is emitted by none, so it would have no verdict.
     // The header is lowered alone as C with every declaration emitted, after
-    // the units; only functions no unit reported are kept from it.
-    if (!units.empty() && std::getenv("PRISM_PIR_NO_HEADERS") == nullptr) {
+    // the units; only functions no unit reported are kept from it. A header
+    // given alone (no unit) is lowered the same way.
+    if (std::getenv("PRISM_PIR_NO_HEADERS") == nullptr) {
         static const Regex has_body(R"(\)\s*\{)");
         for (auto& p : sources)
             if (p.extension() == ".h" && has_body.search(read_file(p)))

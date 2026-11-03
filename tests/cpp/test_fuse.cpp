@@ -342,6 +342,23 @@ TEST_CASE("fuse goals: GOAL_n labels follow FuSeBMC numbering") {
     }
 }
 
+TEST_CASE("fuse goals: a condition with nested parentheses is read whole") {
+    prism::FunctionInfo f;
+    f.name = "g";
+    f.body = "{ if (x == (-2147483647 - 1)) { return 1; } while ((y)) { y--; } "
+             "for (i = 0; i < (n); i++) {} switch ((x)) { case 1: break; } return 0; }";
+    auto goals = prism::branch_goals(f);
+    CHECK(has(goals, "x == (-2147483647 - 1)"));
+    CHECK(has(goals, "!(x == (-2147483647 - 1))"));
+    CHECK(has(goals, "(y)"));
+    CHECK(has(goals, "i < (n)"));
+    CHECK(has(goals, "((x)) == (1)"));
+    for (auto& g : goals) {
+        INFO(g);
+        CHECK(std::ranges::count(g, '(') == std::ranges::count(g, ')'));
+    }
+}
+
 TEST_CASE("fuse: a CLEAN run carries its goal ids and map and is not a proof") {
     auto f = fn_named("fuse_goals.c", "fuse_goals");
     auto goals = prism::branch_goals(f);

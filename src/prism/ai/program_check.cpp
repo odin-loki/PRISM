@@ -176,7 +176,10 @@ ProgramCheck check_program(const FunctionInfo& fn, const std::string& body, int 
     for (char ch : fn.signature) sig_lines += ch == '\n';
     const int base = std::max(1, fn.span.first) + sig_lines + 1;
     std::string rest = "unknown";
-    for (int round = 0; round < 64; ++round) {
+    // One pir run refutes one invariant (the first failing assert); every
+    // tag gets its own round, so a candidate after the 64th refuted one is
+    // still decided (never "unknown" for lack of rounds, which Houdini drops).
+    for (int round = 0; round < 64 || round <= static_cast<int>(all_tags.size()); ++round) {
         Lowering lw{disabled, base, "", {}};
         auto text = lw.lower(body, 0, body.size());
         if (!lw.err.empty()) {

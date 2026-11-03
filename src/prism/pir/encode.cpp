@@ -1297,6 +1297,9 @@ void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const 
     }
     v.extra["nondet"] = join_s(vals, ", ");
     v.extra["nondet_loc"] = join_s(locs, ", ");
+    // DWARF line:col of the call: the physical position in the file (macro
+    // expansions report their expansion site), usable as witness waypoints
+    v.extra["nondet_loc_kind"] = "physical";
 }
 
 // One verification condition answered by the solver library.

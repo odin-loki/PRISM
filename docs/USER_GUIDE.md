@@ -102,7 +102,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 
 The stages run in a fixed order (`--list-stages`): inventory, classify,
 lints, taint, thread, interval, warnings, cppcheck, pbsd, sanitize, optional,
-polyglot, esbmc, dafny, contracts, wp, bmc, pir, conc, harness, review,
+polyglot, esbmc, dafny, contracts, wp, pir, conc, harness, review,
 concolic, fuzz, diff, rapid, muttest, ltl, llm, execute, repair, unify. What
 each one does is in [PLAN.md](PLAN.md#pipeline-order-is-the-method). `pir` (the
 Clang/LLVM front end, [PIR.md](PIR.md)), `conc` (threads,

@@ -466,48 +466,52 @@ void add_goal(std::vector<std::string>& seen, std::string cond) {
 
 std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     // FuSeBMC MyVisitor::check / checkStmt: then, implicit else, loop-exit, switch cases.
-    static Regex if_re("\\bif\\s*\\(([^)]+)\\)");
-    static Regex while_re("\\bwhile\\s*\\(([^)]+)\\)");
-    static Regex for_re("\\bfor\\s*\\(([^)]*)\\)");
-    static Regex switch_re("\\bswitch\\s*\\(([^)]+)\\)");
+    // Conditions are read with balanced parentheses: `if (x == (a - 1))` is
+    // one condition, never the truncated `x == (a - 1`.
     static Regex case_re("\\bcase\\s+([^:]+):");
+    const std::string& body = fn.body;
     std::vector<std::string> seen;
-    for (auto& m : if_re.finditer(fn.body)) {
-        auto cond = norm_ws(m.group(1));
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
+    std::vector<std::pair<std::string, std::size_t>> switches;  // expr, end of `(...)`
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    for (std::string_view kw : {"if", "while", "for", "switch"}) {
+        for (std::size_t at = body.find(kw); at != std::string::npos; at = body.find(kw, at + 1)) {
+            if (at > 0 && ident(body[at - 1])) continue;
+            std::size_t i = at + kw.size();
+            if (i < body.size() && ident(body[i])) continue;
+            while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) ++i;
+            if (i >= body.size() || body[i] != '(') continue;
+            std::size_t open = i, depth = 0, close = std::string::npos;
+            for (; i < body.size(); ++i) {
+                if (body[i] == '(') ++depth;
+                else if (body[i] == ')' && --depth == 0) { close = i; break; }
+            }
+            if (close == std::string::npos) continue;
+            std::string inner = body.substr(open + 1, close - open - 1);
+            if (kw == "switch") {
+                auto expr = norm_ws(inner);
+                if (!expr.empty()) switches.emplace_back(expr, close + 1);
+                continue;
+            }
+            if (kw == "for") {
+                auto semi = inner.find(';');
+                if (semi == std::string::npos) continue;
+                auto semi2 = inner.find(';', semi + 1);
+                inner = inner.substr(semi + 1, semi2 == std::string::npos ? std::string::npos : semi2 - semi - 1);
+            }
+            auto cond = norm_ws(inner);
+            if (cond.empty()) continue;
+            add_goal(seen, cond);
+            add_goal(seen, "!(" + cond + ")");
+        }
     }
-    for (auto& m : while_re.finditer(fn.body)) {
-        auto cond = norm_ws(m.group(1));
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
-    }
-    for (auto& m : for_re.finditer(fn.body)) {
-        auto inner = m.group(1);
-        auto semi = inner.find(';');
-        if (semi == std::string::npos) continue;
-        auto semi2 = inner.find(';', semi + 1);
-        auto mid = inner.substr(semi + 1, semi2 == std::string::npos ? std::string::npos : semi2 - semi - 1);
-        auto cond = norm_ws(mid);
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
-    }
-    auto switches = switch_re.finditer(fn.body);
-    for (std::size_t i = 0; i < switches.size(); ++i) {
-        auto expr = norm_ws(switches[i].group(1));
-        if (expr.empty()) continue;
-        std::size_t from = switches[i].spans.empty() ? 0 : static_cast<std::size_t>(std::max(0, switches[i].spans[0].second));
-        std::size_t to = fn.body.size();
-        if (i + 1 < switches.size() && !switches[i + 1].spans.empty() && switches[i + 1].spans[0].first >= 0)
-            to = static_cast<std::size_t>(switches[i + 1].spans[0].first);
-        if (from > to) from = to;
-        auto rest = fn.body.substr(from, to - from);
+    std::ranges::sort(switches, {}, &std::pair<std::string, std::size_t>::second);
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        std::size_t from = switches[k].second;
+        std::size_t to = k + 1 < switches.size() ? switches[k + 1].second : body.size();
+        auto rest = body.substr(from, to - from);
         for (auto& cm : case_re.finditer(rest)) {
             auto lab = norm_ws(cm.group(1));
-            if (!lab.empty()) add_goal(seen, "(" + expr + ") == (" + lab + ")");
+            if (!lab.empty()) add_goal(seen, "(" + switches[k].first + ") == (" + lab + ")");
         }
     }
     return seen;

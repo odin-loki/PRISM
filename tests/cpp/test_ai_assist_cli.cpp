@@ -207,16 +207,16 @@ private:
                 const auto grammar = r.value("grammar", std::string());
                 std::string content = "{}";
                 if (grammar.find("statuses") != std::string::npos)
-                    content = json{{"stages", {"bmc"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
+                    content = json{{"stages", {"pir"}}, {"statuses", {"FAILED"}}, {"cls", {"DIV"}}, {"file_glob", ""},
                                    {"function_glob", ""}, {"text", ""},          {"group_by", ""}, {"count_only", false}}
                                   .dump();
                 else if (grammar.find("links") != std::string::npos)
                     content = json::array({{{"section", "Defects"},
                                             {"text", "Dividing by a zero parameter is undefined."},
-                                            {"links", {"verdict:bmc#1"}}},
+                                            {"links", {"verdict:pir#1"}}},
                                            {{"section", "Defects"},
                                             {"text", "Everything else is proved."},
-                                            {"links", {"stage:bmc"}}}})
+                                            {"links", {"stage:pir"}}}})
                                   .dump();
                 reply = {{"content", content}};
             }
@@ -247,7 +247,7 @@ int ok(int x) {
 }
 )";
 
-// One pipeline run over calc.c (inventory, classify, bmc; no model) shared by
+// One pipeline run over calc.c (inventory, classify, pir; no model) shared by
 // the cases below; the model endpoints point at a closed port.
 struct AssistRun {
     fs::path td, src, out;
@@ -268,7 +268,7 @@ struct AssistRun {
         cfg.root = src;
         cfg.out = out;
         cfg.llm = false;
-        cfg.stages = std::vector<std::string>{"inventory", "classify", "bmc"};
+        cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
         prism::run_pipeline(cfg);
         report_text = slurp(out / "report.json");
     }
@@ -278,7 +278,7 @@ struct AssistRun {
 
 TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keeps report.json") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -307,7 +307,7 @@ TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keep
 
 TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -323,7 +323,7 @@ TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
     CHECK(j["translator"] == "grammar");
     CHECK(j["query"]["count_only"] == true);
     CHECK(j["count"].get<int>() >= 2);
-    auto e = run_cli(prism::ai::ask_main, {"explain", "bmc#0", "--report", run.out.string(), "--no-llm"});
+    auto e = run_cli(prism::ai::ask_main, {"explain", "pir#0", "--report", run.out.string(), "--no-llm"});
     CHECK(e.out.find("what") != std::string::npos);
 }
 
@@ -383,7 +383,7 @@ TEST_CASE("ai-assist cli: triage uses the embedding endpoint when PRISM_EMBED_SE
 
 TEST_CASE("ai-assist cli: `prism regress` writes under <out> only; --run without --allow-exec runs nothing") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's bmc stage gives no FAILED rows");
+        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;

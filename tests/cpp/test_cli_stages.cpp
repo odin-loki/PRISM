@@ -55,7 +55,7 @@ TEST_CASE("cli stages: an unknown stage name is CliError") {
               .starts_with("argument --stage: unknown stage 'not-a-stage' (stages: "));
     CHECK(error_of({"--stage", "wp", "--stage", "nope"})
               .starts_with("argument --stage: unknown stage 'nope' (stages: "));
-    CHECK(error_of({"--stage=bmc,,nope"}).starts_with("argument --stage: unknown stage 'nope' (stages: "));
+    CHECK(error_of({"--stage=wp,,nope"}).starts_with("argument --stage: unknown stage 'nope' (stages: "));
 }
 
 TEST_CASE("cli stages: repeating --stage accumulates") {
@@ -74,7 +74,7 @@ TEST_CASE("cli stages: repeating --stage accumulates") {
     CHECK(*csv->cfg.stages == std::vector<std::string>{"wp", "pir", "harness"});
 
     // A later empty --stage keeps the names already chosen. `--stage=` is
-    // the same empty value: only bmc, not every stage.
+    // the same empty value: only wp, not every stage.
     auto kept = parse({"--stage", "wp", "--stage", ""});
     REQUIRE(kept);
     REQUIRE(kept->cfg.stages);
@@ -113,7 +113,7 @@ TEST_CASE("cli skip: an unknown skip name is CliError") {
               .starts_with("argument --skip: unknown stage 'not-a-stage' (stages: "));
     CHECK(error_of({"--skip", "wp", "--skip", "nope"})
               .starts_with("argument --skip: unknown stage 'nope' (stages: "));
-    CHECK(error_of({"--skip=bmc,,nope"}).starts_with("argument --skip: unknown stage 'nope' (stages: "));
+    CHECK(error_of({"--skip=wp,,nope"}).starts_with("argument --skip: unknown stage 'nope' (stages: "));
 }
 
 TEST_CASE("cli stages: --no-bmc, --skip-stage and --disable are CliError") {
