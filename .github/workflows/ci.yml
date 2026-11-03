@@ -137,57 +137,6 @@ jobs:
   # Smoke-build prism_core + prism with VS clang-cl (MSVC ABI), Z3 off (skip vendored Z3),
   # tests off (solver Z3 integration tests compile on Windows when PRISM_HAS_Z3).
   # Smoke: prism_core + prism + prism-qa + portable prism_tests (phase 7 subset).
-  # Native MSVC cl (not clang-cl): same smoke as windows-compile-smoke; needs
-  # portable signed overflow in stages/interp.cpp (no __builtin_*_overflow on cl).
-  windows-compile-smoke-cl:
-    name: Windows compile smoke (MSVC cl)
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
-        uses: actions/checkout@v4
-        with:
-          repository: odin-loki/FORGE
-          ref: main
-          path: _forge
-      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
-        shell: pwsh
-        run: |
-          $d = python scripts/fetch_toolchain.py cmake
-          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
-          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - uses: actions/cache@v4
-        with:
-          path: build-win-cl
-          key: win-smoke-cl-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
-          restore-keys: win-smoke-cl-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
-      - name: Configure (Ninja + cl)
-        run: >
-          cmake -B build-win-cl -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
-          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
-      - name: Build (prism_core + prism + prism-qa + prism_tests)
-        run: cmake --build build-win-cl --target prism_core prism prism-qa prism_tests
-      - name: Run portable prism_tests subset
-        run: .\build-win-cl\prism_tests.exe
-      - name: PRISM_BIN smoke (real PE prism.exe)
-        run: |
-          .\build-win-cl\prism.exe testdata\planted\abs_ok.c --no-llm --stage inventory --out prism-smoke-out
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path prism-smoke-out\report.json)) { Write-Error "no report.json"; exit 1 }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prism-windows
-          path: build-win-cl/prism.exe
-          retention-days: 7
-
   windows-compile-smoke:
     name: Windows compile smoke
     runs-on: windows-latest
@@ -214,11 +163,29 @@ jobs:
           path: build-win
           key: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
           restore-keys: win-smoke-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
+      # One compiler: the pinned LLVM 23.1.4 (third_party/llvm/PIN.toml; scripts/fetch_llvm.py,
+      # sha256-checked) compiles PRISM (clang-cl) and is PIR's clang/opt (PRISM_LLVM_BIN).
+      # PIR lowers for x86_64-linux-gnu: the pinned Linux sysroot gives it glibc + libstdc++.
+      - name: Cache pinned LLVM 23.1.4 + Linux sysroot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prism/tools
+            ~/.prism/toolchain/linux-sysroot
+          key: llvm-sysroot-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml', 'third_party/TOOLCHAIN_PINS.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 + Linux sysroot (sha256-checked)
+        shell: pwsh
+        run: |
+          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
+          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
+          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          python scripts/fetch_toolchain.py linux-sysroot
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py linux-sysroot failed" }
       - name: Configure (Ninja + clang-cl)
         run: >
           cmake -B build-win -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
           -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
@@ -227,7 +194,8 @@ jobs:
       - name: Put clang ASan runtime DLLs on PATH (label self-check)
         shell: pwsh
         run: |
-          $clang = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
+          $clang = Join-Path $env:PRISM_LLVM_BIN 'clang.exe'
+          if (-not (Test-Path $clang)) { $clang = $null }
           if (-not $clang) { Write-Host "clang.exe not on PATH: label self-check will be NOTRUN"; exit 0 }
           $root = Split-Path (Split-Path $clang)
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -285,11 +253,29 @@ jobs:
             Get-ChildItem -Path $d -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $old; $n++ }
           }
           Write-Host "backdated $n files"
+      # One compiler: the pinned LLVM 23.1.4 (third_party/llvm/PIN.toml; scripts/fetch_llvm.py,
+      # sha256-checked) compiles PRISM (clang-cl) and is PIR's clang/opt (PRISM_LLVM_BIN).
+      # PIR lowers for x86_64-linux-gnu: the pinned Linux sysroot gives it glibc + libstdc++.
+      - name: Cache pinned LLVM 23.1.4 + Linux sysroot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prism/tools
+            ~/.prism/toolchain/linux-sysroot
+          key: llvm-sysroot-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml', 'third_party/TOOLCHAIN_PINS.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 + Linux sysroot (sha256-checked)
+        shell: pwsh
+        run: |
+          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
+          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
+          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          python scripts/fetch_toolchain.py linux-sysroot
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py linux-sysroot failed" }
       - name: Configure (Ninja + clang-cl, PRISM_Z3=ON)
         run: >
           cmake -B build-win-z3 -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
           -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
@@ -309,119 +295,18 @@ jobs:
       - name: Put clang ASan runtime DLLs on PATH (label self-check)
         shell: pwsh
         run: |
-          $clang = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
+          $clang = Join-Path $env:PRISM_LLVM_BIN 'clang.exe'
+          if (-not (Test-Path $clang)) { $clang = $null }
           if (-not $clang) { Write-Host "clang.exe not on PATH: label self-check will be NOTRUN"; exit 0 }
           $root = Split-Path (Split-Path $clang)
           $dll = Get-ChildItem -Path "$root\lib\clang" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($dll) { $dll.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH; Write-Host "ASan DLL dir: $($dll.DirectoryName)" }
           else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
-      # PIR e2e on Windows needs clang + opt from the pinned LLVM 23.1.4
-      # (third_party/llvm/PIN.toml; scripts/fetch_llvm.py picks
-      # clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz and checks its sha256).
-      # PRISM_LLVM_BIN points PIR at it; the runner's clang-cl still compiles PRISM.
-      - name: Cache pinned LLVM 23.1.4
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/prism/tools
-          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
-      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
-        shell: pwsh
-        run: |
-          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
-          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
-          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
 
-  # Phase 5c + 5b: native MSVC cl with vendored Z3 (Release; same subset as clang-cl Z3).
-  windows-compile-smoke-cl-z3:
-    name: Windows compile smoke (MSVC cl, Z3)
-    runs-on: windows-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
-        uses: actions/checkout@v4
-        with:
-          repository: odin-loki/FORGE
-          ref: main
-          path: _forge
-      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
-        shell: pwsh
-        run: |
-          $d = python scripts/fetch_toolchain.py cmake
-          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
-          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      # Restore/save split. The old restore-keys (exact hash + "-") could never match,
-      # so any Z3 input change was a cold build, and the cache was saved only if the
-      # whole job passed. A miss now falls back to the newest win-smoke-cl-z3- cache (ninja
-      # rebuilds only what changed) and libz3 is saved as soon as it is built.
-      - uses: actions/cache/restore@v4
-        id: z3cache
-        with:
-          path: build-win-cl-z3
-          key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
-          restore-keys: win-smoke-cl-z3-
-      # Warm-cache fix: see the clang-cl Z3 job (checkout mtimes are newer than the
-      # restored objects; backdate sources on an exact key hit only).
-      - name: Backdate Z3 sources (exact cache hit only)
-        if: steps.z3cache.outputs.cache-hit == 'true'
-        shell: pwsh
-        run: |
-          $old = [datetime]'2000-01-01T00:00:00Z'
-          $n = 0
-          foreach ($d in 'third_party/z3', 'cmake/z3-generated') {
-            Get-ChildItem -Path $d -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $old; $n++ }
-          }
-          Write-Host "backdated $n files"
-      - name: Configure (Ninja + cl, PRISM_Z3=ON)
-        run: >
-          cmake -B build-win-cl-z3 -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
-          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
-      - name: Build vendored Z3 (libz3)
-        shell: pwsh
-        run: |
-          if ('${{ steps.z3cache.outputs.cache-hit }}' -eq 'true') { cmake --build build-win-cl-z3 --target libz3 -- -d explain } else { cmake --build build-win-cl-z3 --target libz3 }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/cache/save@v4
-        if: steps.z3cache.outputs.cache-hit != 'true'
-        with:
-          path: build-win-cl-z3
-          key: win-smoke-cl-z3-${{ hashFiles('CMakeLists.txt', 'cmake/z3.cmake', 'cmake/z3-generated/tree_sha256', 'third_party/z3/CMakeLists.txt') }}
-      - name: Build (prism_core + prism + prism-qa + prism_tests)
-        run: cmake --build build-win-cl-z3 --target prism_core prism prism-qa prism_tests
-      # PIR e2e on Windows needs clang + opt from the pinned LLVM 23.1.4
-      # (third_party/llvm/PIN.toml; scripts/fetch_llvm.py picks
-      # clang+llvm-23.1.4-x86_64-pc-windows-msvc.tar.xz and checks its sha256).
-      # PRISM_LLVM_BIN points PIR at it; the runner's clang-cl still compiles PRISM.
-      - name: Cache pinned LLVM 23.1.4
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/prism/tools
-          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
-      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
-        shell: pwsh
-        run: |
-          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
-          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
-          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: Run portable prism_tests subset (Z3 + leanbb)
-        run: .\build-win-cl-z3\prism_tests.exe
-
-  # Native Qt GUI on Windows: MSVC cl, Qt 6 from jurplel/install-qt-action
-  # (aqtinstall), PRISM_QT=ON, PRISM_Z3=OFF (the window needs no solver; skips the
-  # vendored Z3 build). Everything runs offscreen (QT_QPA_PLATFORM=offscreen).
-  # prism_tests is built too so the `prism --gui` launcher cases of
-  # test_gui_model.cpp run against the real prism_gui.exe beside them.
   windows-gui-qt:
-    name: Windows GUI (Qt 6, MSVC cl, offscreen)
+    name: Windows GUI (Qt 6, clang-cl, offscreen)
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -454,11 +339,29 @@ jobs:
           path: build-win-qt
           key: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
           restore-keys: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
-      - name: Configure (Ninja + cl, PRISM_QT=ON, PRISM_Z3=OFF)
+      # One compiler: the pinned LLVM 23.1.4 (third_party/llvm/PIN.toml; scripts/fetch_llvm.py,
+      # sha256-checked) compiles PRISM (clang-cl) and is PIR's clang/opt (PRISM_LLVM_BIN).
+      # PIR lowers for x86_64-linux-gnu: the pinned Linux sysroot gives it glibc + libstdc++.
+      - name: Cache pinned LLVM 23.1.4 + Linux sysroot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prism/tools
+            ~/.prism/toolchain/linux-sysroot
+          key: llvm-sysroot-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml', 'third_party/TOOLCHAIN_PINS.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 + Linux sysroot (sha256-checked)
+        shell: pwsh
+        run: |
+          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
+          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
+          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          python scripts/fetch_toolchain.py linux-sysroot
+          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py linux-sysroot failed" }
+      - name: Configure (Ninja + clang-cl, PRISM_QT=ON, PRISM_Z3=OFF)
         run: >
           cmake -B build-win-qt -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
           "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
           -DPRISM_CUDA=OFF -DPRISM_QT=ON -DPRISM_Z3=OFF
