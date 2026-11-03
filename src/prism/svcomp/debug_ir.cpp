@@ -29,7 +29,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* IR_PASSES = "-passes=mem2reg,lowerswitch,loop-simplify,lcssa,instnamer";
 
 struct Record {
     std::string block;
@@ -94,6 +93,8 @@ std::pair<std::optional<IrFunc>, Md> parse_debug_ir(const std::string& ir, const
     static const Regex label_re(R"(^([\w.]+):)");
     static const Regex def_re(R"(%([\w.]+) = (\w+))");
     static const Regex dbg_re(R"(@llvm\.dbg\.value\(metadata \S+ (%[\w.]+|[-\w.]+), metadata (!\d+),)");
+    // LLVM 19+ prints debug records instead of intrinsic calls: #dbg_value(i32 %x, !15, ...)
+    static const Regex dbg_rec_re(R"(^#dbg_value\(\S+ (%[\w.]+|[-\w.]+), (!\d+),)");
     static const Regex target_re(R"(label %([\w.]+))");
     static const Regex loop_re(R"(!llvm\.loop (!\d+))");
     for (std::size_t i = *start + 1; i < lines.size(); ++i) {
@@ -112,7 +113,9 @@ std::pair<std::optional<IrFunc>, Md> parse_debug_ir(const std::string& ir, const
             f.defs[d->group(1)] = cur;
             if (d->group(2) == "phi") f.phis[cur].insert(d->group(1));
         }
-        if (auto r = dbg_re.search_match(t)) {
+        auto r = dbg_re.search_match(t);
+        if (!r) r = dbg_rec_re.search_match(t);
+        if (r) {
             std::string v = r->group(1);
             f.records.push_back(Record{cur, idx, v.starts_with("%") ? v.substr(1) : "#" + v, r->group(2)});
         }
@@ -331,7 +334,7 @@ std::optional<std::string> debug_ir(const fs::path& task) {
                              "-o", "-"});
     auto r = stages_detail::run_argv(argv, "", 120.0);
     if (r.rc != 0 || r.timeout) return std::nullopt;
-    auto o = stages_detail::run_argv({opt->string(), "-S", IR_PASSES}, r.out, 120.0);
+    auto o = stages_detail::run_argv({opt->string(), "-S", pir::c_ir_passes(*opt)}, r.out, 120.0);
     if (o.rc != 0 || o.timeout) return std::nullopt;
     return o.out;
 }

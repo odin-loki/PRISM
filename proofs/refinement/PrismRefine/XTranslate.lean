@@ -481,11 +481,64 @@ def freeChk (j : Nat) (P : Arg) (kd : Nat) : List PStmt :=
 
 def freeT : List Nat := [64, 1, 8, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
+/-- `MemTr::dealloc` of a `FILE` (kind 8, `fclose`): one MEM-INVALID-FREE check
+for another kind instead of the two allocator checks. -/
+def freeChkF (j : Nat) (P : Arg) : List PStmt :=
+  [.assign j (.bin .lshr) [P, c64 48], .assign (j + 1) (.cmp .ne) [.v j 64, c64 0],
+   .assign (j + 2) .objKind [P], .assign (j + 3) .objLive [P],
+   .assign (j + 4) (.cmp .eq) [.v (j + 2) 8, .c 8 0], .assign (j + 5) (.bin .and) [.v (j + 1) 1, .v (j + 4) 1],
+   .check (.v (j + 5) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 6) (.cmp .ne) [.v (j + 2) 8, .c 8 0], .assign (j + 7) (.bin .and) [.v (j + 1) 1, .v (j + 6) 1],
+   .assign (j + 8) (.bin .and) [P, c64 (2 ^ 48 - 1)], .assign (j + 9) (.cmp .ne) [.v (j + 8) 64, c64 0],
+   .assign (j + 10) (.bin .and) [.v (j + 7) 1, .v (j + 9) 1],
+   .check (.v (j + 10) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 11) (.cmp .eq) [.v (j + 2) 8, .c 8 2], .assign (j + 12) (.cmp .eq) [.v (j + 2) 8, .c 8 5],
+   .assign (j + 13) (.cmp .eq) [.v (j + 2) 8, .c 8 6], .assign (j + 14) (.bin .or) [.v (j + 12) 1, .v (j + 13) 1],
+   .assign (j + 15) (.bin .or) [.v (j + 11) 1, .v (j + 14) 1],
+   .assign (j + 16) (.cmp .ne) [.v (j + 2) 8, .c 8 8], .assign (j + 17) (.bin .and) [.v (j + 7) 1, .v (j + 16) 1],
+   .check (.v (j + 17) 1) "free-invalid" "MEM-INVALID-FREE",
+   .assign (j + 18) (.cmp .eq) [.v (j + 2) 8, .c 8 8], .assign (j + 19) (.cmp .eq) [.v (j + 3) 1, .c 1 0],
+   .assign (j + 20) (.bin .and) [.v (j + 18) 1, .v (j + 19) 1],
+   .assign (j + 21) (.bin .and) [.v (j + 7) 1, .v (j + 20) 1],
+   .check (.v (j + 21) 1) "double-free" "MEM-DOUBLE-FREE"]
+
+def freeTF : List Nat := [64, 1, 8, 1, 1, 1, 1, 1, 64, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+def freeChkK (j : Nat) (P : Arg) (kd : Nat) : List PStmt := if kd = 8 then freeChkF j P else freeChk j P kd
+
+def freeTK (kd : Nat) : List Nat := if kd = 8 then freeTF else freeT
+
+/-- `MemTr::fresh_cstr` (`__prism_fresh_cstr`, D136), temporaries from `k`:
+the drawn length, its bound, `n + 1`, the size check of `MemTr::alloc`, the
+object, `p + n` and the NUL store. -/
+def freshCore (k kd : Nat) : List PStmt :=
+  [.havoc k, .assign (k + 1) (.cmp .ult) [.v k 64, c64 4096], .assume (.v (k + 1) 1),
+   .assign (k + 2) (.bin .add) [.v k 64, c64 1],
+   .assign (k + 3) (.cmp .ult) [.v (k + 2) 64, c64 (2 ^ 47)], .assume (.v (k + 3) 1),
+   .alloc (k + 4) (.v (k + 2) 64) kd 2 16,
+   .assign (k + 5) (.bin .add) [.v (k + 4) 64, .v k 64],
+   .store (.v (k + 5) 64) (.c 8 0) (.c 1 1)]
+
+def freshT : List Nat := [64, 1, 64, 1, 64, 64]
+
 /-- The size check of `MemTr::alloc`: a variable size below `2^47` is
 assumed (a constant one is checked by the translator). -/
 def hallocSz (k1 : Nat) : Arg → List PStmt × List Nat
   | .c _ _ => ([], [])
   | N => ([.assign k1 (.cmp .ult) [N, c64 (2 ^ 47)], .assume (.v k1 1)], [1])
+
+/-- `MemTr::write_havoc` (`__prism_havoc_bytes`, D136) of `N` bytes at `D`,
+temporaries from `g`: the guard `N ≠ 0`, the write checks under it, the size
+check of `MemTr::alloc`, a fresh `extern` object of arbitrary bytes, the copy
+and the end of the object's lifetime. -/
+def havocCore (g : Nat) (D N : Arg) : List PStmt :=
+  let a := g + 1 + (accTG true).length
+  let o := a + (hallocSz a N).2.length
+  [.assign g (.cmp .ne) [N, c64 0]] ++ (accChkG (g + 1) g D N true ++ ((hallocSz a N).1 ++
+    [.alloc o N 7 2 16, .memcpy D (.v o 64) N, .free (.v o 64)]))
+
+def havocT (g : Nat) (N : Arg) : List Nat :=
+  [1] ++ accTG true ++ (hallocSz (g + 1 + (accTG true).length) N).2 ++ [64]
 
 /-- `MemTr::obj_size_remaining`: bytes from `p` to the end of its object. -/
 def hobjszCore (k : Nat) (P : Arg) : List PStmt :=
@@ -511,7 +564,6 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
     need (look c.sh d).isNone "outside fragment: result with a shadow"
     pure (sa ++ [.assign i .copy [A.setW w]], ta)
   | .alloca d size al => do
-    need (!c.inlined) "outside fragment: alloca in an inlined function"
     need (decide (size < 2 ^ 47)) "UNENCODED: stack object larger than 2^47 bytes"
     let i ← dstX c d 64
     need (look c.sh d).isNone "outside fragment: result with a shadow"
@@ -620,6 +672,38 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
             .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-cmp" "PTR-COMPARE",
             .assign i (.cmp (uPred p)) [A, B]],
           ta ++ tb ++ [64, 64, 1])
+  | .psub d fl a b => do
+    need (flagsOk .sub fl) "outside fragment: flags"
+    let (sa, ta, A) ← trOpndX c 64 false k a
+    let (sb, tb, B) ← trOpndX c 64 false (k + ta.length) b
+    let j := k + ta.length + tb.length
+    -- `Tr::binop`: the operands, `MemTr::ptr_sub_check` (`obj(x) != obj(y)`,
+    -- PTR-COMPARE), the flag checks, then the subtraction
+    let (sc, tc) := emitAll (j + 3) (checks .sub fl 64 A B)
+    let i ← dstX c d 64
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    pure (sa ++ sb ++ [.assign j (.bin .lshr) [A, c64 48], .assign (j + 1) (.bin .lshr) [B, c64 48],
+            .assign (j + 2) (.cmp .ne) [.v j 64, .v (j + 1) 64], .check (.v (j + 2) 1) "ptr-sub" "PTR-COMPARE"] ++
+            sc ++ [.assign i (.bin .sub) [A, B]],
+          ta ++ tb ++ [64, 64, 1] ++ tc)
+  | .acmp d p a b => do
+    need (p == .eq || p == .ne || p == .ult || p == .ule || p == .ugt || p == .uge)
+      "UNENCODED: signed icmp of address values"
+    let (sa, ta, A) ← trOpndX c 64 false k a
+    let (sb, tb, B) ← trOpndX c 64 false (k + ta.length) b
+    let i ← dstX c d 1
+    need (look c.sh d).isNone "outside fragment: result with a shadow"
+    let j := k + ta.length + tb.length
+    -- `MemTr::addr_cmp`: the comparison; for an order, also the objects, their
+    -- equality, an unknown bit and the select; then the copy into the result
+    if p == .eq || p == .ne then
+      pure (sa ++ sb ++ [.assign j (.cmp p) [A, B], .assign i .copy [.v j 1]], ta ++ tb ++ [1])
+    else
+      pure (sa ++ sb ++ [.assign j (.cmp p) [A, B], .assign (j + 1) (.bin .lshr) [A, c64 48],
+              .assign (j + 2) (.bin .lshr) [B, c64 48], .assign (j + 3) (.cmp .eq) [.v (j + 1) 64, .v (j + 2) 64],
+              .havoc (j + 4), .assign (j + 5) .select [.v (j + 3) 1, .v j 1, .v (j + 4) 1],
+              .assign i .copy [.v (j + 5) 1]],
+            ta ++ tb ++ [1, 64, 64, 1, 1, 1])
   | .nondet d w => do
     need (okW w) "UNENCODED: width"
     let i ← dstX c d w
@@ -644,9 +728,9 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       pure (sn ++ r.1 ++ [.alloc i N kd ini 16], tn ++ r.2)
     | none => pure (sn ++ r.1 ++ [.alloc (k + tn.length + r.2.length) N kd ini 16], tn ++ r.2 ++ [64])
   | .hfree p kd kill => do
-    need (kd != 8 && decide (kd < 256)) "outside fragment: release kind"
+    need (decide (kd < 256)) "outside fragment: release kind"
     let (sp, tp, P) ← trOpndX c 64 true k p
-    pure (sp ++ freeChk (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeT)
+    pure (sp ++ freeChkK (k + tp.length) P kd ++ (if kill then [.free P] else []), tp ++ freeTK kd)
   | .hobjsz d p => do
     let (sp, tp, P) ← trOpndX c 64 false k p
     let j := k + tp.length
@@ -656,6 +740,45 @@ def trSInstX (c : Ctx) (k : Nat) : SInst → Except String (List PStmt × List N
       need (look c.sh d).isNone "outside fragment: result with a shadow"
       pure (sp ++ hobjszCore j P ++ [.assign i .copy [.v (j + 4) 64]], tp ++ hobjszT)
     | none => pure (sp ++ hobjszCore j P, tp ++ hobjszT)
+  | .hread p n => do
+    let (sp, tp, D) ← trOpndX c 64 true k p
+    let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
+    need (N.width == 64) "outside fragment: length width"
+    let g := k + tp.length + tn.length
+    pure (sp ++ sn ++ ([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N false),
+      tp ++ tn ++ ([1] ++ accTG false))
+  | .hfresh d kd => do
+    need (decide (kd < 256)) "outside fragment: allocation kind"
+    match d with
+    | some d => do
+      let i ← dstX c d 64
+      need (look c.sh d).isNone "outside fragment: result with a shadow"
+      pure (freshCore k kd ++ [.assign i .copy [.v (k + 4) 64]], freshT)
+    | none => pure (freshCore k kd, freshT)
+  | .hmemset d b len => do
+    let (sd, td, D) ← trOpndX c 64 true k d
+    let (sb, tb, B) ← trOpndX c 32 true (k + td.length) b
+    need (B.width == 32) "outside fragment: byte width"
+    let (sn, tn, N) ← trOpndX c 64 true (k + td.length + tb.length) len
+    need (N.width == 64) "outside fragment: length width"
+    let g := k + td.length + tb.length + tn.length
+    let o := g + 1 + (accTG true).length
+    pure (sd ++ sb ++ sn ++ (([.assign g (.cmp .ne) [N, c64 0]] ++ accChkG (g + 1) g D N true) ++
+        [.assign o (.cast .trunc) [B], .memset D (.v o 8) N]),
+      td ++ tb ++ tn ++ (([1] ++ accTG true) ++ [8]))
+  | .vcheck a w cls => do
+    need (okW w) "UNENCODED: width"
+    let (sa, ta, A) ← trOpndX c w true k a
+    need (A.width == w) "outside fragment: check operand width"
+    let j := k + ta.length
+    pure (sa ++ [.assign j (.cmp .eq) [A, .c w 0], .check (.v j 1) "model" cls], ta ++ [1])
+  | .hhavoc p n => do
+    let (sp, tp, D) ← trOpndX c 64 true k p
+    let (sn, tn, N) ← trOpndX c 64 true (k + tp.length) n
+    need (N.width == 64 && (match N with | .c _ b => decide (b < 2 ^ 47) | .v _ _ => true))
+      "UNENCODED: allocation larger than 2^47 bytes"
+    let g := k + tp.length + tn.length
+    pure (sp ++ sn ++ havocCore g D N, tp ++ tn ++ havocT g N)
   | .memset d b len lw => do
     need (okW lw) "UNENCODED: width"
     let (sd, td, D) ← trOpndX c 64 true k d
@@ -803,6 +926,15 @@ def escStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) (j : Nat) (A : Arg) :
     Except String (List PStmt × List Nat) :=
   if retTo.isNone && G.retPtr then (escArgsX c G.escNames).map (fun As => escChk j A As) else .ok ([], [])
 
+/-- `Tr::call`'s `end_lifetime` of an inlined callee's own stack objects at
+its `ret` (`Frame::allocas`); a callee returning a pointer next to them would
+need `stack_escape_check` (outside the fragment). -/
+def freeStmts (G : XFunc) (c : Ctx) (retTo : Option Nat) : Except String (List PStmt) :=
+  if retTo.isSome then
+    if G.retPtr && !G.escNames.isEmpty then .error "outside fragment: inlined function returning a pointer with stack objects"
+    else (escArgsX c G.escNames).map (·.map .free)
+  else .ok []
+
 /-- The terminator; `retTo` is the continuation block of an inlined
 instance (its `ret` jumps there), `none` for the analysed function.  Also
 returns the `Arg` of a returned value (the continuation phi's entry). -/
@@ -818,13 +950,23 @@ def trTermX (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : N
     pure (s, tw, .br C tj fj, none)
   | .ret none => do
     need (G.retw == 0) "outside fragment: ret void in a function returning a value"
-    pure ([], [], (match retTo with | some cb => .jmp cb | none => .ret none), none)
+    let sf ← freeStmts G c retTo
+    pure (sf, [], (match retTo with | some cb => .jmp cb | none => .ret none), none)
   | .ret (some o) => do
     need (G.retw != 0) "outside fragment: ret value in a void function"
     let (s, tw, A) ← trOpndX c G.retw true k o
     let (se, te) ← escStmts G c retTo (k + tw.length) A
-    pure (s ++ se, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
+    let sf ← freeStmts G c retTo
+    pure (s ++ se ++ sf, tw ++ te, (match retTo with | some cb => .jmp cb | none => .ret (some A)), some A)
   | .unreachable => .ok ([.check (.c 1 1) "unreachable" "CXX-UNREACHABLE"], [], .stop, none)
+
+/-- The terminator of a block, or the failing check of a noreturn failure
+call (`Tr::call`: `check(1, prop, cls)`, then the block ends). -/
+def trTermN (G : XFunc) (c : Ctx) (heads : List Nat) (retTo : Option Nat) (k : Nat)
+    (nr : Option (String × String)) (t : LTerm) : Except String (List PStmt × List Nat × PTerm × Option Arg) :=
+  match nr with
+  | some (p, cl) => .ok ([.check (.c 1 1) p cl], [], .stop, none)
+  | none => trTermX G c heads retTo k t
 
 /-! ## Instances and certificates -/
 
@@ -850,10 +992,14 @@ where
     | .xv d w _ _ => [(d, w)]
     | .glob d _ _ _ _ _ => [(d, 64)]
     | .pcmp d _ _ _ => [(d, 1)]
+    | .psub d _ _ _ => [(d, 64)]
+    | .acmp d _ _ _ => [(d, 1)]
     | .nondet d w => [(d, w)]
     | .halloc (some d) _ _ _ => [(d, 64)]
     | .hobjsz (some d) _ => [(d, 64)]
-    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. => []
+    | .hfresh (some d) _ => [(d, 64)]
+    | .hfresh none _ => []
+    | .halloc none _ _ _ | .hobjsz none _ | .vassume .. | .hfree .. | .hhavoc .. | .hread .. | .hmemset .. | .vcheck .. => []
     | .lstart .. | .lend .. | .memcpy .. | .memset .. => []
 
 def xPhisOf (G : XFunc) : List PhiI := G.blocks.flatMap (·.phis)
@@ -901,6 +1047,10 @@ structure TS where
   vars : Array Nat
   blocks : Array PBlock
   insts : Array IInfo
+  /-- `Tr::type_ids`: typeinfo symbols in the order first numbered -/
+  tys : Array String := #[]
+  /-- the number of `invoke`s on the inlined call path (`Tr::handlers`) -/
+  hdl : Nat := 0
   deriving Inhabited
 
 abbrev TM := StateT TS (Except String)
@@ -918,21 +1068,82 @@ def pushTemps (ts : List Nat) : TM Unit :=
 
 def curVars : TM (List Nat) := do return (← get).vars.toList
 
+/-- `Tr::type_id`. -/
+def typeId (t : String) : TM Nat := do
+  let s ← get
+  match s.tys.toList.idxOf? t with
+  | some i => pure (i + 1)
+  | none => do set { s with tys := s.tys.push t }; pure (s.tys.size + 1)
+
+/-- `Tr::at`: a new pointer variable `p + off` (`MemTr::gep` over `i8`,
+inbounds), its statements. -/
+def atX (B : Arg) (off : Nat) : TM (List PStmt × Arg) := do
+  let i ← newVar 64
+  let j := (← get).vars.size
+  pushTemps (gFinT true)
+  pure (gFinS i j B (c64 off) true, .v i 64)
+
+/-- `Tr::st`: an 8-aligned store with its access checks. -/
+def stX (P V : Arg) : TM (List PStmt) := do
+  let k := (← get).vars.size
+  let (sa, ta) := accessChecks k P ((V.width + 7) / 8) true 8
+  pushTemps ta
+  pure (sa ++ [.store P V (.c 1 1)])
+
+/-- `Tr::eh_call` on `std::__throw_*` with no handler (`Tr::raise`,
+`dispatch_type`): the exception object, its header stores, the `main`
+uncaught check, the stop, and the fresh unreachable block. -/
+def throwX (stack : List String) (t : String) : TM (List PStmt) := do
+  let b ← newVar 64
+  let B := Arg.v b 64
+  let tid ← typeId t
+  let s0 ← stX B (c64 tid)
+  let (g1, P1) ← atX B 8
+  let s1 ← stX P1 (c64 0)
+  let (g2, P2) ← atX B 16
+  let (g3, P3) ← atX B 32
+  let s2 ← stX P2 P3
+  let top := stack.headD ""
+  let entry := top == "main" || top.startsWith "_GLOBAL__sub_I" || top.startsWith "__cxx_global_var_init"
+  let _ ← newBlock
+  pure ([.alloc b (c64 96) 7 2 16] ++ s0 ++ g1 ++ s1 ++ g2 ++ g3 ++ s2 ++
+    (if entry then [.check (.c 1 1) "uncaught" "CXX-UNCAUGHT"] else []))
+
 def liftE {α : Type} (e : Except String α) : TM α :=
   match e with
   | .ok a => pure a
   | .error m => throw m
 
-/-- Blocks reachable from the entry (`Tr::normal_blocks`). -/
+/-- The successors of an LLVM block along its terminator. -/
+def xSucc (G : XFunc) (B : XBlock) : List Nat :=
+  match B.term with
+  | .br t => (lookupBlock G.shape t).toList
+  | .cbr _ t f => (lookupBlock G.shape t).toList ++ (lookupBlock G.shape f).toList
+  | _ => []
+
+/-- `normal_blocks`: the blocks reachable from the entry. -/
 def xLive (G : XFunc) : List Nat :=
-  let succ (B : XBlock) : List Nat :=
-    match B.term with
-    | .br t => (lookupBlock G.shape t).toList
-    | .cbr _ t f => (lookupBlock G.shape t).toList ++ (lookupBlock G.shape f).toList
-    | _ => []
   let step (seen : List Nat) : List Nat :=
-    seen ++ ((seen.flatMap fun j => (G.blocks[j]?.map succ).getD []).filter (fun j => !seen.contains j)).eraseDups
+    seen ++ ((seen.flatMap fun j => (G.blocks[j]?.map (xSucc G)).getD []).filter (fun j => !seen.contains j)).eraseDups
   (List.range G.blocks.length).foldl (fun s _ => step s) [0]
+
+/-- `xLive` contains the entry and is closed under `xSucc` (checked, not
+proved: the proof only needs the check). -/
+def xLiveClosed (G : XFunc) : Bool :=
+  (xLive G).contains 0 && (List.range G.blocks.length).all fun j =>
+    !(xLive G).contains j || ((G.blocks[j]?.map (xSucc G)).getD []).all (xLive G).contains
+
+/-- A reachable block's phi names an unreachable predecessor (`Tr` drops
+such incomings; not mirrored). -/
+def xDeadInc (G : XFunc) (live : List Nat) : Bool :=
+  G.blocks.zipIdx.any fun (B, b) => live.contains b && B.phis.any fun p => p.inc.any fun (_, pr) =>
+    match lookupBlock G.shape pr with
+    | some j => !live.contains j
+    | none => false
+
+/-- The number of `alloca`s of `G`. -/
+def xAllocas (G : XFunc) : Nat :=
+  (G.blocks.flatMap fun B => (B.segs.flatMap (·.1)) ++ B.last).countP (·.allocaDst?.isSome)
 
 /-- `Tr::enter_frame`: blocks, result variables, shadow variables of a new
 instance whose parameters are bound to `penv`.  Returns the instance index. -/
@@ -950,6 +1161,10 @@ def enterFrame (G : XFunc) (penv : List (String × Arg)) (lo : Nat) (retTo : Opt
     sh := sh ++ [(d, .v v 1)]
   if !nodupB (env.map Prod.fst) then throw "outside fragment: duplicate SSA name"
   if !nodupB (G.blocks.map XBlock.name) then throw "outside fragment: duplicate block name"
+  -- `Frame::allocas`: an inlined callee's stack objects end at its return,
+  -- those of the entry block before its first call (the others would stay)
+  if retTo.isSome && xAllocas G != G.escNames.length then
+    throw "outside fragment: alloca in an inlined function outside its entry block"
   let hi := (← get).vars.size
   let I : IInfo := { fn := G, env := env, sh := sh, lo := lo, hi := hi, retTo := retTo,
                      blks := heads.map fun h => [h], ks := G.blocks.map fun _ => [],
@@ -973,7 +1188,7 @@ def recordSeg (ι b : Nat) (pb k : Nat) (kid : Option Nat) : TM Unit :=
                | some x => I.kids.modify b (· ++ [x])
                | none => I.kids }
 
-/-- `Tr::run_frame` of instance `ι` (every block must be reachable); the
+/-- `Tr::run_frame` of instance `ι` (the unreachable blocks are skipped); the
 return sites `(PIR block, returned Arg)` of the instance are returned. -/
 def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List (Nat × Arg))
   | 0, _, _ => throw "UNENCODED: call depth"
@@ -981,12 +1196,18 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     let I ← getInst ι
     let G := I.fn
     let live := xLive G
-    if (List.range G.blocks.length).any (fun j => !live.contains j) then
-      throw "outside fragment: unreachable block"
+    if !xLiveClosed G then throw "internal: reachable blocks not closed"
+    if xDeadInc G live then throw "outside fragment: phi incoming from an unreachable block"
+    if G.blocks.zipIdx.any (fun (B, b) => B.stub && live.contains b) then
+      throw "outside fragment: a block the exporter stubbed is reachable"
     let mut rets : List (Nat × Arg) := []
     let mut tails : List Nat := []
     for (B, b) in G.blocks.zipIdx do
       let mut cur := (I.heads.getD b 0)
+      -- `run_frame` translates only the reachable blocks
+      if !live.contains b then
+        tails := tails ++ [cur]
+        continue
       -- segments ending in a call
       for (is, cl) in B.segs do
         let I ← getInst ι
@@ -1019,7 +1240,9 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
         let Iκ ← getInst κ
         setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .jmp (Iκ.heads.getD 0 0) }
         recordSeg ι b cb k (some κ)
+        if cl.inv then modify fun s => { s with hdl := s.hdl + 1 }
         let sites ← runFrame M depth fuel (stack ++ [cl.f]) κ
+        if cl.inv then modify fun s => { s with hdl := s.hdl - 1 }
         match rv? with
         | some (rv, uv) =>
           if !sites.isEmpty then
@@ -1034,7 +1257,20 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
       let k := (← get).vars.size
       let (s1, t1) ← liftE (trSInstsX c k B.last)
       pushTemps t1
-      let (s2, t2, T, A?) ← liftE (trTermX G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.term)
+      if B.thr then
+        -- a handler is live: `dispatch_type` may route the exception to a landing pad
+        if (← get).hdl != 0 then
+          throw "outside fragment: std::__throw_* under an invoke (handler dispatch)"
+        -- `Tr::eh_call`: the arguments are evaluated (their checks), then the raise
+        let k2 := k + t1.length
+        let (s0, t0, _) ← liftE (trArgsX (I.ctx (← curVars)) k2 (B.thrA.map fun (o, w) => (o, w, w)))
+        pushTemps t0
+        let s2 := s0 ++ (← throwX stack B.thrT)
+        setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := .stop }
+        setInst ι fun I => { I with ks := I.ks.modify b (· ++ [k]) }
+        tails := tails ++ [cur]
+        continue
+      let (s2, t2, T, A?) ← liftE (trTermN G (I.ctx (← curVars)) I.heads I.retTo (k + t1.length) B.nr B.term)
       pushTemps t2
       setBlock cur fun pb => { pb with stmts := s1 ++ s2, term := T }
       -- the first temporary of the last segment
@@ -1046,6 +1282,7 @@ def runFrame (M : XMod) (depth : Nat) : Nat → List String → Nat → TM (List
     -- phis (`resolve_phis`): predecessors are the blocks that end each LLVM block
     let I ← getInst ι
     for (B, b) in G.blocks.zipIdx do
+      if !live.contains b then continue
       let qs ← liftE (trPhisX G (I.ctx (← curVars)) tails B.phis)
       setBlock (I.heads.getD b 0) fun pb => { pb with phis := qs }
     pure rets

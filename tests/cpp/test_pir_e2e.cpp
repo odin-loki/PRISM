@@ -9,8 +9,16 @@
 #include "prism/pir.hpp"
 #include "prism/pir/frontend.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <fstream>
+#ifdef _WIN32
+#  include <process.h>
+#  define getpid _getpid
+#else
+#  include <unistd.h>
+#endif
 #include <set>
 #include <string>
 #include <vector>
@@ -46,7 +54,7 @@ const std::vector<Row>& rows() {
         {"coro_gen.cpp", "coro_ok", "PROVED", ""},
         {"cxx.cpp", "constexpr_ok", "PROVED", ""},
         {"cxx.cpp", "cxx_add_bad", "FAILED", ""},
-        {"cxx.cpp", "cxx_shl_ok", "PROVED", ""},
+        {"cxx.cpp", "cxx_shl_ok", "FAILED", "INT-SHIFT-UB"},  // C++17 default: a << 4 can exceed unsigned int
         {"cxx.cpp", "get", "NEEDS-HARNESS", ""},
         {"cxx.cpp", "use_twice_ok", "PROVED", ""},
         {"div0.c", "div_bad", "FAILED", "INT-DIV-ZERO"},
@@ -91,7 +99,7 @@ const std::vector<Row>& rows() {
         {"kinduct.c", "kind_countdown", "PROVED-UNBOUNDED", ""},
         {"kinduct.c", "kind_open", "BOUNDED", ""},
         {"loops.c", "count4_ok", "PROVED", ""},
-        {"loops.c", "loop_long_bounded", "BOUNDED", ""},
+        {"loops.c", "loop_long_sum", "PROVED-UNBOUNDED", ""},  // triangular template (2s == i(i-1))
         {"loops.c", "loop_long_inv", "PROVED-UNBOUNDED", ""},
         {"loops.c", "loop_ovf_bad", "FAILED", ""},
         {"loops.c", "nested_ok", "PROVED", ""},
@@ -434,4 +442,134 @@ TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {
     CHECK(f.cls == "MEM-STRICT-ALIAS");
     REQUIRE(got.contains({"mem_alias.c", "char_ok"}));
     CHECK(got.at({"mem_alias.c", "char_ok"})->status == prism::laws::PROVED);
+}
+
+// Regression (OOM at 12.8 GB): run_pir lowers, analyses and validates in
+// batches and frees each batch's IR. Batch size 1 must give the same verdicts
+// as one batch holding every unit.
+TEST_CASE("pir e2e: PRISM_PIR_BATCH=1 gives the same verdicts as the default") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::vector<fs::path> paths;
+    for (const char* n : {"overflow.c", "casts.c", "loops.c"})
+        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+    REQUIRE(paths.size() >= 2);
+    auto verdicts = [&](const char* batch) {
+#ifdef _WIN32
+        _putenv_s("PRISM_PIR_BATCH", batch);
+#else
+        ::setenv("PRISM_PIR_BATCH", batch, 1);
+#endif
+        std::map<std::pair<std::string, std::string>, std::string> m;
+        for (auto& f : pp::run_pir(paths, cfg))
+            if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+        return m;
+    };
+    auto one = verdicts("1");
+    auto all = verdicts("1000");
+#ifdef _WIN32
+    _putenv_s("PRISM_PIR_BATCH", "");
+#else
+    ::unsetenv("PRISM_PIR_BATCH");
+#endif
+    CHECK(!one.empty());
+    CHECK(one == all);
+}
+
+// Regression (straggler): without a per-function default budget one function's
+// Z3 query held a whole batch for 10+ minutes on full testdata.
+TEST_CASE("pir: the default per-function budget is bounded and follows --timeout") {
+    auto cfg = prism::default_config();
+    CHECK(pp::default_function_budget_s(cfg) > 0);
+    CHECK(pp::default_function_budget_s(cfg) >= 300.0);
+    cfg.timeout = 120;
+    CHECK(pp::default_function_budget_s(cfg) == doctest::Approx(1200.0));
+}
+
+// Gap category 1 (pir-vs-bmc, 242 of 339 superset gaps): clang rejected the
+// whole unit for one function bmc's front end skipped; the other functions
+// had no verdict. Now the rejected function is cut out (NEEDS-HARNESS) and
+// the rest of the unit is checked.
+TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit is checked") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "planted";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::vector<fs::path> paths;
+    for (const char* n : {"aligned_unenc.c", "nested_fn.c"})
+        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+    if (paths.empty()) return;
+    std::map<std::string, prism::Finding> m;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) m[*f.function] = f;
+    if (fs::exists(dir / "aligned_unenc.c")) {
+        REQUIRE(m.count("aligned_unenc_bad"));
+        CHECK(m["aligned_unenc_bad"].status == "NEEDS-HARNESS");
+        CHECK(m["aligned_unenc_bad"].message.find("front end rejects") != std::string::npos);
+        REQUIRE(m.count("aligned_unenc_ok"));
+        CHECK(m["aligned_unenc_ok"].status.starts_with("PROVED"));
+    }
+    if (fs::exists(dir / "nested_fn.c")) {
+        REQUIRE(m.count("nested_fn_ok"));
+        CHECK(m["nested_fn_ok"].status.starts_with("PROVED"));
+        // the nested function itself is hoisted to file scope and checked
+        REQUIRE(m.count("inner"));
+        CHECK(m["inner"].status.starts_with("PROVED"));
+    }
+}
+
+// Gap (hard conflicts, 115 of 117): reach_error's assert(0) is FAILED alone.
+// Discharged at the call sites only when every caller inlined it and is proved.
+TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and stays FAILED otherwise") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    if (!pp::pir_test_c_file_supported("sink.c")) return;
+    const auto dir = fs::temp_directory_path() / ("prism_sink_" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    auto put = [&](const char* name, const char* main_body) {
+        std::ofstream(dir / name) << "extern void __assert_fail(const char*, const char*, unsigned, const char*)"
+                                     " __attribute__((__noreturn__));\n"
+                                     "void reach_error(void) { __assert_fail(\"0\", \"x.c\", 1, \"reach_error\"); }\n"
+                                     "int main(void) {\n" << main_body << "\n}\n";
+        return dir / name;
+    };
+    std::vector<fs::path> paths{put("sink_safe.c", "  int x = 3; if (x != 3) reach_error(); return 0;"),
+                                put("sink_bad.c", "  reach_error(); return 0;")};
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::map<std::pair<std::string, std::string>, std::string> m;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+    fs::remove_all(dir);
+    CHECK(m[{"sink_safe.c", "reach_error"}] == "PROVED-ASSUMING");
+    // The sink itself is discharged to its callers either way; the failure is
+    // reported where it is reached (main), not lost.
+    CHECK(m[{"sink_bad.c", "reach_error"}] == "PROVED-ASSUMING");
+    CHECK(m[{"sink_bad.c", "main"}] == "FAILED");
+    CHECK(m[{"sink_safe.c", "main"}].starts_with("PROVED"));
+}
+
+// Gap (harness.h nd_char): a static inline helper in a header that no unit
+// calls is emitted by no unit; the header is lowered alone for it.
+TEST_CASE("pir: unused static inline function in a header gets a verdict") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    if (!pp::pir_test_c_file_supported("hdr.c")) return;
+    const auto dir = fs::temp_directory_path() / ("prism_hdr_" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    std::ofstream(dir / "h.h") << "static inline int used_h(int x) { return x & 7; }\n"
+                                  "static inline int unused_h(int x) { return x / 2; }\n";
+    std::ofstream(dir / "u.c") << "#include \"h.h\"\nint user(int x) { return used_h(x); }\n";
+    cfg.root = dir;
+    cfg.jobs = 1;
+    std::map<std::pair<std::string, std::string>, std::string> m;
+    for (auto& f : pp::run_pir({dir / "u.c", dir / "h.h"}, cfg))
+        if (f.function) m[{fs::path(f.file).filename().string(), *f.function}] = f.status;
+    fs::remove_all(dir);
+    CHECK(m[{"h.h", "unused_h"}].starts_with("PROVED"));
+    CHECK(m[{"u.c", "user"}].starts_with("PROVED"));
 }

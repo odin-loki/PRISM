@@ -175,31 +175,31 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(take < clear);
     CHECK(move_as.find("this != &__o") != std::string::npos);
 
-    const std::string fail = body_of(src, "void regex::_M_fail(const char* __cls, const char* __msg) noexcept");
-    REQUIRE_FALSE(fail.empty());
-    const auto check = fail.find("__prism_check(0, __cls, __msg);");
-    const auto trap = fail.find("__builtin_trap();");
-    REQUIRE(check != std::string::npos);
-    REQUIRE(trap != std::string::npos);
-    CHECK(check < trap);
-    CHECK(fail.find("return") == std::string::npos);
-    CHECK(fail.find("_M_own") == std::string::npos);
+    // every failure is reported in place (no _M_fail helper: a call to a
+    // noreturn helper hid the trap from the encoder): __prism_check, then trap
+    CHECK(src.find("_M_fail") == std::string::npos);
+    for (std::size_t at = src.find("{ __prism_check(0, \""); at != std::string::npos;
+         at = src.find("{ __prism_check(0, \"", at + 1)) {
+        const auto end = src.find('}', at);
+        REQUIRE(end != std::string::npos);
+        CHECK(src.substr(at, end - at).find("); __builtin_trap(); ") != std::string::npos);
+    }
 
     const std::string from = body_of(src, "void regex::_M_from_cstr(const char* __s)");
     REQUIRE_FALSE(from.empty());
-    const auto null_fail = from.find("_M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\")");
+    const auto null_fail = from.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\")");
     const auto oob_fail =
-        from.find("_M_fail(\"MEM-OOB-READ\", \"std::regex C string is not terminated within its object\")");
+        from.find("__prism_check(0, \"MEM-OOB-READ\", \"std::regex C string is not terminated within its object\")");
     const auto own = from.find("_M_own(");
     REQUIRE(null_fail != std::string::npos);
     REQUIRE(oob_fail != std::string::npos);
     REQUIRE(own != std::string::npos);
     CHECK(null_fail < oob_fail);
     CHECK(oob_fail < own);
-    CHECK(from.find("if (__s == nullptr) _M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\");") !=
+    CHECK(from.find("if (__s == nullptr) { __prism_check(0, \"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\"); __builtin_trap(); }") !=
           std::string::npos);
-    CHECK(from.find("if (__n >= __bytes) _M_fail(\"MEM-OOB-READ\", \"std::regex C string is not terminated within its "
-                    "object\");") != std::string::npos);
+    CHECK(from.find("if (__n >= __bytes) { __prism_check(0, \"MEM-OOB-READ\", \"std::regex C string is not terminated "
+                    "within its object\"); __builtin_trap(); }") != std::string::npos);
     CHECK(from.find("if (__n != 0) _M_own(__s, static_cast<std::size_t>(__n));") != std::string::npos);
     CHECK(from.find("__prism_obj_size(__s)") != std::string::npos);
 
@@ -236,7 +236,7 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     REQUIRE_FALSE(flagged.empty());
     CHECK(src.find("regex(const char* __s, unsigned __f) : _M_str(nullptr), _M_len(0) {") != std::string::npos);
     const auto flag_null =
-        flagged.find("if (__s == nullptr) _M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\");");
+        flagged.find("if (__s == nullptr) { __prism_check(0, \"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\"); __builtin_trap(); }");
     const auto flag_store = flagged.find("_M_flags = __f;");
     const auto flag_from = flagged.find("_M_from_cstr(__s);");
     REQUIRE(flag_null != std::string::npos);

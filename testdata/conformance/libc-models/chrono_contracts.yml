@@ -1,0 +1,6 @@
+format_version: 1
+input_files: chrono_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  chrono_add_small_true: true

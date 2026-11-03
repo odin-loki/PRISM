@@ -1,0 +1,6 @@
+format_version: 1
+input_files: regex_contracts.cpp
+language: C++
+property: libc-contract
+expected:
+  regex_owns_true: true

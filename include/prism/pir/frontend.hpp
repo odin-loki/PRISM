@@ -5,6 +5,7 @@
 #include "prism/config.hpp"
 #include "prism/export.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,13 @@ PRISM_API std::vector<std::string> lp64_target_flags();
 
 // LP64 target plus, on _WIN32, -idirafter the libc name-header shim (conc, testdata/pir, debug_ir).
 PRISM_API std::vector<std::string> lp64_clang_driver_flags();
+
+// opt's name for the switch-lowering pass: "lowerswitch" in older LLVM, "lower-switch"
+// after the rename (LLVM 23 rejects the old name). Asked from `opt --print-passes`,
+// cached per opt path; "lowerswitch" when the probe fails.
+PRISM_API std::string lowerswitch_pass(const std::filesystem::path& opt);
+// "-passes=mem2reg,<lowerswitch>,loop-simplify,lcssa,instnamer" for that opt (C PIR pipeline).
+PRISM_API std::string c_ir_passes(const std::filesystem::path& opt);
 
 // True when find_frontend has clang and opt and the LP64 triple probe succeeds.
 // When false and notrun_reason is non-null, set to a Law-1 MESSAGE ("NOTRUN: ...").

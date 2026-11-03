@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <set>
 #include <string>
@@ -1172,12 +1173,67 @@ void cd_again_ok(void) {
 }
 )";
 
+// CTRL-SIBLING-ASYMMETRY: idx is range-checked in get_ok, not in get_bad.
+const char* kSiblingC = R"(int table[16];
+int get_ok(int idx) {
+    if (idx >= 16)
+        return -1;
+    return table[idx];
+}
+int get_bad(int idx) {
+    return table[idx]; // expect: CTRL-SIBLING-ASYMMETRY
+}
+int get_tested_ok(int idx) {
+    if (idx == 3) return 0;
+    return table[idx];
+}
+int other_ok(long n) {
+    return table[n];
+}
+)";
+
+// MEM-CAPACITY-FIRST: cap doubled before realloc; failure arm keeps it.
+const char* kCapacityC = R"(typedef __SIZE_TYPE__ size_t;
+void *realloc(void *, size_t);
+void free(void *);
+#define NULL ((void *)0)
+struct buf { int *data; size_t cap; };
+int grow_bad(struct buf *b) {
+    b->cap *= 2; // expect: MEM-CAPACITY-FIRST
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL)
+        return -1;
+    b->data = p;
+    return 0;
+}
+int grow_undo_ok(struct buf *b) {
+    b->cap *= 2;
+    int *p = realloc(b->data, b->cap);
+    if (p == NULL) {
+        b->cap /= 2;
+        return -1;
+    }
+    b->data = p;
+    return 0;
+}
+int grow_after_ok(struct buf *b) {
+    int *p = realloc(b->data, b->cap + 64);
+    if (p == NULL)
+        return -1;
+    b->cap *= 2;
+    b->data = p;
+    return 0;
+}
+)";
+
 }  // namespace
 
 TEST_CASE("astlint: ported regex classes on C (planted + guards, both front ends)") {
     check_marks("ported.c", kPortedC);
     check_marks("nowait.c", kNowaitC);
     check_marks("lock_order.c", kLockOrderC);
+    check_marks("sibling.c", kSiblingC);
+    check_marks("capacity.c", kCapacityC);
 }
 
 TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, MEM-REALLOC-SELF, "
@@ -1199,9 +1255,16 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
     prism::Config cfg;
     cfg.jobs = 1;
     cfg.root = root;
+    // One clang run per (file, front end): the checks below ask about several classes and functions of
+    // the same file, and each run re-parses the platform headers (minutes on a small Windows runner).
+    std::map<std::pair<std::string, int>, std::vector<prism::Finding>> runs;
     auto ast_lines = [&](const char* file, const char* cls, const char* func, Backend b) {
         std::set<int> lines;
-        for (auto& f : prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)) {
+        auto key = std::make_pair(std::string(file), static_cast<int>(b));
+        auto it_run = runs.find(key);
+        if (it_run == runs.end())
+            it_run = runs.emplace(key, prism::astlint::run_lints_ast({root / file}, root, cfg, clang, b)).first;
+        for (auto& f : it_run->second) {
             auto it = f.extra.find("engine");
             if (it == f.extra.end() || it->second != "clang-ast") continue;
             if (f.status != prism::laws::FAILED || f.cls != cls) continue;

@@ -1,4 +1,4 @@
-﻿// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
+// Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
 #include "agent.hpp"
 #include "fuse.hpp"
@@ -366,7 +366,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         return f;
     };
     auto is_bin_crash = [&](const ProcRun& rr) {
-        if (rr.timeout) return false;
+        if (rr.timeout || rr.failed) return false;
         if (rr.crashed || rr.rc < 0) return true;
         auto low = lower_copy(rr.err);
         return low.find("runtime error") != std::string::npos ||
@@ -396,7 +396,14 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
             auto rr = runs[k].get();
             if (hit) continue;
             ++n;
-            if (is_bin_crash(rr)) hit = bin_crash(window[k], rr.err, n);
+            if (rr.failed && !rr.timeout) {
+                // The harness never ran (for example the ASan runtime DLL is not
+                // on PATH): Law 7, the binary half is NOTRUN, never a crash.
+                auto f = no_crash();
+                f.extra["binary"] = std::string(laws::NOTRUN);
+                f.extra["binary_error"] = rr.err.substr(0, 400);
+                hit = f;
+            } else if (is_bin_crash(rr)) hit = bin_crash(window[k], rr.err, n);
         }
         return hit;
     };

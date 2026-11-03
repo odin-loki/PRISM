@@ -609,8 +609,9 @@ behaviour the real library can:
   `std::unique_ptr` are not replaced: their libstdc++ code is small,
   loop-free and already checks exactly the standard's preconditions under
   `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
-  `std::unordered_map`/`unordered_set`, `std::list`, `std::deque` and
-  iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
+  `std::deque` is the model `models/cxx/deque` (one heap node per element,
+  invalidation is a real free, `docs/finish-notes/deque.md`;
+  `libc-models/deque_contracts`). Iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
   into `libstdc++.so`).
 
 Encoder support added for the model: a use of a loop value outside its loop
@@ -789,11 +790,7 @@ element shift plus the symbolic position); `vector_insert.cpp` (insert at a
 position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
 twin) is in the suite now; measured 2026-09-25 per harness on a loaded
 machine: `vector_insert_uaf_false` FAILED MEM-UAF in 146 s,
-`vector_insert_true` did not finish within 1800 s (the insert position is a
-symbolic index, so the element addresses have no value set and the
-byte-level read-over-write chains stay; its properties are UNSAT one by one
-in 1–10 s each but there are ~1,750 of them at unwind 8, and the grouped
-queries time out under load). `map_contracts.cpp` checks the map/set
+`vector_insert_true` did not finish within 1800 s then; on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default the smaller of 60% of RAM and a quarter of RLIMIT_AS), checked before every query (a soft cap; Z3's own `memory_max_size` is twice that, because past it Z3 is not reliably recoverable: `priority_queue_contracts.cpp` under the conformance runner's 4 GB RLIMIT_AS hit SIGSEGV in `Z3_simplify` about one run in two), and a function that starts while the process's Z3 memory is over the cap is UNKNOWN "not checked". Measured 2026-10-29 under 4 GB: `vector_insert` true PROVED / false refuted, `priority_queue_contracts` reports all 7 functions (1 PROVED, 6 UNKNOWN on memory) instead of crashing. `map_contracts.cpp` checks the map/set
 models (insert/operator[]/erase/at/order, multiset counts; false twins: an
 erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
 order contract). It did not finish within 1200 s before value sets
@@ -1231,8 +1228,9 @@ doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
 refuted` (strlen and copy loops over heap objects of any size; reading one
 past the terminator, an off-by-one write, an unterminated string and a write
 through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
-(`loop_long_inv` closes; `loop_long_bounded`, whose invariant is
-non-linear, stays BOUNDED).
+(`loop_long_inv` closes; `loop_long_sum`, whose invariant
+`2s == i(i-1)` is non-linear, closes through the bounded triangular
+template, admitted only by Houdini and the induction check).
 
 ## Roadmap 2.3 / 2.6 coverage
 
@@ -1394,7 +1392,7 @@ switches the combined query off (plain answers and certificates per VC). Plain m
 
 The plain property queries, the unwinding assertion, k-induction and Houdini
 of one function share a **function budget** (`CheckOptions::function_budget_s`;
-the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none). One clock
+the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none; unset, max(300 s, 10 x `--timeout`)). One clock
 covers both unwind attempts of `check_function` and the stage's memory-policy
 re-checks of the same function (static initialisation, arbitrary or initial
 globals), which also use the run's solver cache, Houdini budget and core share.
@@ -1529,3 +1527,26 @@ No wrong PROVED was found in either engine on `testdata/`.
 * Units that clang rejects (undeclared identifiers, missing headers in the
   lint-oriented `_api`/`_lint` snippets) are one `ERROR` row per unit; the
   old parser still extracts functions from them (the "absent" column).
+
+
+## Memory budget
+
+Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill
+or a crash. `src/prism/membudget.cpp` fixes one budget per process at start:
+`$PRISM_MEM_BUDGET_MB` (or `$PRISM_PIR_MEM_MB`), else 75% of the smallest of
+the cgroup limit (v2 `memory.max` minus `memory.current`, or v1), MemAvailable
+and half of RLIMIT_AS (address space only bounds; it is not memory). The
+process's resident set is compared with 80% of it (headroom for the stop
+latency), and the machine's MemAvailable with `$PRISM_MEM_RESERVE_MB`
+(default 800), in three places: the encoder (SymMem's read-over-write chain,
+value-set walks and havoc reads, sampled every 4096 steps, plus every encoded
+node), before every query, and a 100 ms watchdog that interrupts every live
+Z3 context (pir's and the portfolio's) mid-query. The function then ends as
+UNKNOWN with "memory budget reached ... (process RSS, budget, source)"; its
+contexts are freed and the heap is trimmed, so the next function is checked
+normally. With `--jobs N` the threads share the one process budget.
+Past half the budget the portfolio solves without the query-cache key (that
+key copies, simplifies and prints the whole formula) and one in-process solver
+at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort; past
+it Z3 is not reused in the process and the remaining functions are re-checked
+in a fresh process (`rerun_after_oom`). Tests: `tests/cpp/test_membudget.cpp`.

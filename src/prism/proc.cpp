@@ -384,7 +384,19 @@ RunOut run(const RunSpec& spec) {
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     r.rc = r.timed_out ? -1 : static_cast<int>(code);
-    if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
+    // The loader's own NTSTATUS codes mean the child never ran its code (a
+    // missing DLL such as the ASan runtime, a bad image, a failed DLL init):
+    // that is a start failure, not a crash of the program under test.
+    const bool loader_failed = code == 0xC0000135u /* DLL_NOT_FOUND */ || code == 0xC0000139u /* ENTRYPOINT_NOT_FOUND */ ||
+                               code == 0xC000007Bu /* INVALID_IMAGE_FORMAT */ || code == 0xC0000142u /* DLL_INIT_FAILED */;
+    if (!r.timed_out && loader_failed) {
+        r.failed = true;
+        if (r.err.empty()) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "process did not start: loader status 0x%08lX", static_cast<unsigned long>(code));
+            r.err = buf;
+        }
+    } else if (!r.timed_out && code >= 0xC0000000u) r.crashed = true;
     close_h(out_r);
     close_h(err_r);
     close_h(stdout_file);

@@ -13,14 +13,14 @@ int expected_value_true(int c) {
 
 // error() on an unexpected is the stored E.
 int expected_error_true(int c) {
-    std::expected<int, int> e(std::unexpected<int>(c));
+    std::expected<int, int> e{std::unexpected<int>(c)};  // braces: not a function declaration
     if (e.has_value()) return 0;
     return e.error();
 }
 
 // value() when the expected holds an E (precondition has_value()).
 int expected_value_false(int c) {
-    std::expected<int, int> e(std::unexpected<int>(c));
+    std::expected<int, int> e{std::unexpected<int>(c)};  // braces: not a function declaration
     return e.value();
 }
 

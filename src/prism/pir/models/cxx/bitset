@@ -367,14 +367,14 @@ public:
         }
     }
     constexpr bitset operator<<(size_t __position) const noexcept {
-        bitset __out(*this);
-        __out <<= __position;
-        return __out;
+        bitset __outv(*this);
+        __outv <<= __position;
+        return __outv;
     }
     constexpr bitset operator>>(size_t __position) const noexcept {
-        bitset __out(*this);
-        __out >>= __position;
-        return __out;
+        bitset __outv(*this);
+        __outv >>= __position;
+        return __outv;
     }
 
     // [bitset.members]. Each stored bit becomes the AND of the two bits at
@@ -392,9 +392,9 @@ public:
         }
     }
     constexpr bitset operator&(const bitset& __rhs) const noexcept {
-        bitset __out(*this);
-        __out &= __rhs;
-        return __out;
+        bitset __outv(*this);
+        __outv &= __rhs;
+        return __outv;
     }
 
     // [bitset.members]. Each stored bit becomes the OR of the two bits at
@@ -412,9 +412,9 @@ public:
         }
     }
     constexpr bitset operator|(const bitset& __rhs) const noexcept {
-        bitset __out(*this);
-        __out |= __rhs;
-        return __out;
+        bitset __outv(*this);
+        __outv |= __rhs;
+        return __outv;
     }
 
     // [bitset.members]. Each result bit is the XOR of the two bits at that
@@ -432,9 +432,9 @@ public:
         }
     }
     constexpr bitset operator^(const bitset& __rhs) const noexcept {
-        bitset __out(*this);
-        __out ^= __rhs;
-        return __out;
+        bitset __outv(*this);
+        __outv ^= __rhs;
+        return __outv;
     }
 
     // [bitset.members]. Unary complement. Each stored bit is flipped, then
@@ -442,14 +442,14 @@ public:
     // word and stays empty. The complement does not allocate and does not
     // invent a 1 from padding. This is not a binary operator.
     constexpr bitset operator~() const noexcept {
-        bitset __out(*this);
+        bitset __outv(*this);
         if constexpr (_Nb == 0) {
-            return __out;
+            return __outv;
         } else {
             for (size_t __i = 0; __i < _S_nwords; ++__i)
-                __out._M_words._M_w[__i] = ~__out._M_words._M_w[__i];
-            __out._M_sanitize();
-            return __out;
+                __outv._M_words._M_w[__i] = ~__outv._M_words._M_w[__i];
+            __outv._M_sanitize();
+            return __outv;
         }
     }
 

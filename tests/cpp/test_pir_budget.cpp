@@ -47,6 +47,10 @@ bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
         MESSAGE(why);
         return true;
     }
+    if (!pp::z3_available()) {
+        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        return true;
+    }
     return false;
 }
 
@@ -319,10 +323,11 @@ TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after ever
     CHECK(v.extra.at("function_budget_s") == "0.3");
     CHECK(seen.count("k-induction@") == 0);
     CHECK(seen.count("houdini") == 0);
-    // without the delay the same function is BOUNDED with k-induction and Houdini tried
+    // without the delay Houdini runs and the triangular invariant
+    // (2s == i(i-1)) closes the loop: a proof, never a promoted BOUNDED
     auto v2 = pp::check_function(*fn, opts(0));
-    CHECK(v2.status == prism::laws::BOUNDED);
-    CHECK(v2.extra.at("k_induction") == "step-open");
+    CHECK(v2.status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(v2.extra.at("k_induction") == "closed-invariants");
 }
 
 TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after every VC (two loops) (skips without "
@@ -373,8 +378,8 @@ TEST_CASE("pir budget: the k-induction step is budgeted; k=2 is not tried once i
     CHECK((k == "step-open at k=1; k=2 not attempted (function budget of 0.5 s spent; PRISM_FUNCTION_BUDGET)" ||
            contains(k, "unknown (pir function budget of 0.5 s spent")));
     CHECK(took < 1.1);
-    // the same function closes nothing without a budget either (Law 2: never promoted)
-    CHECK(pp::check_function(*fn, opts(0)).status == prism::laws::BOUNDED);
+    // without a budget Houdini's triangular invariant closes it (a real proof)
+    CHECK(pp::check_function(*fn, opts(0)).status == prism::laws::PROVED_UNBOUNDED);
 }
 
 TEST_CASE("pir budget: Houdini never runs past what is left of the function budget (skips without clang/opt)") {

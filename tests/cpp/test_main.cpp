@@ -504,6 +504,10 @@ TEST_CASE("real-world: pir finds root/include headers; a missing header is NOTRU
     // include/ and was pir ERROR "clang front end failed".
     prism::Config cfg;
     if (!prism::pir::frontend_usable(cfg)) return;
+    if (!prism::pir::z3_available()) {
+        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        return;
+    }
     auto td = std::filesystem::temp_directory_path() / "prism_rw_pir_inc";
     std::filesystem::remove_all(td);
     std::filesystem::create_directories(td / "include");
