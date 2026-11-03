@@ -131,25 +131,24 @@ void scoped_timer::initialize() {
 }
 
 void scoped_timer::finalize() {
-    unsigned deleted = 0;
-    while (deleted < num_workers) {
-        workers.lock();
-        for (auto w : available_workers) {
-            w->work = EXITING;
-            w->cv.notify_one();
-        }
-        decltype(available_workers) cleanup_workers;
-        std::swap(available_workers, cleanup_workers);
-        workers.unlock();
-
-        for (auto w : cleanup_workers) {
-            ++deleted;
-            w->m_thread.join();
-            delete w;
-        }
+    // PRISM: retire only the workers idle right now. Upstream looped until every
+    // worker (busy ones included) had come back, so a fork() while other threads
+    // kept timers running spun in this pthread_atfork prepare handler forever
+    // (test_fork_serial livelock). Busy workers keep running in the parent and
+    // return to the pool as usual; a forked child only execs.
+    workers.lock();
+    for (auto w : available_workers) {
+        w->work = EXITING;
+        w->cv.notify_one();
     }
-    num_workers = 0;
-    available_workers.clear();
+    decltype(available_workers) cleanup_workers;
+    std::swap(available_workers, cleanup_workers);
+    workers.unlock();
+    for (auto w : cleanup_workers) {
+        w->m_thread.join();
+        delete w;
+        --num_workers;
+    }
 }
 
 void scoped_timer::init_state(unsigned ms, event_handler * eh) {
