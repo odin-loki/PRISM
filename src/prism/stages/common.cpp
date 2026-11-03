@@ -363,12 +363,20 @@ Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::strin
     cfg.jobs = 1;
     cfg.unwind = unwind;
     cfg.pir_only_props = only_props;
-    std::optional<Finding> out;
-    for (auto& f : pir::run_pir({src}, cfg))
+    std::optional<Finding> out, stage_row;
+    for (auto& f : pir::run_pir({src}, cfg)) {
         if (f.function && *f.function == fn.name) {
             out = f;
             break;
         }
+        // A whole-stage row (z3 not built, no front end) applies to every
+        // function: keep its NOTRUN, never turn it into "no result" ERROR.
+        if (!f.function && !stage_row && !laws::is_proof(f.status)) stage_row = f;
+    }
+    if (!out && stage_row) {
+        out = std::move(stage_row);
+        out->function = fn.name;
+    }
     std::error_code ec;
     fs::remove_all(dir, ec);
     if (!out) return make_find("pir", laws::ERROR, fn, "", "pir produced no result for the function", laws::STRENGTH_READS);

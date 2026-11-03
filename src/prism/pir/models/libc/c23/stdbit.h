@@ -64,23 +64,31 @@ static inline unsigned int stdc_bit_ceil_ui(unsigned int x) {
     unsigned int w = stdc_bit_width_ui((unsigned int)(x - 1));
     return w < 32u ? (unsigned int)((unsigned int)1 << w) : (unsigned int)0;
 }
-static inline unsigned int stdc_leading_zeros_ul(unsigned long x) { return x ? (unsigned int)(__builtin_clzll((unsigned long long)x) - (64 - 64)) : 64u; }
+/* unsigned long is 64-bit on LP64, 32-bit on ILP32 and LLP64 (Windows). */
+#if defined(__SIZEOF_LONG__)
+#define PRISM_STDBIT_ULW (__SIZEOF_LONG__ * 8)
+#elif defined(_WIN32)
+#define PRISM_STDBIT_ULW 32
+#else
+#define PRISM_STDBIT_ULW 64
+#endif
+static inline unsigned int stdc_leading_zeros_ul(unsigned long x) { return x ? (unsigned int)(__builtin_clzll((unsigned long long)x) - (64 - PRISM_STDBIT_ULW)) : ((unsigned int)PRISM_STDBIT_ULW); }
 static inline unsigned int stdc_leading_ones_ul(unsigned long x) { return stdc_leading_zeros_ul((unsigned long)~x); }
-static inline unsigned int stdc_trailing_zeros_ul(unsigned long x) { return x ? (unsigned int)(__builtin_ctzll((unsigned long long)x)) : 64u; }
+static inline unsigned int stdc_trailing_zeros_ul(unsigned long x) { return x ? (unsigned int)(__builtin_ctzll((unsigned long long)x)) : ((unsigned int)PRISM_STDBIT_ULW); }
 static inline unsigned int stdc_trailing_ones_ul(unsigned long x) { return stdc_trailing_zeros_ul((unsigned long)~x); }
 static inline unsigned int stdc_first_leading_zero_ul(unsigned long x) { return (unsigned long)~x ? stdc_leading_ones_ul(x) + 1u : 0u; }
 static inline unsigned int stdc_first_leading_one_ul(unsigned long x) { return x ? stdc_leading_zeros_ul(x) + 1u : 0u; }
 static inline unsigned int stdc_first_trailing_zero_ul(unsigned long x) { return (unsigned long)~x ? stdc_trailing_ones_ul(x) + 1u : 0u; }
 static inline unsigned int stdc_first_trailing_one_ul(unsigned long x) { return x ? stdc_trailing_zeros_ul(x) + 1u : 0u; }
 static inline unsigned int stdc_count_ones_ul(unsigned long x) { return (unsigned int)(__builtin_popcountll((unsigned long long)x)); }
-static inline unsigned int stdc_count_zeros_ul(unsigned long x) { return 64u - stdc_count_ones_ul(x); }
+static inline unsigned int stdc_count_zeros_ul(unsigned long x) { return ((unsigned int)PRISM_STDBIT_ULW) - stdc_count_ones_ul(x); }
 static inline _Bool stdc_has_single_bit_ul(unsigned long x) { return stdc_count_ones_ul(x) == 1u; }
-static inline unsigned int stdc_bit_width_ul(unsigned long x) { return 64u - stdc_leading_zeros_ul(x); }
+static inline unsigned int stdc_bit_width_ul(unsigned long x) { return ((unsigned int)PRISM_STDBIT_ULW) - stdc_leading_zeros_ul(x); }
 static inline unsigned long stdc_bit_floor_ul(unsigned long x) { return x ? (unsigned long)((unsigned long)1 << (stdc_bit_width_ul(x) - 1u)) : (unsigned long)0; }
 static inline unsigned long stdc_bit_ceil_ul(unsigned long x) {
     if (x <= 1) return (unsigned long)1;
     unsigned int w = stdc_bit_width_ul((unsigned long)(x - 1));
-    return w < 64u ? (unsigned long)((unsigned long)1 << w) : (unsigned long)0;
+    return w < ((unsigned int)PRISM_STDBIT_ULW) ? (unsigned long)((unsigned long)1 << w) : (unsigned long)0;
 }
 static inline unsigned int stdc_leading_zeros_ull(unsigned long long x) { return x ? (unsigned int)(__builtin_clzll((unsigned long long)x) - (64 - 64)) : 64u; }
 static inline unsigned int stdc_leading_ones_ull(unsigned long long x) { return stdc_leading_zeros_ull((unsigned long long)~x); }

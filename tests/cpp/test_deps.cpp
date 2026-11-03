@@ -1068,6 +1068,8 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
     auto allowed = [&](std::string_view rel) -> bool {
         if (rel.starts_with("third_party/")) return true;
         if (rel == "tools/svcomp/prism.py") return true;
+        // CI bootstrap only (pinned cmake / LLVM fetch before any build exists).
+        if (rel == "scripts/fetch_llvm.py" || rel == "scripts/fetch_toolchain.py") return true;
         if (!k_python_engine_deleted) {
             for (const char* pre : {"prism/", "tests/", "scripts/", "tools/"})
                 if (rel.starts_with(pre)) return true;

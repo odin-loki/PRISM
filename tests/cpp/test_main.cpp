@@ -5574,7 +5574,7 @@ std::vector<prism::FunctionInfo> fns_of(const std::string& file, const std::stri
     return prism::extract_functions(p, p.string());
 }
 // pir on fn's file; std != 0 sets the unit's -std= through a compile database
-std::string checker_status(prism::FunctionInfo fn, int std = 0) {
+[[maybe_unused]] std::string checker_status(prism::FunctionInfo fn, int std = 0) {
     const std::filesystem::path file = fn.file;
     const auto dir = file.parent_path();
     if (std != 0) {
@@ -5593,6 +5593,7 @@ std::string checker_status(prism::FunctionInfo fn, int std = 0) {
 }
 }  // namespace
 
+#ifdef PRISM_HAS_Z3  // pir needs Z3; without it run_pir is one NOTRUN stage row
 TEST_CASE("pir shift rules follow the C++ standard of the unit (F7)") {
     const char* pos = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return 1 << s;\n}\n";
     const char* neg = "int f(int s) {\n    if (s < 0 || s > 31) return 0;\n    return -1 << s;\n}\n";
@@ -5619,6 +5620,7 @@ TEST_CASE("pir shift rules follow the C++ standard of the unit (F7)") {
     CHECK(prism::cxx_std_year("-std=c++98") == 3);
     CHECK(prism::cxx_std_year("-std=c17") == 0);
 }
+#endif  // PRISM_HAS_Z3
 
 TEST_CASE("with_cxx_std reads -std from compile_commands.json") {
     auto dir = std::filesystem::temp_directory_path() / ("prism_cxxstd_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
