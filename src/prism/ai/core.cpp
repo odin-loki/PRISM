@@ -592,7 +592,10 @@ struct SessionState {
     bool open = false;
     Config cfg;
     bool tried = false;
-    std::shared_ptr<ModelBackend> test_backend;  // set_session_backend_for_testing: survives Session open/close
+    // set_session_backend_for_testing: a backend set outside a session survives
+    // the sessions a CLI entry point opens; one set inside a session ends with it.
+    std::shared_ptr<ModelBackend> test_backend;
+    bool test_in_session = false;
     std::shared_ptr<ModelBackend> backend;
     std::string why = "no AI session (library call outside the pipeline)";
     std::atomic<int> counter{0};
@@ -619,6 +622,8 @@ Session::~Session() {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mu);
     s.open = false;
+    if (s.test_in_session) s.test_backend.reset();
+    s.test_in_session = false;
     s.backend.reset();
     s.tried = false;
     s.why = "no AI session (library call outside the pipeline)";
@@ -652,6 +657,7 @@ void set_session_backend_for_testing(std::shared_ptr<ModelBackend> backend) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mu);
     s.test_backend = std::move(backend);
+    s.test_in_session = s.open && s.test_backend;
     s.tried = false;
     s.backend.reset();
 }

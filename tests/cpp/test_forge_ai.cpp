@@ -1,3 +1,4 @@
+#include <cmath>
 // FORGE mind engine end to end on a tiny real .fpk (FORGE tests/tiny_model.hpp):
 // no test double, the same forge_llm path PRISM uses for Qwen 3.5.
 #include <doctest/doctest.h>
@@ -42,11 +43,16 @@ TEST_CASE("forge ai: a grammar-constrained completion only emits the grammar's l
     CHECK((r.text == "yes" || r.text == "no"));
 }
 
-TEST_CASE("forge ai: a generative .fpk is not an embedder (clear error, no crash)") {
+TEST_CASE("forge ai: embedding with a generative .fpk is a vector or a clear error, never a crash") {
+    // FORGE main pools a generative model's hidden states; older FORGE refused.
     std::string err;
     auto v = prism::forge_llm::embed(prism_test::tiny_fpk(), "int x;", &err);
-    CHECK_FALSE(v.has_value());
-    CHECK_FALSE(err.empty());
+    if (v) {
+        CHECK_FALSE(v->empty());
+        for (double x : *v) CHECK(std::isfinite(x));
+    } else {
+        CHECK_FALSE(err.empty());
+    }
 }
 
 TEST_CASE("forge ai: a missing .fpk is not a model") {
