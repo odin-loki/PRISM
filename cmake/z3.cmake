@@ -114,6 +114,14 @@ else()
   file(REMOVE "${_prism_z3gen_dir}/z3gen_python.txt")
 endif()
 
+# An earlier find_package(Python3) (a subproject, before this file) cached the host
+# interpreter's probe results; FindPython reuses them for the new
+# executable and fails on Windows (Support.cmake "list GET given empty
+# list"). Drop them so Z3's find_package probes z3gen afresh.
+foreach(_v _Python3_EXECUTABLE _Python3_INTERPRETER_SIGNATURE _Python3_INTERPRETER_PROPERTIES)
+  unset(${_v} CACHE)
+  unset(${_v})
+endforeach()
 set(Python3_EXECUTABLE "${_prism_python3}" CACHE FILEPATH "PRISM z3gen (no Python for Z3 codegen)" FORCE)
 set(Python3_FOUND TRUE CACHE BOOL "" FORCE)
 set(Python3_VERSION "3.11.0" CACHE STRING "" FORCE)
