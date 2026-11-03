@@ -116,7 +116,9 @@ std::vector<Finding> rlef_repair_with(const Finding& fail, const Config& cfg, co
     for (int i = 0; i < rounds; ++i) {
         auto r = engine.complete(messages, 120);
         if (!r.error.empty()) {
-            if (llm_httpish(r.error) && best_score < 0) {
+            // No candidate yet: a model that cannot answer (transport or a lost
+            // FORGE session) is NOTRUN, never a score.
+            if (best_score < 0) {
                 auto f = nr("repair", r.error);
                 f.extra["install"] = LLM_INSTALL;
                 f.extra["backend"] = r.backend;
