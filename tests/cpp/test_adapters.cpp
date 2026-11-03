@@ -2202,6 +2202,12 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
         MESSAGE("no C compiler: the PRISM_AFL=1 run with afl-fuzz present is not exercised");
         return;
     }
+#ifdef _WIN32
+    // AFL++ has no native Windows build and the fake afl-fuzz is a POSIX sh
+    // script; the run hung until the 30-minute CI timeout. Not exercised here.
+    MESSAGE("NOTRUN on Windows: no AFL++ (the PRISM_AFL=1 run with afl-fuzz present is POSIX-only)");
+    return;
+#endif
     {
         // PRISM_AFL=1 with afl-fuzz present and --allow-exec: AFL runs once.
         EnvVar afl("PRISM_AFL", std::string("1"));
