@@ -10,6 +10,11 @@
 
 #include <tiny_model.hpp>  // FORGE tests/ (on the prism_tests include path)
 
+// FORGE os headers may pull in <windows.h>; its ERROR macro breaks laws::ERROR.
+#if defined(_WIN32) && defined(ERROR)
+#  undef ERROR
+#endif
+
 #include <filesystem>
 #include <functional>
 #include <memory>

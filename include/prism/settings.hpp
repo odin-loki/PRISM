@@ -7,6 +7,11 @@
 
 #include <forge/os/settings.hpp>
 
+// FORGE os headers may pull in <windows.h>; its ERROR macro breaks laws::ERROR.
+#if defined(_WIN32) && defined(ERROR)
+#  undef ERROR
+#endif
+
 #include <cstdint>
 #include <cstdlib>
 #include <string>
