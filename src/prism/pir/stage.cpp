@@ -1567,6 +1567,24 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             }
         }
     }
+    if (cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // C++ that C++23 removed (dynamic exception specifications
+        // `throw(T)`, removed in C++17; std::auto_ptr ...) is still a C++14
+        // program: try once more as gnu++14 with the platform library. Only
+        // the language level changes; every check flag stays.
+        auto c14 = fl;
+        std::replace(c14.begin(), c14.end(), std::string("-std=c++23"), std::string("-std=gnu++14"));
+        std::vector<std::string> av{cc->string()};
+        av.insert(av.end(), c14.begin(), c14.end());
+        av.insert(av.end(), {"-o", o0.string(), src.string()});
+        auto r2 = prism::exec::run_process(av, timeout_s);
+        if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+            r = std::move(r2);
+            fl = std::move(c14);
+            argv = av;
+            if (cxx_models) *cxx_models = "libstdc++ (the unit is C++14: C++23 rejects it)";
+        }
+    }
     if (r.failed || r.timed_out || r.rc != 0) {
         err = r.timed_out ? "clang timed out" : "clang: " + first_error(r.text);
         return std::nullopt;
