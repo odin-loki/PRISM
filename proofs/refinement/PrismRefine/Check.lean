@@ -548,7 +548,7 @@ def parseXLlvm (name : String) (ls : List (List String)) :
       let pp ← opnd? p
       f := { f with cur := some (bn, ps, sg,
         .load (pairReg r 1) (← nat? w1) (.reg (pairReg r 2)) (← nat? a1) ::
-        .gep (pairReg r 2) true pp [.first (.const 0) 32 (← nat? sz), .field (← nat? off1)] ::
+        .gep (pairReg r 2) true false pp [.first (.const 0) 32 (← nat? sz), .field (← nat? off1)] ::
         .load (pairReg r 0) (← nat? w0) pp (← nat? a0) :: is) }
     | ["memcpy", d, sp, n, lw, mv, so] =>
       let (bn, ps, sg, is) ← inBlock
