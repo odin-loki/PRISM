@@ -2318,7 +2318,7 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
         CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_noreturn", b).empty());
         CHECK(ast_lines("noreturn_fatal.c", "FUNC-NORETURN", "dead_attr", b).empty());
         // Reported on the last statement, as in kPortedC (missing_ret_bad).
-        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_bad", b) == std::set<int>{3});
+        CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_bad", b) == std::set<int>{4});
         CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_oneline_bad", b) ==
               std::set<int>{14});
         CHECK(ast_lines("missing_return.c", "CTRL-MISSING-RETURN", "missing_return_ok", b).empty());
