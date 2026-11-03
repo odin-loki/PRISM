@@ -103,6 +103,7 @@ struct HoudiniOut {
     std::string footprint;
     int prechecks = 0;      // optimistic final queries (all candidates alive assumed)
     std::string cache;      // "", "hit (proof re-checked)", "hit (no proof)", "stored"
+    double final_s = -1;    // seconds given to the final query at the fixpoint (-1: not asked)
     bool undecided = false; // some answer came from the time limit or an unknown
 };
 
@@ -1491,6 +1492,7 @@ HoudiniOut Houdini::run() {
     // the final query keeps a minimum of its own (the run's Houdini budget
     // does not cut it), but never runs past the function budget
     const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
+    out.final_s = final_budget;
     // the optimistic solver is not asked again: hand its memory back before
     // the final query (nested loops: both together crossed the budget)
     sopt.reset();
