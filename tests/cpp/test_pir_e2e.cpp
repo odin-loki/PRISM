@@ -283,7 +283,6 @@ const std::vector<const char*>& pir_files_all() {
 }
 
 const std::vector<const char*>& pir_files() { return pir_files_all(); }
-}
 
 std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     const std::vector<prism::Finding>& out) {
