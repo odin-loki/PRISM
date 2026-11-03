@@ -57,8 +57,6 @@ private:
 // When false and notrun_reason is non-null, set to a Law-1 MESSAGE ("NOTRUN: ...").
 PRISM_API bool frontend_usable(const Config& cfg, std::string* notrun_reason = nullptr);
 
-// Every testdata/pir C file runs on every host (the Linux sysroot supplies glibc off Linux).
-PRISM_API bool pir_test_c_file_supported(const char* basename);
 
 // C++ PIR (libstdc++ models): frontend_usable and clang++ on PATH.
 PRISM_API bool pir_cxx_usable(const Config& cfg, std::string* notrun_reason = nullptr);

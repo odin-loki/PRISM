@@ -190,8 +190,6 @@ bool frontend_usable(const Config& cfg, std::string* notrun_reason) {
     return true;
 }
 
-bool pir_test_c_file_supported(const char* basename) { return basename != nullptr; }
-
 bool pir_cxx_usable(const Config& cfg, std::string* notrun_reason) {
     if (!frontend_usable(cfg, notrun_reason)) return false;
     auto fe = find_frontend(cfg);
