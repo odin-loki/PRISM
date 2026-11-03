@@ -3858,6 +3858,172 @@ TEST_CASE("pir: lean export of freeze, undef and direct calls") {
     fs::remove_all(dir);
 }
 
+static const char* kLeanThrowIr = R"IR(
+@_ZTIi = external constant ptr
+declare ptr @__cxa_allocate_exception(i64)
+declare void @__cxa_throw(ptr, ptr, ptr)
+
+define i32 @ok(i32 %x) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %e, ptr @_ZTIi, ptr null)
+  unreachable
+}
+
+define i32 @other_ptr(i32 %x, ptr %q) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %q, ptr @_ZTIi, ptr null)
+  unreachable
+}
+
+define i32 @dyn_type(i32 %x, ptr %ti) {
+entry:
+  %e = call ptr @__cxa_allocate_exception(i64 4)
+  store i32 %x, ptr %e, align 16
+  call void @__cxa_throw(ptr %e, ptr %ti, ptr null)
+  unreachable
+}
+)IR";
+
+TEST_CASE("pir: lean export of a user throw only in clang's exact pattern") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanThrowIr);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"ok", "other_ptr", "dyn_type"}) {
+        fs::path dir = fs::temp_directory_path() / "prism-lean-export-thr";
+        fs::remove_all(dir);
+        tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+        tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
+        std::ifstream in(dir / "unit.pirl");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        INFO(name << "\n" << text);
+        bool good = std::string(name) == "ok";
+        CHECK((text.find("L uthrow _ZTIi %e - -\n") != std::string::npos) == good);
+        CHECK((text.find("L xalloc %e #4 64\n") != std::string::npos) == good);
+        CHECK((text.find("L unsupported") != std::string::npos) == !good);
+        in.close();
+        fs::remove_all(dir);
+    }
+}
+
+static const char* kLeanTermIr = R"IR(
+declare void @_ZSt9terminatev()
+
+define i32 @ok(i32 %x) {
+entry:
+  call void @_ZSt9terminatev()
+  unreachable
+}
+
+define i32 @not_last(i32 %x, ptr %p) {
+entry:
+  call void @_ZSt9terminatev()
+  store i32 %x, ptr %p, align 4
+  unreachable
+}
+)IR";
+
+TEST_CASE("pir: lean export of std::terminate only right before unreachable") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanTermIr);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"ok", "not_last"}) {
+        fs::path dir = fs::temp_directory_path() / "prism-lean-export-term";
+        fs::remove_all(dir);
+        tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+        tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
+        std::ifstream in(dir / "unit.pirl");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        INFO(name << "\n" << text);
+        bool good = std::string(name) == "ok";
+        CHECK((text.find("L terminate\n") != std::string::npos) == good);
+        CHECK((text.find("L unsupported") != std::string::npos) == !good);
+        in.close();
+        fs::remove_all(dir);
+    }
+}
+
+static const char* kLeanCalleeGlobIr = R"IR(
+@k = internal constant [2 x i32] [i32 7, i32 9], align 4
+@m = internal global i32 3, align 4
+@t = internal thread_local global i32 3, align 4
+define internal i32 @rd(i32 %i) {
+entry:
+  %p = getelementptr inbounds i32, ptr @k, i32 1
+  %v = load i32, ptr %p, align 4
+  ret i32 %v
+}
+define internal i32 @wr(i32 %i) {
+entry:
+  %v = load i32, ptr @m, align 4
+  store i32 %i, ptr @m, align 4
+  ret i32 %v
+}
+define internal i32 @tl(i32 %i) {
+entry:
+  %v = load i32, ptr @t, align 4
+  ret i32 %v
+}
+define i32 @ok(i32 %x) {
+entry:
+  %r = call i32 @rd(i32 %x)
+  ret i32 %r
+}
+define i32 @mut(i32 %x) {
+entry:
+  %r = call i32 @wr(i32 %x)
+  ret i32 %r
+}
+define i32 @bad(i32 %x) {
+entry:
+  %r = call i32 @tl(i32 %x)
+  ret i32 %r
+}
+)IR";
+
+TEST_CASE("pir: lean export passes globals to inlined callees, not thread_local ones") {
+    namespace fs = std::filesystem;
+    auto m = prism::pir::ir::parse_module(kLeanCalleeGlobIr);
+    prism::pir::TranslateOptions opt;
+    for (const char* name : {"ok", "mut", "bad"}) {
+        fs::path dir = fs::temp_directory_path() / "prism-lean-export-cglob";
+        fs::remove_all(dir);
+        tm_setenv("PRISM_PIR_LEAN_EXPORT", dir.string().c_str());
+        const auto* f = m.find(name);
+        REQUIRE(f != nullptr);
+        auto t = prism::pir::translate(m, *f, opt);
+        prism::pir::export_lean_pair(dir, "unit", m, *f, opt, t);
+        tm_unsetenv("PRISM_PIR_LEAN_EXPORT");
+        std::ifstream in(dir / "unit.pirl");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        INFO(name << "\n" << text);
+        const std::string n = name;
+        if (n == "ok") {
+            CHECK(text.find("L glob %@k ") != std::string::npos);
+            CHECK(text.find(" @k 64") != std::string::npos);
+            CHECK(text.find(" %@k 64") != std::string::npos);
+        }
+        if (n == "mut") {
+            CHECK(text.find("L glob %@m ") != std::string::npos);
+            CHECK(text.find("L store 32 %i %@m 4") != std::string::npos);
+        }
+        CHECK((text.find("L unsupported") != std::string::npos) == (n == "bad"));
+        in.close();
+        fs::remove_all(dir);
+    }
+}
+
 static const char* kLeanIntrIr = R"IR(
 declare void @llvm.lifetime.start.p0(i64, ptr)
 declare void @llvm.lifetime.end.p0(i64, ptr)

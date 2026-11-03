@@ -82,6 +82,9 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // a scalar pair load's field-1 address, numbered between its two fields
+    // (the order export_lean's `L pload` gives the Lean frame)
+    std::map<std::string, int> pairq;
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
     // var -> undef shadow (i1): the value may be (computed from) LLVM undef,
     // so every use may observe a different value (refinement finding 4)
@@ -160,7 +163,8 @@ struct Tr final : pirmem::TrApi {
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
     std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
-    bool oom_pending_ = false;                        // oom_ preassigned, its object not yet emitted
+    bool oom_pending_ = false;
+    int caught_var_ = -1;                             // caught_'s preassigned variable                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
     Snap snap();
@@ -517,6 +521,9 @@ struct Tr final : pirmem::TrApi {
                 oom_ = Arg::v(newvar("_oom", ptr_w()), ptr_w());
                 oom_pending_ = true;
             }
+            // the hidden caught-exceptions stack, when a handler can be entered:
+            // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
+            if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
         }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
@@ -547,6 +554,7 @@ struct Tr final : pirmem::TrApi {
                         // two-field aggregate (the { ptr, i32 } exception pair
                         // rebuilt before `resume`, a returned std::pair ...)
                         int a = newvar(fr.prefix + in.result + ".0", sp->first);
+                        if (in.op == "load") fr.pairq[in.result] = newvar(tmpname("pair.f1"), ptr_w());
                         int s = newvar(fr.prefix + in.result + ".1", sp->second);
                         mark_fp_pair(in.ty, a, s);
                         fr.pairs[in.result] = {a, s};
@@ -630,6 +638,8 @@ struct Tr final : pirmem::TrApi {
                 mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0, oom_->var);
                 oom_pending_ = false;
             }
+            if (caught_var_ >= 0 && !caught_)
+                caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
@@ -830,6 +840,27 @@ struct Tr final : pirmem::TrApi {
                     pphis.push_back(std::move(p));
                 }
             }
+            return;
+        }
+        if (fr.ret_block < 0 && !in.ops.empty() && scalar_pair(in.ops[0].ty)) {
+            // the analysed function returning a scalar pair: each pointer
+            // field's stack-escape check, then a return without a value (PIR's
+            // `ret` carries one; the fields' checks are what is observed)
+            if (in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
+                throw Unenc{"UNENCODED: return of " + in.ops[0].ty.text};
+            if (auto pu = fr.upair.find(in.ops[0].v.name);
+                pu != fr.upair.end() && (pu->second[0] || pu->second[1]))
+                throw Unenc{"UNENCODED: undef field returned"};
+            auto [a, s] = fr.pairs[in.ops[0].v.name];
+            for (unsigned k = 0; k < 2; ++k) {
+                int src = k == 0 ? a : s;
+                if (in.ops[0].ty.elems[k].kind == ir::Type::Ptr)
+                    mt.stack_escape_check(cur, Arg::v(src, out.vars[static_cast<std::size_t>(src)].width),
+                                          fr.allocas, line);
+            }
+            Term t;
+            t.kind = Term::Ret;
+            out.blocks[static_cast<std::size_t>(cur)].term = t;
             return;
         }
         // ret (a raw byte copy is not a use: its shadow goes to the caller)
@@ -1562,7 +1593,7 @@ struct Tr final : pirmem::TrApi {
     // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
     // Field k of the scalar pair `ty` stored at p: fn(k, pointer, alignment).
     template <typename Fn>
-    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn) {
+    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn, int q = -1) {
         const auto& lay = mt.layout();
         const uint64_t off1 = lay.field_offset(ty, 1);
         const unsigned a0 = align ? align : lay.align(ty);
@@ -1571,7 +1602,7 @@ struct Tr final : pirmem::TrApi {
         unsigned a1 = a0;
         while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
         fn(0, p, a0);
-        int q = newvar(tmpname("pair.f1"), ptr_w());
+        if (q < 0) q = newvar(tmpname("pair.f1"), ptr_w());
         mt.gep(cur, q, p, ty, {Arg::c(32, 0), Arg::c(32, 1)}, true, line, 1);
         fn(1, Arg::v(q, ptr_w()), a1);
     }
@@ -1607,7 +1638,7 @@ struct Tr final : pirmem::TrApi {
             auto [a, s] = fr.pairs[in.result];
             pair_fields(cur, in.ty, p, in.align, line, [&](unsigned k, Arg fp, unsigned al) {
                 mt.load(cur, k == 0 ? a : s, in.ty.elems[k], fp, al, line);
-            });
+            }, fr.pairq.at(in.result));
             return true;
         }
         if (op == "store" && in.ops.size() == 2 && in.ops[0].v.kind == ir::Value::Local &&
@@ -2334,7 +2365,8 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         }
         if (contracts > 1)
             tr.out.assumptions.push_back("pointer parameters point to distinct objects (\\separated)");
-        if (f.ret.kind != ir::Type::Void) {
+        // a scalar pair result is not returned (Tr::term): width 0
+        if (f.ret.kind != ir::Type::Void && !tr.scalar_pair(f.ret)) {
             tr.out.ret_width = tr.vwidth(f.ret, "return type");
             tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
         }

@@ -381,6 +381,35 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
             for (auto& o : in.ops) see(o);
             for (auto& [o, _] : in.incoming) see(o);
         }
+    // then the globals the functions it may inline name (depth
+    // first, in call order): allocated at entry too rather than when an
+    // inlined body first names them (MemTr::global), so the Lean export can
+    // pass them to the inlined callees as extra parameters
+    std::set<const ir::Function*> seen{&f};
+    std::vector<const ir::Function*> todo;
+    auto calls = [&](const ir::Function& g) {
+        std::vector<const ir::Function*> cs;
+        for (auto& bl : g.blocks)
+            for (auto& in : bl.insts)
+                if ((in.op == "call" || in.op == "invoke") && !in.callee.empty())
+                    if (const auto* h = m.find(in.callee); h && seen.insert(h).second) cs.push_back(h);
+        todo.insert(todo.end(), cs.rbegin(), cs.rend());
+    };
+    calls(f);
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                auto ro = [&](const ir::Operand& o) {
+                    if (o.v.kind != ir::Value::Global) return;
+                    see(o);
+                };
+                for (auto& o : in.ops) ro(o);
+                for (auto& [o, _] : in.incoming) ro(o);
+            }
+        calls(*g);
+    }
     return out;
 }
 
@@ -395,6 +424,25 @@ bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f) {
             for (auto& in : bl.insts) {
                 if (in.op != "call" || in.callee.empty()) continue;
                 if (in.callee == "__prism_alloc_failed") return true;
+                if (const auto* h = m.find(in.callee)) todo.push_back(h);
+            }
+    }
+    return false;
+}
+
+bool reaches_caught_slot(const ir::Module& m, const ir::Function& f) {
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> todo{&f};
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                if ((in.op != "call" && in.op != "invoke") || in.callee.empty()) continue;
+                if (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
+                    in.callee == "__cxa_rethrow")
+                    return true;
                 if (const auto* h = m.find(in.callee)) todo.push_back(h);
             }
     }

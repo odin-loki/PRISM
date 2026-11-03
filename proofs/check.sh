@@ -8,7 +8,9 @@
 #   3. every main theorem's axioms are within {propext, Classical.choice,
 #      Quot.sound} (Prism/Axioms.lean; sorryAx or anything else fails);
 #   4. the exported truth tables equal testdata/fixtures/verdict_tables.json, which
-#      the C++ doctests (tests/cpp/test_main.cpp) check the code against.
+#      the C++ doctests (tests/cpp/test_main.cpp) check the code against;
+#   5. refinement/check.sh: the refinement proofs' own scan and axiom audit, and
+#      every fixtures/*.pirl giving exactly its fixtures/*.expected summary.
 #
 # --write regenerates testdata/fixtures/verdict_tables.json instead of step 4's diff.
 set -euo pipefail
@@ -59,4 +61,7 @@ else
   echo "ok: testdata/fixtures/verdict_tables.json equals the Lean model"
 fi
 rm -f "$log" "$out"
+
+echo "== 5. refinement proofs and correspondence fixtures"
+bash "$here/refinement/check.sh" || fail "refinement/check.sh failed (see above)"
 echo "proofs: OK"
