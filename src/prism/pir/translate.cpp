@@ -1625,6 +1625,52 @@ struct Tr final : pirmem::TrApi {
         if (op == "load") {
             if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
                 throw Unenc{"UNENCODED: load"};
+
+            // C alignment of the access, not LLVM's: since LLVM 23 clang
+            // annotates `*(int *)(buf + 2)` with the alignment it can prove
+            // for that address (align 2) instead of int's, which hid the
+            // C17 6.3.2.3p7 / 6.5 misaligned access (testdata/pir
+            // mem_ptr.c:misaligned_bad). Below the type's ABI alignment the
+            // IR value is trusted only for a packed struct member.
+            auto c_align = [&](const ir::Value& pv, const ir::Type& ty, unsigned ir_al) -> unsigned {
+                if (ty.kind != ir::Type::Int && ty.kind != ir::Type::Float && ty.kind != ir::Type::Ptr) return ir_al;
+                unsigned nat = 0;
+                try {
+                    nat = mt.layout().align(ty);
+                } catch (const Unenc&) {
+                    return ir_al;
+                }
+                if (ir_al >= nat) return ir_al;
+                auto packed_in = [&](const ir::Type& t0) {
+                    const ir::Type* t = &t0;
+                    for (int d = 0; d < 16; ++d) {
+                        const auto& rt = mt.layout().resolve(*t);
+                        if (rt.kind == ir::Type::Struct) {
+                            if (rt.text.starts_with("<{")) return true;
+                            for (auto& e : rt.elems) {
+                                const auto& re = mt.layout().resolve(e);
+                                if (re.kind == ir::Type::Struct && re.text.starts_with("<{")) return true;
+                            }
+                            return false;
+                        }
+                        if (rt.kind != ir::Type::Array || rt.elems.empty()) return false;
+                        t = &rt.elems.at(0);
+                    }
+                    return false;
+                };
+                const ir::Value* v = &pv;
+                for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
+                    auto it = fr.defs.find(v->name);
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.empty()) break;
+                    try {
+                        if (packed_in(it->second->ety)) return ir_al;
+                    } catch (const Unenc&) {
+                        return ir_al;
+                    }
+                    v = &it->second->ops[0].v;
+                }
+                return nat;
+            };
             Arg p = operand(fr, in.ops[0], cur, line);
             vwidth(in.ty, "load of");
             // An integer load of a whole aggregate object (ABI coercion of a
@@ -1663,7 +1709,7 @@ struct Tr final : pirmem::TrApi {
                 }
             }
             int dst = result_var(fr, in);
-            int sh = mt.load(cur, dst, in.ty, p, in.align, line, !agg);
+            int sh = mt.load(cur, dst, in.ty, p, c_align(in.ops[0].v, in.ty, in.align), line, !agg);
             if (agg && dst >= 0) {
                 fr.shadow[dst] = Arg::v(sh, out.vars[static_cast<std::size_t>(sh)].width);
                 fr.raw.insert(dst);
@@ -1673,6 +1719,52 @@ struct Tr final : pirmem::TrApi {
         if (op == "store") {
             if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr")
                 throw Unenc{"UNENCODED: store"};
+
+            // (as for load) C alignment of the access, not LLVM's: since LLVM 23 clang
+            // annotates `*(int *)(buf + 2)` with the alignment it can prove
+            // for that address (align 2) instead of int's, which hid the
+            // C17 6.3.2.3p7 / 6.5 misaligned access (testdata/pir
+            // mem_ptr.c:misaligned_bad). Below the type's ABI alignment the
+            // IR value is trusted only for a packed struct member.
+            auto c_align = [&](const ir::Value& pv, const ir::Type& ty, unsigned ir_al) -> unsigned {
+                if (ty.kind != ir::Type::Int && ty.kind != ir::Type::Float && ty.kind != ir::Type::Ptr) return ir_al;
+                unsigned nat = 0;
+                try {
+                    nat = mt.layout().align(ty);
+                } catch (const Unenc&) {
+                    return ir_al;
+                }
+                if (ir_al >= nat) return ir_al;
+                auto packed_in = [&](const ir::Type& t0) {
+                    const ir::Type* t = &t0;
+                    for (int d = 0; d < 16; ++d) {
+                        const auto& rt = mt.layout().resolve(*t);
+                        if (rt.kind == ir::Type::Struct) {
+                            if (rt.text.starts_with("<{")) return true;
+                            for (auto& e : rt.elems) {
+                                const auto& re = mt.layout().resolve(e);
+                                if (re.kind == ir::Type::Struct && re.text.starts_with("<{")) return true;
+                            }
+                            return false;
+                        }
+                        if (rt.kind != ir::Type::Array || rt.elems.empty()) return false;
+                        t = &rt.elems.at(0);
+                    }
+                    return false;
+                };
+                const ir::Value* v = &pv;
+                for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
+                    auto it = fr.defs.find(v->name);
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.empty()) break;
+                    try {
+                        if (packed_in(it->second->ety)) return ir_al;
+                    } catch (const Unenc&) {
+                        return ir_al;
+                    }
+                    v = &it->second->ops[0].v;
+                }
+                return nat;
+            };
             auto w = vwidth(in.ops[0].ty, "store of");
             Arg init = Arg::c(1, 1);
             Arg v;
@@ -1699,7 +1791,7 @@ struct Tr final : pirmem::TrApi {
                 }
             }
             Arg p = operand(fr, in.ops[1], cur, line);
-            mt.store(cur, p, v, init, vo.ty, in.align, line);
+            mt.store(cur, p, v, init, vo.ty, c_align(in.ops[1].v, vo.ty, in.align), line);
             return true;
         }
         if (op == "getelementptr") {
