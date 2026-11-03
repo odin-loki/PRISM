@@ -19,9 +19,7 @@ struct Config {
     // ParanoidBSD tree (--pbsd PATH or PRISM_PBSD); empty = not configured.
     std::filesystem::path pbsd_root;
     std::string model{"qwen3.5:9b"};
-    std::string ollama_host{"http://127.0.0.1:11434"};
-    std::filesystem::path gguf;
-    std::string llama_server{"http://127.0.0.1:8080"};
+    std::filesystem::path fpk;  // FORGE model (.fpk), PRISM_FPK
     int jobs = 2;
     double timeout = 30.0;
     int unwind = 8;

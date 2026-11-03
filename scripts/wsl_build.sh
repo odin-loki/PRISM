@@ -15,6 +15,6 @@ fi
 BD="${1:-build-wsl}"
 cmake -B "$BD" -G Ninja \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build "$BD" --target prism_tests -j"$(nproc)"
 echo "run: $BD/prism_tests"

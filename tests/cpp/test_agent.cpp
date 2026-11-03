@@ -12,6 +12,7 @@
 
 #include "../../src/prism/stages/agent.hpp"
 
+#include "forge_test_model.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
@@ -77,82 +78,12 @@ fs::path agent_tmp(const std::string& tag) {
 prism::Config offline_cfg(const fs::path& out) {
     prism::Config cfg = prism::default_config();
     cfg.out = out;
-    cfg.llama_server = "http://127.0.0.1:1";
-    cfg.ollama_host = "http://127.0.0.1:1";
-    cfg.gguf.clear();
+    cfg.fpk.clear();
     return cfg;
 }
 
 bool have_cc() { return sd::which_cc().has_value(); }
 
-#ifndef _WIN32
-// A one-route HTTP server: every request gets the answer of `handler`
-// (status, body) for its (method, path).
-class TinyHttp {
-public:
-    using Handler = std::function<std::pair<int, std::string>(const std::string& method, const std::string& path)>;
-    explicit TinyHttp(Handler h) : handler_(std::move(h)) {
-        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        int one = 1;
-        ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        ::bind(fd_, reinterpret_cast<sockaddr*>(&a), sizeof a);
-        ::listen(fd_, 16);
-        socklen_t len = sizeof a;
-        ::getsockname(fd_, reinterpret_cast<sockaddr*>(&a), &len);
-        port_ = ntohs(a.sin_port);
-        th_ = std::thread([this] {
-            while (!stop_) {
-                pollfd p{fd_, POLLIN, 0};
-                if (::poll(&p, 1, 100) <= 0) continue;
-                int c = ::accept(fd_, nullptr, nullptr);
-                if (c < 0) continue;
-                serve(c);
-                ::close(c);
-            }
-        });
-    }
-    ~TinyHttp() {
-        stop_ = true;
-        th_.join();
-        ::close(fd_);
-    }
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_); }
-
-private:
-    Handler handler_;
-    int fd_ = -1, port_ = 0;
-    std::atomic<bool> stop_{false};
-    std::thread th_;
-    void serve(int c) {
-        std::string req;
-        char buf[8192];
-        std::size_t need = 0, head = std::string::npos;
-        while (true) {
-            pollfd p{c, POLLIN, 0};
-            if (::poll(&p, 1, 3000) <= 0) break;
-            auto n = ::recv(c, buf, sizeof buf, 0);
-            if (n <= 0) break;
-            req.append(buf, static_cast<std::size_t>(n));
-            if (head == std::string::npos && (head = req.find("\r\n\r\n")) != std::string::npos) {
-                std::string low;
-                for (char ch : req.substr(0, head)) low += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                auto cl = low.find("content-length:");
-                need = cl == std::string::npos ? 0 : std::stoul(low.substr(cl + 15));
-            }
-            if (head != std::string::npos && req.size() >= head + 4 + need) break;
-        }
-        const auto sp1 = req.find(' '), sp2 = req.find(' ', sp1 + 1);
-        if (sp1 == std::string::npos || sp2 == std::string::npos) return;
-        auto [code, body] = handler_(req.substr(0, sp1), req.substr(sp1 + 1, sp2 - sp1 - 1));
-        std::string resp = "HTTP/1.1 " + std::to_string(code) + " X\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-        ::send(c, resp.data(), resp.size(), MSG_NOSIGNAL);
-    }
-};
-#endif
 
 }  // namespace
 
@@ -287,7 +218,7 @@ TEST_CASE("agent: sandbox output keeps its tail, and a timeout keeps what was pr
          "  return 0;\n"
          "}\n```",
          "", ""});
-    sd::LlamaEngine engine(offline_cfg(dir));
+    sd::LlmEngine engine(offline_cfg(dir));
     auto clean = sd::interpreter_loop(engine, "show the tail", 1, true);
     REQUIRE(clean.size() == 1);
     CAPTURE(clean[0].message);
@@ -318,7 +249,7 @@ TEST_CASE("agent: the RLEF reward; only a BMC proof of the patch is terminal, BO
 TEST_CASE("agent: the chat seam binds every engine; unreachable servers are NOTRUN, not ERROR") {
     auto out = agent_tmp("engine");
     {
-        sd::LlamaEngine none(offline_cfg(out));
+        sd::LlmEngine none(offline_cfg(out));
         CHECK_FALSE(none.available());
         auto r = none.complete({{"user", "hi"}});
         CHECK_FALSE(r.error.empty());
@@ -326,7 +257,7 @@ TEST_CASE("agent: the chat seam binds every engine; unreachable servers are NOTR
     }
     ChatDouble chat;
     chat.replies.push_back({"hello", "", "", json{{"id", 1}}});
-    sd::LlamaEngine e(offline_cfg(out));
+    sd::LlmEngine e(offline_cfg(out));
     REQUIRE(e.available());
     CHECK(e.backend == "test-double");
     auto r = e.complete({{"system", "s"}, {"user", "u"}});
@@ -337,57 +268,7 @@ TEST_CASE("agent: the chat seam binds every engine; unreachable servers are NOTR
 }
 
 #ifndef _WIN32
-TEST_CASE("agent: an HTTP error keeps its status and body; a good answer keeps its JSON") {
-    auto out = agent_tmp("http");
-    TinyHttp srv([](const std::string& method, const std::string& path) -> std::pair<int, std::string> {
-        if (method == "GET") return {200, "{}"};
-        if (path == "/v1/chat/completions") return {503, R"({"error":"model is loading"})"};
-        return {404, "no"};
-    });
-    auto cfg = offline_cfg(out);
-    cfg.llama_server = srv.url();
-    sd::LlamaEngine e(cfg);
-    REQUIRE(e.backend == "llama-server");
-    auto r = e.complete({{"user", "hi"}}, 5.0);
-    CHECK(r.error == R"(HTTP 503: {"error":"model is loading"})");
-    CHECK(sd::llm_httpish(r.error));  // a server that cannot answer is a missing backend (NOTRUN)
-    TinyHttp ok([](const std::string& method, const std::string&) -> std::pair<int, std::string> {
-        if (method == "GET") return {200, "{}"};
-        return {200, R"({"choices":[{"message":{"content":"fine"}}],"usage":{"total_tokens":3}})"};
-    });
-    cfg.llama_server = ok.url();
-    sd::LlamaEngine e2(cfg);
-    auto r2 = e2.complete({{"user", "hi"}}, 5.0);
-    CHECK(r2.error.empty());
-    CHECK(r2.text == "fine");
-    CHECK(r2.raw["usage"]["total_tokens"] == 3);
-}
 
-TEST_CASE("agent: Fuzz4All uses the run's model settings, not built-in defaults") {
-    auto td = agent_tmp("fuse-cfg");
-    std::ofstream(td / "f.c") << "int f(int x) {\n    return x + 1;\n}\n";
-    auto fns = prism::extract_functions(td / "f.c", "f.c");
-    REQUIRE(!fns.empty());
-    TinyHttp srv([](const std::string& method, const std::string&) -> std::pair<int, std::string> {
-        if (method == "GET") return {200, "{}"};
-        return {200, R"({"choices":[{"message":{"content":"{\"seeds\":[\"01000000\"]}"}}]})"};
-    });
-    auto cfg = offline_cfg(td / "out");
-    cfg.llama_server = srv.url();
-    auto has_skip = [](const std::vector<prism::Finding>& fs) {
-        for (const auto& f : fs)
-            if (f.message.find("stall mutants / autoprompt skipped") != std::string::npos) return true;
-        return false;
-    };
-    // The run's configuration reaches the model; without it the defaults
-    // (here: nothing listening) say NOTRUN.
-    ::setenv("PRISM_LLAMA_SERVER", "http://127.0.0.1:1", 1);
-    ::setenv("OLLAMA_HOST", "http://127.0.0.1:1", 1);
-    CHECK_FALSE(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true, cfg)));
-    CHECK(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true)));
-    ::unsetenv("PRISM_LLAMA_SERVER");
-    ::unsetenv("OLLAMA_HOST");
-}
 #endif
 
 // ------------------------------------------------------------------ interpreter and repair loops
@@ -395,7 +276,7 @@ TEST_CASE("agent: the interpreter loop runs model C only with --allow-exec; CLEA
     auto out = agent_tmp("interp");
     ChatDouble chat;
     chat.replies.push_back({"```c\n#include <stdio.h>\nint main(void) { puts(\"hi\"); return 0; }\n```", "", ""});
-    sd::LlamaEngine e(offline_cfg(out));
+    sd::LlmEngine e(offline_cfg(out));
     auto off = sd::interpreter_loop(e, "prove it", 2, /*allow_exec=*/false);
     REQUIRE(off.size() == 1);
     CHECK(off[0].status == prism::laws::NOTRUN);
@@ -536,7 +417,7 @@ TEST_CASE("agent: Dafny-style specs are hypotheses; no model is NOTRUN") {
     CHECK(none[0].status == prism::laws::NOTRUN);
     CHECK(none[0].strength == prism::laws::STRENGTH_READS);
     CHECK(none[0].cls == "FUNC-CONTRACT");
-    CHECK(none[0].message == "llama.cpp/Ollama not reachable");
+    CHECK(none[0].message == "no FORGE model (.fpk) configured");
     ChatDouble chat;
     chat.replies = {{R"({"requires":["x < 2147483647"],"ensures":["\\result == x + 1"]})", "", ""},
                     {"", "", "HTTP 500: oops"}};
@@ -552,26 +433,24 @@ TEST_CASE("agent: Dafny-style specs are hypotheses; no model is NOTRUN") {
     CHECK(prism::dafny_specs(fns, 0, cfg).empty());
 }
 
-TEST_CASE("agent: dafny_specs with no GGUF is one NOTRUN FUNC-CONTRACT read") {
+TEST_CASE("agent: dafny_specs with no FORGE model is one NOTRUN FUNC-CONTRACT read") {
     auto td = agent_tmp("dafny-nogguf");
     std::ofstream(td / "c.c") << "int inc(int x) {\n    return x + 1;\n}\nvoid nop(void) {\n}\n";
     auto fns = prism::extract_functions(td / "c.c", "c.c");
     REQUIRE(fns.size() == 2);
-    // Config{}, not default_config(): the latter fills gguf from PRISM_GGUF or a guessed blob.
+    // Config{}, not default_config(): the latter fills fpk from PRISM_FPK or a guessed blob.
     prism::Config cfg;
     cfg.out = td / "out";
-    cfg.gguf.clear();
+    cfg.fpk.clear();
     cfg.llm = true;
-    cfg.llama_server = "http://127.0.0.1:1";
-    cfg.ollama_host = "http://127.0.0.1:1";
-    REQUIRE(cfg.gguf.empty());
+    REQUIRE(cfg.fpk.empty());
     auto specs = prism::dafny_specs(fns, 3, cfg);
     REQUIRE(specs.size() == 1);
     CHECK(specs[0].stage == "contracts");
     CHECK(specs[0].status == prism::laws::NOTRUN);
     CHECK(specs[0].strength == prism::laws::STRENGTH_READS);
     CHECK(specs[0].cls == "FUNC-CONTRACT");
-    CHECK(specs[0].message == "llama.cpp/Ollama not reachable");
+    CHECK(specs[0].message == "no FORGE model (.fpk) configured");
     CHECK(specs[0].status != prism::laws::PROVED);
     CHECK(specs[0].status != prism::laws::PROVED_UNBOUNDED);
     CHECK(specs[0].status != prism::laws::PROVED_CERTIFIED);
@@ -617,7 +496,7 @@ TEST_CASE("repo lint: LLM stage strings and pipeline exports (ex test_llm.py)") 
     const auto llm_hpp = slurp(root / "src" / "prism" / "stages" / "llm.hpp");
     CHECK(llm_hpp.find("LLM_UNAVAILABLE_MSG") != std::string::npos);
     CHECK(llm_hpp.find("LLM_INSTALL") != std::string::npos);
-    CHECK(llm_hpp.find("llama.cpp/Ollama not reachable") != std::string::npos);
+    CHECK(llm_hpp.find("no FORGE model (.fpk) configured") != std::string::npos);
     const auto hyp = slurp(root / "src" / "prism" / "stages" / "hypothesize.cpp");
     CHECK(hyp.find("LLM_INSTALL") != std::string::npos);
     CHECK(hyp.find("llm_httpish") != std::string::npos);
@@ -626,3 +505,43 @@ TEST_CASE("repo lint: LLM stage strings and pipeline exports (ex test_llm.py)") 
     const auto tax = slurp(root / "src" / "prism" / "taxonomy.cpp");
     CHECK(tax.find("coverage_from_report") != std::string::npos);
 }
+
+// ---- FORGE-era replacements for the TinyHttp llama-server fakes ----
+TEST_CASE("agent: a failed model call keeps its error; a good answer keeps its text") {
+    auto out = agent_tmp("chat");
+    {
+        prism_test::ScriptedChat bad([](const std::string&) { return std::string(); });
+        bad.fail_with("FORGE: context 4096 exceeded");
+        sd::LlmEngine e(offline_cfg(out));
+        REQUIRE(e.backend == "test-double");
+        auto r = e.complete({{"user", "hi"}}, 5.0);
+        CHECK(r.error == "FORGE: context 4096 exceeded");
+        CHECK(r.text.empty());
+    }
+    prism_test::ScriptedChat ok([](const std::string&) { return std::string("fine"); });
+    sd::LlmEngine e2(offline_cfg(out));
+    auto r2 = e2.complete({{"user", "hi"}}, 5.0);
+    CHECK(r2.error.empty());
+    CHECK(r2.text == "fine");
+    CHECK(ok.chats() == 1);
+}
+#ifndef _WIN32  // setenv
+TEST_CASE("agent: Fuzz4All uses the run's model settings, not built-in defaults") {
+    auto td = agent_tmp("fuse-cfg");
+    std::ofstream(td / "f.c") << "int f(int x) {\n    return x + 1;\n}\n";
+    auto fns = prism::extract_functions(td / "f.c", "f.c");
+    REQUIRE(!fns.empty());
+    auto has_skip = [](const std::vector<prism::Finding>& fs) {
+        for (const auto& f : fs)
+            if (f.message.find("stall mutants / autoprompt skipped") != std::string::npos) return true;
+        return false;
+    };
+    // The run's Config names a real (tiny) FORGE model; the defaults name none.
+    auto cfg = offline_cfg(td / "out");
+    cfg.fpk = prism_test::tiny_fpk();
+    ::setenv("PRISM_FPK", (td / "no_such_model.fpk").c_str(), 1);
+    CHECK_FALSE(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true, cfg)));
+    CHECK(has_skip(prism::run_fuse(fns, {}, td, 0.05, 2, true)));
+    ::unsetenv("PRISM_FPK");
+}
+#endif
