@@ -181,6 +181,15 @@ std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
         char* end = nullptr;
         double d = std::strtod(t.c_str(), &end);
         if (end != t.c_str() + t.size()) return std::nullopt;
+        // LLVM 23 prints a float constant in decimal when the decimal
+        // rounds back to it ("float 1.000000e-10"), and its parser rounds a
+        // decimal to the type (round to nearest even), as here.
+        if (w == 32) {
+            const float f = static_cast<float>(d);
+            uint32_t fb = 0;
+            std::memcpy(&fb, &f, 4);
+            return fb;
+        }
         std::memcpy(&dbits, &d, 8);
     }
     if (w == 64) return dbits;
