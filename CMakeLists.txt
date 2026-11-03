@@ -11,7 +11,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(MINGW)
-  message(FATAL_ERROR "PRISM does not build with MinGW. Use MSVC (cl) or WSL clang++.")
+  message(FATAL_ERROR "PRISM does not build with MinGW. Use the pinned clang (clang-cl on Windows).")
+endif()
+# One compiler everywhere: the pinned LLVM clang 23.1.4 (third_party/llvm/PIN.toml,
+# scripts/fetch_llvm.py); clang-cl on Windows. No compiler-specific test exclusions.
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "PRISM builds with clang only (pinned 23.1.4; clang-cl on Windows), got ${CMAKE_CXX_COMPILER_ID}")
+endif()
+if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 23.1.4)
+  message(WARNING "PRISM pins clang 23.1.4 (scripts/fetch_llvm.py); building with ${CMAKE_CXX_COMPILER_VERSION}")
 endif()
 if(WIN32)
   add_compile_definitions(NOMINMAX)
@@ -891,10 +899,8 @@ if(PRISM_TESTS)
     tests/cpp/test_scope_pods.cpp
     # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
     tests/cpp/test_llm_hypothesis.cpp)
-  # The stdbit model is PIR (clang) source: GCC/clang builtins, not MSVC cl.
-  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    list(APPEND _prism_test_sources tests/cpp/test_c23_stdbit.cpp)
-  endif()
+  # The stdbit model is PIR (clang) source; every build compiles with clang.
+  list(APPEND _prism_test_sources tests/cpp/test_c23_stdbit.cpp)
   # Z3 + POSIX fork/pthread_atfork livelock regression.
   if(PRISM_HAS_Z3 AND NOT WIN32)
     list(APPEND _prism_test_sources tests/cpp/test_fork_serial.cpp)
@@ -926,10 +932,6 @@ if(PRISM_TESTS)
     add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
-  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    # model headers included by path use __builtin_trap (tests/cpp/msvc_builtins.hpp)
-    target_compile_options(prism_tests PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/msvc_builtins.hpp")
-  endif()
   target_include_directories(prism_tests PRIVATE
     "${PRISM_ROOT}/include"
     "${PRISM_ROOT}/third_party"
