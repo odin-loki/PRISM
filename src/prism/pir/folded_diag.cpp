@@ -28,6 +28,9 @@ const std::map<std::string, std::string>& folding_flags() {
         {"-Wshift-negative-value", "INT-SHIFT-UB"},
         {"-Wshift-overflow", "INT-SHIFT-UB"},
         {"-Winteger-overflow", "INT-SIGNED-OVF"},
+        // LLVM 23 folds a constant division by zero to poison
+        // (`100 / ((int)sizeof(long) - 4)` under ILP32)
+        {"-Wdivision-by-zero", "INT-DIV-ZERO"},
     };
     return k;
 }
