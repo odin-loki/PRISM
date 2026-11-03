@@ -12,6 +12,16 @@
 #include "prism_model.h"
 #include "prism_fpfmt.h"
 
+// __int128 arguments (class 5) exist only where the target has the type:
+// an ILP32 (i386) build of this model has no __int128, and no call passes one.
+#ifdef __SIZEOF_INT128__
+typedef __int128 prism_q_t;
+#  define PRISM_Q_HIGH(v) ((unsigned long long)((unsigned __int128)(v) >> 64))
+#else
+typedef long long prism_q_t;
+#  define PRISM_Q_HIGH(v) ((unsigned long long)((v) < 0 ? -1 : 0))
+#endif
+
 // glibc %La for the x86 80-bit format (sysdeps/ieee754/ldbl-96
 // printf_fphex): the leading hex digit is the top nibble of the explicit
 // 64-bit mantissa, 15 fraction digits, exponent = biased - 16383 - 3; a
@@ -113,8 +123,8 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
                             double d0, double d1, double d2, double d3, double d4, double d5, double d6, double d7,
                             long double l0, long double l1, long double l2, long double l3, long double l4, long double l5, long double l6, long double l7,
                             const char* p0, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5, const char* p6, const char* p7,
-                            __int128 q0, __int128 q1, __int128 q2, __int128 q3, __int128 q4, __int128 q5, __int128 q6, __int128 q7) {
-    const __int128 qs[8] = {q0, q1, q2, q3, q4, q5, q6, q7};
+                            prism_q_t q0, prism_q_t q1, prism_q_t q2, prism_q_t q3, prism_q_t q4, prism_q_t q5, prism_q_t q6, prism_q_t q7) {
+    const prism_q_t qs[8] = {q0, q1, q2, q3, q4, q5, q6, q7};
     int nq = 0;
     const int is[8] = {i0, i1, i2, i3, i4, i5, i6, i7};
     const long long js[8] = {j0, j1, j2, j3, j4, j5, j6, j7};
@@ -137,7 +147,7 @@ extern "C" int __prism_fmtv(char* buf, size_t cap, const char* fmt, int ab, int 
         if (pend) { pend = false; return (long long)pendv; }
         if (bv && bvn > 0) { --bvn; long long v = (long long)*bv++; if (!bvn) bv = nullptr; return v; }
         const int k = clsof(ai);
-        if (k == 5) { win(); __int128 v = nq < 8 ? qs[nq++] : 0; pend = true; pendv = (unsigned long long)((unsigned __int128)v >> 64); return (long long)(unsigned long long)v; }
+        if (k == 5) { win(); prism_q_t v = nq < 8 ? qs[nq++] : 0; pend = true; pendv = PRISM_Q_HIGH(v); return (long long)(unsigned long long)v; }
         if (k == 6) { win(); const char* sp = np < 8 ? ps[np++] : nullptr; if (!sp) return 0; bv = (const unsigned long long*)sp; bvn = 1; long long v = (long long)*bv++; return v; }
         if (k == 4) { win(); return (long long)(size_t)(np < 8 ? ps[np++] : nullptr); }
         if (k == 1 || (wide && k != 0)) { bool w = win(); return w && nj < 8 ? js[nj++] : 0; }
