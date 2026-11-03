@@ -880,7 +880,6 @@ if(PRISM_TESTS)
     tests/cpp/test_qa_conformance.cpp
     tests/cpp/test_pir_e2e.cpp
     tests/cpp/test_pir_incomplete.cpp
-    tests/cpp/test_c23_stdbit.cpp
     tests/cpp/test_c23_memset_explicit.cpp
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).
     tests/cpp/test_repo_tools.cpp
@@ -895,6 +894,10 @@ if(PRISM_TESTS)
     tests/cpp/test_scope_pods.cpp
     # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
     tests/cpp/test_llm_hypothesis.cpp)
+  # The stdbit model is PIR (clang) source: GCC/clang builtins, not MSVC cl.
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    list(APPEND _prism_test_sources tests/cpp/test_c23_stdbit.cpp)
+  endif()
   # Z3 + POSIX fork/pthread_atfork livelock regression.
   if(PRISM_HAS_Z3 AND NOT WIN32)
     list(APPEND _prism_test_sources tests/cpp/test_fork_serial.cpp)
