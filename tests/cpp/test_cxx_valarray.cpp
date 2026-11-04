@@ -703,3 +703,840 @@ TEST_CASE("cxx valarray model: operator+ and operator- add equal sizes and trap 
     CHECK(td[0].v == -1);
     CHECK(td[1].v == 4);
 }
+
+TEST_CASE("cxx valarray model: operator* multiplies equal sizes and traps otherwise") {
+    const std::string src = slurp(header_path());
+    REQUIRE(src.find("class valarray") != std::string::npos);
+    CHECK(src.find("#include <vector>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("#include <initializer_list>") == std::string::npos);
+    CHECK(src.find("slice_array") == std::string::npos);
+    CHECK(src.find("gslice_array") == std::string::npos);
+    CHECK(src.find("shift(") == std::string::npos);
+    CHECK(src.find("cshift(") == std::string::npos);
+    CHECK(src.find("apply(") == std::string::npos);
+    CHECK(src.find("operator*(const value_type&") == std::string::npos);
+    CHECK(src.find("operator*(const _Tp&") == std::string::npos);
+    CHECK(src.find("operator*(value_type") == std::string::npos);
+    const auto star = src.find("friend valarray operator*(const valarray& __x, const valarray& __y)");
+    REQUIRE(star != std::string::npos);
+    CHECK(src.find("friend valarray operator*(const valarray& __x, const valarray& __y)", star + 1) == std::string::npos);
+    CHECK(src.find("friend valarray operator+(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator-(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("value_type sum() const") != std::string::npos);
+    CHECK(src.find("value_type min() const") != std::string::npos);
+    CHECK(src.find("value_type max() const") != std::string::npos);
+    CHECK(src.find("valarray(valarray&& __o) noexcept : _M_data(__o._M_data), _M_size(__o._M_size)") !=
+          std::string::npos);
+    const auto moved = body_of(src, "valarray(valarray&& __o) noexcept");
+    REQUIRE(!moved.empty());
+    CHECK(moved.find("__o._M_data = nullptr;") != std::string::npos);
+    CHECK(moved.find("__o._M_size = 0;") != std::string::npos);
+    CHECK(moved.find("__o._M_data = nullptr;") < moved.find("}"));
+
+    const auto news = std::string("::operator new(__n * sizeof(value_type))");
+    const auto at = src.find(news);
+    REQUIRE(at != std::string::npos);
+    CHECK(src.find(news, at + news.size()) == std::string::npos);
+
+    require_binop(src, "operator*(const valarray& __x, const valarray& __y)", "valarray::operator* sizes differ",
+                  "static value_type _S_mul_elem(value_type __a, value_type __b)",
+                  "__prism_check(__ok, \"INT-SIGNED-OVF\", \"valarray::operator* does not fit in value_type\")",
+                  "__prism_check(__ok, \"FUNC-CONTRACT\", \"valarray::operator* does not fit in value_type\")",
+                  "__a * __b");
+
+    const auto elem = body_of(src, "static value_type _S_mul_elem(value_type __a, value_type __b)");
+    REQUIRE(!elem.empty());
+    const auto etrap = elem.find("if (!__ok) __builtin_trap();");
+    REQUIRE(etrap != std::string::npos);
+    const auto first_mul = elem.find("__a * __b");
+    const auto second_mul = elem.find("__a * __b", first_mul + 1);
+    REQUIRE(first_mul != std::string::npos);
+    REQUIRE(second_mul != std::string::npos);
+    CHECK(etrap < first_mul);
+    CHECK(etrap < second_mul);
+    CHECK(elem.find("__a * __b", second_mul + 1) == std::string::npos);
+    CHECK(elem.find("return __a * __b") == std::string::npos);
+    const auto nonint = elem.rfind("} else {");
+    REQUIRE(nonint != std::string::npos);
+    CHECK(nonint > etrap);
+    CHECK(elem.find("__prism_check", nonint) == std::string::npos);
+    CHECK(elem.find("__a * __b", nonint) != std::string::npos);
+    CHECK(elem.find("is_same_v<value_type, bool>") != std::string::npos);
+
+    const auto fits = body_of(src, "static int _S_prod_fits(");
+    REQUIRE(!fits.empty());
+    CHECK(fits.find("__a * __b") == std::string::npos);
+    CHECK(fits.find("return __a * __b") == std::string::npos);
+    CHECK(fits.find("return __p") == std::string::npos);
+    CHECK(fits.find("__hi / __b") != std::string::npos);
+    CHECK(fits.find("__lo / __a") != std::string::npos);
+    CHECK(fits.find("__lo / __b") != std::string::npos);
+    CHECK(fits.find("__hi / __a") != std::string::npos);
+    CHECK(fits.find("__lo / -") == std::string::npos);
+
+    std::valarray<int> ea;
+    std::valarray<int> eb;
+    CHECK((ea * eb).size() == 0);
+    std::valarray<int> grown(4);
+    grown.resize(0);
+    CHECK((grown * eb).size() == 0);
+
+    std::valarray<int> lhs(3);
+    lhs[0] = 1;
+    lhs[1] = 2;
+    lhs[2] = 4;
+    std::valarray<int> rhs(3);
+    rhs[0] = 10;
+    rhs[1] = 20;
+    rhs[2] = 30;
+    const std::valarray<int> prod = lhs * rhs;
+    CHECK(prod.size() == 3);
+    CHECK(prod[0] == 10);
+    CHECK(prod[1] == 40);
+    CHECK(prod[2] == 120);
+    CHECK(lhs[0] == 1);
+    CHECK(lhs[2] == 4);
+    CHECK(rhs[2] == 30);
+    std::valarray<int> alias = lhs * lhs;
+    CHECK(alias[0] == 1);
+    CHECK(alias[1] == 4);
+    CHECK(alias[2] == 16);
+    alias[0] = 0;
+    CHECK(lhs[0] == 1);
+
+    const auto iv = [](int v) {
+        std::valarray<int> a(1);
+        a[0] = v;
+        return a;
+    };
+    const int imax = std::numeric_limits<int>::max();
+    const int imin = std::numeric_limits<int>::min();
+    CHECK((iv(imax) * iv(1))[0] == imax);
+    CHECK((iv(imax) * iv(-1))[0] == -imax);
+    CHECK((iv(imax) * iv(0))[0] == 0);
+    CHECK((iv(imin) * iv(1))[0] == imin);
+    CHECK((iv(imin) * iv(0))[0] == 0);
+    CHECK((iv(0) * iv(imin))[0] == 0);
+    CHECK((iv(-1) * iv(-1))[0] == 1);
+    CHECK((iv(imax / 2) * iv(2))[0] == (imax / 2) * 2);
+    CHECK((iv(2) * iv(imin / 2))[0] == imin);
+    CHECK((iv(-46340) * iv(46340))[0] == -46340 * 46340);
+    CHECK((iv(46340) * iv(46340))[0] == 46340 * 46340);
+    CHECK((iv(-46340) * iv(-46340))[0] == 46340 * 46340);
+
+    const auto uv = [](unsigned v) {
+        std::valarray<unsigned> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned umax = std::numeric_limits<unsigned>::max();
+    CHECK((uv(umax) * uv(1u))[0] == umax);
+    CHECK((uv(umax) * uv(0u))[0] == 0u);
+    CHECK((uv(0u) * uv(umax))[0] == 0u);
+    CHECK((uv(umax / 2u) * uv(2u))[0] == (umax / 2u) * 2u);
+    CHECK((uv(65535u) * uv(65535u))[0] == 65535u * 65535u);
+    std::valarray<unsigned> ue;
+    CHECK((ue * ue).size() == 0);
+
+    const auto sc = [](signed char v) {
+        std::valarray<signed char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const signed char smax = std::numeric_limits<signed char>::max();
+    const signed char smin = std::numeric_limits<signed char>::min();
+    CHECK(static_cast<int>((sc(smax) * sc(static_cast<signed char>(1)))[0]) == static_cast<int>(smax));
+    CHECK(static_cast<int>((sc(smax) * sc(static_cast<signed char>(-1)))[0]) == -static_cast<int>(smax));
+    CHECK(static_cast<int>((sc(smin) * sc(static_cast<signed char>(1)))[0]) == static_cast<int>(smin));
+    CHECK(static_cast<int>((sc(smin) * sc(static_cast<signed char>(0)))[0]) == 0);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(0)) * sc(smin))[0]) == 0);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(-1)) * sc(static_cast<signed char>(-1)))[0]) == 1);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(2)) * sc(static_cast<signed char>(smin / 2)))[0]) ==
+          static_cast<int>(smin));
+    CHECK(static_cast<int>((sc(static_cast<signed char>(smax / 2)) * sc(static_cast<signed char>(2)))[0]) ==
+          static_cast<int>(smax / 2) * 2);
+
+    const auto uc = [](unsigned char v) {
+        std::valarray<unsigned char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned char ucmax = std::numeric_limits<unsigned char>::max();
+    CHECK(static_cast<unsigned>((uc(ucmax) * uc(static_cast<unsigned char>(1)))[0]) == ucmax);
+    CHECK(static_cast<unsigned>((uc(ucmax) * uc(static_cast<unsigned char>(0)))[0]) == 0u);
+    CHECK(static_cast<unsigned>((uc(static_cast<unsigned char>(15)) * uc(static_cast<unsigned char>(17)))[0]) == 255u);
+
+    std::valarray<double> da(2);
+    da[0] = 1.5;
+    da[1] = -0.5;
+    std::valarray<double> db(2);
+    db[0] = 2.0;
+    db[1] = -4.0;
+    const std::valarray<double> dp = da * db;
+    CHECK(dp[0] == 3.0);
+    CHECK(dp[1] == 2.0);
+    std::valarray<double> de;
+    CHECK((de * de).size() == 0);
+    std::valarray<double> big(1);
+    big[0] = std::numeric_limits<double>::max();
+    std::valarray<double> two(1);
+    two[0] = 2.0;
+    const std::valarray<double> huge = big * two;
+    CHECK(huge[0] > std::numeric_limits<double>::max());
+    CHECK(huge.size() == 1);
+
+    const auto lv = [](long long v) {
+        std::valarray<long long> a(1);
+        a[0] = v;
+        return a;
+    };
+    const long long lmax = std::numeric_limits<long long>::max();
+    const long long lmin = std::numeric_limits<long long>::min();
+    CHECK((lv(lmax) * lv(1))[0] == lmax);
+    CHECK((lv(lmax) * lv(-1))[0] == -lmax);
+    CHECK((lv(lmin) * lv(1))[0] == lmin);
+    CHECK((lv(lmin) * lv(0))[0] == 0);
+    CHECK((lv(2) * lv(lmin / 2))[0] == lmin);
+    CHECK((lv(lmax / 2) * lv(2))[0] == (lmax / 2) * 2);
+
+    std::valarray<bool> ba(3);
+    ba[0] = true;
+    ba[1] = true;
+    ba[2] = false;
+    std::valarray<bool> bb(3);
+    bb[0] = true;
+    bb[1] = false;
+    bb[2] = false;
+    const std::valarray<bool> bp = ba * bb;
+    CHECK(bp[0] == true);
+    CHECK(bp[1] == false);
+    CHECK(bp[2] == false);
+    CHECK(ba[1] == true);
+    CHECK(bb[0] == true);
+    std::valarray<bool> be;
+    CHECK((be * be).size() == 0);
+
+    ValarrayTouch::hits = 0;
+    std::valarray<ValarrayTouch> te;
+    std::valarray<ValarrayTouch> tf;
+    const std::valarray<ValarrayTouch> tz = te * tf;
+    CHECK(tz.size() == 0);
+    CHECK(ValarrayTouch::hits == 0);
+
+    std::valarray<ValarrayTouch> ta(ValarrayTouch(2), 2);
+    ta[1] = ValarrayTouch(5);
+    std::valarray<ValarrayTouch> tb(ValarrayTouch(3), 2);
+    tb[1] = ValarrayTouch(4);
+    ValarrayTouch::hits = 0;
+    const std::valarray<ValarrayTouch> ts = ta * tb;
+    CHECK(ValarrayTouch::hits == 2);
+    CHECK(ts.size() == 2);
+    CHECK(ts[0].v == 6);
+    CHECK(ts[1].v == 20);
+    CHECK(ta[0].v == 2);
+    CHECK(tb[1].v == 4);
+}
+
+TEST_CASE("cxx valarray model: operator/ divides equal sizes and traps otherwise") {
+    const std::string src = slurp(header_path());
+    REQUIRE(src.find("class valarray") != std::string::npos);
+    CHECK(src.find("#include <vector>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("#include <initializer_list>") == std::string::npos);
+    CHECK(src.find("slice_array") == std::string::npos);
+    CHECK(src.find("gslice_array") == std::string::npos);
+    CHECK(src.find("shift(") == std::string::npos);
+    CHECK(src.find("cshift(") == std::string::npos);
+    CHECK(src.find("apply(") == std::string::npos);
+    CHECK(src.find("operator/(const value_type&") == std::string::npos);
+    CHECK(src.find("operator/(const _Tp&") == std::string::npos);
+    CHECK(src.find("operator/(value_type") == std::string::npos);
+    const auto slash = src.find("friend valarray operator/(const valarray& __x, const valarray& __y)");
+    REQUIRE(slash != std::string::npos);
+    CHECK(src.find("friend valarray operator/(const valarray& __x, const valarray& __y)", slash + 1) ==
+          std::string::npos);
+    CHECK(src.find("friend valarray operator*(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator+(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator-(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("static value_type _S_mul_elem(value_type __a, value_type __b)") != std::string::npos);
+    CHECK(src.find("valarray::operator* sizes differ") != std::string::npos);
+    CHECK(src.find("valarray::operator* does not fit in value_type") != std::string::npos);
+    CHECK(src.find("value_type sum() const") != std::string::npos);
+    CHECK(src.find("value_type min() const") != std::string::npos);
+    CHECK(src.find("value_type max() const") != std::string::npos);
+    CHECK(src.find("void resize(size_type __n, const value_type& __c = value_type())") != std::string::npos);
+    CHECK(src.find("valarray(valarray&& __o) noexcept : _M_data(__o._M_data), _M_size(__o._M_size)") !=
+          std::string::npos);
+
+    const auto news = std::string("::operator new(__n * sizeof(value_type))");
+    const auto at = src.find(news);
+    REQUIRE(at != std::string::npos);
+    CHECK(src.find(news, at + news.size()) == std::string::npos);
+    CHECK(src.find("valarray allocation byte count overflows") != std::string::npos);
+
+    require_binop(src, "operator/(const valarray& __x, const valarray& __y)", "valarray::operator/ sizes differ",
+                  "static value_type _S_div_elem(value_type __a, value_type __b)",
+                  "__prism_check(__ok, \"INT-SIGNED-OVF\", \"valarray::operator/ does not fit in value_type\")",
+                  "__prism_check(__nz, \"FUNC-CONTRACT\", \"valarray::operator/ divisor is zero\")", "__a / __b");
+
+    const auto body = body_of(src, "operator/(const valarray& __x, const valarray& __y)");
+    REQUIRE(!body.empty());
+    const auto strap = body.find("if (__x._M_size != __y._M_size) __builtin_trap();");
+    const auto sempty = body.find("if (__x._M_size == 0) return valarray();");
+    const auto salloc = body.find("_S_alloc(");
+    const auto xload = body.find("__x._M_data");
+    const auto yload = body.find("__y._M_data");
+    const auto stored = body.find("::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);");
+    REQUIRE(strap != std::string::npos);
+    REQUIRE(sempty != std::string::npos);
+    REQUIRE(salloc != std::string::npos);
+    REQUIRE(xload != std::string::npos);
+    REQUIRE(yload != std::string::npos);
+    REQUIRE(stored != std::string::npos);
+    CHECK(strap < sempty);
+    CHECK(sempty < salloc);
+    CHECK(salloc < xload);
+    CHECK(salloc < yload);
+    CHECK(xload < stored);
+    CHECK(yload < stored);
+    CHECK(body.find("::operator new") == std::string::npos);
+    CHECK(body.find("__a / __b") == std::string::npos);
+    CHECK(body.substr(0, strap).find("_M_data") == std::string::npos);
+    CHECK(body.substr(0, sempty).find("__x._M_data") == std::string::npos);
+    CHECK(body.substr(0, sempty).find("__y._M_data") == std::string::npos);
+
+    const auto elem = body_of(src, "static value_type _S_div_elem(value_type __a, value_type __b)");
+    REQUIRE(!elem.empty());
+    const auto zcheck =
+        elem.find("__prism_check(__nz, \"FUNC-CONTRACT\", \"valarray::operator/ divisor is zero\")");
+    const auto ztrap = elem.find("if (!__nz) __builtin_trap();");
+    const auto ocheck =
+        elem.find("__prism_check(__ok, \"INT-SIGNED-OVF\", \"valarray::operator/ does not fit in value_type\")");
+    const auto otrap = elem.find("if (!__ok) __builtin_trap();");
+    const auto first = elem.find("__a / __b");
+    REQUIRE(zcheck != std::string::npos);
+    REQUIRE(ztrap != std::string::npos);
+    REQUIRE(ocheck != std::string::npos);
+    REQUIRE(otrap != std::string::npos);
+    REQUIRE(first != std::string::npos);
+    const auto second = elem.find("__a / __b", first + 1);
+    REQUIRE(second != std::string::npos);
+    CHECK(zcheck < ztrap);
+    CHECK(ztrap < ocheck);
+    CHECK(ocheck < otrap);
+    CHECK(otrap < first);
+    CHECK(otrap < second);
+    CHECK(elem.find("__a / __b", second + 1) == std::string::npos);
+    CHECK(elem.find("return __a / __b") == std::string::npos);
+    CHECK(elem.find("return __a * __b") == std::string::npos);
+    const auto nonint = elem.rfind("} else {");
+    REQUIRE(nonint != std::string::npos);
+    CHECK(nonint > otrap);
+    CHECK(elem.find("__prism_check", nonint) == std::string::npos);
+    CHECK(elem.find("__a / __b", nonint) != std::string::npos);
+    CHECK(elem.find("::new") == std::string::npos);
+    CHECK(elem.find("_M_data") == std::string::npos);
+
+    const auto fits = body_of(src, "static int _S_quot_fits(");
+    REQUIRE(!fits.empty());
+    CHECK(fits.find("/") == std::string::npos);
+    CHECK(fits.find("__a / __b") == std::string::npos);
+    CHECK(fits.find("numeric_limits<value_type>::min()") != std::string::npos);
+    CHECK(fits.find("static_cast<value_type>(-1)") != std::string::npos);
+    CHECK(fits.find("return __q") == std::string::npos);
+    CHECK(fits.find("return __a") == std::string::npos);
+    CHECK(fits.find("return __b") == std::string::npos);
+
+    std::valarray<int> ea;
+    std::valarray<int> eb;
+    CHECK((ea / eb).size() == 0);
+    std::valarray<int> grown(4);
+    grown.resize(0);
+    CHECK((grown / eb).size() == 0);
+
+    std::valarray<int> lhs(3);
+    lhs[0] = 10;
+    lhs[1] = 20;
+    lhs[2] = 31;
+    std::valarray<int> rhs(3);
+    rhs[0] = 2;
+    rhs[1] = 4;
+    rhs[2] = 5;
+    const std::valarray<int> quot = lhs / rhs;
+    CHECK(quot.size() == 3);
+    CHECK(quot[0] == 5);
+    CHECK(quot[1] == 5);
+    CHECK(quot[2] == 6);
+    CHECK(lhs[0] == 10);
+    CHECK(lhs[2] == 31);
+    CHECK(rhs[2] == 5);
+    std::valarray<int> alias = lhs / lhs;
+    CHECK(alias[0] == 1);
+    CHECK(alias[1] == 1);
+    CHECK(alias[2] == 1);
+    alias[0] = 0;
+    CHECK(lhs[0] == 10);
+
+    const auto iv = [](int v) {
+        std::valarray<int> a(1);
+        a[0] = v;
+        return a;
+    };
+    const int imax = std::numeric_limits<int>::max();
+    const int imin = std::numeric_limits<int>::min();
+    CHECK((iv(8) / iv(3))[0] == 2);
+    CHECK((iv(3) / iv(8))[0] == 0);
+    CHECK((iv(7) / iv(2))[0] == 3);
+    CHECK((iv(-7) / iv(2))[0] == -3);
+    CHECK((iv(7) / iv(-2))[0] == -3);
+    CHECK((iv(-7) / iv(-2))[0] == 3);
+    CHECK((iv(imax) / iv(1))[0] == imax);
+    CHECK((iv(imax) / iv(-1))[0] == -imax);
+    CHECK((iv(imax) / iv(2))[0] == imax / 2);
+    CHECK((iv(imin) / iv(1))[0] == imin);
+    CHECK((iv(imin) / iv(2))[0] == imin / 2);
+    CHECK((iv(imin) / iv(-2))[0] == imin / -2);
+    CHECK((iv(0) / iv(1))[0] == 0);
+    CHECK((iv(0) / iv(-1))[0] == 0);
+    CHECK((iv(0) / iv(imin))[0] == 0);
+    CHECK((iv(1) / iv(1))[0] == 1);
+    CHECK((iv(-1) / iv(-1))[0] == 1);
+    CHECK((iv(imin) / iv(imin))[0] == 1);
+    CHECK((iv(imax) / iv(imax))[0] == 1);
+
+    const auto uv = [](unsigned v) {
+        std::valarray<unsigned> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned umax = std::numeric_limits<unsigned>::max();
+    CHECK((uv(umax) / uv(1u))[0] == umax);
+    CHECK((uv(umax) / uv(2u))[0] == umax / 2u);
+    CHECK((uv(0u) / uv(1u))[0] == 0u);
+    CHECK((uv(0u) / uv(umax))[0] == 0u);
+    CHECK((uv(15u) / uv(4u))[0] == 3u);
+    std::valarray<unsigned> ue;
+    CHECK((ue / ue).size() == 0);
+
+    const auto sc = [](signed char v) {
+        std::valarray<signed char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const signed char smax = std::numeric_limits<signed char>::max();
+    const signed char smin = std::numeric_limits<signed char>::min();
+    CHECK(static_cast<int>((sc(smax) / sc(static_cast<signed char>(1)))[0]) == static_cast<int>(smax));
+    CHECK(static_cast<int>((sc(smax) / sc(static_cast<signed char>(-1)))[0]) == -static_cast<int>(smax));
+    CHECK(static_cast<int>((sc(smin) / sc(static_cast<signed char>(1)))[0]) == static_cast<int>(smin));
+    CHECK(static_cast<int>((sc(smin) / sc(static_cast<signed char>(2)))[0]) == static_cast<int>(smin) / 2);
+    CHECK(static_cast<int>((sc(smin) / sc(static_cast<signed char>(-2)))[0]) == static_cast<int>(smin) / -2);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(0)) / sc(static_cast<signed char>(1)))[0]) == 0);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(-7)) / sc(static_cast<signed char>(2)))[0]) == -3);
+
+    const auto uc = [](unsigned char v) {
+        std::valarray<unsigned char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned char ucmax = std::numeric_limits<unsigned char>::max();
+    CHECK(static_cast<unsigned>((uc(ucmax) / uc(static_cast<unsigned char>(1)))[0]) == ucmax);
+    CHECK(static_cast<unsigned>((uc(ucmax) / uc(static_cast<unsigned char>(5)))[0]) == 51u);
+    CHECK(static_cast<unsigned>((uc(static_cast<unsigned char>(0)) / uc(static_cast<unsigned char>(1)))[0]) == 0u);
+    CHECK(static_cast<unsigned>((uc(static_cast<unsigned char>(17)) / uc(static_cast<unsigned char>(3)))[0]) == 5u);
+
+    std::valarray<double> da(2);
+    da[0] = 3.0;
+    da[1] = -4.0;
+    std::valarray<double> db(2);
+    db[0] = 2.0;
+    db[1] = 2.0;
+    const std::valarray<double> dq = da / db;
+    CHECK(dq[0] == 1.5);
+    CHECK(dq[1] == -2.0);
+    std::valarray<double> de;
+    CHECK((de / de).size() == 0);
+    std::valarray<double> big(1);
+    big[0] = std::numeric_limits<double>::max();
+    std::valarray<double> half(1);
+    half[0] = 0.5;
+    const std::valarray<double> huge = big / half;
+    CHECK(huge[0] > std::numeric_limits<double>::max());
+    CHECK(huge.size() == 1);
+
+    const auto lv = [](long long v) {
+        std::valarray<long long> a(1);
+        a[0] = v;
+        return a;
+    };
+    const long long lmax = std::numeric_limits<long long>::max();
+    const long long lmin = std::numeric_limits<long long>::min();
+    CHECK((lv(lmax) / lv(1))[0] == lmax);
+    CHECK((lv(lmax) / lv(-1))[0] == -lmax);
+    CHECK((lv(lmin) / lv(1))[0] == lmin);
+    CHECK((lv(lmin) / lv(2))[0] == lmin / 2);
+    CHECK((lv(lmin) / lv(-2))[0] == lmin / -2);
+    CHECK((lv(0) / lv(1))[0] == 0);
+    CHECK((lv(-7) / lv(2))[0] == -3);
+
+    std::valarray<bool> ba(3);
+    ba[0] = true;
+    ba[1] = false;
+    ba[2] = true;
+    std::valarray<bool> bb(3);
+    bb[0] = true;
+    bb[1] = true;
+    bb[2] = true;
+    const std::valarray<bool> bq = ba / bb;
+    CHECK(bq[0] == true);
+    CHECK(bq[1] == false);
+    CHECK(bq[2] == true);
+    CHECK(ba[1] == false);
+    CHECK(bb[0] == true);
+    std::valarray<bool> be;
+    CHECK((be / be).size() == 0);
+
+    ValarrayTouch::hits = 0;
+    std::valarray<ValarrayTouch> te;
+    std::valarray<ValarrayTouch> tf;
+    const std::valarray<ValarrayTouch> tz = te / tf;
+    CHECK(tz.size() == 0);
+    CHECK(ValarrayTouch::hits == 0);
+
+    std::valarray<ValarrayTouch> ta(ValarrayTouch(8), 2);
+    ta[1] = ValarrayTouch(9);
+    std::valarray<ValarrayTouch> tb(ValarrayTouch(2), 2);
+    tb[1] = ValarrayTouch(4);
+    ValarrayTouch::hits = 0;
+    const std::valarray<ValarrayTouch> ts = ta / tb;
+    CHECK(ValarrayTouch::hits == 2);
+    CHECK(ts.size() == 2);
+    CHECK(ts[0].v == 4);
+    CHECK(ts[1].v == 2);
+    CHECK(ta[0].v == 8);
+    CHECK(tb[1].v == 4);
+}
+
+TEST_CASE("cxx valarray model: operator% remains of equal sizes and traps otherwise") {
+    const std::string src = slurp(header_path());
+    REQUIRE(src.find("class valarray") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("#include <vector>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("#include <initializer_list>") == std::string::npos);
+    CHECK(src.find("#include <cmath>") == std::string::npos);
+    CHECK(src.find("slice_array") == std::string::npos);
+    CHECK(src.find("gslice_array") == std::string::npos);
+    CHECK(src.find("shift(") == std::string::npos);
+    CHECK(src.find("cshift(") == std::string::npos);
+    CHECK(src.find("apply(") == std::string::npos);
+    CHECK(src.find("operator%(const value_type&") == std::string::npos);
+    CHECK(src.find("operator%(const _Tp&") == std::string::npos);
+    CHECK(src.find("operator%(value_type") == std::string::npos);
+    CHECK(src.find("operator%=(") == std::string::npos);
+    const auto mod = src.find("friend valarray operator%(const valarray& __x, const valarray& __y)");
+    REQUIRE(mod != std::string::npos);
+    CHECK(src.find("friend valarray operator%(const valarray& __x, const valarray& __y)", mod + 1) ==
+          std::string::npos);
+    CHECK(src.find("friend valarray operator/(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator*(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator+(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("friend valarray operator-(const valarray& __x, const valarray& __y)") != std::string::npos);
+    CHECK(src.find("static value_type _S_div_elem(value_type __a, value_type __b)") != std::string::npos);
+    CHECK(src.find("valarray::operator/ sizes differ") != std::string::npos);
+    CHECK(src.find("valarray::operator/ divisor is zero") != std::string::npos);
+    CHECK(src.find("valarray::operator/ does not fit in value_type") != std::string::npos);
+    CHECK(src.find("value_type sum() const") != std::string::npos);
+    CHECK(src.find("value_type min() const") != std::string::npos);
+    CHECK(src.find("value_type max() const") != std::string::npos);
+    CHECK(src.find("void resize(size_type __n, const value_type& __c = value_type())") != std::string::npos);
+    CHECK(src.find("valarray(valarray&& __o) noexcept : _M_data(__o._M_data), _M_size(__o._M_size)") !=
+          std::string::npos);
+
+    const auto news = std::string("::operator new(__n * sizeof(value_type))");
+    const auto at = src.find(news);
+    REQUIRE(at != std::string::npos);
+    CHECK(src.find(news, at + news.size()) == std::string::npos);
+    CHECK(src.find("valarray allocation byte count overflows") != std::string::npos);
+
+    require_binop(src, "operator%(const valarray& __x, const valarray& __y)", "valarray::operator% sizes differ",
+                  "static value_type _S_mod_elem(value_type __a, value_type __b)",
+                  "__prism_check(__ok, \"INT-SIGNED-OVF\", \"valarray::operator% does not fit in value_type\")",
+                  "__prism_check(__nz, \"FUNC-CONTRACT\", \"valarray::operator% divisor is zero\")", "__a % __b");
+
+    const auto body = body_of(src, "operator%(const valarray& __x, const valarray& __y)");
+    REQUIRE(!body.empty());
+    const auto strap = body.find("if (__x._M_size != __y._M_size) __builtin_trap();");
+    const auto sempty = body.find("if (__x._M_size == 0) return valarray();");
+    const auto salloc = body.find("_S_alloc(");
+    const auto xload = body.find("__x._M_data");
+    const auto yload = body.find("__y._M_data");
+    const auto stored = body.find("::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);");
+    REQUIRE(strap != std::string::npos);
+    REQUIRE(sempty != std::string::npos);
+    REQUIRE(salloc != std::string::npos);
+    REQUIRE(xload != std::string::npos);
+    REQUIRE(yload != std::string::npos);
+    REQUIRE(stored != std::string::npos);
+    CHECK(strap < sempty);
+    CHECK(sempty < salloc);
+    CHECK(salloc < xload);
+    CHECK(salloc < yload);
+    CHECK(xload < stored);
+    CHECK(yload < stored);
+    CHECK(body.find("::operator new") == std::string::npos);
+    CHECK(body.find("__a % __b") == std::string::npos);
+    CHECK(body.substr(0, strap).find("_M_data") == std::string::npos);
+    CHECK(body.substr(0, sempty).find("__x._M_data") == std::string::npos);
+    CHECK(body.substr(0, sempty).find("__y._M_data") == std::string::npos);
+    CHECK(body.substr(0, strap).find("return") == std::string::npos);
+
+    const auto elem = body_of(src, "static value_type _S_mod_elem(value_type __a, value_type __b)");
+    REQUIRE(!elem.empty());
+    const auto zcheck =
+        elem.find("__prism_check(__nz, \"FUNC-CONTRACT\", \"valarray::operator% divisor is zero\")");
+    const auto ztrap = elem.find("if (!__nz) __builtin_trap();");
+    const auto ocheck =
+        elem.find("__prism_check(__ok, \"INT-SIGNED-OVF\", \"valarray::operator% does not fit in value_type\")");
+    const auto otrap = elem.find("if (!__ok) __builtin_trap();");
+    const auto first = elem.find("__a % __b");
+    REQUIRE(zcheck != std::string::npos);
+    REQUIRE(ztrap != std::string::npos);
+    REQUIRE(ocheck != std::string::npos);
+    REQUIRE(otrap != std::string::npos);
+    REQUIRE(first != std::string::npos);
+    const auto second = elem.find("__a % __b", first + 1);
+    REQUIRE(second != std::string::npos);
+    CHECK(zcheck < ztrap);
+    CHECK(ztrap < ocheck);
+    CHECK(ocheck < otrap);
+    CHECK(otrap < first);
+    CHECK(otrap < second);
+    CHECK(elem.find("__a % __b", second + 1) == std::string::npos);
+    CHECK(elem.find("return __a % __b") == std::string::npos);
+    CHECK(elem.find("return __a / __b") == std::string::npos);
+    const auto fcall = elem.find("_S_float_mod(");
+    REQUIRE(fcall != std::string::npos);
+    CHECK(ztrap < fcall);
+    CHECK(otrap < fcall);
+    CHECK(elem.find("__builtin_fmod", fcall) == std::string::npos);
+    const auto nonint = elem.rfind("} else {");
+    REQUIRE(nonint != std::string::npos);
+    CHECK(nonint > otrap);
+    CHECK(elem.find("__prism_check", nonint) == std::string::npos);
+    CHECK(elem.find("__a % __b", nonint) != std::string::npos);
+    CHECK(elem.find("_S_float_mod(", nonint) == std::string::npos);
+    CHECK(elem.find("::new") == std::string::npos);
+    CHECK(elem.find("_M_data") == std::string::npos);
+
+    const auto fits = body_of(src, "static int _S_rem_fits(");
+    REQUIRE(!fits.empty());
+    CHECK(fits.find("%") == std::string::npos);
+    CHECK(fits.find("/") == std::string::npos);
+    CHECK(fits.find("__a % __b") == std::string::npos);
+    CHECK(fits.find("numeric_limits<value_type>::min()") != std::string::npos);
+    CHECK(fits.find("static_cast<value_type>(-1)") != std::string::npos);
+    CHECK(fits.find("return __r") == std::string::npos);
+    CHECK(fits.find("return __a") == std::string::npos);
+    CHECK(fits.find("return __b") == std::string::npos);
+
+    const auto frem = body_of(src, "static value_type _S_float_mod(value_type __a, value_type __b)");
+    REQUIRE(!frem.empty());
+    CHECK(frem.find("%") == std::string::npos);
+    CHECK(frem.find("__prism_check") == std::string::npos);
+    CHECK(frem.find("__builtin_trap") == std::string::npos);
+    CHECK(frem.find("__builtin_fmodf") != std::string::npos);
+    CHECK(frem.find("__builtin_fmodl") != std::string::npos);
+    CHECK(frem.find("__builtin_fmod(") != std::string::npos);
+    const auto ffirst = frem.find("__builtin_fmod");
+    REQUIRE(ffirst != std::string::npos);
+    CHECK(frem.find("return __r", ffirst) != std::string::npos);
+
+    std::valarray<int> ea;
+    std::valarray<int> eb;
+    CHECK((ea % eb).size() == 0);
+    std::valarray<int> grown(4);
+    grown.resize(0);
+    CHECK((grown % eb).size() == 0);
+
+    std::valarray<int> lhs(3);
+    lhs[0] = 10;
+    lhs[1] = 20;
+    lhs[2] = 31;
+    std::valarray<int> rhs(3);
+    rhs[0] = 3;
+    rhs[1] = 6;
+    rhs[2] = 5;
+    const std::valarray<int> rem = lhs % rhs;
+    CHECK(rem.size() == 3);
+    CHECK(rem[0] == 1);
+    CHECK(rem[1] == 2);
+    CHECK(rem[2] == 1);
+    CHECK(lhs[0] == 10);
+    CHECK(lhs[2] == 31);
+    CHECK(rhs[2] == 5);
+    std::valarray<int> alias = lhs % lhs;
+    CHECK(alias[0] == 0);
+    CHECK(alias[1] == 0);
+    CHECK(alias[2] == 0);
+    alias[0] = 4;
+    CHECK(lhs[0] == 10);
+
+    const auto iv = [](int v) {
+        std::valarray<int> a(1);
+        a[0] = v;
+        return a;
+    };
+    const int imax = std::numeric_limits<int>::max();
+    const int imin = std::numeric_limits<int>::min();
+    CHECK((iv(8) % iv(3))[0] == 2);
+    CHECK((iv(3) % iv(8))[0] == 3);
+    CHECK((iv(7) % iv(2))[0] == 1);
+    CHECK((iv(-7) % iv(2))[0] == -1);
+    CHECK((iv(7) % iv(-2))[0] == 1);
+    CHECK((iv(-7) % iv(-2))[0] == -1);
+    CHECK((iv(imax) % iv(1))[0] == 0);
+    CHECK((iv(imax) % iv(-1))[0] == 0);
+    CHECK((iv(imax) % iv(2))[0] == 1);
+    CHECK((iv(imin) % iv(1))[0] == 0);
+    CHECK((iv(imin) % iv(2))[0] == 0);
+    CHECK((iv(imin) % iv(-2))[0] == 0);
+    CHECK((iv(0) % iv(1))[0] == 0);
+    CHECK((iv(0) % iv(-1))[0] == 0);
+    CHECK((iv(0) % iv(imin))[0] == 0);
+    CHECK((iv(1) % iv(1))[0] == 0);
+    CHECK((iv(-1) % iv(-1))[0] == 0);
+    CHECK((iv(imin) % iv(imin))[0] == 0);
+    CHECK((iv(imax) % iv(imax))[0] == 0);
+
+    const auto uv = [](unsigned v) {
+        std::valarray<unsigned> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned umax = std::numeric_limits<unsigned>::max();
+    CHECK((uv(umax) % uv(1u))[0] == 0u);
+    CHECK((uv(umax) % uv(2u))[0] == 1u);
+    CHECK((uv(0u) % uv(1u))[0] == 0u);
+    CHECK((uv(0u) % uv(umax))[0] == 0u);
+    CHECK((uv(15u) % uv(4u))[0] == 3u);
+    std::valarray<unsigned> ue;
+    CHECK((ue % ue).size() == 0);
+
+    const auto sc = [](signed char v) {
+        std::valarray<signed char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const signed char smax = std::numeric_limits<signed char>::max();
+    const signed char smin = std::numeric_limits<signed char>::min();
+    CHECK(static_cast<int>((sc(smax) % sc(static_cast<signed char>(1)))[0]) == 0);
+    CHECK(static_cast<int>((sc(smax) % sc(static_cast<signed char>(-1)))[0]) == 0);
+    CHECK(static_cast<int>((sc(smin) % sc(static_cast<signed char>(1)))[0]) == 0);
+    CHECK(static_cast<int>((sc(smin) % sc(static_cast<signed char>(2)))[0]) == 0);
+    CHECK(static_cast<int>((sc(smin) % sc(static_cast<signed char>(-2)))[0]) == 0);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(0)) % sc(static_cast<signed char>(1)))[0]) == 0);
+    CHECK(static_cast<int>((sc(static_cast<signed char>(-7)) % sc(static_cast<signed char>(2)))[0]) == -1);
+
+    const auto uc = [](unsigned char v) {
+        std::valarray<unsigned char> a(1);
+        a[0] = v;
+        return a;
+    };
+    const unsigned char ucmax = std::numeric_limits<unsigned char>::max();
+    CHECK(static_cast<unsigned>((uc(ucmax) % uc(static_cast<unsigned char>(1)))[0]) == 0u);
+    CHECK(static_cast<unsigned>((uc(ucmax) % uc(static_cast<unsigned char>(5)))[0]) == 0u);
+    CHECK(static_cast<unsigned>((uc(static_cast<unsigned char>(0)) % uc(static_cast<unsigned char>(1)))[0]) == 0u);
+    CHECK(static_cast<unsigned>((uc(static_cast<unsigned char>(17)) % uc(static_cast<unsigned char>(3)))[0]) == 2u);
+
+    std::valarray<double> da(2);
+    da[0] = 5.5;
+    da[1] = -5.5;
+    std::valarray<double> db(2);
+    db[0] = 2.0;
+    db[1] = 2.0;
+    const std::valarray<double> dr = da % db;
+    CHECK(dr[0] == 1.5);
+    CHECK(dr[1] == -1.5);
+    std::valarray<double> de;
+    CHECK((de % de).size() == 0);
+    std::valarray<double> neg0(1);
+    neg0[0] = std::copysign(0.0, -1.0);
+    std::valarray<double> two(1);
+    two[0] = 2.0;
+    const std::valarray<double> nrem = neg0 % two;
+    CHECK(nrem[0] == 0.0);
+    CHECK(std::signbit(nrem[0]));
+    std::valarray<double> big(1);
+    big[0] = std::numeric_limits<double>::max();
+    std::valarray<double> half(1);
+    half[0] = 0.5;
+    const std::valarray<double> huge = big % half;
+    CHECK(huge[0] == 0.0);
+    CHECK(huge.size() == 1);
+    std::valarray<float> fa(1);
+    fa[0] = 5.5f;
+    std::valarray<float> fb(1);
+    fb[0] = 2.0f;
+    CHECK((fa % fb)[0] == 1.5f);
+    std::valarray<long double> la(1);
+    la[0] = -5.5L;
+    std::valarray<long double> lb(1);
+    lb[0] = -2.0L;
+    CHECK((la % lb)[0] == -1.5L);
+
+    const auto lv = [](long long v) {
+        std::valarray<long long> a(1);
+        a[0] = v;
+        return a;
+    };
+    const long long lmax = std::numeric_limits<long long>::max();
+    const long long lmin = std::numeric_limits<long long>::min();
+    CHECK((lv(lmax) % lv(1))[0] == 0);
+    CHECK((lv(lmax) % lv(-1))[0] == 0);
+    CHECK((lv(lmin) % lv(1))[0] == 0);
+    CHECK((lv(lmin) % lv(2))[0] == 0);
+    CHECK((lv(lmin) % lv(-2))[0] == 0);
+    CHECK((lv(0) % lv(1))[0] == 0);
+    CHECK((lv(-7) % lv(2))[0] == -1);
+
+    std::valarray<bool> ba(3);
+    ba[0] = true;
+    ba[1] = false;
+    ba[2] = true;
+    std::valarray<bool> bb(3);
+    bb[0] = true;
+    bb[1] = true;
+    bb[2] = true;
+    const std::valarray<bool> br = ba % bb;
+    CHECK(br[0] == false);
+    CHECK(br[1] == false);
+    CHECK(br[2] == false);
+    CHECK(ba[1] == false);
+    CHECK(bb[0] == true);
+    std::valarray<bool> be;
+    CHECK((be % be).size() == 0);
+
+    ValarrayModTouch::hits = 0;
+    std::valarray<ValarrayModTouch> te;
+    std::valarray<ValarrayModTouch> tf;
+    const std::valarray<ValarrayModTouch> tz = te % tf;
+    CHECK(tz.size() == 0);
+    CHECK(ValarrayModTouch::hits == 0);
+
+    std::valarray<ValarrayModTouch> ta(ValarrayModTouch(8), 2);
+    ta[1] = ValarrayModTouch(9);
+    std::valarray<ValarrayModTouch> tb(ValarrayModTouch(3), 2);
+    tb[1] = ValarrayModTouch(4);
+    ValarrayModTouch::hits = 0;
+    const std::valarray<ValarrayModTouch> ts = ta % tb;
+    CHECK(ValarrayModTouch::hits == 2);
+    CHECK(ts.size() == 2);
+    CHECK(ts[0].v == 2);
+    CHECK(ts[1].v == 1);
+    CHECK(ta[0].v == 8);
+    CHECK(tb[1].v == 4);
+}

@@ -41,7 +41,12 @@
 // keeps only the new one. A shrink and a grow take that same path. The old
 // pointer is not stored in the new buffer and is not left in the object.
 //
-// Omitted math operators (the scalar overloads of + and -, * / % ^ & | <<
+// operator*, operator/, and operator% of two valarrays use the same equal-size
+// contract as operator+ and operator-. A mismatch traps before any load.
+// A product, quotient, or remainder that does not fit traps before it is
+// stored. A zero divisor traps before the quotient or the remainder.
+//
+// Omitted math operators (the scalar overloads of + - * / %, ^ & | <<
 // >> , the compound forms, the comparisons, and unary + - ~ !), and shift,
 // cshift, and apply, are not declared. A unit that names one fails to
 // compile against this header, so pir falls back to libstdc++. They are
@@ -198,6 +203,65 @@ public:
         return __r;
     }
 
+    // Equal sizes. A mismatch is FUNC-CONTRACT then trap, before any load,
+    // and does not return a partial array. Two empty valarrays return an
+    // empty valarray and do not read. Each stored element is the product.
+    // A product that does not fit traps inside _S_mul_elem before the store.
+    friend valarray operator*(const valarray& __x, const valarray& __y) {
+        __prism_check(__x._M_size == __y._M_size, "FUNC-CONTRACT",
+                      "valarray::operator* sizes differ");
+        if (__x._M_size != __y._M_size) __builtin_trap();
+        if (__x._M_size == 0) return valarray();
+        valarray __r;
+        __r._M_data = _S_alloc(__x._M_size);
+        for (size_type __i = 0; __i < __x._M_size; ++__i) {
+            const value_type __e = _S_mul_elem(__x._M_data[__i], __y._M_data[__i]);
+            ::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);
+        }
+        __r._M_size = __x._M_size;
+        return __r;
+    }
+
+    // Equal sizes. A mismatch is FUNC-CONTRACT then trap, before any load,
+    // and does not return a partial array. Two empty valarrays return an
+    // empty valarray and do not read. Each stored element is the quotient.
+    // A zero divisor or a signed quotient that does not fit traps inside
+    // _S_div_elem before the store.
+    friend valarray operator/(const valarray& __x, const valarray& __y) {
+        __prism_check(__x._M_size == __y._M_size, "FUNC-CONTRACT",
+                      "valarray::operator/ sizes differ");
+        if (__x._M_size != __y._M_size) __builtin_trap();
+        if (__x._M_size == 0) return valarray();
+        valarray __r;
+        __r._M_data = _S_alloc(__x._M_size);
+        for (size_type __i = 0; __i < __x._M_size; ++__i) {
+            const value_type __e = _S_div_elem(__x._M_data[__i], __y._M_data[__i]);
+            ::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);
+        }
+        __r._M_size = __x._M_size;
+        return __r;
+    }
+
+    // Equal sizes. A mismatch is FUNC-CONTRACT then trap, before any load,
+    // and does not return a partial array. Two empty valarrays return an
+    // empty valarray and do not read. Each stored element is the remainder.
+    // A zero divisor or the most negative signed value modulo -1 traps
+    // inside _S_mod_elem before the store. This is not PROVED and not CLEAN.
+    friend valarray operator%(const valarray& __x, const valarray& __y) {
+        __prism_check(__x._M_size == __y._M_size, "FUNC-CONTRACT",
+                      "valarray::operator% sizes differ");
+        if (__x._M_size != __y._M_size) __builtin_trap();
+        if (__x._M_size == 0) return valarray();
+        valarray __r;
+        __r._M_data = _S_alloc(__x._M_size);
+        for (size_type __i = 0; __i < __x._M_size; ++__i) {
+            const value_type __e = _S_mod_elem(__x._M_data[__i], __y._M_data[__i]);
+            ::new (static_cast<void*>(__r._M_data + __i)) _Tp(__e);
+        }
+        __r._M_size = __x._M_size;
+        return __r;
+    }
+
     // A different length drops the previous block (shrink and grow). The
     // same length does not allocate. New elements are copies of __c, not
     // the old pointer. _M_release clears the old pointer out of this object
@@ -309,6 +373,154 @@ private:
         if (!__ok) __builtin_trap();
         const value_type __r = __a - __b;
         return __r;
+    }
+
+    // True when __a * __b is a value of this integer type. The test divides
+    // only by a nonzero value, and it never divides the signed minimum by
+    // -1, so the test itself does not overflow. The product is not formed
+    // here. bool and a non-integer do not call this.
+    static int _S_prod_fits(value_type __a, value_type __b) {
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+            const value_type __hi = numeric_limits<value_type>::max();
+            const value_type __lo = numeric_limits<value_type>::min();
+            if (__a > 0) {
+                if (__b > 0) return __a > __hi / __b ? 0 : 1;
+                return __b < __lo / __a ? 0 : 1;
+            }
+            if (__b > 0) return __a < __lo / __b ? 0 : 1;
+            if (__a != 0) return __b < __hi / __a ? 0 : 1;
+            return 1;
+        } else if constexpr (is_integral_v<value_type> && !is_same_v<value_type, bool>) {
+            if (__b == static_cast<value_type>(0)) return 1;
+            return __a > numeric_limits<value_type>::max() / __b ? 0 : 1;
+        } else {
+            return 1;
+        }
+    }
+
+    // The class is INT-SIGNED-OVF for a signed integer and FUNC-CONTRACT for
+    // an unsigned integer. The product sits in the else of the fit test, so
+    // a wrapped element is not returned and is not stored by the caller.
+    // bool and a non-integer multiply with no separate range check.
+    static value_type _S_mul_elem(value_type __a, value_type __b) {
+        if constexpr (is_integral_v<value_type> && !is_same_v<value_type, bool>) {
+            const int __ok = _S_prod_fits(__a, __b);
+            if constexpr (is_signed_v<value_type>)
+                __prism_check(__ok, "INT-SIGNED-OVF", "valarray::operator* does not fit in value_type");
+            else
+                __prism_check(__ok, "FUNC-CONTRACT", "valarray::operator* does not fit in value_type");
+            if (!__ok) __builtin_trap();
+            else {
+                const value_type __r = __a * __b;
+                return __r;
+            }
+        } else {
+            const value_type __r = __a * __b;
+            return __r;
+        }
+    }
+
+    // 1 when the signed quotient fits in value_type. The only failure is the
+    // most negative value divided by -1. The test compares those two values.
+    // It does not form the quotient. Other types fit. A zero divisor is a
+    // different failure, checked before this runs.
+    static int _S_quot_fits([[maybe_unused]] value_type __a, [[maybe_unused]] value_type __b) {
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+            const value_type __lo = numeric_limits<value_type>::min();
+            if (__a == __lo && __b == static_cast<value_type>(-1)) return 0;
+            return 1;
+        } else {
+            return 1;
+        }
+    }
+
+    // An arithmetic zero divisor is FUNC-CONTRACT. A signed integer quotient
+    // that does not fit is INT-SIGNED-OVF. Both traps are before the quotient,
+    // and the quotient sits in the else, so a failing element is not returned
+    // and is not stored by the caller. bool false and a floating -0 are zero
+    // divisors. A class type divides with no separate check.
+    static value_type _S_div_elem(value_type __a, value_type __b) {
+        if constexpr (is_arithmetic_v<value_type>) {
+            const int __nz = __b == static_cast<value_type>(0) ? 0 : 1;
+            __prism_check(__nz, "FUNC-CONTRACT", "valarray::operator/ divisor is zero");
+            if (!__nz) __builtin_trap();
+            else {
+                int __ok = 1;
+                if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+                    __ok = _S_quot_fits(__a, __b);
+                    __prism_check(__ok, "INT-SIGNED-OVF", "valarray::operator/ does not fit in value_type");
+                }
+                if (!__ok) __builtin_trap();
+                else {
+                    const value_type __r = __a / __b;
+                    return __r;
+                }
+            }
+        } else {
+            const value_type __r = __a / __b;
+            return __r;
+        }
+    }
+
+    // 1 when the signed remainder fits in value_type. The only failure is
+    // the most negative value modulo -1. The test compares those two values.
+    // It does not form the remainder. Other types fit. A zero divisor is a
+    // different failure, checked before this runs.
+    static int _S_rem_fits([[maybe_unused]] value_type __a, [[maybe_unused]] value_type __b) {
+        if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+            const value_type __lo = numeric_limits<value_type>::min();
+            if (__a == __lo && __b == static_cast<value_type>(-1)) return 0;
+            return 1;
+        } else {
+            return 1;
+        }
+    }
+
+    // Toward-zero floating remainder, sign of the dividend. The caller has
+    // already rejected a zero divisor, including a floating -0. A floating
+    // type has no remainder operator. The builtin is that remainder.
+    static value_type _S_float_mod(value_type __a, value_type __b) {
+        if constexpr (is_same_v<value_type, float>) {
+            const value_type __r = __builtin_fmodf(__a, __b);
+            return __r;
+        } else if constexpr (is_same_v<value_type, long double>) {
+            const value_type __r = __builtin_fmodl(__a, __b);
+            return __r;
+        } else {
+            const value_type __r = static_cast<value_type>(__builtin_fmod(__a, __b));
+            return __r;
+        }
+    }
+
+    // An arithmetic zero divisor is FUNC-CONTRACT. The most negative signed
+    // value modulo -1 is INT-SIGNED-OVF. Both traps are before the remainder,
+    // so a failing element is not returned and is not stored by the caller.
+    // bool false and a floating -0 are zero divisors. A class type uses
+    // operator% with no separate check.
+    static value_type _S_mod_elem(value_type __a, value_type __b) {
+        if constexpr (is_arithmetic_v<value_type>) {
+            const int __nz = __b == static_cast<value_type>(0) ? 0 : 1;
+            __prism_check(__nz, "FUNC-CONTRACT", "valarray::operator% divisor is zero");
+            if (!__nz) __builtin_trap();
+            else {
+                int __ok = 1;
+                if constexpr (is_integral_v<value_type> && is_signed_v<value_type>) {
+                    __ok = _S_rem_fits(__a, __b);
+                    __prism_check(__ok, "INT-SIGNED-OVF", "valarray::operator% does not fit in value_type");
+                }
+                if (!__ok) __builtin_trap();
+                else if constexpr (is_integral_v<value_type>) {
+                    const value_type __r = __a % __b;
+                    return __r;
+                } else if constexpr (is_floating_point_v<value_type>) {
+                    const value_type __r = _S_float_mod(__a, __b);
+                    return __r;
+                }
+            }
+        } else {
+            const value_type __r = __a % __b;
+            return __r;
+        }
     }
 
     // ::operator new of n elements. n == 0 is not a call.
