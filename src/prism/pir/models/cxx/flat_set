@@ -33,6 +33,11 @@
 //    that path does not load the empty set. The walk stops at the first
 //    deciding key and does not read past the shorter set. It does not
 //    return T{}. This is not PROVED and not CLEAN.
+//  * operator> of two flat_sets returns __y < __x, the existing operator<
+//    with the arguments swapped. Two empty sets compare not-greater and
+//    that path does not load a node. A non-empty set is greater than an
+//    empty set and that path does not load the empty set. It does not
+//    return T{}. This is not PROVED and not CLEAN.
 //
 // A pointer or reference obtained from an iterator addresses that key's
 // node. erase of that key frees the node, so a later use of the pointer is
@@ -382,6 +387,13 @@ public:
         }
         return __a == nullptr && __b != nullptr;
     }
+
+    // Two empty sets compare not-greater. That path does not load a node.
+    // A non-empty set is greater than an empty set.
+    // That path does not load the empty set. Greater-than returns __y < __x,
+    // the existing operator< with the arguments swapped. It does not return T{}.
+    // This is not PROVED and not CLEAN.
+    friend bool operator>(const flat_set& __x, const flat_set& __y) { return __y < __x; }
 };
 
 template <typename _Key, typename _Compare>
