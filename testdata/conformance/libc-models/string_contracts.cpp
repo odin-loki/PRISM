@@ -450,6 +450,8 @@ int memchr_true(int c, int n, int j) {
     } else {
         assert((unsigned char)s[j] != (unsigned char)c);
     }
+    /* Names memmem. This does not assert a found offset. */
+    (void)memmem(s, (size_t)n, s, 0);
     return 0;
 }
 

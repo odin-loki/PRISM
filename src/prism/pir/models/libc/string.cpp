@@ -395,6 +395,43 @@ void *memccpy(void *d, const void *s, int c, size_t n) {
     return 0;
 }
 
+/* memmem returns a pointer to the first match of the needlelen bytes at
+ * needle inside the haystacklen bytes at haystack, or a null pointer on a
+ * miss.
+ * A needle length of 0 returns the haystack pointer and does not read,
+ * even when the haystack pointer is null.
+ * A null haystack with a haystack length greater than 0 is PTR-NULL-DEREF
+ * "memmem null haystack" and __builtin_trap before any read.
+ * A null needle with a needle length greater than 0 is PTR-NULL-DEREF
+ * "memmem null needle" and __builtin_trap before any read.
+ * Otherwise the search reads only inside the two lengths.
+ * A miss returns a null pointer.
+ * This is not a proof of the search.
+ * This is not PROVED and not CLEAN. */
+void *memmem(const void *haystack, size_t haystacklen, const void *needle, size_t needlelen) {
+    if (needlelen == 0) return (void *)haystack;
+    if (haystack == 0 && haystacklen > 0) {
+        __prism_check(0, "PTR-NULL-DEREF", "memmem null haystack");
+        __builtin_trap();
+    }
+    if (needle == 0 && needlelen > 0) {
+        __prism_check(0, "PTR-NULL-DEREF", "memmem null needle");
+        __builtin_trap();
+    }
+    if (needlelen > haystacklen) return 0;
+    const unsigned char *h = (const unsigned char *)haystack;
+    const unsigned char *nd = (const unsigned char *)needle;
+    const size_t last = haystacklen - needlelen;
+    size_t i = 0;
+    for (;;) {
+        size_t j = 0;
+        while (j < needlelen && h[i + j] == nd[j]) ++j;
+        if (j == needlelen) return (void *)(h + i);
+        if (i == last) return 0;
+        ++i;
+    }
+}
+
 void *malloc(size_t n);
 
 char *strdup(const char *s) {
