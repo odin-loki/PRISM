@@ -489,6 +489,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},
     {"PRISM_LAKE", "path of Lean's lake for proof search"},
     {"PRISM_LIBFUZZER", "fuse: 1 = use libFuzzer (pinned LLVM) for the FuSeBMC fuzz oracle"},
+    {"PRISM_LINUX_SYSROOT", "pir off Linux: pinned glibc/libstdc++ sysroot for the Linux target (else scripts/fetch_toolchain.py linux-sysroot)"},
     {"PRISM_LLVM_BIN", "directory of clang/opt/lli for pir (before the pinned LLVM build)"},
     {"PRISM_MEM_BUDGET_MB", "process-tree memory budget (MB); 0 = unlimited"},
     {"PRISM_MEM_RESERVE_MB", "memory held back from the budget for the main process"},

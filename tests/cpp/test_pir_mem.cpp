@@ -1107,6 +1107,9 @@ int loop_long_cubic(int n) {
 }
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: PRISM_HAS_Z3 off: pir has no solver, so no per-function verdicts");
+#else
     std::string why;
     if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
         MESSAGE(why);
@@ -1161,6 +1164,7 @@ int map_cond_erase_sum_bad(int k) {
     CHECK(got["map_cond_erase_uaf_bad"].cls == "MEM-UAF");
     CHECK(got["map_cond_erase_sum_bad"].status == prism::laws::FAILED);
     CHECK(got["map_cond_erase_sum_bad"].cls == "FUNC-CONTRACT");
+#endif
 }
 
 TEST_CASE("pir: per-function budget returns TIMEOUT when spent") {
