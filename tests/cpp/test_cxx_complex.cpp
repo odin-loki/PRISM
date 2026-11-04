@@ -9,6 +9,10 @@
 // norm of (0, 0) is 0. A square that does not fit is the same kind of
 // check and trap, and that path does not return a finite sum. A square
 // that fits returns the sum of the squares.
+// operator!= of two complex<T> is !(__x == __y). The body does not read
+// real() or imag() and does not compare the parts again. A NaN part
+// compares not-equal to itself because operator== is false. The result is
+// not forced to false or to 0. This is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -24,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -64,6 +69,25 @@ std::string body_of(std::string_view src, std::string_view sig) {
         }
     }
     return {};
+}
+
+struct Part {
+    int v;
+    static int calls;
+    friend bool operator==(Part lhs, Part rhs) {
+        ++calls;
+        return lhs.v == rhs.v;
+    }
+};
+
+int Part::calls = 0;
+
+std::string norm_nl(std::string s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        if (c != '\r') out.push_back(c);
+    return out;
 }
 
 int count_of(std::string_view hay, std::string_view needle) {
@@ -349,4 +373,100 @@ TEST_CASE("cxx complex model: norm of (0, 0) is 0 and a fitting value is the sum
     CHECK(body.find("__builtin_sqrt") == std::string::npos);
     CHECK(count_of(src, "complex norm square does not fit") == 1);
     CHECK(count_of(src, "_Tp norm(const complex<_Tp>& __z)") == 1);
+}
+
+TEST_CASE("cxx complex model: operator!= is the negation of operator==") {
+    const fs::path header = fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "complex";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    CHECK(src.find("not PROVED") != std::string::npos);
+    CHECK(src.find("not CLEAN") != std::string::npos);
+
+    const std::string eq = norm_nl(body_of(src, "constexpr bool operator==(const complex<_Tp>& __x, const complex<_Tp>& __y)"));
+    CHECK(eq == "{\n    return __x.real() == __y.real() && __x.imag() == __y.imag();\n}");
+    CHECK(count_of(src, "constexpr bool operator==(const complex<_Tp>& __x, const complex<_Tp>& __y)") == 1);
+
+    const std::string ne = norm_nl(body_of(src, "constexpr bool operator!=(const complex<_Tp>& __x, const complex<_Tp>& __y)"));
+    REQUIRE(ne == "{\n    return !(__x == __y);\n}");
+    CHECK(ne.find("real") == std::string::npos);
+    CHECK(ne.find("imag") == std::string::npos);
+    CHECK(ne.find("complex") == std::string::npos);
+    CHECK(ne.find("!=") == std::string::npos);
+    CHECK(ne.find("return 0") == std::string::npos);
+    CHECK(ne.find("return false") == std::string::npos);
+    CHECK(ne.find("return complex") == std::string::npos);
+    CHECK(count_of(ne, "==") == 1);
+    CHECK(count_of(src, "constexpr bool operator!=(const complex<_Tp>& __x, const complex<_Tp>& __y)") == 1);
+
+    const std::string div = body_of(src, "complex& operator/=(const complex& __z)");
+    REQUIRE_FALSE(div.empty());
+    const auto zero_if = div.find("if (__zero)");
+    REQUIRE(zero_if != std::string::npos);
+    const std::string arm = brace_after(div, zero_if);
+    REQUIRE_FALSE(arm.empty());
+    CHECK(arm.find("__builtin_trap") != std::string::npos);
+    CHECK(arm.find("return") == std::string::npos);
+    CHECK(count_of(src, "complex division by zero") == 1);
+
+    static_assert(!(std::complex<int>(1, 2) != std::complex<int>(1, 2)));
+    static_assert(std::complex<int>(1, 2) != std::complex<int>(3, 2));
+    static_assert(std::complex<int>(1, 2) != std::complex<int>(1, 4));
+    static_assert(std::is_same_v<decltype(std::complex<int>(1, 2) != std::complex<int>(1, 2)), bool>);
+
+    const std::complex<double> a(1.5, -2.25);
+    CHECK_FALSE(a != a);
+    CHECK_FALSE(a != std::complex<double>(1.5, -2.25));
+    CHECK(a != std::complex<double>(9.0, -2.25));
+    CHECK(a != std::complex<double>(1.5, 4.0));
+    CHECK_FALSE(std::complex<double>(-0.0, -0.0) != std::complex<double>(0.0, 0.0));
+    CHECK(std::complex<double>(-0.0, -0.0) == std::complex<double>(0.0, 0.0));
+
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    const std::complex<double> nr(nan, 1.0);
+    const std::complex<double> ni(1.0, nan);
+    const std::complex<double> nb(nan, nan);
+    CHECK_FALSE(nr == nr);
+    CHECK_FALSE(ni == ni);
+    CHECK_FALSE(nb == nb);
+    const int nr_ne = static_cast<int>(nr != nr);
+    const int ni_ne = static_cast<int>(ni != ni);
+    const int nb_ne = static_cast<int>(nb != nb);
+    CHECK(nr_ne == 1);
+    CHECK(ni_ne == 1);
+    CHECK(nb_ne == 1);
+    CHECK(nr_ne != 0);
+    CHECK(ni_ne != 0);
+    CHECK(nb_ne != 0);
+
+    Part::calls = 0;
+    const bool same_eq = (std::complex<Part>(Part{1}, Part{2}) == std::complex<Part>(Part{1}, Part{2}));
+    const int same_n = Part::calls;
+    Part::calls = 0;
+    const bool same_ne = (std::complex<Part>(Part{1}, Part{2}) != std::complex<Part>(Part{1}, Part{2}));
+    CHECK(same_eq);
+    CHECK_FALSE(same_ne);
+    CHECK(same_n == 2);
+    CHECK(Part::calls == same_n);
+
+    Part::calls = 0;
+    const bool re_eq = (std::complex<Part>(Part{1}, Part{2}) == std::complex<Part>(Part{9}, Part{2}));
+    const int re_n = Part::calls;
+    Part::calls = 0;
+    const bool re_ne = (std::complex<Part>(Part{1}, Part{2}) != std::complex<Part>(Part{9}, Part{2}));
+    CHECK_FALSE(re_eq);
+    CHECK(re_ne);
+    CHECK(re_n == 1);
+    CHECK(Part::calls == re_n);
+
+    Part::calls = 0;
+    const bool im_eq = (std::complex<Part>(Part{1}, Part{2}) == std::complex<Part>(Part{1}, Part{9}));
+    const int im_n = Part::calls;
+    Part::calls = 0;
+    const bool im_ne = (std::complex<Part>(Part{1}, Part{2}) != std::complex<Part>(Part{1}, Part{9}));
+    CHECK_FALSE(im_eq);
+    CHECK(im_ne);
+    CHECK(im_n == 2);
+    CHECK(Part::calls == im_n);
 }

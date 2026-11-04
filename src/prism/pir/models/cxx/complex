@@ -25,6 +25,13 @@
 // not return a finite number. Only after that check, the return is the sum
 // of the squares. This is not a scaled magnitude.
 //
+// operator!= of two complex<T> is !(__x == __y). That body uses the
+// existing operator==. It does not read real() or imag() and it does not
+// compare the parts a second time. A NaN part stays a NaN comparison:
+// operator== is false, so the values compare not-equal. The result is not
+// forced to false or to 0, and the function does not return complex{}.
+// This is not PROVED and not CLEAN.
+//
 // exp, log, log10, pow, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh,
 // tanh, asinh, acosh, atanh, arg, polar, and proj are not declared. A
 // unit that names one fails to compile against this header, and the pir
@@ -191,6 +198,16 @@ complex<_Tp> operator/(const _Tp& __x, const complex<_Tp>& __y) {
 template <typename _Tp>
 constexpr bool operator==(const complex<_Tp>& __x, const complex<_Tp>& __y) {
     return __x.real() == __y.real() && __x.imag() == __y.imag();
+}
+
+// Two complex<T>. The body is the negation of operator==. It does not read
+// real() or imag() and it does not compare the parts a second time. A NaN
+// part stays a NaN comparison: operator== is false, so the values compare
+// not-equal. The result is not forced to false or to 0. The function does
+// not return complex{}. This is not PROVED and not CLEAN.
+template <typename _Tp>
+constexpr bool operator!=(const complex<_Tp>& __x, const complex<_Tp>& __y) {
+    return !(__x == __y);
 }
 
 template <typename _Tp>

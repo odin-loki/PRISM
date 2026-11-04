@@ -27,11 +27,26 @@
 //    constructs elements. A throwing comparator is libstdc++'s basic
 //    guarantee (the chain may be mid-merge); this model does not invent a
 //    rollback;
+//  * empty front() is __prism_check with class FUNC-CONTRACT and the
+//    message "std::forward_list::front on an empty list", then
+//    __builtin_trap, before any node is loaded. That path does not return
+//    a value-initialized T. It is not PROVED and not CLEAN.
+//  * empty pop_front() is __prism_check with class FUNC-CONTRACT and the
+//    message "std::forward_list::pop_front on an empty list", then
+//    __builtin_trap, before any destroy or free. That path does not invent
+//    an element and does not return a value-initialized T. It is not
+//    PROVED and not CLEAN.
+//  * operator!= takes two forward_list<T, Alloc> of the same type. It
+//    returns !(__x == __y) and does not walk elements itself. Two empty
+//    lists compare not-equal as false and do not load a node, because
+//    operator== does not enter its loop when begin and end compare equal.
+//    A mismatch stops at the first difference inside operator==. The
+//    function does not return T{}. It is not PROVED and not CLEAN.
 //  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
-//    does not mention size() or nullptr): !this->empty() on front and
-//    pop_front, a dereferenceable iterator on * / ->, a non-end iterator
-//    on ++, an iterator of this list on insert_after / erase_after, and a
-//    dereferenceable successor on erase_after of one element.
+//    does not mention size() or nullptr): a dereferenceable iterator on
+//    * / ->, a non-end iterator on ++, an iterator of this list on
+//    insert_after / erase_after, and a dereferenceable successor on
+//    erase_after of one element.
 //
 // splice_after is not declared. Every overload takes another forward_list
 // and moves nodes into this one; those nodes would later be freed with this
@@ -66,6 +81,10 @@
 #include <utility>
 #include <bits/memory_resource.h>
 #include <debug/assertions.h>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 #define __cpp_lib_list_remove_return_type 201806L
 #define __cpp_lib_erase_if 202002L
@@ -560,12 +579,18 @@ public:
         return size_type(-1) / sizeof(_Prism_fwd_lib_node<value_type>);
     }
 
+    // Empty: FUNC-CONTRACT, then trap, before the node is loaded. That path
+    // does not return a value-initialized T. This is not PROVED and not CLEAN.
     reference front() {
-        __glibcxx_assert(!this->empty());
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::forward_list::front on an empty list");
+        if (this->empty()) __builtin_trap();
         return *_S_val(_M_head._M_next);
     }
     const_reference front() const {
-        __glibcxx_assert(!this->empty());
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::forward_list::front on an empty list");
+        if (this->empty()) __builtin_trap();
         return *_S_val(_M_head._M_next);
     }
 
@@ -575,8 +600,13 @@ public:
     }
     void push_front(const value_type& __x) { emplace_front(__x); }
     void push_front(value_type&& __x) { emplace_front(std::move(__x)); }
+    // Empty: FUNC-CONTRACT, then trap, before the node is destroyed or
+    // freed. That path does not invent an element and does not return a
+    // value-initialized T. This is not PROVED and not CLEAN.
     void pop_front() {
-        __glibcxx_assert(!this->empty());
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::forward_list::pop_front on an empty list");
+        if (this->empty()) __builtin_trap();
         _M_erase_after(&_M_head);
     }
 
@@ -700,6 +730,16 @@ template <typename _Tp, typename _Alloc>
     for (; __i1 != __e1 && __i2 != __e2; ++__i1, (void)++__i2)
         if (!(*__i1 == *__i2)) return false;
     return __i1 == __e1 && __i2 == __e2;
+}
+
+// Same type. The body is the negation of operator==. It does not walk
+// elements. Two empty lists compare not-equal as false and do not load a node,
+// because operator== does not enter its loop when begin and end compare
+// equal. A mismatch stops at the first difference inside operator==.
+// The function does not return T{}. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] inline bool operator!=(const forward_list<_Tp, _Alloc>& __x, const forward_list<_Tp, _Alloc>& __y) {
+    return !(__x == __y);
 }
 
 template <typename _Tp, typename _Alloc>

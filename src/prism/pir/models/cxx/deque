@@ -17,6 +17,14 @@
 //  * at()'s out_of_range message, the length_error from an oversized
 //    constructor, and the _GLIBCXX_ASSERTIONS checks
 //    (`__n < this->size()` -> MEM-OOB-READ, `!this->empty()` -> FUNC-CONTRACT).
+//  * operator!= takes two deque<T, Alloc> of the same type. It returns
+//    !(__x == __y) and does not walk elements or call begin(), end(), or
+//    size(). Two empty deques compare not-equal as false. operator==
+//    compares sizes first; when both sizes are 0 it still calls std::equal,
+//    and that empty range does not load an element. A size mismatch makes
+//    operator== false before std::equal. A mismatch of equal length stops
+//    at the first difference inside operator==. The function does not
+//    return T{}. It is not PROVED and not CLEAN.
 //
 // Not the same, and not pretended: libstdc++'s 512-byte block map, when a
 // block is freed, and the move-assignments a middle insert/erase uses to
@@ -741,6 +749,20 @@ template <typename _Tp, typename _Alloc>
 [[nodiscard]] bool operator==(const deque<_Tp, _Alloc>& __x, const deque<_Tp, _Alloc>& __y) {
     return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
 }
+
+// Same type. The body is the negation of operator==. It does not walk
+// elements and it does not call begin(), end(), or size(). Two empty
+// deques compare not-equal as false. operator== compares sizes first;
+// when both sizes are 0 it still calls std::equal, and that empty range
+// does not load an element. A size mismatch makes operator== false before
+// std::equal. A mismatch of equal length stops at the first difference
+// inside operator==. The function does not return T{}. This is not PROVED
+// and not CLEAN.
+template <typename _Tp, typename _Alloc>
+[[nodiscard]] bool operator!=(const deque<_Tp, _Alloc>& __x, const deque<_Tp, _Alloc>& __y) {
+    return !(__x == __y);
+}
+
 template <typename _Tp, typename _Alloc>
 [[nodiscard]] __detail::__synth3way_t<_Tp> operator<=>(const deque<_Tp, _Alloc>& __x, const deque<_Tp, _Alloc>& __y) {
     return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),

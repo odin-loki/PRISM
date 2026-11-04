@@ -8,6 +8,10 @@
 // list has size 0 and begin() == end(). Nothing here yields a made-up T
 // for a past-the-end pointer.
 //
+// size() returns the stored length and does not load an element. empty()
+// is size() == 0 and does not load an element. A zero-length list has size 0.
+// This is not PROVED and not CLEAN.
+//
 // Subscript is not part of std::initializer_list and is not declared.
 // Anything else is omitted so an unmodeled use fails to compile and the
 // pir stage lowers that translation unit again with libstdc++.
@@ -38,7 +42,13 @@ public:
     // Does not free the compiler-owned array.
     constexpr ~initializer_list() noexcept = default;
 
+    // Stored length. Does not load an element. A zero-length list has size 0.
+    // This is not PROVED and not CLEAN.
     constexpr size_type size() const noexcept { return _M_len; }
+
+    // size() == 0. Does not load an element.
+    // This is not PROVED and not CLEAN.
+    constexpr bool empty() const noexcept { return size() == 0; }
 
     constexpr const_iterator begin() const noexcept { return _M_array; }
 

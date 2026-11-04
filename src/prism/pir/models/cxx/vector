@@ -17,6 +17,14 @@
 //    (`__n < this->size()` -> MEM-OOB-READ, `!this->empty()` -> FUNC-CONTRACT),
 //    plus the standard's preconditions on insert/erase positions;
 //  * the same element construction/destruction order on reallocation.
+//  * operator!= takes two vector<T, Alloc> of the same type. It returns
+//    !(__x == __y) and does not walk elements or call begin() or end().
+//    Two empty vectors compare not-equal as false. operator== compares
+//    sizes first; when both sizes are 0 it still calls std::equal, and
+//    that empty range does not load an element. A size mismatch makes
+//    operator== false before std::equal. A mismatch of equal length stops
+//    at the first difference inside operator==. The function does not
+//    return T{}. It is not PROVED and not CLEAN.
 //
 // What it does not model is not silently different: vector<bool> and
 // allocators other than std::allocator<T> (including pmr::vector) are left
@@ -794,6 +802,19 @@ template <typename _Tp, typename _Alloc>
 constexpr bool operator==(const vector<_Tp, _Alloc>& __x, const vector<_Tp, _Alloc>& __y) {
     return __x.size() == __y.size() && std::equal(__x.begin(), __x.end(), __y.begin());
 }
+
+// Same type. The body is the negation of operator==. It does not walk
+// elements and it does not call begin() or end(). Two empty vectors compare
+// not-equal as false. operator== compares sizes first; when both sizes are
+// 0 it still calls std::equal, and that empty range does not load an element.
+// A size mismatch makes operator== false before std::equal. A mismatch of
+// equal length stops at the first difference inside operator==. The function
+// does not return T{}. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Alloc>
+constexpr bool operator!=(const vector<_Tp, _Alloc>& __x, const vector<_Tp, _Alloc>& __y) {
+    return !(__x == __y);
+}
+
 template <typename _Tp, typename _Alloc>
 constexpr __detail::__synth3way_t<_Tp> operator<=>(const vector<_Tp, _Alloc>& __x, const vector<_Tp, _Alloc>& __y) {
     return std::lexicographical_compare_three_way(__x.begin(), __x.end(), __y.begin(), __y.end(),

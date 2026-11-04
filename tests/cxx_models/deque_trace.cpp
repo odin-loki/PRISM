@@ -9,6 +9,11 @@
 // after push_back: defined as UB; the model frees the iterator anchor so
 // ASan reports heap-use-after-free. libstdc++ often does not free a block
 // on that push, so the doctest runs "uaf" only against the model.
+// operator!= is the negation of operator==. Two empty deques compare
+// not-equal as false. operator== compares sizes first; when both sizes are
+// 0 it still calls std::equal, and that empty range does not load an
+// element. A size mismatch is false before std::equal. A mismatch of equal
+// length stops at the first difference inside operator==.
 #include <cstdio>
 #include <deque>
 #include <stdexcept>
@@ -170,9 +175,110 @@ static int uaf() {
     return *it;
 }
 
+struct Load {
+    int v;
+    static int calls;
+    static int reads;
+    static int ctors;
+    explicit Load(int x) : v(x) { ++ctors; }
+    Load(const Load& o) : v(o.v) { ++ctors; }
+    friend bool operator==(const Load& a, const Load& b) {
+        ++calls;
+        if (a.v < 0 || b.v < 0) ++reads;
+        return a.v == b.v;
+    }
+};
+int Load::calls = 0;
+int Load::reads = 0;
+int Load::ctors = 0;
+
+struct NoDef {
+    int v;
+    explicit NoDef(int x) : v(x) {}
+    NoDef(const NoDef&) = default;
+    friend bool operator==(const NoDef& a, const NoDef& b) { return a.v == b.v; }
+};
+
+static std::deque<Load> load_deque(std::initializer_list<int> xs) {
+    std::deque<Load> d;
+    for (int x : xs) d.emplace_back(x);
+    return d;
+}
+
+struct NeCount {
+    int ne = 0;
+    int calls = 0;
+    int reads = 0;
+    int ctors = 0;
+};
+
+static NeCount count_ne(std::deque<Load>& a, std::deque<Load>& b) {
+    Load::calls = 0;
+    Load::reads = 0;
+    Load::ctors = 0;
+    NeCount c;
+    c.ne = int(a != b);
+    c.calls = Load::calls;
+    c.reads = Load::reads;
+    c.ctors = Load::ctors;
+    return c;
+}
+
+static void not_equal() {
+    std::deque<int> empty_a, empty_b;
+    std::deque<int> same{1, 2, 3};
+    std::deque<int> copy{1, 2, 3};
+    std::deque<int> head{9, 2, 3};
+    std::deque<int> mid{1, 9, 3};
+    std::deque<int> tail{1, 2, 9};
+    std::deque<int> shorter{1, 2};
+    std::deque<int> longer{1, 2, 3, 4};
+    std::deque<int> cleared_a{1, 2};
+    std::deque<int> cleared_b{9};
+    cleared_a.clear();
+    cleared_b.clear();
+    const std::deque<int> csame{1, 2, 3};
+    std::deque<NoDef> nd_a, nd_b;
+    std::printf("ne empty=%d same=%d head=%d mid=%d tail=%d short=%d long=%d self=%d clear=%d csame=%d "
+                "nodef=%d\n",
+                int(empty_a != empty_b), int(same != copy), int(same != head), int(same != mid), int(same != tail),
+                int(same != shorter), int(shorter != longer), int(same != same), int(cleared_a != cleared_b),
+                int(csame != copy), int(nd_a != nd_b));
+
+    auto e1 = load_deque({});
+    auto e2 = load_deque({});
+    const NeCount empty = count_ne(e1, e2);
+    auto same_l = load_deque({1, 2, 3});
+    auto same_r = load_deque({1, 2, 3});
+    const NeCount same_c = count_ne(same_l, same_r);
+    auto head_r = load_deque({9, 2, 3});
+    const NeCount head_c = count_ne(same_l, head_r);
+    auto mid_r = load_deque({1, 9, 3});
+    const NeCount mid_c = count_ne(same_l, mid_r);
+    auto tail_r = load_deque({1, 2, 9});
+    const NeCount tail_c = count_ne(same_l, tail_r);
+    auto len_l = load_deque({1, -1});
+    auto len_r = load_deque({1});
+    const NeCount len_c = count_ne(len_l, len_r);
+    auto poison_l = load_deque({1, 2, -1});
+    auto poison_r = load_deque({1, 9, -1});
+    const NeCount poison_c = count_ne(poison_l, poison_r);
+    auto eq_l = load_deque({1, -1});
+    auto eq_r = load_deque({1, -1});
+    const NeCount eq_c = count_ne(eq_l, eq_r);
+    const int ctors = empty.ctors + same_c.ctors + head_c.ctors + mid_c.ctors + tail_c.ctors + len_c.ctors +
+                      poison_c.ctors + eq_c.ctors;
+    std::printf("nel empty=%d/%d same=%d/%d head=%d/%d mid=%d/%d tail=%d/%d len=%d/%d lreads=%d poison=%d/%d "
+                "preads=%d eqneg=%d/%d/%d ctors=%d\n",
+                empty.ne, empty.calls, same_c.ne, same_c.calls, head_c.ne, head_c.calls, mid_c.ne, mid_c.calls,
+                tail_c.ne, tail_c.calls, len_c.ne, len_c.calls, len_c.reads, poison_c.ne, poison_c.calls,
+                poison_c.reads, eq_c.ne, eq_c.calls, eq_c.reads, ctors);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "uaf") return uaf();
     ints();
     traced();
+    not_equal();
     return 0;
 }
