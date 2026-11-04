@@ -32,7 +32,9 @@
 // then __builtin_trap. That path does not return a zero duration. The
 // most negative signed 64-bit count modulo -1 is __prism_check then
 // __builtin_trap and does not form the remainder. Every other result is
-// the stored count modulo the scalar. operator%= is not declared. Sleep
+// the stored count modulo the scalar. duration::operator%= assigns that
+// result. A zero divisor and the most negative count modulo -1 trap
+// inside operator%, so that function does not store a duration. Sleep
 // stays absent. This is not PROVED and not CLEAN.
 // This case does not compile the header.
 
@@ -189,7 +191,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(text.find("#include <compare>") == std::string::npos);
     CHECK(text.find("operator<=>") == std::string::npos);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 13);  // + the clocks
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 14);  // + the clocks, + operator%=
     CHECK(text.find("A different period is not an overload.") != std::string::npos);
     const auto note = text.find("Count comparison. Same duration type only.");
     const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");
@@ -646,10 +648,30 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "std::chrono::duration modulo by zero") == 1);
     CHECK(count_of(text, "std::chrono::duration modulo overflows the representation") == 1);
     CHECK(count_of(text, "__x % __y") == 1);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 13);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 14);
     CHECK(text.find("operator*=(") == std::string::npos);
     CHECK(text.find("operator/=(") == std::string::npos);
-    CHECK(text.find("operator%=(") == std::string::npos);
     CHECK(text.find("sleep_for(") == std::string::npos);
     CHECK(text.find("sleep_until(") == std::string::npos);
+
+    // duration::operator%= assigns operator%. The remainder stays in
+    // operator%, so a zero divisor and the minimum count modulo -1 trap
+    // there. This function does not store a duration and does not form
+    // a second remainder.
+    const std::string mod_eq = slice_between(
+        text, "// Same representation as operator%. Assigns that result.", "};");
+    CHECK(mod_eq.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(count_of(mod_eq, "requires __duration_same_type<_Scalar, _Rep>") == 1);
+    CHECK(count_of(mod_eq, "duration& operator%=(const _Scalar& __s)") == 1);
+    CHECK(mod_eq.find("*this = *this % __s;") != std::string::npos);
+    CHECK(mod_eq.find("return *this;") != std::string::npos);
+    CHECK(mod_eq.find("__x % __y") == std::string::npos);
+    CHECK(mod_eq.find("__builtin_trap") == std::string::npos);
+    CHECK(mod_eq.find("__prism_check") == std::string::npos);
+    CHECK(mod_eq.find("_M_count") == std::string::npos);
+    CHECK(mod_eq.find("duration(0)") == std::string::npos);
+    CHECK(mod_eq.find("if (!__ok) return duration<_Rep, _Period>(0);") == std::string::npos);
+    CHECK(count_of(text, "*this = *this % __s;") == 1);
+    CHECK(count_of(text, "duration& operator%=(const _Scalar& __s)") == 1);
+    CHECK(count_of(text, "__x % __y") == 1);
 }

@@ -61,7 +61,9 @@
 // return duration(0). The most negative signed 64-bit count modulo -1 is
 // a precondition failure (__prism_check, INT-SIGNED-OVF). That path calls
 // __builtin_trap and does not form the remainder. Every other result is
-// the stored count modulo the scalar. operator%= is not declared.
+// the stored count modulo the scalar. duration::operator%= assigns that
+// result. A zero divisor and the most negative count modulo -1 still
+// trap inside operator%, so that function does not store a duration.
 // This is not PROVED and not CLEAN.
 //
 // (Session 5: time_point, system_clock, steady_clock are now declared at
@@ -70,7 +72,8 @@
 // a fake wait. Omitted names fail to compile against this header and pir
 // falls back to libstdc++. That includes period conversion and the calendar
 // typedefs (the SI duration typedefs nanoseconds..hours are declared, with
-// a cross-period duration_cast; see the end of the file). Compound assignment is only the same duration type. A different
+// a cross-period duration_cast; see the end of the file). Compound
+// assignment of two durations is only the same duration type. A different
 // period is not declared for it. duration_cast is declared only when
 // the source and target period are the same type, this header's
 // __duration_period (num 1, den 1). The result count is that count. It
@@ -97,6 +100,15 @@ struct __duration_period {
 
 inline constexpr long long __duration_rep_max = 9223372036854775807LL;
 inline constexpr long long __duration_rep_min = -9223372036854775807LL - 1;
+
+// True when both types are the same type. Used so duration_cast exists
+// only for __duration_period (num 1, den 1) and the same rep. A different
+// period does not match, so that cast is not declared.
+template <typename _A, typename _B>
+inline constexpr bool __duration_same_type = false;
+
+template <typename _A>
+inline constexpr bool __duration_same_type<_A, _A> = true;
 
 template <typename _Rep, typename _Period = __duration_period>
 class duration {
@@ -130,16 +142,19 @@ public:
     // compound assignment fails to compile and pir still falls back.
     duration& operator+=(const duration& __d);
     duration& operator-=(const duration& __d);
+
+    // Same representation as operator%. Assigns that result. A zero
+    // divisor and the most negative count modulo -1 trap inside
+    // operator%, so this function does not store a duration. There is
+    // no second remainder.
+    // This is not PROVED and not CLEAN.
+    template <typename _Scalar>
+        requires __duration_same_type<_Scalar, _Rep>
+    duration& operator%=(const _Scalar& __s) {
+        *this = *this % __s;
+        return *this;
+    }
 };
-
-// True when both types are the same type. Used so duration_cast exists
-// only for __duration_period (num 1, den 1) and the same rep. A different
-// period does not match, so that cast is not declared.
-template <typename _A, typename _B>
-inline constexpr bool __duration_same_type = false;
-
-template <typename _A>
-inline constexpr bool __duration_same_type<_A, _A> = true;
 
 // Same period and the same rep. The count is copied. There is no ratio
 // multiply and no division, so the count is not truncated and not wrapped.
@@ -447,7 +462,7 @@ duration<_Rep, _Period> abs(const duration<_Rep, _Period>& __d) {
 // Duration modulo a scalar of the same representation.
 // The scalar type is that same rep. A duration modulo a duration is
 // not an overload, and a different scalar type is not an overload.
-// operator%= is not declared. A zero divisor is __prism_check then
+// A zero divisor is __prism_check then
 // __builtin_trap, before any remainder is formed. That path does not
 // return a zero duration. The most negative signed 64-bit count
 // modulo -1 is __prism_check then __builtin_trap. That path does not
