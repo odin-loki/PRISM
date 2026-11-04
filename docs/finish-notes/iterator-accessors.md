@@ -18,10 +18,10 @@ an element. `N == 0` is the `sizeof == 0` overload and returns 0. A
 pointer does not match. An lvalue with a `size()` member returns that
 member once. The body does not invent 0.
 
-`empty` is only the lvalue with an `empty()` member. The body returns
-that member once. It does not call `size` and does not invent `false`.
-`std::empty` for an array is not declared, so that call fails to compile
-here and pir falls back.
+`empty` of a `T (&)[N]` returns false and of a zero-length array returns
+true; neither loads an element (see `iterator-empty.md`). An lvalue with
+an `empty()` member returns that member once. It does not call `size`
+and does not invent `false`.
 
 `data` of a `T (&)[N]` returns `__arr` (array-to-pointer decay, not a
 load). `N == 0` returns the decayed pointer. An lvalue with a `data()`

@@ -70,13 +70,16 @@
 // without that member does not match, so that call fails to compile and
 // pir falls back. This is not PROVED and not CLEAN.
 //
-// std::empty is one overload for an lvalue with an empty member. It
-// returns that member once. The noexcept operator and the decltype
-// operand are unevaluated. The body does not call size and does not load
-// an element. It does not return a fabricated false. An array does not
-// match: std::empty for an array is not declared. A pointer does not
-// match. A class without that member does not match, so that call fails
-// to compile and pir falls back. This is not PROVED and not CLEAN.
+// std::empty is the two array overloads and one overload for an lvalue
+// with an empty member. The bound overload returns false and does not
+// load an element. N == 0 does not match that parameter. The zero-length
+// overload returns true and does not load. A pointer argument does not
+// match. There is no pointer overload. The array bodies do not call size,
+// begin, or end. The lvalue overload returns that member once. The
+// noexcept operator and the decltype operand are unevaluated. That body
+// does not call size and does not load an element. It does not return a
+// fabricated false. A class without that member does not match, so that
+// call fails to compile and pir falls back. This is not PROVED and not CLEAN.
 //
 // std::data is the two array overloads and one overload for an lvalue
 // with a data member. The bound overload returns a pointer to the first
@@ -121,9 +124,9 @@
 //
 // reverse_iterator is not declared.
 // The rest of this header is omitted the same way (iterator traits, tags,
-// insert iterators, stream iterators, the container overloads of begin
-// and end, and std::empty for an array). A unit that names one fails to
-// compile here and falls back. They are not stubbed.
+// insert iterators, stream iterators, and the container overloads of
+// begin and end). A unit that names one fails to compile here and falls
+// back. They are not stubbed.
 //
 // This is not a proof that an iterator stays in range. There is no check
 // on a later increment or on a dereference of the returned pointer.
@@ -238,6 +241,25 @@ template <typename _Tp>
     requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
 constexpr auto size(const _Tp& __t) noexcept(noexcept(__t.size())) -> decltype(__t.size()) {
     return __t.size();
+}
+
+// False for a bound of at least 1. N == 0 does not match this
+// parameter. The parameter is unnamed, so the body does not load an
+// element. The result is false.
+template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr bool empty(_Tp (&)[_Nm]) noexcept {
+    return false;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is true, not a
+// load. The parameter is unnamed. A pointer argument has a non-zero size,
+// so it does not match. There is no pointer overload.
+template <typename _Arr>
+constexpr bool empty(_Arr&) noexcept
+    requires(sizeof(_Arr) == 0)
+{
+    return true;
 }
 
 // An lvalue with an empty member. That member is returned once. The
