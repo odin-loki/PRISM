@@ -340,7 +340,8 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(src.find("substr, starts_with") == std::string::npos);
     CHECK(src.find("compare, find, and every other") == std::string::npos);
     CHECK(src.find("find, and every other member that is not") == std::string::npos);
-    CHECK(src.find("contains, and every other member that is not") != std::string::npos);
+    CHECK(src.find("contains, and every other member that is not") == std::string::npos);
+    CHECK(src.find("copy, and every other member that is not") != std::string::npos);
     CHECK(src.find("compare, find, substr, and every other") == std::string::npos);
     // Pointer plus count stores the pointer and the count. It stays noexcept
     // and does not check null. The view still does not own its characters.
@@ -499,7 +500,34 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(rd.find("new ") == std::string::npos);
     CHECK(rd.find("delete") == std::string::npos);
     CHECK(rd.find("locale") == std::string::npos);
-    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 2);
+    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 9);
+    CHECK(count_occ(code, "contains(") == 2);
+    CHECK(count_occ(code, "find_first_of(") == 1);
+    CHECK(count_occ(code, "find_last_of(") == 1);
+    CHECK(count_occ(code, "find_first_not_of(") == 1);
+    CHECK(count_occ(code, "find_last_not_of(") == 1);
+    CHECK(count_occ(code, "at(") == 1);
+
+    const std::string atb = body_of(code, "const_reference at(size_type __pos) const");
+    REQUIRE_FALSE(atb.empty());
+    const auto at_check = atb.find("__prism_check(0, \"MEM-OOB-READ\", \"std::basic_string_view::at index is outside the view\")");
+    const auto at_trap = atb.find("__builtin_trap()");
+    const auto at_load = atb.find("return _M_str[__pos];");
+    REQUIRE(at_check != std::string::npos);
+    REQUIRE(at_trap != std::string::npos);
+    REQUIRE(at_load != std::string::npos);
+    CHECK(atb.find("__pos >= this->size()") < at_check);
+    CHECK(at_check < at_trap);
+    CHECK(at_trap < at_load);
+
+    const std::string cview = body_of(code, "bool contains(basic_string_view __x) const noexcept");
+    const std::string cchar = body_of(code, "bool contains(_CharT __c) const noexcept");
+    REQUIRE(cview.find("if (__x._M_len == 0) return true;") != std::string::npos);
+    REQUIRE(cchar.find("if (_M_len == 0) return false;") != std::string::npos);
+    CHECK(cview.find("if (__x._M_len == 0) return true;") < cview.find("_M_str"));
+    CHECK(cchar.find("if (_M_len == 0) return false;") < cchar.find("_M_str"));
+    CHECK(cview.find("__prism_check") == std::string::npos);
+    CHECK(cchar.find("__prism_check") == std::string::npos);
 
     const std::string trace = slurp(repo() / "tests" / "cxx_models" / "string_view_trace.cpp");
     CHECK(trace.find(".starts_with(") != std::string::npos);
@@ -508,6 +536,11 @@ TEST_CASE("cxx string_view model: starts_with and ends_with stay inside the view
     CHECK(trace.find(".compare(") != std::string::npos);
     CHECK(trace.find("v.find(") != std::string::npos);
     CHECK(trace.find("v.rfind(") != std::string::npos);
+    CHECK(trace.find("v.find_first_of(") != std::string::npos);
+    CHECK(trace.find("v.find_last_of(") != std::string::npos);
+    CHECK(trace.find("v.find_first_not_of(") != std::string::npos);
+    CHECK(trace.find("v.find_last_not_of(") != std::string::npos);
+    CHECK(trace.find("v.contains(") != std::string::npos);
     CHECK(trace.find("v.substr(0, 0)") != std::string::npos);
     CHECK(trace.find("empty.substr(0, 0)") != std::string::npos);
 }

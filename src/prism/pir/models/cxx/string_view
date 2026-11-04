@@ -4,7 +4,7 @@
 // libstdc++'s. It is a non-owning view of a character sequence: a pointer and
 // a length. Nothing here allocates, and the destructor does not free.
 //
-// contains, and every other member that is not
+// copy, and every other member that is not
 // defined below are omitted on purpose. A use of one of them fails to compile
 // against this header, and the pir stage lowers that translation unit again
 // with libstdc++ (extra.cxx_models records the fallback). They are not stubbed.
@@ -103,6 +103,19 @@ public:
     // failure: not '\0', and not some other character substituted for it.
     [[nodiscard]] const_reference operator[](size_type __pos) const noexcept {
         __prism_check(__pos < _M_len, "MEM-OOB-READ", "std::string_view::operator[] index out of range");
+        return _M_str[__pos];
+    }
+
+    // [string.view.access] at. An index >= size() is MEM-OOB-READ, then
+    // __builtin_trap, before the character is read. at(0) on an empty view
+    // takes that path and does not load a pointer. That path does not return
+    // a fabricated character. An in-range index returns that stored character
+    // and does not read past size(). This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr const_reference at(size_type __pos) const {
+        if (__pos >= this->size()) {
+            __prism_check(0, "MEM-OOB-READ", "std::basic_string_view::at index is outside the view");
+            __builtin_trap();
+        }
         return _M_str[__pos];
     }
 
@@ -268,6 +281,144 @@ public:
             }
             if (__i == 0) return npos;
             --__i;
+        }
+    }
+
+    // [string.view.find] find_first_of(basic_string_view, pos). The lowest
+    // index at or after pos whose character equals any character of the
+    // needle, or npos. An empty needle returns npos and does not read. A
+    // non-empty needle in an empty view returns npos and does not read a
+    // null pointer. pos > size() returns npos without reading. pos == size()
+    // is the same miss. The scan starts at pos and stops on the last
+    // character, so no index past size() is formed. Each character is
+    // compared with char_traits::eq. The CharT and const CharT* overloads
+    // are not declared. npos is a miss, not a contract failure.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type find_first_of(basic_string_view __x, size_type __pos = 0) const noexcept {
+        if (__x._M_len == 0) return npos;
+        if (_M_len == 0 || __pos >= _M_len) return npos;
+        const size_type __last = _M_len - 1;
+        for (size_type __i = __pos;;) {
+            size_type __j = 0;
+            for (;;) {
+                if (_Traits::eq(_M_str[__i], __x._M_str[__j])) return __i;
+                ++__j;
+                if (__j == __x._M_len) break;
+            }
+            if (__i == __last) return npos;
+            ++__i;
+        }
+    }
+
+    // [string.view.find] find_last_of(basic_string_view, pos). The highest
+    // index at or before pos whose character equals any character of the
+    // needle, or npos. pos defaults to npos. An empty needle returns npos
+    // and does not read. A non-empty needle in an empty view returns npos
+    // and does not read a null pointer. A pos past size(), including npos,
+    // starts at the last character. The cursor walks down to 0 and does not
+    // wrap. The CharT and const CharT* overloads are not declared.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type find_last_of(basic_string_view __x, size_type __pos = npos) const noexcept {
+        if (__x._M_len == 0) return npos;
+        if (_M_len == 0) return npos;
+        const size_type __last = _M_len - 1;
+        for (size_type __i = __pos < __last ? __pos : __last;;) {
+            size_type __j = 0;
+            for (;;) {
+                if (_Traits::eq(_M_str[__i], __x._M_str[__j])) return __i;
+                ++__j;
+                if (__j == __x._M_len) break;
+            }
+            if (__i == 0) return npos;
+            --__i;
+        }
+    }
+
+    // [string.view.find] find_first_not_of(basic_string_view, pos). The lowest
+    // index at or after pos whose character equals no character of the needle,
+    // or npos. An empty needle returns pos when pos < size(), and npos
+    // otherwise, and does not read a needle character. A non-empty needle in
+    // an empty view returns npos and does not read a null pointer.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type find_first_not_of(basic_string_view __x, size_type __pos = 0) const noexcept {
+        if (__x._M_len == 0) {
+            if (__pos < _M_len) return __pos;
+            return npos;
+        }
+        if (_M_len == 0 || __pos >= _M_len) return npos;
+        const size_type __last = _M_len - 1;
+        for (size_type __i = __pos;;) {
+            size_type __j = 0;
+            for (;;) {
+                if (_Traits::eq(_M_str[__i], __x._M_str[__j])) break;
+                ++__j;
+                if (__j == __x._M_len) return __i;
+            }
+            if (__i == __last) return npos;
+            ++__i;
+        }
+    }
+
+    // [string.view.find] find_last_not_of(basic_string_view, pos). The highest
+    // index at or before pos whose character equals no character of the
+    // needle, or npos. pos defaults to npos. An empty needle returns the last
+    // index at or before pos when the view is non-empty, and npos when the
+    // view is empty. It does not read a needle character.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr size_type find_last_not_of(basic_string_view __x, size_type __pos = npos) const noexcept {
+        if (__x._M_len == 0) {
+            if (_M_len == 0) return npos;
+            const size_type __last = _M_len - 1;
+            return __pos < __last ? __pos : __last;
+        }
+        if (_M_len == 0) return npos;
+        const size_type __last = _M_len - 1;
+        for (size_type __i = __pos < __last ? __pos : __last;;) {
+            size_type __j = 0;
+            for (;;) {
+                if (_Traits::eq(_M_str[__i], __x._M_str[__j])) break;
+                ++__j;
+                if (__j == __x._M_len) return __i;
+            }
+            if (__i == 0) return npos;
+            --__i;
+        }
+    }
+
+    // [string.view.ops] contains(basic_string_view). True when the needle
+    // occurs. An empty needle is true and does not read a character. A
+    // non-empty needle in an empty view is false and does not read a null
+    // pointer. A needle longer than the view is false. The const CharT*
+    // overload is not declared. This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr bool contains(basic_string_view __x) const noexcept {
+        if (__x._M_len == 0) return true;
+        if (_M_len == 0 || __x._M_len > _M_len) return false;
+        const size_type __last = _M_len - __x._M_len;
+        for (size_type __i = 0;;) {
+            size_type __k = __i;
+            size_type __j = 0;
+            for (;;) {
+                if (!_Traits::eq(_M_str[__k], __x._M_str[__j])) break;
+                ++__j;
+                if (__j == __x._M_len) return true;
+                ++__k;
+            }
+            if (__i == __last) return false;
+            ++__i;
+        }
+    }
+
+    // [string.view.ops] contains(CharT). True when that character occurs.
+    // An empty view is false and does not read a null pointer. A miss is
+    // false. An empty view is not treated as containing '\0'.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] constexpr bool contains(_CharT __c) const noexcept {
+        if (_M_len == 0) return false;
+        const size_type __last = _M_len - 1;
+        for (size_type __i = 0;;) {
+            if (_Traits::eq(_M_str[__i], __c)) return true;
+            if (__i == __last) return false;
+            ++__i;
         }
     }
 

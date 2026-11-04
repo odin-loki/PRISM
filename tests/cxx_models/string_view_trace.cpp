@@ -219,6 +219,22 @@ static void searches() {
     static_assert(ca.rfind(caa) == 1);
     static_assert(std::string_view(ab, 2).find(std::string_view(abc, 3), 0) == std::string_view::npos);
     static_assert(std::string_view(ab, 2).rfind(std::string_view(abc, 3)) == std::string_view::npos);
+    static constexpr std::string_view cb(raw + 1, 1);
+    static constexpr std::string_view ca0(raw, 1);
+    static_assert(cv.find_first_of(cb, 0) == 1);
+    static_assert(cv.find_first_of(cb, 2) == 3);
+    static_assert(cv.find_first_of(cempty, 0) == std::string_view::npos);
+    static_assert(cv.find_last_of(cb) == 3);
+    static_assert(cv.find_first_not_of(ca0, 0) == 1);
+    static_assert(cv.find_last_not_of(ca0) == 3);
+    static_assert(cv.find_first_not_of(cempty, 2) == 2);
+    static_assert(cv.contains(cn));
+    static_assert(cv.contains(cempty));
+    static_assert(cv.contains(static_cast<char>('b')));
+    static_assert(!cv.contains(static_cast<char>('z')));
+    static_assert(std::string_view{}.contains(cempty));
+    static_assert(!std::string_view{}.contains(static_cast<char>('a')));
+    static_assert(std::string_view{}.find_first_of(cb, 0) == std::string_view::npos);
 
     // Exact objects. A read past size() is an ASan fault, including a read
     // of an empty needle whose pointer is one past the end, and a read of
@@ -281,6 +297,16 @@ static void searches() {
     put_line("find_long", {ex.find(exn, 0), ex.rfind(exn)});
     put_line("find_endgap", {ex.find(end, 0), ex.find(end, 2), ex.find(end, 3), ex.rfind(end, 1), ex.rfind(end, 7)});
     put_line("find_self", {v.find(v), v.rfind(v)});
+    put_line("first_of", {v.find_first_of(nba, 0), v.find_first_of(nz, 0), v.find_first_of(gap, 0),
+                          empty.find_first_of(nba, 0)});
+    put_line("last_of", {v.find_last_of(nba), v.find_last_of(nba, 1), v.find_last_of(gap), empty.find_last_of(nba)});
+    put_line("first_not", {v.find_first_not_of(std::string_view(buf, 1), 0), v.find_first_not_of(gap, 2),
+                           v.find_first_not_of(gap, 5), empty.find_first_not_of(gap, 0)});
+    put_line("last_not", {v.find_last_not_of(std::string_view(buf, 1)), v.find_last_not_of(gap),
+                          empty.find_last_not_of(gap)});
+    std::printf("contains=%d%d%d%d\n", v.contains(naba) ? 1 : 0, v.contains(gap) ? 1 : 0, v.contains('b') ? 1 : 0,
+                v.contains('z') ? 1 : 0);
+    std::printf("contains_empty=%d%d\n", empty.contains(gap) ? 1 : 0, empty.contains('a') ? 1 : 0);
     std::printf("find_alive=%c%c%c%c%c\n", buf[0], buf[1], buf[2], buf[3], buf[4]);
 }
 
