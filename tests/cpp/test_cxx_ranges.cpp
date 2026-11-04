@@ -1,5 +1,8 @@
 // The <ranges> model is a partial stand-in: size, ssize, empty, begin, end,
-// data, cbegin, cend, cdata, and distance. An array size is N. An lvalue
+// data, cbegin, cend, cdata, and distance. std::ranges::count_if is in the
+// <algorithm> model, as it is in libstdc++; the trace and the snippets
+// here include both headers. <ranges> alone does not declare count_if,
+// against libstdc++ or the model. An array size is N. An lvalue
 // with a const size() member returns that size(). ssize converts that value
 // to ptrdiff_t, and a value that does not fit is a FUNC-CONTRACT check then
 // a trap, not a wrapped negative ptrdiff_t. empty of T(&)[N] is true only
@@ -253,7 +256,7 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
 
 }  // namespace
 
-TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, and find_if_not; ssize and distance trap when they do not fit") {
+TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, find_if_not, and count_if; ssize and distance trap when they do not fit") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -294,6 +297,8 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(src.find("find(_Arr*") == std::string::npos);
     CHECK(src.find("find_if(_Arr*") == std::string::npos);
     CHECK(src.find("find_if_not(_Arr*") == std::string::npos);
+    // ranges::count_if is declared by <algorithm>, as in libstdc++, not here.
+    CHECK(src.find("count_if") == std::string::npos);
     CHECK(src.find("(_Tp*") == std::string::npos);
     // The access CPOs end where the views::take / views::drop part starts
     // (pointer subranges over contiguous ranges, which use data()).
@@ -674,7 +679,7 @@ TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
     if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
-TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, and find_if_not match libstdc++, a pointer does not compile") {
+TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, find_if_not, and count_if match libstdc++, a pointer does not compile") {
     auto& c = ctx();
     if (!c.ok) return;
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -795,6 +800,22 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "nfznull 1"));
     CHECK(has_line(b, "nfpfind 1"));
     CHECK(has_line(b, "nfpmiss 1"));
+    CHECK(has_line(b, "cfhit 1 4"));
+    CHECK(has_line(b, "cftwo 2 4"));
+    CHECK(has_line(b, "cffront 1 4"));
+    CHECK(has_line(b, "cfmiss 0 4"));
+    CHECK(has_line(b, "cfempty 0 0"));
+    CHECK(has_line(b, "cftie 2 2"));
+    CHECK(has_line(b, "cftiemiss 0 2"));
+    CHECK(has_line(b, "cfone 1"));
+    CHECK(has_line(b, "cfkeep 1"));
+    CHECK(has_line(b, "cfcfirst 1"));
+    CHECK(has_line(b, "cfczero 2 4"));
+    CHECK(has_line(b, "cfcall 4 4"));
+    CHECK(has_line(b, "cfcmiss 0"));
+    CHECK(has_line(b, "cfznull 1"));
+    CHECK(has_line(b, "cfpnull 2"));
+    CHECK(has_line(b, "cfpmiss 0"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "huge"}, &out, &err));
@@ -816,6 +837,13 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(notnull_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
     CHECK(notnull_both.find("std::ranges::find_if_not null predicate") != std::string::npos);
     CHECK(notnull_out.find("called") == std::string::npos);
+
+    std::string countnull_out, countnull_err;
+    CHECK_FALSE(run_cmd({mod.string(), "countnull"}, &countnull_out, &countnull_err));
+    const std::string countnull_both = countnull_out + countnull_err;
+    CHECK(countnull_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(countnull_both.find("std::ranges::count_if null predicate") != std::string::npos);
+    CHECK(countnull_out.find("called") == std::string::npos);
 
     const char* ok_src =
         "#include <ranges>\n"
@@ -1226,6 +1254,106 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK_FALSE(
         compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_null", find_if_not_null_src, true, &find_if_not_null_err));
     CHECK(find_if_not_null_err.find("__prism_check") != std::string::npos);
+
+    const char* count_if_arr_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "#include <type_traits>\n"
+        "constexpr bool is_one(const int& x) { return x == 1; }\n"
+        "constexpr bool is_four(const int& x) { return x == 4; }\n"
+        "constexpr bool is_nine(const int& x) { return x == 9; }\n"
+        "constexpr bool always(const int&) { return true; }\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::count_if(std::declval<int (&)[4]>(), is_one)), "
+        "std::ptrdiff_t>);\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::count_if(std::declval<const int (&)[4]>(), is_one)), "
+        "std::ptrdiff_t>);\n"
+        "constexpr int ak[4] = {1, 2, 4, 4};\n"
+        "static_assert(std::ranges::count_if(ak, is_one) == 1);\n"
+        "static_assert(std::ranges::count_if(ak, is_four) == 2);\n"
+        "static_assert(std::ranges::count_if(ak, is_nine) == 0);\n"
+        "static_assert(std::ranges::count_if(ak, always) == 4);\n"
+        "std::ptrdiff_t f(int (&a)[4], bool (*p)(const int&)) { return std::ranges::count_if(a, p); }\n"
+        "std::ptrdiff_t g(const int (&a)[4], bool (*p)(const int&)) { return std::ranges::count_if(a, p); }\n"
+        "std::ptrdiff_t h(int* (&a)[2], bool (*p)(int* const&)) { return std::ranges::count_if(a, p); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_arr", count_if_arr_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_arr", count_if_arr_src, true));
+
+    // <ranges> alone: libstdc++ declares ranges::count_if in <algorithm>, and so
+    // does the model. Neither accepts this.
+    const char* count_if_ranges_only_src =
+        "#include <ranges>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int (&a)[4], bool (*pred)(const int&)) { return std::ranges::count_if(a, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_ranges_only", count_if_ranges_only_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_ranges_only", count_if_ranges_only_src, true));
+
+    const char* count_if_ptr_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int* p, bool (*pred)(const int&)) { return std::ranges::count_if(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_ptr", count_if_ptr_src, true));
+
+    const char* count_if_pbound_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int (*p)[4], bool (*pred)(const int&)) { return std::ranges::count_if(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_pbound", count_if_pbound_src, true));
+
+    const char* count_if_pair_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int* b, int* e, bool (*pred)(const int&)) { return std::ranges::count_if(b, e, pred); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_pair", count_if_pair_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_pair", count_if_pair_src, true));
+
+    const char* count_if_mem_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "struct Has { int size() const { return 4; } };\n"
+        "std::ptrdiff_t f(Has& h, bool (*pred)(const int&)) { return std::ranges::count_if(h, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_mem", count_if_mem_src, true));
+
+    const char* count_if_lam_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int (&a)[4]) { return std::ranges::count_if(a, [](int x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_lam", count_if_lam_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_lam", count_if_lam_src, true));
+
+    const char* count_if_lam_ref_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "std::ptrdiff_t f(int (&a)[4]) { return std::ranges::count_if(a, [](const int& x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_lam_ref", count_if_lam_ref_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_lam_ref", count_if_lam_ref_src, true));
+
+    const char* count_if_val_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "#include <cstddef>\n"
+        "bool is_zero(int x) { return x == 0; }\n"
+        "std::ptrdiff_t f(int (&a)[4]) { return std::ranges::count_if(a, is_zero); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_count_if_val", count_if_val_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_val", count_if_val_src, true));
+
+    const char* count_if_null_src =
+        "#include <ranges>\n"
+        "#include <algorithm>\n"
+        "constexpr int nullp() {\n"
+        "  int a[3] = {1, 2, 3};\n"
+        "  return static_cast<int>(std::ranges::count_if(a, static_cast<bool (*)(const int&)>(nullptr)));\n"
+        "}\n"
+        "static_assert(nullp() == 0);\n";
+    std::string count_if_null_err;
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_count_if_null", count_if_null_src, true, &count_if_null_err));
+    CHECK(count_if_null_err.find("__prism_check") != std::string::npos);
 
     const char* empty_ptr_src =
         "#include <ranges>\n"
