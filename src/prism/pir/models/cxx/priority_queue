@@ -15,7 +15,8 @@
 // `_Prism_priority_queue_nodes<T>` (so this header does not name `vector`);
 // any other sequence whose value_type is T is accepted and ignored. push,
 // emplace, pop, top, empty, size, and swap are the operations the standard
-// makes observable here.
+// makes observable here. operator< compares stored elements in heap-index
+// order. It does not sort them and it does not use the comparator.
 //
 //  * top is the greatest element under the comparator (std::less by default:
 //    comp(a, b) means a is ordered before b, so a max-heap). Equal elements
@@ -39,12 +40,27 @@
 //    It does not allocate, does not free, and does not copy elements.
 //    Self-swap changes nothing. Swapping with an empty queue leaves this
 //    empty and moves the nodes to the other queue.
+//  * operator< compares stored elements in heap-index order. It does not
+//    sort them and it does not use the comparator. Two empty queues are
+//    not less and do not load the root. An empty queue is less than a
+//    non-empty queue, and that path does not load the empty root. A
+//    non-empty queue is not less than an empty queue, and that path does
+//    not load the empty root either. Otherwise each index compares the
+//    stored elements with operator<; a difference does not read a later
+//    index, and an index past the shorter queue is not read. No element
+//    is invented and the function does not return T{}.
+//  * pop on an empty queue is the same FUNC-CONTRACT check as top,
+//    `__glibcxx_assert(!this->empty())`, and it runs before the root is
+//    loaded and before any destroy or free. That path does not invent an
+//    element.
 //
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
 // libstdc++ (extra.cxx_models says so): the range and container
 // constructors, container_type, and from_range / push_range.
-// Those are not stubbed.
+// Those are not stubbed. operator>, operator<=, operator>=, operator==,
+// operator!=, and operator<=> are not declared. libstdc++ does not
+// provide priority_queue comparison operators either.
 #ifndef _PRISM_MODEL_PRIORITY_QUEUE
 #define _PRISM_MODEL_PRIORITY_QUEUE 1
 #define _GLIBCXX_PRIORITY_QUEUE 1
@@ -172,9 +188,11 @@ public:
     template <typename... _Args>
     void emplace(_Args&&... __args) { _M_push_node(_M_create(std::forward<_Args>(__args)...)); }
 
-    // Precondition !this->empty(), same FUNC-CONTRACT as top(). Destroys the
-    // element top() referred to and frees that node. The last node is moved
-    // into the hole by pointer, then sifted; elements are not move-assigned.
+    // Precondition !this->empty(), same FUNC-CONTRACT as top(). The check
+    // runs before the root is loaded and before any destroy or free. An
+    // empty pop does not invent an element. Otherwise destroys the element
+    // top() referred to and frees that node. The last node is moved into
+    // the hole by pointer, then sifted; elements are not move-assigned.
     void pop() {
         __glibcxx_assert(!this->empty());
         _Node* __dead = _M_heap[0];
@@ -201,6 +219,12 @@ public:
         if (this == &__o) return;
         _M_swap(__o);
     }
+
+    // Defined below. A function template, so a T with no operator< can
+    // still be stored: the comparison is not instantiated with the queue.
+    template <typename _Up, typename _Seq, typename _Cmp>
+    friend bool operator<(const priority_queue<_Up, _Seq, _Cmp>& __x,
+                          const priority_queue<_Up, _Seq, _Cmp>& __y);
 
 private:
     _Node** _M_heap = nullptr;
@@ -322,6 +346,31 @@ template <typename _Tp, typename _Sequence, typename _Compare>
 inline void swap(priority_queue<_Tp, _Sequence, _Compare>& __x,
                  priority_queue<_Tp, _Sequence, _Compare>& __y) noexcept(noexcept(__x.swap(__y))) {
     __x.swap(__y);
+}
+
+// Heap-index order. Does not sort the elements and does not use the
+// comparator. Two empty queues are not less and do not load the root.
+// _M_size is the count stored on the queue, not a load of the root node.
+// An empty queue is less than a non-empty queue, and that path does not
+// load the empty root. A non-empty queue compared with an empty queue is
+// not less, and that path does not load the empty root either. Otherwise
+// stored elements are compared with operator<; a later index is not read
+// after a difference, and an index past the shorter queue is not read.
+// No element is invented. The comparison does not return T{}.
+template <typename _Tp, typename _Sequence, typename _Compare>
+bool operator<(const priority_queue<_Tp, _Sequence, _Compare>& __x,
+               const priority_queue<_Tp, _Sequence, _Compare>& __y) {
+    using size_type = typename priority_queue<_Tp, _Sequence, _Compare>::size_type;
+    // _M_size is the count stored on the queue. These returns do not load the root.
+    if (__x._M_size == 0 && __y._M_size == 0) return false;
+    if (__x._M_size == 0) return true;
+    if (__y._M_size == 0) return false;
+    const size_type __n = __x._M_size < __y._M_size ? __x._M_size : __y._M_size;
+    for (size_type __i = 0; __i < __n; ++__i) {
+        if (*__x._M_heap[__i]->_M_valptr() < *__y._M_heap[__i]->_M_valptr()) return true;
+        if (*__y._M_heap[__i]->_M_valptr() < *__x._M_heap[__i]->_M_valptr()) return false;
+    }
+    return __x._M_size < __y._M_size;
 }
 
 _GLIBCXX_END_NAMESPACE_VERSION

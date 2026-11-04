@@ -18,13 +18,22 @@
 //  * _GLIBCXX_ASSERTIONS preconditions (FUNC-CONTRACT, the condition text
 //    does not mention size()): !this->empty() on front, back, and pop. The
 //    failed check is std::__glibcxx_assert_fail, which does not return, so
-//    an empty queue does not yield a stand-in element.
+//    an empty queue does not yield a stand-in element. The check runs
+//    before a node is loaded, and pop's check runs before that node is
+//    destroyed or freed.
+//  * operator< compares two queues of the same T. Two empty queues compare
+//    not-less and do not load a node. An empty queue is less than a
+//    non-empty queue, and that path does not load the empty queue.
+//    Otherwise the stored elements are compared from front to back and the
+//    walk stops at the first deciding element. An element past the shorter
+//    queue is not read. The comparison does not return T{}.
 //
 // What it does not model is not declared, so a unit that names it fails to
 // compile against this header and the pir stage lowers it again with
 // libstdc++ (extra.cxx_models says so): std::priority_queue, any container
-// template argument other than the model's default, from_range, and
-// allocator-extended constructors. Those are not stubbed.
+// template argument other than the model's default, from_range,
+// allocator-extended constructors, and operator>, operator<=, operator>=,
+// operator==, operator!=, and operator<=>. Those are not stubbed.
 #ifndef _PRISM_MODEL_QUEUE
 #define _PRISM_MODEL_QUEUE 1
 #define _GLIBCXX_QUEUE 1  // libstdc++'s <queue> include guard: never both
@@ -251,11 +260,42 @@ public:
         std::swap(_M_tail, __q._M_tail);
         std::swap(_M_size, __q._M_size);
     }
+
+    // Defined below. A function template, so a T with no operator< can
+    // still be stored: the comparison is not instantiated with the queue.
+    template <typename _Up, typename _Seq>
+    friend bool operator<(const queue<_Up, _Seq>& __x, const queue<_Up, _Seq>& __y);
 };
 
 template <typename _Tp, typename _Sequence>
 inline void swap(queue<_Tp, _Sequence>& __x, queue<_Tp, _Sequence>& __y) noexcept {
     __x.swap(__y);
+}
+
+// Two empty queues compare not-less and do not load a node. empty() reads
+// the head pointer stored in the queue; it does not load a heap node, and
+// this return runs before any node is named. An empty queue is less than a
+// non-empty queue, and that path does not load the empty queue. A non-empty
+// queue is not less than an empty queue. Otherwise the stored elements are
+// compared from front to back and the walk stops at the first deciding
+// element. An element past the shorter queue is not read. The comparison
+// does not return T{}.
+template <typename _Tp, typename _Sequence>
+bool operator<(const queue<_Tp, _Sequence>& __x, const queue<_Tp, _Sequence>& __y) {
+    using _Node = typename queue<_Tp, _Sequence>::_Node;
+    if (__x.empty() || __y.empty())
+        return __x.empty() && !__y.empty();
+    const _Node* __a = __x._M_head;
+    const _Node* __b = __y._M_head;
+    while (__a != nullptr && __b != nullptr) {
+        const _Tp& __lv = *__a->_M_valptr();
+        const _Tp& __rv = *__b->_M_valptr();
+        if (__lv < __rv) return true;
+        if (__rv < __lv) return false;
+        __a = __a->_M_next;
+        __b = __b->_M_next;
+    }
+    return __a == nullptr && __b != nullptr;
 }
 
 _GLIBCXX_END_NAMESPACE_VERSION
