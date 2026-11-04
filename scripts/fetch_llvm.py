@@ -31,7 +31,10 @@ def main():
     if not asset: raise SystemExit(f"no asset for {plat}")
     out = Path(a.dest) / f"llvm-{pin['version']}"
     stamp = out / ".sha256"
-    if stamp.exists() and stamp.read_text().strip() == asset["sha256"]:
+    # The stamp names the archive and the member list, so adding a member to
+    # PIN.toml re-extracts instead of reusing a tree that lacks it.
+    key = asset["sha256"] + ("" if a.keep_full else " " + hashlib.sha256("\n".join(pin["members"]).encode()).hexdigest()[:16])
+    if stamp.exists() and stamp.read_text().strip() == key:
         print(out / "bin"); return
     Path(a.dest).mkdir(parents=True, exist_ok=True)
     tgz = Path(a.dest) / asset["name"]
@@ -56,7 +59,7 @@ def main():
             m.name = rel
             t.extract(m, out, filter="data")
     tgz.unlink()
-    stamp.write_text(asset["sha256"])
+    stamp.write_text(key)
     print(out / "bin")
 
 if __name__ == "__main__":

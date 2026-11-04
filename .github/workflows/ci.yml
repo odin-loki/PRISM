@@ -115,7 +115,7 @@ jobs:
           mkdir -p gui-smoke/src
           cp testdata/planted/add_overflow.c testdata/planted/div_param.c testdata/planted/oob_write.c gui-smoke/src/
           QT_QPA_PLATFORM=offscreen timeout 600 ./build/prism_gui gui-smoke/src --no-llm \
-            --stage inventory,classify,lints,bmc --out gui-smoke/out \
+            --stage inventory,classify,lints,pir --out gui-smoke/out \
             --smoke-screenshot gui-smoke/prism_gui.png
       - uses: actions/upload-artifact@v4
         if: always()

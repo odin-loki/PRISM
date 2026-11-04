@@ -1,4 +1,5 @@
-# Pinned LLVM toolchain for PRISM (clang, clang++, opt, llvm-link, lli, libclang).
+# Pinned LLVM toolchain for PRISM (clang, clang++, clang-cl, lld, opt, llvm-link, lli, libclang).
+# clang-cl compiles PRISM on Windows; lld links FORGE's HIP code objects.
 # Binaries are 1.5-2 GB per platform, too large for git: this is a pinned fetch.
 # scripts/fetch_llvm.py downloads the asset for the host, checks the sha256
 # below (and refuses on mismatch), extracts only the needed members into
@@ -7,7 +8,8 @@
 tag = "llvmorg-23.1.4"
 version = "23.1.4"
 base_url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/"
-members = ["bin/clang", "bin/clang++", "bin/clang-23", "bin/opt", "bin/llvm-link", "bin/lli",
+members = ["bin/clang", "bin/clang++", "bin/clang-23", "bin/clang-cl", "bin/opt", "bin/llvm-link", "bin/lli",
+           "bin/lld", "bin/ld.lld", "bin/lld-link",
            "bin/clang-scan-deps", "lib/clang", "lib/libclang.so*", "lib/libc++*", "include/c++", "include/clang-c", "share/libc++",
            "include/x86_64-unknown-linux-gnu", "include/aarch64-unknown-linux-gnu",
            "lib/x86_64-unknown-linux-gnu", "lib/aarch64-unknown-linux-gnu"]
