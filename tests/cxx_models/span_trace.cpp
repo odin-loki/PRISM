@@ -4,7 +4,10 @@
 // last(0), and size_bytes(). The view does not own: `kept` is still the same
 // int after the span dies. last(0) prints a size and does not read an element.
 // size_bytes() of the 4-int span is 4 * sizeof(int). size_bytes() of an empty
-// span, including last(0), is 0 and does not read an element.
+// span, including last(0), is 0 and does not read an element. first(2),
+// first(0), first(4), and last(4) stay inside the view. first(0) prints a
+// size and does not read an element. A count past size() is not called
+// here: the model traps there, and libstdc++ does not define it.
 #include <cstdio>
 #include <cstdlib>
 #include <span>
@@ -43,5 +46,15 @@ int main() {
     std::printf("bytes=%zu\n", s.size_bytes());
     std::printf("none_bytes=%zu\n", none.size_bytes());
     std::printf("last0_bytes=%zu\n", z.size_bytes());
+    std::span<int> head = s.first(2);
+    std::printf("first2=%zu %d %d %d\n", head.size(), head[0], head[1], head.data() == s.data() ? 1 : 0);
+    std::span<int> f0 = s.first(0);
+    std::printf("first0=%zu %d\n", f0.size(), f0.data() == s.data() ? 1 : 0);
+    std::span<int> fall = s.first(4);
+    std::printf("first4=%zu %d\n", fall.size(), fall[3]);
+    std::span<int> fe = none.first(0);
+    std::printf("none_first=%zu\n", fe.size());
+    std::span<int> lall = s.last(4);
+    std::printf("last4=%zu %d %d\n", lall.size(), lall[0], lall.data() == s.data() ? 1 : 0);
     return 0;
 }

@@ -313,7 +313,7 @@ TEST_CASE("cxx span model: valid index reads the element and the view does not o
     auto a = run_lines(lib);
     auto b = run_lines(mod);
     CHECK(a == b);
-    REQUIRE(b.size() >= 13);
+    REQUIRE(b.size() >= 18);
     CHECK(b[0] == "size=4");
     CHECK(b[1] == "empty=0");
     CHECK(b[2] == "at2=30");
@@ -324,6 +324,11 @@ TEST_CASE("cxx span model: valid index reads the element and the view does not o
     CHECK(b[10] == "bytes=" + std::to_string(static_cast<unsigned long long>(4) * sizeof(int)));
     CHECK(b[11] == "none_bytes=0");
     CHECK(b[12] == "last0_bytes=0");
+    CHECK(b[13] == "first2=2 10 20 1");
+    CHECK(b[14] == "first0=0 1");
+    CHECK(b[15] == "first4=4 40");
+    CHECK(b[16] == "none_first=0");
+    CHECK(b[17] == "last4=4 10 1");
 }
 
 TEST_CASE("cxx span model: last past size is a check and a null nonzero size stays one") {
@@ -348,21 +353,71 @@ TEST_CASE("cxx span model: last past size is a check and a null nonzero size sta
     const auto last_end = src.find("struct iterator", last);
     REQUIRE(last_end != std::string::npos);
     const auto body = src.substr(last, last_end - last);
-    const auto check = body.find("__prism_check(__count <= this->size(), \"MEM-OOB-READ\",");
-    REQUIRE(check != std::string::npos);
+    // A count past size() is FUNC-CONTRACT, then __builtin_trap, before an
+    // element address is formed. That arm does not return a span.
     const auto bad = body.find("if (__count > this->size())");
-    REQUIRE(bad != std::string::npos);
-    const auto bad_ret = body.find("return span(_M_ptr, 0);");
-    REQUIRE(bad_ret != std::string::npos);
+    const auto check =
+        body.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::span::last count is outside the span\")");
+    const auto trap = body.find("__builtin_trap();");
+    const auto null = body.find("if (_M_ptr == nullptr)");
+    const auto zero = body.find("if (__count == 0)");
+    const auto zero_ret = body.find("return span(_M_ptr + this->size(), 0);");
     const auto good = body.find("return span(_M_ptr + (this->size() - __count), __count);");
+    REQUIRE(bad != std::string::npos);
+    REQUIRE(check != std::string::npos);
+    REQUIRE(trap != std::string::npos);
+    REQUIRE(null != std::string::npos);
+    REQUIRE(zero != std::string::npos);
+    REQUIRE(zero_ret != std::string::npos);
     REQUIRE(good != std::string::npos);
-    CHECK(check < bad);
-    CHECK(bad < bad_ret);
-    CHECK(bad_ret < good);
+    CHECK(bad < check);
+    CHECK(check < trap);
+    CHECK(trap < null);
+    CHECK(null < zero);
+    CHECK(zero < zero_ret);
+    CHECK(zero_ret < good);
+    const auto last_arm = body.substr(bad, trap - bad);
+    CHECK(last_arm.find("return") == std::string::npos);
+    CHECK(last_arm.find("_M_ptr") == std::string::npos);
+    CHECK(body.find("MEM-OOB-READ") == std::string::npos);
+    CHECK(body.find("exceeds size()") == std::string::npos);
+    CHECK(body.find("return span(_M_ptr, 0);") == std::string::npos);
+    CHECK(body.find("__glibcxx_assert") == std::string::npos);
+    CHECK(body.find("This is not PROVED and not CLEAN.") != std::string::npos);
     CHECK(body.find("return *") == std::string::npos);
     CHECK(body.find("operator[]") == std::string::npos);
-    CHECK(src.find("__glibcxx_assert(__count <= this->size())") != std::string::npos);
-    CHECK(src.find("return span(_M_ptr, __count);") != std::string::npos);
+
+    // first(count): the same contract, at the front of the view.
+    const auto first = src.find("span first(size_type __count) const noexcept");
+    REQUIRE(first != std::string::npos);
+    CHECK(first < last);
+    const auto fbody = src.substr(first, last - first);
+    const auto fbad = fbody.find("if (__count > this->size())");
+    const auto fcheck =
+        fbody.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::span::first count is outside the span\")");
+    const auto ftrap = fbody.find("__builtin_trap();");
+    const auto fzero = fbody.find("if (__count == 0)");
+    const auto fzero_ret = fbody.find("return span(_M_ptr, 0);");
+    const auto fgood = fbody.find("return span(_M_ptr, __count);");
+    REQUIRE(fbad != std::string::npos);
+    REQUIRE(fcheck != std::string::npos);
+    REQUIRE(ftrap != std::string::npos);
+    REQUIRE(fzero != std::string::npos);
+    REQUIRE(fzero_ret != std::string::npos);
+    REQUIRE(fgood != std::string::npos);
+    CHECK(fbad < fcheck);
+    CHECK(fcheck < ftrap);
+    CHECK(ftrap < fzero);
+    CHECK(fzero < fzero_ret);
+    CHECK(fzero_ret < fgood);
+    const auto first_arm = fbody.substr(fbad, ftrap - fbad);
+    CHECK(first_arm.find("return") == std::string::npos);
+    CHECK(first_arm.find("_M_ptr") == std::string::npos);
+    CHECK(fbody.find("__glibcxx_assert") == std::string::npos);
+    CHECK(fbody.find("MEM-OOB-READ") == std::string::npos);
+    CHECK(fbody.find("return *") == std::string::npos);
+    CHECK(fbody.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("__glibcxx_assert(__count <= this->size())") == std::string::npos);
     CHECK(src.find("__glibcxx_assert(__offset <= this->size())") != std::string::npos);
     CHECK(src.find("__glibcxx_assert(__offset <= this->size() && __count <= this->size() - __offset)") !=
           std::string::npos);
@@ -396,7 +451,20 @@ TEST_CASE("cxx span model: last past size and a null nonzero span abort in the c
                "  }\n"
                "  if (argc > 1 && argv[1][0] == 'z') {\n"
                "    std::span<int> e = s.last(0);\n"
-               "    std::printf(\"z=%zu\\n\", e.size());\n"
+               "    std::span<int> f = s.first(0);\n"
+               "    std::span<int> g = s.first(4);\n"
+               "    std::printf(\"z=%zu %zu %zu %d\\n\", e.size(), f.size(), g.size(), g[3]);\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (argc > 1 && argv[1][0] == 'f') {\n"
+               "    std::span<int> t = s.first(5);\n"
+               "    std::printf(\"size=%zu\\n\", t.size());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (argc > 1 && argv[1][0] == 'e') {\n"
+               "    std::span<int> empty(a, 0);\n"
+               "    std::span<int> t = empty.last(1);\n"
+               "    std::printf(\"size=%zu\\n\", t.size());\n"
                "    return 0;\n"
                "  }\n"
                "  std::span<int> t = s.last(5);\n"
@@ -421,10 +489,25 @@ TEST_CASE("cxx span model: last past size and a null nonzero span abort in the c
     build.push_back(exe.string());
     REQUIRE(run_cmd(build));
 
-    std::string err;
-    CHECK_FALSE(run_cmd({exe.string()}, nullptr, &err));
-    CHECK(err.find("CHECK MEM-OOB-READ") != std::string::npos);
-    CHECK(err.find("std::span::last count exceeds size()") != std::string::npos);
+    // A count past size() stops at the check. No size line is printed, so
+    // no span was returned.
+    std::string out, err;
+    CHECK_FALSE(run_cmd({exe.string()}, &out, &err));
+    CHECK(out.find("size=") == std::string::npos);
+    CHECK(err.find("CHECK FUNC-CONTRACT") != std::string::npos);
+    CHECK(err.find("std::span::last count is outside the span") != std::string::npos);
+    CHECK(err.find("MEM-OOB-READ") == std::string::npos);
+
+    std::string eout, eerr;
+    CHECK_FALSE(run_cmd({exe.string(), "e"}, &eout, &eerr));
+    CHECK(eout.find("size=") == std::string::npos);
+    CHECK(eerr.find("std::span::last count is outside the span") != std::string::npos);
+
+    std::string fout, ferr;
+    CHECK_FALSE(run_cmd({exe.string(), "f"}, &fout, &ferr));
+    CHECK(fout.find("size=") == std::string::npos);
+    CHECK(ferr.find("CHECK FUNC-CONTRACT") != std::string::npos);
+    CHECK(ferr.find("std::span::first count is outside the span") != std::string::npos);
 
     std::string nerr;
     CHECK_FALSE(run_cmd({exe.string(), "n"}, nullptr, &nerr));
@@ -433,7 +516,7 @@ TEST_CASE("cxx span model: last past size and a null nonzero span abort in the c
 
     std::string zout;
     REQUIRE(run_cmd({exe.string(), "z"}, &zout));
-    CHECK(zout.find("z=0\n") != std::string::npos);
+    CHECK(zout.find("z=0 0 4 40\n") != std::string::npos);
 }
 
 TEST_CASE("cxx span model: operator[] outside the span and empty front and back trap before the address") {

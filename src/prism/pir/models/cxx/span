@@ -24,13 +24,14 @@
 //    An empty span traps before that address is formed;
 //  * subspan(offset, count) and subspan(offset) (the tail) when the slice
 //    sits inside size();
-//  * first(count) and last(count) when the count fits in size(), and
-//    begin()/end() iterators that point at the viewed elements (a class
-//    type, because <format> calls iterator::operator->). Stepping an
-//    iterator does not allocate. last(0) is an empty span and does not
-//    read an element;
+//  * first(count) and last(count) when the count fits in size(). A count
+//    of 0 is an empty span and does not load an element. A count greater
+//    than size() is FUNC-CONTRACT, then __builtin_trap, before an element
+//    address is formed. begin()/end() iterators point at the viewed
+//    elements (a class type, because <format> calls iterator::operator->).
+//    Stepping an iterator does not allocate;
 //
-// subspan() and first() use __glibcxx_assert, the same call <vector> and
+// subspan() uses __glibcxx_assert, the same call <vector> and
 // <list> use (_GLIBCXX_ASSERTIONS, on for every C++ unit). The failing
 // path does not invent an element or a view:
 //  * operator[] with an index >= size() is __prism_check with class
@@ -47,12 +48,21 @@
 //    ("std::span::back of an empty span"), then __builtin_trap, before
 //    the element address is formed. That path does not load and does not
 //    return a fabricated _Tp. This is not PROVED and not CLEAN;
-//  * subspan or first that would run past size() is the same kind of
+//  * subspan that would run past size() is the same kind of
 //    precondition failure, not a span of invented elements;
+//  * first(count) with count > size() is __prism_check with class
+//    FUNC-CONTRACT ("std::span::first count is outside the span"),
+//    then __builtin_trap, before an element address is formed. That
+//    path does not load and does not return a span. A count of 0
+//    returns an empty span and does not load an element. An in-range
+//    count returns that sub-span. This is not PROVED and not CLEAN.
 //  * last(count) with count > size() is __prism_check with class
-//    MEM-OOB-READ. That path returns a span at the viewed pointer with
-//    length 0: it does not start before the buffer and it does not extend
-//    past size().
+//    FUNC-CONTRACT ("std::span::last count is outside the span"),
+//    then __builtin_trap, before an element address is formed. That
+//    path does not load and does not return a span. A count of 0
+//    returns an empty span and does not load an element. An in-range
+//    count returns that sub-span. A null pointer is not stepped. This
+//    is not PROVED and not CLEAN.
 //  * size_bytes() when sizeof(element_type) == 0 is __prism_check with
 //    class FUNC-CONTRACT, then __builtin_trap. That is not a 0 result.
 //    size_bytes() when size() * sizeof(element_type) does not fit in
@@ -194,24 +204,42 @@ public:
         __glibcxx_assert(__offset <= this->size() && __count <= this->size() - __offset);
         return span(_M_ptr + __offset, __count);
     }
+    // A count greater than size() is FUNC-CONTRACT, then __builtin_trap,
+    // before an element address is formed. That path does not load and
+    // does not return a span. A count of 0 returns an empty span and does
+    // not load an element. An in-range count returns that sub-span.
     [[nodiscard]] constexpr span first(size_type __count) const noexcept {
-        __glibcxx_assert(__count <= this->size());
+        // This is not PROVED and not CLEAN.
+        if (__count > this->size()) {
+            __prism_check(0, "FUNC-CONTRACT", "std::span::first count is outside the span");
+            __builtin_trap();
+        }
+        if (__count == 0) {
+            // Empty sub-span. This stores the pointer and does not load an element.
+            return span(_M_ptr, 0);
+        }
         return span(_M_ptr, __count);
     }
-    // The last __count elements. A count past size() is MEM-OOB-READ. The
-    // span returned on that path starts at _M_ptr and has length 0, so it
-    // does not start before the buffer and does not extend past size().
-    // last(0) is an empty span and does not read an element. A null pointer
-    // is not stepped; a non-zero size on that pointer stays a check.
+    // A count greater than size() is FUNC-CONTRACT, then __builtin_trap,
+    // before an element address is formed. That path does not load and
+    // does not return a span. A count of 0 returns an empty span and does
+    // not load an element. An in-range count returns that sub-span. A null
+    // pointer is not stepped; a non-zero size on that pointer stays a check.
     [[nodiscard]] constexpr span last(size_type __count) const noexcept {
-        __prism_check(__count <= this->size(), "MEM-OOB-READ",
-                      "std::span::last count exceeds size()");
-        if (__count > this->size()) return span(_M_ptr, 0);
+        // This is not PROVED and not CLEAN.
+        if (__count > this->size()) {
+            __prism_check(0, "FUNC-CONTRACT", "std::span::last count is outside the span");
+            __builtin_trap();
+        }
         if (_M_ptr == nullptr) {
             if (this->size() != 0)
                 __prism_check(0, "PTR-NULL-DEREF",
                               "std::span null pointer with a non-zero size");
             return span(nullptr, 0);
+        }
+        if (__count == 0) {
+            // Empty sub-span at one past the end. This does not load an element.
+            return span(_M_ptr + this->size(), 0);
         }
         return span(_M_ptr + (this->size() - __count), __count);
     }
