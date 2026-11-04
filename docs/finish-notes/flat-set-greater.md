@@ -78,3 +78,18 @@ by hand with clang++ 23 against this header, under `-std=c++23
 The libstdc++ on this machine (`__GLIBCXX__ 20240908`, GCC 14) has no
 `<flat_set>`, so the trace was not compiled against it. That is not a
 differential result.
+
+## Checked against the flat_map link-order defect (branch `port/flat-map-equal`)
+
+flat_map's `operator<` used to walk its node chain in link order, which is
+not key order there, so its result depended on insertion order. flat_set
+does not have that defect: `insert` links each new node before
+`_M_upper_node` (the first node whose key is above it under `_M_comp`),
+so the chain is always in comparator order and the link-order walk is the
+key-order walk. The header was not changed. A standalone check built with
+clang++ from `~/opt/llvm23` under `-std=c++23 -D_GLIBCXX_ASSERTIONS
+-fsanitize=address,undefined` compared `{1, 2, 3}` inserted as 1, 2, 3
+against 3, 1, 2 (`<` 0 0, `>` 0 0, `==` 1), and `{1, 5}` against
+`{3, 2}`, where link order and key order would disagree (`<` 1 0, `>` 0 1).
+Both match key order. `tests/cxx_models/flat_set_trace.cpp` still prints
+its recorded lines and returns 0 under ASan and UBSan.
