@@ -28,18 +28,18 @@
 // construct a key or a mapped value and it does not return T{}. This is
 // not PROVED and not CLEAN.
 // operator> returns __y < __x, using the existing operator<, so it visits
-// the pairs in the same key order. Two empty maps compare not-greater and do not load
-// a node. A non-empty map is greater than an empty map, and that path does
-// the empty map. It does not return T{}. This is not PROVED and not
-// CLEAN.
+// the pairs in the same key order. Two empty maps compare not-greater and
+// do not load a node. A non-empty map is greater than an empty map, and
+// that path does not load the empty map. It does not return T{}. This is
+// not PROVED and not CLEAN.
 // operator== of two flat_maps is container equality, not iterator
-// equality: same size and the same pairs in key order. Two empty maps
-// compare equal and do not load a node. Different sizes compare unequal
-// before a node is loaded, so the shorter map is not read past. The node
-// chain is in link order, not key order, so equality does not pair nodes
-// by position: each pair of __x is looked up in __y with the existing
-// _M_find and its stored key and mapped value are compared with ==. Two
-// maps holding the same pairs inserted in different orders compare equal.
+// equality: same size and the same pairs in key order, compared with ==
+// as std::equal over the two sorted ranges. Two empty maps compare equal
+// and do not load a node. Different sizes compare unequal before a node
+// is loaded. Both maps are walked in key order with _M_key_next and paired
+// position by position, so two maps holding the same pairs inserted in
+// different orders compare equal, and keys that are == but not equivalent
+// under _Compare still match. The walk does not read past either map.
 // a != b is the C++20 rewrite !(a == b); operator!= is not declared. It
 // does not construct a key or a mapped value. This is not PROVED and not
 // CLEAN.
@@ -544,12 +544,12 @@ public:
     // Container equality, not iterator equality.
     // Two empty maps compare equal. That path does not dereference a node.
     // Different sizes compare unequal before a node is loaded. The walk does not read past the shorter map.
-    // The nodes are in link order, not key order, so nodes are not paired by position:
-    // each stored pair of __x is looked up in __y with the existing _M_find, and the
-    // stored keys and mapped values are compared with ==. Keys are unique on both
-    // sides, so the same size and every pair found equal is element-wise equality in
-    // key order. The same pairs inserted in a different order compare equal.
-    // A missing key or a mismatch returns false.
+    // The nodes are in link order, not key order, so both maps are walked in key order
+    // with _M_key_next and paired position by position, as std::equal over the sorted
+    // ranges. The stored keys and mapped values are compared with ==, not by _Compare
+    // equivalence or by lookup, so keys that are == but not equivalent (0.0 and -0.0
+    // under a sign-first order) still match. The same pairs inserted in a different
+    // order compare equal. A mismatch returns false.
     // It does not construct a new key or a new mapped value and it does not return T{}.
     // a != b is the C++20 rewrite !(a == b), so operator!= is not declared.
     // This is not PROVED and not CLEAN.
@@ -558,14 +558,15 @@ public:
             return true;
         if (__x._M_size != __y._M_size)
             return false;
-        for (const _Node* __a = __x._M_head; __a != nullptr; __a = __a->_M_next) {
-            const _Node* __b = __y._M_find(__a->_M_key);
-            if (__b == nullptr)
-                return false;
+        const _Node* __a = _M_key_next(__x._M_head, nullptr);
+        const _Node* __b = _M_key_next(__y._M_head, nullptr);
+        while (__a != nullptr && __b != nullptr) {
             if (!(__a->_M_key == __b->_M_key && __a->_M_mapped == __b->_M_mapped))
                 return false;
+            __a = _M_key_next(__x._M_head, __a);
+            __b = _M_key_next(__y._M_head, __b);
         }
-        return true;
+        return __a == nullptr && __b == nullptr;
     }
 
     // Two empty maps compare not-less and do not load a node.

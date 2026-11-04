@@ -34,12 +34,16 @@
 // with == and != (the C++20 rewrite of !(a == b)). Two empty maps compare
 // equal and do not load a node. Different sizes compare unequal before any
 // key or mapped comparison. The same pairs inserted in different orders
-// compare equal: each pair is looked up by key, not paired by link
-// position. A missing key or a mismatch returns false. Nothing is
+// compare equal: both maps are walked in key order and paired by
+// position. Keys are compared with ==, not by comparator equivalence:
+// under Sgn (sign bit first, then <) -0.0 and 0.0 are not equivalent but
+// are ==, so {-0.0: 1} == {0.0: 1}. Under Abs (|a| < |b|) -1 and 1 are
+// equivalent but not ==, so {-1: 1} != {1: 1}. A mismatch returns false. Nothing is
 // constructed. The no-argument lines are unchanged. This trace is not
 // PROVED and not CLEAN.
 #include <flat_map>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <type_traits>
@@ -818,6 +822,19 @@ static void greater_trace() {
     show_greater("kearlyba", (kearly_b > kearly_a) ? 1 : 0);
 }
 
+// Sign bit first, then <: -0.0 orders before 0.0, so they are not
+// equivalent, but -0.0 == 0.0.
+struct Sgn {
+    bool operator()(double a, double b) const {
+        if (std::signbit(a) != std::signbit(b)) return std::signbit(a);
+        return a < b;
+    }
+};
+// Magnitude order: -1 and 1 are equivalent, but -1 != 1.
+struct Abs {
+    bool operator()(int a, int b) const { return (a < 0 ? -a : a) < (b < 0 ? -b : b); }
+};
+
 static void show_equal(const char* tag, int r) {
     std::printf("%s %d key_eq=%d mapped_eq=%d key_lt=%d copies=%d moves=%d mapped=%d\n", tag, r, CountKey::eq,
                 CountMapped::eq, CountKey::lt, CountKey::copies + CountMapped::copies,
@@ -856,6 +873,17 @@ static void equal_trace() {
     std::printf("longer %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
     a.erase(3);
     std::printf("erased %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    std::flat_map<double, int, Sgn> sx{{-0.0, 1}};
+    std::flat_map<double, int, Sgn> sy{{0.0, 1}};
+    std::printf("sgn %d ne %d rev %d\n", (sx == sy) ? 1 : 0, (sx != sy) ? 1 : 0, (sy == sx) ? 1 : 0);
+    std::flat_map<double, int, Sgn> s2x{{-0.0, 1}, {2.0, 2}};
+    std::flat_map<double, int, Sgn> s2y;
+    s2y[2.0] = 2;
+    s2y[0.0] = 1;
+    std::printf("sgn2 %d ne %d\n", (s2x == s2y) ? 1 : 0, (s2x != s2y) ? 1 : 0);
+    std::flat_map<int, int, Abs> ax{{-1, 1}};
+    std::flat_map<int, int, Abs> ay{{1, 1}};
+    std::printf("abs %d ne %d\n", (ax == ay) ? 1 : 0, (ax != ay) ? 1 : 0);
 
     reset_counts();
     std::flat_map<CountKey, CountMapped> e1;

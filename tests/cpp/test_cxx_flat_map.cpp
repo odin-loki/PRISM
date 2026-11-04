@@ -38,9 +38,10 @@
 // It does not return T{}. The comment states that this is not PROVED and
 // not CLEAN. operator== is container equality: two empty maps compare
 // equal before a node is loaded, different sizes compare unequal before a
-// node is loaded, and otherwise each pair of __x is looked up in __y with
-// the existing _M_find (the chain is link order, not key order) and its
-// key and mapped value are compared with ==. operator!= is not declared:
+// node is loaded, and otherwise both maps are walked in key order with
+// _M_key_next (the chain is link order, not key order) and paired position
+// by position, key and mapped value compared with ==, not by lookup under
+// _Compare equivalence. operator!= is not declared:
 // a != b is the C++20 rewrite of !(a == b). The comment states that this
 // is not PROVED and not CLEAN.
 
@@ -829,7 +830,7 @@ TEST_CASE("cxx flat_map model: greater is operator< with the arguments swapped")
     CHECK(src.find(lt_sig) != std::string::npos);
 }
 
-TEST_CASE("cxx flat_map model: equality looks each pair up so link order does not matter") {
+TEST_CASE("cxx flat_map model: equality walks both maps in key order and compares pairs with ==") {
     const fs::path path = header();
     REQUIRE(fs::is_regular_file(path));
     CHECK_FALSE(fs::is_directory(path));
@@ -866,7 +867,7 @@ TEST_CASE("cxx flat_map model: equality looks each pair up so link order does no
     CHECK(empty_prefix.find("_M_key") == std::string::npos);
     CHECK(empty_prefix.find("_M_mapped") == std::string::npos);
     CHECK(empty_prefix.find("_M_next") == std::string::npos);
-    CHECK(empty_prefix.find("_M_find") == std::string::npos);
+    CHECK(empty_prefix.find("_M_key_next") == std::string::npos);
 
     // Different sizes return false before a node is loaded.
     const auto sizes = eq.find("if (__x._M_size != __y._M_size)");
@@ -880,39 +881,46 @@ TEST_CASE("cxx flat_map model: equality looks each pair up so link order does no
     CHECK(size_prefix.find("_M_key") == std::string::npos);
     CHECK(size_prefix.find("_M_mapped") == std::string::npos);
     CHECK(size_prefix.find("_M_next") == std::string::npos);
-    CHECK(size_prefix.find("_M_find") == std::string::npos);
+    CHECK(size_prefix.find("_M_key_next") == std::string::npos);
 
-    // The walk is over __x only. Each pair is looked up in __y by key, not
-    // paired with __y's node at the same position, because the chain is in
-    // link order. A missing key returns false. The stored key and mapped
-    // value are compared with ==, and a mismatch returns false.
-    const auto walk = eq.find("for (const _Node* __a = __x._M_head; __a != nullptr; __a = __a->_M_next)");
-    const auto look = eq.find("const _Node* __b = __y._M_find(__a->_M_key);");
-    const auto miss = eq.find("if (__b == nullptr)");
-    const auto miss_ret = eq.find("return false;", size_ret + 1);
+    // Both maps are walked in key order with _M_key_next and paired by
+    // position. No lookup: _M_find matches by _Compare equivalence, which
+    // is not ==. The stored key and mapped value are compared with ==, and
+    // a mismatch returns false before the next pair. The success result is
+    // both walks running out together.
+    const auto start_a = eq.find("const _Node* __a = _M_key_next(__x._M_head, nullptr);");
+    const auto start_b = eq.find("const _Node* __b = _M_key_next(__y._M_head, nullptr);");
+    const auto walk = eq.find("while (__a != nullptr && __b != nullptr)");
     const auto keys = eq.find("__a->_M_key == __b->_M_key");
     const auto mapped = eq.find("__a->_M_mapped == __b->_M_mapped");
-    const auto bad_ret = eq.find("return false;", miss_ret + 1);
-    const auto done = eq.find("return true;", empty_ret + 1);
+    const auto bad_ret = eq.find("return false;", size_ret + 1);
+    const auto next_a = eq.find("__a = _M_key_next(__x._M_head, __a);");
+    const auto next_b = eq.find("__b = _M_key_next(__y._M_head, __b);");
+    const auto done = eq.find("return __a == nullptr && __b == nullptr;");
+    REQUIRE(start_a != std::string::npos);
+    REQUIRE(start_b != std::string::npos);
     REQUIRE(walk != std::string::npos);
-    REQUIRE(look != std::string::npos);
-    REQUIRE(miss != std::string::npos);
-    REQUIRE(miss_ret != std::string::npos);
     REQUIRE(keys != std::string::npos);
     REQUIRE(mapped != std::string::npos);
     REQUIRE(bad_ret != std::string::npos);
+    REQUIRE(next_a != std::string::npos);
+    REQUIRE(next_b != std::string::npos);
     REQUIRE(done != std::string::npos);
-    CHECK(size_ret < walk);
-    CHECK(walk < look);
-    CHECK(look < miss);
-    CHECK(miss < miss_ret);
-    CHECK(miss_ret < keys);
+    CHECK(size_ret < start_a);
+    CHECK(start_a < start_b);
+    CHECK(start_b < walk);
+    CHECK(walk < keys);
     CHECK(keys < mapped);
     CHECK(mapped < bad_ret);
-    CHECK(bad_ret < done);
+    CHECK(bad_ret < next_a);
+    CHECK(next_a < next_b);
+    CHECK(next_b < done);
     CHECK(eq.find("return false;", bad_ret + 1) == std::string::npos);
-    CHECK(eq.find("return true;", done + 1) == std::string::npos);
-    CHECK(eq.find("__b = __b->_M_next") == std::string::npos);
+    CHECK(eq.find("return true;", empty_ret + 1) == std::string::npos);
+    CHECK(eq.find("_M_find") == std::string::npos);
+    CHECK(eq.find("_Compare") == std::string::npos);
+    CHECK(eq.find("->_M_next") == std::string::npos);
+    CHECK(eq.find("__x._M_head;") == std::string::npos);
     CHECK(eq.find("__y._M_head;") == std::string::npos);
     CHECK(eq.find("key_type") == std::string::npos);
     CHECK(eq.find("mapped_type") == std::string::npos);
@@ -942,11 +950,18 @@ TEST_CASE("cxx flat_map model: equality looks each pair up so link order does no
     CHECK(note.find("does not dereference a node") != std::string::npos);
     CHECK(note.find("does not read past the shorter map") != std::string::npos);
     CHECK(note.find("link order, not key order") != std::string::npos);
-    CHECK(note.find("not paired by position") != std::string::npos);
-    CHECK(note.find("_M_find") != std::string::npos);
+    CHECK(note.find("walked in key order") != std::string::npos);
+    CHECK(note.find("_M_key_next") != std::string::npos);
+    CHECK(note.find("position by position") != std::string::npos);
     CHECK(note.find("mapped values are compared with ==") != std::string::npos);
-    CHECK(note.find("inserted in a different order compare equal") != std::string::npos);
-    CHECK(note.find("A missing key or a mismatch returns false") != std::string::npos);
+    CHECK(note.find("not by _Compare") != std::string::npos);
+    CHECK(note.find("== but not equivalent") != std::string::npos);
+    CHECK(note.find("inserted in a different") != std::string::npos);
+    CHECK(note.find("A mismatch returns false") != std::string::npos);
+
+    // The file comment keeps the whole operator> sentence.
+    CHECK(src.find("A non-empty map is greater than an empty map, and\n// that path does not load the empty map.") !=
+          std::string::npos);
     CHECK(note.find("does not construct a new key") != std::string::npos);
     CHECK(note.find("operator!= is not declared") != std::string::npos);
     CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
