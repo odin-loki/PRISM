@@ -11,6 +11,12 @@
 // unsigned 32-bit count traps and does not return a wrapped value. A span
 // that fits returns a + (nondet % span), inside [a, b]. That is not a proof
 // of uniformity.
+// bernoulli_distribution stores a double probability. p < 0, p > 1, or a
+// NaN p is FUNC-CONTRACT, then a trap, and that path returns no bool.
+// p == 0 returns false and does not call __VERIFIER_nondet_int. p == 1
+// returns true and does not call nondet. Otherwise the result is
+// __VERIFIER_nondet_int() ? true : false. That is not a proof of the
+// probability. It is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -19,6 +25,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <type_traits>
 
 #undef _GLIBCXX_RANDOM
 #include "../../src/prism/pir/models/cxx/random"
@@ -28,11 +35,18 @@ namespace fs = std::filesystem;
 namespace {
 unsigned int g_nondet_value = 0;
 int g_nondet_calls = 0;
+int g_nondet_int_value = 0;
+int g_nondet_int_calls = 0;
 }  // namespace
 
 extern "C" unsigned int __VERIFIER_nondet_uint(void) {
     ++g_nondet_calls;
     return g_nondet_value;
+}
+
+extern "C" int __VERIFIER_nondet_int(void) {
+    ++g_nondet_int_calls;
+    return g_nondet_int_value;
 }
 
 TEST_CASE("cxx random model: seed 1 is 48271 and random_device is not a proof") {
@@ -148,7 +162,6 @@ TEST_CASE("cxx random model: uniform_int_distribution<int> stays inside [a, b]")
     CHECK(text.find("#include <memory>") == std::string::npos);
     CHECK(text.find("class mt19937") == std::string::npos);
     CHECK(text.find("class uniform_real_distribution") == std::string::npos);
-    CHECK(text.find("class bernoulli_distribution") == std::string::npos);
     CHECK(text.find("class normal_distribution") == std::string::npos);
     CHECK(text.find("uniform_int_distribution<long>") == std::string::npos);
     CHECK(text.find("uniform_int_distribution<int>") != std::string::npos);
@@ -292,4 +305,158 @@ TEST_CASE("cxx random model: uniform_int_distribution<int> stays inside [a, b]")
     draw(INT_MIN, INT_MAX - 1, 0);
     draw(INT_MIN, INT_MAX - 1, 4294967294u);
     draw(INT_MIN, INT_MAX - 1, 4294967295u);
+}
+
+TEST_CASE("cxx random model: bernoulli_distribution follows a double probability") {
+    const fs::path header = fs::path(PRISM_SOURCE_DIR) / "src" / "prism" / "pir" / "models" / "cxx" / "random";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+
+    std::ifstream in(header, std::ios::binary);
+    REQUIRE(in);
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    CHECK(text.find("#include <vector>") == std::string::npos);
+    CHECK(text.find("#include <functional>") == std::string::npos);
+    CHECK(text.find("#include <memory>") == std::string::npos);
+    CHECK(text.find("class bernoulli_distribution") != std::string::npos);
+    CHECK(text.find("class uniform_real_distribution") == std::string::npos);
+    CHECK(text.find("class normal_distribution") == std::string::npos);
+    CHECK(text.find("class mt19937") == std::string::npos);
+    CHECK(text.find("That is not a proof of the probability.") != std::string::npos);
+    CHECK(text.find("not PROVED") != std::string::npos);
+    CHECK(text.find("not CLEAN") != std::string::npos);
+    CHECK(text.find("return 0") == std::string::npos);
+    CHECK(text.find("p < 0.0 || p > 1.0 || __builtin_isnan(p)") != std::string::npos);
+    CHECK(text.find("_M_p < 0.0 || _M_p > 1.0 || __builtin_isnan(_M_p)") != std::string::npos);
+    CHECK(text.find("return p != p") != std::string::npos);
+    CHECK(text.find("extern \"C\" int __VERIFIER_nondet_int(void);") != std::string::npos);
+
+    const auto other = text.find("every other distribution (");
+    REQUIRE(other != std::string::npos);
+    const auto other_end = text.find(')', other);
+    REQUIRE(other_end != std::string::npos);
+    const std::string dists = text.substr(other, other_end - other);
+    CHECK(dists.find("uniform_real_distribution") != std::string::npos);
+    CHECK(dists.find("normal_distribution") != std::string::npos);
+    CHECK(dists.find("bernoulli_distribution") == std::string::npos);
+
+    const auto ctor = text.find("explicit bernoulli_distribution(double p)");
+    const auto op = text.find("bool operator()(URNG&)");
+    REQUIRE(ctor != std::string::npos);
+    REQUIRE(op != std::string::npos);
+    REQUIRE(ctor < op);
+    const std::string ctor_body = text.substr(ctor, op - ctor);
+    const auto inv = ctor_body.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"bernoulli_distribution probability is outside [0, 1]\")");
+    REQUIRE(inv != std::string::npos);
+    const auto inv_trap = ctor_body.find("__builtin_trap()", inv);
+    const auto ctor_else = ctor_body.find("else", inv_trap);
+    const auto store = ctor_body.find("_M_p = p;");
+    REQUIRE(inv_trap != std::string::npos);
+    REQUIRE(ctor_else != std::string::npos);
+    REQUIRE(store != std::string::npos);
+    CHECK(inv < inv_trap);
+    CHECK(inv_trap < ctor_else);
+    CHECK(ctor_else < store);
+    const std::string inv_arm = ctor_body.substr(inv, inv_trap - inv);
+    CHECK(inv_arm.find("return") == std::string::npos);
+    CHECK(inv_arm.find("_M_p") == std::string::npos);
+    CHECK(inv_arm.find("__VERIFIER_nondet_int") == std::string::npos);
+
+    const auto member = text.find("double _M_p", op);
+    REQUIRE(member != std::string::npos);
+    const std::string op_body = text.substr(op, member - op);
+    const auto bad = op_body.find(
+        "__prism_check(0, \"FUNC-CONTRACT\", \"bernoulli_distribution probability is outside [0, 1]\")");
+    const auto bad_trap = op_body.find("__builtin_trap()", bad);
+    const auto eq0 = op_body.find("else if (_M_p == 0.0)");
+    const auto ret_f = op_body.find("return false;");
+    const auto eq1 = op_body.find("else if (_M_p == 1.0)");
+    const auto ret_t = op_body.find("return true;");
+    const auto nondet = op_body.find("return __VERIFIER_nondet_int() ? true : false;");
+    REQUIRE(bad != std::string::npos);
+    REQUIRE(bad_trap != std::string::npos);
+    REQUIRE(eq0 != std::string::npos);
+    REQUIRE(ret_f != std::string::npos);
+    REQUIRE(eq1 != std::string::npos);
+    REQUIRE(ret_t != std::string::npos);
+    REQUIRE(nondet != std::string::npos);
+    CHECK(bad < bad_trap);
+    CHECK(bad_trap < eq0);
+    CHECK(eq0 < ret_f);
+    CHECK(ret_f < eq1);
+    CHECK(eq1 < ret_t);
+    CHECK(ret_t < nondet);
+    const std::string bad_arm = op_body.substr(bad, bad_trap - bad);
+    CHECK(bad_arm.find("return") == std::string::npos);
+    CHECK(bad_arm.find("__VERIFIER_nondet_int") == std::string::npos);
+    const std::string zero_arm = op_body.substr(eq0, ret_f - eq0);
+    CHECK(zero_arm.find("__VERIFIER_nondet_int") == std::string::npos);
+    CHECK(zero_arm.find("return true") == std::string::npos);
+    const std::string one_arm = op_body.substr(eq1, ret_t - eq1);
+    CHECK(one_arm.find("__VERIFIER_nondet_int") == std::string::npos);
+    CHECK(one_arm.find("return false") == std::string::npos);
+
+    static_assert(std::is_same<std::bernoulli_distribution::result_type, bool>::value);
+
+    std::minstd_rand eng;
+    g_nondet_int_value = 1;
+    g_nondet_int_calls = 0;
+    g_nondet_calls = 0;
+    std::bernoulli_distribution zero(0.0);
+    CHECK(zero.p() == 0.0);
+    CHECK(zero.min() == false);
+    CHECK(zero.max() == true);
+    CHECK(zero(eng) == false);
+    CHECK(g_nondet_int_calls == 0);
+    CHECK(g_nondet_calls == 0);
+
+    g_nondet_int_value = 1;
+    g_nondet_int_calls = 0;
+    std::bernoulli_distribution negzero(-0.0);
+    CHECK(negzero(eng) == false);
+    CHECK(g_nondet_int_calls == 0);
+
+    g_nondet_int_value = 0;
+    g_nondet_int_calls = 0;
+    g_nondet_calls = 0;
+    std::bernoulli_distribution one(1.0);
+    CHECK(one.p() == 1.0);
+    CHECK(one(eng) == true);
+    CHECK(g_nondet_int_calls == 0);
+    CHECK(g_nondet_calls == 0);
+
+    std::bernoulli_distribution def;
+    CHECK(def.p() == 0.5);
+    g_nondet_int_value = 0;
+    g_nondet_int_calls = 0;
+    g_nondet_calls = 0;
+    CHECK(def(eng) == false);
+    CHECK(g_nondet_int_calls == 1);
+    CHECK(g_nondet_calls == 0);
+    g_nondet_int_value = 1;
+    g_nondet_int_calls = 0;
+    CHECK(def(eng) == true);
+    CHECK(g_nondet_int_calls == 1);
+
+    auto flip = [&](double p, int nondet) {
+        g_nondet_int_value = nondet;
+        g_nondet_int_calls = 0;
+        g_nondet_calls = 0;
+        std::bernoulli_distribution dist(p);
+        const bool got = dist(eng);
+        const bool expect = nondet ? true : false;
+        CHECK(got == expect);
+        CHECK(g_nondet_int_calls == 1);
+        CHECK(g_nondet_calls == 0);
+        CHECK(dist.p() == p);
+    };
+    flip(0.5, 0);
+    flip(0.5, 1);
+    flip(0.5, -4);
+    flip(0.5, 42);
+    flip(0.25, 0);
+    flip(0.25, 3);
+    flip(0.75, 0);
+    flip(0.75, 3);
 }

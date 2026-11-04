@@ -12,11 +12,15 @@
 // a later use of the reference is MEM-UAF. push, and pop of a newer element,
 // leave an older reference in place: only that element's node is freed.
 //
-// pop and top require a non-empty stack. The check is
-// __glibcxx_requires_nonempty(), i.e. __glibcxx_assert(!this->empty()). The
-// condition text does not mention size(), so PIR classifies it FUNC-CONTRACT.
-// An empty pop does not invent a value (pop is void) and does not destroy or
-// free a node. An empty top does not return a stand-in zero.
+// empty pop() is __prism_check with class FUNC-CONTRACT and the message
+// "std::stack::pop on an empty stack", then __builtin_trap, before any
+// destroy or free and before a node is read. pop is void: that path does
+// not invent an element and does not return T{}. It is not PROVED and not
+// CLEAN.
+// empty top() is __prism_check with class FUNC-CONTRACT and the message
+// "std::stack::top on an empty stack", then __builtin_trap, before any
+// node is loaded. That path does not invent an element and does not return
+// T{}. It is not PROVED and not CLEAN.
 //
 // Element order matches libstdc++ 13's deque adaptor: construction and
 // destruction run bottom to top, copy-assign assigns the common prefix then
@@ -46,6 +50,10 @@
 #include <compare>
 #include <memory>
 #include <new>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the analysed program does not link a body.
+extern "C" void __prism_check(int, const char*, const char*);
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
@@ -198,12 +206,19 @@ public:
     [[nodiscard]] bool empty() const { return _M_top == nullptr; }
     [[nodiscard]] size_type size() const { return _M_size; }
 
+    // Empty: FUNC-CONTRACT, then trap, before the node is loaded. empty()
+    // only compares _M_top with nullptr. This path does not invent an
+    // element and does not return T{}. This is not PROVED and not CLEAN.
     [[nodiscard]] reference top() {
-        __glibcxx_requires_nonempty();
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::stack::top on an empty stack");
+        if (this->empty()) __builtin_trap();
         return *_M_top->_M_valptr();
     }
     [[nodiscard]] const_reference top() const {
-        __glibcxx_requires_nonempty();
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::stack::top on an empty stack");
+        if (this->empty()) __builtin_trap();
         return *_M_top->_M_valptr();
     }
 
@@ -215,10 +230,14 @@ public:
         _M_link_top(__n);
         return *__n->_M_valptr();
     }
-    // Empty pop hits the precondition and does not reach _M_pop. pop is void:
-    // it does not yield a value, and it does not destroy or free a node.
+    // Empty: FUNC-CONTRACT, then trap, before _M_pop destroys or frees the
+    // node and before that node is loaded. empty() only compares _M_top with
+    // nullptr. pop is void, so this path does not invent an element and does
+    // not return T{}. This is not PROVED and not CLEAN.
     void pop() {
-        __glibcxx_requires_nonempty();
+        __prism_check(!this->empty() ? 1 : 0, "FUNC-CONTRACT",
+                      "std::stack::pop on an empty stack");
+        if (this->empty()) __builtin_trap();
         _M_pop();
     }
 

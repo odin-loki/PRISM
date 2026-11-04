@@ -13,6 +13,23 @@
 // that product. Zero times any count is zero. `mul_ovf` multiplies the
 // maximum count by 2. `mul_min_ovf` multiplies the minimum count by -1.
 // The model must __prism_check and must not print a wrapped count.
+// Unary operator- returns the negated count. Zero stays zero. `neg_ovf`
+// negates the minimum count. The model must __prism_check and must not
+// print a wrapped count. That path does not return a zero duration.
+// A same-rep quotient that fits is the stored count divided by the scalar.
+// `div_zero` and `div_min_zero` divide by zero. `div_ovf` divides the
+// minimum count by -1. The model must __prism_check and must not print a
+// quotient. Those paths do not return a zero duration.
+// std::chrono::abs returns the magnitude. Zero stays zero. A positive
+// count stays that count. A negative count that is not the minimum is the
+// negation. `abs_ovf` takes the minimum count. The model must
+// __prism_check and must not print a wrapped count. That path does not
+// return a zero duration and does not form the negation.
+// A same-rep remainder that fits is the stored count modulo the scalar.
+// `mod_zero` and `mod_min_zero` take the remainder by zero. `mod_ovf`
+// takes the minimum count modulo -1. The model must __prism_check and
+// must not print a remainder. Those paths do not return a zero duration
+// and do not form the remainder.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -129,6 +146,56 @@ int main(int argc, char** argv) {
     std::printf("mul_near=%lld\n", static_cast<long long>((dur(4611686018427387903LL) * 2LL).count()));
     std::printf("mul_edge=%lld\n", static_cast<long long>((dur(-4611686018427387904LL) * 2LL).count()));
     std::printf("mul_edge_left=%lld\n", static_cast<long long>((2LL * dur(-4611686018427387904LL)).count()));
+    std::printf("neg_zero=%lld\n", static_cast<long long>((-dur(0)).count()));
+    std::printf("neg_pos=%lld\n", static_cast<long long>((-dur(5)).count()));
+    std::printf("neg_neg=%lld\n", static_cast<long long>((-dur(-5)).count()));
+    std::printf("neg_max=%lld\n", static_cast<long long>((-dur::max()).count()));
+    std::printf("neg_min1=%lld\n", static_cast<long long>((-dur(-9223372036854775807LL)).count()));
+    std::printf("div=%lld\n", static_cast<long long>((dur(10) / 2LL).count()));
+    std::printf("div_trunc=%lld\n", static_cast<long long>((dur(5) / 2LL).count()));
+    std::printf("div_neg=%lld\n", static_cast<long long>((dur(-5) / 2LL).count()));
+    std::printf("div_neg_s=%lld\n", static_cast<long long>((dur(5) / -2LL).count()));
+    std::printf("div_neg2=%lld\n", static_cast<long long>((dur(-5) / -2LL).count()));
+    std::printf("div_zero_count=%lld\n", static_cast<long long>((dur(0) / 5LL).count()));
+    std::printf("div_zero_neg1=%lld\n", static_cast<long long>((dur(0) / -1LL).count()));
+    std::printf("div_max_one=%lld\n", static_cast<long long>((lim_max / 1LL).count()));
+    std::printf("div_max_neg1=%lld\n", static_cast<long long>((lim_max / -1LL).count()));
+    std::printf("div_min_one=%lld\n", static_cast<long long>((lim_min / 1LL).count()));
+    std::printf("div_min_two=%lld\n", static_cast<long long>((lim_min / 2LL).count()));
+    std::printf("div_min_neg2=%lld\n", static_cast<long long>((lim_min / -2LL).count()));
+    std::printf("div_one_two=%lld\n", static_cast<long long>((dur(1) / 2LL).count()));
+    std::printf("div_m1_two=%lld\n", static_cast<long long>((dur(-1) / 2LL).count()));
+    std::printf("div_max_max=%lld\n", static_cast<long long>((lim_max / lim_max.count()).count()));
+    std::printf("div_min_min=%lld\n", static_cast<long long>((lim_min / lim_min.count()).count()));
+    std::printf("div_max_min=%lld\n", static_cast<long long>((lim_max / lim_min.count()).count()));
+    std::printf("div_min_max=%lld\n", static_cast<long long>((lim_min / lim_max.count()).count()));
+    std::printf("abs_zero=%lld\n", static_cast<long long>(std::chrono::abs(dur(0)).count()));
+    std::printf("abs_pos=%lld\n", static_cast<long long>(std::chrono::abs(dur(5)).count()));
+    std::printf("abs_neg=%lld\n", static_cast<long long>(std::chrono::abs(dur(-5)).count()));
+    std::printf("abs_one=%lld\n", static_cast<long long>(std::chrono::abs(dur(1)).count()));
+    std::printf("abs_m1=%lld\n", static_cast<long long>(std::chrono::abs(dur(-1)).count()));
+    std::printf("abs_max=%lld\n", static_cast<long long>(std::chrono::abs(dur::max()).count()));
+    std::printf("abs_min1=%lld\n",
+                static_cast<long long>(std::chrono::abs(dur(-9223372036854775807LL)).count()));
+    std::printf("mod=%lld\n", static_cast<long long>((dur(10) % 2LL).count()));
+    std::printf("mod_rem=%lld\n", static_cast<long long>((dur(10) % 3LL).count()));
+    std::printf("mod_trunc=%lld\n", static_cast<long long>((dur(5) % 2LL).count()));
+    std::printf("mod_neg=%lld\n", static_cast<long long>((dur(-5) % 2LL).count()));
+    std::printf("mod_neg_s=%lld\n", static_cast<long long>((dur(5) % -2LL).count()));
+    std::printf("mod_neg2=%lld\n", static_cast<long long>((dur(-5) % -2LL).count()));
+    std::printf("mod_zero_count=%lld\n", static_cast<long long>((dur(0) % 5LL).count()));
+    std::printf("mod_zero_neg1=%lld\n", static_cast<long long>((dur(0) % -1LL).count()));
+    std::printf("mod_max_one=%lld\n", static_cast<long long>((lim_max % 1LL).count()));
+    std::printf("mod_max_neg1=%lld\n", static_cast<long long>((lim_max % -1LL).count()));
+    std::printf("mod_min_one=%lld\n", static_cast<long long>((lim_min % 1LL).count()));
+    std::printf("mod_min_two=%lld\n", static_cast<long long>((lim_min % 2LL).count()));
+    std::printf("mod_min_neg2=%lld\n", static_cast<long long>((lim_min % -2LL).count()));
+    std::printf("mod_one_two=%lld\n", static_cast<long long>((dur(1) % 2LL).count()));
+    std::printf("mod_m1_two=%lld\n", static_cast<long long>((dur(-1) % 2LL).count()));
+    std::printf("mod_max_max=%lld\n", static_cast<long long>((lim_max % lim_max.count()).count()));
+    std::printf("mod_min_min=%lld\n", static_cast<long long>((lim_min % lim_min.count()).count()));
+    std::printf("mod_max_min=%lld\n", static_cast<long long>((lim_max % lim_min.count()).count()));
+    std::printf("mod_min_max=%lld\n", static_cast<long long>((lim_min % lim_max.count()).count()));
     if (argc > 1 && std::strcmp(argv[1], "ovf") == 0) {
         std::chrono::duration<long long> hi(9223372036854775807LL);
         std::chrono::duration<long long> one(1);
@@ -165,6 +232,46 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "mul_min_left_ovf") == 0) {
         const auto n = (-1LL * std::chrono::duration<long long>::min()).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "neg_ovf") == 0) {
+        const auto n = (-std::chrono::duration<long long>::min()).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div_zero") == 0) {
+        const auto n = (std::chrono::duration<long long>(5) / 0LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div_min_zero") == 0) {
+        const auto n = (std::chrono::duration<long long>::min() / 0LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div_ovf") == 0) {
+        const auto n = (std::chrono::duration<long long>::min() / -1LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "abs_ovf") == 0) {
+        const auto n = std::chrono::abs(std::chrono::duration<long long>::min()).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_zero") == 0) {
+        const auto n = (std::chrono::duration<long long>(5) % 0LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_min_zero") == 0) {
+        const auto n = (std::chrono::duration<long long>::min() % 0LL).count();
+        std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_ovf") == 0) {
+        const auto n = (std::chrono::duration<long long>::min() % -1LL).count();
         std::printf("wrapped=%lld\n", static_cast<long long>(n));
         return 0;
     }

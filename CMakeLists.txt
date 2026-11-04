@@ -830,11 +830,13 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_queue_less.cpp
     tests/cpp/test_cxx_priority_queue.cpp
     tests/cpp/test_cxx_span.cpp
+    tests/cpp/test_cxx_bitset.cpp
     tests/cpp/test_cxx_optional.cpp
     tests/cpp/test_cxx_initializer_list.cpp
     tests/cpp/test_cxx_string_view.cpp
     tests/cpp/test_cxx_expected.cpp
     tests/cpp/test_cxx_memory.cpp
+    tests/cpp/test_cxx_memory_deref.cpp
     tests/cpp/test_cxx_complex.cpp
     tests/cpp/test_cxx_tuple.cpp
     tests/cpp/test_cxx_any.cpp
@@ -869,6 +871,7 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_filesystem.cpp
     tests/cpp/test_cxx_condition_variable.cpp
     tests/cpp/test_cxx_stacktrace.cpp
+    tests/cpp/test_cxx_stack.cpp
     tests/cpp/test_cxx_typeindex.cpp
     tests/cpp/test_cxx_algorithm.cpp
     tests/cpp/test_cxx_coroutine.cpp

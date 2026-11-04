@@ -30,10 +30,12 @@
 //    whichever the platform gives unsigned long). A bit at or above that
 //    width throws std::overflow_error, with libstdc++'s message;
 //  * test(pos) for pos >= N throws std::out_of_range (the same format
-//    string as libstdc++) and does not yield a bit. operator[] is the same
-//    _GLIBCXX_ASSERTIONS precondition as vector (`__position < this->size()`
-//    -> MEM-OOB-READ). An index that is not one of the N bits is not answered
-//    with a padding zero from the last word;
+//    string as libstdc++) and does not yield a bit. operator[] with an
+//    index >= N is __prism_check with class MEM-OOB-READ
+//    ("std::bitset::operator[] index is outside the bitset"), then
+//    __builtin_trap, before any word is read. That path does not return
+//    a bit. bitset<0>::operator[](0) takes that path and does not read
+//    a bit. This is not PROVED and not CLEAN;
 //  * bitset<0> is empty: any() is false, all() and none() are true, count()
 //    and to_ulong() are 0, and test(0) is the out_of_range precondition.
 //
@@ -54,6 +56,11 @@
 #include <cstddef>
 #include <cstdlib>
 #include <type_traits>
+
+// PIR intrinsic (translate.cpp). Literal class and message. Declared, not
+// defined: the encoder treats the call as a check, and a host test supplies
+// a stub.
+extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
 
 #if __cplusplus > 202002L
 #define __cpp_lib_constexpr_bitset 202202L
@@ -79,9 +86,9 @@ class bitset {
     _Store _M_words{};
 
     // An index that is not a stored bit has no value to return. The
-    // operator[] precondition (__glibcxx_assert) is the check PIR sees;
-    // this is the path that must not fall through to a padding zero when
-    // that assert is compiled out, and the path bitset<0> takes.
+    // unchecked helpers take this path, including bitset<0>. operator[]
+    // does not: an index >= N is the MEM-OOB-READ check and then
+    // __builtin_trap, before a word is read.
     [[noreturn]] static void _S_no_bit() noexcept {
 #if defined(_GLIBCXX_ASSERTIONS)
         __glibcxx_assert_fail(__FILE__, __LINE__, __PRETTY_FUNCTION__, "__position < this->size()");
@@ -255,19 +262,30 @@ public:
         return *this;
     }
 
-    // Precondition: __position < size(). Same _GLIBCXX_ASSERTIONS shape as
-    // vector::operator[] (`__position < this->size()`). No bit is returned
-    // when the index is past N, including the padding of the last word and
-    // every index of bitset<0>.
+    // An index >= N is MEM-OOB-READ, then __builtin_trap, before any word
+    // is read. bitset<0>::operator[](0) takes that path and does not read
+    // a bit. That path does not return a bit. An in-range index returns
+    // that bit, or a reference to it. This is not PROVED and not CLEAN.
     constexpr reference operator[](size_t __position) noexcept {
-        __glibcxx_assert(__position < this->size());
-        if (__position >= _Nb) _S_no_bit();
-        return reference(*this, __position);
+        if (__position >= _Nb) {
+            __prism_check(0, "MEM-OOB-READ", "std::bitset::operator[] index is outside the bitset");
+            __builtin_trap();
+        } else if constexpr (_Nb == 0) {
+            __builtin_trap();
+        } else {
+            return reference(*this, __position);
+        }
     }
     constexpr bool operator[](size_t __position) const noexcept {
-        __glibcxx_assert(__position < this->size());
-        if (__position >= _Nb) _S_no_bit();
-        return _M_unchecked_test(__position);
+        if (__position >= _Nb) {
+            __prism_check(0, "MEM-OOB-READ", "std::bitset::operator[] index is outside the bitset");
+            __builtin_trap();
+        } else if constexpr (_Nb == 0) {
+            __builtin_trap();
+        } else {
+            const unsigned long __w = _M_words._M_w[__position / _S_bpw];
+            return ((__w >> (__position % _S_bpw)) & 1UL) != 0;
+        }
     }
 
     constexpr bool test(size_t __position) const {

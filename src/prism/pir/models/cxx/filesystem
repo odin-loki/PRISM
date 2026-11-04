@@ -26,6 +26,33 @@
 // prefix of the other. It does not ask the operating system whether a file
 // exists, and it does not drop "..".
 //
+// is_absolute() and is_relative() are character tests. An empty path is not
+// absolute, and that answer returns before the pointer is loaded.
+// is_relative() of an empty path is true. A path whose first character is
+// '/' is absolute. Every other non-empty path is not absolute.
+// is_relative() is the opposite of is_absolute(). Neither walks the
+// filesystem.
+//
+// has_root_directory() is a character test. An empty path has no root
+// directory, and that answer returns before the pointer is loaded. A path
+// whose first character is '/' has a root directory. Every other non-empty
+// path does not. It does not walk the filesystem.
+//
+// has_filename() is a character test. An empty path has no filename, and
+// that answer returns before the pointer is loaded. A non-empty path whose
+// last character is '/' has no filename. Every other non-empty path does.
+// The read is that one stored character, not the byte past the owned
+// length. It does not walk the filesystem.
+//
+// has_extension() is a character test. An empty path has no extension, and
+// that answer returns before the pointer is loaded. A non-empty path whose
+// last character is '/' has no extension. Otherwise only the filename, the
+// characters after the last '/', is examined. A filename with no '.', a
+// filename that is ".", a filename that is "..", or a filename whose only
+// '.' is the first character has no extension. A later '.' means the path
+// has an extension. Those reads stay inside the owned length. It does not
+// walk the filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -136,17 +163,33 @@ public:
     // compares equal to an empty path.
     [[nodiscard]] int compare(const path& __p) const noexcept;
 
+    // Stored characters only. An empty path is not absolute, and that answer
+    // does not load the pointer. The first character '/' is absolute.
+    [[nodiscard]] bool is_absolute() const noexcept;
+
+    // Opposite of is_absolute. An empty path is relative. No filesystem walk.
+    [[nodiscard]] bool is_relative() const noexcept;
+
+    // Stored characters only. An empty path has no root directory, and that
+    // answer does not load the pointer. The first character '/' has one.
+    [[nodiscard]] bool has_root_directory() const noexcept;
+
+    // Stored characters only. An empty path has no filename, and that answer
+    // does not load the pointer. A trailing '/' has none. The last stored
+    // character is inside the owned length.
+    [[nodiscard]] bool has_filename() const noexcept;
+
+    // Stored characters only. An empty path has no extension, and that
+    // answer does not load the pointer. A trailing '/' has none. A later
+    // '.' in the filename is an extension. "." and ".." are not.
+    [[nodiscard]] bool has_extension() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool is_absolute() const noexcept { return _M_len != 0 && _M_str[0] == '/'; }
-    [[nodiscard]] bool is_relative() const noexcept { return !is_absolute(); }
-    [[nodiscard]] bool has_root_directory() const noexcept { return is_absolute(); }
-    [[nodiscard]] bool has_filename() const { return !filename().empty(); }
-    [[nodiscard]] bool has_extension() const { return !extension().empty(); }
     [[nodiscard]] bool has_stem() const { return !stem().empty(); }
     [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
     void clear() noexcept { _M_free(); }
@@ -314,6 +357,57 @@ inline int path::compare(const path& __p) const noexcept {
     if (_M_len < __p._M_len) return -1;
     if (_M_len > __p._M_len) return 1;
     return 0;
+}
+
+inline bool path::is_absolute() const noexcept {
+    // An empty path stores no characters. It is not absolute. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    return _M_str[0] == '/';
+}
+
+inline bool path::is_relative() const noexcept {
+    // Opposite of is_absolute. An empty path is relative. This does not
+    // walk the filesystem.
+    return !is_absolute();
+}
+
+inline bool path::has_root_directory() const noexcept {
+    // An empty path stores no characters. It has no root directory. The
+    // pointer is not loaded.
+    if (_M_len == 0) return false;
+    return _M_str[0] == '/';
+}
+
+inline bool path::has_filename() const noexcept {
+    // An empty path stores no characters. It has no filename. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    // One character, the last one stored. The index is inside the owned
+    // length, so this does not read the terminating NUL.
+    return _M_str[_M_len - 1] != '/';
+}
+
+inline bool path::has_extension() const noexcept {
+    // An empty path stores no characters. It has no extension. The pointer
+    // is not loaded.
+    if (_M_len == 0) return false;
+    // A trailing slash is an empty filename. The index is inside the owned
+    // length, so this does not read the terminating NUL.
+    if (_M_str[_M_len - 1] == '/') return false;
+
+    // Filename: the characters after the last '/'. The scan stays inside
+    // the owned length. A dot in an earlier component is not an extension.
+    std::size_t __b = _M_len;
+    while (__b > 0 && _M_str[__b - 1] != '/') --__b;
+    const std::size_t __n = _M_len - __b;
+    // "." and ".." have no extension.
+    if (__n == 1 && _M_str[__b] == '.') return false;
+    if (__n == 2 && _M_str[__b] == '.' && _M_str[__b + 1] == '.') return false;
+    // A later '.' is an extension. The first character's '.' is not one.
+    for (std::size_t __i = 1; __i < __n; ++__i)
+        if (_M_str[__b + __i] == '.') return true;
+    return false;
 }
 
 inline path& path::replace_extension(const path& __rep) {

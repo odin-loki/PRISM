@@ -4,6 +4,7 @@
 // must be identical. `stack_trace uaf` is separate: the model frees the node
 // pop destroys, and libstdc++'s deque does not free that block.
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <stack>
 #include <string>

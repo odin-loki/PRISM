@@ -4,6 +4,8 @@
 // is the digit count. popcount of 0xA is 2. A rotate by a multiple of the
 // width returns the same bits. byteswap(0) is 0. A one-byte value is
 // unchanged. A wider unsigned value reverses its own bytes.
+// countl_one(0) and countr_one(0) are 0. An all-ones value counts the full
+// width. A clear low bit does not count as a trailing one.
 #include <bit>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +29,63 @@ static_assert(std::byteswap(std::byteswap(static_cast<std::uint32_t>(0xA5A5A5A5u
 static_assert(std::byteswap(std::byteswap(static_cast<std::uint64_t>(0x0123456789ABCDEFULL))) ==
               static_cast<std::uint64_t>(0x0123456789ABCDEFULL));
 
+static_assert(std::countl_one(0u) == 0);
+static_assert(std::countr_one(0u) == 0);
+static_assert(std::countl_one(1u) == 0);
+static_assert(std::countr_one(2u) == 0);
+static_assert(std::countl_one(~0u) == std::numeric_limits<unsigned>::digits);
+static_assert(std::countr_one(~0u) == std::numeric_limits<unsigned>::digits);
+static_assert(std::countl_one(0xFu << (std::numeric_limits<unsigned>::digits - 4)) == 4);
+static_assert(std::countl_one(1u << (std::numeric_limits<unsigned>::digits - 1)) == 1);
+static_assert(std::countr_one(static_cast<unsigned>(0x0F)) == 4);
+
+static_assert(std::countl_one(std::uint8_t{0}) == 0);
+static_assert(std::countl_one(std::uint8_t{0x80}) == 1);
+static_assert(std::countl_one(std::uint8_t{0xF0}) == 4);
+static_assert(std::countl_one(std::uint8_t{0xFF}) == 8);
+static_assert(std::countr_one(std::uint8_t{0}) == 0);
+static_assert(std::countr_one(std::uint8_t{0x02}) == 0);
+static_assert(std::countr_one(std::uint8_t{0x80}) == 0);
+static_assert(std::countr_one(std::uint8_t{0x0F}) == 4);
+static_assert(std::countr_one(std::uint8_t{0xFF}) == 8);
+
+static_assert(std::countl_one(std::uint16_t{0}) == 0);
+static_assert(std::countl_one(std::uint16_t{0x8000}) == 1);
+static_assert(std::countl_one(std::uint16_t{0xF000}) == 4);
+static_assert(std::countl_one(std::uint16_t{0xFFFF}) == 16);
+static_assert(std::countr_one(std::uint16_t{0}) == 0);
+static_assert(std::countr_one(std::uint16_t{0x0002}) == 0);
+static_assert(std::countr_one(std::uint16_t{0xFFFF}) == 16);
+
+static_assert(std::countl_one(std::uint32_t{0}) == 0);
+static_assert(std::countl_one(std::uint32_t{0x80000000u}) == 1);
+static_assert(std::countl_one(std::uint32_t{0xF0000000u}) == 4);
+static_assert(std::countl_one(std::uint32_t{0xFFFFFFFFu}) == 32);
+static_assert(std::countr_one(std::uint32_t{0}) == 0);
+static_assert(std::countr_one(std::uint32_t{2u}) == 0);
+static_assert(std::countr_one(std::uint32_t{0xFFFFFFFFu}) == 32);
+
+static_assert(std::countl_one(std::uint64_t{0}) == 0);
+static_assert(std::countl_one(std::uint64_t{0x8000000000000000ULL}) == 1);
+static_assert(std::countl_one(std::uint64_t{0xF000000000000000ULL}) == 4);
+static_assert(std::countl_one(std::uint64_t{0xFFFFFFFFFFFFFFFFULL}) == 64);
+static_assert(std::countr_one(std::uint64_t{0}) == 0);
+static_assert(std::countr_one(std::uint64_t{2}) == 0);
+static_assert(std::countr_one(std::uint64_t{0xFFFFFFFFFFFFFFFFULL}) == 64);
+
+static_assert(std::countl_one(0ul) == 0);
+static_assert(std::countr_one(0ul) == 0);
+static_assert(std::countr_one(2ul) == 0);
+static_assert(std::countl_one(~0ul) == std::numeric_limits<unsigned long>::digits);
+static_assert(std::countr_one(~0ul) == std::numeric_limits<unsigned long>::digits);
+static_assert(std::countl_one(1ul << (std::numeric_limits<unsigned long>::digits - 1)) == 1);
+static_assert(std::countl_one(0ull) == 0);
+static_assert(std::countr_one(0ull) == 0);
+static_assert(std::countr_one(2ull) == 0);
+static_assert(std::countl_one(~0ull) == std::numeric_limits<unsigned long long>::digits);
+static_assert(std::countr_one(~0ull) == std::numeric_limits<unsigned long long>::digits);
+static_assert(std::countl_one(1ull << (std::numeric_limits<unsigned long long>::digits - 1)) == 1);
+
 // Native stand-in for the PIR intrinsic. The overflow path of bit_ceil aborts
 // here. Values that fit do not call it.
 extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
@@ -38,8 +97,46 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
 }
 
 template <typename T>
+int ones_edges() {
+    constexpr int d = std::numeric_limits<T>::digits;
+    const T hi_bits = static_cast<T>(T{1} << (d - 1));
+    const T run_bits = static_cast<T>(static_cast<T>(0xFu) << (d - 4));
+    volatile T zero = T{0};
+    volatile T one = T{1};
+    volatile T two = T{2};
+    volatile T nibble = static_cast<T>(0x0F);
+    volatile T all = static_cast<T>(~T{0});
+    volatile T hi = hi_bits;
+    volatile T run = run_bits;
+    if (std::countl_one(zero) != 0) return 0;
+    if (std::countl_one(one) != 0) return 0;
+    if (std::countl_one(hi) != 1) return 0;
+    if (std::countl_one(run) != 4) return 0;
+    if (std::countl_one(all) != d) return 0;
+    if (std::countr_one(zero) != 0) return 0;
+    if (std::countr_one(two) != 0) return 0;
+    if (std::countr_one(hi) != 0) return 0;
+    if (std::countr_one(nibble) != 4) return 0;
+    if (std::countr_one(all) != d) return 0;
+    return 1;
+}
+
+template <typename T>
+void dump_ones(const char* name) {
+    constexpr int d = std::numeric_limits<T>::digits;
+    const T hi = static_cast<T>(T{1} << (d - 1));
+    const T run = static_cast<T>(static_cast<T>(0xFu) << (d - 4));
+    const T all = static_cast<T>(~T{0});
+    std::printf("ones %s clo0 %d clohi %d clorun %d cloall %d cro0 %d crolow %d crohi %d crorun %d croall %d\n", name,
+                std::countl_one(T{0}), std::countl_one(hi), std::countl_one(run), std::countl_one(all),
+                std::countr_one(T{0}), std::countr_one(T{2}), std::countr_one(hi), std::countr_one(static_cast<T>(0x0F)),
+                std::countr_one(all));
+}
+
+template <typename T>
 int counts_ok() {
     constexpr int d = std::numeric_limits<T>::digits;
+    if (!ones_edges<T>()) return 0;
     if (std::countl_zero(T{0}) != d) return 0;
     if (std::countr_zero(T{0}) != d) return 0;
     if (std::countl_one(static_cast<T>(~T{0})) != d) return 0;
@@ -109,6 +206,15 @@ int main() {
     const int r64 = round_ok(static_cast<std::uint64_t>(0x0123456789ABCDEFULL));
     std::printf("counts %d %d %d\n", cu, c8, c64);
     std::printf("round %d %d %d\n", ru, r8, r64);
+    dump_ones<std::uint8_t>("u8");
+    dump_ones<std::uint16_t>("u16");
+    dump_ones<std::uint32_t>("u32");
+    dump_ones<unsigned>("unsigned");
+    dump_ones<std::uint64_t>("u64");
+    const int o16 = ones_edges<std::uint16_t>();
+    const int o32 = ones_edges<std::uint32_t>();
+    const int ol = ones_edges<unsigned long>();
+    const int oll = ones_edges<unsigned long long>();
     // relations, not raw values: libstdc++ uses __ORDER_*_ENDIAN__ (1234/4321), MSVC STL uses 0/1
     std::printf("endian native_little=%d little_ne_big=%d\n",
                 static_cast<int>(std::endian::native == std::endian::little),
@@ -141,6 +247,7 @@ int main() {
     if (std::countl_zero(0u) != digits) return 1;
     if (std::popcount(0xAu) != 2) return 1;
     if (cu != 1 || c8 != 1 || c64 != 1) return 1;
+    if (o16 != 1 || o32 != 1 || ol != 1 || oll != 1) return 1;
     if (ru != 1 || r8 != 1 || r64 != 1) return 1;
     return 0;
 }

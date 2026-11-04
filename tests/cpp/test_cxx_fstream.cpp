@@ -1,11 +1,19 @@
-// The <fstream> model is a partial basic_ifstream for char. These checks
-// read the header text: a default stream is not open, and read or get on
-// that stream is a FUNC-CONTRACT check that does not write a byte and does
-// not return a fabricated character. tellg on that stream is the same class
-// of check, then __builtin_trap. The return type is long. That path does
-// not return 0 and does not return a file position. The header is not
-// included here: this binary already uses the standard fstream in other
-// translation units.
+// The <fstream> model is a partial basic_ifstream for char, plus
+// basic_ofstream::tellp and basic_ofstream::write. These checks read the
+// header text: a default stream is not open, and read or get on that stream
+// is a FUNC-CONTRACT check that does not write a byte and does not return a
+// fabricated character. tellg on that stream is the same class of check,
+// then __builtin_trap. tellp on a basic_ofstream that is not open is the
+// same class of check, then __builtin_trap. The return type of each is long.
+// That path does not return 0 and does not return a file position. write on
+// a basic_ofstream that is not open is the same class of check, then
+// __builtin_trap. That path does not return a byte count, does not write any
+// byte, and does not set the open flag. gcount returns 0. Nothing in the
+// header reads a file, so that 0 is not a character count from a file, and
+// gcount does not change the open flag. This is not PROVED and not CLEAN.
+// See docs/finish-notes/fstream-write.md.
+// The header is not included here: this binary already uses the standard
+// fstream in other translation units.
 
 #include <doctest/doctest.h>
 
@@ -136,14 +144,15 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(src.find("not a proof that a file exists") != std::string::npos);
 
     const std::string code = strip_comments_and_strings(src);
-    for (const char* name : {"open", "close", "ofstream", "fstream", "basic_ofstream", "basic_fstream", "basic_filebuf",
-                             "filebuf", "wifstream", "exists", "peek", "getline", "ignore"}) {
+    for (const char* name : {"open", "close", "ofstream", "fstream", "basic_fstream", "basic_filebuf",
+                             "filebuf", "wifstream", "exists", "peek", "getline", "ignore", "put", "seekp"}) {
         CAPTURE(name);
         CHECK_FALSE(has_ident(code, name));
     }
     CHECK(has_ident(code, "ifstream"));
     CHECK(has_ident(code, "is_open"));
     CHECK(has_ident(code, "basic_ifstream"));
+    CHECK(has_ident(code, "basic_ofstream"));
 
     const auto read = body_of(src, "basic_ifstream& read(");
     REQUIRE_FALSE(read.empty());
@@ -200,8 +209,87 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(tellg.find("streamoff") == std::string::npos);
     CHECK(tellg.find("fpos") == std::string::npos);
     CHECK(tellg.find("_M_is_open =") == std::string::npos);
+    CHECK(tellg.find("gcount") == std::string::npos);
+    CHECK(tellg.find("tellp") == std::string::npos);
     CHECK(count_sub(src, "std::basic_ifstream::tellg on a stream that is not open") == 1);
-    CHECK(count_sub(src, "__builtin_trap()") == 1);
+    CHECK(count_sub(tellg, "__builtin_trap()") == 1);
+    CHECK(count_sub(src, "long tellg()") == 1);
+    CHECK(count_sub(src, "~basic_ifstream() = default;") == 1);
+    CHECK(count_sub(src, "bool is_open() const noexcept") == 1);
 
-    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 6);
+    CHECK(src.find("long tellp()") != std::string::npos);
+    CHECK(src.find("class basic_ofstream {") != std::string::npos);
+    CHECK(src.find("basic_ofstream() noexcept = default;") != std::string::npos);
+    CHECK(src.find("~basic_ofstream() = default;") != std::string::npos);
+    CHECK(src.find("using ofstream") == std::string::npos);
+    CHECK(has_ident(code, "tellp"));
+    const auto tellp = body_of(src, "long tellp()");
+    REQUIRE_FALSE(tellp.empty());
+    const auto tellp_check = tellp.find("__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",");
+    const auto tellp_trap = tellp.find("__builtin_trap()");
+    REQUIRE(tellp_check != std::string::npos);
+    REQUIRE(tellp_trap != std::string::npos);
+    CHECK(tellp_check < tellp_trap);
+    CHECK(tellp.find("std::basic_ofstream::tellp on a stream that is not open") != std::string::npos);
+    CHECK(tellp.find("return") == std::string::npos);
+    CHECK(tellp.find("return 0") == std::string::npos);
+    CHECK(tellp.find("pos_type") == std::string::npos);
+    CHECK(tellp.find("streampos") == std::string::npos);
+    CHECK(tellp.find("streamoff") == std::string::npos);
+    CHECK(tellp.find("fpos") == std::string::npos);
+    CHECK(tellp.find("_M_is_open =") == std::string::npos);
+    CHECK(tellp.find("gcount") == std::string::npos);
+    CHECK(tellp.find("tellg") == std::string::npos);
+    CHECK(count_sub(src, "std::basic_ofstream::tellp on a stream that is not open") == 1);
+    CHECK(count_sub(tellp, "__builtin_trap()") == 1);
+    CHECK(count_sub(src, "bool _M_is_open = false;") == 2);
+
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(count_sub(src, "This is not PROVED and not CLEAN.") == 1);
+    CHECK(src.find("basic_ofstream& write(const char*, std::ptrdiff_t)") != std::string::npos);
+    const auto write_at = src.find("basic_ofstream& write(const char*, std::ptrdiff_t)");
+    CHECK(write_at > src.find("class basic_ofstream"));
+    CHECK(write_at > src.find("long tellp()"));
+    CHECK(count_sub(src, "basic_ofstream& write(const char*, std::ptrdiff_t)") == 1);
+    CHECK(has_ident(code, "write"));
+    const auto write = body_of(src, "basic_ofstream& write(const char*, std::ptrdiff_t)");
+    REQUIRE_FALSE(write.empty());
+    const auto write_check = write.find("__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",");
+    const auto write_trap = write.find("__builtin_trap()");
+    REQUIRE(write_check != std::string::npos);
+    REQUIRE(write_trap != std::string::npos);
+    CHECK(write_check < write_trap);
+    CHECK(write.find("std::basic_ofstream::write on a stream that is not open") != std::string::npos);
+    CHECK(write.find("return") == std::string::npos);
+    CHECK(write.find("return 0") == std::string::npos);
+    CHECK(write.find("return __n") == std::string::npos);
+    CHECK(write.find("*__s") == std::string::npos);
+    CHECK(write.find("__s[") == std::string::npos);
+    CHECK(write.find("__s") == std::string::npos);
+    CHECK(write.find("__n") == std::string::npos);
+    CHECK(write.find("_M_is_open =") == std::string::npos);
+    CHECK(write.find("fopen") == std::string::npos);
+    CHECK(write.find("fwrite") == std::string::npos);
+    CHECK(write.find("gcount") == std::string::npos);
+    CHECK(write.find("tellg") == std::string::npos);
+    CHECK(write.find("tellp") == std::string::npos);
+    CHECK(count_sub(src, "std::basic_ofstream::write on a stream that is not open") == 1);
+    CHECK(count_sub(write, "__builtin_trap()") == 1);
+    CHECK(count_sub(src, "__builtin_trap()") == 3);
+
+    const auto gcount_at = src.find("std::ptrdiff_t gcount() const");
+    CHECK(gcount_at != std::string::npos);
+    CHECK(gcount_at < src.find("class basic_ofstream"));
+    CHECK(has_ident(code, "gcount"));
+    const auto gcount = body_of(src, "std::ptrdiff_t gcount() const");
+    CHECK(gcount == "{ return 0; }");
+    CHECK(gcount.find("_M_is_open") == std::string::npos);
+    CHECK(gcount.find("__prism_check") == std::string::npos);
+    CHECK(gcount.find("__builtin_trap") == std::string::npos);
+    CHECK(gcount.find("fopen") == std::string::npos);
+    CHECK(gcount.find("fread") == std::string::npos);
+    CHECK(count_sub(src, "std::ptrdiff_t gcount() const") == 1);
+    CHECK(count_sub(gcount, "return") == 1);
+
+    CHECK(count_sub(src, "__prism_check(_M_is_open ? 1 : 0, \"FUNC-CONTRACT\",") == 8);
 }

@@ -4,33 +4,49 @@
 // file, not a directory: a directory of that name would make the include
 // fail with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. Only std::basic_ifstream for char, and the ifstream
-// alias of that type. A default stream is not open: is_open() is false.
-// Nothing in this header sets that flag. read() and get() on a stream that
-// is not open are __prism_check with class FUNC-CONTRACT. They do not write
-// any byte and do not return a fabricated character. get() returns -1, which
-// is eof, not a character read from a file. tellg() on a stream that is not
-// open is the same class of check, then __builtin_trap. The return type is
-// long. That path does not return 0 and does not return a file position.
+// Partial on purpose. std::basic_ifstream for char, and the ifstream alias
+// of that type. std::basic_ofstream for char, with tellp() and write(). A
+// default basic_ifstream is not open: is_open() is false. A default
+// basic_ofstream is not open. Nothing in this header sets either open flag
+// true. read() and get() on a stream that is not open are __prism_check
+// with class FUNC-CONTRACT. They do not write any byte and do not return a
+// fabricated character. get() returns -1, which is eof, not a character read
+// from a file. tellg() on a stream that is not open is the same class of
+// check, then __builtin_trap. The return type is long. That path does not
+// return 0 and does not return a file position. tellp() on a basic_ofstream
+// that is not open is the same class of check, then __builtin_trap. The
+// return type is long. That path does not return 0 and does not return a
+// file position. write() on a basic_ofstream that is not open is the same
+// class of check, then __builtin_trap. The parameters are const char* and
+// std::ptrdiff_t. That path does not return a byte count, does not write
+// any byte, and does not set the open flag. gcount() returns 0. The return
+// type is std::ptrdiff_t, which is libstdc++ std::streamsize. This header
+// does not include <ios>. Nothing in this header reads a file, so that 0 is
+// not a character count taken from a file. gcount() does not change the
+// open flag.
 //
 // There is no heap allocation. The destructor is defaulted and does not free.
-// The object holds one bool.
+// Each object holds one bool. gcount() does not store a character count.
 //
 // open and close are not declared. A successful open would be a fake file.
-// So are ofstream, fstream, filebuf, basic_ofstream, basic_fstream,
-// basic_filebuf, and wifstream, and any constructor that takes a path or a
-// file name. exists and every other name that would report a file is there
-// are omitted the same way. peek, getline, ignore, and operator>> are
-// omitted: each one would have to invent a character. A use of an omitted
-// name fails to compile against this header, and the pir stage lowers that
-// translation unit again with libstdc++ (extra.cxx_models). They are not
-// stubbed. The traits parameter of basic_ifstream is omitted, so the
-// two-argument form fails to compile and falls back the same way.
+// So are ofstream, fstream, filebuf, basic_fstream, basic_filebuf, and
+// wifstream, and any constructor that takes a path or a file name. exists
+// and every other name that would report a file is there are omitted the
+// same way. peek, getline, ignore, and operator>> are omitted: each one
+// would have to invent a character. put and seekp are omitted: a modelled
+// store of a byte would be a fake file. write() does not store a byte. A
+// use of an omitted name fails to
+// compile against this header, and the pir stage lowers that translation
+// unit again with libstdc++ (extra.cxx_models). They are not stubbed. The
+// traits parameter of basic_ifstream is omitted, so the two-argument form
+// fails to compile and falls back the same way. The traits parameter of
+// basic_ofstream is omitted the same way.
 //
 // This header does not include the string, filesystem, memory, mutex,
 // iostream, istream, or ostream headers.
 //
 // This header is not a proof that a file exists.
+// This is not PROVED and not CLEAN.
 #ifndef _GLIBCXX_FSTREAM
 #define _GLIBCXX_FSTREAM 1
 
@@ -115,11 +131,53 @@ public:
         __builtin_trap();
     }
 
+    // Nothing in this header reads a file, so the extraction count is 0.
+    // That 0 is not a character count taken from a file. The open flag is
+    // left unchanged.
+    std::ptrdiff_t gcount() const { return 0; }
+
 private:
     bool _M_is_open = false;
 };
 
 using ifstream = basic_ifstream<char>;
+
+// tellp and write. No open, no close. A default stream is not open.
+// Nothing in this header stores true in the open flag.
+template <typename _CharT>
+class basic_ofstream {
+    static_assert(is_same_v<_CharT, char>,
+                  "PRISM fstream model: only char is modelled (the pir stage falls back to libstdc++)");
+
+public:
+    // A default stream is not open. No constructor here takes a file name.
+    basic_ofstream() noexcept = default;
+
+    basic_ofstream(const basic_ofstream&) = delete;
+    basic_ofstream& operator=(const basic_ofstream&) = delete;
+
+    // Does not free. There is no buffer and no file.
+    ~basic_ofstream() = default;
+
+    // Not open: there is no file position. This path does not return.
+    long tellp() {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ofstream::tellp on a stream that is not open");
+        __builtin_trap();
+    }
+
+    // Not open: there is no file. The pointer and the count are not named,
+    // so this path cannot store through them. It does not return a byte
+    // count, does not write any byte, and does not set the open flag.
+    basic_ofstream& write(const char*, std::ptrdiff_t) {
+        __prism_check(_M_is_open ? 1 : 0, "FUNC-CONTRACT",
+                      "std::basic_ofstream::write on a stream that is not open");
+        __builtin_trap();
+    }
+
+private:
+    bool _M_is_open = false;
+};
 
 }  // namespace std
 
