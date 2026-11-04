@@ -23,6 +23,10 @@
 //    not invent an element. If n > SIZE_MAX/sizeof(T) or sizeof(T) == 0,
 //    __prism_check reports MEM-OOB-WRITE and __builtin_trap runs before the
 //    allocation. That path does not allocate a wrapped count.
+//  * operator== for two unique_ptr objects of the same type compares the
+//    stored pointers (get()). Two empty unique_ptrs compare equal. A
+//    mismatch is false. The comparison reads get() only. C++20 rewrites
+//    operator!= from this operator==.
 //
 // shared_ptr, weak_ptr, and make_shared are modelled at the end of this file
 // (control block, last owner deletes). allocator, pointer_traits, and
@@ -221,6 +225,14 @@ void swap(unique_ptr<_Tp, _Dp>& __x, unique_ptr<_Tp, _Dp>& __y) noexcept {
 template <typename _Tp, typename _Dp>
 bool operator==(const unique_ptr<_Tp, _Dp>& __x, nullptr_t) noexcept {
     return !__x;
+}
+
+// Two unique_ptr objects of the same type. Compares the stored pointers.
+// Two empty unique_ptrs compare equal. A mismatch is false. The comparison
+// reads get() only. C++20 rewrites operator!= from this operator==.
+template <typename _Tp, typename _Dp>
+bool operator==(const unique_ptr<_Tp, _Dp>& __x, const unique_ptr<_Tp, _Dp>& __y) noexcept {
+    return __x.get() == __y.get();
 }
 
 // Selects make_unique's return type. A missing nested type is a substitution
