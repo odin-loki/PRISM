@@ -816,6 +816,10 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_iostream.cpp
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_list.cpp
+    tests/cpp/test_cxx_queue.cpp
+    tests/cpp/test_cxx_queue_front.cpp
+    tests/cpp/test_cxx_queue_less.cpp
+    tests/cpp/test_cxx_priority_queue.cpp
     tests/cpp/test_cxx_span.cpp
     tests/cpp/test_cxx_optional.cpp
     tests/cpp/test_cxx_initializer_list.cpp
