@@ -17,6 +17,15 @@
 // expected that holds the function's result as the error. On a value it
 // does not call the function; the result holds that same T and does not
 // construct an E or return E{} or T{}.
+// operator== compares two expected<T, E> of the same type. Both values
+// compare the stored T. Both errors compare the stored E. A value compared
+// with an error is false and does not call either operator==. operator!=
+// is the negation. This is not PROVED and not CLEAN.
+// emplace takes one argument. When the expected holds a T, that T is
+// destroyed first and E is not read. When it holds an E, that E is destroyed
+// first and T is not read. Then T is constructed in the value storage.
+// operator< is declared; this trace does not call it. libstdc++ does not
+// provide operator< for expected, so a call here would not match.
 //
 // argv "value" calls value() on an unexpected. argv "star" calls operator* on
 // an unexpected. argv "error" calls error() on a success value. The model must
@@ -64,10 +73,88 @@ struct Box {
     Box(int x) : v(x) {}
 };
 
+// No default constructor. operator== prints, so a read of the inactive
+// alternative shows up. T{} or E{} would not compile.
+struct EqVal {
+    int v;
+    EqVal() = delete;
+    explicit EqVal(int x) : v(x) {}
+    friend bool operator==(const EqVal& a, const EqVal& b) {
+        std::printf("eqv %d %d\n", a.v, b.v);
+        return a.v == b.v;
+    }
+};
+
+struct EqErr {
+    int v;
+    EqErr() = delete;
+    explicit EqErr(int x) : v(x) {}
+    friend bool operator==(const EqErr& a, const EqErr& b) {
+        std::printf("eqe %d %d\n", a.v, b.v);
+        return a.v == b.v;
+    }
+};
+
+// Move-only. No default constructor, so emplace cannot build EmMove{}. An
+// engaged emplace destroys the stored EmMove, then move-constructs the new one.
+// A value emplace must not run ~EmErr.
+struct EmMove {
+    int v;
+    EmMove() = delete;
+    explicit EmMove(int x) noexcept : v(x) { std::printf("mvc%d\n", v); }
+    EmMove(const EmMove&) = delete;
+    EmMove(EmMove&& o) noexcept : v(o.v) {
+        o.v = -1;
+        std::printf("mvm%d\n", v);
+    }
+    ~EmMove() { std::printf("mvd%d\n", v); }
+};
+
+// Move-only error. No default constructor, so emplace cannot build EmErr{}.
+// An error emplace destroys this EmErr and must not run ~EmMove first.
+struct EmErr {
+    int v;
+    EmErr() = delete;
+    explicit EmErr(int x) noexcept : v(x) { std::printf("erc%d\n", v); }
+    EmErr(const EmErr&) = delete;
+    EmErr(EmErr&& o) noexcept : v(o.v) {
+        o.v = -1;
+        std::printf("erm%d\n", v);
+    }
+    ~EmErr() { std::printf("erd%d\n", v); }
+};
+
+// Copy and move both print. An lvalue argument is copied; an rvalue is moved.
+// No default constructor. The copy constructor is noexcept so libstdc++
+// emplace's nothrow constraint accepts it.
+struct EmCopy {
+    int v;
+    EmCopy() = delete;
+    explicit EmCopy(int x) noexcept : v(x) { std::printf("cpc%d\n", v); }
+    EmCopy(const EmCopy& o) noexcept : v(o.v) { std::printf("cpp%d\n", v); }
+    EmCopy(EmCopy&& o) noexcept : v(o.v) {
+        o.v = -1;
+        std::printf("cpm%d\n", v);
+    }
+    ~EmCopy() { std::printf("cpd%d\n", v); }
+};
+
+// Not movable and not copyable. emplace(int) has to construct in the storage.
+struct EmBox {
+    int v;
+    EmBox() = delete;
+    explicit EmBox(int x) noexcept : v(x) { std::printf("bxc%d\n", v); }
+    EmBox(const EmBox&) = delete;
+    EmBox(EmBox&&) = delete;
+    ~EmBox() { std::printf("bxd%d\n", v); }
+};
+
 static void show_monadic();
 static void show_value_or();
 static void show_transform();
 static void show_transform_error();
+static void show_equal();
+static void show_emplace();
 
 static void show() {
     std::expected<int, int> def;
@@ -100,6 +187,8 @@ static void show() {
     show_value_or();
     show_transform();
     show_transform_error();
+    show_equal();
+    show_emplace();
 }
 
 // and_then / or_else. Lines are the contract: a value calls and_then and does
@@ -461,6 +550,131 @@ static void show_transform_error() {
     const std::expected<int, int> ccmv(std::unexpected<int>(1));
     auto cm = static_cast<const std::expected<int, int>&&>(ccmv).transform_error(ErrCat{});
     std::printf("transform_error_cat_cmv %d\n", cm.error());
+}
+
+// Same type only. Both values compare T and do not call E's operator==.
+// Both errors compare E and do not call T's operator==. A value against an
+// error is false and calls neither. operator!= is the negation, so it calls
+// operator== once more on the pairs that share an alternative.
+static void show_equal() {
+    std::expected<int, int> a(42);
+    std::expected<int, int> b(42);
+    std::expected<int, int> c(7);
+    std::printf("eq_val %d %d %d\n", static_cast<int>(a == b), static_cast<int>(a == c),
+                static_cast<int>(a == a));
+    std::printf("ne_val %d %d %d\n", static_cast<int>(a != b), static_cast<int>(a != c),
+                static_cast<int>(a != a));
+
+    std::expected<int, int> z(0);
+    std::expected<int, int> z2(0);
+    std::printf("eq_zero %d %d\n", static_cast<int>(z == z2), static_cast<int>(z != z2));
+
+    std::expected<int, int> e1(std::unexpected<int>(7));
+    std::expected<int, int> e2(std::unexpected<int>(7));
+    std::expected<int, int> e3(std::unexpected<int>(3));
+    std::printf("eq_err %d %d %d\n", static_cast<int>(e1 == e2), static_cast<int>(e1 == e3),
+                static_cast<int>(e1 == e1));
+    std::printf("ne_err %d %d %d\n", static_cast<int>(e1 != e2), static_cast<int>(e1 != e3),
+                static_cast<int>(e1 != e1));
+
+    std::expected<int, int> ez(std::unexpected<int>(0));
+    std::expected<int, int> ez2(std::unexpected<int>(0));
+    std::printf("eq_err0 %d %d\n", static_cast<int>(ez == ez2), static_cast<int>(ez != ez2));
+
+    std::printf("eq_mix %d %d\n", static_cast<int>(a == e1), static_cast<int>(e1 == a));
+    std::printf("ne_mix %d %d\n", static_cast<int>(a != e1), static_cast<int>(e1 != a));
+    std::printf("eq_mix0 %d %d\n", static_cast<int>(z == ez), static_cast<int>(ez == z));
+
+    const std::expected<int, int> ca(42);
+    const std::expected<int, int> cb(7);
+    const std::expected<int, int> ce(std::unexpected<int>(7));
+    const std::expected<int, int> ce2(std::unexpected<int>(7));
+    std::printf("eq_const %d %d %d %d\n", static_cast<int>(ca == ca), static_cast<int>(ca == cb),
+                static_cast<int>(ce == ce2), static_cast<int>(ca == ce));
+
+    std::expected<EqVal, EqErr> va(EqVal(3));
+    std::expected<EqVal, EqErr> vb(EqVal(3));
+    std::expected<EqVal, EqErr> vc(EqVal(4));
+    const int same = static_cast<int>(va == vb);
+    const int diff = static_cast<int>(va == vc);
+    std::printf("eq_t %d %d\n", same, diff);
+
+    std::expected<EqVal, EqErr> ea(std::unexpected<EqErr>(EqErr(5)));
+    std::expected<EqVal, EqErr> eb(std::unexpected<EqErr>(EqErr(5)));
+    std::expected<EqVal, EqErr> ec(std::unexpected<EqErr>(EqErr(6)));
+    const int es = static_cast<int>(ea == eb);
+    const int ed = static_cast<int>(ea == ec);
+    std::printf("eq_e %d %d\n", es, ed);
+
+    std::expected<EqVal, EqErr> mix_v(EqVal(8));
+    std::expected<EqVal, EqErr> mix_e(std::unexpected<EqErr>(EqErr(2)));
+    const int mv = static_cast<int>(mix_v == mix_e);
+    const int me = static_cast<int>(mix_e == mix_v);
+    std::printf("eq_cross %d %d\n", mv, me);
+
+    const int ne_same = static_cast<int>(va != vb);
+    std::printf("ne_t %d\n", ne_same);
+    const int ne_diff = static_cast<int>(ea != ec);
+    std::printf("ne_e %d\n", ne_diff);
+    const int ne_mix = static_cast<int>(mix_v != mix_e);
+    std::printf("ne_cross %d\n", ne_mix);
+}
+
+// One argument. A stored T is destroyed before the new T is constructed, and
+// E is not read. A stored E is destroyed before the new T is constructed, and
+// the previous T is not read. The reference is the stored T.
+static void show_emplace() {
+    {
+        std::expected<EmMove, EmErr> o(EmMove(1));
+        std::printf("start %d\n", static_cast<int>(o.has_value()));
+        EmMove& r = o.emplace(EmMove(2));
+        std::printf("one %d %d %d\n", static_cast<int>(o.has_value()), r.v,
+                    static_cast<int>(&r == &*o));
+        r.v = 6;
+        std::printf("mut %d\n", (*o).v);
+        EmMove& r2 = o.emplace(EmMove(3));
+        std::printf("two %d %d %d\n", static_cast<int>(o.has_value()), r2.v,
+                    static_cast<int>(&r2 == &*o));
+    }
+    {
+        std::expected<EmMove, EmErr> o(std::unexpected<EmErr>(EmErr(4)));
+        std::printf("emheld %d %d\n", static_cast<int>(o.has_value()), o.error().v);
+        EmMove& r = o.emplace(EmMove(5));
+        std::printf("from_err %d %d %d\n", static_cast<int>(o.has_value()), r.v,
+                    static_cast<int>(&r == &*o));
+    }
+    {
+        EmCopy src(3);
+        std::expected<EmCopy, EmErr> o(src);
+        EmCopy& r = o.emplace(src);
+        std::printf("lv %d %d %d\n", src.v, r.v, static_cast<int>(&r == &*o));
+        EmCopy& r2 = o.emplace(static_cast<EmCopy&&>(src));
+        std::printf("rv %d %d %d\n", src.v, r2.v, static_cast<int>(&r2 == &*o));
+    }
+    {
+        std::expected<int, int> e(std::unexpected<int>(7));
+        int& ir = e.emplace(0);
+        std::printf("zero %d %d %d\n", static_cast<int>(e.has_value()), ir,
+                    static_cast<int>(&ir == &*e));
+        ir = 4;
+        std::printf("zmut %d\n", *e);
+        int& ir2 = e.emplace(9);
+        std::printf("nine %d %d\n", ir2, e.value());
+    }
+    {
+        std::expected<EmBox, EmErr> b(std::unexpected<EmErr>(EmErr(8)));
+        EmBox& br = b.emplace(42);
+        std::printf("box %d %d %d\n", static_cast<int>(b.has_value()), br.v,
+                    static_cast<int>(&br == &*b));
+        EmBox& br2 = b.emplace(7);
+        std::printf("box2 %d %d %d\n", static_cast<int>(b.has_value()), br2.v,
+                    static_cast<int>(&br2 == &*b));
+    }
+    {
+        std::expected<int, int> n(42);
+        int& nr = n.emplace(3);
+        std::printf("wasnow %d %d\n", nr, n.value());
+    }
 }
 
 int main(int argc, char** argv) {
