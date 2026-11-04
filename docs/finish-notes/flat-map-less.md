@@ -71,9 +71,9 @@ right head is non-null, and that arm returns true. The other direction
 returns false. Both arms return before a node pointer is copied into the
 walk, so neither path loads the empty map's node.
 
-Otherwise the walk starts at `_M_head` and follows `_M_next`. `_M_link`
-puts a new node at the head, so the first pair compared is the most
-recently inserted pair. The loop condition is both nodes non-null, so the
+Otherwise the walk visits each map's pairs in key order (see "Key order"
+below; this slice first walked the link chain from `_M_head`, newest pair
+first, which was a defect). The loop condition is both nodes non-null, so the
 walk does not read past the shorter map. A deciding `<` returns before
 `_M_next` is loaded.
 
@@ -99,7 +99,7 @@ if (__b->_M_mapped < __a->_M_mapped)
 ```
 
 A key that is greater returns false before the mapped value is read.
-Equivalent pairs advance to `_M_next`. When every pair is equivalent the
+Equivalent pairs advance to the next pair in key order. When every pair is equivalent the
 result is false.
 
 The comparison does not call `operator[]`, `at`, `erase`, `contains`,
@@ -124,7 +124,7 @@ missing key it still constructs the mapped object from the arguments only
 after the key is known to be absent, and it still returns `bool`.
 `size()` is still `return _M_size`. `empty()` is still
 `return _M_size == 0`. `clear()` still calls the existing `_M_clear`.
-Iterators still walk in key order. That walk is not what `operator<` uses.
+Iterators still walk in key order, and `operator<` now uses the same order.
 
 Not declared, so a use fails to compile against this header and pir falls
 back to libstdc++ (`extra.cxx_models`): `insert`, `insert_range`,
@@ -233,3 +233,84 @@ empty count=0 key_copies=0 key_moves=0 mapped=0 size=0
 index key_copies=0 key_moves=1 defaults=1 from_int=1 mapped_moves=1 assigns=1 size=1 value=8
 count hit=1 missing=0 key_copies=0 key_moves=0 from_int=0 defaults=0 mapped_copies=0 mapped_moves=0 assigns=0 value=8 size=1 missing_at=threw
 ```
+
+## Key order (branch `port/flat-map-equal`)
+
+The walk described above followed the node chain from `_M_head`. That
+chain is in link order, newest pair first, not key order, so the result
+depended on insertion order and could disagree with the standard
+(`std::lexicographical_compare` over `value_type` in key order). This was
+a defect. It is fixed.
+
+`operator<` now visits each map's pairs in key order with a private
+static helper:
+
+```cpp
+static const _Node* _M_key_next(const _Node* __h, const _Node* __cur) {
+    const _Node* __best = nullptr;
+    for (const _Node* __p = __h; __p != nullptr; __p = __p->_M_next)
+        if ((__cur == nullptr || _Compare{}(__cur->_M_key, __p->_M_key)) &&
+            (__best == nullptr || _Compare{}(__p->_M_key, __best->_M_key)))
+            __best = __p;
+    return __best;
+}
+```
+
+It returns the node with the smallest key above `__cur` under `_Compare`,
+or the smallest key when `__cur` is null. The walk starts at
+`_M_key_next(__x._M_head, nullptr)` and steps with
+`_M_key_next(__x._M_head, __a)`, the same for `__y`. Each step is one scan,
+so a comparison is O(n^2) `_Compare` calls. Nothing is sorted, nothing is
+allocated, and no key or mapped value is constructed. The three empty-map
+returns are unchanged and still come before any node is loaded. The loop
+still needs both nodes, so it does not read past the shorter map. The pair
+compare is unchanged (key `<` both ways, then mapped `<` both ways). The
+walk no longer contains `->_M_next`.
+
+The trace has three new int lines. `order` is `{1, 2, 3}` inserted as
+1, 2, 3 against 3, 1, 2: neither map is less (`order 0 0`). `disagree` is
+`{1 -> 10, 5 -> 50}` against `{2 -> 20, 3 -> 30}`: in key order 1 < 2, so
+the first map is less (`disagree 1 0`). The old link-order walk compared
+5 with 3 first and printed `disagree 0 1`. It also printed `order 0 1`.
+`mixed` is an initializer-list map against operator[] inserts that differ
+in the last mapped value. The counted maps were reordered so a mapped
+value of -1 sits on the largest key, past the deciding pair. `poison` now
+counts only mapped `<` calls on those values. Key `<` calls are no longer
+a measure of how far the walk went, because they include the
+`_M_key_next` scans. `poison` is 0 on every line, so the walk stopped at
+the deciding pair and did not read past the shorter map.
+
+`less` now prints
+
+```text
+empty 0
+el 1
+le 0
+oneeq 0
+key 0 1
+mapped 1 0
+prefix 1 0
+early 0 1
+tail 0 1
+order 0 0
+disagree 1 0
+mixed 1 0
+kempty 0 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+kel 1 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+kle 0 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+ksame 0 key_lt=4 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+ktwo 0 key_lt=14 mapped_lt=4 poison=0 copies=0 moves=0 mapped=0
+kkey 0 key_lt=16 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kkeyba 1 key_lt=15 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kmap 1 key_lt=4 mapped_lt=1 poison=0 copies=0 moves=0 mapped=0
+kpre 1 key_lt=6 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+krev 0 key_lt=6 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kearly 0 key_lt=16 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kearlyba 1 key_lt=15 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+```
+
+Built with clang++ from `~/opt/llvm23`, `-std=c++23 -Wall -Wextra -Werror
+-D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined
+-fno-sanitize-recover=all -g -O1`, with only the model headers on the
+include path and a `__prism_check` stub that prints failures. ASan and
+UBSan reported nothing, and no check failed.

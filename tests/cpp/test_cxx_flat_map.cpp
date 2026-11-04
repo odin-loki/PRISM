@@ -25,7 +25,9 @@
 // loaded. Swap does not allocate, free, or construct a key. Self-swap
 // returns before any free, so it does not free the nodes. The comment
 // states that this is not PROVED and not CLEAN. operator< is
-// lexicographical order of the stored pairs along the node chain. Two
+// lexicographical order of the stored pairs in key order: each next pair
+// is _M_key_next, the smallest key above the previous one, not the next
+// link, so insertion order does not change the result. Two
 // empty maps compare not-less and do not load a node. An empty map is
 // less than a non-empty map, and that path does not load the empty map's
 // node. The walk stops at the first deciding pair and does not read past
@@ -34,7 +36,14 @@
 // maps compare not-greater and do not load a node. A non-empty map is
 // greater than an empty map, and that path does not load the empty map.
 // It does not return T{}. The comment states that this is not PROVED and
-// not CLEAN.
+// not CLEAN. operator== is container equality: two empty maps compare
+// equal before a node is loaded, different sizes compare unequal before a
+// node is loaded, and otherwise both maps are walked in key order with
+// _M_key_next (the chain is link order, not key order) and paired position
+// by position, key and mapped value compared with ==, not by lookup under
+// _Compare equivalence. operator!= is not declared:
+// a != b is the C++20 rewrite of !(a == b). The comment states that this
+// is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -547,7 +556,7 @@ TEST_CASE("cxx flat_map model: less compares stored keys and mapped values") {
     CHECK(empty_ret < filled);
     CHECK(filled < filled_ret);
 
-    const auto walk_at = lt.find("const _Node* __a = __x._M_head;");
+    const auto walk_at = lt.find("const _Node* __a = _M_key_next(__x._M_head, nullptr);");
     REQUIRE(walk_at != std::string::npos);
     CHECK(filled_ret < walk_at);
     const auto before_walk = lt.substr(0, walk_at);
@@ -567,8 +576,8 @@ TEST_CASE("cxx flat_map model: less compares stored keys and mapped values") {
     const auto kfals = lt.find("return false;", filled_ret + 1);
     const auto mret = lt.find("return true;", kret + 1);
     const auto mfals = lt.find("return false;", kfals + 1);
-    const auto next_a = lt.find("__a = __a->_M_next;");
-    const auto next_b = lt.find("__b = __b->_M_next;");
+    const auto next_a = lt.find("__a = _M_key_next(__x._M_head, __a);");
+    const auto next_b = lt.find("__b = _M_key_next(__y._M_head, __b);");
     const auto done = lt.find("return __a == nullptr && __b != nullptr;");
     REQUIRE(walk != std::string::npos);
     REQUIRE(klt != std::string::npos);
@@ -620,6 +629,48 @@ TEST_CASE("cxx flat_map model: less compares stored keys and mapped values") {
     CHECK(lt.find("swap") == std::string::npos);
     CHECK(lt.find("operator==") == std::string::npos);
     CHECK(lt.find("size()") == std::string::npos);
+    // The walk is in key order. No step follows the link chain directly,
+    // and the right map's walk starts from its smallest key too.
+    CHECK(lt.find("->_M_next") == std::string::npos);
+    CHECK(lt.find("__x._M_head;") == std::string::npos);
+    CHECK(lt.find("__y._M_head;") == std::string::npos);
+    CHECK(lt.find("const _Node* __b = _M_key_next(__y._M_head, nullptr);") != std::string::npos);
+
+    // _M_key_next is one scan of the chain for the smallest key above the
+    // previous one under _Compare. It does not allocate, sort, or build a key.
+    const std::string kn_sig = "static const _Node* _M_key_next(const _Node* __h, const _Node* __cur) {";
+    const auto kn_at = src.find(kn_sig);
+    REQUIRE(kn_at != std::string::npos);
+    CHECK(src.find(kn_sig, kn_at + kn_sig.size()) == std::string::npos);
+    CHECK(kn_at < lt_at);
+    const std::string kn = slice_from(src, kn_sig, "template <typename _N>");
+    REQUIRE_FALSE(kn.empty());
+    const auto kn_loop = kn.find("for (const _Node* __p = __h; __p != nullptr; __p = __p->_M_next)");
+    const auto kn_above = kn.find("(__cur == nullptr || _Compare{}(__cur->_M_key, __p->_M_key))");
+    const auto kn_min = kn.find("(__best == nullptr || _Compare{}(__p->_M_key, __best->_M_key))");
+    const auto kn_ret = kn.find("return __best;");
+    REQUIRE(kn_loop != std::string::npos);
+    REQUIRE(kn_above != std::string::npos);
+    REQUIRE(kn_min != std::string::npos);
+    REQUIRE(kn_ret != std::string::npos);
+    CHECK(kn_loop < kn_above);
+    CHECK(kn_above < kn_min);
+    CHECK(kn_min < kn_ret);
+    CHECK(kn.find("new ") == std::string::npos);
+    CHECK(kn.find("::operator new") == std::string::npos);
+    CHECK(kn.find("::operator delete") == std::string::npos);
+    CHECK(kn.find("_M_make") == std::string::npos);
+    CHECK(kn.find("_M_link") == std::string::npos);
+    CHECK(kn.find("key_type") == std::string::npos);
+    CHECK(kn.find("mapped_type") == std::string::npos);
+    CHECK(kn.find("vector") == std::string::npos);
+    CHECK(kn.find("sort") == std::string::npos);
+    CHECK(kn.find("_M_mapped") == std::string::npos);
+    const auto kn_note = src.rfind("Next pair in key order", kn_at);
+    REQUIRE(kn_note != std::string::npos);
+    const std::string kn_text = src.substr(kn_note, kn_at - kn_note);
+    CHECK(kn_text.find("It does not") != std::string::npos);
+    CHECK(kn_text.find("allocate, sort, or construct a key") != std::string::npos);
 
     const auto note_from = src.rfind("Two empty maps compare not-less", lt_at);
     REQUIRE(note_from != std::string::npos);
@@ -628,6 +679,8 @@ TEST_CASE("cxx flat_map model: less compares stored keys and mapped values") {
     CHECK(note.find("An empty map is less than a non-empty map") != std::string::npos);
     CHECK(note.find("does not load the empty map's node") != std::string::npos);
     CHECK(note.find("lexicographically") != std::string::npos);
+    CHECK(note.find("visited in key order with _M_key_next, not in link order") != std::string::npos);
+    CHECK(note.find("insertion order does not") != std::string::npos);
     CHECK(note.find("stored keys and mapped values") != std::string::npos);
     CHECK(note.find("do not read past the shorter map") != std::string::npos);
     CHECK(note.find("with <") != std::string::npos);
@@ -675,9 +728,13 @@ TEST_CASE("cxx flat_map model: greater is operator< with the arguments swapped")
     REQUIRE(swap_at != std::string::npos);
     CHECK(swap_at < lt_at);
     CHECK(lt_at < gt_at);
-    // This header has no container operator== or operator!=, so a == or
-    // != of two flat_maps still falls back to libstdc++.
-    CHECK(src.find("operator==(const flat_map&") == std::string::npos);
+    // Container operator== is declared once, before operator<. operator!=
+    // is not declared: a != b is the C++20 rewrite of !(a == b).
+    const auto eq_at = src.find("friend bool operator==(const flat_map& __x, const flat_map& __y)");
+    REQUIRE(eq_at != std::string::npos);
+    CHECK(src.find("operator==(const flat_map&", eq_at + std::string("friend bool operator==").size()) ==
+          std::string::npos);
+    CHECK(eq_at < lt_at);
     CHECK(src.find("operator!=(const flat_map&") == std::string::npos);
 
     // The body is the existing operator< with the arguments swapped. It does
@@ -725,7 +782,7 @@ TEST_CASE("cxx flat_map model: greater is operator< with the arguments swapped")
     const auto empty_ret = lt.find("return true;");
     const auto filled = lt.find("if (__y._M_head == nullptr && __x._M_head != nullptr)");
     const auto filled_ret = lt.find("return false;", both_ret + 1);
-    const auto walk_at = lt.find("const _Node* __a = __x._M_head;");
+    const auto walk_at = lt.find("const _Node* __a = _M_key_next(__x._M_head, nullptr);");
     REQUIRE(both != std::string::npos);
     REQUIRE(both_ret != std::string::npos);
     REQUIRE(empty_lt != std::string::npos);
@@ -771,4 +828,155 @@ TEST_CASE("cxx flat_map model: greater is operator< with the arguments swapped")
     CHECK(src.find("bool empty() const noexcept { return _M_size == 0; }") != std::string::npos);
     CHECK(src.find("void swap(flat_map& __o) noexcept") != std::string::npos);
     CHECK(src.find(lt_sig) != std::string::npos);
+}
+
+TEST_CASE("cxx flat_map model: equality walks both maps in key order and compares pairs with ==") {
+    const fs::path path = header();
+    REQUIRE(fs::is_regular_file(path));
+    CHECK_FALSE(fs::is_directory(path));
+    const std::string src = slurp(path);
+    REQUIRE_FALSE(src.empty());
+
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("operator!=(const flat_map&") == std::string::npos);
+    CHECK(src.find("operator<=>") == std::string::npos);
+
+    const std::string eq_sig = "friend bool operator==(const flat_map& __x, const flat_map& __y)";
+    const auto eq_at = src.find(eq_sig);
+    REQUIRE(eq_at != std::string::npos);
+    CHECK(src.find(eq_sig, eq_at + eq_sig.size()) == std::string::npos);
+    const auto swap_at = src.find("void swap(flat_map& __o) noexcept");
+    const auto lt_at = src.find("friend bool operator<(const flat_map& __x, const flat_map& __y)");
+    REQUIRE(swap_at != std::string::npos);
+    REQUIRE(lt_at != std::string::npos);
+    CHECK(swap_at < eq_at);
+    CHECK(eq_at < lt_at);
+
+    const std::string eq = slice_from(src, eq_sig, "Two empty maps compare not-less");
+    REQUIRE_FALSE(eq.empty());
+
+    // Two empty maps return true before a node is loaded.
+    const auto heads = eq.find("if (__x._M_head == nullptr && __y._M_head == nullptr)");
+    const auto empty_ret = eq.find("return true;");
+    REQUIRE(heads != std::string::npos);
+    REQUIRE(empty_ret != std::string::npos);
+    CHECK(heads < empty_ret);
+    const auto empty_prefix = eq.substr(0, empty_ret);
+    CHECK(empty_prefix.find("->") == std::string::npos);
+    CHECK(empty_prefix.find("_M_key") == std::string::npos);
+    CHECK(empty_prefix.find("_M_mapped") == std::string::npos);
+    CHECK(empty_prefix.find("_M_next") == std::string::npos);
+    CHECK(empty_prefix.find("_M_key_next") == std::string::npos);
+
+    // Different sizes return false before a node is loaded.
+    const auto sizes = eq.find("if (__x._M_size != __y._M_size)");
+    const auto size_ret = eq.find("return false;");
+    REQUIRE(sizes != std::string::npos);
+    REQUIRE(size_ret != std::string::npos);
+    CHECK(empty_ret < sizes);
+    CHECK(sizes < size_ret);
+    const auto size_prefix = eq.substr(0, size_ret);
+    CHECK(size_prefix.find("->") == std::string::npos);
+    CHECK(size_prefix.find("_M_key") == std::string::npos);
+    CHECK(size_prefix.find("_M_mapped") == std::string::npos);
+    CHECK(size_prefix.find("_M_next") == std::string::npos);
+    CHECK(size_prefix.find("_M_key_next") == std::string::npos);
+
+    // Both maps are walked in key order with _M_key_next and paired by
+    // position. No lookup: _M_find matches by _Compare equivalence, which
+    // is not ==. The stored key and mapped value are compared with ==, and
+    // a mismatch returns false before the next pair. The success result is
+    // both walks running out together.
+    const auto start_a = eq.find("const _Node* __a = _M_key_next(__x._M_head, nullptr);");
+    const auto start_b = eq.find("const _Node* __b = _M_key_next(__y._M_head, nullptr);");
+    const auto walk = eq.find("while (__a != nullptr && __b != nullptr)");
+    const auto keys = eq.find("__a->_M_key == __b->_M_key");
+    const auto mapped = eq.find("__a->_M_mapped == __b->_M_mapped");
+    const auto bad_ret = eq.find("return false;", size_ret + 1);
+    const auto next_a = eq.find("__a = _M_key_next(__x._M_head, __a);");
+    const auto next_b = eq.find("__b = _M_key_next(__y._M_head, __b);");
+    const auto done = eq.find("return __a == nullptr && __b == nullptr;");
+    REQUIRE(start_a != std::string::npos);
+    REQUIRE(start_b != std::string::npos);
+    REQUIRE(walk != std::string::npos);
+    REQUIRE(keys != std::string::npos);
+    REQUIRE(mapped != std::string::npos);
+    REQUIRE(bad_ret != std::string::npos);
+    REQUIRE(next_a != std::string::npos);
+    REQUIRE(next_b != std::string::npos);
+    REQUIRE(done != std::string::npos);
+    CHECK(size_ret < start_a);
+    CHECK(start_a < start_b);
+    CHECK(start_b < walk);
+    CHECK(walk < keys);
+    CHECK(keys < mapped);
+    CHECK(mapped < bad_ret);
+    CHECK(bad_ret < next_a);
+    CHECK(next_a < next_b);
+    CHECK(next_b < done);
+    CHECK(eq.find("return false;", bad_ret + 1) == std::string::npos);
+    CHECK(eq.find("return true;", empty_ret + 1) == std::string::npos);
+    CHECK(eq.find("_M_find") == std::string::npos);
+    CHECK(eq.find("_Compare") == std::string::npos);
+    CHECK(eq.find("->_M_next") == std::string::npos);
+    CHECK(eq.find("__x._M_head;") == std::string::npos);
+    CHECK(eq.find("__y._M_head;") == std::string::npos);
+    CHECK(eq.find("key_type") == std::string::npos);
+    CHECK(eq.find("mapped_type") == std::string::npos);
+    CHECK(eq.find("T{}") == std::string::npos);
+    CHECK(eq.find("new ") == std::string::npos);
+    CHECK(eq.find("_Node(") == std::string::npos);
+    CHECK(eq.find("::operator new") == std::string::npos);
+    CHECK(eq.find("::operator delete") == std::string::npos);
+    CHECK(eq.find("_M_make") == std::string::npos);
+    CHECK(eq.find("_M_link") == std::string::npos);
+    CHECK(eq.find("_M_emplace_args") == std::string::npos);
+    CHECK(eq.find("operator[]") == std::string::npos);
+    CHECK(eq.find("at(") == std::string::npos);
+    CHECK(eq.find("erase") == std::string::npos);
+    CHECK(eq.find("contains") == std::string::npos);
+    CHECK(eq.find("try_emplace") == std::string::npos);
+    CHECK(eq.find("count") == std::string::npos);
+    CHECK(eq.find("empty(") == std::string::npos);
+    CHECK(eq.find("clear") == std::string::npos);
+    CHECK(eq.find("insert") == std::string::npos);
+    CHECK(eq.find("operator<") == std::string::npos);
+
+    const auto note_from = src.rfind("Container equality, not iterator equality.", eq_at);
+    REQUIRE(note_from != std::string::npos);
+    const std::string note = src.substr(note_from, eq_at - note_from);
+    CHECK(note.find("Two empty maps compare equal") != std::string::npos);
+    CHECK(note.find("does not dereference a node") != std::string::npos);
+    CHECK(note.find("does not read past the shorter map") != std::string::npos);
+    CHECK(note.find("link order, not key order") != std::string::npos);
+    CHECK(note.find("walked in key order") != std::string::npos);
+    CHECK(note.find("_M_key_next") != std::string::npos);
+    CHECK(note.find("position by position") != std::string::npos);
+    CHECK(note.find("mapped values are compared with ==") != std::string::npos);
+    CHECK(note.find("not by _Compare") != std::string::npos);
+    CHECK(note.find("== but not equivalent") != std::string::npos);
+    CHECK(note.find("inserted in a different") != std::string::npos);
+    CHECK(note.find("A mismatch returns false") != std::string::npos);
+
+    // The file comment keeps the whole operator> sentence.
+    CHECK(src.find("A non-empty map is greater than an empty map, and\n// that path does not load the empty map.") !=
+          std::string::npos);
+    CHECK(note.find("does not construct a new key") != std::string::npos);
+    CHECK(note.find("operator!= is not declared") != std::string::npos);
+    CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+
+    const std::string declared = slice_from(src, "Declared besides the above:", "Not declared:");
+    REQUIRE_FALSE(declared.empty());
+    CHECK(declared.find("operator==") != std::string::npos);
+    CHECK(declared.find("Container equality and") == std::string::npos);
+
+    CHECK(src.find("const _Node* _M_find(const key_type& __k) const noexcept {") != std::string::npos);
+    CHECK(src.find("mapped_type& operator[](const key_type& __k)") != std::string::npos);
+    CHECK(src.find("mapped_type& at(const key_type& __k)") != std::string::npos);
+    CHECK(src.find("bool contains(const key_type& __k) const { return _M_find(__k) != nullptr; }") !=
+          std::string::npos);
+    CHECK(src.find("size_type erase(const key_type& __k)") != std::string::npos);
+    CHECK(src.find("size_type size() const noexcept { return _M_size; }") != std::string::npos);
+    CHECK(src.find("bool empty() const noexcept { return _M_size == 0; }") != std::string::npos);
 }
