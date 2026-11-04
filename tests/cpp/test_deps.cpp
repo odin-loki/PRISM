@@ -134,7 +134,7 @@ const deps::Table& row(const deps::Manifest& m, const std::string& name) {
     throw;
 }
 
-const std::vector<std::string> kLinked = {"z3", "pcre2", "xsimd", "nlohmann_json", "doctest", "llama.cpp"};
+const std::vector<std::string> kLinked = {"z3", "pcre2", "nlohmann_json", "doctest"};
 const std::vector<std::string> kMined = {"AFLplusplus", "Frama-C", "FuSeBMC", "Fuzz4All", "cbmc",
                                          "coccinelle", "codeql", "cppcheck", "dafny", "esbmc",
                                          "infer", "klee", "rapidcheck", "semgrep", "strix"};
@@ -887,7 +887,8 @@ TEST_CASE("deps: CycloneDX 1.5 SBOM from the manifest") {
     for (auto& p : refs.at("linked:z3")["properties"])
         if (p["name"] == "prism:drift")
             drift = p["value"] == "D src/api/js/package-lock.json; D src/api/js/package.json; "
-                                  "M src/math/simplex/model_based_opt.cpp; M src/util/memory_manager.cpp";
+                                  "M src/math/simplex/model_based_opt.cpp; M src/util/memory_manager.cpp; "
+                                  "M src/util/scoped_timer.cpp";
     CHECK(drift);
     auto dep = bom["dependencies"][0];
     CHECK(dep["ref"] == "prism");
@@ -1068,6 +1069,8 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
     auto allowed = [&](std::string_view rel) -> bool {
         if (rel.starts_with("third_party/")) return true;
         if (rel == "tools/svcomp/prism.py") return true;
+        // CI bootstrap only (pinned cmake / LLVM fetch before any build exists).
+        if (rel == "scripts/fetch_llvm.py" || rel == "scripts/fetch_toolchain.py") return true;
         if (!k_python_engine_deleted) {
             for (const char* pre : {"prism/", "tests/", "scripts/", "tools/"})
                 if (rel.starts_with(pre)) return true;
@@ -1112,6 +1115,7 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
             if (!rel.starts_with("third_party/")) tracked_outside_vendor.push_back(rel);
         }
         std::sort(tracked_outside_vendor.begin(), tracked_outside_vendor.end());
-        CHECK(tracked_outside_vendor == std::vector<std::string>{"tools/svcomp/prism.py"});
+        CHECK(tracked_outside_vendor == std::vector<std::string>{"scripts/fetch_llvm.py", "scripts/fetch_toolchain.py",
+                                                             "tools/svcomp/prism.py"});
     }
 }

@@ -261,6 +261,46 @@ void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
     return 0;
 }
 
+
+/* C11 7.22.3.1 / C17 (DR 460): aligned_alloc. An alignment that is not a
+ * power of two is unsupported: NULL, no allocation (C17 wording). Alignment
+ * itself is not tracked by the PIR heap, so the result is a plain heap
+ * object of n bytes; freeing it with free() is correct. */
+void *aligned_alloc(size_t align, size_t n) {
+    if (align == 0 || (align & (align - 1)) != 0) return 0;
+    return malloc(n);
+}
+
+/* C23 7.24.3.4: free_sized. p is NULL or came from malloc/calloc/realloc
+ * with exactly `size` bytes requested; a different size is undefined. */
+void free_sized(void *p, size_t size) {
+    if (p) __prism_check(__prism_obj_size(p) == size ? 1 : 0, "FUNC-CONTRACT",
+                         "free_sized() size differs from the allocation size");
+    __prism_free(p, PRISM_HEAP);
+}
+
+/* C23 7.24.3.5: free_aligned_sized. Same size rule; the alignment must be
+ * the one passed to aligned_alloc (not tracked, so only checked to be a
+ * power of two). */
+void free_aligned_sized(void *p, size_t align, size_t size) {
+    if (p) {
+        __prism_check(align != 0 && (align & (align - 1)) == 0 ? 1 : 0, "FUNC-CONTRACT",
+                      "free_aligned_sized() alignment is not a power of two");
+        __prism_check(__prism_obj_size(p) == size ? 1 : 0, "FUNC-CONTRACT",
+                      "free_aligned_sized() size differs from the allocation size");
+    }
+    __prism_free(p, PRISM_HEAP);
+}
+
+/* C23 7.24.3.1 memalignment: 0 for NULL, else a power of two. The address
+ * is not modelled, so the value is any power of two (over-approximation). */
+size_t memalignment(const void *p) {
+    if (!p) return 0;
+    unsigned long long a = __VERIFIER_nondet_ulonglong();
+    __prism_assume(a != 0 && (a & (a - 1)) == 0);
+    return (size_t)a;
+}
+
 }  // extern "C"
 
 void *operator new(size_t n) {

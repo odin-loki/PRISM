@@ -64,10 +64,10 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(src.find("namespace std") != std::string::npos);
     CHECK(src.find("#include <map>") == std::string::npos);
     CHECK(src.find("#include <set>") == std::string::npos);
-    CHECK(src.find("#include <vector>") == std::string::npos);
+    CHECK(src.find("#include <vector>") != std::string::npos);  // extract()/replace() containers
     CHECK(src.find("#include <memory>") == std::string::npos);
-    CHECK(src.find("#include <initializer_list>") == std::string::npos);
-    CHECK(src.find("fail to compile") != std::string::npos);
+    CHECK(src.find("#include <initializer_list>") != std::string::npos);  // initializer_list constructors
+    CHECK(src.find("fails to compile") != std::string::npos);
     CHECK(src.find("pir falls back") != std::string::npos);
 
     // Both at() overloads. The miss throws (or is a check) and the only
@@ -121,7 +121,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(src.find("find, count, clear") == std::string::npos);
     // clear used to be listed with the names that are not declared.
     CHECK(src.find("iterators, find, clear,") == std::string::npos);
-    CHECK(src.find("iterators, find, swap,") != std::string::npos);
+    CHECK(src.find("Not declared: insert, insert_range, emplace, swap") != std::string::npos);
 
     // Lookup only. The const finder returns nullptr for a miss and does not
     // allocate, insert, or touch size. contains is that result as a bool.
@@ -243,7 +243,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
         "bool empty() const noexcept { return _M_size == 0; }";
     const auto emp_at = src.find(emp);
     REQUIRE(emp_at != std::string::npos);
-    const std::string emp_body = slice_from(src, "bool empty() const noexcept", "_GLIBCXX_END_NAMESPACE_VERSION");
+    const std::string emp_body = slice_from(src, "bool empty() const noexcept", "\n");
     REQUIRE_FALSE(emp_body.empty());
     CHECK(emp_body.find("return _M_size == 0") != std::string::npos);
     CHECK(emp_body.find("::operator new") == std::string::npos);
@@ -349,7 +349,7 @@ TEST_CASE("cxx flat_map model: missing at throws and erase frees the node") {
     CHECK(mclear.find("mapped_type{}") == std::string::npos);
     CHECK(mclear.find("mapped_type(") == std::string::npos);
 
-    const std::string omitted = slice_from(src, "Not stubbed:", "template takes Key");
+    const std::string omitted = slice_from(src, "Not declared:", "a use of an omitted name");
     REQUIRE_FALSE(omitted.empty());
     CHECK(omitted.find("empty") == std::string::npos);
     CHECK(omitted.find("clear") == std::string::npos);

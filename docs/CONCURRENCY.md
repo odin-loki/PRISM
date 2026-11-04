@@ -3,7 +3,8 @@
 Roadmap 2.6, "Threads and atomics". This is a separate stage that checks
 programs that create threads. It uses lazy sequentialisation, the Lazy-CSeq
 method, which bounds the number of context switches. Atomics are sequentially
-consistent (SC) for now; relaxed, acquire and release orders come later. A
+consistent (SC) unless a scalar atomic names a weaker order, which selects
+the C11 view model (section 6). A
 data race counts as a property violation.
 
 | | |
@@ -86,18 +87,35 @@ slot for `T0`. That allows up to `K·N` context switches.
 Not modelled. Each of these gives `NEEDS-HARNESS` with an `UNENCODED:`
 reason:
 
-- `memory_order_relaxed`, `acquire`, `release` and `acq_rel`, and
-  `syncscope`. The message names the order. For example, `relaxed.c` gives
-  "UNENCODED: memory_order_relaxed (SC only: relaxed/acquire/release atomics
-  are not encoded yet)".
+- `syncscope`. (Weaker orders on scalar globals are encoded by the C11 view
+  model, section 6. A weaker order on an atomic in the bounded memory
+  (arrays, structs, heap, address-taken globals) is still encoded as seq_cst
+  and recorded in `Program::weak_order`; a clean result there is withheld.)
 - Shared data that is not a scalar integer global: heap, arrays, structs,
   pointers, and mutexes that are not globals. These wait for the PIR memory
   model (roadmap 2.5). See "Memory model hook" below.
 - A thread argument that the thread entry uses, and a join result pointer.
-- A creation site inside a loop, or in a function called more than once
-  (dynamic thread sets), and threads created by threads.
-- `std::thread` and `std::jthread`, which lower through a virtual `_State`
-  object, and OpenMP.
+- A creation site inside a loop, or in a function called more than once, or
+  reached by several threads (dynamic thread sets). Threads created by
+  threads are encoded when each such site runs in one thread at most once
+  (nested_race.c).
+- libstdc++'s own `std::thread` / `std::jthread` (a virtual `_State` object),
+  and OpenMP. The stage lowers C++ units against the PRISM models with
+  `-D__PRISM_CONC_THREADS=1 -fignore-exceptions` (models/cxx/bits/prism_conc.h),
+  then runs `sroa,mem2reg`, so `std::thread`, `std::mutex`, `lock_guard`,
+  `unique_lock`, `condition_variable` and seq_cst `std::atomic` reach the
+  encoder as the pthread / `__atomic` calls above. A callable with captures or
+  arguments is a thread argument (UNENCODED); `joinable()` is always true.
+  This is the complete-within-K-rounds path for C++ threads (every thread has
+  its own saved pc, so a resumed thread can itself be preempted again). The
+  pir stage's in-model scheduler (bits/prism_sched.h) is still an
+  under-approximation.
+- Condition variables: a wait is "unlock and join the wait set; block until a
+  signal or broadcast on that variable after the release; lock". Every
+  signal wakes every waiter (POSIX allows the extra wake-ups), so a wait
+  that never returns, a lost wake-up, is CONC-DEADLOCK when every live thread
+  is blocked (lost_wakeup.c; condvar_ok.c is BOUNDED). Spurious wake-ups that
+  could rescue such a run are not counted.
 - Everything `pir::translate` does not encode, such as floating point, calls
   to unknown externals, and memory. Its own `UNENCODED:` reason is passed
   through, with the thread named.
@@ -107,7 +125,7 @@ reason:
 ### 1. Front end: the PIR one, plus visible-operation markers (`src/prism/conc/extract.cpp`)
 
 `pir::lower_to_ir` lowers the unit (clang `-O0`, then `mem2reg`,
-`lowerswitch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
+`lower-switch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
 parses it. `pir::translate` models the memory of one function
 (docs/PIR.md), not memory shared between threads. So the stage copies the
 module and rewrites every *visible* operation into a **marker**, an
@@ -170,7 +188,27 @@ earliest violation in the model is reported with its interleaving. That
 violation is then excluded and Z3 is asked again, up to `max_findings`.
 Z3 answering UNSAT gives `BOUNDED`.
 
-### 4. Memory model hook
+### 4. Bounded memory (shared aggregates)
+
+Shared globals that are arrays or structs of integers live in a bounded
+memory (`Program::objects`). Object `k` has addresses
+`((k + 1) << 32) | offset`, so objects never alias. The extractor rewrites a
+`getelementptr` on such an object (or on an address derived from one) into
+i64 arithmetic with the module's data layout, and a load or store through it
+into two markers: the head (`__prism.conc.k`, the address; the context-switch
+point) and the tail (`__prism.conc.ks`, the value read or written in the same
+step). The encoder keeps one Z3 array `M` from byte address to byte; an access of
+w bits reads or writes its ceil(w/8) bytes little-endian, so overlapping
+accesses of different widths agree. A scalar global loaded or stored at more
+than one type lives in this memory too (as an address-taken one does). The
+race check still compares start addresses (overlapping accesses that start
+at different bytes are not race-checked against each other). Every access
+is bounds-checked (`MEM-OOB-READ`/`MEM-OOB-WRITE`), and the race check
+compares addresses. Not yet: constant-expression GEP operands, pointers
+stored in memory or passed to calls, heap (`malloc`/`free`), non-global
+mutexes, thread arguments.
+
+### 5. Memory model hook
 
 Shared state is a vector of bit-vectors, `G[var]`, and the access rules are
 in `Enc::visible`. When the PIR memory model lands (roadmap 2.5), a `Load`,
@@ -312,3 +350,100 @@ through the stage, with defaults `K = 2` and unwind 4:
   `assume_abort_if_not`: PIR treats `abort` as a crash, not an assumption.
   This is PIR's policy, and a later row carries the property-specific
   finding.
+
+## 5. Weak memory (x86-TSO)
+
+`--memory-model tso` (Config::conc_tso, conc::Options::tso) checks x86-TSO
+instead of sequential consistency, for scalar globals and the bounded memory
+(arrays, structs, heap, escaping locals). Each thread has a FIFO store buffer
+of `--store-buffer k` entries (default 2; Options::tso_buffer). A plain store
+is appended (when the buffer is full the oldest entry commits first), the
+thread's own plain loads forward from the newest matching entry, any other
+visible operation of the thread (atomics, locks, fences, create, join,
+alloc/free) drains its buffer, a join drains the joined thread's buffer, and
+before every visible step each buffer may commit its oldest entry
+nondeterministically. A bounded k under-approximates TSO; litmus tests such
+as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding is per byte: each byte of a
+load comes from the newest buffered store that covers it, else from `M`.
+The race check of a buffered plain store runs when it commits (it becomes
+visible then), not when it is issued; loads are checked when issued. TSO and
+the C11 view model are exclusive: a program with a weaker C11 order run
+under `--memory-model tso` is NEEDS-HARNESS ("UNENCODED: --memory-model tso
+together with C11 weaker orders"); run it under the default model, whose
+C11 encoding already contains every TSO behaviour of a race-free program.
+
+## 6. C11 orders (view model)
+
+When a scalar global (including a one-field wrapper such as `std::atomic<int>`)
+has an atomic access with `relaxed`, `acquire`, `release` or `acq_rel`
+(Program::views), lazy.cpp runs a promise-free view machine in the style of
+the Promising semantics restricted to RC11 (no load buffering, as RC11
+forbids po;rf cycles):
+
+- each such location keeps one message per store-site execution plus its
+  initial message: symbolic distinct bv16 timestamps (the modification
+  order), value, and the view released with it;
+- a thread's view has one timestamp per location and one clock per thread;
+  a store takes a timestamp above its view, a load reads any written message
+  at or above it; acquire (or a later acquire fence) joins the message view,
+  release (or an earlier release fence) attaches the thread view, a relaxed
+  store carries the last release fence / release store to that location
+  (release sequences); an RMW reads message ts and writes ts + 1 and carries
+  the read view on; a failed compare-exchange is a load with the failure
+  order;
+- atomics in the bounded memory (arrays, structs, heap, address-taken or
+  mixed-width globals), when one of them has a weaker order: the view gets
+  one more entry, an array from address to timestamp (joined pointwise with
+  a lambda). Each memory atomic store / RMW site execution is a message
+  (address, timestamp, value, view); the plain contents of `M` are one more
+  message per address whose timestamp `Pts[a]` a plain store sets (above the
+  storing thread's view). Every load of the memory, plain or atomic, reads
+  one of the messages at its address at or above its view;
+- create, join, mutexes (by name or address) and condition variables
+  transfer views: a wait is unlock / block / re-lock, and the re-lock is an
+  ordinary lock, so it acquires the view of the last unlock (the signaller's,
+  when it held the mutex);
+- seq_cst fences: one SC view in the fences' total order (RC11 psc_F): a
+  seq_cst fence joins it into the thread view and stores the result back.
+  Store buffering with seq_cst fences between relaxed accesses is forbidden
+  (tests/conc/c11_sc_fence_sb.c);
+- race check, happens-before (epochs against the view clocks), for scalars
+  and the bounded memory: a non-atomic access races with any conflicting
+  access it is not ordered with, atomic or not (each thread's last atomic
+  read / write clock per location is kept); an atomic access races only with
+  non-atomic ones. Values of non-atomic locations stay SC.
+
+A failed compare-exchange is a load (flag marker "c") on both the scalar
+and the memory path.
+
+Approximations (each only adds behaviours, so clean results stand):
+seq_cst accesses (not fences) to a location that also has weaker accesses
+are acq_rel; RC11's psc constraints for SC accesses are not encoded (an
+operational encoding stronger than acq_rel would exceed RC11, e.g. the
+C++20 SC-access strengthening, and could drop behaviours). Locations with
+only seq_cst accesses stay SC. An atomic location in the memory is
+identified by its start address, so atomic accesses of different widths or
+overlapping starts to one location are distinct locations. --memory-model tso
+together with C11 weaker orders is refused as NEEDS-HARNESS ("UNENCODED:
+--memory-model tso together with C11 weaker orders"): TSO is a hardware model
+for SC-compiled programs, and a C11 program is checked against C11 alone.
+extract.cpp records the order of every atomic; the C++ `<atomic>` model
+passes it through and the stage folds it with sccp (only for sources naming
+a weaker order). extra["method"] names the model, extra["c11_locations"]
+counts the scalar locations.
+
+### Bounded memory, byte addressed
+
+M maps byte addresses to bytes (little-endian): an access of w bits reads or
+writes ceil(w/8) bytes from its address, so mixed-width and overlapping
+accesses agree; a scalar global accessed at two types lives in the memory.
+Under TSO a buffered store keeps its byte count, and a load takes each byte
+from the newest buffered store covering it (overlap forwarding), else M.
+Race checks and the adjacent-access check still key on the start address.
+
+### Mixed pointer call sites
+
+When a function's pointer parameter receives bounded-memory pointers at some
+call sites and other pointers at others, extract.cpp clones it
+(`name__prism_mem`) for the bounded-memory sites and rebuilds (up to three
+rounds), so each copy carries one pointer kind per parameter.

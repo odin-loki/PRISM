@@ -11,14 +11,15 @@ code base and says honestly what it could not check.
   If you find "Helix"/"helix"/"HELIX" anywhere outside `third_party/`, it is a
   leftover: rename it to PRISM (`tests/cpp/test_naming.cpp` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
-  `PRISM_GGUF`, `PRISM_MODEL`, `PRISM_LLAMA_SERVER`, `PRISM_NATIVE_DLL` (only
-  when `libprism_native` is built with `-DPRISM_NATIVE=ON`),
-  `PRISM_TOOLS_DIR`, AI: `PRISM_PROVER_SERVER`, `PRISM_PROVER_GGUF`,
-  `PRISM_PROOF_CACHE`, `PRISM_EMBED_SERVER`, `PRISM_TRIAGE`,
-  `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`, `PRISM_PREDICT_COLLECT`,
-  `PRISM_PREDICT_BUDGET`; certified mode: `PRISM_CERT_CACHE_MAX`,
-  `PRISM_CHECKER_MEM`, `PRISM_CERTIFY_BUDGET`; pir: `PRISM_FUNCTION_BUDGET`,
-  `PRISM_HOUDINI_BUDGET`).
+  `PRISM_TOOLS_DIR`, `PRISM_LLVM_BIN`; AI (FORGE mind, `.fpk` models):
+  `PRISM_FPK`, `PRISM_MODEL`, `PRISM_PROVER_FPK`, `PRISM_PROVER_MODEL`,
+  `PRISM_EMBED_FPK`, `PRISM_DEVICE`, `PRISM_PROOF_CACHE`, `PRISM_TRIAGE`,
+  `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`; certified mode:
+  `PRISM_CERT_CACHE_MAX`, `PRISM_CHECKER_MEM`, `PRISM_CERTIFY_BUDGET`; pir:
+  `PRISM_FUNCTION_BUDGET`, `PRISM_HOUDINI_BUDGET`, `PRISM_PIR_*`; memory:
+  `PRISM_MEM_*`). The full list with one line each is `prism::env_vars()`
+  (`src/prism/config.cpp`); `tests/cpp/test_env_registry.cpp` fails on a
+  `PRISM_*` getenv that is not in it.
   There are no `HELIX_*` fallbacks.
 - Output directory is `prism-out/` (GUI: `prism-out-gui/`).
 
@@ -75,7 +76,7 @@ Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build          # first build compiles vendored Z3 (slow)
 ./build/prism_tests
 ```
@@ -90,8 +91,9 @@ keep `build-wsl/` there — it is slow and flaky. **WSL:** sync then build on ex
 safety target). Stricter warnings: `-DPRISM_WERROR=ON` (Clang/GCC). Root `.clang-tidy`
 for engine sources.
 
-`third_party/` holds only the six linked libraries (z3, pcre2, xsimd,
-nlohmann, doctest, llama.cpp; ~140 MB), pinned in `third_party/MANIFEST.toml`.
+`third_party/` holds only the four linked libraries (z3, pcre2,
+nlohmann, doctest; ~50 MB), pinned in `third_party/MANIFEST.toml`, plus
+the clang/LLVM pin `third_party/llvm/PIN.toml`.
 Never edit them (`prism-deps linked` checks their tree digest), never
 glob them from CMake. External tools are not vendored:
 `prism-deps tool NAME` builds the pinned commit into

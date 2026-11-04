@@ -1,3 +1,4 @@
+#include "prism/log.hpp"
 #include "fetch.hpp"
 
 #include "proctree.hpp"
@@ -163,7 +164,7 @@ fs::path fetch_juliet(const fs::path& dest, const std::vector<std::string>& flow
         return e ? -1 : static_cast<long long>(s);
     };
     if (!fs::exists(zpath, ec) || size_of(zpath) != src.size) {
-        std::cerr << "downloading " << src.url << "\n";
+        prism::log::plain(prism::log::cat("downloading ", src.url, "\n"));
         if (which("curl").empty()) throw std::runtime_error("curl: NOTRUN (not on PATH; needed to download Juliet)");
         fs::path tmp = zpath;
         tmp.replace_extension(".part");
@@ -239,7 +240,7 @@ fs::path fetch_juliet(const fs::path& dest, const std::vector<std::string>& flow
         throw;
     }
     fs::remove_all(tmp, ec);
-    std::cerr << "juliet: " << written << " task files under " << tasks_root.string() << "\n";
+    prism::log::plain(prism::log::cat("juliet: ", written, " task files under ", tasks_root.string(), "\n"));
     return tasks_root;
 }
 
@@ -420,7 +421,7 @@ fs::path fetch_esbmc(const fs::path& dest, bool thorough) {
     std::vector<std::string> sparse = {"sparse-checkout", "set"};
     sparse.insert(sparse.end(), ESBMC_DIRS.begin(), ESBMC_DIRS.end());
     if (head != ESBMC_COMMIT) {
-        std::cerr << "fetching " << ESBMC_REPO << " @ " << ESBMC_COMMIT << "\n";
+        prism::log::plain(prism::log::cat("fetching ", ESBMC_REPO, " @ ", ESBMC_COMMIT, "\n"));
         git({"fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ESBMC_COMMIT});
         git(sparse);
         git({"checkout", "-q", "--detach", "FETCH_HEAD"});
@@ -452,13 +453,13 @@ fs::path fetch_esbmc(const fs::path& dest, bool thorough) {
             ++written;
         }
     }
-    std::cerr << "esbmc-cpp: " << written << " task files under " << tasks_root.string() << "\n";
+    prism::log::plain(prism::log::cat("esbmc-cpp: ", written, " task files under ", tasks_root.string(), "\n"));
     std::stable_sort(skip_order.begin(), skip_order.end(),
                      [&](const std::string& a, const std::string& b) { return skipped[a] > skipped[b]; });
     for (const auto& why : skip_order) {
         char buf[32];
         std::snprintf(buf, sizeof buf, "%5d", skipped[why]);
-        std::cerr << "  skipped " << buf << ": " << why << "\n";
+        prism::log::plain(prism::log::cat("  skipped ", buf, ": ", why, "\n"));
     }
     return tasks_root;
 }
@@ -506,8 +507,7 @@ int curate_esbmc(const fs::path& fetched, const fs::path& dest, int per_verdict,
         per_cat[{t.category, exp}]++;
         if (kept[true] >= per_verdict && kept[false] >= per_verdict) break;
     }
-    std::cerr << "esbmc-cpp subset: " << kept[true] << " true, " << kept[false] << " false under " << dest.string()
-              << "\n";
+    prism::log::plain(prism::log::cat("esbmc-cpp subset: ", kept[true], " true, ", kept[false], " false under ", dest.string(), "\n"));
     return kept[true] + kept[false];
 }
 

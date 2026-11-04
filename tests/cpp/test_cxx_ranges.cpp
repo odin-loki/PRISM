@@ -289,18 +289,23 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(src.find("cdata(_Tp*") == std::string::npos);
     CHECK(src.find("distance(_Tp*") == std::string::npos);
     CHECK(src.find("(_Tp*") == std::string::npos);
+    // The access CPOs end where the views::take / views::drop part starts
+    // (pointer subranges over contiguous ranges, which use data()).
+    const std::string cpos = src.substr(0, src.find("struct _Prism_ptr_elem;"));
+    REQUIRE(cpos.size() < src.size());
     // begin, end, and data return _Tp*. cbegin, cend, and cdata return
     // const _Tp*, and that spelling also contains the substring _Tp*.
-    CHECK(count_of(src, "_Tp*") == 6);
-    CHECK(count_of(src, "const _Tp*") == 3);
+    CHECK(count_of(cpos, "_Tp*") == 6);
+    CHECK(count_of(cpos, "const _Tp*") == 3);
     for (const char* inc : {"memory", "vector", "string", "iterator", "algorithm", "span"}) {
         CAPTURE(inc);
         CHECK(src.find(std::string("#include <") + inc + ">") == std::string::npos);
     }
-    for (const char* name : {"sort(", "find(", "view_interface", "namespace views"}) {
+    for (const char* name : {"sort(", "find(", "view_interface"}) {
         CAPTURE(name);
         CHECK(src.find(name) == std::string::npos);
     }
+    CHECK(src.find("namespace views {") != std::string::npos);  // take / drop only
 
     const auto trap = body_of(src, "void _Prism_ssize_does_not_fit()");
     REQUIRE_FALSE(trap.empty());
@@ -414,7 +419,7 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
 
     CHECK(count_of(src, "constexpr _Tp* data(_Tp (&__a)[_Nm]) noexcept") == 1);
     CHECK(count_of(src, "constexpr auto data(_Arr& __a) noexcept") == 1);
-    CHECK(src.find(".data()") == std::string::npos);
+    CHECK(src.substr(0, src.find("struct _Prism_ptr_elem;")).find(".data()") == std::string::npos);
 
     const auto arr_cbegin = body_of(src, "constexpr const _Tp* cbegin(_Tp (&__a)[_Nm]) noexcept");
     REQUIRE_FALSE(arr_cbegin.empty());

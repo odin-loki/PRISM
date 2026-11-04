@@ -8,7 +8,7 @@
 //
 // On the next run, a stored function the current run does not prove is
 // re-checked with its stored artefacts (Houdini + loop-cut induction for
-// invariants, the contracts engine for contracts, the drafted harness BMC):
+// invariants, the contracts engine for contracts, the drafted harness check):
 //   * still checks -> the proof is re-established from the store (the checker
 //     decided, so the verdict is the checker's);
 //   * does not check -> PROOF-REGRESSION (UNKNOWN, extra.regression = true)
@@ -19,6 +19,7 @@
 //     specification, so it stays HYPOTHESIS until a human approves it.
 // Detection needs no model.
 
+#include "prism/settings.hpp"
 #include "ai_internal.hpp"
 
 #include "prism/ai_proof.hpp"
@@ -113,7 +114,7 @@ void save_proof_store(const fs::path& path, const std::vector<ProofEntry>& entri
 
 fs::path persistent_store_path(const fs::path& root) {
     fs::path dir;
-    if (const char* v = std::getenv("PRISM_PROOF_CACHE"); v && *v) dir = v;
+    if (auto v = settings::proof_cache().get(); !v.empty()) dir = v;
     else if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) dir = fs::path(x) / "prism" / "proofs";
     else if (const char* h = std::getenv("HOME"); h && *h) dir = fs::path(h) / ".cache" / "prism" / "proofs";
     else return {};
@@ -211,7 +212,7 @@ Finding recheck_artefact(const FunctionInfo& fn, const ProofArtefact& a, int unw
     }
     if (!a.assumptions.empty()) {
         std::string refused;
-        auto d = drafted_harness_bmc(fn, unwind, &refused);
+        auto d = drafted_harness_check(fn, unwind, &refused);
         if (!d) return row(laws::UNKNOWN, fn, "", "harness can no longer be drafted: " + refused, laws::STRENGTH_PROVES);
         auto f = *d;
         f.stage = "review";
@@ -222,8 +223,7 @@ Finding recheck_artefact(const FunctionInfo& fn, const ProofArtefact& a, int unw
         }
         return f;
     }
-    auto recs = run_bmc({fn}, unwind);
-    auto f = recs.empty() ? row(laws::ERROR, fn, "", "bmc returned nothing", laws::STRENGTH_PROVES) : recs[0];
+    auto f = check_function_pir(fn, unwind);
     f.stage = "review";
     return f;
 }
@@ -316,7 +316,7 @@ std::optional<Finding> repair_contract(const FunctionInfo& fn, const ProofArtefa
     AuditRecord rec;
     rec.function = fn.name;
     rec.file = fn.file;
-    rec.checker = "contracts engine (bmc)";
+    rec.checker = "contracts engine (pir)";
     auto reply = ask(backend, req, rec);
     auto v = reply.error.empty() ? validate_contract(reply.text, vars) : Validated{};
     rec.output_valid = v.ok;
@@ -353,7 +353,7 @@ std::optional<Finding> repair_contract(const FunctionInfo& fn, const ProofArtefa
 }
 
 const std::set<std::string>& proving_stages() {
-    static const std::set<std::string> s{"bmc", "contracts", "harness", "wp", "pir", "review"};
+    static const std::set<std::string> s{"contracts", "wp", "pir", "review"};
     return s;
 }
 
@@ -363,7 +363,7 @@ std::vector<Finding> run_proof_regression(const std::vector<FunctionInfo>& funct
                                           const std::vector<StageResult>& stages, const Config& cfg) {
     std::vector<Finding> out;
     auto store_path = cfg.out / "proof_store.json";
-    auto persistent = std::getenv("PRISM_PROOF_CACHE") ? persistent_store_path(cfg.root) : fs::path{};
+    auto persistent = settings::proof_cache().is_set() ? persistent_store_path(cfg.root) : fs::path{};
     std::error_code ec;
     auto previous = load_proof_store(store_path);
     if (previous.empty() && !persistent.empty() && fs::exists(persistent, ec)) previous = load_proof_store(persistent);

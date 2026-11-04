@@ -50,7 +50,7 @@ TEST_CASE("cxx system_error: value 5 stays 5 and the header has no Success") {
           std::string::npos);
     CHECK(src.find("int value() const noexcept { return _M_value; }") != std::string::npos);
     CHECK(src.find("return 0") == std::string::npos);
-    CHECK(src.find("error_code() noexcept : _M_value(0), _M_cat(0)") != std::string::npos);
+    CHECK(src.find("error_code() noexcept : _M_value(0), _M_cat(2)") != std::string::npos);
     CHECK(src.find("explicit operator bool() const noexcept { return value() != 0; }") != std::string::npos);
 }
 

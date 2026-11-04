@@ -1,6 +1,7 @@
 // MANIFEST.toml: validation, component lookup, linked-tree digests and
 // version markers.
 #include "prism/deps.hpp"
+#include "prism/settings.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -131,7 +132,7 @@ fs::path tools_dir() {
 #else
     if (const char* u = std::getenv("HOME")) home = u;
 #endif
-    if (const char* env = std::getenv("PRISM_TOOLS_DIR"); env && *env) {
+    if (const char* env = prism::settings::cstr(prism::settings::tools_dir()); env && *env) {
         std::string v(env);
         if (v == "~") return home;
         if (v.rfind("~/", 0) == 0) return home / v.substr(2);
@@ -151,7 +152,7 @@ bool ignored_file(const std::string& name) {
     auto ends = [&](std::string_view suf) {
         return name.size() >= suf.size() && name.compare(name.size() - suf.size(), suf.size(), suf) == 0;
     };
-    return ends(".gguf") || ends(".pyc");
+    return ends(".gguf") || ends(".fpk") || ends(".pyc");
 }
 
 // os.walk(followlinks=False): a symlink to a directory is neither walked

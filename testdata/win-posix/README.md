@@ -1,5 +1,6 @@
 Windows-only stand-ins for the POSIX headers the astlint fixtures include
-(`<unistd.h>`, `<strings.h>`, `<pthread.h>`). The UCRT has none of them, so on
+(`<unistd.h>`, `<strings.h>`, `<pthread.h>`, `<pwd.h>`, `<sys/mman.h>`,
+`<sys/socket.h>`). The UCRT has none of them, so on
 Windows tests/cpp/test_astlint.cpp copies these next to the fixture (the AST
 front end puts the fixture's directory on the include path). On Linux and
 macOS the fixtures parse against the real system headers and these files are

@@ -1,3 +1,4 @@
+#include <forward_list>
 void fwd_bad(void) {
     std::forward_list<int> l;
     int x=l.front();

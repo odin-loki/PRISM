@@ -1,3 +1,5 @@
+#include <chrono>
+#include <random>
 void chrono_seed_bad(void) {
     std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
 }

@@ -1,4 +1,4 @@
-// NEEDS-HARNESS: relaxed atomics are not encoded yet (SC only).
+// BOUNDED: relaxed atomics run in the C11 view model (no violation: the flag is atomic).
 #include <pthread.h>
 #include <stdatomic.h>
 

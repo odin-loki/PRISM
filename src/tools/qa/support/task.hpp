@@ -23,12 +23,9 @@ using i128 = prism::i128;
 
 // ---- fixed tables
 extern const std::set<std::string> PROOF;             // PROVED, PROVED-UNBOUNDED, PROVED-ASSUMING, PROVED-CERTIFIED
-extern const std::vector<std::string> BASE_STAGES;    // inventory, classify, bmc, harness
-extern const std::vector<std::string> VERDICT_STAGES; // bmc, harness, pir, conc
-// Stages that only speak about part of the functions (harness: POINTER
-// functions under `// requires:`). A function they do not mention is out of
-// scope, not silently skipped; bmc and pir must report every function.
-extern const std::set<std::string> SCOPED_STAGES;
+extern const std::vector<std::string> BASE_STAGES;    // inventory, classify
+extern const std::vector<std::string> VERDICT_STAGES; // pir, conc
+// pir must report every function; one it does not mention is a miss.
 // conc is scored only on the thread programs of testdata/conformance/concurrency,
 // and those only by conc.
 extern const std::map<std::string, std::set<std::string>> STAGE_TASK_ORIGINS;
@@ -61,6 +58,9 @@ struct Task {
     std::map<std::string, std::vector<i128>> witness;
     std::map<std::string, std::string> expect_status;
     std::set<std::string> sanitizer_blind;
+    // function -> why the native self-check toolchain cannot build it (C23/C++26
+    // features clang or glibc lack); self-check reports it skipped with the reason
+    std::map<std::string, std::string> native_unsupported;
     std::string data_model;
     std::string std;  // whole-program tasks (esbmc-cpp): language standard of the native self-check
     bool deterministic = false;  // whole program whose one run is its only behaviour

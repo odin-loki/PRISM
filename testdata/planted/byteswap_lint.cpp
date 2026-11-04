@@ -1,3 +1,4 @@
+#include <bit>
 void bswap_bad(unsigned n) {
     int a[4];
     a[std::byteswap(n)]=1;

@@ -22,6 +22,8 @@
 // k-induction step is answered by Z3 in-process.
 
 #include "prism/laws.hpp"
+#include "prism/clock.hpp"
+#include "prism/settings.hpp"
 #include "prism/membudget.hpp"
 #include "prism/pir.hpp"
 
@@ -581,14 +583,14 @@ struct Encoding {
         exit_reach.assign(nodes.size(), c.bool_val(false));
         vals.assign(nodes.size(), {});
         for (int id : order) {
-            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
             encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
             if (tr_on && membudget::rss_mb() > r0 + 100)
                 std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
                              static_cast<unsigned long long>(membudget::rss_mb() - r0));
         }
-        if (std::getenv("PRISM_MEM_TRACE"))
+        if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu\n", nodes.size(),
                          static_cast<unsigned long long>(membudget::rss_mb()));
     }
@@ -957,7 +959,7 @@ struct Encoding {
             }
             std::optional<z3::expr> acc;
             std::optional<uint64_t> prov;
-            bool prov_ok = mem && w == 64;
+            bool prov_ok = mem && w == ptr_w();
             for (auto it = guards.rbegin(); it != guards.rend(); ++it) {
                 int pb = nodes.at(static_cast<std::size_t>(it->second)).block;
                 const Arg* src = nullptr;
@@ -995,7 +997,7 @@ struct Encoding {
                 CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init);
                 if (!fpL.all) {
                     std::vector<z3::expr> ptrs;
-                    for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, 64), id));
+                    for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, ptr_w()), id));
                     CL.havocked += mem->havoc_pointed(reach.at(static_cast<std::size_t>(id)), ptrs, fpL.keep_init);
                 }
             }
@@ -1016,7 +1018,7 @@ struct Encoding {
             if (membudget::over_budget_sampled(16))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while encoding");
             const auto& s = bl.stmts[si];
-            static const bool tr_on = std::getenv("PRISM_MEM_TRACE") != nullptr;
+            static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t rss0 = tr_on ? membudget::rss_mb() : 0;
             struct TraceBig {
                 bool on; uint64_t r0; int kind, op; std::size_t si; int id;
@@ -1297,6 +1299,9 @@ void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const 
     }
     v.extra["nondet"] = join_s(vals, ", ");
     v.extra["nondet_loc"] = join_s(locs, ", ");
+    // DWARF line:col of the call: the physical position in the file (macro
+    // expansions report their expansion site), usable as witness waypoints
+    v.extra["nondet_loc_kind"] = "physical";
 }
 
 // One verification condition answered by the solver library.
@@ -1325,7 +1330,7 @@ struct VcBook {
 };
 
 double detail_now_s() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return (static_cast<double>(prism::clock::now_ns()) * 1e-9);
 }
 
 // A budget's seconds as written in messages and extra.function_budget_s
@@ -1519,7 +1524,7 @@ static bool z3_over_soft_cap() {
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
     if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
-        if (std::getenv("PRISM_MEM_TRACE"))
+        if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] %lld guard rss=%llu z3=%llu\n",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
                          static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(Z3_get_estimated_alloc_size() >> 20));
@@ -1537,23 +1542,9 @@ static void cap_z3_memory_once() {
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
         if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
-        // Graceful stop under the hard limit: past memory_high_watermark_mb
-        // (Z3's own heap count) the SMT search returns unknown, reason
-        // "memout" (smt_context resource checks), instead of the allocator
-        // throwing. Half the budget: the rest of the process (IR, lowered
-        // units) holds up to ~1 GB at 2000 MB (conformance/libc-models went
-        // 1.0 -> 2.3 GB inside one in-process check). A memout is UNKNOWN,
-        // never a proof. PRISM_Z3_WATERMARK_PCT overrides the share (0 = off).
-        if (mb > 0) {
-            // Default off: the watermark is process-wide and sticky. On
-            // conformance/libc-models the live Z3 heap reached the mark
-            // (1002 of 1000 MB) and stayed there, so every later check
-            // returned memout at once and pir stalled for over an hour on
-            // the fallback engines. Opt in with PRISM_Z3_WATERMARK_PCT.
-            uint64_t pct = 0;
-            if (const char* e = std::getenv("PRISM_Z3_WATERMARK_PCT"); e && *e) pct = std::strtoull(e, nullptr, 10);
-            if (pct > 0) z3::set_param("memory_high_watermark_mb", static_cast<int>(std::max<uint64_t>(64, mb * pct / 100)));
-        }
+        // No memory_high_watermark_mb: it is process-wide and sticky (on
+        // conformance/libc-models the live Z3 heap reached the mark and every
+        // later check returned memout at once), so it stays off.
         // A Z3 call can ignore Z3_interrupt (a portfolio job's check on
         // priority_queue_contracts.cpp grew 2.1 -> 3.6 GB over a 2.4 GB trip
         // point for ~20 s). Lowering memory_max_size under it was tried and
@@ -1561,20 +1552,30 @@ static void cap_z3_memory_once() {
         // fresh rerun process (PRISM_PIR_ONLY) leave at once; the parent
         // records "fresh process gave no verdict (rc 75)" and the function
         // stays UNKNOWN. In the main process the 1.5x hard limit stays.
-        if (mb > 0 && std::getenv("PRISM_PIR_ONLY"))
+        if (mb > 0 && prism::settings::cstr(prism::settings::pir_only()))
             membudget::set_stuck_hook([] { std::_Exit(75); });
     });
 }
 
 static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in);
 Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
+    PtrModelScope pms(fn.ptr);
     // this function's contexts and encoder state are gone when it returns:
     // hand the heap back so the next function's RSS check starts clean
     struct Trim {
         ~Trim() { membudget::release_free_memory(); }
     } trim;
     const uint64_t trips0 = membudget::trips();
-    Verdict mv = check_function_mem(fn, opt_in);
+    std::optional<Function> filtered;
+    if (!opt_in.only_props.empty()) {
+        filtered = fn;
+        for (auto& b : filtered->blocks)
+            std::erase_if(b.stmts, [&](const Stmt& s) {
+                return s.kind == Stmt::Check &&
+                       std::find(opt_in.only_props.begin(), opt_in.only_props.end(), s.prop) == opt_in.only_props.end();
+            });
+    }
+    Verdict mv = check_function_mem(filtered ? *filtered : fn, opt_in);
     if (membudget::trips() != trips0 && mv.status != std::string(laws::PROVED) &&
         mv.status != std::string(laws::FAILED)) {
         // a query was interrupted by the memory watchdog: say so (Law 7)
@@ -1587,7 +1588,7 @@ Verdict check_function(const Function& fn, const CheckOptions& opt_in) {
 static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in) {
     constexpr int kFirstUnwind = 4;
     cap_z3_memory_once();
-    if (std::getenv("PRISM_PIR_MEM_TRACE"))
+    if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "pir mem: %s start, z3 estimate %llu MB, cap %llu MB, rss %ld MB\n", fn.name.c_str(),
                      static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
                      static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
@@ -1613,9 +1614,11 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     if (opt.function_budget_s > 0 && !opt.function_budget)
         opt.function_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
     if (opt.certified || opt.unwind <= kFirstUnwind + 1) return check_function_at(fn, opt);
+    std::size_t n_loops = 0;
     {
         auto g = analyze(fn);
         if (!g.unencoded.empty() || g.loops.empty()) return check_function_at(fn, opt);
+        n_loops = g.loops.size();
     }
     CheckOptions first = opt;
     first.unwind = kFirstUnwind;
@@ -1654,12 +1657,47 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
         return v;
     }
     full.extra["unwind_first_tried"] = std::to_string(kFirstUnwind) + " (" + v.status + ")";
+    // Deepening: a single loop still BOUNDED at the requested unwind is
+    // re-checked at twice the unwind, up to PRISM_PIR_DEEPEN_MAX (default 64,
+    // 0 = off), while the function budget lasts. arr_loop_false writes a[10]
+    // on the 11th iteration, past unwind 8: BOUNDED there, FAILED at 16.
+    // Only a FAILED (a path that exists at any larger unwind) or a PROVED
+    // with every loop closed replaces the answer; anything else keeps it.
+    static const int deepen_env = [] {
+        const char* e = std::getenv("PRISM_PIR_DEEPEN_MAX");
+        return (e && *e) ? std::atoi(e) : 64;
+    }();
+    const int deepen_max = opt.deepen_max >= 0 ? opt.deepen_max : deepen_env;
+    if (full.status == std::string(laws::BOUNDED) && n_loops == 1 && deepen_max > opt.unwind) {
+        for (int u = opt.unwind * 2; u <= deepen_max; u *= 2) {
+            if (opt.function_budget && opt.function_budget->left() < opt.timeout_s) break;
+            if (z3_exhausted()) break;
+            CheckOptions d = opt;
+            d.unwind = u;
+            Verdict dv = check_function_at(fn, d);
+            auto dc = dv.extra.find("unwind_closed");
+            const bool dproved = dv.status == std::string(laws::PROVED) && dc != dv.extra.end() && dc->second == "true";
+            if (dproved || dv.status == std::string(laws::FAILED)) {
+                dv.extra["unwind_requested"] = std::to_string(opt.unwind);
+                dv.extra["unwind_deepened_to"] = std::to_string(u);
+                return dv;
+            }
+            if (dv.status != std::string(laws::BOUNDED)) break;
+            full.extra["unwind_deepened_to"] = std::to_string(u) + " (BOUNDED)";
+        }
+    }
     return full;
 }
 
 namespace {
 
-Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
+Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
+    PtrModelScope pms(fn.ptr);
+    // Lean certificates are LP64-only (PrismSem Memory.lean: BitVec 64
+    // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
+    CheckOptions opt_ilp = opt_in;
+    if (fn.ptr.w != 64) opt_ilp.certified = false;
+    const CheckOptions& opt = opt_ilp;
     const EncodeOptions& eo = opt.encode;
     Verdict v;
     const int unwind = std::max(1, opt.unwind);
@@ -1715,7 +1753,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
     VcBook book;
     auto finish = [&](Verdict& r) -> Verdict {
         r.extra["solver"] = book.summary();
-        r.extra["certified_mode"] = opt.certified ? "on" : "off";
+        r.extra["certified_mode"] = opt.certified ? "on" : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)" : "off";
         return r;
     };
     // Loop invariants (houdini.inc): tried when k-induction does not
@@ -1767,10 +1805,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         // final query included, runs past it (docs/PIR.md "Solving")
         const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
         if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
-        const auto th = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch th;
         Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
         auto h = hd.run();
-        const double hs = std::chrono::duration<double>(std::chrono::steady_clock::now() - th).count();
+        const double hs = th.elapsed_s();
         if (opt.houdini_budget) opt.houdini_budget->spend(hs);
         {
             char buf[32];
@@ -1779,6 +1817,11 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
         }
         r.extra["houdini_rounds"] = std::to_string(h.rounds);
         r.extra["houdini_candidates"] = std::to_string(h.candidates);
+        if (h.final_s >= 0) {
+            char fb[32];
+            std::snprintf(fb, sizeof fb, "%.2f", h.final_s);
+            r.extra["houdini_final_budget"] = fb;
+        }
         if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
         if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
         if (!h.proved) {
@@ -1789,6 +1832,16 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt) {
             std::size_t kept = 0;
             for (auto& l : h.invariants) kept += l.size();
             if (kept > 0) r.extra["invariants_inductive"] = std::to_string(kept);  // proved, but not enough
+            // $PRISM_PIR_DUMP_INVARIANTS=1: the survivors of a search that
+            // did not prove (diagnostic only; never a proof claim)
+            if (kept > 0) {
+                const char* d = std::getenv("PRISM_PIR_DUMP_INVARIANTS");
+                if (d && *d && std::string(d) != "0") {
+                    nlohmann::json inv = nlohmann::json::array();
+                    for (auto& l : h.invariants) inv.push_back(l);
+                    r.extra["pir_invariants_surviving"] = inv.dump();
+                }
+            }
             return false;
         }
         std::size_t n = 0;
@@ -2446,6 +2499,7 @@ std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
 }
 
 std::vector<Vc> pir_vcs(const Function& fn, int unwind, const EncodeOptions& eo) {
+    PtrModelScope pms(fn.ptr);
     std::vector<Vc> out;
     auto g = analyze(fn);
     if (!g.unencoded.empty()) return out;

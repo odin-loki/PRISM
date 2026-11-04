@@ -49,7 +49,7 @@
 // PRISM_HOUDINI_TRACE=1: one stderr line per Houdini goal query (diagnostics only)
 static bool houdini_trace() {
     static const bool on = [] {
-        const char* e = std::getenv("PRISM_HOUDINI_TRACE");
+        const char* e = prism::settings::cstr(prism::settings::houdini_trace());
         return e && *e && *e != '0';
     }();
     return on;
@@ -103,6 +103,7 @@ struct HoudiniOut {
     std::string footprint;
     int prechecks = 0;      // optimistic final queries (all candidates alive assumed)
     std::string cache;      // "", "hit (proof re-checked)", "hit (no proof)", "stored"
+    double final_s = -1;    // seconds given to the final query at the fixpoint (-1: not asked)
     bool undecided = false; // some answer came from the time limit or an unknown
 };
 
@@ -149,7 +150,9 @@ std::vector<char> pointer_vars(const Function& fn) {
 
 class Houdini {
 public:
-    // timeout_s: the solver time per query; the whole search gets 6 times that
+    // timeout_s: the solver time per query. With a function budget (hard_s
+    // >= 0) the whole search gets what is left of it (search_s, the run's
+    // Houdini budget, caps it further); without one, 6 times timeout_s
     // (search_s < 6 * timeout_s when the run's budget has less left).
     // hard_s >= 0: a hard cap (what is left of the function budget) that no
     // query passes, the final query and the per-query minimums included; the
@@ -160,7 +163,22 @@ public:
         : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
           deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), hard_s_(hard_s),
           env_(std::move(env)) {
-        if (hard_s_ >= 0) deadline_ = std::min(deadline_, hard_s_);
+        if (hard_s_ >= 0) {
+            deadline_ = search_s >= 0 ? std::min(search_s, hard_s_) : hard_s_;
+            // a share of the hard cap is kept for the final query so the
+            // search cannot starve it ($PRISM_HOUDINI_FINAL_RESERVE, a
+            // fraction in [0, 0.9]; default 0.3)
+            deadline_ = std::min(deadline_, (1.0 - final_reserve()) * hard_s_);
+        }
+    }
+    static double final_reserve() {
+        double r = 0.3;
+        if (const char* v = std::getenv("PRISM_HOUDINI_FINAL_RESERVE")) {
+            char* end = nullptr;
+            const double x = std::strtod(v, &end);
+            if (end != v && *end == 0 && x >= 0 && x <= 0.9) r = x;
+        }
+        return r;
     }
 
     HoudiniOut run();
@@ -178,7 +196,7 @@ private:
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
     std::vector<std::string> cands_for_key_;
     int query_ = 0;
-    std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
+    prism::clock::Stopwatch t0_;
     std::vector<char> ptr_;
     std::vector<const Stmt*> def_;
     std::vector<char> signed_use_;
@@ -192,12 +210,12 @@ private:
             mem_out_ = true;
             return 0;
         }
-        return deadline_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+        return deadline_ - t0_.elapsed_s();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
     double hard_left() const {
         if (hard_s_ < 0) return 1e18;
-        return hard_s_ - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+        return hard_s_ - t0_.elapsed_s();
     }
     // a query's Z3 timeout in ms: t seconds, never past the hard cap (1 ms at least)
     unsigned query_ms(double t) const { return static_cast<unsigned>(std::max(0.001, std::min(t, hard_left())) * 1000); }
@@ -544,7 +562,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
                                 std::set<int> lv;
                                 leaves(L, d->args[1], lv);
                                 for (int x : lv)
-                                    if (fn_.vars[static_cast<std::size_t>(x)].width == 64) offs.insert(x);
+                                    if (fn_.vars[static_cast<std::size_t>(x)].width == ptr_w()) offs.insert(x);
                             }
                             if (!(d->ptr_arith || d->op == Op::Copy)) break;
                             v = d->args[0].var;
@@ -566,10 +584,10 @@ void Houdini::generate(std::vector<InvCand>& out) {
             cs.insert(0);
             cs.insert(1);
             for (auto c : cs) bs.push_back({InvTerm::Const, -1, c & wmask(w), w});
-            if (w == 64)
+            if (w == ptr_w())
                 for (int p : bases_r)
                     bs.push_back({InvTerm::Size, p, 0, w});
-            if (w == 64)
+            if (w == ptr_w())
                 for (int p : bases_w)
                     if (!bases_r.count(p)) bs.push_back({InvTerm::Size, p, 0, w});
             bs.push_back({InvTerm::Entry, i, 0, w});
@@ -636,6 +654,20 @@ void Houdini::generate(std::vector<InvCand>& out) {
                         c.sext = sg;
                         out.push_back(c);
                     }
+                // Unit-bounded accumulation (kindmem_alloc_true: s += q[1] with
+                // q[1] == 1 per iteration): a - entry(a) <= / >= b - entry(b).
+                // The Eq form is Lin's; only the inequalities are new.
+                for (Op r : {Op::Sle, Op::Sge}) {
+                    InvCand c;
+                    c.kind = InvCand::Scale;
+                    c.loop = L;
+                    c.rel = r;
+                    c.a = a;
+                    c.b = b;
+                    c.mask = 1;
+                    c.sext = sg;
+                    out.push_back(c);
+                }
                 std::size_t nv = 0;
                 for (int v : scope) {
                     if (fn_.vars[static_cast<std::size_t>(v)].width != w || nv >= kArithScope) continue;
@@ -673,12 +705,12 @@ void Houdini::generate(std::vector<InvCand>& out) {
         // pointer below the index into an accessed object, at the value
         for (int r : phis) {
             int rv = phi_var(r);
-            if (fn_.vars[static_cast<std::size_t>(rv)].width != 64 || !ptr_[static_cast<std::size_t>(rv)]) continue;
+            if (fn_.vars[static_cast<std::size_t>(rv)].width != ptr_w() || !ptr_[static_cast<std::size_t>(rv)]) continue;
             for (int i : phis) {
                 int iv = phi_var(i);
                 if (i == r || ptr_[static_cast<std::size_t>(iv)] || fn_.vars[static_cast<std::size_t>(iv)].width < 8) continue;
                 std::set<bool> exts;
-                if (fn_.vars[static_cast<std::size_t>(iv)].width == 64) exts.insert(false);
+                if (fn_.vars[static_cast<std::size_t>(iv)].width == ptr_w()) exts.insert(false);
                 else exts = ext[iv];
                 for (bool sx : exts)
                     for (int p : bases_r) {
@@ -705,7 +737,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
             unsigned w = fn_.vars[static_cast<std::size_t>(pv)].width;
             if (w < 8) continue;
             std::set<bool> exts;
-            if (w == 64) exts.insert(false);
+            if (w == ptr_w()) exts.insert(false);
             else exts = ext[pv];
             for (bool sx : exts)
                 for (unsigned eb : ebs)
@@ -844,7 +876,7 @@ HoudiniOut Houdini::run() {
     for (int attempt = 0;; ++attempt) {
         z3::context c;
         // the in-process Houdini checks bypass the portfolio's z3-worker
-        // child (PRISM_Z3_CHILD_NODES): stop them at the budget watchdog's
+        // child (z3_worker_argv): stop them at the budget watchdog's
         // trip; an interrupted check is unknown, never unsat
         membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         Encoding e(c, fn_, g_, 1, eo_);
@@ -903,11 +935,13 @@ HoudiniOut Houdini::run() {
         }
 
     auto& cands = out.cands;
-    const z3::expr x0 = c.bv_const("inv!x", 64);
+    const z3::expr x0 = c.bv_const("inv!x", ptr_w());
     auto ext64 = [&](const z3::expr& v, bool sx) {
         unsigned w = v.get_sort().bv_size();
-        if (w >= 64) return v;
-        return sx ? z3::sext(v, 64 - w) : z3::zext(v, 64 - w);
+        const unsigned pw = ptr_w();
+        if (w == pw) return v;
+        if (w > pw) return v.extract(pw - 1, 0);  // a candidate only; admitted when proved
+        return sx ? z3::sext(v, pw - w) : z3::zext(v, pw - w);
     };
     // index terms at which the universal templates are assumed
     std::vector<z3::expr> T{x0};
@@ -934,12 +968,12 @@ HoudiniOut Houdini::run() {
         auto& CL = e.cut_loops[static_cast<std::size_t>(cand.loop)];
         if (CL.node < 0) continue;
         try {
-            z3::expr off = e.lookup(Arg::v(cand.off, 64), CL.node);
-            if (!off.is_bv() || off.get_sort().bv_size() != 64) continue;
+            z3::expr off = e.lookup(Arg::v(cand.off, ptr_w()), CL.node);
+            if (!off.is_bv() || off.get_sort().bv_size() != ptr_w()) continue;
             for (auto& pe : e.params) {
                 unsigned w = pe.get_sort().bv_size();
-                if (w < 8 || w > 64) continue;
-                addT((w == 64 ? pe : z3::zext(pe, 64 - w)) - off);
+                if (w < 8 || w > ptr_w()) continue;
+                addT((w == ptr_w() ? pe : z3::zext(pe, ptr_w() - w)) - off);
             }
         } catch (const EncodeFail&) {
             continue;
@@ -956,7 +990,7 @@ HoudiniOut Houdini::run() {
             case InvTerm::Scope: return e.lookup(Arg::v(t.idx, t.w), node);
             case InvTerm::Const: return e.bv(t.c, t.w);
             case InvTerm::Entry: return e.cut_loops[static_cast<std::size_t>(L)].entry[static_cast<std::size_t>(t.idx)];
-            case InvTerm::Size: return e.M().size(e.lookup(Arg::v(t.idx, 64), node));
+            case InvTerm::Size: return e.M().size(e.lookup(Arg::v(t.idx, ptr_w()), node));
         }
         return e.bv(0, 1);
     };
@@ -1022,11 +1056,11 @@ HoudiniOut Houdini::run() {
         }
         if (k.kind == InvCand::PtrIn || k.kind == InvCand::PtrAt) {
             auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
-            auto null = r == e.bv(0, 64);
+            auto null = r == e.bv(0, ptr_w());
             if (k.kind == InvCand::PtrIn) {
-                auto p = e.lookup(Arg::v(k.p, 64), node);
+                auto p = e.lookup(Arg::v(k.p, ptr_w()), node);
                 auto idx = ext64((*st.phis)[static_cast<std::size_t>(k.ip)], k.sext);
-                return null || (r.extract(63, kObjShift) == p.extract(63, kObjShift) && z3::uge(r, p) && z3::ult(r - p, idx));
+                return null || (r.extract(63, obj_shift()) == p.extract(63, obj_shift()) && z3::uge(r, p) && z3::ult(r - p, idx));
             }
             auto v = e.lookup(Arg::v(k.v.idx, k.v.w), node);
             if (k.v.w > 8) v = v.extract(7, 0);
@@ -1039,14 +1073,14 @@ HoudiniOut Houdini::run() {
         if (k.kind == InvCand::MemScopeAt && k.sum) in = z3::ule(x, idx);
         if (k.kind == InvCand::MemFrame) {
             z3::expr hi = ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext);
-            if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, 64), node);
+            if (k.off >= 0) hi = hi + e.lookup(Arg::v(k.off, ptr_w()), node);
             in = z3::ult(x, hi);
         }
         if (k.lo_entry) in = in && z3::ule(ext64(CL.entry[static_cast<std::size_t>(k.ip)], k.sext), x);
-        auto scale = k.eb == 1 ? x : x * e.bv(k.eb, 64);
+        auto scale = k.eb == 1 ? x : x * e.bv(k.eb, ptr_w());
         auto ptr = [&](int p, int off) {
-            z3::expr a = e.lookup(Arg::v(p, 64), node);
-            if (off >= 0) a = a + e.lookup(Arg::v(off, 64), node);
+            z3::expr a = e.lookup(Arg::v(p, ptr_w()), node);
+            if (off >= 0) a = a + e.lookup(Arg::v(off, ptr_w()), node);
             return a + scale;
         };
         auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb); };
@@ -1057,9 +1091,9 @@ HoudiniOut Houdini::run() {
             case InvCand::MemInit: body = ld(k.p, k.off).uninit == e.bv(0, 1); break;
             case InvCand::MemConst: body = ld(k.p, -1).val == e.bv(k.v.c, 8 * k.eb); break;
             case InvCand::MemScopeAt: {
-                auto sz = e.M().size(e.lookup(Arg::v(k.p, 64), node));
+                auto sz = e.M().size(e.lookup(Arg::v(k.p, ptr_w()), node));
                 z3::expr at = scale;
-                if (k.off >= 0) at = e.lookup(Arg::v(k.off, 64), node) + scale;
+                if (k.off >= 0) at = e.lookup(Arg::v(k.off, ptr_w()), node) + scale;
                 body = z3::ult(at, sz);
                 break;
             }
@@ -1074,8 +1108,8 @@ HoudiniOut Houdini::run() {
                 if (k.v.w > 8) v = v.extract(7, 0);
                 else if (k.v.w < 8) v = z3::zext(v, 8 - k.v.w);
                 auto r = (*st.phis)[static_cast<std::size_t>(k.rp)];
-                auto p = e.lookup(Arg::v(k.p, 64), node);
-                body = z3::implies(ld(k.p, -1).val == v, r != e.bv(0, 64) && z3::ule(x, r - p));
+                auto p = e.lookup(Arg::v(k.p, ptr_w()), node);
+                body = z3::implies(ld(k.p, -1).val == v, r != e.bv(0, ptr_w()) && z3::ule(x, r - p));
                 break;
             }
             case InvCand::MemNeC: {
@@ -1217,7 +1251,7 @@ HoudiniOut Houdini::run() {
                 z3::params p(c);
                 p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
                 s.set(p);
-                const auto tq0 = std::chrono::steady_clock::now();
+                const prism::clock::Stopwatch tq0;
                 auto r = s.check(as);
                 std::optional<z3::model> qm;
                 if (r == z3::sat) qm = s.get_model();
@@ -1227,7 +1261,7 @@ HoudiniOut Houdini::run() {
                 if (houdini_trace())
                     std::fprintf(stderr, "houdini q%d loop %d goals %zu -> %s %.2fs\n", qid, L, live.size(),
                                  r == z3::unsat ? "unsat" : r == z3::sat ? "sat" : "unknown",
-                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - tq0).count());
+                                 tq0.elapsed_s());
                 if (houdini_trace() && live.size() == 1 && r != z3::unsat)
                     std::fprintf(stderr, "houdini   goal: %s\n", text(cands[live[0]]).c_str());
                 if (r == z3::unsat) return;
@@ -1332,11 +1366,9 @@ HoudiniOut Houdini::run() {
         // split: the final query (search solver); else an optimistic one
         z3::solver& sf = split ? s : opt_solver();
         if (split) add_instances(s, added_final);
-        z3::expr_vector all_sel(c);
-        selectors([](std::size_t) { return true; }, all_sel);
-        const auto tf = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch tf;
         auto fleft = [&] {
-            return budget - std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+            return budget - tf.elapsed_s();
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
@@ -1358,8 +1390,11 @@ HoudiniOut Houdini::run() {
                                                    : std::min(per_query_, fleft());
             p.set("timeout", query_ms(std::max(1.0, t)));
             sf.set(p);
+            // only the invariants of loops whose header is encoded before
+            // some property of the group (a property encoded earlier cannot
+            // use them); assuming fewer candidates is only weaker
             z3::expr_vector as(c);
-            for (auto x : all_sel) as.push_back(x);
+            selectors([&](std::size_t L) { return e.cut_loops[L].props_before < hi; }, as);
             as.push_back(act);
             auto r = sf.check(as);
             if (r == z3::unsat) return 0;
@@ -1472,7 +1507,11 @@ HoudiniOut Houdini::run() {
     if (unsat_with && *unsat_with == alive_set()) return finish_out(true);
     // the final query keeps a minimum of its own (the run's Houdini budget
     // does not cut it), but never runs past the function budget
-    const double final_budget = std::min(std::max(3 * per_query_, left()), hard_left());
+    // with a hard cap the final query gets all of what is left of it (the
+    // search stopped at its deadline, short of the cap by the reserve)
+    const double final_budget =
+        hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, left()), hard_left());
+    out.final_s = final_budget;
     // the optimistic solver is not asked again: hand its memory back before
     // the final query (nested loops: both together crossed the budget)
     sopt.reset();

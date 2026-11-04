@@ -73,6 +73,8 @@ theorem lMem_lift (R : SRegs) (r : Res World) :
 theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
     SLX (sSInst ω R t i) (lSInst ω ⟨lift R, false⟩ t i) := by
   cases i with
+  | lpad _ _ _ => simp only [sSInst, lSInst]; rfl
+  | insv _ _ _ _ _ _ => simp only [sSInst, lSInst]; rfl
   | i x =>
     have h := inst_lift R x
     simp only [sSInst, lSInst]
@@ -121,17 +123,17 @@ theorem sinst_liftX (ω : Nat → Nat) (R : SRegs) (t : World) (i : SInst) :
       rw [hs] at h; simp only [OpRel] at h
       rcases h with h | h <;> rw [h] <;> exact .inl rfl
   | store w v p al => exact store_liftX ω R t w v p al
-  | gep d inb base ix =>
+  | gep d inb nuw base ix =>
     simp only [sSInst, lSInst, lower_lift]
     have e : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
-        (gepVal t.mem inb b ix vs).bind fun r => Res.ok (R.set d r, t)) =
-        ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs).bind
+        (gepValN t.mem inb nuw b ix vs).bind fun r => Res.ok (R.set d r, t)) =
+        ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepValN t.mem inb nuw b ix vs).bind
           (fun r => Res.ok (R.set d r, t)) := by
       cases sOpnd R 64 base <;> simp only [Res.bind]
       rename_i b
       cases sIdxVals R ix <;> simp only [Res.bind]
     rw [e]
-    cases hg : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepVal t.mem inb b ix vs) with
+    cases hg : ((sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs => gepValN t.mem inb nuw b ix vs) with
     | ok r => simp [Res.bind, SLX, lift_set]
     | ub => exact .inr (.inr ⟨_, t, rfl, rfl⟩)
     | stuck => rfl
@@ -240,6 +242,8 @@ theorem lMem_mono {S S' : LSt} {t' : World} {r : Res World}
 theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
     (h : lSInst ω S t i = .ok (S', t')) (hc : S.c = true) : S'.c = true := by
   cases i with
+  | lpad _ _ _ => simp [lSInst] at h
+  | insv _ _ _ _ _ _ => simp [lSInst] at h
   | i x =>
     simp only [lSInst] at h
     cases hl : lInst S x with
@@ -272,7 +276,7 @@ theorem lSInst_mono {ω : Nat → Nat} {S S' : LSt} {t t' : World} {i : SInst}
       · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; simp [hc]
     all_goals cases h
   | store w v p al => exact lStoreR_mono h hc
-  | gep d inb base ix =>
+  | gep d inb nuw base ix =>
     simp only [lSInst] at h
     split at h
     · simp only [Res.ok.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, _⟩ := h; exact hc
@@ -404,7 +408,10 @@ theorem enter_lift (fr : Frame) (B : XBlock) : SLE (sEnter fr B) (lEnter (liftFr
       | some d =>
         cases fr.pend with
         | none => rfl
-        | some v => simp [SLE, lift_set]
+        | some v =>
+          cases c.pw with
+          | none => simp [SLE, setRet, lSetRet, lift_set]
+          | some _ => simp [SLE, setRet, lSetRet, lift_set]
 
 theorem lEnter_mono {fr : LFrame} {B : XBlock} {S : LSt} (h : lEnter fr B true = .ok S) : S.c = true := by
   unfold lEnter at h
@@ -504,6 +511,12 @@ theorem retFree_lift (F : XFunc) (R : SRegs) (c : Frame) (cs : List Frame) (v : 
   | ub => exact .inl rfl
   | stuck => rfl
 
+theorem retFree_lift' (F : XFunc) (R : SRegs) (rest : List Frame) (v : Option Nat) (t : World) :
+    SLStep (retFree F R rest v t) (lRetFree F (lift R) (rest.map liftFr) v t false) := by
+  cases rest with
+  | nil => rfl
+  | cons c cs => exact retFree_lift F R c cs v t
+
 theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t : World)
     (hc : S.c = true) : (lEnd M fr rest B S t).badish := by
   unfold lEnd
@@ -537,12 +550,27 @@ theorem lEnd_mono (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S 
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · rw [hc]; exact lRetFree_bad _ _ _ _ _
     · split
+      · split
+        · split
+          · split
+            · rw [hc, Bool.true_or, Bool.true_or]
+              exact lstep_bad _ _ (fun b0 => by
+                split
+                · exact .inl rfl
+                · exact lstep_bad _ _ (fun b1 => by
+                    split
+                    · exact .inl rfl
+                    · exact lRetFree_bad _ _ _ _ _))
+            all_goals first | exact .inl rfl | exact .inr (.inl rfl)
+          all_goals first | exact .inl rfl | exact .inr (.inl rfl)
+        · exact .inr (.inl rfl)
+      split
       · simp only [hc, Bool.true_or]
         split
         · exact lstep_bad _ _ (fun hit => by
             split
             · exact .inl rfl
-            · exact lRetTo_bad _ _ _)
+            · exact lRetFree_bad _ _ _ _ _)
         · exact lRetFree_bad _ _ _ _ _
       all_goals first | exact .inl rfl | exact .inr (.inl rfl)
     · exact .inl rfl
@@ -630,27 +658,74 @@ theorem end_lift (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : S
         | cons c cs => exact retFree_lift _ _ c cs none t
       | some o =>
         simp only
+        cases hpr : fr.F.pret with
+        | some pt =>
+          obtain ⟨w0, w1, p0, p1⟩ := pt
+          simp only
+          cases o with
+          | reg x =>
+            simp only
+            have h0 := opnd_lift R w0 (.reg (pairReg x 0))
+            have h1 := opnd_lift R w1 (.reg (pairReg x 1))
+            cases hs0 : sOpnd R w0 (.reg (pairReg x 0)) with
+            | ok v0 =>
+              rw [hs0] at h0; simp only [OpRel] at h0
+              simp only [Res.step, h0]
+              cases hs1 : sOpnd R w1 (.reg (pairReg x 1)) with
+              | ok v1 =>
+                rw [hs1] at h1; simp only [OpRel] at h1
+                simp only [h1, lower_lift, Bool.or_false]
+                cases escBad R fr.F p0 v0 with
+                | ok b0 =>
+                  cases b0 with
+                  | true => exact .inl rfl
+                  | false =>
+                    simp only [Res.lstep, Bool.false_eq_true, ite_false]
+                    cases escBad R fr.F p1 v1 with
+                    | ok b1 =>
+                      cases b1 with
+                      | true => exact .inl rfl
+                      | false =>
+                        simp only [Res.lstep, Bool.false_eq_true, ite_false]
+                        rw [show (rest.map liftFr).isEmpty = rest.isEmpty by cases rest <;> rfl]
+                        exact retFree_lift' _ _ rest _ t
+                    | ub => exact .inl rfl
+                    | stuck => rfl
+                | ub => exact .inl rfl
+                | stuck => rfl
+              | stuck => rw [hs1] at h1; simp only [OpRel] at h1; simp [Res.step, h1, SLStep]
+              | ub =>
+                rw [hs1] at h1; simp only [OpRel] at h1
+                rcases h1 with h1 | h1 <;> simp [Res.step, h1, SLStep]
+            | stuck => rw [hs0] at h0; simp only [OpRel] at h0; simp [Res.step, h0, SLStep]
+            | ub =>
+              rw [hs0] at h0; simp only [OpRel] at h0
+              rcases h0 with h0 | h0 <;> simp [Res.step, h0, SLStep]
+          | const _ => rfl
+          | poison => rfl
+        | none =>
+        simp only
         have h := opnd_lift R fr.F.retw o
         cases hs : sOpnd R fr.F.retw o with
         | ok v =>
           rw [hs] at h; simp only [OpRel] at h
           simp only [Res.step, h, Bool.or_false]
-          cases rest with
-          | nil =>
-            simp only [List.map_nil, lower_lift, List.isEmpty_nil, Bool.true_and]
-            cases hcnd : fr.F.retPtr with
-            | true =>
-              cases escHit R v fr.F.escNames with
-              | ok hit =>
-                cases hb : (hit && ptrObj (v % 2 ^ 64) != 0) with
-                | true => simp only [Res.step, Res.lstep, hb]; exact .inl rfl
-                | false => simp only [Res.step, Res.lstep, hb]; rfl
-              | ub => exact .inl rfl
-              | stuck => rfl
-            | false => rfl
-          | cons c cs =>
-            simp only [List.map_cons, List.isEmpty_cons, Bool.false_and, Bool.false_eq_true, ite_false]
-            exact retFree_lift _ _ c cs (some v) t
+          simp only [lower_lift]
+          cases hcnd : fr.F.retPtr with
+          | true =>
+            simp only [ite_true]
+            cases escHit R v fr.F.escNames with
+            | ok hit =>
+              cases hb : (hit && ptrObj (v % 2 ^ 64) != 0) with
+              | true => simp only [Res.step, Res.lstep, hb]; exact .inl rfl
+              | false =>
+                simp only [Res.step, Res.lstep, hb, Bool.false_eq_true, ite_false]
+                exact retFree_lift' _ _ rest (some v) t
+            | ub => exact .inl rfl
+            | stuck => rfl
+          | false =>
+            simp only [Bool.false_eq_true, ite_false]
+            exact retFree_lift' _ _ rest (some v) t
         | stuck => rw [hs] at h; simp only [OpRel] at h; simp [Res.step, h, SLStep]
         | ub =>
           rw [hs] at h; simp only [OpRel] at h

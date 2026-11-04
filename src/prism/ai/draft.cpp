@@ -13,6 +13,7 @@
 
 #include "ai_internal.hpp"
 
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
@@ -189,7 +190,7 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
                        "proof of absence (see the gaps).",
                        {}};
             for (auto& s : report.stages)
-                if (s.status != laws::NOTRUN && (s.name == "bmc" || s.name == "pir" || s.name == "fuzz" || s.name == "sanitize"))
+                if (s.status != laws::NOTRUN && (s.name == "pir" || s.name == "fuzz" || s.name == "sanitize"))
                     none.links.push_back("stage:" + s.name);
             defects.claims.push_back(none);
         }
@@ -232,7 +233,7 @@ Draft draft_template(const RunReport& report, const std::string& kind, const std
         if (proofs.claims.empty()) {
             Claim c{"No proof verdict was reached in this run.", {}};
             for (auto& s : report.stages)
-                if (s.name == "bmc" || s.name == "pir") c.links.push_back("stage:" + s.name);
+                if (s.name == "pir") c.links.push_back("stage:" + s.name);
             proofs.claims.push_back(c);
         }
     }
@@ -500,17 +501,17 @@ int draft_main(int argc, char** argv) {
             return 0;
         } else {
             // An option this command does not know is an error, never ignored.
-            std::cerr << "prism draft: error: unrecognized arguments: " << a << "\n";
+            prism::log::error("draft", "unrecognized arguments: " + std::string(a));
             return 2;
         }
     }
     if (kind != "report" && kind != "assurance") {
-        std::cerr << "--kind expects report|assurance\n";
+        prism::log::error("draft", "--kind expects report|assurance");
         return 2;
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR draft: cannot read " << report_path.string() << "\n";
+        prism::log::error("draft", "cannot read " + report_path.string());
         return 2;
     }
     if (proofs.empty()) {

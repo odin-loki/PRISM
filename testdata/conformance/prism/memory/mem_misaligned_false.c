@@ -3,5 +3,6 @@
 #include <string.h>
 int mem_misaligned_false(void) {
     _Alignas(8) char buf[8] = {0};
-    return *(int *)(buf + 1);
+    char *volatile q = buf + 1;  /* not folded: the alignment check stays */
+    return *(int *)q;
 }

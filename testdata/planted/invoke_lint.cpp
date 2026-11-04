@@ -1,3 +1,4 @@
+#include <functional>
 void invoke_bad(void) {
     std::function<void()> f;
     std::invoke(f);

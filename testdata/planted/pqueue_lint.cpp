@@ -1,3 +1,4 @@
+#include <queue>
 void pqueue_bad(void) {
     std::priority_queue<int> pq;
     pq.top();

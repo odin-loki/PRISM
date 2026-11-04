@@ -1,3 +1,4 @@
+#include <memory>
 int toaddr_bad(void) {
     int a[4] = {0};
     auto *p = std::to_address(a);

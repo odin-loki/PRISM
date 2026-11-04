@@ -101,7 +101,10 @@ std::vector<Tok> lex(std::string_view s) {
             out.push_back(std::move(t));
             continue;
         }
-        if (std::isdigit(static_cast<unsigned char>(c)) ||
+        // LLVM 23 floating-point literal: f0x<IEEE bits of the type>
+        const bool fhex = c == 'f' && i + 3 < s.size() && s[i + 1] == '0' && s[i + 2] == 'x' &&
+                          std::isxdigit(static_cast<unsigned char>(s[i + 3]));
+        if (fhex || std::isdigit(static_cast<unsigned char>(c)) ||
             (c == '-' && i + 1 < s.size() && std::isdigit(static_cast<unsigned char>(s[i + 1])))) {
             Tok t;
             t.kind = Tok::Num;
@@ -169,6 +172,11 @@ std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
         if (w != 16) return std::nullopt;
         return hex(s.substr(3));
     }
+    if (s.starts_with("f0x")) {  // LLVM 23: the type's own IEEE bits
+        auto h = s.substr(3);
+        if (h.size() > w / 4) return std::nullopt;
+        return hex(h);
+    }
     uint64_t dbits = 0;
     if (s.starts_with("0x")) {
         if (s.size() > 2 && !std::isxdigit(static_cast<unsigned char>(s[2])))
@@ -181,6 +189,15 @@ std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
         char* end = nullptr;
         double d = std::strtod(t.c_str(), &end);
         if (end != t.c_str() + t.size()) return std::nullopt;
+        // LLVM 23 prints a float constant in decimal when the decimal
+        // rounds back to it ("float 1.000000e-10"), and its parser rounds a
+        // decimal to the type (round to nearest even), as here.
+        if (w == 32) {
+            const float f = static_cast<float>(d);
+            uint32_t fb = 0;
+            std::memcpy(&fb, &f, 4);
+            return fb;
+        }
         std::memcpy(&dbits, &d, 8);
     }
     if (w == 64) return dbits;
@@ -197,6 +214,8 @@ const std::unordered_set<std::string>& param_attr_words() {
         "align",     "dereferenceable", "dereferenceable_or_null", "byval", "byref",
         "sret",      "inalloca",  "preallocated", "elementtype", "range", "nofpclass",
         "captures",  "initializes", "alignstack",
+        // LLVM 20-23 additions (no semantics PRISM relies on; never trusted):
+        "dead_on_return",
     };
     return k;
 }
@@ -447,7 +466,15 @@ struct P {
         v.kind = Value::ConstExpr;
         v.ce_op = op;
         v.text = op;
-        while (peek().kind == Tok::Word) v.ce_flags.push_back(next().text);
+        while (peek().kind == Tok::Word) {
+            v.ce_flags.push_back(next().text);
+            // LLVM 19+: `getelementptr inbounds inrange(lo, hi) (T, ...)`; the
+            // range only bounds later derived accesses, so it is dropped.
+            if (v.ce_flags.back() == "inrange" && is_punct('(')) {
+                v.ce_flags.pop_back();
+                skip_group();
+            }
+        }
         if (!is_punct('(')) throw ParseError("constant expression without operands");
         ++i;
         if (op == "getelementptr") {
@@ -884,7 +911,11 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         return in;
     }
     if (op == "load") {
-        if (p.is_word("atomic") || p.is_word("volatile")) {
+        // volatile: the program's own object, read and written in program
+        // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
+        // like any other. The flag is kept. atomic stays unencoded.
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        if (p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;
@@ -896,7 +927,11 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         return in;
     }
     if (op == "store") {
-        if (p.is_word("atomic") || p.is_word("volatile")) {
+        // volatile: the program's own object, read and written in program
+        // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
+        // like any other. The flag is kept. atomic stays unencoded.
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        if (p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;
@@ -1153,6 +1188,10 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
     for (auto raw : body) {
         auto line = trim(raw);
         if (line.empty() || line[0] == ';') continue;
+        // Debug records (LLVM 19+ "#dbg_value(...)", "#dbg_declare(...)",
+        // "#dbg_assign(...)", "#dbg_label(...)") replace the llvm.dbg.*
+        // intrinsics. They carry no semantics: dropped, like the intrinsics.
+        if (line.starts_with("#dbg_")) continue;
         if (!lpad.empty()) {
             if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
                 lpad += " " + line;

@@ -1,3 +1,4 @@
+#include <atomic>
 void aflag_bad(void) {
     std::atomic_flag f;
     f.test_and_set();

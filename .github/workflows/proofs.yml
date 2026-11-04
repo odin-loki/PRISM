@@ -27,6 +27,7 @@ jobs:
             proofs
             testdata/fixtures
             src/tools
+            include/prism
           sparse-checkout-cone-mode: true
 
       - name: Install elan

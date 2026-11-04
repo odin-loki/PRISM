@@ -1,0 +1,9 @@
+format_version: 1
+input_files: cxx_condvar_false.cpp
+language: C++
+property: nodeadlock
+timeout: 600  # item 4 (prism-llvm), not yet run
+expected:
+  cxx_condvar_false: false
+witness:
+  cxx_condvar_false: [1]

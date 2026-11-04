@@ -90,8 +90,8 @@ TEST_CASE("pir refinement: binop flags are modelled or explicitly refused") {
         flags.insert((*it)[1].str());
     for (auto& fl : flags) {
         if (fl == "inbounds") {
-            CHECK(export_cpp.find(R"(if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};)") !=
-                  std::string::npos);
+            CHECK(export_cpp.find(R"(if (fl != "inbounds" && fl != "nuw" &&)") != std::string::npos);
+            CHECK(export_cpp.find(R"(throw Unsupported{"getelementptr " + fl};)") != std::string::npos);
             CHECK(xlean.find("if inb then") != std::string::npos);
             continue;
         }

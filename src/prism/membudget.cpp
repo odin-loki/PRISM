@@ -1,6 +1,12 @@
+#include "prism/clock.hpp"
+#include <optional>
+#include "prism/settings.hpp"
 #include <filesystem>
 #include <cstring>
+#include "prism/log.hpp"
 #include "prism/membudget.hpp"
+
+#include <forge/os/sysinfo.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -28,26 +34,9 @@ std::atomic<bool> g_low_trip{false};
 std::string g_source;
 std::once_flag g_once;
 
-uint64_t read_u64_file(const char* path) {
-    std::ifstream in(path);
-    std::string s;
-    if (!(in >> s) || s == "max") return 0;
-    try {
-        return std::stoull(s);
-    } catch (...) {
-        return 0;
-    }
-}
-
-uint64_t meminfo_mb(const char* key) {
-    std::ifstream in("/proc/meminfo");
-    std::string k;
-    uint64_t v = 0;
-    std::string unit;
-    while (in >> k >> v >> unit)
-        if (k == key) return v / 1024;
-    return 0;
-}
+// Machine memory through FORGE's OS wrapper (forge::os::memory: /proc/meminfo
+// and the cgroup v2/v1 limit on Linux, sysctl on Apple/FreeBSD, Win32 elsewhere).
+uint64_t available_mb() { return forge::os::memory().available / (1024 * 1024); }
 
 void compute() {
 #ifdef __linux__
@@ -68,7 +57,6 @@ void compute() {
             return;
         }
     }
-#ifdef __linux__
     std::string src;
     auto take = [&](uint64_t v, const char* what) {
         if (v == 0) return;
@@ -77,21 +65,17 @@ void compute() {
             src = what;
         }
     };
-    // cgroup v2, then v1 (a value near 2^63 means no limit)
-    uint64_t cg = read_u64_file("/sys/fs/cgroup/memory.max");
-    uint64_t cur = read_u64_file("/sys/fs/cgroup/memory.current");
-    if (cg == 0) {
-        cg = read_u64_file("/sys/fs/cgroup/memory/memory.limit_in_bytes");
-        cur = read_u64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes");
-    }
+    const forge::os::memory_info mi = forge::os::memory();
+    const uint64_t cg = mi.cgroup_limit, cur = mi.cgroup_usage;
     if (cg > 0 && cg < (uint64_t{1} << 60)) take((cg - std::min(cg, cur)) / (1024 * 1024), "cgroup memory limit");
-    take(meminfo_mb("MemAvailable:"), "MemAvailable");
+    take(mi.available / (1024 * 1024), "MemAvailable");
+#ifdef __linux__
     struct rlimit rl{};
     if (::getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
         take(static_cast<uint64_t>(rl.rlim_cur) / (1024 * 1024) / 2, "RLIMIT_AS/2");
-    mb = mb * 3 / 4;
-    g_source = "75% of " + src;
 #endif
+    mb = mb * 3 / 4;
+    if (!src.empty()) g_source = "75% of " + src;
     g_budget.store(mb);
 }
 
@@ -118,18 +102,7 @@ uint64_t per_job_mb(int jobs) {
     return jobs > 1 ? b / static_cast<uint64_t>(jobs) : b;
 }
 
-uint64_t rss_mb() {
-#ifdef __linux__
-    long pages = 0, rss = 0;
-    if (FILE* f = std::fopen("/proc/self/statm", "r")) {
-        if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0;
-        std::fclose(f);
-    }
-    return static_cast<uint64_t>(rss) * static_cast<uint64_t>(::sysconf(_SC_PAGE_SIZE)) / (1024 * 1024);
-#else
-    return 0;
-#endif
-}
+uint64_t rss_mb() { return forge::os::current_rss() / (1024 * 1024); }
 
 #ifdef __linux__
 namespace {
@@ -200,17 +173,12 @@ uint64_t tree_rss_mb() {
 }
 
 bool system_low() {
-#ifdef __linux__
     static const uint64_t reserve = [] {
-        const char* e = std::getenv("PRISM_MEM_RESERVE_MB");
-        return e && *e ? std::strtoull(e, nullptr, 10) : uint64_t{1500};
+        return static_cast<uint64_t>(std::max<std::int64_t>(0, settings::mem_reserve_mb().get()));
     }();
     if (reserve == 0) return false;
-    const uint64_t avail = meminfo_mb("MemAvailable:");
+    const uint64_t avail = available_mb();
     return avail > 0 && avail < reserve;
-#else
-    return false;
-#endif
 }
 
 bool over_budget() {
@@ -229,12 +197,12 @@ bool over_budget() {
     // 3379 MB): trip at 70% so the stop latency still lands under budget.
     static std::mutex mu;
     static uint64_t last_rss = 0;
-    static std::chrono::steady_clock::time_point last_t{};
+    static uint64_t last_t = 0;  // clock::now_ns()
     static bool fast = false;
     {
         std::lock_guard<std::mutex> lk(mu);
-        const auto now = std::chrono::steady_clock::now();
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_t).count();
+        const uint64_t now = clock::now_ns();
+        const auto ms = static_cast<long long>((now - last_t) / 1000000);
         if (ms >= 50) {
             fast = last_rss > 0 && rss > last_rss && (rss - last_rss) * 1000 / static_cast<uint64_t>(ms) >= 1024;
             last_rss = rss;
@@ -260,47 +228,46 @@ std::mutex g_hmu;
 std::function<void()> g_stuck_hook;
 
 void watchdog() {
-    using clk = std::chrono::steady_clock;
-    clk::time_point streak{};
+    std::optional<clock::Stopwatch> streak;  // running while over budget
     bool hooked = false;
     const long stuck_ms = [] {
-        const char* e = std::getenv("PRISM_MEM_STUCK_MS");
-        return e && *e ? std::strtol(e, nullptr, 10) : 1000L;
+        return static_cast<long>(settings::mem_stuck_ms().get());
     }();
     for (;;) {
         // 20 ms near the limit (from 60% of budget): a Z3 query or an encoder
         // burst grows hundreds of MB between 50 ms samples (~30% overshoot).
         {
             const uint64_t b = budget_mb();
-            const bool near = b > 0 && rss_mb() >= b * 3 / 5;
-            std::this_thread::sleep_for(std::chrono::milliseconds(near ? 20 : 50));
+            const bool near_limit = b > 0 && rss_mb() >= b * 3 / 5;
+            std::this_thread::sleep_for(std::chrono::milliseconds(near_limit ? 20 : 50));
         }
         {
             std::lock_guard<std::mutex> lk(g_wmu);
             if (g_watches.empty()) continue;
         }
         if (!over_budget()) {
-            streak = {};
+            streak.reset();
             hooked = false;
             continue;
         }
-        if (streak == clk::time_point{}) streak = clk::now();
-        if (!hooked && stuck_ms > 0 && clk::now() - streak >= std::chrono::milliseconds(stuck_ms)) {
+        if (!streak) streak.emplace();
+        if (!hooked && stuck_ms > 0 && streak->elapsed_ms() >= static_cast<uint64_t>(stuck_ms)) {
             hooked = true;
             std::function<void()> h;
             { std::lock_guard<std::mutex> lk(g_hmu); h = g_stuck_hook; }
-            if (std::getenv("PRISM_MEM_TRACE"))
-                std::fprintf(stderr, "[memtrace] stuck %ld ms rss=%llu phases=%s: hard stop\n", stuck_ms,
-                             static_cast<unsigned long long>(rss_mb()), phases().c_str());
+            if (settings::mem_trace().get())
+                prism::log::trace("memtrace", "stuck " + std::to_string(stuck_ms) + " ms rss=" + std::to_string(rss_mb()) +
+                                                  " phases=" + phases() + ": hard stop");
             if (h) h();
         }
         g_trips.fetch_add(1);
-        if (std::getenv("PRISM_MEM_TRACE")) {
+        if (settings::mem_trace().get()) {
             std::size_t n = 0;
             { std::lock_guard<std::mutex> lk(g_wmu); n = g_watches.size(); }
-            std::fprintf(stderr, "[memtrace] %lld trip rss=%llu watches=%zu phases=%s\n",
-                         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                         static_cast<unsigned long long>(rss_mb()), n, phases().c_str());
+            prism::log::trace("memtrace", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                     std::chrono::system_clock::now().time_since_epoch()).count()) +
+                                                 " trip rss=" + std::to_string(rss_mb()) + " watches=" + std::to_string(n) +
+                                                 " phases=" + phases());
         }
         std::lock_guard<std::mutex> lk(g_wmu);
         for (auto& [id, r] : g_watches) {
@@ -378,7 +345,7 @@ void release_free_memory() {
 
 std::string over_message(const char* where) {
     if (g_low_trip.exchange(false) || system_low())
-        return std::string("machine memory low (MemAvailable ") + std::to_string(meminfo_mb("MemAvailable:")) +
+        return std::string("machine memory low (MemAvailable ") + std::to_string(available_mb()) +
                " MB, PRISM_MEM_RESERVE_MB) " + where + "; stopped by the memory budget watchdog; no proof";
     return std::string("memory budget reached ") + where + " (process RSS " + std::to_string(rss_mb()) + " MB, budget " +
            std::to_string(budget_mb()) + " MB from " + (g_test.load() ? std::string("a test") : budget_source()) +

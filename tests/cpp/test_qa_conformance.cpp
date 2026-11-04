@@ -21,6 +21,7 @@
 #include "support/replay.hpp"
 #include "support/report.hpp"
 #include "support/task.hpp"
+#include "prism/laws.hpp"
 #include "support/yaml_subset.hpp"
 
 #include "prism/ai.hpp"
@@ -55,7 +56,7 @@ using i128 = prism::qa::i128;
 const std::set<std::string> kProperties = {"no-overflow", "no-div0",       "no-shift-ub", "no-oob",
                                            "no-null-deref", "memsafety", "no-fp-cast",  "no-uncaught",
                                            // qa task.cpp maps noassert to FUNC-CONTRACT (cxx any_cast tasks)
-                                           "noassert"};
+                                           "noassert", "nodeadlock"};
 
 fs::path suite() { return qa::suite_root(); }
 
@@ -320,7 +321,10 @@ TEST_CASE("qa conformance: in-house tasks come in labelled true/false pairs") {
         const std::string text = slurp(t.source);
         for (const auto& [fn, exp] : t.expected) {
             CHECK(text.find(fn) != std::string::npos);
-            if (!exp && !t.expect_status.count(fn)) CHECK_MESSAGE(t.witness.count(fn), "false function needs a witness");
+            // the self-check replays a witness through scalar inputs; pointer-parameter
+            // functions (ptrparam contracts) have none and are skipped there too
+            if (!exp && !t.expect_status.count(fn) && qa::scalar_params(t, fn))
+                CHECK_MESSAGE(t.witness.count(fn), "false function needs a witness");
             (exp ? n_true : n_false)++;
             if (t.expect_status.count(fn) && t.expect_status.at(fn) == "NEEDS-HARNESS") law6 = true;
         }
@@ -588,7 +592,7 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
     // bits/basic_string.tcc replaces the libstdc++ file <string> includes
     for (const auto& f : files)
         if (f.find('/') == std::string::npos && f.rfind("prism_", 0) != 0) headers.push_back(f);
-    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "deque", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex"})
+    for (const char* h : {"vector", "map", "set", "unordered_map", "unordered_set", "sstream", "list", "deque", "array", "bitset", "stack", "queue", "span", "optional", "priority_queue", "forward_list", "initializer_list", "string_view", "expected", "memory", "complex", "tuple", "any", "latch", "numbers", "ratio", "mdspan", "barrier", "source_location", "cmath", "bit", "numeric", "semaphore", "variant", "functional", "mutex", "spanstream", "flat_map", "random", "charconv", "chrono", "format", "future", "shared_mutex", "stop_token", "system_error", "valarray", "syncstream", "memory_resource", "flat_set", "filesystem", "condition_variable", "stacktrace", "typeindex", "algorithm", "coroutine", "iterator", "ranges", "execution", "fstream", "regex", "generator", "thread", "atomic"})
         CHECK(std::find(headers.begin(), headers.end(), h) != headers.end());
     CHECK(std::find(files.begin(), files.end(), "bits/basic_string.tcc") != files.end());
     // An explicit-include buffer, not a header the pir stage swaps in for
@@ -615,13 +619,19 @@ TEST_CASE("qa conformance: every C++ library model header is embedded and exerci
             continue;
         }
         CHECK(cmake.find("src/prism/pir/models/cxx/" + f) != std::string::npos);
+        if (f == "std.cppm") continue;  // imported by `import std`, built by build_cxx_std_module
+        // force-included by pir/stage.cpp on the C23 decimal route (dfp_rewrite), not by a public header
+        if (f == "prism_dfp.hpp") continue;
         if (pub.count(f)) {
             CHECK(harnesses.find("#include <" + pub[f] + ">") != std::string::npos);
             CHECK(tasks.find("#include <" + pub[f] + ">") != std::string::npos);
         } else {  // an internal header: some public model header includes it
             bool any = false;
-            for (const auto& h : headers)
-                if (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos) any = true;
+            // public headers, or another internal one (prism_dfp.hpp includes prism_dfp_mp.hpp)
+            for (const auto& h : files)
+                if (h != f && (slurp(cxx / h).find("#include <" + f + ">") != std::string::npos ||
+                               slurp(cxx / h).find("#include \"" + f + "\"") != std::string::npos))
+                    any = true;
             CHECK(any);
         }
     }
@@ -645,8 +655,8 @@ TEST_CASE("qa conformance: classify") {
         return t;
     };
     const ojson fail = one(finding("FAILED", "INT-SIGNED-OVF"));
-    CHECK(qa::PROOF == std::set<std::string>{"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"});
-    for (const auto& proof : qa::PROOF) {
+    for (const char* proof : {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"}) {
+        CHECK(prism::laws::is_proof(proof));
         CAPTURE(proof);
         CHECK(qa::classify(task(false), "f", one(finding(proof))) == "wrong-proof");
         CHECK(qa::classify(task(true), "f", one(finding(proof))) == "proved");
@@ -820,14 +830,14 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
     CHECK_MESSAGE(rc == 1, "a wrong proof must fail the release gate");
     CHECK(m["meta"]["wrong_proofs"] == 2);
     CHECK(m["meta"]["release_gate"] == "FAIL");
-    CHECK(m["metrics"]["bmc"]["prism"]["completeness"].get<double>() == 1.0);
+    CHECK(m["metrics"]["pir"]["prism"]["completeness"].get<double>() == 1.0);
     std::tie(rc, m) = run("NEEDS-HARNESS");
     CHECK(rc == 0);
-    CHECK(m["metrics"]["bmc"]["prism"]["completeness"].get<double>() == 0.0);
+    CHECK(m["metrics"]["pir"]["prism"]["completeness"].get<double>() == 0.0);
     std::tie(rc, m) = run("FAILED");
     CHECK(rc == 0);
-    CHECK(m["metrics"]["bmc"]["prism"]["false_alarms"] == 2);
-    CHECK(m["metrics"]["bmc"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
+    CHECK(m["metrics"]["pir"]["prism"]["false_alarms"] == 2);
+    CHECK(m["metrics"]["pir"]["prism"]["detection"].get<double>() == 0.0);  // not replayed
     // an engine that cannot run is NOTRUN (exit 3), never a pass
     CHECK(qa::conformance_main({"--prism", (tmp.dir / "missing").string(), "--out", (tmp.dir / "o").string()}) == 3);
 }

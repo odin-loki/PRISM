@@ -17,6 +17,7 @@
 // every location object gets the resolved canonical file in "_f", and lines
 // come from "offset" (always printed) against the file's own bytes.
 
+#include "prism/exec.hpp"
 #include "prism/astlint.hpp"
 
 #include "astlint_internal.hpp"
@@ -27,7 +28,8 @@
 #include "prism/pir.hpp"
 #include "prism/threads.hpp"
 
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -48,7 +50,7 @@ namespace {
 
 constexpr std::size_t npos = std::string_view::npos;
 constexpr const char* kInstall =
-    "install libclang (apt install libclang1-18) or clang (apt install clang-18) for the AST lints";
+    "install the pinned LLVM (scripts/fetch_llvm.py) or set PRISM_LLVM_BIN for the AST lints";
 
 // ---------------------------------------------------------------- dump split
 
@@ -453,7 +455,7 @@ std::vector<std::string> driver_system_flags(const std::optional<fs::path>& clan
     auto key = std::pair{clang->string(), cxx};
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     std::vector<std::string> out;
-    auto pr = ::prism::detail::run_process(
+    auto pr = prism::exec::run_process(
         {key.first, "-###", "-fsyntax-only", "-x", cxx ? "c++" : "c", "-"}, 30);
     if (!pr.failed && !pr.timed_out && pr.rc == 0) {
         // The cc1 line: tokens in double quotes, backslash escapes.
@@ -495,6 +497,11 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     FileResult r;
     bool has_db = false;
     auto flags = unit_flags(src, root, has_db);
+    // clang 23 makes std::forward_like a builtin and then rejects libstdc++ 14's
+    // deduced-return definition ("deduced return type cannot be used before it
+    // is defined", also via <ranges>), so the unit does not parse. As a plain
+    // function it parses and the call stays in the AST.
+    if (is_cxx_unit(src)) flags.push_back("-fno-builtin-std-forward_like");
     std::string why;
     const bool use_lib = backend != Backend::Process && detail::libclang_load(clang, &why);
     if (backend == Backend::LibClang && !use_lib) {
@@ -527,7 +534,7 @@ FileResult run_file(const std::optional<fs::path>& clang, const fs::path& src, c
     std::vector<std::string> argv{clang->string(), "-fsyntax-only", "-Xclang", "-ast-dump=json"};
     argv.insert(argv.end(), flags.begin(), flags.end());
     argv.push_back(src.string());
-    auto pr = ::prism::detail::run_process(argv, timeout_s);
+    auto pr = prism::exec::run_process(argv, timeout_s);
     if (pr.failed) {
         r.error = "could not start " + clang->string();
         return r;

@@ -1,12 +1,17 @@
 // `prism svcomp`: PRISM as an SV-COMP verifier (include/prism/svcomp.hpp,
 // docs/SVCOMP.md). One task, the subset scorer (`svcomp score`) and the
 // tool archive (`svcomp pack`).
+#include "prism/exec.hpp"
+#include "prism/clock.hpp"
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "prism/svcomp.hpp"
 
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/taskdef.hpp"
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "svcomp/internal.hpp"
 
 #include <algorithm>
@@ -97,8 +102,9 @@ fs::path make_temp_dir(const fs::path& parent, const std::string& prefix) {
 // and no execution of task code (allow_exec stays off: replay is the only
 // step that runs the task, and it is gated separately).
 std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const std::string& data_model,
-                              std::string& error) {
+                              std::string& error, int unwind = 0) {
     Config cfg = default_config();
+    if (unwind > 0) cfg.unwind = unwind;
     cfg.llm = false;
     cfg.allow_exec = false;
     std::vector<std::string> stages;
@@ -158,8 +164,24 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         oc.decision = Decision{"error", "cannot copy " + task.string() + ": " + ec.message(), std::nullopt, json::object()};
         return oc;
     }
+    if (prop == "no-overflow") {
+        // reach_error()/abort() end the execution; for no-overflow they are
+        // exit(0), so a proof of main need not show them unreachable.
+        // Replay, fuzzing and the witness use the original task.
+        std::ifstream tin(task, std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(tin)), std::istreambuf_iterator<char>());
+        if (auto rew = neutralize_error_calls(text)) {
+            std::ofstream tout(task_c, std::ios::binary | std::ios::trunc);
+            tout << *rew;
+        }
+    }
     std::string error;
+    const auto t_start = std::chrono::steady_clock::now();
+    auto since = [](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+    };
     auto report = run_prism(task_c, opt.out / "prism-out", dm, error);
+    double last_run_s = since(t_start);
     if (!report) {
         oc.decision = Decision{"error", error, std::nullopt, json::object()};
         return oc;
@@ -178,6 +200,53 @@ Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOption
         return r;
     };
     Decision dec = decide(*report, prop, rp);
+    // Fuzzing: a refutation only when a seeded run shows the violation under
+    // the same sanitizer check as replay. Never a proof. It runs before the
+    // deepening below, so the deeper (Houdini-heavy) runs cannot use up the
+    // task's time before a cheap concrete counterexample is tried.
+    bool fuzzed = false;
+    auto try_fuzz = [&] {
+        if (fuzzed || dec.answer != "unknown" || !opt.allow_exec || (prop != "no-overflow" && prop != "unreach-call")) return;
+        fuzzed = true;
+        fs::path fd = make_temp_dir(opt.out, "prism-fuzz-");
+        json r = fuzz_replay(task, prop, true, fd, dm);
+        std::error_code rm;
+        fs::remove_all(fd, rm);
+        if (get_str(r, "replay") == "replayed") {
+            // a finding of main carrying the run's nondet values (witness waypoints)
+            json f = {{"function", "main"}, {"stage", "fuzz"}, {"extra", {{"nondet", get_str(r, "nondet")}}}};
+            if (has(r, "nondet_loc")) {
+                f["extra"]["nondet_loc"] = r.at("nondet_loc");
+                f["extra"]["nondet_loc_kind"] = "physical";
+            }
+            if (has(r, "line")) f["line"] = r.at("line");
+            dec = Decision{"false(" + prop + ")", "fuzz: " + get_str(r, "detail") + " (after: " + dec.reason + ")", f, r};
+        }
+    };
+    try_fuzz();
+    // Deepening: a main that is only BOUNDED (no violation within the
+    // unwind, loops not closed) is re-run with a deeper unwind. A deeper
+    // run can only prove (its loops close) or refute with a counterexample
+    // that must still replay; BOUNDED stays unknown. Never weaker evidence.
+    // A deeper run costs about 4x the previous one (seq-3: 12 min base; s3_srvr_1a:
+    // 20 s, 3 min at 32, over 13 min at 128): skip it when that would overrun
+    // the SV-COMP 900 s limit, so the task answers unknown instead of TIMEOUT.
+    constexpr double kTaskBudgetS = 840.0;
+    for (int deeper : {32, 128}) {
+        if (dec.answer != "unknown" || dec.reason.find("bmc: BOUNDED") == std::string::npos) break;
+        if (since(t_start) + 4.0 * last_run_s > kTaskBudgetS) {
+            dec.reason += " (bmc unwind " + std::to_string(deeper) + " skipped: time budget)";
+            break;
+        }
+        std::string err2;
+        const auto t_run = std::chrono::steady_clock::now();
+        auto rep2 = run_prism(task_c, opt.out / ("prism-out-u" + std::to_string(deeper)), dm, err2, deeper);
+        last_run_s = since(t_run);
+        if (!rep2) break;
+        Decision d2 = decide(*rep2, prop, rp);
+        if (d2.answer != "unknown") d2.reason += " (bmc unwind " + std::to_string(deeper) + ")";
+        dec = std::move(d2);
+    }
     oc.decision = dec;
     Decision& d = oc.decision;
     WitnessMeta meta;
@@ -244,7 +313,7 @@ std::vector<SubsetTask> subset_tasks(const fs::path& suite, const std::string& p
     for (const auto& yml : ymls) {
         auto y = taskdef::load_yaml(yml);
         if (!y.value) {
-            std::cerr << "WARNING svcomp score: " << y.error << " (task skipped)\n";
+            log::warn("svcomp score", y.error + " (task skipped)");
             continue;
         }
         auto t = taskdef::parse_taskdef(*y.value);
@@ -366,22 +435,22 @@ int score_main(int argc, char** argv) {
                          "upper bound. Replay executes the benchmark programs: the tasks run with\n"
                          "--allow-exec because the pinned suite in this repository is trusted (Law 9).\n"
                          "Writes DIR/score.md and DIR/results.json; exit 1 on any incorrect answer.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "prism svcomp score: unknown argument " << a << "\n";
-            return 2;
+            log::error("svcomp score", "unknown argument " + std::string(a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (property != "no-overflow" && property != "unreach-call") {
-        std::cerr << "prism svcomp score: --property expects no-overflow or unreach-call\n";
-        return 2;
+        log::error("svcomp score", "--property expects no-overflow or unreach-call");
+        return prism::code(prism::Exit::Usage);
     }
     if (suite.empty()) {
         auto repo = find_repo(fs::current_path());
         if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
         if (!repo) {
-            std::cerr << "prism svcomp score: no testdata/conformance/sv-comp here; pass --suite DIR\n";
-            return 2;
+            log::error("svcomp score", "no testdata/conformance/sv-comp here; pass --suite DIR");
+            return prism::code(prism::Exit::Usage);
         }
         suite = *repo / "testdata" / "conformance" / "sv-comp";
     }
@@ -413,9 +482,9 @@ int score_main(int argc, char** argv) {
                 cmd.push_back(t.data_model);
             }
             cmd.push_back(t.input.string());
-            const auto t0 = std::chrono::steady_clock::now();
-            auto r = prism::detail::run_session(cmd, timeout);
-            const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            const prism::clock::Stopwatch sw;
+            auto r = prism::exec::run_session(cmd, timeout);
+            const double secs = sw.elapsed_s();
             std::vector<std::string> lines = splitlines(r.out);
             std::string answer;
             for (const auto& ln : lines)
@@ -465,14 +534,14 @@ int score_main(int argc, char** argv) {
     write_text(work / "score.md", md);
     std::cout << md << "\n";
     for (const auto& r : all_rows)
-        if (r.at("outcome").get<std::string>() == "wrong") return 1;
-    return 0;
+        if (r.at("outcome").get<std::string>() == "wrong") return prism::code(prism::Exit::Failed);
+    return prism::code(prism::Exit::Ok);
 }
 
 // ---------------------------------------------------------------- pack
 
 std::optional<std::string> first_line(const std::vector<std::string>& cmd) {
-    auto r = prism::detail::run_process(cmd, 15.0);
+    auto r = prism::exec::run_process(cmd, 15.0);
     if (r.failed || r.timed_out || r.rc != 0) return std::nullopt;
     std::string t = strip(r.text);
     if (t.empty()) return std::nullopt;
@@ -496,26 +565,26 @@ int pack_main(int argc, char** argv) {
                          "(BIN, default this executable), the BenchExec tool-info module prism.py,\n"
                          "README.md, fm-tools.yml (from DIR/tools/svcomp), LICENSE, MANIFEST.json and\n"
                          "dependencies.json (the clang/opt seen here, which are not bundled).\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "prism svcomp pack: unknown argument " << a << "\n";
-            return 2;
+            log::error("svcomp pack", "unknown argument " + std::string(a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (!repo) repo = find_repo(fs::current_path());
     if (!repo) repo = find_repo(self_exe(nullptr).parent_path());
     if (!repo) {
-        std::cerr << "prism svcomp pack: tools/svcomp/prism.py not found above the working directory; pass --repo DIR\n";
-        return 2;
+        log::error("svcomp pack", "tools/svcomp/prism.py not found above the working directory; pass --repo DIR");
+        return prism::code(prism::Exit::Usage);
     }
     auto res = pack(prism, *repo, fs::absolute(out));
     if (!res.ok) {
-        std::cerr << "ERROR svcomp pack: " << res.error << "\n";
-        return 2;
+        log::error("svcomp pack", res.error);
+        return prism::code(prism::Exit::Usage);
     }
     std::cout << "wrote " << out.string() << " (" << res.manifest.at("files").size() << " files, prism "
               << res.manifest.at("prism_version").dump() << ")\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace
@@ -626,7 +695,7 @@ PackResult pack(const fs::path& prism_bin, const fs::path& repo, const fs::path&
     std::vector<std::string> cmd = tar_cmd;
     cmd.push_back(out.string());
     cmd.emplace_back("prism");
-    auto r = prism::detail::run_process(cmd, 300.0, stage);
+    auto r = prism::exec::run_process(cmd, 300.0, stage);
     if (r.failed || r.timed_out || r.rc != 0) {
         res.error = "archiver failed: " + strip(r.text);
         return res;
@@ -643,9 +712,9 @@ int svcomp_main(int argc, char** argv) {
     SolveOptions opt;
     bool version = false;
     auto usage = [] {
-        std::cerr << "usage: prism svcomp [--allow-exec] [--data-model ILP32|LP64] [--out DIR] [--witness FILE]\n"
-                     "                    --prop PROPERTY.prp TASK.c\n"
-                     "       prism svcomp score ... | prism svcomp pack ...   (--help for each)\n";
+        prism::log::plain("usage: prism svcomp [--allow-exec] [--data-model ILP32|LP64] [--out DIR] [--witness FILE]\n"
+                          "                    --prop PROPERTY.prp TASK.c\n"
+                          "       prism svcomp score ... | prism svcomp pack ...   (--help for each)");
     };
     for (int i = 0; i < argc; ++i) {
         std::string a = argv[i];
@@ -665,8 +734,8 @@ int svcomp_main(int argc, char** argv) {
             auto v = next();
             if (!v) {
                 usage();
-                std::cerr << "prism svcomp: " << a << " expects a value\n";
-                return 2;
+                log::error("svcomp", std::string(a) + " expects a value");
+                return prism::code(prism::Exit::Usage);
             }
             if (a == "--prop") prop = *v;
             else if (a == "--out") opt.out = *v;
@@ -674,8 +743,8 @@ int svcomp_main(int argc, char** argv) {
             else if (a == "--data-model") {
                 if (upper(*v) != "LP64" && upper(*v) != "ILP32") {
                     usage();
-                    std::cerr << "prism svcomp: --data-model expects LP64 or ILP32\n";
-                    return 2;
+                    log::error("svcomp", "--data-model expects LP64 or ILP32");
+                    return prism::code(prism::Exit::Usage);
                 }
                 opt.data_model = *v;
             }
@@ -694,28 +763,28 @@ int svcomp_main(int argc, char** argv) {
                          "every refutation is unknown. docs/SVCOMP.md has the rules.\n"
                          "  prism svcomp score --help   score the pinned subset (testdata/conformance/sv-comp)\n"
                          "  prism svcomp pack --help    build the SV-COMP tool archive\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-") && !task) {
             task = a;
         } else {
             usage();
-            std::cerr << "prism svcomp: unrecognized argument " << a << "\n";
-            return 2;
+            log::error("svcomp", "unrecognized argument " + std::string(a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     if (version) {
         std::cout << version_string() << "\n";
-        return 0;
+        return prism::code(prism::Exit::Ok);
     }
     if (!task) {
         usage();
-        std::cerr << "prism svcomp: TASK and --prop are required\n";
-        return 2;
+        log::error("svcomp", "TASK and --prop are required");
+        return prism::code(prism::Exit::Usage);
     }
     if (!prop) {
         usage();
-        std::cerr << "prism svcomp: TASK and --prop are required\n";
-        return 2;
+        log::error("svcomp", "TASK and --prop are required");
+        return prism::code(prism::Exit::Usage);
     }
     Outcome oc;
     try {
@@ -728,7 +797,7 @@ int svcomp_main(int argc, char** argv) {
     std::replace(reason.begin(), reason.end(), '\n', ' ');
     std::cout << RESULT_PREFIX << oc.decision.answer << "\n" << REASON_PREFIX << reason << "\n";
     if (oc.witness_path) std::cout << WITNESS_PREFIX << oc.witness_path->string() << "\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::svcomp

@@ -17,8 +17,8 @@
 extern "C" {
 #endif
 
-typedef unsigned long size_t;
-typedef long ssize_t;
+typedef __SIZE_TYPE__ size_t; /* unsigned long (LP64) or unsigned int (ILP32) */
+typedef __PTRDIFF_TYPE__ ssize_t;
 typedef struct PRISM_FILE FILE;
 
 /* allocation kinds (include/prism/pir.hpp MemKind) */
@@ -32,8 +32,14 @@ typedef struct PRISM_FILE FILE;
 #define PRISM_UNINIT 0
 #define PRISM_ZERO 1
 #define PRISM_HAVOC 2
-/* objects stay below 2^47 bytes (pointer encoding, docs/PIR.md) */
+/* objects stay below the pointer model's bound (pointer encoding,
+ * docs/PIR.md; include/prism/pir.hpp kLP64 / kILP32): 2^47 bytes under LP64,
+ * 2^21 under ILP32 (where 1UL << 47 is undefined and clang folds it to poison) */
+#if __SIZEOF_POINTER__ == 4
+#define PRISM_MAX_OBJ (1UL << 21)
+#else
 #define PRISM_MAX_OBJ (1UL << 47)
+#endif
 #define PRISM_FILE_SIZE 216UL
 
 void *__prism_alloc(size_t size, int kind, int init);
@@ -41,6 +47,8 @@ void __prism_free(void *p, int kind);
 void __prism_free_check(void *p, int kind);
 void __prism_check(int ok, const char *cls, const char *msg);
 void __prism_assume(int cond);
+/* A path this model does not follow: reachable => NEEDS-HARNESS, never FAILED or PROVED. */
+void __prism_incomplete(const char *msg);
 /* this execution saw an allocation fail: a later abort() is out-of-memory
  * handling, not a defect (translate.cpp, abort) */
 void __prism_alloc_failed(void);

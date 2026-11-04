@@ -1,0 +1,8 @@
+format_version: 1
+input_files: cxx_error_code_default_false.cpp
+language: C++
+property: no-overflow
+expected:
+  cxx_error_code_default_false: false
+witness:
+  cxx_error_code_default_false: [2147483647]

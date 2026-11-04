@@ -5,25 +5,24 @@ licence-checked, and a release can be rebuilt bit for bit.
 
 ## What is in the repository
 
-`third_party/` holds only the six libraries PRISM links, each an unmodified
+`third_party/` holds only the four libraries PRISM links, each an unmodified
 upstream copy pinned in `third_party/MANIFEST.toml`:
 
 | Component | Version | Upstream commit | Licence |
 |---|---|---|---|
 | Z3 | 4.13.4 | `6f24123f0c9d` (z3-4.13.4) | MIT |
 | PCRE2 | 10.44 | `6ae58beca071` (pcre2-10.44) | BSD-3-Clause WITH PCRE2-exception |
-| xsimd | 13.2.0 | `1f8dd9c8e162` (13.2.0) | BSD-3-Clause |
 | nlohmann/json | 3.11.3 | `9cca280a4d0c` (v3.11.3) | MIT |
 | doctest | 2.4.11 | `ae7a13539fb7` (v2.4.11) | MIT |
-| llama.cpp | b6875 | `3eb2be1ca5f3` (b6875) | MIT |
 
 The fifteen mined source trees (AFLplusplus, Frama-C, FuSeBMC, Fuzz4All,
 cbmc, coccinelle, codeql, cppcheck, dafny, esbmc, infer, klee, rapidcheck,
 semgrep, strix; about 170,000 files) were deleted. They were never built;
 `docs/MINED.md` records what PRISM re-implemented from each, and
 `[[mined]]` rows in the manifest keep their URLs and licences. On disk the
-six linked trees are about 140 MB of source (llama.cpp ~90 MB, Z3 ~33 MB,
-PCRE2 ~16 MB); that size is not a roadmap target — only pins, hashes and
+four linked trees are about 50 MB of source (Z3 ~33 MB, PCRE2 ~16 MB;
+llama.cpp and xsimd were removed when FORGE became the platform layer and
+model engine); that size is not a roadmap target — only pins, hashes and
 licences are. The `.git` directory only shrinks after the optional history
 rewrite below.
 
@@ -58,10 +57,8 @@ commit hashes, because the trees were shallow clones with `.git` removed.
 
 - Linked libraries: read the version from the in-tree source, resolve the
   matching tag with `git ls-remote`, fetch the tag's tree and compare it file
-  by file with the in-tree copy. All six match except the files listed under
-  `drift`. llama.cpp carries no release number, so its commit was found by
-  comparing the in-tree tree against every upstream commit since 2025-09-01;
-  `3eb2be1` (tag `b6875`) is the only exact match.
+  by file with the in-tree copy. All four match except the files listed under
+  `drift`.
 - External tools: the mined copies were development heads (for example
   cppcheck 2.21.99, KLEE 3.3-pre), which cannot be reproduced. Each is pinned
   to the upstream release at or just below that version.

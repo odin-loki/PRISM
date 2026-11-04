@@ -43,7 +43,9 @@
 //
 // emplace and hash are not declared. A use of them fails to compile against
 // this header and pir falls back to libstdc++.
-// nullopt, in_place, swap, make_optional, assignment from T, operator<=>,
+// nullopt_t and nullopt: construction, assignment (reset), and == / !=
+// against nullopt (the engaged flag; no T is read).
+// in_place, swap, make_optional, assignment from T, operator<=>,
 // operator>, operator<=, operator>=, comparison with a bare T, and
 // comparison of two different optional types are not declared either, so
 // those uses fall back too. operator!= is not a separate declaration. It is
@@ -112,6 +114,13 @@ struct _Prism_transform_object<_T&&> {
     static constexpr bool value = false;
 };
 
+// [optional.nullopt]
+struct nullopt_t {
+    struct _Construct {};
+    explicit constexpr nullopt_t(_Construct) noexcept {}
+};
+inline constexpr nullopt_t nullopt{nullopt_t::_Construct{}};
+
 template <typename _Tp>
 class optional {
     // char is the inactive member. T lives in this union, inside the optional
@@ -133,6 +142,12 @@ public:
     using value_type = _Tp;
 
     optional() noexcept = default;
+    optional(nullopt_t) noexcept {}
+    optional& operator=(nullopt_t) noexcept {
+        reset();
+        return *this;
+    }
+    friend bool operator==(const optional& __x, nullopt_t) noexcept { return !__x._M_engaged; }
     optional(const _Tp& __v) : _M_engaged(true), _M_storage(__v) {}
     optional(_Tp&& __v) : _M_engaged(true), _M_storage(static_cast<_Tp&&>(__v)) {}
     ~optional() { reset(); }

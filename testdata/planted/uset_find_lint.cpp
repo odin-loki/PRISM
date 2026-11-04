@@ -1,3 +1,4 @@
+#include <unordered_set>
 void uset_find_bad(void) {
     std::unordered_set<int> s;
     auto it=s.find(1);

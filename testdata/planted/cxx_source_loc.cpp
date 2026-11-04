@@ -1,3 +1,4 @@
+#include <source_location>
 int source_loc_unenc_bad(int n) {
     std::source_location loc;
     return n;

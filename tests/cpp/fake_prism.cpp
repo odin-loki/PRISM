@@ -2,7 +2,7 @@
 //
 //   fake_prism STATUS [prism args...]   claims STATUS for every function of
 //       the source (the first prism argument): --list-stages prints
-//       inventory/classify/bmc/harness; otherwise OUT/report.json gets one bmc
+//       inventory/classify/pir/harness; otherwise OUT/report.json gets one pir
 //       finding per function (cls INT-SIGNED-OVF, no counterexample).
 //   fake_prism HANG PIDFILE [...]       starts a "solver" (sleep) in a process
 //       group of its own, as the solver runner does, writes its pid to
@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
     }
     for (const auto& a : args)
         if (a == "--list-stages") {
-            std::cout << "inventory\nclassify\nbmc\nharness\n";
+            std::cout << "inventory\nclassify\npir\nharness\n";
             return 0;
         }
     if (args.empty()) return 2;
@@ -139,10 +139,10 @@ int main(int argc, char** argv) {
     std::string findings;
     for (auto it = std::sregex_iterator(src.begin(), src.end(), fn_re); it != std::sregex_iterator(); ++it) {
         if (!findings.empty()) findings += ", ";
-        findings += "{\"stage\": \"bmc\", \"status\": " + json_str(status) + ", \"function\": " + json_str((*it)[1]) +
+        findings += "{\"stage\": \"pir\", \"status\": " + json_str(status) + ", \"function\": " + json_str((*it)[1]) +
                     ", \"cls\": \"INT-SIGNED-OVF\", \"message\": \"fake\", \"counterexample\": \"\"}";
     }
-    std::ofstream(out + "/report.json") << "{\"stages\": [{\"name\": \"bmc\", \"status\": \"ok\", \"findings\": ["
+    std::ofstream(out + "/report.json") << "{\"stages\": [{\"name\": \"pir\", \"status\": \"ok\", \"findings\": ["
                                         << findings << "]}]}";
     return 0;
 }

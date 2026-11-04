@@ -26,17 +26,19 @@
 // returns false: it does not allocate and it does not overwrite the stored
 // mapped object. On a missing key it constructs the mapped object from
 // those arguments in a new node and returns true. That mapped object is
-// not constructed until the key is known to be absent. This header has no
-// insert and no iterators, so try_emplace returns bool: false when the key
-// was already present, true when a node was inserted.
+// not constructed until the key is known to be absent. try_emplace returns
+// bool (false when the key was already present, true when a node was
+// inserted), not libstdc++'s pair<iterator, bool>.
 //
-// insert ranges and the rest are not declared. Omitted names
-// fail to compile against this header and pir falls back to libstdc++
-// (extra.cxx_models). Not stubbed: insert, insert_range, emplace,
-// erase(iterator), iterators, find, swap,
-// the Compare / KeyContainer / MappedContainer parameters (this
-// template takes Key and T only), and any allocator other than the
-// ::operator new / ::operator delete pair above.
+// The template takes Key, T and Compare (default less<Key>); there are no
+// KeyContainer / MappedContainer parameters and no allocator other than the
+// ::operator new / ::operator delete pair above. Declared besides the above:
+// the sorted_unique and container constructors (the sorted_unique
+// precondition is CHECKED), extract() && and replace() over vector<Key> /
+// vector<T>, transparent contains/count/at, iterators (key order), find and
+// erase(iterator). Not declared: insert, insert_range, emplace, swap and the
+// rest; a use of an omitted name fails to compile against this header and
+// pir falls back to libstdc++ (extra.cxx_models).
 #ifndef _PRISM_MODEL_FLAT_MAP
 #define _PRISM_MODEL_FLAT_MAP 1
 #define _GLIBCXX_FLAT_MAP 1  // libstdc++'s <flat_map> include guard: never both
@@ -47,16 +49,41 @@
 #include <bits/functexcept.h>
 #include <cstddef>
 #include <new>
+extern "C" void __prism_check(int ok, const char* cls, const char* msg);
+#include <initializer_list>
+#include <bits/stl_function.h>
+#include <vector>
+#include <bits/stl_pair.h>
+#include <type_traits>
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
-template <typename _Key, typename _Tp>
+#ifndef _PRISM_SORTED_UNIQUE
+#define _PRISM_SORTED_UNIQUE 1
+// [flat.map.syn] tag: the caller promises the input is sorted and has no
+// duplicate keys. The model CHECKS that promise (FUNC-CONTRACT, a
+// precondition violation is UB in the standard), it does not trust it.
+struct sorted_unique_t {
+    explicit sorted_unique_t() = default;
+};
+inline constexpr sorted_unique_t sorted_unique{};
+#endif
+
+template <typename _Key, typename _Tp, typename _Compare = less<_Key>>
 class flat_map {
 public:
     using key_type = _Key;
     using mapped_type = _Tp;
+    using key_compare = _Compare;
     using size_type = size_t;
+    using key_container_type = vector<_Key>;
+    using mapped_container_type = vector<_Tp>;
+    // [flat.map.defn] extract() returns both containers, keys sorted.
+    struct containers {
+        key_container_type keys;
+        mapped_container_type values;
+    };
 
 private:
     // One pair. The mapped object lives in this allocation, so freeing the
@@ -78,7 +105,39 @@ private:
     _Node* _M_head = nullptr;
     size_type _M_size = 0;
 
-    static bool _M_eq(const key_type& __a, const key_type& __b) { return !(__a < __b) && !(__b < __a); }
+    static bool _M_eq(const key_type& __a, const key_type& __b) {
+        return !_Compare{}(__a, __b) && !_Compare{}(__b, __a);
+    }
+    // Heterogeneous equivalence: only reachable when _Compare::is_transparent.
+    template <typename _Kx>
+    static bool _M_eqx(const key_type& __a, const _Kx& __b) {
+        return !_Compare{}(__a, __b) && !_Compare{}(__b, __a);
+    }
+    template <typename _Kx>
+    const _Node* _M_findx(const _Kx& __k) const noexcept {
+        for (const _Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
+            if (_M_eqx(__p->_M_key, __k)) return __p;
+        return nullptr;
+    }
+    // Build from parallel key/value sequences. __sorted: check the
+    // sorted_unique precondition; otherwise later duplicates are dropped
+    // (first one wins, as insert does).
+    template <typename _KIt, typename _VIt>
+    void _M_build(_KIt __k, _KIt __ke, _VIt __v, bool __sorted) {
+        try {
+            const key_type* __prev = nullptr;
+            for (; __k != __ke; ++__k, ++__v) {
+                if (__sorted && __prev != nullptr)
+                    __prism_check(_Compare{}(*__prev, *__k) ? 1 : 0, "FUNC-CONTRACT",
+                                  "flat_map sorted_unique input is not strictly sorted");
+                __prev = &*__k;
+                if (_M_find(*__k) == nullptr) _M_link(_M_make(*__k, *__v));
+            }
+        } catch (...) {
+            _M_clear();
+            throw;
+        }
+    }
 
     _Node* _M_find(const key_type& __k) noexcept {
         for (_Node* __p = _M_head; __p != nullptr; __p = __p->_M_next)
@@ -170,6 +229,92 @@ public:
     }
     ~flat_map() { _M_clear(); }
 
+    template <typename _Pair>
+    struct __pair_key_it {
+        const _Pair* _M_p;
+        const key_type& operator*() const { return _M_p->first; }
+        __pair_key_it& operator++() { ++_M_p; return *this; }
+        bool operator!=(const __pair_key_it& __o) const { return _M_p != __o._M_p; }
+    };
+    template <typename _Pair>
+    struct __pair_val_it {
+        const _Pair* _M_p;
+        const mapped_type& operator*() const { return _M_p->second; }
+        __pair_val_it& operator++() { ++_M_p; return *this; }
+    };
+
+    // Initializer-list constructors ({{k, v}, ...}); value_type pairs.
+    template <typename _Pair = pair<key_type, mapped_type>>
+    flat_map(initializer_list<_Pair> __il) {
+        _M_build(__pair_key_it<_Pair>{__il.begin()}, __pair_key_it<_Pair>{__il.end()},
+                 __pair_val_it<_Pair>{__il.begin()}, false);
+    }
+    template <typename _Pair = pair<key_type, mapped_type>>
+    flat_map(sorted_unique_t, initializer_list<_Pair> __il) {
+        _M_build(__pair_key_it<_Pair>{__il.begin()}, __pair_key_it<_Pair>{__il.end()},
+                 __pair_val_it<_Pair>{__il.begin()}, true);
+    }
+    // Container constructors. Sizes must match ([flat.map.cons] precondition).
+    flat_map(key_container_type __keys, mapped_container_type __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map key and mapped containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), false);
+    }
+    flat_map(sorted_unique_t, key_container_type __keys, mapped_container_type __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map key and mapped containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), true);
+    }
+
+    // [flat.map.modifiers] extract: move the contents out as two containers
+    // sorted by key; *this is left empty. Selection sort over the node list
+    // (O(n^2) compares, no extra allocation besides the two vectors).
+    containers extract() && {
+        containers __c;
+        __c.keys.reserve(_M_size);
+        __c.values.reserve(_M_size);
+        while (_M_head != nullptr) {
+            _Node** __min = &_M_head;
+            for (_Node** __pp = &(*__min)->_M_next; *__pp != nullptr; __pp = &(*__pp)->_M_next)
+                if (_Compare{}((*__pp)->_M_key, (*__min)->_M_key)) __min = __pp;
+            _Node* __n = *__min;
+            *__min = __n->_M_next;
+            --_M_size;
+            __c.keys.push_back(static_cast<key_type&&>(__n->_M_key));
+            __c.values.push_back(static_cast<mapped_type&&>(__n->_M_mapped));
+            __n->~_Node();
+            ::operator delete(__n);
+        }
+        return __c;
+    }
+    // replace: precondition sizes equal and keys sorted-unique (checked).
+    void replace(key_container_type&& __keys, mapped_container_type&& __vals) {
+        __prism_check(__keys.size() == __vals.size() ? 1 : 0, "FUNC-CONTRACT",
+                      "flat_map::replace containers differ in size");
+        if (__keys.size() != __vals.size()) __builtin_trap();
+        _M_clear();
+        _M_build(__keys.data(), __keys.data() + __keys.size(), __vals.data(), true);
+    }
+
+    // Heterogeneous lookup ([flat.map.overview]): only with a transparent
+    // comparator, as in the standard.
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    bool contains(const _Kx& __k) const { return _M_findx(__k) != nullptr; }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    size_type count(const _Kx& __k) const { return _M_findx(__k) != nullptr ? 1 : 0; }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    const mapped_type& at(const _Kx& __k) const {
+        if (const _Node* __n = _M_findx(__k)) return __n->_M_mapped;
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    mapped_type& at(const _Kx& __k) {
+        if (const _Node* __n = _M_findx(__k)) return const_cast<_Node*>(__n)->_M_mapped;
+        __throw_out_of_range_fmt(__N("%s: key is not present"), __N("flat_map::at"));
+    }
+
     // Missing key: insert a node and return its mapped object.
     mapped_type& operator[](const key_type& __k) {
         if (_Node* __n = _M_find(__k)) return __n->_M_mapped;
@@ -248,6 +393,90 @@ public:
     // construct a mapped value. It does not call operator[] or at().
     // This is not PROVED and not CLEAN.
     bool empty() const noexcept { return _M_size == 0; }
+    // Session 5: iterators and find. Nodes are an unsorted list; an
+    // iterator walks them in key order by picking, at each step, the
+    // smallest key greater than the current one (O(n) per step, no
+    // allocation). end() is the null node. *it is a pair of references
+    // (key const), like [flat.map.defn]'s pair<const key_type&, mapped_type&>.
+    // Dereferencing or incrementing end() is __prism_check FUNC-CONTRACT.
+    // This is not PROVED and not CLEAN.
+private:
+    template <bool _Const>
+    class _Iter {
+        using _Map = conditional_t<_Const, const flat_map, flat_map>;
+        using _N = conditional_t<_Const, const _Node, _Node>;
+        _Map* _M_map = nullptr;
+        _N* _M_cur = nullptr;
+        friend class flat_map;
+        _Iter(_Map* __m, _N* __c) noexcept : _M_map(__m), _M_cur(__c) {}
+
+    public:
+        using value_type = pair<key_type, mapped_type>;
+        using reference = pair<const key_type&, conditional_t<_Const, const mapped_type&, mapped_type&>>;
+        using difference_type = ptrdiff_t;
+        struct pointer {
+            reference __r;
+            reference* operator->() noexcept { return &__r; }
+        };
+        _Iter() noexcept = default;
+        template <bool _C2 = _Const, typename = enable_if_t<_C2>>
+        _Iter(const _Iter<false>& __o) noexcept : _M_map(__o._M_map), _M_cur(__o._M_cur) {}
+        reference operator*() const {
+            __prism_check(_M_cur != nullptr ? 1 : 0, "FUNC-CONTRACT", "flat_map iterator: dereference of end()");
+            return reference(_M_cur->_M_key, _M_cur->_M_mapped);
+        }
+        pointer operator->() const { return pointer{**this}; }
+        _Iter& operator++() {
+            __prism_check(_M_cur != nullptr ? 1 : 0, "FUNC-CONTRACT", "flat_map iterator: increment of end()");
+            _N* __best = nullptr;
+            for (_N* __p = _M_map->_M_head; __p != nullptr; __p = __p->_M_next)
+                if (_Compare{}(_M_cur->_M_key, __p->_M_key) &&
+                    (__best == nullptr || _Compare{}(__p->_M_key, __best->_M_key)))
+                    __best = __p;
+            _M_cur = __best;
+            return *this;
+        }
+        _Iter operator++(int) { _Iter __t = *this; ++*this; return __t; }
+        friend bool operator==(const _Iter& __a, const _Iter& __b) noexcept { return __a._M_cur == __b._M_cur; }
+        friend bool operator!=(const _Iter& __a, const _Iter& __b) noexcept { return __a._M_cur != __b._M_cur; }
+    };
+    template <typename _N>
+    static _N* _M_min(_N* __h) noexcept {
+        _N* __best = nullptr;
+        for (_N* __p = __h; __p != nullptr; __p = __p->_M_next)
+            if (__best == nullptr || _Compare{}(__p->_M_key, __best->_M_key)) __best = __p;
+        return __best;
+    }
+
+public:
+    using iterator = _Iter<false>;
+    using const_iterator = _Iter<true>;
+    iterator begin() noexcept { return iterator(this, _M_min(_M_head)); }
+    iterator end() noexcept { return iterator(this, nullptr); }
+    const_iterator begin() const noexcept { return const_iterator(this, _M_min<const _Node>(_M_head)); }
+    const_iterator end() const noexcept { return const_iterator(this, nullptr); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend() const noexcept { return end(); }
+    iterator find(const key_type& __k) { return iterator(this, _M_find(__k)); }
+    const_iterator find(const key_type& __k) const { return const_iterator(this, _M_find(__k)); }
+    template <typename _Kx, typename _C = _Compare, typename = typename _C::is_transparent>
+    const_iterator find(const _Kx& __k) const { return const_iterator(this, _M_findx(__k)); }
+    // erase(iterator): unlink that node, return the next one in key order.
+    iterator erase(iterator __it) {
+        __prism_check(__it._M_cur != nullptr ? 1 : 0, "FUNC-CONTRACT", "flat_map::erase(end())");
+        iterator __nx = __it;
+        ++__nx;
+        for (_Node** __pp = &_M_head; *__pp != nullptr; __pp = &(*__pp)->_M_next)
+            if (*__pp == __it._M_cur) {
+                _Node* __n = *__pp;
+                *__pp = __n->_M_next;
+                __n->~_Node();
+                ::operator delete(__n);
+                --_M_size;
+                break;
+            }
+        return __nx;
+    }
 };
 
 _GLIBCXX_END_NAMESPACE_VERSION

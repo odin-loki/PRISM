@@ -357,12 +357,13 @@ TEST_CASE("wp: the false twin of the unbounded loop is not a proof") {
 
 // ---- harness
 
-TEST_CASE("harness: the stage runs after bmc, pir and conc") {
-    auto b = stage_index("bmc");
+TEST_CASE("harness: the stage runs after wp, pir and conc") {
+    auto b = stage_index("wp");
     REQUIRE(b >= 0);
     CHECK(stage_index("pir") == b + 1);
     CHECK(stage_index("conc") == b + 2);
     CHECK(stage_index("harness") == b + 3);
+    CHECK(stage_index("bmc") < 0);
 }
 
 TEST_CASE("harness: materialize needs an honest requires on a POINTER function") {
@@ -384,7 +385,7 @@ TEST_CASE("harness: materialize needs an honest requires on a POINTER function")
 
 TEST_CASE("harness: POINTER without requires is NEEDS-HARNESS, not ERROR") {
     auto f = fn_in("null_branch.c", "null_branch");
-    auto recs = prism::run_harness_bmc({f}, 8);
+    auto recs = prism::run_harness({f}, 8);
     REQUIRE(recs.size() == 1);
     auto& r = recs[0];
     CHECK(r.stage == "harness");
@@ -398,44 +399,20 @@ TEST_CASE("harness: POINTER without requires is NEEDS-HARNESS, not ERROR") {
     CHECK(has(r.message, "no honest requires"));
 }
 
-TEST_CASE("harness: SCALAR functions are left to bmc") {
-    CHECK(prism::run_harness_bmc({scalar_inc()}, 8).empty());
+TEST_CASE("harness: SCALAR functions are left to pir") {
+    CHECK(prism::run_harness({scalar_inc()}, 8).empty());
     auto f = fn_in("null_branch.c", "null_branch");
-    auto recs = prism::run_harness_bmc({scalar_inc(), f}, 8);
+    auto recs = prism::run_harness({scalar_inc(), f}, 8);
     REQUIRE(recs.size() == 1);
     CHECK(recs[0].function == f.name);
     CHECK(recs[0].status == prism::laws::NEEDS_HARNESS);
 }
 
 #ifdef PRISM_HAS_Z3
-TEST_CASE("harness: bmc finds ++/-- signed overflow and an uninitialised read") {
-    auto f = scalar_inc("inc_ovf");
-    for (auto* body : {"x++; return x;", "++x; return x;"}) {
-        f.body = body;
-        auto r = prism::run_bmc({f}, 8);
-        REQUIRE_FALSE(r.empty());
-        INFO(body << " -> " << r[0].status << ": " << r[0].message);
-        CHECK(r[0].status == prism::laws::FAILED);
-        CHECK(r[0].cls == "INT-SIGNED-OVF");
-    }
-    prism::FunctionInfo u;
-    u.file = "synthetic.c";
-    u.name = "uninit_read";
-    u.kind = "VOID";
-    u.line = 1;
-    u.signature = "int uninit_read(void)";
-    u.body = "int x; return x;";
-    auto r = prism::run_bmc({u}, 8);
-    REQUIRE_FALSE(r.empty());
-    INFO(r[0].status << ": " << r[0].message);
-    CHECK(r[0].status == prism::laws::FAILED);
-    CHECK(r[0].cls == "UNINIT-READ");
-}
-
 TEST_CASE("harness: a materialized proof is PROVED-ASSUMING, never PROVED") {
     for (auto* name : {"copy", "deref_ok"}) {
         INFO(name);
-        auto recs = prism::run_harness_bmc({fn_in("ptr_copy.c", name)}, 8);
+        auto recs = prism::run_harness({fn_in("ptr_copy.c", name)}, 8);
         REQUIRE_FALSE(recs.empty());
         auto& r = recs[0];
         INFO(r.status << ": " << r.message);
@@ -450,25 +427,4 @@ TEST_CASE("harness: a materialized proof is PROVED-ASSUMING, never PROVED") {
     }
 }
 
-TEST_CASE("harness: a step that k-induction cannot close stays BOUNDED") {
-    // Only a closed (PROVED/PROVED-UNBOUNDED) havocked step makes a loop
-    // PROVED-UNBOUNDED; a violated step keeps the base case's BOUNDED record.
-    // The division by zero at i == 500 is real but beyond the unwind bound, so
-    // no invariant can close the step and nothing may call it proved.
-    auto f = fn_from("kind_open.c",
-                     "int kind_open(int n) {\n"
-                     "    int i = 0;\n"
-                     "    while (i < n && i < 1000) {\n"
-                     "        i = i + 1;\n"
-                     "    }\n"
-                     "    return 100 / (i - 500);\n"
-                     "}\n",
-                     "kind_open");
-    auto r = prism::run_bmc({f}, 8);
-    REQUIRE_FALSE(r.empty());
-    INFO(r[0].status << ": " << r[0].message);
-    CHECK(r[0].status == prism::laws::BOUNDED);
-    CHECK(extra_or(r[0], "k_induction") == "step-open");
-    CHECK_FALSE(prism::laws::is_proof(r[0].status));
-}
 #endif

@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_stdbit_ceil_false.c
+language: C
+property: no-oob
+expected:
+  c23_stdbit_ceil_false: false
+witness:
+  c23_stdbit_ceil_false: [9]

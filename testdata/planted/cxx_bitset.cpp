@@ -1,3 +1,4 @@
+#include <bitset>
 int bitset_unenc_bad(int n) {
     std::bitset<8> b;
     return n;

@@ -410,9 +410,13 @@ TEST_CASE("pir mem: every property, true and false, in both memory encodings") {
         REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
         CHECK(t.fn->uses_memory);
         for (auto enc : {pp::MemEncoding::Array, pp::MemEncoding::Bv}) {
-            pp::EncodeOptions eo;
-            eo.memory = enc;
-            auto v = pp::check_function(*t.fn, 8, 30, eo);
+            pp::CheckOptions o;
+            o.unwind = 8;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.encode.memory = enc;
+            o.deepen_max = 0;  // the k-induction step itself, at unwind 8
+            auto v = pp::check_function(*t.fn, o);
             CAPTURE(v.message);
             CHECK(v.status == c.status);
             if (*c.cls) CHECK(v.cls == c.cls);
@@ -882,14 +886,26 @@ TEST_CASE("pir mem: k-induction havocs the write footprint of a memory-writing l
         REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
         for (auto enc : {pp::MemEncoding::Array, pp::MemEncoding::Bv}) {
             CAPTURE(static_cast<int>(enc));
-            pp::EncodeOptions eo;
-            eo.memory = enc;
-            auto v = pp::check_function(*t.fn, 8, 30, eo);
+            pp::CheckOptions o;
+            o.unwind = 8;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.encode.memory = enc;
+            o.deepen_max = 0;  // the k-induction step itself, at unwind 8
+            auto v = pp::check_function(*t.fn, o);
             CAPTURE(v.message);
             CHECK(v.status == c.status);
             CHECK(v.extra["k_induction"] == c.kind);
             CHECK(v.extra["k_induction_memory"] == "write footprint havocked");
             CHECK(v.extra["k_induction_footprint"].find(c.footprint) != std::string::npos);
+            if (!c.witness.empty()) {
+                // with deepening (best effort, budget-limited) the real bug
+                // past unwind 8 may be found; it is never PROVED
+                o.deepen_max = 64;
+                auto d = pp::check_function(*t.fn, o);
+                CAPTURE(d.message);
+                CHECK((d.status == "FAILED" || d.status == "BOUNDED"));
+            }
         }
         if (!c.witness.empty()) {
             // the false cases are real: the interpreter hits the violation
@@ -1091,6 +1107,9 @@ int loop_long_cubic(int n) {
 }
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
+#ifndef PRISM_HAS_Z3
+    MESSAGE("NOTRUN: PRISM_HAS_Z3 off: pir has no solver, so no per-function verdicts");
+#else
     std::string why;
     if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
         MESSAGE(why);
@@ -1145,6 +1164,7 @@ int map_cond_erase_sum_bad(int k) {
     CHECK(got["map_cond_erase_uaf_bad"].cls == "MEM-UAF");
     CHECK(got["map_cond_erase_sum_bad"].status == prism::laws::FAILED);
     CHECK(got["map_cond_erase_sum_bad"].cls == "FUNC-CONTRACT");
+#endif
 }
 
 TEST_CASE("pir: per-function budget returns TIMEOUT when spent") {
@@ -1516,4 +1536,80 @@ int nested_bad(void) {
         CHECK(got[bad].status != prism::laws::PROVED_UNBOUNDED);
         CHECK(got[bad].status != prism::laws::PROVED);
     }
+}
+
+// ILP32 (sv-comp 32-bit tasks): long, size_t and pointers are 32 bits; the
+// same source is checked under both data models (twins), and certificates
+// stay LP64-only (an ILP32 proof is solver-only).
+TEST_CASE("pir ILP32: 32-bit long, size_t and pointers, twins under LP64 (skips without clang/opt)") {
+    if (skip_without_frontend()) return;
+    const auto dir = std::filesystem::temp_directory_path() / ("prism_pir_ilp32_" + std::to_string(test_pid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    // no system headers: a 32-bit glibc need not be installed
+    std::ofstream(dir / "w.c") << R"(typedef __SIZE_TYPE__ size_t;
+void *malloc(size_t);
+void free(void *);
+void *memset(void *, int, size_t);
+int long_is_32(void) { return 100 / ((int)sizeof(long) - 4); }          /* ILP32: div by 0 */
+int ptr_is_32(void) { return 100 / ((int)sizeof(void *) - 4); }         /* ILP32: div by 0 */
+long dbl_long(long x) { if (x > 1500000000L || x < -1500000000L) return 0; return x + x; } /* ILP32: ovf */
+long dbl_long_ok(long x) { if (x > 1000000000L || x < -1000000000L) return 0; return x + x; }
+int heap_ok(unsigned n) {
+    if (n == 0 || n > 64) return 0;
+    char *p = malloc(n);
+    if (!p) return 0;
+    memset(p, 1, n);
+    int r = p[n - 1];
+    free(p);
+    return r;
+}
+int heap_bad(unsigned n) {
+    if (n == 0 || n > 64) return 0;
+    char *p = malloc(n);
+    if (!p) return 0;
+    int r = p[n];
+    free(p);
+    return r;
+}
+int arr_ok(int i) { int a[8]; memset(a, 0, sizeof a); if (i < 0 || i >= 8) return 0; return a[i]; }
+int arr_bad(int i) { int a[8]; memset(a, 0, sizeof a); if (i < 0 || i > 8) return 0; return a[i]; }
+int null_bad(int *p) { return *p; }
+)";
+    auto run = [&](const char* dm) {
+        auto cfg = prism::default_config();
+        cfg.root = dir;
+        cfg.jobs = 1;
+        cfg.data_model = dm;
+        cfg.solver_cache = dir / (std::string("cache_") + dm);
+        std::map<std::string, prism::Finding> by;
+        for (auto& f : pp::run_pir({dir / "w.c"}, cfg))
+            if (f.function) by[*f.function] = f;
+        return by;
+    };
+    auto proved = [](const prism::Finding& f) { return prism::laws::is_proof(f.status); };
+    auto i32 = run("ILP32");
+    auto l64 = run("LP64");
+    CHECK(i32["long_is_32"].status == prism::laws::FAILED);
+    CHECK(i32["long_is_32"].cls == "INT-DIV-ZERO");
+    CHECK(i32["ptr_is_32"].status == prism::laws::FAILED);
+    CHECK(proved(l64["long_is_32"]));
+    CHECK(proved(l64["ptr_is_32"]));
+    CHECK(i32["dbl_long"].status == prism::laws::FAILED);
+    CHECK(i32["dbl_long"].cls == "INT-SIGNED-OVF");
+    CHECK(proved(l64["dbl_long"]));
+    for (auto* m : {&i32, &l64}) {
+        auto& by = *m;
+        CHECK(proved(by["dbl_long_ok"]));
+        CHECK(proved(by["heap_ok"]));
+        CHECK(by["heap_bad"].status == prism::laws::FAILED);
+        CHECK(by["heap_bad"].cls == "MEM-OOB-READ");
+        CHECK(proved(by["arr_ok"]));
+        CHECK(by["arr_bad"].status == prism::laws::FAILED);
+        CHECK(by["arr_bad"].cls == "MEM-OOB-READ");
+        CHECK_FALSE(proved(by["null_bad"]));
+    }
+    // certificates are LP64-only: no ILP32 proof claims PROVED-CERTIFIED
+    for (auto& [n, f] : i32) CHECK(f.status != prism::laws::PROVED_CERTIFIED);
+    std::filesystem::remove_all(dir);
 }

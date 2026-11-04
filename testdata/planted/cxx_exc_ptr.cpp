@@ -1,3 +1,4 @@
+#include <exception>
 int exc_ptr_unenc_bad(int n) {
     std::exception_ptr p;
     return n;

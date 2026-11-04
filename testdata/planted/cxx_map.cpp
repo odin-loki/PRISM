@@ -1,3 +1,4 @@
+#include <map>
 int map_unenc_bad(int n) {
     std::map<int, int> m;
     return n;

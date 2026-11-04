@@ -1,3 +1,4 @@
+#include <sstream>
 int sstream_unenc_bad(int n) {
     std::stringstream x;
     return n;

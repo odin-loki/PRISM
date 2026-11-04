@@ -30,7 +30,7 @@ const std::vector<std::string> SAN_FLAGS = {"-g", "-O0", "-w", "-fno-wrapv", "-f
                                             "-fno-sanitize-recover=all"};
 const std::vector<std::pair<std::string, std::string>> SAN_ENV = {
     {"ASAN_OPTIONS",
-     "detect_leaks=0:abort_on_error=1:halt_on_error=1:print_summary=0:symbolize=0"},
+     "detect_leaks=0:allocator_may_return_null=1:abort_on_error=1:halt_on_error=1:print_summary=0:symbolize=0"},
     {"UBSAN_OPTIONS", "print_stacktrace=0:halt_on_error=1"},
 };
 
@@ -268,7 +268,16 @@ std::string driver_source(const Task& task, const std::string& fn, const Params&
                       "extern \"C\" __attribute__((weak)) void __prism_check(int ok, const char* cls, const char* msg) {",
                       "    if (ok) return;",
                       "    fprintf(stderr, \"runtime error: %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");",
-                      "    abort();", "}"});
+                      "    abort();", "}",
+                      // the other PRISM intrinsics the models declare without a body: one
+                      // native run is one concrete path, so assume/havoc/incomplete keep
+                      // the values it has; object sizes are unknown (ASan still sees OOB)
+                      "#include <string.h>",
+                      "extern \"C\" __attribute__((weak)) void __prism_memcpy(void* d, const void* s, unsigned long n, int) { memmove(d, s, n); }",
+                      "extern \"C\" __attribute__((weak)) unsigned long __prism_obj_size(const void*) { return ~0ul; }",
+                      "extern \"C\" __attribute__((weak)) void __prism_assume(int) {}",
+                      "extern \"C\" __attribute__((weak)) void __prism_havoc_bytes(void*, unsigned long) {}",
+                      "extern \"C\" __attribute__((weak)) void __prism_incomplete(const char*) {}"});
     }
     if (!params.empty()) {
         std::string fields;
@@ -410,6 +419,7 @@ Exec run_sanitized(const Task& task, const std::string& fn, const Params& params
     write_file(drv, driver_source(task, fn, params, rows));
     fs::path exe = work / "driver.bin";
     std::vector<std::string> cc = compiler_for(task.lang);
+    if (!task.std.empty()) cc[1] = "-std=" + task.std;  // the task pins its standard (as PRISM sees it)
     cc.insert(cc.end(), {drv.string(), "-x", "none"});
     cc.insert(cc.end(), SAN_FLAGS.begin(), SAN_FLAGS.end());
     cc.insert(cc.end(), {"-o", exe.string()});
@@ -448,7 +458,7 @@ Exec run_sanitized(const Task& task, const std::string& fn, const Params& params
     // std::terminate (an exception escaping main or a noexcept function) is a
     // property violation for PRISM (roadmap 2.6), reported by the C++ runtime
     static const Regex hit_re(
-        R"(runtime error: .*|ERROR: AddressSanitizer: \S+.*|terminate called .*|pure virtual method called|Assertion '.*' failed)");
+        R"(runtime error: .*|ERROR: AddressSanitizer: \S+.*|terminate called .*|pure virtual method called|Assertion [`'].*' failed)");
     if (auto hit = hit_re.search_match(err)) return {"ub", py_head(hit->group(0), 300)};
     if (x.rc != 0) return {"crash", "exit " + std::to_string(x.rc) + ": " + py_tail(err, 300)};
     return {"clean", ""};

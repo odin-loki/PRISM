@@ -1,3 +1,4 @@
+#include <map>
 int multimap_unenc_bad(int n) {
     std::multimap<int, int> m;
     return n;

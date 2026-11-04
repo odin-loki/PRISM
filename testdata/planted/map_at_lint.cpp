@@ -1,3 +1,4 @@
+#include <map>
 void map_at_bad(int i) {
     std::map<int,int> m;
     m.at(i);

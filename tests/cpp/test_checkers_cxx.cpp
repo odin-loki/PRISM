@@ -15,6 +15,7 @@
 #endif
 
 #include <atomic>
+#include <set>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -288,6 +289,57 @@ TEST_CASE("checkers: per-function gates report the function that passes them") {
     CHECK(ap.of("CXX-AUTO-PTR").size() == 2);
     Snippet es("a.cpp", "void a() {\n    auto p = shared_from_this();\n}\nvoid b() {\n    auto q = shared_from_this();\n}\n");
     CHECK(es.of("CXX-ENABLE-SHARED").size() == 2);
+    // A member of a class with an enable_shared_from_this base may be owned
+    // (testdata/planted/enable_shared_ast.cpp Conn::handle); its constructor
+    // and destructor still fire, and an unrelated class's member does too.
+    Snippet esm("a.cpp",
+                "struct Conn : std::enable_shared_from_this<Conn> {\n"
+                "    Conn() { auto s = shared_from_this(); }\n"
+                "    ~Conn() { auto t = shared_from_this(); }\n"
+                "    std::shared_ptr<Conn> handle() { return shared_from_this(); }\n"
+                "};\n"
+                "struct Other {\n"
+                "    std::shared_ptr<Other> get() { return shared_from_this(); }\n"
+                "};\n");
+    std::set<std::string> es_fns;
+    for (auto& f : esm.of("CXX-ENABLE-SHARED")) es_fns.insert(f.function.value_or(""));
+    CHECK(es_fns.count("Conn::handle") == 0);
+    CHECK(es_fns.count("Other::get") == 1);
+    CHECK(es_fns.count("Conn::Conn") == 1);
+    CHECK(es_fns.count("Conn::~Conn") == 1);
+}
+
+TEST_CASE("checkers: move-const and bool-as-bit read declaration order and cast targets") {
+    // A const local declared after the move (here a lambda parameter shares
+    // its name) is a different object; one declared before still fires.
+    Snippet later("a.cpp",
+                  "#include <string>\n#include <utility>\n"
+                  "std::string f(const std::string& raw) {\n"
+                  "    auto make = [&](std::string text) { std::string r = std::move(text); return r; };\n"
+                  "    const std::string text = raw;\n"
+                  "    return make(raw) + text;\n"
+                  "}\n");
+    CHECK(later.of("CXX-MOVE-CONST").empty());
+    Snippet before("a.cpp",
+                   "#include <string>\n#include <utility>\n"
+                   "std::string g() {\n"
+                   "    const std::string text = \"x\";\n"
+                   "    std::string r = std::move(text);\n"
+                   "    return r;\n"
+                   "}\n");
+    CHECK(before.of("CXX-MOVE-CONST").size() == 1);
+    // `static_cast<unsigned char>(...)` is no comparison; `a < b & c` still is.
+    Snippet cast("a.cpp",
+                 "#include <string>\n"
+                 "bool h(const std::string& s, unsigned k) {\n"
+                 "    return k < s.size() && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80;\n"
+                 "}\n"
+                 "int b(int x, int y) {\n"
+                 "    return x < 1 & y > 2;\n"
+                 "}\n");
+    std::set<std::string> bit_fns;
+    for (auto& f : cast.of("INT-BOOL-AS-BIT")) bit_fns.insert(f.function.value_or(""));
+    CHECK(bit_fns == std::set<std::string>{"b"});
 }
 
 TEST_CASE("checkers: guards that keep correct code silent") {

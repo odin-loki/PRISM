@@ -1,11 +1,11 @@
 // Harness drafting for POINTER-parameter functions (roadmap 4.2, 9.2).
 //
-// Law 6 keeps pointer functions out of unguarded BMC. A drafted harness makes
+// Law 6 keeps pointer functions out of unguarded checking. A drafted harness makes
 // the missing preconditions explicit: the pointer is not NULL, it addresses
 // exactly `n` elements (n taken from how the body indexes it), and the size
 // lies in a small checked range. Every assumption is listed in the finding.
 // Drafted assumptions were invented by PRISM (template or model), not stated
-// by a human, so even when BMC closes under them the row stays NEEDS-HARNESS
+// by a human, so even when the checker closes under them the row stays NEEDS-HARNESS
 // with extra.draft_verdict=PROVED-ASSUMING and the `// requires:` lines to
 // confirm; once a human writes them into the source, the ordinary harness
 // path reports PROVED-ASSUMING. A drafted assumption can hide the bug (e.g.
@@ -162,7 +162,12 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
             auto s = plan.size_of.at(p);
             int n = is_identifier(s) ? k : std::stoi(s);
             // the caller's object: element values unconstrained but written
-            pre += "int " + p + "[" + std::to_string(n) + "] = __prism_unconstrained;\n";
+            // (a local array with havocked bytes, and p a local pointer to it:
+            // the harnessed signature has the scalars only, as the harness
+            // stage materializes a requires)
+            const std::string obj = "__prism_obj_" + p;
+            pre += "int " + obj + "[" + std::to_string(n) + "];\n__prism_havoc_bytes((void*)" + obj + ", sizeof(" +
+                   obj + "));\nint *" + p + " = " + obj + ";\n";
         }
         if (!lenvar.empty()) pre += "if (!(" + lenvar + " == " + std::to_string(k) + ")) return 0;\n";
         for (auto& [v, r] : plan.range)
@@ -172,6 +177,12 @@ std::vector<HarnessDraft> build(const FunctionInfo& fn, const Plan& plan, std::s
         HarnessDraft d;
         d.harnessed = fn;
         d.harnessed.params = scalars;
+        {
+            std::string sig = (fn.return_type.empty() ? std::string("int") : fn.return_type) + " " + fn.name + "(";
+            for (std::size_t i = 0; i < scalars.size(); ++i)
+                sig += (i ? ", " : "") + scalars[i].first + " " + scalars[i].second;
+            d.harnessed.signature = sig + (scalars.empty() ? "void)" : ")");
+        }
         d.harnessed.kind = scalars.empty() ? "VOID" : "SCALAR";
         d.harnessed.body = pre + body;
         d.assumptions = plan.assumptions;
@@ -354,7 +365,7 @@ std::vector<HarnessDraft> draft_harness(const FunctionInfo& fn, std::string* why
 
 namespace {
 
-// Runs every size case of a draft through BMC and folds the results.
+// Runs every size case of a draft through PIR and folds the results.
 Finding evaluate(const FunctionInfo& fn, const std::vector<HarnessDraft>& drafts, int unwind) {
     auto& A = drafts.front().assumptions;
     nlohmann::json aj = A;
@@ -363,8 +374,7 @@ Finding evaluate(const FunctionInfo& fn, const std::vector<HarnessDraft>& drafts
     bool all_proof = true, any_bounded = false;
     std::string blocking;
     for (auto& d : drafts) {
-        auto recs = run_bmc({d.harnessed}, unwind, true);
-        auto r = recs.empty() ? Finding{} : recs[0];
+        auto r = check_function_pir(d.harnessed, unwind);
         statuses.push_back(r.status);
         if (r.status == laws::FAILED) {
             if (!failed) failed = r;
@@ -415,14 +425,14 @@ Finding evaluate(const FunctionInfo& fn, const std::vector<HarnessDraft>& drafts
         f.status = std::string(laws::NEEDS_HARNESS);
         f.strength = std::string(laws::STRENGTH_SOME);
         f.extra["harness"] = "false";
-        f.message = "drafted harness (" + listed + ") not decidable by BMC: " + blocking;
+        f.message = "drafted harness (" + listed + ") not decidable by PIR: " + blocking;
     }
     return f;
 }
 
 }  // namespace
 
-std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, std::string* refused) {
+std::optional<Finding> drafted_harness_check(const FunctionInfo& fn, int unwind, std::string* refused) {
     if (fn.kind != "POINTER") return std::nullopt;
     std::string why;
     auto drafts = draft_harness(fn, &why);
@@ -435,7 +445,7 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, s
     if (templ && closes(*templ)) return templ;
 
     // Template could not draft, or its draft does not prove: ask the model
-    // (when one is bound). Its draft goes through the same builder and BMC.
+    // (when one is bound). Its draft goes through the same builder and PIR.
     auto finish = [&](std::string note) -> std::optional<Finding> {
         if (templ) {
             templ->extra["llm_harness"] = note;
@@ -459,7 +469,7 @@ std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind, s
         return finish("model draft unusable: " + lwhy);
     }
     auto mf = evaluate(fn, mdrafts, unwind);
-    ar.checker = "bmc(drafted harness)";
+    ar.checker = "pir(drafted harness)";
     ar.checker_result = closes(mf) ? std::string(laws::PROVED_ASSUMING) + " (drafted, unconfirmed)" : mf.status;
     bool use_model = !templ || closes(mf);
     ar.verdict_effect = "none";  // drafted harnesses never change a verdict to a proof

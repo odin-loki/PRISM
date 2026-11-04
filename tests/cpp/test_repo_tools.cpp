@@ -66,15 +66,19 @@ prism::RunReport plan_done_run(const std::string& plant, const fs::path& out) {
 // docs/PLAN.md "done": prove a SCALAR, crash a plant, name a missing tool.
 // Without --allow-exec (Law 9) the crash comes from the in-process
 // interpreter paths (concolic / fuzz), not from running compiled code.
-TEST_CASE("plan done: abs_ok PROVED-UNBOUNDED; oob_write CRASH; missing ESBMC is never a proof") {
+TEST_CASE("plan done: abs_ok proved; oob_write CRASH; missing ESBMC is never a proof") {
     auto tmp = tools_tmp("plan-done");
     REQUIRE(fs::is_regular_file(repo_root() / "testdata" / "planted" / "abs_ok.c"));
     auto abs = plan_done_run("abs_ok.c", tmp / "abs_ok");
 #ifdef PRISM_HAS_Z3
-    CHECK(has(statuses(abs, "bmc"), std::string(prism::laws::PROVED_UNBOUNDED)));
+    {
+        // abs_ok is loop-free: pir proves it PROVED (k-induction is not needed)
+        auto st = statuses(abs, "pir");
+        CHECK(std::any_of(st.begin(), st.end(), [](const auto& s) { return prism::laws::is_proof(s); }));
+    }
 #else
-    // Without Z3 the bmc stage is NOTRUN (Law 1), never a proof.
-    CHECK_FALSE(has(statuses(abs, "bmc"), std::string(prism::laws::PROVED_UNBOUNDED)));
+    // Without Z3 the pir stage is NOTRUN (Law 1), never a proof.
+    CHECK_FALSE(has(statuses(abs, "pir"), std::string(prism::laws::PROVED_UNBOUNDED)));
 #endif
     // ESBMC is optional: when it is missing it is NOTRUN, never a clean or proved row (Law 1).
     for (const auto& s : statuses(abs, "esbmc")) {

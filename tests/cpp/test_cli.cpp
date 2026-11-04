@@ -86,14 +86,14 @@ TEST_CASE("cli: defaults match default_config and the documented values") {
 }
 
 TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
-    auto a = parse({"src", "--out", "o", "--no-llm", "--stage", "bmc,pir", "--skip", "fuzz",
+    auto a = parse({"src", "--out", "o", "--no-llm", "--stage", "wp,pir", "--skip", "fuzz",
                     "--unwind", "3", "--jobs", "4", "--fuzz-budget", "1.5", "--fuzz-iters", "16",
                     "--repair-rounds", "1", "--resume", "--tool", "esbmc=/opt/esbmc", "--allow-exec",
                     "--certified", "--solver-cache", "sc", "--timeout", "5", "--pbsd", "pb",
                     "--fail-on", "defect", "--strict-aliasing", "--pir-drafts", "--fp-checks",
                     "--requirements", "req.md", "--contracts-approved", "ap.json"});
     REQUIRE(a);
-    auto b = parse({"--out=o", "--no-llm", "--stage=bmc,pir", "--skip=fuzz", "--unwind=3", "-j4",
+    auto b = parse({"--out=o", "--no-llm", "--stage=wp,pir", "--skip=fuzz", "--unwind=3", "-j4",
                     "--fuzz-budget=1.5", "--fuzz-iters=16", "--repair-rounds=1", "--resume",
                     "--tool=esbmc=/opt/esbmc", "--allow-exec", "--certified", "--solver-cache=sc",
                     "--timeout=5", "--pbsd=pb", "--fail-on=defect", "--strict-aliasing",
@@ -105,7 +105,7 @@ TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
         CHECK(r->cfg.out == fs::path("o"));
         CHECK_FALSE(r->cfg.llm);
         REQUIRE(r->cfg.stages);
-        CHECK(*r->cfg.stages == std::vector<std::string>{"bmc", "pir"});
+        CHECK(*r->cfg.stages == std::vector<std::string>{"wp", "pir"});
         CHECK(r->cfg.skip == std::vector<std::string>{"fuzz"});
         CHECK(r->cfg.unwind == 3);
         CHECK(r->cfg.jobs == 4);
@@ -219,12 +219,12 @@ TEST_CASE("cli: a missing or malformed value is an error, never an empty or defa
 // Laws 7 and 8: a joined value is the value asked for. An unknown flag or a
 // missing value is an error before any scan, so a typo cannot skip every stage.
 TEST_CASE("cli: --flag=value, unknown flags, and a missing value") {
-    auto eq = parse({"--fail-on=defect", "--stage=bmc", "--out=reports", "--skip=fuzz",
+    auto eq = parse({"--fail-on=defect", "--stage=wp", "--out=reports", "--skip=fuzz",
                      "--unwind=3", "--jobs=4"});
     REQUIRE(eq);
     CHECK(eq->fail_on == "defect");
     REQUIRE(eq->cfg.stages);
-    CHECK(*eq->cfg.stages == std::vector<std::string>{"bmc"});
+    CHECK(*eq->cfg.stages == std::vector<std::string>{"wp"});
     CHECK(eq->cfg.out == fs::path("reports"));
     CHECK(eq->cfg.skip == std::vector<std::string>{"fuzz"});
     CHECK(eq->cfg.unwind == 3);
@@ -264,16 +264,16 @@ TEST_CASE("cli: --stage/--skip take only pipeline stages; an empty --stage runs 
     CHECK(e.starts_with("argument --stage: unknown stage 'bcm' (stages: inventory, classify,"));
     CHECK(e.find("unify") != std::string::npos);
     CHECK(error_of({"--skip", "fuse"}).starts_with("argument --skip: unknown stage 'fuse'"));
-    CHECK(error_of({"--stage=bmc,,nope"}).starts_with("argument --stage: unknown stage 'nope'"));
+    CHECK(error_of({"--stage=wp,,nope"}).starts_with("argument --stage: unknown stage 'nope'"));
     for (auto* empty : {"", " , "}) {
         auto r = parse({"--stage", empty});
         REQUIRE(r);
         CHECK_FALSE(r->cfg.stages);  // every stage, as if --stage were not given
         for (auto& s : stage_order()) CHECK(r->cfg.want(s));
     }
-    auto sp = parse({"--stage", " bmc , pir ", "--skip", ""});
+    auto sp = parse({"--stage", " wp , pir ", "--skip", ""});
     REQUIRE(sp);
-    CHECK(*sp->cfg.stages == std::vector<std::string>{"bmc", "pir"});
+    CHECK(*sp->cfg.stages == std::vector<std::string>{"wp", "pir"});
     CHECK(sp->cfg.skip.empty());
     // Every stage name is accepted.
     std::string all;
@@ -312,7 +312,7 @@ TEST_CASE("cli: prism triage options") {
 // ---- the stage list ------------------------------------------------------------
 
 TEST_CASE("pipeline: every STAGE_ORDER name is run, in order (none skipped quietly)") {
-    for (auto* s : {"harness", "rapid", "muttest", "diff", "fuzz", "bmc", "execute", "concolic",
+    for (auto* s : {"harness", "rapid", "muttest", "diff", "fuzz", "execute", "concolic",
                     "sanitize", "taint", "thread", "interval", "wp", "polyglot", "pir", "conc",
                     "review", "unify"}) {
         auto o = stage_order();

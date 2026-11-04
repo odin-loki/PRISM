@@ -491,6 +491,26 @@ inlined function was only 11. The two that moved:
   `__throw_bad_array_new_length` functions move to their next blocker (7 to
   the throw-under-invoke refusal, i.e. need real dispatch; 9 to an inlined
   pointer-returning callee with stack objects; 3 to `__cxa_allocate_exception`).
+* **Coverage reproducibility (491 vs 308).** The 308 runs (`cov3`, `cov4`)
+  were truncated: `prism` over the whole `testdata/conformance` tree was killed
+  (kernel OOM / box memory pressure) partway, after the newly merged
+  `libc-models` tasks, so `conformance/prism/*` and `sv-comp/*` never exported
+  (116 of 228 conformance files). The 479/491 rows came from full runs
+  earlier in the day. Reproducible method now: `/workspace/bin/prism-run
+  prism-qa pir-lean-check` with the conformance tree split into its five
+  subdirectories (one `prism` run each), the other trees as before.
+* **`L throw` with arguments** (8954fa5ce): `Tr::eh_call` evaluates the
+  non-float arguments of `std::__throw_*` before raising; the exporter writes
+  them after the typeinfo and `runFrame` translates them (`trArgsX`) before
+  `throwX`. Fixture `throw_args` (3 agree-ext).
+* **Coverage after the `fix/memory-budget` merge (3c64dac94, which brings
+  `work/libc-models`' new testdata) and the two throw changes, 2026-10-29,
+  split method:** agree 1 061, agree-ext **641**, agree-reject 274, outside
+  2 078, mismatch **0** (conformance: concurrency 43 functions / 0 agree-ext,
+  esbmc-cpp 186 / 19, libc-models 442 / 246, prism 332 / 119, sv-comp 157 / 48;
+  the run was killed by the RSS watchdog during or after `sv-comp`, so that
+  subtree may be partial — a lower bound). Not comparable row-for-row with
+  the table above (more test functions).
   \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
   the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
   files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under
@@ -871,6 +891,216 @@ A value difference that is not a soundness issue: after a failed division
 check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
 `x / 0 = 0`; the value is unobservable because the check already failed.
 
+## WIP: exception landing pads (work/proofs)
+
+Done (fixture `cxx_cleanup_pad`, agree-ext 3, 0 mismatch; check.sh OK):
+* Exporter (`export_lean.cpp`): blocks reached from a live `invoke`'s unwind
+  edge (`padset`) are exported (`L lpad`, `L insv`, `L resume`, `L xv` of a
+  pair; the invoke's call is `L ivk PAD ...`; `L thrown` = sorted
+  `thrown_types()`); a pad that fails to export is still a stub
+  (`PRISM_LEAN_PAD_DEBUG=1` prints why).
+* Lean: `SInst.lpad`/`insv` are `.stuck` (the LLVM run makes no claim past a
+  throw; pad blocks are not in `xLive`, so no proof changes beyond
+  impossible cases). `XTranslate` mirrors `Tr::handlers`/`frames`,
+  `dispatch_type` (cleanup pads; a filter soft-stops; catch clauses are
+  refused), `raise` of an unknown type (`resume`, `Tr::ld` + per-type
+  branches), `eh_pass`/`region` (region calls are not certificate segments),
+  landing-pad head phis (`add_phi`), `upair` for `resume` (UB-POISON).
+Refused (outside): catch clauses / `__cxa_begin_catch`, terminate.lpad,
+phis in pads, region code joining a live block with phis or returning,
+region phis from untranslated blocks, insertvalue operands not from a pad.
+Catch dispatch (fd97e1fae): `Tr::enters`/`catches` mirrored in `dispatchX`
+(catch(...) selector 0x7FFFFFF0, exact type selector `type_id`, pointer /
+fundamental pass-by, -1 cases soft-stop, bound-pointer store at exn+16);
+`derives` (catch through a base) is refused (typeinfo initialisers not
+exported). NOT yet covered, so every catch pad is still refused at
+`__cxa_begin_catch` (`UNENCODED: call`). Handoff for the rest:
+1. `caught_slot()` is `mt.alloc(-1, 72, Static, init 1)`: block -1 is
+   `Tr::prologue`, prepended to PIR block 0 at the end
+   (`translate.cpp` ~2064). Lean has no prologue: add `TS.prologue`, prepend
+   in `translateX`, and let `segOK` of instance 0 / block 0 / seg 0 accept
+   `prologue ++ s1 ++ ...`. Proof work (XRefine/XMemSim): running the
+   prologue (one fresh object nobody names in LLVM) keeps `RelX` and the
+   memory relation; check how `.glob`/`L glob` objects are already
+   related, likely the model to follow.
+2. Mirror `eh_call` for `__cxa_begin_catch` (`translate_ctl.inc` ~520:
+   depth ld, soft_guard d<8 = br eh.ok/eh.unmodelled, count update, slot
+   gep `mt.gep(...,{d},...,1)`, push compare, store), `__cxa_end_catch`
+   (~555; destroy path inlines `type_dtor` destructors via `call`: needs
+   the exporter to emit `type_dtor` and the dtor bodies; first version can
+   refuse when any thrown type has a dtor), `llvm.eh.typeid.for` (constant
+   `type_id`), `__cxa_rethrow`. The exporter must emit these calls as
+   dedicated lines (now `call` to an unknown function).
+   FINDING (blocks step 1 as written): the extended simulation runs LLVM
+   and PIR on the SAME world (`SimX`: `p = .ok σ' t'` with the LLVM `t'`).
+   `L glob` works because the LLVM side has the same `.glob` SInst
+   (`globAlloc`), so both worlds allocate in lockstep. A PIR-only prologue
+   alloc (the caught slot) would shift every later object id and oracle
+   draw, which breaks `RelX` for all later pointers; proving it needs a
+   renaming relation between the worlds (an XMemSim rewrite). Cheaper
+   options: (a) make the LLVM side allocate it too: the exporter emits
+   `L glob %__prism.caught 72 ...` first in the entry block (after the other
+   globs, as `emit_entry_globals` then `caught_slot` order in the
+   prologue) and `.glob` already has its proof; this needs the C++
+   translator to allocate the slot eagerly under the same static condition
+   the exporter uses (e.g. "the export closure calls __cxa_begin_catch /
+   end_catch / rethrow"), since `caught_slot()` is lazy today (first
+   use, var number mid-stream). Changing translate.cpp affects product
+   output: needs sign-off. (b) the renaming relation. Recommend (a).
+   STATUS (option (a) approved): implemented in the working tree, commit
+   held until verified: `pirmem::reaches_caught_slot` (translate_mem.cpp:
+   call/invoke closure reaching __cxa_begin_catch/end_catch/rethrow);
+   `Tr::enter_frame` preassigns `caught_var_` after `oom_`; `run_frame`
+   allocates `caught_` in the prologue after the oom object; exporter emits
+   `L glob %__prism.caught 72 16 3 1 0` after the oom line. Verification
+   queued (prism-run queue stalled by other agents' jobs):
+   `/workspace/eh/tests1.log` (prism_tests -tc=*pir*,*PIR*,*cxx*,*C++*,*xception*),
+   `/workspace/eh/cmp.sh` -> cs-base/ vs cs-new/ (14 catch-heavy
+   conformance files, binaries /workspace/eh/prism-base and prism-new;
+   compare verdicts in out/report.md). Then commit, then Lean mirrors of
+   begin/end_catch etc. (step 2).
+3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
+   list_contracts.
+DONE (ca55edb53, cbd942f88, c7fbf3a77): eager caught slot committed (14
+catch-heavy cs verdicts identical base/new; pir tests pass except 2 astlint
+cases failing on a missing libclang resource dir, unrelated). Lean `ehCallX`
+mirrors `__cxa_begin_catch`, `__cxa_end_catch` (refused when `L thrdtor`: a
+`__cxa_throw` passes a destructor), `llvm.eh.typeid.for` (exported as
+`L call %r 32 llvm.eh.typeid.for:<TI> 0`), `__cxa_rethrow` (plain call only;
+an `invoke` of it, e.g. inside a cleanup pad, is refused). Region blocks now
+append statements (several eh calls in one LLVM block). Fixture
+`cxx_catch` (catch(...), catch(std::bad_alloc&): agree-ext; rethrow refused:
+invoke + terminate.lpad). check.sh OK, 0 mismatch, testdata/pir agree-ext 87.
+Open: invoke of rethrow / terminate.lpad (`__clang_call_terminate`), thrown
+dtors in end_catch, region code joining a block with phis.
+Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
+via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
+
+DONE (6fa8a9de6): user-written throw. Exporter emits `L xalloc %d <sz> 64`
+and `L uthrow <TI> <ptr> <pad|-> <normal|->` only for the exact clang
+pattern (call-free stores between `__cxa_allocate_exception` and
+`__cxa_throw(result, @TI, dtor)`; else unsupported, e.g. a throw of a class
+with an out-of-line ctor). Lean trB mirrors Tr::eh_call's throw (header
+object, payload, dispatch; an invoke pushes the pad on hs) and translates
+the invoke's normal `unreachable` block as `check unreachable; stop`.
+LLVM side stays `.stuck` (thr), so no proof change. Fixtures cxx_uthrow
+(g, t2 invoke, t3: agree-ext) and cxx_uthrow_neg (ctor throw refused).
+Re-measure: final binaries in /workspace/eh/final (REV); libc-models per
+file at 700MB in /workspace/eh/lcper.log.
+
+Negative export tests (90e8fea64, test_main "user throw only in clang's
+exact pattern"): thrown pointer not the allocation, non-constant typeinfo.
+Checker speed (3dc99bf64): `xLive` was a layered list fixpoint (cubic) and
+dominated translateX/validB on large sv-comp reducers (apache-get-tag
+p+lhb: 150 s); now a linear BFS in the same order (proofs only use
+`xLiveClosed`, which checks it): 0.16 s; all 174 sv-comp pairs in 22 s.
+libc-models per file at 700MB (/workspace/eh/lcper.log): killed
+priority_queue_contracts (1006MB), sstream_contracts (939MB),
+unordered_map_contracts (983MB): skipped in the final measure
+(/workspace/eh/lcskip). Per-file exit 2 (ctype, expected, ratio, stdio, ...)
+is the per-file copy losing `harness.h`, not a product issue.
+Final measure: /workspace/eh/final5.sh -> /workspace/eh/fin_<subdir>.log.
+
+Final measure (binaries /workspace/eh/final, REV 3dc99bf64), all mismatch=0:
+concurrency agree=0 ext=0 reject=6 outside=37; esbmc-cpp 8/20/86/72 (28
+proved); libc-models minus 3 skipped 4/87/3/146 (91 proved); sv-comp
+32/180/0/362 (212 proved); prism killed at 1951MB (budget 1500): per-subdir
+sweep at 1000MB in /workspace/eh/prper.log: every subdir fine (mismatch=0)
+except prism/cxx (killed 1300MB); per-file sweep in /workspace/eh/cxxper.log.
+
+Memory root cause (3c5fc60fa): the ~1GB in pir-lean-check was the pir
+stage's model checking (Z3), not export or Lean (checker 15MB, export
+<80MB). pir-lean-check only needs the translation: prism-qa now sets
+PRISM_PIR_EXPORT_ONLY=1 (with PRISM_PIR_LEAN_EXPORT), and stage.cpp records
+each function NOTRUN after exporting. libc-models priority_queue / sstream /
+unordered_map: 1GB -> 21/77/60MB, same verdicts; prism/cxx culprits were the
+same containers (cxx_priority_queue/sstream/unordered_map/unordered_set_true).
+Final rerun without skips: /workspace/eh/fin_<subdir>.log (old in fin_old/).
+
+Final measure, no skips (REV 3c5fc60fa, 1500MB), all mismatch=0:
+concurrency 0/0/6/37; esbmc-cpp 8/20/86/72 (28 proved); libc-models
+6/246/4/186 (252 proved; was 4/87/3/146 with skips and checking on);
+prism 203/230/69/227 (433 proved; was killed); sv-comp 32/180/0/362 (212).
+Peak RSS 20-173MB per subdir. libc-models 240 -> 442 is not memory: harness.h
+#includes model sources by repo-relative path, so the out-of-tree copies
+(lcper, lcskip) lost those units (ctype in tree: 28 agree-ext; copied: 0).
+
+Outside tally (5 subdirs, before d/terminate): call @_ZSt9terminatev 123
+(all the `__clang_call_terminate` helper), pointer operand @global 96,
+inlined fn returning a pointer with stack objects 48, type {ptr,iN} 40,
+indirect call 25, gep operand / constant-bound gep 19+19, float/double 30.
+std::terminate done: exporter `L terminate` (call right before
+`unreachable`, not invoke); Lean: thr block (LLVM stuck), begin/end_catch
+before it via ehCallX, then `check 1 terminate CXX-TERMINATE; stop`.
+Fixtures cxx_terminate_call, cxx_terminate_neg (inlined call before
+terminate refused); doctest "std::terminate only right before unreachable".
+Re-measure (b49996efa): outside 884 -> 761, all mismatch=0; the 123
+`__clang_call_terminate` helpers now agree-reject (pointer parameter, Law 6,
+same as C++), so the proved count is unchanged (28/252/433/212; user
+std::terminate calls rarely occur in these trees). concurrency 0/0/6/37,
+esbmc-cpp 8/20/101/57, libc-models 6/246/35/155, prism 203/230/146/150,
+sv-comp 32/180/0/362.
+Next candidate: pointer operand @global (96; .str, typeinfo, vtables).
+
+### Globals named by inlined callees (bca67906e, 676b3bead)
+All 96 "pointer operand @global" outsides were globals named only inside an
+inlined callee (MemTr::global allocated them lazily, mid-numbering, so the
+export refused them). Now `pirmem::entry_globals` also collects the globals
+of the transitively callable functions (DFS, call order), so C++ allocates
+them in the prologue like the function's own; the exporter writes them as
+`L glob` lines and passes every entry global to every inlined callee as extra
+`@name 64` parameters (after its own, before `__prism.oom`), each call passing
+`%@name` — the same rewrite as the oom flag, no Lean change. thread_local
+globals stay outside. Fixture `callee_global`, doctest "lean export passes
+globals to inlined callees, not thread_local ones". Re-measure (final/,
+676b3bead, mismatch 0 everywhere): concurrency 0/0/6/37, esbmc-cpp
+8/21/101/56, libc-models 6/259/35/142, prism 203/235/146/145, sv-comp
+32/180/0/362 (agree/ext/reject/outside): outside 761 -> 742, proved +19; the
+other callee-global functions now stop at a later fragment limit. Left:
+`__const.*` globals with an `undef` initialiser (flat_init fails, still
+lazy). Next, `{ptr,iN}`/`{i64,i64}` scalar pairs (49): C++ Frame::pairs
+(two variables per register, insertvalue/extractvalue, pair-returning
+inlined calls, pair load/store, upair undef tracking) — needs a two-value
+return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
+
+### Inlined callees returning a pointer (98dadedab)
+
+- **Semantics (XLlvm `sEnd`/`lEnd`):** a `ret` of a pointer from *any* frame with `retPtr` (the analysed function or an inlined callee) now runs the stack-escape check against that frame's own `escNames` before `retFree`. Previously an inlined callee was outside.
+- **Translator (XTranslate):** `escStmts` no longer requires `retTo = none`. `freeStmts` frees the callee's objects after the check.
+- **Proofs:**
+  - XRun `step_sim`'s `ret (some o)` cons case is proved: `escChk_run` plus `escHit_ok`, then the new `freeW_agree` and `freeAll_ok`, then the continuation.
+  - XLazy gets `retFree_lift'`.
+- **Fixtures:**
+  - `callee_retptr` gives agree-ext=3 and agree-reject=1.
+  - `callee_retptr_neg` drops the callee's escape check, giving MISMATCH.
+  - `inlined_alloca` moved from outside=1 to agree-ext=5.
+- **Re-measure (agree/ext/reject/outside):**
+
+  | Subdir | Result |
+  |---|---|
+  | concurrency | 0/0/6/37 |
+  | esbmc-cpp | 8/21/101/56 |
+  | libc-models | 6/303/35/98 |
+  | prism | 203/252/146/128 |
+  | sv-comp | 32/180/0/362 |
+
+  Outside went from 742 to 681, with 0 mismatches. check.sh is green and pir tests pass at 1735.
+- **Next:** `{ptr,iN}` scalar pairs, per the design: `CallI.pw`, a pair `ret`, pend packing, the `contOK`/`EntryX` pair variant, and exporter lines.
+
+## Scalar pairs ({ptr|iN, ptr|iN}) of inlined callees
+
+- Model: `packP v0 v1 = 2^v0*(2*v1+1)` (lossless, `unpk_packP`); `setRet`/`lSetRet` unpack; `XFunc.pret`, `CallI.pw`.
+- Translator/validator/proofs (aeda92a89): pair `ret` escape-checks each pointer field, ends the frame, jumps to the continuation whose two phis take the fields in order.
+- Syntax (30eca81b3): `L ret 0` + `L pret W0 W1 P0 P1`; call width `pW0:W1`; `L pload %x W0 W1 SIZE OFF1 P A0 A1` = load `.0`, gep `.2`, load `.1` (translate.cpp now numbers the field-1 address between the fields); `L dead %x W0 W1 64` for a dead pair load; `L xv` of a pair load/call/invoke.
+- The analysed function's own pair return: each pointer field's escape check, then `ret` without a value (PIR's `ret` has one value; `pairOut` makes the LLVM side return none at the top frame, so `pir_faithful_ret_x` reads `ret none`); `ret_width` 0. Fixtures top_pair (agree-ext x2), top_pair_neg_esc (escape check dropped: mismatch). A pair constant returned stays UNENCODED.
+- Re-measure at 30eca81b3 (five conformance suites): agree=249 agree-ext=785 agree-reject=288 outside=652 (was 681) mismatch=0.
+- Fixtures: callee_pair (agree-ext), callee_pair_neg_phi (phis swapped), callee_pair_neg_esc (escape check dropped), both mismatch.
+
+## Outside tally at 36dfbca60 and abort()
+
+- Tally (all five suites, 652 outside): `call @abort` 341, getelementptr cases ~70 (`pointer operand @global` 37, constant-bound index 39, `operand ptr getelementptr` 19), `call @<indirect>` 25, `__cxa_allocate_exception` 17, `pthread_create` 16, `__throw_logic_error` 14, `pthread_mutex_lock` 12, `printf` 12, float/double ~42, raw aggregate load 14.
+- abort(): translate.cpp's check(1, "abort", FUNC-CONTRACT) + noreturn, exactly a noreturn failure call (`afail_kind`), unless the analysed function reaches `__prism_alloc_failed` (then the check reads the oom flag: still outside). Fixtures abort_call (agree-ext x2), abort_call_neg (check dropped: mismatch).
+
 ## What remains
 
 * **Library calls.** Most `testdata` functions outside the fragment call a
@@ -936,3 +1166,35 @@ check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
   `revive` statement of `llvm.lifetime.start` (finding 7) in the Lean model,
   so those functions come back into the fragment; `undef` outside
   `freeze`/`store` (finding 4); `llvm.assume` (finding 8).
+
+### Catch code joining phis (1d6447234)
+- Exporter keeps phi incomings from landing-pad blocks (`live || padset`).
+- Lean: a live phi incoming from a translated region block uses its PIR tail;
+  after the phi loop each region block's `IInfo.blks` entry is set to `[tail]`
+  so `validB` (segOK s=0, `I.tails`) recomputes the same phis; no proof change.
+  An incoming from an untranslated block (pad no throw reached) is refused.
+- Fixture fixtures/cxx_catch_phi (source /workspace/eh/catch_phi.cpp): agree-ext=4.
+- Next: dtors in `__cxa_end_catch` (C++ type_dtor loop; exporter must emit the
+  dtor map), then rethrow invoke / terminate.lpad (`__clang_call_terminate`).
+- Re-measure queued: /workspace/eh/rm_{concurrency,esbmc-cpp,libc-models,prism,sv-comp}.log;
+  list_contracts still queued: /workspace/eh/lc.log.
+
+### Destructors, rethrow invoke, terminate pad (a711b71d4, 36662af06)
+- Exporter: `L thrdtor T D ...` (Tr::type_dtor, first `__cxa_throw` per type,
+  entries with a destructor; bare `L thrdtor` = not exported -> Lean refuses
+  `__cxa_end_catch`). When the module has `__cxa_end_catch`, the destructors
+  are added as `L fn` callees. `__clang_call_terminate` in pads -> `L call`.
+- Lean: `ehCallX` end_catch leaves `eh.destroy` in `pendD`; `runFrame.trB` runs
+  the type_dtor loop (type-id compare, inline the destructor via `callAt` on a
+  temp env entry `__prism.eh.obj` = payload, then `free E`, `jmp eh.done`).
+  A destructor that fails is refused (C++ snap/restore does not roll back
+  vars, so a soft stop is not mirrored). The generic inlined call is now the
+  closure `callAt`.
+- `invoke` of an eh call pushes its pad on `hs` around the call (and the dtor
+  loop); `__clang_call_terminate`: `check 1 terminate CXX-THROW-NOEXCEPT`, stop.
+- Fixtures: cxx_catch_dtor (agree-ext 4), cxx_rethrow, cxx_terminate; cxx_catch
+  now agree-ext 4 (f_rethrow accepted).
+- list_contracts (lc2.log): outside=8, all "inlined function returning a
+  pointer with stack objects" (not EH) + __clang_call_terminate (calls std::terminate).
+- Known: user `throw` (`__cxa_allocate_exception`/`__cxa_throw`) is still
+  outside; that is the next big EH gap.

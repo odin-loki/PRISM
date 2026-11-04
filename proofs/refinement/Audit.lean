@@ -18,7 +18,7 @@ open PrismRefine
 #print axioms pir_no_stop
 -- Part 8.2 "Property instrumentation": the C++ checks test the LangRef conditions
 #print axioms checks_bad
-#print axioms nneg_bad
+#print axioms cast_bad
 #print axioms checks_eq_ubBin
 #print axioms checks_cover_ubBin
 #print axioms test_sadd

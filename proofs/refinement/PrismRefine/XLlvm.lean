@@ -96,8 +96,8 @@ inductive SInst where
   | load (dst : String) (w : Nat) (p : Opnd) (al : Nat)
   /-- `store iw v, ptr p, align al` (`v` may be `undef`) -/
   | store (w : Nat) (v : FOpnd) (p : Opnd) (al : Nat)
-  /-- `%dst = getelementptr [inbounds] T, ptr base, ix…` -/
-  | gep (dst : String) (inb : Bool) (base : Opnd) (ix : List GIdx)
+  /-- `%dst = getelementptr [inbounds] [nuw] T, ptr base, ix…` -/
+  | gep (dst : String) (inb nuw : Bool) (base : Opnd) (ix : List GIdx)
   /-- `%dst = call iw @llvm.smax.iw(a, b)` (`smin`, `umax`, `umin`) -/
   | mm (dst : String) (k : MMK) (w : Nat) (a b : Opnd)
   /-- `%dst = call iw @llvm.abs.iw(a, i1 flag)` (`ctlz`, `cttz` with their
@@ -189,6 +189,15 @@ inductive SInst where
   /-- `call void @__prism_check(iw a, cls, msg)`: a model's property check of
   class `cls` (literal strings): undefined (the property fails) when `a` is 0. -/
   | vcheck (a : Opnd) (w : Nat) (cls : String)
+  /-- `%dst = landingpad { ptr, i32 } [cleanup] clauses` (`cls`: the catch
+  typeinfo symbols, `null` for `catch (...)`, `f` for a filter): the fields are
+  `pairReg dst 0` (exception) and `pairReg dst 1` (selector).  Only reached by
+  unwinding, which this semantics does not follow: stuck (no claim). -/
+  | lpad (dst : String) (cleanup : Bool) (cls : List String)
+  /-- `%dst = insertvalue { iw0, iw1 } agg, v, idx` of a two-field pair
+  (`agg = none`: `undef`), as clang rebuilds the exception pair before
+  `resume`; only in code unwinding reaches (stuck: no claim). -/
+  | insv (dst : String) (w0 w1 : Nat) (agg : Option String) (v : Opnd) (idx : Nat)
   deriving DecidableEq, Repr, Inhabited
 
 /-- The register of field `i` of an overflow pair (a name no LLVM register
@@ -219,6 +228,12 @@ structure CallI where
   /-- the call an `invoke` became (translator only): while the callee runs,
   `Tr::handlers` holds the invoke's landing pad -/
   inv : Bool := false
+  /-- the landing pad label of that `invoke` (translator only; `""`: not
+  exported, a throw dispatching to it is refused) -/
+  pad : String := ""
+  /-- the callee returns a two-field scalar pair (`{ ptr, i8 }` …) of these
+  field widths (`rw = 0`): the result's fields are `pairReg dst 0/1` -/
+  pw : Option (Nat × Nat) := none
   deriving DecidableEq, Repr, Inhabited
 
 /-- A block split at its calls: phis, then segments each ending in a call,
@@ -246,6 +261,21 @@ structure XBlock where
   /-- the non-float arguments of the `std::__throw_*` call (operand, width;
   translator only: `Tr::eh_call` evaluates them before raising) -/
   thrA : List (Opnd × Nat) := []
+  /-- the block ends in `resume` of this exception pair register (translator
+  only: only unwinding reaches it; its `term` is `unreachable`) -/
+  res : Option String := none
+  /-- a user throw (translator only): `__cxa_allocate_exception`'s result and
+  size, the code initialising the object (the run is stuck before it), and the
+  pointer `__cxa_throw` raises -/
+  thrU : Option (String × Opnd × List SInst × Opnd) := none
+  /-- the landing pad of an `invoke` of that `__cxa_throw` (`""`: a call) -/
+  thrPad : String := ""
+  /-- that `invoke`'s normal label (translate.cpp translates it; `unreachable`) -/
+  thrNorm : String := ""
+  /-- `std::terminate()` ends the block (`L terminate`, `thr`): the
+  caught-exception-stack calls before it, each with the instructions after it
+  (`__clang_call_terminate`'s `__cxa_begin_catch`) -/
+  thrK : Option (List (CallI × List SInst)) := none
   deriving DecidableEq, Repr, Inhabited
 
 structure XFunc where
@@ -261,6 +291,17 @@ structure XFunc where
   /-- the analysed function returns a pointer (checked for pointing into its
   own stack objects, `MemTr::stack_escape_check`) -/
   retPtr : Bool := false
+  /-- the function returns a two-field scalar pair: the field widths and
+  which fields are pointers (`retw = 0`; only an inlined callee's `ret` of
+  such a pair has a semantics: the analysed function's is stuck) -/
+  pret : Option (Nat × Nat × Bool × Bool) := none
+  /-- `Tr::thrown_types` (translator only, analysed function): every exception
+  type the module throws, sorted; `none`: not exported -/
+  thrown : Option (List String) := none
+  /-- `L thrdtor`: some `__cxa_throw` passes a destructor (translator only) -/
+  thrDtor : Bool := false
+  /-- `Tr::type_dtor` (the entries with a destructor; empty: not exported) -/
+  dtors : List (String × String) := []
   deriving DecidableEq, Repr, Inhabited
 
 /-- A module: the functions calls can reach (first match by name). -/
@@ -365,6 +406,20 @@ def gFinish (m : Mem) (inb : Bool) (b : Nat) (acc : GAcc) : Res Nat :=
 /-- `getelementptr` on register values: base `b`, the index values `vs`. -/
 def gepVal (m : Mem) (inb : Bool) (b : Nat) (ix : List GIdx) (vs : List Nat) : Res Nat :=
   (gFold { cst := 0, var := none } (ix.zip vs)).bind fun acc => gFinish m inb b acc
+
+/-- `getelementptr nuw` (LLVM 19+): the result is poison when an index, read
+as unsigned, makes the offset arithmetic wrap. PRISM checks the sufficient
+per-index condition `Tr::mem_inst` emits: an array or first index (variable
+or constant) is negative at its own width. Struct fields are never negative. -/
+def gNuwBad : List (GIdx × Nat) → Bool
+  | [] => false
+  | (.first _ w _, v) :: t => evalPred .slt (bv w v) (bv w 0) || gNuwBad t
+  | (.field _, _) :: t => gNuwBad t
+  | (.arr _ w _ _ _, v) :: t => evalPred .slt (bv w v) (bv w 0) || gNuwBad t
+
+/-- `getelementptr` with its `nuw` flag: the per-index checks, then `gepVal`. -/
+def gepValN (m : Mem) (inb nuw : Bool) (b : Nat) (ix : List GIdx) (vs : List Nat) : Res Nat :=
+  if nuw && gNuwBad (ix.zip vs) then .ub else gepVal m inb b ix vs
 
 /-- The operand of an index (`none`: a struct field, no operand). -/
 def GIdx.opnd : GIdx → Option (Opnd × Nat)
@@ -601,9 +656,9 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
       else if (loadCells W.mem pv w).any (·.isNone) then .ub
       else .ok (R.set d (bytesVal ((loadCells W.mem pv w).map (·.getD 0)) % 2 ^ w), W)
   | .store w v p al => sStoreR ω R W w v p al
-  | .gep d inb base ix =>
+  | .gep d inb nuw base ix =>
     (sOpnd R 64 base).bind fun b => (sIdxVals R ix).bind fun vs =>
-      (gepVal W.mem inb b ix vs).bind fun r => .ok (R.set d r, W)
+      (gepValN W.mem inb nuw b ix vs).bind fun r => .ok (R.set d r, W)
   | .mm d k w a b => (sMMV R k w a b).bind fun v => .ok (R.set d v, W)
   | .un d k w a flag => (sUnV R k w a flag).bind fun v => .ok (R.set d v, W)
   | .expect d w a => (sExpV R w a).bind fun v => .ok (R.set d v, W)
@@ -629,6 +684,8 @@ def sSInst (ω : Nat → Nat) (R : SRegs) (W : World) : SInst → Res (SRegs × 
   | .hmemset d b n => (sHmemset R W d b n).bind fun W' => .ok (R, W')
   | .hfresh d kd => (sFresh ω W kd).bind fun (p, W') => .ok (R.setOpt d p, W')
   | .vcheck a w _ => (sVcheck R w a).bind fun _ => .ok (R, W)
+  | .lpad .. => .stuck
+  | .insv .. => .stuck
 
 def sSInsts (ω : Nat → Nat) : SRegs → World → List SInst → Res (SRegs × World)
   | R, W, [] => .ok (R, W)
@@ -664,6 +721,46 @@ def Res.step {α : Type} : Res α → (α → Step) → Step
   | .ub, _ => .ub
   | .stuck, _ => .stuck
 
+/-- A returned scalar pair travels as one number, `2^v0 * (2 v1 + 1)`
+(`unpk` recovers both fields exactly). -/
+def packP (v0 v1 : Nat) : Nat := 2 ^ v0 * (2 * v1 + 1)
+
+/-- The value a returned scalar pair carries: none from the analysed function
+itself (`top`; PIR's `ret` has one value, and translate.cpp returns none
+there: only the fields' checks are observed), else the packed pair. -/
+def pairOut (top : Bool) (v0 v1 : Nat) : Option Nat := if top then none else some (packP v0 v1)
+
+def unpk (n : Nat) : Nat × Nat :=
+  if h : n = 0 then (0, 0)
+  else if n % 2 = 1 then (0, n / 2)
+  else ((unpk (n / 2)).1 + 1, (unpk (n / 2)).2)
+termination_by n
+decreasing_by omega
+
+theorem packP_pos (v0 v1 : Nat) : 0 < packP v0 v1 :=
+  Nat.mul_pos (Nat.two_pow_pos _) (by omega)
+
+theorem unpk_packP (v1 : Nat) : ∀ v0, unpk (packP v0 v1) = (v0, v1)
+  | 0 => by
+    have h1 : 2 * v1 + 1 ≠ 0 := by omega
+    have h2 : (2 * v1 + 1) % 2 = 1 := by omega
+    have h3 : (2 * v1 + 1) / 2 = v1 := by omega
+    rw [unpk]; simp only [packP, Nat.pow_zero, Nat.one_mul, h1, h2, h3, dite_false, ite_true]
+  | v0 + 1 => by
+    have hp := packP_pos v0 v1
+    have e : packP (v0 + 1) v1 = 2 * packP v0 v1 := by
+      simp only [packP, Nat.pow_succ]; rw [Nat.mul_comm (2 ^ v0) 2, Nat.mul_assoc]
+    have h1 : 2 * packP v0 v1 ≠ 0 := by omega
+    have h2 : ¬ (2 * packP v0 v1 % 2 = 1) := by omega
+    have h3 : 2 * packP v0 v1 / 2 = packP v0 v1 := by omega
+    rw [unpk, e]; simp only [h1, h2, h3, dite_false, ite_false, unpk_packP v1 v0]
+
+/-- The result `d` of a call: one register, or a pair's two fields. -/
+def setRet (R : SRegs) (pw : Option (Nat × Nat)) (d : String) (v : Nat) : SRegs :=
+  match pw with
+  | some _ => (R.set (pairReg d 0) (unpk v).1).set (pairReg d 1) (unpk v).2
+  | none => R.set d v
+
 /-- Registers on entry to the current segment: the phis (segment 0) or the
 result of the call that ended the previous segment. -/
 def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
@@ -674,7 +771,7 @@ def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
       match c.dst with
       | some d =>
         match fr.pend with
-        | some v => .ok (fr.R.set d v)
+        | some v => .ok (setRet fr.R c.pw d v)
         | none => .stuck
       | none => .ok fr.R
     | none => .stuck
@@ -683,6 +780,11 @@ def sEnter (fr : Frame) (B : XBlock) : Res SRegs :=
 def retTo : List Frame → Option Nat → World → Step
   | [], v, _ => .ret v
   | c :: cs, v, t => .next ({ c with pend := v } :: cs) t
+
+/-- A returned pointer `v` (when `p`) points into one of `F`'s own stack
+objects (C17 6.2.4p2: dangling once they end). -/
+def escBad (R : SRegs) (F : XFunc) (p : Bool) (v : Nat) : Res Bool :=
+  if p then (escHit R v F.escNames).bind fun hit => .ok (hit && ptrObj (v % 2 ^ 64) != 0) else .ok false
 
 /-- The stack objects `ns` of a returning callee end (LangRef: `alloca`
 memory is released when the function returns; `Tr::call`'s `end_lifetime`). -/
@@ -722,12 +824,27 @@ def sEnd (M : XMod) (fr : Frame) (rest : List Frame) (B : XBlock) (R : SRegs) (t
         | some j => .next ({ fr with prev := some fr.cur, cur := j, seg := 0, R := R, pend := none } :: rest) t
         | none => .stuck
     | .ret none => retFree fr.F R rest none t
-    | .ret (some o) => (sOpnd R fr.F.retw o).step fun v =>
+    | .ret (some o) =>
+      match fr.F.pret with
+      | some (w0, w1, p0, p1) =>
+        -- an inlined callee returning a scalar pair: each pointer field gets
+        -- the stack-escape check (translate.cpp's `ret_pair` return)
+        match o, rest with
+        | .reg x, _ =>
+          (sOpnd R w0 (.reg (pairReg x 0))).step fun v0 =>
+          (sOpnd R w1 (.reg (pairReg x 1))).step fun v1 =>
+          (escBad R fr.F p0 v0).step fun b0 => if b0 then .ub else
+          (escBad R fr.F p1 v1).step fun b1 => if b1 then .ub else
+          retFree fr.F R rest (pairOut rest.isEmpty v0 v1) t
+        | _, _ => .stuck
+      | none =>
+      (sOpnd R fr.F.retw o).step fun v =>
       -- PRISM's rule (C17 6.2.4p2): the analysed function returning a pointer
       -- into one of its own stack objects returns a dangling pointer
-      if rest.isEmpty && fr.F.retPtr then
+      -- (an inlined callee too: `MemTr::stack_escape_check` before its objects end)
+      if fr.F.retPtr then
         (escHit R v fr.F.escNames).step fun hit =>
-          if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retTo rest (some v) t
+          if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else retFree fr.F R rest (some v) t
       else retFree fr.F R rest (some v) t
     | .unreachable => .ub
 
@@ -821,11 +938,11 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ub => .ub
     | .stuck => .stuck
   | .store w v p al => lStoreR ω S W w v p al
-  | .gep d inb base ix =>
+  | .gep d inb nuw base ix =>
     -- a poison or indeterminate operand, an overflow, a C bound or leaving the
     -- object: the result is poison (LLVM) or C UB; flagged
     match ((sOpnd (lower S.R) 64 base).bind fun b => (sIdxVals (lower S.R) ix).bind fun vs =>
-            gepVal W.mem inb b ix vs) with
+            gepValN W.mem inb nuw b ix vs) with
     | .ok r => .ok (⟨S.R.set d (.val r), S.c⟩, W)
     | .ub => .ok (⟨S.R.set d (.val 0), true⟩, W)
     | .stuck => .stuck
@@ -879,6 +996,8 @@ def lSInst (ω : Nat → Nat) (S : LSt) (W : World) : SInst → Res (LSt × Worl
     | .ok _ => .ok (S, W)
     | .ub => .ub
     | .stuck => .stuck
+  | .lpad .. => .stuck
+  | .insv .. => .stuck
 
 def lSInsts (ω : Nat → Nat) : LSt → World → List SInst → Res (LSt × World)
   | S, W, [] => .ok (S, W)
@@ -911,6 +1030,11 @@ def Res.lstep {α : Type} : Res α → (α → LStep) → LStep
   | .ub, _ => .ub
   | .stuck, _ => .stuck
 
+def lSetRet (R : LRegs) (pw : Option (Nat × Nat)) (d : String) (v : Nat) : LRegs :=
+  match pw with
+  | some _ => (R.set (pairReg d 0) (.val (unpk v).1)).set (pairReg d 1) (.val (unpk v).2)
+  | none => R.set d (.val v)
+
 def lEnter (fr : LFrame) (B : XBlock) (c : Bool) : Res LSt :=
   if fr.seg = 0 then
     (lPhis fr.F.shape fr.R fr.prev B.phis).bind fun (upd, c1) => .ok ⟨fr.R.setAll upd, c || c1⟩
@@ -920,7 +1044,7 @@ def lEnter (fr : LFrame) (B : XBlock) (c : Bool) : Res LSt :=
       match cl.dst with
       | some d =>
         match fr.pend with
-        | some v => .ok ⟨fr.R.set d (.val v), c⟩
+        | some v => .ok ⟨lSetRet fr.R cl.pw d v, c⟩
         | none => .stuck
       | none => .ok ⟨fr.R, c⟩
     | none => .stuck
@@ -966,11 +1090,32 @@ def lEnd (M : XMod) (fr : LFrame) (rest : List LFrame) (B : XBlock) (S : LSt) (t
       | .stuck => .stuck
     | .ret none => lRetFree fr.F S.R rest none t S.c
     | .ret (some o) =>
+      match fr.F.pret with
+      | some (w0, w1, p0, p1) =>
+        match o, rest with
+        | .reg x, _ =>
+          match lOpnd S.R w0 (.reg (pairReg x 0)) with
+          | .ok (.val v0, c0) =>
+            match lOpnd S.R w1 (.reg (pairReg x 1)) with
+            | .ok (.val v1, c1) =>
+              (escBad (lower S.R) fr.F p0 v0).lstep fun b0 => if b0 then .ub else
+              (escBad (lower S.R) fr.F p1 v1).lstep fun b1 => if b1 then .ub else
+              lRetFree fr.F S.R rest (pairOut rest.isEmpty v0 v1) t (S.c || c0 || c1)
+            | .ok (.poison, _) => .ub
+            | .ok (.ind, _) => .ub
+            | .ub => .ub
+            | .stuck => .stuck
+          | .ok (.poison, _) => .ub
+          | .ok (.ind, _) => .ub
+          | .ub => .ub
+          | .stuck => .stuck
+        | _, _ => .stuck
+      | none =>
       match lOpnd S.R fr.F.retw o with
       | .ok (.val v, cv) =>
-        if rest.isEmpty && fr.F.retPtr then
+        if fr.F.retPtr then
           (escHit (lower S.R) v fr.F.escNames).lstep fun hit =>
-            if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetTo rest (some v) t (S.c || cv)
+            if hit && ptrObj (v % 2 ^ 64) != 0 then .ub else lRetFree fr.F S.R rest (some v) t (S.c || cv)
         else lRetFree fr.F S.R rest (some v) t (S.c || cv)
       | .ok (.poison, _) => .ub
       | .ok (.ind, _) => .ub

@@ -43,7 +43,7 @@ namespace prism::pir {
 namespace {
 
 using pirmem::Unenc;
-using pirmem::kPtrW;
+using pirmem::ptr_w;
 
 bool has_flag(const ir::Inst& in, std::string_view f) {
     return std::find(in.flags.begin(), in.flags.end(), f) != in.flags.end();
@@ -82,6 +82,9 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // a scalar pair load's field-1 address, numbered between its two fields
+    // (the order export_lean's `L pload` gives the Lean frame)
+    std::map<std::string, int> pairq;
     std::map<int, Arg> shadow;                          // var -> uninit shadow (i1)
     // var -> undef shadow (i1): the value may be (computed from) LLVM undef,
     // so every use may observe a different value (refinement finding 4)
@@ -160,7 +163,8 @@ struct Tr final : pirmem::TrApi {
     std::optional<std::vector<std::string>> thrown_;  // every type the module throws
     std::optional<Arg> caught_;                       // hidden object: stack of caught exceptions
     std::optional<Arg> oom_;                          // hidden object: an allocation failed (F9)
-    bool oom_pending_ = false;                        // oom_ preassigned, its object not yet emitted
+    bool oom_pending_ = false;
+    int caught_var_ = -1;                             // caught_'s preassigned variable                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
     Snap snap();
@@ -276,7 +280,7 @@ struct Tr final : pirmem::TrApi {
     static std::optional<std::pair<unsigned, unsigned>> scalar_pair(const ir::Type& t) {
         if (t.kind != ir::Type::Struct || t.elems.size() != 2) return std::nullopt;
         auto w = [](const ir::Type& e) -> unsigned {
-            if (e.kind == ir::Type::Ptr && e.text == "ptr") return kPtrW;
+            if (e.kind == ir::Type::Ptr && e.text == "ptr") return ptr_w();
             if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
             if (e.kind == ir::Type::Float && e.text == "double") return 64u;  // std::complex<double>
             if (e.kind == ir::Type::Float && e.text == "float") return 32u;
@@ -341,10 +345,10 @@ struct Tr final : pirmem::TrApi {
                 return havoc(b, w, false, false);
             }
             case ir::Value::Null:
-                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(ptr_w(), 0);
                 break;
             case ir::Value::Zero:
-                if (o.ty.kind == ir::Type::Ptr) return Arg::c(kPtrW, 0);
+                if (o.ty.kind == ir::Type::Ptr) return Arg::c(ptr_w(), 0);
                 if (auto w = fp::width_of(o.ty)) return Arg::c(*w, 0);
                 break;
             case ir::Value::Fp: return Arg::c(vwidth(o.ty, "operand type"), o.v.bits);
@@ -355,7 +359,7 @@ struct Tr final : pirmem::TrApi {
                 if (o.v.ce_op == "getelementptr") return mt.const_gep(b, o.v, line);
                 if ((o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast") && o.ty.kind == ir::Type::Ptr &&
                     !o.v.elems.empty() && o.v.elems[0].v.kind == ir::Value::Int && o.v.elems[0].v.bits == 0)
-                    return Arg::c(kPtrW, 0);
+                    return Arg::c(ptr_w(), 0);
                 throw Unenc{"UNENCODED: constant expression " + o.v.ce_op +
                             (o.v.ce_op == "ptrtoint" ? " (address values are not modelled)" : "")};
             default: break;
@@ -514,9 +518,12 @@ struct Tr final : pirmem::TrApi {
             // the hidden allocation-failed flag, when a model can set it: its
             // variable after the globals', its object after theirs (run_frame)
             if (pirmem::reaches_alloc_failed(m, f)) {
-                oom_ = Arg::v(newvar("_oom", kPtrW), kPtrW);
+                oom_ = Arg::v(newvar("_oom", ptr_w()), ptr_w());
                 oom_pending_ = true;
             }
+            // the hidden caught-exceptions stack, when a handler can be entered:
+            // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
+            if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
         }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
@@ -536,7 +543,7 @@ struct Tr final : pirmem::TrApi {
                     in.ty.elems.size() == 2 && in.ty.elems[0].kind == ir::Type::Ptr &&
                     in.ty.elems[1].kind == ir::Type::Int && in.ty.elems[1].bits == 32) {
                     // { ptr, i32 }: exception pointer and selector (translate_ctl.inc)
-                    int a = newvar(fr.prefix + in.result + ".exn", kPtrW);
+                    int a = newvar(fr.prefix + in.result + ".exn", ptr_w());
                     int s = newvar(fr.prefix + in.result + ".sel", 32);
                     fr.pairs[in.result] = {a, s};
                     fr.defs[in.result] = &in;
@@ -547,6 +554,7 @@ struct Tr final : pirmem::TrApi {
                         // two-field aggregate (the { ptr, i32 } exception pair
                         // rebuilt before `resume`, a returned std::pair ...)
                         int a = newvar(fr.prefix + in.result + ".0", sp->first);
+                        if (in.op == "load") fr.pairq[in.result] = newvar(tmpname("pair.f1"), ptr_w());
                         int s = newvar(fr.prefix + in.result + ".1", sp->second);
                         mark_fp_pair(in.ty, a, s);
                         fr.pairs[in.result] = {a, s};
@@ -555,7 +563,7 @@ struct Tr final : pirmem::TrApi {
                     }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
-                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, kPtrW, "ptr", {}};
+                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
                 bool is_fp = false;
                 if (auto fw = fp::width_of(ty)) {
                     ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
@@ -630,6 +638,8 @@ struct Tr final : pirmem::TrApi {
                 mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0, oom_->var);
                 oom_pending_ = false;
             }
+            if (caught_var_ >= 0 && !caught_)
+                caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
@@ -746,7 +756,7 @@ struct Tr final : pirmem::TrApi {
 
     void terminator(Frame& fr, const ir::Inst& in, int& cur, int line, bool noreturn) {
         auto& T = out.blocks[static_cast<std::size_t>(cur)].term;
-        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lowerswitch did not run)"};
+        if (in.op == "switch") throw Unenc{"UNENCODED: switch (lower-switch did not run)"};
         if (!in.parsed) throw Unenc{"UNENCODED: " + in.op};
         if (in.op == "resume") {
             // re-throw after cleanup code: the exception continues to the next handler
@@ -756,7 +766,7 @@ struct Tr final : pirmem::TrApi {
                 check(cur, Arg::c(1, 1), "undef", "UB-POISON", "resume of an undef exception (undefined behaviour)",
                       line);
             int ev = fr.pairs[in.ops[0].v.name].first;
-            raise(cur, Arg::v(ev, kPtrW), std::nullopt, line);
+            raise(cur, Arg::v(ev, ptr_w()), std::nullopt, line);
             return;
         }
         if (in.op == "unreachable") {
@@ -832,6 +842,27 @@ struct Tr final : pirmem::TrApi {
             }
             return;
         }
+        if (fr.ret_block < 0 && !in.ops.empty() && scalar_pair(in.ops[0].ty)) {
+            // the analysed function returning a scalar pair: each pointer
+            // field's stack-escape check, then a return without a value (PIR's
+            // `ret` carries one; the fields' checks are what is observed)
+            if (in.ops[0].v.kind != ir::Value::Local || !fr.pairs.count(in.ops[0].v.name))
+                throw Unenc{"UNENCODED: return of " + in.ops[0].ty.text};
+            if (auto pu = fr.upair.find(in.ops[0].v.name);
+                pu != fr.upair.end() && (pu->second[0] || pu->second[1]))
+                throw Unenc{"UNENCODED: undef field returned"};
+            auto [a, s] = fr.pairs[in.ops[0].v.name];
+            for (unsigned k = 0; k < 2; ++k) {
+                int src = k == 0 ? a : s;
+                if (in.ops[0].ty.elems[k].kind == ir::Type::Ptr)
+                    mt.stack_escape_check(cur, Arg::v(src, out.vars[static_cast<std::size_t>(src)].width),
+                                          fr.allocas, line);
+            }
+            Term t;
+            t.kind = Term::Ret;
+            out.blocks[static_cast<std::size_t>(cur)].term = t;
+            return;
+        }
         // ret (a raw byte copy is not a use: its shadow goes to the caller)
         std::optional<Arg> v;
         bool raw = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && fr.env.count(in.ops[0].v.name) &&
@@ -867,7 +898,7 @@ struct Tr final : pirmem::TrApi {
             }
         }
         if (v && !in.ops.empty() && in.ops[0].ty.kind == ir::Type::Ptr) {
-            v->width = kPtrW;
+            v->width = ptr_w();
             mt.stack_escape_check(cur, *v, fr.allocas, line);
         }
         if (fr.ret_block >= 0)
@@ -1056,8 +1087,17 @@ struct Tr final : pirmem::TrApi {
             unsigned fw = int_width(in.ops[0].ty), tw = int_width(in.ty);
             Arg a = operand(fr, in.ops[0], cur, line);
             a.width = fw;
-            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw")))
-                throw Unenc{"UNENCODED: trunc nuw/nsw"};
+            // trunc nuw / nsw (LLVM 19+): poison when the dropped bits are not
+            // all zero (nuw) / not a sign extension (nsw). Checked, never trusted.
+            if (op == "trunc" && (has_flag(in, "nuw") || has_flag(in, "nsw"))) {
+                Arg t = assign(cur, Op::Trunc, tw, {a}, "t");
+                if (has_flag(in, "nuw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::ZExt, fw, {t}, "t"), a), "nuw", "UB-POISON",
+                          "trunc nuw drops nonzero bits (poison)", line);
+                if (has_flag(in, "nsw"))
+                    check(cur, p2(cur, Op::Ne, assign(cur, Op::SExt, fw, {t}, "t"), a), "nsw", "UB-POISON",
+                          "trunc nsw changes the signed value (poison)", line);
+            }
             if (op == "zext" && has_flag(in, "nneg"))
                 check(cur, p2(cur, Op::Slt, a, Arg::c(fw, 0)), "nneg", "UB-POISON", "zext nneg of a negative value (poison)", line);
             (void)tw;
@@ -1223,8 +1263,8 @@ struct Tr final : pirmem::TrApi {
                 // offset 0). Not a pointer into the program's data, so it does
                 // not alias a local (no stack escape) and a dereference is
                 // checked like a wild pointer.
-                Arg h = havoc(cur, kPtrW, false, true);
-                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(kPtrW, (uint64_t{1} << 48) - 1)});
+                Arg h = havoc(cur, ptr_w(), false, true);
+                emit_assign(cur, result_var(fr, in), Op::And, {h, Arg::c(ptr_w(), off_mask())});
                 return;
             }
             if (starts(n, "llvm.is.constant.")) {
@@ -1332,7 +1372,30 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         const bool defined = m.find(n) != nullptr;
+        // SV-COMP error sinks: a reachable call is the violation whatever the
+        // unit's definition does (a static no-op reach_error included).
+        if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty()) {
+            check(cur, Arg::c(1, 1), "reach_error", "FUNC-CONTRACT", n + "() is reachable", line);
+            // the call site is checked here, as if the sink were inlined: a
+            // defined sink is discharged to this caller (caller_discharged_asserts)
+            if (defined) out.inlined.push_back(n);
+            noreturn = true;
+            return;
+        }
         if (!defined) {
+            if (n == "assume_abort_if_not" && in.ops.size() == 1) {
+                // SV-COMP helper declared without a body: assume(cond)
+                Arg c = arg(0);
+                assume(cur, p2(cur, Op::Ne, c, Arg::c(c.width, 0)));
+                return;
+            }
+            if (n == "__VERIFIER_assert" && in.ops.size() == 1) {
+                // declared without a body: SV-COMP semantics at the call site
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(c.width, 0)), "assert", "FUNC-CONTRACT",
+                      "__VERIFIER_assert can fail", line);
+                return;
+            }
             if (starts(n, "__VERIFIER_nondet_") || starts(n, "nondet_")) {
                 int dst = result_var(fr, in);
                 if (in.ty.kind != ir::Type::Void && dst < 0) throw Unenc{"UNENCODED: call @" + n};
@@ -1349,6 +1412,19 @@ struct Tr final : pirmem::TrApi {
                     }
                 }
                 out.nondet = true;
+                return;
+            }
+            // C23 `static_assert(e[, msg])` in a unit lowered as C17 (no
+            // <assert.h> macro): clang sees a call to an undeclared function.
+            // Its operand is the constant expression C23 6.7.11 requires to be
+            // nonzero; failing it is a constraint violation, checked here (a
+            // constant true operand proves, anything else is reported).
+            if (n == "static_assert" && !in.ops.empty()) {
+                Arg c = arg(0);
+                check(cur, p2(cur, Op::Eq, c, Arg::c(c.width, 0)), "static_assert", "FUNC-CONTRACT",
+                      "static_assert operand can be zero", line);
+                int dst = result_var(fr, in);
+                if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
                 return;
             }
             if (n == "__VERIFIER_assume") {
@@ -1382,6 +1458,12 @@ struct Tr final : pirmem::TrApi {
                       "C++ library precondition violated" + (where.empty() ? "" : " in " + where) +
                           (cond.empty() ? "" : ": " + cond),
                       line);
+                noreturn = true;
+                return;
+            }
+            if (n == "abort" && std::ranges::find(stack, std::string("assume_abort_if_not")) != stack.end()) {
+                // inside SV-COMP's assume_abort_if_not: abort() ends the path
+                // (an assumption, as SV-COMP defines it), not a crash
                 noreturn = true;
                 return;
             }
@@ -1524,7 +1606,7 @@ struct Tr final : pirmem::TrApi {
     // alloca/load/store/getelementptr/ptrtoint/inttoptr/bitcast; false = not a memory instruction
     // Field k of the scalar pair `ty` stored at p: fn(k, pointer, alignment).
     template <typename Fn>
-    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn) {
+    void pair_fields(int cur, const ir::Type& ty, Arg p, unsigned align, int line, Fn fn, int q = -1) {
         const auto& lay = mt.layout();
         const uint64_t off1 = lay.field_offset(ty, 1);
         const unsigned a0 = align ? align : lay.align(ty);
@@ -1533,9 +1615,9 @@ struct Tr final : pirmem::TrApi {
         unsigned a1 = a0;
         while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
         fn(0, p, a0);
-        int q = newvar(tmpname("pair.f1"), kPtrW);
+        if (q < 0) q = newvar(tmpname("pair.f1"), ptr_w());
         mt.gep(cur, q, p, ty, {Arg::c(32, 0), Arg::c(32, 1)}, true, line, 1);
-        fn(1, Arg::v(q, kPtrW), a1);
+        fn(1, Arg::v(q, ptr_w()), a1);
     }
 
     bool mem_inst(Frame& fr, const ir::Inst& in, int cur, int line) {
@@ -1557,7 +1639,7 @@ struct Tr final : pirmem::TrApi {
             }
             mt.alloca_(cur, dst, in.ety, in.align, count, src, in.result, line);
             if (!count && fr.f && !fr.f->blocks.empty() && cur == head[fr.prefix + fr.f->blocks.front().name])
-                fr.allocas.push_back(Arg::v(dst, kPtrW));
+                fr.allocas.push_back(Arg::v(dst, ptr_w()));
             return true;
         }
         if (op == "load" && fr.pairs.count(in.result)) {
@@ -1569,7 +1651,7 @@ struct Tr final : pirmem::TrApi {
             auto [a, s] = fr.pairs[in.result];
             pair_fields(cur, in.ty, p, in.align, line, [&](unsigned k, Arg fp, unsigned al) {
                 mt.load(cur, k == 0 ? a : s, in.ty.elems[k], fp, al, line);
-            });
+            }, fr.pairq.at(in.result));
             return true;
         }
         if (op == "store" && in.ops.size() == 2 && in.ops[0].v.kind == ir::Value::Local &&
@@ -1587,6 +1669,67 @@ struct Tr final : pirmem::TrApi {
         if (op == "load") {
             if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
                 throw Unenc{"UNENCODED: load"};
+
+            // C alignment of the access, not LLVM's: since LLVM 23 clang
+            // annotates `*(int *)(buf + 2)` with the alignment it can prove
+            // for that address (align 2) instead of int's, which hid the
+            // C17 6.3.2.3p7 / 6.5 misaligned access (testdata/pir
+            // mem_ptr.c:misaligned_bad). Below the type's ABI alignment the
+            // IR value is trusted only for a packed struct member.
+            auto c_align = [&](const ir::Value& pv, const ir::Type& ty, unsigned ir_al) -> unsigned {
+                if (ty.kind != ir::Type::Int && ty.kind != ir::Type::Float && ty.kind != ir::Type::Ptr) return ir_al;
+                unsigned nat = 0;
+                try {
+                    nat = mt.layout().align(ty);
+                } catch (const Unenc&) {
+                    return ir_al;
+                }
+                if (ir_al >= nat) return ir_al;
+                auto packed_in = [&](const ir::Type& t0) {
+                    const ir::Type* t = &t0;
+                    for (int d = 0; d < 16; ++d) {
+                        const auto& rt = mt.layout().resolve(*t);
+                        if (rt.kind == ir::Type::Struct) {
+                            if (rt.text.starts_with("<{")) return true;
+                            for (auto& e : rt.elems) {
+                                const auto& re = mt.layout().resolve(e);
+                                if (re.kind == ir::Type::Struct && re.text.starts_with("<{")) return true;
+                            }
+                            return false;
+                        }
+                        if (rt.kind != ir::Type::Array || rt.elems.empty()) return false;
+                        t = &rt.elems.at(0);
+                    }
+                    return false;
+                };
+                // Only byte/scalar pointer arithmetic lowers the alignment
+                // below the C type's: a struct passed by value is loaded as
+                // its ABI coercion type (i64 at the struct's align 4), which
+                // is no C access and keeps the IR value.
+                auto scalar = [](const ir::Type& t) {
+                    return t.kind == ir::Type::Int || t.kind == ir::Type::Float || t.kind == ir::Type::Ptr;
+                };
+                auto moves = [](const auto& o) { return o.v.kind != ir::Value::Int || o.v.bits != 0; };
+                bool arith = false;
+                const ir::Value* v = &pv;
+                for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
+                    auto it = fr.defs.find(v->name);
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.size() < 2) break;
+                    const auto* d = it->second;
+                    try {
+                        if (packed_in(d->ety)) return ir_al;
+                        const auto& rt = mt.layout().resolve(d->ety);
+                        if (scalar(rt) && moves(d->ops[1])) arith = true;
+                        if (rt.kind == ir::Type::Array && !rt.elems.empty() &&
+                            scalar(mt.layout().resolve(rt.elems.at(0))) && moves(d->ops.back()))
+                            arith = true;
+                    } catch (const Unenc&) {
+                        return ir_al;
+                    }
+                    v = &d->ops[0].v;
+                }
+                return arith ? nat : ir_al;
+            };
             Arg p = operand(fr, in.ops[0], cur, line);
             vwidth(in.ty, "load of");
             // An integer load of a whole aggregate object (ABI coercion of a
@@ -1625,7 +1768,7 @@ struct Tr final : pirmem::TrApi {
                 }
             }
             int dst = result_var(fr, in);
-            int sh = mt.load(cur, dst, in.ty, p, in.align, line, !agg);
+            int sh = mt.load(cur, dst, in.ty, p, c_align(in.ops[0].v, in.ty, in.align), line, !agg);
             if (agg && dst >= 0) {
                 fr.shadow[dst] = Arg::v(sh, out.vars[static_cast<std::size_t>(sh)].width);
                 fr.raw.insert(dst);
@@ -1635,6 +1778,67 @@ struct Tr final : pirmem::TrApi {
         if (op == "store") {
             if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr")
                 throw Unenc{"UNENCODED: store"};
+
+            // (as for load) C alignment of the access, not LLVM's: since LLVM 23 clang
+            // annotates `*(int *)(buf + 2)` with the alignment it can prove
+            // for that address (align 2) instead of int's, which hid the
+            // C17 6.3.2.3p7 / 6.5 misaligned access (testdata/pir
+            // mem_ptr.c:misaligned_bad). Below the type's ABI alignment the
+            // IR value is trusted only for a packed struct member.
+            auto c_align = [&](const ir::Value& pv, const ir::Type& ty, unsigned ir_al) -> unsigned {
+                if (ty.kind != ir::Type::Int && ty.kind != ir::Type::Float && ty.kind != ir::Type::Ptr) return ir_al;
+                unsigned nat = 0;
+                try {
+                    nat = mt.layout().align(ty);
+                } catch (const Unenc&) {
+                    return ir_al;
+                }
+                if (ir_al >= nat) return ir_al;
+                auto packed_in = [&](const ir::Type& t0) {
+                    const ir::Type* t = &t0;
+                    for (int d = 0; d < 16; ++d) {
+                        const auto& rt = mt.layout().resolve(*t);
+                        if (rt.kind == ir::Type::Struct) {
+                            if (rt.text.starts_with("<{")) return true;
+                            for (auto& e : rt.elems) {
+                                const auto& re = mt.layout().resolve(e);
+                                if (re.kind == ir::Type::Struct && re.text.starts_with("<{")) return true;
+                            }
+                            return false;
+                        }
+                        if (rt.kind != ir::Type::Array || rt.elems.empty()) return false;
+                        t = &rt.elems.at(0);
+                    }
+                    return false;
+                };
+                // Only byte/scalar pointer arithmetic lowers the alignment
+                // below the C type's: a struct passed by value is loaded as
+                // its ABI coercion type (i64 at the struct's align 4), which
+                // is no C access and keeps the IR value.
+                auto scalar = [](const ir::Type& t) {
+                    return t.kind == ir::Type::Int || t.kind == ir::Type::Float || t.kind == ir::Type::Ptr;
+                };
+                auto moves = [](const auto& o) { return o.v.kind != ir::Value::Int || o.v.bits != 0; };
+                bool arith = false;
+                const ir::Value* v = &pv;
+                for (int depth = 0; depth < 32 && v->kind == ir::Value::Local; ++depth) {
+                    auto it = fr.defs.find(v->name);
+                    if (it == fr.defs.end() || it->second->op != "getelementptr" || it->second->ops.size() < 2) break;
+                    const auto* d = it->second;
+                    try {
+                        if (packed_in(d->ety)) return ir_al;
+                        const auto& rt = mt.layout().resolve(d->ety);
+                        if (scalar(rt) && moves(d->ops[1])) arith = true;
+                        if (rt.kind == ir::Type::Array && !rt.elems.empty() &&
+                            scalar(mt.layout().resolve(rt.elems.at(0))) && moves(d->ops.back()))
+                            arith = true;
+                    } catch (const Unenc&) {
+                        return ir_al;
+                    }
+                    v = &d->ops[0].v;
+                }
+                return arith ? nat : ir_al;
+            };
             auto w = vwidth(in.ops[0].ty, "store of");
             Arg init = Arg::c(1, 1);
             Arg v;
@@ -1661,7 +1865,7 @@ struct Tr final : pirmem::TrApi {
                 }
             }
             Arg p = operand(fr, in.ops[1], cur, line);
-            mt.store(cur, p, v, init, vo.ty, in.align, line);
+            mt.store(cur, p, v, init, vo.ty, c_align(in.ops[1].v, vo.ty, in.align), line);
             return true;
         }
         if (op == "getelementptr") {
@@ -1708,13 +1912,29 @@ struct Tr final : pirmem::TrApi {
                     } catch (const Unenc&) {
                         base_last = true;  // unknown layout: no sub-array check
                     }
+            // gep nuw (LLVM 19+): poison if any index, read as unsigned, makes the
+            // offset arithmetic wrap. A negative index (variable or constant; a
+            // struct field index is never negative) always wraps, so it is checked
+            // here (Lean: PrismRefine.nuwChecks); the rest is bounded by the
+            // inbounds/object check.
+            // nusw is implied by inbounds (checked by MemTr::gep); without
+            // inbounds it is dropped (conservative: the result is not trusted).
+            if (has_flag(in, "nuw"))
+                for (std::size_t k = 1; k < in.ops.size(); ++k) {
+                    if (in.ops[k].v.kind != ir::Value::Local && in.ops[k].v.kind != ir::Value::Int) continue;
+                    unsigned iw = int_width(in.ops[k].ty);
+                    Arg ix = operand(fr, in.ops[k], cur, line);
+                    ix.width = iw;
+                    check(cur, p2(cur, Op::Slt, ix, Arg::c(iw, 0)), "nuw", "UB-POISON",
+                          "getelementptr nuw with a negative index (poison)", line);
+                }
             mt.gep(cur, result_var(fr, in), base, in.ety, idx, has_flag(in, "inbounds"), line, use, base_last);
             return true;
         }
         if (op == "ptrtoint") {
             // Only pointer differences are modelled: every use must be a sub
             // of two ptrtoint values (checked to be in the same object).
-            if (in.ty.kind != ir::Type::Int || in.ty.bits != 64)
+            if (in.ty.kind != ir::Type::Int || in.ty.bits != ptr_w())
                 throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
             for (auto& bl : fr.f->blocks)
                 for (auto& u : bl.insts) {
@@ -1735,7 +1955,7 @@ struct Tr final : pirmem::TrApi {
         if (op == "inttoptr") {
             const auto& o = in.ops[0];
             if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
-                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(kPtrW, 0)});
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), 0)});
                 return true;
             }
             throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
@@ -1785,7 +2005,24 @@ struct Tr final : pirmem::TrApi {
             Arg ok = arg(0);
             auto cls = mt.const_string(in.ops.at(1).v), msg = mt.const_string(in.ops.at(2).v);
             if (!cls || !msg) throw Unenc{"UNENCODED: __prism_check without literal class/message"};
+            // Thread-scheduler model classes (models/cxx/bits/prism_sched.h)
+            // onto the taxonomy: a wait/lock no schedule can satisfy is a
+            // deadlock (CWE-833, property nodeadlock); a std::thread destroyed
+            // or move-assigned while joinable calls std::terminate.
+            if (*cls == "CXX-DEADLOCK") cls = std::string("CONC-DEADLOCK");
+            else if (*cls == "CXX-THREAD-JOINABLE") cls = std::string("CXX-TERMINATE");
             check(cur, assign(cur, Op::Eq, 1, {ok, Arg::c(ok.width, 0)}, "c"), "model", *cls, *msg, line);
+            return;
+        }
+        // __prism_incomplete(msg): a library model's path that PRISM does not
+        // follow (e.g. regex syntax the matcher does not implement). Reaching
+        // it is a soft stop (translate_ctl.inc): NEEDS-HARNESS when reachable,
+        // never FAILED, never PROVED; an unreachable one is no obstacle.
+        if (n == "__prism_incomplete") {
+            auto msg = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!msg) throw Unenc{"UNENCODED: __prism_incomplete without a literal message"};
+            soft_stop(cur, "model incomplete: " + *msg, line);
+            cur = newblock("incomplete.after");  // unreachable
             return;
         }
         if (n == "__prism_assume") {
@@ -1903,7 +2140,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     auto fi = n == "printf" ? 0u : n == "snprintf" ? 2u : 1u;
     if (fi < in.ops.size()) fmt = mt.const_string(in.ops[fi].v);
     std::vector<std::optional<uint64_t>> lits;
-    for (auto& o : in.ops) lits.push_back(o.v.kind == ir::Value::Int ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
+    // Int: two's complement bits; Fp: IEEE bits (libc_format.cpp tells them apart by the IR type)
+    for (auto& o : in.ops)
+        lits.push_back(o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Fp ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
     auto plan = pirmem::plan_format(n, fmt, tys, lits);
     if (!plan.handled) return false;
     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
@@ -1918,43 +2157,116 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     for (auto& [cls, msg] : plan.violations) check(cur, Arg::c(1, 1), "format", cls, msg, line);
     for (auto i : plan.cstr_args) {
         Arg a = args.at(i);
-        a.width = kPtrW;
-        check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, 64, {a, Arg::c(64, kObjShift)}), Arg::c(64, 0)}),
+        a.width = ptr_w();
+        check(cur, assign(cur, Op::Eq, 1, {assign(cur, Op::LShr, ptr_w(), {a, Arg::c(ptr_w(), obj_shift())}), Arg::c(ptr_w(), 0)}),
               "null", "PTR-NULL-DEREF", n + " %s argument is a null pointer", line);
         inline_named(fr, "strlen", {in.ops[i]}, cur, line);
     }
+    if (plan.buf_arg >= 0 && plan.exact_double_arg >= 0 && m.find("__prism_fmtv")) {
+        // exact output bytes (coverage item 1): every variadic argument goes
+        // to a typed slot of __prism_fmtv (8 each of i32, i64, double,
+        // x86_fp80, ptr), which renders the whole format with prism_fpfmt.
+        const ir::Type ti32{ir::Type::Int, 32, "i32", {}}, ti64{ir::Type::Int, 64, "i64", {}},
+            tdbl{ir::Type::Float, 0, "double", {}}, tld{ir::Type::Float, 0, "x86_fp80", {}}, tptr{ir::Type::Ptr, 0, "ptr", {}};
+        auto zero = [](const ir::Type& t) {
+            ir::Operand o;
+            o.ty = t;
+            o.v.kind = t.kind == ir::Type::Ptr ? ir::Value::Null : t.kind == ir::Type::Float ? ir::Value::Fp : ir::Value::Int;
+            o.v.bits = 0;
+            return o;
+        };
+        // Windows of 8 arguments (conversions starting in the first 6 of them,
+        // so '*' width, '*' precision and the value always fit), chained
+        // through the running length: no cap on the argument count.
+        auto cls = [](const ir::Operand& o) {
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 32) return 0;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 64) return 1;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "double") return 2;
+            if (o.ty.kind == ir::Type::Float && o.ty.text == "x86_fp80") return 3;
+            if (o.ty.kind == ir::Type::Ptr && o.attrs.find("byval") != std::string::npos) return 6;
+            if (o.ty.kind == ir::Type::Ptr) return 4;
+            if (o.ty.kind == ir::Type::Int && o.ty.bits == 128) return 5;
+            return -1;
+        };
+        bool fits = true;
+        const std::size_t na = in.ops.size() - (fi + 1);
+        for (std::size_t k = fi + 1; k < in.ops.size(); ++k) if (cls(in.ops[k]) < 0) fits = false;
+        if (fits) {
+            ir::Operand cap;
+            if (plan.size_arg >= 0) cap = in.ops[static_cast<std::size_t>(plan.size_arg)];
+            else {
+                cap = zero(ti64);
+                cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
+            }
+            ir::Operand pos = zero(ti32);
+            static unsigned fmt_seq = 0;
+            const std::string base = (in.result.empty() ? std::string("prism.fmtv") : in.result) + ".w" + std::to_string(fmt_seq++) + ".";
+            for (std::size_t ab = 0;; ab += 6) {
+                const bool last = ab + 6 >= na;
+                ir::Inst call;
+                call.op = "call";
+                call.callee = "__prism_fmtv";
+                call.result = last && !in.result.empty() ? in.result : base + std::to_string(ab);
+                call.ty = ti32;
+                ir::Operand oab = zero(ti32), oae = zero(ti32);
+                oab.v.bits = ab;
+                oae.v.bits = last ? 0x7fffffffu : ab + 6;
+                ir::Operand ocl = zero(ti32);
+                std::vector<ir::Operand> sv[6];
+                for (std::size_t k = ab; k < std::min(na, ab + 8); ++k) {
+                    const int c = cls(in.ops[fi + 1 + k]);
+                    ocl.v.bits |= static_cast<uint64_t>(c) << (3 * (k - ab));
+                    // byval structs travel in the pointer slots (the model reads their eightbytes)
+                    ir::Operand o = in.ops[fi + 1 + k];
+                    if (c == 6) o.attrs.clear();
+                    sv[c == 6 ? 4 : c].push_back(o);
+                }
+                call.ops = {in.ops[static_cast<std::size_t>(plan.buf_arg)], cap, in.ops[fi], oab, oae, pos, ocl};
+                const ir::Type ti128{ir::Type::Int, 128, "i128", {}};
+                const ir::Type* tys[6] = {&ti32, &ti64, &tdbl, &tld, &tptr, &ti128};
+                for (int c = 0; c < 6; ++c)
+                    for (std::size_t k = 0; k < 8u; ++k) call.ops.push_back(k < sv[c].size() ? sv[c][k] : zero(*tys[c]));
+                inline_call(fr, call, cur, line);
+                if (last) return true;
+                pos = ir::Operand{};
+                pos.ty = ti32;
+                pos.v.kind = ir::Value::Local;
+                pos.v.name = call.result;
+            }
+        }
+    }
     if (plan.buf_arg >= 0) {
         Arg buf = args.at(static_cast<std::size_t>(plan.buf_arg));
-        buf.width = kPtrW;
-        Arg len = havoc(cur, 64, false, false);
+        buf.width = ptr_w();
+        Arg len = havoc(cur, ptr_w(), false, false);
         if (plan.size_arg >= 0) {
             Arg sz = args.at(static_cast<std::size_t>(plan.size_arg));
-            if (sz.width < 64) sz = assign(cur, Op::ZExt, 64, {sz});
+            if (sz.width < ptr_w()) sz = assign(cur, Op::ZExt, ptr_w(), {sz});
             // snprintf(buf, 0, ...) writes nothing; otherwise at most size-1 characters and a NUL
             int wb = newblock("snprintf.write"), done = newblock("snprintf.done");
             Term t;
             t.kind = Term::Br;
-            t.cond = assign(cur, Op::Ne, 1, {sz, Arg::c(64, 0)});
+            t.cond = assign(cur, Op::Ne, 1, {sz, Arg::c(ptr_w(), 0)});
             t.t = wb;
             t.f = done;
             out.blocks[static_cast<std::size_t>(cur)].term = t;
             cur = wb;
             assume(cur, assign(cur, Op::Ult, 1, {len, sz}));
             mt.write_havoc(cur, buf, len, line);
-            int end = newvar(tmpname("end"), kPtrW);
+            int end = newvar(tmpname("end"), ptr_w());
             mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
-            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+            mt.store(cur, Arg::v(end, ptr_w()), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
             Term j;
             j.kind = Term::Jmp;
             j.t = done;
             out.blocks[static_cast<std::size_t>(cur)].term = j;
             cur = done;
         } else {
-            assume(cur, assign(cur, Op::Ule, 1, {len, Arg::c(64, plan.max_len)}));
+            assume(cur, assign(cur, Op::Ule, 1, {len, Arg::c(ptr_w(), plan.max_len)}));
             mt.write_havoc(cur, buf, len, line);
-            int end = newvar(tmpname("end"), kPtrW);
+            int end = newvar(tmpname("end"), ptr_w());
             mt.gep(cur, end, buf, ir::Type{ir::Type::Int, 8, "i8", {}}, {len}, true, line);
-            mt.store(cur, Arg::v(end, kPtrW), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
+            mt.store(cur, Arg::v(end, ptr_w()), Arg::c(8, 0), Arg::c(1, 1), ir::Type{ir::Type::Int, 8, "i8", {}}, 1, line);
         }
     }
     if (int dst = in.result.empty() ? -1 : result_var(fr, in); dst >= 0)
@@ -1970,7 +2282,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
     Arg size;
     std::string count_text;
     if (c.count >= 0) {
-        if (static_cast<uint64_t>(c.count) > kMaxObjSize / esz) throw Unenc{"UNENCODED: contract object too large"};
+        if (static_cast<uint64_t>(c.count) > max_obj_size() / esz) throw Unenc{"UNENCODED: contract object too large"};
         size = Arg::c(64, static_cast<uint64_t>(c.count) * esz);
         count_text = std::to_string(c.count);
     } else {
@@ -1993,7 +2305,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
         }
         Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
         Arg nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
-        tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, kMaxObjSize / esz)}));
+        tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, max_obj_size() / esz)}));
         size = tr.assign(-1, Op::Mul, 64, {nn, Arg::c(64, esz)});
         count_text = c.count_param + (c.count_add ? (c.count_add > 0 ? "+" : "") + std::to_string(c.count_add) : "");
         tr.out.assumptions.push_back(count_text + " * " + std::to_string(esz) + " < 2^47 (object size fits the model)");
@@ -2009,6 +2321,8 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
 }  // namespace
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
+    const PtrModel pm = ptr_model_of(m);
+    PtrModelScope pms(pm);
     Translation t;
     t.status = std::string(laws::NEEDS_HARNESS);
     if (!f.parse_error.empty()) {
@@ -2064,7 +2378,8 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         }
         if (contracts > 1)
             tr.out.assumptions.push_back("pointer parameters point to distinct objects (\\separated)");
-        if (f.ret.kind != ir::Type::Void) {
+        // a scalar pair result is not returned (Tr::term): width 0
+        if (f.ret.kind != ir::Type::Void && !tr.scalar_pair(f.ret)) {
             tr.out.ret_width = tr.vwidth(f.ret, "return type");
             tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
         }
@@ -2080,6 +2395,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
             auto& b0 = tr.out.blocks.front().stmts;
             b0.insert(b0.begin(), tr.prologue.begin(), tr.prologue.end());
         }
+        tr.out.ptr = pm;
         t.fn = std::move(tr.out);
         t.folded_used.assign(tr.folded_used.begin(), tr.folded_used.end());
         t.status.clear();

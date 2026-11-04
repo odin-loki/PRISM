@@ -700,7 +700,7 @@ struct Parser {
                 attrs.find('&') != std::string::npos || attrs.find("->") != std::string::npos ||
                 cxx_mods.search(mods) || !knr.empty() || !m->named("cc").empty()) {
                 // A method, template, K&R, calling-convention or C++-typed
-                // definition: BMC must not model it as a plain C function.
+                // definition: the checkers must not model it as a plain C function.
                 kind = "OTHER";
             }
             int head_start = m->spans[0].first;
@@ -1313,12 +1313,6 @@ std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const
         out.push_back(std::move(f));
     }
     return out;
-}
-
-bool tu_is_empty(const std::filesystem::path& path) {
-    auto ext = to_lower(path.extension().string());
-    if (!is_tu_ext(ext)) return false;
-    return extract_functions(path).empty();
 }
 
 std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root) {

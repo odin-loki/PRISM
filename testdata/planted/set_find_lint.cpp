@@ -1,3 +1,4 @@
+#include <set>
 void set_find_bad(void) {
     std::set<int> s;
     auto it = s.find(1);

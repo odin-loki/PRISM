@@ -1,3 +1,4 @@
+#include <tuple>
 void tuple_bad(void) {
     std::tuple<int,int> t;
     (void)std::get<1>(t);

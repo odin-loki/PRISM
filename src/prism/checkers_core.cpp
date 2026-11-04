@@ -1047,7 +1047,7 @@ bool arm_falls_through(std::string_view arm) {
     static Regex annot(
         R"(\b(?:fallthrough|FALLTHROUGH|\[\[fallthrough\]\]|__attribute__\s*\(\s*\(\s*fallthrough\s*\)\s*\)))");
     static Regex stop(R"(\b(?:break|return|goto|continue)\b)");
-    static Regex label(R"(\b(?:case\b[^:]*:|default\s*:))");
+    static Regex label(R"(\b(?:case\b(?:[^:]|::)*:|default\s*:))");
     if (annot.search(arm)) return false;
     bool has_stmt = false;
     for (auto& ln : split_lines(arm)) {
@@ -2588,6 +2588,26 @@ void taut_bound(const std::vector<std::string>& lines, std::string_view rel,
     }
 }
 
+// Blank the template argument list of `static_cast<T>` and the other named
+// casts: `(static_cast<unsigned char>(s[k]) & 0xC0) == 0x80` has no
+// comparison inside the `&` operand (src/prism/models.cpp, testdata/fp/vector_guards.cpp).
+std::string blank_cast_targets(std::string ln) {
+    static Regex cast(R"(\b(?:static|reinterpret|const|dynamic|bit)_cast\s*<)");
+    for (auto& m : cast.finditer(ln)) {
+        if (m.spans.empty()) continue;
+        auto i = static_cast<std::size_t>(m.spans[0].second) - 1;  // the '<'
+        int d = 0;
+        for (std::size_t j = i; j < ln.size(); ++j) {
+            if (ln[j] == '<') ++d;
+            else if (ln[j] == '>' && --d == 0) {
+                for (std::size_t k = i; k <= j; ++k) ln[k] = ' ';
+                break;
+            } else if (ln[j] == ';' || ln[j] == '{') break;
+        }
+    }
+    return ln;
+}
+
 void bool_as_bit(const std::vector<std::string>& lines, std::string_view rel,
                  const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
     for (auto& fn : funcs) {
@@ -2595,7 +2615,8 @@ void bool_as_bit(const std::vector<std::string>& lines, std::string_view rel,
         std::unordered_set<int> seen;
         int i = 0;
         // `case '&': if (s->next++[0] == '&')` (tinyexpr): a char literal is no operator.
-        for (auto& ln : split_lines(blank_char_literals_full(fn.body))) {
+        for (auto& raw : split_lines(blank_char_literals_full(fn.body))) {
+            auto ln = blank_cast_targets(raw);
             if (has_comparison(ln) && bitop_on_comparison(ln) && !seen.contains(i)) {
                 seen.insert(i);
                 lint_add(out, rel, fn.name, start + i, "INT-BOOL-AS-BIT",
@@ -2896,7 +2917,7 @@ std::string mask_nested_switches(const std::string& body) {
 }
 
 bool nested_switch_leaves(const std::string& inner) {
-    static Regex label(R"(\b(?:case\b[^:]*:|default\s*:))");
+    static Regex label(R"(\b(?:case\b(?:[^:]|::)*:|default\s*:))");
     static Regex dflt(R"(\bdefault\s*:)");
     static Regex brk(R"(\bbreak\b)");
     static Regex leave(
@@ -2922,7 +2943,7 @@ bool nested_switch_leaves(const std::string& inner) {
 
 void fallthrough(const std::vector<std::string>& lines, const std::vector<std::string>& orig_lines,
                  std::string_view rel, const std::vector<FunctionInfo>& funcs, std::vector<Finding>& out) {
-    static Regex case_label(R"(\b(?:case\b[^:]*:|default\s*:))");
+    static Regex case_label(R"(\b(?:case\b(?:[^:]|::)*:|default\s*:))");
     // GCC -Wimplicit-fallthrough comment forms (`/* Falls through. */`,
     // `// FALLTHRU`, `/* no break */`): the author annotated the intent.
     static Regex comment_annot(R"((?i)(?://|/\*).*?(?:\bfalls?[ \t-]*thr(?:ough|u)|\bno\s*break))");

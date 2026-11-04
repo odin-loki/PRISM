@@ -1,3 +1,4 @@
+#include <ranges>
 int repeat_bad() {
     auto v = std::views::repeat(1);
     return v[9];

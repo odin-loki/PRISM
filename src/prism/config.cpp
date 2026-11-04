@@ -1,7 +1,10 @@
+#include "prism/exec.hpp"
+#include "prism/settings.hpp"
 #include "prism/config.hpp"
 #include "prism/deps.hpp"
 #include "prism/manifest_pins.hpp"  // generated from third_party/MANIFEST.toml by prism-deps pins
-#include "proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -36,20 +39,20 @@ namespace fs = std::filesystem;
 // PRISM_PBSD only. No guessed location: the ParanoidBSD tree is used when
 // named explicitly (PRISM_PBSD or --pbsd PATH). Empty = not configured.
 static fs::path default_pbsd() {
-    if (const char* env = std::getenv("PRISM_PBSD"); env && *env) return env;
+    if (auto v = settings::pbsd().get(); !v.empty()) return v;
     return {};
 }
 
-static fs::path default_gguf() {
-    if (const char* env = std::getenv("PRISM_GGUF"); env && *env) return env;
+// The FORGE model: PRISM_FPK, else ~/.prism/models/qwen3.5-9b.fpk.
+static fs::path default_fpk() {
+    if (const char* env = std::getenv("PRISM_FPK"); env && *env) return env;
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;
 #else
     if (const char* u = std::getenv("HOME")) home = u;
 #endif
-    return home / ".ollama" / "models" / "blobs" /
-           "sha256-dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c";
+    return home / ".prism" / "models" / "qwen3.5-9b.fpk";
 }
 
 static std::string env_or(const char* name, const char* def) {
@@ -60,10 +63,8 @@ static std::string env_or(const char* name, const char* def) {
 Config default_config() {
     Config c;
     c.pbsd_root = default_pbsd();
-    c.gguf = default_gguf();
-    c.model = env_or("PRISM_MODEL", "qwen3.5:9b");
-    c.ollama_host = env_or("OLLAMA_HOST", "http://127.0.0.1:11434");
-    c.llama_server = env_or("PRISM_LLAMA_SERVER", "http://127.0.0.1:8080");
+    c.fpk = default_fpk();
+    c.model = env_or("PRISM_MODEL", "qwen3.5-9b");
     unsigned n = std::max(2u, std::thread::hardware_concurrency());
     c.jobs = static_cast<int>(std::max(1u, n / 2));
     return c;
@@ -105,7 +106,7 @@ static bool is_store_python_stub(const fs::path& p) {
         std::lock_guard<std::mutex> lock(mu);
         if (auto it = cache.find(key); it != cache.end()) return it->second;
     }
-    auto r = detail::run_process({p.string(), "--version"}, 10.0);
+    auto r = prism::exec::run_process({p.string(), "--version"}, 10.0);
     const bool stub = r.failed || r.timed_out || r.rc == 9009;
     std::lock_guard<std::mutex> lock(mu);
     cache[key] = stub;
@@ -227,6 +228,27 @@ std::optional<fs::path> Config::which(std::initializer_list<std::string_view> na
     return std::nullopt;
 }
 
+std::optional<fs::path> Config::llvm_tool(std::string_view name) const {
+    std::error_code ec;
+    if (auto it = tools.find(std::string(name)); it != tools.end() && fs::is_regular_file(it->second, ec))
+        return it->second;
+    std::vector<fs::path> dirs;
+    if (!llvm_bin.empty()) dirs.push_back(llvm_bin);
+    if (const char* e = std::getenv("PRISM_LLVM_BIN"); e && *e) dirs.emplace_back(e);
+#ifdef PRISM_LLVM_PINNED_BIN
+    dirs.emplace_back(PRISM_LLVM_PINNED_BIN);
+#endif
+    std::string base(name);
+#ifdef _WIN32
+    base += ".exe";
+#endif
+    for (const auto& d : dirs) {
+        fs::path cand = d / base;
+        if (fs::is_regular_file(cand, ec)) return cand;
+    }
+    return which({name});
+}
+
 // Stage -> third_party/MANIFEST.toml component. Same table as
 // prism/config.py VENDOR_DIR. No CodeQL (roadmap 1.2: engine terms).
 static const char* vendor_dir_for(std::string_view stage) {
@@ -286,7 +308,7 @@ fs::path expand_user(const fs::path& p) {
 }
 
 fs::path tools_home() {
-    if (const char* env = std::getenv("PRISM_TOOLS_DIR"); env && *env) return fs::path(env);
+    if (auto v = settings::tools_dir().get(); !v.empty()) return fs::path(v);
     fs::path home;
 #ifdef _WIN32
     if (const char* u = std::getenv("USERPROFILE")) home = u;
@@ -441,4 +463,64 @@ std::optional<fs::path> Config::which_adapter(std::string_view stage,
     return which(names);
 }
 
+}  // namespace prism
+
+namespace prism {
+// Every environment variable PRISM reads, in one place. A getenv of a
+// PRISM_* name that is not listed here fails test_env_registry.
+const std::vector<EnvVar>& env_vars() {
+    static const std::vector<EnvVar> v = {
+    {"PRISM_AFL", "fuse: 1 = use afl-fuzz (when on PATH) for the FuSeBMC fuzz oracle"},
+    {"PRISM_BIN", "path of the prism executable used by tools and tests"},
+    {"PRISM_CERTIFY_BUDGET", "certified mode: per-function certification seconds"},
+    {"PRISM_CERT_CACHE_MAX", "maximum entries kept in the proof-certificate cache"},
+    {"PRISM_CHECKER_MEM", "memory cap (MB) for external certificate checkers"},
+    {"PRISM_CONF_KEEP", "qa conformance/soundness: keep per-task scratch dirs"},
+    {"PRISM_DEVICE", "FORGE device for the models (cpu, cuda, vulkan, ...)"},
+    {"PRISM_EMBED_FPK", "FORGE embedding model (.fpk) used by ai triage"},
+    {"PRISM_FPK", "FORGE assistant model (.fpk), default ~/.prism/models/qwen3.5-9b.fpk"},
+    {"PRISM_FUNCTION_BUDGET", "per-function time budget (seconds)"},
+    {"PRISM_HOST_PYTHON3", "z3gen: host Python that non-Z3 build scripts are forwarded to (build time)"},
+    {"PRISM_HOUDINI_FINAL_RESERVE", "pir: fraction of the function budget Houdini keeps for the final query (0..0.9, default 0.3)"},
+    {"PRISM_LEAN_PAD_DEBUG", "diagnostics: trace Lean export padding to stderr"},
+    {"PRISM_PIR_DUMP_INVARIANTS", "diagnostics: 1 = report Houdini survivors of a search that did not prove (pir_invariants_surviving)"},
+    {"PRISM_PIR_EXPORT_ONLY", "pir: with PRISM_PIR_LEAN_EXPORT, only export Lean, skip the checks"},
+    {"PRISM_HOUDINI_BUDGET", "pir: run-wide Houdini loop-invariant seconds (0 = none)"},
+    {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},
+    {"PRISM_LAKE", "path of Lean's lake for proof search"},
+    {"PRISM_LIBFUZZER", "fuse: 1 = use libFuzzer (pinned LLVM) for the FuSeBMC fuzz oracle"},
+    {"PRISM_LINUX_SYSROOT", "pir off Linux: pinned glibc/libstdc++ sysroot for the Linux target (else scripts/fetch_toolchain.py linux-sysroot)"},
+    {"PRISM_LLVM_BIN", "directory of clang/opt/lli for pir (before the pinned LLVM build)"},
+    {"PRISM_MEM_BUDGET_MB", "process-tree memory budget (MB); 0 = unlimited"},
+    {"PRISM_MEM_RESERVE_MB", "memory held back from the budget for the main process"},
+    {"PRISM_MEM_STUCK_MS", "time over the hard limit before the stuck hook fires"},
+    {"PRISM_MEM_TRACE", "diagnostics: memory-budget, Z3 and pir memory trace lines on stderr"},
+    {"PRISM_MODEL", "default LLM model name"},
+    {"PRISM_PBSD", "path of the pbsd tool"},
+    {"PRISM_PIR_BATCH", "pir: functions per fresh-process batch"},
+    {"PRISM_PIR_DEEPEN_MAX", "pir: largest unwind a BOUNDED single loop is re-checked at (default 64; 0 = off)"},
+    {"PRISM_PIR_DIVERT_S", "pir: seconds a function gets in the main process before an UNKNOWN is re-checked in a child (default off)"},
+    {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
+    {"PRISM_PIR_MEM_MB", "pir: memory budget (MB) when PRISM_MEM_BUDGET_MB is unset"},
+    {"PRISM_PIR_NO_HEADERS", "pir: skip the system-header IR pass (diagnostics)"},
+    {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (the units and functions to re-check)"},
+    {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},
+    {"PRISM_PROOF_CACHE", "directory of the proof cache"},
+    {"PRISM_PROVER_FPK", "path of the FORGE prover model (.fpk)"},
+    {"PRISM_PROVER_MODEL", "prover LLM model name"},
+    {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
+    {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
+    {"PRISM_TOOLS_DIR", "directory of vendored external tools"},
+    {"PRISM_TRIAGE", "enable LLM triage"},
+    {"PRISM_VERSION", "override the reported version string"},
+    {"PRISM_Z3_GENERATED_ROOT", "z3gen: output root for generated Z3 sources (build time)"},
+    {"PRISM_Z3_WORKER", "path of the executable used for killable Z3 child queries"},
+    {"CC_SAN", "qa replay: C compiler for sanitizer builds"},
+    {"CXX_SAN", "qa replay: C++ compiler for sanitizer builds"},
+    {"MALLOC_ARENA_MAX", "glibc; if unset PRISM caps arenas at 2"},
+    {"SOURCE_DATE_EPOCH", "reproducible timestamps in reports"},
+    {"XDG_CACHE_HOME", "cache root"},
+    };
+    return v;
+}
 }  // namespace prism
