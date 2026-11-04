@@ -1,4 +1,4 @@
-// The LLM chat engine (FORGE mind, in process, on a .fpk model) and the
+// The LLM chat engine (FORGE inference, in process, on a .fpk model) and the
 // sandboxed compile+run of LLM-written C (declared in llm.hpp).
 #include "prism/settings.hpp"
 #include "llm.hpp"

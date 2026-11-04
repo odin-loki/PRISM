@@ -1,5 +1,5 @@
 // PRISM AI layer core: hashing, grammar validation, prompt fencing, model
-// backend (FORGE mind, GBNF-constrained), session and audit log.
+// backend (FORGE inference, GBNF-constrained), session and audit log.
 // Roadmap 4.1 and 9.6. The model proposes; a checker decides.
 
 #include "prism/forge_llm.hpp"

@@ -11,7 +11,7 @@ code base and says honestly what it could not check.
   If you find "Helix"/"helix"/"HELIX" anywhere outside `third_party/`, it is a
   leftover: rename it to PRISM (`tests/cpp/test_naming.cpp` fails on it).
 - Env vars are `PRISM_*` only (`PRISM_AFL`, `PRISM_LIBFUZZER`, `PRISM_PBSD`,
-  `PRISM_TOOLS_DIR`, `PRISM_LLVM_BIN`; AI (FORGE mind, `.fpk` models):
+  `PRISM_TOOLS_DIR`, `PRISM_LLVM_BIN`; AI (FORGE inference, `.fpk` models):
   `PRISM_FPK`, `PRISM_MODEL`, `PRISM_PROVER_FPK`, `PRISM_PROVER_MODEL`,
   `PRISM_EMBED_FPK`, `PRISM_DEVICE`, `PRISM_PROOF_CACHE`, `PRISM_TRIAGE`,
   `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`; certified mode:

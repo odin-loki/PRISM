@@ -1,6 +1,6 @@
 #pragma once
 
-// Internal to prism_core: the LLM chat engine (FORGE mind on a .fpk model) and the sandboxed compile+run of LLM-written C
+// Internal to prism_core: the LLM chat engine (FORGE inference on a .fpk model) and the sandboxed compile+run of LLM-written C
 // (src/prism/stages/llm.cpp). Used by hypothesize, fuse, execute and repair.
 
 #include "common.hpp"

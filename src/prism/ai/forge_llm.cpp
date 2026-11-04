@@ -1,9 +1,9 @@
-// FORGE mind as PRISM's language-model engine (see include/prism/forge_llm.hpp).
+// FORGE inference as PRISM's language-model engine (see include/prism/forge_llm.hpp).
 #include "prism/forge_llm.hpp"
 
 #include "prism/ai.hpp"
 
-#include <forge/mind/mind.hpp>
+#include <forge/inference/inference.hpp>
 
 #include <chrono>
 #include <cstdlib>
@@ -20,7 +20,7 @@ bool is_fpk(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
     char magic[8] = {};
     f.read(magic, 8);
-    return f.gcount() == 8 && std::string(magic, 8) == std::string(forge::pack::magic, 8);
+    return f.gcount() == 8 && std::string(magic, 8) == std::string(forge::modelfile::magic, 8);
 }
 
 std::string render_chat(const Messages& messages) {
@@ -38,14 +38,14 @@ std::string device() {
 
 namespace {
 std::mutex g_mu;
-std::map<std::string, std::shared_ptr<forge::mind::model>> g_models;
+std::map<std::string, std::shared_ptr<forge::inference::model>> g_models;
 std::map<std::string, std::string> g_digests;
 
-std::shared_ptr<forge::mind::model> open_model(const fs::path& p) {
+std::shared_ptr<forge::inference::model> open_model(const fs::path& p) {
     std::lock_guard lk(g_mu);
     auto key = p.string();
     if (auto it = g_models.find(key); it != g_models.end()) return it->second;
-    auto m = forge::mind::model::open(key);
+    auto m = forge::inference::model::open(key);
     m->set_device(device());
     g_models.emplace(key, m);
     return m;
@@ -74,9 +74,9 @@ Reply complete(const fs::path& fpk, const Request& req) {
             r.error = fpk.string() + ": .fpk has no tokenizer section";
             return r;
         }
-        forge::mind::session_options so;
+        forge::inference::session_options so;
         so.context = std::min<forge::i64>(model->max_context(), 8192);
-        forge::mind::session sess(model, so);
+        forge::inference::session sess(model, so);
 
         std::string text;
         if (req.chat) text = render_chat(req.messages);
@@ -92,15 +92,15 @@ Reply complete(const fs::path& fpk, const Request& req) {
         if (auto ids = tok->encode("<|im_end|>"); ids.size() == 1) im_end = ids[0];
         const int eos = tok->eos();
 
-        forge::mind::sampler_config sc;
+        forge::inference::sampler_config sc;
         sc.temperature = req.temperature;
         sc.seed = req.seed;
-        forge::mind::sampler smp(sc);
+        forge::inference::sampler smp(sc);
 
-        std::unique_ptr<forge::mind::grammar_constraint> gc;
+        std::unique_ptr<forge::inference::grammar_constraint> gc;
         if (!req.grammar.empty())
-            gc = std::make_unique<forge::mind::grammar_constraint>(
-                std::make_shared<const forge::mind::grammar>(req.grammar), *tok, int(model->vocab()), eos);
+            gc = std::make_unique<forge::inference::grammar_constraint>(
+                std::make_shared<const forge::inference::grammar>(req.grammar), *tok, int(model->vocab()), eos);
 
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(static_cast<long long>(req.timeout_s * 1000));
@@ -148,7 +148,7 @@ std::optional<std::vector<double>> embed(const fs::path& fpk, const std::string&
         auto ids = tok->encode(text);
         if (ids.empty()) return fail("empty input");
         std::vector<float> in(ids.begin(), ids.end());
-        forge::mind::session sess(model);
+        forge::inference::session sess(model);
         // A decoder's output is next-token logits, not an embedding.
         if (sess.blueprint().session == "generative_sequence")
             return fail(fpk.string() + ": a generative model, not an embedding model (PRISM_EMBED_FPK wants an encoder .fpk)");

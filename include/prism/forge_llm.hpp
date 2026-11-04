@@ -1,5 +1,5 @@
 #pragma once
-// PRISM's only language-model engine: FORGE mind (odin-loki/FORGE), in process,
+// PRISM's only language-model engine: FORGE inference (odin-loki/FORGE), in process,
 // on a .fpk model (default Qwen 3.5 9B). Replaces llama.cpp, llama-server and Ollama.
 
 #include "prism/ai.hpp"
@@ -17,7 +17,7 @@ using Messages = std::vector<std::pair<std::string, std::string>>;  // (role, co
 
 struct Request {
     Messages messages;
-    std::string grammar;       // GBNF (llama.cpp dialect, FORGE mind grammar); empty = free text
+    std::string grammar;       // GBNF (llama.cpp dialect, FORGE inference grammar); empty = free text
     int max_new = 768;
     float temperature = 0.2f;  // 0 = greedy
     unsigned seed = 0;
