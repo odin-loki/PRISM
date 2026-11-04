@@ -43,11 +43,87 @@
 // This is not a proof that the pointer addresses an array.
 // This is not PROVED and not CLEAN.
 //
+// std::iter_swap is only the overload for two pointers of the same type.
+// A null pointer is __prism_check with class PTR-NULL-DEREF and message
+// "std::iter_swap null pointer", then __builtin_trap, before any load or
+// store. Both null is that path, not the self path. Both non-null and
+// different: the two T values are exchanged. The temporary is the value
+// already stored through the first pointer. Swapping a pointer with
+// itself returns and does not invent a value. This is not a proof that
+// the pointers address an array. This is not PROVED and not CLEAN.
+//
+// std::iter_move is only the overload for one pointer. A null pointer is
+// __prism_check with class PTR-NULL-DEREF and message
+// "std::iter_move null pointer", then __builtin_trap, before any load.
+// A non-null pointer returns the T stored through that pointer, not a
+// value-initialized T{}. This is not a proof that the pointer addresses
+// an array. This is not PROVED and not CLEAN.
+//
+// std::size is the two array overloads and one overload for an lvalue
+// with a size member. The bound overload returns the bound and does not
+// load an element. N == 0 does not match that parameter. The zero-length
+// overload returns 0 and does not load. A pointer argument does not match.
+// There is no pointer overload. The array bodies do not call the other
+// array functions. The lvalue overload returns that member once. The
+// noexcept operator and the decltype operand are unevaluated. That body
+// does not load an element. It does not return a fabricated 0. A class
+// without that member does not match, so that call fails to compile and
+// pir falls back. This is not PROVED and not CLEAN.
+//
+// std::empty is one overload for an lvalue with an empty member. It
+// returns that member once. The noexcept operator and the decltype
+// operand are unevaluated. The body does not call size and does not load
+// an element. It does not return a fabricated false. An array does not
+// match: std::empty for an array is not declared. A pointer does not
+// match. A class without that member does not match, so that call fails
+// to compile and pir falls back. This is not PROVED and not CLEAN.
+//
+// std::data is the two array overloads and one overload for an lvalue
+// with a data member. The bound overload returns a pointer to the first
+// element by array-to-pointer decay and does not load an element. N == 0
+// does not match that parameter. The zero-length overload returns the
+// decayed pointer and does not load. A pointer argument does not match.
+// There is no pointer overload. The array bodies do not call the other
+// array functions. The lvalue overload returns that member once. The
+// noexcept operator and the decltype operand are unevaluated. That body
+// does not dereference that pointer. It does not load an element. It does
+// not return a fabricated nullptr. A class without that member does not
+// match, so that call fails to compile and pir falls back.
+// This is not PROVED and not CLEAN.
+//
+// std::cdata is the array overloads only, the same two shapes as the array
+// reference and the zero-length reference. The bound overload returns a
+// const pointer to the first element by array-to-pointer decay and does
+// not load an element. N == 0 does not match that parameter. The
+// zero-length overload returns the decayed pointer and does not load. A
+// pointer argument does not match. There is no pointer overload. A class
+// type does not match, so that call fails to compile and pir falls back.
+// The bodies do not call the other array functions.
+// This is not PROVED and not CLEAN.
+//
+// std::ssize is the two array overloads and one overload for an lvalue
+// with a size member. The bound overload returns the bound as ptrdiff_t
+// and does not load an element. A bound greater than PTRDIFF_MAX is
+// __prism_check with class FUNC-CONTRACT and message
+// "std::ssize array bound does not fit in ptrdiff_t", then __builtin_trap.
+// That path does not cast the bound and does not return a negative value.
+// N == 0 does not match that parameter. The zero-length overload returns
+// 0 and does not load. A pointer argument does not match. There is no
+// pointer overload. The array bodies do not call the other array
+// functions. The lvalue overload reads that member once. A value greater
+// than PTRDIFF_MAX is __prism_check with class FUNC-CONTRACT and message
+// "std::ssize value does not fit in ptrdiff_t", then __builtin_trap. That
+// path does not cast the value and does not return a negative value.
+// Otherwise the result is the stored value as ptrdiff_t. That body does
+// not load an element. A class without that member does not match, so
+// that call fails to compile and pir falls back.
+// This is not PROVED and not CLEAN.
+//
 // reverse_iterator is not declared.
 // The rest of this header is omitted the same way (iterator traits, tags,
-// insert iterators, stream iterators, and the container overloads of begin
-// and end). A unit that names one fails to compile here and falls back.
-// They are not stubbed.
+// insert iterators, stream iterators, the container overloads of begin
+// and end, and std::empty for an array). A unit that names one fails to
+// compile here and falls back. They are not stubbed.
 //
 // This is not a proof that an iterator stays in range. There is no check
 // on a later increment or on a dereference of the returned pointer.
@@ -133,6 +209,148 @@ constexpr auto end(_Arr& __arr) noexcept -> decltype(__arr + 0)
     requires(sizeof(_Arr) == 0)
 {
     return __arr + 0;
+}
+
+// Element count. The bound is at least 1: N == 0 does not match this
+// parameter. The result is the bound. The body does not load an element.
+template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr size_t size(_Tp (&__arr)[_Nm]) noexcept {
+    return _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is 0, not a
+// load. A pointer argument has a non-zero size, so it does not match.
+// There is no pointer overload.
+template <typename _Arr>
+constexpr size_t size(_Arr& __arr) noexcept
+    requires(sizeof(_Arr) == 0)
+{
+    return 0;
+}
+
+// An lvalue with a size member. That member is returned once. The
+// noexcept operator and the decltype operand are unevaluated. The body
+// does not load an element. It does not return a fabricated 0. An array
+// does not match. A pointer does not match.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr auto size(const _Tp& __t) noexcept(noexcept(__t.size())) -> decltype(__t.size()) {
+    return __t.size();
+}
+
+// An lvalue with an empty member. That member is returned once. The
+// noexcept operator and the decltype operand are unevaluated. The body
+// does not call size. It does not load an element. It does not return a
+// fabricated false. An array does not match. A pointer does not match.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr auto empty(const _Tp& __t) noexcept(noexcept(__t.empty())) -> decltype(__t.empty()) {
+    return __t.empty();
+}
+
+// Pointer to the first element. The bound is at least 1: N == 0 does not
+// match this parameter. The result is array-to-pointer decay, not a load.
+template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr _Tp* data(_Tp (&__arr)[_Nm]) noexcept {
+    return __arr;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. A pointer argument has a non-zero size, so it does
+// not match. There is no pointer overload.
+template <typename _Arr>
+constexpr auto data(_Arr& __arr) noexcept -> decltype(__arr + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __arr;
+}
+
+// An lvalue with a data member. That member is returned once. The
+// noexcept operator and the decltype operand are unevaluated. The body
+// does not dereference that pointer. It does not load an element. It
+// does not return a fabricated nullptr. An array does not match. A
+// pointer does not match.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr auto data(const _Tp& __t) noexcept(noexcept(__t.data())) -> decltype(__t.data()) {
+    return __t.data();
+}
+
+// Const pointer to the first element. The bound is at least 1: N == 0 does
+// not match this parameter. The result is array-to-pointer decay, not a load.
+template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr const _Tp* cdata(_Tp (&__arr)[_Nm]) noexcept {
+    return __arr;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. A pointer argument has a non-zero size, so it does
+// not match. There is no pointer overload.
+template <typename _Arr>
+constexpr auto cdata(_Arr& __arr) noexcept -> decltype(__arr + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __arr;
+}
+
+// A bound that does not fit in ptrdiff_t. This path does not cast that
+// bound and does not return a negative value.
+[[noreturn]] inline void _Prism_ssize_array_bound_does_not_fit() noexcept {
+    __prism_check(0, "FUNC-CONTRACT", "std::ssize array bound does not fit in ptrdiff_t");
+    __builtin_trap();
+}
+
+// The bound is at least 1: N == 0 does not match this parameter. A bound
+// greater than PTRDIFF_MAX takes the check above and is not cast.
+// Otherwise the result is that bound as ptrdiff_t. The parameter is
+// unnamed, so the body does not load an element.
+template <typename _Tp, size_t _Nm>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr std::ptrdiff_t ssize(_Tp (&)[_Nm]) noexcept {
+    if constexpr (_Nm > static_cast<size_t>(PTRDIFF_MAX)) {
+        _Prism_ssize_array_bound_does_not_fit();
+    } else {
+        return static_cast<std::ptrdiff_t>(_Nm);
+    }
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is 0, not a
+// load. The parameter is unnamed. A pointer argument has a non-zero size,
+// so it does not match. There is no pointer overload.
+template <typename _Arr>
+constexpr std::ptrdiff_t ssize(_Arr&) noexcept
+    requires(sizeof(_Arr) == 0)
+{
+    return 0;
+}
+
+// A stored value that does not fit in ptrdiff_t. This path does not cast
+// that value and does not return a negative value.
+[[noreturn]] inline void _Prism_ssize_value_does_not_fit() noexcept {
+    __prism_check(0, "FUNC-CONTRACT", "std::ssize value does not fit in ptrdiff_t");
+    __builtin_trap();
+}
+
+// An lvalue with a size member. That member is read once into a local.
+// A value greater than PTRDIFF_MAX takes the check above and is not cast.
+// Otherwise the result is that stored value as ptrdiff_t. The body does
+// not load an element. An array does not match. A pointer does not match.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+    requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
+constexpr auto ssize(const _Tp& __t) noexcept(noexcept(__t.size())) -> decltype(__t.size(), std::ptrdiff_t()) {
+    const auto __n = __t.size();
+    if (__n > PTRDIFF_MAX) {
+        _Prism_ssize_value_does_not_fit();
+    } else {
+        return static_cast<std::ptrdiff_t>(__n);
+    }
 }
 
 // Two pointers only. A class iterator does not match, so the call fails
@@ -224,6 +442,58 @@ constexpr void advance(_Tp*& __p, std::ptrdiff_t __n) noexcept {
         __p = __p + __n;
     } else if (__n < 0) {
         __p = __p + __n;
+    }
+}
+
+// A null pointer. This path does not load or store.
+// Both null takes this path, not the self path.
+// This is not a proof that the pointers address an array.
+[[noreturn]] inline void _Prism_iter_swap_null() noexcept {
+    __prism_check(0, "PTR-NULL-DEREF", "std::iter_swap null pointer");
+    __builtin_trap();
+}
+
+// Two pointers only. A null pointer calls the check above before any load
+// or store. Both non-null and different: exchange the two T values. The
+// temporary is the T already stored through __a, not a value-initialized
+// T. The same pointer twice returns without a load or a store, so the
+// existing value stays. That path does not invent a value. A class
+// iterator does not match, so that call fails to compile and pir falls
+// back.
+// This is not a proof that the pointers address an array.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+constexpr void iter_swap(_Tp* __a, _Tp* __b) noexcept {
+    if (__a == nullptr || __b == nullptr) {
+        _Prism_iter_swap_null();
+    } else if (__a == __b) {
+        return;
+    } else {
+        _Tp __tmp = *__a;
+        *__a = *__b;
+        *__b = __tmp;
+    }
+}
+
+// A null pointer. This path does not load.
+// This is not a proof that the pointer addresses an array.
+[[noreturn]] inline void _Prism_iter_move_null() noexcept {
+    __prism_check(0, "PTR-NULL-DEREF", "std::iter_move null pointer");
+    __builtin_trap();
+}
+
+// One pointer only. A null pointer calls the check above before any load.
+// A non-null pointer returns the T stored through __p. That return is the
+// load, not a value-initialized T. A class iterator does not match, so
+// that call fails to compile and pir falls back.
+// This is not a proof that the pointer addresses an array.
+// This is not PROVED and not CLEAN.
+template <typename _Tp>
+constexpr _Tp iter_move(_Tp* __p) noexcept {
+    if (__p == nullptr) {
+        _Prism_iter_move_null();
+    } else {
+        return *__p;
     }
 }
 
