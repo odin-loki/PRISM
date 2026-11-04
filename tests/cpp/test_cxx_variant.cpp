@@ -9,8 +9,11 @@
 //
 // std::monostate is empty. Two monostate objects compare equal: == is true,
 // != is false, < and > are false, and <= and >= are true. Two variant objects
-// of the same type compare with == and !=. visit, swap, and relational
-// comparison of variant stay undeclared. This is not PROVED and not CLEAN.
+// of the same type compare with ==, !=, <, >, <=, and >=. operator> is
+// operator< with the arguments swapped. operator<= is !(b < a), the negation
+// of that operator>. operator>= is !(a < b), using the existing operator<.
+// visit of lvalue variants is modelled. swap and operator<=> stay undeclared.
+// This is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -371,11 +374,33 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
           std::string::npos);
     CHECK(code.find("operator==(variant") == std::string::npos);
     CHECK(code.find("operator!=(variant") == std::string::npos);
-    for (const char* op : {"operator<", "operator>", "operator<=", "operator>="}) {
-        CAPTURE(op);
-        CHECK(code.find(std::string(op) + "(const variant") == std::string::npos);
-        CHECK(code.find(std::string(op) + "(variant") == std::string::npos);
-    }
+    CHECK(code.find("constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    int variant_lt = 0;
+    for (std::size_t i = 0; (i = code.find("operator<(const variant", i)) != std::string::npos; i += 1)
+        ++variant_lt;
+    CHECK(variant_lt == 1);
+    int variant_gt = 0;
+    for (std::size_t i = 0; (i = code.find("operator>(const variant", i)) != std::string::npos; i += 1)
+        ++variant_gt;
+    CHECK(variant_gt == 1);
+    CHECK(code.find("constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    int variant_le = 0;
+    for (std::size_t i = 0; (i = code.find("operator<=(const variant", i)) != std::string::npos; i += 1)
+        ++variant_le;
+    CHECK(variant_le == 1);
+    CHECK(code.find("constexpr bool operator<=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("return !(__b < __a);") != std::string::npos);
+    int variant_ge = 0;
+    for (std::size_t i = 0; (i = code.find("operator>=(const variant", i)) != std::string::npos; i += 1)
+        ++variant_ge;
+    CHECK(variant_ge == 1);
+    CHECK(code.find("constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("return !(__a < __b);") != std::string::npos);
+    CHECK(code.find("operator>=(variant") == std::string::npos);
     CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
     CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
     CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
@@ -384,17 +409,36 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
     CHECK(code.find("#include <compare>") == std::string::npos);
 }
 
-TEST_CASE("cxx variant model: swap and variant comparison fail against the model") {
+TEST_CASE("cxx variant model: swap and operator<=> fail against the model") {
     auto& c = ctx();
     if (!c.ok) return;
     struct Snip {
         const char* name;
         const char* src;
     };
-    const Snip snips[] = {
-        {"rel",
+    const Snip held[] = {
+        {"lt",
          "#include <variant>\n"
          "int use(){ std::variant<int, char> a(1), b(2); return a < b ? 1 : 0; }\n"},
+        {"gt",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(2); return a > b ? 1 : 0; }\n"},
+        {"le",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(2); return a <= b ? 1 : 0; }\n"},
+        {"ge",
+         "#include <variant>\n"
+         "int use(){ std::variant<int, char> a(1), b(2); return a >= b ? 1 : 0; }\n"},
+    };
+    for (const auto& snip : held) {
+        CAPTURE(snip.name);
+        const fs::path src = c.tmp / (std::string("hold_") + snip.name + ".cpp");
+        std::ofstream(src) << snip.src;
+        std::string err;
+        CHECK(syntax_only(c.cxx, src, false, &err));
+        CHECK(syntax_only(c.cxx, src, true, &err));
+    }
+    const Snip snips[] = {
         {"cmp",
          "#include <variant>\n"
          "int use(){ std::variant<int, char> a(1), b(1); return (a <=> b) == 0 ? 1 : 0; }\n"},
@@ -469,7 +513,10 @@ TEST_CASE("cxx variant model: equality reads only the active alternative") {
         ++variant_eq;
     CHECK(variant_eq == 1);
 
-    const std::string ne_body = code.substr(ne, code.find("struct variant_size", ne) - ne);
+    const auto lt_at = code.find("constexpr bool _Prism_var_lt_at(");
+    REQUIRE(lt_at != std::string::npos);
+    REQUIRE(ne < lt_at);
+    const std::string ne_body = code.substr(ne, lt_at - ne);
     CHECK(ne_body.find("return !(__a == __b);") != std::string::npos);
     CHECK(ne_body.find("_M_get") == std::string::npos);
     CHECK(ne_body.find("return true") == std::string::npos);
@@ -570,4 +617,864 @@ TEST_CASE("cxx variant model: monostate ordering compiles against the model and 
     std::string err;
     CHECK(syntax_only(c.cxx, src, false, &err));
     CHECK(syntax_only(c.cxx, src, true, &err));
+}
+
+TEST_CASE("cxx variant model: operator< returns before it reads storage") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    const std::string src = slurp(header);
+    const std::string code = strip_comments(src);
+    const auto at = code.find("constexpr bool _Prism_var_lt_at(");
+    const auto lt = code.find("constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto gt = code.find("constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto ne = code.find("constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto size = code.find("struct variant_size");
+    REQUIRE(at != std::string::npos);
+    REQUIRE(lt != std::string::npos);
+    REQUIRE(gt != std::string::npos);
+    REQUIRE(ne != std::string::npos);
+    REQUIRE(size != std::string::npos);
+    REQUIRE(ne < at);
+    REQUIRE(at < lt);
+    REQUIRE(lt < gt);
+    REQUIRE(gt < size);
+
+    const std::string helper = code.substr(at, lt - at);
+    CHECK(helper.find("if (__a.index() == _I && __b.index() == _I)") != std::string::npos);
+    CHECK(helper.find("return __a.template _M_get<_I>() < __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(helper.find("return false;") != std::string::npos);
+    CHECK(helper.find("return true") == std::string::npos);
+    CHECK(helper.find("{}") == std::string::npos);
+    CHECK(helper.find("_M_get") < helper.find("return false;"));
+    CHECK(helper.find("_M_get<_I>() ==") == std::string::npos);
+
+    const std::string lt_body = code.substr(lt, gt - lt);
+    const auto both = lt_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
+    const auto left = lt_body.find("if (__a.valueless_by_exception())");
+    const auto right = lt_body.find("if (__b.valueless_by_exception())");
+    const auto diff = lt_body.find("if (__a.index() != __b.index())");
+    const auto cmp = lt_body.find("return __a.index() < __b.index();");
+    const auto read = lt_body.find("_Prism_var_lt_at<0>(__a, __b)");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(left != std::string::npos);
+    REQUIRE(right != std::string::npos);
+    REQUIRE(diff != std::string::npos);
+    REQUIRE(cmp != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    const auto both_ret = lt_body.find("return false;", both);
+    const auto left_ret = lt_body.find("return true;", left);
+    const auto right_ret = lt_body.find("return false;", right);
+    REQUIRE(both_ret != std::string::npos);
+    REQUIRE(left_ret != std::string::npos);
+    REQUIRE(right_ret != std::string::npos);
+    CHECK(both < both_ret);
+    CHECK(both_ret < left);
+    CHECK(left < left_ret);
+    CHECK(left_ret < right);
+    CHECK(right < right_ret);
+    CHECK(right_ret < diff);
+    CHECK(diff < cmp);
+    CHECK(cmp < read);
+    CHECK(lt_body.find("_M_get") == std::string::npos);
+    CHECK(lt_body.find("_M_ptr") == std::string::npos);
+    CHECK(lt_body.find("_M_storage") == std::string::npos);
+    CHECK(lt_body.find("_M_first") == std::string::npos);
+    CHECK(lt_body.find("T{}") == std::string::npos);
+    CHECK(lt_body.find("_T{}") == std::string::npos);
+    CHECK(lt_body.find("__prism_check") == std::string::npos);
+    int variant_lt = 0;
+    for (std::size_t i = 0; (i = code.find("operator<(const variant", i)) != std::string::npos; i += 1)
+        ++variant_lt;
+    CHECK(variant_lt == 1);
+    CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() == __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("return !(__a == __b);") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <compare>") == std::string::npos);
+    CHECK(has_ident(code, "visit"));  // modelled (one or more lvalue variants)
+    for (const char* name : {"swap", "bad_variant_access", "hash", "in_place"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+}
+
+TEST_CASE("cxx variant model: same-type operator< matches libstdc++ and different types do not compile") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* diff_lt =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<char> b('a'); return a < b ? 1 : 0; }\n";
+    const char* no_lt =
+        "#include <variant>\n"
+        "struct NoLt { int v; explicit NoLt(int x) : v(x) {} };\n"
+        "int use(){ std::variant<NoLt, char> a(NoLt(1)); std::variant<NoLt, char> b(NoLt(2));\n"
+        "  return a < b ? 1 : 0; }\n";
+    for (const char* text : {diff_lt, no_lt}) {
+        const fs::path src = c.tmp / "variant_diff_lt.cpp";
+        std::ofstream(src) << text;
+        std::string err;
+        CHECK_FALSE(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "struct Ord {\n"
+        "  int v;\n"
+        "  explicit Ord(int x) : v(x) {}\n"
+        "  bool operator<(const Ord& o) const {\n"
+        "    std::printf(\"lt %d %d\\n\", v, o.v);\n"
+        "    return v < o.v;\n"
+        "  }\n"
+        "};\n"
+        "int main() {\n"
+        "  std::variant<int, char> ia(1), ib(1), ic(2), id('A'), ie('B');\n"
+        "  const std::variant<int, char> ca(1), cb(2);\n"
+        "  std::printf(\"ilt %d %d %d %d %d %d %d %d %d\\n\",\n"
+        "              static_cast<int>(ia < ia), static_cast<int>(ia < ib), static_cast<int>(ia < ic),\n"
+        "              static_cast<int>(ic < ia), static_cast<int>(ia < id), static_cast<int>(id < ia),\n"
+        "              static_cast<int>(id < ie), static_cast<int>(ie < id), static_cast<int>(ca < cb));\n"
+        "  std::variant<int, int> a0, b1, c0, d1;\n"
+        "  a0.emplace<0>(1);\n"
+        "  b1.emplace<1>(1);\n"
+        "  c0.emplace<0>(2);\n"
+        "  d1.emplace<1>(0);\n"
+        "  std::printf(\"dup %d %d %d %d %d %d\\n\", static_cast<int>(a0 < b1), static_cast<int>(b1 < a0),\n"
+        "              static_cast<int>(a0 < c0), static_cast<int>(c0 < a0), static_cast<int>(b1 < d1),\n"
+        "              static_cast<int>(d1 < b1));\n"
+        "  std::variant<std::monostate, int> m1, m2, m3(4), m4(5);\n"
+        "  std::printf(\"mlt %d %d %d %d %d %d\\n\", static_cast<int>(m1 < m2), static_cast<int>(m2 < m1),\n"
+        "              static_cast<int>(m1 < m3), static_cast<int>(m3 < m1), static_cast<int>(m3 < m4),\n"
+        "              static_cast<int>(m4 < m3));\n"
+        "  std::variant<Ord, char> oa(Ord(3)), ob(Ord(3)), oc(Ord(4)), od('Z');\n"
+        "  const int ab = oa < ob;\n"
+        "  const int bc = ob < oc;\n"
+        "  const int ca2 = oc < oa;\n"
+        "  const int ad = oa < od;\n"
+        "  const int da = od < oa;\n"
+        "  std::printf(\"ord %d %d %d %d %d\\n\", ab, bc, ca2, ad, da);\n"
+        "  std::variant<int, Ord> x(1), y(2), z(Ord(9));\n"
+        "  const int xy = x < y;\n"
+        "  const int xz = x < z;\n"
+        "  const int zx = z < x;\n"
+        "  const int zz = z < z;\n"
+        "  std::printf(\"mix %d %d %d %d\\n\", xy, xz, zx, zz);\n"
+        "  return 0;\n"
+        "}\n";
+    auto lib = build_text(c.cxx, c.tmp, "variant_lt", prog, false);
+    auto mod = build_text(c.cxx, c.tmp, "variant_lt", prog, true);
+    const std::vector<std::string> expect{"ilt 0 0 1 0 1 0 1 0 1",
+                                          "dup 1 0 1 0 0 1",
+                                          "mlt 0 0 1 0 1 0",
+                                          "lt 3 3",
+                                          "lt 3 4",
+                                          "lt 4 3",
+                                          "ord 0 1 0 1 0",
+                                          "lt 9 9",
+                                          "mix 1 1 0 0"};
+    CHECK(run_lines(lib) == expect);
+    CHECK(run_lines(mod) == expect);
+}
+
+TEST_CASE("cxx variant model: operator> is operator< with the arguments swapped") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    const std::string code = strip_comments(src);
+    const auto lt = code.find("constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto gt = code.find("constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto le = code.find("constexpr bool operator<=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto size = code.find("struct variant_size");
+    REQUIRE(lt != std::string::npos);
+    REQUIRE(gt != std::string::npos);
+    REQUIRE(le != std::string::npos);
+    REQUIRE(size != std::string::npos);
+    REQUIRE(lt < gt);
+    REQUIRE(gt < le);
+    REQUIRE(le < size);
+
+    const std::string lt_body = code.substr(lt, gt - lt);
+    const auto both = lt_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
+    const auto both_ret = lt_body.find("return false;", both);
+    const auto read = lt_body.find("_Prism_var_lt_at<0>(__a, __b)");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(both_ret != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    CHECK(both < both_ret);
+    CHECK(both_ret < read);
+    CHECK(lt_body.find("_M_get") == std::string::npos);
+    CHECK(lt_body.find("_M_storage") == std::string::npos);
+
+    const std::string gt_body = code.substr(gt, le - gt);
+    CHECK(gt_body.find("return __b < __a;") != std::string::npos);
+    CHECK(gt_body.find("__a < __b") == std::string::npos);
+    CHECK(gt_body.find("__x < __y") != std::string::npos);
+    CHECK(gt_body.find("__x > __y") == std::string::npos);
+    CHECK(gt_body.find("return true") == std::string::npos);
+    CHECK(gt_body.find("return false") == std::string::npos);
+    CHECK(gt_body.find("_M_get") == std::string::npos);
+    CHECK(gt_body.find("_M_ptr") == std::string::npos);
+    CHECK(gt_body.find("_M_storage") == std::string::npos);
+    CHECK(gt_body.find("_M_first") == std::string::npos);
+    CHECK(gt_body.find("valueless_by_exception") == std::string::npos);
+    CHECK(gt_body.find("index(") == std::string::npos);
+    CHECK(gt_body.find("get_if") == std::string::npos);
+    CHECK(gt_body.find("holds_alternative") == std::string::npos);
+    CHECK(gt_body.find("__prism_check") == std::string::npos);
+    CHECK(gt_body.find("T{}") == std::string::npos);
+    CHECK(gt_body.find("_T{}") == std::string::npos);
+    int variant_gt = 0;
+    for (std::size_t i = 0; (i = code.find("operator>(const variant", i)) != std::string::npos; i += 1)
+        ++variant_gt;
+    CHECK(variant_gt == 1);
+    int variant_lt = 0;
+    for (std::size_t i = 0; (i = code.find("operator<(const variant", i)) != std::string::npos; i += 1)
+        ++variant_lt;
+    CHECK(variant_lt == 1);
+    CHECK(code.find("return !(__a == __b);") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() == __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() < __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(src.find("std::get on an inactive variant alternative") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("return !(__a < __b);") != std::string::npos);
+    CHECK(code.find("operator>=(variant") == std::string::npos);
+    CHECK(code.find("return !(__b < __a);") != std::string::npos);
+    CHECK(has_ident(code, "visit"));  // modelled (one or more lvalue variants)
+    for (const char* name : {"swap", "bad_variant_access", "hash", "in_place"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+}
+
+TEST_CASE("cxx variant model: same-type operator> matches libstdc++ and different types do not compile") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* diff_gt =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<char> b('a'); return a > b ? 1 : 0; }\n";
+    const char* no_lt =
+        "#include <variant>\n"
+        "struct NoLt { int v; explicit NoLt(int x) : v(x) {} };\n"
+        "int use(){ std::variant<NoLt, char> a(NoLt(1)); std::variant<NoLt, char> b(NoLt(2));\n"
+        "  return a > b ? 1 : 0; }\n";
+    for (const char* text : {diff_gt, no_lt}) {
+        const fs::path src = c.tmp / "variant_diff_gt.cpp";
+        std::ofstream(src) << text;
+        std::string err;
+        CHECK_FALSE(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
+
+    const char* only_gt =
+        "#include <variant>\n"
+        "struct OnlyGt {\n"
+        "  int v;\n"
+        "  explicit OnlyGt(int x) : v(x) {}\n"
+        "  bool operator>(const OnlyGt& o) const { return v > o.v; }\n"
+        "};\n"
+        "int use(){ std::variant<OnlyGt, char> a(OnlyGt(1)); std::variant<OnlyGt, char> b(OnlyGt(2));\n"
+        "  return a > b ? 1 : 0; }\n";
+    const fs::path only_src = c.tmp / "variant_only_gt.cpp";
+    std::ofstream(only_src) << only_gt;
+    std::string err;
+    CHECK(syntax_only(c.cxx, only_src, false, &err));
+    CHECK_FALSE(syntax_only(c.cxx, only_src, true, &err));
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "int main() {\n"
+        "  std::variant<int, char> ia(1), ib(1), ic(2), id('A'), ie('B');\n"
+        "  const std::variant<int, char> ca(1), cb(2);\n"
+        "  std::printf(\"igt %d %d %d %d %d %d %d %d %d\\n\",\n"
+        "              static_cast<int>(ia > ia), static_cast<int>(ia > ib), static_cast<int>(ia > ic),\n"
+        "              static_cast<int>(ic > ia), static_cast<int>(ia > id), static_cast<int>(id > ia),\n"
+        "              static_cast<int>(id > ie), static_cast<int>(ie > id), static_cast<int>(ca > cb));\n"
+        "  std::variant<int, int> a0, b1, c0, d1;\n"
+        "  a0.emplace<0>(1);\n"
+        "  b1.emplace<1>(1);\n"
+        "  c0.emplace<0>(2);\n"
+        "  d1.emplace<1>(0);\n"
+        "  std::printf(\"dup %d %d %d %d %d %d\\n\", static_cast<int>(a0 > b1), static_cast<int>(b1 > a0),\n"
+        "              static_cast<int>(a0 > c0), static_cast<int>(c0 > a0), static_cast<int>(b1 > d1),\n"
+        "              static_cast<int>(d1 > b1));\n"
+        "  std::variant<std::monostate, int> m1, m2, m3(4), m4(5);\n"
+        "  std::printf(\"mgt %d %d %d %d %d %d\\n\", static_cast<int>(m1 > m2), static_cast<int>(m2 > m1),\n"
+        "              static_cast<int>(m1 > m3), static_cast<int>(m3 > m1), static_cast<int>(m3 > m4),\n"
+        "              static_cast<int>(m4 > m3));\n"
+        "  return 0;\n"
+        "}\n";
+    auto lib = build_text(c.cxx, c.tmp, "variant_gt", prog, false);
+    auto mod = build_text(c.cxx, c.tmp, "variant_gt", prog, true);
+    const std::vector<std::string> expect{"igt 0 0 0 1 0 1 0 1 0", "dup 0 1 0 1 1 0", "mgt 0 0 0 1 0 1"};
+    CHECK(run_lines(lib) == expect);
+    CHECK(run_lines(mod) == expect);
+}
+
+TEST_CASE("cxx variant model: operator> calls operator< and does not read an inactive alternative") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "struct Ord {\n"
+        "  int v;\n"
+        "  explicit Ord(int x) : v(x) {}\n"
+        "  bool operator<(const Ord& o) const {\n"
+        "    std::printf(\"lt %d %d\\n\", v, o.v);\n"
+        "    return v < o.v;\n"
+        "  }\n"
+        "  bool operator>(const Ord& o) const {\n"
+        "    std::printf(\"gt %d %d\\n\", v, o.v);\n"
+        "    return v > o.v;\n"
+        "  }\n"
+        "};\n"
+        "int main() {\n"
+        "  std::variant<Ord, char> oa(Ord(3)), ob(Ord(3)), oc(Ord(4)), od('Z');\n"
+        "  const int ab = oa > ob;\n"
+        "  const int bc = ob > oc;\n"
+        "  const int ca2 = oc > oa;\n"
+        "  const int ad = oa > od;\n"
+        "  const int da = od > oa;\n"
+        "  std::printf(\"ord %d %d %d %d %d\\n\", ab, bc, ca2, ad, da);\n"
+        "  std::variant<int, Ord> x(1), y(2), z(Ord(9));\n"
+        "  const int xy = x > y;\n"
+        "  const int xz = x > z;\n"
+        "  const int zx = z > x;\n"
+        "  const int zz = z > z;\n"
+        "  std::printf(\"mix %d %d %d %d\\n\", xy, xz, zx, zz);\n"
+        "  return 0;\n"
+        "}\n";
+    const fs::path src = c.tmp / "variant_gt_ord.cpp";
+    std::ofstream(src) << prog;
+    std::string err;
+    CHECK(syntax_only(c.cxx, src, false, &err));
+    CHECK(syntax_only(c.cxx, src, true, &err));
+    auto mod = build_text(c.cxx, c.tmp, "variant_gt_ord", prog, true);
+    const std::vector<std::string> expect{"lt 3 3", "lt 4 3", "lt 3 4", "ord 0 0 1 0 1", "lt 9 9", "mix 0 0 1 0"};
+    const auto lines = run_lines(mod);
+    CHECK(lines == expect);
+    for (const auto& line : lines) CHECK(line.find("gt ") == std::string::npos);
+}
+
+TEST_CASE("cxx variant model: operator<= is the negation of operator< with the arguments swapped") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    const std::string code = strip_comments(src);
+    const auto lt = code.find("constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto gt = code.find("constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto le = code.find("constexpr bool operator<=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto ge = code.find("constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto size = code.find("struct variant_size");
+    REQUIRE(lt != std::string::npos);
+    REQUIRE(gt != std::string::npos);
+    REQUIRE(le != std::string::npos);
+    REQUIRE(ge != std::string::npos);
+    REQUIRE(size != std::string::npos);
+    REQUIRE(lt < gt);
+    REQUIRE(gt < le);
+    REQUIRE(le < ge);
+    REQUIRE(ge < size);
+
+    const std::string lt_body = code.substr(lt, gt - lt);
+    const auto both = lt_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
+    const auto both_ret = lt_body.find("return false;", both);
+    const auto read = lt_body.find("_Prism_var_lt_at<0>(__a, __b)");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(both_ret != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    CHECK(both < both_ret);
+    CHECK(both_ret < read);
+    CHECK(lt_body.find("_M_get") == std::string::npos);
+
+    const std::string gt_body = code.substr(gt, le - gt);
+    CHECK(gt_body.find("return __b < __a;") != std::string::npos);
+    CHECK(gt_body.find("return !(__b < __a);") == std::string::npos);
+
+    const std::string le_body = code.substr(le, ge - le);
+    CHECK(le_body.find("return !(__b < __a);") != std::string::npos);
+    CHECK(le_body.find("return __b < __a;") == std::string::npos);
+    CHECK(le_body.find("__a < __b") == std::string::npos);
+    CHECK(le_body.find("__a > __b") == std::string::npos);
+    CHECK(le_body.find("__x < __y") != std::string::npos);
+    CHECK(le_body.find("__x <= __y") == std::string::npos);
+    CHECK(le_body.find("__x > __y") == std::string::npos);
+    CHECK(le_body.find("return true") == std::string::npos);
+    CHECK(le_body.find("return false") == std::string::npos);
+    CHECK(le_body.find("_Prism_var_lt_at") == std::string::npos);
+    CHECK(le_body.find("_M_get") == std::string::npos);
+    CHECK(le_body.find("_M_ptr") == std::string::npos);
+    CHECK(le_body.find("_M_storage") == std::string::npos);
+    CHECK(le_body.find("_M_first") == std::string::npos);
+    CHECK(le_body.find("valueless_by_exception") == std::string::npos);
+    CHECK(le_body.find("index(") == std::string::npos);
+    CHECK(le_body.find("get_if") == std::string::npos);
+    CHECK(le_body.find("holds_alternative") == std::string::npos);
+    CHECK(le_body.find("__prism_check") == std::string::npos);
+    CHECK(le_body.find("T{}") == std::string::npos);
+    CHECK(le_body.find("_T{}") == std::string::npos);
+    CHECK(le_body.find("monostate{}") == std::string::npos);
+    CHECK(le_body.find("monostate{") == std::string::npos);
+    int variant_le = 0;
+    for (std::size_t i = 0; (i = code.find("operator<=(const variant", i)) != std::string::npos; i += 1)
+        ++variant_le;
+    CHECK(variant_le == 1);
+    int variant_gt = 0;
+    for (std::size_t i = 0; (i = code.find("operator>(const variant", i)) != std::string::npos; i += 1)
+        ++variant_gt;
+    CHECK(variant_gt == 1);
+    int variant_lt = 0;
+    for (std::size_t i = 0; (i = code.find("operator<(const variant", i)) != std::string::npos; i += 1)
+        ++variant_lt;
+    CHECK(variant_lt == 1);
+    int swapped_lt = 0;
+    for (std::size_t i = 0; (i = code.find("return __b < __a;", i)) != std::string::npos; i += 1)
+        ++swapped_lt;
+    CHECK(swapped_lt == 1);
+    int neg_lt = 0;
+    for (std::size_t i = 0; (i = code.find("return !(__b < __a);", i)) != std::string::npos; i += 1)
+        ++neg_lt;
+    CHECK(neg_lt == 1);
+    CHECK(code.find("return !(__a == __b);") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() == __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() < __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("constexpr bool operator==(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(src.find("std::get on an inactive variant alternative") != std::string::npos);
+    CHECK(src.find("comparison of variant") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("return !(__a < __b);") != std::string::npos);
+    CHECK(code.find("operator>=(variant") == std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <compare>") == std::string::npos);
+    CHECK(has_ident(code, "visit"));  // modelled (one or more lvalue variants)
+    for (const char* name : {"swap", "bad_variant_access", "hash", "in_place"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+}
+
+TEST_CASE("cxx variant model: same-type operator<= matches libstdc++ and different types do not compile") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* diff_le =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<char> b('a'); return a <= b ? 1 : 0; }\n";
+    const char* no_lt =
+        "#include <variant>\n"
+        "struct NoLt { int v; explicit NoLt(int x) : v(x) {} };\n"
+        "int use(){ std::variant<NoLt, char> a(NoLt(1)); std::variant<NoLt, char> b(NoLt(2));\n"
+        "  return a <= b ? 1 : 0; }\n";
+    for (const char* text : {diff_le, no_lt}) {
+        const fs::path src = c.tmp / "variant_diff_le.cpp";
+        std::ofstream(src) << text;
+        std::string err;
+        CHECK_FALSE(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
+
+    const char* only_le =
+        "#include <variant>\n"
+        "struct OnlyLe {\n"
+        "  int v;\n"
+        "  explicit OnlyLe(int x) : v(x) {}\n"
+        "  bool operator<=(const OnlyLe& o) const { return v <= o.v; }\n"
+        "};\n"
+        "int use(){ std::variant<OnlyLe, char> a(OnlyLe(1)); std::variant<OnlyLe, char> b(OnlyLe(2));\n"
+        "  return a <= b ? 1 : 0; }\n";
+    const fs::path only_le_src = c.tmp / "variant_only_le.cpp";
+    std::ofstream(only_le_src) << only_le;
+    std::string err;
+    CHECK(syntax_only(c.cxx, only_le_src, false, &err));
+    CHECK_FALSE(syntax_only(c.cxx, only_le_src, true, &err));
+
+    const char* only_lt =
+        "#include <variant>\n"
+        "struct OnlyLt {\n"
+        "  int v;\n"
+        "  explicit OnlyLt(int x) : v(x) {}\n"
+        "  bool operator<(const OnlyLt& o) const { return v < o.v; }\n"
+        "};\n"
+        "int use(){ std::variant<OnlyLt, char> a(OnlyLt(1)); std::variant<OnlyLt, char> b(OnlyLt(2));\n"
+        "  return a <= b ? 1 : 0; }\n";
+    const fs::path only_lt_src = c.tmp / "variant_only_lt.cpp";
+    std::ofstream(only_lt_src) << only_lt;
+    CHECK_FALSE(syntax_only(c.cxx, only_lt_src, false, &err));
+    CHECK(syntax_only(c.cxx, only_lt_src, true, &err));
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "int main() {\n"
+        "  std::variant<int, char> ia(1), ib(1), ic(2), id('A'), ie('B');\n"
+        "  const std::variant<int, char> ca(1), cb(2);\n"
+        "  std::printf(\"ile %d %d %d %d %d %d %d %d %d\\n\",\n"
+        "              static_cast<int>(ia <= ia), static_cast<int>(ia <= ib), static_cast<int>(ia <= ic),\n"
+        "              static_cast<int>(ic <= ia), static_cast<int>(ia <= id), static_cast<int>(id <= ia),\n"
+        "              static_cast<int>(id <= ie), static_cast<int>(ie <= id), static_cast<int>(ca <= cb));\n"
+        "  std::variant<int, int> a0, b1, c0, d1, e0;\n"
+        "  a0.emplace<0>(1);\n"
+        "  b1.emplace<1>(1);\n"
+        "  c0.emplace<0>(2);\n"
+        "  d1.emplace<1>(0);\n"
+        "  e0.emplace<0>(1);\n"
+        "  std::printf(\"dup %d %d %d %d %d %d %d\\n\", static_cast<int>(a0 <= b1), static_cast<int>(b1 <= a0),\n"
+        "              static_cast<int>(a0 <= c0), static_cast<int>(c0 <= a0), static_cast<int>(b1 <= d1),\n"
+        "              static_cast<int>(d1 <= b1), static_cast<int>(a0 <= e0));\n"
+        "  std::variant<std::monostate, int> m1, m2, m3(4), m4(5);\n"
+        "  std::printf(\"mle %d %d %d %d %d %d\\n\", static_cast<int>(m1 <= m2), static_cast<int>(m2 <= m1),\n"
+        "              static_cast<int>(m1 <= m3), static_cast<int>(m3 <= m1), static_cast<int>(m3 <= m4),\n"
+        "              static_cast<int>(m4 <= m3));\n"
+        "  return 0;\n"
+        "}\n";
+    auto lib = build_text(c.cxx, c.tmp, "variant_le", prog, false);
+    auto mod = build_text(c.cxx, c.tmp, "variant_le", prog, true);
+    const std::vector<std::string> expect{"ile 1 1 1 0 1 0 1 0 1", "dup 1 0 1 0 0 1 1", "mle 1 1 1 0 1 0"};
+    CHECK(run_lines(lib) == expect);
+    CHECK(run_lines(mod) == expect);
+}
+
+TEST_CASE("cxx variant model: operator<= calls operator< and does not read an inactive alternative") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "struct Ord {\n"
+        "  int v;\n"
+        "  explicit Ord(int x) : v(x) {}\n"
+        "  bool operator<(const Ord& o) const {\n"
+        "    std::printf(\"lt %d %d\\n\", v, o.v);\n"
+        "    return v < o.v;\n"
+        "  }\n"
+        "  bool operator<=(const Ord& o) const {\n"
+        "    std::printf(\"le %d %d\\n\", v, o.v);\n"
+        "    return v <= o.v;\n"
+        "  }\n"
+        "  bool operator>(const Ord& o) const {\n"
+        "    std::printf(\"gt %d %d\\n\", v, o.v);\n"
+        "    return v > o.v;\n"
+        "  }\n"
+        "};\n"
+        "int main() {\n"
+        "  std::variant<Ord, char> oa(Ord(3)), ob(Ord(3)), oc(Ord(4)), od('Z');\n"
+        "  const int ab = oa <= ob;\n"
+        "  const int bc = ob <= oc;\n"
+        "  const int ca2 = oc <= oa;\n"
+        "  const int ad = oa <= od;\n"
+        "  const int da = od <= oa;\n"
+        "  std::printf(\"ord %d %d %d %d %d\\n\", ab, bc, ca2, ad, da);\n"
+        "  std::variant<int, Ord> x(1), y(2), z(Ord(9));\n"
+        "  const int xy = x <= y;\n"
+        "  const int xz = x <= z;\n"
+        "  const int zx = z <= x;\n"
+        "  const int zz = z <= z;\n"
+        "  std::printf(\"mix %d %d %d %d\\n\", xy, xz, zx, zz);\n"
+        "  return 0;\n"
+        "}\n";
+    const fs::path src = c.tmp / "variant_le_ord.cpp";
+    std::ofstream(src) << prog;
+    std::string err;
+    CHECK(syntax_only(c.cxx, src, false, &err));
+    CHECK(syntax_only(c.cxx, src, true, &err));
+    auto mod = build_text(c.cxx, c.tmp, "variant_le_ord", prog, true);
+    const std::vector<std::string> expect{"lt 3 3", "lt 4 3", "lt 3 4", "ord 1 1 0 1 0", "lt 9 9", "mix 1 1 0 1"};
+    const auto lines = run_lines(mod);
+    CHECK(lines == expect);
+    for (const auto& line : lines) {
+        CHECK(line.find("le ") == std::string::npos);
+        CHECK(line.find("gt ") == std::string::npos);
+    }
+}
+
+TEST_CASE("cxx variant model: operator>= is the negation of operator<") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "variant";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    const std::string code = strip_comments(src);
+    const auto lt = code.find("constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto gt = code.find("constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto le = code.find("constexpr bool operator<=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto ge = code.find("constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)");
+    const auto size = code.find("struct variant_size");
+    REQUIRE(lt != std::string::npos);
+    REQUIRE(gt != std::string::npos);
+    REQUIRE(le != std::string::npos);
+    REQUIRE(ge != std::string::npos);
+    REQUIRE(size != std::string::npos);
+    REQUIRE(lt < gt);
+    REQUIRE(gt < le);
+    REQUIRE(le < ge);
+    REQUIRE(ge < size);
+
+    const std::string lt_body = code.substr(lt, gt - lt);
+    const auto both = lt_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
+    const auto both_ret = lt_body.find("return false;", both);
+    const auto read = lt_body.find("_Prism_var_lt_at<0>(__a, __b)");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(both_ret != std::string::npos);
+    REQUIRE(read != std::string::npos);
+    CHECK(both < both_ret);
+    CHECK(both_ret < read);
+    CHECK(lt_body.find("_M_get") == std::string::npos);
+
+    const std::string ge_body = code.substr(ge, size - ge);
+    CHECK(ge_body.find("return !(__a < __b);") != std::string::npos);
+    CHECK(ge_body.find("return __a < __b;") == std::string::npos);
+    CHECK(ge_body.find("return !(__b < __a);") == std::string::npos);
+    CHECK(ge_body.find("return __b < __a;") == std::string::npos);
+    CHECK(ge_body.find("__a > __b") == std::string::npos);
+    CHECK(ge_body.find("__b < __a") == std::string::npos);
+    CHECK(ge_body.find("__x < __y") != std::string::npos);
+    CHECK(ge_body.find("__x >= __y") == std::string::npos);
+    CHECK(ge_body.find("__x > __y") == std::string::npos);
+    CHECK(ge_body.find("__x <= __y") == std::string::npos);
+    CHECK(ge_body.find("return true") == std::string::npos);
+    CHECK(ge_body.find("return false") == std::string::npos);
+    CHECK(ge_body.find("_Prism_var_lt_at") == std::string::npos);
+    CHECK(ge_body.find("_M_get") == std::string::npos);
+    CHECK(ge_body.find("_M_ptr") == std::string::npos);
+    CHECK(ge_body.find("_M_storage") == std::string::npos);
+    CHECK(ge_body.find("_M_first") == std::string::npos);
+    CHECK(ge_body.find("valueless_by_exception") == std::string::npos);
+    CHECK(ge_body.find("index(") == std::string::npos);
+    CHECK(ge_body.find("get_if") == std::string::npos);
+    CHECK(ge_body.find("holds_alternative") == std::string::npos);
+    CHECK(ge_body.find("__prism_check") == std::string::npos);
+    CHECK(ge_body.find("T{}") == std::string::npos);
+    CHECK(ge_body.find("_T{}") == std::string::npos);
+    CHECK(ge_body.find("monostate{}") == std::string::npos);
+    CHECK(ge_body.find("monostate{") == std::string::npos);
+    int variant_ge = 0;
+    for (std::size_t i = 0; (i = code.find("operator>=(const variant", i)) != std::string::npos; i += 1)
+        ++variant_ge;
+    CHECK(variant_ge == 1);
+    int variant_le = 0;
+    for (std::size_t i = 0; (i = code.find("operator<=(const variant", i)) != std::string::npos; i += 1)
+        ++variant_le;
+    CHECK(variant_le == 1);
+    int variant_gt = 0;
+    for (std::size_t i = 0; (i = code.find("operator>(const variant", i)) != std::string::npos; i += 1)
+        ++variant_gt;
+    CHECK(variant_gt == 1);
+    int variant_lt = 0;
+    for (std::size_t i = 0; (i = code.find("operator<(const variant", i)) != std::string::npos; i += 1)
+        ++variant_lt;
+    CHECK(variant_lt == 1);
+    int neg_same = 0;
+    for (std::size_t i = 0; (i = code.find("return !(__a < __b);", i)) != std::string::npos; i += 1)
+        ++neg_same;
+    CHECK(neg_same == 1);
+    int neg_swap = 0;
+    for (std::size_t i = 0; (i = code.find("return !(__b < __a);", i)) != std::string::npos; i += 1)
+        ++neg_swap;
+    CHECK(neg_swap == 1);
+    int swapped_lt = 0;
+    for (std::size_t i = 0; (i = code.find("return __b < __a;", i)) != std::string::npos; i += 1)
+        ++swapped_lt;
+    CHECK(swapped_lt == 1);
+    CHECK(code.find("return !(__a == __b);") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() == __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("return __a.template _M_get<_I>() < __b.template _M_get<_I>();") != std::string::npos);
+    CHECK(code.find("constexpr bool operator==(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...>& __b)") !=
+          std::string::npos);
+    CHECK(code.find("constexpr bool operator==(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator!=(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>(monostate, monostate) noexcept { return false; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator<=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(code.find("constexpr bool operator>=(monostate, monostate) noexcept { return true; }") != std::string::npos);
+    CHECK(src.find("std::get on an inactive variant alternative") != std::string::npos);
+    CHECK(src.find("comparison of variant") != std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("operator>=(variant") == std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <compare>") == std::string::npos);
+    CHECK(has_ident(code, "visit"));  // modelled (one or more lvalue variants)
+    for (const char* name : {"swap", "bad_variant_access", "hash", "in_place"}) {
+        CAPTURE(name);
+        CHECK_FALSE(has_ident(code, name));
+    }
+}
+
+TEST_CASE("cxx variant model: same-type operator>= matches libstdc++ and different types do not compile") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* diff_ge =
+        "#include <variant>\n"
+        "int use(){ std::variant<int> a(1); std::variant<char> b('a'); return a >= b ? 1 : 0; }\n";
+    const char* no_lt =
+        "#include <variant>\n"
+        "struct NoLt { int v; explicit NoLt(int x) : v(x) {} };\n"
+        "int use(){ std::variant<NoLt, char> a(NoLt(1)); std::variant<NoLt, char> b(NoLt(2));\n"
+        "  return a >= b ? 1 : 0; }\n";
+    for (const char* text : {diff_ge, no_lt}) {
+        const fs::path src = c.tmp / "variant_diff_ge.cpp";
+        std::ofstream(src) << text;
+        std::string err;
+        CHECK_FALSE(syntax_only(c.cxx, src, false, &err));
+        CHECK_FALSE(syntax_only(c.cxx, src, true, &err));
+    }
+
+    const char* only_ge =
+        "#include <variant>\n"
+        "struct OnlyGe {\n"
+        "  int v;\n"
+        "  explicit OnlyGe(int x) : v(x) {}\n"
+        "  bool operator>=(const OnlyGe& o) const { return v >= o.v; }\n"
+        "};\n"
+        "int use(){ std::variant<OnlyGe, char> a(OnlyGe(1)); std::variant<OnlyGe, char> b(OnlyGe(2));\n"
+        "  return a >= b ? 1 : 0; }\n";
+    const fs::path only_ge_src = c.tmp / "variant_only_ge.cpp";
+    std::ofstream(only_ge_src) << only_ge;
+    std::string err;
+    CHECK(syntax_only(c.cxx, only_ge_src, false, &err));
+    CHECK_FALSE(syntax_only(c.cxx, only_ge_src, true, &err));
+
+    const char* only_lt =
+        "#include <variant>\n"
+        "struct OnlyLt {\n"
+        "  int v;\n"
+        "  explicit OnlyLt(int x) : v(x) {}\n"
+        "  bool operator<(const OnlyLt& o) const { return v < o.v; }\n"
+        "};\n"
+        "int use(){ std::variant<OnlyLt, char> a(OnlyLt(1)); std::variant<OnlyLt, char> b(OnlyLt(2));\n"
+        "  return a >= b ? 1 : 0; }\n";
+    const fs::path only_lt_src = c.tmp / "variant_only_lt_ge.cpp";
+    std::ofstream(only_lt_src) << only_lt;
+    CHECK_FALSE(syntax_only(c.cxx, only_lt_src, false, &err));
+    CHECK(syntax_only(c.cxx, only_lt_src, true, &err));
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "int main() {\n"
+        "  std::variant<int, char> ia(1), ib(1), ic(2), id('A'), ie('B');\n"
+        "  const std::variant<int, char> ca(1), cb(2);\n"
+        "  std::printf(\"ige %d %d %d %d %d %d %d %d %d\\n\",\n"
+        "              static_cast<int>(ia >= ia), static_cast<int>(ia >= ib), static_cast<int>(ia >= ic),\n"
+        "              static_cast<int>(ic >= ia), static_cast<int>(ia >= id), static_cast<int>(id >= ia),\n"
+        "              static_cast<int>(id >= ie), static_cast<int>(ie >= id), static_cast<int>(ca >= cb));\n"
+        "  std::variant<int, int> a0, b1, c0, d1, e0;\n"
+        "  a0.emplace<0>(1);\n"
+        "  b1.emplace<1>(1);\n"
+        "  c0.emplace<0>(2);\n"
+        "  d1.emplace<1>(0);\n"
+        "  e0.emplace<0>(1);\n"
+        "  std::printf(\"dup %d %d %d %d %d %d %d\\n\", static_cast<int>(a0 >= b1), static_cast<int>(b1 >= a0),\n"
+        "              static_cast<int>(a0 >= c0), static_cast<int>(c0 >= a0), static_cast<int>(b1 >= d1),\n"
+        "              static_cast<int>(d1 >= b1), static_cast<int>(a0 >= e0));\n"
+        "  std::variant<std::monostate, int> m1, m2, m3(4), m4(5);\n"
+        "  std::printf(\"mge %d %d %d %d %d %d\\n\", static_cast<int>(m1 >= m2), static_cast<int>(m2 >= m1),\n"
+        "              static_cast<int>(m1 >= m3), static_cast<int>(m3 >= m1), static_cast<int>(m3 >= m4),\n"
+        "              static_cast<int>(m4 >= m3));\n"
+        "  return 0;\n"
+        "}\n";
+    auto lib = build_text(c.cxx, c.tmp, "variant_ge", prog, false);
+    auto mod = build_text(c.cxx, c.tmp, "variant_ge", prog, true);
+    const std::vector<std::string> expect{"ige 1 1 0 1 0 1 0 1 0", "dup 0 1 0 1 1 0 1", "mge 1 1 0 1 0 1"};
+    CHECK(run_lines(lib) == expect);
+    CHECK(run_lines(mod) == expect);
+}
+
+TEST_CASE("cxx variant model: operator>= calls operator< and does not read an inactive alternative") {
+    auto& c = ctx();
+    if (!c.ok) return;
+
+    const char* prog =
+        "#include <cstdio>\n"
+        "#include <variant>\n"
+        "struct Ord {\n"
+        "  int v;\n"
+        "  explicit Ord(int x) : v(x) {}\n"
+        "  bool operator<(const Ord& o) const {\n"
+        "    std::printf(\"lt %d %d\\n\", v, o.v);\n"
+        "    return v < o.v;\n"
+        "  }\n"
+        "  bool operator>=(const Ord& o) const {\n"
+        "    std::printf(\"ge %d %d\\n\", v, o.v);\n"
+        "    return v >= o.v;\n"
+        "  }\n"
+        "  bool operator>(const Ord& o) const {\n"
+        "    std::printf(\"gt %d %d\\n\", v, o.v);\n"
+        "    return v > o.v;\n"
+        "  }\n"
+        "};\n"
+        "int main() {\n"
+        "  std::variant<Ord, char> oa(Ord(3)), ob(Ord(3)), oc(Ord(4)), od('Z');\n"
+        "  const int ab = oa >= ob;\n"
+        "  const int bc = ob >= oc;\n"
+        "  const int ca2 = oc >= oa;\n"
+        "  const int ad = oa >= od;\n"
+        "  const int da = od >= oa;\n"
+        "  std::printf(\"ord %d %d %d %d %d\\n\", ab, bc, ca2, ad, da);\n"
+        "  std::variant<int, Ord> x(1), y(2), z(Ord(9));\n"
+        "  const int xy = x >= y;\n"
+        "  const int xz = x >= z;\n"
+        "  const int zx = z >= x;\n"
+        "  const int zz = z >= z;\n"
+        "  std::printf(\"mix %d %d %d %d\\n\", xy, xz, zx, zz);\n"
+        "  return 0;\n"
+        "}\n";
+    const fs::path src = c.tmp / "variant_ge_ord.cpp";
+    std::ofstream(src) << prog;
+    std::string err;
+    CHECK(syntax_only(c.cxx, src, false, &err));
+    CHECK(syntax_only(c.cxx, src, true, &err));
+    auto mod = build_text(c.cxx, c.tmp, "variant_ge_ord", prog, true);
+    const std::vector<std::string> expect{"lt 3 3", "lt 3 4", "lt 4 3", "ord 1 0 1 0 1", "lt 9 9", "mix 0 0 1 1"};
+    const auto lines = run_lines(mod);
+    CHECK(lines == expect);
+    for (const auto& line : lines) {
+        CHECK(line.find("ge ") == std::string::npos);
+        CHECK(line.find("gt ") == std::string::npos);
+    }
 }

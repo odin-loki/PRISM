@@ -32,9 +32,42 @@
 // that holds a value. Two different variant types are not that operator.
 // This is not PROVED and not CLEAN.
 //
-// visit of one or more lvalue variants is modelled (below). swap, relational comparison of variant (operator<, operator<=>, and
-// the other relational operators), hash, in_place constructors, and
-// bad_variant_access are not declared. operator<=> on monostate is not
+// operator< compares two variant objects of the same type. Both valueless:
+// false, and that path does not read storage. A valueless left side and a
+// valued right side: true, and that path does not read the stored
+// alternative. A valued left side and a valueless right side: false, and
+// that path does not read storage. Different indexes compare the indexes and
+// that path does not read the inactive alternative. The same index compares
+// the stored values with <. Two different variant types are not that
+// operator. This is not PROVED and not CLEAN.
+//
+// operator> compares two variant objects of the same type by returning
+// __b < __a. It uses the existing operator< and does not read an inactive
+// alternative itself. Both valueless compare not-greater, and that path
+// does not read storage, because operator< returns false before it reads
+// storage. Two different variant types are not that operator. This is not
+// PROVED and not CLEAN.
+//
+// operator<= compares two variant objects of the same type by returning
+// !(__b < __a). That is the negation of operator> of the swapped arguments,
+// and it uses the existing operator<. It does not read an inactive
+// alternative itself and does not construct T{} or a monostate stand-in for a
+// value. Both valueless compare less-or-equal, and that path does not read
+// storage, because operator< returns false before it reads storage. Two
+// different variant types are not that operator. This is not PROVED and not
+// CLEAN.
+//
+// operator>= compares two variant objects of the same type by returning
+// !(__a < __b). It uses the existing operator<. It does not read an inactive
+// alternative itself and does not construct T{} or a monostate stand-in for a
+// value. Both valueless compare greater-or-equal, and that path does not
+// read storage, because operator< returns false before it reads storage. Two
+// different variant types are not that operator. This is not PROVED and not
+// CLEAN.
+//
+// visit of one or more lvalue variants is modelled (below). swap, the other
+// relational comparison of variant (operator<=>), hash, in_place constructors,
+// and bad_variant_access are not declared. operator<=> on monostate is not
 // declared. A use of an omitted API fails to compile against this header, so
 // the pir stage falls back to libstdc++.
 #ifndef _PRISM_MODEL_VARIANT
@@ -480,6 +513,81 @@ constexpr bool operator!=(const variant<_Types...>& __a, const variant<_Types...
     requires((requires(const _Types& __x, const _Types& __y) { __x == __y; }) && ...)
 {
     return !(__a == __b);
+}
+
+// Same index only. The stored values are compared with <. A different index
+// does not read the inactive alternative. This does not construct T{}.
+template <std::size_t _I, typename... _Types>
+constexpr bool _Prism_var_lt_at(const variant<_Types...>& __a, const variant<_Types...>& __b) {
+    if constexpr (_I < sizeof...(_Types)) {
+        if (__a.index() == _I && __b.index() == _I)
+            return __a.template _M_get<_I>() < __b.template _M_get<_I>();
+        return _Prism_var_lt_at<_I + 1>(__a, __b);
+    }
+    return false;
+}
+
+// Two variant objects of the same type. Both valueless: false, and that path
+// does not read storage. A valueless left side and a valued right side: true,
+// and that path does not read the stored alternative. A valued left side and
+// a valueless right side: false, and that path does not read storage.
+// Different indexes compare the indexes and do not read the inactive
+// alternative. The same index compares the stored values with <. This is not
+// PROVED and not CLEAN.
+template <typename... _Types>
+constexpr bool operator<(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x < __y; }) && ...)
+{
+    if (__a.valueless_by_exception() && __b.valueless_by_exception())
+        return false;
+    if (__a.valueless_by_exception())
+        return true;
+    if (__b.valueless_by_exception())
+        return false;
+    if (__a.index() != __b.index())
+        return __a.index() < __b.index();
+    return _Prism_var_lt_at<0>(__a, __b);
+}
+
+// Greater-than is the existing operator< with the arguments swapped.
+// Same type only. Both valueless compare not-greater: operator< of two
+// valueless variants returns false before it reads storage, so this returns
+// false and does not read storage either. This operator does not read an
+// inactive alternative itself. This is not PROVED and not CLEAN.
+template <typename... _Types>
+constexpr bool operator>(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x < __y; }) && ...)
+{
+    return __b < __a;
+}
+
+// Less-or-equal is the negation of operator> of the swapped arguments,
+// equivalently !(__b < __a). operator>(__a, __b) returns __b < __a, so this
+// returns the negation and uses the existing operator<. Same type only.
+// Both valueless compare less-or-equal: operator< of two valueless variants
+// returns false before it reads storage, so this returns true and does not
+// read storage either. This operator does not read an inactive alternative
+// itself and does not construct T{} or a monostate stand-in.
+// This is not PROVED and not CLEAN.
+template <typename... _Types>
+constexpr bool operator<=(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x < __y; }) && ...)
+{
+    return !(__b < __a);
+}
+
+// Greater-or-equal is the negation of operator< of the same arguments,
+// equivalently !(__a < __b). It uses the existing operator<. Same type only.
+// Both valueless compare greater-or-equal: operator< of two valueless
+// variants returns false before it reads storage, so this returns true and
+// does not read storage either. This operator does not read an inactive
+// alternative itself and does not construct T{} or a monostate stand-in.
+// This is not PROVED and not CLEAN.
+template <typename... _Types>
+constexpr bool operator>=(const variant<_Types...>& __a, const variant<_Types...>& __b)
+    requires((requires(const _Types& __x, const _Types& __y) { __x < __y; }) && ...)
+{
+    return !(__a < __b);
 }
 
 template <typename _T>
