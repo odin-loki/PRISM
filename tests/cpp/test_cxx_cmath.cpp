@@ -379,6 +379,36 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
         CHECK(fn_body.find("return 0") == std::string::npos);
         CHECK(fn_body.find("0.0") == std::string::npos);
     }
+    CHECK(src.find("fma, hypot, remainder, fmod, and fdim are not PROVED and not CLEAN.") != std::string::npos);
+    CHECK(src.find("#undef fma") != std::string::npos);
+    CHECK(src.find("#undef hypot") != std::string::npos);
+    CHECK(src.find("#undef remainder") != std::string::npos);
+    CHECK(src.find("#undef fmod") != std::string::npos);
+    CHECK(src.find("#undef fdim") != std::string::npos);
+    CHECK(src.find("fma(int") == std::string::npos);
+    CHECK(src.find("hypot(int") == std::string::npos);
+    CHECK(src.find("fmod(int") == std::string::npos);
+    CHECK(src.find("remainder(int") == std::string::npos);
+    CHECK(src.find("fdim(int") == std::string::npos);
+    for (const char* sig : {"constexpr double fma(double __x, double __y, double __z)",
+                            "constexpr float fma(float __x, float __y, float __z)",
+                            "constexpr long double fma(long double __x, long double __y, long double __z)"}) {
+        const std::string fn_body = brace_body(src, sig);
+        REQUIRE_FALSE(fn_body.empty());
+        CHECK(fn_body.find("if (isnan(__x)) return __x;") != std::string::npos);
+        CHECK(fn_body.find("if (isnan(__y)) return __y;") != std::string::npos);
+        CHECK(fn_body.find("if (isnan(__z)) return __z;") != std::string::npos);
+        CHECK(fn_body.find("return 0") == std::string::npos);
+    }
+    CHECK(src.find("return __builtin_fma(__x, __y, __z);") != std::string::npos);
+    CHECK(src.find("return __builtin_fmaf(__x, __y, __z);") != std::string::npos);
+    CHECK(src.find("return __builtin_fmal(__x, __y, __z);") != std::string::npos);
+    CHECK(src.find("return __builtin_hypot(__x, __y);") != std::string::npos);
+    CHECK(src.find("return __builtin_fmod(__x, __y);") != std::string::npos);
+    CHECK(src.find("return __builtin_remainder(__x, __y);") != std::string::npos);
+    CHECK(src.find("if (__x <= __y) return +0.0;") != std::string::npos);
+    CHECK(src.find("if (isinf(__x) || isinf(__y)) return __builtin_huge_val();") != std::string::npos);
+    CHECK(src.find("if (__y == 0.0) return __builtin_nan(\"\");") != std::string::npos);
 }
 
 TEST_CASE("cxx cmath model: setup clang++ with ASan/UBSan") {
@@ -523,6 +553,66 @@ TEST_CASE("cxx cmath model: fabs(-2) is 2 when the model header is included") {
     CHECK(has_line(b, "flmzl=1"));
     CHECK(has_line(b, "cemzl=1"));
     CHECK(has_line(b, "trmzl=1"));
+    CHECK(has_line(b, "fd31=1"));
+    CHECK(has_line(b, "fd13=1"));
+    CHECK(has_line(b, "fdnan=1"));
+    CHECK(has_line(b, "fdnan2=1"));
+    CHECK(has_line(b, "fdpinf=1"));
+    CHECK(has_line(b, "fdninf=1"));
+    CHECK(has_line(b, "fd31f=1"));
+    CHECK(has_line(b, "fd13f=1"));
+    CHECK(has_line(b, "fdnanf=1"));
+    CHECK(has_line(b, "fd31l=1"));
+    CHECK(has_line(b, "fd13l=1"));
+    CHECK(has_line(b, "fdnanl=1"));
+    CHECK(has_line(b, "fm52=1"));
+    CHECK(has_line(b, "fmn52=1"));
+    CHECK(has_line(b, "fm0=1"));
+    CHECK(has_line(b, "fmnan=1"));
+    CHECK(has_line(b, "fminf=1"));
+    CHECK(has_line(b, "fm52f=1"));
+    CHECK(has_line(b, "fm0f=1"));
+    CHECK(has_line(b, "fmnanf=1"));
+    CHECK(has_line(b, "fm52l=1"));
+    CHECK(has_line(b, "fm0l=1"));
+    CHECK(has_line(b, "fmnanl=1"));
+    CHECK(has_line(b, "rm52=1"));
+    CHECK(has_line(b, "rmn52=1"));
+    CHECK(has_line(b, "rm0=1"));
+    CHECK(has_line(b, "rmnan=1"));
+    CHECK(has_line(b, "rminf=1"));
+    CHECK(has_line(b, "rm52f=1"));
+    CHECK(has_line(b, "rm0f=1"));
+    CHECK(has_line(b, "rmnanf=1"));
+    CHECK(has_line(b, "rm52l=1"));
+    CHECK(has_line(b, "rm0l=1"));
+    CHECK(has_line(b, "rmnanl=1"));
+    CHECK(has_line(b, "hy34=1"));
+    CHECK(has_line(b, "hy00=1"));
+    CHECK(has_line(b, "hynan=1"));
+    CHECK(has_line(b, "hypinf=1"));
+    CHECK(has_line(b, "hyninf=1"));
+    CHECK(has_line(b, "hynaninf=1"));
+    CHECK(has_line(b, "hy34f=1"));
+    CHECK(has_line(b, "hy00f=1"));
+    CHECK(has_line(b, "hynanf=1"));
+    CHECK(has_line(b, "hypinff=1"));
+    CHECK(has_line(b, "hy34l=1"));
+    CHECK(has_line(b, "hy00l=1"));
+    CHECK(has_line(b, "hynanl=1"));
+    CHECK(has_line(b, "hypinfl=1"));
+    CHECK(has_line(b, "fma231=1"));
+    CHECK(has_line(b, "fmanx=1"));
+    CHECK(has_line(b, "fmany=1"));
+    CHECK(has_line(b, "fmanz=1"));
+    CHECK(has_line(b, "fmapinf=1"));
+    CHECK(has_line(b, "fmainf0=1"));
+    CHECK(has_line(b, "fma231f=1"));
+    CHECK(has_line(b, "fmanxf=1"));
+    CHECK(has_line(b, "fmapinff=1"));
+    CHECK(has_line(b, "fma231l=1"));
+    CHECK(has_line(b, "fmanxl=1"));
+    CHECK(has_line(b, "fmapinfl=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "neg"}, &out, &err));
