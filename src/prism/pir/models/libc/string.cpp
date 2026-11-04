@@ -411,11 +411,10 @@ char *strdup(const char *s) {
  * before any allocation. That path does not read s.
  * n == 0 does not read s. It allocates one byte, stores a NUL, and returns
  * that pointer. Allocation failure returns a null pointer.
- * Otherwise the copy is min(n, strlen(s)) bytes and a trailing NUL. The
- * scan does not read s[i] for i >= n, and it does not read past the
- * terminator. A copy length of SIZE_MAX has no room for the trailing
- * NUL: that path is MEM-OOB-WRITE and __builtin_trap, and it does not
- * call malloc.
+ * Otherwise the copy is min(n, strlen(s)) bytes and a trailing NUL.
+ * The scan does not read s[i] for i >= n, and it does not read past the terminator.
+ * A copy length of SIZE_MAX has no room for the trailing NUL: that path is
+ * MEM-OOB-WRITE and __builtin_trap, and it does not call malloc.
  * This is not a proof of the copy.
  * This is not PROVED and not CLEAN. */
 char *strndup(const char *s, size_t n) {

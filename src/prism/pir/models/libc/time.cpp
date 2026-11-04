@@ -103,8 +103,8 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp) {
  * written. A live time_t * returns a pointer to static storage. Each field
  * is nondet. tm_mon stays in 0..11 and tm_mday stays in 1..31, the ranges
  * this model already uses for a tm. The time_t value is not read and not
- * converted. This is not a proof of the calendar time. gmtime is not
- * PROVED and not CLEAN. */
+ * converted. This is not a proof of the calendar time.
+ * gmtime is not PROVED and not CLEAN. */
 struct tm *gmtime(const time_t *timer) {
     if (timer == 0) {
         __prism_check(0, "PTR-NULL-DEREF", "gmtime null time_t");
