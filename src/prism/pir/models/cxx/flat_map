@@ -12,6 +12,18 @@
 // the existing _M_clear. It does not allocate, does not insert, and does
 // not construct a mapped value. An empty map does not call ::operator delete.
 // After clear(), empty() is true and size() is 0. This is not PROVED and not CLEAN.
+// swap exchanges the node pointer and the size. Two empty maps swap to
+// empty and do not load a node. It does not allocate, free, or construct
+// a key. Self-swap does not free the nodes. This is not PROVED and not
+// CLEAN.
+// operator< orders the stored pairs lexicographically along the node chain
+// from _M_head (each link inserts at the head, so the first pair compared
+// is the most recently inserted). Two empty maps compare not-less and do
+// not load a node. An empty map is less than a non-empty map, and that
+// path does not load the empty map's node. The walk stops at the first
+// deciding pair and does not read past the shorter map. It does not
+// construct a key or a mapped value and it does not return T{}. This is
+// not PROVED and not CLEAN.
 // operator[] on a missing key inserts a node.
 // at(key) when the key is absent, including on an empty container, throws
 // std::out_of_range and does not return a default mapped T. erase of a
@@ -36,9 +48,9 @@
 // the sorted_unique and container constructors (the sorted_unique
 // precondition is CHECKED), extract() && and replace() over vector<Key> /
 // vector<T>, transparent contains/count/at, iterators (key order), find and
-// erase(iterator). Not declared: insert, insert_range, emplace, swap and the
-// rest; a use of an omitted name fails to compile against this header and
-// pir falls back to libstdc++ (extra.cxx_models).
+// erase(iterator), swap, and operator<. Not declared: insert, insert_range,
+// emplace and the rest; a use of an omitted name fails to compile against
+// this header and pir falls back to libstdc++ (extra.cxx_models).
 #ifndef _PRISM_MODEL_FLAT_MAP
 #define _PRISM_MODEL_FLAT_MAP 1
 #define _GLIBCXX_FLAT_MAP 1  // libstdc++'s <flat_map> include guard: never both
@@ -393,6 +405,23 @@ public:
     // construct a mapped value. It does not call operator[] or at().
     // This is not PROVED and not CLEAN.
     bool empty() const noexcept { return _M_size == 0; }
+
+    // Exchanges the node pointer and the size.
+    // Two empty maps swap to empty and do not load a node.
+    // Swap does not allocate, free, or construct a key.
+    // Self-swap does not free the nodes.
+    // This is not PROVED and not CLEAN.
+    void swap(flat_map& __o) noexcept {
+        if (this == &__o) return;
+        if (_M_head == nullptr && __o._M_head == nullptr) return;
+        _Node* __h = _M_head;
+        size_type __s = _M_size;
+        _M_head = __o._M_head;
+        _M_size = __o._M_size;
+        __o._M_head = __h;
+        __o._M_size = __s;
+    }
+
     // Session 5: iterators and find. Nodes are an unsorted list; an
     // iterator walks them in key order by picking, at each step, the
     // smallest key greater than the current one (O(n) per step, no
@@ -476,6 +505,36 @@ public:
                 break;
             }
         return __nx;
+    }
+
+    // Two empty maps compare not-less and do not load a node.
+    // An empty map is less than a non-empty map, and that path does not load the empty map's node.
+    // Different sizes compare lexicographically on stored keys and mapped values and do not read past the shorter map.
+    // The same size compares stored keys and mapped values with <.
+    // It does not construct a key or a mapped value and it does not return T{}.
+    // The walk stops at the first deciding pair. This is not PROVED and not CLEAN.
+    friend bool operator<(const flat_map& __x, const flat_map& __y) {
+        if (__x._M_head == nullptr && __y._M_head == nullptr)
+            return false;
+        if (__x._M_head == nullptr && __y._M_head != nullptr)
+            return true;
+        if (__y._M_head == nullptr && __x._M_head != nullptr)
+            return false;
+        const _Node* __a = __x._M_head;
+        const _Node* __b = __y._M_head;
+        while (__a != nullptr && __b != nullptr) {
+            if (__a->_M_key < __b->_M_key)
+                return true;
+            if (__b->_M_key < __a->_M_key)
+                return false;
+            if (__a->_M_mapped < __b->_M_mapped)
+                return true;
+            if (__b->_M_mapped < __a->_M_mapped)
+                return false;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        return __a == nullptr && __b != nullptr;
     }
 };
 

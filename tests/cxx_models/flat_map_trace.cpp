@@ -13,11 +13,20 @@
 // and must not overwrite the stored value. "empty" is true when there are
 // no nodes and false when there is at least one. Those calls read the
 // existing size: they must not allocate, insert, erase, construct a mapped
-// value, or call operator[] or at(). This trace is not PROVED and not CLEAN.
+// value, or call operator[] or at(). "swap" exchanges the node pointer and
+// the size. Two empty maps swap to empty and do not load a node. Swap does
+// not allocate, free, or construct a key. Self-swap does not free the nodes.
+// "less" orders two flat_maps along the node chain, newest pair first. Two
+// empty maps compare not-less and do not load a node. An empty map is less
+// than a non-empty map, and that path does not load the empty map's node.
+// The walk stops at the first deciding pair and does not read past the
+// shorter map. It does not return T{}. The no-argument lines are unchanged.
+// This trace is not PROVED and not CLEAN.
 #include <flat_map>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 
 // Copy count for the contains driver. The model allocates a node only by
 // constructing a key into it, so a contains that copies nothing did not
@@ -26,13 +35,27 @@ struct CountKey {
     int v;
     static int copies;
     static int moves;
+    static int eq;
+    static int lt;
+    static int poison;
     CountKey(int x) : v(x) {}
     CountKey(const CountKey& o) : v(o.v) { ++copies; }
     CountKey(CountKey&& o) noexcept : v(o.v) { ++moves; }
-    bool operator<(const CountKey& o) const { return v < o.v; }
+    bool operator<(const CountKey& o) const {
+        ++lt;
+        if (v < 0 || o.v < 0) ++poison;
+        return v < o.v;
+    }
+    bool operator==(const CountKey& o) const {
+        ++eq;
+        return v == o.v;
+    }
 };
 int CountKey::copies = 0;
 int CountKey::moves = 0;
+int CountKey::eq = 0;
+int CountKey::lt = 0;
+int CountKey::poison = 0;
 
 // Mapped-object counters. from_int is the in-node construction from the
 // try_emplace arguments. A temporary mapped object would also move or copy.
@@ -43,10 +66,22 @@ struct CountMapped {
     static int copies;
     static int moves;
     static int assigns;
+    static int eq;
+    static int lt;
+    static int poison;
     CountMapped() : v(-1) { ++defaults; }
     explicit CountMapped(int x) : v(x) { ++from_int; }
     CountMapped(const CountMapped& o) : v(o.v) { ++copies; }
     CountMapped(CountMapped&& o) noexcept : v(o.v) { ++moves; }
+    bool operator==(const CountMapped& o) const {
+        ++eq;
+        return v == o.v;
+    }
+    bool operator<(const CountMapped& o) const {
+        ++lt;
+        if (v < 0 || o.v < 0) ++poison;
+        return v < o.v;
+    }
     CountMapped& operator=(const CountMapped& o) {
         v = o.v;
         ++assigns;
@@ -63,6 +98,9 @@ int CountMapped::defaults = 0;
 int CountMapped::copies = 0;
 int CountMapped::moves = 0;
 int CountMapped::assigns = 0;
+int CountMapped::eq = 0;
+int CountMapped::lt = 0;
+int CountMapped::poison = 0;
 
 struct ThrowMapped {
     static int throws_left;
@@ -120,6 +158,22 @@ static void lookup() {
 static int mapped_activity() {
     return CountMapped::from_int + CountMapped::defaults + CountMapped::copies + CountMapped::moves +
            CountMapped::assigns;
+}
+
+static void reset_counts() {
+    CountKey::copies = 0;
+    CountKey::moves = 0;
+    CountKey::eq = 0;
+    CountKey::lt = 0;
+    CountKey::poison = 0;
+    CountMapped::from_int = 0;
+    CountMapped::defaults = 0;
+    CountMapped::copies = 0;
+    CountMapped::moves = 0;
+    CountMapped::assigns = 0;
+    CountMapped::eq = 0;
+    CountMapped::lt = 0;
+    CountMapped::poison = 0;
 }
 
 static void count_trace() {
@@ -349,6 +403,213 @@ static void empty_trace() {
     std::printf("plain none=%d some=%d again=%d size=%zu\n", plain_none, plain_some, plain_again, plain.size());
 }
 
+static void swap_trace() {
+    std::flat_map<int, int> e1;
+    std::flat_map<int, int> e2;
+    static_assert(std::is_void_v<decltype(e1.swap(e2))>);
+    static_assert(noexcept(e1.swap(e2)));
+    e1.swap(e2);
+    std::printf("empty a=%d b=%d asize=%zu bsize=%zu\n", e1.empty() ? 1 : 0, e2.empty() ? 1 : 0, e1.size(),
+                e2.size());
+
+    std::flat_map<int, int> left;
+    std::flat_map<int, int> right;
+    left[1] = 10;
+    left[2] = 20;
+    right[3] = 30;
+    left.swap(right);
+    const char* left_old = "present";
+    try {
+        const int v = left.at(1);
+        static_cast<void>(v);
+    } catch (const std::out_of_range&) {
+        left_old = "threw";
+    }
+    std::printf("exch left=%d lsize=%zu right1=%d right2=%d rsize=%zu left_old=%s\n", left.at(3), left.size(),
+                right.at(1), right.at(2), right.size(), left_old);
+    left.swap(right);
+    std::printf("back left1=%d left2=%d lsize=%zu right=%d rsize=%zu\n", left.at(1), left.at(2), left.size(),
+                right.at(3), right.size());
+    left.swap(left);
+    std::printf("self left1=%d lsize=%zu empty=%d\n", left.at(1), left.size(), left.empty() ? 1 : 0);
+
+    std::flat_map<int, int> hole;
+    left.swap(hole);
+    std::printf("hole leftempty=%d lsize=%zu hole1=%d hsize=%zu\n", left.empty() ? 1 : 0, left.size(), hole.at(1),
+                hole.size());
+
+    reset_counts();
+    std::flat_map<CountKey, CountMapped> k1;
+    std::flat_map<CountKey, CountMapped> k2;
+    k1.swap(k2);
+    const int kempty_copies = CountKey::copies;
+    const int kempty_moves = CountKey::moves;
+    const int kempty_mapped = mapped_activity();
+    const int kempty_eq = CountKey::eq + CountMapped::eq;
+    const int kempty_a = k1.empty() ? 1 : 0;
+    const int kempty_b = k2.empty() ? 1 : 0;
+
+    k1[CountKey(1)] = CountMapped(8);
+    k2[CountKey(2)] = CountMapped(9);
+    reset_counts();
+    k1.swap(k2);
+    const int kex_copies = CountKey::copies;
+    const int kex_moves = CountKey::moves;
+    const int kex_mapped = mapped_activity();
+    const int kex_eq = CountKey::eq + CountMapped::eq;
+    const int kex_left = k1.at(CountKey(2)).v;
+    const int kex_right = k2.at(CountKey(1)).v;
+    const auto kex_lsize = k1.size();
+    const auto kex_rsize = k2.size();
+
+    reset_counts();
+    k1.swap(k1);
+    const int kself_copies = CountKey::copies;
+    const int kself_moves = CountKey::moves;
+    const int kself_mapped = mapped_activity();
+    const int kself_value = k1.at(CountKey(2)).v;
+    const auto kself_size = k1.size();
+
+    std::printf("kempty a=%d b=%d copies=%d moves=%d mapped=%d eq=%d\n", kempty_a, kempty_b, kempty_copies,
+                kempty_moves, kempty_mapped, kempty_eq);
+    std::printf("kex left=%d right=%d lsize=%zu rsize=%zu copies=%d moves=%d mapped=%d eq=%d\n", kex_left, kex_right,
+                kex_lsize, kex_rsize, kex_copies, kex_moves, kex_mapped, kex_eq);
+    std::printf("kself value=%d size=%zu copies=%d moves=%d mapped=%d\n", kself_value, kself_size, kself_copies,
+                kself_moves, kself_mapped);
+}
+
+static void show_less(const char* name, int result) {
+    std::printf("%s %d key_lt=%d mapped_lt=%d poison=%d copies=%d moves=%d mapped=%d\n", name, result, CountKey::lt,
+                CountMapped::lt, CountKey::poison + CountMapped::poison, CountKey::copies + CountMapped::copies,
+                CountKey::moves + CountMapped::moves, mapped_activity());
+}
+
+static void less_trace() {
+    std::flat_map<int, int> e1;
+    std::flat_map<int, int> e2;
+    const int empty = (e1 < e2) ? 1 : 0;
+    std::flat_map<int, int> one;
+    one[1] = 10;
+    const int el = (e1 < one) ? 1 : 0;
+    const int le = (one < e1) ? 1 : 0;
+    std::flat_map<int, int> one_b;
+    one_b[1] = 10;
+    const int oneeq = (one < one_b) ? 1 : 0;
+    std::flat_map<int, int> key_a;
+    std::flat_map<int, int> key_b;
+    key_a[2] = 20;
+    key_b[1] = 10;
+    const int key_ab = (key_a < key_b) ? 1 : 0;
+    const int key_ba = (key_b < key_a) ? 1 : 0;
+    std::flat_map<int, int> map_a;
+    std::flat_map<int, int> map_b;
+    map_a[1] = 10;
+    map_b[1] = 20;
+    const int map_ab = (map_a < map_b) ? 1 : 0;
+    const int map_ba = (map_b < map_a) ? 1 : 0;
+    std::flat_map<int, int> pre_s;
+    std::flat_map<int, int> pre_l;
+    pre_s[1] = 10;
+    pre_l[9] = 90;
+    pre_l[1] = 10;
+    const int pre = (pre_s < pre_l) ? 1 : 0;
+    const int revpre = (pre_l < pre_s) ? 1 : 0;
+    std::flat_map<int, int> early_a;
+    std::flat_map<int, int> early_b;
+    early_a[1] = 10;
+    early_a[5] = 50;
+    early_b[9] = 90;
+    early_b[1] = 10;
+    early_b[4] = 40;
+    const int early = (early_a < early_b) ? 1 : 0;
+    const int early_ba = (early_b < early_a) ? 1 : 0;
+    std::flat_map<int, int> tail_a;
+    std::flat_map<int, int> tail_b;
+    tail_a[8] = 80;
+    tail_a[1] = 10;
+    tail_b[7] = 70;
+    tail_b[1] = 10;
+    const int tail_ab = (tail_a < tail_b) ? 1 : 0;
+    const int tail_ba = (tail_b < tail_a) ? 1 : 0;
+    std::printf("empty %d\n", empty);
+    std::printf("el %d\n", el);
+    std::printf("le %d\n", le);
+    std::printf("oneeq %d\n", oneeq);
+    std::printf("key %d %d\n", key_ab, key_ba);
+    std::printf("mapped %d %d\n", map_ab, map_ba);
+    std::printf("prefix %d %d\n", pre, revpre);
+    std::printf("early %d %d\n", early, early_ba);
+    std::printf("tail %d %d\n", tail_ab, tail_ba);
+
+    reset_counts();
+    std::flat_map<CountKey, CountMapped> ke1;
+    std::flat_map<CountKey, CountMapped> ke2;
+    show_less("kempty", (ke1 < ke2) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kone;
+    (void)kone.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_less("kel", (ke1 < kone) ? 1 : 0);
+    reset_counts();
+    show_less("kle", (kone < ke1) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kone_b;
+    (void)kone_b.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_less("ksame", (kone < kone_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> ktwo_a;
+    std::flat_map<CountKey, CountMapped> ktwo_b;
+    (void)ktwo_a.try_emplace(CountKey(1), 10);
+    (void)ktwo_a.try_emplace(CountKey(2), 20);
+    (void)ktwo_b.try_emplace(CountKey(1), 10);
+    (void)ktwo_b.try_emplace(CountKey(2), 20);
+    reset_counts();
+    show_less("ktwo", (ktwo_a < ktwo_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kkey_a;
+    std::flat_map<CountKey, CountMapped> kkey_b;
+    (void)kkey_a.try_emplace(CountKey(-1), -1);
+    (void)kkey_a.try_emplace(CountKey(5), 50);
+    (void)kkey_b.try_emplace(CountKey(-1), -1);
+    (void)kkey_b.try_emplace(CountKey(4), 40);
+    reset_counts();
+    show_less("kkey", (kkey_a < kkey_b) ? 1 : 0);
+    reset_counts();
+    show_less("kkeyba", (kkey_b < kkey_a) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kmap_a;
+    std::flat_map<CountKey, CountMapped> kmap_b;
+    (void)kmap_a.try_emplace(CountKey(-1), -1);
+    (void)kmap_a.try_emplace(CountKey(2), 20);
+    (void)kmap_b.try_emplace(CountKey(-1), -1);
+    (void)kmap_b.try_emplace(CountKey(2), 30);
+    reset_counts();
+    show_less("kmap", (kmap_a < kmap_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kpre_s;
+    std::flat_map<CountKey, CountMapped> kpre_l;
+    (void)kpre_s.try_emplace(CountKey(1), 10);
+    (void)kpre_l.try_emplace(CountKey(-1), -1);
+    (void)kpre_l.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_less("kpre", (kpre_s < kpre_l) ? 1 : 0);
+    reset_counts();
+    show_less("krev", (kpre_l < kpre_s) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kearly_a;
+    std::flat_map<CountKey, CountMapped> kearly_b;
+    (void)kearly_a.try_emplace(CountKey(1), 10);
+    (void)kearly_a.try_emplace(CountKey(5), 50);
+    (void)kearly_b.try_emplace(CountKey(-1), -1);
+    (void)kearly_b.try_emplace(CountKey(1), 10);
+    (void)kearly_b.try_emplace(CountKey(4), 40);
+    reset_counts();
+    show_less("kearly", (kearly_a < kearly_b) ? 1 : 0);
+    reset_counts();
+    show_less("kearlyba", (kearly_b < kearly_a) ? 1 : 0);
+}
+
 static int uaf() {
     std::flat_map<int, int> m;
     m[1] = 5;
@@ -377,6 +638,14 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "empty") == 0) {
         empty_trace();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "swap") == 0) {
+        swap_trace();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "less") == 0) {
+        less_trace();
         return 0;
     }
     show();
