@@ -52,9 +52,9 @@ std::size_t count_of(std::string_view s, std::string_view needle) {
 TEST_CASE("strcoll model: null returns before a read, unsigned bytes stop at difference or NUL") {
     const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "string.cpp");
     REQUIRE(!src.empty());
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 10);
-    CHECK(count_of(src, "PROVED") == 10);
-    CHECK(count_of(src, "CLEAN") == 10);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 11);
+    CHECK(count_of(src, "PROVED") == 11);
+    CHECK(count_of(src, "CLEAN") == 11);
 
     const auto strncasecmp_at = src.find("int strncasecmp(const char *a, const char *b, size_t n) {");
     const auto strcoll_at = src.find("int strcoll(const char *a, const char *b) {");
