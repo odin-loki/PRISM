@@ -161,4 +161,40 @@ long ftell(FILE *f) {
     return __VERIFIER_nondet_long();
 }
 
+/* This is not a proof the position changed.
+ * fseek is not PROVED and not CLEAN. */
+int fseek(FILE *f, long off, int whence) {
+    prism_file_ok(f);
+    if (f == 0) {
+        __prism_assume(0);
+        return -1;
+    }
+    (void)off;
+    (void)whence;
+    return __VERIFIER_nondet_int() ? -1 : 0;
+}
+
+/* This is not a proof the stream is at the start.
+ * A live FILE does not store a position of 0.
+ * rewind is not PROVED and not CLEAN. */
+void rewind(FILE *f) {
+    prism_file_ok(f);
+    if (f == 0) {
+        __prism_assume(0);
+        return;
+    }
+}
+
+/* This is not a proof those flags changed.
+ * A live FILE does not store a cleared error or eof flag.
+ * It does not claim the error flag is clear.
+ * clearerr is not PROVED and not CLEAN. */
+void clearerr(FILE *f) {
+    prism_file_ok(f);
+    if (f == 0) {
+        __prism_assume(0);
+        return;
+    }
+}
+
 }  // extern "C"

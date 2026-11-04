@@ -203,7 +203,7 @@ TEST_CASE("stdio buffer: ftell null file returns -1 and is not a proof") {
     CHECK(note.find("not PROVED") != std::string::npos);
     CHECK(note.find("not CLEAN") != std::string::npos);
 
-    const auto body = function_body(src, "long ftell(", "}  // extern");
+    const auto body = function_body(src, "long ftell(", "int fseek(");
     REQUIRE(!body.empty());
     const auto ok = body.find("prism_file_ok(f)");
     REQUIRE(ok != std::string::npos);
@@ -231,4 +231,66 @@ TEST_CASE("stdio buffer: ftell null file returns -1 and is not a proof") {
     CHECK(body.find("snprintf(") == std::string::npos);
     CHECK(body.find("sprintf(") == std::string::npos);
     CHECK(body.find("printf(") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: fseek null file returns -1 and is not a proof") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    const auto body = function_body(src, "int fseek(", "void rewind(");
+    REQUIRE(!body.empty());
+    const auto note_at = src.rfind("/*", src.find("int fseek("));
+    const auto note = src.substr(note_at, src.find("int fseek(") - note_at);
+    CHECK(note.find("not a proof the position changed") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+    const auto null_if = body.find("if (f == 0)");
+    REQUIRE(null_if != std::string::npos);
+    const auto arm = brace_block_after(body, null_if);
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return -1") != std::string::npos);
+    CHECK(arm.find("return 0") == std::string::npos);
+    const auto rest = body.substr(body.find(arm, null_if) + arm.size());
+    CHECK(rest.find("return __VERIFIER_nondet_int() ? -1 : 0") != std::string::npos);
+    CHECK(rest.find("(void)off") != std::string::npos);
+    CHECK(rest.find("(void)whence") != std::string::npos);
+    CHECK(rest.find("__prism_havoc_bytes") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: rewind null file returns without a position of 0") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    const auto body = function_body(src, "void rewind(", "void clearerr(");
+    REQUIRE(!body.empty());
+    const auto note_at = src.rfind("/*", src.find("void rewind("));
+    const auto note = src.substr(note_at, src.find("void rewind(") - note_at);
+    CHECK(note.find("not a proof the stream is at the start") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("= 0;") == std::string::npos);
+    const auto null_if = body.find("if (f == 0)");
+    REQUIRE(null_if != std::string::npos);
+    const auto arm = brace_block_after(body, null_if);
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return;") != std::string::npos);
+    CHECK(body.find("__prism_havoc_bytes") == std::string::npos);
+}
+
+TEST_CASE("stdio buffer: clearerr null file returns without clearing flags") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "libc" / "stdio.cpp");
+    const auto body = function_body(src, "void clearerr(", "}  // extern");
+    REQUIRE(!body.empty());
+    const auto note_at = src.rfind("/*", src.find("void clearerr("));
+    const auto note = src.substr(note_at, src.find("void clearerr(") - note_at);
+    CHECK(note.find("not a proof those flags changed") != std::string::npos);
+    CHECK(note.find("not PROVED") != std::string::npos);
+    CHECK(note.find("not CLEAN") != std::string::npos);
+    CHECK(body.find("return 0") == std::string::npos);
+    CHECK(body.find("= 0;") == std::string::npos);
+    const auto null_if = body.find("if (f == 0)");
+    REQUIRE(null_if != std::string::npos);
+    const auto arm = brace_block_after(body, null_if);
+    CHECK(arm.find("__prism_assume(0)") != std::string::npos);
+    CHECK(arm.find("return;") != std::string::npos);
+    CHECK(body.find("feof(") == std::string::npos);
+    CHECK(body.find("ferror(") == std::string::npos);
+    CHECK(body.find("__prism_havoc_bytes") == std::string::npos);
 }

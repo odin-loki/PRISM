@@ -15,6 +15,9 @@ int fopen_true(void) {
     (void)feof(f);
     (void)ferror(f);
     (void)ftell(f);
+    (void)fseek(f, 0, 0);
+    rewind(f);
+    clearerr(f);
     (void)fflush(f);
     (void)fclose(f);
     return 0;
