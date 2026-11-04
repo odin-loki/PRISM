@@ -833,8 +833,14 @@ TEST_CASE("cxx optional model: emplace constructs one T and swap does not read a
     auto& c = ctx();
     if (!c.ok) return;
     const fs::path src = c.tmp / "optional_emplace.cpp";
+    // The model's operator-> calls the PIR intrinsic; this native stand-in
+    // aborts on a failing check like the one in optional_trace.cpp.
     std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <cstdlib>\n"
                           "#include <optional>\n"
+                          "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+                          "    if (!ok) { std::fprintf(stderr, \"CHECK %s: %s\\n\", cls, msg); std::abort(); }\n"
+                          "}\n"
                           "struct Box {\n"
                           "    int v;\n"
                           "    Box() = delete;\n"
