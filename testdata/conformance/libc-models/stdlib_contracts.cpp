@@ -323,6 +323,14 @@ int strtol_true(int k) {
     /* Names strtoll and strtoull. The value is not a parsed numeral. */
     (void)strtoll(s, 0, 10);
     (void)strtoull(s, 0, 10);
+    /* Names atoll. The value is not a parsed numeral. */
+    (void)atoll(s);
+    /* Names strtod. The value is not a parsed numeral. */
+    (void)strtod(s, 0);
+    /* Names strtof. The value is not a parsed numeral. */
+    (void)strtof(s, 0);
+    /* Names strtold. The value is not a parsed numeral. */
+    (void)strtold(s, 0);
     return 0;
 }
 

@@ -787,12 +787,21 @@ if(PRISM_TESTS)
     tests/cpp/test_strspn.cpp
     tests/cpp/test_strstr.cpp
     tests/cpp/test_memrchr.cpp
+    tests/cpp/test_strndup.cpp
+    tests/cpp/test_memccpy.cpp
+    tests/cpp/test_strcasecmp.cpp
+    tests/cpp/test_strncasecmp.cpp
+    tests/cpp/test_strcoll.cpp
     tests/cpp/test_stdio_buffer.cpp
     tests/cpp/test_rand_unseeded.cpp
     tests/cpp/test_qsort_null.cpp
     tests/cpp/test_abs_min.cpp
     tests/cpp/test_div.cpp
     tests/cpp/test_strtoll.cpp
+    tests/cpp/test_atoll.cpp
+    tests/cpp/test_strtod.cpp
+    tests/cpp/test_strtof.cpp
+    tests/cpp/test_strtold.cpp
     tests/cpp/test_time_model.cpp
     tests/cpp/test_ctype.cpp
     tests/cpp/test_ffs.cpp

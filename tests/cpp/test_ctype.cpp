@@ -111,10 +111,9 @@ TEST_CASE("ctype model: C locale ASCII ranges, EOF, and no extra class") {
     const std::set<std::string> want = {"isdigit", "isspace", "isalpha", "isalnum",
                                         "islower", "isupper", "tolower", "toupper",
                                         "isblank", "isxdigit", "isprint", "isgraph",
-                                        "ispunct", "iscntrl"};
+                                        "ispunct", "iscntrl", "isascii"};
     CHECK(defined_models(src) == want);
-    for (const char* banned : {"isascii", "toascii"})
-        CHECK(src.find(banned) == std::string::npos);
+    CHECK(src.find("toascii") == std::string::npos);
 
     CHECK(statements(src, "isdigit") == std::vector<std::string>{
                                             "if (c == EOF) return 0;",
@@ -191,6 +190,11 @@ TEST_CASE("ctype model: C locale ASCII ranges, EOF, and no extra class") {
                                             "if (c == 0x7F) return 1;",
                                             "return 0;",
                                         });
+    CHECK(statements(src, "isascii") == std::vector<std::string>{
+                                            "if (c == EOF) return 0;",
+                                            "if (c >= 0 && c <= 127) return 1;",
+                                            "return 0;",
+                                        });
 }
 
 TEST_CASE("ctype contracts: harness includes the model and calls every function") {
@@ -206,7 +210,7 @@ TEST_CASE("ctype contracts: harness includes the model and calls every function"
         CAPTURE(name);
         CHECK(cpp.find(std::string(name) + "(") != std::string::npos);
     }
-    for (const char* name : {"isblank", "isxdigit", "isprint", "isgraph", "ispunct", "iscntrl"}) {
+    for (const char* name : {"isblank", "isxdigit", "isprint", "isgraph", "ispunct", "iscntrl", "isascii"}) {
         CAPTURE(name);
         CHECK(cpp.find(std::string(name) + "(") != std::string::npos);
     }
@@ -222,6 +226,11 @@ TEST_CASE("ctype contracts: harness includes the model and calls every function"
     CHECK(cpp.find("ispunct('A') != 0") != std::string::npos);
     CHECK(cpp.find("iscntrl(0x7F) != 0") != std::string::npos);
     CHECK(cpp.find("iscntrl(0x20) != 0") != std::string::npos);
+    CHECK(cpp.find("isascii(0) != 0") != std::string::npos);
+    CHECK(cpp.find("isascii(127) != 0") != std::string::npos);
+    CHECK(cpp.find("isascii(128) == 0") != std::string::npos);
+    CHECK(cpp.find("isascii(EOF) == 0") != std::string::npos);
+    CHECK(cpp.find("isascii(0) == 0") != std::string::npos);
 }
 
 TEST_CASE("ctype contracts: yml has a true function, a false function, and expect_class") {

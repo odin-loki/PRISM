@@ -99,6 +99,85 @@ int strncmp(const char *a, const char *b, size_t n) {
     return 0;
 }
 
+/* strcasecmp compares the bytes of a and b, folding only ASCII A-Z into a-z.
+ * This is not a locale comparison.
+ * It stops at the first difference or the first NUL.
+ * It does not read past that byte.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strcasecmp(const char *a, const char *b) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strcasecmp() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strcasecmp() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    size_t i = 0;
+    for (;;) {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb) return ca > cb ? 1 : -1;
+        if (!ca) return 0;
+        ++i;
+    }
+}
+
+/* strncasecmp compares at most n bytes of a and b, folding only ASCII A-Z into a-z.
+ * This is not a locale comparison.
+ * It stops at the first difference, the first NUL, or n bytes.
+ * It does not read the byte at index n.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * n == 0 returns 0 and does not read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strncasecmp(const char *a, const char *b, size_t n) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strncasecmp() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strncasecmp() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    if (n == 0) return 0;
+    size_t i = 0;
+    while (i + 1 < n) {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (!ca || ca != cb) break;
+        ++i;
+    }
+    {
+        unsigned char ca = uc(a, i);
+        unsigned char cb = uc(b, i);
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb) return ca > cb ? 1 : -1;
+    }
+    return 0;
+}
+
+/* strcoll compares the unsigned bytes of a and b.
+ * This is not a locale collation and it does not call setlocale.
+ * It stops at the first difference or the first NUL.
+ * It does not read past that NUL.
+ * A null a or a null b is STR-NULL-ARG and returns 0 before any read.
+ * This is not a proof of the comparison.
+ * This is not PROVED and not CLEAN. */
+int strcoll(const char *a, const char *b) {
+    __prism_check(a != 0, "STR-NULL-ARG", "strcoll() called with unchecked pointer parameter a");
+    if (a == 0) return 0;
+    __prism_check(b != 0, "STR-NULL-ARG", "strcoll() called with unchecked pointer parameter b");
+    if (b == 0) return 0;
+    size_t i = 0;
+    for (;;) {
+        const unsigned char ca = uc(a, i);
+        const unsigned char cb = uc(b, i);
+        if (ca != cb) return ca > cb ? 1 : -1;
+        if (!ca) return 0;
+        ++i;
+    }
+}
+
 char *strchr(const char *s, int c) {
     __prism_check(s != 0, "STR-NULL-ARG", "strchr() called with unchecked pointer parameter s");
     const unsigned char *us = (const unsigned char *)s;
@@ -289,6 +368,33 @@ void *memrchr(const void *s, int c, size_t n) {
     return 0;
 }
 
+/* memccpy copies bytes from s into d until c is copied, or n bytes are
+ * copied, whichever comes first. The stop byte is (unsigned char)(c & 0xff),
+ * the same conversion memchr uses.
+ * n == 0 returns a null pointer and does not read d or s.
+ * A null d or a null s with n > 0 is STR-NULL-ARG and returns a null
+ * pointer before any read or write.
+ * The copy does not read or write index i for i >= n.
+ * If c is copied, the return is a pointer to the next byte of d.
+ * If c is not found, the return is a null pointer.
+ * This is not a proof of the copy.
+ * This is not PROVED and not CLEAN. */
+void *memccpy(void *d, const void *s, int c, size_t n) {
+    if (n == 0) return 0;
+    __prism_check(d != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter d");
+    if (d == 0) return 0;
+    __prism_check(s != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    unsigned char *dd = (unsigned char *)d;
+    const unsigned char *ss = (const unsigned char *)s;
+    const unsigned char want = (unsigned char)(c & 0xff);
+    for (size_t i = 0; i < n; ++i) {
+        dd[i] = ss[i];
+        if (dd[i] == want) return (void *)(dd + i + 1);
+    }
+    return 0;
+}
+
 void *malloc(size_t n);
 
 char *strdup(const char *s) {
@@ -300,33 +406,36 @@ char *strdup(const char *s) {
     return p;
 }
 
-
-/* C23 7.26.2.2 memccpy: copy up to n bytes, stopping after the first c. */
-void *memccpy(void *d, const void *s, int c, size_t n) {
-    if (n == 0) return 0;
-    __prism_check(d != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter d");
-    __prism_check(s != 0, "STR-NULL-ARG", "memccpy() called with unchecked pointer parameter s");
-    unsigned char *x = (unsigned char *)d;
-    const unsigned char *y = (const unsigned char *)s;
-    const unsigned char want = (unsigned char)(c & 0xff);
-    for (size_t i = 0; i < n; i++) {
-        x[i] = y[i];
-        if (y[i] == want) return x + i + 1;
-    }
-    return 0;
-}
-
-/* C23 7.26.2.7 strndup: at most n bytes of s, always NUL-terminated. s
- * need not be terminated within n bytes, so only n bytes are read. */
+/* strndup returns a fresh copy of at most n bytes of s, plus a trailing NUL.
+ * A null s is STR-NULL-ARG and returns a null pointer before strlen and
+ * before any allocation. That path does not read s.
+ * n == 0 does not read s. It allocates one byte, stores a NUL, and returns
+ * that pointer. Allocation failure returns a null pointer.
+ * Otherwise the copy is min(n, strlen(s)) bytes and a trailing NUL.
+ * The scan does not read s[i] for i >= n, and it does not read past the terminator.
+ * A copy length of SIZE_MAX has no room for the trailing NUL: that path is
+ * MEM-OOB-WRITE and __builtin_trap, and it does not call malloc.
+ * This is not a proof of the copy.
+ * This is not PROVED and not CLEAN. */
 char *strndup(const char *s, size_t n) {
     __prism_check(s != 0, "STR-NULL-ARG", "strndup() called with unchecked pointer parameter s");
-    size_t k = 0;
-    while (k < n && s[k] != 0) k++;
-    if (k + 1 == 0) return 0;
-    char *p = (char *)malloc(k + 1);
+    if (s == 0) return 0;
+    if (n == 0) {
+        char *p = (char *)malloc(1);
+        if (!p) return 0;
+        p[0] = 0;
+        return p;
+    }
+    size_t len = 0;
+    while (len < n && s[len]) ++len;
+    if (len == ~(size_t)0) {
+        __prism_check(0, "MEM-OOB-WRITE", "strndup length does not fit in size_t");
+        __builtin_trap();
+    }
+    char *p = (char *)malloc(len + 1);
     if (!p) return 0;
-    if (k) __prism_memcpy(p, s, k, 0);
-    p[k] = 0;
+    for (size_t i = 0; i < len; ++i) p[i] = s[i];
+    p[len] = 0;
     return p;
 }
 

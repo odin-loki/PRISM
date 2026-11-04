@@ -158,6 +158,10 @@ int strcmp_true(int ka, int kb, int j) {
     int m = 0;
     while (m < ka && a[m] == b[m]) m++;
     assert(sign(r) == sign((int)(unsigned char)a[m] - (int)(unsigned char)b[m]));
+    /* Names strcasecmp. The comparison is not a scored comparison. */
+    (void)strcasecmp(a, b);
+    /* Names strcoll. This does not assert a locale order. */
+    (void)strcoll(a, b);
     return 0;
 }
 
@@ -178,6 +182,8 @@ int strncmp_true(int ka, int kb, int n, int j) {
     if (n == 0) assert(r == 0);
     if (r == 0 && j >= 0 && j < n && j <= ka) assert(a[j] == b[j]);
     assert(sign(strncmp(b, a, (size_t)n)) == -sign(r));
+    /* Names strncasecmp. The comparison is not a scored comparison. */
+    (void)strncasecmp(a, b, (size_t)n);
     return 0;
 }
 
@@ -352,6 +358,9 @@ int memcpy_true(int n, int j) {
     void *r = memcpy(d, s, (size_t)n);
     assert(r == d);
     assert(d[j] == (j < n ? s[j] : d0[j]));
+    /* Names memccpy. The copy is not a scored copy. */
+    char extra[N + 1];
+    (void)memccpy(extra, s, 'a', (size_t)n);
     return 0;
 }
 
@@ -492,6 +501,9 @@ int strdup_true(int k, int j) {
     assert(p != s);
     assert(p[j] == s[j]);
     free(p);
+    /* Names strndup. The copy is not a scored string. */
+    char *q = strndup(s, (size_t)k);
+    if (q) free(q);
     return 0;
 }
 

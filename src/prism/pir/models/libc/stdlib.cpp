@@ -199,6 +199,74 @@ unsigned long long strtoull(const char *s, char **end, int base) {
     }
     return __VERIFIER_nondet_ulonglong();
 }
+/* A null s is STR-NULL-ARG, then 0, before strlen.
+ * That path does not call strlen.
+ * A non-null s may call strlen so the end is inside the string.
+ * The result is __VERIFIER_nondet_longlong(), not a parsed numeral.
+ * This is not PROVED and not CLEAN. */
+long long atoll(const char *s) {
+    __prism_check(s != 0, "STR-NULL-ARG", "atoll() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    (void)strlen(s);
+    return __VERIFIER_nondet_longlong();
+}
+/* A null s is STR-NULL-ARG, then 0, before strlen.
+ * That path does not call strlen, does not write *end, and does not scan.
+ * A non-null s may call strlen so an end pointer, when non-null, stays
+ * inside the string. The offset is nondet and assumed <= the length.
+ * The result is __VERIFIER_nondet_double(), a nondet double, not a parsed numeral.
+ * This is not PROVED and not CLEAN. */
+double __VERIFIER_nondet_double(void);
+
+double strtod(const char *s, char **end) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strtod() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    size_t n = strlen(s);
+    if (end) {
+        size_t k = __VERIFIER_nondet_ulong();
+        __prism_assume(k <= n);
+        *end = (char *)s + k;
+    }
+    return __VERIFIER_nondet_double();
+}
+/* A null s is STR-NULL-ARG, then 0, before strlen.
+ * That path does not call strlen, does not write *end, and does not scan.
+ * A non-null s may call strlen so an end pointer, when non-null, stays
+ * inside the string. The offset is nondet and assumed <= the length.
+ * The result is __VERIFIER_nondet_float(), a nondet float, not a parsed numeral.
+ * This is not PROVED and not CLEAN. */
+float __VERIFIER_nondet_float(void);
+
+float strtof(const char *s, char **end) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strtof() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    size_t n = strlen(s);
+    if (end) {
+        size_t k = __VERIFIER_nondet_ulong();
+        __prism_assume(k <= n);
+        *end = (char *)s + k;
+    }
+    return __VERIFIER_nondet_float();
+}
+/* A null s is STR-NULL-ARG, then 0, before strlen.
+ * That path does not call strlen, does not write *end, and does not scan.
+ * A non-null s may call strlen so an end pointer, when non-null, stays
+ * inside the string. The offset is nondet and assumed <= the length.
+ * The result is __VERIFIER_nondet_longdouble(), a nondet long double, not a parsed numeral.
+ * This is not PROVED and not CLEAN. */
+long double __VERIFIER_nondet_longdouble(void);
+
+long double strtold(const char *s, char **end) {
+    __prism_check(s != 0, "STR-NULL-ARG", "strtold() called with unchecked pointer parameter s");
+    if (s == 0) return 0;
+    size_t n = strlen(s);
+    if (end) {
+        size_t k = __VERIFIER_nondet_ulong();
+        __prism_assume(k <= n);
+        *end = (char *)s + k;
+    }
+    return __VERIFIER_nondet_longdouble();
+}
 unsigned long strtoul(const char *s, char **end, int base) {
     return (unsigned long)strtol(s, end, base);
 }
