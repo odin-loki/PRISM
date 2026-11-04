@@ -600,22 +600,26 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
 
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <functional>") == std::string::npos);
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 3);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 7);
 
     const auto cls = src.find("class optional {");
     const auto kind = src.find("struct _Prism_optional_kind<optional<_T>>");
     const auto eq = src.find("bool operator==(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
     const auto lt = src.find("bool operator<(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    const auto gt = src.find("bool operator>(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
     REQUIRE(cls != std::string::npos);
     REQUIRE(kind != std::string::npos);
     REQUIRE(eq != std::string::npos);
     REQUIRE(lt != std::string::npos);
+    REQUIRE(gt != std::string::npos);
     CHECK(cls < kind);
     CHECK(kind < eq);
     CHECK(eq < lt);
+    CHECK(lt < gt);
 
     const std::string eq_body = function_body(src, eq);
     const std::string lt_body = function_body(src, lt);
+    const std::string gt_body = function_body(src, gt);
     REQUIRE_FALSE(eq_body.empty());
     REQUIRE_FALSE(lt_body.empty());
     CHECK(eq_body.find("if (__x._M_engaged != __y._M_engaged) return false;") != std::string::npos);
@@ -629,7 +633,15 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
     REQUIRE(lt_value != std::string::npos);
     CHECK(lt_body.find("if (!__y._M_engaged) return false;") < lt_value);
     CHECK(lt_body.find("if (!__x._M_engaged) return true;") < lt_value);
-    for (const std::string& body : {eq_body, lt_body}) {
+    REQUIRE_FALSE(gt_body.empty());
+    CHECK(gt_body.find("if (!__x._M_engaged) return false;") != std::string::npos);
+    CHECK(gt_body.find("if (!__y._M_engaged) return true;") != std::string::npos);
+    CHECK(gt_body.find("return __x._M_storage._M_value > __y._M_storage._M_value;") != std::string::npos);
+    const auto gt_value = gt_body.find("_M_value");
+    REQUIRE(gt_value != std::string::npos);
+    CHECK(gt_body.find("if (!__x._M_engaged) return false;") < gt_value);
+    CHECK(gt_body.find("if (!__y._M_engaged) return true;") < gt_value);
+    for (const std::string& body : {eq_body, lt_body, gt_body}) {
         CHECK(body.find("value()") == std::string::npos);
         CHECK(body.find("operator*") == std::string::npos);
         CHECK(body.find("_Tp{}") == std::string::npos);
@@ -639,7 +651,9 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
     }
 
     const std::string code = strip_comments(src);
-    CHECK(code.find("emplace") == std::string::npos);
+    CHECK(code.find("_Tp& emplace(_Up&& __u)") != std::string::npos);
+    CHECK(code.find("void swap(optional& __rhs) noexcept") != std::string::npos);
+    CHECK(code.find("void swap(optional<_Tp>& __x, optional<_Tp>& __y)") != std::string::npos);
     CHECK(code.find("hash") == std::string::npos);
     CHECK(code.find("operator<=>") == std::string::npos);
     CHECK(code.find("bool operator==(") != std::string::npos);
@@ -676,6 +690,10 @@ TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is
                           "    bool operator<(const Box& o) const {\n"
                           "        std::printf(\"lt %d %d\\n\", v, o.v);\n"
                           "        return v < o.v;\n"
+                          "    }\n"
+                          "    bool operator>(const Box& o) const {\n"
+                          "        std::printf(\"gt %d %d\\n\", v, o.v);\n"
+                          "        return v > o.v;\n"
                           "    }\n"
                           "};\n"
                           "int main() {\n"
@@ -731,6 +749,12 @@ TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is
                           "    std::printf(\"ii ne=%d\\n\", static_cast<int>(ie != ie));\n"
                           "    std::printf(\"iz ne=%d\\n\", static_cast<int>(ie != iz));\n"
                           "    std::printf(\"zz ne=%d\\n\", static_cast<int>(iz != iz2));\n"
+                          "    std::printf(\"ee gt=%d\\n\", static_cast<int>(e1 > e2));\n"
+                          "    std::printf(\"de gt=%d\\n\", static_cast<int>(e1 > one));\n"
+                          "    std::printf(\"de gtrev=%d\\n\", static_cast<int>(one > e1));\n"
+                          "    std::printf(\"same gt=%d\\n\", static_cast<int>(one > one_b));\n"
+                          "    std::printf(\"ord gt=%d\\n\", static_cast<int>(one > two));\n"
+                          "    std::printf(\"ord gtrev=%d\\n\", static_cast<int>(two > one));\n"
                           "    return 0;\n"
                           "}\n";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -753,7 +777,8 @@ TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is
         "cde eq=0", "cde lt=1", "cde rev=0", "eq 2 2", "c22 eq=1", "lt 2 2", "c22 lt=0", "lt 2 2", "c22 rev=0",
         "iz eq=0", "iz lt=1", "iz rev=0", "zz eq=1", "zz lt=0", "zz rev=0", "01 eq=0", "01 lt=1", "01 rev=0",
         "neg eq=0", "neg lt=1", "neg rev=0", "ii eq=1", "ii lt=0", "ee ne=0", "de ne=1", "eq 1 1", "same ne=0",
-        "eq 1 2", "ord ne=1", "ii ne=0", "iz ne=1", "zz ne=0",
+        "eq 1 2", "ord ne=1", "ii ne=0", "iz ne=1", "zz ne=0", "ee gt=0", "de gt=0", "de gtrev=1", "gt 1 1",
+        "same gt=0", "gt 1 2", "ord gt=0", "gt 2 1", "ord gtrev=1",
     };
     CHECK(lib == mod);
     CHECK(mod == want);
@@ -802,6 +827,45 @@ TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is
         CHECK(line != "eq 1 0");
         CHECK(line != "lt 0 2");
     }
+}
+
+TEST_CASE("cxx optional model: emplace constructs one T and swap does not read an empty pair") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path src = c.tmp / "optional_emplace.cpp";
+    std::ofstream(src) << "#include <cstdio>\n"
+                          "#include <optional>\n"
+                          "struct Box {\n"
+                          "    int v;\n"
+                          "    Box() = delete;\n"
+                          "    explicit Box(int x) : v(x) {}\n"
+                          "    Box(Box&& o) noexcept : v(o.v) { o.v = -1; }\n"
+                          "    Box& operator=(Box&& o) noexcept { v = o.v; o.v = -1; return *this; }\n"
+                          "};\n"
+                          "int main() {\n"
+                          "    std::optional<Box> a;\n"
+                          "    std::optional<Box> b;\n"
+                          "    a.swap(b);\n"
+                          "    std::printf(\"empty %d %d\\n\", a ? 1 : 0, b ? 1 : 0);\n"
+                          "    a.emplace(7);\n"
+                          "    std::printf(\"emp %d\\n\", a->v);\n"
+                          "    a.emplace(8);\n"
+                          "    std::printf(\"re %d\\n\", a->v);\n"
+                          "    b.emplace(3);\n"
+                          "    a.swap(b);\n"
+                          "    std::printf(\"sw %d %d\\n\", a->v, b->v);\n"
+                          "    a.swap(a);\n"
+                          "    std::printf(\"self %d\\n\", a->v);\n"
+                          "    std::optional<Box> c;\n"
+                          "    a.swap(c);\n"
+                          "    std::printf(\"move %d %d\\n\", c ? c->v : -1, a ? 1 : 0);\n"
+                          "    return 0;\n"
+                          "}\n";
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false, "emplace_trace"));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true, "emplace_trace"));
+    const std::vector<std::string> want{"empty 0 0", "emp 7", "re 8", "sw 3 8", "self 3", "move 3 0"};
+    CHECK(lib == mod);
+    CHECK(mod == want);
 }
 
 TEST_CASE("cxx optional model: comparison of two different types is not declared") {
