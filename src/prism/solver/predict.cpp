@@ -3,6 +3,7 @@
 // the solver still decides every answer.
 
 #include "prism/solver_predict.hpp"
+#include "prism/settings.hpp"
 
 #include "prism/pir.hpp"
 
@@ -76,14 +77,14 @@ void validate(Loaded& e) {
 }
 
 const Loaded* load(const fs::path& cache_dir) {
-    if (const char* off = std::getenv("PRISM_SOLVER_PREDICT"); off && std::string(off) == "0") return nullptr;
+    if (const char* off = prism::settings::cstr(prism::settings::solver_predict()); off && std::string(off) == "0") return nullptr;
     auto p = model_path(cache_dir);
     std::error_code ec;
     auto mt = fs::last_write_time(p, ec);
     std::lock_guard<std::mutex> g(g_mu);
     if (ec) {
         // No model file: the built-in one (a file, even a disabled one, overrides it).
-        if (const char* m = std::getenv("PRISM_SOLVER_MODEL"); m && *m) return nullptr;
+        if (const char* m = prism::settings::cstr(prism::settings::solver_model()); m && *m) return nullptr;
         static Loaded builtin = [] {
             Loaded e;
             std::string txt;
@@ -115,7 +116,7 @@ const Loaded* load(const fs::path& cache_dir) {
 }  // namespace
 
 fs::path model_path(const fs::path& cache_dir) {
-    if (const char* m = std::getenv("PRISM_SOLVER_MODEL"); m && *m) return m;
+    if (const char* m = prism::settings::cstr(prism::settings::solver_model()); m && *m) return m;
     return cache_dir / "predict_model.json";
 }
 

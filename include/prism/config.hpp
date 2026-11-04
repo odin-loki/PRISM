@@ -19,12 +19,14 @@ struct Config {
     // ParanoidBSD tree (--pbsd PATH or PRISM_PBSD); empty = not configured.
     std::filesystem::path pbsd_root;
     std::string model{"qwen3.5:9b"};
-    std::string ollama_host{"http://127.0.0.1:11434"};
-    std::filesystem::path gguf;
-    std::string llama_server{"http://127.0.0.1:8080"};
+    std::filesystem::path fpk;  // FORGE model (.fpk), PRISM_FPK
     int jobs = 2;
     double timeout = 30.0;
     int unwind = 8;
+    // pir: verify only these Check props (CheckOptions::only_props); internal
+    std::vector<std::string> pir_only_props;
+    bool conc_tso = false;
+    int conc_store_buffer = 2;  // --store-buffer k: TSO store-buffer entries per thread  // --memory-model tso: conc stage checks x86-TSO (store buffers) instead of SC
     double fuzz_budget = 8.0;
     int fuzz_iters = 2048;
     bool llm = true;
@@ -69,6 +71,14 @@ struct Config {
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(
         std::initializer_list<std::string_view> names) const;
+    // The one configured LLVM toolchain (third_party/llvm/PIN.toml).
+    // Directory holding clang, clang++, opt, llvm-link, lli. Empty = resolve:
+    // $PRISM_LLVM_BIN, then the pinned fetch dir baked in at build time
+    // (PRISM_LLVM_PINNED_BIN, scripts/fetch_llvm.py), then PATH.
+    std::filesystem::path llvm_bin;
+    // tools[name] override, then llvm_bin/name, then PATH name. No versioned
+    // fallbacks: PRISM's IR parser targets exactly the pinned release.
+    PRISM_API std::optional<std::filesystem::path> llvm_tool(std::string_view name) const;
     // (1) tools[], (2) the pinned `prism-deps tool` build
     // <tools_home>/<component>/<commit>/bin/ (commit from third_party/MANIFEST.toml,
     // baked in at build time), (3) PATH.
@@ -94,5 +104,11 @@ PRISM_API std::string tool_identity(const std::filesystem::path& exe);
 // extra["tool_sha"] = tool_identity(exe) on every finding (existing kept).
 PRISM_API void stamp_tool_sha(std::vector<Finding>& findings, const std::filesystem::path& exe);
 PRISM_API std::string sha256_hex(std::string_view data);
+
+// The documented environment variables (src/prism/config.cpp).
+struct EnvVar {
+    std::string_view name, purpose;
+};
+PRISM_API const std::vector<EnvVar>& env_vars();
 
 }  // namespace prism

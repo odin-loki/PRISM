@@ -1,3 +1,4 @@
+#include <atomic>
 int g;
 void fence_bad(void) {
     g = 1;

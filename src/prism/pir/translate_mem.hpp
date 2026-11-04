@@ -17,7 +17,7 @@ struct Unenc {
     std::string reason;
 };
 
-inline constexpr unsigned kPtrW = 64;
+using prism::pir::ptr_w;  // pointer width of the current PtrModel (pir.hpp)
 
 class TrApi {
 public:
@@ -33,7 +33,7 @@ public:
     // b == -1: the function prologue (runs first, before block 0's statements)
     virtual void push(int b, Stmt s) = 0;
     // address of function @name: a constant pointer to a non-dereferenceable
-    // object with id in [kFnObjBase, kMaxObjects) (translate_ctl.inc)
+    // object with id in [fn_obj_base(), max_objects()) (translate_ctl.inc)
     virtual Arg fn_addr(const std::string& name) = 0;
 };
 
@@ -104,13 +104,16 @@ uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir:
 // right after the entry globals, with its variable after theirs; the Lean
 // export writes it as an `L glob` line there (docs/PROOFS_REFINEMENT.md).
 bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f);
+// calls (transitively) __cxa_begin_catch / __cxa_end_catch / __cxa_rethrow: Tr allocates the
+// caught-exceptions stack in the prologue (export_lean: `L glob %__prism.caught`)
+bool reaches_caught_slot(const ir::Module& m, const ir::Function& f);
 
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);
 
     const Layout& layout() const { return lay_; }
-    // Width of a first-class value type (iN <= 64, ptr = 64); throws Unenc.
+    // Width of a first-class value type (iN <= 64, ptr = ptr_w()); throws Unenc.
     unsigned value_width(const ir::Type& t, std::string_view what) const;
 
     Arg global(const std::string& name);  // pointer to @name, allocated in the prologue
@@ -170,7 +173,12 @@ private:
     std::map<std::string, Arg> globals_;
     std::vector<std::string> pending_;  // preassigned, not yet emitted
 
-    Arg c64(uint64_t v) const { return Arg::c(64, v); }
+    // constant of the pointer width (size_t / address arithmetic)
+    Arg c64(uint64_t v) const { return Arg::c(ptr_w(), ptr_w() >= 64 ? v : v & ((uint64_t{1} << ptr_w()) - 1)); }
+    // `a` at the pointer width: extended (sgn: sign) when narrower; when wider
+    // (an i64 index or length of an ILP32 task) truncated, with a check that
+    // the truncation keeps the value (prop/cls name the violation).
+    Arg to_pw(int b, Arg a, bool sgn, const char* prop, const char* cls, const std::string& msg, int line);
     Arg obj(int b, Arg p);
     Arg off(int b, Arg p);
     Arg p2(int b, Op op, Arg x, Arg y) { return t_.assign(b, op, 1, {x, y}, "c"); }
@@ -194,6 +202,7 @@ struct FormatPlan {
     int buf_arg = -1;            // sprintf / snprintf destination
     int size_arg = -1;           // snprintf size
     uint64_t max_len = 0;        // sprintf: upper bound of the output length (without NUL)
+    int exact_double_arg = -1;   // >= 0: lower via the __prism_fmt1d model (exact bytes)
     std::vector<std::pair<std::string, std::string>> violations;  // (class, message), always reached
     std::vector<std::size_t> cstr_args;  // %s arguments (NUL-terminated string required)
 };

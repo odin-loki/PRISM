@@ -67,6 +67,8 @@ struct Fail {
 struct Mark {
     int op = -1;
     bool tail = false;
+    bool flag = false;  // "c": a compare-exchange's success (view model)
+    bool read = false;  // "r": the old value of a read-modify-write through the bounded memory
 };
 
 Mark marker_of(const std::string& var) {
@@ -78,8 +80,8 @@ Mark marker_of(const std::string& var) {
     while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) ++i;
     if (i == 0 || i > 9) return {};
     auto rest = s.substr(i);
-    if (!rest.empty() && rest != "s") return {};
-    return {std::stoi(s.substr(0, i)), rest == "s"};
+    if (!rest.empty() && rest != "s" && rest != "c" && rest != "r") return {};
+    return {std::stoi(s.substr(0, i)), rest == "s", rest == "c", rest == "r"};
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ struct Graph {
 bool is_head(const pir::Function& fn, const Stmt& s) {
     if (s.kind != Stmt::Assign || s.dst < 0) return false;
     auto mk = marker_of(fn.vars[static_cast<std::size_t>(s.dst)].name);
-    return mk.op >= 0 && !mk.tail;
+    return mk.op >= 0 && !mk.tail && !mk.flag && !mk.read;
 }
 
 std::vector<int> succs(const Block& b) {
@@ -349,18 +351,33 @@ Graph build_graph(const pir::Function& fn, const Options& opt) {
 
 std::string op_text(const Program& p, const VisOp& o) {
     switch (o.kind) {
-        case VisOp::Load: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
-        case VisOp::Store: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
-        case VisOp::Rmw: return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Load:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Store:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
+        case VisOp::Rmw:
+            if (o.mem) return o.what + " " + (o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name + "[...]" : std::string("*ptr"));
+            return o.what + " " + p.vars[static_cast<std::size_t>(o.var)].name;
         case VisOp::Lock:
             [[fallthrough]];
         case VisOp::TryLock:
             [[fallthrough]];
         case VisOp::Unlock:
             [[fallthrough]];
-        case VisOp::MutexInit: return o.what + "(" + p.mutexes[static_cast<std::size_t>(o.mutex)] + ")";
+        case VisOp::MutexInit:
+            return o.what + "(" + (o.mutex >= 0 ? p.mutexes[static_cast<std::size_t>(o.mutex)] : std::string("*ptr")) + ")";
         case VisOp::Create: return o.what + " T" + std::to_string(o.thread);
         case VisOp::Join: return o.what;
+        case VisOp::CondWait:
+            [[fallthrough]];
+        case VisOp::CondSignal:
+            return o.what + "(" + (o.cond >= 0 ? p.conds[static_cast<std::size_t>(o.cond)] : std::string("*ptr")) + ")";
+        case VisOp::Alloc: return o.what + "(" + std::to_string(o.size) + ")";
+        case VisOp::Free: return o.what;
+        case VisOp::Arg: return o.what;
+        case VisOp::Fence: return o.what;
     }
     return o.what;
 }
@@ -409,6 +426,7 @@ std::string lazy_text(const Program& prog, const Options& opt) {
     o << "/* shared:";
     for (auto& v : prog.vars) o << " i" << v.width << " " << v.name << " = " << v.init << ";";
     for (auto& m : prog.mutexes) o << " mutex " << m << " (owner 0 = free);";
+    for (auto& cv : prog.conds) o << " cond " << cv << " (signal count);";
     o << " */\n";
     o << "_Bool active[" << N << "] = {1};  unsigned pc[" << N << "];  _Bool exited;\n";
     for (int t = 0; t < N; ++t) {
@@ -496,7 +514,65 @@ struct Enc {
     std::vector<Graph> g;
     std::vector<std::map<std::pair<int, std::vector<int>>, z3::expr>> vals;  // per thread: value instances
     std::vector<z3::expr> G, owner, pc, active;
+    std::vector<z3::expr> cgen;                 // per condition variable: signals so far
+    std::vector<std::vector<z3::expr>> ticket;  // [thread][cond]: cgen when the thread began its wait
     z3::expr exited, last_tid, last_var, last_w, last_at, last_op, ok;
+    // bounded memory: byte address -> word (the whole access, zero-extended)
+    z3::expr M, maddr, last_addr, last_mem;
+    // bounded heap: one slot per unrolled execution of an allocation site
+    struct HeapSlot { uint64_t id; z3::expr size; z3::expr live; std::string name; bool stack = false; };
+    std::vector<HeapSlot> heap;
+    std::vector<z3::expr> targ;
+    // TSO store buffers (Options::tso): per thread pending / variable / value
+    // per thread: k entries (key, value) oldest first and a count; key =
+    // byte address for the bounded memory, 2^63 | var for a scalar global
+    std::vector<std::vector<z3::expr>> sb_key, sb_val, sb_nb;  // sb_nb: bytes of a memory entry
+    std::vector<z3::expr> sb_cnt;
+    std::map<std::pair<int, int>, int> create_slot;  // (thread, node) of a looped Create -> created thread
+    // mutexes / condition variables addressed through the bounded memory
+    z3::expr OwnA, CgenA;
+    z3::expr try_free{c};  // dyn trylock: the head's "was free" for its tail (same step)
+    std::vector<z3::expr> tkd;  // per thread: CgenA[cv] when it released for a wait on a non-global cv  // per thread: the argument its creating call passed
+    std::map<std::pair<int, int>, std::size_t> heap_of;  // (thread, node) -> heap index
+    // C11 view model (Program::views, docs/CONCURRENCY.md "C11 orders"): a
+    // promise-free view machine. Locations with a non-seq_cst atomic (A) keep
+    // a history of messages (timestamp, value, view), one per store site
+    // execution plus the initial one; timestamps are distinct symbolic bv16
+    // (the modification order), a store takes one above its thread's view, a
+    // load reads any message at or above it, an RMW the message just below
+    // its own (ts + 1). A view has one entry per location in A and one clock
+    // per thread; the clocks give happens-before for the race check of
+    // non-atomic accesses (vector clocks / epochs), whose values stay SC.
+    using View = std::vector<z3::expr>;
+    struct Msg { z3::expr ts, used, val; View view; };
+    bool vw = false;
+    std::vector<int> aidx;                      // var -> index in A, or -1
+    std::size_t nA = 0, NC = 0, VS = 0;          // VS: view size (NC, + 1 array entry for memory)
+    bool memv = false;                          // atomics in the bounded memory use messages too
+    std::size_t MV = 0;                         // the view entry of the memory: address -> timestamp
+    struct MMsg { z3::expr addr, ts, used, val; View view; };
+    std::vector<MMsg> mmsgs;                    // messages of memory atomics (val zero-extended to 64)
+    std::map<std::pair<int, int>, std::size_t> mmsg_of;
+    std::map<std::pair<int, int>, z3::expr> pts_of;  // (thread, node) -> timestamp of a plain memory store
+    z3::expr Pts{c};                            // address -> timestamp of its plain (M) value; 0 initial
+    std::vector<View> relxM;                    // [thread]: per entry, address -> view of its last release store
+    z3::expr mrd_val{c};                        // memory read of the current access (64 bits)
+    std::vector<View> scv;                      // [0]: the SC view of seq_cst fences
+    std::vector<std::vector<z3::expr>> Wa, Ra;  // [var][thread]: clock of its last atomic write / read
+    std::vector<z3::expr> WaA, RaA;             // [thread]: address -> clock of its last atomic write / read
+    std::vector<View> cur, acqv, relv;          // per thread: view, pending acquire, last release fence
+    std::vector<std::vector<View>> relx;        // [thread][a]: view of its last release store to a
+    std::vector<std::vector<Msg>> msgs;         // [a]
+    std::map<std::pair<int, int>, std::size_t> msg_of;  // (thread, node) -> message of its store
+    std::vector<View> mview, svar;              // static mutex: view at unlock; SC-only var: last store's view
+    std::vector<z3::expr> mviewA, svA;          // per view entry: address -> entry (mutexes / atomics in memory)
+    std::vector<z3::expr> Wt, Wc;               // per var: last non-atomic writer (thread + 1) and its clock
+    std::vector<std::vector<z3::expr>> Rc;      // [var][thread]: clock of its last non-atomic read
+    z3::expr WtA{c}, WcA{c};
+    std::vector<z3::expr> RcA;
+    bool defer_race = false;                    // TSO: a buffered plain store is race-checked at commit
+    z3::expr rd_ts{c}, cas_ok{c};               // RMW: the message read by the head, compare-exchange success
+    View rd_view;
     std::vector<z3::expr> hard;
     std::vector<VRec> viols;
     std::vector<ERec> events;
@@ -504,7 +580,10 @@ struct Enc {
 
     Enc(const Program& prog, const Options& o)
         : p(prog), opt(o), exited(c.bool_val(false)), last_tid(c.bv_val(0, 8)), last_var(c.bv_val(0, 16)),
-          last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)) {}
+          last_w(c.bool_val(false)), last_at(c.bool_val(false)), last_op(c.bv_val(0, 16)), ok(c.bool_val(true)),
+          M(z3::const_array(c.bv_sort(64), c.bv_val(0, 8))), maddr(c.bv_val(0, 64)), last_addr(c.bv_val(0, 64)),
+          last_mem(c.bool_val(false)), OwnA(z3::const_array(c.bv_sort(64), c.bv_val(0, 8))),
+          CgenA(z3::const_array(c.bv_sort(64), c.bv_val(0, 16))) {}
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
@@ -700,9 +779,60 @@ struct Enc {
         last_w = z3::ite(e, c.bool_val(write), last_w);
         last_at = z3::ite(e, c.bool_val(atomic), last_at);
         last_op = z3::ite(e, bv(static_cast<uint64_t>(op + 1), 16), last_op);
+        last_mem = z3::ite(e, c.bool_val(false), last_mem);
+    }
+
+    void touch_mem(int t, const z3::expr& e, int op, const z3::expr& addr, bool write, bool atomic) {
+        touch(t, e, op, -1, write, atomic);
+        last_mem = z3::ite(e, c.bool_val(true), last_mem);
+        last_addr = z3::ite(e, addr, last_addr);
+    }
+
+    // A memory access: in bounds of its object (objects are 2^32 apart, so an
+    // out-of-bounds address never reaches another object; it is UB itself),
+    // and a race when the last visible operation was a conflicting access to
+    // the same address by another thread.
+    void mem_checks(int t, const z3::expr& e, int op, const VisOp& o, const z3::expr& addr, bool write) {
+        auto id = z3::lshr(addr, c.bv_val(32, 64));
+        auto off = addr & bv(0xffffffffu, 64);
+        z3::expr inb = c.bool_val(false);
+        for (std::size_t k = 0; k < p.objects.size(); ++k)
+            inb = inb || (id == c.bv_val(static_cast<uint64_t>(k + 1), 64) &&
+                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), c.bv_val(p.objects[k].size, 64)));
+        z3::expr freed = c.bool_val(false);
+        for (auto& h : heap) {
+            auto here = id == c.bv_val(h.id, 64);
+            inb = inb || (here && h.live &&
+                          z3::ule(off + c.bv_val(static_cast<uint64_t>((o.width + 7) / 8), 64), h.size));
+            freed = freed || (here && !h.live);
+        }
+        auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
+        violation(e && freed, write ? "uaf-write" : "uaf-read", "MEM-USE-AFTER-FREE",
+                  "use after free: " + o.what + " by " + tname(p, t) + at_line(o.line), o.line, t,
+                  "uaf:" + std::to_string(op));
+        violation(e && !freed && !inb, write ? "oob-write" : "oob-read", write ? "MEM-OOB-WRITE" : "MEM-OOB-READ",
+                  "out-of-bounds " + o.what + " of " + what + " by " + tname(p, t) + at_line(o.line), o.line, t,
+                  "oob:" + std::to_string(op));
+        if (vw || defer_race) return;  // view model: happens-before; TSO buffered store: at commit
+        auto conflict = e && last_mem && last_addr == addr && last_tid != bv(0, 8) &&
+                        last_tid != bv(static_cast<uint64_t>(t + 1), 8) && (last_w || c.bool_val(write)) &&
+                        !(last_at && c.bool_val(o.atomic));
+        VRec v{ok && conflict,
+               "race",
+               "CONC-DATA-RACE",
+               "data race on " + what + ": " + o.what + " by " + tname(p, t) + at_line(o.line),
+               "race:" + what + ":" + std::to_string(o.line),
+               o.line,
+               t,
+               seq,
+               -1,
+               last_op,
+               {}};
+        viols.push_back(std::move(v));
     }
 
     void race_check(int t, const z3::expr& e, int op, const VisOp& o, bool write) {
+        if (vw) return;  // the view model checks happens-before instead
         auto conflict = e && last_tid != bv(0, 8) && last_tid != bv(static_cast<uint64_t>(t + 1), 8) &&
                         last_var == bv(static_cast<uint64_t>(o.var + 1), 16) && (last_w || c.bool_val(write)) &&
                         !(last_at && c.bool_val(o.atomic));
@@ -726,9 +856,680 @@ struct Enc {
         events.push_back(ERec{e, r, t, op, seq, std::move(val), w});
     }
 
+    // ---- byte-addressed bounded memory (little-endian) -------------------
+    static unsigned nbytes(unsigned w) { return w == 0 ? 1 : (w + 7) / 8; }
+    z3::expr mload(const z3::expr& mem, const z3::expr& a, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr r = z3::select(mem, a);
+        for (unsigned i = 1; i < nb; ++i) r = z3::concat(z3::select(mem, a + bv(i, 64)), r);
+        return w < nb * 8 ? r.extract(w - 1, 0) : r;
+    }
+    z3::expr mstore(z3::expr mem, const z3::expr& a, const z3::expr& v, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr x = w < nb * 8 ? z3::zext(v, nb * 8 - w) : v;
+        for (unsigned i = 0; i < nb; ++i) mem = z3::store(mem, a + bv(i, 64), x.extract(8 * i + 7, 8 * i));
+        return mem;
+    }
+    z3::expr sb_skey(std::size_t v) { return c.bv_val((uint64_t{1} << 63) | v, 64); }
+
+    // commit thread u's oldest buffered store when `when`
+    void sb_commit(std::size_t u, const z3::expr& when) {
+        auto& K = sb_key[u];
+        auto& V = sb_val[u];
+        auto go = when && z3::ugt(sb_cnt[u], bv(0, 8));
+        // the race check of a buffered plain store happens here, when it
+        // becomes visible to the other threads (not when it was issued)
+        {
+            auto uid = bv(u + 1, 8);
+            auto scalar = K[0].extract(63, 63) == c.bv_val(1, 1);
+            auto same = z3::ite(scalar, !last_mem && z3::zext(last_var, 48) == (K[0] & bv(0xffffffffffffULL, 64)) + bv(1, 64),
+                                last_mem && last_addr == K[0]);
+            auto conflict = go && same && last_tid != bv(0, 8) && last_tid != uid && !last_at;
+            VRec v{ok && conflict,
+                   "race",
+                   "CONC-DATA-RACE",
+                   "data race: a store committed from " + tname(p, static_cast<int>(u)) +
+                       "'s store buffer conflicts with the previous access",
+                   "race:sb:" + std::to_string(u),
+                   0,
+                   static_cast<int>(u),
+                   seq,
+                   -1,
+                   last_op,
+                   {}};
+            viols.push_back(std::move(v));
+            last_tid = z3::ite(go, uid, last_tid);
+            last_w = z3::ite(go, c.bool_val(true), last_w);
+            last_at = z3::ite(go, c.bool_val(false), last_at);
+            last_mem = z3::ite(go, !scalar, last_mem);
+            last_addr = z3::ite(go && !scalar, K[0], last_addr);
+            last_var = z3::ite(go && scalar, (K[0] & bv(0xffff, 64)).extract(15, 0) + bv(1, 16), last_var);
+        }
+        for (std::size_t v = 0; v < p.vars.size(); ++v) {
+            unsigned w = p.vars[v].width;
+            G[v] = z3::ite(go && K[0] == sb_skey(v), w < 64 ? V[0].extract(w - 1, 0) : V[0], G[v]);
+        }
+        {
+            auto& NB = sb_nb[u];
+            auto gm = go && K[0].extract(63, 63) == c.bv_val(0, 1);
+            for (unsigned i = 0; i < 8; ++i)
+                M = z3::ite(gm && z3::ult(bv(i, 8), NB[0]), z3::store(M, K[0] + bv(i, 64), V[0].extract(8 * i + 7, 8 * i)), M);
+        }
+        for (std::size_t i = 0; i + 1 < K.size(); ++i) {
+            K[i] = z3::ite(go, K[i + 1], K[i]);
+            V[i] = z3::ite(go, V[i + 1], V[i]);
+            sb_nb[u][i] = z3::ite(go, sb_nb[u][i + 1], sb_nb[u][i]);
+        }
+        sb_cnt[u] = z3::ite(go, sb_cnt[u] - bv(1, 8), sb_cnt[u]);
+    }
+    void sb_drain(std::size_t u, const z3::expr& when) {
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i) sb_commit(u, when);
+    }
+    void sb_push(std::size_t u, const z3::expr& e, const z3::expr& key, const z3::expr& val, unsigned nb = 8) {
+        auto k = static_cast<uint64_t>(sb_key[u].size());
+        sb_commit(u, e && sb_cnt[u] == bv(k, 8));  // full: the oldest commits first
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i) {
+            auto here = e && sb_cnt[u] == bv(i, 8);
+            sb_key[u][i] = z3::ite(here, key, sb_key[u][i]);
+            sb_val[u][i] = z3::ite(here, val, sb_val[u][i]);
+            sb_nb[u][i] = z3::ite(here, bv(nb, 8), sb_nb[u][i]);
+        }
+        sb_cnt[u] = z3::ite(e, sb_cnt[u] + bv(1, 8), sb_cnt[u]);
+    }
+    // a load of w bits at memory address a by thread u: each byte from the
+    // newest buffered store covering it (overlap forwarding), else M
+    z3::expr sb_forward_mem(std::size_t u, const z3::expr& a, unsigned w) {
+        unsigned nb = nbytes(w);
+        z3::expr r(c);
+        for (unsigned j = 0; j < nb; ++j) {
+            auto aj = a + bv(j, 64);
+            z3::expr b = z3::select(M, aj);
+            for (std::size_t i = 0; i < sb_key[u].size(); ++i) {
+                auto k = sb_key[u][i];
+                auto d = aj - k;
+                auto cov = z3::ult(bv(i, 8), sb_cnt[u]) && k.extract(63, 63) == c.bv_val(0, 1) && z3::uge(aj, k) &&
+                           z3::ult(d, z3::zext(sb_nb[u][i], 56));
+                b = z3::ite(cov, z3::lshr(sb_val[u][i], d * bv(8, 64)).extract(7, 0), b);
+            }
+            r = j == 0 ? b : z3::concat(b, r);
+        }
+        return w < nb * 8 ? r.extract(w - 1, 0) : r;
+    }
+    // the newest buffered value for key, else `mem`
+    z3::expr sb_forward(std::size_t u, const z3::expr& key, const z3::expr& mem) {
+        z3::expr r = mem;
+        for (std::size_t i = 0; i < sb_key[u].size(); ++i)
+            r = z3::ite(z3::ult(bv(i, 8), sb_cnt[u]) && sb_key[u][i] == key, sb_val[u][i], r);
+        return r;
+    }
+
+    // ---- C11 view model -------------------------------------------------
+    z3::expr vmax(const z3::expr& a, const z3::expr& b) {
+        if (a.get_sort().is_array()) {  // the memory entry: pointwise
+            auto x = c.bv_const(("vx!" + std::to_string(fresh++)).c_str(), 64);
+            return z3::lambda(x, vmax(z3::select(a, x), z3::select(b, x)));
+        }
+        return z3::ite(z3::ugt(b, a), b, a);
+    }
+    View vjoin(const View& a, const View& b) {
+        View r;
+        for (std::size_t i = 0; i < a.size(); ++i) r.push_back(vmax(a[i], b[i]));
+        return r;
+    }
+    void vset(View& d, const z3::expr& e, const View& v) {
+        for (std::size_t i = 0; i < d.size(); ++i) d[i] = z3::ite(e, v[i], d[i]);
+    }
+    View vzero() {
+        View v(NC, c.bv_val(0, 16));
+        if (memv) v.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        return v;
+    }
+    std::size_t clk(std::size_t u) { return nA + u; }
+    static bool acq(int o) { return o == 1 || o == 3 || o == 4; }
+    static bool rel(int o) { return o == 2 || o == 3 || o == 4; }
+
+    void views_init() {
+        const std::size_t N = p.threads.size();
+        if (opt.tso)
+            throw Fail{std::string(laws::NEEDS_HARNESS),
+                       "UNENCODED: --memory-model tso together with C11 weaker orders (the view model is for the C11 "
+                       "model alone)"};
+        vw = true;
+        aidx.assign(p.vars.size(), -1);
+        for (const auto& o : p.ops)
+            if (o.var >= 0 && !o.mem && o.atomic && ((o.order >= 0 && o.order < 4) || (o.cas && o.order_fail < 4)) &&
+                aidx[static_cast<std::size_t>(o.var)] < 0)
+                aidx[static_cast<std::size_t>(o.var)] = static_cast<int>(nA++);
+        NC = nA + N;
+        for (const auto& o : p.ops)
+            if (o.mem && o.atomic && ((o.order >= 0 && o.order < 4) || (o.cas && o.order_fail >= 0 && o.order_fail < 4)))
+                memv = true;
+        MV = NC;
+        VS = NC + (memv ? 1 : 0);
+        scv.assign(1, vzero());
+        cur.assign(N, vzero());
+        acqv.assign(N, vzero());
+        relv.assign(N, vzero());
+        relx.assign(N, std::vector<View>(nA, vzero()));
+        msgs.assign(nA, {});
+        for (std::size_t v = 0; v < p.vars.size(); ++v)
+            if (aidx[v] >= 0) msgs[static_cast<std::size_t>(aidx[v])].push_back({c.bv_val(0, 16), c.bool_val(true), G[v], vzero()});
+        for (std::size_t t = 0; t < N; ++t)
+            for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                int h = g[t].nodes[nd].head;
+                if (h < 0) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(h)];
+                if ((o.kind != VisOp::Store && o.kind != VisOp::Rmw) || o.mem || o.var < 0) continue;
+                int a = aidx[static_cast<std::size_t>(o.var)];
+                if (a < 0) continue;
+                auto& ms = msgs[static_cast<std::size_t>(a)];
+                auto ts = fresh_bv("ts", 16);
+                hard.push_back(z3::ugt(ts, c.bv_val(0, 16)) && z3::ult(ts, c.bv_val(0x4000, 16)));
+                msg_of[{static_cast<int>(t), static_cast<int>(nd)}] = ms.size();
+                ms.push_back({ts, c.bool_val(false), bv(0, p.vars[static_cast<std::size_t>(o.var)].width), vzero()});
+            }
+        for (auto& ms : msgs)
+            if (ms.size() > 1) {
+                z3::expr_vector tv(c);
+                for (auto& m : ms) tv.push_back(m.ts);
+                hard.push_back(z3::distinct(tv));
+            }
+        mview.assign(p.mutexes.size(), vzero());
+        svar.assign(p.vars.size(), vzero());
+        {
+            auto z = vzero();
+            for (std::size_t i = 0; i < VS; ++i) {
+                mviewA.push_back(z3::const_array(c.bv_sort(64), z[i]));
+                svA.push_back(z3::const_array(c.bv_sort(64), z[i]));
+            }
+            relxM.assign(N, {});
+            for (auto& r : relxM)
+                for (std::size_t i = 0; i < VS; ++i) r.push_back(z3::const_array(c.bv_sort(64), z[i]));
+        }
+        Wa.assign(p.vars.size(), std::vector<z3::expr>(N, c.bv_val(0, 16)));
+        Ra.assign(p.vars.size(), std::vector<z3::expr>(N, c.bv_val(0, 16)));
+        for (std::size_t u = 0; u < N; ++u) {
+            WaA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+            RaA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        }
+        Pts = z3::const_array(c.bv_sort(64), c.bv_val(0, 16));
+        mrd_val = c.bv_val(0, 64);
+        if (memv) {  // memory messages: one per atomic store / RMW site execution; plain stores get a timestamp
+            z3::expr_vector all(c);
+            for (auto& ms : msgs)
+                for (auto& m : ms)
+                    if (!m.ts.is_numeral()) all.push_back(m.ts);
+            for (std::size_t t = 0; t < N; ++t)
+                for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                    int h = g[t].nodes[nd].head;
+                    if (h < 0) continue;
+                    const auto& o = p.ops[static_cast<std::size_t>(h)];
+                    if (!o.mem || (o.kind != VisOp::Store && o.kind != VisOp::Rmw)) continue;
+                    auto ts = fresh_bv("mts", 16);
+                    hard.push_back(z3::ugt(ts, c.bv_val(0, 16)) && z3::ult(ts, c.bv_val(0x4000, 16)));
+                    all.push_back(ts);
+                    std::pair<int, int> key{static_cast<int>(t), static_cast<int>(nd)};
+                    if (o.atomic) {
+                        mmsg_of[key] = mmsgs.size();
+                        mmsgs.push_back({c.bv_val(0, 64), ts, c.bool_val(false), c.bv_val(0, 64), vzero()});
+                    } else {
+                        pts_of.insert({key, ts});
+                    }
+                }
+            if (all.size() > 1) hard.push_back(z3::distinct(all));
+        }
+        Wt.assign(p.vars.size(), c.bv_val(0, 8));
+        Wc.assign(p.vars.size(), c.bv_val(0, 16));
+        Rc.assign(p.vars.size(), std::vector<z3::expr>(N, c.bv_val(0, 16)));
+        WtA = z3::const_array(c.bv_sort(64), c.bv_val(0, 8));
+        WcA = z3::const_array(c.bv_sort(64), c.bv_val(0, 16));
+        for (std::size_t u = 0; u < N; ++u) RcA.push_back(z3::const_array(c.bv_sort(64), c.bv_val(0, 16)));
+        rd_ts = c.bv_val(0, 16);
+        cas_ok = c.bool_val(true);
+        rd_view = vzero();
+    }
+
+    // thread t's clock entry for the writer wt (thread + 1)
+    z3::expr clock_of(std::size_t t, const z3::expr& wt) {
+        z3::expr r = c.bv_val(0, 16);
+        for (std::size_t u = 0; u < p.threads.size(); ++u) r = z3::ite(wt == bv(u + 1, 8), cur[t][clk(u)], r);
+        return r;
+    }
+
+    // A non-atomic access races with any conflicting access it is not
+    // ordered with; an atomic one only with non-atomic accesses. wt / wc / rc:
+    // the last non-atomic write and reads; wa / ra (non-atomic accesses
+    // only): each thread's last atomic write / read clock.
+    void hb_race(int t, const z3::expr& e, const VisOp& o, bool write, const z3::expr& wt, const z3::expr& wc,
+                 const std::vector<z3::expr>& rc, const std::string& what, const std::vector<z3::expr>* wa = nullptr,
+                 const std::vector<z3::expr>* ra = nullptr) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto tid = bv(ti + 1, 8);
+        z3::expr conflict = wt != bv(0, 8) && wt != tid && z3::ugt(wc, clock_of(ti, wt));
+        for (std::size_t u = 0; u < p.threads.size(); ++u) {
+            if (u == ti) continue;
+            if (write) conflict = conflict || z3::ugt(rc[u], cur[ti][clk(u)]);
+            if (wa) conflict = conflict || z3::ugt((*wa)[u], cur[ti][clk(u)]);
+            if (ra && write) conflict = conflict || z3::ugt((*ra)[u], cur[ti][clk(u)]);
+        }
+        VRec v{ok && e && conflict,
+               "race",
+               "CONC-DATA-RACE",
+               "data race on " + what + ": " + o.what + " by " + tname(p, t) + at_line(o.line) +
+                   " (no happens-before with a conflicting access)",
+               "race:" + what + ":" + std::to_string(o.line),
+               o.line,
+               t,
+               seq,
+               o.mem ? -1 : o.var,
+               last_op,
+               {}};
+        viols.push_back(std::move(v));
+    }
+
+    // the race check of an access to a scalar global (atomic or not)
+    void hb_scalar(int t, const z3::expr& e, const VisOp& o, bool write) {
+        const auto v = static_cast<std::size_t>(o.var);
+        const auto ti = static_cast<std::size_t>(t);
+        if (o.atomic) {
+            hb_race(t, e, o, write, Wt[v], Wc[v], Rc[v], p.vars[v].name);
+            auto now = cur[ti][clk(ti)];
+            if (o.kind != VisOp::Load) Wa[v][ti] = z3::ite(e, now, Wa[v][ti]);
+            if (o.kind != VisOp::Store) Ra[v][ti] = z3::ite(e, now, Ra[v][ti]);
+            return;
+        }
+        hb_race(t, e, o, write, Wt[v], Wc[v], Rc[v], p.vars[v].name, &Wa[v], &Ra[v]);
+        if (write) {
+            Wt[v] = z3::ite(e, bv(ti + 1, 8), Wt[v]);
+            Wc[v] = z3::ite(e, cur[ti][clk(ti)], Wc[v]);
+        } else {
+            Rc[v][ti] = z3::ite(e, cur[ti][clk(ti)], Rc[v][ti]);
+        }
+    }
+
+    void hb_mem(int t, const z3::expr& e, const VisOp& o, bool write, const z3::expr& a) {
+        const auto ti = static_cast<std::size_t>(t);
+        std::vector<z3::expr> rc;
+        for (auto& x : RcA) rc.push_back(z3::select(x, a));
+        auto what = o.obj >= 0 ? p.objects[static_cast<std::size_t>(o.obj)].name : std::string("memory");
+        if (o.atomic) {
+            hb_race(t, e, o, write, z3::select(WtA, a), z3::select(WcA, a), rc, what);
+            auto now = cur[ti][clk(ti)];
+            if (o.kind != VisOp::Load) WaA[ti] = z3::ite(e, z3::store(WaA[ti], a, now), WaA[ti]);
+            if (o.kind != VisOp::Store) RaA[ti] = z3::ite(e, z3::store(RaA[ti], a, now), RaA[ti]);
+            return;
+        }
+        std::vector<z3::expr> wa, ra;
+        for (std::size_t u = 0; u < p.threads.size(); ++u) {
+            wa.push_back(z3::select(WaA[u], a));
+            ra.push_back(z3::select(RaA[u], a));
+        }
+        hb_race(t, e, o, write, z3::select(WtA, a), z3::select(WcA, a), rc, what, &wa, &ra);
+        if (write) {
+            WtA = z3::ite(e, z3::store(WtA, a, bv(ti + 1, 8)), WtA);
+            WcA = z3::ite(e, z3::store(WcA, a, cur[ti][clk(ti)]), WcA);
+        } else {
+            RcA[ti] = z3::ite(e, z3::store(RcA[ti], a, cur[ti][clk(ti)]), RcA[ti]);
+        }
+    }
+
+    // read a message of location a at or above thread t's view (sets rd_ts / rd_view)
+    z3::expr read_msg(int t, const z3::expr& e, std::size_t a) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto& ms = msgs[a];
+        auto idx = fresh_bv("rf", 16);
+        z3::expr can = c.bool_val(false);
+        z3::expr val = ms[0].val, ts = ms[0].ts;
+        View view = ms[0].view;
+        for (std::size_t j = 0; j < ms.size(); ++j) {
+            auto pick = idx == bv(j, 16);
+            can = can || (pick && ms[j].used && z3::uge(ms[j].ts, cur[ti][a]));
+            if (j == 0) continue;
+            val = z3::ite(pick, ms[j].val, val);
+            ts = z3::ite(pick, ms[j].ts, ts);
+            for (std::size_t i = 0; i < VS; ++i) view[i] = z3::ite(pick, ms[j].view[i], view[i]);
+        }
+        ok = ok && z3::implies(e, can);
+        cur[ti][a] = z3::ite(e, vmax(cur[ti][a], ts), cur[ti][a]);
+        rd_ts = ts;
+        rd_view = view;
+        return val;
+    }
+
+    // after a read of rd_view by thread t with order ord
+    void read_sync(std::size_t ti, const z3::expr& e, int ord) {
+        if (acq(ord)) vset(cur[ti], e, vjoin(cur[ti], rd_view));
+        else vset(acqv[ti], e, vjoin(acqv[ti], rd_view));
+    }
+
+    // write message j of location a (its timestamp already constrained)
+    void write_msg(int t, int node, const z3::expr& e, std::size_t a, int ord, const z3::expr& nv,
+                   std::optional<View> from) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto& m = msgs[a].at(msg_of.at({t, node}));
+        cur[ti][a] = z3::ite(e, m.ts, cur[ti][a]);
+        View mv = cur[ti];
+        if (rel(ord)) {
+            vset(relx[ti][a], e, cur[ti]);
+        } else {
+            mv = vjoin(relv[ti], relx[ti][a]);
+            mv[a] = m.ts;
+        }
+        if (from) mv = vjoin(mv, *from);  // RMW: the release sequence continues
+        m.used = m.used || e;
+        m.val = z3::ite(e, nv, m.val);
+        vset(m.view, e, mv);
+    }
+
+    // memory: read a message at address a (w bits) at or above thread t's
+    // view; message 0 is the plain value in M (timestamp Pts[a], no view)
+    z3::expr read_mmsg(int t, const z3::expr& e, const z3::expr& a, unsigned w) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto idx = fresh_bv("mrf", 16);
+        auto curA = z3::select(cur[ti][MV], a);
+        auto pv = mload(M, a, w);
+        z3::expr val = w < 64 ? z3::zext(pv, 64 - w) : pv;
+        z3::expr ts = z3::select(Pts, a);
+        z3::expr can = idx == bv(0, 16) && z3::uge(ts, curA);
+        View view = vzero();
+        for (std::size_t j = 0; j < mmsgs.size(); ++j) {
+            auto& m = mmsgs[j];
+            auto pick = idx == bv(j + 1, 16);
+            can = can || (pick && m.used && m.addr == a && z3::uge(m.ts, curA));
+            val = z3::ite(pick, m.val, val);
+            ts = z3::ite(pick, m.ts, ts);
+            for (std::size_t i = 0; i < VS; ++i) view[i] = z3::ite(pick, m.view[i], view[i]);
+        }
+        ok = ok && z3::implies(e, can);
+        cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], a, vmax(curA, ts)), cur[ti][MV]);
+        rd_ts = ts;
+        rd_view = view;
+        return val;
+    }
+
+    void write_mmsg(int t, int node, const z3::expr& e, const z3::expr& a, int ord, const z3::expr& nv, unsigned w,
+                    std::optional<View> from) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto& m = mmsgs.at(mmsg_of.at({t, node}));
+        cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], a, m.ts), cur[ti][MV]);
+        View mv = cur[ti];
+        if (rel(ord)) {
+            for (std::size_t i = 0; i < VS; ++i) relxM[ti][i] = z3::ite(e, z3::store(relxM[ti][i], a, cur[ti][i]), relxM[ti][i]);
+        } else {
+            View rx;
+            for (std::size_t i = 0; i < VS; ++i) rx.push_back(z3::select(relxM[ti][i], a));
+            mv = vjoin(relv[ti], rx);
+            mv[MV] = z3::store(mv[MV], a, m.ts);
+        }
+        if (from) mv = vjoin(mv, *from);
+        m.used = m.used || e;
+        m.addr = z3::ite(e, a, m.addr);
+        m.val = z3::ite(e, w < 64 ? z3::zext(nv, 64 - w) : nv, m.val);
+        vset(m.view, e, mv);
+    }
+
+    // views at synchronisation: s = sync view (by reference), acquire / release
+    void sync_acquire(std::size_t ti, const z3::expr& e, const View& s) { vset(cur[ti], e, vjoin(cur[ti], s)); }
+
+    // the view-model part of a visible operation; true when it handled the value
+    bool views_visible(int r, int t, int node, const Stmt& s, const Mark& mk, const z3::expr& e, const VisOp& o) {
+        const auto ti = static_cast<std::size_t>(t);
+        if (!mk.tail && !mk.flag && !mk.read)
+            cur[ti][clk(ti)] = z3::ite(e, cur[ti][clk(ti)] + bv(1, 16), cur[ti][clk(ti)]);
+        if (o.kind == VisOp::Fence) {
+            if (acq(o.order)) vset(cur[ti], e, vjoin(cur[ti], acqv[ti]));
+            if (o.order == 4) {  // seq_cst fence: the fences' total order carries the SC view (RC11 psc_F)
+                vset(cur[ti], e, vjoin(cur[ti], scv[0]));
+                vset(scv[0], e, cur[ti]);
+            }
+            if (rel(o.order)) vset(relv[ti], e, cur[ti]);
+            return false;
+        }
+        if ((o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw) && !o.mem) {
+            const auto v = static_cast<std::size_t>(o.var);
+            const int ai = aidx[v];
+            if (ai < 0) {
+                if (mk.tail) {  // SC-only RMW: the release sequence keeps the last store's view
+                    vset(svar[v], e, vjoin(svar[v], cur[ti]));
+                    return false;
+                }
+                hb_scalar(t, e, o, o.kind != VisOp::Load);
+                if (o.atomic) {
+                    if (o.kind != VisOp::Store) sync_acquire(ti, e, svar[v]);
+                    if (o.kind == VisOp::Store) vset(svar[v], e, cur[ti]);
+                }
+                return false;  // the value is the SC one (G)
+            }
+            const auto a = static_cast<std::size_t>(ai);
+            const int ord = o.atomic ? o.order : 0;  // a plain access to an atomic location: relaxed (race-checked)
+            auto& m = msgs[a];
+            if (!mk.tail) hb_scalar(t, e, o, o.kind != VisOp::Load);
+            if (o.kind == VisOp::Load) {
+                auto val = read_msg(t, e, a);
+                read_sync(ti, e, ord);
+                event(e, r, t, mk.op, val, o.width);
+                define(t, node, s.dst, e, val);
+                touch(t, e, mk.op, o.var, false, true);
+                return true;
+            }
+            if (o.kind == VisOp::Store) {
+                auto& msg = m.at(msg_of.at({t, node}));
+                ok = ok && z3::implies(e, z3::ugt(msg.ts, cur[ti][a]));
+                auto nv = lookup(t, node, s.args.at(0));
+                write_msg(t, node, e, a, ord, nv, std::nullopt);
+                event(e, r, t, mk.op, nv, o.width);
+                define(t, node, s.dst, e, nv);
+                touch(t, e, mk.op, o.var, true, true);
+                return true;
+            }
+            // Rmw
+            if (!mk.tail) {
+                auto val = read_msg(t, e, a);
+                cas_ok = c.bool_val(true);
+                event(e, r, t, mk.op, val, o.width);
+                define(t, node, s.dst, e, val);
+                touch(t, e, mk.op, o.var, true, true);
+                return true;
+            }
+            auto succ = e && cas_ok;
+            if (o.cas) read_sync(ti, e && !cas_ok, o.order_fail);
+            read_sync(ti, succ, o.order);
+            auto& msg = m.at(msg_of.at({t, node}));
+            ok = ok && z3::implies(succ, msg.ts == rd_ts + bv(1, 16));
+            auto nv = lookup(t, node, s.args.at(0));
+            write_msg(t, node, succ, a, o.order, nv, rd_view);
+            define(t, node, s.dst, e, nv);
+            return true;
+        }
+        if (o.mem && (o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw)) {
+            if (mk.read) return false;
+            if (memv) {
+                const int ord = o.atomic ? o.order : 0;
+                if (!mk.tail) {
+                    auto a = lookup(t, node, s.args.at(0));
+                    hb_mem(t, e, o, o.kind != VisOp::Load, a);
+                    if (o.kind != VisOp::Store) {
+                        mrd_val = read_mmsg(t, e, a, o.width);
+                        cas_ok = c.bool_val(true);
+                        if (o.kind == VisOp::Load) read_sync(ti, e, ord);
+                    }
+                    return false;  // the common code checks the address and records the head
+                }
+                if (o.kind == VisOp::Load) {
+                    define(t, node, s.dst, e, o.width < 64 ? mrd_val.extract(o.width - 1, 0) : mrd_val);
+                    return true;
+                }
+                auto nv = lookup(t, node, s.args.at(0));
+                if (o.kind == VisOp::Store && !o.atomic) {  // plain: M, with a timestamp above the view
+                    auto ts = pts_of.at({t, node});
+                    auto curA = z3::select(cur[ti][MV], maddr);
+                    ok = ok && z3::implies(e, z3::ugt(ts, curA));
+                    Pts = z3::ite(e, z3::store(Pts, maddr, ts), Pts);
+                    cur[ti][MV] = z3::ite(e, z3::store(cur[ti][MV], maddr, ts), cur[ti][MV]);
+                    return false;  // the common code writes M
+                }
+                if (o.kind == VisOp::Store) {
+                    auto& msg = mmsgs.at(mmsg_of.at({t, node}));
+                    ok = ok && z3::implies(e, z3::ugt(msg.ts, z3::select(cur[ti][MV], maddr)));
+                    write_mmsg(t, node, e, maddr, ord, nv, o.width, std::nullopt);
+                    define(t, node, s.dst, e, nv);
+                    return true;
+                }
+                auto succ = e && cas_ok;
+                if (o.cas) read_sync(ti, e && !cas_ok, o.order_fail);
+                read_sync(ti, succ, o.order);
+                auto& msg = mmsgs.at(mmsg_of.at({t, node}));
+                ok = ok && z3::implies(succ, msg.ts == rd_ts + bv(1, 16));
+                write_mmsg(t, node, succ, maddr, o.order, nv, o.width, rd_view);
+                define(t, node, s.dst, e, nv);
+                return true;
+            }
+            if (!mk.tail) {
+                auto a = lookup(t, node, s.args.at(0));
+                hb_mem(t, e, o, o.kind != VisOp::Load, a);
+                if (o.atomic && o.kind != VisOp::Store) {
+                    View sv;
+                    for (auto& x : svA) sv.push_back(z3::select(x, a));
+                    sync_acquire(ti, e, sv);
+                }
+                return false;
+            }
+            if (o.atomic && o.kind != VisOp::Load)
+                for (std::size_t i = 0; i < VS; ++i) {
+                    auto old = z3::select(svA[i], maddr);
+                    auto nw = o.kind == VisOp::Rmw ? vmax(old, cur[ti][i]) : cur[ti][i];
+                    svA[i] = z3::ite(e, z3::store(svA[i], maddr, nw), svA[i]);
+                }
+            return false;
+        }
+        return false;
+    }
+
+    void views_sync(int t, int node, const Stmt& s, const z3::expr& e, const VisOp& o, const z3::expr& done_ok) {
+        const auto ti = static_cast<std::size_t>(t);
+        auto arr_view = [&](const z3::expr& a) {
+            View v;
+            for (auto& x : mviewA) v.push_back(z3::select(x, a));
+            return v;
+        };
+        auto arr_set = [&](const z3::expr& a, const z3::expr& when) {
+            for (std::size_t i = 0; i < VS; ++i) mviewA[i] = z3::ite(when, z3::store(mviewA[i], a, cur[ti][i]), mviewA[i]);
+        };
+        switch (o.kind) {
+            case VisOp::Lock:
+            case VisOp::TryLock:
+                if (o.dyn) sync_acquire(ti, e && done_ok, arr_view(lookup(t, node, s.args.at(0))));
+                else sync_acquire(ti, e && done_ok, mview[static_cast<std::size_t>(o.mutex)]);
+                break;
+            case VisOp::Unlock:
+                if (o.dyn) arr_set(lookup(t, node, s.args.at(0)), e);
+                else vset(mview[static_cast<std::size_t>(o.mutex)], e, cur[ti]);
+                break;
+            case VisOp::Create: {
+                int u = o.looped ? create_slot.at({t, node}) : o.thread;
+                vset(cur[static_cast<std::size_t>(u)], e, cur[ti]);
+                break;
+            }
+            case VisOp::Join: {
+                auto h = lookup(t, node, s.args.at(0));
+                unsigned hw = h.get_sort().bv_size();
+                for (std::size_t u = 1; u < p.threads.size(); ++u) sync_acquire(ti, e && h == bv(u, hw), cur[u]);
+                break;
+            }
+            default: break;
+        }
+    }
+
     void visible(int r, int t, int node, const Stmt& s, const Mark& mk, const z3::expr& e) {
         const auto& o = p.ops[static_cast<std::size_t>(mk.op)];
+        if (mk.flag) {  // compare-exchange success, same step as its head
+            auto f = lookup(t, node, s.args.at(0));
+            cas_ok = is1(f);
+            define(t, node, s.dst, e, f);
+            return;
+        }
+        if (mk.read) {  // bounded-memory RMW: the old value at the head's address
+            define(t, node, s.dst, e,
+                   memv ? (o.width < 64 ? mrd_val.extract(o.width - 1, 0) : mrd_val) : mload(M, maddr, o.width));
+            return;
+        }
+        if (vw) {
+            bool head = !mk.tail;
+            if (views_visible(r, t, node, s, mk, e, o)) return;
+            if (head && (o.kind == VisOp::Unlock || o.kind == VisOp::Create || o.kind == VisOp::Join))
+                views_sync(t, node, s, e, o, c.bool_val(true));
+            if (head && o.kind == VisOp::Lock) views_sync(t, node, s, e, o, c.bool_val(true));
+            if (head && o.kind == VisOp::TryLock) {
+                z3::expr fr = o.dyn ? z3::select(OwnA, lookup(t, node, s.args.at(0))) == bv(0, 8)
+                                    : owner[static_cast<std::size_t>(o.mutex)] == bv(0, 8);
+                views_sync(t, node, s, e, o, fr);
+            }
+        }
         auto tid = bv(static_cast<uint64_t>(t + 1), 8);
+        bool plain = (o.kind == VisOp::Load || o.kind == VisOp::Store) && !o.atomic;
+        bool plain_scalar = plain && !o.mem;
+        if (opt.tso && !mk.tail) {
+            for (std::size_t u = 0; u < sb_cnt.size(); ++u)
+                sb_commit(u, e && c.bool_const(("sbf!" + std::to_string(fresh++)).c_str()));
+            if (!plain) sb_drain(static_cast<std::size_t>(t), e);
+            if (o.kind == VisOp::Join) {  // a finished thread has drained its buffer
+                auto h = lookup(t, node, s.args.at(0));
+                unsigned hw = h.get_sort().bv_size();
+                for (std::size_t u = 1; u < sb_cnt.size(); ++u) sb_drain(u, e && h == bv(u, hw));
+            }
+        }
+        if (opt.tso && o.mem && plain && mk.tail) {  // bounded memory through the store buffer
+            const auto ti = static_cast<std::size_t>(t);
+            if (o.kind == VisOp::Store) {
+                auto nv = lookup(t, node, s.args.at(0));
+                sb_push(ti, e, maddr, o.width < 64 ? z3::zext(nv, 64 - o.width) : nv, nbytes(o.width));
+                define(t, node, s.dst, e, nv);
+            } else {
+                define(t, node, s.dst, e, sb_forward_mem(ti, maddr, o.width));
+            }
+            return;
+        }
+        if (opt.tso && plain_scalar) {
+            const auto vi = static_cast<std::size_t>(o.var);
+            const auto ti = static_cast<std::size_t>(t);
+            auto& gv = G[vi];
+            if (o.kind != VisOp::Store) race_check(t, e, mk.op, o, false);  // stores: at commit (sb_commit)
+            unsigned w = p.vars[vi].width;
+            if (o.kind == VisOp::Store) {
+                auto nv = lookup(t, node, s.args.at(0));
+                event(e, r, t, mk.op, nv, o.width);
+                sb_push(ti, e, sb_skey(vi), w < 64 ? z3::zext(nv, 64 - w) : nv);
+                define(t, node, s.dst, e, nv);
+            } else {
+                auto fw = sb_forward(ti, sb_skey(vi), w < 64 ? z3::zext(gv, 64 - w) : gv);
+                auto val = w < 64 ? fw.extract(w - 1, 0) : fw;
+                event(e, r, t, mk.op, val, o.width);
+                define(t, node, s.dst, e, val);
+                touch(t, e, mk.op, o.var, false, false);
+            }
+            return;
+        }
+        if (o.mem) {
+            if (!mk.tail) {  // head: the address
+                maddr = lookup(t, node, s.args.at(0));
+                bool write = o.kind != VisOp::Load;
+                defer_race = opt.tso && plain && o.kind == VisOp::Store;
+                mem_checks(t, e, mk.op, o, maddr, write);
+                event(e, r, t, mk.op, maddr, 64);
+                define(t, node, s.dst, e, maddr);
+                if (!defer_race) touch_mem(t, e, mk.op, maddr, write, o.atomic);
+                defer_race = false;
+                return;
+            }
+            if (o.kind != VisOp::Load) {  // store, or the write of a read-modify-write
+                auto nv = lookup(t, node, s.args.at(0));
+                M = z3::ite(e, mstore(M, maddr, nv, o.width), M);
+                define(t, node, s.dst, e, nv);
+            } else {
+                define(t, node, s.dst, e, mload(M, maddr, o.width));
+            }
+            return;
+        }
         if (o.kind == VisOp::Load || o.kind == VisOp::Store || o.kind == VisOp::Rmw) {
             auto& gv = G[static_cast<std::size_t>(o.var)];
             if (mk.tail) {  // Rmw write part, same atomic step as the head
@@ -749,6 +1550,58 @@ struct Enc {
                 define(t, node, s.dst, e, gv);
             }
             touch(t, e, mk.op, o.var, write, o.atomic);
+            return;
+        }
+        if (o.kind == VisOp::Unlock && o.cond_dyn && mk.tail) {  // wait release: remember the cv generation
+            auto& tk = tkd[static_cast<std::size_t>(t)];
+            tk = z3::ite(e, z3::select(CgenA, lookup(t, node, s.args.at(0))), tk);
+            define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
+            return;
+        }
+        if (o.dyn && o.kind == VisOp::TryLock) {
+            if (!mk.tail) {
+                event(e, r, t, mk.op, std::nullopt, 0);
+                auto a = lookup(t, node, s.args.at(0));
+                auto fr = z3::select(OwnA, a) == bv(0, 8);
+                try_free = fr;
+                OwnA = z3::ite(e && fr, z3::store(OwnA, a, tid), OwnA);
+                define(t, node, s.dst, e, a);
+                touch(t, e, mk.op, -1, false, false);
+            } else {
+                define(t, node, s.dst, e, z3::ite(try_free, bv(0, o.width), bv(o.busy, o.width)));
+            }
+            return;
+        }
+        if (o.dyn && (o.kind == VisOp::Lock || o.kind == VisOp::Unlock || o.kind == VisOp::MutexInit ||
+                      o.kind == VisOp::CondWait || o.kind == VisOp::CondSignal)) {
+            event(e, r, t, mk.op, std::nullopt, 0);
+            auto a = lookup(t, node, s.args.at(0));
+            switch (o.kind) {
+                case VisOp::Lock:
+                    ok = ok && z3::implies(e, z3::select(OwnA, a) == bv(0, 8));
+                    OwnA = z3::ite(e, z3::store(OwnA, a, tid), OwnA);
+                    break;
+                case VisOp::Unlock:
+                    violation(e && z3::select(OwnA, a) != tid, "unlock", "LOCK-DOUBLE-UNLOCK",
+                              "unlock of a mutex that " + tname(p, t) + " does not hold" + at_line(o.line), o.line, t,
+                              "unlock:*:" + std::to_string(o.line));
+                    OwnA = z3::ite(e, z3::store(OwnA, a, bv(0, 8)), OwnA);
+                    if (o.cond >= 0) {
+                        auto& tk = ticket[static_cast<std::size_t>(t)][static_cast<std::size_t>(o.cond)];
+                        tk = z3::ite(e, cgen[static_cast<std::size_t>(o.cond)], tk);
+                    }
+                    break;
+                case VisOp::MutexInit: OwnA = z3::ite(e, z3::store(OwnA, a, bv(0, 8)), OwnA); break;
+                case VisOp::CondWait:
+                    ok = ok && z3::implies(e, z3::select(CgenA, a) != tkd[static_cast<std::size_t>(t)]);
+                    break;
+                case VisOp::CondSignal:
+                    CgenA = z3::ite(e, z3::store(CgenA, a, z3::select(CgenA, a) + bv(1, 16)), CgenA);
+                    break;
+                default: break;
+            }
+            define(t, node, s.dst, e, a);
+            touch(t, e, mk.op, -1, false, false);
             return;
         }
         event(e, r, t, mk.op, std::nullopt, 0);
@@ -773,6 +1626,20 @@ struct Enc {
                           "unlock of mutex " + mn + " that " + tname(p, t) + " does not hold" + at_line(o.line), o.line,
                           t, "unlock:" + mn + ":" + std::to_string(o.line));
                 ow = z3::ite(e, bv(0, 8), ow);
+                if (o.cond >= 0) {
+                    auto& tk = ticket[static_cast<std::size_t>(t)][static_cast<std::size_t>(o.cond)];
+                    tk = z3::ite(e, cgen[static_cast<std::size_t>(o.cond)], tk);
+                }
+                break;
+            }
+            case VisOp::CondWait: {
+                const auto ci = static_cast<std::size_t>(o.cond);
+                ok = ok && z3::implies(e, cgen[ci] != ticket[static_cast<std::size_t>(t)][ci]);
+                break;
+            }
+            case VisOp::CondSignal: {
+                auto& gn = cgen[static_cast<std::size_t>(o.cond)];
+                gn = z3::ite(e, gn + bv(1, 16), gn);
                 break;
             }
             case VisOp::MutexInit: {
@@ -781,9 +1648,72 @@ struct Enc {
                 break;
             }
             case VisOp::Create: {
-                if (t != 0) throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: thread created by a thread"};
+                if (o.looped) {
+                    // looped creation: head = handle address, tail = argument
+                    int u = create_slot.at({t, node});
+                    if (mk.tail) {
+                        auto& ta = targ[static_cast<std::size_t>(u)];
+                        ta = z3::ite(e, lookup(t, node, s.args.at(0)), ta);
+                        define(t, node, s.dst, e, lookup(t, node, s.args.at(0)));
+                        return;
+                    }
+                    auto& a = active[static_cast<std::size_t>(u)];
+                    a = a || e;
+                    auto h = lookup(t, node, s.args.at(0));
+                    M = z3::ite(e, mstore(M, h, c.bv_val(static_cast<uint64_t>(u), 64), 64), M);
+                    define(t, node, s.dst, e, h);
+                    touch(t, e, mk.op, -1, false, false);
+                    return;
+                }
                 auto& a = active[static_cast<std::size_t>(o.thread)];
                 a = a || e;
+                auto& ta = targ[static_cast<std::size_t>(o.thread)];
+                ta = z3::ite(e, lookup(t, node, s.args.at(0)), ta);
+                break;
+            }
+            case VisOp::Arg: {
+                define(t, node, s.dst, e, targ[static_cast<std::size_t>(t)]);
+                touch(t, e, mk.op, -1, false, false);
+                return;
+            }
+            case VisOp::Alloc: {
+                auto& h = heap.at(heap_of.at({t, node}));
+                h.live = z3::ite(e, c.bool_val(true), h.live);
+                if (o.size == 0) {  // symbolic size, bounded by Options::max_alloc
+                    auto n = lookup(t, node, s.args.at(0));
+                    h.size = z3::ite(e, n, h.size);
+                    // sizes above the bound are not explored (reported in extra["max_alloc"])
+                    ok = ok && z3::implies(e, z3::ule(n, c.bv_val(opt.max_alloc, 64)));
+                }
+                define(t, node, s.dst, e, c.bv_val(h.id << 32, 64));
+                touch(t, e, mk.op, -1, false, false);
+                return;
+            }
+            case VisOp::Free: {
+                auto a = lookup(t, node, s.args.at(0));
+                z3::expr base_live = c.bool_val(false), base_dead = c.bool_val(false), on_stack = c.bool_val(false);
+                for (auto& h : heap) {
+                    auto at = a == c.bv_val(h.id << 32, 64);
+                    if (h.stack && !o.stack) {  // free() of an escaping local: never valid
+                        on_stack = on_stack || (z3::lshr(a, c.bv_val(32, 64)) == c.bv_val(h.id, 64));
+                        continue;
+                    }
+                    base_live = base_live || (at && h.live);
+                    base_dead = base_dead || (at && !h.live);
+                }
+                violation(e && on_stack, "invalid-free", "MEM-INVALID-FREE",
+                          o.what + " of a stack object by " + tname(p, t) + at_line(o.line), o.line, t,
+                          "sfree:" + std::to_string(mk.op));
+                base_dead = base_dead && !on_stack;
+                auto null = a == c.bv_val(0, 64);
+                violation(e && base_dead, "double-free", "MEM-DOUBLE-FREE",
+                          "double free by " + tname(p, t) + at_line(o.line), o.line, t, "dfree:" + std::to_string(mk.op));
+                violation(e && !null && !base_live && !base_dead && !on_stack, "invalid-free", "MEM-INVALID-FREE",
+                          o.what + " of a pointer that is not the start of a heap allocation by " + tname(p, t) +
+                              at_line(o.line),
+                          o.line, t, "ifree:" + std::to_string(mk.op));
+                for (auto& h : heap)
+                    if (h.stack == o.stack) h.live = z3::ite(e && a == c.bv_val(h.id << 32, 64), c.bool_val(false), h.live);
                 break;
             }
             case VisOp::Join: {
@@ -936,8 +1866,16 @@ struct Enc {
                 if (op < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(op)];
                 auto at = pc[t] == c.bv_val(static_cast<uint64_t>(n), 16);
-                if (o.kind == VisOp::Lock) {
+                if (o.dyn && (o.kind == VisOp::Lock || o.kind == VisOp::CondWait)) {
+                    const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts.at(0);
+                    auto a = lookup(ti, static_cast<int>(n), s.args.at(0));
+                    blocked = blocked || (at && (o.kind == VisOp::Lock ? z3::select(OwnA, a) != bv(0, 8)
+                                                                       : z3::select(CgenA, a) == tkd[t]));
+                } else if (o.kind == VisOp::Lock) {
                     blocked = blocked || (at && owner[static_cast<std::size_t>(o.mutex)] != bv(0, 8));
+                } else if (o.kind == VisOp::CondWait) {
+                    const auto ci = static_cast<std::size_t>(o.cond);
+                    blocked = blocked || (at && cgen[ci] == ticket[t][ci]);
                 } else if (o.kind == VisOp::Join) {
                     const auto& s = gr.blocks[static_cast<std::size_t>(gr.nodes[n].block)].stmts.at(0);
                     blocked = blocked || (at && !joinable(lookup(ti, static_cast<int>(n), s.args.at(0))));
@@ -966,13 +1904,60 @@ struct Enc {
         std::size_t N = p.threads.size();
         for (auto& th : p.threads) g.push_back(build_graph(th.fn, opt));
         vals.resize(N);
-        // a creation site must run at most once (no loops of threads yet)
+        // heap slots: one per (thread, node) running an allocation site;
+        // their number is the allocation bound (reported in extra["heap_slots"]).
+        for (std::size_t t = 0; t < N; ++t)
+            for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                int h = g[t].nodes[nd].head;
+                if (h < 0 || p.ops[static_cast<std::size_t>(h)].kind != VisOp::Alloc) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(h)];
+                heap_of[{static_cast<int>(t), static_cast<int>(nd)}] = heap.size();
+                heap.push_back({p.objects.size() + 1 + heap.size(), c.bv_val(o.size, 64), c.bool_val(false),
+                                o.what + "#" + std::to_string(heap.size()) + at_line(o.line), o.stack});
+            }
+        // a creation site must run at most once (no loops of threads yet):
+        // once per graph, and in one thread only. A thread may create
+        // threads (nested creation) when the created index is above its own,
+        // so the static set of slots is well founded.
+        std::map<int, std::size_t> create_in;
         for (std::size_t t = 0; t < N; ++t)
             for (auto& nd : g[t].nodes) {
                 if (nd.head < 0) continue;
                 const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
-                if (o.kind != VisOp::Create) continue;
-                if (t != 0) throw Fail{std::string(laws::NEEDS_HARNESS), "UNENCODED: thread created by a thread"};
+                if (o.kind != VisOp::Create || o.looped) continue;
+                auto [it, fresh] = create_in.emplace(nd.head, t);
+                if ((!fresh && it->second != t) || o.thread <= static_cast<int>(t))
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " reached by several threads, or a thread that (indirectly) "
+                               "creates itself" + at_line(o.line)};
+            }
+        // looped creation sites: the k-th unrolled execution creates slot
+        // thread + k; more executions than slots is a bound hit (reported)
+        // (any thread may run a looped site; slots are shared by all its
+        // executions, and a slot must be above its creator's index)
+        std::map<int, int> used;
+        for (std::size_t t = 0; t < N; ++t) {
+            for (std::size_t nd = 0; nd < g[t].nodes.size(); ++nd) {
+                int h = g[t].nodes[nd].head;
+                if (h < 0) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(h)];
+                if (o.kind != VisOp::Create || !o.looped) continue;
+                int k = used[h]++;
+                if (k >= o.copies)
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " runs more than " + std::to_string(o.copies) +
+                                   " times (thread slots per looped creation site = unwind)" + at_line(o.line)};
+                if (o.thread + k <= static_cast<int>(t))
+                    throw Fail{std::string(laws::NEEDS_HARNESS),
+                               "UNENCODED: " + o.what + " creates a thread slot at or below its creator" + at_line(o.line)};
+                create_slot[{static_cast<int>(t), static_cast<int>(nd)}] = o.thread + k;
+            }
+        }
+        for (std::size_t t = 0; t < N; ++t)
+            for (auto& nd : g[t].nodes) {
+                if (nd.head < 0) continue;
+                const auto& o = p.ops[static_cast<std::size_t>(nd.head)];
+                if (o.kind != VisOp::Create || o.looped) continue;
                 int cnt = 0;
                 for (auto& m : g[t].nodes)
                     if (m.head == nd.head) ++cnt;
@@ -982,11 +1967,29 @@ struct Enc {
                                " (dynamic thread sets need the PIR memory model)" + at_line(o.line)};
             }
         for (auto& v : p.vars) G.push_back(bv(v.init, v.width));
+        for (std::size_t k = 0; k < p.objects.size(); ++k)
+            for (auto& in : p.objects[k].init)
+                M = mstore(M, c.bv_val(((static_cast<uint64_t>(k) + 1) << 32) | in.off, 64), bv(in.bits, in.w ? in.w : 64),
+                           in.w ? in.w : 64);
         for (std::size_t m = 0; m < p.mutexes.size(); ++m) owner.push_back(bv(0, 8));
+        for (std::size_t k = 0; k < p.conds.size(); ++k) cgen.push_back(bv(0, 16));
+        ticket.assign(N, std::vector<z3::expr>(p.conds.size(), bv(0, 16)));
         for (std::size_t t = 0; t < N; ++t) {
+            targ.push_back(c.bv_val(0, 64));
+            sb_cnt.push_back(c.bv_val(0, 8));
+            sb_key.emplace_back();
+            sb_val.emplace_back();
+            sb_nb.emplace_back();
+            for (int i = 0; i < std::max(1, opt.tso_buffer); ++i) {
+                sb_key.back().push_back(c.bv_val(0, 64));
+                sb_val.back().push_back(c.bv_val(0, 64));
+                sb_nb.back().push_back(c.bv_val(8, 8));
+            }
+            tkd.push_back(c.bv_val(0, 16));
             pc.push_back(c.bv_val(0, 16));
             active.push_back(c.bool_val(t == 0));
         }
+        if (p.views) views_init();
         for (int r = 0; r < opt.rounds; ++r) {
             for (std::size_t t = 0; t < N; ++t) run_slot(r, static_cast<int>(t));
             deadlock_check(r);
@@ -1079,7 +2082,9 @@ Result check(const Program& prog, const Options& opt) {
     res.extra["rounds"] = std::to_string(opt.rounds);
     res.extra["unwind"] = std::to_string(opt.unwind);
     res.extra["threads"] = std::to_string(N);
-    res.extra["method"] = "lazy sequentialisation (Lazy-CSeq), sequentially consistent";
+    res.extra["method"] = opt.tso ? "lazy sequentialisation (Lazy-CSeq), x86-TSO (" + std::to_string(opt.tso_buffer) + "-entry store buffers)"
+                  : prog.views ? "lazy sequentialisation (Lazy-CSeq), C11 release/acquire/relaxed (promise-free view machine)"
+                               : "lazy sequentialisation (Lazy-CSeq), sequentially consistent";
     res.extra["context_switch_bound"] = std::to_string(opt.rounds * N);  // K*N slots + main's final slot
     if (auto why = escaping_throw(prog); !why.empty()) {
         res.status = std::string(laws::NEEDS_HARNESS);
@@ -1094,6 +2099,12 @@ Result check(const Program& prog, const Options& opt) {
     try {
         Enc enc(prog, opt);
         enc.encode();
+        res.extra["heap_slots"] = std::to_string(enc.heap.size());
+        res.extra["max_alloc"] = std::to_string(opt.max_alloc);
+        if (enc.vw) res.extra["c11_locations"] = std::to_string(enc.nA);
+        for (auto& o : prog.ops)
+            if (o.kind == VisOp::Create && o.looped)
+                res.extra["loop_thread_slots"] = std::to_string(o.copies) + " per looped creation site";
         z3::solver s(enc.c);
         z3::params prm(enc.c);
         prm.set("timeout", static_cast<unsigned>(std::max(1.0, opt.timeout_s) * 1000));

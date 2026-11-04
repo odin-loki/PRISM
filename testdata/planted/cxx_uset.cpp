@@ -1,3 +1,4 @@
+#include <unordered_set>
 int uset_unenc_bad(int n) {
     std::unordered_set<int> s;
     return n;

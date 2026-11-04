@@ -138,3 +138,27 @@
 - 2c73112db: h10 is in the model. tools/models/gen_prime_lb.cpp regenerates it (idempotent);
   tools/models/check_prime_lb.sh <orig> <new> checks equality (201360 inputs IDENTICAL).
 - Running: full unordered_map_contracts pir at 3000 MB, binary /tmp/mf/prism-h10, log /tmp/mf/u3.log.
+
+## unordered_map at 3000 MB with h10 (2026-10-30 ~10:15 AEDT, /tmp/mf/u3, /tmp/mf/u4)
+- 3/8 correct, 0 wrong: umap_erase_true PROVED; erase_uaf_false MEM-UAF and end_deref_false FUNC-CONTRACT
+  refuted. 5 end as memory-budget UNKNOWN (before h10, all 8 were missing).
+- Overshoot: peak 3461/3413 MB of 3000 (+14%). PRISM_MEM_TRIP_PCT=65 changed it only from 3066 to 2941 MB
+  (umap_index_true): not trip latency. Suspect Z3 hard limit 1.5x.
+- Rerun child now gets budget minus parent RSS (defensive; no rerun happened in u4).
+- Pushes failing (classifier error): commits are local only until pushed.
+- Z3 hard-limit test (PRISM_Z3_HARD_PCT knob, default 150; MALLOC_ARENA_MAX=4, umap_index_true, budget 3000):
+  150% peak 3112 MB, 120% peak 3496 MB, both UNKNOWN, no crash. A lower hard limit does not cut the
+  overshoot: the default stays 150. The overshoot is probably RSS that is not Z3's own estimate (encoder/SymMem,
+  allocator) growing between watchdog polls.
+- conf7 started ~10:40 AEDT: prism-run prism-qa conformance --prism /tmp/mf/prism-conf7 (9fc143692) --jobs 1 --out /tmp/mf/conf7, budget 3400, log /tmp/mf/conf7.log. Compare vs conf6 188/203.
+
+## Handoff 2026-10-30 ~11:10 AEDT (second box restart)
+- The section above was recovered from the stale pre-restart snapshot. 9fc143692 and the /tmp/mf binaries/logs
+  (u3, u4, conf7) did not survive: conf7 never reported. The Z3 hard-limit knob (PRISM_Z3_HARD_PCT) and the
+  rerun child budget (budget minus parent RSS) were never pushed; the diff is kept in
+  /workspace/PRISM-rescue-2354/memfix.patch (applies cleanly to 3a343af85, not built or tested yet).
+- Box toolchain is gone after the restart: no g++/cc1plus, no libstdc++ headers, no ccache, and
+  /workspace/.venv (ziglang, used by /workspace/bin/c++) is missing. Reinstall first:
+  `python3 -m venv /workspace/.venv && /workspace/.venv/bin/pip install ziglang`, plus a ccache binary.
+- Next: rebuild build/ (Release, PRISM_Z3=ON, -j4), apply memfix.patch, run prism_tests via prism-run, commit;
+  then rerun conf7 and compare against conf6 (188/203, 0 wrong).

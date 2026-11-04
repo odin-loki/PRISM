@@ -59,6 +59,17 @@ jobs:
           - { dir: proofs/refinement, roots: PrismRefine, name: refinement }
     steps:
       - uses: actions/checkout@v4
+      - name: Cache pinned LLVM 23.1.4
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prism/tools
+          key: llvm-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml') }}
+      - name: Fetch pinned LLVM 23.1.4 (scripts/fetch_llvm.py, sha256-checked)
+        shell: bash
+        run: |
+          bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
+          echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
 
       - name: Install elan (toolchain from each lean-toolchain file)
         run: |
@@ -82,9 +93,9 @@ jobs:
 
       - name: Build prism-deps (standard library only)
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+          sudo apt-get update && sudo apt-get install -y ninja-build
           cmake -B "$RUNNER_TEMP/deps" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DPRISM_DEPS_ONLY=ON
+            -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_DEPS_ONLY=ON
           cmake --build "$RUNNER_TEMP/deps" --target prism-deps
 
       - name: Fetch and build the pinned re-checkers (lean4export, nanoda)

@@ -1,3 +1,4 @@
+#include <ranges>
 int countv_bad(int *p) {
     auto v = std::views::counted(p, 4);
     return v[9];

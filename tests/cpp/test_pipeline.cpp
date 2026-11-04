@@ -97,15 +97,16 @@ struct EnvGuard {
 
 }  // namespace
 
-TEST_CASE("pipeline: pir follows bmc; pir is a part-exec stage (Law 9)") {
+TEST_CASE("pipeline: pir follows wp and no bmc stage is left; pir is a part-exec stage (Law 9)") {
     const char* const* p = prism::STAGE_ORDER;
     std::vector<std::string> order;
     for (; p && *p; ++p) order.push_back(*p);
-    auto bmc = std::find(order.begin(), order.end(), "bmc");
+    auto wp = std::find(order.begin(), order.end(), "wp");
     auto pir = std::find(order.begin(), order.end(), "pir");
-    REQUIRE(bmc != order.end());
+    REQUIRE(wp != order.end());
     REQUIRE(pir != order.end());
-    CHECK(pir == bmc + 1);
+    CHECK(pir == wp + 1);
+    CHECK(std::find(order.begin(), order.end(), "bmc") == order.end());
     CHECK(prism::exec_stages().at("pir") == "part");
 }
 
@@ -230,24 +231,24 @@ TEST_CASE("pipeline: esbmc missing is NOTRUN with install, never a proof") {
 
 TEST_CASE("pipeline: --resume reuses an ok stage instead of running it again") {
 #ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: bmc stage needs PRISM_HAS_Z3");
+    MESSAGE("NOTRUN: pir stage needs PRISM_HAS_Z3");
     return;
 #endif
     Work w;
     w.put("add.c", "int add(int x) { return x + 1; }\n");
     auto cfg = w.cfg();
-    cfg.stages = std::vector<std::string>{"inventory", "classify", "bmc"};
+    cfg.stages = std::vector<std::string>{"inventory", "classify", "pir"};
     auto first = prism::run_pipeline(cfg);
-    auto bmc = stage_of(first, "bmc");
-    CHECK(bmc.status == "ok");
+    auto pir = stage_of(first, "pir");
+    CHECK(pir.status == "ok");
     cfg.resume = true;
     auto second = prism::run_pipeline(cfg);
-    auto& bmc2 = stage_of(second, "bmc");
-    CHECK(bmc2.status == "ok");
-    CHECK(bmc2.records == bmc.records);
+    auto& pir2 = stage_of(second, "pir");
+    CHECK(pir2.status == "ok");
+    CHECK(pir2.records == pir.records);
     // The same run's timestamps: the stage was read back, not run again.
-    CHECK(bmc2.started == bmc.started);
-    CHECK(bmc2.elapsed == bmc.elapsed);
+    CHECK(pir2.started == pir.started);
+    CHECK(pir2.elapsed == pir.elapsed);
     bool noted = false;
     for (auto& n : second.notes) noted = noted || n.find("resumed") != std::string::npos;
     CHECK(noted);
@@ -275,7 +276,7 @@ TEST_CASE("pipeline: an LLM hypothesis stays READS and never covers a class") {
     llm.name = "llm";
     llm.status = "ok";
     prism::Finding lie;
-    lie.stage = "bmc";
+    lie.stage = "pir";
     lie.status = std::string(prism::laws::PROVED);
     lie.file = "a.c";
     lie.function = "add";

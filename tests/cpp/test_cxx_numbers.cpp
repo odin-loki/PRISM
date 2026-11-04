@@ -34,7 +34,7 @@ TEST_CASE("numbers model: literals are not a proof and pi starts with 3.14") {
     const std::string line = text.substr(begin, (line_end == std::string::npos ? text.size() : line_end) - begin);
     CHECK(line.find("//") != std::string::npos);
 
-    const std::string key = " pi = ";
+    const std::string key = " pi_v = ";  // pi is pi_v<double>
     const auto at = text.find(key);
     REQUIRE(at != std::string::npos);
     CHECK(text.compare(at + key.size(), 4, "3.14") == 0);

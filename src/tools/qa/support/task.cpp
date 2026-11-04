@@ -16,9 +16,8 @@
 namespace prism::qa {
 
 const std::set<std::string> PROOF = {"PROVED", "PROVED-UNBOUNDED", "PROVED-ASSUMING", "PROVED-CERTIFIED"};
-const std::vector<std::string> BASE_STAGES = {"inventory", "classify", "bmc", "harness"};
-const std::vector<std::string> VERDICT_STAGES = {"bmc", "harness", "pir", "conc"};
-const std::set<std::string> SCOPED_STAGES = {"harness"};
+const std::vector<std::string> BASE_STAGES = {"inventory", "classify"};
+const std::vector<std::string> VERDICT_STAGES = {"pir", "conc"};
 const std::map<std::string, std::set<std::string>> STAGE_TASK_ORIGINS = {{"conc", {"concurrency"}}};
 const std::map<std::string, std::set<std::string>> ORIGIN_STAGES = {{"concurrency", {"conc"}}};
 const std::vector<std::string> DEFAULT_ROOTS = {"prism", "sv-comp", "concurrency", "esbmc-cpp", "libc-models"};
@@ -227,6 +226,13 @@ std::optional<Task> load_task(const fs::path& yml, const fs::path& root) {
         if (const auto* b = data.get("sanitizer_blind"); !falsy(b)) {
             if (!b->is_seq()) throw yaml::Error(yml.string() + ": `sanitizer_blind` is not a list");
             for (const auto& x : b->seq) t.sanitizer_blind.insert(x.py_str());
+        }
+        if (const auto* u = data.get("native_unsupported"); !falsy(u)) {
+            if (!u->is_map()) throw yaml::Error(yml.string() + ": `native_unsupported` is not a mapping");
+            for (const auto& [k, v] : u->map) {
+                if (falsy(&v)) throw yaml::Error(yml.string() + ": native_unsupported " + k + " needs a reason");
+                t.native_unsupported[k] = v.py_str();
+            }
         }
         t.std = node_str(data.get("std"), "");
         if (const auto* d = data.get("deterministic")) t.deterministic = d->truthy_label();

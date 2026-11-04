@@ -22,7 +22,7 @@ const char* SYSTEM_DAFNY =
 std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg) {
     // Model-proposed contracts are HYPOTHESIS / READS (Law 4): they never
     // prove or cover FUNC-CONTRACT; a missing model is NOTRUN.
-    LlamaEngine engine(cfg);
+    LlmEngine engine(cfg);
     if (!engine.available()) {
         Finding f;
         f.stage = "contracts";
@@ -61,9 +61,9 @@ std::vector<Finding> dafny_specs(const std::vector<FunctionInfo>& functions, int
 }
 
 std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int budget, const Config& cfg) {
-    // Missing GGUF/Ollama is NOTRUN, never CLEAN. Model text is HYPOTHESIS/READS.
+    // Missing FORGE .fpk is NOTRUN, never CLEAN. Model text is HYPOTHESIS/READS.
     // Empty hypotheses are silence: still HYPOTHESIS, not a proof and not COVERED.
-    LlamaEngine engine(cfg);
+    LlmEngine engine(cfg);
     if (!engine.available()) {
         Finding f;
         f.stage = "llm";
@@ -72,12 +72,7 @@ std::vector<Finding> hypothesize(const std::vector<FunctionInfo>& functions, int
         f.message = LLM_UNAVAILABLE_MSG;
         f.strength = std::string(laws::STRENGTH_READS);
         f.extra["install"] = LLM_INSTALL;
-        f.extra["gguf"] = cfg.gguf.string();
-#ifdef PRISM_HAS_LLAMA
-        f.extra["prism_has_llama"] = "1";
-#else
-        f.extra["prism_has_llama"] = "0";
-#endif
+        f.extra["fpk"] = cfg.fpk.string();
         return {f};
     }
     std::vector<Finding> out;

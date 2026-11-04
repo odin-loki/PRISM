@@ -4,18 +4,30 @@
 // It is a file, not a directory: a directory of this name would make the
 // include fail with EISDIR and every such unit would fall back to libstdc++.
 //
-// Partial on purpose. std::condition_variable stores one bool in the object.
-// There is no heap allocation and no thread. This header is not a
-// concurrency proof.
+// std::condition_variable stores one bool in the object (no heap allocation)
+// and runs on the thread-interleaving scheduler of bits/prism_sched.h, whose
+// schedule bounds (preemptions, queued threads) are an under-approximation.
+// Under the conc stage (__PRISM_CONC_THREADS) bits/prism_conc.h maps it onto
+// the pthread model instead.
 //
-// notify_one() and notify_all() set that flag. They do not run a waiter.
+// notify_one() and notify_all() set that flag and are a switch point: the
+// solver may run a queued thread there. They do not invent a woken thread.
 // A default condition_variable has the flag false.
 //
-// wait, wait_for, and wait_until are not declared. A blocking wait that
-// returned immediately would be a fake wakeup. condition_variable_any,
-// cv_status, and notify_all_at_thread_exit are not declared either, so a
-// use of those names fails to compile against this header and the pir stage
-// lowers that translation unit again with libstdc++.
+// wait(lock) releases the lock, lets the solver run zero or one queued thread
+// and relocks. Returning with nothing run is a spurious wakeup, which
+// [thread.condition.condvar] permits. wait(lock, pred) returns only with
+// pred() true: while pred() is false it releases the lock and some queued
+// thread must run; with none left the wait can never return (CXX-DEADLOCK:
+// a lost wakeup, or a predicate no thread makes true).
+// wait_for / wait_until with a predicate run queued threads while pred() is
+// false and, with none left, time out and return pred(). Without a predicate
+// they wait once and return cv_status::no_timeout or cv_status::timeout from
+// havoc (an unconstrained choice of the two).
+// condition_variable_any has the same members over any BasicLockable.
+// notify_all_at_thread_exit is not declared, so a use of it fails to compile
+// against this header and the pir stage lowers that unit again with
+// libstdc++.
 //
 // The include guard is _GLIBCXX_CONDITION_VARIABLE, the usual libstdc++
 // guard. This file does not include a libstdc++ header to learn that name.
@@ -25,13 +37,69 @@
 
 #pragma GCC system_header
 
+// conc stage: the pthread / seq_cst mapping its lazy sequentialisation encodes
+#ifdef __PRISM_CONC_THREADS
+#include "bits/prism_conc.h"
+#else
+
+#include "bits/prism_sched.h"
+
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
 // Nothing in this header calls it. notify has no failing operation, and a
 // woken thread is not invented.
 extern "C" void __prism_check(int __ok, const char* __cls, const char* __msg);
+extern "C" void __prism_assume(int __cond);
+extern "C" void __prism_havoc_bytes(void* __p, unsigned long __n);
 
 namespace std {
+
+enum class cv_status { no_timeout, timeout };
+
+namespace __prism_cv {
+// An unconstrained choice between the two statuses.
+inline cv_status __any_status() noexcept {
+    unsigned char __b = 0;
+    __prism_havoc_bytes(&__b, 1);
+    return (__b & 1u) ? cv_status::timeout : cv_status::no_timeout;
+}
+// Interleaving exploration (bits/prism_sched.h): while the predicate is
+// false the waiter releases the lock and some queued thread must run; with
+// none left the wait can never return (CXX-DEADLOCK: lost wakeup or a
+// predicate no thread makes true).
+template <class _Lock, class _Pred>
+inline void __wait_pred(_Lock& __l, _Pred& __p) {
+    while (!static_cast<bool>(__p())) {
+        __l.unlock();
+        // the unlock is itself a switch point: another thread may already
+        // have made the predicate true (a notify the waiter then receives)
+        if (!static_cast<bool>(__p()))
+            __prism_sched::__must_switch("condition_variable::wait: no remaining thread can satisfy the predicate");
+        __l.lock();
+    }
+}
+// Plain wait: release, let the solver run zero or one queued thread, relock
+// (a return with nothing run is a spurious wakeup, which is permitted).
+template <class _Lock>
+inline void __wait_once(_Lock& __l) {
+    __l.unlock();
+    __prism_sched::__maybe_switch();
+    __l.lock();
+}
+// Timed wait with predicate: like __wait_pred, but with nothing left to
+// run it times out and returns pred().
+template <class _Lock, class _Pred>
+inline bool __wait_timed(_Lock& __l, _Pred& __p) {
+    while (!static_cast<bool>(__p())) {
+        if (__prism_sched::__n == 0) return false;
+        __l.unlock();
+        __prism_sched::__maybe_switch();
+        __l.lock();
+        if (__prism_sched::__n == 0) return static_cast<bool>(__p());
+    }
+    return true;
+}
+}  // namespace __prism_cv
 
 class condition_variable {
     bool _M_flag;
@@ -46,16 +114,77 @@ public:
     // The flag is a member, not a heap object. Nothing is freed.
     ~condition_variable() = default;
 
-    // wait, wait_for, and wait_until are not declared. A blocking wait that
-    // returned immediately would be a fake wakeup.
+
+    // Spurious wakeup: allowed by the standard, so returning is sound.
+    template <class _Lock>
+    void wait(_Lock& __l) { __prism_cv::__wait_once(__l); }
+
+    // Returns only with pred() true (the standard's postcondition).
+    template <class _Lock, class _Pred>
+    void wait(_Lock& __l, _Pred __p) { __prism_cv::__wait_pred(__l, __p); }
+
+    template <class _Lock, class _Dur>
+    cv_status wait_for(_Lock& __l, const _Dur&) { __prism_cv::__wait_once(__l); return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Dur, class _Pred>
+    bool wait_for(_Lock& __l, const _Dur&, _Pred __p) { return __prism_cv::__wait_timed(__l, __p); }
+
+    template <class _Lock, class _Tp>
+    cv_status wait_until(_Lock& __l, const _Tp&) { __prism_cv::__wait_once(__l); return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Tp, class _Pred>
+    bool wait_until(_Lock& __l, const _Tp&, _Pred __p) { return __prism_cv::__wait_timed(__l, __p); }
 
     // Sets the flag. Does not run a waiter and does not invent a woken thread.
-    void notify_one() noexcept { _M_flag = true; }
+    void notify_one() noexcept { _M_flag = true; __prism_sched::__maybe_switch(); }
 
     // Sets the same flag. Does not run a waiter and does not invent a woken thread.
-    void notify_all() noexcept { _M_flag = true; }
+    void notify_all() noexcept { _M_flag = true; __prism_sched::__maybe_switch(); }
+
+    // The handle is the object's own address: it lives exactly as long as the
+    // condition_variable, so a read through it after delete is a use after
+    // free, as with libstdc++'s handle (a pointer into the object).
+    using native_handle_type = condition_variable*;
+    native_handle_type native_handle() noexcept { return this; }
+};
+
+
+// Same model over any BasicLockable.
+class condition_variable_any {
+    bool _M_flag;
+
+public:
+    condition_variable_any() : _M_flag(false) {}
+    condition_variable_any(const condition_variable_any&) = delete;
+    condition_variable_any& operator=(const condition_variable_any&) = delete;
+    ~condition_variable_any() = default;
+
+    void notify_one() noexcept { _M_flag = true; __prism_sched::__maybe_switch(); }
+    void notify_all() noexcept { _M_flag = true; __prism_sched::__maybe_switch(); }
+
+    // Spurious wakeup: allowed by the standard, so returning is sound.
+    template <class _Lock>
+    void wait(_Lock& __l) { __prism_cv::__wait_once(__l); }
+
+    // Returns only with pred() true (the standard's postcondition).
+    template <class _Lock, class _Pred>
+    void wait(_Lock& __l, _Pred __p) { __prism_cv::__wait_pred(__l, __p); }
+
+    template <class _Lock, class _Dur>
+    cv_status wait_for(_Lock& __l, const _Dur&) { __prism_cv::__wait_once(__l); return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Dur, class _Pred>
+    bool wait_for(_Lock& __l, const _Dur&, _Pred __p) { return __prism_cv::__wait_timed(__l, __p); }
+
+    template <class _Lock, class _Tp>
+    cv_status wait_until(_Lock& __l, const _Tp&) { __prism_cv::__wait_once(__l); return __prism_cv::__any_status(); }
+
+    template <class _Lock, class _Tp, class _Pred>
+    bool wait_until(_Lock& __l, const _Tp&, _Pred __p) { return __prism_cv::__wait_timed(__l, __p); }
 };
 
 }  // namespace std
+
+#endif  // __PRISM_CONC_THREADS
 
 #endif  // _GLIBCXX_CONDITION_VARIABLE

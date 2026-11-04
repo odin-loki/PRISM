@@ -1,3 +1,4 @@
+#include <sstream>
 int osstream_unenc_bad(int n) {
     std::ostringstream x;
     return n;

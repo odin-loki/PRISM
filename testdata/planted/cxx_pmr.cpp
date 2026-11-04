@@ -1,3 +1,4 @@
+#include <memory_resource>
 int pmr_unenc_bad(int n) {
     std::pmr::monotonic_buffer_resource x;
     return n;

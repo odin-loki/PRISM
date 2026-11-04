@@ -451,17 +451,65 @@ theorem checks_bad (σ : Store) (op : BinOp) (fl : LFlags) (w : Nat) (A B : Arg)
   · -- xor
     simp [checks, binUB, cUB, binPoison]
 
-/-- `zext nneg`: the inserted `slt a, 0` test is exactly the poison
-condition. -/
-theorem nneg_bad (σ : Store) (fw : Nat) (A : Arg) (hA : A.width = fw) (nneg : Bool) :
-    (opt nneg (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON")).any (Chk.bad σ) =
-      castPoison .zext nneg fw (A.get σ) := by
-  cases nneg
-  · simp [opt, castPoison]
-  · have e : (opt true (.p (.cmp .slt) A (.c fw 0) "nneg" "UB-POISON")).any (Chk.bad σ) =
-        evalPred .slt (bv fw (A.get σ)) (bv fw 0) := by
-      simp only [opt, ite_true, List.any_cons, List.any_nil, Bool.or_false, bad_cmp]; rw [hA]; rfl
-    rw [e, slt_zero_msb]
-    simp [castPoison]
+/-- `zext nneg` / `trunc nuw` / `trunc nsw`: the inserted tests are exactly
+the poison condition. -/
+theorem cast_bad (σ : Store) (ck : CastK) (fl fw tw : Nat) (A : Arg) (hA : A.width = fw)
+    (hf : castFlagsOk ck fl fw tw = true) :
+    (castChecks ck fl fw tw A).any (Chk.bad σ) = castPoison ck fl fw tw (A.get σ) := by
+  subst hA
+  simp only [castFlagsOk, Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true,
+    Bool.not_eq_true'] at hf
+  obtain ⟨⟨_, h0⟩, h12⟩ := hf
+  simp only [castChecks, List.any_append, any_opt, bad_cmp, castPoison]
+  generalize A.get σ = x
+  simp only [Arg.get]
+  generalize A.width = fw at *
+  cases ck
+  · have : (fl.testBit 1 || fl.testBit 2) = false := by
+      rcases h12 with h | h
+      · exact h
+      · simp at h
+    simp only [Bool.or_eq_false_iff] at this
+    simp [slt_zero_msb, this.1, this.2]
+  · have h0' : fl.testBit 0 = false := by simpa using h0
+    simp [h0', (by decide : (CastK.sext == CastK.trunc) = false)]
+  · have h0' : fl.testBit 0 = false := by simpa using h0
+    simp only [h0', Bool.and_false, Bool.false_or, reduceCtorEq, beq_self_eq_true, Bool.true_and,
+      Bool.false_and]
+    by_cases hn : (fl.testBit 1 || fl.testBit 2) = true
+    · have ⟨htw, hlt⟩ : 0 < tw ∧ tw < fw := by
+        rcases h12 with h | h
+        · simp [h] at hn
+        · exact ⟨h.1.2, h.2⟩
+      have p1 : 2 ^ tw < 2 ^ fw := Nat.pow_lt_pow_right (by decide) hlt
+      have p3 : 2 ^ tw ≤ 2 ^ (fw - 1) := Nat.pow_le_pow_right (by decide) (by omega)
+      have p4 : 2 ^ fw = 2 * 2 ^ (fw - 1) := by
+        rw [← Nat.pow_succ']; congr 1; omega
+      have p5 : 2 ^ tw = 2 * 2 ^ (tw - 1) := by
+        rw [← Nat.pow_succ']; congr 1; omega
+      have p0 : 0 < 2 ^ (tw - 1) := Nat.two_pow_pos _
+      have e1 : (bv fw (2 ^ tw)).toNat = 2 ^ tw := by
+        simp only [bv, BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt p1
+      have n2 : (bv fw (2 ^ (tw - 1))).toNat = 2 ^ (tw - 1) := by
+        simp only [bv, BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt (by omega)
+      have n3 : (bv fw (2 ^ fw - 2 ^ (tw - 1))).toNat = 2 ^ fw - 2 ^ (tw - 1) := by
+        simp only [bv, BitVec.toNat_ofNat]; exact Nat.mod_eq_of_lt (by omega)
+      have hxn : (bv fw x).toNat = x % 2 ^ fw := BitVec.toNat_ofNat _ _
+      have hx : (bv fw x).toNat < 2 ^ fw := (bv fw x).isLt
+      simp only [evalPred, BitVec.ule, BitVec.sle, BitVec.slt, e1, sInRange,
+        BitVec.toInt_eq_toNat_cond, n2, n3, ← hxn]
+      have i1 : (((2 ^ (tw - 1) : Nat)) : Int) = (2 : Int) ^ (tw - 1) := by push_cast; rfl
+      have i2 : (((2 ^ fw : Nat)) : Int) = (2 : Int) ^ fw := by push_cast; rfl
+      have i3 : (((2 ^ fw - 2 ^ (tw - 1) : Nat)) : Int) = (2 : Int) ^ fw - (2 : Int) ^ (tw - 1) := by
+        rw [Int.ofNat_sub (by omega)]; push_cast; rfl
+      clear e1 n2 n3 h0 h12 hn hxn
+      cases fl.testBit 1 <;> cases fl.testBit 2 <;>
+        simp only [Bool.true_and, Bool.false_and, Bool.or_false, Bool.false_or] <;>
+        (repeat' split) <;> rw [Bool.eq_iff_iff] <;>
+        simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true',
+          decide_eq_false_iff_not, Bool.true_eq_false, Bool.false_eq_true, iff_self] <;>
+        (try constructor) <;> (try intro) <;> omega
+    · simp only [Bool.or_eq_true, not_or, Bool.not_eq_true] at hn
+      simp [hn.1, hn.2]
 
 end PrismRefine

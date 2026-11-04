@@ -1,3 +1,4 @@
+#include <latch>
 void latch_bad(void) {
     std::latch l(1);
     l.wait();

@@ -17,20 +17,24 @@ see [MSVC_PORT.md](MSVC_PORT.md). WSL also works).
 
 ### Build
 
-Requirements: CMake 3.20+, Ninja, clang 18 (or GCC 13), Python 3.11 for the
-tooling. Z3, PCRE2, xsimd and nlohmann/json are vendored under `third_party/`
-and built with PRISM; nothing is downloaded at build time.
+Requirements: CMake 3.20+, Ninja, clang (the pinned release is
+`third_party/llvm/PIN.toml`; GCC 13 also builds), Python 3.11 for the tooling.
+Z3, PCRE2, nlohmann/json and doctest are vendored under `third_party/` and
+built with PRISM. FORGE is the one dependency that is not vendored: pass
+`-DFORGE_SOURCE_DIR=PATH`, or leave it empty and CMake fetches odin-loki/FORGE
+`main`.
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build            # the first build compiles Z3 and is slow
 ./build/prism_tests            # unit tests
 ./build/prism --list-stages
 ```
 
-Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_LLAMA=ON`
-links llama.cpp for the LLM stage, `-DPRISM_CUDA=ON` builds the GPU mutator.
+Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_CUDA=ON`
+builds the GPU mutator. FORGE is always linked (`-DFORGE_SOURCE_DIR=PATH` uses a
+local checkout; empty fetches odin-loki/FORGE `main`); it is also the LLM engine.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
 to make rebuilds cheap.
 
@@ -60,7 +64,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | fuzzers | AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`) |
 | other languages | ruff or pyflakes, mypy, node, tsc, eslint, bash, shellcheck, gofmt, cargo clippy, ruby, php, perl, luac, yamllint |
 | sandbox | bubblewrap (`bwrap`) for `--allow-exec` |
-| LLM | a GGUF model (`PRISM_GGUF`, `PRISM_MODEL`) or a llama.cpp server (`PRISM_LLAMA_SERVER`) |
+| LLM | a FORGE `.fpk` model (`PRISM_FPK`, default `~/.prism/models/qwen3.5-9b.fpk`; `PRISM_DEVICE` picks cpu/cuda/vulkan) |
 
 ## 2. Run
 
@@ -102,7 +106,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 
 The stages run in a fixed order (`--list-stages`): inventory, classify,
 lints, taint, thread, interval, warnings, cppcheck, pbsd, sanitize, optional,
-polyglot, esbmc, dafny, contracts, wp, bmc, pir, conc, harness, review,
+polyglot, esbmc, dafny, contracts, wp, pir, conc, harness, review,
 concolic, fuzz, diff, rapid, muttest, ltl, llm, execute, repair, unify. What
 each one does is in [PLAN.md](PLAN.md#pipeline-order-is-the-method). `pir` (the
 Clang/LLVM front end, [PIR.md](PIR.md)), `conc` (threads,
@@ -187,8 +191,7 @@ when every theorem is proved, 3 only when every one is `NOTRUN`).
 | `--budget N`, `--beam N` | model calls allowed (default 24) and partial proofs kept (default 4) |
 | `--timeout S` | Lean time limit per check in seconds (default 120, minimum 5) |
 | `--out DIR` | output directory (default `prism-out`) |
-| `--prover-server URL` | a llama.cpp server running the prover model (else `PRISM_PROVER_SERVER`) |
-| `--prover-gguf PATH`, `--prover-model NAME` | a local GGUF prover model (else `PRISM_PROVER_GGUF`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
+| `--prover-fpk PATH`, `--prover-model NAME` | the FORGE prover model (`.fpk`, else `PRISM_PROVER_FPK`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
 | `--json` | print only the JSON result |
 | `--help`, `-h` | print the option summary and exit |
 
@@ -342,7 +345,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ninja-build clang
           git clone --depth 1 <your PRISM mirror> prism-src
           cmake -S prism-src -B prism-build -G Ninja -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF -DPRISM_LLAMA=OFF \
+            -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF \
             -DPRISM_QT=OFF -DPRISM_Z3=ON
           cmake --build prism-build --target prism
       - name: Check

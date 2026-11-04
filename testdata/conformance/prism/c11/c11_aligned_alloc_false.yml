@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c11_aligned_alloc_false.c
+language: C
+property: memsafety
+expected:
+  c11_aligned_alloc_false: false
+witness:
+  c11_aligned_alloc_false: [4]

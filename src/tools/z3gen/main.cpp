@@ -1,6 +1,8 @@
 // PRISM z3gen: Python-free driver for vendored Z3's CMake codegen scripts.
 // Invoked as Python3_EXECUTABLE with the upstream script path as argv[1].
 // Copies pre-generated outputs from cmake/z3-generated/ (see cmake/z3.cmake).
+#define PRISM_LOG_STANDALONE  // single-file tool: inline prism::log, no library
+#include "../../../include/prism/log.hpp"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -9,13 +11,16 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
 
 [[noreturn]] void die(std::string_view msg) {
-  std::cerr << "z3gen: " << msg << "\n";
+  prism::log::error("", msg);
   std::exit(1);
 }
 
@@ -36,12 +41,65 @@ fs::path gen_root() {
 
 std::string basename(const fs::path& p) { return p.filename().string(); }
 
+// The host Python that PRISM found before pointing Python3_EXECUTABLE at
+// z3gen (cmake/z3.cmake writes z3gen_python.txt). Python3_EXECUTABLE is a
+// global cache entry, so other projects in the build (FORGE's spec codegen)
+// reach z3gen too: whatever z3gen does not emulate goes to that interpreter.
+fs::path host_python() {
+  if (const char* env = std::getenv("PRISM_HOST_PYTHON3")) {
+    if (env[0] != '\0') return fs::path(env);
+  }
+  std::ifstream in(g_exe_dir / "z3gen_python.txt");
+  std::string line;
+  if (in && std::getline(in, line) && !line.empty()) return fs::path(line);
+  return {};
+}
+
+std::string shell_quote(const std::string& a) {
+#ifdef _WIN32
+  std::string q = "\"";
+  for (char c : a) {
+    if (c == '"') q += '\\';
+    q += c;
+  }
+  return q + "\"";
+#else
+  std::string q = "'";
+  for (char c : a) {
+    if (c == '\'') q += "'\\''";
+    else q += c;
+  }
+  return q + "'";
+#endif
+}
+
+// Run the host Python with these arguments; its exit code. Dies when there is none.
+int forward_to_python(int argc, char** argv, const std::string& why) {
+  const fs::path py = host_python();
+  if (py.empty()) die(why + " (and no host Python: z3gen_python.txt / PRISM_HOST_PYTHON3)");
+  std::string cmd = shell_quote(py.string());
+  for (int i = 1; i < argc; ++i) cmd += " " + shell_quote(argv[i]);
+#ifdef _WIN32
+  // cmd.exe cuts an argument at a newline, so a multi-line -c snippet would
+  // run truncated and "succeed" with no output (FindPython's sysconfig probe
+  // then fails with "list GET given empty list"). Fail it like main did.
+  for (int i = 1; i < argc; ++i)
+    if (std::string_view(argv[i]).find_first_of("\r\n") != std::string_view::npos) return 1;
+  cmd = "\"" + cmd + "\"";  // cmd.exe strips one outer pair of quotes
+  return std::system(cmd.c_str());
+#else
+  const int rc = std::system(cmd.c_str());
+  if (rc == -1) die("cannot run " + py.string());
+  return WIFEXITED(rc) ? WEXITSTATUS(rc) : 128 + (WIFSIGNALED(rc) ? WTERMSIG(rc) : 0);
+#endif
+}
+
 bool copy_pregen(const fs::path& from, const fs::path& to) {
   std::error_code ec;
   fs::create_directories(to.parent_path(), ec);
   fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
   if (ec) {
-    std::cerr << "z3gen: copy " << from << " -> " << to << ": " << ec.message() << "\n";
+    prism::log::error("", prism::log::cat("copy ", from, " -> ", to, ": ", ec.message()));
     return false;
   }
   return true;
@@ -72,8 +130,7 @@ int emulate_python_c(int argc, char** argv) {
   if (code.find("sys.abiflags") != std::string_view::npos) {
     return 0;
   }
-  std::cerr << "z3gen: unsupported -c snippet\n";
-  return 1;
+  return -1;  // not emulated: the host Python runs it
 }
 
 int do_pyg2hpp(const std::vector<std::string>& args) {
@@ -177,20 +234,25 @@ int dispatch_script(const std::vector<std::string>& args) {
   if (script == "mk_gparams_register_modules_cpp.py") return do_gparams_register(args);
   if (script == "mk_pat_db.py") return do_pat_db(args);
   if (script == "mk_def_file.py") return do_def_file(args);
-  die("unknown Z3 codegen script: " + script);
+  return -1;  // not a Z3 script: the host Python runs it
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    prism::log::set_program("z3gen");
   g_exe_dir = fs::absolute(fs::path(argv[0])).parent_path();
-  if (argc >= 2 && std::string_view(argv[1]) == "-c") return emulate_python_c(argc, argv);
+  if (argc >= 2 && std::string_view(argv[1]) == "-c") {
+    const int rc = emulate_python_c(argc, argv);
+    return rc >= 0 ? rc : forward_to_python(argc, argv, "unsupported -c snippet");
+  }
   if (argc < 2) {
-    std::cerr << "usage: z3gen [-c CODE | SCRIPT.py ...]\n";
+    prism::log::plain("usage: z3gen [-c CODE | SCRIPT.py ...]\n");
     return 1;
   }
   std::vector<std::string> args;
   args.reserve(static_cast<std::size_t>(argc));
   for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-  return dispatch_script(args);
+  const int rc = dispatch_script(args);
+  return rc >= 0 ? rc : forward_to_python(argc, argv, "unknown Z3 codegen script: " + basename(fs::path(args[0])));
 }

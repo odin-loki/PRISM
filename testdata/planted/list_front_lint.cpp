@@ -1,3 +1,4 @@
+#include <list>
 void list_front_bad(void) {
     std::list<int> l;
     l.front();

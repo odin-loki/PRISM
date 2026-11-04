@@ -1,3 +1,4 @@
+#include <memory>
 int construct_bad(int *p) {
     std::destroy_at(p);
     return *p;

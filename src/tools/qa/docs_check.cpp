@@ -8,9 +8,13 @@
 //   resolves (docscan.hpp anchor_errors);
 // - every verdict has the docs/VERDICTS.md anchor the reports link to.
 
+#include "prism/exec.hpp"
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/shipdocs.hpp"
@@ -39,10 +43,10 @@ int docs_check_main(const Args& args) {
             std::cout << "prism-qa docs-check [--bin PRISM]\n"
                          "Every --help flag is in docs/USER_GUIDE.md, the stage order is listed, every\n"
                          "Markdown anchor link resolves and every verdict has its VERDICTS anchor.\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else {
-            std::cerr << "docs-check: unknown option " << args[i] << "\n";
-            return 2;
+            prism::log::error("docs-check", prism::log::cat("unknown option ", args[i]));
+            return prism::code(prism::Exit::Usage);
         }
     }
     int bad = 0;
@@ -55,9 +59,9 @@ int docs_check_main(const Args& args) {
         for (const auto& sub : std::vector<std::vector<std::string>>{{"--help"}, {"prove", "--help"}}) {
             std::vector<std::string> argv{exe->string()};
             argv.insert(argv.end(), sub.begin(), sub.end());
-            detail::SessionOptions so;
+            prism::exec::SessionOptions so;
             so.timeout_s = 60;
-            auto r = detail::run_session(argv, so);
+            auto r = prism::exec::run_session(argv, so);
             const std::string who = sub.size() == 1 ? "prism" : "prism prove";
             if (r.rc != 0 || flags_of(r.out).empty()) {
                 std::cout << who << " --help: exit " << r.rc << ", no flags parsed\n";
@@ -94,7 +98,7 @@ int docs_check_main(const Args& args) {
         }
     }
     std::cout << "docs-check: " << bad << " problem" << (bad == 1 ? "" : "s") << "\n";
-    return bad ? 1 : 0;
+    return bad ? prism::code(prism::Exit::Failed) : prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::qa

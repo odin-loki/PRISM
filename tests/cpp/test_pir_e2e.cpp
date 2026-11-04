@@ -50,9 +50,15 @@ const std::vector<Row>& rows() {
         {"casts.c", "uchar_ok", "PROVED", ""},
         {"casts.c", "widen_bad", "FAILED", ""},
         {"casts.c", "widen_ok", "PROVED", ""},
+        {"c23_static_assert.c", "sa_bad", "FAILED", "FUNC-CONTRACT"},
+        {"c23_static_assert.c", "sa_ok", "PROVED", ""},
         {"coro_gen.cpp", "coro_bad", "FAILED", "INT-DIV-ZERO"},
         {"coro_gen.cpp", "coro_ok", "PROVED", ""},
         {"cxx.cpp", "constexpr_ok", "PROVED", ""},
+        {"unused_constexpr.cpp", "unused_cexpr_bad", "FAILED", "INT-SIGNED-OVF"},
+        {"unused_constexpr.cpp", "unused_cexpr_ok", "PROVED", ""},
+        {"cxx17_shift.cpp", "shl17_bad", "FAILED", "INT-SHIFT-UB"},
+        {"cxx17_shift.cpp", "shl17_sign_ok", "PROVED", ""},
         {"cxx.cpp", "cxx_add_bad", "FAILED", ""},
         {"cxx.cpp", "cxx_shl_ok", "FAILED", "INT-SHIFT-UB"},  // C++17 default: a << 4 can exceed unsigned int
         {"cxx.cpp", "get", "NEEDS-HARNESS", ""},
@@ -238,9 +244,12 @@ const std::vector<const char*>& pir_files_all() {
         "asm_contract.c",
         "assert.c",
         "calls.c",
+        "c23_static_assert.c",
         "casts.c",
         "coro_gen.cpp",
         "cxx.cpp",
+        "cxx17_shift.cpp",
+        "unused_constexpr.cpp",
         "div0.c",
         "eh_catch.cpp",
         "eh_uncaught.cpp",
@@ -252,6 +261,7 @@ const std::vector<const char*>& pir_files_all() {
         "mem_array.c",
         "mem_contract.c",
         "mem_cxx.cpp",
+        "svcomp_sink.c",
         "mem_heap.c",
         "mem_libc.c",
         "mem_ptr.c",
@@ -272,38 +282,7 @@ const std::vector<const char*>& pir_files_all() {
     return k;
 }
 
-#ifdef _WIN32
-const std::vector<const char*>& pir_files_win_c() {
-    static const std::vector<const char*> k{
-        "asm_contract.c",
-        "calls.c",
-        "casts.c",
-        "div0.c",
-        "folded.c",
-        "kinduct.c",
-        "loops.c",
-        "mem_alias.c",
-        "mem_array.c",
-        "mem_contract.c",
-        "mem_ptr.c",
-        "overflow.c",
-        "select.c",
-        "shift.c",
-        "switch.c",
-        "unencoded.c",
-        "uninit.c",
-    };
-    return k;
-}
-#endif
-
-const std::vector<const char*>& pir_files() {
-#ifdef _WIN32
-    return pir_files_win_c();
-#else
-    return pir_files_all();
-#endif
-}
+const std::vector<const char*>& pir_files() { return pir_files_all(); }
 
 std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
     const std::vector<prism::Finding>& out) {
@@ -329,14 +308,6 @@ bool skip_without_frontend(const prism::Config& cfg) {
     return false;
 }
 
-bool skip_glibc_corpus_file(const char* pir_c_file) {
-    if (pp::pir_test_c_file_supported(pir_c_file)) return false;
-    const std::string skip_msg =
-        std::string("NOTRUN: ") + (pir_c_file ? pir_c_file : "") +
-        " needs glibc headers (assert.c, fp_arith.c, kind_mem.c, mem_heap.c, mem_libc.c, mem_str.c, sjlj_basic.c); not in the Windows C subset";
-    MESSAGE(skip_msg);
-    return true;
-}
 }  // namespace
 
 TEST_CASE("pir e2e: testdata/pir verdict table (NOTRUN without clang/opt/LP64 probe)") {
@@ -344,33 +315,31 @@ TEST_CASE("pir e2e: testdata/pir verdict table (NOTRUN without clang/opt/LP64 pr
     if (skip_without_frontend(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
-#ifdef _WIN32
-    cfg.jobs = 1;  // parallel Z3 on Windows CI can leave simple cases UNKNOWN
-#else
     cfg.jobs = 2;
-#endif
     std::vector<fs::path> paths;
     for (auto* name : pir_files()) paths.push_back(dir / name);
     auto out = pp::run_pir(paths, cfg);
     auto got = index(out);
     std::vector<std::string> wrong;
     for (auto& r : rows()) {
-#ifdef _WIN32
-        if (!pp::pir_test_c_file_supported(r.file)) continue;
-#endif
         auto it = got.find({r.file, r.function});
         if (it == got.end()) {
             wrong.push_back(std::string(r.file) + ":" + r.function + " missing");
             continue;
         }
         auto& f = *it->second;
+        // real bugs past unwind 8 (kind_open overflows at n = 31, a[1] of
+        // kind_mem_write_uninit stays uninitialised): unwind deepening may
+        // find them within the budget. FAILED (validated, with the deepened
+        // unwind recorded) or BOUNDED are both right; PROVED never is.
+        const std::string fn_name = r.function;
+        const bool deep_bug = fn_name == "kind_open" || fn_name == "kind_mem_write_uninit";
+        if (deep_bug && f.status == prism::laws::FAILED && f.extra.count("unwind_deepened_to")) {
+            if (f.counterexample.empty())
+                wrong.push_back(std::string(r.file) + ":" + r.function + " FAILED without counterexample");
+            continue;
+        }
         if (f.status != r.status) {
-#ifdef _WIN32
-            // clang-cl + Z3 on CI can leave this multiply proof UNKNOWN; the MSVC cl Z3 smoke covers casts.c.
-            if (std::string(r.file) == "casts.c" && std::string(r.function) == "sext_mul_ok" &&
-                f.status == prism::laws::UNKNOWN && std::string(r.status) == prism::laws::PROVED)
-                continue;
-#endif
             wrong.push_back(std::string(r.file) + ":" + r.function + " status " + f.status + " != " + r.status);
             continue;
         }
@@ -390,7 +359,6 @@ TEST_CASE("pir e2e: testdata/pir verdict table (NOTRUN without clang/opt/LP64 pr
 TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    if (skip_glibc_corpus_file("overflow.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     auto out = pp::run_pir({dir / "overflow.c"}, cfg);
@@ -407,7 +375,6 @@ TEST_CASE("pir e2e: Law 9 holds translation validation without --allow-exec") {
 TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    if (skip_glibc_corpus_file("fp_arith.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     cfg.fp_checks = true;
@@ -424,7 +391,6 @@ TEST_CASE("pir e2e: --fp-checks is opt-in (NOTRUN without clang/opt)") {
 TEST_CASE("pir e2e: --strict-aliasing is opt-in (NOTRUN without clang/opt)") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    if (skip_glibc_corpus_file("mem_alias.c")) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     {
@@ -455,7 +421,7 @@ TEST_CASE("pir e2e: PRISM_PIR_BATCH=1 gives the same verdicts as the default") {
     cfg.jobs = 1;
     std::vector<fs::path> paths;
     for (const char* n : {"overflow.c", "casts.c", "loops.c"})
-        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+        if (fs::exists(dir / n)) paths.push_back(dir / n);
     REQUIRE(paths.size() >= 2);
     auto verdicts = [&](const char* batch) {
 #ifdef _WIN32
@@ -501,7 +467,7 @@ TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit
     cfg.jobs = 1;
     std::vector<fs::path> paths;
     for (const char* n : {"aligned_unenc.c", "nested_fn.c"})
-        if (fs::exists(dir / n) && pp::pir_test_c_file_supported(n)) paths.push_back(dir / n);
+        if (fs::exists(dir / n)) paths.push_back(dir / n);
     if (paths.empty()) return;
     std::map<std::string, prism::Finding> m;
     for (auto& f : pp::run_pir(paths, cfg))
@@ -527,7 +493,6 @@ TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit
 TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and stays FAILED otherwise") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    if (!pp::pir_test_c_file_supported("sink.c")) return;
     const auto dir = fs::temp_directory_path() / ("prism_sink_" + std::to_string(::getpid()));
     fs::create_directories(dir);
     auto put = [&](const char* name, const char* main_body) {
@@ -558,7 +523,6 @@ TEST_CASE("pir e2e: an error sink is proved assuming its proved callers, and sta
 TEST_CASE("pir: unused static inline function in a header gets a verdict") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
-    if (!pp::pir_test_c_file_supported("hdr.c")) return;
     const auto dir = fs::temp_directory_path() / ("prism_hdr_" + std::to_string(::getpid()));
     fs::create_directories(dir);
     std::ofstream(dir / "h.h") << "static inline int used_h(int x) { return x & 7; }\n"

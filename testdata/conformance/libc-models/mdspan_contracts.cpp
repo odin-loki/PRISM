@@ -10,7 +10,7 @@
 
 int mdspan_read_true(int i) {
     int a[4] = {1, 2, 3, 4};
-    std::mdspan<int> m(a, 4);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 4);
     assert(m.size() == 4);
     assert(m.extent(0) == 4);
     assert(m.data() == a);
@@ -21,7 +21,7 @@ int mdspan_read_true(int i) {
 }
 
 int mdspan_empty_true(int) {
-    std::mdspan<int> m(static_cast<int*>(nullptr), 0);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(static_cast<int*>(nullptr), 0);
     assert(m.size() == 0);
     assert(m.extent(0) == 0);
     assert(m.data() == nullptr);
@@ -33,7 +33,7 @@ int mdspan_nonowning_true(int i) {
     int a[4] = {1, 2, 3, 4};
     int* p = a;
     {
-        std::mdspan<int> m(p, 4);
+        std::mdspan<int, std::dextents<std::size_t, 1>> m(p, 4);
         if (i >= 0 && i < 4) (void)m(static_cast<std::size_t>(i));
     }
     if (i < 0 || i >= 4) return 0;
@@ -44,16 +44,16 @@ int mdspan_nonowning_true(int i) {
 int mdspan_index_oob_false(int i) {
     if (i < 0 || i > 4) return 0;
     int a[4] = {10, 11, 12, 13};
-    std::mdspan<int> m(a, 4);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 4);
     return m(static_cast<std::size_t>(i));
 }
 
 // A null data pointer with a non-zero extent. n == 0 is the empty view.
 int mdspan_null_extent_false(int n) {
     if (n == 0) {
-        std::mdspan<int> empty(static_cast<int*>(nullptr), 0);
+        std::mdspan<int, std::dextents<std::size_t, 1>> empty(static_cast<int*>(nullptr), 0);
         return static_cast<int>(empty.size());
     }
-    std::mdspan<int> m(static_cast<int*>(nullptr), 1);
+    std::mdspan<int, std::dextents<std::size_t, 1>> m(static_cast<int*>(nullptr), 1);
     return static_cast<int>(m.extent(0));
 }

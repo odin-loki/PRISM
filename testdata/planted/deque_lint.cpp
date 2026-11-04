@@ -1,3 +1,4 @@
+#include <deque>
 void deque_bad(int i) {
     std::deque<int> d(4);
     d[i]=1;

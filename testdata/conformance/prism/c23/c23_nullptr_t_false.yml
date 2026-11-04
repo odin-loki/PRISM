@@ -1,0 +1,8 @@
+format_version: 1
+input_files: c23_nullptr_t_false.c
+language: C
+property: memsafety
+expected:
+  c23_nullptr_t_false: false
+witness:
+  c23_nullptr_t_false: [0]

@@ -10,6 +10,7 @@
 #  undef ERROR
 #endif
 
+#include "forge_test_model.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/sandbox.hpp"
@@ -88,7 +89,7 @@ bool any_proof(const std::vector<prism::Finding>& recs) {
     return std::any_of(recs.begin(), recs.end(), [](auto& r) { return prism::laws::is_proof(r.status); });
 }
 
-const char* kLlmSkipMsg = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
+const char* kLlmSkipMsg = "no FORGE model (.fpk); stall mutants / autoprompt skipped";
 
 namespace sd = prism::stages_detail;
 
@@ -181,108 +182,11 @@ struct ScopedEnv {
     }
 };
 
-// A port nothing listens on: bound, read back, closed.
-int closed_port() {
-    int s = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a);
-    socklen_t len = sizeof a;
-    ::getsockname(s, reinterpret_cast<sockaddr*>(&a), &len);
-    ::close(s);
-    return ntohs(a.sin_port);
-}
-
-// No model anywhere: llama-server and Ollama endpoints refuse, no GGUF.
+// No model anywhere: PRISM_FPK names a .fpk that does not exist.
 void llm_down(ScopedEnv& env) {
-    auto dead = "http://127.0.0.1:" + std::to_string(closed_port());
-    env.set("PRISM_LLAMA_SERVER", dead);
-    env.set("OLLAMA_HOST", dead);
-    env.set("PRISM_GGUF", (fs::temp_directory_path() / "prism_no_such_model.gguf").string());
+    env.set("PRISM_FPK", (fs::temp_directory_path() / "prism_no_such_model.fpk").string());
 }
 
-// A llama-server stand-in: /health is up, /v1/chat/completions answers with
-// reply(system prompt) and records every system prompt it saw.
-struct FakeLlm {
-    int lfd = -1;
-    int port = 0;
-    std::atomic<bool> stop{false};
-    std::thread th;
-    std::mutex mu;
-    std::vector<std::string> systems;
-    std::function<std::string(const std::string&)> reply;
-
-    explicit FakeLlm(std::function<std::string(const std::string&)> r) : reply(std::move(r)) {
-        lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-        int one = 1;
-        ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        REQUIRE(::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0);
-        socklen_t len = sizeof a;
-        ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
-        port = ntohs(a.sin_port);
-        REQUIRE(::listen(lfd, 16) == 0);
-        th = std::thread([this] { loop(); });
-    }
-    ~FakeLlm() {
-        stop = true;
-        th.join();
-        ::close(lfd);
-    }
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port); }
-    int count(const std::string& prefix) {
-        std::lock_guard<std::mutex> lock(mu);
-        return static_cast<int>(
-            std::count_if(systems.begin(), systems.end(), [&](auto& s) { return s.rfind(prefix, 0) == 0; }));
-    }
-    void loop() {
-        while (!stop) {
-            pollfd p{lfd, POLLIN, 0};
-            if (::poll(&p, 1, 50) <= 0) continue;
-            int c = ::accept(lfd, nullptr, nullptr);
-            if (c < 0) continue;
-            serve(c);
-            ::close(c);
-        }
-    }
-    void serve(int c) {
-        std::string raw;
-        char buf[4096];
-        std::size_t hdr = std::string::npos;
-        while ((hdr = raw.find("\r\n\r\n")) == std::string::npos) {
-            auto n = ::recv(c, buf, sizeof buf, 0);
-            if (n <= 0) return;
-            raw.append(buf, static_cast<std::size_t>(n));
-        }
-        auto head = lower(raw.substr(0, hdr));
-        std::size_t clen = 0;
-        if (auto k = head.find("content-length:"); k != std::string::npos)
-            clen = std::stoul(head.substr(k + 15, head.find("\r\n", k) - (k + 15)));
-        while (raw.size() < hdr + 4 + clen) {
-            auto n = ::recv(c, buf, sizeof buf, 0);
-            if (n <= 0) return;
-            raw.append(buf, static_cast<std::size_t>(n));
-        }
-        std::string body = "{}";
-        if (head.find(" /v1/chat/completions") != std::string::npos) {
-            auto req = nlohmann::json::parse(raw.substr(hdr + 4, clen));
-            std::string system;
-            for (auto& m : req["messages"])
-                if (m["role"] == "system") system = m["content"].get<std::string>();
-            {
-                std::lock_guard<std::mutex> lock(mu);
-                systems.push_back(system);
-            }
-            body = nlohmann::json{{"choices", {{{"message", {{"content", reply(system)}}}}}}}.dump();
-        }
-        auto resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                    std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-        ::send(c, resp.data(), resp.size(), 0);
-    }
-};
 
 // System prompts of the fuse stage's model calls.
 const std::string kSeeds = "You distill a fuzzing prompt";
@@ -342,6 +246,23 @@ TEST_CASE("fuse goals: GOAL_n labels follow FuSeBMC numbering") {
     }
 }
 
+TEST_CASE("fuse goals: a condition with nested parentheses is read whole") {
+    prism::FunctionInfo f;
+    f.name = "g";
+    f.body = "{ if (x == (-2147483647 - 1)) { return 1; } while ((y)) { y--; } "
+             "for (i = 0; i < (n); i++) {} switch ((x)) { case 1: break; } return 0; }";
+    auto goals = prism::branch_goals(f);
+    CHECK(has(goals, "x == (-2147483647 - 1)"));
+    CHECK(has(goals, "!(x == (-2147483647 - 1))"));
+    CHECK(has(goals, "(y)"));
+    CHECK(has(goals, "i < (n)"));
+    CHECK(has(goals, "((x)) == (1)"));
+    for (auto& g : goals) {
+        INFO(g);
+        CHECK(std::ranges::count(g, '(') == std::ranges::count(g, ')'));
+    }
+}
+
 TEST_CASE("fuse: a CLEAN run carries its goal ids and map and is not a proof") {
     auto f = fn_named("fuse_goals.c", "fuse_goals");
     auto goals = prism::branch_goals(f);
@@ -367,7 +288,7 @@ TEST_CASE("fuse: a CLEAN run carries its goal ids and map and is not a proof") {
 TEST_CASE("fuse: a spent fuzz budget skips the goal BMC and proves nothing") {
     auto recs = prism::run_fuse({fn_named("fuse_goals.c", "fuse_goals")}, {}, td(), 0.0, 4, false);
     REQUIRE_FALSE(recs.empty());
-    CHECK(extra_or(recs[0], "bmc_goals_skipped").find("fuzz budget spent") != std::string::npos);
+    CHECK(extra_or(recs[0], "goal_checks_skipped").find("fuzz budget spent") != std::string::npos);
     CHECK(recs[0].status != prism::laws::PROVED);
     CHECK_FALSE(prism::laws::is_proof(recs[0].status));
 }
@@ -493,63 +414,9 @@ TEST_CASE("fuse: without the file, the NOTRUN row's documentation comes from the
     CHECK(extra_or(notrun[0], "docstring").find("signed integer") != std::string::npos);
 }
 
-TEST_CASE("fuse: an interesting input is mutated once by the model") {
-    FakeLlm llm(replies({}, {"03000000"}, {}));
-    ScopedEnv env;
-    env.set("PRISM_LLAMA_SERVER", llm.url());
-    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
-    REQUIRE_FALSE(recs.empty());
-    INFO(recs[0].status << ": " << recs[0].message);
-    CHECK(llm.count(kMutate) == 1);
-    CHECK(recs[0].status == prism::laws::CLEAN);
-    CHECK(extra_or(recs[0], "fuzz4all_mutate") == "true");
-    CHECK_FALSE(any_proof(recs));
-}
 
-TEST_CASE("fuse: two interesting inputs are combined once by the model") {
-    FakeLlm llm(replies({"01000000", "02000000"}, {}, {"04000000"}));
-    ScopedEnv env;
-    env.set("PRISM_LLAMA_SERVER", llm.url());
-    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
-    REQUIRE_FALSE(recs.empty());
-    CHECK(llm.count(kCombine) == 1);
-    CHECK(extra_or(recs[0], "fuzz4all_combine") == "true");
-    CHECK(recs[0].status == prism::laws::CLEAN);
-    CHECK_FALSE(any_proof(recs));
-}
 
-TEST_CASE("fuse: a model seed that reaches a branch records its GOAL label; the prompt is a HYPOTHESIS") {
-    // x = 101 takes the x > 100 branch: GOAL_1.
-    FakeLlm llm(replies({"65000000"}, {}, {}));
-    ScopedEnv env;
-    env.set("PRISM_LLAMA_SERVER", llm.url());
-    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
-    REQUIRE_FALSE(recs.empty());
-    auto& fuse = recs[0];
-    CHECK(fuse.status == prism::laws::CLEAN);
-    CHECK(has(json_list(fuse, "goals"), "GOAL_1"));
-    CHECK(has(json_list(fuse, "new_goals"), "GOAL_1"));
-    CHECK(has(json_list(fuse, "covered_goals"), "GOAL_1"));
-    auto hyps = with_status(recs, prism::laws::HYPOTHESIS);
-    REQUIRE_FALSE(hyps.empty());
-    CHECK(hyps[0].strength == prism::laws::STRENGTH_READS);
-    CHECK_FALSE(any_proof(recs));
-}
 
-TEST_CASE("fuse: the distilled prompt is a HYPOTHESIS with the documentation, not CLEAN") {
-    FakeLlm llm(replies({}, {}, {}));
-    ScopedEnv env;
-    env.set("PRISM_LLAMA_SERVER", llm.url());
-    auto recs = prism::run_fuse({fn_named("fuzz4all_docs.c", "fuzz4all_docs")}, {}, td(), 0.2, 4, true);
-    auto hyps = with_status(recs, prism::laws::HYPOTHESIS);
-    REQUIRE_FALSE(hyps.empty());
-    CHECK(hyps[0].strength == prism::laws::STRENGTH_READS);
-    CHECK(extra_or(hyps[0], "docstring").find("clamp") != std::string::npos);
-    CHECK(extra_or(hyps[0], "target_api") == "fuzz4all_docs");
-    CHECK(hyps[0].status != prism::laws::CLEAN);
-    CHECK_FALSE(any_proof(recs));
-    CHECK(llm.count(kAuto) >= 1);
-}
 
 TEST_CASE("fuse: AFL++ without a C compiler is NOTRUN and does not take the greybox CLEAN") {
     prism::sandbox::Policy policy(true);
@@ -609,4 +476,51 @@ TEST_CASE("fuse: libFuzzer without clang is NOTRUN and does not claim the engine
     CHECK(lower(r.message).find("not a proof") != std::string::npos);
     CHECK_FALSE(prism::laws::is_proof(r.status));
 }
-#endif
+
+// ---- FORGE-era replacements for the llama-server fakes (ScriptedChat seam) ----
+TEST_CASE("fuse: an interesting input is mutated once by the model") {
+    prism_test::ScriptedChat llm(replies({}, {"03000000"}, {}));
+    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
+    REQUIRE_FALSE(recs.empty());
+    INFO(recs[0].status << ": " << recs[0].message);
+    CHECK(llm.count(kMutate) == 1);
+    CHECK(recs[0].status == prism::laws::CLEAN);
+    CHECK(extra_or(recs[0], "fuzz4all_mutate") == "true");
+    CHECK_FALSE(any_proof(recs));
+}
+TEST_CASE("fuse: two interesting inputs are combined once by the model") {
+    prism_test::ScriptedChat llm(replies({"01000000", "02000000"}, {}, {"04000000"}));
+    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
+    REQUIRE_FALSE(recs.empty());
+    CHECK(llm.count(kCombine) == 1);
+    CHECK(extra_or(recs[0], "fuzz4all_combine") == "true");
+    CHECK(recs[0].status == prism::laws::CLEAN);
+    CHECK_FALSE(any_proof(recs));
+}
+TEST_CASE("fuse: a model seed that reaches a branch records its GOAL label; the prompt is a HYPOTHESIS") {
+    prism_test::ScriptedChat llm(replies({"65000000"}, {}, {}));  // x = 101 takes x > 100: GOAL_1
+    auto recs = prism::run_fuse({fn_named("saturate.c", "saturate")}, {}, td(), 0.2, 4, true);
+    REQUIRE_FALSE(recs.empty());
+    auto& fuse = recs[0];
+    CHECK(fuse.status == prism::laws::CLEAN);
+    CHECK(has(json_list(fuse, "goals"), "GOAL_1"));
+    CHECK(has(json_list(fuse, "new_goals"), "GOAL_1"));
+    CHECK(has(json_list(fuse, "covered_goals"), "GOAL_1"));
+    auto hyps = with_status(recs, prism::laws::HYPOTHESIS);
+    REQUIRE_FALSE(hyps.empty());
+    CHECK(hyps[0].strength == prism::laws::STRENGTH_READS);
+    CHECK_FALSE(any_proof(recs));
+}
+TEST_CASE("fuse: the distilled prompt is a HYPOTHESIS with the documentation, not CLEAN") {
+    prism_test::ScriptedChat llm(replies({}, {}, {}));
+    auto recs = prism::run_fuse({fn_named("fuzz4all_docs.c", "fuzz4all_docs")}, {}, td(), 0.2, 4, true);
+    auto hyps = with_status(recs, prism::laws::HYPOTHESIS);
+    REQUIRE_FALSE(hyps.empty());
+    CHECK(hyps[0].strength == prism::laws::STRENGTH_READS);
+    CHECK(extra_or(hyps[0], "docstring").find("clamp") != std::string::npos);
+    CHECK(extra_or(hyps[0], "target_api") == "fuzz4all_docs");
+    CHECK(hyps[0].status != prism::laws::CLEAN);
+    CHECK_FALSE(any_proof(recs));
+    CHECK(llm.count(kAuto) >= 1);
+}
+#endif  // !_WIN32

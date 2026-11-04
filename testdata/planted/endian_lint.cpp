@@ -1,3 +1,4 @@
+#include <bit>
 int endian_bad(char *p) {
     return p[(int)std::endian::native];
 }

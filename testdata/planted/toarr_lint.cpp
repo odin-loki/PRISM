@@ -1,3 +1,4 @@
+#include <array>
 int toarr_bad(void) {
     int a[4] = {0};
     auto x = std::to_array(a);

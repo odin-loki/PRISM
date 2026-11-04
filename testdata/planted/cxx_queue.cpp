@@ -1,3 +1,4 @@
+#include <queue>
 int queue_unenc_bad(int n) {
     std::queue<int> q;
     return n;

@@ -1,3 +1,4 @@
+#include <functional>
 int mofn_unenc_bad(int n) {
     std::move_only_function<int()> f;
     return n;

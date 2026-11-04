@@ -1,0 +1,13 @@
+format_version: 1
+input_files: fmtdouble_contracts.cpp
+language: C++
+property: libc-contract
+timeout: 300
+expected:
+  setlocale_c_true: true
+  setlocale_unknown_false: false
+  fmtv_digit_true: true
+  fmtv_truncated_false: false
+expect_class:  # the violation each false harness plants
+  setlocale_unknown_false: "FUNC-CONTRACT"
+  fmtv_truncated_false: "FUNC-CONTRACT"

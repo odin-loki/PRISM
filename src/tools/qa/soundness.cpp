@@ -28,7 +28,11 @@
 // Only programs this tool generates are compiled and run (inside bwrap when
 // available), never code from elsewhere.
 
+#include "prism/exit.hpp"
+#include "prism/settings.hpp"
+#include "prism/log.hpp"
 #include "gen_random.hpp"
+#include "prism/laws.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
 #include "support/pool.hpp"
@@ -118,8 +122,8 @@ std::set<std::string> statuses(const ojson& found) {
 }
 
 bool any_proof(const std::set<std::string>& st) {
-    for (const auto& p : PROOF)
-        if (st.count(p)) return true;
+    for (const auto& s : st)
+        if (prism::laws::is_proof(s)) return true;
     return false;
 }
 
@@ -151,29 +155,27 @@ int soundness_main(const std::vector<std::string>& argv) {
         if (args.has("--jobs")) jobs = std::stoll(args.get("--jobs"));
         if (args.has("--timeout")) timeout = std::stod(args.get("--timeout"));
     } catch (...) {
-        std::cerr << "prism-qa soundness: error: invalid number\n";
-        return 2;
+        prism::log::error("soundness", "invalid number");
+        return prism::code(prism::Exit::Usage);
     }
     jobs = std::max(1LL, jobs);
     const std::string generator = args.get("--generator", "inhouse");
     if (generator != "inhouse" && generator != "inhouse-ptr" && generator != "inhouse-loop" && generator != "csmith") {
-        std::cerr << "prism-qa soundness: error: --generator: invalid choice '" << generator
-                  << "' (choose from inhouse, inhouse-ptr, inhouse-loop, csmith)\n";
-        return 2;
+        prism::log::error("soundness", prism::log::cat("--generator: invalid choice '", generator, "' (choose from inhouse, inhouse-ptr, inhouse-loop, csmith)"));
+        return prism::code(prism::Exit::Usage);
     }
     if (generator == "csmith" && which("csmith").empty()) {
-        std::cerr << "csmith: NOTRUN (not on PATH; apt install csmith). Use --generator inhouse.\n";
-        return 3;
+        prism::log::plain("csmith: NOTRUN (not on PATH; apt install csmith). Use --generator inhouse.\n");
+        return prism::code(prism::Exit::Error);
     }
     const std::vector<std::string> cmd = prism_command(args.get("--prism"));
     const std::vector<std::string> listed = list_stages(cmd);
     if (listed.empty()) {
-        std::cerr << "cannot run PRISM: " << (cmd.empty() ? "(no --prism, $PRISM_BIN or build/prism)" : join(cmd, " "))
-                  << "\n";
-        return 3;
+        prism::log::error("soundness", prism::log::cat("cannot run PRISM: ", (cmd.empty() ? "(no --prism, $PRISM_BIN or build/prism)" : join(cmd, " "))));
+        return prism::code(prism::Exit::Error);
     }
     std::vector<std::string> stages;
-    for (const auto& s : {"inventory", "classify", "bmc", "pir"})
+    for (const auto& s : {"inventory", "classify", "pir"})
         if (std::find(listed.begin(), listed.end(), s) != listed.end()) stages.push_back(s);
 
     const fs::path out_dir = args.get("--out", "soundness-out");
@@ -185,14 +187,14 @@ int soundness_main(const std::vector<std::string>& argv) {
     try {
         work = make_unique_dir("prism-rand-");
     } catch (const std::exception& e) {
-        std::cerr << "temporary directory failed: " << e.what() << "\n";
-        return 2;
+        prism::log::error("soundness", prism::log::cat("temporary directory failed: ", e.what()));
+        return prism::code(prism::Exit::Usage);
     }
     struct Cleanup {
         fs::path p;
         ~Cleanup() {
-            if (std::getenv("PRISM_CONF_KEEP")) {
-                std::cerr << "work dir kept: " << p.string() << "\n";
+            if (prism::settings::cstr(prism::settings::conf_keep())) {
+                prism::log::plain(prism::log::cat("work dir kept: ", p.string(), "\n"));
             } else {
                 std::error_code e;
                 fs::remove_all(p, e);
@@ -235,7 +237,6 @@ int soundness_main(const std::vector<std::string>& argv) {
         }
         for (const auto& fn : pf.second) {
             ojson found = ojson::array();
-            for (const auto& f : res.found("bmc", fn)) found.push_back(f);
             for (const auto& f : res.found("pir", fn)) found.push_back(f);
             a.functions.emplace_back(fn, found);
         }
@@ -379,7 +380,7 @@ int soundness_main(const std::vector<std::string>& argv) {
     write_file(out_dir / "summary.json", dump(full));
     write_file(out_dir / "summary.md", join(lines, "\n") + "\n");
     std::cout << join(lines, "\n") << "\n";
-    return bugs.empty() ? 0 : 1;
+    return bugs.empty() ? prism::code(prism::Exit::Ok) : prism::code(prism::Exit::Failed);
 }
 
 }  // namespace prism::qa

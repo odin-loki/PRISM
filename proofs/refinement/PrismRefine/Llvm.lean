@@ -89,7 +89,9 @@ inductive Inst where
   | bin (dst : String) (op : BinOp) (fl : LFlags) (w : Nat) (a b : Opnd)
   | icmp (dst : String) (p : Pred) (w : Nat) (a b : Opnd)
   | select (dst : String) (w : Nat) (c a b : Opnd)
-  | cast (dst : String) (k : CastK) (nneg : Bool) (fw tw : Nat) (a : Opnd)
+  /-- `fl` is the flag set, as exported: bit 0 `nneg` (zext), bit 1 `nuw`,
+  bit 2 `nsw` (trunc, LLVM 19+). -/
+  | cast (dst : String) (k : CastK) (fl : Nat) (fw tw : Nat) (a : Opnd)
   /-- `%dst = call iw @__prism.uninit.iw()`: an indeterminate value. -/
   | uninit (dst : String) (w : Nat)
   deriving DecidableEq, Repr, Inhabited
@@ -188,9 +190,13 @@ def binPoison (op : BinOp) (fl : LFlags) (w x y : Nat) : Bool :=
   | .or => fl.disjoint && (a &&& b) != 0#w
   | _ => false
 
-/-- `zext nneg` of a negative value is poison. -/
-def castPoison (k : CastK) (nneg : Bool) (fw x : Nat) : Bool :=
-  k == .zext && nneg && (bv fw x).msb
+/-- `zext nneg` of a negative value is poison; `trunc nuw` is poison when a
+dropped bit is set (the value is not below `2^tw`), `trunc nsw` when the
+dropped bits are not a sign extension (the signed value is outside `itw`). -/
+def castPoison (k : CastK) (fl : Nat) (fw tw x : Nat) : Bool :=
+  (k == .zext && fl.testBit 0 && (bv fw x).msb) ||
+  (k == .trunc && fl.testBit 1 && decide (2 ^ tw ≤ (bv fw x).toNat)) ||
+  (k == .trunc && fl.testBit 2 && !sInRange tw (bv fw x).toInt)
 
 /-- The divisor of `udiv/sdiv/urem/srem` may not be poison (LangRef: UB). -/
 def isDivOp : BinOp → Bool
@@ -271,9 +277,9 @@ def sInst (R : SRegs) : Inst → Res SRegs
   | .select d w c a b =>
     (sOpnd R 1 c).bind fun z => (sOpnd R w a).bind fun x => (sOpnd R w b).bind fun y =>
       .ok (R.set d (selVal w z x y))
-  | .cast d k nneg fw tw a =>
+  | .cast d k fl fw tw a =>
     (sOpnd R fw a).bind fun x =>
-      if castPoison k nneg fw x then .ub else .ok (R.set d (castVal k fw tw x))
+      if castPoison k fl fw tw x then .ub else .ok (R.set d (castVal k fw tw x))
   | .uninit d _ => .ok (R.put d .ind)
 
 def sInsts (R : SRegs) : List Inst → Res SRegs
@@ -408,13 +414,13 @@ def lInst (S : LSt) : Inst → Res LSt
         | .val v => .ok ⟨S.R.set d (.val (v % 2 ^ w)), cc⟩
         | .ind => .ub
       | .ind => .ub
-  | .cast d k nneg fw tw a =>
+  | .cast d k fl fw tw a =>
     (lOpnd S.R fw a).bind fun (x, ca) =>
       let c := S.c || ca
       match x with
       | .poison => .ok ⟨S.R.set d .poison, c⟩
       | .val x =>
-        if castPoison k nneg fw x then .ok ⟨S.R.set d .poison, true⟩
+        if castPoison k fl fw tw x then .ok ⟨S.R.set d .poison, true⟩
         else .ok ⟨S.R.set d (.val (castVal k fw tw x)), c⟩
       | .ind => .ub
   | .uninit d _ => .ok ⟨S.R.set d .ind, S.c⟩

@@ -9,7 +9,7 @@
 //   * drafted harness assumptions give PROVED-ASSUMING with every assumption
 //     listed, never PROVED;
 //   * explanations and fixes are HYPOTHESIS / READS; a fix is called
-//     "verified fix" only when BMC proves the patched function.
+//     "verified fix" only when PIR proves the patched function.
 // Every model interaction is appended to <out>/ai_audit.jsonl.
 
 #include "prism/config.hpp"
@@ -34,7 +34,7 @@ PRISM_API std::string sha256_file(const std::filesystem::path& path);  // "" whe
 // locks the embedded copy to the file). Names: invariants, harness, contract, explain,
 // lean_proof, assumption_audit (include/prism/ai_proof.hpp).
 PRISM_API const std::string& grammar_text(const std::string& name);
-// JSON schema used for Ollama's "format" parameter (same shape as the grammar).
+// JSON schema of the grammar (same shape as the GBNF; used by docs and tests).
 PRISM_API std::string grammar_json_schema(const std::string& name);
 
 // Post-decoding validation. A grammar constrains the sampler, but the decoded
@@ -69,8 +69,8 @@ struct ModelRequest {
     std::string feature;   // invariants | harness | contract | explain
     std::string system;
     std::string user;
-    std::string grammar;       // grammar name (audit log, Ollama schema)
-    std::string grammar_text;  // GBNF sent to llama-server (ident rule narrowed)
+    std::string grammar;       // grammar name (audit log)
+    std::string grammar_text;  // GBNF for FORGE mind constrained sampling (ident rule narrowed)
 };
 struct ModelReply {
     std::string text;
@@ -79,15 +79,13 @@ struct ModelReply {
 class PRISM_API ModelBackend {
 public:
     virtual ~ModelBackend();
-    virtual std::string name() const = 0;          // e.g. "llama-server:qwen3.5:9b"
+    virtual std::string name() const = 0;          // e.g. "forge:qwen3.5-9b"
     virtual std::string model_sha256() const = 0;  // "unknown" for HTTP backends
     virtual ModelReply complete(const ModelRequest& req) = 0;
 };
 
-// llama-server /completion with "grammar" (GBNF) and Ollama /api/generate
-// with "format" (JSON schema). Returns nullptr (and a reason) when neither is
-// reachable, or when --no-llm. The native in-process GGUF path has no grammar
-// sampler wired, so it is not used for AI features (reason says so).
+// FORGE mind in process on cfg.fpk, with GBNF-constrained sampling. Returns
+// nullptr (and a reason) when no .fpk is configured, or when --no-llm.
 PRISM_API std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* why);
 
 // ---------------------------------------------------------------- session
@@ -105,7 +103,7 @@ struct AuditRecord {
     std::string raw_output_sha256;
     bool output_valid = false;
     std::string rejected_reason;
-    std::string checker;          // e.g. "z3-houdini+k-induction", "bmc(patched)"
+    std::string checker;          // e.g. "z3-houdini+k-induction", "pir(patched)"
     std::string checker_result;   // the checker's own status; "" = no checker ran
     std::string verdict_effect;   // "none" or the checked verdict
     std::string id;               // stable id referenced by findings (extra.ai_audit_id)
@@ -137,7 +135,7 @@ PRISM_API void audit_model_call(AuditRecord& rec, const std::string& prompt, con
 PRISM_API std::filesystem::path audit_path();  // "" when no session
 
 // ---------------------------------------------------------------- BMC primitive
-// Implemented in src/prism/bmc.cpp (needs the encoder). Encodes `body` for
+// Implemented in src/prism/ai/program_check.cpp (on pir). Checks `body` for
 // `fn`'s parameters with the AI hook statements enabled:
 //   __prism_assume(e);  __prism_assert(tag, e);  __prism_havoc(x);
 //   __prism_step (c) { ... }   (runs the block under c, then continues under !c
@@ -179,9 +177,19 @@ PRISM_API std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, 
 //   step(cond) { body; incr; assert(I_j) [consecution] }
 // with inv[j] = (tag, expression) pairs.
 PRISM_API std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
-                                  const std::vector<std::vector<std::pair<int, std::string>>>& inv);
+                                  const std::vector<std::vector<std::pair<int, std::string>>>& inv,
+                                  const std::vector<std::string>* step_facts = nullptr);
+// No-wrap step fact of a counted loop (`x++` under `x <= r` / `x < r`), as
+// an expression over x and its pre-increment snapshot __prism_pre_x; empty
+// when the loop has no such shape. Houdini asserts it (tag kStepFactTag + j)
+// before assuming it, so a fact that does not hold is dropped, never trusted.
+PRISM_API std::string step_fact(const LoopCut& loop);
+constexpr int kStepFactTag = 1000000;
 // Deterministic template candidates for one loop.
-PRISM_API std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& loop);
+// extended=false: the cheap linear/bound/congruence families; true adds the
+// non-linear and three-variable shapes (tried only when the cheap set fails).
+PRISM_API std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& loop,
+                                                       bool extended = true);
 
 struct HoudiniResult {
     bool proved = false;              // strengthened step AND base case closed, no UB property sat
@@ -210,9 +218,9 @@ struct HarnessDraft {
 };
 // One draft per concrete size case (size range); empty = could not draft.
 PRISM_API std::vector<HarnessDraft> draft_harness(const FunctionInfo& fn, std::string* why = nullptr);
-// Runs the drafted harness through BMC. nullopt when no draft was possible
+// Runs the drafted harness through PIR. nullopt when no draft was possible
 // (`refused` then says why: template reason, and the model note).
-PRISM_API std::optional<Finding> drafted_harness_bmc(const FunctionInfo& fn, int unwind,
+PRISM_API std::optional<Finding> drafted_harness_check(const FunctionInfo& fn, int unwind,
                                                      std::string* refused = nullptr);
 
 // ---------------------------------------------------------------- explanation / repair

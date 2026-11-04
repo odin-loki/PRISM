@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "prism/settings.hpp"
 
 #include "proctree.hpp"
 
@@ -12,7 +13,7 @@ namespace prism::qa {
 std::vector<std::string> prism_command(const std::string& prism_arg) {
     std::string binp = prism_arg;
     if (binp.empty())
-        if (const char* e = std::getenv("PRISM_BIN")) binp = e;
+        if (const char* e = prism::settings::cstr(prism::settings::bin())) binp = e;
     std::error_code ec;
     if (binp.empty()) {
         fs::path built = repo_root() / "build" / "prism";
@@ -103,7 +104,7 @@ PrismRun run_prism(const std::vector<std::string>& cmd, const Task& task, const 
     // all): each function gets a quarter of the file's time, at least 120 s
     // (unbounded_string_contracts: strcat/strncat take > 300 s each and hid the
     // 8 other invariants proofs). Past it the function is TIMEOUT, never a proof.
-    if (!std::getenv("PRISM_FUNCTION_BUDGET")) {
+    if (!prism::settings::cstr(prism::settings::function_budget())) {
         const long fb = std::max(120L, static_cast<long>(timeout / 4));
         argv.insert(argv.begin(), {"env", "PRISM_FUNCTION_BUDGET=" + std::to_string(fb)});
         res.argv = argv;

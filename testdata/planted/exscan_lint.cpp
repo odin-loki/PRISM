@@ -1,3 +1,4 @@
+#include <numeric>
 int exscan_bad(int *in, int *out) {
     std::exclusive_scan(in, in + 4, out, 0);
     return out[9];

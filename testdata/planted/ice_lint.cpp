@@ -1,3 +1,4 @@
+#include <type_traits>
 int ice_bad(int n, int *p) {
     if (std::is_constant_evaluated()) return 0;
     return p[n];

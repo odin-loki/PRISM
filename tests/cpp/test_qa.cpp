@@ -1,5 +1,5 @@
 // prism-qa (src/tools/qa) and the session runner it uses
-// (src/prism/proc_session.cpp). Part of prism_tests.
+// (prism::exec::run_session). Part of prism_tests.
 // Same source list on WIN32 (PRISM_TESTS_WIN_SUBSET builds the fakes): sibling() finds the tools as
 // .exe, run_session is checked with tests/cpp/fake_session_probe.cpp
 // (PRISM_FAKE_SESSION_PROBE) instead of sh, and the fork / session-kill cases
@@ -9,16 +9,19 @@
 // A tool that needs something this machine lacks (the Lean checkers built by
 // lake, lli) says NOTRUN in a doctest MESSAGE and checks what it can without
 // it; nothing is skipped quietly.
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
 #endif
 
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "../../src/tools/qa/qa.hpp"
 
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
+#include "prism/log.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
 #include "prism/shipdocs.hpp"
@@ -36,6 +39,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -169,25 +173,44 @@ bool gone(long pid) {
     return false;
 }
 
-prism::detail::SessionOptions fake_prism(const fs::path& pidfile, double timeout) {
-    prism::detail::SessionOptions so;
+prism::exec::SessionOptions fake_prism(const fs::path& pidfile, double timeout) {
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_FAKE_SOLVER_PIDFILE", pidfile.string()}};
     so.timeout_s = timeout;
     return so;
 }
 #endif
 
-int pvb_cell(const prism::qa::PvbResult& r, const char* row, const char* col) {
-    auto it = r.matrix.find(std::pair<std::string, std::string>{row, col});
-    return it == r.matrix.end() ? 0 : it->second;
+// prism-qa reports through prism::log, not std::cerr: the capture swaps the
+// log sink too and formats lines the way prism-qa prints them.
+std::ostringstream* g_qa_log = nullptr;
+void qa_capture_sink(prism::log::Level lv, std::string_view component, std::string_view message) {
+    if (!g_qa_log) return;
+    std::ostringstream& o = *g_qa_log;
+    if (lv == prism::log::Level::Plain) {
+        o << message;
+        return;
+    }
+    o << "prism-qa";
+    if (!component.empty()) o << ' ' << component;
+    o << ": ";
+    if (lv == prism::log::Level::Error) o << "error: ";
+    if (lv == prism::log::Level::Warn) o << "warning: ";
+    o << message << '\n';
 }
 
 struct StreamCapture {
     std::ostringstream out, err;
     std::streambuf* prev_out = nullptr;
     std::streambuf* prev_err = nullptr;
-    StreamCapture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {}
+    prism::log::Sink prev_sink = nullptr;
+    StreamCapture() : prev_out(std::cout.rdbuf(out.rdbuf())), prev_err(std::cerr.rdbuf(err.rdbuf())) {
+        g_qa_log = &err;
+        prev_sink = prism::log::set_sink(&qa_capture_sink);
+    }
     ~StreamCapture() {
+        prism::log::set_sink(prev_sink);
+        g_qa_log = nullptr;
         std::cout.rdbuf(prev_out);
         std::cerr.rdbuf(prev_err);
     }
@@ -200,49 +223,18 @@ struct Captured {
     std::string out, err;
 };
 
-Captured run_pvb(const std::vector<std::string>& args) {
-    StreamCapture cap;
-    Captured c;
-    c.rc = prism::qa::pir_vs_bmc_main(args);
-    c.out = cap.out.str();
-    c.err = cap.err.str();
-    return c;
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------- sessions
 #ifndef _WIN32
-TEST_CASE("session_members sees a solver in a process group of its own; kill_session kills it") {
-    Tmp t("prism_qa_sess_");
-    const auto pidfile = t.path / "solver.pid";
-    const pid_t p = ::fork();
-    REQUIRE(p >= 0);
-    if (p == 0) {
-        ::setsid();
-        ::setenv("PRISM_QA_FAKE_SOLVER_PIDFILE", pidfile.c_str(), 1);
-        ::execl(sibling("prism_tests").c_str(), "prism_tests", static_cast<char*>(nullptr));
-        ::_exit(127);
-    }
-    const long solver = solver_pid(pidfile);
-    REQUIRE(solver > 1);
-    CHECK(::getpgid(static_cast<pid_t>(solver)) != p);  // its own group ...
-    auto members = prism::detail::session_members(p);
-    CHECK(std::find(members.begin(), members.end(), static_cast<int>(solver)) != members.end());  // ... same session
-    prism::detail::kill_session(p);
-    int st = 0;
-    ::waitpid(p, &st, 0);
-    CHECK(gone(solver));
-}
-
 TEST_CASE("run_session: a timeout kills the solver in its own group") {
     Tmp t("prism_qa_sess_");
     const auto pidfile = t.path / "solver.pid";
     const auto t0 = std::chrono::steady_clock::now();
-    auto r = prism::detail::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 2.0));
+    auto r = prism::exec::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 2.0));
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(r.timed_out);
-    CHECK(r.rc == -1);
+    CHECK((r.rc == -SIGKILL || r.rc == -SIGTERM));  // -signal: the timeout signalled the group
     CHECK(secs < 30.0);
     const long solver = solver_pid(pidfile);
     REQUIRE(solver > 1);
@@ -256,8 +248,8 @@ TEST_CASE("run_session: a SIGTERM to the runner kills the session it started") {
     const pid_t p = ::fork();
     REQUIRE(p >= 0);
     if (p == 0) {
-        prism::detail::install_child_cleanup();
-        prism::detail::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 60.0));
+        prism::exec::install_interrupt_cleanup();
+        prism::exec::run_session({sibling("prism_tests").string()}, fake_prism(pidfile, 60.0));
         ::_exit(0);
     }
     const long solver = solver_pid(pidfile);
@@ -283,9 +275,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     const std::string probe = PRISM_FAKE_SESSION_PROBE;
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     REQUIRE(fs::exists(probe));
-    auto run = [&](std::vector<std::string> args, const prism::detail::SessionOptions& so = {}) {
+    auto run = [&](std::vector<std::string> args, const prism::exec::SessionOptions& so = {}) {
         args.insert(args.begin(), probe);
-        return prism::detail::run_session(args, so);
+        return prism::exec::run_session(args, so);
     };
 
     // stdout, stderr and the exit code come back separately
@@ -307,7 +299,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
 
     Tmp t("prism_qa_sess_");
     // the env overlay reaches the child (and only the child) ...
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_PROBE", "v1"}};
     auto ev = run({"echo-env", "PRISM_QA_PROBE"}, so);
     CHECK(ev.rc == 0);
@@ -315,7 +307,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(std::getenv("PRISM_QA_PROBE") == nullptr);
     CHECK(run({"echo-env", "PRISM_QA_PROBE"}).rc == 3);  // unset without the overlay: the probe says 3
     // ... the working directory is the one asked for ...
-    prism::detail::SessionOptions in_dir;
+    prism::exec::SessionOptions in_dir;
     in_dir.cwd = t.path;
     auto cw = run({"echo-cwd"}, in_dir);
     CHECK(cw.rc == 0);
@@ -323,7 +315,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     REQUIRE(cl.size() == 1);
     CHECK(fs::equivalent(cl[0], t.path));
     // ... and stdin is the given input, byte for byte
-    prism::detail::SessionOptions with_in;
+    prism::exec::SessionOptions with_in;
     const std::string input = "line1\nline2\n";
     with_in.input = input;
     with_in.timeout_s = 30;
@@ -333,7 +325,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(ci.out == input);
 
     // no input: stdin is empty (EOF), so copy-stdin ends at once
-    prism::detail::SessionOptions bounded;
+    prism::exec::SessionOptions bounded;
     bounded.timeout_s = 30;
     auto n = run({"copy-stdin"}, bounded);
     CHECK_FALSE(n.timed_out);
@@ -341,9 +333,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(n.out.empty());
 
     // a missing program is 127
-    CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
+    CHECK(prism::exec::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
     // a memory cap reaches the child (RLIMIT_AS on POSIX, a Job Object limit here)
-    prism::detail::SessionOptions capped;
+    prism::exec::SessionOptions capped;
     capped.rlimit_as_mb = 64;
     CHECK(run({"alloc", "8"}, capped).rc == 0);
     CHECK(run({"alloc", "256"}, capped).rc == 4);
@@ -375,10 +367,10 @@ TEST_CASE("run_session: a timeout kills the child and the process it started (Jo
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     Tmp t("prism_qa_sess_");
     const auto pidfile = t.path / "solver.pid";
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.timeout_s = 2.0;
     const auto t0 = std::chrono::steady_clock::now();
-    auto r = prism::detail::run_session({probe, "spawn-sleep", "120", pidfile.string()}, so);
+    auto r = prism::exec::run_session({probe, "spawn-sleep", "120", pidfile.string()}, so);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     CHECK(r.timed_out);
     CHECK(r.rc == -1);
@@ -393,7 +385,7 @@ TEST_CASE("run_session: a background grandchild left behind dies with its sessio
     const std::string probe = PRISM_FAKE_SESSION_PROBE;
     REQUIRE_MESSAGE(!probe.empty(), "PRISM_FAKE_SESSION_PROBE not defined (CMake: fake_session_probe)");
     // the child exits at once, leaving "sleep 120" running; run_session ends it
-    auto bg = prism::detail::run_session({probe, "spawn-bg", "120"});
+    auto bg = prism::exec::run_session({probe, "spawn-bg", "120"});
     CHECK(bg.rc == 0);
     CHECK_FALSE(bg.timed_out);
     const long gc = std::atol(bg.out.c_str());
@@ -402,7 +394,7 @@ TEST_CASE("run_session: a background grandchild left behind dies with its sessio
 }
 #else
 TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, cwd and stdin") {
-    auto r = prism::detail::run_session({"sh", "-c", "echo ok; echo err >&2; exit 3"});
+    auto r = prism::exec::run_session({"sh", "-c", "echo ok; echo err >&2; exit 3"});
     CHECK_FALSE(r.timed_out);
     CHECK_FALSE(r.failed);
     CHECK(r.rc == 3);
@@ -410,12 +402,12 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(r.err == "err\n");
 
     Tmp t("prism_qa_sess_");
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.env = {{"PRISM_QA_PROBE", "v1"}, {"PATH", std::getenv("PATH") ? std::getenv("PATH") : "/usr/bin:/bin"}};
     so.cwd = t.path;
     const std::string input = "line1\nline2\n";
     so.input = input;
-    auto e = prism::detail::run_session({"sh", "-c", "echo $PRISM_QA_PROBE; pwd; cat"}, so);
+    auto e = prism::exec::run_session({"sh", "-c", "echo $PRISM_QA_PROBE; pwd; cat"}, so);
     CHECK(e.rc == 0);
     auto ls = lines_of(e.out);
     REQUIRE(ls.size() == 4);
@@ -425,13 +417,13 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(ls[3] == "line2");
 
     // no input: stdin is /dev/null, not the test runner's terminal
-    auto n = prism::detail::run_session({"sh", "-c", "cat; echo done"});
+    auto n = prism::exec::run_session({"sh", "-c", "cat; echo done"});
     CHECK(n.out == "done\n");
     // a killed child reports the signal; a missing program is 127
-    CHECK(prism::detail::run_session({"sh", "-c", "kill -9 $$"}).rc == -9);
-    CHECK(prism::detail::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
+    CHECK(prism::exec::run_session({"sh", "-c", "kill -9 $$"}).rc == -9);
+    CHECK(prism::exec::run_session({"/nonexistent/prism-qa-probe"}).rc == 127);
     // a background grandchild left behind by a finished child dies with its session
-    auto bg = prism::detail::run_session({"sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"});
+    auto bg = prism::exec::run_session({"sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"});
     const long gc = std::atol(bg.out.c_str());
     REQUIRE(gc > 1);
     CHECK(gone(gc));
@@ -440,9 +432,9 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
 
 #ifndef _WIN32
 TEST_CASE("run_session: RLIMIT_AS applies to the child") {
-    prism::detail::SessionOptions so;
+    prism::exec::SessionOptions so;
     so.rlimit_as_mb = 64;
-    auto r = prism::detail::run_session({"sh", "-c", "ulimit -v"}, so);
+    auto r = prism::exec::run_session({"sh", "-c", "ulimit -v"}, so);
     CHECK(r.rc == 0);
     CHECK(r.out == std::to_string(64 * 1024) + "\n");
 }
@@ -483,292 +475,14 @@ TEST_CASE("triage-selfscan buckets the self-scan fixture") {
 }
 
 TEST_CASE("prism-qa triage-selfscan prints the same lines") {
-    auto r = prism::detail::run_session(
+    auto r = prism::exec::run_session(
         {sibling("prism-qa").string(), "triage-selfscan", (repo() / "testdata" / "fixtures" / "selfscan_min").string()});
     REQUIRE(r.rc == 0);
     CHECK(has_line(lf(r.out), "total FAILED: 4"));
     CHECK(has_line(lf(r.out), "summary: 1 / 3 / 1"));
-    auto bad = prism::detail::run_session({sibling("prism-qa").string(), "triage-selfscan", "/nonexistent"});
+    auto bad = prism::exec::run_session({sibling("prism-qa").string(), "triage-selfscan", "/nonexistent"});
     CHECK(bad.rc == 2);
-    CHECK(prism::detail::run_session({sibling("prism-qa").string(), "no-such-command"}).rc == 2);
-}
-
-// ---------------------------------------------------------------- pir-vs-bmc
-TEST_CASE("pir-vs-bmc buckets, matrix and hard conflicts") {
-    using prism::qa::pvb_bucket;
-    const std::string proved = "PROVED", cert = "PROVED-CERTIFIED", unb = "PROVED-UNBOUNDED", ass = "PROVED-ASSUMING",
-                      bounded = "BOUNDED", timeout = "TIMEOUT", notrun = "NOTRUN", nh = "NEEDS-HARNESS";
-    CHECK(pvb_bucket(nullptr) == "absent");
-    for (auto* s : {&proved, &cert, &unb, &ass}) CHECK(pvb_bucket(s) == "PROVED*");
-    CHECK(pvb_bucket(&bounded) == "BOUNDED");  // Law 2: never a PROVED*
-    CHECK(pvb_bucket(&nh) == "NEEDS-HARNESS");
-    CHECK(pvb_bucket(&timeout) == "UNKNOWN");
-    CHECK(pvb_bucket(&notrun) == "UNKNOWN");
-
-    auto f = [](const char* file, const char* fn, const char* st) {
-        return nlohmann::json{{"file", file}, {"function", fn}, {"status", st}, {"message", "m"}};
-    };
-    nlohmann::json report = {
-        {"stages",
-         {{{"name", "bmc"},
-           {"findings",
-            {f("a.c", "f", "PROVED"), f("a.c", "f", "FAILED"), f("a.c", "g", "FAILED"), f("a.c", "h", "BOUNDED"),
-             f("a.c", "only_bmc", "UNKNOWN"), nlohmann::json{{"file", "a.c"}, {"status", "FAILED"}}}}},
-          {{"name", "pir"},
-           {"findings",
-            {f("a.c", "f", "PROVED-CERTIFIED"), f("a.c", "g", "PROVED"), f("a.c", "h", "PROVED"),
-             f("b.c", "only_pir", "FAILED")}}}}}};
-    auto r = prism::qa::pir_vs_bmc(report);
-    CHECK(r.functions == 5);
-    CHECK(r.bmc == 4);
-    CHECK(r.pir == 4);
-    CHECK(r.matrix[{"PROVED*", "PROVED*"}] == 1);  // the first finding per function is its verdict
-    CHECK(r.matrix[{"FAILED", "PROVED*"}] == 1);
-    CHECK(r.matrix[{"BOUNDED", "PROVED*"}] == 1);
-    CHECK(r.matrix[{"UNKNOWN", "absent"}] == 1);
-    CHECK(r.matrix[{"absent", "FAILED"}] == 1);
-    REQUIRE(r.conflicts.size() == 1);
-    CHECK(r.conflicts[0]["function"] == "g");
-    CHECK(r.conflicts[0]["bmc"] == "FAILED");
-    CHECK(r.conflicts[0]["pir"] == "PROVED");
-    const auto text = prism::qa::pir_vs_bmc_text(r);
-    CHECK(has_line(text, "functions: 5 (bmc 4, pir 4)"));
-    CHECK(has_line(text, "rows = bmc, columns = pir"));
-    CHECK(has_line(text, "same bucket where both report: 1/3"));
-    CHECK(r.agree_both == 1);
-    CHECK(r.both_report == 3);
-    CHECK(r.superset_gaps == 0);
-    CHECK(r.superset_gaps == pvb_cell(r, "PROVED*", "absent") + pvb_cell(r, "PROVED*", "NEEDS-HARNESS"));
-    const auto gate = prism::qa::pir_vs_bmc_gate(r);
-    CHECK(gate.hard_conflicts_ok == false);
-    CHECK(gate.superset_ok == true);
-    CHECK(gate.pass == false);
-    CHECK(has_line(text, "superset gaps (bmc PROVED*, pir absent or NEEDS-HARNESS): 0"));
-    CHECK(has_line(text, "retirement gate (hard conflicts): FAIL (1)"));
-    CHECK(has_line(text, "retirement gate (pir superset): PASS (0)"));
-    CHECK(has_line(text, "retirement gate (overall): FAIL"));
-    CHECK(has_line(text, "hard conflicts (PROVED* vs FAILED): 1"));
-    CHECK(has_line(text, "  a.c::g: bmc=FAILED [m]  | pir=PROVED [m] "));
-    // the matrix: right-aligned columns 15 wide, left-aligned row names
-    CHECK(has_line(text, std::string(15, ' ') + "        PROVED*        BOUNDED         FAILED  NEEDS-HARNESS"
-                                                "          ERROR        UNKNOWN         absent"));
-    CHECK(has_line(text, "FAILED                       1              0              0              0"
-                         "              0              0              0"));
-    auto j = prism::qa::pir_vs_bmc_json(r);
-    CHECK(j["matrix"]["FAILED|PROVED*"] == 1);
-    CHECK(j["conflicts"].size() == 1);
-    CHECK(j["agree_both"] == 1);
-    CHECK(j["both_report"] == 3);
-    CHECK(j["superset_gaps"] == 0);
-    CHECK(j["gate"]["hard_conflicts"] == "FAIL");
-    CHECK(j["gate"]["superset"] == "PASS");
-    CHECK(j["gate"]["overall"] == "FAIL");
-}
-
-// Synthetic rows only. A passing gate here is the counter definition, not a testdata/ run.
-TEST_CASE("pir-vs-bmc retirement gates, superset cells and exit codes") {
-    auto f = [](const char* file, const char* fn, const char* st) {
-        return nlohmann::json{{"file", file}, {"function", fn}, {"status", st}, {"message", "m"}};
-    };
-    auto stages = [](nlohmann::json bmc, nlohmann::json pir) {
-        return nlohmann::json{
-            {"stages", nlohmann::json::array({nlohmann::json{{"name", "bmc"}, {"findings", std::move(bmc)}},
-                                              nlohmann::json{{"name", "pir"}, {"findings", std::move(pir)}}})}};
-    };
-    // Every proof class counts as PROVED*. The unnamed finding is not a function.
-    const auto mixed = stages(
-        nlohmann::json::array({f("a.c", "gap_abs", "PROVED"), f("a.c", "gap_cert", "PROVED-CERTIFIED"),
-                               f("a.c", "gap_unb", "PROVED-UNBOUNDED"), f("a.c", "gap_ass", "PROVED-ASSUMING"),
-                               f("a.c", "ok", "PROVED"), f("a.c", "hard", "PROVED"), f("a.c", "hard_rev", "FAILED"),
-                               f("a.c", "hard_cert", "PROVED-CERTIFIED"), f("a.c", "bounded_abs", "BOUNDED"),
-                               f("a.c", "bounded_both", "BOUNDED"), f("a.c", "unk", "NOTRUN"),
-                               f("a.c", "proved_err", "PROVED"), f("a.c", "proved_bounded", "PROVED"),
-                               f("a.c", "nh_abs", "NEEDS-HARNESS"),
-                               nlohmann::json{{"file", "a.c"}, {"status", "PROVED"}}}),
-        nlohmann::json::array({f("a.c", "gap_unb", "NEEDS-HARNESS"), f("a.c", "gap_ass", "NEEDS-HARNESS"),
-                               f("a.c", "ok", "PROVED-CERTIFIED"), f("a.c", "hard", "FAILED"),
-                               f("a.c", "hard_rev", "PROVED"), f("a.c", "hard_cert", "FAILED"),
-                               f("a.c", "bounded_both", "BOUNDED"), f("a.c", "unk", "TIMEOUT"),
-                               f("a.c", "proved_err", "ERROR"), f("a.c", "proved_bounded", "BOUNDED")}));
-    auto r = prism::qa::pir_vs_bmc(mixed);
-    CHECK(r.functions == 14);
-    CHECK(r.bmc == 14);
-    CHECK(r.pir == 10);
-    CHECK(pvb_cell(r, "PROVED*", "absent") == 2);
-    CHECK(pvb_cell(r, "PROVED*", "NEEDS-HARNESS") == 2);
-    CHECK(pvb_cell(r, "PROVED*", "PROVED*") == 1);
-    CHECK(pvb_cell(r, "PROVED*", "FAILED") == 2);
-    CHECK(pvb_cell(r, "FAILED", "PROVED*") == 1);
-    CHECK(pvb_cell(r, "PROVED*", "BOUNDED") == 1);
-    CHECK(pvb_cell(r, "PROVED*", "ERROR") == 1);
-    CHECK(pvb_cell(r, "BOUNDED", "absent") == 1);
-    CHECK(pvb_cell(r, "BOUNDED", "BOUNDED") == 1);
-    CHECK(pvb_cell(r, "UNKNOWN", "UNKNOWN") == 1);
-    CHECK(pvb_cell(r, "NEEDS-HARNESS", "absent") == 1);
-    CHECK(r.superset_gaps == 4);
-    CHECK(r.superset_gaps == pvb_cell(r, "PROVED*", "absent") + pvb_cell(r, "PROVED*", "NEEDS-HARNESS"));
-    CHECK(r.agree_both == 3);
-    CHECK(r.both_report == 10);
-    REQUIRE(r.conflicts.size() == 3);
-    std::set<std::string> names;
-    bool saw_cert = false;
-    for (const auto& c : r.conflicts) {
-        names.insert(c["function"].get<std::string>());
-        if (c["function"] == "hard_cert") {
-            saw_cert = true;
-            CHECK(c["bmc"] == "PROVED-CERTIFIED");
-            CHECK(c["pir"] == "FAILED");
-        }
-    }
-    CHECK(saw_cert);
-    CHECK(names.size() == 3);
-    CHECK(names.count("hard") == 1);
-    CHECK(names.count("hard_cert") == 1);
-    CHECK(names.count("hard_rev") == 1);
-    const auto mixed_gate = prism::qa::pir_vs_bmc_gate(r);
-    CHECK(mixed_gate.hard_conflicts_ok == false);
-    CHECK(mixed_gate.superset_ok == false);
-    CHECK(mixed_gate.pass == false);
-    const auto mixed_text = prism::qa::pir_vs_bmc_text(r);
-    CHECK(has_line(mixed_text, "same bucket where both report: 3/10"));
-    CHECK(has_line(mixed_text, "superset gaps (bmc PROVED*, pir absent or NEEDS-HARNESS): 4"));
-    CHECK(has_line(mixed_text, "retirement gate (hard conflicts): FAIL (3)"));
-    CHECK(has_line(mixed_text, "retirement gate (pir superset): FAIL (4)"));
-    CHECK(has_line(mixed_text, "retirement gate (overall): FAIL"));
-    auto mixed_json = prism::qa::pir_vs_bmc_json(r);
-    CHECK(mixed_json["matrix"]["PROVED*|absent"] == 2);
-    CHECK(mixed_json["matrix"]["PROVED*|NEEDS-HARNESS"] == 2);
-    CHECK(mixed_json["matrix"]["BOUNDED|absent"] == 1);
-    CHECK(mixed_json["superset_gaps"] == 4);
-    CHECK(mixed_json["agree_both"] == 3);
-    CHECK(mixed_json["both_report"] == 10);
-    CHECK(mixed_json["gate"]["hard_conflicts"] == "FAIL");
-    CHECK(mixed_json["gate"]["superset"] == "FAIL");
-    CHECK(mixed_json["gate"]["overall"] == "FAIL");
-
-    // Agreement and a non-proof disagreement. Neither is a superset gap or a hard conflict.
-    const auto pass = stages(nlohmann::json::array({f("a.c", "a", "PROVED"), f("a.c", "b", "BOUNDED"),
-                                                    f("a.c", "c", "FAILED")}),
-                             nlohmann::json::array({f("a.c", "a", "PROVED-UNBOUNDED"), f("a.c", "b", "BOUNDED"),
-                                                    f("a.c", "c", "NEEDS-HARNESS")}));
-    auto pr = prism::qa::pir_vs_bmc(pass);
-    CHECK(pr.superset_gaps == 0);
-    CHECK(pr.conflicts.empty());
-    CHECK(pr.agree_both == 2);
-    CHECK(pr.both_report == 3);
-    const auto pass_gate = prism::qa::pir_vs_bmc_gate(pr);
-    CHECK(pass_gate.hard_conflicts_ok == true);
-    CHECK(pass_gate.superset_ok == true);
-    CHECK(pass_gate.pass == true);
-    CHECK(has_line(prism::qa::pir_vs_bmc_text(pr), "same bucket where both report: 2/3"));
-    CHECK(has_line(prism::qa::pir_vs_bmc_text(pr), "retirement gate (overall): PASS"));
-
-    const auto gap_only = stages(nlohmann::json::array({f("a.c", "a", "PROVED"), f("a.c", "b", "PROVED-CERTIFIED")}),
-                                 nlohmann::json::array({f("a.c", "b", "NEEDS-HARNESS")}));
-    auto gr = prism::qa::pir_vs_bmc(gap_only);
-    CHECK(gr.superset_gaps == 2);
-    CHECK(gr.conflicts.empty());
-    CHECK(prism::qa::pir_vs_bmc_gate(gr).hard_conflicts_ok == true);
-    CHECK(prism::qa::pir_vs_bmc_gate(gr).superset_ok == false);
-    CHECK(prism::qa::pir_vs_bmc_gate(gr).pass == false);
-
-    const auto hard_only = stages(nlohmann::json::array({f("a.c", "a", "PROVED-ASSUMING")}),
-                                  nlohmann::json::array({f("a.c", "a", "FAILED")}));
-    auto hr = prism::qa::pir_vs_bmc(hard_only);
-    CHECK(hr.superset_gaps == 0);
-    CHECK(hr.conflicts.size() == 1);
-    CHECK(hr.conflicts[0]["bmc"] == "PROVED-ASSUMING");
-    CHECK(prism::qa::pir_vs_bmc_gate(hr).hard_conflicts_ok == false);
-    CHECK(prism::qa::pir_vs_bmc_gate(hr).superset_ok == true);
-    CHECK(prism::qa::pir_vs_bmc_gate(hr).pass == false);
-
-    Tmp td("pvb_gate_");
-    auto write = [&](const char* name, const nlohmann::json& rep) {
-        const auto p = td.path / name;
-        std::ofstream(p, std::ios::binary) << rep.dump(2);
-        return p.string();
-    };
-    const auto mixed_path = write("mixed.json", mixed);
-    const auto pass_path = write("pass.json", pass);
-    const auto gap_path = write("gap.json", gap_only);
-    const auto hard_path = write("hard.json", hard_only);
-    const auto empty_path = write("empty.json", nlohmann::json::object());
-    std::ofstream(td.path / "bad.json", std::ios::binary) << "{";
-
-    auto help = run_pvb({"-h"});
-    CHECK(help.rc == 0);
-    CHECK(help.out.find("--gate") != std::string::npos);
-    CHECK(help.out.find("testdata") != std::string::npos);
-
-    auto unknown = run_pvb({"--no-such"});
-    CHECK(unknown.rc == 2);
-    CHECK(has_line(unknown.err, "pir-vs-bmc: unknown option --no-such"));
-
-    auto missing = run_pvb({"--gate", "--report", (td.path / "missing.json").string()});
-    CHECK(missing.rc == 2);
-    CHECK(missing.err.find("cannot read") != std::string::npos);
-
-    auto bad = run_pvb({"--gate", "--report", (td.path / "bad.json").string()});
-    CHECK(bad.rc == 2);
-    CHECK(bad.err.find("cannot read") != std::string::npos);
-
-    auto reported = run_pvb({"--report", hard_path});
-    CHECK(reported.rc == 0);
-    CHECK(reported.err.empty());
-    CHECK(has_line(reported.out, "retirement gate (overall): FAIL"));
-    CHECK(has_line(reported.out, "hard conflicts (PROVED* vs FAILED): 1"));
-
-    auto gated_hard = run_pvb({"--gate", "--report", hard_path});
-    CHECK(gated_hard.rc == 1);
-    CHECK(has_line(gated_hard.err, "PIR-vs-BMC GATE FAILED: 1 hard conflict(s)"));
-    CHECK(gated_hard.err.find("NEEDS-HARNESS") == std::string::npos);
-
-    auto gated_gap = run_pvb({"--gate", "--report", gap_path});
-    CHECK(gated_gap.rc == 1);
-    CHECK(has_line(gated_gap.err, "PIR-vs-BMC GATE FAILED: 2 bmc PROVED* function(s) with pir absent or NEEDS-HARNESS"));
-    CHECK(gated_gap.err.find("hard conflict") == std::string::npos);
-    CHECK(has_line(gated_gap.out, "retirement gate (hard conflicts): PASS (0)"));
-    CHECK(has_line(gated_gap.out, "retirement gate (pir superset): FAIL (2)"));
-
-    auto gated_mixed = run_pvb({"--gate", "--report", mixed_path});
-    CHECK(gated_mixed.rc == 1);
-    CHECK(has_line(gated_mixed.err, "PIR-vs-BMC GATE FAILED: 3 hard conflict(s)"));
-    CHECK(has_line(gated_mixed.err, "PIR-vs-BMC GATE FAILED: 4 bmc PROVED* function(s) with pir absent or NEEDS-HARNESS"));
-
-    const auto json_path = (td.path / "out.json").string();
-    auto gated_pass = run_pvb({"--gate", "--report", pass_path, "--json", json_path});
-    CHECK(gated_pass.rc == 0);
-    CHECK(gated_pass.err.empty());
-    CHECK(has_line(gated_pass.out, "retirement gate (overall): PASS"));
-    CHECK(has_line(gated_pass.out, "same bucket where both report: 2/3"));
-    auto written = prism::qa::load_json(json_path);
-    REQUIRE(written);
-    CHECK((*written)["gate"]["overall"] == "PASS");
-    CHECK((*written)["gate"]["hard_conflicts"] == "PASS");
-    CHECK((*written)["gate"]["superset"] == "PASS");
-    CHECK((*written)["superset_gaps"] == 0);
-    CHECK((*written)["agree_both"] == 2);
-    CHECK((*written)["both_report"] == 3);
-    CHECK((*written)["conflicts"].empty());
-
-    const auto gap_json = (td.path / "gap-out.json").string();
-    auto gated_gap_json = run_pvb({"--json", gap_json, "--gate", "--report", gap_path});
-    CHECK(gated_gap_json.rc == 1);
-    auto gap_written = prism::qa::load_json(gap_json);
-    REQUIRE(gap_written);
-    CHECK((*gap_written)["gate"]["overall"] == "FAIL");
-    CHECK((*gap_written)["gate"]["hard_conflicts"] == "PASS");
-    CHECK((*gap_written)["gate"]["superset"] == "FAIL");
-    CHECK((*gap_written)["matrix"]["PROVED*|absent"] == 1);
-    CHECK((*gap_written)["matrix"]["PROVED*|NEEDS-HARNESS"] == 1);
-
-    // Both counters are 0, so --gate exits 0. That is not evidence pir covers bmc.
-    auto empty = run_pvb({"--gate", "--report", empty_path});
-    CHECK(empty.rc == 0);
-    CHECK(has_line(empty.out, "functions: 0 (bmc 0, pir 0)"));
-    CHECK(has_line(empty.out, "same bucket where both report: 0/0"));
-    CHECK(has_line(empty.out, "superset gaps (bmc PROVED*, pir absent or NEEDS-HARNESS): 0"));
-    CHECK(has_line(empty.out, "retirement gate (overall): PASS"));
+    CHECK(prism::exec::run_session({sibling("prism-qa").string(), "no-such-command"}).rc == 2);
 }
 
 // ---------------------------------------------------------------- pir-lean-check
@@ -823,7 +537,7 @@ TEST_CASE("pir_lean_check fixtures give their expected verdicts") {
         auto want = prism::qa::read_text(fs::path(f).replace_extension(".expected"));
         while (!want.empty() && (want.back() == '\n' || want.back() == '\r' || want.back() == ' '))
             want.pop_back();
-        auto r = prism::detail::run_session({checker->string(), f.string()});
+        auto r = prism::exec::run_session({checker->string(), f.string()});
         auto ls = lines_of(r.out);
         REQUIRE_FALSE(ls.empty());
         CHECK_MESSAGE(ls.back() == want, f.filename().string());
@@ -835,7 +549,7 @@ TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
     auto checker = built_checker();
     if (!checker) {
         // the driver itself reports NOTRUN (exit 2), never a pass
-        auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
+        auto r = prism::exec::run_session({sibling("prism-qa").string(), "pir-lean-check",
                                              (repo() / "testdata" / "pir").string(), "--checker",
                                              "/nonexistent/pir_lean_check"});
         CHECK(r.rc == 2);
@@ -843,7 +557,7 @@ TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
         MESSAGE("NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)");
         return;
     }
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "pir-lean-check",
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "pir-lean-check",
                                          (repo() / "testdata" / "pir").string(), "--bin", sibling("prism").string(),
                                          "--checker", checker->string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
@@ -940,9 +654,9 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     REQUIRE_MESSAGE(ir, err);
     auto run = [&](const std::string& fn, int w, int ret, std::uint64_t a) {
         std::ofstream(t.path / "h.ll") << prism::qa::lli_harness(*ir, fn, {w}, ret, {a});
-        prism::detail::SessionOptions so;
+        prism::exec::SessionOptions so;
         so.timeout_s = 60;
-        auto r = prism::detail::run_session(
+        auto r = prism::exec::run_session(
             {fe.lli->string(), "--entry-function=__prism_lli_main", (t.path / "h.ll").string()}, so);
         auto ls = lines_of(r.out);
         return ls.empty() ? std::string("rc ") + std::to_string(r.rc) + " " + r.err : ls.back();
@@ -951,7 +665,7 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     CHECK(run("add1", 8, 8, 255) == "0");               // i8 wraps; printed zero-extended
     CHECK(run("neg", 32, 32, 1) == "4294967295");       // -1 as an unsigned 32-bit value
     // the driver without the Lean evaluator: NOTRUN, exit 2
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "llvm-sem-vs-lli", src.string()});
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "llvm-sem-vs-lli", src.string()});
     if (!fs::exists(repo() / "proofs" / "refinement" / ".lake" / "build" / "bin" / "llvm_eval")) {
         CHECK(r.rc == 2);
         CHECK(r.out.find("NOTRUN: missing llvm_eval") != std::string::npos);
@@ -1090,15 +804,15 @@ TEST_CASE("assurance-check catches missing artefacts") {
     CHECK_FALSE(prism::qa::is_path_ref("build/prism"));
 
     // the standalone checker (the docs CI job) agrees: exit 0 on the package, 1 here
-    auto ok = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
+    auto ok = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                           repo().string()});
     CHECK_MESSAGE(ok.rc == 0, (ok.out + ok.err));
     CHECK(ok.out.find(" 0 missing") != std::string::npos);
-    auto bad = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
+    auto bad = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                            repo().string(), "--docs", t.path.string()});
     CHECK(bad.rc == 1);
     CHECK(bad.out.find("5 missing") != std::string::npos);
-    auto missing = prism::detail::run_session({sibling("prism_docs_check").string(), "assurance-check", "--docs",
+    auto missing = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--docs",
                                                (t.path / "nope").string()});
     CHECK(missing.rc == 2);
 }
@@ -1130,7 +844,7 @@ TEST_CASE("docs: every --help flag of prism and prism prove is in docs/USER_GUID
     for (const auto& sub : std::vector<std::vector<std::string>>{{"--help"}, {"prove", "--help"}}) {
         std::vector<std::string> argv{sibling("prism").string()};
         argv.insert(argv.end(), sub.begin(), sub.end());
-        auto r = prism::detail::run_session(argv);
+        auto r = prism::exec::run_session(argv);
         REQUIRE(r.rc == 0);
         CHECK_FALSE(prism::qa::flags_of(r.out).empty());
         auto missing = prism::qa::undocumented_flags(r.out, guide);
@@ -1169,7 +883,7 @@ TEST_CASE("docs: every verdict has the VERDICTS.md anchor reports link to") {
 }
 
 TEST_CASE("prism-qa docs-check passes on this repository") {
-    auto r = prism::detail::run_session({sibling("prism-qa").string(), "docs-check", "--bin", sibling("prism").string()});
+    auto r = prism::exec::run_session({sibling("prism-qa").string(), "docs-check", "--bin", sibling("prism").string()});
     CHECK_MESSAGE(r.rc == 0, (r.out + r.err));
     CHECK(has_line(lf(r.out), "docs-check: 0 problems"));
 }

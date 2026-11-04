@@ -1,3 +1,5 @@
+#include <spanstream>
+#include <string>
 char *spanstream_bad(void) {
     char buf[8];
     std::spanstream ss(buf);

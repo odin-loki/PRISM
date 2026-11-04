@@ -133,7 +133,7 @@ constexpr const char* kProbeExe = "probe";
 
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <format>\n"
+    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <format>\n"
                             "int main() {\n"
                             "  char buf[8] = {};\n"
                             "  auto r = std::format_to_n(buf, 8, \"{}\", 42);\n"
@@ -200,8 +200,9 @@ TEST_CASE("cxx format model: header checks a null output pointer") {
     CHECK(text.find("_GLIBCXX_FORMAT") != std::string::npos);
     CHECK(text.find("#pragma GCC system_header") != std::string::npos);
     CHECK(text.find("namespace std") != std::string::npos);
-    CHECK(text.find("#include <string>") == std::string::npos);
-    CHECK(text.find("#include <string_view>") == std::string::npos);
+    // session 5: std::format returns std::string
+    CHECK(text.find("#include <string>") != std::string::npos);
+    CHECK(text.find("#include <string_view>") != std::string::npos);
     CHECK(text.find("#include <sstream>") == std::string::npos);
     CHECK(text.find("#include <vector>") == std::string::npos);
     CHECK(text.find("fail to compile") != std::string::npos);
@@ -224,7 +225,6 @@ TEST_CASE("cxx format model: header checks a null output pointer") {
 TEST_CASE("cxx format model: long long shares the writer and traps a length that does not fit") {
     const std::string text = slurp(model_header());
     REQUIRE_FALSE(text.empty());
-    CHECK(text.find("#include <string>") == std::string::npos);
     CHECK(text.find("#include <memory>") == std::string::npos);
     CHECK(text.find("This is not PROVED and not CLEAN.") != std::string::npos);
     CHECK(text.find("\nformat(") == std::string::npos);

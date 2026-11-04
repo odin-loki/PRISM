@@ -1,3 +1,4 @@
+#include <regex>
 void regex_bad(void) {
     const char *pat;
     pat = "a+";

@@ -2,8 +2,8 @@
 //
 // Deterministic half (no model): a precondition that no input satisfies makes
 // every PROVED-ASSUMING under it vacuous. The conjunction of a finding's
-// `requires` clauses and its drafted integer ranges is checked with the
-// bitvector encoder (C semantics, parameter widths); UNSAT is a
+// `requires` clauses and its drafted integer ranges is checked by pir (one
+// assume + assert probe; C semantics, parameter widths); UNSAT is a
 // VACUOUS-ASSUMPTION finding (FAILED: the specification or harness is
 // wrong), SAT is recorded, anything the encoder cannot express is named as
 // not audited.
@@ -217,7 +217,7 @@ std::vector<Finding> vacuity_audit(const std::vector<FunctionInfo>& functions, c
         g.extra["assumptions"] = nlohmann::json(clauses).dump();
         g.extra["audited_stage"] = f.stage;
         g.extra["audited_status"] = f.status;
-        g.extra["checker"] = "z3(bitvector encoder)";
+        g.extra["checker"] = "pir(z3 probe)";
         if (!culprit.empty()) g.extra["culprit"] = culprit;
         if (!skipped.empty()) g.extra["not_audited"] = nlohmann::json(skipped).dump();
         out.push_back(std::move(g));

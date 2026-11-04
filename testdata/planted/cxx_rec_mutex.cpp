@@ -1,3 +1,4 @@
+#include <mutex>
 int rmutex_unenc_bad(int n) {
     std::recursive_mutex x;
     return n;

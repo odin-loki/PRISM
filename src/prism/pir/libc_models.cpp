@@ -10,10 +10,11 @@
 // ir::Module (the models' metadata references are renamed so they cannot
 // collide with the unit's), so no llvm-link run is needed.
 
+#include "prism/exec.hpp"
 #include "prism/pir.hpp"
 #include "prism/pir/frontend.hpp"
 
-#include "../proc.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -23,6 +24,8 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <string>
+#include <thread>
 
 namespace prism::pir {
 
@@ -40,6 +43,80 @@ bool write_cxx_models(const std::filesystem::path& dir) {
         std::ofstream o(dst, std::ios::binary);
         o << text;
         if (!o) return false;
+    }
+    return true;
+}
+
+bool source_imports_std(const std::string& t) {
+    // Skip comments and string/char literals; match `import std` followed by
+    // optional whitespace and ';' or '.compat'.
+    std::size_t i = 0;
+    const std::size_t n = t.size();
+    bool line_start = true;
+    while (i < n) {
+        const char c = t[i];
+        if (c == '/' && i + 1 < n && t[i + 1] == '/') { while (i < n && t[i] != '\n') ++i; continue; }
+        if (c == '/' && i + 1 < n && t[i + 1] == '*') {
+            const auto e = t.find("*/", i + 2);
+            i = e == std::string::npos ? n : e + 2;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            ++i;
+            while (i < n && t[i] != c) { if (t[i] == '\\') ++i; ++i; }
+            ++i;
+            line_start = false;
+            continue;
+        }
+        if (c == '\n') { line_start = true; ++i; continue; }
+        if (c == ' ' || c == '\t' || c == '\r') { ++i; continue; }
+        if (line_start) {
+            std::size_t j = i;
+            if (t.compare(j, 7, "export ") == 0) j += 7;
+            while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+            if (t.compare(j, 6, "import") == 0) {
+                j += 6;
+                const std::size_t ws = j;
+                while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+                if (j > ws && t.compare(j, 3, "std") == 0) {
+                    j += 3;
+                    if (t.compare(j, 7, ".compat") == 0) j += 7;
+                    while (j < n && (t[j] == ' ' || t[j] == '\t')) ++j;
+                    if (j < n && t[j] == ';') return true;
+                }
+            }
+        }
+        line_start = false;
+        ++i;
+    }
+    return false;
+}
+
+bool build_cxx_std_module(const std::filesystem::path& clangxx, const std::filesystem::path& models_dir,
+                          const std::string& cxx_std, const std::vector<std::string>& extra_flags,
+                          const std::filesystem::path& out_pcm, double timeout_s, std::string& err) {
+    const auto src = models_dir / "std.cppm";
+    std::error_code ec;
+    if (!std::filesystem::exists(src, ec)) { err = "std.cppm model missing in " + models_dir.string(); return false; }
+    std::vector<std::string> argv{clangxx.string(), "-std=" + (cxx_std.empty() ? std::string("c++23") : cxx_std),
+                                  "-isystem", models_dir.string()};
+    argv.insert(argv.end(), extra_flags.begin(), extra_flags.end());
+    // Lowering runs units in parallel: build to a private name, then rename
+    // (atomic on one file system), so no unit reads a half-written module.
+    static std::atomic<unsigned> seq{0};
+    const auto tmp = out_pcm.string() + ".tmp" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +
+                     "." + std::to_string(seq.fetch_add(1));
+    argv.insert(argv.end(), {"-w", "--precompile", "-o", tmp, src.string()});
+    auto r = prism::exec::run_process(argv, timeout_s);
+    if (!r.failed && !r.timed_out && r.rc == 0) {
+        std::filesystem::rename(tmp, out_pcm, ec);
+        if (ec) { err = "std module rename failed: " + ec.message(); return false; }
+        return true;
+    }
+    std::filesystem::remove(tmp, ec);
+    {
+        err = r.timed_out ? "std module precompile timed out" : "std module precompile failed: " + r.text.substr(0, 400);
+        return false;
     }
     return true;
 }
@@ -113,14 +190,14 @@ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::stri
     auto src = dir / ("prism_model_" + name);
     auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
     std::vector<std::string> argv{fe.clang->string(), "-S"};
-    for (auto& t : lp64_target_flags()) argv.push_back(t);
+    for (auto& t : frontend_target_flags()) argv.push_back(t);
     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
                              "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
                              src.string()});
-    auto r = detail::run_process(argv, timeout_s);
+    auto r = prism::exec::run_process(argv, timeout_s);
     if (r.timed_out) return "model " + name + ": clang timed out after " + std::to_string(int(timeout_s)) + " s";
     if (r.failed || r.rc != 0) return "model " + name + ": " + first_error_line(r.text);
-    auto ro = detail::run_process({fe.opt->string(), c_ir_passes(*fe.opt), "-S",
+    auto ro = prism::exec::run_process({fe.opt->string(), c_ir_passes(*fe.opt), "-S",
                                    "-o", o1.string(), o0.string()},
                                   timeout_s);
     if (ro.timed_out) return "model " + name + " (opt): timed out after " + std::to_string(int(timeout_s)) + " s";
@@ -140,6 +217,11 @@ std::size_t model_source_lowered_count() {
 bool cached_model_ir_ok(const std::string& ll) {
     if (ll.empty()) return false;
 #ifdef _WIN32
+    if (frontend_ilp32()) {
+        // ILP32 models: their own cache key (triple); a 64-bit tree never matches
+        if (ll.find(std::string("target triple = \"") + ilp32_target_triple() + "\"") == std::string::npos) return false;
+        return true;
+    }
     const std::string triple_line = lp64_llvm_triple_metadata_line();
     if (ll.find(triple_line) == std::string::npos) return false;
     if (ll.find("target triple = \"x86_64-pc-windows") != std::string::npos) return false;
@@ -183,6 +265,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
 #else
     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
 #endif
+    if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;
@@ -218,6 +301,7 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
             return lib;
         }
         for (auto& [name, text] : model_sources()) {
+            if (name == "cxx/prism_fpfmt.h") { std::ofstream(dir / "prism_fpfmt.h", std::ios::binary) << text; continue; }  // fmtdouble.cpp
             if (name.starts_with("cxx/")) continue;  // C++ headers: write_cxx_models
             auto dst = dir / (name.ends_with(".h") ? name : "prism_model_" + name);
             std::ofstream(dst, std::ios::binary) << text;
@@ -268,6 +352,7 @@ std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib) {
     for (auto* f : {"printf", "fprintf", "dprintf", "sprintf", "snprintf"})
         if (std::find(m.declarations.begin(), m.declarations.end(), f) != m.declarations.end()) {
             want.push_back("strlen");
+            want.push_back("__prism_fmtv");  // exact bytes for a symbolic double
             break;
         }
     int uniq = 0;

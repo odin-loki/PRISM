@@ -1,7 +1,7 @@
 // Counterexample explanation + verified repair (roadmap 4.2, 9.3).
 //
 // The explanation is HYPOTHESIS with strength READS: it never changes the
-// FAILED verdict it explains. A proposed fix is re-verified by running BMC on
+// FAILED verdict it explains. A proposed fix is re-verified by running the PIR checker on
 // the patched function; it is labelled "verified fix" only when that run is a
 // proof, otherwise "unverified suggestion". Nothing is compiled or executed.
 
@@ -117,23 +117,22 @@ std::vector<Finding> explain_failed(const Finding& fail, const Config& cfg) {
         auto patched = *fn;
         patched.body = v.fix_body;
         auto unwind = session_config() ? session_config()->unwind : cfg.unwind;
-        auto recs = run_bmc({patched}, unwind);
-        fix_status = recs.empty() ? std::string(laws::ERROR) : recs[0].status;
+        fix_status = check_function_pir(patched, unwind).status;
         bool proved = fix_status == laws::PROVED || fix_status == laws::PROVED_UNBOUNDED;
         label = proved ? "verified fix" : "unverified suggestion";
     }
-    ar.checker = "bmc(patched function)";
+    ar.checker = "pir(patched function)";
     ar.checker_result = fix_status;
     ar.verdict_effect = "none";  // a fix never changes the FAILED verdict it answers
     audit_append(ar);
     auto fx = row(fail, laws::HYPOTHESIS,
                   label + (label == "verified fix"
                                ? " (patched function " + fix_status +
-                                     " by BMC: encoded UB properties only; intent/equivalence not checked)"
-                               : " (patched function " + fix_status + " by BMC)"));
+                                     " by PIR: encoded UB properties only; intent/equivalence not checked)"
+                               : " (patched function " + fix_status + " by PIR)"));
     fx.extra["feature"] = "repair";
     fx.extra["fix_label"] = label;
-    fx.extra["fix_bmc_status"] = fix_status;
+    fx.extra["fix_pir_status"] = fix_status;
     fx.extra["fix_body"] = v.fix_body.substr(0, 2000);
     fx.extra["model"] = backend->name();
     fx.extra["ai_audit_id"] = ar.id;

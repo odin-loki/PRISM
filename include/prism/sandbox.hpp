@@ -61,9 +61,6 @@ struct Limits {
     bool limit_as = true;      // false for ASan/TSan builds (shadow memory)
 };
 PRISM_API Limits limits_for(double timeout_s, bool limit_as = true);
-// setrlimit in the forked child before execvp (POSIX; async-signal-safe).
-// No-op on Windows or when !enabled.
-PRISM_API void apply_child_limits(const Limits& limits) noexcept;
 
 // --- Windows command lines (pure; compiled and tested on every platform) ---
 // One argument quoted for CommandLineToArgvW / the MSVC CRT: quotes are

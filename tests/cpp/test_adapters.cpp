@@ -6,6 +6,7 @@
 // Tools are fake executables (shell scripts or .cmd stubs on WIN32) in a temp
 // dir, handed over through Config::tools, $PATH or $PRISM_TOOLS_DIR, so every
 // branch runs against a real child process.
+#include "prism/exec.hpp"
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -19,7 +20,8 @@
 #include "prism/stages.hpp"
 
 #include "../../src/prism/adapters_internal.hpp"
-#include "../../src/prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "../../src/prism/stages/common.hpp"
 #include "../../src/prism/stages/llm.hpp"
 
@@ -394,10 +396,10 @@ std::string esbmc_out_cmd(const char* out) {
 TEST_CASE("fake_tool: PE launcher forwards stdout to proc runner") {
     TmpDir t;
     auto exe = fake_cmd(t.dir / "bin", "hello-fake", "echo prism-fake-out\r\nexit /b 0\r\n");
-    prism::detail::RunSpec spec;
+    prism::exec::Spec spec;
     spec.argv = {exe.string()};
-    spec.timeout_s = 5;
-    auto r = prism::detail::run(spec);
+    spec.timeout_ms = 5000;
+    auto r = prism::exec::run(spec);
     CHECK_FALSE(r.failed);
     CHECK_FALSE(r.timed_out);
     CHECK(has(r.out, "prism-fake-out"));
@@ -409,113 +411,112 @@ TEST_CASE("fake_tool: PE launcher forwards stdout to proc runner") {
 #ifndef _WIN32
 TEST_CASE("proc: one runner with stdin, split or merged output, env overlay and cwd") {
     TmpDir t;
-    prism::detail::RunSpec s;
+    prism::exec::Spec s;
     s.argv = {"sh", "-c", "cat; echo out; echo err >&2; exit 3"};
-    s.input = "from-stdin\n";
-    s.timeout_s = 10;
-    auto r = prism::detail::run(s);
+    s.stdin_data = "from-stdin\n";
+    s.timeout_ms = 10000;
+    auto r = prism::exec::run(s);
     CHECK_FALSE(r.failed);
     CHECK_FALSE(r.timed_out);
-    CHECK_FALSE(r.crashed);
-    CHECK(r.rc == 3);
+    CHECK_FALSE(r.crashed());
+    CHECK(r.rc() == 3);
     CHECK(r.out == "from-stdin\nout\n");
     CHECK(r.err == "err\n");
 
     s.merge_stderr = true;
-    s.input.clear();
-    r = prism::detail::run(s);
+    s.stdin_data.reset();
+    r = prism::exec::run(s);
     CHECK(r.out == "out\nerr\n");
     CHECK(r.err.empty());
 
     // The overlay reaches the child only; PRISM's own environment is untouched
     // (the AFL_* variables used to be setenv'd on the PRISM process).
     EnvVar gone("PRISM_TEST_OVERLAY", std::nullopt);
-    prism::detail::RunSpec e;
+    prism::exec::Spec e;
     e.argv = {"sh", "-c", "printf '%s|%s' \"$PRISM_TEST_OVERLAY\" \"$PWD\""};
-    e.env = {{"PRISM_TEST_OVERLAY", "child-only"}};
-    e.cwd = t.dir;
-    e.timeout_s = 10;
-    auto er = prism::detail::run(e);
+    e.env_set = {{"PRISM_TEST_OVERLAY", "child-only"}};
+    e.cwd = t.dir.string();
+    e.timeout_ms = 10000;
+    auto er = prism::exec::run(e);
     CHECK(er.out == "child-only|" + fs::canonical(t.dir).string());
     CHECK(std::getenv("PRISM_TEST_OVERLAY") == nullptr);
     {
         EnvVar set("PRISM_TEST_OVERLAY", std::string("parent"));
-        er = prism::detail::run(e);
+        er = prism::exec::run(e);
         CHECK(er.out.starts_with("child-only|"));  // the overlay replaces the inherited value
         CHECK(std::string(std::getenv("PRISM_TEST_OVERLAY")) == "parent");
     }
 
     // A program that is not there: exec fails in the child. That is "could not
     // start" (failed, rc 127, the reason in err), not an exit code of the tool.
-    prism::detail::RunSpec m;
+    prism::exec::Spec m;
     m.argv = {(t.dir / "no-such-program").string()};
-    m.timeout_s = 5;
-    auto mr = prism::detail::run(m);
-    CHECK(mr.rc == 127);
+    m.timeout_ms = 5000;
+    auto mr = prism::exec::run(m);
+    CHECK(mr.rc() == 127);
     CHECK(mr.failed);
-    CHECK(has(mr.err, "cannot execute " + m.argv[0]));
+    CHECK(has(mr.err, m.argv[0]));
     // ... and so is a file without the execute bit, or a cwd that is not there.
     m.argv = {t.put("noexec.sh", "#!/bin/sh\necho hi\n").string()};
-    mr = prism::detail::run(m);
+    mr = prism::exec::run(m);
     CHECK(mr.failed);
     CHECK(mr.out.empty());
     m.argv = {"sh", "-c", "echo hi"};
-    m.cwd = t.dir / "no-such-dir";
-    mr = prism::detail::run(m);
+    m.cwd = (t.dir / "no-such-dir").string();
+    mr = prism::exec::run(m);
     CHECK(mr.failed);
-    CHECK(has(mr.err, "cannot enter"));
     // A tool that itself exits 127 started: that is its exit code, not failed.
     m.cwd.clear();
     m.argv = {"sh", "-c", "exit 127"};
-    mr = prism::detail::run(m);
-    CHECK(mr.rc == 127);
+    mr = prism::exec::run(m);
+    CHECK(mr.rc() == 127);
     CHECK_FALSE(mr.failed);
 
     // A child that exits without reading a large stdin: the write gets EPIPE
     // (SIGPIPE is blocked for it), PRISM survives, the exit code is kept.
-    prism::detail::RunSpec q;
+    prism::exec::Spec q;
     q.argv = {"sh", "-c", "exit 4"};
-    q.input.assign(4u << 20, 'x');
-    q.timeout_s = 10;
-    auto qr = prism::detail::run(q);
-    CHECK(qr.rc == 4);
+    q.stdin_data = std::string(4u << 20, 'x');
+    q.timeout_ms = 10000;
+    auto qr = prism::exec::run(q);
+    CHECK(qr.rc() == 4);
     CHECK_FALSE(qr.failed);
 
     // Law 8: no runner starts a child with a check disabled.
-    CHECK_THROWS_AS(prism::detail::run_process({"x", "--no-bounds-check"}, 5), std::runtime_error);
-    prism::detail::RunSpec l8;
+    CHECK_THROWS_AS(prism::exec::run_process({"x", "--no-bounds-check"}, 5), std::runtime_error);
+    prism::exec::Spec l8;
     l8.argv = {"sh", "-c", "true", "--no-pointer-check"};
-    CHECK_THROWS_AS(prism::detail::run(l8), std::runtime_error);
+    CHECK_THROWS_AS(prism::exec::run(l8), std::runtime_error);
     CHECK_THROWS_AS(sd::run_argv({"sh", "--no-div-by-zero-check"}, "", 5), std::runtime_error);
 
     // A signal death is a crash, a timeout is not.
-    prism::detail::RunSpec k;
+    prism::exec::Spec k;
     k.argv = {"sh", "-c", "kill -SEGV $$"};
-    k.timeout_s = 5;
-    auto kr = prism::detail::run(k);
-    CHECK(kr.crashed);
-    CHECK(kr.rc == -11);
+    k.timeout_ms = 5000;
+    auto kr = prism::exec::run(k);
+    CHECK(kr.crashed());
+    CHECK(kr.rc() == -11);
     k.argv = {"sh", "-c", "sleep 5"};
-    k.timeout_s = 0.3;
-    kr = prism::detail::run(k);
+    k.timeout_ms = 300;
+    kr = prism::exec::run(k);
     CHECK(kr.timed_out);
-    CHECK_FALSE(kr.crashed);
+    CHECK_FALSE(kr.crashed());
 
     // A child that exits while its background grandchild holds the pipe
     // returns at once, not after the grandchild.
     const auto t0 = std::chrono::steady_clock::now();
-    prism::detail::RunSpec g;
+    prism::exec::Spec g;
     g.argv = {"sh", "-c", "sleep 3 & echo started"};
-    g.timeout_s = 20;
-    auto gr = prism::detail::run(g);
-    CHECK(gr.rc == 0);
+    g.timeout_ms = 20000;
+    auto gr = prism::exec::run(g);
+    CHECK(gr.rc() == 0);
     CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 2.5);
 
     // The stage and adapter wrappers are the same runner.
     auto sr = sd::run_argv({"sh", "-c", "cat; echo e >&2"}, "in\n", 10);
     CHECK(sr.out == "in\n");
     CHECK(sr.err == "e\n");
-    auto pr = prism::detail::run_process({"sh", "-c", "echo a; echo b >&2; pwd"}, 10, t.dir);
+    auto pr = prism::exec::run_process({"sh", "-c", "echo a; echo b >&2; pwd"}, 10, t.dir);
     CHECK(pr.text == "a\nb\n" + fs::canonical(t.dir).string() + "\n");
 }
 
@@ -546,7 +547,7 @@ TEST_CASE("llm_httpish: connection errors are a missing backend, not a failed re
     CHECK(sd::llm_httpish("Connection aborted."));
     CHECK(sd::llm_httpish("connection refused"));
     CHECK(sd::llm_httpish("[Errno 111] Connection refused"));
-    CHECK(sd::llm_httpish("llama.cpp/Ollama not reachable"));
+    CHECK(sd::llm_httpish("no FORGE model (.fpk) configured"));
     CHECK_FALSE(sd::llm_httpish("candidate did not compile"));
     CHECK_FALSE(sd::llm_httpish(""));
 }
@@ -574,9 +575,7 @@ TEST_CASE("execute_cex replays concretely (not a proof); rlef_repair without a m
     CHECK((out[0].status == laws::CRASH || out[0].status == laws::CLEAN));
     for (const auto& f : out) CHECK_FALSE(laws::is_proof(f.status));
 
-    cfg.gguf = "/nonexistent/prism-missing.gguf";
-    cfg.ollama_host.clear();
-    cfg.llama_server = "http://127.0.0.1:1";
+    cfg.fpk = "/nonexistent/prism-missing.fpk";
     auto rep = prism::rlef_repair(fail, cfg);
     REQUIRE_FALSE(rep.empty());
     CHECK(rep[0].stage == "repair");
@@ -862,7 +861,7 @@ TEST_CASE("optional tools: every missing tool is NOTRUN with its install hint") 
             CHECK(f.status == laws::NOTRUN);
             never_clean_or_proof(f);
             auto install = xget(f, "install");
-            CHECK(has(install, "third_party/MANIFEST.toml"));
+            CHECK(has(install, f.stage == "libfuzzer" ? "third_party/llvm/PIN.toml" : "third_party/MANIFEST.toml"));
             if (f.stage != "clang-tidy" && f.stage != "libfuzzer")
                 CHECK(has(install, "prism-deps tool"));
             if (f.stage == "libfuzzer") {
@@ -1612,7 +1611,7 @@ TEST_CASE("libfuzzer probe: missing clang or no -fsanitize=fuzzer is NOTRUN; sup
     auto lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
     CHECK(lf.status == laws::NOTRUN);
     never_clean_or_proof(lf);
-    CHECK(has(xget(lf, "install"), "third_party/MANIFEST.toml"));
+    CHECK(has(xget(lf, "install"), "third_party/llvm/PIN.toml"));
 
     fake(nt.bin, "clang", "echo \"error: unsupported argument '-fsanitize=fuzzer'\" >&2; exit 1");
     lf = stage_row(prism::run_optional_tools({}, nt.cfg), "libfuzzer");
@@ -1838,9 +1837,9 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     CHECK(has(out[0].message, noexec.string()));
     CHECK(out[0].message.find("is not cppcheck") == std::string::npos);
 #ifdef _WIN32
-    CHECK(has(out[0].message, "CreateProcess failed"));
+    CHECK(has(out[0].message, "CreateProcess"));  // FORGE spawn: "CreateProcess <exe>: <system message>"
 #else
-    CHECK(has(out[0].message, "cannot execute"));
+    CHECK(has(out[0].message, "spawn "));  // FORGE spawn: "spawn <exe>: <strerror>"
 #endif
     CHECK(xget(out[0], "install") == prism::adapter_install("cppcheck"));
     // Something that starts but answers like a test binary is not cppcheck.
@@ -2364,152 +2363,5 @@ TEST_CASE("fuzz_function: the binary oracle runs after the concrete one and befo
 // ---------------------------------------------------------------- rlef_repair
 
 #ifndef _WIN32
-namespace {
-// A scripted llama-server: GET /health answers 200; each POST
-// /v1/chat/completions takes the next reply ("" closes the connection
-// without an answer, as a server that went away does).
-struct FakeLlama {
-    int lfd = -1;
-    int port = 0;
-    std::deque<std::string> replies;
-    std::atomic<bool> stop{false};
-    std::atomic<int> chats{0};
-    std::thread th;
 
-    explicit FakeLlama(std::deque<std::string> r) : replies(std::move(r)) {
-        lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-        REQUIRE(lfd >= 0);
-        int one = 1;
-        ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        sockaddr_in a{};
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        a.sin_port = 0;
-        REQUIRE(::bind(lfd, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0);
-        REQUIRE(::listen(lfd, 8) == 0);
-        socklen_t len = sizeof a;
-        ::getsockname(lfd, reinterpret_cast<sockaddr*>(&a), &len);
-        port = ntohs(a.sin_port);
-        th = std::thread([this] { serve(); });
-    }
-    ~FakeLlama() {
-        stop = true;
-        th.join();
-        ::close(lfd);
-    }
-    FakeLlama(const FakeLlama&) = delete;
-    FakeLlama& operator=(const FakeLlama&) = delete;
-    std::string url() const { return "http://127.0.0.1:" + std::to_string(port); }
-
-    static std::string chat_json(const std::string& content) {
-        return nlohmann::json{{"choices", {{{"message", {{"role", "assistant"}, {"content", content}}}}}}}.dump();
-    }
-
-    void serve() {
-        while (!stop) {
-            pollfd p{lfd, POLLIN, 0};
-            if (::poll(&p, 1, 50) <= 0) continue;
-            int c = ::accept(lfd, nullptr, nullptr);
-            if (c < 0) continue;
-            std::string req;
-            char buf[4096];
-            std::size_t need = std::string::npos;
-            for (;;) {
-                auto he = req.find("\r\n\r\n");
-                if (he != std::string::npos && need == std::string::npos) {
-                    need = he + 4;
-                    auto low = lower(req.substr(0, he));
-                    auto cl = low.find("content-length:");
-                    if (cl != std::string::npos) need += std::stoul(low.substr(cl + 15));
-                }
-                if (need != std::string::npos && req.size() >= need) break;
-                pollfd q{c, POLLIN, 0};
-                if (::poll(&q, 1, 2000) <= 0) break;
-                auto n = ::recv(c, buf, sizeof buf, 0);
-                if (n <= 0) break;
-                req.append(buf, static_cast<std::size_t>(n));
-            }
-            std::string body;
-            if (req.starts_with("GET /health") || req.starts_with("GET /v1/models")) {
-                body = "{}";
-            } else if (req.starts_with("POST /v1/chat/completions")) {
-                ++chats;
-                if (!replies.empty()) {
-                    body = replies.front();
-                    replies.pop_front();
-                }
-            }
-            if (!body.empty()) {
-                auto resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                            std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-                (void)::send(c, resp.data(), resp.size(), MSG_NOSIGNAL);
-            }
-            ::close(c);
-        }
-    }
-};
-}  // namespace
-
-TEST_CASE("rlef_repair: a lost connection is NOTRUN only before any candidate scored") {
-    if (!prism::Config{}.which({"gcc", "clang"})) {
-        MESSAGE("no C compiler: RLEF candidates cannot be built here");
-        return;
-    }
-    TmpDir t;
-    auto src = t.put("div.c", "int div_param(int x, int y) { return x / y; }\n");
-    prism::Finding fail;
-    fail.stage = "bmc";
-    fail.status = std::string(laws::FAILED);
-    fail.file = src.string();
-    fail.function = "div_param";
-    fail.line = 1;
-    fail.cls = "INT-DIV-ZERO";
-    fail.message = "div by zero";
-    auto cfg = prism::default_config();
-    cfg.root = t.dir;
-    cfg.allow_exec = true;
-    cfg.repair_rounds = 3;
-    cfg.gguf.clear();
-    cfg.ollama_host.clear();
-    // A candidate that builds and runs but exits 3: scored (1), not accepted,
-    // so the loop asks again. main(argc, argv) has a pointer parameter, so no
-    // BMC verdict is attached to it.
-    const std::string cand = "int main(int argc, char **argv) { (void)argv; return argc + 2; }\n";
-
-    SUBCASE("the server goes away after a scored candidate: the best candidate stands") {
-        FakeLlama srv({FakeLlama::chat_json(cand), ""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 2);
-        CHECK(out[0].stage == "repair");
-        CHECK(out[0].status != laws::NOTRUN);
-        CHECK(out[0].status == laws::HYPOTHESIS);
-        CHECK(has(out[0].message, "RLEF best score 1 over 2 rounds (not a proof)"));
-        CHECK(has(xget(out[0], "history"), "HTTP error"));
-        CHECK(has(xget(out[0], "best"), "argc + 2"));
-        CHECK_FALSE(laws::is_proof(out[0].status));
-    }
-    SUBCASE("the server goes away before any candidate: NOTRUN, never a verdict") {
-        FakeLlama srv({""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 1);
-        CHECK(out[0].status == laws::NOTRUN);
-        CHECK(has(out[0].message, "HTTP error"));
-        CHECK(xget(out[0], "backend") == "llama-server");
-    }
-    SUBCASE("a silent reply scores nothing: a later lost connection is still NOTRUN") {
-        // history holds a row for the silent round, so a history-size test
-        // would wrongly keep going; best_score is what counts.
-        FakeLlama srv({FakeLlama::chat_json("  \n"), ""});
-        cfg.llama_server = srv.url();
-        auto out = prism::rlef_repair(fail, cfg);
-        REQUIRE(out.size() == 1);
-        CHECK(srv.chats == 2);
-        CHECK(out[0].status == laws::NOTRUN);
-        CHECK(has(xget(out[0], "history"), "silent"));
-    }
-}
 #endif

@@ -1,0 +1,3 @@
+// PRISM conformance task c23/c23_thread_local_kw_false.c: expected false (no-overflow)
+thread_local static int counter;
+int c23_thread_local_kw_false(int x) { counter = x; return counter + 1; }

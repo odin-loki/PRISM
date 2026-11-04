@@ -97,8 +97,9 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(text.find("return a - b") == std::string::npos);
     CHECK(text.find("sleep_for(") == std::string::npos);
     CHECK(text.find("sleep_until(") == std::string::npos);
-    CHECK(text.find("class time_point") == std::string::npos);
-    CHECK(text.find("system_clock") == std::string::npos);
+    // coverage session 5 declares time_point and the clocks (no OS reads)
+    CHECK(text.find("class time_point") != std::string::npos);
+    CHECK(text.find("system_clock") != std::string::npos);
 
     // The binary operators are sliced at "(const duration" because
     // operator+= also contains the text operator+. The overflow line stays
@@ -168,7 +169,7 @@ TEST_CASE("cxx chrono: overflow calls __prism_check and does not return a wrappe
     CHECK(count_of(text, "if (!__ok) return duration<_Rep, _Period>(0);") == 2);
     CHECK(text.find("#include <compare>") == std::string::npos);
     CHECK(text.find("operator<=>") == std::string::npos);
-    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 4);
+    CHECK(count_of(text, "This is not PROVED and not CLEAN.") == 5);  // + the clocks
     CHECK(text.find("A different period is not an overload.") != std::string::npos);
     const auto note = text.find("Count comparison. Same duration type only.");
     const auto ops = text.find("constexpr bool operator==(const duration<_Rep, _Period>& __a,");

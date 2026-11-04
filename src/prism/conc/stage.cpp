@@ -10,11 +10,20 @@
 
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
+#include "prism/exec.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <fstream>
 #include <sstream>
+
+#ifndef _WIN32
+#  include <unistd.h>
+#else
+#  include <process.h>
+#  define getpid _getpid
+#endif
 
 namespace fs = std::filesystem;
 
@@ -22,11 +31,55 @@ namespace prism::conc {
 
 namespace {
 
-constexpr const char* kInstall = "install clang and llvm 18 (apt install clang-18 llvm-18)";
+constexpr const char* kInstall = "install the pinned LLVM (python3 scripts/fetch_llvm.py; see third_party/llvm/PIN.toml) or set PRISM_LLVM_BIN";
 
 bool is_cxx(const fs::path& p) {
     auto e = p.extension().string();
     return e == ".cc" || e == ".cpp" || e == ".cxx" || e == ".C" || e == ".c++";
+}
+
+// C++ units are lowered with the conc variant of the thread models
+// (models/cxx/bits/prism_conc.h): std::thread / mutex / condition_variable /
+// atomic become the pthread calls and seq_cst atomics this stage encodes.
+const std::vector<std::string>& conc_flags(const fs::path& p) {
+    // -fignore-exceptions: calls stay `call` (the encoder does not follow
+    // `invoke`); a try block still compiles.
+    static const std::vector<std::string> cxx{"-D__PRISM_CONC_THREADS=1", "-fignore-exceptions"}, none;
+    return is_cxx(p) ? cxx : none;
+}
+
+std::string read_text(const fs::path& p);
+
+// Lower one unit for this stage. C++ units also go through sroa: the lock
+// objects (lock_guard, unique_lock) are small structs holding the mutex
+// address, and only once they are split does each pthread call name the
+// global mutex the encoder needs (it does not follow loads of pointers).
+// The shared pir stage pipeline (pir::lower_to_ir) is left unchanged.
+// fold_orders: the source names a weaker memory order; sccp folds the
+// constant order argument of the <atomic> model (clang lowers a non-constant
+// order to a switch over every order), so each atomic keeps exactly its order.
+std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& src, double timeout_s,
+                                      std::string& err, bool fold_orders = false) {
+    auto ir = pir::lower_to_ir(fe, src, timeout_s, err, nullptr, nullptr, nullptr, conc_flags(src));
+    if (!ir || !is_cxx(src) || !fe.opt) return ir;
+    static std::atomic<unsigned> seq{0};
+    const auto dir = fs::temp_directory_path() /
+                     ("prism-conc-" + std::to_string(::getpid()) + "-" + std::to_string(seq++));
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const auto in = dir / "in.ll", outp = dir / "out.ll";
+    {
+        std::ofstream o(in, std::ios::binary);
+        o << *ir;
+    }
+    auto r = prism::exec::run_process({fe.opt->string(), fold_orders ? "-passes=function(sroa,mem2reg,sccp,lower-switch,loop-simplify,lcssa,instnamer)"
+                                              : "-passes=function(sroa,mem2reg,lower-switch,loop-simplify,lcssa,instnamer)",
+                                  "-S", "-o", outp.string(), in.string()},
+                                 timeout_s);
+    std::optional<std::string> res = ir;  // sroa failing keeps the unsplit IR (the encoder then says UNENCODED)
+    if (!r.failed && !r.timed_out && r.rc == 0) res = read_text(outp);
+    fs::remove_all(dir, ec);
+    return res;
 }
 
 bool is_unit(const fs::path& p) { return p.extension() == ".c" || is_cxx(p); }
@@ -68,6 +121,13 @@ std::optional<std::string> weak_memory_order(const std::string& text) {
         {"__ATOMIC_RELEASE", "memory_order_release"},
         {"memory_order_acq_rel", "memory_order_acq_rel"},
         {"__ATOMIC_ACQ_REL", "memory_order_acq_rel"},
+        // C++20 scoped forms: the PRISM <atomic> model of the conc stage
+        // emits seq_cst whatever the argument, so only the source shows them
+        {"memory_order::relaxed", "memory_order_relaxed"},
+        {"memory_order::consume", "memory_order_acquire (or consume)"},
+        {"memory_order::acquire", "memory_order_acquire (or consume)"},
+        {"memory_order::release", "memory_order_release"},
+        {"memory_order::acq_rel", "memory_order_acq_rel"},
     };
     std::optional<std::string> shown;
     std::size_t at = std::string::npos;
@@ -90,7 +150,8 @@ std::optional<std::string> weak_memory_order(const std::string& text) {
 }
 
 std::string weak_order_message(const std::string& name) {
-    return "UNENCODED: " + name + " (SC only: relaxed/acquire/release atomics are not encoded yet)";
+    return "UNENCODED: " + name + " (encoded as seq_cst: a failure found is a real run, but a clean result "
+           "is no proof under the weaker order)";
 }
 
 bool only_data_races(const Result& r) {
@@ -102,10 +163,12 @@ bool only_data_races(const Result& r) {
 
 // A clean result, or a data race found only after the order was erased, is not
 // a verdict on a weak atomic. A deadlock or a failed assertion is kept.
-void refuse_weak_order(Result& r, const std::string& name) {
+// keep_races: the order is in the IR (the atomic access itself is encoded, so
+// a race reported is on other data and is real in an SC run).
+void refuse_weak_order(Result& r, const std::string& name, bool keep_races = false) {
     if (r.status == laws::NEEDS_HARNESS && r.message.find("UNENCODED:") != std::string::npos) return;
     const bool clean = r.status.empty() || r.status == laws::CLEAN || laws::is_formal(r.status);
-    const bool stripped_race = r.status == laws::FAILED && only_data_races(r);
+    const bool stripped_race = !keep_races && r.status == laws::FAILED && only_data_races(r);
     if (!clean && !stripped_race) return;
     r.status = std::string(laws::NEEDS_HARNESS);
     r.violations.clear();
@@ -149,6 +212,8 @@ Options options_of(const Config& cfg) {
     Options o;
     o.unwind = std::max(1, cfg.unwind);
     o.timeout_s = cfg.timeout;
+    o.tso = cfg.conc_tso;
+    o.tso_buffer = cfg.conc_store_buffer;
     return o;
 }
 
@@ -156,7 +221,12 @@ struct Harnessed {
     std::string name;       // source name
     std::optional<int> line;
     Result res;
+    bool views = false;     // the C11 view model encoded its weak orders
 };
+
+bool any_views(const std::vector<Harnessed>& hs) {
+    return std::any_of(hs.begin(), hs.end(), [](const Harnessed& h) { return h.views; });
+}
 
 std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
     std::vector<Harnessed> out;
@@ -179,6 +249,8 @@ std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
             h.res.message = b.reason;
         } else {
             h.res = check(*b.prog, opt);
+            h.views = b.prog->views;
+            if (!b.prog->weak_order.empty()) refuse_weak_order(h.res, b.prog->weak_order, true);
         }
         out.push_back(std::move(h));
     }
@@ -192,7 +264,7 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
     const auto weak = weak_memory_order(read_text(src));
     auto fe = pir::find_frontend(cfg);
     std::string err;
-    auto ir = pir::lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err);
+    auto ir = lower_unit(fe, src, std::max(10.0, cfg.timeout), err, weak.has_value());
     if (!ir) {
         Result r;
         r.status = std::string(laws::ERROR);
@@ -200,8 +272,11 @@ std::map<std::string, Result> check_file(const fs::path& src, const Config& cfg,
         out[""] = r;
         return out;
     }
-    for (auto& h : analyse_ir(*ir, opt)) out[h.name] = std::move(h.res);
-    if (weak) {
+    auto hs = analyse_ir(*ir, opt);
+    for (auto& h : hs) out[h.name] = h.res;
+    // the IR carries every order the source names (C builtins, the <atomic>
+    // model); the source scan only guards a unit whose IR shows none of them
+    if (weak && !any_views(hs)) {
         if (out.empty()) {
             Result r;
             r.status = std::string(laws::NEEDS_HARNESS);
@@ -242,7 +317,8 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
     std::vector<std::string> errs(units.size());
     for (std::size_t i = 0; i < units.size(); ++i) {
         try {
-            irs.at(i) = pir::lower_to_ir(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i));
+            irs.at(i) = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i),
+                                   weak_memory_order(read_text(units.at(i))).has_value());
         } catch (const std::exception& ex) {
             irs.at(i).reset();
             errs.at(i) = std::string("internal error: ") + ex.what();
@@ -272,7 +348,7 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
             out.push_back(std::move(f));
             continue;
         }
-        if (const auto weak = weak_memory_order(read_text(units.at(i)))) {
+        if (const auto weak = weak_memory_order(read_text(units.at(i))); weak && !any_views(hs)) {
             if (hs.empty()) {
                 auto f = base(rel);
                 f.status = std::string(laws::NEEDS_HARNESS);

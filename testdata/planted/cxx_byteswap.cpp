@@ -1,3 +1,4 @@
+#include <bit>
 int byteswap_unenc_bad(int n) {
     std::byteswap(n);
     return n;

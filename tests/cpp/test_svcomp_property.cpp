@@ -189,8 +189,8 @@ TEST_CASE("svcomp property: an unknown file is unsupported, and valid-memsafety 
 }
 
 TEST_CASE("svcomp property: an unknown id stays unknown, and valid-memsafety is not no-overflow") {
-    auto proved = report({{"bmc", {row(laws::PROVED, "", "main proved")}}});
-    auto ovf = report({{"bmc", {overflow_cex()}}});
+    auto proved = report({{"pir", {row(laws::PROVED, "", "main proved")}}});
+    auto ovf = report({{"pir", {overflow_cex()}}});
 
     CHECK(decide(proved, "no-overflow", confirmed).answer == "true");
     check_unknown_verdict(decide(proved, "valid-memsafety", confirmed).answer);

@@ -39,11 +39,12 @@
 // file is there. A stub that returns true is a fake file. A use of an omitted
 // name fails to compile against this header, and the pir stage lowers that
 // translation unit again with libstdc++ (extra.cxx_models). They are not
-// stubbed. Iterators, string conversion, and directory walking are omitted
+// stubbed. Iterators and directory walking are omitted
 // the same way.
 //
-// This header does not include <string>, <string_view>, <memory>, or <mutex>.
-// The characters live in storage this path allocates itself.
+// This header includes <string> (the PRISM model) for string(); it does not
+// include <string_view>, <memory>, or <mutex>. The characters live in
+// storage this path allocates itself; string() returns a copy.
 #ifndef _GLIBCXX_FILESYSTEM
 #define _GLIBCXX_FILESYSTEM 1
 
@@ -51,6 +52,7 @@
 
 #include <cstddef>
 #include <new>
+#include <string>
 
 // PIR intrinsics (src/prism/pir/models/libc/prism_model.h). Not defined here:
 // the encoder treats the calls as checks, and a host test supplies a stub.
@@ -116,6 +118,15 @@ public:
     [[nodiscard]] bool empty() const noexcept { return _M_len == 0; }
     [[nodiscard]] const char* c_str() const noexcept { return _M_str != nullptr ? _M_str : ""; }
 
+    // String conversion: a copy of the stored characters (POSIX: char is the
+    // native encoding, so string(), native() and u8-free conversions agree).
+    using value_type = char;
+    using string_type = std::string;
+    [[nodiscard]] std::string string() const { return _M_len != 0 ? std::string(_M_str, _M_len) : std::string(); }
+    [[nodiscard]] std::string generic_string() const { return string(); }
+    [[nodiscard]] const string_type native() const { return string(); }
+    operator string_type() const { return string(); }
+
     [[nodiscard]] path filename() const;
     [[nodiscard]] path extension() const;
     [[nodiscard]] path stem() const;
@@ -129,6 +140,26 @@ public:
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
+
+    // Lexical queries on the stored characters only (no OS access).
+    [[nodiscard]] bool is_absolute() const noexcept { return _M_len != 0 && _M_str[0] == '/'; }
+    [[nodiscard]] bool is_relative() const noexcept { return !is_absolute(); }
+    [[nodiscard]] bool has_root_directory() const noexcept { return is_absolute(); }
+    [[nodiscard]] bool has_filename() const { return !filename().empty(); }
+    [[nodiscard]] bool has_extension() const { return !extension().empty(); }
+    [[nodiscard]] bool has_stem() const { return !stem().empty(); }
+    [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
+    void clear() noexcept { _M_free(); }
+    void swap(path& __o) noexcept { _M_swap(__o); }
+    path& remove_filename() {
+        std::size_t __b = 0, __e = 0;
+        _M_last(__b, __e);
+        if (__e > __b) { path __r = _M_slice(0, __b); _M_swap(__r); }
+        return *this;
+    }
+    path& replace_filename(const path& __r) { remove_filename(); return *this /= __r; }
+
+    friend bool operator!=(const path& __a, const path& __b) noexcept { return !(__a == __b); }
 
     friend bool operator==(const path& __a, const path& __b) noexcept {
         if (__a._M_len != __b._M_len) return false;

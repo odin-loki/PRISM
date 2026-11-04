@@ -176,11 +176,14 @@ theorem segOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Na
           exact ⟨s2, e.symm⟩
   · simp at h
 
-theorem contOK_spec {c : Ctx} {cl : CallI} {phis : List PPhi} (h : contOK c cl phis = true) :
+theorem contOK_spec {c : Ctx} {cl : CallI} {phis : List PPhi} (hn : cl.pw = none)
+    (h : contOK c cl phis = true) :
     phis = [] ∨ ∃ pu pr, phis = [pu, pr] ∧ c.hi ≤ pu.dst ∧
       (∀ d, cl.dst = some d → dstX c d cl.rw = .ok pr.dst ∧ look c.sh d = none) ∧
       (cl.dst = none → c.hi ≤ pr.dst) := by
   unfold contOK at h
+  rw [hn] at h
+  simp only at h
   split at h
   · exact .inl rfl
   · rename_i pu pr
@@ -197,17 +200,46 @@ theorem contOK_spec {c : Ctx} {cl : CallI} {phis : List PPhi} (h : contOK c cl p
     · intro hd; rw [hd] at h; simpa using h
   · simp at h
 
+theorem contOK_pair {c : Ctx} {cl : CallI} {phis : List PPhi} {w0 w1 : Nat} (hp : cl.pw = some (w0, w1))
+    (h : contOK c cl phis = true) :
+    phis = [] ∨ ∃ q0 q1, phis = [q0, q1] ∧ q0.dst ≠ q1.dst ∧
+      (∀ d, cl.dst = some d → dstX c (pairReg d 0) w0 = .ok q0.dst ∧ dstX c (pairReg d 1) w1 = .ok q1.dst ∧
+        look c.sh (pairReg d 0) = none ∧ look c.sh (pairReg d 1) = none) ∧
+      (cl.dst = none → c.hi ≤ q0.dst ∧ c.hi ≤ q1.dst) := by
+  unfold contOK at h
+  rw [hp] at h
+  simp only at h
+  split at h
+  · exact .inl rfl
+  · rename_i q0 q1
+    simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at h
+    obtain ⟨hne, h⟩ := h
+    refine .inr ⟨q0, q1, rfl, hne, ?_, ?_⟩
+    · intro d hd
+      rw [hd] at h
+      simp only [Bool.and_eq_true, Option.isNone_iff_eq_none] at h
+      obtain ⟨⟨h1, h2⟩, h3⟩ := h
+      split at h1
+      · rename_i i0 i1 e0 e1
+        simp only [Bool.and_eq_true, beq_iff_eq] at h1
+        obtain ⟨rfl, rfl⟩ := h1
+        exact ⟨e0, e1, h2, h3⟩
+      · simp at h1
+    · intro hd; rw [hd] at h; simpa using h
+  · simp at h
+
 theorem callOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : Nat} {c : Ctx} {k : Nat}
     {s1 : List PStmt} {t1 : List Nat} {PB : PBlock} {cl : CallI}
     (h : callOK M P C I b s c k s1 t1 PB cl = true) :
     ∃ κ J s2 t2 As h0 rest0, (I.kids[b]?).bind (·[s]?) = some κ ∧ C[κ]? = some J ∧
       M.find cl.f = some J.fn ∧ cl.args.length = J.fn.params.length ∧
-      (J.fn.retw = 0 ↔ cl.rw = 0) ∧ (J.fn.retw ≠ 0 ∨ cl.dst = none) ∧
+      (J.fn.retw = 0 ↔ cl.rw = 0) ∧ (J.fn.retw ≠ 0 ∨ cl.pw.isSome ∨ cl.dst = none) ∧
       trArgsX c (k + t1.length) ((cl.args.zip J.fn.params).map fun ((o, w), (_, wp)) => (o, w, wp)) =
         .ok (s2, t2, As) ∧
       TempsOK P (k + t1.length) t2 ∧ PB.stmts = s1 ++ s2 ∧
       J.blks[0]? = some (h0 :: rest0) ∧ PB.term = .jmp h0 ∧ paramsOK J J.fn.params As = true ∧
-      (∀ a ∈ As, a.below J.lo) ∧ I.hi ≤ J.lo ∧ J.retTo = (I.blks[b]?).bind (·[s + 1]?) := by
+      (∀ a ∈ As, a.below J.lo) ∧ I.hi ≤ J.lo ∧ J.retTo = (I.blks[b]?).bind (·[s + 1]?) ∧
+      cl.pw = J.fn.pret.map (fun (w0, w1, _, _) => (w0, w1)) ∧ (J.fn.pret = none ∨ J.fn.retw = 0) := by
   unfold callOK at h
   split at h
   · simp at h
@@ -217,7 +249,7 @@ theorem callOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : N
     · rename_i J hJ
       simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq, Bool.or_eq_true, bne_iff_ne, ne_eq,
         Option.isNone_iff_eq_none] at h
-      obtain ⟨⟨⟨⟨⟨hf, hlen⟩, hrw⟩, _⟩, hdst⟩, h⟩ := h
+      obtain ⟨⟨⟨⟨⟨⟨⟨hf, hlen⟩, hrw⟩, _⟩, hdst⟩, hpw⟩, hpr⟩, h⟩ := h
       split at h
       · simp at h
       · rename_i s2 t2 As hargs
@@ -227,12 +259,16 @@ theorem callOK_spec {M : XMod} {P : PFunc} {C : List IInfo} {I : IInfo} {b s : N
         · rename_i h0 r0 hb0
           simp only [beq_iff_eq] at hterm
           refine ⟨κ, J, s2, t2, As, h0, r0, hκ, hJ, hf, hlen, ?_, ?_, hargs, tempsOKB_ok hT, hst, hb0, hterm,
-            hpar, fun a ha => Arg.lt_below (hlt a ha), hhi, hret⟩
+            hpar, fun a ha => Arg.lt_below (hlt a ha), hhi, hret, hpw, ?_⟩
           · constructor
             · intro h0'; rw [h0'] at hrw; simpa using hrw
             · intro h0'; rw [h0'] at hrw; simpa using hrw.symm
-          · rcases hdst with h1 | h1
+          · rcases hdst with (h1 | h1) | h1
             · exact .inl h1
+            · exact .inr (.inl h1)
+            · exact .inr (.inr h1)
+          · rcases hpr with h1 | h1
+            · exact .inl (h1)
             · exact .inr h1
         · simp at hterm
 
@@ -241,14 +277,29 @@ theorem termOK_spec {P : PFunc} {I : IInfo} {c : Ctx} {k : Nat} {s1 : List PStmt
     ∃ s2 t2 T A?, trTermN I.fn c I.heads I.retTo (k + t1.length) nr t = .ok (s2, t2, T, A?) ∧
       TempsOK P (k + t1.length) t2 ∧ PB.stmts = s1 ++ s2 ∧ PB.term = T ∧
       (∀ cb A, I.retTo = some cb → A? = some A → ∃ CB pu pr u, P.blocks[cb]? = some CB ∧
-        CB.phis = [pu, pr] ∧ pickInc pb pr.inc = some A ∧ pickInc pb pu.inc = some u) := by
+        CB.phis = [pu, pr] ∧ pickInc pb pr.inc = some A ∧ pickInc pb pu.inc = some u) ∧
+      (∀ pt cb x, I.fn.pret = some pt → I.retTo = some cb → nr = none → t = .ret (some (.reg x)) →
+        ∃ A0 A1 CB q0 q1, pairArgsX c x = .ok (A0, A1) ∧ P.blocks[cb]? = some CB ∧ CB.phis = [q0, q1] ∧
+          pickInc pb q0.inc = some A0 ∧ pickInc pb q1.inc = some A1) := by
   unfold termOK at h
   split at h
   · simp at h
   · rename_i s2 t2 T A? htr
     simp only [Bool.and_eq_true, beq_iff_eq] at h
-    obtain ⟨⟨⟨hT, hst⟩, hterm⟩, hret⟩ := h
-    refine ⟨s2, t2, T, A?, htr, tempsOKB_ok hT, hst, hterm, ?_⟩
+    obtain ⟨⟨⟨⟨hT, hst⟩, hterm⟩, hret⟩, hpair⟩ := h
+    refine ⟨s2, t2, T, A?, htr, tempsOKB_ok hT, hst, hterm, ?_, ?_⟩
+    rotate_left
+    · intro pt cb x hpt hcb hnr ht
+      rw [hpt, hcb, hnr, ht] at hpair
+      simp only at hpair
+      split at hpair
+      · rename_i A0 A1 CB e1 e2
+        split at hpair
+        · rename_i q0 q1 hph
+          simp only [Bool.and_eq_true, beq_iff_eq] at hpair
+          exact ⟨A0, A1, CB, q0, q1, e1, e2, hph, hpair.1, hpair.2⟩
+        · simp at hpair
+      · simp at hpair
     intro cb A hcb hA
     rw [hcb, hA] at hret
     simp only at hret

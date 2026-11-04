@@ -1,3 +1,4 @@
+#include <shared_mutex>
 void slock_bad(void) {
     std::shared_mutex m;
     std::shared_lock<std::shared_mutex> lk; /* default, not owning */

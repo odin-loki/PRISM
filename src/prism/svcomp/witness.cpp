@@ -206,6 +206,8 @@ std::size_t utf8_seq_len(const std::string& s, std::size_t i) {
 }
 
 char32_t utf8_cp(const std::string& s, std::size_t i, std::size_t len) {
+    // Callers pass a length from utf8_seq_len; never read past the string.
+    if (i >= s.size() || len > s.size() - i) return 0;
     auto b = [&](std::size_t k) { return static_cast<unsigned char>(s[i + k]); };
     if (len == 1) return b(0);
     if (len == 2) return (static_cast<char32_t>(b(0) & 0x1F) << 6) | (b(1) & 0x3F);

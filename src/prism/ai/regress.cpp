@@ -14,6 +14,8 @@
 // A finding that cannot become a test is listed as "unsupported" with the
 // reason (Law 7: nothing is dropped quietly).
 
+#include "prism/exit.hpp"
+#include "prism/log.hpp"
 #include "prism/ai_assist.hpp"
 
 #include "prism/cparse.hpp"
@@ -21,7 +23,7 @@
 #include "prism/sandbox.hpp"
 #include "prism/wide_int.hpp"
 
-#include "../proc.hpp"
+#include "prism/exec.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -659,7 +661,19 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             // the MSVC CRT carries libm; there is no -lm to link on Windows
             if (!cxx) argv.push_back("-lm");
 #endif
-            auto b = detail::run_process(argv, 180.0);
+            struct {
+                std::string text;
+                int rc;
+                bool failed;
+            } b;
+            {
+                exec::Spec bs;
+                bs.argv = argv;
+                bs.timeout_ms = 180000;
+                bs.merge_stderr = true;
+                auto br = exec::run(bs);
+                b = {std::move(br.out), br.failed ? 127 : (br.term_signal ? -br.term_signal : br.exit_code), br.failed};
+            }
             if (!b.failed && b.rc != 0 && b.text.find("libclang_rt.") != std::string::npos) {
                 // The compiler is there but its sanitizer runtime is not: a missing tool (Law 1).
                 t.status = "NOTRUN";
@@ -674,17 +688,17 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
             // halt_on_error so the first UB report ends the run with a failure.
             // (an environment overlay on the child, not an `env` program: there is
             // none on Windows)
-            detail::RunSpec rs;
+            exec::Spec rs;
             rs.argv = sandbox::wrap_argv({exe_path.string()}, bin);
-            rs.env = {{"UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"}, {"ASAN_OPTIONS", "detect_leaks=0"}};
-            rs.timeout_s = opt.timeout_s;
+            rs.env_set = {{"UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"}, {"ASAN_OPTIONS", "detect_leaks=0"}};
+            rs.timeout_ms = static_cast<std::uint64_t>(opt.timeout_s * 1000);
             rs.merge_stderr = true;
-            auto ro = detail::run(rs);
+            auto ro = exec::run(rs);
             struct {
                 std::string text;
                 int rc;
                 bool timed_out;
-            } r{ro.out, ro.rc, ro.timed_out};
+            } r{ro.out, ro.term_signal ? -ro.term_signal : ro.exit_code, ro.timed_out};
             if (ro.failed) r.rc = 127;
             auto hit = r.text.find("runtime error:");
             if (hit == std::string::npos) hit = r.text.find("ERROR: AddressSanitizer");
@@ -745,28 +759,28 @@ int regress_main(int argc, char** argv) {
                          "that fails while the defect is present (UBSan+ASan build). Tests go to\n"
                          "<report dir>/regression_tests/ unless --write-tests DIR. --run compiles and runs\n"
                          "them now (executes scanned code: needs --allow-exec, Law 9).\n";
-            return 0;
+            return prism::code(prism::Exit::Ok);
         } else if (!a.starts_with("-") && !report_given) {
             fs::path p(a);
             report_path = fs::is_directory(p) ? p / "report.json" : p;
             report_given = true;
         } else {
             // An option this command does not know is an error, never ignored.
-            std::cerr << "prism regress: error: unrecognized arguments: " << a << "\n";
-            return 2;
+            prism::log::error("regress", "unrecognized arguments: " + std::string(a));
+            return prism::code(prism::Exit::Usage);
         }
     }
     auto report = RunReport::load(report_path);
     if (!report) {
-        std::cerr << "ERROR regress: cannot read " << report_path.string() << "\n";
-        return 2;
+        prism::log::error("regress", "cannot read " + report_path.string());
+        return prism::code(prism::Exit::Usage);
     }
     opt.relative_includes = !write_dir.empty();
     opt.out_dir = write_dir.empty() ? fs::absolute(report_path).parent_path() / "regression_tests" : fs::absolute(write_dir);
     if (opt.framework != "auto" && opt.framework != "gtest" && opt.framework != "catch2" &&
         opt.framework != "ctest" && opt.framework != "pytest" && opt.framework != "plain") {
-        std::cerr << "--framework expects auto|gtest|catch2|ctest|pytest|plain\n";
-        return 2;
+        prism::log::error("regress", "--framework expects auto|gtest|catch2|ctest|pytest|plain");
+        return prism::code(prism::Exit::Usage);
     }
     auto res = generate_regression_tests(*report, opt);
     std::map<std::string, int> by;
@@ -777,7 +791,7 @@ int regress_main(int argc, char** argv) {
     for (auto& t : res.tests)
         if (t.status != "written")
             std::cout << "  " << t.status << " " << t.finding_id << " " << t.function << ": " << t.detail << "\n";
-    return 0;
+    return prism::code(prism::Exit::Ok);
 }
 
 }  // namespace prism::ai

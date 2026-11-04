@@ -19,6 +19,8 @@
 // discarded-call rule)" and left to the regex layer (nothing is dropped
 // silently). Standard library only; no PRISM code is linked.
 
+#define PRISM_LOG_STANDALONE  // single-file tool: inline prism::log, no library
+#include "../../include/prism/log.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -476,9 +478,10 @@ PRISM_GEN_DISCARD_INLINE std::string render(const std::vector<Row>& rows) {
 
 #ifndef PRISM_GEN_DISCARD_NO_MAIN
 int main(int argc, char** argv) {
+    prism::log::set_program("prism_gen_astlint_discard");
     using namespace prism_gen_discard;
     if (argc < 3) {
-        std::cerr << "usage: prism_gen_astlint_discard OUT.inc checkers_*.cpp...\n";
+        prism::log::plain("usage: prism_gen_astlint_discard OUT.inc checkers_*.cpp...\n");
         return 2;
     }
     std::vector<std::string> files(argv + 2, argv + argc);
@@ -488,7 +491,7 @@ int main(int argc, char** argv) {
     for (auto& f : files) {
         std::ifstream in(f, std::ios::binary);
         if (!in) {
-            std::cerr << "prism_gen_astlint_discard: cannot read " << f << "\n";
+            prism::log::error("", prism::log::cat("cannot read ", f));
             return 1;
         }
         std::stringstream ss;
@@ -496,7 +499,7 @@ int main(int argc, char** argv) {
         scan_source(ss.str(), rows, skipped);
     }
     for (auto& s : skipped)
-        std::cerr << "skipped (not a plain discarded-call rule): " << s.var << " " << s.cls << " " << s.why << "\n";
+        prism::log::plain(prism::log::cat("skipped (not a plain discarded-call rule): ", s.var, " ", s.cls, " ", s.why, "\n"));
     const auto text = render(rows);
     std::ofstream out(argv[1], std::ios::binary | std::ios::trunc);
     out << text;

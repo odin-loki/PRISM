@@ -6,7 +6,7 @@
 // (R<n>, from --requirements markdown/text files), the function's comments,
 // or the code itself. PRISM then
 //   * rejects a draft whose requires is unsatisfiable (Z3 vacuity check),
-//   * proves the function against the draft (the contracts engine: BMC with
+//   * proves the function against the draft (the contracts engine: pir with
 //     requires assumed and ensures asserted at every return),
 //   * checks every caller in the tree satisfies the requires at each call
 //     (modular: the call is replaced by a fresh value, the requires is
@@ -469,7 +469,7 @@ std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions,
         f.extra["contract_state"] = "approved";
         f.extra["approval_file"] = approval_path.string();
         f.extra["requires"] = req;
-        f.extra["checker"] = "contracts engine (bmc)";
+        f.extra["checker"] = "contracts engine (pir)";
         f.extra["checker_status"] = r.status;
         std::vector<std::pair<const FunctionInfo*, std::string>> callers;
         f.extra["callers"] = callers_json(functions, fn, req, unwind, &callers);
@@ -534,7 +534,7 @@ std::vector<Finding> draft_contracts(const std::vector<FunctionInfo>& functions,
         AuditRecord rec;
         rec.function = fn.name;
         rec.file = fn.file;
-        rec.checker = "contracts engine (bmc) + z3 vacuity + caller check";
+        rec.checker = "contracts engine (pir) + z3 vacuity + caller check";
         auto reply = ask(*backend, req, rec);
         if (!reply.error.empty()) {
             rec.checker_result = "no output";

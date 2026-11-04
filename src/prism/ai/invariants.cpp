@@ -21,10 +21,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prism/regex.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <regex>
 #include <set>
 #include <string_view>
 
@@ -277,8 +280,12 @@ struct Walker {
             if (t == "&" && (i == 0 || !(is_identifier(tk[i - 1].t) || tk[i - 1].t == ")" || tk[i - 1].t == "]")))
                 return fail("address-of in loop");
             if (t == "->" || t == ".") return fail("member access in loop");
+            // A __VERIFIER_nondet_* call (bmc tags it __VERIFIER_nondet_X__prism_at_L_C)
+            // writes nothing and returns a fresh unconstrained value at every
+            // evaluation, in the cut step as in the unrolled program: keeping it
+            // does not weaken the havoc. Any other call is refused.
             if (is_identifier(t) && i + 1 < tk.size() && tk[i + 1].t == "(" && !keywords().count(t) &&
-                !type_words().count(t))
+                !type_words().count(t) && !t.starts_with("__VERIFIER_nondet_"))
                 return fail("call to '" + t + "' in loop");
         }
         return true;
@@ -438,6 +445,73 @@ bool has_pointer_decl(const std::string& body) {
 
 }  // namespace
 
+// CIL / cfa-reducer loops: `L:; if (c) { B goto L; } else { E }` is exactly
+// `while (c) { B } { E }` when L is named nowhere else (one label, one goto)
+// and B has no jump of its own (break/continue/goto/switch would change
+// meaning inside a while). Anything else is left alone. Returns the number of
+// loops rewritten.
+int goto_loops_to_while(std::string& s) {
+    int done = 0;
+    for (int guard = 0; guard < 64; ++guard) {
+        Walker w(s);
+        bool changed = false;
+        static const prism::Regex lab(R"(([A-Za-z_]\w*)\s*:\s*;)");
+        for (std::size_t from = 0; from < s.size() && !changed;) {
+            auto m = lab.search_match(s, from);
+            if (!m) break;
+            std::size_t a = static_cast<std::size_t>(m->spans[0].first), after_lab = static_cast<std::size_t>(m->spans[0].second);
+            from = after_lab;
+            std::string L = m->group(1);
+            if (L == "default") continue;
+            std::size_t q = a;
+            while (q > 0 && std::isspace(static_cast<unsigned char>(s[q - 1]))) --q;
+            if (q > 0 && s[q - 1] != ';' && s[q - 1] != '{' && s[q - 1] != '}') continue;
+            if (q > 0 && (std::isalnum(static_cast<unsigned char>(s[a - 1])) || s[a - 1] == '_')) continue;
+            auto i = w.skip_ws(after_lab);
+            if (w.word_at(i) != "if") continue;
+            auto p = w.skip_ws(i + 2);
+            if (p >= s.size() || s[p] != '(') continue;
+            auto pe = w.match(p);
+            if (pe == std::string::npos) continue;
+            auto t = w.skip_ws(pe);
+            if (t >= s.size() || s[t] != '{') continue;
+            auto te = w.match(t);
+            if (te == std::string::npos) continue;
+            std::string inner = s.substr(t + 1, te - t - 2);
+            static const prism::Regex tail(R"(goto\s+([A-Za-z_]\w*)\s*;\s*\z)");
+            auto gm = tail.search_match(inner, 0);
+            if (!gm || gm->group(1) != L) continue;
+            std::string B = inner.substr(0, static_cast<std::size_t>(gm->spans[0].first));
+            int uses = 0;
+            for (auto& tk : lex(s)) uses += tk.t == L;
+            if (uses != 2) continue;
+            bool bad = false;
+            for (auto& tk : lex(B))
+                bad |= tk.t == "break" || tk.t == "continue" || tk.t == "goto" || tk.t == "switch" ||
+                       tk.t == "case" || tk.t == "default";
+            if (bad) continue;
+            std::string cond = s.substr(p + 1, pe - p - 2);
+            std::size_t end = te;
+            std::string E;
+            auto el = w.skip_ws(te);
+            if (w.word_at(el) == "else") {
+                auto eb = w.skip_ws(el + 4);
+                if (eb >= s.size() || s[eb] != '{') continue;
+                auto ee = w.match(eb);
+                if (ee == std::string::npos) continue;
+                E = s.substr(eb, ee - eb);
+                end = ee;
+            }
+            std::string rep = "while (" + cond + ") {" + B + "}\n" + E;
+            s = s.substr(0, a) + rep + s.substr(end);
+            changed = true;
+            ++done;
+        }
+        if (!changed) break;
+    }
+    return done;
+}
+
 std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, std::string* why) {
     auto say = [&](std::string m) -> std::optional<std::vector<LoopCut>> {
         if (why) *why = std::move(m);
@@ -497,12 +571,12 @@ std::optional<std::vector<LoopCut>> loop_cuts(const FunctionInfo& fn, std::strin
     return w.loops;
 }
 
-std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& L) {
+std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopCut& L, bool extended) {
     (void)fn;
     std::vector<std::string> out;
     std::set<std::string> seen;
     auto push = [&](const std::string& e) {
-        if (out.size() >= 240) return;
+        if (out.size() >= 480) return;
         if (!valid_c_bool_expr(e, [&] {
                 auto v = L.scalars;
                 return v;
@@ -511,6 +585,7 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
         if (seen.insert(e).second) out.push_back(e);
     };
     std::set<std::string> vocab(L.scalars.begin(), L.scalars.end());
+    std::vector<std::string> wrap_guards;
     // (1) bounds from the loop condition atoms.
     {
         std::vector<std::string> atoms;
@@ -541,7 +616,15 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 std::string op = r;
                 if (vocab.count(lhs)) {
                     if (op == "<") push(lhs + " <= " + rhs);
+                    if (op == "<") push(lhs + " <= " + rhs + " + 1");  // a step of 2 overshoots by 1
+                    if (op == "<") push(rhs + " < 0 || " + lhs + " <= " + rhs + " + 1");  // loop never ran
                     if (op == "<=") push(lhs + " <= " + rhs + " + 1");
+                    if (op == "<=" && extended) {
+                        push(lhs + " + 0ULL <= " + rhs + " + 1ULL");  // the bound in 64 bits
+                        // `lhs <= rhs` with rhs the type's maximum never exits and lhs
+                        // wraps: relations of lhs hold only when rhs + 1 != 0
+                        wrap_guards.push_back(rhs + " + 1 == 0");
+                    }
                     if (op == ">") push(lhs + " >= " + rhs);
                     if (op == ">=") push(lhs + " >= " + rhs + " - 1");
                     if (op == "!=") {
@@ -609,33 +692,118 @@ std::vector<std::string> template_candidates(const FunctionInfo& fn, const LoopC
                 push(x + " + " + y + " == " + std::to_string(k));
             }
         }
+    // (7) congruences of written scalars (x stays odd, a multiple of k, ...):
+    //     x % c == r for small moduli. Houdini drops the ones that fail.
+    for (auto& x : L.modified)
+        for (long long c : {2LL, 3LL, 4LL})
+            for (long long r = 0; r < c; ++r) push(x + " % " + std::to_string(c) + " == " + std::to_string(r));
+    // (7b) phase guards: a parity that only holds once x passes a constant
+    //      threshold of the body (phases_1-1: x++ below 0xfff0, x += 2 above).
+    for (auto& x : L.modified)
+        for (auto k : L.constants) {
+            if (k <= 0) continue;
+            for (long long r = 0; r < 2; ++r)
+                push(x + " < " + std::to_string(k) + " || " + x + " % 2 == " + std::to_string(r));
+        }
+    // (8) non-linear and three-variable shapes (gauss_sum, count_by_k, half).
+    //     They are checked by Houdini in the same bit-vector semantics in which
+    //     they are assumed, so a wrapping product cannot make a proof unsound;
+    //     the witness exporter separately drops arithmetic it cannot bound.
+    if (extended)
+    for (auto& x : L.modified)
+        for (auto& y : L.scalars) {
+            if (x == y) continue;
+            push("2 * " + x + " == " + y + " * " + y + " + " + y);
+            // widened Gauss shapes (sum02-2: a 64-bit sum of a 32-bit counter);
+            // checked by Houdini in the same bit-vector semantics as the rest.
+            push("2 * " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1)");
+            for (auto& g : wrap_guards) {
+                push(g + " || 2 * " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1)");
+                // 2*x == P loses x's top bit; the halved form pins x (P is even)
+                push(g + " || " + x + " == (" + y + " + 0ULL) * (" + y + " + 0ULL - 1) / 2");
+            }
+            push("2 * " + x + " == " + y + " * " + y + " - " + y);
+            push(x + " == " + y + " * " + y);
+            bool y_mod = std::ranges::find(L.modified, y) != L.modified.end();
+            if (!y_mod) {
+                push(y + " == 0 || " + x + " % " + y + " == 0");
+                for (auto k : L.constants)
+                    if (k > 1000) push(x + " <= " + std::to_string(k) + " * " + y);
+            }
+            for (auto& z : L.scalars) {
+                if (z == x || z == y) continue;
+                if (std::ranges::find(L.modified, z) != L.modified.end()) continue;
+                push("2 * " + x + " + " + y + " == 2 * " + z);
+                push(x + " + " + y + " == " + z);
+                push(x + " + " + y + " / 2 == " + z);  // 2*x + y == 2*z without the wrap ambiguity
+                push(z + " < 0 || " + x + " + " + y + " == " + z + " / 2");
+            }
+        }
     return out;
 }
 
+std::string step_fact(const LoopCut& L) {
+    static const prism::Regex cond_re(R"(^\s*([A-Za-z_]\w*)\s*(<=|<)\s*([^&|?]+?)\s*$)");
+    static const prism::Regex incr_re(R"(^\s*(?:([A-Za-z_]\w*)\s*\+\+|\+\+\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*\+=\s*1)\s*$)");
+    auto c = cond_re.match_prefix(L.cond);
+    auto i = incr_re.match_prefix(L.incr);
+    if (!c || !i) return "";
+    std::string x = i->group(1).empty() ? (i->group(2).empty() ? i->group(3) : i->group(2)) : i->group(1);
+    if (x != c->group(1)) return "";
+    // x must not be written in the body as well
+    const prism::Regex write("(?<![\\w.>])" + x + R"(\s*(=(?!=)|\+\+|--|[-+*/%&|^]=|<<=|>>=)|(\+\+|--)\s*)" + x + R"(\b|&\s*)" + x + R"(\b)");
+    if (write.search(L.body)) return "";
+    const std::string grow = x + " + 0ULL == __prism_pre_" + x + " + 1ULL";
+    if (c->group(2) == "<") return grow;
+    return "(" + c->group(3) + ") + 1 == 0 || " + grow;
+}
+
 std::string cut_program(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
-                        const std::vector<std::vector<std::pair<int, std::string>>>& inv) {
+                        const std::vector<std::vector<std::pair<int, std::string>>>& inv,
+                        const std::vector<std::string>* step_facts) {
     std::string body = fn.body;
     for (std::size_t j = loops.size(); j-- > 0;) {
         auto& L = loops.at(j);
         const auto& I = j < inv.size() ? inv.at(j) : std::vector<std::pair<int, std::string>>{};
-        std::string asserts, assume;
+        // The invariants are assumed one by one, the variable-vs-constant
+        // bounds first: after the havoc, a relation such as `s == 2 * i` is
+        // evaluated only once `i` is bounded, so assuming it is not itself a
+        // signed overflow of the cut program (the loop's own code is checked).
+        static const std::regex bound_re(R"(^\s*[A-Za-z_]\w*\s*(<=|>=|<|>|==|!=)\s*-?\d+\s*$)");
+        // Then the definitions `v == expr`, which bound `v` before a relation
+        // such as `x <= 100 * v` is evaluated.
+        static const std::regex def_re(R"(^\s*[A-Za-z_]\w*\s*==[^=].*$)");
+        std::string asserts, assume, assume_def, assume_rel;
         for (auto& [tag, e] : I) {
             asserts += "__prism_assert(" + std::to_string(tag) + ", (" + e + "));\n";
-            if (!assume.empty()) assume += " && ";
-            assume += "(" + e + ")";
+            (std::regex_match(e, bound_re) ? assume : std::regex_match(e, def_re) ? assume_def : assume_rel) +=
+                "__prism_assume(" + e + ");\n";
         }
+        assume += assume_def + assume_rel;
         std::string havoc;
         for (auto& v : L.havoc) havoc += "__prism_havoc(" + v + ");\n";
         std::string cut = "{\n";
         if (!L.init.empty()) cut += L.init + ";\n";
         cut += asserts + havoc;
-        if (!assume.empty()) cut += "__prism_assume(" + assume + ");\n";
+        cut += assume;
         if (L.kind == "do") {
             cut += "{\n" + L.body + "\n}\n";
             cut += "__prism_step (" + L.cond + ") {\n" + asserts + "}\n";
         } else {
             cut += "__prism_step (" + L.cond + ") {\n{\n" + L.body + "\n}\n";
+            const std::string fact = step_facts && j < step_facts->size() ? step_facts->at(j) : std::string();
+            std::string x;
+            if (!fact.empty()) {
+                auto p = fact.find("__prism_pre_");
+                auto q = fact.find(' ', p);
+                x = fact.substr(p + 12, q - p - 12);
+                cut += "unsigned long long __prism_pre_" + x + " = " + x + " + 0ULL;\n";
+            }
             if (!L.incr.empty()) cut += L.incr + ";\n";
+            if (!fact.empty()) {
+                cut += "__prism_assert(" + std::to_string(kStepFactTag + static_cast<int>(j)) + ", (" + fact + "));\n";
+                cut += "__prism_assume(" + fact + ");\n";
+            }
             cut += asserts + "}\n";
         }
         cut += "}\n";
@@ -659,11 +827,13 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
     for (std::size_t j = 0; j < loops.size(); ++j)
         for (std::size_t k = 0; k < candidates.at(j).size(); ++k)
             all.push_back({j, candidates.at(j).at(k), k < sources.at(j).size() ? sources.at(j).at(k) : "template"});
+    std::vector<std::string> facts;
+    for (auto& L : loops) facts.push_back(step_fact(L));
     auto build = [&] {
         std::vector<std::vector<std::pair<int, std::string>>> inv(loops.size());
         for (std::size_t t = 0; t < all.size(); ++t)
             if (all.at(t).alive) inv.at(all.at(t).loop).push_back({static_cast<int>(t), all.at(t).expr});
-        return cut_program(fn, loops, inv);
+        return cut_program(fn, loops, inv, &facts);
     };
     for (int round = 0; round < 64; ++round) {
         h.rounds = round + 1;
@@ -683,6 +853,12 @@ HoudiniResult houdini(const FunctionInfo& fn, const std::vector<LoopCut>& loops,
             try {
                 tag = std::stoi(p.name.substr(7));
             } catch (const std::exception&) {
+            }
+            if (tag >= kStepFactTag && tag - kStepFactTag < static_cast<int>(facts.size()) &&
+                !facts.at(static_cast<std::size_t>(tag - kStepFactTag)).empty()) {
+                facts.at(static_cast<std::size_t>(tag - kStepFactTag)).clear();  // not trusted: drop it
+                dropped = true;
+                continue;
             }
             if (tag >= 0 && tag < static_cast<int>(all.size()) && all.at(static_cast<std::size_t>(tag)).alive) {
                 all.at(static_cast<std::size_t>(tag)).alive = false;
@@ -772,7 +948,7 @@ std::string loops_json(const FunctionInfo& fn, const std::vector<LoopCut>& loops
 Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const HoudiniResult& h,
                        const std::string& source, const std::vector<LoopCut>& loops) {
     Finding f;
-    f.stage = "bmc";
+    f.stage = "pir";
     f.status = std::string(laws::PROVED_UNBOUNDED);
     f.file = fn.file;
     f.function = fn.name;
@@ -796,8 +972,17 @@ Finding proved_finding(const FunctionInfo& fn, const Finding& bounded, const Hou
 
 }  // namespace
 
-Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int unwind) {
+Finding strengthen_bounded(const FunctionInfo& fn0, const Finding& bounded, int unwind) {
     Finding rec = bounded;
+    // goto-built loops (CIL, cfa-reducer) become while loops first; the
+    // rewritten body is equivalent, but its offsets no longer map onto the
+    // source, so loop positions are reported unknown (body_line = 0).
+    FunctionInfo fn = fn0;
+    if (int n = goto_loops_to_while(fn.body); n > 0) {
+        fn.body_line = 0;
+        fn.body_col = 0;
+        rec.extra["goto_loops_rewritten"] = std::to_string(n);
+    }
     std::string why;
     auto loops = loop_cuts(fn, &why);
     if (!loops) {
@@ -809,12 +994,24 @@ Finding strengthen_bounded(const FunctionInfo& fn, const Finding& bounded, int u
         return rec;
     }
     std::vector<std::vector<std::string>> cands, srcs;
+    // Cheap families first; the extended set (several times larger, so each
+    // Houdini round costs more) only when the cheap one leaves the step open.
     for (auto& L : *loops) {
-        cands.push_back(template_candidates(fn, L));
+        cands.push_back(template_candidates(fn, L, false));
         srcs.push_back(std::vector<std::string>(cands.back().size(), "template"));
     }
     auto h = houdini(fn, *loops, cands, srcs, unwind);
     if (h.proved) return proved_finding(fn, bounded, h, "template", *loops);
+    if (h.encoded) {
+        cands.clear();
+        srcs.clear();
+        for (auto& L : *loops) {
+            cands.push_back(template_candidates(fn, L, true));
+            srcs.push_back(std::vector<std::string>(cands.back().size(), "template"));
+        }
+        h = houdini(fn, *loops, cands, srcs, unwind);
+        if (h.proved) return proved_finding(fn, bounded, h, "template", *loops);
+    }
     rec.extra["invariants_attempt"] = h.why.empty() ? std::string("open") : h.why;
     rec.extra["invariants"] = inv_json(h.invariants);
     if (!h.encoded) return rec;

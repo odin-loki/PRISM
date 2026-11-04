@@ -1,3 +1,4 @@
+#include <fstream>
 void fstream_bad(void) {
     std::ifstream in("x");
     char c; in.get(c);

@@ -166,7 +166,7 @@ MdCtx& ctx() {
                             "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
                             "int main() {\n"
                             "  int a[1] = {7};\n"
-                            "  std::mdspan<int> m(a, 1);\n"
+                            "  std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 1);\n"
                             "  return m(0) == 7 ? 0 : 1;\n"
                             "}\n";
     std::vector<std::string> build{c.cxx};
@@ -217,19 +217,22 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("delete[]") == std::string::npos);
     CHECK(src.find("submdspan(") == std::string::npos);
     CHECK(src.find("class mdarray") == std::string::npos);
-    CHECK(src.find("template <typename _Tp, typename _Extents") == std::string::npos);
-    // Ranks 1, 2, 3, 4, 5, 6, and 7. Any other rank stays the incomplete primary.
+    // The standard template mdspan<T, extents<I, E...>> derives from the rank
+    // implementation __prism_mdspan<T, N>: ranks 1, 2, 3, 4, 5, 6, and 7. Any
+    // other rank stays the incomplete primary.
+    CHECK(src.find("template <typename _Tp, typename _Extents") != std::string::npos);
+    CHECK(src.find(": public __prism_mdspan<_Tp, sizeof...(_Exts)>") != std::string::npos);
     CHECK(src.find("class mdspan;") != std::string::npos);
     CHECK(src.find("class mdspan {") == std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 1>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 2>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 3>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 4>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 5>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 6>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 7>") != std::string::npos);
-    CHECK(src.find("class mdspan<_Tp, 8>") == std::string::npos);
-    CHECK(count_of(src, "~mdspan() = default") == 7);
+    CHECK(src.find("class __prism_mdspan<_Tp, 1>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 2>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 3>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 4>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 5>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 6>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 7>") != std::string::npos);
+    CHECK(src.find("class __prism_mdspan<_Tp, 8>") == std::string::npos);
+    CHECK(count_of(src, "~__prism_mdspan() = default") == 7);
     // The class name in the header comment is unquoted. The checks are quoted.
     CHECK(count_of(src, "\"PTR-NULL-DEREF\"") == 7);
     CHECK(src.find("null data pointer with a non-zero extent") != std::string::npos);
@@ -264,15 +267,15 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
     CHECK(src.find("__i < _M_e0 && __j < _M_e1 && __k < _M_e2 && __l < _M_e3 && __m < _M_e4 && __n < _M_e5 &&") !=
           std::string::npos);
     CHECK(src.find("__p < _M_e6,") != std::string::npos);
-    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 3>;") != std::string::npos);
-    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 4>;") !=
+    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 3>>;") != std::string::npos);
+    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 4>>;") !=
           std::string::npos);
-    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, 5>;") !=
+    CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> mdspan<_Tp, dextents<std::size_t, 5>>;") !=
           std::string::npos);
     CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t) -> "
-                   "mdspan<_Tp, 6>;") != std::string::npos);
+                   "mdspan<_Tp, dextents<std::size_t, 6>>;") != std::string::npos);
     CHECK(src.find("mdspan(_Tp*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, "
-                   "std::size_t) -> mdspan<_Tp, 7>;") != std::string::npos);
+                   "std::size_t) -> mdspan<_Tp, dextents<std::size_t, 7>>;") != std::string::npos);
 
     std::size_t from = 0;
     for (int n = 0; n < 7; ++n) {

@@ -10,7 +10,7 @@
 #include "prism/taxonomy.hpp"
 
 #ifdef PRISM_HAS_CUDA
-#include "prism/cuda_mutate.h"
+#include "prism/cuda_mutate.hpp"
 #endif
 
 #include <array>
@@ -136,7 +136,7 @@ TEST_CASE("havoc: cpu havoc preserves length and mutates") {
 #ifdef PRISM_HAS_CUDA
 TEST_CASE("havoc: cuda havoc returns 0 or honest device failure never a proof") {
     uint8_t buf[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    int rc = prism_cuda_havoc(buf, 8, 1, 1);
+    int rc = prism::cuda::havoc(buf, 8, 1, 1);
     CHECK(rc <= 0);
     CHECK(rc != 1);
 }
@@ -183,7 +183,7 @@ TEST_CASE("havoc: CMake CUDA skip is WARNING NOTRUN not STATUS CLEAN") {
     CHECK(cmake.find("CUDA kernel skipped (CLEAN") == std::string::npos);
     CHECK(cmake.find(std::string("message(STATUS \"") + warn) == std::string::npos);
     std::regex cuda_block(
-        R"(if\s*\(\s*PRISM_CUDA\s*\)[\s\S]*?\nendif\(\)\s*\n\s*if\(PRISM_LLAMA)");
+        R"(if\s*\(\s*PRISM_CUDA\s*\)[\s\S]*?\nendif\(\)\s*\n\s*target_link_libraries\(prism_core PUBLIC prism_forge_mind\))");
     std::smatch m;
     CHECK(std::regex_search(cmake, m, cuda_block));
     const std::string block = m[0].str();

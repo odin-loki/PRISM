@@ -1,3 +1,4 @@
+#include <mutex>
 int mutex_unenc_bad(int n) {
     std::mutex m;
     std::lock_guard<std::mutex> g(m);

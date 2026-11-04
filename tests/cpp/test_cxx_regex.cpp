@@ -121,7 +121,8 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(src.find("__prism_check(int, const char*, const char*) {") == std::string::npos);
     CHECK(src.find("unsigned long __prism_obj_size(const void*);") != std::string::npos);
     CHECK(src.find("__prism_obj_size(const void*) {") == std::string::npos);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    // the matcher works on std::string subjects (regex_match/regex_search)
+    CHECK(src.find("#include <string>") != std::string::npos);
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <locale>") == std::string::npos);
@@ -129,17 +130,20 @@ TEST_CASE("cxx regex model: owns the pattern, does not match, null is not a matc
     CHECK(src.find("regex_match") != std::string::npos);
     CHECK(src.find("regex_search") != std::string::npos);
     CHECK(src.find("regex_replace") != std::string::npos);
-    CHECK(src.find("fake match") != std::string::npos);
+    // pattern syntax the matcher does not model is undecided, never a fake match
+    CHECK(src.find("__prism_incomplete(") != std::string::npos);
     CHECK(src.find("empty match-all") != std::string::npos);
     CHECK(src.find("stays empty") != std::string::npos);
     const std::string code = strip_comments(src);
-    for (const char* name : {"regex_match", "regex_search", "regex_replace", "basic_regex", "wregex", "match_results"}) {
+    for (const char* name : {"regex_replace", "basic_regex", "wregex"}) {
         CAPTURE(name);
         CHECK_FALSE(has_ident(code, name));
     }
     CHECK(code.find("\".*\"") == std::string::npos);
-    CHECK(src.find("regex_match(") == std::string::npos);
-    CHECK(src.find("regex_search(") == std::string::npos);
+    for (const char* name : {"regex_match", "regex_search", "match_results"}) {
+        CAPTURE(name);
+        CHECK(has_ident(code, name));  // modelled by the iterative matcher
+    }
     CHECK(src.find("regex_replace(") == std::string::npos);
 
     CHECK(src.find("regex() noexcept : _M_str(nullptr), _M_len(0)") != std::string::npos);

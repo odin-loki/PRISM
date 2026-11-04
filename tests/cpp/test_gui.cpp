@@ -13,7 +13,7 @@
 #  undef ERROR
 #endif
 
-#include "MainWindow.h"
+#include "MainWindow.hpp"
 
 #include "prism/gui_model.hpp"
 #include "prism/journal.hpp"

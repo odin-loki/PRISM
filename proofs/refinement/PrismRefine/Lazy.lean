@@ -109,7 +109,7 @@ theorem inst_lift (R : SRegs) (i : Inst) : SL (sInst R i) (lInst ⟨lift R, fals
       rw [hc, ha, hb] <;>
       simp only [Res.bind, SL, ite_val] <;> (repeat' split) <;> subst_vars <;>
       simp_all [lift_set, selVal, apply_ite]
-  | cast d k nneg fw tw a =>
+  | cast d k fl fw tw a =>
     have ha := opnd_lift R fw a
     simp only [sInst, lInst]
     cases hsa : sOpnd R fw a <;> simp only [hsa, OpRel] at ha <;>
@@ -137,7 +137,7 @@ theorem lInst_mono {S S' : LSt} {i : Inst} (h : lInst S i = .ok S') (hc : S.c = 
     cases h0 : lOpnd S.R 1 c <;> cases h1 : lOpnd S.R w a <;> cases h2 : lOpnd S.R w b <;>
       simp [h0, h1, h2, Res.bind] at h
     (repeat' split at h) <;> simp_all <;> (subst h; simp [hc])
-  | cast d k nneg fw tw a =>
+  | cast d k fl fw tw a =>
     simp only [lInst] at h
     cases h1 : lOpnd S.R fw a <;> simp [h1, Res.bind] at h
     (repeat' split at h) <;> simp_all <;> (subst h; simp [hc])

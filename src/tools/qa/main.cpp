@@ -5,12 +5,14 @@
 //   prism-qa conformance [...]     conformance suite and release gate
 //   prism-qa soundness [...]       random-program soundness campaign
 //   prism-qa triage-selfscan ...   bucket a self-scan report.sarif
-//   prism-qa pir-vs-bmc ...        bmc vs pir agreement matrix
 //   (see usage below for the rest)
 
+#include "prism/exec.hpp"
+#include "prism/log.hpp"
 #include "qa.hpp"
 
-#include "../../prism/proc.hpp"
+#include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 #include "support/cli.hpp"
 #include "support/proctree.hpp"
 
@@ -37,7 +39,6 @@ constexpr Command COMMANDS[] = {
     {"soundness", soundness, "random-program soundness campaign"},
     {"triage-selfscan", prism::qa::triage_selfscan_main,
      "bucket a self-scan report.sarif (real / false alarm / out of scope)"},
-    {"pir-vs-bmc", prism::qa::pir_vs_bmc_main, "bmc encoder vs pir stage agreement matrix and hard conflicts"},
     {"pir-lean-check", prism::qa::pir_lean_check_main, "C++ LLVM->PIR translator vs the proved Lean translator"},
     {"llvm-sem-vs-lli", prism::qa::llvm_sem_vs_lli_main, "formal LLVM semantics (Lean) vs lli"},
     {"libc-bounds", prism::qa::libc_bounds_main, "size-bound sweep of the libc model contract harnesses"},
@@ -54,14 +55,15 @@ int usage(std::ostream& o, int rc) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    prism::log::set_program("prism-qa");
     prism::qa::install_interrupt_cleanup();
-    prism::detail::install_child_cleanup();
-    if (argc < 2) return usage(std::cerr, 2);
+    prism::exec::install_interrupt_cleanup();
+    if (argc < 2) return usage(prism::log::err_stream(), 2);
     const std::string_view cmd = argv[1];
     if (cmd == "-h" || cmd == "--help") return usage(std::cout, 0);
     prism::qa::Args args(argv + 2, argv + argc);
     for (const auto& c : COMMANDS)
         if (c.name == cmd) return c.run(args);
-    std::cerr << "prism-qa: unknown command " << cmd << "\n";
-    return usage(std::cerr, 2);
+    prism::log::error("", prism::log::cat("unknown command ", cmd));
+    return usage(prism::log::err_stream(), 2);
 }

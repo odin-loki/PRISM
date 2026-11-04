@@ -1,3 +1,4 @@
+#include <shared_mutex>
 void stmutex_bad(void) {
     std::shared_timed_mutex m;
     m.lock();

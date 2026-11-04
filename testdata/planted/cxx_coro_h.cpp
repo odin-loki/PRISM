@@ -1,3 +1,4 @@
+#include <coroutine>
 int coro_h_unenc_bad(int n) {
     std::coroutine_handle<> h;
     return n;

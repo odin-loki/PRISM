@@ -1,5 +1,6 @@
 // Stage fuse: concrete and binary fuzzing (fuzz_function), AFL++ and
 // libFuzzer engines, Fuzz4All / ChatFuzz LLM seeds and mutants (run_fuse).
+#include "prism/clock.hpp"
 #include "agent.hpp"
 #include "fuse.hpp"
 #include "llm.hpp"
@@ -185,7 +186,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         }
     if (corpus.empty()) corpus.push_back(random_seed_row(static_cast<std::size_t>(nbytes)));
     bool noseed = !seeds;
-    auto t0 = std::chrono::steady_clock::now();
+    const prism::clock::Stopwatch t0;
     std::set<uint64_t> seen;
     int new_cov = 0, stall = 0, i = 0;
     // The interpreter's reason when it could not run the function (a parse
@@ -245,7 +246,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     };
     std::deque<std::vector<uint8_t>> queue(corpus.begin(), corpus.end());
     while (!queue.empty() && interp_err.empty()) {
-        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        auto elapsed = t0.elapsed_s();
         if (elapsed >= std::max(budget, 1.0)) break;
         auto child = queue.front();
         queue.pop_front();
@@ -254,7 +255,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     }
     uint64_t hseed = 1;
     while (i < iters && interp_err.empty()) {
-        auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        auto elapsed = t0.elapsed_s();
         if (elapsed >= budget) break;
         auto child = corpus[static_cast<std::size_t>(i) % corpus.size()];
         havoc(child.data(), child.size(), ++hseed);
@@ -279,7 +280,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         fill(f, "concrete");
         return f;
     };
-    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    auto elapsed = t0.elapsed_s();
     double remain = std::max(0.05, budget - elapsed);
     int bin_iters = std::min(32, std::max(1, iters));
     // Law 9: the compiled harness runs the scanned function; without
@@ -377,12 +378,12 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     };
     auto run_one = [&](const std::vector<uint8_t>& child) {
         std::string in(child.begin(), child.end());
-        detail::RunSpec spec;  // the harness's whole tree dies with the run
+        exec::Spec spec;  // the harness's whole tree dies with the run
         spec.argv = sandbox::wrap_argv({exe.string()}, workdir);
-        spec.input = std::move(in);
-        spec.timeout_s = 1.0;
-        spec.limits = sandbox::limits_for(1.0, /*limit_as=*/false);
-        spec.kill_descendants = true;
+        spec.stdin_data = std::move(in);
+        spec.timeout_ms = 1000;
+        exec::apply_limits(spec, true, 1.0, /*limit_as=*/false);
+        spec.new_session = true;
         return run_spec(spec);
     };
     // A window of inputs runs at once; the first crash in input order wins,
@@ -407,8 +408,8 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
         }
         return hit;
     };
-    auto tbin = std::chrono::steady_clock::now();
-    auto bin_elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tbin).count(); };
+    const prism::clock::Stopwatch tbin;
+    auto bin_elapsed = [&] { return tbin.elapsed_s(); };
     int n = 0;
     int take = std::max(1, std::min(bin_iters, static_cast<int>(corpus.size())));
     for (int k = 0; k < take;) {
@@ -466,48 +467,52 @@ void add_goal(std::vector<std::string>& seen, std::string cond) {
 
 std::vector<std::string> branch_goals(const FunctionInfo& fn) {
     // FuSeBMC MyVisitor::check / checkStmt: then, implicit else, loop-exit, switch cases.
-    static Regex if_re("\\bif\\s*\\(([^)]+)\\)");
-    static Regex while_re("\\bwhile\\s*\\(([^)]+)\\)");
-    static Regex for_re("\\bfor\\s*\\(([^)]*)\\)");
-    static Regex switch_re("\\bswitch\\s*\\(([^)]+)\\)");
+    // Conditions are read with balanced parentheses: `if (x == (a - 1))` is
+    // one condition, never the truncated `x == (a - 1`.
     static Regex case_re("\\bcase\\s+([^:]+):");
+    const std::string& body = fn.body;
     std::vector<std::string> seen;
-    for (auto& m : if_re.finditer(fn.body)) {
-        auto cond = norm_ws(m.group(1));
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
+    std::vector<std::pair<std::string, std::size_t>> switches;  // expr, end of `(...)`
+    auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    for (std::string_view kw : {"if", "while", "for", "switch"}) {
+        for (std::size_t at = body.find(kw); at != std::string::npos; at = body.find(kw, at + 1)) {
+            if (at > 0 && ident(body[at - 1])) continue;
+            std::size_t i = at + kw.size();
+            if (i < body.size() && ident(body[i])) continue;
+            while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) ++i;
+            if (i >= body.size() || body[i] != '(') continue;
+            std::size_t open = i, depth = 0, close = std::string::npos;
+            for (; i < body.size(); ++i) {
+                if (body[i] == '(') ++depth;
+                else if (body[i] == ')' && --depth == 0) { close = i; break; }
+            }
+            if (close == std::string::npos) continue;
+            std::string inner = body.substr(open + 1, close - open - 1);
+            if (kw == "switch") {
+                auto expr = norm_ws(inner);
+                if (!expr.empty()) switches.emplace_back(expr, close + 1);
+                continue;
+            }
+            if (kw == "for") {
+                auto semi = inner.find(';');
+                if (semi == std::string::npos) continue;
+                auto semi2 = inner.find(';', semi + 1);
+                inner = inner.substr(semi + 1, semi2 == std::string::npos ? std::string::npos : semi2 - semi - 1);
+            }
+            auto cond = norm_ws(inner);
+            if (cond.empty()) continue;
+            add_goal(seen, cond);
+            add_goal(seen, "!(" + cond + ")");
+        }
     }
-    for (auto& m : while_re.finditer(fn.body)) {
-        auto cond = norm_ws(m.group(1));
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
-    }
-    for (auto& m : for_re.finditer(fn.body)) {
-        auto inner = m.group(1);
-        auto semi = inner.find(';');
-        if (semi == std::string::npos) continue;
-        auto semi2 = inner.find(';', semi + 1);
-        auto mid = inner.substr(semi + 1, semi2 == std::string::npos ? std::string::npos : semi2 - semi - 1);
-        auto cond = norm_ws(mid);
-        if (cond.empty()) continue;
-        add_goal(seen, cond);
-        add_goal(seen, "!(" + cond + ")");
-    }
-    auto switches = switch_re.finditer(fn.body);
-    for (std::size_t i = 0; i < switches.size(); ++i) {
-        auto expr = norm_ws(switches[i].group(1));
-        if (expr.empty()) continue;
-        std::size_t from = switches[i].spans.empty() ? 0 : static_cast<std::size_t>(std::max(0, switches[i].spans[0].second));
-        std::size_t to = fn.body.size();
-        if (i + 1 < switches.size() && !switches[i + 1].spans.empty() && switches[i + 1].spans[0].first >= 0)
-            to = static_cast<std::size_t>(switches[i + 1].spans[0].first);
-        if (from > to) from = to;
-        auto rest = fn.body.substr(from, to - from);
+    std::ranges::sort(switches, {}, &std::pair<std::string, std::size_t>::second);
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        std::size_t from = switches[k].second;
+        std::size_t to = k + 1 < switches.size() ? switches[k + 1].second : body.size();
+        auto rest = body.substr(from, to - from);
         for (auto& cm : case_re.finditer(rest)) {
             auto lab = norm_ws(cm.group(1));
-            if (!lab.empty()) add_goal(seen, "(" + expr + ") == (" + lab + ")");
+            if (!lab.empty()) add_goal(seen, "(" + switches[k].first + ") == (" + lab + ")");
         }
     }
     return seen;
@@ -526,9 +531,9 @@ std::vector<std::pair<std::string, std::string>> numbered_goals(const FunctionIn
 }
 
 namespace stages_detail {
-std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings) {
+std::vector<std::vector<uint8_t>> seeds_from_findings(const FunctionInfo& fn, const std::vector<Finding>& checker_findings) {
     std::vector<std::vector<uint8_t>> out;
-    for (auto& f : bmc_findings) {
+    for (auto& f : checker_findings) {
         if (!f.function || *f.function != fn.name) continue;
         if (f.status != laws::FAILED) continue;
         auto b = bytes_from_cex(f.counterexample, fn);
@@ -541,19 +546,19 @@ std::vector<std::vector<uint8_t>> seeds_from_bmc(const FunctionInfo& fn, const s
 
 namespace {
 
-bool llama_engine_up(LlamaEngine* e);
+bool llm_engine_up(LlmEngine* e);
 
-std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const FunctionInfo& fn, int nbytes);
+std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlmEngine& engine, const FunctionInfo& fn, int nbytes);
 
-std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex);
 
-std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlmEngine& engine, const FunctionInfo& fn,
                                                               const std::string& seed_hex,
                                                               const std::string& prev_hex = {},
                                                               int strategy = 1);
 
-std::vector<std::vector<uint8_t>> fuzz4all_combine(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_combine(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex, const std::string& prev_hex);
 
 void pad_seed_nbytes(std::vector<uint8_t>& b, int n) {
@@ -633,13 +638,13 @@ namespace {
 // grandchildren must not outlive the run holding its pipes (the Windows
 // clang-cl CI hang in the PRISM_AFL opt-in test).
 ProcRun run_tree(const std::vector<std::string>& argv, const std::string& input, double timeout_s,
-                 const sandbox::Limits& limits = {}) {
-    detail::RunSpec spec;
+                 bool sandbox_limits = false) {
+    exec::Spec spec;
     spec.argv = argv;
-    spec.input = input;
-    spec.timeout_s = timeout_s;
-    spec.limits = limits;
-    spec.kill_descendants = true;
+    spec.stdin_data = input;
+    spec.timeout_ms = static_cast<std::uint64_t>(timeout_s * 1000);
+    exec::apply_limits(spec, sandbox_limits, timeout_s, /*limit_as=*/false);
+    spec.new_session = true;
     return run_spec(spec);
 }
 }  // namespace
@@ -793,15 +798,15 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
         seed.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
     }
     int vsec = std::max(1, static_cast<int>(timeout));
-    detail::RunSpec spec;
+    exec::Spec spec;
     spec.argv = sandbox::wrap_argv({afl->string(), "-i", in_dir.string(), "-o", out_dir.string(), "-V",
                                     std::to_string(vsec), "--", exe.string()},
                                    td);
-    spec.env = afl_env();  // the child's environment only, never PRISM's
-    spec.cwd = td;
-    spec.timeout_s = timeout + 10.0;
-    spec.limits = sandbox::limits_for(timeout + 10.0, /*limit_as=*/false);
-    spec.kill_descendants = true;
+    for (const auto& [k, v] : afl_env()) spec.env_set[k] = v;  // the child's environment only, never PRISM's
+    spec.cwd = td.string();
+    spec.timeout_ms = static_cast<std::uint64_t>((timeout + 10.0) * 1000);
+    exec::apply_limits(spec, true, timeout + 10.0, /*limit_as=*/false);
+    spec.new_session = true;  // the timeout kills afl-fuzz's whole tree
     ProcRun run = run_spec(spec);
     std::optional<AflCrashFile> crash;
     std::vector<fs::path> crash_dirs{out_dir / "crashes", out_dir / "default" / "crashes"};
@@ -829,7 +834,7 @@ std::optional<Finding> run_afl_fuzz(const FunctionInfo& fn, const fs::path& src,
 
 namespace {
 
-const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: apt install clang-18 (see third_party/MANIFEST.toml)";
+const char* kLibfuzzerInstall = "clang -fsanitize=fuzzer is a system tool: the pinned LLVM (scripts/fetch_llvm.py, third_party/llvm/PIN.toml)";
 
 std::string libfuzzer_harness_source(const FunctionInfo& fn, std::string src_rel) {
     for (char& c : src_rel)
@@ -1050,8 +1055,8 @@ Finding run_libfuzzer(const FunctionInfo& fn, const fs::path& src, double timeou
     return f;
 }
 
-Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_findings, const fs::path& root,
-                 double budget, int iters, int rounds, LlamaEngine* engine, const Config& cfg) {
+Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& checker_findings, const fs::path& root,
+                 double budget, int iters, int rounds, LlmEngine* engine, const Config& cfg) {
     auto nh = [&](std::string msg) {
         return make_find("fuse", laws::NEEDS_HARNESS, fn, "", std::move(msg), laws::STRENGTH_FINDS);
     };
@@ -1072,16 +1077,16 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     if (!fs::exists(src) && fs::is_regular_file(root)) src = root;
     if (!fs::exists(src) && fs::exists(root / fs::path(fn.file).filename()))
         src = root / fs::path(fn.file).filename();
-    auto seeds = seeds_from_bmc(fn, bmc_findings);
-    int from_bmc = static_cast<int>(seeds.size());
+    auto seeds = seeds_from_findings(fn, checker_findings);
+    int from_checker = static_cast<int>(seeds.size());
     auto labeled = numbered_goals(fn);
     std::set<std::string> covered;
     Finding last;
     std::map<std::string, std::string> extra{
-        {"from_bmc", std::to_string(from_bmc)},
+        {"from_checker", std::to_string(from_checker)},
         {"rounds", "0"},
-        {"new_bmc_seeds", "0"},
-        {"noseed", from_bmc == 0 ? "true" : "false"},
+        {"new_checker_seeds", "0"},
+        {"noseed", from_checker == 0 ? "true" : "false"},
     };
     {
         nlohmann::json ids = nlohmann::json::array();
@@ -1108,11 +1113,11 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
     } else if (afl_on_path && !use_afl) {
         extra["afl_available"] = "true";
     }
-    bool llm_up = llama_engine_up(engine);
+    bool llm_up = llm_engine_up(engine);
     if (engine && !llm_up) {
         extra["autoprompt"] = "NOTRUN";
         extra["chatfuzz"] = "NOTRUN";
-        extra["install"] = "ollama serve  (qwen3.5:9b) or build prism with -DPRISM_LLAMA=ON";
+        extra["install"] = LLM_INSTALL;
     }
     if (llm_up) {
         try {
@@ -1138,7 +1143,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         // inputs to the same results, so it adds no check.
         if (r > 0 && seeds == prev_seeds && !sandbox::allowed()) break;
         prev_seeds = seeds;
-        const auto round_t0 = std::chrono::steady_clock::now();
+        const prism::clock::Stopwatch round_t0;
         extra["rounds"] = std::to_string(r + 1);
         try {
             last = fuzz_function(fn, src, budget, iters, seeds.empty() ? nullptr : &seeds);
@@ -1300,35 +1305,35 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
         int goals_skipped = 0;
         for (auto& [lab, cond] : labeled) {
             if (covered.contains(lab)) continue;
-            // The goal BMC runs only while the round's fuzz budget lasts: a
+            // The goal checks run only while the round's fuzz budget lasts: a
             // goal is a seed source, never a check (a fuzzer CLEAN is not a
             // proof, Law 3). zlib: one goal query per branch of every scalar
-            // function took the fuzz stage past 700 s; the bmc stage checks
+            // function took the fuzz stage past 700 s; the pir stage checks
             // each function in full on its own.
-            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - round_t0).count() >= budget) {
+            if (round_t0.elapsed_s() >= budget) {
                 ++goals_skipped;
                 continue;
             }
             auto cloned = fn;
             cloned.body = "if (!(" + cond + ")) return 0;\n" + fn.body;
-            auto g = bmc_one(cloned, 8);
+            auto g = pir_one(cloned, 8);
             extra["rounds"] = std::to_string(r + 1);
             if (g.status == laws::FAILED && !g.counterexample.empty()) {
                 covered.insert(lab);
                 nlohmann::json ids = nlohmann::json::array();
-                if (extra.contains("bmc_goals")) {
+                if (extra.contains("goal_checks")) {
                     try {
-                        ids = nlohmann::json::parse(extra["bmc_goals"]);
+                        ids = nlohmann::json::parse(extra["goal_checks"]);
                     } catch (...) {
                         ids = nlohmann::json::array();
                     }
                 }
                 ids.push_back(lab);
-                extra["bmc_goals"] = ids.dump();
+                extra["goal_checks"] = ids.dump();
                 if (auto seed_bytes = bytes_from_cex(g.counterexample, fn)) {
                     if (std::ranges::find(seeds, *seed_bytes) == seeds.end())
                         seeds.push_back(*seed_bytes);
-                    extra["new_bmc_seeds"] = std::to_string(std::stoi(extra["new_bmc_seeds"]) + 1);
+                    extra["new_checker_seeds"] = std::to_string(std::stoi(extra["new_checker_seeds"]) + 1);
                 }
             } else if (g.status == laws::PROVED || g.status == laws::PROVED_UNBOUNDED ||
                        g.status == laws::BOUNDED) {
@@ -1336,7 +1341,7 @@ Finding fuse_one(const FunctionInfo& fn, const std::vector<Finding>& bmc_finding
             }
         }
         if (goals_skipped > 0)
-            extra["bmc_goals_skipped"] = std::to_string(goals_skipped) + " (fuzz budget spent: no seed from them)";
+            extra["goal_checks_skipped"] = std::to_string(goals_skipped) + " (fuzz budget spent: no seed from them)";
 #endif
     }
     extra["covered_goals"] = nlohmann::json(std::vector<std::string>(covered.begin(), covered.end())).dump();
@@ -1400,9 +1405,9 @@ std::string fn_source_text(const FunctionInfo& fn, const fs::path& root) {
     return fn.signature + "\n{" + fn.body + "\n}";
 }
 
-const char* LLM_SKIP_FUSE_MSG = "llama.cpp/Ollama not reachable; stall mutants / autoprompt skipped";
+const char* LLM_SKIP_FUSE_MSG = "no FORGE model (.fpk); stall mutants / autoprompt skipped";
 
-bool llama_engine_up(LlamaEngine* e) { return e && e->available(); }
+bool llm_engine_up(LlmEngine* e) { return e && e->available(); }
 
 }  // namespace
 
@@ -1542,7 +1547,7 @@ FuzzPrompt create_prompt_from_source(const std::string& name, const std::string&
 
 namespace {
 
-std::string fuzz4all_autoprompt_text(LlamaEngine& engine, const FunctionInfo& fn) {
+std::string fuzz4all_autoprompt_text(LlmEngine& engine, const FunctionInfo& fn) {
     if (!engine.available()) return {};
     auto src_file = read_fn_source(fn);
     auto docs = documentation_from_comments(src_file);
@@ -1568,7 +1573,7 @@ std::string fuzz4all_update_strategy(const std::string& new_hex, const std::stri
 
 namespace {
 
-std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const FunctionInfo& fn, int nbytes) {
+std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlmEngine& engine, const FunctionInfo& fn, int nbytes) {
     if (!engine.available()) return {};
     auto user = "nbytes=" + std::to_string(nbytes) + "\n" + fn.signature + "\n{" + fn.body + "\n}";
     auto r = engine.complete({{"system", SYSTEM_FUZZ4ALL}, {"user", user}}, 90.0);
@@ -1585,7 +1590,7 @@ std::vector<std::vector<uint8_t>> fuzz4all_seeds(LlamaEngine& engine, const Func
     return pick_best_prompt(candidates, nbytes).seeds;
 }
 
-std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlmEngine& engine, const FunctionInfo& fn,
                                                               const std::string& seed_hex,
                                                               const std::string& prev_hex, int strategy) {
     if (!engine.available()) return {};
@@ -1597,12 +1602,12 @@ std::vector<std::vector<uint8_t>> fuzz4all_mutate_interesting(LlamaEngine& engin
     return json_hex_list(extract_json(r.text), "mutants");
 }
 
-std::vector<std::vector<uint8_t>> fuzz4all_combine(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> fuzz4all_combine(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex, const std::string& prev_hex) {
     return fuzz4all_mutate_interesting(engine, fn, seed_hex, prev_hex, 3);
 }
 
-std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const FunctionInfo& fn,
+std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlmEngine& engine, const FunctionInfo& fn,
                                                    const std::string& seed_hex) {
     if (!engine.available()) return {};
     auto r = engine.complete({{"system", SYSTEM_CHATFUZZ},
@@ -1614,27 +1619,27 @@ std::vector<std::vector<uint8_t>> chatfuzz_mutants(LlamaEngine& engine, const Fu
 
 }  // namespace
 
-std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& checker_findings,
                               const fs::path& src_root, double budget, int iters, bool llm) {
-    return run_fuse(functions, bmc_findings, src_root, budget, iters, llm, default_config());
+    return run_fuse(functions, checker_findings, src_root, budget, iters, llm, default_config());
 }
 
-std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& bmc_findings,
+std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const std::vector<Finding>& checker_findings,
                               const fs::path& src_root, double budget, int iters, bool llm, const Config& cfg) {
     std::vector<Finding> out;
     int rounds = 2;
     // A zero budget is already spent: do not lift it to the 0.05 s floor.
-    // Goal BMC (below) runs only while that budget lasts, and a positive
+    // Goal checks (below) run only while that budget lasts, and a positive
     // budget still gets a floor so a short round does some concrete fuzzing.
     double slice_budget = budget > 0.0 ? std::max(0.05, budget / rounds) : 0.0;
     int slice_iters = std::max(1, iters / rounds);
-    std::optional<LlamaEngine> eng;
-    // The run's model settings (PRISM_MODEL, PRISM_LLAMA_SERVER, OLLAMA_HOST,
-    // PRISM_GGUF, and its output directory for the audit log).
+    std::optional<LlmEngine> eng;
+    // The run's model settings (PRISM_MODEL, PRISM_FPK,
+    // and its output directory for the audit log).
     if (llm) eng.emplace(cfg);
-    LlamaEngine* ep = eng.has_value() ? &eng.value() : nullptr;
+    LlmEngine* ep = eng.has_value() ? &eng.value() : nullptr;
     for (auto& fn : functions)
-        out.push_back(fuse_one(fn, bmc_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
+        out.push_back(fuse_one(fn, checker_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
     if (ep && !ep->available() && !functions.empty()) {
         Finding f;
         f.stage = "fuse";

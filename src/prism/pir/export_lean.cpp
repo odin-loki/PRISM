@@ -14,13 +14,16 @@
 // directory. Unset (the default): nothing is written.
 
 #include "prism/pir.hpp"
+#include "prism/settings.hpp"
 
 #include "fp.hpp"
 #include "translate_mem.hpp"
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <cstdlib>
+#include <iostream>
 #include <fstream>
 #include <mutex>
 #include <optional>
@@ -61,6 +64,16 @@ unsigned vw(const ir::Type& t) {
 // The analysed function's entry globals (pirmem::entry_globals); null while
 // a callee is written (a global there is outside the fragment).
 thread_local const std::vector<std::string>* g_entry = nullptr;
+// The analysed function's entry globals while its callees are written: each
+// inlined callee takes them as extra parameters `@name` (after its own, before
+// the allocation-failed flag) and every inlined call passes the caller's
+// `%@name` registers. A faithful rewrite: a global's address is the same in
+// every frame, and MemTr::global gives an inlined body the variable the
+// prologue allocated (pirmem::entry_globals includes the read-only globals the
+// callees name).
+thread_local std::vector<std::string> g_top_eg;
+// the analysed function can reach __prism_alloc_failed (translate.cpp's oom_)
+thread_local bool g_top_oom = false;
 
 std::string opnd(const ir::Operand& o) {
     switch (o.v.kind) {
@@ -156,14 +169,18 @@ bool aggregate_load(const pirmem::Layout& lay, const ir::Function& f, const ir::
     }
 }
 
-// `L gep %d INB BASE N` then per index `f OPND W SCALE` (the first), `s OFF`
+// `L gep %d FL BASE N` (FL: bit 0 inbounds, bit 1 nuw) then per index `f OPND W SCALE` (the first), `s OFF`
 // (a struct field), `a OPND W SCALE BOUND USE` (an array index; BOUND 0: no C
 // array-bound check), computed as MemTr::gep and Tr::mem_inst do.
 void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f, const ir::Inst& in) {
     if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr" || in.result.empty())
         throw Unsupported{"vector getelementptr"};
     for (auto& fl : in.flags)
-        if (fl != "inbounds") throw Unsupported{"getelementptr " + fl};
+        // nusw is implied by inbounds (LLVM 19+); nuw is the Lean gep flag
+        // (PrismRefine.gNuwBad / nuwChecks).
+        if (fl != "inbounds" && fl != "nuw" &&
+            !(fl == "nusw" && std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end()))
+            throw Unsupported{"getelementptr " + fl};
     int use = 0;  // 0 address, 1 loaded, 2 stored through, 3 deeper GEP
     for (auto& bl : f.blocks)
         for (auto& u : bl.insts) {
@@ -194,8 +211,10 @@ void gep_line(std::ostream& b, const pirmem::Layout& lay, const ir::Function& f,
             } catch (const pirmem::Unenc&) {
                 base_last = true;
             }
-    b << "L gep %" << name(in.result) << " " << (std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end())
-      << " " << ptr_opnd(in.ops[0]) << " " << in.ops.size() - 1;
+    // flag set: bit 0 inbounds, bit 1 nuw (Check.lean reads it)
+    const bool inb = std::find(in.flags.begin(), in.flags.end(), "inbounds") != in.flags.end();
+    const bool nuw = std::find(in.flags.begin(), in.flags.end(), "nuw") != in.flags.end();
+    b << "L gep %" << name(in.result) << " " << ((inb ? 1 : 0) | (nuw ? 2 : 0)) << " " << ptr_opnd(in.ops[0]) << " " << in.ops.size() - 1;
     const ir::Type* t = &in.ety;
     bool last_field = base_last;
     for (std::size_t k = 1; k < in.ops.size(); ++k) {
@@ -368,6 +387,9 @@ std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& 
         return std::pair<std::string, std::string>{"assert", "FUNC-CONTRACT"};
     if (n == "__VERIFIER_error" || n == "reach_error")
         return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
+    // Tr::call's abort(): an unconditional check unless an allocation can
+    // have failed (then the check reads the hidden flag)
+    if (n == "abort" && !g_top_oom) return std::pair<std::string, std::string>{"abort", "FUNC-CONTRACT"};
     if (n == "_ZSt21__glibcxx_assert_failPKciS0_S0_" || n == "_ZSt21__glibcxx_assert_failv") {
         // libstdc++ precondition: the class from the condition text (as Tr::call)
         std::string cond = in.ops.size() > 3 ? literal_string(m, in.ops[3].v).value_or("") : "";
@@ -405,6 +427,7 @@ std::string std_throw_ti(const std::string& fn) {
         {"__throw_bad_variant_access", "_ZTISt18bad_variant_access"},
         {"__throw_bad_cast", "_ZTISt8bad_cast"},
         {"__throw_bad_typeid", "_ZTISt10bad_typeid"},
+        {"__throw_ios_failure", "_ZTINSt8ios_base7failureB5cxx11E"},
     };
     for (auto& [pre, ti] : k) {
         auto p = fn.find(pre);
@@ -580,6 +603,19 @@ std::vector<unsigned> frame_vars(const ir::Inst& in) {
     return {};
 }
 
+// A { ptr|iN, ptr|iN } scalar pair (translate.cpp's scalar_pair without its
+// floating-point fields): the two widths and whether each field is a pointer.
+struct PairTy { unsigned w0, w1; bool p0, p1; };
+std::optional<PairTy> pair_ty(const ir::Type& t) {
+    auto pw = [](const ir::Type& e) -> unsigned {
+        if (e.kind == ir::Type::Ptr && e.text == "ptr") return 64;
+        if (e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) return e.bits;
+        return 0;
+    };
+    if (t.kind != ir::Type::Struct || t.elems.size() != 2 || !pw(t.elems[0]) || !pw(t.elems[1])) return std::nullopt;
+    return PairTy{pw(t.elems[0]), pw(t.elems[1]), t.elems[0].kind == ir::Type::Ptr, t.elems[1].kind == ir::Type::Ptr};
+}
+
 // A block normal_blocks leaves out, as `L dead` placeholders for the variables
 // Tr::enter_frame numbers there, then `L stub` (the Lean translator refuses a
 // stub block it finds reachable). Refused where Tr::enter_frame would add a
@@ -614,6 +650,8 @@ void dead_block(std::ostream& b, const ir::Function& f, const ir::Block& bl,
         if (ws.empty()) continue;
         b << "L dead %" << name(in.result);
         for (auto w : ws) b << " " << w;
+        // a scalar pair load also numbers its field-1 address (`L pload`)
+        if (in.op == "load" && ws.size() == 2) b << " 64";
         b << "\n";
     }
     b << "L stub\n";
@@ -663,6 +701,8 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
     // entry globals, passed to every inlined function that can reach it as an
     // extra last parameter (the translator refers to its variable directly)
     const bool oom = pirmem::reaches_alloc_failed(m, f);
+    if (top) g_top_oom = oom;
+    const bool caught = pirmem::reaches_caught_slot(m, f);
     // Pointer parameters. Of an inlined callee: ordinary 64-bit values bound
     // to the caller's arguments (a by-value aggregate is copied first:
     // outside). Of the analysed function (translate()): a by-value aggregate
@@ -721,45 +761,79 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } catch (const pirmem::Unenc& u) {
                 throw Unsupported{"parameter object: " + u.reason};
             }
-            if (sz >= kMaxObjSize) throw Unsupported{"parameter object larger than 2^47 bytes"};
+            if (sz >= max_obj_size()) throw Unsupported{"parameter object larger than 2^47 bytes"};
             harness << "L glob %" << name(p.name) << " " << sz << " 16 1 " << (bt ? 2 : 0) << " 0\n";
             continue;
         }
         if (c->count < 0) throw Unsupported{"pointer parameter with a symbolic-size contract (assumptions on the size)"};
         const uint64_t esz = pirmem::contract_elem_bytes(lay, f, p, *c);
-        if (!esz || static_cast<uint64_t>(c->count) > kMaxObjSize / esz ||
-            static_cast<uint64_t>(c->count) * esz >= kMaxObjSize)
+        if (!esz || static_cast<uint64_t>(c->count) > max_obj_size() / esz ||
+            static_cast<uint64_t>(c->count) * esz >= max_obj_size())
             throw Unsupported{"contract object of unknown or too large size"};
         harness << "L glob %" << name(p.name) << " " << static_cast<uint64_t>(c->count) * esz << " 16 "
                 << (c->read_only ? 4 : 7) << " 2 0\n";
     }
-    b << "L params " << ints.size() + (oom && !top ? 1 : 0);
-    for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
-    if (oom && !top) b << " " << kOom << " 64";
-    b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
-    // translate.cpp's return of a pointer: MemTr::stack_escape_check against
-    // the function's own stack objects (the Lean XFunc.escNames; a callee: outside)
-    if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
     std::vector<std::string> eg;
     if (top) eg = pirmem::entry_globals(m, lay, f, opt.globals_initial);
-    g_entry = top ? &eg : nullptr;
+    if (top) g_top_eg = eg;
+    const std::size_t neg = top ? 0 : g_top_eg.size();
+    b << "L params " << ints.size() + neg + (oom && !top ? 1 : 0);
+    for (auto* p : ints) b << " " << name(p->name) << " " << vw(p->ty);
+    if (!top)
+        for (auto& gname : g_top_eg) b << " @" << name(gname) << " 64";
+    if (oom && !top) b << " " << kOom << " 64";
+    if (auto pt = pair_ty(f.ret)) {
+        // a scalar pair return (translate.cpp's ret_pair; inlined callee only)
+        b << "\nL ret 0\nL pret " << pt->w0 << " " << pt->w1 << " " << pt->p0 << " " << pt->p1 << "\n";
+    } else {
+        b << "\nL ret " << (f.ret.kind == ir::Type::Void ? 0u : vw(f.ret)) << "\n";
+    }
+    // translate.cpp's return of a pointer: MemTr::stack_escape_check against
+    // the function's own stack objects (the Lean XFunc.escNames; also for an inlined callee)
+    if (f.ret.kind == ir::Type::Ptr) b << "L retptr\n";
+    g_entry = top ? &eg : &g_top_eg;
     struct Reset {
         ~Reset() { g_entry = nullptr; }
     } reset;
     const auto live = normal_blocks(f);
     const auto muninit = maybe_uninit_of(f);
-    for (auto& bl0 : f.blocks) {
-        b << "L block " << name(bl0.name) << "\n";
-        if (!live.count(bl0.name)) {
-            dead_block(b, f, bl0, muninit);
-            continue;
+    // the blocks eh_pass may translate (Tr::region from a landing pad): those
+    // reached from an invoke's unwind label along br, switch and invoke normal
+    // edges, outside normal_blocks; exported in full (translated only once a
+    // throw edge reaches their landing pad), a stub where the export fails
+    std::set<std::string> padset;
+    {
+        std::map<std::string, const ir::Block*> by;
+        for (auto& x : f.blocks) by[x.name] = &x;
+        std::vector<std::string> work;
+        auto unw = [&](const ir::Block& x) {
+            for (auto& in : x.insts)
+                if (in.op == "invoke" && in.targets.size() == 2) work.push_back(in.targets[1]);
+        };
+        for (auto& x : f.blocks)
+            if (live.count(x.name)) unw(x);
+        while (!work.empty()) {
+            auto n = work.back();
+            work.pop_back();
+            if (live.count(n) || !by.count(n) || !padset.insert(n).second) continue;
+            unw(*by[n]);
+            for (auto& in : by[n]->insts) {
+                if (in.op == "br" || in.op == "switch")
+                    for (auto& t : in.targets) work.push_back(t);
+                if (in.op == "switch")
+                    for (auto& [c, t] : in.cases) work.push_back(t);
+                if (in.op == "invoke" && !in.targets.empty()) work.push_back(in.targets[0]);
+            }
         }
+    }
+    auto emit_block = [&](std::ostream& b, const ir::Block& bl0) {
         // an invoke: translate.cpp's Tr::translate_block translates it as the
         // call (its landing pad the handler of a throw inside), then the normal
         // edge. Nothing the Lean fragment admits throws (__cxa_throw, resume,
         // std::__throw_* are all outside), so the handler is never used and the
         // landing pads stay unreachable: the call, then `br` to the normal label.
         ir::Block bl = bl0;
+        std::string invoke_pad;
         const bool invoke_end = !bl.insts.empty() && bl.insts.back().op == "invoke";
         if (invoke_end) {
             ir::Inst& inv = bl.insts.back();
@@ -768,6 +842,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             br.op = "br";
             br.parsed = true;
             br.targets = {inv.targets[0]};
+            invoke_pad = inv.targets[1];
             inv.op = "call";
             inv.targets.clear();
             bl.insts.push_back(std::move(br));
@@ -787,6 +862,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         if (top && oom && &bl0 == &f.blocks.front())
             // MemTr::alloc(-1, c64(1), Static, init 1): one zero byte
             b << "L glob %" << kOom << " 1 16 3 1 0\n";
+        if (top && caught && &bl0 == &f.blocks.front())
+            // Tr::caught_slot: MemTr::alloc(-1, c64(72), Static, init 1), after the oom flag
+            b << "L glob %__prism.caught 72 16 3 1 0\n";
+        bool xalloc = false;  // a user throw's __cxa_allocate_exception was written (L xalloc)
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
             const std::string& op = in.op;
@@ -799,8 +878,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 continue;
             }
             for (auto& fl : in.flags)
-                if (fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
+                if (!(op == "landingpad" && fl == "cleanup") && fl != "nsw" && fl != "nuw" && fl != "exact" && fl != "disjoint" && fl != "nneg")
                     throw Unsupported{in.op + " " + fl};
+            if (op == "phi" && padset.count(bl0.name) && std::ranges::any_of(bl0.insts, [](const ir::Inst& x) {
+                    return x.op == "landingpad";
+                }))
+                throw Unsupported{"phi in a landing pad"};
             if (op == "phi") {
                 // resolve_phis drops an incoming from a block run_frame never
                 // translated (normal_blocks does not reach it: a catch handler
@@ -808,7 +891,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 // shadows saw it: an undef or maybe-uninitialised input.
                 std::vector<std::pair<ir::Operand, std::string>> inc;
                 for (auto& [v, pred] : in.incoming) {
-                    if (live.count(pred)) {
+                    // a landing-pad region block (catch code joining the normal
+                    // path): kept, the Lean translator drops it when no throw reached it
+                    if (live.count(pred) || padset.count(pred)) {
                         inc.emplace_back(v, pred);
                         continue;
                     }
@@ -881,8 +966,10 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                   << opnd(in.ops[1]) << " " << opnd(in.ops[2]) << "\n";
             } else if (op == "zext" || op == "sext" || op == "trunc") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{op + " shape"};
-                if (op == "trunc" && (has(in, "nuw") || has(in, "nsw"))) throw Unsupported{"trunc nuw/nsw"};
-                b << "L cast %" << name(in.result) << " " << op << " " << (has(in, "nneg") ? 1 : 0) << " "
+                // flag set as Lean's Inst.cast reads it: bit 0 nneg, bit 1 nuw, bit 2 nsw
+                // (trunc nuw/nsw: PrismRefine.castChecks / cast_bad).
+                const int cfl = (has(in, "nneg") ? 1 : 0) | (has(in, "nuw") ? 2 : 0) | (has(in, "nsw") ? 4 : 0);
+                b << "L cast %" << name(in.result) << " " << op << " " << cfl << " "
                   << width(in.ops[0].ty) << " " << width(in.ty) << " " << opnd(in.ops[0]) << "\n";
             } else if (op == "br") {
                 if (in.targets.size() == 1) {
@@ -912,7 +999,17 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"load shape"};
                 std::string p = ptr_opnd(in.ops[0]);
                 if (aggregate_load(lay, f, in)) throw Unsupported{"integer load of an aggregate (raw byte copy)"};
-                b << "L load %" << name(in.result) << " " << vw(in.ty) << " " << p << " " << in.align << "\n";
+                if (auto pt = pair_ty(in.ty)) {
+                    // translate.cpp's pair_fields: field 0, the address of field 1, field 1
+                    const uint64_t off1 = lay.field_offset(in.ty, 1);
+                    const unsigned a0 = in.align ? in.align : lay.align(in.ty);
+                    unsigned a1 = a0;
+                    while (a1 > 1 && off1 % a1 != 0) a1 /= 2;
+                    b << "L pload %" << name(in.result) << " " << pt->w0 << " " << pt->w1 << " "
+                      << lay.alloc_size(in.ty) << " " << off1 << " " << p << " " << a0 << " " << a1 << "\n";
+                } else {
+                    b << "L load %" << name(in.result) << " " << vw(in.ty) << " " << p << " " << in.align << "\n";
+                }
             } else if (op == "store") {
                 if (in.ops.size() != 2) throw Unsupported{"store shape"};
                 b << "L store " << vw(in.ops[0].ty) << " " << opnd(in.ops[0]) << " " << ptr_opnd(in.ops[1]) << " "
@@ -920,9 +1017,68 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "freeze") {
                 if (in.result.empty() || in.ops.size() != 1) throw Unsupported{"freeze shape"};
                 b << "L freeze %" << name(in.result) << " " << vw(in.ty) << " " << opnd(in.ops[0]) << "\n";
+            } else if (op == "call" && !in.is_asm && in.callee.starts_with("llvm.eh.typeid.for")) {
+                // Tr::eh_call: the constant type_id of the typeinfo (Lean region code only)
+                if (in.result.empty() || in.ops.empty() || in.ops[0].v.kind != ir::Value::Global ||
+                    !plain_name(in.ops[0].v.name))
+                    throw Unsupported{"call @" + in.callee};
+                b << "L call %" << name(in.result) << " 32 llvm.eh.typeid.for:" << in.ops[0].v.name << " 0\n";
+            } else if (op == "call" && !in.is_asm &&
+                       ((!m.find(in.callee) && (in.callee == "__cxa_begin_catch" || in.callee == "__cxa_end_catch" ||
+                                                in.callee == "__cxa_rethrow")) ||
+                        in.callee == "__clang_call_terminate")) {
+                // Tr::eh_call on the caught-exception stack (Lean region code only)
+                b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call "))
+                  << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                  << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << in.callee << " " << in.ops.size();
+                for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
+                b << "\n";
             } else if (op == "call" && in.callee.starts_with("llvm.") && !in.is_asm &&
                        !(afail_kind(m, in) && afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())))) {
                 intrinsic_line(b, in);
+            } else if (op == "landingpad") {
+                // Tr::enter_frame's { exn, selector } pair; the throw edges set it
+                if (frame_vars(in).size() != 2) throw Unsupported{"landingpad type"};
+                b << "L lpad %" << name(in.result) << " "
+                  << (std::find(in.flags.begin(), in.flags.end(), "cleanup") != in.flags.end() ? 1 : 0) << " "
+                  << in.clauses.size();
+                for (auto& [kind, o2] : in.clauses) {
+                    if (kind != "catch") b << " f";
+                    else if (o2.v.kind == ir::Value::Null) b << " null";
+                    else if (o2.v.kind == ir::Value::Global && plain_name(o2.v.name)) b << " " << o2.v.name;
+                    else throw Unsupported{"landingpad clause"};
+                }
+                b << "\n";
+            } else if (op == "insertvalue") {
+                // Tr::inst: a field of a two-field pair (the exception pair rebuilt before resume)
+                auto ws = frame_vars(in);
+                if (ws.size() != 2 || in.ops.size() != 2 || in.indices.size() != 1 || in.indices[0] > 1)
+                    throw Unsupported{"insertvalue"};
+                const auto& agg = in.ops[0];
+                std::string a;
+                if (agg.v.kind == ir::Value::Undef || agg.v.kind == ir::Value::Poison) a = "undef";
+                else if (agg.v.kind == ir::Value::Local) a = "%" + name(agg.v.name);
+                else throw Unsupported{"insertvalue into a constant"};
+                if (in.ops[1].v.kind == ir::Value::Undef || in.ops[1].v.kind == ir::Value::Poison)
+                    throw Unsupported{"insertvalue of undef"};
+                b << "L insv %" << name(in.result) << " " << ws[0] << " " << ws[1] << " " << a << " "
+                  << opnd(in.ops[1]) << " " << in.indices[0] << "\n";
+            } else if (op == "resume") {
+                if (in.ops.size() != 1 || in.ops[0].v.kind != ir::Value::Local) throw Unsupported{"resume"};
+                b << "L resume %" << name(in.ops[0].v.name) << "\n";
+            } else if (op == "extractvalue" && in.ops.size() == 1 && in.ops[0].v.kind == ir::Value::Local &&
+                       def_of(f, in.ops[0].v.name) &&
+                       (def_of(f, in.ops[0].v.name)->op == "landingpad" ||
+                        def_of(f, in.ops[0].v.name)->op == "insertvalue" ||
+                        (pair_ty(def_of(f, in.ops[0].v.name)->ty) &&
+                         (def_of(f, in.ops[0].v.name)->op == "load" || def_of(f, in.ops[0].v.name)->op == "call" ||
+                          def_of(f, in.ops[0].v.name)->op == "invoke")))) {
+                // a field of an exception pair
+                if (in.indices.size() != 1 || in.indices[0] > 1 || in.result.empty() ||
+                    frame_vars(*def_of(f, in.ops[0].v.name)).size() != 2)
+                    throw Unsupported{"extractvalue"};
+                b << "L xv %" << name(in.result) << " " << vw(in.ty) << " %" << name(in.ops[0].v.name) << " "
+                  << in.indices[0] << "\n";
             } else if (op == "extractvalue") {
                 // a field of an overflow intrinsic's { iN, i1 } result
                 const auto* d = in.ops.size() == 1 && in.ops[0].v.kind == ir::Value::Local
@@ -941,6 +1097,33 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 if (t.op == "br") b << " br " << name(t.targets[0]);
                 b << "\n";
                 break;
+            } else if (op == "call" && !in.is_asm && in.callee == "__cxa_allocate_exception" && !m.find(in.callee)) {
+                // a user throw (Tr::eh_call): __cxa_allocate_exception, call-free code
+                // (the object's initialisation), then __cxa_throw of that object and
+                // `unreachable` (or the invoke's normal edge). The semantics stops
+                // following the run at the allocation; the rest is translator only.
+                const std::size_t i = static_cast<std::size_t>(&in - bl.insts.data());
+                std::size_t j = i + 1;
+                while (j < bl.insts.size() && bl.insts[j].op != "call" && bl.insts[j].op != "invoke") ++j;
+                bool ok = !xalloc && in.ops.size() == 1 && !in.result.empty() && in.ops[0].ty.kind == ir::Type::Int &&
+                          vw(in.ops[0].ty) == 64 && j + 2 == bl.insts.size();
+                if (ok) {
+                    const ir::Inst& t = bl.insts[j];
+                    ok = t.callee == "__cxa_throw" && !m.find(t.callee) && t.ops.size() == 3 &&
+                         t.ops[0].v.kind == ir::Value::Local && t.ops[0].v.name == in.result &&
+                         t.ops[1].v.kind == ir::Value::Global && plain_name(t.ops[1].v.name) &&
+                         (bl.insts.back().op == "unreachable" || &t == invoke_call);
+                }
+                if (!ok) throw Unsupported{"call @" + in.callee};
+                b << "L xalloc %" << name(in.result) << " " << opnd(in.ops[0]) << " 64\n";
+                xalloc = true;
+                continue;
+            } else if (op == "call" && !in.is_asm && in.callee == "__cxa_throw" && !m.find(in.callee)) {
+                if (!xalloc) throw Unsupported{"call @" + in.callee};
+                b << "L uthrow " << in.ops[1].v.name << " " << opnd(in.ops[0]) << " "
+                  << (&in == invoke_call ? name(invoke_pad) + " " + name(bl.insts.back().targets.at(0)) : std::string("- -"))
+                  << "\n";
+                break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("_ZSt") &&
                        in.callee.find("__throw_") != std::string::npos && !m.find(in.callee) &&
                        afail_tail_ok(bl, static_cast<size_t>(&in - bl.insts.data())) &&
@@ -955,6 +1138,12 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                     if (a.ty.kind != ir::Type::Float) b << " " << opnd(a) << " " << vw(a.ty);
                 b << "\n";
                 break;
+            } else if (op == "call" && !in.is_asm && in.callee == "_ZSt9terminatev" && !m.find(in.callee) &&
+                       in.ops.empty() && in.result.empty() && &in != invoke_call &&
+                       &in + 1 == &bl.insts.back() && bl.insts.back().op == "unreachable") {
+                // Tr::eh_call: std::terminate() is CXX-TERMINATE, then the run stops
+                b << "L terminate\n";
+                break;
             } else if (op == "call" && !in.is_asm && in.callee.starts_with("__prism_")) {
                 model_line(b, m, in);
             } else if (op == "call" && !in.is_asm && !m.find(in.callee) &&
@@ -968,10 +1157,15 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             } else if (op == "call" && inlined_call(m, in)) {
                 const bool cforeign = foreign || foreign_callee(m, in.callee, top_file);
                 const bool coom = pirmem::reaches_alloc_failed(m, *m.find(in.callee));
-                b << (&in == invoke_call ? "L icall " : "L call ") << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
-                  << (in.ty.kind == ir::Type::Void ? 0u : vw(in.ty)) << " " << name(in.callee) << " "
-                  << in.ops.size() + (coom ? 1 : 0);
+                b << (&in == invoke_call ? "L ivk " + name(invoke_pad) + " " : std::string("L call ")) << (in.result.empty() ? std::string("-") : "%" + name(in.result)) << " "
+                  << [&] {
+                         if (in.ty.kind == ir::Type::Void) return std::string("0");
+                         if (auto pt = pair_ty(in.ty)) return "p" + std::to_string(pt->w0) + ":" + std::to_string(pt->w1);
+                         return std::to_string(vw(in.ty));
+                     }() << " " << name(in.callee) << " "
+                  << in.ops.size() + g_top_eg.size() + (coom ? 1 : 0);
                 for (auto& a : in.ops) b << " " << opnd(a) << " " << vw(a.ty);
+                for (auto& gname : g_top_eg) b << " %@" << name(gname) << " 64";
                 if (coom) b << " %" << kOom << " 64";
                 b << "\n";
                 auto it = std::ranges::find_if(callees, [&](const Callee& c) { return c.name == in.callee; });
@@ -984,6 +1178,25 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 throw Unsupported{op};
             }
         }
+    };
+    for (auto& bl0 : f.blocks) {
+        b << "L block " << name(bl0.name) << "\n";
+        if (live.count(bl0.name)) {
+            emit_block(b, bl0);
+            continue;
+        }
+        if (padset.count(bl0.name)) {
+            std::ostringstream pb;
+            try {
+                emit_block(pb, bl0);
+                b << pb.str();
+                continue;
+            } catch (const Unsupported& u) {
+                if (std::getenv("PRISM_LEAN_PAD_DEBUG"))
+                    std::cerr << "pir-lean: landing pad " << f.name << "/" << bl0.name << ": " << u.why << "\n";
+            }
+        }
+        dead_block(b, f, bl0, muninit);
     }
     o << b.str();
 }
@@ -1055,7 +1268,7 @@ void pir_side(std::ostream& o, const Function& fn) {
 
 void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
                       const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
-    const char* env = std::getenv("PRISM_PIR_LEAN_EXPORT");
+    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
     if (!env || !*env) return;
     std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
     std::ostringstream o;
@@ -1066,6 +1279,24 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         if (auto it = m.subprograms.find(f.dbg); it != m.subprograms.end()) top_file = it->second.file;
         std::vector<Callee> callees;
         llvm_side(l, m, f, opt, top_file, callees, true, false);
+        // Tr::type_dtor: __cxa_end_catch inlines the thrown classes' destructors
+        bool ends = false;
+        for (auto& g : m.functions)
+            for (auto& x : g.blocks)
+                for (auto& in : x.insts)
+                    if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_end_catch") ends = true;
+        if (ends)
+            for (auto& g : m.functions)
+                for (auto& x : g.blocks)
+                    for (auto& in : x.insts)
+                        if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_throw" &&
+                            in.ops.size() >= 3 && in.ops[2].v.kind == ir::Value::Global) {
+                            const std::string& d = in.ops[2].v.name;
+                            const ir::Function* df = m.find(d);
+                            if (!df || df->blocks.empty() || !plain_name(d)) continue;
+                            if (std::ranges::none_of(callees, [&](const Callee& c) { return c.name == d; }))
+                                callees.push_back({d, foreign_callee(m, d, top_file)});
+                        }
         // every function the calls reach, once, in order of first call
         for (std::size_t i = 0; i < callees.size(); ++i) {
             const Callee c = callees.at(i);
@@ -1073,6 +1304,48 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
             llvm_side(l, m, *m.find(c.name), opt, top_file, callees, false, c.foreign);
         }
         if (!callees.empty()) o << "L depth " << opt.inline_depth << "\n";
+        {
+            // Tr::thrown_types: every type the module throws (sorted)
+            std::set<std::string> ts;
+            for (auto& g : m.functions)
+                for (auto& x : g.blocks)
+                    for (auto& in : x.insts) {
+                        if (in.op != "call" && in.op != "invoke") continue;
+                        if (in.callee == "__cxa_throw" && in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Global)
+                            ts.insert(in.ops[1].v.name);
+                        else if (in.callee.starts_with("_ZSt") && in.callee.find("__throw_") != std::string::npos)
+                            ts.insert(std_throw_ti(in.callee));
+                    }
+            // Tr::type_dtor: a thrown class with a destructor (__cxa_end_catch would call it)
+            // (emplace: the first __cxa_throw of a type names its destructor)
+            std::map<std::string, std::string> tdt;
+            for (auto& g : m.functions)
+                for (auto& x : g.blocks)
+                    for (auto& in : x.insts)
+                        if ((in.op == "call" || in.op == "invoke") && in.callee == "__cxa_throw" &&
+                            in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Global)
+                            tdt.emplace(in.ops[1].v.name, in.ops.size() >= 3 && in.ops[2].v.kind == ir::Value::Global
+                                                              ? in.ops[2].v.name : "");
+            bool dtor = false, plain = true;
+            for (auto& [t, d] : tdt)
+                if (!d.empty()) {
+                    dtor = true;
+                    plain = plain && plain_name(t) && plain_name(d);
+                }
+            // `L thrdtor T D ...` (the map in order); a bare `L thrdtor`: not exported
+            if (dtor) {
+                o << "L thrdtor";
+                if (plain)
+                    for (auto& [t, d] : tdt)
+                        if (!d.empty()) o << " " << t << " " << d;
+                o << "\n";
+            }
+            if (std::ranges::all_of(ts, [](const std::string& t) { return plain_name(t); })) {
+                o << "L thrown";
+                for (auto& t : ts) o << " " << t;
+                o << "\n";
+            }
+        }
         o << l.str();
     } catch (const Unsupported& u) {
         std::string why = u.why;
