@@ -107,6 +107,10 @@ TEST_CASE("cxx memory model: empty operator* checks, reset frees, move does not 
 
     CHECK(count_sub(src, "pointer get() const noexcept { return _M_ptr; }") == 2);
     CHECK(count_sub(src, "unique_ptr() noexcept : _M_ptr(nullptr) {}") == 2);
+    const auto upeq = body_of(src, "bool operator==(const unique_ptr<_Tp, _Dp>& __x, const unique_ptr<_Tp, _Dp>& __y) noexcept");
+    REQUIRE(!upeq.empty());
+    CHECK(upeq.find("return __x.get() == __y.get();") != std::string::npos);
+    CHECK(upeq.find("*") == std::string::npos);
     // shared_ptr/weak_ptr are modelled: the last owner deletes the object
     CHECK(src.find("class shared_ptr {") != std::string::npos);
     CHECK(src.find("class weak_ptr {") != std::string::npos);
