@@ -27,6 +27,7 @@
 #  pragma warning(pop)
 #endif
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -284,7 +285,7 @@ struct ValarrayTag {
 };
 
 // No default constructor. operator+ must not value-initialize an element.
-// hits counts element operator+ / operator- calls.
+// hits counts element operator+ / operator- / operator* / operator/ calls.
 struct ValarrayTouch {
     int v;
     static int hits;
@@ -300,9 +301,35 @@ struct ValarrayTouch {
         a.v -= b.v;
         return a;
     }
+    friend ValarrayTouch operator*(ValarrayTouch a, const ValarrayTouch& b) {
+        ++hits;
+        a.v *= b.v;
+        return a;
+    }
+    friend ValarrayTouch operator/(ValarrayTouch a, const ValarrayTouch& b) {
+        ++hits;
+        a.v /= b.v;
+        return a;
+    }
 };
 
 int ValarrayTouch::hits = 0;
+
+// No default constructor. operator% prints nothing here; hits counts calls.
+// A size mismatch must not call it. Empty operator% must still compile.
+struct ValarrayModTouch {
+    int v;
+    static int hits;
+    ValarrayModTouch() = delete;
+    explicit ValarrayModTouch(int x) : v(x) {}
+    friend ValarrayModTouch operator%(ValarrayModTouch a, const ValarrayModTouch& b) {
+        ++hits;
+        a.v %= b.v;
+        return a;
+    }
+};
+
+int ValarrayModTouch::hits = 0;
 
 void require_no_fake_t(const std::string& body) {
     CHECK(body.find("return {}") == std::string::npos);
