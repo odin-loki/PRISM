@@ -347,10 +347,10 @@ TEST_CASE("cxx tuple model: get<2> of a 3-tuple is the third stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9.cpp";
+    const fs::path nine = c.tmp / "tuple14.cpp";
     std::ofstream(nine) << "#include <tuple>\n"
                           "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
+                          "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
                           "  return std::get<0>(t);\n"
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, nine, true));
@@ -406,10 +406,10 @@ TEST_CASE("cxx tuple model: get<3> of a 4-tuple is the fourth stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9_omit.cpp";
+    const fs::path nine = c.tmp / "tuple14_omit.cpp";
     std::ofstream(nine) << "#include <tuple>\n"
                           "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
+                          "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
                           "  return std::get<0>(t);\n"
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, nine, true));
@@ -465,10 +465,10 @@ TEST_CASE("cxx tuple model: get<4> of a 5-tuple is the fifth stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9_primary.cpp";
+    const fs::path nine = c.tmp / "tuple14_primary.cpp";
     std::ofstream(nine) << "#include <tuple>\n"
                           "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
+                          "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
                           "  return std::get<0>(t);\n"
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, nine, true));
@@ -524,10 +524,10 @@ TEST_CASE("cxx tuple model: get<5> of a 6-tuple is the sixth stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9_undef.cpp";
+    const fs::path nine = c.tmp / "tuple14_undef.cpp";
     std::ofstream(nine) << "#include <tuple>\n"
                           "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
+                          "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
                           "  return std::get<0>(t);\n"
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, nine, true));
@@ -583,10 +583,10 @@ TEST_CASE("cxx tuple model: get<6> of a 7-tuple is the seventh stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9_from7.cpp";
+    const fs::path nine = c.tmp / "tuple14_from7.cpp";
     std::ofstream(nine) << "#include <tuple>\n"
                           "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
+                          "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
                           "  return std::get<0>(t);\n"
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, nine, true));
