@@ -1,7 +1,8 @@
 // Trace of std::ranges::size, std::ranges::ssize, std::ranges::empty,
 // std::ranges::begin, std::ranges::end, std::ranges::data,
-// std::ranges::cbegin, std::ranges::cend, std::ranges::cdata, and
-// std::ranges::distance. `#include <ranges>` is the model when its directory
+// std::ranges::cbegin, std::ranges::cend, std::ranges::cdata,
+// std::ranges::distance, the find family, and std::ranges::count_if (from
+// <algorithm>). `#include <ranges>` is the model when its directory
 // is first on the include path, and libstdc++ otherwise. An array's size is
 // N. An lvalue with a const size() member returns that size(). ssize of a
 // value that fits is that value as ptrdiff_t. argv "huge" asks ssize of a
@@ -23,11 +24,19 @@
 // element, or one past the last. find_if and find_if_not do the same for a
 // function pointer bool (*)(const T&): true, or false. A null predicate
 // traps before a call. N == 0 returns the decayed pointer and does not load
-// and does not call. A pointer argument is not called: it is not an
-// overload, and it is not given a length. This is not a proof that an
+// and does not call. count_if of T(&)[N] and bool (*)(const T&) is how
+// many elements make the predicate true, as a ptrdiff_t. It calls the
+// predicate once per element. A null predicate traps before a call and
+// before a load. N == 0 returns 0 and does not load and does not call.
+// argv "countnull" passes a null predicate. A pointer argument is not
+// called: it is not an overload, and it is not given a length. This is
+// not a proof that an
 // iterator stays in range or that a pointer has a length. This is not
 // PROVED and not CLEAN.
 #include <ranges>
+// std::ranges::count_if is declared by <algorithm>, in libstdc++ and in the
+// model directory. <ranges> alone does not declare it.
+#include <algorithm>
 
 #include <cstdint>
 #include <cstdio>
@@ -69,6 +78,17 @@ bool nf_watch(const int& x) {
 }
 bool nf_always(const int&) {
     ++g_nf_calls;
+    return true;
+}
+
+int g_cf_calls = 0;
+int g_cf_want = 0;
+bool cf_watch(const int& x) {
+    ++g_cf_calls;
+    return x == g_cf_want;
+}
+bool cf_always(const int&) {
+    ++g_cf_calls;
     return true;
 }
 
@@ -130,6 +150,13 @@ static_assert(std::ranges::find_if_not(ak, fi_is_one) == ak + 1);
 static_assert(std::ranges::find_if_not(ak, fi_is_two) == ak);
 static_assert(std::ranges::find_if_not(ak, fi_is_four) == ak);
 static_assert(std::ranges::find_if_not(ak, fi_always) == ak + 4);
+static_assert(std::ranges::count_if(ak, fi_is_one) == 1);
+static_assert(std::ranges::count_if(ak, fi_is_four) == 1);
+static_assert(std::ranges::count_if(ak, fi_always) == 4);
+constexpr int fours[4] = {4, 1, 4, 2};
+static_assert(std::ranges::count_if(fours, fi_is_four) == 2);
+static_assert(std::ranges::count_if(fours, fi_is_one) == 1);
+static_assert(std::ranges::count_if(fours, fi_is_nine) == 0);
 
 constexpr Count ck{3};
 static_assert(std::ranges::size(ck) == 3);
@@ -152,6 +179,9 @@ static_assert(std::ranges::find_if(zk, fi_is_one) == std::ranges::end(zk));
 static_assert(std::ranges::find_if_not(zk, fi_is_one) == zk);
 static_assert(std::ranges::find_if_not(zk, fi_always) == std::ranges::end(zk));
 static_assert(std::ranges::find_if_not(zk, static_cast<bool (*)(const int&)>(nullptr)) == zk);
+static_assert(std::ranges::count_if(zk, fi_is_one) == 0);
+static_assert(std::ranges::count_if(zk, fi_always) == 0);
+static_assert(std::ranges::count_if(zk, static_cast<bool (*)(const int&)>(nullptr)) == 0);
 constexpr Flag fk{true};
 constexpr Flag fn{false};
 static_assert(std::ranges::empty(fk));
@@ -190,6 +220,9 @@ constexpr bool prism_ranges_find_if = requires(T& r, P p) { std::ranges::find_if
 template <class T, class P>
 constexpr bool prism_ranges_find_if_not = requires(T& r, P p) { std::ranges::find_if_not(r, p); };
 
+template <class T, class P>
+constexpr bool prism_ranges_count_if = requires(T& r, P p) { std::ranges::count_if(r, p); };
+
 template <class A, class B>
 constexpr bool prism_same = false;
 template <class A>
@@ -219,6 +252,9 @@ static_assert(prism_same<decltype(std::ranges::find_if(prism_lref<int[0]>(), fi_
 static_assert(prism_same<decltype(std::ranges::find_if_not(prism_lref<int[4]>(), fi_is_one)), int*>);
 static_assert(prism_same<decltype(std::ranges::find_if_not(prism_lref<const int[4]>(), fi_is_one)), const int*>);
 static_assert(prism_same<decltype(std::ranges::find_if_not(prism_lref<int[0]>(), fi_is_one)), int*>);
+static_assert(prism_same<decltype(std::ranges::count_if(prism_lref<int[4]>(), fi_is_one)), std::ptrdiff_t>);
+static_assert(prism_same<decltype(std::ranges::count_if(prism_lref<const int[4]>(), fi_is_one)), std::ptrdiff_t>);
+static_assert(prism_same<decltype(std::ranges::count_if(prism_lref<int[0]>(), fi_is_one)), std::ptrdiff_t>);
 
 static_assert(prism_ranges_begin<int[4]>);
 static_assert(prism_ranges_end<int[4]>);
@@ -286,6 +322,13 @@ static_assert(!prism_ranges_find_if_not<int*, bool (*)(const int&)>);
 static_assert(!prism_ranges_find_if_not<const int*, bool (*)(const int&)>);
 static_assert(!prism_ranges_find_if_not<int (*)[4], bool (*)(const int&)>);
 static_assert(!prism_ranges_find_if_not<Count, bool (*)(const int&)>);
+static_assert(prism_ranges_count_if<int[4], bool (*)(const int&)>);
+static_assert(prism_ranges_count_if<const int[4], bool (*)(const int&)>);
+static_assert(prism_ranges_count_if<int[0], bool (*)(const int&)>);
+static_assert(!prism_ranges_count_if<int*, bool (*)(const int&)>);
+static_assert(!prism_ranges_count_if<const int*, bool (*)(const int&)>);
+static_assert(!prism_ranges_count_if<int (*)[4], bool (*)(const int&)>);
+static_assert(!prism_ranges_count_if<Count, bool (*)(const int&)>);
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "huge") == 0) {
@@ -306,6 +349,12 @@ int main(int argc, char** argv) {
         int b[3] = {1, 2, 3};
         int* p = std::ranges::find_if_not(b, static_cast<bool (*)(const int&)>(nullptr));
         std::printf("called %d\n", p == b ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "countnull") == 0) {
+        int b[3] = {1, 2, 3};
+        std::ptrdiff_t n = std::ranges::count_if(b, static_cast<bool (*)(const int&)>(nullptr));
+        std::printf("called %lld\n", static_cast<long long>(n));
         return 0;
     }
     int a[4] = {9, 0, 0, 6};
@@ -496,5 +545,57 @@ int main(int argc, char** argv) {
                                    : 0);
     std::printf("nfpfind %d\n", std::ranges::find_if_not(ps, if_is_anchor) == ps ? 1 : 0);
     std::printf("nfpmiss %d\n", std::ranges::find_if_not(ps, if_null_ptr) == ps + 2 ? 1 : 0);
+    g_cf_calls = 0;
+    g_cf_want = 1;
+    auto cfhit = std::ranges::count_if(seq, cf_watch);
+    std::printf("cfhit %d %d\n", static_cast<int>(cfhit), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 4;
+    auto cftwo = std::ranges::count_if(seq, cf_watch);
+    std::printf("cftwo %d %d\n", static_cast<int>(cftwo), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 9;
+    auto cffront = std::ranges::count_if(seq, cf_watch);
+    std::printf("cffront %d %d\n", static_cast<int>(cffront), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 7;
+    auto cfmiss = std::ranges::count_if(seq, cf_watch);
+    std::printf("cfmiss %d %d\n", static_cast<int>(cfmiss), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 9;
+    auto cfempty = std::ranges::count_if(z, cf_watch);
+    std::printf("cfempty %d %d\n", static_cast<int>(cfempty), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 2;
+    auto cftie = std::ranges::count_if(ties, cf_watch);
+    std::printf("cftie %d %d\n", static_cast<int>(cftie), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 7;
+    auto cftiemiss = std::ranges::count_if(ties, cf_watch);
+    std::printf("cftiemiss %d %d\n", static_cast<int>(cftiemiss), g_cf_calls);
+    g_cf_calls = 0;
+    g_cf_want = 5;
+    auto cfone = std::ranges::count_if(one, cf_watch);
+    int cfone_hit_calls = g_cf_calls;
+    g_cf_calls = 0;
+    g_cf_want = 0;
+    auto cfone_miss = std::ranges::count_if(one, cf_watch);
+    std::printf("cfone %d\n",
+                (cfone == 1 && cfone_hit_calls == 1 && cfone_miss == 0 && g_cf_calls == 1) ? 1 : 0);
+    std::printf("cfkeep %d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("cfcfirst %d\n", static_cast<int>(std::ranges::count_if(ca, fi_is_two)));
+    g_cf_calls = 0;
+    g_cf_want = 0;
+    auto cfczero = std::ranges::count_if(ca, cf_watch);
+    std::printf("cfczero %d %d\n", static_cast<int>(cfczero), g_cf_calls);
+    g_cf_calls = 0;
+    auto cfcall = std::ranges::count_if(ca, cf_always);
+    std::printf("cfcall %d %d\n", static_cast<int>(cfcall), g_cf_calls);
+    std::printf("cfcmiss %d\n", static_cast<int>(std::ranges::count_if(ca, fi_is_seven)));
+    g_cf_calls = 0;
+    std::printf("cfznull %d\n",
+                std::ranges::count_if(z, static_cast<bool (*)(const int&)>(nullptr)) == 0 && g_cf_calls == 0 ? 1 : 0);
+    std::printf("cfpnull %d\n", static_cast<int>(std::ranges::count_if(ps, if_null_ptr)));
+    std::printf("cfpmiss %d\n", static_cast<int>(std::ranges::count_if(ps, if_is_anchor)));
     return 0;
 }

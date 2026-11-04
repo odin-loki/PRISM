@@ -114,9 +114,42 @@
 // The result is the destination one past the last element written. The
 // function does not allocate.
 //
-// sort, copy_backward, for_each, and every other algorithm are not
-// declared. A use of those names fails to compile and the pir stage falls
-// back to libstdc++ (extra.cxx_models). A partial header is intentional.
+// std::copy_backward takes three pointers, first, last, and dest. There is
+// no other overload. A const source and a non-const dest do not match.
+// When last < first, __prism_check with class FUNC-CONTRACT and the
+// message "std::copy_backward last is before first", then __builtin_trap.
+// That path does not read an element and does not write. When
+// first == last, the result is dest. That path does not read and does not
+// write, even when dest is null. That empty check is before the
+// null-destination check. A null dest on a non-empty range is
+// __prism_check with class PTR-NULL-DEREF and the message
+// "std::copy_backward null destination", then __builtin_trap. That path
+// does not write. When dest lies in (first, last], __prism_check with
+// class FUNC-CONTRACT and the message
+// "std::copy_backward dest lies in (first, last]", then __builtin_trap
+// ([alg.copy]). That path does not write. The overlap scan compares
+// pointers with equality and does not read an element. Otherwise the
+// elements in [first, last) are copied from the back into the positions
+// ending at dest. dest is not written. The element at last is not read.
+// The result is the start of the written range. The function does not
+// allocate.
+//
+// std::ranges::count_if is declared here, as in libstdc++, where it is in
+// this header and not in the ranges header. It takes a T(&)[N] and a
+// function pointer bool (*)(const T&). The result is how many elements make
+// the predicate true, as a ptrdiff_t. A null predicate is __prism_check with
+// class FUNC-CONTRACT and the message "std::ranges::count_if null
+// predicate", then __builtin_trap. That path does not call the predicate
+// and does not load an element. The subscript is an index below N. N == 0
+// is a second overload, a reference whose size is 0. It returns 0 and does
+// not load an element and does not call the predicate. A pointer, an
+// iterator pair, a class range, a projection, and a predicate that takes T
+// by value do not match, so those calls fail to compile and pir falls back.
+// std::count_if, the iterator form, is not declared.
+//
+// sort, for_each, and every other algorithm are not declared. A use of
+// those names fails to compile and the pir stage falls back to libstdc++
+// (extra.cxx_models). A partial header is intentional.
 //
 // This header is not a proof that a range is sorted. It is not PROVED
 // and it is not CLEAN. After a failed check the path traps. It does not
@@ -486,6 +519,87 @@ constexpr _Tp* copy_n(_Tp* __first, std::size_t __n, _Tp* __dest) {
     }
     return __out;
 }
+
+// Three pointers. An inverted range traps before any read or write. An
+// empty range returns dest and does not read or write, even when dest is
+// null. That check is before the null-destination check. A null dest on a
+// non-empty range traps before any write. A dest in (first, last] traps
+// before any write. That scan compares pointers and does not read an
+// element. Otherwise each element in [first, last) is copied from the back
+// into the positions ending at dest. dest is not written. The element at
+// last is not read. The result is the start of the written range.
+// This is not PROVED and it is not CLEAN.
+template <typename _Tp>
+constexpr _Tp* copy_backward(_Tp* __first, _Tp* __last, _Tp* __dest) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::copy_backward last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __dest;
+    if (__dest == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::copy_backward null destination");
+        __builtin_trap();
+    }
+    _Tp* __scan = __last;
+    while (__scan != __first) {
+        if (__scan == __dest) {
+            __prism_check(0, "FUNC-CONTRACT", "std::copy_backward dest lies in (first, last]");
+            __builtin_trap();
+        }
+        --__scan;
+    }
+    _Tp* __src = __last;
+    _Tp* __out = __dest;
+    while (__src != __first) {
+        --__src;
+        --__out;
+        *__out = *__src;
+    }
+    return __out;
+}
+
+namespace ranges {
+
+// T is deduced from the array only. The predicate parameter does not take
+// part in deduction, so a captureless lambda of const T& converts.
+template <typename _Tp>
+struct _Prism_count_if_identity {
+    using type = _Tp;
+};
+
+// A zero-length array whose decayed pointer compares with _Elem*.
+template <typename _Arr, typename _Elem>
+concept _Prism_count_if_zero_elem = requires(_Arr& __a, _Elem* __p) { __a + 0 == __p; };
+
+// How many elements make the predicate true. The bound is at least 1:
+// N == 0 does not match this parameter. A null predicate traps before a
+// call and before a load. The subscript is below N. The result is a count,
+// not a pointer. This is not PROVED and it is not CLEAN.
+template <typename _Tp, size_t _Nm>
+constexpr __PTRDIFF_TYPE__ count_if(_Tp (&__a)[_Nm],
+                                    bool (*__pred)(const typename _Prism_count_if_identity<_Tp>::type&)) {
+    if (__pred == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT", "std::ranges::count_if null predicate");
+        __builtin_trap();
+    }
+    __PTRDIFF_TYPE__ __n = 0;
+    for (size_t __i = 0; __i < _Nm; ++__i) {
+        if (__pred(__a[__i])) ++__n;
+    }
+    return __n;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is 0. The
+// predicate is not called, even when it is null, and no element is loaded.
+// A pointer argument has a non-zero size, so it does not match.
+template <typename _Arr, typename _Elem>
+constexpr __PTRDIFF_TYPE__ count_if(_Arr&, bool (*)(const _Elem&)) noexcept
+    requires(sizeof(_Arr) == 0 && _Prism_count_if_zero_elem<_Arr, _Elem>)
+{
+    return 0;
+}
+
+}  // namespace ranges
 
 }  // namespace std
 
