@@ -47,8 +47,17 @@
 // __builtin_trap and does not read. A null dest with n > 0 is
 // __prism_check then __builtin_trap and does not write. n elements are
 // copied. copy_n does not write one past the last element written.
-// This is not PROVED and not CLEAN. sort, copy_backward, and for_each are
-// not declared.
+// copy_backward takes three pointers. An inverted range is __prism_check
+// then __builtin_trap and does not read or write. An empty range returns
+// dest and does not read or write, even when dest is null. That empty
+// check is before the null-destination check. A null dest on a non-empty
+// range is __prism_check then __builtin_trap and does not write. A dest
+// in (first, last] is __prism_check then __builtin_trap and does not
+// write. That scan compares pointers and does not read an element. The
+// elements in [first, last) are copied from the back into the positions
+// ending at dest. copy_backward does not write at dest and does not read
+// the element at last. The result is the start of the written range.
+// This is not PROVED and not CLEAN. sort and for_each are not declared.
 
 #include <doctest/doctest.h>
 
@@ -274,7 +283,7 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
             if (line.compare(i, 8, "#include") == 0) CHECK(line.find("<bits/stl_pair.h>") != std::string::npos);
         }
     }
-    for (const char* name : {"sort(", "for_each(", "count_if", "fill_n", "copy_backward("})
+    for (const char* name : {"sort(", "for_each(", "count_if", "fill_n"})
         CHECK(text.find(name) == std::string::npos);
 
     for (const char* name : {"all_of(", "any_of(", "none_of(", "find_if_not(", "copy_if(", "is_partitioned(",
@@ -829,10 +838,14 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(fill_body.find("This is not PROVED and it is not CLEAN.") != std::string::npos);
     CHECK(copy_body.find("This is not PROVED and it is not CLEAN.") != std::string::npos);
 
+    const auto copy_bw_at =
+        text.find("constexpr _Tp* copy_backward(_Tp* __first, _Tp* __last, _Tp* __dest)");
+    REQUIRE(copy_bw_at != std::string::npos);
+    CHECK(copy_n_at < copy_bw_at);
     const auto copy_n_sig = text.find("copy_n(", copy_n_at);
     REQUIRE(copy_n_sig != std::string::npos);
     CHECK(text.find("copy_n(", copy_n_sig + 7) == std::string::npos);
-    const std::string copy_n_body = text.substr(copy_n_at);
+    const std::string copy_n_body = text.substr(copy_n_at, copy_bw_at - copy_n_at);
     const auto copy_n_brace = copy_n_body.find('{');
     REQUIRE(copy_n_brace != std::string::npos);
     const std::string copy_n_fn = copy_n_body.substr(copy_n_brace);
@@ -885,7 +898,7 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(copy_n_dec < copy_n_ret);
     CHECK(copy_n_fn.find("*__out = *__first", copy_n_store + 1) == std::string::npos);
     CHECK(copy_n_fn.find("*__last") == std::string::npos);
-    const auto copy_n_end = copy_n_body.find("\n}  // namespace std");
+    const auto copy_n_end = copy_n_body.rfind("\n}");
     REQUIRE(copy_n_end != std::string::npos);
     const std::string copy_n_only = copy_n_body.substr(0, copy_n_end);
     CHECK(copy_n_only.find("<=") == std::string::npos);
@@ -897,6 +910,103 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(copy_n_only.find("return 0") == std::string::npos);
     CHECK(copy_n_only.find("PROVED") == std::string::npos);
     CHECK(copy_n_only.find("CLEAN") == std::string::npos);
+    CHECK(copy_n_body.find("This is not PROVED and it is not CLEAN.") != std::string::npos);
+
+    const auto copy_bw_sig = text.find("copy_backward(", copy_bw_at);
+    REQUIRE(copy_bw_sig != std::string::npos);
+    CHECK(text.find("copy_backward(", copy_bw_sig + 14) == std::string::npos);
+    const std::string copy_bw_body = text.substr(copy_bw_at);
+    const auto copy_bw_brace = copy_bw_body.find('{');
+    REQUIRE(copy_bw_brace != std::string::npos);
+    const std::string copy_bw_fn = copy_bw_body.substr(copy_bw_brace);
+    const auto copy_bw_bad = copy_bw_fn.find("if (__last < __first)");
+    const auto copy_bw_empty = copy_bw_fn.find("if (__first == __last) return __dest;");
+    const auto copy_bw_null = copy_bw_fn.find("if (__dest == nullptr)");
+    const auto copy_bw_scan = copy_bw_fn.find("while (__scan != __first)");
+    const auto copy_bw_hit = copy_bw_fn.find("if (__scan == __dest)");
+    const auto copy_bw_src = copy_bw_fn.find("_Tp* __src = __last;");
+    const auto copy_bw_out = copy_bw_fn.find("_Tp* __out = __dest;");
+    const auto copy_bw_loop = copy_bw_fn.find("while (__src != __first)");
+    REQUIRE(copy_bw_bad != std::string::npos);
+    REQUIRE(copy_bw_empty != std::string::npos);
+    REQUIRE(copy_bw_null != std::string::npos);
+    REQUIRE(copy_bw_scan != std::string::npos);
+    REQUIRE(copy_bw_hit != std::string::npos);
+    REQUIRE(copy_bw_src != std::string::npos);
+    REQUIRE(copy_bw_out != std::string::npos);
+    REQUIRE(copy_bw_loop != std::string::npos);
+    CHECK(copy_bw_bad < copy_bw_empty);
+    CHECK(copy_bw_empty < copy_bw_null);
+    CHECK(copy_bw_null < copy_bw_scan);
+    CHECK(copy_bw_scan < copy_bw_hit);
+    CHECK(copy_bw_hit < copy_bw_src);
+    // The scan starts at last and stops before first: (first, last].
+    CHECK(copy_bw_fn.find("_Tp* __scan = __last;") < copy_bw_scan);
+    const std::string copy_bw_scan_body = copy_bw_fn.substr(copy_bw_scan, copy_bw_src - copy_bw_scan);
+    const auto copy_bw_scan_check = copy_bw_scan_body.find("__prism_check");
+    const auto copy_bw_scan_trap = copy_bw_scan_body.find("__builtin_trap");
+    REQUIRE(copy_bw_scan_check != std::string::npos);
+    REQUIRE(copy_bw_scan_trap != std::string::npos);
+    CHECK(copy_bw_scan_check < copy_bw_scan_trap);
+    CHECK(copy_bw_scan_trap < copy_bw_scan_body.find("--__scan"));
+    CHECK(copy_bw_scan_body.find("*__") == std::string::npos);
+    CHECK(copy_bw_scan_body.find("<") == std::string::npos);
+    CHECK(copy_bw_scan_body.find("return") == std::string::npos);
+    CHECK(copy_bw_scan_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(copy_bw_scan_body.find("std::copy_backward dest lies in (first, last]") != std::string::npos);
+    CHECK(copy_bw_null < copy_bw_src);
+    CHECK(copy_bw_src < copy_bw_out);
+    CHECK(copy_bw_out < copy_bw_loop);
+    const std::string copy_bw_bad_body = copy_bw_fn.substr(copy_bw_bad, copy_bw_empty - copy_bw_bad);
+    const auto copy_bw_bad_check = copy_bw_bad_body.find("__prism_check");
+    const auto copy_bw_bad_trap = copy_bw_bad_body.find("__builtin_trap");
+    REQUIRE(copy_bw_bad_check != std::string::npos);
+    REQUIRE(copy_bw_bad_trap != std::string::npos);
+    CHECK(copy_bw_bad_check < copy_bw_bad_trap);
+    CHECK(copy_bw_bad_body.find("FUNC-CONTRACT") != std::string::npos);
+    CHECK(copy_bw_bad_body.find("std::copy_backward last is before first") != std::string::npos);
+    CHECK(copy_bw_bad_body.find("return") == std::string::npos);
+    CHECK(copy_bw_bad_body.find("*__") == std::string::npos);
+    CHECK(copy_bw_bad_body.find("__dest") == std::string::npos);
+    const std::string copy_bw_null_body = copy_bw_fn.substr(copy_bw_null, copy_bw_scan - copy_bw_null);
+    const auto copy_bw_null_check = copy_bw_null_body.find("__prism_check");
+    const auto copy_bw_null_trap = copy_bw_null_body.find("__builtin_trap");
+    REQUIRE(copy_bw_null_check != std::string::npos);
+    REQUIRE(copy_bw_null_trap != std::string::npos);
+    CHECK(copy_bw_null_check < copy_bw_null_trap);
+    CHECK(copy_bw_null_body.find("PTR-NULL-DEREF") != std::string::npos);
+    CHECK(copy_bw_null_body.find("std::copy_backward null destination") != std::string::npos);
+    CHECK(copy_bw_null_body.find("return") == std::string::npos);
+    CHECK(copy_bw_null_body.find("*__") == std::string::npos);
+    CHECK(copy_bw_fn.substr(0, copy_bw_loop).find("*__") == std::string::npos);
+    const auto copy_bw_dec_src = copy_bw_fn.find("--__src", copy_bw_loop);
+    REQUIRE(copy_bw_dec_src != std::string::npos);
+    const auto copy_bw_dec_out = copy_bw_fn.find("--__out", copy_bw_dec_src);
+    REQUIRE(copy_bw_dec_out != std::string::npos);
+    const auto copy_bw_store = copy_bw_fn.find("*__out = *__src", copy_bw_dec_out);
+    REQUIRE(copy_bw_store != std::string::npos);
+    const auto copy_bw_ret = copy_bw_fn.find("return __out", copy_bw_store);
+    REQUIRE(copy_bw_ret != std::string::npos);
+    CHECK(copy_bw_loop < copy_bw_dec_src);
+    CHECK(copy_bw_dec_src < copy_bw_dec_out);
+    CHECK(copy_bw_dec_out < copy_bw_store);
+    CHECK(copy_bw_store < copy_bw_ret);
+    CHECK(copy_bw_fn.find("*__out = *__src", copy_bw_store + 1) == std::string::npos);
+    CHECK(copy_bw_fn.find("*__last") == std::string::npos);
+    CHECK(copy_bw_fn.find("*__dest") == std::string::npos);
+    CHECK(copy_bw_fn.find("++") == std::string::npos);
+    const auto copy_bw_end = copy_bw_body.rfind("\n}");
+    REQUIRE(copy_bw_end != std::string::npos);
+    const std::string copy_bw_only = copy_bw_body.substr(0, copy_bw_end);
+    CHECK(copy_bw_only.find("<=") == std::string::npos);
+    CHECK(copy_bw_only.find("_Tp{") == std::string::npos);
+    CHECK(copy_bw_only.find("_Tp(") == std::string::npos);
+    CHECK(copy_bw_only.find("_Tp __") == std::string::npos);
+    CHECK(copy_bw_only.find("new") == std::string::npos);
+    CHECK(copy_bw_only.find("malloc") == std::string::npos);
+    CHECK(copy_bw_only.find("return 0") == std::string::npos);
+    CHECK(copy_bw_only.find("PROVED") == std::string::npos);
+    CHECK(copy_bw_only.find("CLEAN") == std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
@@ -1044,6 +1154,16 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(has_line(b, "copy_n_null_dst=1 src=9,4,1,4"));
     CHECK(has_line(b, "copy_n_pred=3,1,3,5 copy_n_pred_empty=4,5"));
     CHECK(has_line(b, "copy_n_adj=1,2,3,1,2,3 end=1"));
+    CHECK(has_line(b, "copy_backward_all=9,4,1,4 end=1 src=9,4,1,4"));
+    CHECK(has_line(b, "copy_backward_span=9,4,1,8 end=1"));
+    CHECK(has_line(b, "copy_backward_empty=8,7,6,5 end=1"));
+    CHECK(has_line(b, "copy_backward_one=8 end=1"));
+    CHECK(has_line(b, "copy_backward_null=1"));
+    CHECK(has_line(b, "copy_backward_null_src=8,7,6,5 end=1"));
+    CHECK(has_line(b, "copy_backward_null_dst=1 src=9,4,1,4"));
+    CHECK(has_line(b, "copy_backward_pred=3,1,3,5 copy_backward_pred_empty=4,5"));
+    CHECK(has_line(b, "copy_backward_adj=1,2,3,1,2,3 end=1"));
+    CHECK(has_line(b, "copy_backward_shift=1,1,2,3 end=1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "invert"}, &out, &err));
@@ -1204,6 +1324,36 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     CHECK(null_copy_n_both_both.find("read") == std::string::npos);
     CHECK(null_copy_n_both_both.find("AddressSanitizer") == std::string::npos);
     CHECK(null_copy_n_both_out.find("value=") == std::string::npos);
+
+    std::string copy_bw_out, copy_bw_err;
+    CHECK_FALSE(run_cmd({mod.string(), "invert-copy-backward"}, &copy_bw_out, &copy_bw_err));
+    const std::string copy_bw_both = copy_bw_out + copy_bw_err;
+    CHECK(copy_bw_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(copy_bw_both.find("std::copy_backward last is before first") != std::string::npos);
+    CHECK(copy_bw_both.find("wrote") == std::string::npos);
+    CHECK(copy_bw_both.find("read") == std::string::npos);
+    CHECK(copy_bw_out.find("value=") == std::string::npos);
+
+    std::string null_copy_bw_out, null_copy_bw_err;
+    CHECK_FALSE(run_cmd({mod.string(), "null-copy-backward"}, &null_copy_bw_out, &null_copy_bw_err));
+    const std::string null_copy_bw_both = null_copy_bw_out + null_copy_bw_err;
+    CHECK(null_copy_bw_both.find("CHECK PTR-NULL-DEREF:") != std::string::npos);
+    CHECK(null_copy_bw_both.find("std::copy_backward null destination") != std::string::npos);
+    CHECK(null_copy_bw_both.find("wrote") == std::string::npos);
+    CHECK(null_copy_bw_both.find("read") == std::string::npos);
+    CHECK(null_copy_bw_both.find("AddressSanitizer") == std::string::npos);
+    CHECK(null_copy_bw_out.find("value=") == std::string::npos);
+
+    for (const char* arg : {"overlap-copy-backward", "overlap-copy-backward-last"}) {
+        std::string ov_out, ov_err;
+        CHECK_FALSE(run_cmd({mod.string(), arg}, &ov_out, &ov_err));
+        const std::string ov_both = ov_out + ov_err;
+        CHECK(ov_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+        CHECK(ov_both.find("std::copy_backward dest lies in (first, last]") != std::string::npos);
+        CHECK(ov_both.find("wrote") == std::string::npos);
+        CHECK(ov_both.find("read") == std::string::npos);
+        CHECK(ov_out.find("value=") == std::string::npos);
+    }
 
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
@@ -1624,7 +1774,16 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
                                     "}\n";
     std::string copy_backward_err;
     CHECK(syntax_only(c.cxx, copy_backward, false, &copy_backward_err));
-    CHECK_FALSE(syntax_only(c.cxx, copy_backward, true, &copy_backward_err));
+    CHECK(syntax_only(c.cxx, copy_backward, true, &copy_backward_err));
+
+    const fs::path copy_backward_const_src = c.tmp / "copy_backward_const_src.cpp";
+    std::ofstream(copy_backward_const_src) << "#include <algorithm>\n"
+                                              "int* use(const int* a, int* b, int n) {\n"
+                                              "  return std::copy_backward(a, a + n, b + n);\n"
+                                              "}\n";
+    std::string copy_backward_const_src_err;
+    CHECK(syntax_only(c.cxx, copy_backward_const_src, false, &copy_backward_const_src_err));
+    CHECK_FALSE(syntax_only(c.cxx, copy_backward_const_src, true, &copy_backward_const_src_err));
 
     const fs::path copy_empty_ok = c.tmp / "copy_empty_ok.cpp";
     std::ofstream(copy_empty_ok) << "#include <algorithm>\n"
@@ -1741,4 +1900,71 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
     std::string null_copy_n_dst_const_err;
     CHECK_FALSE(syntax_only(c.cxx, null_copy_n_dst_const, true, &null_copy_n_dst_const_err));
     CHECK(null_copy_n_dst_const_err.find("__prism_check") != std::string::npos);
+
+    const fs::path copy_bw_empty_ok = c.tmp / "copy_backward_empty_ok.cpp";
+    std::ofstream(copy_bw_empty_ok) << "#include <algorithm>\n"
+                                       "constexpr int empty() {\n"
+                                       "  int a[] = {1, 2, 3};\n"
+                                       "  int b[] = {8, 7, 6};\n"
+                                       "  int* end = std::copy_backward(a, a, b);\n"
+                                       "  return (end == b && b[0] == 8 && a[0] == 1) ? 1 : 0;\n"
+                                       "}\n"
+                                       "static_assert(empty() == 1);\n"
+                                       "constexpr int empty_null() {\n"
+                                       "  int* end = std::copy_backward(static_cast<int*>(nullptr),\n"
+                                       "                                 static_cast<int*>(nullptr),\n"
+                                       "                                 static_cast<int*>(nullptr));\n"
+                                       "  return end == nullptr ? 1 : 0;\n"
+                                       "}\n"
+                                       "static_assert(empty_null() == 1);\n"
+                                       "constexpr int empty_null_dst() {\n"
+                                       "  int a[] = {1, 2, 3};\n"
+                                       "  int* end = std::copy_backward(a, a, static_cast<int*>(nullptr));\n"
+                                       "  return (end == nullptr && a[0] == 1) ? 1 : 0;\n"
+                                       "}\n"
+                                       "static_assert(empty_null_dst() == 1);\n";
+    std::string copy_bw_empty_ok_err;
+    CHECK(syntax_only(c.cxx, copy_bw_empty_ok, false, &copy_bw_empty_ok_err));
+    CHECK(syntax_only(c.cxx, copy_bw_empty_ok, true, &copy_bw_empty_ok_err));
+
+    const fs::path inverted_copy_bw = c.tmp / "invert_copy_backward_const.cpp";
+    std::ofstream(inverted_copy_bw) << "#include <algorithm>\n"
+                                       "constexpr int inverted() {\n"
+                                       "  int a[] = {1, 2, 3};\n"
+                                       "  int b[] = {0, 0, 0};\n"
+                                       "  std::copy_backward(a + 2, a, b + 3);\n"
+                                       "  return b[0];\n"
+                                       "}\n"
+                                       "static_assert(inverted() == 0);\n";
+    std::string inverted_copy_bw_err;
+    CHECK_FALSE(syntax_only(c.cxx, inverted_copy_bw, true, &inverted_copy_bw_err));
+    CHECK(inverted_copy_bw_err.find("__prism_check") != std::string::npos);
+
+    const fs::path null_copy_bw_const = c.tmp / "null_copy_backward_const.cpp";
+    std::ofstream(null_copy_bw_const) << "#include <algorithm>\n"
+                                         "constexpr int null_dest() {\n"
+                                         "  int a[] = {1, 2, 3};\n"
+                                         "  int* dest = nullptr;\n"
+                                         "  std::copy_backward(a, a + 3, dest);\n"
+                                         "  return a[0];\n"
+                                         "}\n"
+                                         "static_assert(null_dest() == 1);\n";
+    std::string null_copy_bw_const_err;
+    CHECK_FALSE(syntax_only(c.cxx, null_copy_bw_const, true, &null_copy_bw_const_err));
+    CHECK(null_copy_bw_const_err.find("__prism_check") != std::string::npos);
+
+    // dest == last is the end of (first, last]. [alg.copy] rules it out.
+    // A shift right by one (dest == last + 1) is valid and is in the trace.
+    const fs::path overlap_copy_bw_const = c.tmp / "overlap_copy_backward_const.cpp";
+    std::ofstream(overlap_copy_bw_const) << "#include <algorithm>\n"
+                                            "constexpr int overlap() {\n"
+                                            "  int a[] = {1, 2, 3, 4};\n"
+                                            "  std::copy_backward(a, a + 3, a + 3);\n"
+                                            "  return a[0];\n"
+                                            "}\n"
+                                            "static_assert(overlap() == 1);\n";
+    std::string overlap_copy_bw_const_err;
+    CHECK_FALSE(syntax_only(c.cxx, overlap_copy_bw_const, true, &overlap_copy_bw_const_err));
+    CHECK(overlap_copy_bw_const_err.find("__prism_check") != std::string::npos);
+
 }

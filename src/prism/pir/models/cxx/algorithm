@@ -114,9 +114,29 @@
 // The result is the destination one past the last element written. The
 // function does not allocate.
 //
-// sort, copy_backward, for_each, and every other algorithm are not
-// declared. A use of those names fails to compile and the pir stage falls
-// back to libstdc++ (extra.cxx_models). A partial header is intentional.
+// std::copy_backward takes three pointers, first, last, and dest. There is
+// no other overload. A const source and a non-const dest do not match.
+// When last < first, __prism_check with class FUNC-CONTRACT and the
+// message "std::copy_backward last is before first", then __builtin_trap.
+// That path does not read an element and does not write. When
+// first == last, the result is dest. That path does not read and does not
+// write, even when dest is null. That empty check is before the
+// null-destination check. A null dest on a non-empty range is
+// __prism_check with class PTR-NULL-DEREF and the message
+// "std::copy_backward null destination", then __builtin_trap. That path
+// does not write. When dest lies in (first, last], __prism_check with
+// class FUNC-CONTRACT and the message
+// "std::copy_backward dest lies in (first, last]", then __builtin_trap
+// ([alg.copy]). That path does not write. The overlap scan compares
+// pointers with equality and does not read an element. Otherwise the
+// elements in [first, last) are copied from the back into the positions
+// ending at dest. dest is not written. The element at last is not read.
+// The result is the start of the written range. The function does not
+// allocate.
+//
+// sort, for_each, and every other algorithm are not declared. A use of
+// those names fails to compile and the pir stage falls back to libstdc++
+// (extra.cxx_models). A partial header is intentional.
 //
 // This header is not a proof that a range is sorted. It is not PROVED
 // and it is not CLEAN. After a failed check the path traps. It does not
@@ -483,6 +503,44 @@ constexpr _Tp* copy_n(_Tp* __first, std::size_t __n, _Tp* __dest) {
         ++__first;
         ++__out;
         --__n;
+    }
+    return __out;
+}
+
+// Three pointers. An inverted range traps before any read or write. An
+// empty range returns dest and does not read or write, even when dest is
+// null. That check is before the null-destination check. A null dest on a
+// non-empty range traps before any write. A dest in (first, last] traps
+// before any write. That scan compares pointers and does not read an
+// element. Otherwise each element in [first, last) is copied from the back
+// into the positions ending at dest. dest is not written. The element at
+// last is not read. The result is the start of the written range.
+// This is not PROVED and it is not CLEAN.
+template <typename _Tp>
+constexpr _Tp* copy_backward(_Tp* __first, _Tp* __last, _Tp* __dest) {
+    if (__last < __first) {
+        __prism_check(0, "FUNC-CONTRACT", "std::copy_backward last is before first");
+        __builtin_trap();
+    }
+    if (__first == __last) return __dest;
+    if (__dest == nullptr) {
+        __prism_check(0, "PTR-NULL-DEREF", "std::copy_backward null destination");
+        __builtin_trap();
+    }
+    _Tp* __scan = __last;
+    while (__scan != __first) {
+        if (__scan == __dest) {
+            __prism_check(0, "FUNC-CONTRACT", "std::copy_backward dest lies in (first, last]");
+            __builtin_trap();
+        }
+        --__scan;
+    }
+    _Tp* __src = __last;
+    _Tp* __out = __dest;
+    while (__src != __first) {
+        --__src;
+        --__out;
+        *__out = *__src;
     }
     return __out;
 }
