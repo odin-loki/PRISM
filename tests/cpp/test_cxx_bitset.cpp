@@ -88,7 +88,7 @@ TEST_CASE("cxx bitset model: operator[] traps before a word is read") {
     REQUIRE_FALSE(src.empty());
     CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
     CHECK(src.find("bit_cast") == std::string::npos);
-    CHECK(count_of(src, kMsg) == 2);
+    CHECK(count_of(src, kMsg) == 3);  // the header note and the two checks
     CHECK(count_of(src, "__prism_check(0, \"MEM-OOB-READ\", \"std::bitset::operator[] index is outside the bitset\")") ==
           2);
 

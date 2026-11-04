@@ -352,10 +352,8 @@ TEST_CASE("cxx regex model: equality does not read a character of an empty patte
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    for (const char* name : {"regex_match", "regex_search", "regex_replace"}) {
-        CAPTURE(name);
-        CHECK_FALSE(has_ident(code, name));
-    }
+    // regex_match and regex_search are the matcher on main.
+    CHECK_FALSE(has_ident(code, "regex_replace"));
 
     CHECK(src.find("bool operator==(const regex& __y) const noexcept;") != std::string::npos);
     CHECK(src.find("bool operator!=(const regex& __y) const noexcept;") != std::string::npos);
@@ -444,10 +442,11 @@ TEST_CASE("cxx regex model: equality does not read a character of an empty patte
     CHECK(swap_pub.find("operator==") == std::string::npos);
     CHECK(swap_pub.find("_M_str[") == std::string::npos);
     const std::string from = body_of(src, "void regex::_M_from_cstr(const char* __s)");
-    CHECK(from.find("_M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\")") != std::string::npos);
+    CHECK(from.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\"); __builtin_trap();") !=
+          std::string::npos);
     const std::string flagged = body_of(src, "regex(const char* __s, unsigned __f)");
     const auto flag_null =
-        flagged.find("if (__s == nullptr) _M_fail(\"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\");");
+        flagged.find("if (__s == nullptr) { __prism_check(0, \"FUNC-CONTRACT\", \"std::regex constructed from a null pointer\"); __builtin_trap(); }");
     const auto flag_store = flagged.find("_M_flags = __f;");
     REQUIRE(flag_null != std::string::npos);
     REQUIRE(flag_store != std::string::npos);

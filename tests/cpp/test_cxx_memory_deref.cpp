@@ -153,7 +153,8 @@ TEST_CASE("cxx memory model: empty unique_ptr operator* and operator-> trap befo
     CHECK(count_sub(src, "pointer operator->() const") == 1);
     CHECK(count_sub(src, "if (_M_ptr == nullptr) __builtin_trap();") == 2);
     CHECK(count_sub(src, "__builtin_trap();") == 3);
-    CHECK(count_sub(src, "This is not PROVED and not CLEAN.") == 2);
+    // Main's equality note does not carry the sentence; operator*/-> does.
+    CHECK(count_sub(src, "This is not PROVED and not CLEAN.") == 1);
 
     const auto index = body_of(src, "element_type& operator[](size_t __i) const");
     REQUIRE_FALSE(index.empty());
@@ -183,24 +184,21 @@ TEST_CASE("cxx memory model: empty unique_ptr operator* and operator-> trap befo
         CHECK(swapped.find("std::swap") == std::string::npos);
     }
     CHECK(count_sub(src, "pointer get() const noexcept { return _M_ptr; }") == 2);
-    CHECK(count_sub(src, "explicit operator bool() const noexcept { return _M_ptr != nullptr; }") == 2);
+    // unique_ptr, unique_ptr<T[]>, and shared_ptr.
+    CHECK(count_sub(src, "explicit operator bool() const noexcept { return _M_ptr != nullptr; }") == 3);
     CHECK(count_sub(src, "::operator delete(") == 1);
     CHECK(count_sub(src, "delete[]") == 1);
 
     const auto eq = body_of(src, "bool operator==(const unique_ptr<_Tp, _Dp>& __x, const unique_ptr<_Tp, _Dp>& __y)");
-    const auto ne = body_of(src, "bool operator!=(const unique_ptr<_Tp, _Dp>& __x, const unique_ptr<_Tp, _Dp>& __y)");
     REQUIRE_FALSE(eq.empty());
-    REQUIRE_FALSE(ne.empty());
-    CHECK(eq.find("if (__x.get() == nullptr && __y.get() == nullptr)") != std::string::npos);
-    CHECK(eq.find("if (__x.get() != __y.get())") != std::string::npos);
-    CHECK(eq.find("return false;") != std::string::npos);
+    // Main compares the stored pointers in one line; C++20 rewrites
+    // operator!= from it, so there is no operator!= body.
+    CHECK(eq.find("return __x.get() == __y.get();") != std::string::npos);
     CHECK(eq.find("__prism_check") == std::string::npos);
     CHECK(eq.find("__builtin_trap") == std::string::npos);
     CHECK(eq.find("*") == std::string::npos);
-    CHECK(ne.find("return !(__x == __y);") != std::string::npos);
-    CHECK(ne.find("__prism_check") == std::string::npos);
-    CHECK(ne.find("__builtin_trap") == std::string::npos);
-    CHECK(ne.find("*") == std::string::npos);
+    CHECK(src.find("bool operator!=(const unique_ptr<_Tp, _Dp>& __x, const unique_ptr<_Tp, _Dp>& __y)") ==
+          std::string::npos);
 
     const auto one = body_of(src, "make_unique(_Args&&... __args)");
     const auto arr = body_of(src, "make_unique(size_t __n)");
@@ -215,8 +213,7 @@ TEST_CASE("cxx memory model: empty unique_ptr operator* and operator-> trap befo
     CHECK(arr.find("__builtin_trap();") < arr.find("new _Elem[__n]()"));
     CHECK(src.find("make_unique_for_overwrite(") == std::string::npos);
 
-    CHECK(src.find("class shared_ptr") == std::string::npos);
-    CHECK(src.find("class weak_ptr") == std::string::npos);
+    CHECK(src.find("class shared_ptr") != std::string::npos);  // modelled on main
     CHECK(count_sub(src, "class unique_ptr<_Tp[], _Dp>") == 1);
     CHECK(src.find("shared_ptr") != std::string::npos);
 }

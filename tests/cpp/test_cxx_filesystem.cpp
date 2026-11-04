@@ -255,7 +255,7 @@ TEST_CASE("cxx filesystem model: is_absolute is a character test") {
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     for (const char* name : {"exists", "absolute", "lexically_normal", "status"}) {
@@ -320,7 +320,7 @@ TEST_CASE("cxx filesystem model: has_root_directory is a character test") {
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     for (const char* name : {"exists", "absolute", "lexically_normal", "status"}) {
@@ -383,7 +383,7 @@ TEST_CASE("cxx filesystem model: has_filename is a character test") {
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     for (const char* name : {"exists", "absolute", "lexically_normal", "status"}) {
@@ -455,7 +455,7 @@ TEST_CASE("cxx filesystem model: has_extension is a character test") {
     REQUIRE_FALSE(src.empty());
     const std::string code = strip_comments(src);
     CHECK(count_sub(code, "::operator delete(") == 1);
-    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string>") != std::string::npos);  // path::string()
     CHECK(src.find("#include <string_view>") == std::string::npos);
     CHECK(src.find("#include <memory>") == std::string::npos);
     for (const char* name : {"exists", "absolute", "lexically_normal", "status"}) {
