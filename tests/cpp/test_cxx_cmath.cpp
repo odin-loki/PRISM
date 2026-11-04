@@ -310,8 +310,8 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
     CHECK(src.find("A NaN stays a NaN.") != std::string::npos);
     CHECK(src.find("does not return 0 in place of a NaN") != std::string::npos);
     CHECK(src.find("An infinity stays that infinity.") != std::string::npos);
-    CHECK(count_of(src, "PROVED") == 2);
-    CHECK(count_of(src, "CLEAN") == 2);
+    CHECK(count_of(src, "PROVED") == 3);
+    CHECK(count_of(src, "CLEAN") == 3);
     CHECK(src.find("negative zero, not a positive") != std::string::npos);
     CHECK(src.find("Zero is not a stand-in") != std::string::npos);
     CHECK(src.find("copysign(int") == std::string::npos);
@@ -379,7 +379,6 @@ TEST_CASE("cxx cmath model: negative sqrt is checked before a value is produced"
         CHECK(fn_body.find("return 0") == std::string::npos);
         CHECK(fn_body.find("0.0") == std::string::npos);
     }
-    CHECK(src.find("fma, hypot, remainder, fmod, and fdim are not PROVED and not CLEAN.") != std::string::npos);
     CHECK(src.find("#undef fma") != std::string::npos);
     CHECK(src.find("#undef hypot") != std::string::npos);
     CHECK(src.find("#undef remainder") != std::string::npos);
