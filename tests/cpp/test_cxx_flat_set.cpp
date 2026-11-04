@@ -3,7 +3,8 @@
 // before any new node and before size grows, erase is where the node is
 // freed (the delete expression is in erase, not in a helper), contains
 // returns false for a missing key and true for a present key without
-// allocating, and operator== of two flat_sets is container equality.
+// allocating, operator== of two flat_sets is container equality, and
+// operator< is lexicographical order on the stored keys.
 
 #include <doctest/doctest.h>
 
@@ -244,4 +245,135 @@ TEST_CASE("cxx flat_set model: container equality does not read past the shorter
     CHECK(src.find("bool empty() const noexcept { return _M_head == nullptr; }") != std::string::npos);
     CHECK(src.find("void clear() noexcept") != std::string::npos);
     CHECK(src.find("void swap(flat_set& __o) noexcept") != std::string::npos);
+}
+
+TEST_CASE("cxx flat_set model: container less does not load an empty set") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "flat_set");
+    REQUIRE(!src.empty());
+
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("lexicographical_compare") == std::string::npos);
+    CHECK(count_sub(src, "operator<(const iterator") == 0);
+    CHECK(count_sub(src, "operator<(const flat_set&") == 1);
+    CHECK(count_sub(src, "operator<=(const flat_set&") == 0);
+    CHECK(count_sub(src, "operator>(const flat_set&") == 0);
+    CHECK(count_sub(src, "operator>=(const flat_set&") == 0);
+    CHECK(src.find("operator<=>") == std::string::npos);
+
+    const auto lt = body_of(src, "operator<(const flat_set& __x, const flat_set& __y)");
+    REQUIRE(!lt.empty());
+
+    // Two empty sets return false before a node is loaded.
+    const auto both = lt.find("if (__x._M_head == nullptr && __y._M_head == nullptr)");
+    const auto not_less = lt.find("return false;");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(not_less != std::string::npos);
+    CHECK(both < not_less);
+    const auto empty_prefix = lt.substr(0, not_less);
+    CHECK(empty_prefix.find("->") == std::string::npos);
+    CHECK(empty_prefix.find("_M_key") == std::string::npos);
+    CHECK(empty_prefix.find("_M_next") == std::string::npos);
+    CHECK(empty_prefix.find("*") == std::string::npos);
+    CHECK(empty_prefix.find("_M_size") == std::string::npos);
+
+    // An empty set is less than a non-empty set. That return does not load
+    // the empty set, and it does not load the other set's node either.
+    const auto left_empty = lt.find("if (__x._M_head == nullptr)", both + 1);
+    const auto less_ret = lt.find("return true;");
+    REQUIRE(left_empty != std::string::npos);
+    REQUIRE(less_ret != std::string::npos);
+    CHECK(not_less < left_empty);
+    CHECK(left_empty < less_ret);
+    const auto less_prefix = lt.substr(0, less_ret);
+    CHECK(less_prefix.find("->") == std::string::npos);
+    CHECK(less_prefix.find("_M_key") == std::string::npos);
+    CHECK(less_prefix.find("_M_next") == std::string::npos);
+    CHECK(less_prefix.find("*") == std::string::npos);
+
+    // A non-empty set is not less than an empty set. The shorter set has no
+    // node, so this return does not read the longer set.
+    const auto right_empty = lt.find("if (__y._M_head == nullptr)");
+    const auto longer_ret = lt.find("return false;", not_less + 1);
+    REQUIRE(right_empty != std::string::npos);
+    REQUIRE(longer_ret != std::string::npos);
+    CHECK(less_ret < right_empty);
+    CHECK(right_empty < longer_ret);
+    const auto right_prefix = lt.substr(0, longer_ret);
+    CHECK(right_prefix.find("->") == std::string::npos);
+    CHECK(right_prefix.find("_M_key") == std::string::npos);
+    CHECK(right_prefix.find("_M_next") == std::string::npos);
+
+    // Otherwise compare stored keys. The walk stops when either node is
+    // missing, so it does not read past the shorter set. A deciding key
+    // returns before the next node is loaded. No key is constructed.
+    const auto walk = lt.find("while (__a != nullptr && __b != nullptr)");
+    const auto left_key = lt.find("if (__a->_M_key < __b->_M_key)");
+    const auto left_true = lt.find("return true;", less_ret + 1);
+    const auto right_key = lt.find("if (__b->_M_key < __a->_M_key)");
+    const auto right_false = lt.find("return false;", longer_ret + 1);
+    const auto next = lt.find("_M_next");
+    const auto done = lt.find("return __a == nullptr && __b != nullptr;");
+    REQUIRE(walk != std::string::npos);
+    REQUIRE(left_key != std::string::npos);
+    REQUIRE(left_true != std::string::npos);
+    REQUIRE(right_key != std::string::npos);
+    REQUIRE(right_false != std::string::npos);
+    REQUIRE(next != std::string::npos);
+    REQUIRE(done != std::string::npos);
+    CHECK(longer_ret < walk);
+    CHECK(walk < left_key);
+    CHECK(left_key < left_true);
+    CHECK(left_true < right_key);
+    CHECK(right_key < right_false);
+    CHECK(right_false < next);
+    CHECK(next < done);
+    CHECK(lt.find("_M_key", done) == std::string::npos);
+    CHECK(lt.find("->", done) == std::string::npos);
+    CHECK(lt.find("T{}") == std::string::npos);
+    CHECK(lt.find("key_type") == std::string::npos);
+    CHECK(lt.find("value_type") == std::string::npos);
+    CHECK(lt.find("_Key{") == std::string::npos);
+    CHECK(lt.find("return {}") == std::string::npos);
+    CHECK(lt.find("_Node(") == std::string::npos);
+    CHECK(lt.find("new ") == std::string::npos);
+    CHECK(lt.find("_M_size") == std::string::npos);
+    CHECK(lt.find("_M_comp") == std::string::npos);
+    CHECK(lt.find("operator==") == std::string::npos);
+    CHECK(lt.find("insert") == std::string::npos);
+    CHECK(lt.find("erase") == std::string::npos);
+    CHECK(lt.find("find(") == std::string::npos);
+    CHECK(lt.find("contains") == std::string::npos);
+    CHECK(lt.find("count") == std::string::npos);
+    CHECK(lt.find("empty(") == std::string::npos);
+    CHECK(lt.find("clear") == std::string::npos);
+    CHECK(lt.find("swap") == std::string::npos);
+    CHECK(lt.find("size(") == std::string::npos);
+
+    const auto sig = src.find("friend bool operator<(const flat_set& __x, const flat_set& __y)");
+    REQUIRE(sig != std::string::npos);
+    const auto note_from = src.rfind("Two empty sets compare not-less.", sig);
+    REQUIRE(note_from != std::string::npos);
+    const auto note = src.substr(note_from, sig - note_from);
+    CHECK(note.find("does not load a node") != std::string::npos);
+    CHECK(note.find("An empty set is less than a non-empty set.") != std::string::npos);
+    CHECK(note.find("does not load") != std::string::npos);
+    CHECK(note.find("the empty set") != std::string::npos);
+    CHECK(note.find("lexicographically") != std::string::npos);
+    CHECK(note.find("does not read past the shorter set") != std::string::npos);
+    CHECK(note.find("does not return T{}") != std::string::npos);
+    CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+
+    CHECK(src.find("friend bool operator==(const flat_set& __x, const flat_set& __y)") != std::string::npos);
+    CHECK(src.find("bool empty() const noexcept { return _M_head == nullptr; }") != std::string::npos);
+    CHECK(src.find("size_type size() const noexcept { return _M_size; }") != std::string::npos);
+    CHECK(src.find("void swap(flat_set& __o) noexcept") != std::string::npos);
+    CHECK(src.find("void clear() noexcept") != std::string::npos);
+    CHECK(src.find("pair<iterator, bool> insert(const value_type& __x)") != std::string::npos);
+    CHECK(src.find("size_type erase(const key_type& __x)") != std::string::npos);
+    CHECK(src.find("iterator find(const key_type& __x) const { return iterator(_M_find_node(__x)); }") !=
+          std::string::npos);
+    CHECK(src.find("bool contains(const key_type& __x) const") != std::string::npos);
+    CHECK(src.find("size_type count(const key_type& __x) const { return contains(__x) ? 1 : 0; }") !=
+          std::string::npos);
 }

@@ -27,6 +27,12 @@
 //    not read past the shorter set. Same size compares stored keys with
 //    key equality and does not construct a new key. A mismatch returns
 //    false. operator!= is the negation. This is not PROVED and not CLEAN.
+//  * operator< of two flat_sets is lexicographical order on the stored
+//    keys, in link order. Two empty sets compare not-less and that path
+//    does not load a node. An empty set is less than a non-empty set and
+//    that path does not load the empty set. The walk stops at the first
+//    deciding key and does not read past the shorter set. It does not
+//    return T{}. This is not PROVED and not CLEAN.
 //
 // A pointer or reference obtained from an iterator addresses that key's
 // node. erase of that key frees the node, so a later use of the pointer is
@@ -350,6 +356,32 @@ public:
 
     // Negation of operator==. It does not walk the nodes again.
     friend bool operator!=(const flat_set& __x, const flat_set& __y) { return !(__x == __y); }
+
+    // Two empty sets compare not-less. That path does not load a node.
+    // An empty set is less than a non-empty set. That path does not load
+    // the empty set. Otherwise the stored keys are compared lexicographically.
+    // The walk does not read past the shorter set. It does not return T{}.
+    // A deciding key returns before the next node is loaded.
+    // This is not PROVED and not CLEAN.
+    friend bool operator<(const flat_set& __x, const flat_set& __y) {
+        if (__x._M_head == nullptr && __y._M_head == nullptr)
+            return false;
+        if (__x._M_head == nullptr)
+            return true;
+        if (__y._M_head == nullptr)
+            return false;
+        const _Node* __a = __x._M_head;
+        const _Node* __b = __y._M_head;
+        while (__a != nullptr && __b != nullptr) {
+            if (__a->_M_key < __b->_M_key)
+                return true;
+            if (__b->_M_key < __a->_M_key)
+                return false;
+            __a = __a->_M_next;
+            __b = __b->_M_next;
+        }
+        return __a == nullptr && __b != nullptr;
+    }
 };
 
 template <typename _Key, typename _Compare>
