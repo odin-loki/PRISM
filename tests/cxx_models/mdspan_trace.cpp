@@ -1,13 +1,15 @@
 // Host trace of the std::mdspan model (src/prism/pir/models/cxx/mdspan).
 // Compiled with that directory on the include path so #include <mdspan> is
 // the model. __prism_check is the PIR intrinsic; the doctest links a stub
-// that aborts when the precondition fails. This is not a libstdc++
-// differential: operator[] and the layout policies are not in the model.
+// that aborts when the precondition fails. This is not a library
+// differential: it calls operator() and data(), which the model declares
+// and the standard mdspan does not.
 #include <mdspan>
 
 #include <cstddef>
 #include <cstdio>
 #include <string>
+#include <type_traits>
 
 static void in_range() {
     int a[4] = {10, 20, 30, 40};
@@ -308,6 +310,279 @@ static int ovf7() {
     return static_cast<int>(m.size());
 }
 
+// Extents alternate 2 and 3 so the array stays small and every stride is
+// still a product of several extents. (1, 0, 1, 0, 1, 0, 1, 0) is the
+// element at offset 777, not the first or the last.
+static void rank8() {
+    static int g8[1296];
+    for (int i = 0; i < 1296; ++i) g8[i] = i + 1;
+    std::mdspan<int, std::dextents<std::size_t, 8>> m(g8, 2, 3, 2, 3, 2, 3, 2, 3);
+    std::printf("r8 %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %d %d %d\n", m.rank(), m.size(), m.extent(0), m.extent(1),
+                m.extent(2), m.extent(3), m.extent(4), m.extent(5), m.extent(6), m.extent(7),
+                m(0, 0, 0, 0, 0, 0, 0, 0), m(1, 2, 1, 2, 1, 2, 1, 2), m(1, 0, 1, 0, 1, 0, 1, 0));
+}
+
+// The other seven extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero8() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 8>> m(&one, huge, 2, 2, 2, 2, 2, 2, 0);
+    std::printf("z8 %zu\n", m.size());
+}
+
+static void empty8() {
+    std::mdspan<int, std::dextents<std::size_t, 8>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0);
+    std::printf("e8 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
+// The deduction guide with eight extents is dextents<size_t, 8>, and
+// operator[] (the standard spelling) reads the same element as operator().
+static void deduce8() {
+    static int h8[1296];
+    for (int i = 0; i < 1296; ++i) h8[i] = i + 1;
+    std::mdspan m(h8, std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3),
+                  std::size_t(2), std::size_t(3));
+    const bool same = std::is_same_v<decltype(m), std::mdspan<int, std::dextents<std::size_t, 8>>>;
+    std::printf("d8 %d %d %d\n", int(same), m[1, 0, 1, 0, 1, 0, 1, 0],
+                int(&m[1, 2, 1, 2, 1, 2, 1, 2] == &m(1, 2, 1, 2, 1, 2, 1, 2)));
+}
+
+// which 0..7 is one past extent 0..7. The other indices are in range.
+// which 8 is the same past-the-end index through operator[].
+static int oob8(int which) {
+    static int g[1296] = {};
+    std::mdspan<int, std::dextents<std::size_t, 8>> m(g, 2, 3, 2, 3, 2, 3, 2, 3);
+    if (which == 0) return m(2, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 1) return m(0, 3, 0, 0, 0, 0, 0, 0);
+    if (which == 2) return m(0, 0, 2, 0, 0, 0, 0, 0);
+    if (which == 3) return m(0, 0, 0, 3, 0, 0, 0, 0);
+    if (which == 4) return m(0, 0, 0, 0, 2, 0, 0, 0);
+    if (which == 5) return m(0, 0, 0, 0, 0, 3, 0, 0);
+    if (which == 6) return m(0, 0, 0, 0, 0, 0, 2, 0);
+    if (which == 7) return m(0, 0, 0, 0, 0, 0, 0, 3);
+    return m[0, 0, 0, 0, 0, 0, 0, 3];
+}
+
+static int null8() {
+    std::mdspan<int, std::dextents<std::size_t, 8>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf8() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 8>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2);
+    return static_cast<int>(m.size());
+}
+
+// Extents alternate 2 and 3 so the array stays small and every stride is
+// still a product of several extents. (1, 0, 1, 0, 1, 0, 1, 0, 1) is the
+// element at offset 1555, not the first or the last.
+static void rank9() {
+    static int g9[2592];
+    for (int i = 0; i < 2592; ++i) g9[i] = i + 1;
+    std::mdspan<int, std::dextents<std::size_t, 9>> m(g9, 2, 3, 2, 3, 2, 3, 2, 3, 2);
+    std::printf("r9 %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %d %d %d\n", m.rank(), m.size(), m.extent(0),
+                m.extent(1), m.extent(2), m.extent(3), m.extent(4), m.extent(5), m.extent(6), m.extent(7),
+                m.extent(8), m(0, 0, 0, 0, 0, 0, 0, 0, 0), m(1, 2, 1, 2, 1, 2, 1, 2, 1),
+                m(1, 0, 1, 0, 1, 0, 1, 0, 1));
+}
+
+// The other eight extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero9() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 9>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 0);
+    std::printf("z9 %zu\n", m.size());
+}
+
+static void empty9() {
+    std::mdspan<int, std::dextents<std::size_t, 9>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    std::printf("e9 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
+// The deduction guide with nine extents is dextents<size_t, 9>, and
+// operator[] (the standard spelling) reads the same element as operator().
+static void deduce9() {
+    static int h9[2592];
+    for (int i = 0; i < 2592; ++i) h9[i] = i + 1;
+    std::mdspan m(h9, std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3),
+                  std::size_t(2), std::size_t(3), std::size_t(2));
+    const bool same = std::is_same_v<decltype(m), std::mdspan<int, std::dextents<std::size_t, 9>>>;
+    std::printf("d9 %d %d %d\n", int(same), m[1, 0, 1, 0, 1, 0, 1, 0, 1],
+                int(&m[1, 2, 1, 2, 1, 2, 1, 2, 1] == &m(1, 2, 1, 2, 1, 2, 1, 2, 1)));
+}
+
+// which 0..8 is one past extent 0..8. The other indices are in range.
+// which 9 is the same past-the-end index through operator[].
+static int oob9(int which) {
+    static int g[2592] = {};
+    std::mdspan<int, std::dextents<std::size_t, 9>> m(g, 2, 3, 2, 3, 2, 3, 2, 3, 2);
+    if (which == 0) return m(2, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 1) return m(0, 3, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 2) return m(0, 0, 2, 0, 0, 0, 0, 0, 0);
+    if (which == 3) return m(0, 0, 0, 3, 0, 0, 0, 0, 0);
+    if (which == 4) return m(0, 0, 0, 0, 2, 0, 0, 0, 0);
+    if (which == 5) return m(0, 0, 0, 0, 0, 3, 0, 0, 0);
+    if (which == 6) return m(0, 0, 0, 0, 0, 0, 2, 0, 0);
+    if (which == 7) return m(0, 0, 0, 0, 0, 0, 0, 3, 0);
+    if (which == 8) return m(0, 0, 0, 0, 0, 0, 0, 0, 2);
+    return m[0, 0, 0, 0, 0, 0, 0, 0, 2];
+}
+
+static int null9() {
+    std::mdspan<int, std::dextents<std::size_t, 9>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf9() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 9>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 2);
+    return static_cast<int>(m.size());
+}
+
+// Extents alternate 2 and 3 so the array stays small and every stride is
+// still a product of several extents. (1, 0, 1, 0, 1, 0, 1, 0, 1, 0) is the
+// element at offset 4665, not the first or the last.
+static void rank10() {
+    static int g10[7776];
+    for (int i = 0; i < 7776; ++i) g10[i] = i + 1;
+    std::mdspan<int, std::dextents<std::size_t, 10>> m(g10, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3);
+    std::printf("r10 %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %d %d %d\n", m.rank(), m.size(), m.extent(0),
+                m.extent(1), m.extent(2), m.extent(3), m.extent(4), m.extent(5), m.extent(6), m.extent(7),
+                m.extent(8), m.extent(9), m(0, 0, 0, 0, 0, 0, 0, 0, 0, 0), m(1, 2, 1, 2, 1, 2, 1, 2, 1, 2),
+                m(1, 0, 1, 0, 1, 0, 1, 0, 1, 0));
+}
+
+// The other nine extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero10() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 10>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 2, 0);
+    std::printf("z10 %zu\n", m.size());
+}
+
+static void empty10() {
+    std::mdspan<int, std::dextents<std::size_t, 10>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    std::printf("e10 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
+// The deduction guide with ten extents is dextents<size_t, 10>, and
+// operator[] (the standard spelling) reads the same element as operator().
+static void deduce10() {
+    static int h10[7776];
+    for (int i = 0; i < 7776; ++i) h10[i] = i + 1;
+    std::mdspan m(h10, std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3),
+                  std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3));
+    const bool same = std::is_same_v<decltype(m), std::mdspan<int, std::dextents<std::size_t, 10>>>;
+    std::printf("d10 %d %d %d\n", int(same), m[1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+                int(&m[1, 2, 1, 2, 1, 2, 1, 2, 1, 2] == &m(1, 2, 1, 2, 1, 2, 1, 2, 1, 2)));
+}
+
+// which 0..9 is one past extent 0..9. The other indices are in range.
+// which 10 is the same past-the-end index through operator[].
+static int oob10(int which) {
+    static int g[7776] = {};
+    std::mdspan<int, std::dextents<std::size_t, 10>> m(g, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3);
+    if (which == 0) return m(2, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 1) return m(0, 3, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 2) return m(0, 0, 2, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 3) return m(0, 0, 0, 3, 0, 0, 0, 0, 0, 0);
+    if (which == 4) return m(0, 0, 0, 0, 2, 0, 0, 0, 0, 0);
+    if (which == 5) return m(0, 0, 0, 0, 0, 3, 0, 0, 0, 0);
+    if (which == 6) return m(0, 0, 0, 0, 0, 0, 2, 0, 0, 0);
+    if (which == 7) return m(0, 0, 0, 0, 0, 0, 0, 3, 0, 0);
+    if (which == 8) return m(0, 0, 0, 0, 0, 0, 0, 0, 2, 0);
+    if (which == 9) return m(0, 0, 0, 0, 0, 0, 0, 0, 0, 3);
+    return m[0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
+}
+
+static int null10() {
+    std::mdspan<int, std::dextents<std::size_t, 10>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf10() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 10>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 2, 2);
+    return static_cast<int>(m.size());
+}
+
+// Extents alternate 2 and 3 so the array stays small and every stride is
+// still a product of several extents. (1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1) is the
+// element at offset 9331, not the first or the last.
+static void rank11() {
+    static int g11[15552];
+    for (int i = 0; i < 15552; ++i) g11[i] = i + 1;
+    std::mdspan<int, std::dextents<std::size_t, 11>> m(g11, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2);
+    std::printf("r11 %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %d %d %d\n", m.rank(), m.size(), m.extent(0),
+                m.extent(1), m.extent(2), m.extent(3), m.extent(4), m.extent(5), m.extent(6), m.extent(7),
+                m.extent(8), m.extent(9), m.extent(10), m(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                m(1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1), m(1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1));
+}
+
+// The other ten extents would overflow size_t. The zero extent makes the
+// product 0, so this is not the overflow check, and size() stays 0.
+static void zero11() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 11>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0);
+    std::printf("z11 %zu\n", m.size());
+}
+
+static void empty11() {
+    std::mdspan<int, std::dextents<std::size_t, 11>> z(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    std::printf("e11 %zu %d\n", z.size(), int(z.data() == nullptr));
+}
+
+// The deduction guide with eleven extents is dextents<size_t, 11>, and
+// operator[] (the standard spelling) reads the same element as operator().
+static void deduce11() {
+    static int h11[15552];
+    for (int i = 0; i < 15552; ++i) h11[i] = i + 1;
+    std::mdspan m(h11, std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3),
+                  std::size_t(2), std::size_t(3), std::size_t(2), std::size_t(3), std::size_t(2));
+    const bool same = std::is_same_v<decltype(m), std::mdspan<int, std::dextents<std::size_t, 11>>>;
+    std::printf("d11 %d %d %d\n", int(same), m[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                int(&m[1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1] == &m(1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1)));
+}
+
+// which 0..10 is one past extent 0..10. The other indices are in range.
+// which 11 is the same past-the-end index through operator[].
+static int oob11(int which) {
+    static int g[15552] = {};
+    std::mdspan<int, std::dextents<std::size_t, 11>> m(g, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2);
+    if (which == 0) return m(2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 1) return m(0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 2) return m(0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 3) return m(0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0);
+    if (which == 4) return m(0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0);
+    if (which == 5) return m(0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0);
+    if (which == 6) return m(0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0);
+    if (which == 7) return m(0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0);
+    if (which == 8) return m(0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0);
+    if (which == 9) return m(0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0);
+    if (which == 10) return m(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2);
+    return m[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+}
+
+static int null11() {
+    std::mdspan<int, std::dextents<std::size_t, 11>> m(static_cast<int*>(nullptr), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+    return static_cast<int>(m.size());
+}
+
+static int ovf11() {
+    int one = 1;
+    const std::size_t huge = static_cast<std::size_t>(-1);
+    std::mdspan<int, std::dextents<std::size_t, 11>> m(&one, huge, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2);
+    return static_cast<int>(m.size());
+}
+
 int main(int argc, char** argv) {
     const std::string arg = argc > 1 ? argv[1] : "";
     if (arg == "oob") return oob();
@@ -349,6 +624,56 @@ int main(int argc, char** argv) {
     if (arg == "oob7p") return oob7(6);
     if (arg == "null7") return null7();
     if (arg == "ovf7") return ovf7();
+    if (arg == "oob8") return oob8(0);
+    if (arg == "oob8j") return oob8(1);
+    if (arg == "oob8k") return oob8(2);
+    if (arg == "oob8l") return oob8(3);
+    if (arg == "oob8m") return oob8(4);
+    if (arg == "oob8n") return oob8(5);
+    if (arg == "oob8p") return oob8(6);
+    if (arg == "oob8q") return oob8(7);
+    if (arg == "oob8b") return oob8(8);
+    if (arg == "null8") return null8();
+    if (arg == "ovf8") return ovf8();
+    if (arg == "oob9") return oob9(0);
+    if (arg == "oob9j") return oob9(1);
+    if (arg == "oob9k") return oob9(2);
+    if (arg == "oob9l") return oob9(3);
+    if (arg == "oob9m") return oob9(4);
+    if (arg == "oob9n") return oob9(5);
+    if (arg == "oob9p") return oob9(6);
+    if (arg == "oob9q") return oob9(7);
+    if (arg == "oob9r") return oob9(8);
+    if (arg == "oob9b") return oob9(9);
+    if (arg == "null9") return null9();
+    if (arg == "ovf9") return ovf9();
+    if (arg == "oob10") return oob10(0);
+    if (arg == "oob10j") return oob10(1);
+    if (arg == "oob10k") return oob10(2);
+    if (arg == "oob10l") return oob10(3);
+    if (arg == "oob10m") return oob10(4);
+    if (arg == "oob10n") return oob10(5);
+    if (arg == "oob10p") return oob10(6);
+    if (arg == "oob10q") return oob10(7);
+    if (arg == "oob10r") return oob10(8);
+    if (arg == "oob10s") return oob10(9);
+    if (arg == "oob10b") return oob10(10);
+    if (arg == "null10") return null10();
+    if (arg == "ovf10") return ovf10();
+    if (arg == "oob11") return oob11(0);
+    if (arg == "oob11j") return oob11(1);
+    if (arg == "oob11k") return oob11(2);
+    if (arg == "oob11l") return oob11(3);
+    if (arg == "oob11m") return oob11(4);
+    if (arg == "oob11n") return oob11(5);
+    if (arg == "oob11p") return oob11(6);
+    if (arg == "oob11q") return oob11(7);
+    if (arg == "oob11r") return oob11(8);
+    if (arg == "oob11s") return oob11(9);
+    if (arg == "oob11t") return oob11(10);
+    if (arg == "oob11b") return oob11(11);
+    if (arg == "null11") return null11();
+    if (arg == "ovf11") return ovf11();
     in_range();
     not_own();
     empty();
@@ -368,5 +693,21 @@ int main(int argc, char** argv) {
     rank7();
     zero7();
     empty7();
+    rank8();
+    zero8();
+    empty8();
+    deduce8();
+    rank9();
+    zero9();
+    empty9();
+    deduce9();
+    rank10();
+    zero10();
+    empty10();
+    deduce10();
+    rank11();
+    zero11();
+    empty11();
+    deduce11();
     return 0;
 }
