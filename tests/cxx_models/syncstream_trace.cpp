@@ -65,6 +65,50 @@ static void show() {
 }
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "avail") == 0) {
+        char buf[4] = {'W', 'X', 'Y', 'Z'};
+        std::basic_syncbuf b(buf, 4);
+        const auto n = b.in_avail();
+        std::printf("avail %d %d %d %d %d\n", static_cast<int>(n),
+                    static_cast<int>(static_cast<unsigned char>(buf[0])),
+                    static_cast<int>(static_cast<unsigned char>(buf[1])),
+                    static_cast<int>(static_cast<unsigned char>(buf[2])),
+                    static_cast<int>(static_cast<unsigned char>(buf[3])));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availmid") == 0) {
+        char buf[4] = {'W', 'X', 'Y', 'Z'};
+        std::basic_syncbuf b(buf, 4);
+        b.sputc('A');
+        const auto n = b.in_avail();
+        std::printf("availmid %d %d %d %d %d\n", static_cast<int>(n),
+                    static_cast<int>(static_cast<unsigned char>(buf[0])),
+                    static_cast<int>(static_cast<unsigned char>(buf[1])),
+                    static_cast<int>(static_cast<unsigned char>(buf[2])),
+                    static_cast<int>(static_cast<unsigned char>(buf[3])));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "avail0") == 0) {
+        std::basic_syncbuf b(nullptr, 0);
+        const auto n = b.in_avail();
+        std::printf("avail0 %d\n", static_cast<int>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availend") == 0) {
+        char buf[1] = {'A'};
+        std::basic_syncbuf b(buf, 0);
+        const auto n = b.in_avail();
+        std::printf("availend %d %d\n", static_cast<int>(n), static_cast<int>(static_cast<unsigned char>(buf[0])));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availat") == 0) {
+        char buf[1] = {'Q'};
+        std::basic_syncbuf b(buf, 1);
+        (void)b.sgetc();
+        const auto n = b.in_avail();
+        std::printf("availat %d %d\n", static_cast<int>(n), static_cast<int>(static_cast<unsigned char>(buf[0])));
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "full") == 0) {
         char buf[4] = {};
         std::basic_syncbuf b(buf, 0);

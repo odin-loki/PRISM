@@ -8,7 +8,9 @@
 // __prism_check and does not decrement or load before the buffer. sputn
 // with a negative count is a __prism_check then __builtin_trap and does
 // not write. A count of 0 returns 0 and does not read. A positive count
-// stores only into the remaining buffer. The header does not define emit.
+// stores only into the remaining buffer. in_avail() returns the bytes still
+// left at the offset without writing or loading. The header does not define
+// emit.
 
 #include <doctest/doctest.h>
 
@@ -44,6 +46,23 @@ std::string slurp(const fs::path& p) {
 
 bool is_ident(char c) {
     return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+}
+
+// Body of the first function whose text contains `sig`, including braces.
+std::string body_of(std::string_view src, std::string_view sig) {
+    const auto at = src.find(sig);
+    if (at == std::string_view::npos) return {};
+    const auto brace = src.find('{', at);
+    if (brace == std::string_view::npos) return {};
+    int depth = 0;
+    for (std::size_t i = brace; i < src.size(); ++i) {
+        if (src[i] == '{')
+            ++depth;
+        else if (src[i] == '}') {
+            if (--depth == 0) return std::string(src.substr(brace, i - brace + 1));
+        }
+    }
+    return {};
 }
 
 // `name` as its own identifier, then '('. A comment that only says emit does not count.
@@ -381,9 +400,11 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(sgetc.find("_M_off =") == std::string::npos);
     CHECK(sgetc.find("++_M_off;", gadv + 1) == std::string::npos);
 
-    const auto priv = src.find("private:", sungetc_at);
+    const auto avail_at = src.find("size_t in_avail(", sungetc_at);
+    REQUIRE(avail_at != std::string::npos);
+    const auto priv = src.find("private:", avail_at);
     REQUIRE(priv != std::string::npos);
-    const std::string sungetc = src.substr(sungetc_at, priv - sungetc_at);
+    const std::string sungetc = src.substr(sungetc_at, avail_at - sungetc_at);
     CHECK(sungetc.find("const int __back = (_M_off > 0) ? 1 : 0;") != std::string::npos);
     CHECK(sungetc.find("__prism_check(__back, \"MEM-OOB-READ\", \"basic_syncbuf::sungetc would read before the caller "
                        "buffer\")") != std::string::npos);
@@ -416,6 +437,68 @@ TEST_CASE("cxx syncstream model: a write or a read at the size is a check, a ste
     CHECK(src.find("emit(") == std::string::npos);
     CHECK(src.find("class syncstream") == std::string::npos);
     CHECK(src.find("osyncstream") == std::string::npos);
+}
+
+TEST_CASE("cxx syncstream model: in_avail returns bytes left at the offset and does not load") {
+    const fs::path header = syncstream_header();
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    CHECK(src.find("in_avail is not PROVED and not CLEAN") != std::string::npos);
+    CHECK(src.find("#include <span>") == std::string::npos);
+    CHECK(src.find("#include <sstream>") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+    CHECK(src.find("__prism_check((__buf != nullptr || __n == 0) ? 1 : 0, \"FUNC-CONTRACT\",") != std::string::npos);
+    CHECK(src.find("if (!(__buf != nullptr || __n == 0)) _M_size = 0;") != std::string::npos);
+    CHECK(src.find("const int __ok = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
+    CHECK(src.find("__prism_check(__s != nullptr ? 1 : 0, \"PTR-NULL-DEREF\",") != std::string::npos);
+    CHECK(src.find("if (__s == nullptr) __builtin_trap();") != std::string::npos);
+
+    const auto at = src.find("size_t in_avail() const noexcept");
+    REQUIRE(at != std::string::npos);
+    CHECK(src.find("size_t in_avail() const noexcept", at + 1) == std::string::npos);
+    const auto sungetc_at = src.find("int sungetc(");
+    const auto priv = src.find("\nprivate:");
+    REQUIRE(sungetc_at != std::string::npos);
+    REQUIRE(priv != std::string::npos);
+    CHECK(sungetc_at < at);
+    CHECK(at < priv);
+
+    const auto avail = body_of(src, "size_t in_avail(");
+    REQUIRE(!avail.empty());
+    CHECK(avail.find("return _M_off < _M_size ? _M_size - _M_off : 0;") != std::string::npos);
+    CHECK(avail.find("_M_buf") == std::string::npos);
+    CHECK(avail.find("[") == std::string::npos);
+    CHECK(avail.find("=") == std::string::npos);
+    CHECK(avail.find("++") == std::string::npos);
+    CHECK(avail.find("--") == std::string::npos);
+    CHECK(avail.find("__prism_check") == std::string::npos);
+    CHECK(avail.find("__builtin_trap") == std::string::npos);
+    CHECK(avail.find("sputc") == std::string::npos);
+    CHECK(avail.find("sgetc") == std::string::npos);
+    CHECK(avail.find("sungetc") == std::string::npos);
+    CHECK(avail.find("sputn") == std::string::npos);
+
+    const auto sputc = body_of(src, "void sputc(");
+    const auto sputn = body_of(src, "ptrdiff_t sputn(");
+    const auto sgetc = body_of(src, "int sgetc(");
+    const auto sungetc = body_of(src, "int sungetc(");
+    const auto ctor = body_of(src, "explicit basic_syncbuf(");
+    REQUIRE(!sputc.empty());
+    REQUIRE(!sputn.empty());
+    REQUIRE(!sgetc.empty());
+    REQUIRE(!sungetc.empty());
+    REQUIRE(!ctor.empty());
+    CHECK(sputc.find("in_avail") == std::string::npos);
+    CHECK(sputn.find("in_avail") == std::string::npos);
+    CHECK(sgetc.find("in_avail") == std::string::npos);
+    CHECK(sungetc.find("in_avail") == std::string::npos);
+    CHECK(ctor.find("in_avail") == std::string::npos);
+    CHECK(sputc.find("const int __ok = (_M_off < _M_size) ? 1 : 0;") != std::string::npos);
+    CHECK(ctor.find("if (!(__buf != nullptr || __n == 0)) _M_size = 0;") != std::string::npos);
+    CHECK(sputn.find("if (__s == nullptr) __builtin_trap();") != std::string::npos);
+    CHECK(src.find("~basic_syncbuf() = default;") != std::string::npos);
+    CHECK(defines_call(src, "in_avail"));
 }
 
 TEST_CASE("cxx syncstream model: setup clang++ with ASan/UBSan") {
@@ -499,6 +582,16 @@ TEST_CASE("cxx syncstream model: one stored byte stays in the caller buffer") {
     CHECK(has_line(emptyn, "emptyn 0 90"));
     auto rest = run_lines(mod, "rest");
     CHECK(has_line(rest, "rest 3 65 66 67 68"));
+    auto avail = run_lines(mod, "avail");
+    CHECK(has_line(avail, "avail 4 87 88 89 90"));
+    auto availmid = run_lines(mod, "availmid");
+    CHECK(has_line(availmid, "availmid 3 65 88 89 90"));
+    auto avail0 = run_lines(mod, "avail0");
+    CHECK(has_line(avail0, "avail0 0"));
+    auto availend = run_lines(mod, "availend");
+    CHECK(has_line(availend, "availend 0 65"));
+    auto availat = run_lines(mod, "availat");
+    CHECK(has_line(availat, "availat 0 81"));
     CHECK(is_check(mod, "neg", "FUNC-CONTRACT", "basic_syncbuf::sputn count is negative", "stored"));
     CHECK(is_check(mod, "neggo", "FUNC-CONTRACT", "basic_syncbuf::sputn count is negative", "stored"));
     CHECK(read_then_check(mod, "after", "filled 2", "extra", "MEM-OOB-WRITE",

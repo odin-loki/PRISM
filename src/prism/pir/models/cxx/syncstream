@@ -12,8 +12,8 @@
 // then advances. When the offset is already the size, sputc is a
 // __prism_check: it does not write and does not wrap the offset. A null
 // pointer with a non-zero size is a __prism_check at construction. That
-// failure stores size 0, so a later sputc, sputn, sgetc, or sungetc does not
-// use the pointer.
+// failure stores size 0, so a later sputc, sputn, sgetc, sungetc, or
+// in_avail does not use the pointer.
 //
 // sgetc returns the unsigned char at the offset and advances by one only
 // when the offset is less than the size. When the offset is already the
@@ -35,6 +35,11 @@
 // many characters as the remaining buffer holds and does not write past it.
 // It does not flush. A null buffer whose size was forced to 0 stores
 // nothing and does not use the pointer.
+//
+// in_avail() returns how many stored bytes remain at the current offset.
+// It does not write and it does not move the offset. A null buffer with
+// size 0 returns 0 and does not load through the pointer. An offset past
+// the size returns 0 and does not load. in_avail is not PROVED and not CLEAN.
 //
 // emit and the syncstream class are omitted so a unit that names one
 // fails to compile and pir falls back to libstdc++. A flush that returns
@@ -146,6 +151,15 @@ public:
             return static_cast<int>(__ch);
         }
         return -1;
+    }
+
+    // How many stored bytes remain at the current offset. It does not write
+    // and it does not move the offset. It does not load through the pointer.
+    // A null buffer with size 0 returns 0. An offset at the size, and an
+    // offset past the size, take the else and return 0. That arm does not
+    // subtract and does not load. in_avail is not PROVED and not CLEAN.
+    size_t in_avail() const noexcept {
+        return _M_off < _M_size ? _M_size - _M_off : 0;
     }
 
 private:
