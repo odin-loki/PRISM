@@ -25,8 +25,14 @@
 // operator<. Two empty maps compare not-greater and do not load a node. A
 // non-empty map is greater than an empty map, and that path does not load
 // the empty map. It does not return T{}. CountKey and CountMapped define
-// operator< and do not define operator>. The no-argument lines are
-// unchanged. This trace is not PROVED and not CLEAN.
+// operator< and do not define operator>. "equal" compares two flat_maps
+// with == and != (the C++20 rewrite of !(a == b)). Two empty maps compare
+// equal and do not load a node. Different sizes compare unequal before any
+// key or mapped comparison. The same pairs inserted in different orders
+// compare equal: each pair is looked up by key, not paired by link
+// position. A missing key or a mismatch returns false. Nothing is
+// constructed. The no-argument lines are unchanged. This trace is not
+// PROVED and not CLEAN.
 #include <flat_map>
 #include <cstdio>
 #include <cstring>
@@ -747,6 +753,94 @@ static void greater_trace() {
     show_greater("kearlyba", (kearly_b > kearly_a) ? 1 : 0);
 }
 
+static void show_equal(const char* tag, int r) {
+    std::printf("%s %d key_eq=%d mapped_eq=%d key_lt=%d copies=%d moves=%d mapped=%d\n", tag, r, CountKey::eq,
+                CountMapped::eq, CountKey::lt, CountKey::copies + CountMapped::copies,
+                CountKey::moves + CountMapped::moves, mapped_activity());
+}
+
+static void equal_trace() {
+    std::flat_map<int, int> a;
+    std::flat_map<int, int> b;
+    std::printf("empty %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    a[1] = 10;
+    std::printf("short %d ne %d rev %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0, (b == a) ? 1 : 0);
+    b[1] = 10;
+    std::printf("one %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    b[1] = 11;
+    std::printf("miss %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    b[1] = 10;
+    a[2] = 20;
+    b[2] = 20;
+    std::printf("same %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    std::flat_map<int, int> rev;
+    rev[2] = 20;
+    rev[1] = 10;
+    std::printf("order %d ne %d rev %d\n", (a == rev) ? 1 : 0, (a != rev) ? 1 : 0, (rev == a) ? 1 : 0);
+    std::flat_map<int, int> other;
+    other[1] = 10;
+    other[3] = 20;
+    std::printf("keydiff %d ne %d\n", (a == other) ? 1 : 0, (a != other) ? 1 : 0);
+    std::flat_map<int, int> il{{3, 30}, {1, 10}, {2, 20}};
+    std::flat_map<int, int> built;
+    built[2] = 20;
+    built[3] = 30;
+    built[1] = 10;
+    std::printf("three %d ne %d\n", (il == built) ? 1 : 0, (il != built) ? 1 : 0);
+    a[3] = 30;
+    std::printf("longer %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+    a.erase(3);
+    std::printf("erased %d ne %d\n", (a == b) ? 1 : 0, (a != b) ? 1 : 0);
+
+    reset_counts();
+    std::flat_map<CountKey, CountMapped> e1;
+    std::flat_map<CountKey, CountMapped> e2;
+    show_equal("kempty", (e1 == e2) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> one_map;
+    std::flat_map<CountKey, CountMapped> two_map;
+    (void)one_map.try_emplace(CountKey(1), 10);
+    (void)two_map.try_emplace(CountKey(1), 10);
+    (void)two_map.try_emplace(CountKey(2), 20);
+    reset_counts();
+    show_equal("kshort", (two_map == one_map) ? 1 : 0);
+    reset_counts();
+    show_equal("kshortne", (two_map != one_map) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> left;
+    std::flat_map<CountKey, CountMapped> right;
+    (void)left.try_emplace(CountKey(1), 10);
+    (void)left.try_emplace(CountKey(2), 20);
+    (void)right.try_emplace(CountKey(2), 20);
+    (void)right.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_equal("korder", (left == right) ? 1 : 0);
+    reset_counts();
+    show_equal("korderne", (left != right) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> stop_a;
+    std::flat_map<CountKey, CountMapped> stop_b;
+    (void)stop_a.try_emplace(CountKey(1), 10);
+    (void)stop_a.try_emplace(CountKey(2), 20);
+    (void)stop_a.try_emplace(CountKey(3), 30);
+    (void)stop_b.try_emplace(CountKey(1), 10);
+    (void)stop_b.try_emplace(CountKey(8), 80);
+    (void)stop_b.try_emplace(CountKey(3), 30);
+    reset_counts();
+    show_equal("kstop", (stop_a == stop_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> mstop_a;
+    std::flat_map<CountKey, CountMapped> mstop_b;
+    (void)mstop_a.try_emplace(CountKey(1), 10);
+    (void)mstop_a.try_emplace(CountKey(2), 20);
+    (void)mstop_a.try_emplace(CountKey(3), 30);
+    (void)mstop_b.try_emplace(CountKey(1), 10);
+    (void)mstop_b.try_emplace(CountKey(2), 99);
+    (void)mstop_b.try_emplace(CountKey(3), 30);
+    reset_counts();
+    show_equal("mstop", (mstop_a == mstop_b) ? 1 : 0);
+}
+
 static int uaf() {
     std::flat_map<int, int> m;
     m[1] = 5;
@@ -787,6 +881,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "greater") == 0) {
         greater_trace();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "equal") == 0) {
+        equal_trace();
         return 0;
     }
     show();
