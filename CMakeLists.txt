@@ -849,6 +849,8 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_cmath.cpp
     tests/cpp/test_cxx_bit.cpp
     tests/cpp/test_cxx_numeric.cpp
+    tests/cpp/test_cxx_numeric_partial_sum.cpp
+    tests/cpp/test_cxx_numeric_inner_product.cpp
     tests/cpp/test_cxx_semaphore.cpp
     tests/cpp/test_cxx_variant.cpp
     tests/cpp/test_cxx_functional.cpp
@@ -867,6 +869,8 @@ if(PRISM_TESTS)
     tests/cpp/test_cxx_valarray.cpp
     tests/cpp/test_cxx_syncstream.cpp
     tests/cpp/test_cxx_memory_resource.cpp
+    tests/cpp/test_cxx_memory_resource_dealloc.cpp
+    tests/cpp/test_cxx_memory_resource_equal.cpp
     tests/cpp/test_cxx_flat_set.cpp
     tests/cpp/test_cxx_filesystem.cpp
     tests/cpp/test_cxx_condition_variable.cpp

@@ -12,6 +12,24 @@
 // std::identity returns its argument. std::equal_to, std::not_equal_to,
 // std::less, and std::greater are function objects: a == b, !(a == b),
 // a < b, and b < a. They do not invent a third value.
+// std::plus, std::minus, std::multiplies, std::divides, std::modulus, and
+// std::negate are function objects for one type argument. A signed plus,
+// minus, or multiplies that does not fit is INT-SIGNED-OVF then a trap,
+// and that path does not print a wrapped result. An unsigned one of those
+// three that does not fit is FUNC-CONTRACT then a trap. A zero divides or
+// modulus is FUNC-CONTRACT then a trap and does not print a quotient.
+// Signed divides of the minimum by -1 is that same class then a trap.
+// negate of the most negative signed value is INT-SIGNED-OVF then a trap.
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type argument. Each returns that operator. A missing
+// operator fails the template. There is no stand-in boolean.
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type argument. Each returns that operator. A type that does not provide
+// the operator fails the template. There is no stand-in integer and no
+// void specialization.
+// std::bit_not is a function object for one type argument. It returns the
+// ~ of its argument. A type that does not provide the operator fails the
+// template. There is no stand-in integer and no void specialization.
 
 #include <doctest/doctest.h>
 
@@ -209,6 +227,23 @@ bool null_not_fn_is_check(const fs::path& exe) {
     return true;
 }
 
+bool arith_trap(const fs::path& exe, const char* arg, const char* cls, const char* msg) {
+    std::string out, err;
+    if (run_cmd({exe.string(), arg}, &out, &err)) return false;
+    const std::string both = out + err;
+    if (both.find(std::string("CHECK ") + cls + ":") == std::string::npos) return false;
+    if (both.find(msg) == std::string::npos) return false;
+    if (out.find("fake=") != std::string::npos) return false;
+    if (both.find("runtime error") != std::string::npos) return false;
+    return true;
+}
+
+std::size_t count_occ(const std::string& s, const std::string& n) {
+    std::size_t c = 0;
+    for (std::size_t at = 0; (at = s.find(n, at)) != std::string::npos; at += n.size()) ++c;
+    return c;
+}
+
 std::string slurp(const fs::path& p) {
     std::ifstream in(p);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -379,6 +414,133 @@ TEST_CASE("cxx functional model: invoke of a null function pointer is a check") 
     const std::string cmp_body = text.substr(cmp);
     for (const char* stand_in : {"return true", "return false", "return 0", "return {}", "return _Tp{}"})
         CHECK(cmp_body.find(stand_in) == std::string::npos);
+
+    for (const char* name : {"struct plus", "struct minus", "struct multiplies", "struct divides", "struct modulus",
+                             "struct negate"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct plus<void>", "struct minus<void>", "struct multiplies<void>",
+                             "struct divides<void>", "struct modulus<void>", "struct negate<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("for one type argument.") != std::string::npos);
+    CHECK(text.find("There is no transparent call") != std::string::npos);
+
+    for (const char* name : {"struct logical_and", "struct logical_or", "struct logical_not"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct logical_and<void>", "struct logical_or<void>", "struct logical_not<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("return __a && __b;") != std::string::npos);
+    CHECK(text.find("return __a || __b;") != std::string::npos);
+    CHECK(text.find("return !__x;") != std::string::npos);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const") == 5);
+    CHECK(count_occ(text, "constexpr decltype(auto) operator()(const _Tp& __x) const") == 2);
+    CHECK(text.find("requires requires { __a && __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a || __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { !__x; }") != std::string::npos);
+    CHECK(text.find("The result is that operator.") != std::string::npos);
+    CHECK(text.find("A missing operator fails the template.") != std::string::npos);
+    CHECK(text.find("There is no stand-in boolean") != std::string::npos);
+    CHECK(code.find("#define logical_and _Prism_libstd_logical_and") != std::string::npos);
+    CHECK(code.find("#define logical_or _Prism_libstd_logical_or") != std::string::npos);
+    CHECK(code.find("#define logical_not _Prism_libstd_logical_not") != std::string::npos);
+    CHECK(code.find("#undef logical_and") != std::string::npos);
+    CHECK(code.find("#undef logical_or") != std::string::npos);
+    CHECK(code.find("#undef logical_not") != std::string::npos);
+    CHECK(text.find("return static_cast<bool>(__a && __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<bool>(__a || __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<bool>(!__x)") == std::string::npos);
+
+    for (const char* name : {"struct bit_and", "struct bit_or", "struct bit_xor"}) {
+        CHECK(count_occ(code, name) == 1);
+        const std::string id = std::string(name).substr(sizeof("struct ") - 1);
+        CHECK(code.find("(*" + id + ")") == std::string::npos);
+    }
+    for (const char* hole : {"struct bit_and<void>", "struct bit_or<void>", "struct bit_xor<void>"})
+        CHECK(code.find(hole) == std::string::npos);
+    CHECK(text.find("return __a & __b;") != std::string::npos);
+    CHECK(text.find("return __a | __b;") != std::string::npos);
+    CHECK(text.find("return __a ^ __b;") != std::string::npos);
+    CHECK(text.find("requires requires { __a & __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a | __b; }") != std::string::npos);
+    CHECK(text.find("requires requires { __a ^ __b; }") != std::string::npos);
+    CHECK(text.find("There is no stand-in integer") != std::string::npos);
+    CHECK(text.find("Each returns that operator.") != std::string::npos);
+    CHECK(code.find("#define bit_and _Prism_libstd_bit_and") != std::string::npos);
+    CHECK(code.find("#define bit_or _Prism_libstd_bit_or") != std::string::npos);
+    CHECK(code.find("#define bit_xor _Prism_libstd_bit_xor") != std::string::npos);
+    CHECK(code.find("#undef bit_and") != std::string::npos);
+    CHECK(code.find("#undef bit_or") != std::string::npos);
+    CHECK(code.find("#undef bit_xor") != std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a & __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a | __b)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(__a ^ __b)") == std::string::npos);
+    CHECK(text.find("return 0;") == std::string::npos);
+
+    CHECK(count_occ(code, "struct bit_not") == 1);
+    CHECK(code.find("(*bit_not)") == std::string::npos);
+    CHECK(code.find("struct bit_not<void>") == std::string::npos);
+    CHECK(code.find("bit_not<>") == std::string::npos);
+    CHECK(code.find("bit_not<void>") == std::string::npos);
+    CHECK(text.find("return ~__x;") != std::string::npos);
+    CHECK(text.find("requires requires { ~__x; }") != std::string::npos);
+    CHECK(text.find("std::bit_not<> is not declared") != std::string::npos);
+    CHECK(text.find("A missing operator~ fails") != std::string::npos);
+    CHECK(code.find("#define bit_not _Prism_libstd_bit_not") != std::string::npos);
+    CHECK(code.find("#undef bit_not") != std::string::npos);
+    CHECK(text.find("return static_cast<_Tp>(~__x)") == std::string::npos);
+    CHECK(text.find("return static_cast<int>(~__x)") == std::string::npos);
+
+    struct Arm {
+        const char* check;
+        const char* result;
+    };
+    const Arm arms[] = {
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::plus result does not fit in T\")",
+         "return static_cast<_Tp>(__a + __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::plus result does not fit in T\")",
+         "return static_cast<_Tp>(__a + __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::minus result does not fit in T\")",
+         "return static_cast<_Tp>(__a - __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::minus result does not fit in T\")",
+         "return static_cast<_Tp>(__a - __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::multiplies result does not fit in T\")",
+         "return static_cast<_Tp>(__a * __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::multiplies result does not fit in T\")",
+         "return static_cast<_Tp>(__a * __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::divides divisor is zero\")",
+         "return static_cast<_Tp>(__a / __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::divides of the minimum by -1\")",
+         "return static_cast<_Tp>(__a / __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus divisor is zero\")",
+         "return static_cast<_Tp>(__a % __b);"},
+        {"__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus of the minimum by -1\")",
+         "return static_cast<_Tp>(__a % __b);"},
+        {"__prism_check(0, \"INT-SIGNED-OVF\", \"std::negate of the most negative value\")",
+         "return static_cast<_Tp>(-__x);"},
+    };
+    for (const Arm& arm : arms) {
+        std::size_t seen = 0;
+        for (std::size_t check = 0; (check = text.find(arm.check, check)) != std::string::npos; ++seen) {
+            const auto trap = text.find("__builtin_trap()", check);
+            const auto ret = text.find(arm.result, trap);
+            REQUIRE(trap != std::string::npos);
+            REQUIRE(ret != std::string::npos);
+            CHECK(check < trap);
+            CHECK(trap < ret);
+            const std::string between = text.substr(check, trap - check);
+            CHECK(between.find("return") == std::string::npos);
+            CHECK(between.find(arm.result) == std::string::npos);
+            check = trap + 1;
+        }
+        CHECK(seen >= 1);
+    }
+    CHECK(count_occ(text, "__prism_check(0, \"FUNC-CONTRACT\", \"std::divides divisor is zero\")") == 2);
+    CHECK(count_occ(text, "__prism_check(0, \"FUNC-CONTRACT\", \"std::modulus divisor is zero\")") == 2);
 }
 
 TEST_CASE("cxx functional model: setup clang++ with ASan/UBSan") {
@@ -454,6 +616,42 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     bool saw_tr = false;
     bool saw_ptr = false;
     bool saw_obj = false;
+    bool saw_add = false;
+    bool saw_sub = false;
+    bool saw_mul = false;
+    bool saw_div = false;
+    bool saw_divn = false;
+    bool saw_neg = false;
+    bool saw_uadd = false;
+    bool saw_usub = false;
+    bool saw_umul = false;
+    bool saw_udiv = false;
+    bool saw_uneg = false;
+    bool saw_ll = false;
+    bool saw_sc = false;
+    bool saw_fp = false;
+    bool saw_bdiv = false;
+    bool saw_objadd = false;
+    bool saw_quot = false;
+    bool saw_bit = false;
+    bool saw_land = false;
+    bool saw_landc = false;
+    bool saw_lor = false;
+    bool saw_lnot = false;
+    bool saw_lbool = false;
+    bool saw_blog = false;
+    bool saw_band = false;
+    bool saw_bor = false;
+    bool saw_bxor = false;
+    bool saw_bbool = false;
+    bool saw_ubit = false;
+    bool saw_bobj = false;
+    bool saw_bandonly = false;
+    bool saw_bnot = false;
+    bool saw_bnotc = false;
+    bool saw_unot = false;
+    bool saw_bnotobj = false;
+    bool saw_bnotonly = false;
     for (const auto& line : b) {
         if (line == "call 42 calls=1") saw_stored = true;
         if (line == "move src=0 dst=1 calls=1") saw_move = true;
@@ -489,6 +687,42 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
         if (line == "tr 1 1 1 0") saw_tr = true;
         if (line == "ptr 1") saw_ptr = true;
         if (line == "obj 1 0 1 1") saw_obj = true;
+        if (line == "add 5 -5") saw_add = true;
+        if (line == "sub 1") saw_sub = true;
+        if (line == "mul -12") saw_mul = true;
+        if (line == "div 3 1") saw_div = true;
+        if (line == "divn -3 -1") saw_divn = true;
+        if (line == "neg -4 4 0") saw_neg = true;
+        if (line == "uadd 5") saw_uadd = true;
+        if (line == "usub 3") saw_usub = true;
+        if (line == "umul 6") saw_umul = true;
+        if (line == "udiv 3 1") saw_udiv = true;
+        if (line == "uneg 0 4294967295") saw_uneg = true;
+        if (line == "ll 42") saw_ll = true;
+        if (line == "sc 5") saw_sc = true;
+        if (line == "fp 4.0") saw_fp = true;
+        if (line == "bdiv 1") saw_bdiv = true;
+        if (line == "objadd 5") saw_objadd = true;
+        if (line == "quot 3 1") saw_quot = true;
+        if (line == "bit 2") saw_bit = true;
+        if (line == "land 0") saw_land = true;
+        if (line == "landc 0 1") saw_landc = true;
+        if (line == "lor 1 0") saw_lor = true;
+        if (line == "lnot 1 0") saw_lnot = true;
+        if (line == "lbool 0 0 0") saw_lbool = true;
+        if (line == "blog 0 1 1") saw_blog = true;
+        if (line == "band 2 1") saw_band = true;
+        if (line == "bor 7 3") saw_bor = true;
+        if (line == "bxor 5 0") saw_bxor = true;
+        if (line == "bbool 0 0 0") saw_bbool = true;
+        if (line == "ubit 2 7 5") saw_ubit = true;
+        if (line == "bobj 2 7 5") saw_bobj = true;
+        if (line == "bandonly 2") saw_bandonly = true;
+        if (line == "bnot -1") saw_bnot = true;
+        if (line == "bnotc -2 0") saw_bnotc = true;
+        if (line == "unot 4294967295") saw_unot = true;
+        if (line == "bnotobj -7") saw_bnotobj = true;
+        if (line == "bnotonly -1") saw_bnotonly = true;
         CHECK(line.find("call 0") == std::string::npos);
         CHECK(line != "held 0");
         CHECK(line != "invoke held 0");
@@ -529,9 +763,70 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     CHECK(saw_tr);
     CHECK(saw_ptr);
     CHECK(saw_obj);
+    CHECK(saw_add);
+    CHECK(saw_sub);
+    CHECK(saw_mul);
+    CHECK(saw_div);
+    CHECK(saw_divn);
+    CHECK(saw_neg);
+    CHECK(saw_uadd);
+    CHECK(saw_usub);
+    CHECK(saw_umul);
+    CHECK(saw_udiv);
+    CHECK(saw_uneg);
+    CHECK(saw_ll);
+    CHECK(saw_sc);
+    CHECK(saw_fp);
+    CHECK(saw_bdiv);
+    CHECK(saw_objadd);
+    CHECK(saw_quot);
+    CHECK(saw_bit);
+    CHECK(saw_land);
+    CHECK(saw_landc);
+    CHECK(saw_lor);
+    CHECK(saw_lnot);
+    CHECK(saw_lbool);
+    CHECK(saw_blog);
+    CHECK(saw_band);
+    CHECK(saw_bor);
+    CHECK(saw_bxor);
+    CHECK(saw_bbool);
+    CHECK(saw_ubit);
+    CHECK(saw_bobj);
+    CHECK(saw_bandonly);
+    CHECK(saw_bnot);
+    CHECK(saw_bnotc);
+    CHECK(saw_unot);
+    CHECK(saw_bnotobj);
+    CHECK(saw_bnotonly);
     CHECK(empty_call_is_check(mod));
     CHECK(null_invoke_is_check(mod));
     CHECK(null_not_fn_is_check(mod));
+    CHECK(arith_trap(mod, "plus-ovf", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-min", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-uovf", "FUNC-CONTRACT", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-ll", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "plus-sc", "INT-SIGNED-OVF", "std::plus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-ovf", "INT-SIGNED-OVF", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-pos", "INT-SIGNED-OVF", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "minus-uovf", "FUNC-CONTRACT", "std::minus result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-min", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-max", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-neg", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-uovf", "FUNC-CONTRACT", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "mul-sc", "INT-SIGNED-OVF", "std::multiplies result does not fit in T"));
+    CHECK(arith_trap(mod, "div-zero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-min", "FUNC-CONTRACT", "std::divides of the minimum by -1"));
+    CHECK(arith_trap(mod, "div-sc", "FUNC-CONTRACT", "std::divides of the minimum by -1"));
+    CHECK(arith_trap(mod, "div-uzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-fzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "div-bzero", "FUNC-CONTRACT", "std::divides divisor is zero"));
+    CHECK(arith_trap(mod, "mod-zero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "mod-min", "FUNC-CONTRACT", "std::modulus of the minimum by -1"));
+    CHECK(arith_trap(mod, "mod-uzero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "mod-bzero", "FUNC-CONTRACT", "std::modulus divisor is zero"));
+    CHECK(arith_trap(mod, "neg-min", "INT-SIGNED-OVF", "std::negate of the most negative value"));
+    CHECK(arith_trap(mod, "neg-sc", "INT-SIGNED-OVF", "std::negate of the most negative value"));
 
     const fs::path rejected = c.tmp / "rejected.cpp";
     std::ofstream(rejected) << "#include <functional>\n"
@@ -679,4 +974,283 @@ TEST_CASE("cxx functional model: stored pointer is called and empty operator() i
     std::string no_lt_err;
     CHECK_FALSE(syntax_only(c.cxx, no_lt, false, &no_lt_err));
     CHECK_FALSE(syntax_only(c.cxx, no_lt, true, &no_lt_err));
+
+    const fs::path arith_ok = c.tmp / "arith_ok.cpp";
+    std::ofstream(arith_ok) << "#include <functional>\n"
+                               "struct Sum { int v; friend Sum operator+(Sum a, Sum b) { return Sum{a.v + b.v}; } };\n"
+                               "struct Quot {\n"
+                               "  int v;\n"
+                               "  friend Quot operator/(Quot a, Quot b) { return Quot{a.v / b.v}; }\n"
+                               "  friend Quot operator%(Quot a, Quot b) { return Quot{a.v % b.v}; }\n"
+                               "};\n"
+                               "int use(int a, int b, unsigned u, Sum s, Quot q) {\n"
+                               "  return std::plus<int>{}(a, b) + std::minus<int>{}(a, b)\n"
+                               "       + std::multiplies<int>{}(a, b) + std::divides<int>{}(a, b)\n"
+                               "       + std::modulus<int>{}(a, b) + std::negate<int>{}(a)\n"
+                               "       + static_cast<int>(std::plus<unsigned>{}(u, 1u))\n"
+                               "       + std::plus<Sum>{}(s, s).v + std::divides<Quot>{}(q, q).v\n"
+                               "       + std::modulus<Quot>{}(q, q).v + std::bit_and<int>{}(a, b);\n"
+                               "}\n";
+    std::string arith_ok_err;
+    CHECK(syntax_only(c.cxx, arith_ok, false, &arith_ok_err));
+    CHECK(syntax_only(c.cxx, arith_ok, true, &arith_ok_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path arith_tr = c.tmp / "arith_tr.cpp";
+    std::ofstream(arith_tr) << "#include <functional>\n"
+                               "int use(int a, double b) {\n"
+                               "  return std::plus<>{}(a, a) + static_cast<int>(std::negate<>{}(b));\n"
+                               "}\n";
+    std::string arith_tr_err;
+    CHECK(syntax_only(c.cxx, arith_tr, false, &arith_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, arith_tr, true, &arith_tr_err));
+
+    const fs::path no_add = c.tmp / "no_add.cpp";
+    std::ofstream(no_add) << "#include <functional>\n"
+                             "struct NoAdd { int v; };\n"
+                             "int use(NoAdd a, NoAdd b) { return std::plus<NoAdd>{}(a, b).v; }\n";
+    std::string no_add_err;
+    CHECK_FALSE(syntax_only(c.cxx, no_add, false, &no_add_err));
+    CHECK_FALSE(syntax_only(c.cxx, no_add, true, &no_add_err));
+
+    const fs::path add_only = c.tmp / "add_only.cpp";
+    std::ofstream(add_only) << "#include <functional>\n"
+                               "struct AddOnly {\n"
+                               "  int v;\n"
+                               "  friend AddOnly operator+(AddOnly a, AddOnly b) { return AddOnly{a.v + b.v}; }\n"
+                               "};\n"
+                               "int use(AddOnly a, AddOnly b) {\n"
+                               "  return std::plus<AddOnly>{}(a, b).v + std::minus<AddOnly>{}(a, b).v;\n"
+                               "}\n";
+    std::string add_only_err;
+    CHECK_FALSE(syntax_only(c.cxx, add_only, false, &add_only_err));
+    CHECK_FALSE(syntax_only(c.cxx, add_only, true, &add_only_err));
+
+    const fs::path log_ok = c.tmp / "log_ok.cpp";
+    std::ofstream(log_ok) << "#include <functional>\n"
+                             "struct AndOnly {\n"
+                             "  int v;\n"
+                             "  friend bool operator&&(AndOnly a, AndOnly b) { return a.v && b.v; }\n"
+                             "};\n"
+                             "struct BoolOp {\n"
+                             "  int v;\n"
+                             "  friend bool operator&&(BoolOp a, BoolOp b) { return a.v && b.v; }\n"
+                             "  friend bool operator||(BoolOp a, BoolOp b) { return a.v || b.v; }\n"
+                             "  friend bool operator!(BoolOp a) { return !a.v; }\n"
+                             "};\n"
+                             "int use(int a, bool b, AndOnly x, BoolOp p, BoolOp q) {\n"
+                             "  return static_cast<int>(std::logical_and<int>{}(a, 1))\n"
+                             "       + static_cast<int>(std::logical_or<int>{}(a, 0))\n"
+                             "       + static_cast<int>(std::logical_not<int>{}(a))\n"
+                             "       + static_cast<int>(std::logical_and<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::logical_or<bool>{}(b, false))\n"
+                             "       + static_cast<int>(std::logical_not<bool>{}(b))\n"
+                             "       + static_cast<int>(std::logical_and<AndOnly>{}(x, x))\n"
+                             "       + static_cast<int>(std::logical_and<BoolOp>{}(p, q))\n"
+                             "       + static_cast<int>(std::logical_or<BoolOp>{}(p, q))\n"
+                             "       + static_cast<int>(std::logical_not<BoolOp>{}(p))\n"
+                             "       + std::bit_and<int>{}(a, 1);\n"
+                             "}\n";
+    std::string log_ok_err;
+    CHECK(syntax_only(c.cxx, log_ok, false, &log_ok_err));
+    CHECK(syntax_only(c.cxx, log_ok, true, &log_ok_err));
+
+    // The operator result is Gate, not a bool. libstdc++ returns bool, so .v fails there.
+    const fs::path log_gate = c.tmp / "log_gate.cpp";
+    std::ofstream(log_gate) << "#include <functional>\n"
+                               "struct Gate {\n"
+                               "  int v;\n"
+                               "  friend Gate operator&&(Gate a, Gate b) { return Gate{a.v && b.v}; }\n"
+                               "  friend Gate operator||(Gate a, Gate b) { return Gate{a.v || b.v}; }\n"
+                               "  friend Gate operator!(Gate a) { return Gate{!a.v}; }\n"
+                               "};\n"
+                               "int use(Gate a, Gate b) {\n"
+                               "  return std::logical_and<Gate>{}(a, b).v\n"
+                               "       + std::logical_or<Gate>{}(a, b).v\n"
+                               "       + std::logical_not<Gate>{}(a).v;\n"
+                               "}\n";
+    std::string log_gate_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_gate, false, &log_gate_err));
+    CHECK(syntax_only(c.cxx, log_gate, true, &log_gate_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path log_tr = c.tmp / "log_tr.cpp";
+    std::ofstream(log_tr) << "#include <functional>\n"
+                             "int use(int a, bool b) {\n"
+                             "  return static_cast<int>(std::logical_and<>{}(a, 0))\n"
+                             "       + static_cast<int>(std::logical_or<>{}(a, 1))\n"
+                             "       + static_cast<int>(std::logical_not<>{}(b));\n"
+                             "}\n";
+    std::string log_tr_err;
+    CHECK(syntax_only(c.cxx, log_tr, false, &log_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_tr, true, &log_tr_err));
+
+    const fs::path log_none = c.tmp / "log_none.cpp";
+    std::ofstream(log_none) << "#include <functional>\n"
+                               "struct NoLog { int v; };\n"
+                               "int use(NoLog a, NoLog b) {\n"
+                               "  return static_cast<int>(std::logical_and<NoLog>{}(a, b))\n"
+                               "       + static_cast<int>(std::logical_or<NoLog>{}(a, b))\n"
+                               "       + static_cast<int>(std::logical_not<NoLog>{}(a));\n"
+                               "}\n";
+    std::string log_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_none, false, &log_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_none, true, &log_none_err));
+
+    const fs::path log_or_missing = c.tmp / "log_or_missing.cpp";
+    std::ofstream(log_or_missing) << "#include <functional>\n"
+                                     "struct AndOnly {\n"
+                                     "  int v;\n"
+                                     "  friend bool operator&&(AndOnly a, AndOnly b) { return a.v && b.v; }\n"
+                                     "};\n"
+                                     "int use(AndOnly a, AndOnly b) {\n"
+                                     "  return static_cast<int>(std::logical_and<AndOnly>{}(a, b))\n"
+                                     "       + static_cast<int>(std::logical_or<AndOnly>{}(a, b));\n"
+                                     "}\n";
+    std::string log_or_missing_err;
+    CHECK_FALSE(syntax_only(c.cxx, log_or_missing, false, &log_or_missing_err));
+    CHECK_FALSE(syntax_only(c.cxx, log_or_missing, true, &log_or_missing_err));
+
+    const fs::path bit_ok = c.tmp / "bit_ok.cpp";
+    std::ofstream(bit_ok) << "#include <functional>\n"
+                             "struct AndOnly {\n"
+                             "  int v;\n"
+                             "  friend AndOnly operator&(AndOnly a, AndOnly b) { return AndOnly{a.v & b.v}; }\n"
+                             "};\n"
+                             "struct Bits {\n"
+                             "  int v;\n"
+                             "  friend Bits operator&(Bits a, Bits b) { return Bits{a.v & b.v}; }\n"
+                             "  friend Bits operator|(Bits a, Bits b) { return Bits{a.v | b.v}; }\n"
+                             "  friend Bits operator^(Bits a, Bits b) { return Bits{a.v ^ b.v}; }\n"
+                             "};\n"
+                             "int use(int a, bool b, unsigned u, AndOnly x, Bits p, Bits q) {\n"
+                             "  return std::bit_and<int>{}(a, 1) + std::bit_or<int>{}(a, 1)\n"
+                             "       + std::bit_xor<int>{}(a, 1)\n"
+                             "       + static_cast<int>(std::bit_and<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::bit_or<bool>{}(b, false))\n"
+                             "       + static_cast<int>(std::bit_xor<bool>{}(b, true))\n"
+                             "       + static_cast<int>(std::bit_and<unsigned>{}(u, 1u))\n"
+                             "       + static_cast<int>(std::bit_or<unsigned>{}(u, 1u))\n"
+                             "       + static_cast<int>(std::bit_xor<unsigned>{}(u, 1u))\n"
+                             "       + std::bit_and<AndOnly>{}(x, x).v\n"
+                             "       + std::bit_and<Bits>{}(p, q).v\n"
+                             "       + std::bit_or<Bits>{}(p, q).v\n"
+                             "       + std::bit_xor<Bits>{}(p, q).v\n"
+                             "       + std::bit_not<int>{}(a)\n"
+                             "       + static_cast<int>(std::logical_and<int>{}(a, 1));\n"
+                             "}\n";
+    std::string bit_ok_err;
+    CHECK(syntax_only(c.cxx, bit_ok, false, &bit_ok_err));
+    CHECK(syntax_only(c.cxx, bit_ok, true, &bit_ok_err));
+
+    // The operator result is BitWord, not BitMask. libstdc++ returns BitMask, so .v fails there.
+    const fs::path bit_word = c.tmp / "bit_word.cpp";
+    std::ofstream(bit_word) << "#include <functional>\n"
+                               "struct BitWord { int v; };\n"
+                               "struct BitMask {\n"
+                               "  int v;\n"
+                               "  friend BitWord operator&(BitMask a, BitMask b) { return BitWord{a.v & b.v}; }\n"
+                               "  friend BitWord operator|(BitMask a, BitMask b) { return BitWord{a.v | b.v}; }\n"
+                               "  friend BitWord operator^(BitMask a, BitMask b) { return BitWord{a.v ^ b.v}; }\n"
+                               "};\n"
+                               "int use(BitMask a, BitMask b) {\n"
+                               "  return std::bit_and<BitMask>{}(a, b).v\n"
+                               "       + std::bit_or<BitMask>{}(a, b).v\n"
+                               "       + std::bit_xor<BitMask>{}(a, b).v;\n"
+                               "}\n";
+    std::string bit_word_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_word, false, &bit_word_err));
+    CHECK(syntax_only(c.cxx, bit_word, true, &bit_word_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path bit_tr = c.tmp / "bit_tr.cpp";
+    std::ofstream(bit_tr) << "#include <functional>\n"
+                             "int use(int a) {\n"
+                             "  return std::bit_and<>{}(a, 1) + std::bit_or<>{}(a, 1) + std::bit_xor<>{}(a, 1);\n"
+                             "}\n";
+    std::string bit_tr_err;
+    CHECK(syntax_only(c.cxx, bit_tr, false, &bit_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_tr, true, &bit_tr_err));
+
+    const fs::path bit_none = c.tmp / "bit_none.cpp";
+    std::ofstream(bit_none) << "#include <functional>\n"
+                               "struct NoBit { int v; };\n"
+                               "int use(NoBit a, NoBit b) {\n"
+                               "  return std::bit_and<NoBit>{}(a, b).v\n"
+                               "       + std::bit_or<NoBit>{}(a, b).v\n"
+                               "       + std::bit_xor<NoBit>{}(a, b).v;\n"
+                               "}\n";
+    std::string bit_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_none, false, &bit_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_none, true, &bit_none_err));
+
+    const fs::path bit_or_missing = c.tmp / "bit_or_missing.cpp";
+    std::ofstream(bit_or_missing) << "#include <functional>\n"
+                                     "struct AndOnly {\n"
+                                     "  int v;\n"
+                                     "  friend AndOnly operator&(AndOnly a, AndOnly b) { return AndOnly{a.v & b.v}; }\n"
+                                     "};\n"
+                                     "int use(AndOnly a, AndOnly b) {\n"
+                                     "  return std::bit_and<AndOnly>{}(a, b).v + std::bit_or<AndOnly>{}(a, b).v;\n"
+                                     "}\n";
+    std::string bit_or_missing_err;
+    CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, false, &bit_or_missing_err));
+    CHECK_FALSE(syntax_only(c.cxx, bit_or_missing, true, &bit_or_missing_err));
+
+    const fs::path bnot_ok = c.tmp / "bnot_ok.cpp";
+    std::ofstream(bnot_ok) << "#include <functional>\n"
+                              "struct NotOnly {\n"
+                              "  int v;\n"
+                              "  friend NotOnly operator~(NotOnly a) { return NotOnly{~a.v}; }\n"
+                              "};\n"
+                              "struct NotBits {\n"
+                              "  int v;\n"
+                              "  friend NotBits operator~(NotBits a) { return NotBits{~a.v}; }\n"
+                              "};\n"
+                              "int use(int a, bool b, unsigned u, NotOnly x, NotBits p) {\n"
+                              "  return std::bit_not<int>{}(a)\n"
+                              "       + static_cast<int>(std::bit_not<bool>{}(b))\n"
+                              "       + static_cast<int>(std::bit_not<unsigned>{}(u))\n"
+                              "       + std::bit_not<NotOnly>{}(x).v\n"
+                              "       + std::bit_not<NotBits>{}(p).v\n"
+                              "       + std::bit_and<int>{}(a, 1);\n"
+                              "}\n";
+    std::string bnot_ok_err;
+    CHECK(syntax_only(c.cxx, bnot_ok, false, &bnot_ok_err));
+    CHECK(syntax_only(c.cxx, bnot_ok, true, &bnot_ok_err));
+
+    // The operator result is BitWord, not BitMask. libstdc++ returns BitMask, so .v fails there.
+    const fs::path bnot_word = c.tmp / "bnot_word.cpp";
+    std::ofstream(bnot_word) << "#include <functional>\n"
+                                "struct BitWord { int v; };\n"
+                                "struct BitMask {\n"
+                                "  int v;\n"
+                                "  friend BitWord operator~(BitMask a) { return BitWord{~a.v}; }\n"
+                                "};\n"
+                                "int use(BitMask a) {\n"
+                                "  return std::bit_not<BitMask>{}(a).v;\n"
+                                "}\n";
+    std::string bnot_word_err;
+    CHECK_FALSE(syntax_only(c.cxx, bnot_word, false, &bnot_word_err));
+    CHECK(syntax_only(c.cxx, bnot_word, true, &bnot_word_err));
+
+    // The transparent call is not declared here. libstdc++ still has it.
+    const fs::path bnot_tr = c.tmp / "bnot_tr.cpp";
+    std::ofstream(bnot_tr) << "#include <functional>\n"
+                              "int use(int a) {\n"
+                              "  return std::bit_not<>{}(a);\n"
+                              "}\n";
+    std::string bnot_tr_err;
+    CHECK(syntax_only(c.cxx, bnot_tr, false, &bnot_tr_err));
+    CHECK_FALSE(syntax_only(c.cxx, bnot_tr, true, &bnot_tr_err));
+
+    const fs::path bnot_none = c.tmp / "bnot_none.cpp";
+    std::ofstream(bnot_none) << "#include <functional>\n"
+                                "struct NoTilde { int v; };\n"
+                                "int use(NoTilde a) {\n"
+                                "  return std::bit_not<NoTilde>{}(a).v;\n"
+                                "}\n";
+    std::string bnot_none_err;
+    CHECK_FALSE(syntax_only(c.cxx, bnot_none, false, &bnot_none_err));
+    CHECK_FALSE(syntax_only(c.cxx, bnot_none, true, &bnot_none_err));
 }

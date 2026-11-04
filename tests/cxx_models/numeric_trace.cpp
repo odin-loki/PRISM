@@ -18,8 +18,21 @@
 // "adj-null" is a null destination. argv "adj-over" is a destination inside
 // the input range. Those paths are checks, not a wrapped store. argv
 // "adj-max1" copies one maximum value and writes nothing further.
-// reduce, transform_reduce, inner_product, partial_sum, and exclusive_scan
-// are not called.
+// argv "ps-ovf", "ps-llovf", "ps-minovf", "ps-sc", and "ps-part" are signed
+// sums that do not fit. argv "ps-uovf" and "ps-ucovf" are unsigned sums that
+// do not fit. argv "ps-inv" is an inverted range. argv "ps-null" is a null
+// destination. argv "ps-over" is a destination inside the input range. Those
+// paths are checks, not a wrapped store. argv "ps-max1" copies one maximum
+// value and writes nothing further.
+// argv "ip-ovf", "ip-llovf", "ip-minovf", "ip-sc", and "ip-part" are signed
+// products that do not fit. argv "ip-sum" and "ip-minsum" are signed sums
+// that do not fit. argv "ip-uovf" and "ip-ucovf" are unsigned products that
+// do not fit. argv "ip-usum" is an unsigned sum that does not fit. argv
+// "ip-inv" is an inverted range. argv "ip-null" is a null second range.
+// Those paths are checks, not a wrapped result. argv "ip-max1" multiplies
+// one maximum by 1. An empty range returns init and does not read, even
+// when the second pointer is null.
+// reduce, transform_reduce, and exclusive_scan are not called.
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -241,6 +254,314 @@ constexpr bool prism_adj_b() {
 }
 static_assert(prism_adj_b());
 
+constexpr bool prism_ps_seq() {
+    int a[4] = {1, 2, 3, 4};
+    int d[4] = {};
+    int* end = std::partial_sum(a, a + 4, d);
+    return end == d + 4 && a[0] == 1 && a[3] == 4 && d[0] == 1 && d[1] == 3 && d[2] == 6 && d[3] == 10;
+}
+static_assert(prism_ps_seq());
+
+constexpr bool prism_ps_empty() {
+    int a[1] = {7};
+    int d[1] = {9};
+    int* end = std::partial_sum(a, a, d);
+    return end == d && d[0] == 9 && a[0] == 7;
+}
+static_assert(prism_ps_empty());
+
+constexpr bool prism_ps_empty_null() {
+    int a[1] = {4};
+    int* end = std::partial_sum(a, a, static_cast<int*>(nullptr));
+    return end == nullptr && a[0] == 4;
+}
+static_assert(prism_ps_empty_null());
+
+constexpr bool prism_ps_neg() {
+    int a[3] = {-5, 3, 4};
+    int d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == -5 && d[1] == -2 && d[2] == 2;
+}
+static_assert(prism_ps_neg());
+
+constexpr bool prism_ps_imin() {
+    int a[3] = {0, INT_MIN, 1};
+    int d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == 0 && d[1] == INT_MIN && d[2] == INT_MIN + 1;
+}
+static_assert(prism_ps_imin());
+
+constexpr bool prism_ps_hi() {
+    int a[1] = {INT_MAX};
+    int d[1] = {0};
+    int* end = std::partial_sum(a, a + 1, d);
+    return end == d + 1 && d[0] == INT_MAX;
+}
+static_assert(prism_ps_hi());
+
+constexpr bool prism_ps_zeroadd() {
+    int a[2] = {INT_MAX, 0};
+    int d[2] = {};
+    std::partial_sum(a, a + 2, d);
+    return d[0] == INT_MAX && d[1] == INT_MAX;
+}
+static_assert(prism_ps_zeroadd());
+
+constexpr bool prism_ps_min0() {
+    int a[2] = {INT_MIN, 0};
+    int d[2] = {};
+    std::partial_sum(a, a + 2, d);
+    return d[0] == INT_MIN && d[1] == INT_MIN;
+}
+static_assert(prism_ps_min0());
+
+constexpr bool prism_ps_sc() {
+    signed char a[3] = {static_cast<signed char>(SCHAR_MAX - 2), 1, 1};
+    signed char d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == static_cast<signed char>(SCHAR_MAX - 2) && d[1] == static_cast<signed char>(SCHAR_MAX - 1) &&
+           d[2] == static_cast<signed char>(SCHAR_MAX);
+}
+static_assert(prism_ps_sc());
+
+constexpr bool prism_ps_uc() {
+    unsigned char a[3] = {static_cast<unsigned char>(UCHAR_MAX - 5), 2, 3};
+    unsigned char d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == static_cast<unsigned char>(UCHAR_MAX - 5) &&
+           d[1] == static_cast<unsigned char>(UCHAR_MAX - 3) && d[2] == static_cast<unsigned char>(UCHAR_MAX);
+}
+static_assert(prism_ps_uc());
+
+constexpr bool prism_ps_f() {
+    float a[3] = {2.0f, 3.0f, 4.0f};
+    float d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == 2.0f && d[1] == 5.0f && d[2] == 9.0f;
+}
+static_assert(prism_ps_f());
+
+constexpr bool prism_ps_b() {
+    bool a[3] = {false, true, true};
+    bool d[3] = {true, true, true};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == false && d[1] == true && d[2] == true;
+}
+static_assert(prism_ps_b());
+
+constexpr bool prism_ps_bf() {
+    bool a[3] = {false, false, true};
+    bool d[3] = {true, true, true};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == false && d[1] == false && d[2] == true;
+}
+static_assert(prism_ps_bf());
+
+constexpr bool prism_ps_tail() {
+    int a[4] = {1, 2, 8, 8};
+    int* end = std::partial_sum(a, a + 2, a + 2);
+    return end == a + 4 && a[0] == 1 && a[1] == 2 && a[2] == 1 && a[3] == 3;
+}
+static_assert(prism_ps_tail());
+
+constexpr bool prism_ps_u() {
+    unsigned a[3] = {UINT_MAX - 2u, 1u, 1u};
+    unsigned d[3] = {};
+    std::partial_sum(a, a + 3, d);
+    return d[0] == UINT_MAX - 2u && d[1] == UINT_MAX - 1u && d[2] == UINT_MAX;
+}
+static_assert(prism_ps_u());
+
+constexpr bool prism_ip_seq() {
+    int a[4] = {1, 2, 3, 4};
+    int b[4] = {1, 1, 1, 1};
+    return std::inner_product(a, a + 4, b, 0) == 10 && a[0] == 1 && b[3] == 1;
+}
+static_assert(prism_ip_seq());
+
+constexpr bool prism_ip_dot() {
+    int a[3] = {1, 2, 3};
+    return std::inner_product(a, a + 3, a, 0) == 14 && a[2] == 3;
+}
+static_assert(prism_ip_dot());
+
+constexpr bool prism_ip_init() {
+    int a[2] = {2, 3};
+    int b[2] = {4, 5};
+    return std::inner_product(a, a + 2, b, 10) == 33;
+}
+static_assert(prism_ip_init());
+
+constexpr bool prism_ip_empty() {
+    int a[1] = {7};
+    int b[1] = {9};
+    return std::inner_product(a, a, b, 3) == 3 && a[0] == 7 && b[0] == 9;
+}
+static_assert(prism_ip_empty());
+
+constexpr bool prism_ip_empty_null() {
+    int a[1] = {7};
+    return std::inner_product(a, a, static_cast<int*>(nullptr), 3) == 3 && a[0] == 7;
+}
+static_assert(prism_ip_empty_null());
+
+constexpr bool prism_ip_neg() {
+    int a[3] = {-1, 2, -3};
+    int b[3] = {4, -5, 6};
+    return std::inner_product(a, a + 3, b, 0) == -32;
+}
+static_assert(prism_ip_neg());
+
+constexpr bool prism_ip_hi() {
+    int a[1] = {INT_MAX};
+    int b[1] = {1};
+    return std::inner_product(a, a + 1, b, 0) == INT_MAX;
+}
+static_assert(prism_ip_hi());
+
+constexpr bool prism_ip_zero() {
+    int a[2] = {INT_MAX, 5};
+    int b[2] = {0, 0};
+    return std::inner_product(a, a + 2, b, INT_MAX) == INT_MAX;
+}
+static_assert(prism_ip_zero());
+
+constexpr bool prism_ip_imin() {
+    int a[1] = {INT_MIN};
+    int b[1] = {1};
+    return std::inner_product(a, a + 1, b, 0) == INT_MIN;
+}
+static_assert(prism_ip_imin());
+
+constexpr bool prism_ip_neg1() {
+    int a[1] = {INT_MAX};
+    int b[1] = {-1};
+    return std::inner_product(a, a + 1, b, 0) == -INT_MAX;
+}
+static_assert(prism_ip_neg1());
+
+constexpr bool prism_ip_min0() {
+    int a[1] = {INT_MIN};
+    int b[1] = {0};
+    return std::inner_product(a, a + 1, b, INT_MIN) == INT_MIN;
+}
+static_assert(prism_ip_min0());
+
+constexpr bool prism_ip_near() {
+    int a[2] = {1, 1};
+    int b[2] = {1, 1};
+    return std::inner_product(a, a + 2, b, INT_MAX - 2) == INT_MAX;
+}
+static_assert(prism_ip_near());
+
+constexpr bool prism_ip_big() {
+    int a[1] = {46340};
+    int b[1] = {46340};
+    return std::inner_product(a, a + 1, b, 0) == 2147395600;
+}
+static_assert(prism_ip_big());
+
+constexpr bool prism_ip_sc() {
+    signed char a[2] = {10, 3};
+    signed char b[2] = {4, 5};
+    return std::inner_product(a, a + 2, b, static_cast<signed char>(0)) == static_cast<signed char>(55);
+}
+static_assert(prism_ip_sc());
+
+constexpr bool prism_ip_scmin() {
+    signed char a[1] = {static_cast<signed char>(SCHAR_MIN)};
+    signed char b[1] = {1};
+    return std::inner_product(a, a + 1, b, static_cast<signed char>(0)) == static_cast<signed char>(SCHAR_MIN);
+}
+static_assert(prism_ip_scmin());
+
+constexpr bool prism_ip_scneg() {
+    signed char a[1] = {static_cast<signed char>(SCHAR_MAX)};
+    signed char b[1] = {-1};
+    return std::inner_product(a, a + 1, b, static_cast<signed char>(0)) == static_cast<signed char>(-SCHAR_MAX);
+}
+static_assert(prism_ip_scneg());
+
+constexpr bool prism_ip_uc() {
+    unsigned char a[2] = {10, 3};
+    unsigned char b[2] = {4, 5};
+    return std::inner_product(a, a + 2, b, static_cast<unsigned char>(0)) == static_cast<unsigned char>(55);
+}
+static_assert(prism_ip_uc());
+
+constexpr bool prism_ip_ucmax() {
+    unsigned char a[1] = {static_cast<unsigned char>(UCHAR_MAX)};
+    unsigned char b[1] = {1};
+    return std::inner_product(a, a + 1, b, static_cast<unsigned char>(0)) ==
+           static_cast<unsigned char>(UCHAR_MAX);
+}
+static_assert(prism_ip_ucmax());
+
+constexpr bool prism_ip_u() {
+    unsigned a[3] = {1u, 2u, 3u};
+    unsigned b[3] = {4u, 5u, 6u};
+    return std::inner_product(a, a + 3, b, 0u) == 32u;
+}
+static_assert(prism_ip_u());
+
+constexpr bool prism_ip_unear() {
+    unsigned a[2] = {1u, 1u};
+    unsigned b[2] = {1u, 1u};
+    return std::inner_product(a, a + 2, b, UINT_MAX - 2u) == UINT_MAX;
+}
+static_assert(prism_ip_unear());
+
+constexpr bool prism_ip_umax() {
+    unsigned a[1] = {UINT_MAX};
+    unsigned b[1] = {1u};
+    return std::inner_product(a, a + 1, b, 0u) == UINT_MAX;
+}
+static_assert(prism_ip_umax());
+
+constexpr bool prism_ip_uzero() {
+    unsigned a[1] = {0u};
+    unsigned b[1] = {UINT_MAX};
+    return std::inner_product(a, a + 1, b, UINT_MAX) == UINT_MAX;
+}
+static_assert(prism_ip_uzero());
+
+constexpr bool prism_ip_f() {
+    float a[3] = {1.0f, 2.0f, 3.0f};
+    float b[3] = {2.0f, 3.0f, 4.0f};
+    return std::inner_product(a, a + 3, b, 0.0f) == 20.0f;
+}
+static_assert(prism_ip_f());
+
+constexpr bool prism_ip_b() {
+    bool a[3] = {true, true, false};
+    bool b[3] = {true, false, true};
+    return std::inner_product(a, a + 3, b, false) == true;
+}
+static_assert(prism_ip_b());
+
+constexpr bool prism_ip_bf() {
+    bool a[2] = {false, false};
+    bool b[2] = {true, true};
+    return std::inner_product(a, a + 2, b, false) == false;
+}
+static_assert(prism_ip_bf());
+
+constexpr bool prism_ip_bt() {
+    bool a[1] = {true};
+    bool b[1] = {true};
+    return std::inner_product(a, a + 1, b, true) == true;
+}
+static_assert(prism_ip_bt());
+
+constexpr bool prism_ip_ll() {
+    long long a[3] = {1, 2, 3};
+    long long b[3] = {4, 5, 6};
+    return std::inner_product(a, a + 3, b, 0LL) == 32LL;
+}
+static_assert(prism_ip_ll());
+
 static bool arg_is(int argc, char** argv, const char* want) {
     if (argc < 2 || argv[1] == nullptr) return false;
     return std::strcmp(argv[1], want) == 0;
@@ -425,6 +746,174 @@ int main(int argc, char** argv) {
         int d[1] = {0};
         std::adjacent_difference(a, a + 1, d);
         std::printf("adj_hi=%d\n", d[0]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-ovf")) {
+        int a[2] = {INT_MAX, 1};
+        int d[2] = {4, 5};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%d,%d\n", d[0], d[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-llovf")) {
+        long long a[2] = {LLONG_MAX, 1};
+        long long d[2] = {4, 5};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%lld,%lld\n", d[0], d[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-minovf")) {
+        int a[2] = {INT_MIN, -1};
+        int d[2] = {4, 5};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%d,%d\n", d[0], d[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-sc")) {
+        signed char a[2] = {static_cast<signed char>(SCHAR_MAX), 1};
+        signed char d[2] = {4, 5};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%d,%d\n", static_cast<int>(d[0]), static_cast<int>(d[1]));
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-part")) {
+        int a[3] = {5, 8, INT_MAX};
+        int d[3] = {4, 4, 4};
+        std::partial_sum(a, a + 3, d);
+        std::printf("wrapped=%d,%d,%d\n", d[0], d[1], d[2]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-uovf")) {
+        unsigned a[2] = {1u, UINT_MAX};
+        unsigned d[2] = {4u, 5u};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%u,%u\n", d[0], d[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-ucovf")) {
+        unsigned char a[2] = {static_cast<unsigned char>(UCHAR_MAX), 1};
+        unsigned char d[2] = {4, 5};
+        std::partial_sum(a, a + 2, d);
+        std::printf("wrapped=%u,%u\n", static_cast<unsigned>(d[0]), static_cast<unsigned>(d[1]));
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-inv")) {
+        int a[2] = {4, 5};
+        int d[2] = {7, 8};
+        std::partial_sum(a + 1, a, d);
+        std::printf("wrapped=%d,%d\n", d[0], d[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-null")) {
+        int a[2] = {4, 5};
+        std::partial_sum(a, a + 2, static_cast<int*>(nullptr));
+        std::printf("wrapped=%d,%d\n", a[0], a[1]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-over")) {
+        int a[3] = {3, 5, 9};
+        std::partial_sum(a, a + 3, a + 1);
+        std::printf("wrapped=%d,%d,%d\n", a[0], a[1], a[2]);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ps-max1")) {
+        int a[1] = {INT_MAX};
+        int d[1] = {0};
+        int* end = std::partial_sum(a, a + 1, d);
+        std::printf("ps_hi=%d end=%d\n", d[0], static_cast<int>(end - d));
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-ovf")) {
+        int a[1] = {INT_MAX};
+        int b[1] = {2};
+        const int r = std::inner_product(a, a + 1, b, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-sum")) {
+        int a[1] = {1};
+        int b[1] = {1};
+        volatile int s = INT_MAX;
+        const int r = std::inner_product(a, a + 1, b, s);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-llovf")) {
+        long long a[1] = {LLONG_MAX};
+        long long b[1] = {2};
+        const long long r = std::inner_product(a, a + 1, b, 0LL);
+        std::printf("wrapped=%lld\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-minovf")) {
+        int a[1] = {INT_MIN};
+        int b[1] = {-1};
+        const int r = std::inner_product(a, a + 1, b, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-minsum")) {
+        int a[1] = {-1};
+        int b[1] = {1};
+        volatile int s = INT_MIN;
+        const int r = std::inner_product(a, a + 1, b, s);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-sc")) {
+        signed char a[1] = {16};
+        signed char b[1] = {8};
+        const signed char r = std::inner_product(a, a + 1, b, static_cast<signed char>(0));
+        std::printf("wrapped=%d\n", static_cast<int>(r));
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-part")) {
+        int a[2] = {2, INT_MAX};
+        int b[2] = {3, 2};
+        const int r = std::inner_product(a, a + 2, b, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-uovf")) {
+        unsigned a[1] = {UINT_MAX};
+        unsigned b[1] = {2u};
+        const unsigned r = std::inner_product(a, a + 1, b, 0u);
+        std::printf("wrapped=%u\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-usum")) {
+        unsigned a[1] = {1u};
+        unsigned b[1] = {1u};
+        volatile unsigned s = UINT_MAX;
+        const unsigned r = std::inner_product(a, a + 1, b, s);
+        std::printf("wrapped=%u\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-ucovf")) {
+        unsigned char a[1] = {16};
+        unsigned char b[1] = {16};
+        const unsigned char r = std::inner_product(a, a + 1, b, static_cast<unsigned char>(0));
+        std::printf("wrapped=%u\n", static_cast<unsigned>(r));
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-inv")) {
+        int a[2] = {4, 5};
+        int b[2] = {6, 7};
+        const int r = std::inner_product(a + 1, a, b, 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-null")) {
+        int a[1] = {3};
+        const int r = std::inner_product(a, a + 1, static_cast<int*>(nullptr), 0);
+        std::printf("wrapped=%d\n", r);
+        return 0;
+    }
+    if (arg_is(argc, argv, "ip-max1")) {
+        int a[1] = {INT_MAX};
+        int b[1] = {1};
+        const int r = std::inner_product(a, a + 1, b, 0);
+        std::printf("ip_hi=%d\n", r);
         return 0;
     }
     const int hi = std::midpoint(INT_MAX, INT_MAX);
@@ -614,5 +1103,186 @@ int main(int argc, char** argv) {
     long long adj_ll[2] = {};
     std::adjacent_difference(adj_ll_src, adj_ll_src + 2, adj_ll);
     std::printf("adj_ll=%lld,%lld\n", adj_ll[0], adj_ll[1]);
+    int ps_src[4] = {1, 2, 3, 4};
+    int ps_dst[4] = {};
+    int* ps_end = std::partial_sum(ps_src, ps_src + 4, ps_dst);
+    std::printf("ps=%d,%d,%d,%d end=%d\n", ps_dst[0], ps_dst[1], ps_dst[2], ps_dst[3],
+                static_cast<int>(ps_end - ps_dst));
+    int ps_empty_src[1] = {7};
+    int ps_empty[1] = {9};
+    int* ps_empty_end = std::partial_sum(ps_empty_src, ps_empty_src, ps_empty);
+    std::printf("ps_empty=%d,%d end=%d\n", ps_empty[0], ps_empty_src[0], ps_empty_end == ps_empty ? 1 : 0);
+    int ps_neg_src[3] = {-5, 3, 4};
+    int ps_neg[3] = {};
+    std::partial_sum(ps_neg_src, ps_neg_src + 3, ps_neg);
+    std::printf("ps_neg=%d,%d,%d\n", ps_neg[0], ps_neg[1], ps_neg[2]);
+    int ps_imin_src[3] = {0, INT_MIN, 1};
+    int ps_imin[3] = {};
+    std::partial_sum(ps_imin_src, ps_imin_src + 3, ps_imin);
+    std::printf("ps_imin=%d,%d,%d\n", ps_imin[0], ps_imin[1], ps_imin[2]);
+    int ps_near_src[3] = {INT_MAX - 2, 1, 1};
+    int ps_near[3] = {};
+    std::partial_sum(ps_near_src, ps_near_src + 3, ps_near);
+    std::printf("ps_near=%d,%d,%d\n", ps_near[0], ps_near[1], ps_near[2]);
+    int ps_down_src[3] = {INT_MAX, -5, 3};
+    int ps_down[3] = {};
+    std::partial_sum(ps_down_src, ps_down_src + 3, ps_down);
+    std::printf("ps_down=%d,%d,%d\n", ps_down[0], ps_down[1], ps_down[2]);
+    int ps_zero_src[2] = {INT_MAX, 0};
+    int ps_zero[2] = {};
+    std::partial_sum(ps_zero_src, ps_zero_src + 2, ps_zero);
+    std::printf("ps_zeroadd=%d,%d\n", ps_zero[0], ps_zero[1]);
+    int ps_min0_src[2] = {INT_MIN, 0};
+    int ps_min0[2] = {};
+    std::partial_sum(ps_min0_src, ps_min0_src + 2, ps_min0);
+    std::printf("ps_min0=%d,%d\n", ps_min0[0], ps_min0[1]);
+    int ps_eq_src[3] = {4, 4, 4};
+    int ps_eq[3] = {};
+    std::partial_sum(ps_eq_src, ps_eq_src + 3, ps_eq);
+    std::printf("ps_eq=%d,%d,%d\n", ps_eq[0], ps_eq[1], ps_eq[2]);
+    unsigned ps_u_src[3] = {1u, 2u, 3u};
+    unsigned ps_u[3] = {};
+    std::partial_sum(ps_u_src, ps_u_src + 3, ps_u);
+    std::printf("ps_u=%u,%u,%u\n", ps_u[0], ps_u[1], ps_u[2]);
+    unsigned ps_unear_src[3] = {UINT_MAX - 2u, 1u, 1u};
+    unsigned ps_unear[3] = {};
+    std::partial_sum(ps_unear_src, ps_unear_src + 3, ps_unear);
+    std::printf("ps_unear=%u,%u,%u\n", ps_unear[0], ps_unear[1], ps_unear[2]);
+    unsigned ps_umax_src[1] = {UINT_MAX};
+    unsigned ps_umax[1] = {0u};
+    std::partial_sum(ps_umax_src, ps_umax_src + 1, ps_umax);
+    std::printf("ps_umax=%u\n", ps_umax[0]);
+    unsigned ps_uzero_src[2] = {UINT_MAX, 0u};
+    unsigned ps_uzero[2] = {};
+    std::partial_sum(ps_uzero_src, ps_uzero_src + 2, ps_uzero);
+    std::printf("ps_uzero=%u,%u\n", ps_uzero[0], ps_uzero[1]);
+    int ps_one_src[1] = {41};
+    int ps_one[1] = {0};
+    int* ps_one_end = std::partial_sum(ps_one_src, ps_one_src + 1, ps_one);
+    std::printf("ps_one=%d end=%d\n", ps_one[0], static_cast<int>(ps_one_end - ps_one));
+    int ps_hi_src[1] = {INT_MAX};
+    int ps_hi[1] = {0};
+    int* ps_hi_end = std::partial_sum(ps_hi_src, ps_hi_src + 1, ps_hi);
+    std::printf("ps_hi=%d end=%d\n", ps_hi[0], static_cast<int>(ps_hi_end - ps_hi));
+    signed char ps_sc_src[3] = {static_cast<signed char>(SCHAR_MAX - 2), 1, 1};
+    signed char ps_sc[3] = {};
+    std::partial_sum(ps_sc_src, ps_sc_src + 3, ps_sc);
+    std::printf("ps_sc=%d,%d,%d\n", static_cast<int>(ps_sc[0]), static_cast<int>(ps_sc[1]), static_cast<int>(ps_sc[2]));
+    signed char ps_scn_src[2] = {-2, -3};
+    signed char ps_scn[2] = {};
+    std::partial_sum(ps_scn_src, ps_scn_src + 2, ps_scn);
+    std::printf("ps_scn=%d,%d\n", static_cast<int>(ps_scn[0]), static_cast<int>(ps_scn[1]));
+    unsigned char ps_uc_src[3] = {static_cast<unsigned char>(UCHAR_MAX - 5), 2, 3};
+    unsigned char ps_uc[3] = {};
+    std::partial_sum(ps_uc_src, ps_uc_src + 3, ps_uc);
+    std::printf("ps_uc=%u,%u,%u\n", static_cast<unsigned>(ps_uc[0]), static_cast<unsigned>(ps_uc[1]),
+                static_cast<unsigned>(ps_uc[2]));
+    float ps_f_src[3] = {2.0f, 3.0f, 4.0f};
+    float ps_f[3] = {};
+    std::partial_sum(ps_f_src, ps_f_src + 3, ps_f);
+    std::printf("ps_f=%d,%d,%d\n", static_cast<int>(ps_f[0]), static_cast<int>(ps_f[1]), static_cast<int>(ps_f[2]));
+    bool ps_b_src[3] = {false, true, true};
+    bool ps_b[3] = {true, true, true};
+    std::partial_sum(ps_b_src, ps_b_src + 3, ps_b);
+    std::printf("ps_b=%d,%d,%d\n", ps_b[0] ? 1 : 0, ps_b[1] ? 1 : 0, ps_b[2] ? 1 : 0);
+    bool ps_bf_src[3] = {false, false, true};
+    bool ps_bf[3] = {true, true, true};
+    std::partial_sum(ps_bf_src, ps_bf_src + 3, ps_bf);
+    std::printf("ps_bf=%d,%d,%d\n", ps_bf[0] ? 1 : 0, ps_bf[1] ? 1 : 0, ps_bf[2] ? 1 : 0);
+    int ps_tail[4] = {1, 2, 8, 8};
+    int* ps_tail_end = std::partial_sum(ps_tail, ps_tail + 2, ps_tail + 2);
+    std::printf("ps_tail=%d,%d,%d,%d end=%d\n", ps_tail[0], ps_tail[1], ps_tail[2], ps_tail[3],
+                static_cast<int>(ps_tail_end - (ps_tail + 2)));
+    int ps_en_src[1] = {4};
+    int* ps_en = std::partial_sum(ps_en_src, ps_en_src, static_cast<int*>(nullptr));
+    std::printf("ps_empty_null=%d\n", ps_en == nullptr ? 1 : 0);
+    long long ps_ll_src[3] = {1, 2, 3};
+    long long ps_ll[3] = {};
+    std::partial_sum(ps_ll_src, ps_ll_src + 3, ps_ll);
+    std::printf("ps_ll=%lld,%lld,%lld\n", ps_ll[0], ps_ll[1], ps_ll[2]);
+    int ip_a[4] = {1, 2, 3, 4};
+    int ip_b[4] = {1, 1, 1, 1};
+    std::printf("ip=%d\n", std::inner_product(ip_a, ip_a + 4, ip_b, 0));
+    int ip_dot_a[3] = {1, 2, 3};
+    std::printf("ip_dot=%d\n", std::inner_product(ip_dot_a, ip_dot_a + 3, ip_dot_a, 0));
+    int ip_init_a[2] = {2, 3};
+    int ip_init_b[2] = {4, 5};
+    std::printf("ip_init=%d\n", std::inner_product(ip_init_a, ip_init_a + 2, ip_init_b, 10));
+    int ip_empty_a[1] = {7};
+    int ip_empty_b[1] = {9};
+    std::printf("ip_empty=%d,%d\n", std::inner_product(ip_empty_a, ip_empty_a, ip_empty_b, 3), ip_empty_a[0]);
+    int ip_en_a[1] = {7};
+    std::printf("ip_empty_null=%d\n", std::inner_product(ip_en_a, ip_en_a, static_cast<int*>(nullptr), 3));
+    int ip_neg_a[3] = {-1, 2, -3};
+    int ip_neg_b[3] = {4, -5, 6};
+    std::printf("ip_neg=%d\n", std::inner_product(ip_neg_a, ip_neg_a + 3, ip_neg_b, 0));
+    int ip_hi_a[1] = {INT_MAX};
+    int ip_hi_b[1] = {1};
+    std::printf("ip_hi=%d\n", std::inner_product(ip_hi_a, ip_hi_a + 1, ip_hi_b, 0));
+    int ip_zero_a[2] = {INT_MAX, 5};
+    int ip_zero_b[2] = {0, 0};
+    std::printf("ip_zero=%d\n", std::inner_product(ip_zero_a, ip_zero_a + 2, ip_zero_b, INT_MAX));
+    int ip_imin_a[1] = {INT_MIN};
+    int ip_imin_b[1] = {1};
+    std::printf("ip_imin=%d\n", std::inner_product(ip_imin_a, ip_imin_a + 1, ip_imin_b, 0));
+    int ip_neg1_a[1] = {INT_MAX};
+    int ip_neg1_b[1] = {-1};
+    std::printf("ip_neg1=%d\n", std::inner_product(ip_neg1_a, ip_neg1_a + 1, ip_neg1_b, 0));
+    int ip_min0_a[1] = {INT_MIN};
+    int ip_min0_b[1] = {0};
+    std::printf("ip_min0=%d\n", std::inner_product(ip_min0_a, ip_min0_a + 1, ip_min0_b, INT_MIN));
+    int ip_near_a[2] = {1, 1};
+    int ip_near_b[2] = {1, 1};
+    std::printf("ip_near=%d\n", std::inner_product(ip_near_a, ip_near_a + 2, ip_near_b, INT_MAX - 2));
+    int ip_big_a[1] = {46340};
+    int ip_big_b[1] = {46340};
+    std::printf("ip_big=%d\n", std::inner_product(ip_big_a, ip_big_a + 1, ip_big_b, 0));
+    signed char ip_sc_a[2] = {10, 3};
+    signed char ip_sc_b[2] = {4, 5};
+    std::printf("ip_sc=%d\n", static_cast<int>(std::inner_product(ip_sc_a, ip_sc_a + 2, ip_sc_b,
+                                                                  static_cast<signed char>(0))));
+    signed char ip_scmin_a[1] = {static_cast<signed char>(SCHAR_MIN)};
+    signed char ip_scmin_b[1] = {1};
+    std::printf("ip_scmin=%d\n", static_cast<int>(std::inner_product(
+                                     ip_scmin_a, ip_scmin_a + 1, ip_scmin_b, static_cast<signed char>(0))));
+    signed char ip_scneg_a[1] = {static_cast<signed char>(SCHAR_MAX)};
+    signed char ip_scneg_b[1] = {-1};
+    std::printf("ip_scneg=%d\n", static_cast<int>(std::inner_product(
+                                     ip_scneg_a, ip_scneg_a + 1, ip_scneg_b, static_cast<signed char>(0))));
+    unsigned char ip_uc_a[2] = {10, 3};
+    unsigned char ip_uc_b[2] = {4, 5};
+    std::printf("ip_uc=%u\n", static_cast<unsigned>(std::inner_product(
+                                  ip_uc_a, ip_uc_a + 2, ip_uc_b, static_cast<unsigned char>(0))));
+    unsigned char ip_ucmax_a[1] = {static_cast<unsigned char>(UCHAR_MAX)};
+    unsigned char ip_ucmax_b[1] = {1};
+    std::printf("ip_ucmax=%u\n", static_cast<unsigned>(std::inner_product(
+                                     ip_ucmax_a, ip_ucmax_a + 1, ip_ucmax_b, static_cast<unsigned char>(0))));
+    unsigned ip_u_a[3] = {1u, 2u, 3u};
+    unsigned ip_u_b[3] = {4u, 5u, 6u};
+    std::printf("ip_u=%u\n", std::inner_product(ip_u_a, ip_u_a + 3, ip_u_b, 0u));
+    unsigned ip_unear_a[2] = {1u, 1u};
+    unsigned ip_unear_b[2] = {1u, 1u};
+    std::printf("ip_unear=%u\n", std::inner_product(ip_unear_a, ip_unear_a + 2, ip_unear_b, UINT_MAX - 2u));
+    unsigned ip_umax_a[1] = {UINT_MAX};
+    unsigned ip_umax_b[1] = {1u};
+    std::printf("ip_umax=%u\n", std::inner_product(ip_umax_a, ip_umax_a + 1, ip_umax_b, 0u));
+    unsigned ip_uzero_a[1] = {0u};
+    unsigned ip_uzero_b[1] = {UINT_MAX};
+    std::printf("ip_uzero=%u\n", std::inner_product(ip_uzero_a, ip_uzero_a + 1, ip_uzero_b, UINT_MAX));
+    float ip_f_a[3] = {1.0f, 2.0f, 3.0f};
+    float ip_f_b[3] = {2.0f, 3.0f, 4.0f};
+    std::printf("ip_f=%d\n", static_cast<int>(std::inner_product(ip_f_a, ip_f_a + 3, ip_f_b, 0.0f)));
+    bool ip_b_a[3] = {true, true, false};
+    bool ip_b_b[3] = {true, false, true};
+    std::printf("ip_b=%d\n", std::inner_product(ip_b_a, ip_b_a + 3, ip_b_b, false) ? 1 : 0);
+    bool ip_bf_a[2] = {false, false};
+    bool ip_bf_b[2] = {true, true};
+    std::printf("ip_bf=%d\n", std::inner_product(ip_bf_a, ip_bf_a + 2, ip_bf_b, false) ? 1 : 0);
+    bool ip_bt_a[1] = {true};
+    bool ip_bt_b[1] = {true};
+    std::printf("ip_bt=%d\n", std::inner_product(ip_bt_a, ip_bt_a + 1, ip_bt_b, true) ? 1 : 0);
+    long long ip_ll_a[3] = {1, 2, 3};
+    long long ip_ll_b[3] = {4, 5, 6};
+    std::printf("ip_ll=%lld\n", std::inner_product(ip_ll_a, ip_ll_a + 3, ip_ll_b, 0LL));
     return 0;
 }

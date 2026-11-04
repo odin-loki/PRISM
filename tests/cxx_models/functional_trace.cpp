@@ -9,12 +9,33 @@
 // pointer is not passed to std::invoke or std::not_fn.
 // std::identity returns the argument. std::equal_to, std::not_equal_to,
 // std::less, and std::greater compare with == and <.
+// std::plus, std::minus, std::multiplies, std::divides, std::modulus, and
+// std::negate are function objects for one type. The happy path uses values
+// that fit, so libstdc++ and the model print the same lines.
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type. The happy path uses the operators, so libstdc++
+// and the model print the same lines. A result that is not a bool is not
+// on this trace.
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type. The happy path uses the operators, so libstdc++ and the model
+// print the same lines. A result whose type is not the argument type is
+// not on this trace.
+// std::bit_not is a function object for one type. The happy path uses ~,
+// so libstdc++ and the model print the same lines. A result whose type
+// is not the argument type is not on this trace. bool is not on this
+// trace.
 //
 // argv "empty" calls operator() on an empty std::function. The model must
 // __prism_check and must not print a return value. argv "nullfn" calls
 // std::invoke on a null function pointer. argv "nullnot" calls the wrapper
 // from std::not_fn on a null function pointer. Those paths must __prism_check
 // and must not print a return value.
+// argv plus-ovf, plus-min, plus-uovf, plus-ll, plus-sc, minus-ovf, minus-pos,
+// minus-uovf, mul-min, mul-max, mul-neg, mul-uovf, mul-sc, div-zero, div-min,
+// div-sc, div-uzero, div-fzero, div-bzero, mod-zero, mod-min, mod-uzero,
+// mod-bzero, neg-min, and neg-sc are the trap paths. Each prints fake= only
+// if a result is returned.
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -146,6 +167,46 @@ struct Num {
     friend constexpr bool operator!=(const Num& a, const Num& b) { return !(a == b); }
     friend constexpr bool operator<(const Num& a, const Num& b) { return a.v < b.v; }
     friend constexpr bool operator>(const Num& a, const Num& b) { return b < a; }
+};
+
+struct Sum {
+    int v;
+    friend constexpr Sum operator+(Sum a, Sum b) { return Sum{a.v + b.v}; }
+};
+
+struct Quot {
+    int v;
+    friend constexpr Quot operator/(Quot a, Quot b) { return Quot{a.v / b.v}; }
+    friend constexpr Quot operator%(Quot a, Quot b) { return Quot{a.v % b.v}; }
+};
+
+struct BoolOp {
+    int v;
+    friend constexpr bool operator&&(BoolOp a, BoolOp b) { return a.v && b.v; }
+    friend constexpr bool operator||(BoolOp a, BoolOp b) { return a.v || b.v; }
+    friend constexpr bool operator!(BoolOp a) { return !a.v; }
+};
+
+struct Bits {
+    int v;
+    friend constexpr Bits operator&(Bits a, Bits b) { return Bits{a.v & b.v}; }
+    friend constexpr Bits operator|(Bits a, Bits b) { return Bits{a.v | b.v}; }
+    friend constexpr Bits operator^(Bits a, Bits b) { return Bits{a.v ^ b.v}; }
+};
+
+struct AndBits {
+    int v;
+    friend constexpr AndBits operator&(AndBits a, AndBits b) { return AndBits{a.v & b.v}; }
+};
+
+struct NotBits {
+    int v;
+    friend constexpr NotBits operator~(NotBits a) { return NotBits{~a.v}; }
+};
+
+struct NotOnly {
+    int v;
+    friend constexpr NotOnly operator~(NotOnly a) { return NotOnly{~a.v}; }
 };
 
 static void show() {
@@ -297,6 +358,141 @@ static void show() {
     std::printf("obj %d %d %d %d\n", static_cast<int>(std::equal_to<Num>{}(n1, n1)),
                 static_cast<int>(std::not_equal_to<Num>{}(n1, n1)), static_cast<int>(std::less<Num>{}(n1, n2)),
                 static_cast<int>(std::greater<Num>{}(n2, n1)));
+
+    static_assert(std::plus<int>{}(2, 3) == 5);
+    static_assert(std::plus<int>{}(-2, -3) == -5);
+    static_assert(std::plus<int>{}(INT_MAX, 0) == INT_MAX);
+    static_assert(std::plus<int>{}(INT_MIN, 1) == INT_MIN + 1);
+    static_assert(std::minus<int>{}(INT_MIN, 0) == INT_MIN);
+    static_assert(std::minus<int>{}(INT_MAX, 1) == INT_MAX - 1);
+    static_assert(std::multiplies<int>{}(0, INT_MIN) == 0);
+    static_assert(std::multiplies<int>{}(-1, INT_MAX) == -INT_MAX);
+    static_assert(std::multiplies<int>{}(1, INT_MIN) == INT_MIN);
+    static_assert(std::divides<int>{}(7, 2) == 3);
+    static_assert(std::divides<int>{}(-7, 2) == -3);
+    static_assert(std::divides<int>{}(INT_MIN, 1) == INT_MIN);
+    static_assert(std::divides<int>{}(INT_MIN, -2) == INT_MIN / -2);
+    static_assert(std::modulus<int>{}(7, 2) == 1);
+    static_assert(std::modulus<int>{}(-7, 2) == -1);
+    static_assert(std::modulus<int>{}(INT_MIN, 2) == 0);
+    static_assert(std::negate<int>{}(INT_MAX) == -INT_MAX);
+    static_assert(std::negate<int>{}(0) == 0);
+    static_assert(std::plus<unsigned>{}(2u, 3u) == 5u);
+    static_assert(std::negate<unsigned>{}(1u) == 0u - 1u);
+    static_assert(std::plus<signed char>{}(static_cast<signed char>(100), static_cast<signed char>(27)) ==
+                  static_cast<signed char>(127));
+    static_assert(std::multiplies<signed char>{}(static_cast<signed char>(-2), static_cast<signed char>(-63)) ==
+                  static_cast<signed char>(126));
+    static_assert(std::multiplies<signed char>{}(static_cast<signed char>(2), static_cast<signed char>(-64)) ==
+                  static_cast<signed char>(-128));
+    static_assert(std::divides<bool>{}(true, true) == true);
+    static_assert(std::plus<Sum>{}(Sum{2}, Sum{3}).v == 5);
+    static_assert(std::logical_and<int>{}(1, 1));
+    static_assert(!std::logical_and<int>{}(1, 0));
+    static_assert(std::logical_or<int>{}(0, 1));
+    static_assert(!std::logical_or<int>{}(0, 0));
+    static_assert(std::logical_not<int>{}(0));
+    static_assert(!std::logical_not<int>{}(1));
+    static_assert(std::logical_and<bool>{}(true, true));
+    static_assert(!std::logical_or<bool>{}(false, false));
+    static_assert(!std::logical_not<bool>{}(true));
+    static_assert(std::logical_and<BoolOp>{}(BoolOp{1}, BoolOp{1}));
+    static_assert(!std::logical_or<BoolOp>{}(BoolOp{0}, BoolOp{0}));
+    static_assert(std::logical_not<BoolOp>{}(BoolOp{0}));
+    static_assert(std::bit_and<int>{}(6, 3) == 2);
+    static_assert(std::bit_or<int>{}(6, 3) == 7);
+    static_assert(std::bit_xor<int>{}(6, 3) == 5);
+    static_assert(std::bit_and<int>{}(7, 1) == 1);
+    static_assert(std::bit_or<int>{}(1, 2) == 3);
+    static_assert(std::bit_xor<int>{}(6, 6) == 0);
+    static_assert(std::bit_and<unsigned>{}(6u, 3u) == 2u);
+    static_assert(std::bit_or<unsigned>{}(6u, 3u) == 7u);
+    static_assert(std::bit_xor<unsigned>{}(6u, 3u) == 5u);
+    static_assert(!std::bit_and<bool>{}(true, false));
+    static_assert(!std::bit_or<bool>{}(false, false));
+    static_assert(!std::bit_xor<bool>{}(true, true));
+    static_assert(std::bit_or<bool>{}(true, false));
+    static_assert(std::bit_xor<bool>{}(true, false));
+    static_assert(std::bit_and<Bits>{}(Bits{6}, Bits{3}).v == 2);
+    static_assert(std::bit_or<Bits>{}(Bits{6}, Bits{3}).v == 7);
+    static_assert(std::bit_xor<Bits>{}(Bits{6}, Bits{3}).v == 5);
+    static_assert(std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v == 2);
+    static_assert(std::bit_not<int>{}(0) == -1);
+    static_assert(std::bit_not<int>{}(1) == -2);
+    static_assert(std::bit_not<int>{}(-1) == 0);
+    static_assert(std::bit_not<unsigned>{}(0u) == ~0u);
+    static_assert(std::bit_not<NotBits>{}(NotBits{6}).v == ~6);
+    static_assert(std::bit_not<NotOnly>{}(NotOnly{0}).v == ~0);
+
+    std::plus<int> padd;
+    std::plus<int> padd2 = padd;
+    std::printf("add %d %d\n", padd(2, 3), padd2(-2, -3));
+    std::printf("sub %d\n", std::minus<int>{}(3, 2));
+    std::printf("mul %d\n", std::multiplies<int>{}(-3, 4));
+    std::printf("div %d %d\n", std::divides<int>{}(7, 2), std::modulus<int>{}(7, 2));
+    std::printf("divn %d %d\n", std::divides<int>{}(-7, 2), std::modulus<int>{}(-7, 2));
+    std::negate<int> ng;
+    std::negate<int> ng2 = ng;
+    std::printf("neg %d %d %d\n", ng(4), ng(-4), ng2(0));
+    std::printf("uadd %u\n", std::plus<unsigned>{}(2u, 3u));
+    std::printf("usub %u\n", std::minus<unsigned>{}(5u, 2u));
+    std::printf("umul %u\n", std::multiplies<unsigned>{}(2u, 3u));
+    std::printf("udiv %u %u\n", std::divides<unsigned>{}(7u, 2u), std::modulus<unsigned>{}(7u, 2u));
+    std::printf("uneg %u %u\n", std::negate<unsigned>{}(0u), std::negate<unsigned>{}(1u));
+    std::printf("ll %lld\n", std::plus<long long>{}(20, 22));
+    std::printf("sc %d\n", static_cast<int>(std::plus<signed char>{}(static_cast<signed char>(2),
+                                                                      static_cast<signed char>(3))));
+    std::printf("fp %.1f\n", std::plus<double>{}(1.5, 2.5));
+    std::printf("bdiv %d\n", static_cast<int>(std::divides<bool>{}(true, true)));
+    std::printf("objadd %d\n", std::plus<Sum>{}(Sum{2}, Sum{3}).v);
+    const Quot q1{7};
+    const Quot q2{2};
+    std::printf("quot %d %d\n", std::divides<Quot>{}(q1, q2).v, std::modulus<Quot>{}(q1, q2).v);
+    std::printf("bit %d\n", std::bit_and<int>{}(6, 3));
+    std::printf("land %d\n", static_cast<int>(std::logical_and<int>{}(1, 0)));
+    std::logical_and<int> landf;
+    std::logical_and<int> landf2 = landf;
+    std::printf("landc %d %d\n", static_cast<int>(landf(1, 0)), static_cast<int>(landf2(1, 1)));
+    std::logical_or<int> lorf;
+    std::logical_or<int> lorf2 = lorf;
+    std::printf("lor %d %d\n", static_cast<int>(lorf(0, 1)), static_cast<int>(lorf2(0, 0)));
+    std::logical_not<int> lnotf;
+    std::logical_not<int> lnotf2 = lnotf;
+    std::printf("lnot %d %d\n", static_cast<int>(lnotf(0)), static_cast<int>(lnotf2(1)));
+    std::printf("lbool %d %d %d\n", static_cast<int>(std::logical_and<bool>{}(true, false)),
+                static_cast<int>(std::logical_or<bool>{}(false, false)),
+                static_cast<int>(std::logical_not<bool>{}(true)));
+    const BoolOp b1{1};
+    const BoolOp b0{0};
+    std::printf("blog %d %d %d\n", static_cast<int>(std::logical_and<BoolOp>{}(b1, b0)),
+                static_cast<int>(std::logical_or<BoolOp>{}(b0, b1)),
+                static_cast<int>(std::logical_not<BoolOp>{}(b0)));
+    std::bit_and<int> band;
+    std::bit_and<int> band2 = band;
+    std::printf("band %d %d\n", band(6, 3), band2(7, 1));
+    std::bit_or<int> bor;
+    std::bit_or<int> bor2 = bor;
+    std::printf("bor %d %d\n", bor(6, 3), bor2(1, 2));
+    std::bit_xor<int> bxor;
+    std::bit_xor<int> bxor2 = bxor;
+    std::printf("bxor %d %d\n", bxor(6, 3), bxor2(6, 6));
+    std::printf("bbool %d %d %d\n", static_cast<int>(std::bit_and<bool>{}(true, false)),
+                static_cast<int>(std::bit_or<bool>{}(false, false)),
+                static_cast<int>(std::bit_xor<bool>{}(true, true)));
+    std::printf("ubit %u %u %u\n", std::bit_and<unsigned>{}(6u, 3u), std::bit_or<unsigned>{}(6u, 3u),
+                std::bit_xor<unsigned>{}(6u, 3u));
+    const Bits w6{6};
+    const Bits w3{3};
+    std::printf("bobj %d %d %d\n", std::bit_and<Bits>{}(w6, w3).v, std::bit_or<Bits>{}(w6, w3).v,
+                std::bit_xor<Bits>{}(w6, w3).v);
+    std::printf("bandonly %d\n", std::bit_and<AndBits>{}(AndBits{6}, AndBits{3}).v);
+    std::printf("bnot %d\n", std::bit_not<int>{}(0));
+    std::bit_not<int> bnotf;
+    std::bit_not<int> bnotf2 = bnotf;
+    std::printf("bnotc %d %d\n", bnotf(1), bnotf2(-1));
+    std::printf("unot %u\n", std::bit_not<unsigned>{}(0u));
+    std::printf("bnotobj %d\n", std::bit_not<NotBits>{}(NotBits{6}).v);
+    std::printf("bnotonly %d\n", std::bit_not<NotOnly>{}(NotOnly{0}).v);
 }
 
 int main(int argc, char** argv) {
@@ -313,6 +509,109 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "nullnot") == 0) {
         bool (*p)(int) = nullptr;
         std::printf("fake=%d\n", static_cast<int>(std::not_fn(p)(0)));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "plus-ovf") == 0) {
+        std::printf("fake=%d\n", std::plus<int>{}(INT_MAX, 1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "plus-min") == 0) {
+        std::printf("fake=%d\n", std::plus<int>{}(INT_MIN, -1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "plus-uovf") == 0) {
+        std::printf("fake=%u\n", std::plus<unsigned>{}(UINT_MAX, 1u));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "plus-ll") == 0) {
+        std::printf("fake=%lld\n", std::plus<long long>{}(LLONG_MAX, 1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "plus-sc") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::plus<signed char>{}(static_cast<signed char>(127),
+                                                                            static_cast<signed char>(1))));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "minus-ovf") == 0) {
+        std::printf("fake=%d\n", std::minus<int>{}(INT_MIN, 1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "minus-pos") == 0) {
+        std::printf("fake=%d\n", std::minus<int>{}(INT_MAX, -1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "minus-uovf") == 0) {
+        std::printf("fake=%u\n", std::minus<unsigned>{}(0u, 1u));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mul-min") == 0) {
+        std::printf("fake=%d\n", std::multiplies<int>{}(INT_MIN, -1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mul-max") == 0) {
+        std::printf("fake=%d\n", std::multiplies<int>{}(INT_MAX, 2));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mul-neg") == 0) {
+        std::printf("fake=%d\n", std::multiplies<int>{}(INT_MIN, 2));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mul-uovf") == 0) {
+        std::printf("fake=%u\n", std::multiplies<unsigned>{}(UINT_MAX, 2u));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mul-sc") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::multiplies<signed char>{}(static_cast<signed char>(-2),
+                                                                                  static_cast<signed char>(-64))));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-zero") == 0) {
+        std::printf("fake=%d\n", std::divides<int>{}(1, 0));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-min") == 0) {
+        std::printf("fake=%d\n", std::divides<int>{}(INT_MIN, -1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-sc") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::divides<signed char>{}(static_cast<signed char>(-128),
+                                                                               static_cast<signed char>(-1))));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-uzero") == 0) {
+        std::printf("fake=%u\n", std::divides<unsigned>{}(1u, 0u));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-fzero") == 0) {
+        std::printf("fake=%f\n", std::divides<double>{}(1.0, 0.0));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "div-bzero") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::divides<bool>{}(true, false)));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod-zero") == 0) {
+        std::printf("fake=%d\n", std::modulus<int>{}(1, 0));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod-min") == 0) {
+        std::printf("fake=%d\n", std::modulus<int>{}(INT_MIN, -1));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod-uzero") == 0) {
+        std::printf("fake=%u\n", std::modulus<unsigned>{}(1u, 0u));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod-bzero") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::modulus<bool>{}(true, false)));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "neg-min") == 0) {
+        std::printf("fake=%d\n", std::negate<int>{}(INT_MIN));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "neg-sc") == 0) {
+        std::printf("fake=%d\n", static_cast<int>(std::negate<signed char>{}(static_cast<signed char>(-128))));
         return 0;
     }
     show();

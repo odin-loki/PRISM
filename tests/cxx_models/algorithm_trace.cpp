@@ -10,14 +10,41 @@
 // operator== match, or last. find_if takes two pointers and
 // bool (*)(const T&). An empty range returns last and does not call the
 // predicate. count returns how many elements compare equal. An empty range
-// returns 0 and does not read. sort, copy, fill, and for_each are not called.
+// returns 0 and does not read. all_of, any_of, and none_of take two
+// pointers and bool (*)(const T&). An empty range does not call: all_of
+// returns true, any_of returns false, none_of returns true. fill takes two
+// pointers and a const T&. An empty range does not write, even when the
+// pointer is null. Each element in [first, last) becomes the value. The
+// element at last is left unchanged. copy takes two pointers and a
+// destination pointer. An empty range returns dest and does not read or
+// write, even when dest is null. Each element in [first, last) is copied.
+// The element at last is left unchanged. The result is one past the last
+// element written. copy_n takes one pointer, a std::size_t count, and a
+// destination pointer. n == 0 returns dest and does not read or write,
+// even when dest or the source is null. Otherwise n elements are copied.
+// The element one past the last written element is left unchanged. sort,
+// copy_backward, and for_each are not called.
 // argv "invert" calls clamp with hi < lo. argv "invert-min" and
 // "invert-max" call min_element and max_element with last < first.
 // argv "invert-find" calls find with last < first. argv "invert-find-if"
 // calls find_if with last < first and must not call the predicate.
 // argv "null-find-if" and "null-find-if-empty" pass a null predicate.
-// argv "invert-count" calls count with last < first. The model must
-// __prism_check and must not print a value. This is not PROVED and not CLEAN.
+// argv "invert-count" calls count with last < first. argv "invert-all-of",
+// "invert-any-of", and "invert-none-of" call those functions with
+// last < first and must not call the predicate. argv "null-all-of",
+// "null-any-of", "null-none-of", and the "-empty" forms pass a null
+// predicate. argv "invert-fill" calls fill with last < first and must not
+// assign. argv "null-fill" calls fill with a null first and a non-empty
+// range and must not assign. argv "invert-copy" calls copy with last < first
+// and must not read or write. argv "null-copy" calls copy with a null dest
+// and a non-empty range and must not write. argv "overlap-copy" and
+// "overlap-copy-first" call copy with dest inside [first, last) and must
+// not read or write. argv "null-copy-n-source" calls copy_n with a null
+// source and n > 0 and must not read. argv "null-copy-n-dest" calls
+// copy_n with a null dest and n > 0 and must not write. argv
+// "null-copy-n-both" calls copy_n with both pointers null and n > 0 and
+// reports the null source. The model must __prism_check and must not
+// print a value. This is not PROVED and not CLEAN.
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -68,6 +95,31 @@ struct PredOnly {
     PredOnly() = delete;
 };
 
+// Assignment is the write fill must not perform on a rejected range.
+struct FillSlot {
+    int x;
+    FillSlot& operator=(const FillSlot& other) {
+        std::fprintf(stderr, "wrote\n");
+        x = other.x;
+        return *this;
+    }
+};
+
+// Assignment is the write copy must not perform on a rejected range.
+// Equality of elements is the read the overlap scan must not perform.
+struct CopySlot {
+    int x;
+    CopySlot& operator=(const CopySlot& other) {
+        std::fprintf(stderr, "wrote\n");
+        x = other.x;
+        return *this;
+    }
+    friend bool operator==(const CopySlot& a, const CopySlot& b) {
+        std::fprintf(stderr, "read\n");
+        return a.x == b.x;
+    }
+};
+
 constexpr bool is_one(const int& x) { return x == 1; }
 constexpr bool is_four(const int& x) { return x == 4; }
 constexpr bool is_nine(const int& x) { return x == 9; }
@@ -82,6 +134,14 @@ int g_want = 0;
 bool watch(const int& x) {
     ++g_calls;
     return x == g_want;
+}
+bool watch_true(const int&) {
+    ++g_calls;
+    return true;
+}
+bool watch_false(const int&) {
+    ++g_calls;
+    return false;
 }
 bool mark_called(const int&) {
     std::fprintf(stderr, "called\n");
@@ -277,6 +337,308 @@ constexpr long long count_nodef() {
 }
 static_assert(count_nodef() == 1);
 
+constexpr bool all_of_all() {
+    int seq[] = {1, 1, 1};
+    return std::all_of(seq, seq + 3, is_one);
+}
+static_assert(all_of_all());
+constexpr bool all_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::all_of(seq, seq + 4, is_four);
+}
+static_assert(!all_of_front());
+constexpr bool all_of_mid() {
+    int seq[] = {9, 9, 1, 4};
+    return std::all_of(seq, seq + 4, is_nine);
+}
+static_assert(!all_of_mid());
+constexpr bool all_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::all_of(seq, seq, is_nine);
+}
+static_assert(all_of_empty());
+constexpr bool all_of_one_true() {
+    int seq[] = {1};
+    return std::all_of(seq, seq + 1, is_one);
+}
+static_assert(all_of_one_true());
+constexpr bool all_of_one_false() {
+    int seq[] = {8};
+    return std::all_of(seq, seq + 1, is_one);
+}
+static_assert(!all_of_one_false());
+static_assert(std::all_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool all_of_eq_empty() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::all_of(seq, seq + 3, eq_is_one)) return false;
+    return std::all_of(seq, seq, eq_is_one);
+}
+static_assert(all_of_eq_empty());
+constexpr bool all_of_nodef_empty() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::all_of(seq, seq + 3, nd_is_one)) return false;
+    return std::all_of(seq, seq, nd_is_one);
+}
+static_assert(all_of_nodef_empty());
+constexpr bool all_of_pred_empty() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::all_of(seq, seq + 3, pred_only_is_one)) return false;
+    return std::all_of(seq, seq, pred_only_is_one);
+}
+static_assert(all_of_pred_empty());
+
+constexpr bool any_of_hit() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_one);
+}
+static_assert(any_of_hit());
+constexpr bool any_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_nine);
+}
+static_assert(any_of_front());
+constexpr bool any_of_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq + 4, is_seven);
+}
+static_assert(!any_of_miss());
+constexpr bool any_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::any_of(seq, seq, is_nine);
+}
+static_assert(!any_of_empty());
+constexpr bool any_of_tie() {
+    int seq[] = {2, 2};
+    return std::any_of(seq, seq + 2, is_two);
+}
+static_assert(any_of_tie());
+static_assert(!std::any_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool any_of_eq() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::any_of(seq, seq, eq_is_one)) return false;
+    return std::any_of(seq, seq + 3, eq_is_one);
+}
+static_assert(any_of_eq());
+constexpr bool any_of_nodef() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::any_of(seq, seq, nd_is_one)) return false;
+    return std::any_of(seq, seq + 3, nd_is_one);
+}
+static_assert(any_of_nodef());
+constexpr bool any_of_pred() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::any_of(seq, seq, pred_only_is_one)) return false;
+    return std::any_of(seq, seq + 3, pred_only_is_one);
+}
+static_assert(any_of_pred());
+
+constexpr bool none_of_miss() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_seven);
+}
+static_assert(none_of_miss());
+constexpr bool none_of_front() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_nine);
+}
+static_assert(!none_of_front());
+constexpr bool none_of_mid() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq + 4, is_one);
+}
+static_assert(!none_of_mid());
+constexpr bool none_of_empty() {
+    int seq[] = {9, 4, 1, 4};
+    return std::none_of(seq, seq, is_nine);
+}
+static_assert(none_of_empty());
+static_assert(std::none_of(static_cast<int*>(nullptr), static_cast<int*>(nullptr), is_one));
+constexpr bool none_of_eq_empty() {
+    EqOnly seq[] = {EqOnly{2}, EqOnly{1}, EqOnly{1}};
+    if (std::none_of(seq, seq + 3, eq_is_one)) return false;
+    return std::none_of(seq, seq, eq_is_one);
+}
+static_assert(none_of_eq_empty());
+constexpr bool none_of_nodef_empty() {
+    NoDefault seq[] = {NoDefault(3), NoDefault(1), NoDefault(3)};
+    if (std::none_of(seq, seq + 3, nd_is_one)) return false;
+    return std::none_of(seq, seq, nd_is_one);
+}
+static_assert(none_of_nodef_empty());
+constexpr bool none_of_pred_empty() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    if (std::none_of(seq, seq + 3, pred_only_is_one)) return false;
+    return std::none_of(seq, seq, pred_only_is_one);
+}
+static_assert(none_of_pred_empty());
+
+constexpr int fill_sum() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq + 4, 7);
+    return seq[0] + seq[1] + seq[2] + seq[3];
+}
+static_assert(fill_sum() == 28);
+constexpr int fill_tail() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq + 3, 7);
+    return seq[0] + seq[1] * 10 + seq[2] * 100 + seq[3] * 1000;
+}
+static_assert(fill_tail() == 4777);
+constexpr bool fill_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    std::fill(seq, seq, 0);
+    return seq[0] == 9 && seq[1] == 4 && seq[2] == 1 && seq[3] == 4;
+}
+static_assert(fill_empty_keeps());
+constexpr bool fill_null_empty() {
+    std::fill(static_cast<int*>(nullptr), static_cast<int*>(nullptr), 0);
+    return true;
+}
+static_assert(fill_null_empty());
+constexpr int fill_one_v() {
+    int seq[] = {8};
+    std::fill(seq, seq + 1, 3);
+    return seq[0];
+}
+static_assert(fill_one_v() == 3);
+constexpr int fill_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly value(9);
+    std::fill(seq, seq + 3, value);
+    PredOnly empty[] = {PredOnly(4), PredOnly(5)};
+    std::fill(empty, empty, PredOnly(8));
+    return seq[0].x + seq[1].x + seq[2].x + empty[0].x + empty[1].x;
+}
+static_assert(fill_pred_v() == 36);
+
+constexpr int copy_sum() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {0, 0, 0, 0};
+    int* end = std::copy(seq, seq + 4, out);
+    if (end != out + 4) return -1;
+    if (seq[0] != 9 || seq[3] != 4) return -1;
+    return out[0] + out[1] + out[2] + out[3];
+}
+static_assert(copy_sum() == 18);
+constexpr int copy_tail() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 8, 8, 8};
+    int* end = std::copy(seq, seq + 3, out);
+    if (end != out + 3) return -1;
+    if (seq[3] != 4 || out[3] != 8) return -1;
+    return out[0] * 1000 + out[1] * 100 + out[2] * 10 + out[3];
+}
+static_assert(copy_tail() == 9418);
+constexpr bool copy_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy(seq, seq, out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5 && seq[0] == 9;
+}
+static_assert(copy_empty_keeps());
+constexpr bool copy_null_empty() {
+    int* end = std::copy(static_cast<int*>(nullptr), static_cast<int*>(nullptr), static_cast<int*>(nullptr));
+    return end == nullptr;
+}
+static_assert(copy_null_empty());
+constexpr int copy_one_v() {
+    int seq[] = {8};
+    int out[] = {0};
+    int* end = std::copy(seq, seq + 1, out);
+    return (end == out + 1 && out[0] == 8 && seq[0] == 8) ? 8 : 0;
+}
+static_assert(copy_one_v() == 8);
+constexpr int copy_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly out[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    PredOnly* end = std::copy(seq, seq + 3, out);
+    PredOnly empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly empty_dst[] = {PredOnly(4), PredOnly(5)};
+    PredOnly* end_empty = std::copy(empty_src, empty_src, empty_dst);
+    if (end != out + 3 || end_empty != empty_dst) return -1;
+    if (empty_dst[0].x != 4 || empty_dst[1].x != 5) return -1;
+    if (seq[0].x != 3 || seq[1].x != 1 || seq[2].x != 3) return -1;
+    if (out[3].x != 5) return -1;
+    return out[0].x + out[1].x + out[2].x + out[3].x;
+}
+static_assert(copy_pred_v() == 12);
+constexpr bool copy_adjacent() {
+    int seq[] = {1, 2, 3, 0, 0, 0};
+    int* end = std::copy(seq, seq + 3, seq + 3);
+    return end == seq + 6 && seq[0] == 1 && seq[1] == 2 && seq[2] == 3 && seq[3] == 1 && seq[4] == 2 && seq[5] == 3;
+}
+static_assert(copy_adjacent());
+
+constexpr int copy_n_sum() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {0, 0, 0, 0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(4), out);
+    if (end != out + 4) return -1;
+    if (seq[0] != 9 || seq[3] != 4) return -1;
+    return out[0] + out[1] + out[2] + out[3];
+}
+static_assert(copy_n_sum() == 18);
+constexpr int copy_n_tail() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 8, 8, 8};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(3), out);
+    if (end != out + 3) return -1;
+    if (seq[3] != 4 || out[3] != 8) return -1;
+    return out[0] * 1000 + out[1] * 100 + out[2] * 10 + out[3];
+}
+static_assert(copy_n_tail() == 9418);
+constexpr bool copy_n_empty_keeps() {
+    int seq[] = {9, 4, 1, 4};
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(0), out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5 && seq[0] == 9;
+}
+static_assert(copy_n_empty_keeps());
+constexpr bool copy_n_null_empty() {
+    int* end = std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    return end == nullptr;
+}
+static_assert(copy_n_null_empty());
+constexpr bool copy_n_null_source_empty() {
+    int out[] = {8, 7, 6, 5};
+    int* end = std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), out);
+    return end == out && out[0] == 8 && out[1] == 7 && out[2] == 6 && out[3] == 5;
+}
+static_assert(copy_n_null_source_empty());
+constexpr bool copy_n_null_dest_empty() {
+    int seq[] = {9, 4, 1, 4};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    return end == nullptr && seq[0] == 9 && seq[1] == 4 && seq[2] == 1 && seq[3] == 4;
+}
+static_assert(copy_n_null_dest_empty());
+constexpr int copy_n_one_v() {
+    int seq[] = {8};
+    int out[] = {0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(1), out);
+    return (end == out + 1 && out[0] == 8 && seq[0] == 8) ? 8 : 0;
+}
+static_assert(copy_n_one_v() == 8);
+constexpr int copy_n_pred_v() {
+    PredOnly seq[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly out[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    PredOnly* end = std::copy_n(seq, static_cast<std::size_t>(3), out);
+    PredOnly empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly empty_dst[] = {PredOnly(4), PredOnly(5)};
+    PredOnly* end_empty = std::copy_n(empty_src, static_cast<std::size_t>(0), empty_dst);
+    if (end != out + 3 || end_empty != empty_dst) return -1;
+    if (empty_dst[0].x != 4 || empty_dst[1].x != 5) return -1;
+    if (seq[0].x != 3 || seq[1].x != 1 || seq[2].x != 3) return -1;
+    if (out[3].x != 5) return -1;
+    return out[0].x + out[1].x + out[2].x + out[3].x;
+}
+static_assert(copy_n_pred_v() == 12);
+constexpr bool copy_n_adjacent() {
+    int seq[] = {1, 2, 3, 0, 0, 0};
+    int* end = std::copy_n(seq, static_cast<std::size_t>(3), seq + 3);
+    return end == seq + 6 && seq[0] == 1 && seq[1] == 2 && seq[2] == 3 && seq[3] == 1 && seq[4] == 2 && seq[5] == 3;
+}
+static_assert(copy_n_adjacent());
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "invert") == 0) {
         volatile int vlo = 4;
@@ -341,6 +703,119 @@ int main(int argc, char** argv) {
         int* last = vl;
         long long n = static_cast<long long>(std::count(first, last, 1));
         std::printf("value=%lld\n", n);
+        return 0;
+    }
+    if (argc > 1 && (std::strcmp(argv[1], "invert-all-of") == 0 || std::strcmp(argv[1], "invert-any-of") == 0 ||
+                     std::strcmp(argv[1], "invert-none-of") == 0)) {
+        int arr_el[] = {1, 2, 3};
+        int* volatile vf = arr_el + 2;
+        int* volatile vl = arr_el;
+        int* first = vf;
+        int* last = vl;
+        bool r = false;
+        if (std::strcmp(argv[1], "invert-all-of") == 0) r = std::all_of(first, last, mark_called);
+        else if (std::strcmp(argv[1], "invert-any-of") == 0) r = std::any_of(first, last, mark_called);
+        else r = std::none_of(first, last, mark_called);
+        std::printf("value=%d\n", r ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && (std::strcmp(argv[1], "null-all-of") == 0 || std::strcmp(argv[1], "null-all-of-empty") == 0 ||
+                     std::strcmp(argv[1], "null-any-of") == 0 || std::strcmp(argv[1], "null-any-of-empty") == 0 ||
+                     std::strcmp(argv[1], "null-none-of") == 0 || std::strcmp(argv[1], "null-none-of-empty") == 0)) {
+        int arr_el[] = {1, 2, 3};
+        const bool empty = std::strcmp(argv[1], "null-all-of-empty") == 0 ||
+                           std::strcmp(argv[1], "null-any-of-empty") == 0 ||
+                           std::strcmp(argv[1], "null-none-of-empty") == 0;
+        int* first = arr_el;
+        int* last = empty ? arr_el : arr_el + 3;
+        auto pred = static_cast<bool (*)(const int&)>(nullptr);
+        bool r = false;
+        if (std::strcmp(argv[1], "null-all-of") == 0 || std::strcmp(argv[1], "null-all-of-empty") == 0)
+            r = std::all_of(first, last, pred);
+        else if (std::strcmp(argv[1], "null-any-of") == 0 || std::strcmp(argv[1], "null-any-of-empty") == 0)
+            r = std::any_of(first, last, pred);
+        else
+            r = std::none_of(first, last, pred);
+        std::printf("value=%d\n", r ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-fill") == 0) {
+        FillSlot arr_el[3] = {{1}, {2}, {3}};
+        FillSlot* volatile vf = arr_el + 2;
+        FillSlot* volatile vl = arr_el;
+        FillSlot* first = vf;
+        FillSlot* last = vl;
+        FillSlot value{9};
+        std::fill(first, last, value);
+        std::printf("value=%d\n", arr_el[0].x);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-fill") == 0) {
+        unsigned long volatile raw_first = 0;
+        unsigned long volatile raw_last = sizeof(FillSlot);
+        FillSlot* first = reinterpret_cast<FillSlot*>(raw_first);
+        FillSlot* last = reinterpret_cast<FillSlot*>(raw_last);
+        FillSlot value{9};
+        std::fill(first, last, value);
+        std::printf("value=%d\n", value.x);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "invert-copy") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        CopySlot dst[3] = {{7}, {7}, {7}};
+        CopySlot* volatile vf = src + 2;
+        CopySlot* volatile vl = src;
+        CopySlot* first = vf;
+        CopySlot* last = vl;
+        CopySlot* end = std::copy(first, last, dst);
+        std::printf("value=%d\n", end == dst ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        unsigned long volatile raw_dest = 0;
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy(src, src + 3, dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "overlap-copy") == 0) {
+        CopySlot arr[4] = {{1}, {2}, {3}, {4}};
+        CopySlot* volatile vd = arr + 2;
+        CopySlot* dest = vd;
+        CopySlot* end = std::copy(arr, arr + 3, dest);
+        std::printf("value=%d\n", static_cast<int>(end - arr));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "overlap-copy-first") == 0) {
+        CopySlot arr[3] = {{1}, {2}, {3}};
+        CopySlot* end = std::copy(arr, arr + 3, arr);
+        std::printf("value=%d\n", end == arr ? arr[0].x : -1);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-source") == 0) {
+        CopySlot dst[3] = {{7}, {7}, {7}};
+        unsigned long volatile raw_first = 0;
+        CopySlot* first = reinterpret_cast<CopySlot*>(raw_first);
+        CopySlot* end = std::copy_n(first, static_cast<std::size_t>(3), dst);
+        std::printf("value=%d\n", end == dst ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-dest") == 0) {
+        CopySlot src[3] = {{1}, {2}, {3}};
+        unsigned long volatile raw_dest = 0;
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy_n(src, static_cast<std::size_t>(3), dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "null-copy-n-both") == 0) {
+        unsigned long volatile raw_first = 0;
+        unsigned long volatile raw_dest = 0;
+        CopySlot* first = reinterpret_cast<CopySlot*>(raw_first);
+        CopySlot* dest = reinterpret_cast<CopySlot*>(raw_dest);
+        CopySlot* end = std::copy_n(first, static_cast<std::size_t>(3), dest);
+        std::printf("value=%d\n", end == nullptr ? 1 : 0);
         return 0;
     }
 
@@ -517,5 +992,227 @@ int main(int argc, char** argv) {
                 static_cast<long long>(std::count(ndes, ndes + 3, nd_three)),
                 static_cast<long long>(std::count(ndes, ndes, ndneedle)));
     std::printf("count_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+
+    g_calls = 0;
+    const bool ao_all = std::all_of(seq, seq + 4, watch_true);
+    const int ao_all_calls = g_calls;
+    g_calls = 0;
+    const bool ao_front = std::all_of(seq, seq + 4, watch_false);
+    const int ao_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ao_mid = std::all_of(seq, seq + 4, watch);
+    const int ao_mid_calls = g_calls;
+    g_calls = 0;
+    const bool ao_empty = std::all_of(seq, seq, watch_true);
+    const int ao_empty_calls = g_calls;
+    std::printf("all_of_all=%d all_of_all_calls=%d\n", ao_all ? 1 : 0, ao_all_calls);
+    std::printf("all_of_front=%d all_of_front_calls=%d\n", ao_front ? 1 : 0, ao_front_calls);
+    std::printf("all_of_mid=%d all_of_mid_calls=%d\n", ao_mid ? 1 : 0, ao_mid_calls);
+    std::printf("all_of_empty=%d all_of_empty_calls=%d\n", ao_empty ? 1 : 0, ao_empty_calls);
+    g_calls = 0;
+    const bool ao_one_t = std::all_of(one, one + 1, watch_true);
+    const int ao_one_t_calls = g_calls;
+    g_calls = 0;
+    const bool ao_one_f = std::all_of(one, one + 1, watch_false);
+    const int ao_one_f_calls = g_calls;
+    std::printf("all_of_one=%d\n", (ao_one_t && ao_one_t_calls == 1 && !ao_one_f && ao_one_f_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    const bool ao_null = std::all_of(zn, zn, watch_true);
+    std::printf("all_of_null=%d all_of_null_calls=%d\n", ao_null ? 1 : 0, g_calls);
+    std::printf("all_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("all_of_eq=%d all_of_eq_empty=%d\n", std::all_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::all_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("all_of_nodef=%d all_of_nodef_empty=%d\n", std::all_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::all_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("all_of_pred=%d all_of_pred_empty=%d\n", std::all_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::all_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    g_calls = 0;
+    g_want = 1;
+    const bool ay_hit = std::any_of(seq, seq + 4, watch);
+    const int ay_hit_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ay_front = std::any_of(seq, seq + 4, watch);
+    const int ay_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 7;
+    const bool ay_miss = std::any_of(seq, seq + 4, watch);
+    const int ay_miss_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool ay_empty = std::any_of(seq, seq, watch);
+    const int ay_empty_calls = g_calls;
+    g_calls = 0;
+    g_want = 2;
+    const bool ay_tie = std::any_of(ties, ties + 2, watch);
+    const int ay_tie_calls = g_calls;
+    std::printf("any_of_hit=%d any_of_hit_calls=%d\n", ay_hit ? 1 : 0, ay_hit_calls);
+    std::printf("any_of_front=%d any_of_front_calls=%d\n", ay_front ? 1 : 0, ay_front_calls);
+    std::printf("any_of_miss=%d any_of_miss_calls=%d\n", ay_miss ? 1 : 0, ay_miss_calls);
+    std::printf("any_of_empty=%d any_of_empty_calls=%d\n", ay_empty ? 1 : 0, ay_empty_calls);
+    std::printf("any_of_tie=%d any_of_tie_calls=%d\n", ay_tie ? 1 : 0, ay_tie_calls);
+    g_calls = 0;
+    g_want = 8;
+    const bool ay_one = std::any_of(one, one + 1, watch);
+    const int ay_one_calls = g_calls;
+    g_calls = 0;
+    g_want = 0;
+    const bool ay_one_miss = std::any_of(one, one + 1, watch);
+    std::printf("any_of_one=%d\n", (ay_one && ay_one_calls == 1 && !ay_one_miss && g_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    g_want = 1;
+    const bool ay_null = std::any_of(zn, zn, watch);
+    std::printf("any_of_null=%d any_of_null_calls=%d\n", ay_null ? 1 : 0, g_calls);
+    std::printf("any_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("any_of_eq=%d any_of_eq_empty=%d\n", std::any_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::any_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("any_of_nodef=%d any_of_nodef_empty=%d\n", std::any_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::any_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("any_of_pred=%d any_of_pred_empty=%d\n", std::any_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::any_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    g_calls = 0;
+    g_want = 7;
+    const bool no_miss = std::none_of(seq, seq + 4, watch);
+    const int no_miss_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool no_front = std::none_of(seq, seq + 4, watch);
+    const int no_front_calls = g_calls;
+    g_calls = 0;
+    g_want = 1;
+    const bool no_mid = std::none_of(seq, seq + 4, watch);
+    const int no_mid_calls = g_calls;
+    g_calls = 0;
+    g_want = 9;
+    const bool no_empty = std::none_of(seq, seq, watch);
+    const int no_empty_calls = g_calls;
+    std::printf("none_of_miss=%d none_of_miss_calls=%d\n", no_miss ? 1 : 0, no_miss_calls);
+    std::printf("none_of_front=%d none_of_front_calls=%d\n", no_front ? 1 : 0, no_front_calls);
+    std::printf("none_of_mid=%d none_of_mid_calls=%d\n", no_mid ? 1 : 0, no_mid_calls);
+    std::printf("none_of_empty=%d none_of_empty_calls=%d\n", no_empty ? 1 : 0, no_empty_calls);
+    g_calls = 0;
+    g_want = 0;
+    const bool no_one = std::none_of(one, one + 1, watch);
+    const int no_one_calls = g_calls;
+    g_calls = 0;
+    g_want = 8;
+    const bool no_one_hit = std::none_of(one, one + 1, watch);
+    std::printf("none_of_one=%d\n", (no_one && no_one_calls == 1 && !no_one_hit && g_calls == 1) ? 1 : 0);
+    g_calls = 0;
+    g_want = 1;
+    const bool no_null = std::none_of(zn, zn, watch);
+    std::printf("none_of_null=%d none_of_null_calls=%d\n", no_null ? 1 : 0, g_calls);
+    std::printf("none_of_keep=%d\n", std::memcmp(seq, kept, sizeof seq) == 0 ? 1 : 0);
+    std::printf("none_of_eq=%d none_of_eq_empty=%d\n", std::none_of(eqs, eqs + 3, eq_is_one) ? 1 : 0,
+                std::none_of(eqs, eqs, eq_is_one) ? 1 : 0);
+    std::printf("none_of_nodef=%d none_of_nodef_empty=%d\n", std::none_of(nds, nds + 3, nd_is_one) ? 1 : 0,
+                std::none_of(nds, nds, nd_is_one) ? 1 : 0);
+    std::printf("none_of_pred=%d none_of_pred_empty=%d\n", std::none_of(preds, preds + 3, pred_only_is_one) ? 1 : 0,
+                std::none_of(preds, preds, pred_only_is_one) ? 1 : 0);
+
+    int fill_all[] = {9, 4, 1, 4};
+    std::fill(fill_all, fill_all + 4, 7);
+    std::printf("fill_all=%d,%d,%d,%d\n", fill_all[0], fill_all[1], fill_all[2], fill_all[3]);
+    int fill_span[] = {9, 4, 1, 4};
+    std::fill(fill_span, fill_span + 3, 7);
+    std::printf("fill_span=%d,%d,%d,%d\n", fill_span[0], fill_span[1], fill_span[2], fill_span[3]);
+    int fill_emp[] = {9, 4, 1, 4};
+    std::fill(fill_emp, fill_emp, 0);
+    std::printf("fill_empty=%d,%d,%d,%d\n", fill_emp[0], fill_emp[1], fill_emp[2], fill_emp[3]);
+    int fill_one_a[] = {8};
+    std::fill(fill_one_a, fill_one_a + 1, 3);
+    std::printf("fill_one=%d\n", fill_one_a[0]);
+    std::fill(zn, zn, 0);
+    std::printf("fill_null=%d\n", 1);
+    PredOnly fill_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly fill_value(9);
+    std::fill(fill_preds, fill_preds + 3, fill_value);
+    PredOnly fill_preds_empty[] = {PredOnly(4), PredOnly(5)};
+    std::fill(fill_preds_empty, fill_preds_empty, PredOnly(8));
+    std::printf("fill_pred=%d,%d,%d fill_pred_empty=%d,%d\n", fill_preds[0].x, fill_preds[1].x, fill_preds[2].x,
+                fill_preds_empty[0].x, fill_preds_empty[1].x);
+
+    int copy_src[] = {9, 4, 1, 4};
+    int copy_dst[] = {0, 0, 0, 0};
+    int* copy_end = std::copy(copy_src, copy_src + 4, copy_dst);
+    std::printf("copy_all=%d,%d,%d,%d end=%d src=%d,%d,%d,%d\n", copy_dst[0], copy_dst[1], copy_dst[2], copy_dst[3],
+                copy_end == copy_dst + 4 ? 1 : 0, copy_src[0], copy_src[1], copy_src[2], copy_src[3]);
+    int copy_span_src[] = {9, 4, 1, 4};
+    int copy_span_dst[] = {8, 8, 8, 8};
+    int* copy_span_end = std::copy(copy_span_src, copy_span_src + 3, copy_span_dst);
+    std::printf("copy_span=%d,%d,%d,%d end=%d\n", copy_span_dst[0], copy_span_dst[1], copy_span_dst[2],
+                copy_span_dst[3], copy_span_end == copy_span_dst + 3 ? 1 : 0);
+    int copy_emp_src[] = {9, 4, 1, 4};
+    int copy_emp_dst[] = {8, 7, 6, 5};
+    int* copy_emp_end = std::copy(copy_emp_src, copy_emp_src, copy_emp_dst);
+    std::printf("copy_empty=%d,%d,%d,%d end=%d\n", copy_emp_dst[0], copy_emp_dst[1], copy_emp_dst[2], copy_emp_dst[3],
+                copy_emp_end == copy_emp_dst ? 1 : 0);
+    int copy_one_src[] = {8};
+    int copy_one_dst[] = {0};
+    int* copy_one_end = std::copy(copy_one_src, copy_one_src + 1, copy_one_dst);
+    std::printf("copy_one=%d end=%d\n", copy_one_dst[0], copy_one_end == copy_one_dst + 1 ? 1 : 0);
+    int* copy_null_end = std::copy(zn, zn, zn);
+    std::printf("copy_null=%d\n", copy_null_end == nullptr ? 1 : 0);
+    PredOnly copy_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly copy_pred_dst[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    std::copy(copy_preds, copy_preds + 3, copy_pred_dst);
+    PredOnly copy_pred_empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly copy_pred_empty_dst[] = {PredOnly(4), PredOnly(5)};
+    std::copy(copy_pred_empty_src, copy_pred_empty_src, copy_pred_empty_dst);
+    std::printf("copy_pred=%d,%d,%d,%d copy_pred_empty=%d,%d\n", copy_pred_dst[0].x, copy_pred_dst[1].x,
+                copy_pred_dst[2].x, copy_pred_dst[3].x, copy_pred_empty_dst[0].x, copy_pred_empty_dst[1].x);
+    int copy_adj[] = {1, 2, 3, 0, 0, 0};
+    int* copy_adj_end = std::copy(copy_adj, copy_adj + 3, copy_adj + 3);
+    std::printf("copy_adj=%d,%d,%d,%d,%d,%d end=%d\n", copy_adj[0], copy_adj[1], copy_adj[2], copy_adj[3], copy_adj[4],
+                copy_adj[5], copy_adj_end == copy_adj + 6 ? 1 : 0);
+
+    int copy_n_src[] = {9, 4, 1, 4};
+    int copy_n_dst[] = {0, 0, 0, 0};
+    int* copy_n_end = std::copy_n(copy_n_src, static_cast<std::size_t>(4), copy_n_dst);
+    std::printf("copy_n_all=%d,%d,%d,%d end=%d src=%d,%d,%d,%d\n", copy_n_dst[0], copy_n_dst[1], copy_n_dst[2],
+                copy_n_dst[3], copy_n_end == copy_n_dst + 4 ? 1 : 0, copy_n_src[0], copy_n_src[1], copy_n_src[2],
+                copy_n_src[3]);
+    int copy_n_span_src[] = {9, 4, 1, 4};
+    int copy_n_span_dst[] = {8, 8, 8, 8};
+    int* copy_n_span_end = std::copy_n(copy_n_span_src, static_cast<std::size_t>(3), copy_n_span_dst);
+    std::printf("copy_n_span=%d,%d,%d,%d end=%d\n", copy_n_span_dst[0], copy_n_span_dst[1], copy_n_span_dst[2],
+                copy_n_span_dst[3], copy_n_span_end == copy_n_span_dst + 3 ? 1 : 0);
+    int copy_n_emp_src[] = {9, 4, 1, 4};
+    int copy_n_emp_dst[] = {8, 7, 6, 5};
+    int* copy_n_emp_end = std::copy_n(copy_n_emp_src, static_cast<std::size_t>(0), copy_n_emp_dst);
+    std::printf("copy_n_empty=%d,%d,%d,%d end=%d\n", copy_n_emp_dst[0], copy_n_emp_dst[1], copy_n_emp_dst[2],
+                copy_n_emp_dst[3], copy_n_emp_end == copy_n_emp_dst ? 1 : 0);
+    int copy_n_one_src[] = {8};
+    int copy_n_one_dst[] = {0};
+    int* copy_n_one_end = std::copy_n(copy_n_one_src, static_cast<std::size_t>(1), copy_n_one_dst);
+    std::printf("copy_n_one=%d end=%d\n", copy_n_one_dst[0], copy_n_one_end == copy_n_one_dst + 1 ? 1 : 0);
+    int* copy_n_null_end =
+        std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    std::printf("copy_n_null=%d\n", copy_n_null_end == nullptr ? 1 : 0);
+    int copy_n_null_src_dst[] = {8, 7, 6, 5};
+    int* copy_n_null_src_end =
+        std::copy_n(static_cast<int*>(nullptr), static_cast<std::size_t>(0), copy_n_null_src_dst);
+    std::printf("copy_n_null_src=%d,%d,%d,%d end=%d\n", copy_n_null_src_dst[0], copy_n_null_src_dst[1],
+                copy_n_null_src_dst[2], copy_n_null_src_dst[3], copy_n_null_src_end == copy_n_null_src_dst ? 1 : 0);
+    int copy_n_null_dst_src[] = {9, 4, 1, 4};
+    int* copy_n_null_dst_end =
+        std::copy_n(copy_n_null_dst_src, static_cast<std::size_t>(0), static_cast<int*>(nullptr));
+    std::printf("copy_n_null_dst=%d src=%d,%d,%d,%d\n", copy_n_null_dst_end == nullptr ? 1 : 0, copy_n_null_dst_src[0],
+                copy_n_null_dst_src[1], copy_n_null_dst_src[2], copy_n_null_dst_src[3]);
+    PredOnly copy_n_preds[] = {PredOnly(3), PredOnly(1), PredOnly(3)};
+    PredOnly copy_n_pred_dst[] = {PredOnly(0), PredOnly(0), PredOnly(0), PredOnly(5)};
+    std::copy_n(copy_n_preds, static_cast<std::size_t>(3), copy_n_pred_dst);
+    PredOnly copy_n_pred_empty_src[] = {PredOnly(4), PredOnly(5)};
+    PredOnly copy_n_pred_empty_dst[] = {PredOnly(4), PredOnly(5)};
+    std::copy_n(copy_n_pred_empty_src, static_cast<std::size_t>(0), copy_n_pred_empty_dst);
+    std::printf("copy_n_pred=%d,%d,%d,%d copy_n_pred_empty=%d,%d\n", copy_n_pred_dst[0].x, copy_n_pred_dst[1].x,
+                copy_n_pred_dst[2].x, copy_n_pred_dst[3].x, copy_n_pred_empty_dst[0].x, copy_n_pred_empty_dst[1].x);
+    int copy_n_adj[] = {1, 2, 3, 0, 0, 0};
+    int* copy_n_adj_end = std::copy_n(copy_n_adj, static_cast<std::size_t>(3), copy_n_adj + 3);
+    std::printf("copy_n_adj=%d,%d,%d,%d,%d,%d end=%d\n", copy_n_adj[0], copy_n_adj[1], copy_n_adj[2], copy_n_adj[3],
+                copy_n_adj[4], copy_n_adj[5], copy_n_adj_end == copy_n_adj + 6 ? 1 : 0);
     return 0;
 }

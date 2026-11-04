@@ -30,7 +30,59 @@
 // a < b. greater returns b < a. They do not invent a third value. A type
 // that does not support the operator fails the template rather than
 // returning a stand-in.
+//
+// std::plus, std::minus, std::multiplies, std::divides, std::modulus, and
+// std::negate are function objects for one type argument. They are not
+// function pointers. A type that does not support the operator fails the
+// template. A zero bool divides or modulus, and a floating divides of
+// zero, use the zero-divisor check. Other bool and non-integer calls use
+// the operator. There is no transparent call (std::plus<> and the same
+// five).
+//
+// A signed integer plus, minus, or multiplies whose result does not fit
+// is __prism_check with class INT-SIGNED-OVF, then __builtin_trap. That
+// path does not return a wrapped result. An unsigned integer plus, minus,
+// or multiplies whose result does not fit is __prism_check with class
+// FUNC-CONTRACT, then __builtin_trap. That path does not return a wrapped
+// result. The limits are formed so the test itself does not overflow.
+//
+// Integer divides or modulus with a zero right operand is __prism_check
+// with class FUNC-CONTRACT and message "std::divides divisor is zero" or
+// "std::modulus divisor is zero", then __builtin_trap. That path does not
+// return a quotient or a remainder. A signed divides of the type minimum
+// by -1 is that same class, message "std::divides of the minimum by -1",
+// then __builtin_trap, and does not return a quotient. A signed modulus
+// of the type minimum by -1 is that same class, message
+// "std::modulus of the minimum by -1", then __builtin_trap, and does not
+// return a remainder. A floating divides by zero is the divides message,
+// then __builtin_trap, and does not return a quotient.
+//
+// negate of the most negative signed value is __prism_check with class
+// INT-SIGNED-OVF, then __builtin_trap. That path does not negate it.
+// Unsigned negate is the built-in negation.
+//
+// std::logical_and, std::logical_or, and std::logical_not are function
+// objects for one type argument. They are not function pointers.
+// logical_and returns the && of its arguments. logical_or returns the ||
+// of its arguments. logical_not returns the ! of its argument. The result
+// is that operator. A missing operator fails the template.
+// There is no stand-in boolean and no void specialization, so
+// std::logical_and<> and the same two are not declared.
 // This is not PROVED and not CLEAN.
+//
+// std::bit_and, std::bit_or, and std::bit_xor are function objects for one
+// type argument. They are not function pointers. bit_and returns the & of
+// its arguments. bit_or returns the | of its arguments. bit_xor returns
+// the ^ of its arguments. Each returns that operator. A type that does not
+// provide the operator fails the template. There is no stand-in integer
+// and no void specialization, so std::bit_and<> and the same two are not
+// declared.
+//
+// std::bit_not is a function object for one type argument. It is not a
+// function pointer. bit_not returns the ~ of its argument. The result is
+// that operator. A type that does not provide the operator fails the
+// template. There is no stand-in integer and no void specialization, so
+// std::bit_not<> is not declared.
 //
 // Not declared, so a unit that names one fails to compile against this header
 // and pir falls back to libstdc++ (extra.cxx_models). A partial header is
@@ -176,20 +228,53 @@ _Not_fn<_Res (*)(_Params...) noexcept> not_fn(_Res (*__f)(_Params...) noexcept) 
 
 }  // namespace std
 
-// The rest of <bits/stl_function.h> (arithmetic functors, the transparent
-// trait map's model names) stays. equal_to, not_equal_to, less, and greater
-// are renamed for that include so this header can define them. identity is
-// renamed for <bits/ranges_cmp.h> so ranges::less stays that header's.
+// plus, minus, multiplies, divides, modulus, and negate are renamed for
+// that include so this header can define them for one type argument.
+// equal_to, not_equal_to, less, and greater are renamed the same way.
+// logical_and, logical_or, and logical_not are renamed the same way.
+// bit_and, bit_or, and bit_xor are renamed the same way.
+// bit_not is renamed the same way.
+// identity is renamed for <bits/ranges_cmp.h> so ranges::less stays that
+// header's. The rest of <bits/stl_function.h> (the
+// transparent-trait helpers) stays. If that bits header
+// was already included, the rename is skipped and the libstdc++ objects
+// stay, and this header does not define a second one.
 #ifndef _STL_FUNCTION_H
 #define equal_to _Prism_libstd_equal_to
 #define not_equal_to _Prism_libstd_not_equal_to
 #define less _Prism_libstd_less
 #define greater _Prism_libstd_greater
+#define plus _Prism_libstd_plus
+#define minus _Prism_libstd_minus
+#define multiplies _Prism_libstd_multiplies
+#define divides _Prism_libstd_divides
+#define modulus _Prism_libstd_modulus
+#define negate _Prism_libstd_negate
+#define logical_and _Prism_libstd_logical_and
+#define logical_or _Prism_libstd_logical_or
+#define logical_not _Prism_libstd_logical_not
+#define bit_and _Prism_libstd_bit_and
+#define bit_or _Prism_libstd_bit_or
+#define bit_xor _Prism_libstd_bit_xor
+#define bit_not _Prism_libstd_bit_not
 #include <bits/stl_function.h>
 #undef equal_to
 #undef not_equal_to
 #undef less
 #undef greater
+#undef plus
+#undef minus
+#undef multiplies
+#undef divides
+#undef modulus
+#undef negate
+#undef logical_and
+#undef logical_or
+#undef logical_not
+#undef bit_and
+#undef bit_or
+#undef bit_xor
+#undef bit_not
 #define _PRISM_MODEL_FUNCTIONAL_CMP 1
 #endif
 
@@ -306,6 +391,263 @@ struct greater<void> {
     }
 
     using is_transparent = __is_transparent;
+};
+
+// One type argument. The call is that operator. A missing operator fails
+// the requires clause. The fitting integer result is the operator's value.
+// The trap arms do not return it.
+
+template <typename _Tp>
+struct plus {
+    constexpr _Tp operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a + __b; }
+    {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if ((__b > static_cast<_Tp>(0) && __a > __lim - __b) ||
+                    (__b < static_cast<_Tp>(0) && __a < __min - __b)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::plus result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a + __b);
+                }
+            } else {
+                if (__a > static_cast<_Tp>(-1) - __b) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::plus result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a + __b);
+                }
+            }
+        } else {
+            return __a + __b;
+        }
+    }
+};
+
+template <typename _Tp>
+struct minus {
+    constexpr _Tp operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a - __b; }
+    {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if ((__b < static_cast<_Tp>(0) && __a > __lim + __b) ||
+                    (__b > static_cast<_Tp>(0) && __a < __min + __b)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::minus result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a - __b);
+                }
+            } else {
+                if (__a < __b) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::minus result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a - __b);
+                }
+            }
+        } else {
+            return __a - __b;
+        }
+    }
+};
+
+template <typename _Tp>
+struct multiplies {
+    constexpr _Tp operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a * __b; }
+    {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if ((__a == __min && __b == static_cast<_Tp>(-1)) || (__b == __min && __a == static_cast<_Tp>(-1)) ||
+                    (__a > static_cast<_Tp>(0) && __b > static_cast<_Tp>(0) && __a > __lim / __b) ||
+                    (__a > static_cast<_Tp>(0) && __b < static_cast<_Tp>(0) && __b < __min / __a) ||
+                    (__a < static_cast<_Tp>(0) && __b > static_cast<_Tp>(0) && __a < __min / __b) ||
+                    (__a < static_cast<_Tp>(0) && __b < static_cast<_Tp>(0) && __a < __lim / __b)) {
+                    __prism_check(0, "INT-SIGNED-OVF", "std::multiplies result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a * __b);
+                }
+            } else {
+                if (__b != static_cast<_Tp>(0) && __a > static_cast<_Tp>(-1) / __b) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::multiplies result does not fit in T");
+                    __builtin_trap();
+                } else {
+                    return static_cast<_Tp>(__a * __b);
+                }
+            }
+        } else {
+            return __a * __b;
+        }
+    }
+};
+
+template <typename _Tp>
+struct divides {
+    constexpr _Tp operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a / __b; }
+    {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if (__b == static_cast<_Tp>(0)) {
+                __prism_check(0, "FUNC-CONTRACT", "std::divides divisor is zero");
+                __builtin_trap();
+            }
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if (__a == __min && __b == static_cast<_Tp>(-1)) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::divides of the minimum by -1");
+                    __builtin_trap();
+                }
+            }
+            return static_cast<_Tp>(__a / __b);
+        } else if constexpr (is_same_v<remove_cv_t<_Tp>, bool> || is_floating_point_v<_Tp>) {
+            if (__b == static_cast<_Tp>(0)) {
+                __prism_check(0, "FUNC-CONTRACT", "std::divides divisor is zero");
+                __builtin_trap();
+            }
+            return static_cast<_Tp>(__a / __b);
+        } else {
+            return __a / __b;
+        }
+    }
+};
+
+template <typename _Tp>
+struct modulus {
+    constexpr _Tp operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a % __b; }
+    {
+        if constexpr (is_integral_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            if (__b == static_cast<_Tp>(0)) {
+                __prism_check(0, "FUNC-CONTRACT", "std::modulus divisor is zero");
+                __builtin_trap();
+            }
+            if constexpr (is_signed_v<_Tp>) {
+                using _Up = make_unsigned_t<_Tp>;
+                const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+                const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+                if (__a == __min && __b == static_cast<_Tp>(-1)) {
+                    __prism_check(0, "FUNC-CONTRACT", "std::modulus of the minimum by -1");
+                    __builtin_trap();
+                }
+            }
+            return static_cast<_Tp>(__a % __b);
+        } else if constexpr (is_same_v<remove_cv_t<_Tp>, bool>) {
+            if (__b == static_cast<_Tp>(0)) {
+                __prism_check(0, "FUNC-CONTRACT", "std::modulus divisor is zero");
+                __builtin_trap();
+            }
+            return static_cast<_Tp>(__a % __b);
+        } else {
+            return __a % __b;
+        }
+    }
+};
+
+template <typename _Tp>
+struct negate {
+    constexpr _Tp operator()(const _Tp& __x) const
+        requires requires { -__x; }
+    {
+        if constexpr (is_integral_v<_Tp> && is_signed_v<_Tp> && !is_same_v<remove_cv_t<_Tp>, bool>) {
+            using _Up = make_unsigned_t<_Tp>;
+            const _Tp __lim = static_cast<_Tp>(static_cast<_Up>(-1) >> 1);
+            const _Tp __min = static_cast<_Tp>(static_cast<_Tp>(-1) - __lim);
+            if (__x == __min) {
+                __prism_check(0, "INT-SIGNED-OVF", "std::negate of the most negative value");
+                __builtin_trap();
+            } else {
+                return static_cast<_Tp>(-__x);
+            }
+        } else {
+            return -__x;
+        }
+    }
+};
+
+// One type argument. The call is that operator. A missing operator fails
+// the requires clause. The result is that operator. There is no stand-in
+// boolean and no void specialization.
+template <typename _Tp>
+struct logical_and {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a && __b; }
+    {
+        return __a && __b;
+    }
+};
+
+template <typename _Tp>
+struct logical_or {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a || __b; }
+    {
+        return __a || __b;
+    }
+};
+
+template <typename _Tp>
+struct logical_not {
+    constexpr decltype(auto) operator()(const _Tp& __x) const
+        requires requires { !__x; }
+    {
+        return !__x;
+    }
+};
+
+// One type argument. The call is that operator. A missing operator fails
+// the requires clause. The result is that operator. There is no stand-in
+// integer and no void specialization.
+template <typename _Tp>
+struct bit_and {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a & __b; }
+    {
+        return __a & __b;
+    }
+};
+
+template <typename _Tp>
+struct bit_or {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a | __b; }
+    {
+        return __a | __b;
+    }
+};
+
+template <typename _Tp>
+struct bit_xor {
+    constexpr decltype(auto) operator()(const _Tp& __a, const _Tp& __b) const
+        requires requires { __a ^ __b; }
+    {
+        return __a ^ __b;
+    }
+};
+
+// One argument. The call is ~ of that argument. A missing operator~ fails
+// the requires clause. The result is that operator. There is no stand-in
+// integer and no void specialization.
+template <typename _Tp>
+struct bit_not {
+    constexpr decltype(auto) operator()(const _Tp& __x) const
+        requires requires { ~__x; }
+    {
+        return ~__x;
+    }
 };
 #endif
 
