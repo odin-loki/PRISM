@@ -11,6 +11,8 @@
 // -1. trunc(1.5) is 1 and trunc(-1.5) is -1. A NaN stays a NaN, not zero.
 // An infinity stays that infinity. A negative zero stays a negative zero.
 // floor, ceil, and trunc are not PROVED and not CLEAN.
+// fdim, fmod, remainder, hypot, and fma follow the same NaN and infinity
+// rules as libstdc++. They are not PROVED and not CLEAN.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -214,5 +216,99 @@ int main(int argc, char** argv) {
     std::printf("flmzl=%d\n", (flmzl == 0.0L && std::signbit(flmzl)) ? 1 : 0);
     std::printf("cemzl=%d\n", (cemzl == 0.0L && std::signbit(cemzl)) ? 1 : 0);
     std::printf("trmzl=%d\n", (trmzl == 0.0L && std::signbit(trmzl)) ? 1 : 0);
+
+    volatile double fd3 = 3.0;
+    volatile double fd1 = 1.0;
+    volatile double fdz = std::fdim(fd1, fd3);
+    std::printf("fd31=%d\n", std::fdim(fd3, fd1) == 2.0 ? 1 : 0);
+    std::printf("fd13=%d\n", (fdz == 0.0 && !std::signbit(fdz)) ? 1 : 0);
+    std::printf("fdnan=%d\n", std::isnan(std::fdim(nand, fd1)) ? 1 : 0);
+    std::printf("fdnan2=%d\n", std::isnan(std::fdim(fd1, nand)) ? 1 : 0);
+    std::printf("fdpinf=%d\n", std::fdim(pinf, fd1) == pinf ? 1 : 0);
+    std::printf("fdninf=%d\n", (std::fdim(ninf, fd1) == 0.0 && !std::signbit(std::fdim(ninf, fd1))) ? 1 : 0);
+    volatile float fd3f = 3.0f;
+    volatile float fd1f = 1.0f;
+    volatile float fdzf = std::fdim(fd1f, fd3f);
+    std::printf("fd31f=%d\n", std::fdim(fd3f, fd1f) == 2.0f ? 1 : 0);
+    std::printf("fd13f=%d\n", (fdzf == 0.0f && !std::signbit(fdzf)) ? 1 : 0);
+    std::printf("fdnanf=%d\n", std::isnan(std::fdim(nanf, fd1f)) ? 1 : 0);
+    volatile long double fd3l = 3.0L;
+    volatile long double fd1l = 1.0L;
+    volatile long double fdzl = std::fdim(fd1l, fd3l);
+    std::printf("fd31l=%d\n", std::fdim(fd3l, fd1l) == 2.0L ? 1 : 0);
+    std::printf("fd13l=%d\n", (fdzl == 0.0L && !std::signbit(fdzl)) ? 1 : 0);
+    std::printf("fdnanl=%d\n", std::isnan(std::fdim(nanl, fd1l)) ? 1 : 0);
+
+    volatile double fm5 = 5.0;
+    volatile double fm2 = 2.0;
+    std::printf("fm52=%d\n", std::fmod(fm5, fm2) == 1.0 ? 1 : 0);
+    std::printf("fmn52=%d\n", std::fmod(-fm5, fm2) == -1.0 ? 1 : 0);
+    std::printf("fm0=%d\n", std::isnan(std::fmod(fm5, z)) ? 1 : 0);
+    std::printf("fmnan=%d\n", std::isnan(std::fmod(nand, fm2)) ? 1 : 0);
+    std::printf("fminf=%d\n", std::isnan(std::fmod(pinf, fm2)) ? 1 : 0);
+    volatile float fm5f = 5.0f;
+    volatile float fm2f = 2.0f;
+    std::printf("fm52f=%d\n", std::fmod(fm5f, fm2f) == 1.0f ? 1 : 0);
+    std::printf("fm0f=%d\n", std::isnan(std::fmod(fm5f, f0)) ? 1 : 0);
+    std::printf("fmnanf=%d\n", std::isnan(std::fmod(nanf, fm2f)) ? 1 : 0);
+    volatile long double fm5l = 5.0L;
+    volatile long double fm2l = 2.0L;
+    std::printf("fm52l=%d\n", std::fmod(fm5l, fm2l) == 1.0L ? 1 : 0);
+    std::printf("fm0l=%d\n", std::isnan(std::fmod(fm5l, l0)) ? 1 : 0);
+    std::printf("fmnanl=%d\n", std::isnan(std::fmod(nanl, fm2l)) ? 1 : 0);
+
+    std::printf("rm52=%d\n", std::remainder(fm5, fm2) == 1.0 ? 1 : 0);
+    std::printf("rmn52=%d\n", std::remainder(-fm5, fm2) == -1.0 ? 1 : 0);
+    std::printf("rm0=%d\n", std::isnan(std::remainder(fm5, z)) ? 1 : 0);
+    std::printf("rmnan=%d\n", std::isnan(std::remainder(nand, fm2)) ? 1 : 0);
+    std::printf("rminf=%d\n", std::isnan(std::remainder(pinf, fm2)) ? 1 : 0);
+    std::printf("rm52f=%d\n", std::remainder(fm5f, fm2f) == 1.0f ? 1 : 0);
+    std::printf("rm0f=%d\n", std::isnan(std::remainder(fm5f, f0)) ? 1 : 0);
+    std::printf("rmnanf=%d\n", std::isnan(std::remainder(nanf, fm2f)) ? 1 : 0);
+    std::printf("rm52l=%d\n", std::remainder(fm5l, fm2l) == 1.0L ? 1 : 0);
+    std::printf("rm0l=%d\n", std::isnan(std::remainder(fm5l, l0)) ? 1 : 0);
+    std::printf("rmnanl=%d\n", std::isnan(std::remainder(nanl, fm2l)) ? 1 : 0);
+
+    volatile double hy3 = 3.0;
+    volatile double hy4 = 4.0;
+    volatile double hy00 = std::hypot(z, d0);
+    std::printf("hy34=%d\n", std::hypot(hy3, hy4) == 5.0 ? 1 : 0);
+    std::printf("hy00=%d\n", (hy00 == 0.0 && !std::signbit(hy00)) ? 1 : 0);
+    std::printf("hynan=%d\n", std::isnan(std::hypot(nand, hy3)) ? 1 : 0);
+    std::printf("hypinf=%d\n", std::hypot(pinf, one) == pinf ? 1 : 0);
+    std::printf("hyninf=%d\n", std::hypot(ninf, one) == pinf ? 1 : 0);
+    std::printf("hynaninf=%d\n", std::hypot(nand, pinf) == pinf ? 1 : 0);
+    volatile float hy3f = 3.0f;
+    volatile float hy4f = 4.0f;
+    volatile float hy00f = std::hypot(f0, f0);
+    std::printf("hy34f=%d\n", std::hypot(hy3f, hy4f) == 5.0f ? 1 : 0);
+    std::printf("hy00f=%d\n", (hy00f == 0.0f && !std::signbit(hy00f)) ? 1 : 0);
+    std::printf("hynanf=%d\n", std::isnan(std::hypot(nanf, fone)) ? 1 : 0);
+    std::printf("hypinff=%d\n", std::hypot(pinff, fone) == pinff ? 1 : 0);
+    volatile long double hy3l = 3.0L;
+    volatile long double hy4l = 4.0L;
+    volatile long double hy00l = std::hypot(l0, l0);
+    std::printf("hy34l=%d\n", std::hypot(hy3l, hy4l) == 5.0L ? 1 : 0);
+    std::printf("hy00l=%d\n", (hy00l == 0.0L && !std::signbit(hy00l)) ? 1 : 0);
+    std::printf("hynanl=%d\n", std::isnan(std::hypot(nanl, lone)) ? 1 : 0);
+    std::printf("hypinfl=%d\n", std::hypot(pinfl, lone) == pinfl ? 1 : 0);
+
+    volatile double fa2 = 2.0;
+    std::printf("fma231=%d\n", std::fma(fa2, three, one) == 7.0 ? 1 : 0);
+    std::printf("fmanx=%d\n", std::isnan(std::fma(nand, fa2, one)) ? 1 : 0);
+    std::printf("fmany=%d\n", std::isnan(std::fma(fa2, nand, one)) ? 1 : 0);
+    std::printf("fmanz=%d\n", std::isnan(std::fma(fa2, one, nand)) ? 1 : 0);
+    std::printf("fmapinf=%d\n", std::fma(pinf, fa2, one) == pinf ? 1 : 0);
+    std::printf("fmainf0=%d\n", std::isnan(std::fma(pinf, z, one)) ? 1 : 0);
+    volatile float fa2f = 2.0f;
+    volatile float fa3f = 3.0f;
+    std::printf("fma231f=%d\n", std::fma(fa2f, fa3f, fone) == 7.0f ? 1 : 0);
+    std::printf("fmanxf=%d\n", std::isnan(std::fma(nanf, fa2f, fone)) ? 1 : 0);
+    std::printf("fmapinff=%d\n", std::fma(pinff, fa2f, fone) == pinff ? 1 : 0);
+    volatile long double fa2l = 2.0L;
+    volatile long double fa3l = 3.0L;
+    std::printf("fma231l=%d\n", std::fma(fa2l, fa3l, lone) == 7.0L ? 1 : 0);
+    std::printf("fmanxl=%d\n", std::isnan(std::fma(nanl, fa2l, lone)) ? 1 : 0);
+    std::printf("fmapinfl=%d\n", std::fma(pinfl, fa2l, lone) == pinfl ? 1 : 0);
     return 0;
 }

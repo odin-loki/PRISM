@@ -24,6 +24,13 @@
 // in place of a NaN. An infinity stays that infinity. An integer argument
 // is not an overload. floor, ceil, and trunc are not PROVED and not CLEAN.
 //
+// fma, hypot, remainder, fmod, and fdim are declared for float, double,
+// and long double. A NaN argument is returned as that NaN, not 0. fmod and
+// remainder of a zero divisor return a NaN. hypot of an infinity is that
+// infinity's magnitude. fdim of x <= y is +0. An integer argument is not
+// an overload. fma, hypot, remainder, fmod, and fdim are not PROVED and
+// not CLEAN.
+//
 // sin, cos, tan, exp, log, and pow are not declared, and neither is the
 // rest of <cmath>. A use of them fails to compile against this header and
 // pir falls back to libstdc++. A partial header is intentional.
@@ -45,8 +52,8 @@
 // include from defining the macros. This file does not include <math.h>,
 // so sin, cos, tan, exp, log, and pow stay undeclared. If <math.h> was
 // already included, the undefs drop the macros. copysign, fmin, fmax,
-// floor, ceil, and trunc are cleared the same way when a macro of that
-// name is present.
+// floor, ceil, trunc, fma, hypot, remainder, fmod, and fdim are cleared
+// the same way when a macro of that name is present.
 #define _MATH_H 1
 #undef isfinite
 #undef isinf
@@ -58,6 +65,11 @@
 #undef floor
 #undef ceil
 #undef trunc
+#undef fma
+#undef hypot
+#undef remainder
+#undef fmod
+#undef fdim
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -213,6 +225,131 @@ constexpr long double ceil(long double __x) { return __builtin_ceill(__x); }
 constexpr double trunc(double __x) { return __builtin_trunc(__x); }
 constexpr float trunc(float __x) { return __builtin_truncf(__x); }
 constexpr long double trunc(long double __x) { return __builtin_truncl(__x); }
+
+// Positive difference. A NaN stays that NaN. x <= y is +0, not a negative
+// and not a stand-in for a NaN. An infinity greater than y stays infinite.
+// An integer argument is not an overload.
+constexpr double fdim(double __x, double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x <= __y) return +0.0;
+    return __x - __y;
+}
+
+constexpr float fdim(float __x, float __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x <= __y) return +0.0f;
+    return __x - __y;
+}
+
+constexpr long double fdim(long double __x, long double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x <= __y) return +0.0L;
+    return __x - __y;
+}
+
+// Remainder x - n*y, n = trunc(x/y), with the sign of x. A NaN stays that
+// NaN. A zero divisor returns a NaN, not zero. Otherwise the builtin result
+// is returned. An infinity stays an infinity when that is the IEEE result.
+// An integer argument is not an overload.
+constexpr double fmod(double __x, double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0) return __builtin_nan("");
+    return __builtin_fmod(__x, __y);
+}
+
+constexpr float fmod(float __x, float __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0f) return __builtin_nanf("");
+    return __builtin_fmodf(__x, __y);
+}
+
+constexpr long double fmod(long double __x, long double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0L) return __builtin_nanl("");
+    return __builtin_fmodl(__x, __y);
+}
+
+// IEEE remainder, n nearest to x/y with ties to even. A NaN stays that NaN.
+// A zero divisor returns a NaN, not zero. Otherwise the builtin result is
+// returned. An integer argument is not an overload.
+constexpr double remainder(double __x, double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0) return __builtin_nan("");
+    return __builtin_remainder(__x, __y);
+}
+
+constexpr float remainder(float __x, float __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0f) return __builtin_nanf("");
+    return __builtin_remainderf(__x, __y);
+}
+
+constexpr long double remainder(long double __x, long double __y) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__y == 0.0L) return __builtin_nanl("");
+    return __builtin_remainderl(__x, __y);
+}
+
+// sqrt(x*x + y*y). An infinity wins, including over a NaN, and the result
+// is +infinity. A NaN with a finite partner stays that NaN. A pair of zeros
+// is +0. Otherwise the builtin result is returned. An integer argument is
+// not an overload.
+constexpr double hypot(double __x, double __y) {
+    if (isinf(__x) || isinf(__y)) return __builtin_huge_val();
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x == 0.0 && __y == 0.0) return +0.0;
+    return __builtin_hypot(__x, __y);
+}
+
+constexpr float hypot(float __x, float __y) {
+    if (isinf(__x) || isinf(__y)) return __builtin_huge_valf();
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x == 0.0f && __y == 0.0f) return +0.0f;
+    return __builtin_hypotf(__x, __y);
+}
+
+constexpr long double hypot(long double __x, long double __y) {
+    if (isinf(__x) || isinf(__y)) return __builtin_huge_vall();
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (__x == 0.0L && __y == 0.0L) return +0.0L;
+    return __builtin_hypotl(__x, __y);
+}
+
+// Fused (x * y) + z. A NaN argument is returned as that NaN, not 0.
+// Otherwise the builtin result is returned. An infinity stays an infinity
+// when that is the IEEE result. An integer argument is not an overload.
+constexpr double fma(double __x, double __y, double __z) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (isnan(__z)) return __z;
+    return __builtin_fma(__x, __y, __z);
+}
+
+constexpr float fma(float __x, float __y, float __z) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (isnan(__z)) return __z;
+    return __builtin_fmaf(__x, __y, __z);
+}
+
+constexpr long double fma(long double __x, long double __y, long double __z) {
+    if (isnan(__x)) return __x;
+    if (isnan(__y)) return __y;
+    if (isnan(__z)) return __z;
+    return __builtin_fmal(__x, __y, __z);
+}
 
 }  // namespace std
 
