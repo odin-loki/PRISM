@@ -64,9 +64,9 @@ friend bool operator==(const flat_map& __x, const flat_map& __y) {
 are not declared. Before this slice the list said container equality was
 not declared.
 
-`operator<` and `operator>` were not changed. They still walk the node
-chain, newest pair first, not key order. That is a separate defect and is
-not fixed here.
+`operator<` and `operator>` walked the node chain, newest pair first, not
+key order. That was a separate defect. It is fixed in the next commit on
+this branch (`flat-map-less.md` "Key order").
 
 ## Tests
 

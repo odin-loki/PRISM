@@ -16,11 +16,16 @@
 // value, or call operator[] or at(). "swap" exchanges the node pointer and
 // the size. Two empty maps swap to empty and do not load a node. Swap does
 // not allocate, free, or construct a key. Self-swap does not free the nodes.
-// "less" orders two flat_maps along the node chain, newest pair first. Two
-// empty maps compare not-less and do not load a node. An empty map is less
-// than a non-empty map, and that path does not load the empty map's node.
-// The walk stops at the first deciding pair and does not read past the
-// shorter map. It does not return T{}. "greater" is that order with the
+// "less" orders two flat_maps lexicographically in key order, whatever the
+// insertion order. Two empty maps compare not-less and do not load a node.
+// An empty map is less than a non-empty map, and that path does not load
+// the empty map's node. The walk stops at the first deciding pair and does
+// not read past the shorter map: a mapped value of -1 sits on the largest
+// key, past the decision, and "poison" counts mapped < calls on it. Key <
+// calls include the _M_key_next scans, so they are not a measure of how far
+// the walk went. "order" holds the same pairs inserted in different orders;
+// "disagree" is two maps whose link order and key order give opposite
+// answers. It does not return T{}. "greater" is that order with the
 // arguments swapped: operator> returns __y < __x and uses the existing
 // operator<. Two empty maps compare not-greater and do not load a node. A
 // non-empty map is greater than an empty map, and that path does not load
@@ -491,7 +496,7 @@ static void swap_trace() {
 
 static void show_less(const char* name, int result) {
     std::printf("%s %d key_lt=%d mapped_lt=%d poison=%d copies=%d moves=%d mapped=%d\n", name, result, CountKey::lt,
-                CountMapped::lt, CountKey::poison + CountMapped::poison, CountKey::copies + CountMapped::copies,
+                CountMapped::lt, CountMapped::poison, CountKey::copies + CountMapped::copies,
                 CountKey::moves + CountMapped::moves, mapped_activity());
 }
 
@@ -542,6 +547,30 @@ static void less_trace() {
     tail_b[1] = 10;
     const int tail_ab = (tail_a < tail_b) ? 1 : 0;
     const int tail_ba = (tail_b < tail_a) ? 1 : 0;
+    std::flat_map<int, int> ord_a;
+    std::flat_map<int, int> ord_b;
+    ord_a[1] = 10;
+    ord_a[2] = 20;
+    ord_a[3] = 30;
+    ord_b[3] = 30;
+    ord_b[1] = 10;
+    ord_b[2] = 20;
+    const int ord_ab = (ord_a < ord_b) ? 1 : 0;
+    const int ord_ba = (ord_b < ord_a) ? 1 : 0;
+    std::flat_map<int, int> dis_a;
+    std::flat_map<int, int> dis_b;
+    dis_a[1] = 10;
+    dis_a[5] = 50;
+    dis_b[2] = 20;
+    dis_b[3] = 30;
+    const int dis_ab = (dis_a < dis_b) ? 1 : 0;
+    const int dis_ba = (dis_b < dis_a) ? 1 : 0;
+    std::flat_map<int, int> mix_a{{2, 20}, {1, 10}};
+    std::flat_map<int, int> mix_b;
+    mix_b[1] = 10;
+    mix_b[2] = 21;
+    const int mix_ab = (mix_a < mix_b) ? 1 : 0;
+    const int mix_ba = (mix_b < mix_a) ? 1 : 0;
     std::printf("empty %d\n", empty);
     std::printf("el %d\n", el);
     std::printf("le %d\n", le);
@@ -551,6 +580,9 @@ static void less_trace() {
     std::printf("prefix %d %d\n", pre, revpre);
     std::printf("early %d %d\n", early, early_ba);
     std::printf("tail %d %d\n", tail_ab, tail_ba);
+    std::printf("order %d %d\n", ord_ab, ord_ba);
+    std::printf("disagree %d %d\n", dis_ab, dis_ba);
+    std::printf("mixed %d %d\n", mix_ab, mix_ba);
 
     reset_counts();
     std::flat_map<CountKey, CountMapped> ke1;
@@ -573,16 +605,18 @@ static void less_trace() {
     std::flat_map<CountKey, CountMapped> ktwo_b;
     (void)ktwo_a.try_emplace(CountKey(1), 10);
     (void)ktwo_a.try_emplace(CountKey(2), 20);
-    (void)ktwo_b.try_emplace(CountKey(1), 10);
     (void)ktwo_b.try_emplace(CountKey(2), 20);
+    (void)ktwo_b.try_emplace(CountKey(1), 10);
     reset_counts();
     show_less("ktwo", (ktwo_a < ktwo_b) ? 1 : 0);
 
     std::flat_map<CountKey, CountMapped> kkey_a;
     std::flat_map<CountKey, CountMapped> kkey_b;
-    (void)kkey_a.try_emplace(CountKey(-1), -1);
+    (void)kkey_a.try_emplace(CountKey(9), -1);
+    (void)kkey_a.try_emplace(CountKey(1), 10);
     (void)kkey_a.try_emplace(CountKey(5), 50);
-    (void)kkey_b.try_emplace(CountKey(-1), -1);
+    (void)kkey_b.try_emplace(CountKey(9), -1);
+    (void)kkey_b.try_emplace(CountKey(1), 10);
     (void)kkey_b.try_emplace(CountKey(4), 40);
     reset_counts();
     show_less("kkey", (kkey_a < kkey_b) ? 1 : 0);
@@ -591,9 +625,9 @@ static void less_trace() {
 
     std::flat_map<CountKey, CountMapped> kmap_a;
     std::flat_map<CountKey, CountMapped> kmap_b;
-    (void)kmap_a.try_emplace(CountKey(-1), -1);
+    (void)kmap_a.try_emplace(CountKey(9), -1);
     (void)kmap_a.try_emplace(CountKey(2), 20);
-    (void)kmap_b.try_emplace(CountKey(-1), -1);
+    (void)kmap_b.try_emplace(CountKey(9), -1);
     (void)kmap_b.try_emplace(CountKey(2), 30);
     reset_counts();
     show_less("kmap", (kmap_a < kmap_b) ? 1 : 0);
@@ -601,7 +635,7 @@ static void less_trace() {
     std::flat_map<CountKey, CountMapped> kpre_s;
     std::flat_map<CountKey, CountMapped> kpre_l;
     (void)kpre_s.try_emplace(CountKey(1), 10);
-    (void)kpre_l.try_emplace(CountKey(-1), -1);
+    (void)kpre_l.try_emplace(CountKey(9), -1);
     (void)kpre_l.try_emplace(CountKey(1), 10);
     reset_counts();
     show_less("kpre", (kpre_s < kpre_l) ? 1 : 0);
@@ -610,9 +644,10 @@ static void less_trace() {
 
     std::flat_map<CountKey, CountMapped> kearly_a;
     std::flat_map<CountKey, CountMapped> kearly_b;
-    (void)kearly_a.try_emplace(CountKey(1), 10);
     (void)kearly_a.try_emplace(CountKey(5), 50);
-    (void)kearly_b.try_emplace(CountKey(-1), -1);
+    (void)kearly_a.try_emplace(CountKey(1), 10);
+    (void)kearly_a.try_emplace(CountKey(9), -1);
+    (void)kearly_b.try_emplace(CountKey(9), -1);
     (void)kearly_b.try_emplace(CountKey(1), 10);
     (void)kearly_b.try_emplace(CountKey(4), 40);
     reset_counts();
@@ -623,7 +658,7 @@ static void less_trace() {
 
 static void show_greater(const char* name, int result) {
     std::printf("%s %d key_lt=%d mapped_lt=%d poison=%d copies=%d moves=%d mapped=%d\n", name, result, CountKey::lt,
-                CountMapped::lt, CountKey::poison + CountMapped::poison, CountKey::copies + CountMapped::copies,
+                CountMapped::lt, CountMapped::poison, CountKey::copies + CountMapped::copies,
                 CountKey::moves + CountMapped::moves, mapped_activity());
 }
 
@@ -674,6 +709,30 @@ static void greater_trace() {
     tail_b[1] = 10;
     const int tail_ab = (tail_a > tail_b) ? 1 : 0;
     const int tail_ba = (tail_b > tail_a) ? 1 : 0;
+    std::flat_map<int, int> ord_a;
+    std::flat_map<int, int> ord_b;
+    ord_a[1] = 10;
+    ord_a[2] = 20;
+    ord_a[3] = 30;
+    ord_b[3] = 30;
+    ord_b[1] = 10;
+    ord_b[2] = 20;
+    const int ord_ab = (ord_a > ord_b) ? 1 : 0;
+    const int ord_ba = (ord_b > ord_a) ? 1 : 0;
+    std::flat_map<int, int> dis_a;
+    std::flat_map<int, int> dis_b;
+    dis_a[1] = 10;
+    dis_a[5] = 50;
+    dis_b[2] = 20;
+    dis_b[3] = 30;
+    const int dis_ab = (dis_a > dis_b) ? 1 : 0;
+    const int dis_ba = (dis_b > dis_a) ? 1 : 0;
+    std::flat_map<int, int> mix_a{{2, 20}, {1, 10}};
+    std::flat_map<int, int> mix_b;
+    mix_b[1] = 10;
+    mix_b[2] = 21;
+    const int mix_ab = (mix_a > mix_b) ? 1 : 0;
+    const int mix_ba = (mix_b > mix_a) ? 1 : 0;
     std::printf("empty %d\n", empty);
     std::printf("eg %d\n", eg);
     std::printf("ge %d\n", ge);
@@ -683,6 +742,9 @@ static void greater_trace() {
     std::printf("prefix %d %d\n", pre, revpre);
     std::printf("early %d %d\n", early, early_ba);
     std::printf("tail %d %d\n", tail_ab, tail_ba);
+    std::printf("order %d %d\n", ord_ab, ord_ba);
+    std::printf("disagree %d %d\n", dis_ab, dis_ba);
+    std::printf("mixed %d %d\n", mix_ab, mix_ba);
 
     reset_counts();
     std::flat_map<CountKey, CountMapped> ke1;
@@ -705,16 +767,18 @@ static void greater_trace() {
     std::flat_map<CountKey, CountMapped> ktwo_b;
     (void)ktwo_a.try_emplace(CountKey(1), 10);
     (void)ktwo_a.try_emplace(CountKey(2), 20);
-    (void)ktwo_b.try_emplace(CountKey(1), 10);
     (void)ktwo_b.try_emplace(CountKey(2), 20);
+    (void)ktwo_b.try_emplace(CountKey(1), 10);
     reset_counts();
     show_greater("ktwo", (ktwo_a > ktwo_b) ? 1 : 0);
 
     std::flat_map<CountKey, CountMapped> kkey_a;
     std::flat_map<CountKey, CountMapped> kkey_b;
-    (void)kkey_a.try_emplace(CountKey(-1), -1);
+    (void)kkey_a.try_emplace(CountKey(9), -1);
+    (void)kkey_a.try_emplace(CountKey(1), 10);
     (void)kkey_a.try_emplace(CountKey(5), 50);
-    (void)kkey_b.try_emplace(CountKey(-1), -1);
+    (void)kkey_b.try_emplace(CountKey(9), -1);
+    (void)kkey_b.try_emplace(CountKey(1), 10);
     (void)kkey_b.try_emplace(CountKey(4), 40);
     reset_counts();
     show_greater("kkey", (kkey_a > kkey_b) ? 1 : 0);
@@ -723,9 +787,9 @@ static void greater_trace() {
 
     std::flat_map<CountKey, CountMapped> kmap_a;
     std::flat_map<CountKey, CountMapped> kmap_b;
-    (void)kmap_a.try_emplace(CountKey(-1), -1);
+    (void)kmap_a.try_emplace(CountKey(9), -1);
     (void)kmap_a.try_emplace(CountKey(2), 20);
-    (void)kmap_b.try_emplace(CountKey(-1), -1);
+    (void)kmap_b.try_emplace(CountKey(9), -1);
     (void)kmap_b.try_emplace(CountKey(2), 30);
     reset_counts();
     show_greater("kmap", (kmap_a > kmap_b) ? 1 : 0);
@@ -733,7 +797,7 @@ static void greater_trace() {
     std::flat_map<CountKey, CountMapped> kpre_s;
     std::flat_map<CountKey, CountMapped> kpre_l;
     (void)kpre_s.try_emplace(CountKey(1), 10);
-    (void)kpre_l.try_emplace(CountKey(-1), -1);
+    (void)kpre_l.try_emplace(CountKey(9), -1);
     (void)kpre_l.try_emplace(CountKey(1), 10);
     reset_counts();
     show_greater("kpre", (kpre_s > kpre_l) ? 1 : 0);
@@ -742,9 +806,10 @@ static void greater_trace() {
 
     std::flat_map<CountKey, CountMapped> kearly_a;
     std::flat_map<CountKey, CountMapped> kearly_b;
-    (void)kearly_a.try_emplace(CountKey(1), 10);
     (void)kearly_a.try_emplace(CountKey(5), 50);
-    (void)kearly_b.try_emplace(CountKey(-1), -1);
+    (void)kearly_a.try_emplace(CountKey(1), 10);
+    (void)kearly_a.try_emplace(CountKey(9), -1);
+    (void)kearly_b.try_emplace(CountKey(9), -1);
     (void)kearly_b.try_emplace(CountKey(1), 10);
     (void)kearly_b.try_emplace(CountKey(4), 40);
     reset_counts();

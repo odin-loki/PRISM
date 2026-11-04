@@ -41,12 +41,12 @@ Every load is in the existing `operator<`.
 It does not construct a key or a mapped value and it does not return
 `T{}`.
 
-`operator<` walks the node chain from `_M_head`, and each insert links at
-the head, so the first pair compared is the most recently inserted, not
-the smallest key. `operator>` inherits that order. When two maps were
-filled in a different key order than libstdc++'s sorted order, the result
-can differ from libstdc++. The trace fills its maps so that the two orders
-agree.
+`operator<` used to walk the node chain from `_M_head`, newest pair first,
+and `operator>` inherited that order, so the result depended on insertion
+order. That was a defect. `operator<` now visits the pairs in key order
+(`_M_key_next`, see `flat-map-less.md` "Key order"), and `operator>` is
+still `return __y < __x;`, so it compares in key order too, whatever the
+insertion order. Its body did not change.
 
 C++23 `std::flat_map` declares `operator==` and `operator<=>`. `a > b`
 against libstdc++ is the rewritten `(a <=> b) > 0`, and the synthesised
@@ -90,3 +90,44 @@ line. The `less` lines and the no-argument lines did not change.
 The libstdc++ on this machine (`__GLIBCXX__ 20240908`, GCC 14) has no
 `<flat_map>`, so the trace was not compiled against it. That is not a
 differential result.
+
+## Key order (branch `port/flat-map-equal`)
+
+`operator>` was not edited. It follows `operator<` into key order. The
+trace's `greater` mode gained the same `order`, `disagree` and `mixed`
+lines as `less`, with the maps on the other side. The counted maps carry
+mapped -1 on the largest key. Every line is the matching `less` line with
+the arguments swapped. `poison` is 0 on every line. `greater` now prints
+
+```text
+empty 0
+eg 0
+ge 1
+oneeq 0
+key 1 0
+mapped 0 1
+prefix 0 1
+early 1 0
+tail 1 0
+order 0 0
+disagree 0 1
+mixed 0 1
+kempty 0 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+keg 0 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+kge 1 key_lt=0 mapped_lt=0 poison=0 copies=0 moves=0 mapped=0
+ksame 0 key_lt=4 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+ktwo 0 key_lt=14 mapped_lt=4 poison=0 copies=0 moves=0 mapped=0
+kkey 1 key_lt=15 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kkeyba 0 key_lt=16 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kmap 0 key_lt=4 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kpre 0 key_lt=6 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+krev 1 key_lt=6 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kearly 1 key_lt=15 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+kearlyba 0 key_lt=16 mapped_lt=2 poison=0 copies=0 moves=0 mapped=0
+```
+
+Built with clang++ from `~/opt/llvm23`, `-std=c++23 -Wall -Wextra -Werror
+-D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined
+-fno-sanitize-recover=all -g -O1`, with only the model headers on the
+include path and a `__prism_check` stub that prints failures. ASan and
+UBSan reported nothing, and no check failed.

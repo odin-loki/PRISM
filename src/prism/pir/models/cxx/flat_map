@@ -16,16 +16,19 @@
 // empty and do not load a node. It does not allocate, free, or construct
 // a key. Self-swap does not free the nodes. This is not PROVED and not
 // CLEAN.
-// operator< orders the stored pairs lexicographically along the node chain
-// from _M_head (each link inserts at the head, so the first pair compared
-// is the most recently inserted). Two empty maps compare not-less and do
-// not load a node. An empty map is less than a non-empty map, and that
+// operator< orders the stored pairs lexicographically in key order, as
+// std::lexicographical_compare over value_type does in [flat.map.defn].
+// The node chain is in link order, so each next pair is found by
+// _M_key_next: one scan of the chain for the smallest key above the
+// previous one under _Compare (O(n) per step, O(n^2) in all). It does not
+// sort and does not allocate. Insertion order does not change the result.
+// Two empty maps compare not-less and do not load a node. An empty map is less than a non-empty map, and that
 // path does not load the empty map's node. The walk stops at the first
 // deciding pair and does not read past the shorter map. It does not
 // construct a key or a mapped value and it does not return T{}. This is
 // not PROVED and not CLEAN.
-// operator> returns __y < __x, using the existing operator<, so it walks
-// the same node chain. Two empty maps compare not-greater and do not load
+// operator> returns __y < __x, using the existing operator<, so it visits
+// the pairs in the same key order. Two empty maps compare not-greater and do not load
 // a node. A non-empty map is greater than an empty map, and that path does
 // the empty map. It does not return T{}. This is not PROVED and not
 // CLEAN.
@@ -488,6 +491,18 @@ private:
         friend bool operator==(const _Iter& __a, const _Iter& __b) noexcept { return __a._M_cur == __b._M_cur; }
         friend bool operator!=(const _Iter& __a, const _Iter& __b) noexcept { return __a._M_cur != __b._M_cur; }
     };
+    // Next pair in key order: the node whose key is the smallest one above
+    // __cur's key under _Compare, or the smallest key when __cur is null.
+    // nullptr when there is none. One scan of the chain. It does not
+    // allocate, sort, or construct a key.
+    static const _Node* _M_key_next(const _Node* __h, const _Node* __cur) {
+        const _Node* __best = nullptr;
+        for (const _Node* __p = __h; __p != nullptr; __p = __p->_M_next)
+            if ((__cur == nullptr || _Compare{}(__cur->_M_key, __p->_M_key)) &&
+                (__best == nullptr || _Compare{}(__p->_M_key, __best->_M_key)))
+                __best = __p;
+        return __best;
+    }
     template <typename _N>
     static _N* _M_min(_N* __h) noexcept {
         _N* __best = nullptr;
@@ -555,6 +570,8 @@ public:
 
     // Two empty maps compare not-less and do not load a node.
     // An empty map is less than a non-empty map, and that path does not load the empty map's node.
+    // The pairs are visited in key order with _M_key_next, not in link order, so insertion order does not
+    // change the result.
     // Different sizes compare lexicographically on stored keys and mapped values and do not read past the shorter map.
     // The same size compares stored keys and mapped values with <.
     // It does not construct a key or a mapped value and it does not return T{}.
@@ -566,8 +583,8 @@ public:
             return true;
         if (__y._M_head == nullptr && __x._M_head != nullptr)
             return false;
-        const _Node* __a = __x._M_head;
-        const _Node* __b = __y._M_head;
+        const _Node* __a = _M_key_next(__x._M_head, nullptr);
+        const _Node* __b = _M_key_next(__y._M_head, nullptr);
         while (__a != nullptr && __b != nullptr) {
             if (__a->_M_key < __b->_M_key)
                 return true;
@@ -577,8 +594,8 @@ public:
                 return true;
             if (__b->_M_mapped < __a->_M_mapped)
                 return false;
-            __a = __a->_M_next;
-            __b = __b->_M_next;
+            __a = _M_key_next(__x._M_head, __a);
+            __b = _M_key_next(__y._M_head, __b);
         }
         return __a == nullptr && __b != nullptr;
     }
