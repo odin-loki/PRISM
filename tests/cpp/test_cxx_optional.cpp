@@ -20,6 +20,11 @@
 // engaged one. Two engaged optionals compare the stored values. The inactive
 // T is not read and T{} is not built. That comparison is not PROVED and not
 // CLEAN.
+// operator<= compares two optional<T> in libstdc++'s order. A disengaged
+// left is true. An engaged left and a disengaged right is false. Two
+// engaged optionals compare the stored values with operator<= on T, not
+// operator<. The inactive T is not read and T{} is not built. That
+// comparison is not PROVED and not CLEAN.
 
 #include <doctest/doctest.h>
 
@@ -600,7 +605,7 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
 
     CHECK(src.find("#include <memory>") == std::string::npos);
     CHECK(src.find("#include <functional>") == std::string::npos);
-    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 7);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 8);
 
     const auto cls = src.find("class optional {");
     const auto kind = src.find("struct _Prism_optional_kind<optional<_T>>");
@@ -900,4 +905,177 @@ TEST_CASE("cxx optional model: comparison of two different types is not declared
     };
     CHECK(compile(false));
     CHECK_FALSE(compile(true));
+}
+
+TEST_CASE("cxx optional model: operator<= is the stored value only when both are engaged") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "optional";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    const std::string code = strip_comments(src);
+
+    const auto gt = code.find("bool operator>(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    const auto le = code.find("bool operator<=(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    const auto free_sw = code.find("inline void swap(optional<_Tp>& __x, optional<_Tp>& __y)");
+    REQUIRE(gt != std::string::npos);
+    REQUIRE(le != std::string::npos);
+    REQUIRE(free_sw != std::string::npos);
+    CHECK(gt < le);
+    CHECK(le < free_sw);
+
+    // libstdc++ order: a disengaged left returns true, then a disengaged
+    // right returns false, both before the stored T is named. Both engaged:
+    // operator<= on T. The body does not call operator< on T.
+    const std::string le_body = function_body(code, le);
+    REQUIRE_FALSE(le_body.empty());
+    const auto left = le_body.find("if (!__x._M_engaged) return true;");
+    const auto right = le_body.find("if (!__y._M_engaged) return false;");
+    const auto cmp = le_body.find("return __x._M_storage._M_value <= __y._M_storage._M_value;");
+    REQUIRE(left != std::string::npos);
+    REQUIRE(right != std::string::npos);
+    REQUIRE(cmp != std::string::npos);
+    CHECK(left < right);
+    CHECK(right < cmp);
+    CHECK(le_body.find("_M_value") == cmp + std::string("return __x._M_storage.").size());
+    CHECK(count_of(le_body, "return ") == 3);
+    CHECK(le_body.find("_M_value < ") == std::string::npos);
+    CHECK(le_body.find("__y < __x") == std::string::npos);
+    CHECK(le_body.find("value()") == std::string::npos);
+    CHECK(le_body.find("operator*") == std::string::npos);
+    CHECK(le_body.find("__prism_check") == std::string::npos);
+    CHECK(le_body.find("T{}") == std::string::npos);
+    CHECK(le_body.find("_Tp{}") == std::string::npos);
+    CHECK(le_body.find("_Tp()") == std::string::npos);
+
+    CHECK(count_of(code, "bool operator<=(") == 2);
+    CHECK(count_of(code, "bool operator>(") == 2);
+    CHECK(count_of(code, "bool operator<(") == 2);
+    CHECK(code.find("operator>=") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("hash") == std::string::npos);
+    CHECK(function_body(code, gt).find("return __x._M_storage._M_value > __y._M_storage._M_value;") !=
+          std::string::npos);
+
+    const auto le_src = src.find("bool operator<=(const optional<_Tp>& __x, const optional<_Tp>& __y) {");
+    const auto note_from = src.rfind("// A disengaged left is less-or-equal anything", le_src);
+    REQUIRE(le_src != std::string::npos);
+    REQUIRE(note_from != std::string::npos);
+    const std::string note = src.substr(note_from, le_src - note_from);
+    CHECK(note.find("do not read the inactive T") != std::string::npos);
+    CHECK(note.find("T{} is not built") != std::string::npos);
+    CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+}
+
+TEST_CASE("cxx optional model: operator<= agrees with libstdc++ and calls operator<= on T") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = repo() / "tests" / "cxx_models" / "optional_leq_trace.cpp";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "optional").string())) != std::string::npos);
+
+    auto lib = run_lines(build_value_or(c.cxx, c.tmp, src, false, "leq_trace"));
+    auto mod = run_lines(build_value_or(c.cxx, c.tmp, src, true, "leq_trace"));
+    const std::vector<std::string> want{
+        "ee le=1",  "ee rev=1",  "de le=1",  "ed le=0", "le 1 1",  "same le=1", "le 1 1",  "same rev=1",
+        "le 1 1",   "self le=1", "le 1 2",   "ord le=1", "le 2 1", "ord rev=0", "cde le=1", "ced le=0",
+        "le 2 2",   "c22 le=1",  "le 2 2",   "c22 rev=1", "nde le=1", "ned le=0", "le 1 -1", "ngt le=0",
+        "le -1 1",  "ngt rev=1", "iz le=1",  "zi le=0", "zz le=1", "zz rev=1", "01 le=1",  "10 le=0",
+        "neg le=1", "pos le=0",  "ii le=1",
+    };
+    CHECK(lib == want);
+    CHECK(mod == lib);
+    for (const auto& line : mod) {
+        // Box operator< prints lt and operator> prints gt. Neither is called.
+        CHECK(line.rfind("lt ", 0) != 0);
+        CHECK(line.rfind("gt ", 0) != 0);
+    }
+}
+
+TEST_CASE("cxx optional model: operator<= of two different types is not declared") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = c.tmp / "optional_leq_hetero.cpp";
+    std::ofstream(src) << "#include <optional>\n"
+                          "int main() {\n"
+                          "    std::optional<int> a(1);\n"
+                          "    std::optional<long> b(1L);\n"
+                          "    return (a <= b) ? 0 : 1;\n"
+                          "}\n";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-w"};
+    auto compile = [&](bool with_models) {
+        std::vector<std::string> argv{c.cxx};
+        argv.insert(argv.end(), flags.begin(), flags.end());
+        if (with_models) {
+            argv.push_back("-isystem");
+            argv.push_back(models.string());
+        }
+        argv.push_back(src.string());
+        argv.push_back("-o");
+        argv.push_back((c.tmp / (with_models ? "leq_hetero.model" : "leq_hetero.lib")).string());
+        return run_cmd(argv);
+    };
+    CHECK(compile(false));
+    CHECK_FALSE(compile(true));
+}
+
+TEST_CASE("cxx optional model: operator<= needs operator<= on T, like libstdc++") {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path only_lt = c.tmp / "optional_leq_only_lt.cpp";
+    std::ofstream(only_lt) << "#include <optional>\n"
+                              "struct OnlyLt {\n"
+                              "    int v;\n"
+                              "    explicit OnlyLt(int x) : v(x) {}\n"
+                              "    bool operator<(const OnlyLt& o) const { return v < o.v; }\n"
+                              "};\n"
+                              "int main() {\n"
+                              "    std::optional<OnlyLt> a(OnlyLt(1));\n"
+                              "    std::optional<OnlyLt> b(OnlyLt(2));\n"
+                              "    return (a <= b) ? 0 : 1;\n"
+                              "}\n";
+    const fs::path only_le = c.tmp / "optional_leq_only_le.cpp";
+    std::ofstream(only_le) << "#include <optional>\n"
+                              "struct OnlyLe {\n"
+                              "    int v;\n"
+                              "    explicit OnlyLe(int x) : v(x) {}\n"
+                              "    bool operator<=(const OnlyLe& o) const { return v <= o.v; }\n"
+                              "};\n"
+                              "int main() {\n"
+                              "    std::optional<OnlyLe> a(OnlyLe(1));\n"
+                              "    std::optional<OnlyLe> b(OnlyLe(2));\n"
+                              "    std::optional<OnlyLe> e;\n"
+                              "    return (e <= a && a <= b && !(b <= a) && a <= a && !(a <= e)) ? 0 : 1;\n"
+                              "}\n";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-w"};
+    auto compile = [&](const fs::path& file, bool with_models, const char* stem) {
+        std::vector<std::string> argv{c.cxx};
+        argv.insert(argv.end(), flags.begin(), flags.end());
+        if (with_models) {
+            argv.push_back("-isystem");
+            argv.push_back(models.string());
+        }
+        argv.push_back(file.string());
+        argv.push_back("-o");
+        argv.push_back((c.tmp / (std::string(stem) + (with_models ? ".model" : ".lib"))).string());
+        return run_cmd(argv);
+    };
+    CHECK_FALSE(compile(only_lt, false, "leq_only_lt"));
+    CHECK_FALSE(compile(only_lt, true, "leq_only_lt"));
+    REQUIRE(compile(only_le, false, "leq_only_le"));
+    REQUIRE(compile(only_le, true, "leq_only_le"));
+    CHECK(run_cmd({(c.tmp / "leq_only_le.lib").string()}));
+    CHECK(run_cmd({(c.tmp / "leq_only_le.model").string()}));
 }

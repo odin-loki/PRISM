@@ -3,8 +3,9 @@
 // before any new node and before size grows, erase is where the node is
 // freed (the delete expression is in erase, not in a helper), contains
 // returns false for a missing key and true for a present key without
-// allocating, operator== of two flat_sets is container equality, and
-// operator< is lexicographical order on the stored keys.
+// allocating, operator== of two flat_sets is container equality,
+// operator< is lexicographical order on the stored keys, and operator>
+// returns __y < __x.
 
 #include <doctest/doctest.h>
 
@@ -257,7 +258,7 @@ TEST_CASE("cxx flat_set model: container less does not load an empty set") {
     CHECK(count_sub(src, "operator<(const iterator") == 0);
     CHECK(count_sub(src, "operator<(const flat_set&") == 1);
     CHECK(count_sub(src, "operator<=(const flat_set&") == 0);
-    CHECK(count_sub(src, "operator>(const flat_set&") == 0);
+    CHECK(count_sub(src, "operator>(const flat_set&") == 1);
     CHECK(count_sub(src, "operator>=(const flat_set&") == 0);
     CHECK(src.find("operator<=>") == std::string::npos);
 
@@ -364,6 +365,98 @@ TEST_CASE("cxx flat_set model: container less does not load an empty set") {
     CHECK(note.find("does not return T{}") != std::string::npos);
     CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
 
+    CHECK(src.find("friend bool operator==(const flat_set& __x, const flat_set& __y)") != std::string::npos);
+    CHECK(src.find("bool empty() const noexcept { return _M_head == nullptr; }") != std::string::npos);
+    CHECK(src.find("size_type size() const noexcept { return _M_size; }") != std::string::npos);
+    CHECK(src.find("void swap(flat_set& __o) noexcept") != std::string::npos);
+    CHECK(src.find("void clear() noexcept") != std::string::npos);
+    CHECK(src.find("pair<iterator, bool> insert(const value_type& __x)") != std::string::npos);
+    CHECK(src.find("size_type erase(const key_type& __x)") != std::string::npos);
+    CHECK(src.find("iterator find(const key_type& __x) const { return iterator(_M_find_node(__x)); }") !=
+          std::string::npos);
+    CHECK(src.find("bool contains(const key_type& __x) const") != std::string::npos);
+    CHECK(src.find("size_type count(const key_type& __x) const { return contains(__x) ? 1 : 0; }") !=
+          std::string::npos);
+}
+
+TEST_CASE("cxx flat_set model: container greater is operator< with the arguments swapped") {
+    const auto src = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "flat_set");
+    REQUIRE(!src.empty());
+
+    CHECK(src.find("#include <algorithm>") == std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("lexicographical_compare") == std::string::npos);
+    CHECK(count_sub(src, "operator>(const flat_set&") == 1);
+    CHECK(count_sub(src, "operator<(const flat_set&") == 1);
+    CHECK(count_sub(src, "operator==(const flat_set&") == 1);
+    CHECK(count_sub(src, "operator<=(const flat_set&") == 0);
+    CHECK(count_sub(src, "operator>=(const flat_set&") == 0);
+    CHECK(src.find("operator<=>") == std::string::npos);
+
+    const auto gt = body_of(src, "operator>(const flat_set& __x, const flat_set& __y)");
+    REQUIRE(!gt.empty());
+    CHECK(gt.find("return __y < __x;") != std::string::npos);
+    CHECK(gt.find("__x < __y") == std::string::npos);
+    CHECK(gt.find("->") == std::string::npos);
+    CHECK(gt.find("_M_key") == std::string::npos);
+    CHECK(gt.find("_M_next") == std::string::npos);
+    CHECK(gt.find("_M_head") == std::string::npos);
+    CHECK(gt.find("_M_size") == std::string::npos);
+    CHECK(gt.find("*") == std::string::npos);
+    CHECK(gt.find("T{}") == std::string::npos);
+    CHECK(gt.find("return {}") == std::string::npos);
+    CHECK(gt.find("return true") == std::string::npos);
+    CHECK(gt.find("return false") == std::string::npos);
+    CHECK(gt.find("new ") == std::string::npos);
+    CHECK(gt.find("key_type") == std::string::npos);
+    CHECK(gt.find("value_type") == std::string::npos);
+    CHECK(gt.find("_Key{") == std::string::npos);
+    CHECK(gt.find("_Node(") == std::string::npos);
+    CHECK(gt.find("operator==") == std::string::npos);
+    CHECK(gt.find("insert") == std::string::npos);
+    CHECK(gt.find("erase") == std::string::npos);
+    CHECK(gt.find("find(") == std::string::npos);
+    CHECK(gt.find("contains") == std::string::npos);
+    CHECK(gt.find("count") == std::string::npos);
+    CHECK(gt.find("empty(") == std::string::npos);
+    CHECK(gt.find("clear") == std::string::npos);
+    CHECK(gt.find("swap") == std::string::npos);
+    CHECK(gt.find("size(") == std::string::npos);
+
+    // Two empty sets are not-greater because operator< of two empty sets
+    // returns false before a node is loaded. A non-empty set is greater
+    // than an empty set because that same operator< returns true for an
+    // empty left side before a node is loaded.
+    const auto lt = body_of(src, "operator<(const flat_set& __x, const flat_set& __y)");
+    REQUIRE(!lt.empty());
+    const auto both = lt.find("if (__x._M_head == nullptr && __y._M_head == nullptr)");
+    const auto not_less = lt.find("return false;");
+    const auto left_empty = lt.find("if (__x._M_head == nullptr)", both + 1);
+    const auto less_ret = lt.find("return true;");
+    REQUIRE(both != std::string::npos);
+    REQUIRE(not_less != std::string::npos);
+    REQUIRE(left_empty != std::string::npos);
+    REQUIRE(less_ret != std::string::npos);
+    CHECK(both < not_less);
+    CHECK(not_less < left_empty);
+    CHECK(left_empty < less_ret);
+    CHECK(lt.substr(0, less_ret).find("->") == std::string::npos);
+    CHECK(lt.substr(0, less_ret).find("_M_key") == std::string::npos);
+    CHECK(lt.find("T{}") == std::string::npos);
+
+    const auto sig = src.find("friend bool operator>(const flat_set& __x, const flat_set& __y)");
+    REQUIRE(sig != std::string::npos);
+    const auto note_from = src.rfind("Two empty sets compare not-greater.", sig);
+    REQUIRE(note_from != std::string::npos);
+    const auto note = src.substr(note_from, sig - note_from);
+    CHECK(note.find("does not load a node") != std::string::npos);
+    CHECK(note.find("A non-empty set is greater than an empty set.") != std::string::npos);
+    CHECK(note.find("does not load the empty set") != std::string::npos);
+    CHECK(note.find("__y < __x") != std::string::npos);
+    CHECK(note.find("does not return T{}") != std::string::npos);
+    CHECK(note.find("This is not PROVED and not CLEAN.") != std::string::npos);
+
+    CHECK(src.find("friend bool operator<(const flat_set& __x, const flat_set& __y)") != std::string::npos);
     CHECK(src.find("friend bool operator==(const flat_set& __x, const flat_set& __y)") != std::string::npos);
     CHECK(src.find("bool empty() const noexcept { return _M_head == nullptr; }") != std::string::npos);
     CHECK(src.find("size_type size() const noexcept { return _M_size; }") != std::string::npos);
