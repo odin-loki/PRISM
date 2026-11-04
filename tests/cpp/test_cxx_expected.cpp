@@ -18,6 +18,11 @@
 // transform_error on an unexpected returns an expected holding the function's
 // result as the error. transform_error on a value does not call the function
 // and keeps that T. It does not construct an E and does not return E{} or T{}.
+// operator== of the same type returns false when the alternatives differ,
+// before either object is read. Both values compare T. Both errors compare E.
+// operator!= is that negation. operator< returns false for a value against an
+// error and true for an error against a value, before storage is read.
+// emplace of one argument destroys the active alternative and placement-news T.
 
 #include <doctest/doctest.h>
 
@@ -193,6 +198,116 @@ bool failed_is_check(const fs::path& exe, const char* mode, const char* cls, con
     return true;
 }
 
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string strip_comments(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '/') {
+            i += 2;
+            while (i < s.size() && s[i] != '\n') ++i;
+            continue;
+        }
+        if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) ++i;
+            if (i + 1 < s.size()) i += 2;
+            continue;
+        }
+        out.push_back(s[i]);
+        ++i;
+    }
+    return out;
+}
+
+// The function whose signature starts at sig. The next character after the
+// signature in this header is '{'.
+std::string function_body(const std::string& src, std::size_t sig) {
+    const auto brace = src.find('{', sig);
+    if (brace == std::string::npos) return {};
+    int depth = 0;
+    for (std::size_t i = brace; i < src.size(); ++i) {
+        if (src[i] == '{') ++depth;
+        else if (src[i] == '}') {
+            --depth;
+            if (depth == 0) return src.substr(brace, i - brace + 1);
+        }
+    }
+    return {};
+}
+
+int count_of(const std::string& s, const std::string& needle) {
+    int n = 0;
+    for (std::size_t at = 0; (at = s.find(needle, at)) != std::string::npos; at += needle.size()) ++n;
+    return n;
+}
+
+bool has_line(const std::vector<std::string>& lines, const char* s) {
+    for (const auto& line : lines)
+        if (line == s) return true;
+    return false;
+}
+
+std::size_t line_at(const std::vector<std::string>& lines, const char* s) {
+    for (std::size_t i = 0; i < lines.size(); ++i)
+        if (lines[i] == s) return i;
+    return lines.size();
+}
+
+std::size_t line_nth(const std::vector<std::string>& lines, const char* s, int n) {
+    int seen = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i] == s) {
+            if (seen == n) return i;
+            ++seen;
+        }
+    }
+    return lines.size();
+}
+
+int count_line(const std::vector<std::string>& lines, const char* s) {
+    int n = 0;
+    for (const auto& line : lines)
+        if (line == s) ++n;
+    return n;
+}
+
+bool syntax_only(const std::string& cxx, const fs::path& src, bool with_models, std::string* err = nullptr) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    std::vector<std::string> argv{cxx, "-std=c++23", "-fsyntax-only", "-w"};
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(src.string());
+    return run_cmd(argv, nullptr, err);
+}
+
+fs::path build_src(const std::string& cxx, const fs::path& tmp, const fs::path& src, bool with_models,
+                   const std::string& stem) {
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = tmp / (stem + (with_models ? ".model" : ".lib"));
+    std::vector<std::string> argv{cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    if (with_models) {
+        argv.push_back("-isystem");
+        argv.push_back(models.string());
+    }
+    argv.push_back(src.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    return out;
+}
+
 }  // namespace
 
 TEST_CASE("cxx expected model: setup clang++ with ASan/UBSan") {
@@ -234,6 +349,56 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     auto b = run_lines(mod);
     CHECK(a.size() > 5);
     CHECK(a == b);
+    const char* eq_lines[] = {
+        "eq_val 1 0 1", "ne_val 0 1 0", "eq_zero 1 0", "eq_err 1 0 1", "ne_err 0 1 0", "eq_err0 1 0",
+        "eq_mix 0 0",   "ne_mix 1 1",   "eq_mix0 0 0", "eq_const 1 0 1 0", "eqv 3 3", "eqv 3 4", "eq_t 1 0",
+        "eqe 5 5",      "eqe 5 6",      "eq_e 1 0",    "eq_cross 0 0",     "ne_t 0",  "ne_e 1",  "ne_cross 1",
+    };
+    for (const char* line : eq_lines) CHECK(has_line(b, line));
+    CHECK(count_line(b, "eqv 3 3") == 2);
+    CHECK(count_line(b, "eqv 3 4") == 1);
+    CHECK(count_line(b, "eqe 5 5") == 1);
+    CHECK(count_line(b, "eqe 5 6") == 2);
+    CHECK(line_nth(b, "eqv 3 3", 0) < line_at(b, "eq_t 1 0"));
+    CHECK(line_at(b, "eq_cross 0 0") < line_nth(b, "eqv 3 3", 1));
+    CHECK(line_nth(b, "eqv 3 3", 1) < line_at(b, "ne_t 0"));
+    CHECK(line_at(b, "eq_e 1 0") < line_nth(b, "eqe 5 6", 1));
+    CHECK(line_nth(b, "eqe 5 6", 1) < line_at(b, "ne_e 1"));
+    const char* em_lines[] = {
+        "start 1", "one 1 2 1", "mut 6",     "two 1 3 1", "emheld 0 4", "from_err 1 5 1", "lv 3 3 1",
+        "rv -1 3 1", "zero 1 0 1", "zmut 4", "nine 9 9",  "box 1 42 1", "box2 1 7 1",     "wasnow 3 3",
+    };
+    for (const char* line : em_lines) CHECK(has_line(b, line));
+    CHECK(line_at(b, "mvc2") < line_at(b, "mvd1"));
+    CHECK(line_at(b, "mvd1") < line_at(b, "mvm2"));
+    CHECK(line_at(b, "mvm2") < line_at(b, "one 1 2 1"));
+    CHECK(line_at(b, "mvc5") < line_at(b, "erd4"));
+    CHECK(line_at(b, "erd4") < line_at(b, "mvm5"));
+    CHECK(line_at(b, "mvm5") < line_at(b, "from_err 1 5 1"));
+    CHECK(line_at(b, "erd8") < line_at(b, "bxc42"));
+    CHECK(line_at(b, "bxc42") < line_at(b, "bxd42"));
+    CHECK(line_at(b, "bxd42") < line_at(b, "bxc7"));
+    for (const auto& line : b) {
+        CHECK(line.find("eqv 8") == std::string::npos);
+        CHECK(line.find("eqe 2") == std::string::npos);
+        CHECK(line != "eq_cross 1 0");
+        CHECK(line != "eq_cross 0 1");
+        CHECK(line != "eq_cross 1 1");
+        CHECK(line != "ne_cross 0");
+        CHECK(line != "one 1 2 0");
+        CHECK(line != "one 0 2 1");
+        CHECK(line != "from_err 0 5 1");
+        CHECK(line != "from_err 1 4 1");
+        CHECK(line != "from_err 1 5 0");
+        CHECK(line != "zero 0 0 1");
+        CHECK(line != "zero 1 0 0");
+        CHECK(line != "box 0 42 1");
+        CHECK(line != "box 1 42 0");
+        CHECK(line != "wasnow 42 42");
+        CHECK(line != "wasnow 3 42");
+        CHECK(line != "lv -1 3 1");
+        CHECK(line != "rv 3 3 1");
+    }
     bool saw_stored = false;
     bool saw_error = false;
     bool saw_and_then = false;
@@ -600,4 +765,334 @@ TEST_CASE("cxx expected model: success value() is the stored T; value() and erro
     CHECK(failed_is_check(mod, "value", "CXX-EXPECTED-NULL", "expected::value()"));
     CHECK(failed_is_check(mod, "star", "CXX-EXPECTED-NULL", "expected::operator*"));
     CHECK(failed_is_check(mod, "error", "CXX-EXPECTED-ERROR", "expected::error()"));
+}
+
+TEST_CASE("cxx expected model: equality, less, and emplace bodies") {
+    const fs::path header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "expected";
+    REQUIRE(fs::is_regular_file(header));
+    CHECK_FALSE(fs::is_directory(header));
+    const std::string src = slurp(header);
+    REQUIRE_FALSE(src.empty());
+    CHECK(src.find("#include <new>") != std::string::npos);
+    CHECK(src.find("#include <memory>") == std::string::npos);
+    CHECK(src.find("#include <compare>") == std::string::npos);
+    CHECK(count_of(src, "This is not PROVED and not CLEAN.") == 5);
+
+    const auto class_open = src.find("class expected {");
+    const auto em = src.find("_Tp& emplace(_Up&& __u)");
+    const auto eq_friend = src.find("friend constexpr bool operator==(const expected<_Up, _Ep>&");
+    const auto lt_friend = src.find("friend constexpr bool operator<(const expected<_Up, _Ep>&");
+    const auto class_close = src.find("};", lt_friend);
+    const auto eq = src.find("constexpr bool operator==(const expected<_Tp, _Er>&");
+    const auto ne = src.find("constexpr bool operator!=(const expected<_Tp, _Er>&");
+    const auto lt = src.find("constexpr bool operator<(const expected<_Tp, _Er>&");
+    REQUIRE(class_open != std::string::npos);
+    REQUIRE(em != std::string::npos);
+    REQUIRE(eq_friend != std::string::npos);
+    REQUIRE(lt_friend != std::string::npos);
+    REQUIRE(class_close != std::string::npos);
+    REQUIRE(eq != std::string::npos);
+    REQUIRE(ne != std::string::npos);
+    REQUIRE(lt != std::string::npos);
+    CHECK(class_open < em);
+    CHECK(em < eq_friend);
+    CHECK(eq_friend < lt_friend);
+    CHECK(lt_friend < class_close);
+    CHECK(class_close < eq);
+    CHECK(eq < ne);
+    CHECK(ne < lt);
+    CHECK(src.find("friend constexpr bool operator!=") == std::string::npos);
+
+    const std::string em_body = function_body(src, em);
+    const std::string eq_body = function_body(src, eq);
+    const std::string ne_body = function_body(src, ne);
+    const std::string lt_body = function_body(src, lt);
+    REQUIRE_FALSE(em_body.empty());
+    REQUIRE_FALSE(eq_body.empty());
+    REQUIRE_FALSE(ne_body.empty());
+    REQUIRE_FALSE(lt_body.empty());
+
+    const auto em_if = em_body.find("if (_M_has)");
+    const auto em_else = em_body.find("} else {");
+    const auto em_new =
+        em_body.find("::new (static_cast<void*>(&_M_storage._M_val)) _Tp(static_cast<_Up&&>(__u));");
+    const auto em_ret = em_body.find("return _M_storage._M_val;");
+    REQUIRE(em_if != std::string::npos);
+    REQUIRE(em_else != std::string::npos);
+    REQUIRE(em_new != std::string::npos);
+    REQUIRE(em_ret != std::string::npos);
+    CHECK(em_if < em_else);
+    CHECK(em_else < em_new);
+    CHECK(em_new < em_ret);
+    CHECK(em_body.find("_M_val.~_Tp()") != std::string::npos);
+    CHECK(em_body.find("_M_unex.~_Er()") != std::string::npos);
+    CHECK(em_body.find("_M_has = true;") != std::string::npos);
+    CHECK(em_body.substr(em_if, em_else - em_if).find("_M_unex") == std::string::npos);
+    CHECK(em_body.substr(em_else, em_new - em_else).find("_M_val") == std::string::npos);
+
+    const auto eq_false = eq_body.find("return false;");
+    REQUIRE(eq_false != std::string::npos);
+    CHECK(eq_body.substr(0, eq_false).find("_M_storage") == std::string::npos);
+    CHECK(eq_body.substr(0, eq_false).find("_M_val") == std::string::npos);
+    CHECK(eq_body.substr(0, eq_false).find("_M_unex") == std::string::npos);
+    CHECK(eq_body.find("if (__x._M_has != __y._M_has)") != std::string::npos);
+    CHECK(eq_body.find("return __x._M_storage._M_val == __y._M_storage._M_val;") != std::string::npos);
+    CHECK(eq_body.find("return __x._M_storage._M_unex == __y._M_storage._M_unex;") != std::string::npos);
+    const auto eq_val = eq_body.find("_M_val");
+    const auto eq_unex = eq_body.find("_M_unex");
+    REQUIRE(eq_val != std::string::npos);
+    REQUIRE(eq_unex != std::string::npos);
+    CHECK(eq_val < eq_unex);
+    CHECK(eq_body.substr(eq_val, eq_unex - eq_val).find("_M_unex") == std::string::npos);
+    CHECK(eq_body.find("_M_val", eq_unex) == std::string::npos);
+
+    CHECK(ne_body.find("return !(__x == __y);") != std::string::npos);
+    CHECK(ne_body.find("_M_storage") == std::string::npos);
+    CHECK(ne_body.find("_M_val") == std::string::npos);
+    CHECK(ne_body.find("_M_unex") == std::string::npos);
+    CHECK(ne_body.find("_M_has") == std::string::npos);
+    CHECK(ne_body.find("<") == std::string::npos);
+
+    const auto lt_storage = lt_body.find("_M_storage");
+    REQUIRE(lt_storage != std::string::npos);
+    CHECK(lt_body.find("if (__x._M_has && !__y._M_has)") != std::string::npos);
+    CHECK(lt_body.find("return false;") != std::string::npos);
+    CHECK(lt_body.find("if (!__x._M_has && __y._M_has)") != std::string::npos);
+    CHECK(lt_body.find("return true;") != std::string::npos);
+    CHECK(lt_body.find("return false;") < lt_storage);
+    CHECK(lt_body.find("return true;") < lt_storage);
+    CHECK(lt_body.substr(0, lt_storage).find("_M_val") == std::string::npos);
+    CHECK(lt_body.substr(0, lt_storage).find("_M_unex") == std::string::npos);
+    CHECK(lt_body.find("return __x._M_storage._M_val < __y._M_storage._M_val;") != std::string::npos);
+    CHECK(lt_body.find("return __x._M_storage._M_unex < __y._M_storage._M_unex;") != std::string::npos);
+    const auto lt_val = lt_body.find("_M_val");
+    const auto lt_unex = lt_body.find("_M_unex");
+    REQUIRE(lt_val != std::string::npos);
+    REQUIRE(lt_unex != std::string::npos);
+    CHECK(lt_val < lt_unex);
+    CHECK(lt_body.substr(lt_val, lt_unex - lt_val).find("_M_unex") == std::string::npos);
+    CHECK(lt_body.find("_M_val", lt_unex) == std::string::npos);
+    CHECK(lt_body.find("operator==") == std::string::npos);
+    CHECK(lt_body.find("==") == std::string::npos);
+
+    for (const std::string& body : {em_body, eq_body, ne_body, lt_body}) {
+        CHECK(body.find("value()") == std::string::npos);
+        CHECK(body.find("error()") == std::string::npos);
+        CHECK(body.find("operator*") == std::string::npos);
+        CHECK(body.find("operator->") == std::string::npos);
+        CHECK(body.find("__prism_check") == std::string::npos);
+        CHECK(body.find("_Tp{}") == std::string::npos);
+        CHECK(body.find("_Er{}") == std::string::npos);
+        CHECK(body.find("T{}") == std::string::npos);
+        CHECK(body.find("E{}") == std::string::npos);
+    }
+
+    const std::string code = strip_comments(src);
+    CHECK(code.find("PROVED") == std::string::npos);
+    CHECK(code.find("CLEAN") == std::string::npos);
+    CHECK(code.find("swap") == std::string::npos);
+    CHECK(code.find("expected<void") == std::string::npos);
+    CHECK(code.find("operator<=>") == std::string::npos);
+    CHECK(code.find("operator>=") == std::string::npos);
+    CHECK(code.find("operator<=") == std::string::npos);
+    CHECK(code.find("operator>") == std::string::npos);
+    CHECK(code.find("initializer_list") == std::string::npos);
+    CHECK(count_of(code, "emplace(") == 1);
+    CHECK(count_of(code, "operator==") == 2);
+    CHECK(count_of(code, "operator!=") == 1);
+    CHECK(count_of(code, "operator<") == 2);
+    CHECK(count_of(code, "CXX-EXPECTED-NULL") == 6);
+    CHECK(count_of(code, "CXX-EXPECTED-ERROR") == 2);
+    CHECK(code.find("and_then") != std::string::npos);
+    CHECK(code.find("or_else") != std::string::npos);
+    CHECK(code.find("value_or") != std::string::npos);
+    CHECK(code.find("transform_error") != std::string::npos);
+    CHECK(code.find("#include <new>") != std::string::npos);
+    CHECK(code.find("#include <memory>") == std::string::npos);
+    CHECK(code.find("#include <compare>") == std::string::npos);
+}
+
+TEST_CASE("cxx expected model: operator< is same-type and is not in libstdc++") {
+    auto& c = ctx();
+    if (c.cxx.empty()) return;
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const fs::path src = c.tmp / "expected_less.cpp";
+    std::ofstream(src) << R"EOS(#include <cstdio>
+#include <cstdlib>
+#include <expected>
+extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
+    if (!ok) { std::fprintf(stderr, "CHECK %s: %s\n", cls, msg); std::abort(); }
+}
+struct LtVal {
+    int v;
+    LtVal() = delete;
+    explicit LtVal(int x) : v(x) {}
+    friend bool operator<(const LtVal& a, const LtVal& b) {
+        std::printf("ltv %d %d\n", a.v, b.v);
+        return a.v < b.v;
+    }
+};
+struct LtErr {
+    int v;
+    LtErr() = delete;
+    explicit LtErr(int x) : v(x) {}
+    friend bool operator<(const LtErr& a, const LtErr& b) {
+        std::printf("lte %d %d\n", a.v, b.v);
+        return a.v < b.v;
+    }
+};
+int main() {
+    std::expected<int, int> a(1), b(2), z(0), z2(0);
+    std::printf("lt_val %d %d %d %d\n", static_cast<int>(a < b), static_cast<int>(b < a),
+                static_cast<int>(a < a), static_cast<int>(z < z2));
+    std::expected<int, int> e1(std::unexpected<int>(1));
+    std::expected<int, int> e2(std::unexpected<int>(2));
+    std::expected<int, int> ez(std::unexpected<int>(0));
+    std::expected<int, int> ez2(std::unexpected<int>(0));
+    std::printf("lt_err %d %d %d %d\n", static_cast<int>(e1 < e2), static_cast<int>(e2 < e1),
+                static_cast<int>(e1 < e1), static_cast<int>(ez < ez2));
+    std::expected<int, int> v0(0), v9(9);
+    std::expected<int, int> err9(std::unexpected<int>(9));
+    std::expected<int, int> err0(std::unexpected<int>(0));
+    std::printf("lt_mix %d %d %d %d %d %d\n", static_cast<int>(v0 < err9), static_cast<int>(err9 < v0),
+                static_cast<int>(v9 < err0), static_cast<int>(err0 < v9), static_cast<int>(v0 < err0),
+                static_cast<int>(err0 < v0));
+    const std::expected<int, int> ca(1), cb(2), ce(std::unexpected<int>(3));
+    std::printf("lt_const %d %d %d %d\n", static_cast<int>(ca < cb), static_cast<int>(cb < ca),
+                static_cast<int>(ce < ca), static_cast<int>(ca < ce));
+    std::expected<LtVal, LtErr> va(LtVal(3)), vb(LtVal(3)), vc(LtVal(4));
+    const int ab = static_cast<int>(va < vb);
+    const int ac = static_cast<int>(va < vc);
+    const int cva = static_cast<int>(vc < va);
+    std::printf("lt_t %d %d %d\n", ab, ac, cva);
+    std::expected<LtVal, LtErr> ea(std::unexpected<LtErr>(LtErr(5)));
+    std::expected<LtVal, LtErr> eb(std::unexpected<LtErr>(LtErr(5)));
+    std::expected<LtVal, LtErr> ec(std::unexpected<LtErr>(LtErr(6)));
+    const int es = static_cast<int>(ea < eb);
+    const int ed = static_cast<int>(ea < ec);
+    const int eg = static_cast<int>(ec < ea);
+    std::printf("lt_e %d %d %d\n", es, ed, eg);
+    std::expected<LtVal, LtErr> mix_v(LtVal(8));
+    std::expected<LtVal, LtErr> mix_e(std::unexpected<LtErr>(LtErr(2)));
+    const int ve = static_cast<int>(mix_v < mix_e);
+    const int ev = static_cast<int>(mix_e < mix_v);
+    std::printf("lt_cross %d %d\n", ve, ev);
+    return 0;
+}
+)EOS";
+    if (c.ok) CHECK_FALSE(syntax_only(c.cxx, src, false));
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> deps_argv{c.cxx};
+    deps_argv.insert(deps_argv.end(), flags.begin(), flags.end());
+    deps_argv.push_back("-isystem");
+    deps_argv.push_back(models.string());
+    deps_argv.push_back("-M");
+    deps_argv.push_back(src.string());
+    std::string deps;
+    REQUIRE(run_cmd(deps_argv, &deps));
+    CHECK(fwd(deps).find(fwd((models / "expected").string())) != std::string::npos);
+
+    auto mod = run_lines(build_src(c.cxx, c.tmp, src, true, "expected_less"));
+    const std::vector<std::string> want{
+        "lt_val 1 0 0 0", "lt_err 1 0 0 0", "lt_mix 0 1 0 1 0 1", "lt_const 1 0 1 0", "ltv 3 3",
+        "ltv 3 4",        "ltv 4 3",        "lt_t 0 1 0",         "lte 5 5",         "lte 5 6",
+        "lte 6 5",        "lt_e 0 1 0",     "lt_cross 0 1",
+    };
+    CHECK(mod == want);
+    for (const auto& line : mod) {
+        CHECK(line.find("ltv 8") == std::string::npos);
+        CHECK(line.find("lte 2") == std::string::npos);
+    }
+}
+
+TEST_CASE("cxx expected model: omitted comparisons and emplace arities stay undeclared") {
+    auto& c = ctx();
+    if (c.cxx.empty()) return;
+    struct Snip {
+        const char* name;
+        const char* src;
+        bool model_ok;
+        bool lib_ok;
+    };
+    const Snip snips[] = {
+        {"same_eq",
+         "#include <expected>\n"
+         "struct NoDef {\n"
+         "  int v;\n"
+         "  explicit NoDef(int x) : v(x) {}\n"
+         "  bool operator==(const NoDef& o) const { return v == o.v; }\n"
+         "};\n"
+         "int use(){\n"
+         "  std::expected<NoDef, int> a(NoDef(1));\n"
+         "  std::expected<NoDef, int> b(NoDef(2));\n"
+         "  std::expected<NoDef, int> e(std::unexpected<int>(3));\n"
+         "  return ((a == b) || (a != b)) && !(a == e) && (a != e) ? 1 : 0;\n"
+         "}\n",
+         true, true},
+        {"store",
+         "#include <expected>\n"
+         "struct NoEq { int v; explicit NoEq(int x) : v(x) {} };\n"
+         "int use(){ std::expected<NoEq, int> a(NoEq(1)); return a.has_value() ? 1 : 0; }\n",
+         true, true},
+        {"no_eq",
+         "#include <expected>\n"
+         "struct NoEq { int v; explicit NoEq(int x) : v(x) {} };\n"
+         "int use(){ std::expected<NoEq, int> a(NoEq(1)); std::expected<NoEq, int> b(NoEq(2));\n"
+         "  return a == b ? 1 : 0; }\n",
+         false, false},
+        {"diff_type",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1); std::expected<long, long> b(1L);\n"
+         "  return a == b ? 1 : 0; }\n",
+         false, true},
+        {"bare",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1); return a == 1 ? 1 : 0; }\n",
+         false, true},
+        {"unex",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(std::unexpected<int>(1));\n"
+         "  return a == std::unexpected<int>(1) ? 1 : 0; }\n",
+         false, true},
+        {"emplace_arity",
+         "#include <expected>\n"
+         "struct Two { int a; int b; Two(int x, int y) noexcept : a(x), b(y) {} };\n"
+         "int use(){ std::expected<int, int> z(std::unexpected<int>(1)); z.emplace();\n"
+         "  std::expected<Two, int> t(std::unexpected<int>(1)); t.emplace(1, 2); return 0; }\n",
+         false, true},
+        {"swap",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1), b(2); a.swap(b); return a.value(); }\n",
+         false, true},
+        {"same_lt",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1), b(2);\n"
+         "  std::expected<int, int> e(std::unexpected<int>(3));\n"
+         "  return (a < b) && !(b < a) && !(a < a) && (e < a) && !(a < e) ? 1 : 0; }\n",
+         true, false},
+        {"diff_lt",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1); std::expected<long, long> b(2L);\n"
+         "  return a < b ? 1 : 0; }\n",
+         false, false},
+        {"no_lt",
+         "#include <expected>\n"
+         "struct NoLt { int v; explicit NoLt(int x) : v(x) {} };\n"
+         "int use(){ std::expected<NoLt, int> a(NoLt(1)); std::expected<NoLt, int> b(NoLt(2));\n"
+         "  return a < b ? 1 : 0; }\n",
+         false, false},
+        {"gt",
+         "#include <expected>\n"
+         "int use(){ std::expected<int, int> a(1), b(2); return a > b ? 1 : 0; }\n",
+         false, false},
+    };
+    for (const auto& snip : snips) {
+        CAPTURE(snip.name);
+        const fs::path file = c.tmp / (std::string("expected_") + snip.name + ".cpp");
+        std::ofstream(file) << snip.src;
+        std::string err;
+        CHECK(syntax_only(c.cxx, file, true, &err) == snip.model_ok);
+        if (c.ok) CHECK(syntax_only(c.cxx, file, false, &err) == snip.lib_ok);
+    }
 }

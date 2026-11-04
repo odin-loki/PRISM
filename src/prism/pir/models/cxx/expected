@@ -37,7 +37,27 @@
 // error, through unexpected. When a T is stored, transform_error does not
 // call the function and returns that stored T. It does not construct an E
 // and it does not return E{} or T{}.
-// emplace, swap, comparison, and expected<void, E> are not declared. A use
+//
+// emplace takes one argument and constructs T from it in the value storage.
+// When the expected holds a T, that T is destroyed first and E is not read.
+// When it holds an E, that E is destroyed first and T is not read. The new T
+// is placement-newed into the value member and the flag is set. The reference
+// is that stored T, not a temporary T{}. operator== compares two expected<T, E>
+// of the same type. Different alternatives compare false and do not read
+// either object. Both values compare the stored T. Both errors compare the
+// stored E. That comparison does not construct T{} or E{}. operator!= is the
+// negation of operator== and does not name either alternative. operator<
+// compares two expected<T, E> of the same type. A value on the left and an
+// error on the right is false. An error on the left and a value on the right
+// is true. Those paths do not read storage. Otherwise the active alternative
+// is compared with operator<. value() and error() are not used. The bodies
+// are function templates, so they are not instantiated just because an
+// expected is stored. This is not PROVED and not CLEAN.
+//
+// swap, operator>, operator<=, operator>=, operator<=>, comparison of
+// expected<T, E> with expected<U, G>, comparison with a bare T, comparison
+// with unexpected, emplace with no argument or with more than one argument
+// or with an initializer_list, and expected<void, E> are not declared. A use
 // of them fails to compile against this header and pir falls back to
 // libstdc++.
 #ifndef _PRISM_MODEL_EXPECTED
@@ -45,6 +65,8 @@
 #define _GLIBCXX_EXPECTED 1  // libstdc++'s <expected> include guard: never both
 
 #pragma GCC system_header
+
+#include <new>
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -122,6 +144,24 @@ public:
             _M_storage._M_val.~_Tp();
         else
             _M_storage._M_unex.~_Er();
+    }
+
+    // One argument. Holds T: destroy that T and do not read E. Holds E:
+    // destroy that E, set the flag, and do not read T. Then placement-new
+    // T into the value storage. The reference is that stored T, not a
+    // temporary T{}. value() and error() are not used, so emplace is not a
+    // CXX-EXPECTED-NULL or CXX-EXPECTED-ERROR check.
+    // This is not PROVED and not CLEAN.
+    template <typename _Up>
+    _Tp& emplace(_Up&& __u) {
+        if (_M_has) {
+            _M_storage._M_val.~_Tp();
+        } else {
+            _M_storage._M_unex.~_Er();
+            _M_has = true;
+        }
+        ::new (static_cast<void*>(&_M_storage._M_val)) _Tp(static_cast<_Up&&>(__u));
+        return _M_storage._M_val;
     }
 
     bool has_value() const noexcept { return _M_has; }
@@ -324,7 +364,51 @@ public:
                 static_cast<_Fn&&>(__f)(static_cast<const _Er&&>(_M_storage._M_unex))));
         return _Ret(static_cast<const _Tp&&>(_M_storage._M_val));
     }
+
+    // Definitions are below, after the class. Friends so the bodies can read
+    // the flag and the active alternative. The bodies are function templates,
+    // so they are not instantiated just because this expected is stored. A T
+    // or an E with no operator== or operator< can still be stored.
+    template <typename _Up, typename _Ep>
+    friend constexpr bool operator==(const expected<_Up, _Ep>& __x, const expected<_Up, _Ep>& __y);
+    template <typename _Up, typename _Ep>
+    friend constexpr bool operator<(const expected<_Up, _Ep>& __x, const expected<_Up, _Ep>& __y);
 };
+
+// Different alternatives: false, before either object is read. Both hold T:
+// compare the stored T and do not read E. Both hold E: compare the stored E
+// and do not read T. T{} and E{} are not built. value() and error() are not
+// used. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Er>
+constexpr bool operator==(const expected<_Tp, _Er>& __x, const expected<_Tp, _Er>& __y) {
+    if (__x._M_has != __y._M_has)
+        return false;
+    if (__x._M_has)
+        return __x._M_storage._M_val == __y._M_storage._M_val;
+    return __x._M_storage._M_unex == __y._M_storage._M_unex;
+}
+
+// The negation of operator==. This body does not name either alternative
+// and does not construct T{} or E{}. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Er>
+constexpr bool operator!=(const expected<_Tp, _Er>& __x, const expected<_Tp, _Er>& __y) {
+    return !(__x == __y);
+}
+
+// A value on the left and an error on the right is false. An error on the
+// left and a value on the right is true. Those returns are before either
+// alternative is named. Otherwise the active alternative is compared with
+// operator<. value() and error() are not used. This is not PROVED and not CLEAN.
+template <typename _Tp, typename _Er>
+constexpr bool operator<(const expected<_Tp, _Er>& __x, const expected<_Tp, _Er>& __y) {
+    if (__x._M_has && !__y._M_has)
+        return false;
+    if (!__x._M_has && __y._M_has)
+        return true;
+    if (__x._M_has)
+        return __x._M_storage._M_val < __y._M_storage._M_val;
+    return __x._M_storage._M_unex < __y._M_storage._M_unex;
+}
 
 }  // namespace std
 
