@@ -33,20 +33,26 @@
 // disengaged, the function is not called and transform returns a disengaged
 // optional. It does not return T{} and it does not invent a value.
 //
-// operator== and operator< compare two optional<T> of the same T. Two
-// disengaged optionals compare equal, and neither is less than the other.
-// Those operators do not read the inactive T and do not construct T{}. A
-// disengaged optional is less than an engaged one. An engaged optional is
-// not less than a disengaged one. Two engaged optionals compare the stored
-// values with operator== and operator<. They do not invent a value.
+// operator==, operator<, and operator> compare two optional<T> of the same
+// T. Two disengaged optionals compare equal, neither is less than the
+// other, and neither is greater. Those operators do not read the inactive
+// T and do not construct T{}. A disengaged optional is less than an engaged
+// one and is not greater. An engaged optional is not less than a disengaged
+// one and is greater. Two engaged optionals compare the stored values.
+// They do not invent a value. This is not PROVED and not CLEAN.
+//
+// emplace constructs one T in the existing storage. A disengaged emplace
+// does not destroy a T. An engaged emplace destroys the stored T first.
+// swap exchanges the two states. Two disengaged optionals are not read.
+// A self-swap of an engaged optional does not destroy the stored T.
 // This is not PROVED and not CLEAN.
 //
-// emplace and hash are not declared. A use of them fails to compile against
-// this header and pir falls back to libstdc++.
+// hash is not declared. A use of it fails to compile against this header
+// and pir falls back to libstdc++.
 // nullopt_t and nullopt: construction, assignment (reset), and == / !=
 // against nullopt (the engaged flag; no T is read).
-// in_place, swap, make_optional, assignment from T, operator<=>,
-// operator>, operator<=, operator>=, comparison with a bare T, and
+// in_place, make_optional, assignment from T, operator<=>,
+// operator<=, operator>=, comparison with a bare T, and
 // comparison of two different optional types are not declared either, so
 // those uses fall back too. operator!= is not a separate declaration. It is
 // the rewritten negation of operator==.
@@ -55,6 +61,8 @@
 #define _GLIBCXX_OPTIONAL 1  // libstdc++'s <optional> include guard: never both
 
 #pragma GCC system_header
+
+#include <new>
 
 // PIR intrinsic (translate.cpp). A literal class and message, as in the libc
 // models. Not defined here: the analysed program does not link a body.
@@ -157,6 +165,52 @@ public:
         if (!_M_engaged) return;
         _M_storage._M_value.~value_type();
         _M_engaged = false;
+    }
+
+    // One argument. Disengaged: do not destroy a T and do not read the
+    // inactive T. Construct T from the argument in this storage. Engaged:
+    // destroy the stored T first, then construct the new T. The reference
+    // is that stored T, not a temporary T{}. value() is not used: a
+    // disengaged emplace is not a CXX-OPTIONAL-NULL check.
+    // This is not PROVED and not CLEAN.
+    template <typename _Up>
+    _Tp& emplace(_Up&& __u) {
+        if (_M_engaged) {
+            _M_storage._M_value.~value_type();
+            _M_engaged = false;
+        }
+        ::new (static_cast<void*>(&_M_storage._M_value)) _Tp(static_cast<_Up&&>(__u));
+        _M_engaged = true;
+        return _M_storage._M_value;
+    }
+
+    // Two disengaged optionals do not name T. One engaged and one disengaged
+    // move-constructs into the disengaged storage, then ends the source
+    // lifetime. Two engaged optionals exchange the stored values by move.
+    // Self-swap returns and does not move or destroy the stored T.
+    // value() is not used, so a disengaged swap is not a CXX-OPTIONAL-NULL
+    // check. This is not PROVED and not CLEAN.
+    void swap(optional& __rhs) noexcept {
+        if (this == &__rhs) return;
+        if (_M_engaged && __rhs._M_engaged) {
+            _Tp __tmp = static_cast<_Tp&&>(_M_storage._M_value);
+            _M_storage._M_value = static_cast<_Tp&&>(__rhs._M_storage._M_value);
+            __rhs._M_storage._M_value = static_cast<_Tp&&>(__tmp);
+            return;
+        }
+        if (_M_engaged) {
+            ::new (static_cast<void*>(&__rhs._M_storage._M_value)) _Tp(static_cast<_Tp&&>(_M_storage._M_value));
+            __rhs._M_engaged = true;
+            _M_engaged = false;
+            _M_storage._M_value.~value_type();
+            return;
+        }
+        if (__rhs._M_engaged) {
+            ::new (static_cast<void*>(&_M_storage._M_value)) _Tp(static_cast<_Tp&&>(__rhs._M_storage._M_value));
+            _M_engaged = true;
+            __rhs._M_engaged = false;
+            __rhs._M_storage._M_value.~value_type();
+        }
     }
 
     bool has_value() const noexcept { return _M_engaged; }
@@ -337,6 +391,8 @@ public:
     friend bool operator==(const optional<_Up>& __x, const optional<_Up>& __y);
     template <typename _Up>
     friend bool operator<(const optional<_Up>& __x, const optional<_Up>& __y);
+    template <typename _Up>
+    friend bool operator>(const optional<_Up>& __x, const optional<_Up>& __y);
 };
 
 template <typename _T>
@@ -371,6 +427,25 @@ bool operator<(const optional<_Tp>& __x, const optional<_Tp>& __y) {
     if (!__y._M_engaged) return false;
     if (!__x._M_engaged) return true;
     return __x._M_storage._M_value < __y._M_storage._M_value;
+}
+
+// Two disengaged optionals compare not-greater. A disengaged left and an
+// engaged right is false. An engaged left and a disengaged right is true.
+// Those paths do not read the inactive T. Both engaged: operator> of the
+// stored values. T{} is not built. value() and operator* are not used.
+// No value is invented. This is not PROVED and not CLEAN.
+template <typename _Tp>
+bool operator>(const optional<_Tp>& __x, const optional<_Tp>& __y) {
+    if (!__x._M_engaged) return false;
+    if (!__y._M_engaged) return true;
+    return __x._M_storage._M_value > __y._M_storage._M_value;
+}
+
+// Same operation as the member. This optional has no move assignment, so
+// the generic std::swap would not compile. This overload does not return T{}.
+template <typename _Tp>
+inline void swap(optional<_Tp>& __x, optional<_Tp>& __y) noexcept(noexcept(__x.swap(__y))) {
+    __x.swap(__y);
 }
 
 }  // namespace std
