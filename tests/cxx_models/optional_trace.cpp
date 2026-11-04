@@ -4,8 +4,8 @@
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
 // emplace and hash are not called: the model does not declare them.
-// value_or, and_then, or_else, transform, operator==, and operator< are
-// declared; this trace does not call them.
+// value_or, and_then, or_else, transform, operator==, operator<,
+// operator>, and operator<= are declared; this trace does not call them.
 //
 // argv "empty" / "star" / "arrow" call value(), operator*, or operator-> on an
 // empty optional. The model must __prism_check and must not print a value.
