@@ -12,6 +12,8 @@
 // has_extension reads stored characters. An empty path has no extension.
 // A trailing '/' has none. ".", "..", a name with no '.', and a name whose
 // only '.' is the first character have none. A later '.' is an extension.
+// has_stem is true exactly when has_filename is true. An empty path has
+// no stem. A trailing '/' has none. "." and ".." are their own stems.
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
@@ -162,6 +164,25 @@ int main() {
     const int hx_unc = std::filesystem::path("//net/share").has_extension();
     const int hx_net = std::filesystem::path("//net").has_extension();
     const int hx_parent_ext = std::filesystem::path("a.b/c").has_extension();
+    const int hs_empty = empty.has_stem();
+    const int hs_blank = std::filesystem::path("").has_stem();
+    const int hs_root = std::filesystem::path("/").has_stem();
+    const int hs_slash = std::filesystem::path("/a").has_stem();
+    const int hs_rel = std::filesystem::path("a").has_stem();
+    const int hs_nested = std::filesystem::path("a/b").has_stem();
+    const int hs_trail = std::filesystem::path("a/").has_stem();
+    const int hs_trail_b = std::filesystem::path("a/b/").has_stem();
+    const int hs_dot = std::filesystem::path(".").has_stem();
+    const int hs_dots = std::filesystem::path("..").has_stem();
+    const int hs_keep = std::filesystem::path("a/..").has_stem();
+    const int hs_dotdot = std::filesystem::path("a/../b").has_stem();
+    const int hs_root_dotdot = std::filesystem::path("/a/../b").has_stem();
+    const int hs_drive = std::filesystem::path("C:/a").has_stem();
+    const int hs_bslash = std::filesystem::path("\\a").has_stem();
+    const int hs_unc = std::filesystem::path("//net/share").has_stem();
+    const int hs_net = std::filesystem::path("//net").has_stem();
+    const int hs_txt = std::filesystem::path("a/b.txt").has_stem();
+    const int hs_hidden = std::filesystem::path(".txt").has_stem();
     std::printf("empty_fn_empty=%d\n", empty_fn_empty);
     std::printf("empty_fn_dot=%d\n", empty_fn_dot);
     std::printf("fn_b=%d\n", fn_b);
@@ -281,6 +302,25 @@ int main() {
     std::printf("hx_unc=%d\n", hx_unc);
     std::printf("hx_net=%d\n", hx_net);
     std::printf("hx_parent_ext=%d\n", hx_parent_ext);
+    std::printf("hs_empty=%d\n", hs_empty);
+    std::printf("hs_blank=%d\n", hs_blank);
+    std::printf("hs_root=%d\n", hs_root);
+    std::printf("hs_slash=%d\n", hs_slash);
+    std::printf("hs_rel=%d\n", hs_rel);
+    std::printf("hs_nested=%d\n", hs_nested);
+    std::printf("hs_trail=%d\n", hs_trail);
+    std::printf("hs_trail_b=%d\n", hs_trail_b);
+    std::printf("hs_dot=%d\n", hs_dot);
+    std::printf("hs_dots=%d\n", hs_dots);
+    std::printf("hs_keep=%d\n", hs_keep);
+    std::printf("hs_dotdot=%d\n", hs_dotdot);
+    std::printf("hs_root_dotdot=%d\n", hs_root_dotdot);
+    std::printf("hs_drive=%d\n", hs_drive);
+    std::printf("hs_bslash=%d\n", hs_bslash);
+    std::printf("hs_unc=%d\n", hs_unc);
+    std::printf("hs_net=%d\n", hs_net);
+    std::printf("hs_txt=%d\n", hs_txt);
+    std::printf("hs_hidden=%d\n", hs_hidden);
     if (!empty_fn_empty || empty_fn_dot || !fn_b || !ext || !parent || !join || !dotdot || !keep || !stem_empty ||
         stem_empty_dot || !stem_txt || !stem_b || !stem_dot || !stem_dotdot || !stem_hidden || !stem_keep ||
         !stem_multi || !cmp_empty || !cmp_empty_a || !cmp_a_empty || !cmp_aa || !cmp_ab || !cmp_ba || !cmp_prefix ||
@@ -296,7 +336,10 @@ int main() {
         hx_empty || hx_blank || hx_root || hx_trail || hx_trail_b || hx_plain || hx_nested || hx_dot || hx_dots ||
         hx_dot_file || hx_dot_parent || hx_hidden || hx_hidden_dir || !hx_txt || !hx_file || !hx_multi || !hx_later ||
         !hx_trailing_dot || !hx_three || hx_dotdot_file || !hx_dotdot_txt || !hx_root_txt || hx_drive ||
-        !hx_drive_txt || hx_bslash || !hx_bslash_txt || hx_unc || hx_net || hx_parent_ext)
+        !hx_drive_txt || hx_bslash || !hx_bslash_txt || hx_unc || hx_net || hx_parent_ext || hs_empty ||
+        hs_blank || hs_root || !hs_slash || !hs_rel || !hs_nested || hs_trail || hs_trail_b || !hs_dot ||
+        !hs_dots || !hs_keep || !hs_dotdot || !hs_root_dotdot || !hs_drive || !hs_bslash || !hs_unc || !hs_net ||
+        !hs_txt || !hs_hidden)
         return 1;
     return 0;
 }

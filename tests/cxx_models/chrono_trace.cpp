@@ -30,6 +30,10 @@
 // takes the minimum count modulo -1. The model must __prism_check and
 // must not print a remainder. Those paths do not return a zero duration
 // and do not form the remainder.
+// duration::operator%= assigns that remainder. `mod_eq_zero` and
+// `mod_eq_min_zero` take the remainder by zero through %=. `mod_eq_ovf`
+// takes the minimum count modulo -1 through %=. Those traps stay inside
+// operator%, so %= does not store a duration and does not print a count.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -196,6 +200,27 @@ int main(int argc, char** argv) {
     std::printf("mod_min_min=%lld\n", static_cast<long long>((lim_min % lim_min.count()).count()));
     std::printf("mod_max_min=%lld\n", static_cast<long long>((lim_max % lim_min.count()).count()));
     std::printf("mod_min_max=%lld\n", static_cast<long long>((lim_min % lim_max.count()).count()));
+    dur mod_eq(10);
+    mod_eq %= 3LL;
+    std::printf("mod_eq=%lld\n", static_cast<long long>(mod_eq.count()));
+    dur mod_eq_neg(-5);
+    mod_eq_neg %= 2LL;
+    std::printf("mod_eq_neg=%lld\n", static_cast<long long>(mod_eq_neg.count()));
+    dur mod_eq_pos(5);
+    mod_eq_pos %= -2LL;
+    std::printf("mod_eq_neg_s=%lld\n", static_cast<long long>(mod_eq_pos.count()));
+    dur mod_eq_zero_count(0);
+    mod_eq_zero_count %= 5LL;
+    std::printf("mod_eq_zero_count=%lld\n", static_cast<long long>(mod_eq_zero_count.count()));
+    dur mod_eq_max(lim_max.count());
+    mod_eq_max %= -1LL;
+    std::printf("mod_eq_max_neg1=%lld\n", static_cast<long long>(mod_eq_max.count()));
+    dur mod_eq_min(lim_min.count());
+    mod_eq_min %= -2LL;
+    std::printf("mod_eq_min_neg2=%lld\n", static_cast<long long>(mod_eq_min.count()));
+    dur mod_eq_chain(10);
+    (mod_eq_chain %= 3LL) %= 2LL;
+    std::printf("mod_eq_chain=%lld\n", static_cast<long long>(mod_eq_chain.count()));
     if (argc > 1 && std::strcmp(argv[1], "ovf") == 0) {
         std::chrono::duration<long long> hi(9223372036854775807LL);
         std::chrono::duration<long long> one(1);
@@ -273,6 +298,24 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "mod_ovf") == 0) {
         const auto n = (std::chrono::duration<long long>::min() % -1LL).count();
         std::printf("wrapped=%lld\n", static_cast<long long>(n));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_eq_zero") == 0) {
+        dur z(5);
+        z %= 0LL;
+        std::printf("wrapped=%lld\n", static_cast<long long>(z.count()));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_eq_min_zero") == 0) {
+        dur z = dur::min();
+        z %= 0LL;
+        std::printf("wrapped=%lld\n", static_cast<long long>(z.count()));
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "mod_eq_ovf") == 0) {
+        dur z = dur::min();
+        z %= -1LL;
+        std::printf("wrapped=%lld\n", static_cast<long long>(z.count()));
         return 0;
     }
     return 0;

@@ -53,6 +53,14 @@
 // has an extension. Those reads stay inside the owned length. It does not
 // walk the filesystem.
 //
+// has_stem() is true exactly when has_filename() is true. An empty path
+// has no stem, and that answer returns before the pointer is loaded. A
+// non-empty path whose last character is '/' has no stem. "." and ".."
+// are true because those filenames are their own stems. The function
+// returns has_filename(), so it does not read a character that
+// has_filename() does not read, and it does not build a stem() copy. It
+// does not walk the filesystem.
+//
 // replace_extension() rewrites the stored characters. An empty path stays
 // empty and its pointer is not read; the replacement is not written. An
 // empty replacement removes a trailing extension and does not leave a dot.
@@ -184,13 +192,17 @@ public:
     // '.' in the filename is an extension. "." and ".." are not.
     [[nodiscard]] bool has_extension() const noexcept;
 
+    // Stored characters only. An empty path has no stem, and that answer
+    // does not load the pointer. A trailing '/' has none. "." and ".."
+    // are their own stems. The result is has_filename().
+    [[nodiscard]] bool has_stem() const noexcept;
+
     // Stored characters only. An empty path stays empty.
     path& replace_extension(const path& __rep = path());
 
     path& operator/=(const path& __p);
 
     // Lexical queries on the stored characters only (no OS access).
-    [[nodiscard]] bool has_stem() const { return !stem().empty(); }
     [[nodiscard]] bool has_parent_path() const { return !parent_path().empty(); }
     void clear() noexcept { _M_free(); }
     void swap(path& __o) noexcept { _M_swap(__o); }
@@ -408,6 +420,14 @@ inline bool path::has_extension() const noexcept {
     for (std::size_t __i = 1; __i < __n; ++__i)
         if (_M_str[__b + __i] == '.') return true;
     return false;
+}
+
+inline bool path::has_stem() const noexcept {
+    // True exactly when a filename is present. An empty path returns
+    // before the stored pointer is loaded. A trailing '/' is false.
+    // "." and ".." are true: those filenames are their own stems.
+    // The call reads no character that has_filename() does not read.
+    return has_filename();
 }
 
 inline path& path::replace_extension(const path& __rep) {
