@@ -21,6 +21,14 @@
 // returns 0 and leaves that byte.
 // argv "neg" is a negative sputn count. argv "null" is a null source with
 // a positive count. Neither writes.
+// argv "view" calls data() and size() on a 4-byte buffer and does not write.
+// argv "view0" is a null pointer with size 0: data() is nullptr, size() is
+// 0, and the pointer is not loaded.
+// argv "avail" calls in_avail on a 4-byte buffer at offset 0 and does not
+// write. argv "availmid" is in_avail after one sputc: three bytes remain.
+// argv "avail0" is a null pointer with size 0: in_avail is 0 and the
+// pointer is not loaded. argv "availend" is in_avail when the size is 0.
+// argv "availat" is in_avail after sgetc has moved the offset to the size.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,6 +47,57 @@ extern "C" void __prism_check(int ok, const char* cls, const char* msg) {
 }
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "view") == 0) {
+        char buf[4] = {'W', 'X', 'Y', 'Z'};
+        std::basic_spanbuf<char> b(buf, 4);
+        char* p = b.data();
+        const std::size_t n = b.size();
+        std::printf("view=%d %zu %c%c%c%c\n", p == buf ? 1 : 0, n, buf[0], buf[1], buf[2], buf[3]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "view0") == 0) {
+        std::basic_spanbuf<char> b(nullptr, 0);
+        char* p = b.data();
+        const std::size_t n = b.size();
+        std::printf("view0=%d %zu\n", p == nullptr ? 1 : 0, n);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "avail") == 0) {
+        char buf[4] = {'W', 'X', 'Y', 'Z'};
+        std::basic_spanbuf<char> b(buf, 4);
+        const std::size_t n = b.in_avail();
+        std::printf("avail=%zu %c%c%c%c\n", n, buf[0], buf[1], buf[2], buf[3]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availmid") == 0) {
+        char buf[4] = {'W', 'X', 'Y', 'Z'};
+        std::basic_spanbuf<char> b(buf, 4);
+        b.sputc('A');
+        const std::size_t n = b.in_avail();
+        std::printf("availmid=%zu %c%c%c%c\n", n, buf[0], buf[1], buf[2], buf[3]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "avail0") == 0) {
+        std::basic_spanbuf<char> b(nullptr, 0);
+        const std::size_t n = b.in_avail();
+        std::printf("avail0=%zu\n", n);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availend") == 0) {
+        char buf[4] = {'A', 'B', 'C', 'D'};
+        std::basic_spanbuf<char> b(buf, 0);
+        const std::size_t n = b.in_avail();
+        std::printf("availend=%zu %c\n", n, buf[0]);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "availat") == 0) {
+        char buf[1] = {'Q'};
+        std::basic_spanbuf<char> b(buf, 1);
+        (void)b.sgetc();
+        const std::size_t n = b.in_avail();
+        std::printf("availat=%zu %c\n", n, buf[0]);
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "off0") == 0) {
         char buf[4] = {'A', 'B', 'C', 'D'};
         std::basic_spanbuf<char> b(buf, 4);

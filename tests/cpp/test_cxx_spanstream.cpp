@@ -310,3 +310,135 @@ TEST_CASE("cxx spanstream model: sputn stores min(count, room) and traps on a ba
     REQUIRE(prod_end != std::string::npos);
     CHECK(sputn.find("* sizeof", prod_end + 1) == std::string::npos);
 }
+
+TEST_CASE("cxx spanstream model: data and size return the stored view and do not load") {
+    const auto header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "spanstream";
+    const auto src = slurp(header);
+    REQUIRE(!src.empty());
+    CHECK(src.find("This is not PROVED and not CLEAN") != std::string::npos);
+    CHECK(src.find("#include <span>") == std::string::npos);
+    CHECK(src.find("#include <sstream>") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+
+    const auto data_at = src.find("char* data() const noexcept");
+    REQUIRE(data_at != std::string::npos);
+    CHECK(src.find("char* data() const noexcept", data_at + 1) == std::string::npos);
+    const auto size_at = src.find("size_t size() const noexcept");
+    REQUIRE(size_at != std::string::npos);
+    CHECK(src.find("size_t size() const noexcept", size_at + 1) == std::string::npos);
+    CHECK(size_at < data_at);
+    const auto priv = src.find("\nprivate:");
+    REQUIRE(priv != std::string::npos);
+    CHECK(data_at < priv);
+
+    const auto data = body_of(src, "char* data(");
+    REQUIRE(!data.empty());
+    CHECK(data.find("return _M_ptr;") != std::string::npos);
+    CHECK(data.find("_M_ptr[") == std::string::npos);
+    CHECK(data.find("*_M_ptr") == std::string::npos);
+    CHECK(data.find("_M_ptr =") == std::string::npos);
+    CHECK(data.find("_M_size") == std::string::npos);
+    CHECK(data.find("_M_off") == std::string::npos);
+    CHECK(data.find("=") == std::string::npos);
+    CHECK(data.find("++") == std::string::npos);
+    CHECK(data.find("--") == std::string::npos);
+    CHECK(data.find("__prism_check") == std::string::npos);
+    CHECK(data.find("__builtin_trap") == std::string::npos);
+    CHECK(data.find("sputc") == std::string::npos);
+    CHECK(data.find("sgetc") == std::string::npos);
+    CHECK(data.find("sungetc") == std::string::npos);
+    CHECK(data.find("sputn") == std::string::npos);
+
+    const auto sz = body_of(src, "size_t size(");
+    REQUIRE(!sz.empty());
+    CHECK(sz.find("return _M_size;") != std::string::npos);
+    CHECK(sz.find("_M_ptr") == std::string::npos);
+    CHECK(sz.find("_M_off") == std::string::npos);
+    CHECK(sz.find("[") == std::string::npos);
+    CHECK(sz.find("=") == std::string::npos);
+    CHECK(sz.find("__prism_check") == std::string::npos);
+    CHECK(sz.find("data(") == std::string::npos);
+
+    const auto sputc = body_of(src, "int sputc(");
+    const auto sgetc = body_of(src, "int sgetc(");
+    const auto sungetc = body_of(src, "int sungetc(");
+    const auto sputn = body_of(src, "std::ptrdiff_t sputn(");
+    const auto ctor = body_of(src, "basic_spanbuf(char* __p, size_t __n)");
+    REQUIRE(!sputc.empty());
+    REQUIRE(!sgetc.empty());
+    REQUIRE(!sungetc.empty());
+    REQUIRE(!sputn.empty());
+    REQUIRE(!ctor.empty());
+    CHECK(sputc.find("data(") == std::string::npos);
+    CHECK(sgetc.find("data(") == std::string::npos);
+    CHECK(sungetc.find("data(") == std::string::npos);
+    CHECK(sputn.find("data(") == std::string::npos);
+    CHECK(ctor.find("data(") == std::string::npos);
+    CHECK(src.find("~basic_spanbuf() noexcept = default") != std::string::npos);
+    CHECK(src.find("basic_spanbuf(char* __p, size_t __n)") != std::string::npos);
+    CHECK(src.find("_M_size(__n)") != std::string::npos);
+}
+
+TEST_CASE("cxx spanstream model: in_avail returns bytes left at the offset and does not load") {
+    const auto header = repo() / "src" / "prism" / "pir" / "models" / "cxx" / "spanstream";
+    const auto src = slurp(header);
+    REQUIRE(!src.empty());
+    CHECK(src.find("in_avail is not PROVED and not CLEAN") != std::string::npos);
+    CHECK(src.find("#include <span>") == std::string::npos);
+    CHECK(src.find("#include <sstream>") == std::string::npos);
+    CHECK(src.find("#include <string>") == std::string::npos);
+    CHECK(src.find("#include <string_view>") == std::string::npos);
+
+    const auto at = src.find("size_t in_avail() const noexcept");
+    REQUIRE(at != std::string::npos);
+    CHECK(src.find("size_t in_avail() const noexcept", at + 1) == std::string::npos);
+    const auto data_at = src.find("char* data() const noexcept");
+    const auto priv = src.find("\nprivate:");
+    REQUIRE(data_at != std::string::npos);
+    REQUIRE(priv != std::string::npos);
+    CHECK(data_at < at);
+    CHECK(at < priv);
+
+    const auto avail = body_of(src, "size_t in_avail(");
+    REQUIRE(!avail.empty());
+    CHECK(avail.find("return _M_off < _M_size ? _M_size - _M_off : 0;") != std::string::npos);
+    CHECK(avail.find("_M_ptr") == std::string::npos);
+    CHECK(avail.find("[") == std::string::npos);
+    CHECK(avail.find("=") == std::string::npos);
+    CHECK(avail.find("++") == std::string::npos);
+    CHECK(avail.find("--") == std::string::npos);
+    CHECK(avail.find("__prism_check") == std::string::npos);
+    CHECK(avail.find("__builtin_trap") == std::string::npos);
+    CHECK(avail.find("sputc") == std::string::npos);
+    CHECK(avail.find("sgetc") == std::string::npos);
+    CHECK(avail.find("sungetc") == std::string::npos);
+    CHECK(avail.find("sputn") == std::string::npos);
+    CHECK(avail.find("data(") == std::string::npos);
+    CHECK(avail.find("size(") == std::string::npos);
+
+    const auto sputc = body_of(src, "int sputc(");
+    const auto sgetc = body_of(src, "int sgetc(");
+    const auto sungetc = body_of(src, "int sungetc(");
+    const auto sputn = body_of(src, "std::ptrdiff_t sputn(");
+    const auto data = body_of(src, "char* data(");
+    const auto sz = body_of(src, "size_t size(");
+    const auto ctor = body_of(src, "basic_spanbuf(char* __p, size_t __n)");
+    REQUIRE(!sputc.empty());
+    REQUIRE(!sgetc.empty());
+    REQUIRE(!sungetc.empty());
+    REQUIRE(!sputn.empty());
+    REQUIRE(!data.empty());
+    REQUIRE(!sz.empty());
+    REQUIRE(!ctor.empty());
+    CHECK(sputc.find("in_avail") == std::string::npos);
+    CHECK(sgetc.find("in_avail") == std::string::npos);
+    CHECK(sungetc.find("in_avail") == std::string::npos);
+    CHECK(sputn.find("in_avail") == std::string::npos);
+    CHECK(data.find("in_avail") == std::string::npos);
+    CHECK(sz.find("in_avail") == std::string::npos);
+    CHECK(ctor.find("in_avail") == std::string::npos);
+    CHECK(src.find("~basic_spanbuf() noexcept = default") != std::string::npos);
+    CHECK(src.find("basic_spanbuf(char* __p, size_t __n)") != std::string::npos);
+    CHECK(src.find("_M_size(__n)") != std::string::npos);
+}

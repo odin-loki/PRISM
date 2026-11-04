@@ -6,8 +6,9 @@
 //
 // std::ranges::size, std::ranges::ssize, std::ranges::empty,
 // std::ranges::begin, std::ranges::end, std::ranges::data,
-// std::ranges::cbegin, std::ranges::cend, std::ranges::cdata, and
-// std::ranges::distance, and views::take / views::drop over contiguous
+// std::ranges::cbegin, std::ranges::cend, std::ranges::cdata,
+// std::ranges::distance, std::ranges::find, std::ranges::find_if,
+// std::ranges::find_if_not, and views::take / views::drop over contiguous
 // lvalue ranges (pointer subranges, clamped; see below).
 // size of a T(&)[N] is N. size of an lvalue with a const size() member
 // is that size(). There is no overload for a pointer. A pointer argument
@@ -63,9 +64,48 @@
 // it does not match. There is no pointer overload. A pointer is not a
 // range and is not given a length.
 //
-// sort, find, and views are not declared. A use fails to compile against
-// this header and pir falls back. They are not stubbed. vector, memory,
-// string, iterator, algorithm, and span are not included.
+// find of a T(&)[N] and a const T& value, for a bound other than 0, is a
+// pointer to the first element that compares equal with ==, or one past
+// the last element. The parameter is named. The subscript is an index
+// below N. One past the last adds the bound to the decayed pointer; it is
+// not a subscript of N. N == 0 does not match that parameter, for the same
+// reason as empty. That array is a second overload: a reference whose size
+// is 0. find then returns the decayed pointer and does not load an element.
+// A pointer argument's size is not 0, so it does not match. There is no
+// pointer overload. A pointer is not a range.
+//
+// find_if of a T(&)[N] and a function pointer bool (*)(const T&), for a
+// bound other than 0, is a pointer to the first element for which the
+// predicate returns true, or one past the last element. A null predicate
+// is __prism_check with class FUNC-CONTRACT and message
+// "std::ranges::find_if null predicate", then __builtin_trap. That path
+// does not call the predicate and does not load an element. The subscript
+// is an index below N. One past the last adds the bound to the decayed
+// pointer; it is not a subscript of N. N == 0 does not match that
+// parameter, for the same reason as empty. That array is a second
+// overload: a reference whose size is 0. find_if then returns the decayed
+// pointer and does not load an element and does not call the predicate.
+// A pointer argument's size is not 0, so it does not match. There is no
+// pointer overload. A pointer is not a range.
+//
+// find_if_not of a T(&)[N] and a function pointer bool (*)(const T&), for
+// a bound other than 0, is a pointer to the first element for which the
+// predicate returns false, or one past the last element. A null predicate
+// is __prism_check with class FUNC-CONTRACT and message
+// "std::ranges::find_if_not null predicate", then __builtin_trap. That
+// path does not call the predicate and does not load an element. The
+// subscript is an index below N. One past the last adds the bound to the
+// decayed pointer; it is not a subscript of N. N == 0 does not match that
+// parameter, for the same reason as empty. That array is a second
+// overload: a reference whose size is 0. find_if_not then returns the
+// decayed pointer and does not load an element and does not call the
+// predicate. A pointer argument's size is not 0, so it does not match.
+// There is no pointer overload. A pointer is not a range.
+//
+// sort is not declared. A use fails to compile against this header and pir
+// falls back. It is not stubbed. views::take and views::drop are declared
+// below. Other views are not declared. vector, memory, string, iterator,
+// algorithm, and span are not included.
 //
 // This is not a proof that an iterator stays in range. This header is not
 // a proof that a range is sorted or that a pointer has a length.
@@ -280,6 +320,105 @@ constexpr std::ptrdiff_t distance(_Arr&) noexcept
     requires(sizeof(_Arr) == 0)
 {
     return 0;
+}
+
+// The value parameter is const T&. T is the element type of the array.
+// It is not deduced from the value, so a literal still binds.
+template <typename _Tp>
+struct _Prism_type_identity {
+    using type = _Tp;
+};
+
+template <typename _Tp>
+using _Prism_type_identity_t = typename _Prism_type_identity<_Tp>::type;
+
+// Pointer to the first element that compares equal with ==, or one past
+// the last. The bound is at least 1: N == 0 does not match this parameter.
+// The subscript is below N. One past the last adds the bound; it is not a
+// subscript.
+template <typename _Tp, std::size_t _Nm>
+constexpr _Tp* find(_Tp (&__a)[_Nm], const _Prism_type_identity_t<_Tp>& __value) {
+    for (std::size_t __i = 0; __i < _Nm; ++__i) {
+        if (__a[__i] == __value) return __a + __i;
+    }
+    return __a + _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. The value is not read. A pointer argument has a
+// non-zero size, so it does not match. When T(&)[N] is viable it is the
+// more specialized overload, so a bound other than 0 is not taken here.
+template <typename _Arr, typename _Up>
+constexpr auto find(_Arr& __a, const _Up&) noexcept -> decltype(__a + 0)
+    requires(sizeof(_Arr) == 0)
+{
+    return __a;
+}
+
+// True when a pointer to _Elem compares with the decay of _Arr. A
+// zero-length array's predicate is then bool (*)(const T&) for that
+// element. The comparison is unevaluated. It does not load an element.
+template <typename _Arr, typename _Elem>
+concept _Prism_zero_array_elem = requires(_Arr& __a, _Elem* __p) { __a + 0 == __p; };
+
+// Pointer to the first element for which the predicate returns true, or
+// one past the last. The bound is at least 1: N == 0 does not match this
+// parameter. The predicate parameter uses type identity, so T is deduced
+// from the array only. A const array still binds bool (*)(const T&) after
+// the extra const collapses. A null predicate traps before a call and
+// before a load. The subscript is below N. One past the last adds the
+// bound; it is not a subscript.
+template <typename _Tp, std::size_t _Nm>
+constexpr _Tp* find_if(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&)) {
+    if (__pred == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT", "std::ranges::find_if null predicate");
+        __builtin_trap();
+    }
+    for (std::size_t __i = 0; __i < _Nm; ++__i) {
+        if (__pred(__a[__i])) return __a + __i;
+    }
+    return __a + _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. The predicate is not called. A pointer argument has
+// a non-zero size, so it does not match. When T(&)[N] is viable it is the
+// more specialized overload, so a bound other than 0 is not taken here.
+template <typename _Arr, typename _Elem>
+constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept -> decltype(__a + 0)
+    requires(sizeof(_Arr) == 0 && _Prism_zero_array_elem<_Arr, _Elem>)
+{
+    return __a;
+}
+
+// Pointer to the first element for which the predicate returns false, or
+// one past the last. The bound is at least 1: N == 0 does not match this
+// parameter. The predicate parameter uses type identity, so T is deduced
+// from the array only. A const array still binds bool (*)(const T&) after
+// the extra const collapses. A null predicate traps before a call and
+// before a load. The subscript is below N. One past the last adds the
+// bound; it is not a subscript.
+template <typename _Tp, std::size_t _Nm>
+constexpr _Tp* find_if_not(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&)) {
+    if (__pred == nullptr) {
+        __prism_check(0, "FUNC-CONTRACT", "std::ranges::find_if_not null predicate");
+        __builtin_trap();
+    }
+    for (std::size_t __i = 0; __i < _Nm; ++__i) {
+        if (!__pred(__a[__i])) return __a + __i;
+    }
+    return __a + _Nm;
+}
+
+// N == 0. sizeof of a zero-length array is 0. The result is the decayed
+// pointer, not a load. The predicate is not called. A pointer argument has
+// a non-zero size, so it does not match. When T(&)[N] is viable it is the
+// more specialized overload, so a bound other than 0 is not taken here.
+template <typename _Arr, typename _Elem>
+constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept -> decltype(__a + 0)
+    requires(sizeof(_Arr) == 0 && _Prism_zero_array_elem<_Arr, _Elem>)
+{
+    return __a;
 }
 
 template <typename _P>

@@ -17,6 +17,11 @@
 // entry and it does not build a frame. An empty current() is empty. A
 // current() that stored one address is not empty.
 //
+// operator== of two empty traces is true and does not read a stored address.
+// Different sizes are unequal and that path does not read past the shorter trace.
+// The same size compares the stored addresses. operator!= is the negation of
+// operator==. No entry is built. This is not PROVED and not CLEAN.
+//
 // The entry does not carry a function name or a source line. Those
 // queries are not declared, so this file cannot invent them.
 //
@@ -97,6 +102,21 @@ public:
         __prism_check(__n < this->size(), "MEM-OOB-READ", "stacktrace::operator[] index out of range");
         if (__n >= this->size()) __builtin_trap();
         return _M_frame;
+    }
+
+    // Two empty traces compare equal. That path does not read a stored address.
+    // Different sizes compare unequal and do not read past the shorter trace.
+    // The same size compares the stored addresses. operator!= is the negation.
+    // No entry is built. This is not PROVED and not CLEAN.
+    friend constexpr bool operator==(const basic_stacktrace& __x, const basic_stacktrace& __y) noexcept {
+        if (__x._M_size == 0 && __y._M_size == 0) return true;
+        if (__x._M_size != __y._M_size) return false;
+        return __x._M_frame.native_handle() == __y._M_frame.native_handle();
+    }
+
+    // Negation of operator==. This body does not read a stored address.
+    friend constexpr bool operator!=(const basic_stacktrace& __x, const basic_stacktrace& __y) noexcept {
+        return !(__x == __y);
     }
 
 private:

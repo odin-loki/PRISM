@@ -18,8 +18,10 @@
 //    an element. sizeof(element_type) == 0 is a check and a trap, not a 0
 //    result. A product that does not fit in size_t is a check and a trap,
 //    not a wrapped byte count;
-//  * operator[] when the index is in range, returning that element;
-//  * front() and back() when the view is non-empty, returning that element;
+//  * operator[] when the index is in range, returning that element.
+//    An index >= size() traps before that address is formed;
+//  * front() and back() when the view is non-empty, returning that element.
+//    An empty span traps before that address is formed;
 //  * subspan(offset, count) and subspan(offset) (the tail) when the slice
 //    sits inside size();
 //  * first(count) and last(count) when the count fits in size(), and
@@ -28,13 +30,23 @@
 //    iterator does not allocate. last(0) is an empty span and does not
 //    read an element;
 //
-// Preconditions use __glibcxx_assert, the same call <vector> and <list> use
-// (_GLIBCXX_ASSERTIONS, on for every C++ unit). The failing path does not
-// invent an element or a view:
-//  * operator[] with an index that is not in range (__n < this->size(),
-//    MEM-OOB-READ) does not return a stand-in _Tp;
-//  * front() and back() on an empty span (!this->empty(), FUNC-CONTRACT)
-//    do not return a fabricated _Tp;
+// subspan() and first() use __glibcxx_assert, the same call <vector> and
+// <list> use (_GLIBCXX_ASSERTIONS, on for every C++ unit). The failing
+// path does not invent an element or a view:
+//  * operator[] with an index >= size() is __prism_check with class
+//    MEM-OOB-READ ("std::span::operator[] index is outside the span"),
+//    then __builtin_trap, before the element address is formed. An
+//    empty span's operator[](0) takes that path and does not load.
+//    That path does not return a fabricated _Tp. This is not PROVED
+//    and not CLEAN;
+//  * front() on an empty span is __prism_check with class FUNC-CONTRACT
+//    ("std::span::front of an empty span"), then __builtin_trap, before
+//    the element address is formed. That path does not load and does not
+//    return a fabricated _Tp. This is not PROVED and not CLEAN;
+//  * back() on an empty span is __prism_check with class FUNC-CONTRACT
+//    ("std::span::back of an empty span"), then __builtin_trap, before
+//    the element address is formed. That path does not load and does not
+//    return a fabricated _Tp. This is not PROVED and not CLEAN;
 //  * subspan or first that would run past size() is the same kind of
 //    precondition failure, not a span of invented elements;
 //  * last(count) with count > size() is __prism_check with class
@@ -141,16 +153,33 @@ public:
     [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
     [[nodiscard]] constexpr pointer data() const noexcept { return _M_ptr; }
 
+    // An index >= size() is MEM-OOB-READ, then __builtin_trap, before the
+    // element address is formed. An empty span's operator[](0) takes that
+    // path and does not load. That path does not return a fabricated _Tp.
+    // An in-range index returns that element. This is not PROVED and not CLEAN.
     [[nodiscard]] constexpr reference operator[](size_type __n) const noexcept {
-        __glibcxx_assert(__n < this->size());
+        if (__n >= this->size()) {
+            __prism_check(0, "MEM-OOB-READ", "std::span::operator[] index is outside the span");
+            __builtin_trap();
+        }
         return *(_M_ptr + __n);
     }
+    // Empty span: FUNC-CONTRACT, then __builtin_trap, before the address.
+    // That path does not load. This is not PROVED and not CLEAN.
     [[nodiscard]] constexpr reference front() const noexcept {
-        __glibcxx_assert(!this->empty());
+        if (this->empty()) {
+            __prism_check(0, "FUNC-CONTRACT", "std::span::front of an empty span");
+            __builtin_trap();
+        }
         return *_M_ptr;
     }
+    // Empty span: FUNC-CONTRACT, then __builtin_trap, before the address.
+    // That path does not load. This is not PROVED and not CLEAN.
     [[nodiscard]] constexpr reference back() const noexcept {
-        __glibcxx_assert(!this->empty());
+        if (this->empty()) {
+            __prism_check(0, "FUNC-CONTRACT", "std::span::back of an empty span");
+            __builtin_trap();
+        }
         return *(_M_ptr + (size() - 1));
     }
     // The tail. An offset past size() fails the precondition; the length is

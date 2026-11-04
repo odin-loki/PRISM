@@ -220,7 +220,7 @@ fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_model
 }
 
 bool compile_snippet(const std::string& cxx, const fs::path& tmp, const std::string& name, const std::string& src,
-                     bool with_models) {
+                     bool with_models, std::string* err = nullptr) {
     const fs::path in = tmp / (name + ".cpp");
     std::ofstream(in) << src;
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -232,7 +232,7 @@ bool compile_snippet(const std::string& cxx, const fs::path& tmp, const std::str
     argv.push_back(in.string());
     argv.push_back("-o");
     argv.push_back((tmp / (name + ".o")).string());
-    return run_cmd(argv);
+    return run_cmd(argv, nullptr, err);
 }
 
 std::vector<std::string> run_lines(const fs::path& exe) {
@@ -253,7 +253,7 @@ bool has_line(const std::vector<std::string>& lines, const std::string& want) {
 
 }  // namespace
 
-TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata, and distance; ssize and distance trap when they do not fit") {
+TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, and find_if_not; ssize and distance trap when they do not fit") {
     const fs::path header = header_path();
     REQUIRE(fs::is_regular_file(header));
     CHECK_FALSE(fs::is_directory(header));
@@ -288,20 +288,27 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(src.find("cend(_Tp*") == std::string::npos);
     CHECK(src.find("cdata(_Tp*") == std::string::npos);
     CHECK(src.find("distance(_Tp*") == std::string::npos);
+    CHECK(src.find("find(_Tp*") == std::string::npos);
+    CHECK(src.find("find_if(_Tp*") == std::string::npos);
+    CHECK(src.find("find_if_not(_Tp*") == std::string::npos);
+    CHECK(src.find("find(_Arr*") == std::string::npos);
+    CHECK(src.find("find_if(_Arr*") == std::string::npos);
+    CHECK(src.find("find_if_not(_Arr*") == std::string::npos);
     CHECK(src.find("(_Tp*") == std::string::npos);
     // The access CPOs end where the views::take / views::drop part starts
     // (pointer subranges over contiguous ranges, which use data()).
     const std::string cpos = src.substr(0, src.find("struct _Prism_ptr_elem;"));
     REQUIRE(cpos.size() < src.size());
-    // begin, end, and data return _Tp*. cbegin, cend, and cdata return
-    // const _Tp*, and that spelling also contains the substring _Tp*.
-    CHECK(count_of(cpos, "_Tp*") == 6);
+    // begin, end, data, find, find_if, and find_if_not return _Tp*. cbegin,
+    // cend, and cdata return const _Tp*, and that spelling also contains the
+    // substring _Tp*.
+    CHECK(count_of(cpos, "_Tp*") == 9);
     CHECK(count_of(cpos, "const _Tp*") == 3);
     for (const char* inc : {"memory", "vector", "string", "iterator", "algorithm", "span"}) {
         CAPTURE(inc);
         CHECK(src.find(std::string("#include <") + inc + ">") == std::string::npos);
     }
-    for (const char* name : {"sort(", "find(", "view_interface"}) {
+    for (const char* name : {"sort(", "view_interface"}) {
         CAPTURE(name);
         CHECK(src.find(name) == std::string::npos);
     }
@@ -354,7 +361,10 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(zero_empty.find('.') == std::string::npos);
     CHECK(zero_empty.find("__t") == std::string::npos);
     // empty, begin, end, data, cbegin, cend, cdata, and distance.
-    CHECK(count_of(src, "requires(sizeof(_Arr) == 0)") == 8);
+    // empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if,
+    // and find_if_not. find_if and find_if_not continue with &&, so this
+    // text stops before the closing parenthesis.
+    CHECK(count_of(src, "requires(sizeof(_Arr) == 0") == 11);
 
     const auto mem_empty = body_of(src, "empty(_Tp& __t)");
     REQUIRE_FALSE(mem_empty.empty());
@@ -479,9 +489,11 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(src.find(".cend()") == std::string::npos);
     CHECK(src.find(".cdata()") == std::string::npos);
     // begin and data (array and zero-length), cbegin and cdata (array and
-    // zero-length), and zero-length cend. end's zero-length body is still + 0.
-    CHECK(count_of(src, "return __a;") == 9);
-    CHECK(count_of(src, "return __a + _Nm;") == 2);
+    // zero-length), zero-length cend, and the zero-length find, find_if, and
+    // find_if_not. end's zero-length body is still + 0.
+    CHECK(count_of(src, "return __a;") == 12);
+    CHECK(count_of(src, "return __a + _Nm;") == 5);
+    CHECK(count_of(src, "return __a + __i;") == 3);
     CHECK(count_of(src, "return __a + 0;") == 1);
 
     const auto arr_dist = body_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept");
@@ -513,6 +525,136 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept") == 1);
     CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept") == 1);
     CHECK(src.find(".distance()") == std::string::npos);
+
+    const auto arr_find =
+        body_of(src, "constexpr _Tp* find(_Tp (&__a)[_Nm], const _Prism_type_identity_t<_Tp>& __value)");
+    REQUIRE_FALSE(arr_find.empty());
+    CHECK(arr_find.find("__i < _Nm") != std::string::npos);
+    CHECK(arr_find.find("__a[__i] == __value") != std::string::npos);
+    CHECK(arr_find.find("return __a + __i;") != std::string::npos);
+    CHECK(arr_find.find("return __a + _Nm;") != std::string::npos);
+    CHECK(arr_find.find("[_Nm]") == std::string::npos);
+    CHECK(arr_find.find("__i <= _Nm") == std::string::npos);
+    CHECK(arr_find.find('*') == std::string::npos);
+    CHECK(arr_find.find('.') == std::string::npos);
+    CHECK(count_of(arr_find, "return ") == 2);
+
+    const auto zero_find = body_of(src, "constexpr auto find(_Arr& __a, const _Up&) noexcept");
+    REQUIRE_FALSE(zero_find.empty());
+    CHECK(zero_find.find("return __a;") != std::string::npos);
+    CHECK(count_of(zero_find, "return ") == 1);
+    CHECK(zero_find.find('*') == std::string::npos);
+    CHECK(zero_find.find('[') == std::string::npos);
+    CHECK(zero_find.find('.') == std::string::npos);
+    CHECK(zero_find.find('+') == std::string::npos);
+    CHECK(zero_find.find("__value") == std::string::npos);
+    CHECK(zero_find.find("_Up") == std::string::npos);
+    CHECK(count_of(src, "constexpr _Tp* find(_Tp (&__a)[_Nm], const _Prism_type_identity_t<_Tp>& __value)") == 1);
+    CHECK(count_of(src, "constexpr auto find(_Arr& __a, const _Up&) noexcept") == 1);
+
+    const auto arr_find_if =
+        body_of(src, "constexpr _Tp* find_if(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))");
+    REQUIRE_FALSE(arr_find_if.empty());
+    const auto fi_null = arr_find_if.find("if (__pred == nullptr)");
+    const auto fi_check =
+        arr_find_if.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if null predicate\")");
+    const auto fi_trap = arr_find_if.find("__builtin_trap()");
+    const auto fi_scan = arr_find_if.find("for (std::size_t __i = 0; __i < _Nm; ++__i)");
+    const auto fi_call = arr_find_if.find("__pred(__a[__i])");
+    const auto fi_hit = arr_find_if.find("return __a + __i;");
+    const auto fi_end = arr_find_if.find("return __a + _Nm;");
+    REQUIRE(fi_null != std::string::npos);
+    REQUIRE(fi_check != std::string::npos);
+    REQUIRE(fi_trap != std::string::npos);
+    REQUIRE(fi_scan != std::string::npos);
+    REQUIRE(fi_call != std::string::npos);
+    REQUIRE(fi_hit != std::string::npos);
+    REQUIRE(fi_end != std::string::npos);
+    CHECK(fi_null < fi_check);
+    CHECK(fi_check < fi_trap);
+    CHECK(fi_trap < fi_scan);
+    CHECK(fi_scan < fi_call);
+    CHECK(fi_call < fi_hit);
+    CHECK(fi_hit < fi_end);
+    const std::string fi_pre = arr_find_if.substr(0, fi_scan);
+    CHECK(fi_pre.find("__pred(") == std::string::npos);
+    CHECK(fi_pre.find("__a[") == std::string::npos);
+    CHECK(fi_pre.find('*') == std::string::npos);
+    CHECK(fi_pre.find("return") == std::string::npos);
+    CHECK(arr_find_if.find("[_Nm]") == std::string::npos);
+    CHECK(arr_find_if.find("__i <= _Nm") == std::string::npos);
+    CHECK(arr_find_if.find('*') == std::string::npos);
+    CHECK(arr_find_if.find('.') == std::string::npos);
+    CHECK(count_of(arr_find_if, "return ") == 2);
+    CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if null predicate\")") == 1);
+
+    const auto zero_find_if = body_of(src, "constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept");
+    REQUIRE_FALSE(zero_find_if.empty());
+    CHECK(zero_find_if.find("return __a;") != std::string::npos);
+    CHECK(count_of(zero_find_if, "return ") == 1);
+    CHECK(zero_find_if.find('*') == std::string::npos);
+    CHECK(zero_find_if.find('[') == std::string::npos);
+    CHECK(zero_find_if.find('.') == std::string::npos);
+    CHECK(zero_find_if.find('+') == std::string::npos);
+    CHECK(zero_find_if.find("__pred") == std::string::npos);
+    CHECK(zero_find_if.find("_Elem") == std::string::npos);
+    CHECK(zero_find_if.find("nullptr") == std::string::npos);
+    CHECK(count_of(src, "constexpr _Tp* find_if(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))") ==
+          1);
+    CHECK(count_of(src, "constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 1);
+
+    const auto arr_find_if_not = body_of(
+        src, "constexpr _Tp* find_if_not(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))");
+    REQUIRE_FALSE(arr_find_if_not.empty());
+    const auto fn_null = arr_find_if_not.find("if (__pred == nullptr)");
+    const auto fn_check =
+        arr_find_if_not.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if_not null predicate\")");
+    const auto fn_trap = arr_find_if_not.find("__builtin_trap()");
+    const auto fn_scan = arr_find_if_not.find("for (std::size_t __i = 0; __i < _Nm; ++__i)");
+    const auto fn_call = arr_find_if_not.find("!__pred(__a[__i])");
+    const auto fn_hit = arr_find_if_not.find("return __a + __i;");
+    const auto fn_end = arr_find_if_not.find("return __a + _Nm;");
+    REQUIRE(fn_null != std::string::npos);
+    REQUIRE(fn_check != std::string::npos);
+    REQUIRE(fn_trap != std::string::npos);
+    REQUIRE(fn_scan != std::string::npos);
+    REQUIRE(fn_call != std::string::npos);
+    REQUIRE(fn_hit != std::string::npos);
+    REQUIRE(fn_end != std::string::npos);
+    CHECK(fn_null < fn_check);
+    CHECK(fn_check < fn_trap);
+    CHECK(fn_trap < fn_scan);
+    CHECK(fn_scan < fn_call);
+    CHECK(fn_call < fn_hit);
+    CHECK(fn_hit < fn_end);
+    const std::string fn_pre = arr_find_if_not.substr(0, fn_scan);
+    CHECK(fn_pre.find("__pred(") == std::string::npos);
+    CHECK(fn_pre.find("__a[") == std::string::npos);
+    CHECK(fn_pre.find('*') == std::string::npos);
+    CHECK(fn_pre.find("return") == std::string::npos);
+    CHECK(arr_find_if_not.find("[_Nm]") == std::string::npos);
+    CHECK(arr_find_if_not.find("__i <= _Nm") == std::string::npos);
+    CHECK(arr_find_if_not.find('*') == std::string::npos);
+    CHECK(arr_find_if_not.find('.') == std::string::npos);
+    CHECK(count_of(arr_find_if_not, "return ") == 2);
+    CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if_not null predicate\")") == 1);
+
+    const auto zero_find_if_not =
+        body_of(src, "constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept");
+    REQUIRE_FALSE(zero_find_if_not.empty());
+    CHECK(zero_find_if_not.find("return __a;") != std::string::npos);
+    CHECK(count_of(zero_find_if_not, "return ") == 1);
+    CHECK(zero_find_if_not.find('*') == std::string::npos);
+    CHECK(zero_find_if_not.find('[') == std::string::npos);
+    CHECK(zero_find_if_not.find('.') == std::string::npos);
+    CHECK(zero_find_if_not.find('+') == std::string::npos);
+    CHECK(zero_find_if_not.find("__pred") == std::string::npos);
+    CHECK(zero_find_if_not.find("_Elem") == std::string::npos);
+    CHECK(zero_find_if_not.find("nullptr") == std::string::npos);
+    CHECK(count_of(
+              src, "constexpr _Tp* find_if_not(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))") ==
+          1);
+    CHECK(count_of(src, "constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 1);
 }
 
 TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
@@ -532,7 +674,7 @@ TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
     if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
-TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, and distance match libstdc++, a pointer does not compile") {
+TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, and find_if_not match libstdc++, a pointer does not compile") {
     auto& c = ctx();
     if (!c.ok) return;
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
@@ -614,6 +756,45 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "idist 4"));
     CHECK(has_line(b, "odist 0"));
     CHECK(has_line(b, "pdist 2"));
+    CHECK(has_line(b, "ffirst 9"));
+    CHECK(has_line(b, "fnext 1"));
+    CHECK(has_line(b, "flast 6"));
+    CHECK(has_line(b, "fmiss 1"));
+    CHECK(has_line(b, "fzfind 1"));
+    CHECK(has_line(b, "fcfirst 2"));
+    CHECK(has_line(b, "fclast 5"));
+    CHECK(has_line(b, "fcmiss 1"));
+    CHECK(has_line(b, "fpfind 1"));
+    CHECK(has_line(b, "fpmiss 1"));
+    CHECK(has_line(b, "ifhit 1 2 3"));
+    CHECK(has_line(b, "iffirst 1 2"));
+    CHECK(has_line(b, "iffront 0 1"));
+    CHECK(has_line(b, "ifmiss 1 4"));
+    CHECK(has_line(b, "ifempty 1 0"));
+    CHECK(has_line(b, "iftie 1 1"));
+    CHECK(has_line(b, "ifone 1"));
+    CHECK(has_line(b, "ifkeep 1"));
+    CHECK(has_line(b, "ifcfirst 2"));
+    CHECK(has_line(b, "ifclast 5"));
+    CHECK(has_line(b, "ifcmiss 1"));
+    CHECK(has_line(b, "ifznull 1"));
+    CHECK(has_line(b, "ifpfind 1"));
+    CHECK(has_line(b, "ifpmiss 1"));
+    CHECK(has_line(b, "nfhit 1 0 1"));
+    CHECK(has_line(b, "nfnext 1 2"));
+    CHECK(has_line(b, "nflast 3 4"));
+    CHECK(has_line(b, "nfmiss 1 4"));
+    CHECK(has_line(b, "nfempty 1 0"));
+    CHECK(has_line(b, "nftie 1 1"));
+    CHECK(has_line(b, "nftieall 1 2"));
+    CHECK(has_line(b, "nfone 1"));
+    CHECK(has_line(b, "nfkeep 1"));
+    CHECK(has_line(b, "nfcfirst 2"));
+    CHECK(has_line(b, "nfcnext 1"));
+    CHECK(has_line(b, "nfcmiss 1"));
+    CHECK(has_line(b, "nfznull 1"));
+    CHECK(has_line(b, "nfpfind 1"));
+    CHECK(has_line(b, "nfpmiss 1"));
 
     std::string out, err;
     CHECK_FALSE(run_cmd({mod.string(), "huge"}, &out, &err));
@@ -621,6 +802,20 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
     CHECK(both.find("ranges::ssize size does not fit in ptrdiff_t") != std::string::npos);
     CHECK(out.find("wrapped=") == std::string::npos);
+
+    std::string null_out, null_err;
+    CHECK_FALSE(run_cmd({mod.string(), "null"}, &null_out, &null_err));
+    const std::string null_both = null_out + null_err;
+    CHECK(null_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(null_both.find("std::ranges::find_if null predicate") != std::string::npos);
+    CHECK(null_out.find("called") == std::string::npos);
+
+    std::string notnull_out, notnull_err;
+    CHECK_FALSE(run_cmd({mod.string(), "notnull"}, &notnull_out, &notnull_err));
+    const std::string notnull_both = notnull_out + notnull_err;
+    CHECK(notnull_both.find("CHECK FUNC-CONTRACT:") != std::string::npos);
+    CHECK(notnull_both.find("std::ranges::find_if_not null predicate") != std::string::npos);
+    CHECK(notnull_out.find("called") == std::string::npos);
 
     const char* ok_src =
         "#include <ranges>\n"
@@ -853,6 +1048,184 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
         "#include <ranges>\n"
         "int* f(int* b, int* e, int v) { return std::ranges::find(b, e, v); }\n";
     CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find", find_src, true));
+
+    const char* find_arr_src =
+        "#include <ranges>\n"
+        "#include <type_traits>\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find(std::declval<int (&)[4]>(), 0)), int*>);\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find(std::declval<const int (&)[4]>(), 0)), "
+        "const int*>);\n"
+        "constexpr int ak[4] = {1, 2, 3, 4};\n"
+        "static_assert(std::ranges::find(ak, 1) == ak);\n"
+        "static_assert(std::ranges::find(ak, 3) == ak + 2);\n"
+        "static_assert(std::ranges::find(ak, 4) == ak + 3);\n"
+        "static_assert(std::ranges::find(ak, 9) == ak + 4);\n"
+        "int* f(int (&a)[4], int v) { return std::ranges::find(a, v); }\n"
+        "const int* g(const int (&a)[4], int v) { return std::ranges::find(a, v); }\n"
+        "int** h(int* (&a)[2]) { return std::ranges::find(a, nullptr); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_arr", find_arr_src, true));
+
+    const char* find_ptr_src =
+        "#include <ranges>\n"
+        "int* f(int* p, int v) { return std::ranges::find(p, v); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_ptr", find_ptr_src, true));
+
+    const char* find_pbound_src =
+        "#include <ranges>\n"
+        "int* f(int (*p)[4], int v) { return std::ranges::find(p, v); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_pbound", find_pbound_src, true));
+
+    const char* find_mem_src =
+        "#include <ranges>\n"
+        "struct Has { int size() const { return 4; } };\n"
+        "int* f(Has& h, int v) { return std::ranges::find(h, v); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_mem", find_mem_src, true));
+
+    const char* find_if_arr_src =
+        "#include <ranges>\n"
+        "#include <type_traits>\n"
+        "constexpr bool is_one(const int& x) { return x == 1; }\n"
+        "constexpr bool is_three(const int& x) { return x == 3; }\n"
+        "constexpr bool is_four(const int& x) { return x == 4; }\n"
+        "constexpr bool is_nine(const int& x) { return x == 9; }\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find_if(std::declval<int (&)[4]>(), is_one)), int*>);\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find_if(std::declval<const int (&)[4]>(), is_one)), "
+        "const int*>);\n"
+        "constexpr int ak[4] = {1, 2, 3, 4};\n"
+        "static_assert(std::ranges::find_if(ak, is_one) == ak);\n"
+        "static_assert(std::ranges::find_if(ak, is_three) == ak + 2);\n"
+        "static_assert(std::ranges::find_if(ak, is_four) == ak + 3);\n"
+        "static_assert(std::ranges::find_if(ak, is_nine) == ak + 4);\n"
+        "int* f(int (&a)[4], bool (*p)(const int&)) { return std::ranges::find_if(a, p); }\n"
+        "const int* g(const int (&a)[4], bool (*p)(const int&)) { return std::ranges::find_if(a, p); }\n"
+        "int** h(int* (&a)[2], bool (*p)(int* const&)) { return std::ranges::find_if(a, p); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_arr", find_if_arr_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_arr", find_if_arr_src, true));
+
+    const char* find_if_ptr_src =
+        "#include <ranges>\n"
+        "int* f(int* p, bool (*pred)(const int&)) { return std::ranges::find_if(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_ptr", find_if_ptr_src, true));
+
+    const char* find_if_pbound_src =
+        "#include <ranges>\n"
+        "int* f(int (*p)[4], bool (*pred)(const int&)) { return std::ranges::find_if(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_pbound", find_if_pbound_src, true));
+
+    const char* find_if_pair_src =
+        "#include <ranges>\n"
+        "int* f(int* b, int* e, bool (*pred)(const int&)) { return std::ranges::find_if(b, e, pred); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_pair", find_if_pair_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_pair", find_if_pair_src, true));
+
+    const char* find_if_mem_src =
+        "#include <ranges>\n"
+        "struct Has { int size() const { return 4; } };\n"
+        "int* f(Has& h, bool (*pred)(const int&)) { return std::ranges::find_if(h, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_mem", find_if_mem_src, true));
+
+    const char* find_if_lam_src =
+        "#include <ranges>\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if(a, [](int x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_lam", find_if_lam_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_lam", find_if_lam_src, true));
+
+    const char* find_if_lam_ref_src =
+        "#include <ranges>\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if(a, [](const int& x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_lam_ref", find_if_lam_ref_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_lam_ref", find_if_lam_ref_src, true));
+
+    const char* find_if_val_src =
+        "#include <ranges>\n"
+        "bool is_zero(int x) { return x == 0; }\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if(a, is_zero); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_val", find_if_val_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_val", find_if_val_src, true));
+
+    const char* find_if_null_src =
+        "#include <ranges>\n"
+        "constexpr int nullp() {\n"
+        "  int a[3] = {1, 2, 3};\n"
+        "  return *std::ranges::find_if(a, static_cast<bool (*)(const int&)>(nullptr));\n"
+        "}\n"
+        "static_assert(nullp() == 0);\n";
+    std::string find_if_null_err;
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_null", find_if_null_src, true, &find_if_null_err));
+    CHECK(find_if_null_err.find("__prism_check") != std::string::npos);
+
+    const char* find_if_not_arr_src =
+        "#include <ranges>\n"
+        "#include <type_traits>\n"
+        "constexpr bool is_one(const int& x) { return x == 1; }\n"
+        "constexpr bool is_two(const int& x) { return x == 2; }\n"
+        "constexpr bool always(const int&) { return true; }\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find_if_not(std::declval<int (&)[4]>(), is_one)), "
+        "int*>);\n"
+        "static_assert(std::is_same_v<decltype(std::ranges::find_if_not(std::declval<const int (&)[4]>(), is_one)), "
+        "const int*>);\n"
+        "constexpr int ak[4] = {1, 2, 3, 4};\n"
+        "static_assert(std::ranges::find_if_not(ak, is_one) == ak + 1);\n"
+        "static_assert(std::ranges::find_if_not(ak, is_two) == ak);\n"
+        "static_assert(std::ranges::find_if_not(ak, always) == ak + 4);\n"
+        "int* f(int (&a)[4], bool (*p)(const int&)) { return std::ranges::find_if_not(a, p); }\n"
+        "const int* g(const int (&a)[4], bool (*p)(const int&)) { return std::ranges::find_if_not(a, p); }\n"
+        "int** h(int* (&a)[2], bool (*p)(int* const&)) { return std::ranges::find_if_not(a, p); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_arr", find_if_not_arr_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_arr", find_if_not_arr_src, true));
+
+    const char* find_if_not_ptr_src =
+        "#include <ranges>\n"
+        "int* f(int* p, bool (*pred)(const int&)) { return std::ranges::find_if_not(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_ptr", find_if_not_ptr_src, true));
+
+    const char* find_if_not_pbound_src =
+        "#include <ranges>\n"
+        "int* f(int (*p)[4], bool (*pred)(const int&)) { return std::ranges::find_if_not(p, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_pbound", find_if_not_pbound_src, true));
+
+    const char* find_if_not_pair_src =
+        "#include <ranges>\n"
+        "int* f(int* b, int* e, bool (*pred)(const int&)) { return std::ranges::find_if_not(b, e, pred); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_pair", find_if_not_pair_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_pair", find_if_not_pair_src, true));
+
+    const char* find_if_not_mem_src =
+        "#include <ranges>\n"
+        "struct Has { int size() const { return 4; } };\n"
+        "int* f(Has& h, bool (*pred)(const int&)) { return std::ranges::find_if_not(h, pred); }\n";
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_mem", find_if_not_mem_src, true));
+
+    const char* find_if_not_lam_src =
+        "#include <ranges>\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if_not(a, [](int x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_lam", find_if_not_lam_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_lam", find_if_not_lam_src, true));
+
+    const char* find_if_not_lam_ref_src =
+        "#include <ranges>\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if_not(a, [](const int& x) { return x == 0; }); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_lam_ref", find_if_not_lam_ref_src, false));
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_lam_ref", find_if_not_lam_ref_src, true));
+
+    const char* find_if_not_val_src =
+        "#include <ranges>\n"
+        "bool is_zero(int x) { return x == 0; }\n"
+        "int* f(int (&a)[4]) { return std::ranges::find_if_not(a, is_zero); }\n";
+    CHECK(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_val", find_if_not_val_src, false));
+    CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_val", find_if_not_val_src, true));
+
+    const char* find_if_not_null_src =
+        "#include <ranges>\n"
+        "constexpr int nullp() {\n"
+        "  int a[3] = {1, 2, 3};\n"
+        "  return *std::ranges::find_if_not(a, static_cast<bool (*)(const int&)>(nullptr));\n"
+        "}\n"
+        "static_assert(nullp() == 0);\n";
+    std::string find_if_not_null_err;
+    CHECK_FALSE(
+        compile_snippet(c.cxx, c.tmp, "ranges_find_if_not_null", find_if_not_null_src, true, &find_if_not_null_err));
+    CHECK(find_if_not_null_err.find("__prism_check") != std::string::npos);
 
     const char* empty_ptr_src =
         "#include <ranges>\n"

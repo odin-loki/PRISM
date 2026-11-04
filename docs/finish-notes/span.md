@@ -16,15 +16,18 @@ Copy and copy-assignment copy the view. The destructor is defaulted and
 does not release the viewed memory. There is no allocation.
 
 `data()`, `size()`, and `empty()` read those two fields. `operator[]`
-returns the element at that index only after `__glibcxx_assert(__n <
-this->size())` (the same call `<vector>` uses; the condition text contains
-`size()`, so PIR classifies a failure as `MEM-OOB-READ`). It does not
-return a stand-in `T`. `front()` and `back()` on an empty span use
-`__glibcxx_assert(!this->empty())` (`FUNC-CONTRACT`, the same precondition
-on both) and do not return a fabricated `T`. `subspan(offset, count)` and
-`subspan(offset)` (the tail) require the slice to sit inside `size()`; a
-slice that would run past the end is that precondition, not a span of
-invented elements. `first(count)` is the same check.
+returns the element at that index when the index is in range. An index
+`>= size()` is `__prism_check` with class `MEM-OOB-READ` and message
+`std::span::operator[] index is outside the span`, then `__builtin_trap`,
+before the element address is formed. It does not return a stand-in `T`.
+`front()` and `back()` on an empty span are `__prism_check` with class
+`FUNC-CONTRACT` (`std::span::front of an empty span`,
+`std::span::back of an empty span`), then `__builtin_trap`, before the
+element address is formed. They do not return a fabricated `T`.
+`subspan(offset, count)` and `subspan(offset)` (the tail) still use
+`__glibcxx_assert` and require the slice to sit inside `size()`; a slice
+that would run past the end is that precondition, not a span of invented
+elements. `first(count)` is the same check. This is not PROVED and not CLEAN.
 
 `begin()` / `end()` are a small random-access iterator over the viewed
 pointer. It is a class type because libstdc++ `<format>` calls

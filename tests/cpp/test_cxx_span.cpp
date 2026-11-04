@@ -197,23 +197,78 @@ TEST_CASE("cxx span model: non-owning view and empty front is a precondition") {
     const auto front = src.find("front() const noexcept");
     REQUIRE(front != std::string::npos);
     const auto front_body = src.substr(front, src.find("back()", front) - front);
-    CHECK(front_body.find("__glibcxx_assert(!this->empty())") != std::string::npos);
-    CHECK(front_body.find("return *_M_ptr;") != std::string::npos);
+    const auto front_empty = front_body.find("if (this->empty())");
+    const auto front_check =
+        front_body.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::span::front of an empty span\")");
+    const auto front_trap = front_body.find("__builtin_trap();");
+    const auto front_addr = front_body.find("return *_M_ptr;");
+    REQUIRE(front_empty != std::string::npos);
+    REQUIRE(front_check != std::string::npos);
+    REQUIRE(front_trap != std::string::npos);
+    REQUIRE(front_addr != std::string::npos);
+    CHECK(front_empty < front_check);
+    CHECK(front_check < front_trap);
+    CHECK(front_trap < front_addr);
+    CHECK(front_body.find("_M_ptr") > front_trap);
+    CHECK(front_body.substr(0, front_trap).find('*') == std::string::npos);
+    CHECK(front_body.substr(0, front_trap).find("return") == std::string::npos);
+    CHECK(front_body.substr(front_empty, front_trap - front_empty).find("return") == std::string::npos);
+    CHECK(front_body.find("__builtin_trap();", front_trap + 1) == std::string::npos);
+    CHECK(front_body.find("__glibcxx_assert") == std::string::npos);
     CHECK(front_body.find("return _Tp") == std::string::npos);
     CHECK(front_body.find("return {}") == std::string::npos);
+    CHECK(front_body.find("std::span::back of an empty span") == std::string::npos);
+    CHECK(front_body.find("index is outside the span") == std::string::npos);
 
     const auto back = src.find("back() const noexcept");
     REQUIRE(back != std::string::npos);
     const auto back_body = src.substr(back, src.find("subspan", back) - back);
-    CHECK(back_body.find("__glibcxx_assert(!this->empty())") != std::string::npos);
+    const auto back_empty = back_body.find("if (this->empty())");
+    const auto back_check =
+        back_body.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::span::back of an empty span\")");
+    const auto back_trap = back_body.find("__builtin_trap();");
+    const auto back_addr = back_body.find("return *(_M_ptr + (size() - 1));");
+    REQUIRE(back_empty != std::string::npos);
+    REQUIRE(back_check != std::string::npos);
+    REQUIRE(back_trap != std::string::npos);
+    REQUIRE(back_addr != std::string::npos);
+    CHECK(back_empty < back_check);
+    CHECK(back_check < back_trap);
+    CHECK(back_trap < back_addr);
+    CHECK(back_body.find("_M_ptr") > back_trap);
+    CHECK(back_body.find("size() - 1") > back_trap);
+    CHECK(back_body.substr(0, back_trap).find('*') == std::string::npos);
+    CHECK(back_body.substr(0, back_trap).find("return") == std::string::npos);
+    CHECK(back_body.substr(back_empty, back_trap - back_empty).find("return") == std::string::npos);
+    CHECK(back_body.find("__builtin_trap();", back_trap + 1) == std::string::npos);
+    CHECK(back_body.find("__glibcxx_assert") == std::string::npos);
+    CHECK(back_body.find("return _Tp") == std::string::npos);
+    CHECK(back_body.find("return {}") == std::string::npos);
+    CHECK(back_body.find("std::span::front of an empty span") == std::string::npos);
+    CHECK(back_body.find("index is outside the span") == std::string::npos);
+    CHECK(src.find("__glibcxx_assert(!this->empty())") == std::string::npos);
 
     const auto index = src.find("operator[](size_type __n) const noexcept");
     REQUIRE(index != std::string::npos);
     const auto index_body = src.substr(index, front - index);
-    CHECK(index_body.find("__glibcxx_assert(__n < this->size())") != std::string::npos);
-    CHECK(index_body.find("return *(_M_ptr + __n);") != std::string::npos);
+    const auto oob = index_body.find("if (__n >= this->size())");
+    const auto oob_check = index_body.find(
+        "__prism_check(0, \"MEM-OOB-READ\", \"std::span::operator[] index is outside the span\")");
+    const auto oob_trap = index_body.find("__builtin_trap();");
+    const auto oob_addr = index_body.find("return *(_M_ptr + __n);");
+    REQUIRE(oob != std::string::npos);
+    REQUIRE(oob_check != std::string::npos);
+    REQUIRE(oob_trap != std::string::npos);
+    REQUIRE(oob_addr != std::string::npos);
+    CHECK(oob < oob_check);
+    CHECK(oob_check < oob_trap);
+    CHECK(oob_trap < oob_addr);
+    CHECK(index_body.find("_M_ptr") > oob_trap);
+    CHECK(index_body.substr(oob, oob_trap - oob).find("return") == std::string::npos);
     CHECK(index_body.find("return _Tp") == std::string::npos);
     CHECK(index_body.find("return {}") == std::string::npos);
+    CHECK(index_body.find("__glibcxx_assert") == std::string::npos);
+    CHECK(src.find("This is not PROVED and not CLEAN.") != std::string::npos);
 
     CHECK(src.find("__glibcxx_assert(__offset <= this->size() && __count <= this->size() - __offset)") !=
           std::string::npos);
@@ -379,6 +434,94 @@ TEST_CASE("cxx span model: last past size and a null nonzero span abort in the c
     std::string zout;
     REQUIRE(run_cmd({exe.string(), "z"}, &zout));
     CHECK(zout.find("z=0\n") != std::string::npos);
+}
+
+TEST_CASE("cxx span model: operator[] outside the span and empty front and back trap before the address") {
+    auto& c = ctx();
+    if (!c.ok) {
+        MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+        return;
+    }
+    const fs::path src = c.tmp / "span_index_trap.cpp";
+    {
+        std::ofstream out(src);
+        out << "#include <span>\n#include <cstdio>\n#include <cstdlib>\n"
+               "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+               "  if (!ok) {\n"
+               "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls, msg);\n"
+               "    std::fflush(stderr);\n"
+               "    std::abort();\n"
+               "  }\n"
+               "}\n"
+               "int main(int argc, char** argv) {\n"
+               "  int a[3] = {10, 20, 30};\n"
+               "  std::span<int> s(a);\n"
+               "  const char m = argc > 1 ? argv[1][0] : 'i';\n"
+               "  if (m == 'i') {\n"
+               "    std::printf(\"at1=%d front=%d back=%d\\n\", s[1], s.front(), s.back());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (m == 'e') {\n"
+               "    std::span<int> empty(a, 0);\n"
+               "    std::printf(\"loaded=%d\\n\", empty[0]);\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (m == 'f') {\n"
+               "    std::span<int> empty(a, 0);\n"
+               "    std::printf(\"loaded=%d\\n\", empty.front());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (m == 'b') {\n"
+               "    std::span<int> empty(a, 0);\n"
+               "    std::printf(\"loaded=%d\\n\", empty.back());\n"
+               "    return 0;\n"
+               "  }\n"
+               "  if (m == 'n') {\n"
+               "    std::span<int> empty(nullptr, 0);\n"
+               "    std::printf(\"loaded=%d\\n\", empty[0]);\n"
+               "    return 0;\n"
+               "  }\n"
+               "  std::printf(\"loaded=%d\\n\", s[3]);\n"
+               "  return 0;\n"
+               "}\n";
+    }
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+#ifdef _WIN32
+    const fs::path exe = c.tmp / "span_index_trap.exe";
+#else
+    const fs::path exe = c.tmp / "span_index_trap";
+#endif
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    std::vector<std::string> build{c.cxx};
+    build.insert(build.end(), flags.begin(), flags.end());
+    build.push_back("-isystem");
+    build.push_back(models.string());
+    build.push_back(src.string());
+    build.push_back("-o");
+    build.push_back(exe.string());
+    REQUIRE(run_cmd(build));
+
+    std::string in_out, in_err;
+    REQUIRE(run_cmd({exe.string(), "i"}, &in_out, &in_err));
+    CHECK(in_out.find("at1=20 front=10 back=30\n") != std::string::npos);
+    CHECK(in_err.find("CHECK ") == std::string::npos);
+
+    for (const char* mode : {"e", "p", "n"}) {
+        std::string out, err;
+        CHECK_FALSE(run_cmd({exe.string(), mode}, &out, &err));
+        CHECK(out.find("loaded=") == std::string::npos);
+        CHECK(err.find("CHECK MEM-OOB-READ") != std::string::npos);
+        CHECK(err.find("std::span::operator[] index is outside the span") != std::string::npos);
+        CHECK(err.find("PTR-NULL-DEREF") == std::string::npos);
+    }
+    std::string ferr, berr;
+    CHECK_FALSE(run_cmd({exe.string(), "f"}, nullptr, &ferr));
+    CHECK(ferr.find("CHECK FUNC-CONTRACT") != std::string::npos);
+    CHECK(ferr.find("std::span::front of an empty span") != std::string::npos);
+    CHECK_FALSE(run_cmd({exe.string(), "b"}, nullptr, &berr));
+    CHECK(berr.find("CHECK FUNC-CONTRACT") != std::string::npos);
+    CHECK(berr.find("std::span::back of an empty span") != std::string::npos);
 }
 
 TEST_CASE("cxx span model: size_bytes is size times the element size") {

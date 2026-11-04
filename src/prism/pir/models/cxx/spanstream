@@ -34,6 +34,16 @@
 // count and the element size that does not fit are checks and then
 // __builtin_trap. A count of 0 returns 0 and does not read or write.
 //
+// data() returns the char pointer already stored. size() returns the size
+// already stored. Neither writes. A null pointer with size 0 returns
+// nullptr from data() and 0 from size(), and neither function loads
+// through the pointer. This is not PROVED and not CLEAN.
+//
+// in_avail() returns how many stored bytes remain at the current offset.
+// It does not write and it does not move the offset. A null pointer with
+// size 0 returns 0 and does not load through the pointer. An offset past
+// the size returns 0 and does not load. in_avail is not PROVED and not CLEAN.
+//
 // Omitted names are not declared here. A use of one fails to compile against
 // this header, and the pir stage falls back to libstdc++ (extra.cxx_models).
 // They are omitted because declaring them would include the span or sstream
@@ -81,6 +91,20 @@ public:
     ~basic_spanbuf() noexcept = default;
 
     [[nodiscard]] size_t size() const noexcept { return _M_size; }
+
+    // The char pointer already stored. It does not write and it does not
+    // load through the pointer. A null buffer with size 0 returns nullptr.
+    // This is not PROVED and not CLEAN.
+    [[nodiscard]] char* data() const noexcept { return _M_ptr; }
+
+    // How many stored bytes remain at the current offset. It does not write
+    // and it does not load through the pointer. A null buffer with size 0
+    // returns 0. An offset at the size, and an offset past the size, take
+    // the else and return 0; that arm does not subtract and does not load.
+    // in_avail is not PROVED and not CLEAN.
+    [[nodiscard]] size_t in_avail() const noexcept {
+        return _M_off < _M_size ? _M_size - _M_off : 0;
+    }
 
     // One character when the offset is still inside the caller buffer, then
     // the offset advances. At the size (a size of 0 is already there) this
