@@ -3,9 +3,11 @@
 // (src/prism/pir/models/cxx/variant) first on the include path, both under
 // ASan/UBSan with _GLIBCXX_ASSERTIONS. The happy-path traces must be identical.
 //
-// visit, swap, and comparison of variant are not called: the model does not
-// declare them. Two std::monostate values compare equal: !=, <, and > are
-// false, and <= and >= are true.
+// swap and operator<=> are not called: the model does not declare them.
+// visit is modelled and this trace does not call it. operator<, operator>,
+// operator<=, and operator>= for two variants of the same type are declared;
+// this trace does not call them. Two std::monostate values compare equal:
+// !=, <, and > are false, and <= and >= are true.
 //
 // argv "bad" / "badi" call std::get<T> / std::get<I> on an inactive alternative.
 // The model must __prism_check and must not print a value.
