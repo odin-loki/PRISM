@@ -5,8 +5,11 @@
 // would fall back to libstdc++.
 //
 // Partial. format_to_n writes one int or one long long, in decimal, into a
-// char buffer. The format string this model accepts is "{}". Both overloads
-// share one writer. It writes at most n characters and does not write past
+// char buffer, and the same writer covers unsigned, unsigned long long,
+// bool, and char. short, signed char, long, unsigned short, unsigned char,
+// and unsigned long delegate to those overloads. The format string this
+// model accepts for those overloads is "{}". It writes at most n characters
+// and does not write past
 // the buffer. The unwritten tail is not stored. n == 0 writes nothing. The
 // returned size is the full untruncated length of that integer, even when n
 // is smaller, and it is not 0 for a non-zero value. A null output pointer
@@ -158,6 +161,322 @@ inline format_to_n_result format_to_n(char* __outv, std::size_t __n, const char*
     // The unwritten tail was not stored.
     __r.size = static_cast<std::ptrdiff_t>(__len);
     return __r;
+}
+
+// Decimal, same writer as int and long long, and only for "{}". There is
+// no minus sign. This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, unsigned long long __v) {
+    // This is not PROVED and not CLEAN.
+    unsigned long long __mag = __v;
+    char __rev[32];
+    std::size_t __nd = 0;
+    do {
+        __rev[__nd] = static_cast<char>('0' + static_cast<int>(__mag % 10ull));
+        ++__nd;
+        __mag /= 10ull;
+    } while (__mag != 0ull);
+    // The length is the digit count. There is no sign. When that count does
+    // not fit in size_t, trap before the writer. The output is not written
+    // on that path. A decimal unsigned long long is at most 20 characters,
+    // so the trap is the guard.
+    std::size_t __len;
+    if (__nd > static_cast<std::size_t>(-1)) {
+        __prism_check(0, "FUNC-CONTRACT", "format_to_n length does not fit in size_t");
+        __builtin_trap();
+    } else {
+        __len = __nd;
+    }
+    char __tmp[32];
+    std::size_t __i = 0;
+    while (__nd > 0) {
+        --__nd;
+        __tmp[__i++] = __rev[__nd];
+    }
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
+    // n == 0 writes nothing and does not index the output pointer.
+    if (__n == 0) {
+        format_to_n_result __r;
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        __r.size = static_cast<std::ptrdiff_t>(__len);
+        return __r;
+    }
+    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                  "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    format_to_n_result __r;
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    // Full untruncated length, not 0 when the value is not zero.
+    // The unwritten tail was not stored.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    return __r;
+}
+
+// Decimal, same writer as int, long long, and unsigned long long, and only
+// for "{}". There is no minus sign. This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, unsigned __v) {
+    // This is not PROVED and not CLEAN.
+    // The value is already unsigned, so the magnitude is __v. There is no
+    // subtraction from zero.
+    unsigned __mag = __v;
+    std::size_t __nd = 0;
+    unsigned __left = __mag;
+    do {
+        ++__nd;
+        __left /= 10u;
+    } while (__left != 0u);
+    // The length is the digit count. There is no sign. When that count does
+    // not fit in size_t, trap before any write. The characters are stored
+    // only after this guard. The output is not written on that path. A
+    // decimal unsigned is at most 10 characters, so the trap is the guard.
+    std::size_t __len;
+    if (__nd > static_cast<std::size_t>(-1)) {
+        __prism_check(0, "FUNC-CONTRACT", "format_to_n length does not fit in size_t");
+        __builtin_trap();
+    } else {
+        __len = __nd;
+    }
+    char __rev[32];
+    std::size_t __ri = 0;
+    do {
+        __rev[__ri] = static_cast<char>('0' + static_cast<int>(__mag % 10u));
+        ++__ri;
+        __mag /= 10u;
+    } while (__mag != 0u);
+    char __tmp[32];
+    std::size_t __i = 0;
+    while (__ri > 0) {
+        --__ri;
+        __tmp[__i++] = __rev[__ri];
+    }
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
+    // n == 0 writes nothing and does not index the output pointer.
+    if (__n == 0) {
+        format_to_n_result __r;
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        __r.size = static_cast<std::ptrdiff_t>(__len);
+        return __r;
+    }
+    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                  "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    format_to_n_result __r;
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    // Full untruncated length, not 0 when the value is not zero.
+    // The unwritten tail was not stored.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    return __r;
+}
+
+// true is the characters t r u e. false is the characters f a l s e.
+// No other text. Same writer, and only for "{}". This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, bool __v) {
+    // This is not PROVED and not CLEAN.
+    // The size is 4 for true and 5 for false, not 0. Character stores and
+    // the writer are after the null trap, so a null output is not written.
+    const std::size_t __len = __v ? static_cast<std::size_t>(4) : static_cast<std::size_t>(5);
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
+    // n == 0 writes nothing and does not index the output pointer.
+    if (__n == 0) {
+        format_to_n_result __r;
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        __r.size = static_cast<std::ptrdiff_t>(__len);
+        return __r;
+    }
+    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                  "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    char __tmp[8];
+    if (__v) {
+        __tmp[0] = 't';
+        __tmp[1] = 'r';
+        __tmp[2] = 'u';
+        __tmp[3] = 'e';
+    } else {
+        __tmp[0] = 'f';
+        __tmp[1] = 'a';
+        __tmp[2] = 'l';
+        __tmp[3] = 's';
+        __tmp[4] = 'e';
+    }
+    format_to_n_result __r;
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    // Full length, 4 for true and 5 for false, not 0.
+    // The unwritten tail was not stored.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    return __r;
+}
+
+// One character. The size is 1. Same writer, and only for "{}".
+// This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, char __v) {
+    // This is not PROVED and not CLEAN.
+    // The size is 1, not 0. The character store and the writer are after
+    // the null trap, so a null output is not written.
+    const std::size_t __len = static_cast<std::size_t>(1);
+    const int __fmt_ok =
+        (__fmt != nullptr && __fmt[0] == '{' && __fmt[1] == '}' && __fmt[2] == '\0') ? 1 : 0;
+    __prism_check(__fmt_ok, "FUNC-CONTRACT", "format_to_n model accepts only {}");
+    if (!__fmt_ok) __builtin_trap();
+    // n == 0 writes nothing and does not index the output pointer.
+    if (__n == 0) {
+        format_to_n_result __r;
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        __r.size = static_cast<std::ptrdiff_t>(__len);
+        return __r;
+    }
+    __prism_check(__out != nullptr ? 1 : 0, "FUNC-CONTRACT",
+                  "format_to_n called with a null output pointer");
+    if (__out == nullptr) __builtin_trap();
+    char __tmp[8];
+    __tmp[0] = __v;
+    format_to_n_result __r;
+    __r.out = __prism_format_write(__out, __n, __tmp, __len);
+    // Full length, 1, not 0.
+    // The unwritten tail was not stored.
+    __r.size = static_cast<std::ptrdiff_t>(__len);
+    return __r;
+}
+
+// Decimal through the int overload. The signed char value is converted to
+// int, so a signed char value uses that decimal writer. A signed char value
+// always fits in int. The format string stays "{}". n == 0 returns the
+// caller's pointer and does not index it. A null output with n > 0 keeps
+// the int overload's existing check and does not write. The char overload
+// still writes one character and is not a decimal writer.
+// This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, signed char __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to int so the value uses that decimal writer.
+    // A signed char value always fits in int.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<int>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<int>(__v));
+}
+
+// Decimal through the int overload. The short value is converted to int,
+// so a short value uses that decimal writer. The format string stays "{}".
+// n == 0 returns the caller's pointer and does not index it. A null output
+// with n > 0 keeps the int overload's existing check and does not write.
+// This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, short __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to int so the value uses that decimal writer.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<int>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<int>(__v));
+}
+
+// Decimal through the unsigned overload. The unsigned char value is
+// converted to unsigned, so an unsigned char value uses that decimal
+// writer. An unsigned char value always fits in unsigned. The format
+// string stays "{}". n == 0 returns the caller's pointer and does not
+// index it. A null output with n > 0 keeps the unsigned overload's
+// existing check and does not write. This is not PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, unsigned char __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to unsigned so the value uses that decimal writer.
+    // An unsigned char value always fits in unsigned.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<unsigned>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<unsigned>(__v));
+}
+
+// Decimal through the unsigned overload. The unsigned short value is
+// converted to unsigned, so an unsigned short value uses that decimal
+// writer. The format string stays "{}". n == 0 returns the caller's pointer
+// and does not index it. A null output with n > 0 keeps the unsigned
+// overload's existing check and does not write. This is not PROVED and
+// not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, unsigned short __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to unsigned so the value uses that decimal writer.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<unsigned>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<unsigned>(__v));
+}
+
+// Decimal through the long long overload. The long value is converted to
+// long long, so a long value uses that decimal writer. A long value always
+// fits in long long. The format string stays "{}". n == 0 returns the
+// caller's pointer and does not index it. A null output with n > 0 keeps
+// the long long overload's existing check and does not write. This is not
+// PROVED and not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, long __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to long long so the value uses that decimal writer.
+    // A long value always fits in long long.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<long long>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<long long>(__v));
+}
+
+// Decimal through the unsigned long long overload. The unsigned long value
+// is converted to unsigned long long, so an unsigned long value uses that
+// decimal writer. An unsigned long value always fits in unsigned long long.
+// The format string stays "{}". n == 0 returns the caller's pointer and
+// does not index it. A null output with n > 0 keeps the unsigned long long
+// overload's existing check and does not write. This is not PROVED and
+// not CLEAN.
+inline format_to_n_result format_to_n(char* __out, std::size_t __n, const char* __fmt, unsigned long __v) {
+    // This is not PROVED and not CLEAN.
+    // Converted to unsigned long long so the value uses that decimal writer.
+    // An unsigned long value always fits in unsigned long long.
+    // The format string stays "{}".
+    if (__n == 0) {
+        format_to_n_result __r = format_to_n(__out, __n, __fmt, static_cast<unsigned long long>(__v));
+        // Same pointer, not a null stand-in. The count is zero, so this does
+        // not index __out and does not write.
+        __r.out = __out;
+        return __r;
+    }
+    return format_to_n(__out, __n, __fmt, static_cast<unsigned long long>(__v));
 }
 
 

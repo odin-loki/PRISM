@@ -642,11 +642,151 @@ TEST_CASE("cxx tuple model: get<7> of an 8-tuple is the eighth stored value") {
                           "}\n";
     CHECK_FALSE(syntax_ok(c.cxx, bad, true));
 
-    const fs::path nine = c.tmp / "tuple9_from8.cpp";
-    std::ofstream(nine) << "#include <tuple>\n"
-                          "int nine() {\n"
-                          "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);\n"
-                          "  return std::get<0>(t);\n"
-                          "}\n";
-    CHECK_FALSE(syntax_ok(c.cxx, nine, true));
+    const fs::path fourteen = c.tmp / "tuple14_from8.cpp";
+    std::ofstream(fourteen) << "#include <tuple>\n"
+                               "int fourteen() {\n"
+                               "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
+                               "  return std::get<0>(t);\n"
+                               "}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, fourteen, true));
+}
+
+namespace {
+
+void check_no_stand_in(const std::string& text) {
+    CHECK_FALSE(default_return_stand_in(text));
+    CHECK(text.find("return {}") == std::string::npos);
+    CHECK(text.find("return T{}") == std::string::npos);
+    CHECK(text.find("return T()") == std::string::npos);
+}
+
+void expect_get(const std::string& stem, const std::string& decl, const std::string& call, int index_past,
+                const std::string& past_decl) {
+    auto& c = ctx();
+    if (!c.ok) return;
+    const fs::path src = c.tmp / (stem + ".cpp");
+    std::ofstream(src) << "#include <cstdio>\n#include <tuple>\nint main() {\n" << decl << "\n  const int got = " << call
+                       << ";\n  std::printf(\"%d\\n\", got);\n  return got == 17 ? 0 : 1;\n}\n";
+    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
+    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
+                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
+    fs::path out = c.tmp / stem;
+#ifdef _WIN32
+    out = c.tmp / (stem + ".exe");
+#endif
+    std::vector<std::string> argv{c.cxx};
+    argv.insert(argv.end(), flags.begin(), flags.end());
+    argv.push_back("-isystem");
+    argv.push_back(models.string());
+    argv.push_back(src.string());
+    argv.push_back("-o");
+    argv.push_back(out.string());
+    REQUIRE(run_cmd(argv));
+    CHECK(has_line(run_lines(out), "17"));
+
+    const fs::path bad = c.tmp / (stem + "_bad.cpp");
+    std::ofstream(bad) << "#include <tuple>\nint bad_index() {\n" << past_decl << "\n  return std::get<" << index_past
+                       << ">(t);\n}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, bad, true));
+
+    const fs::path fourteen = c.tmp / (stem + "_14.cpp");
+    std::ofstream(fourteen) << "#include <tuple>\nint fourteen() {\n"
+                               "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int> "
+                               "t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);\n"
+                               "  return std::get<0>(t);\n}\n";
+    CHECK_FALSE(syntax_ok(c.cxx, fourteen, true));
+}
+
+}  // namespace
+
+TEST_CASE("cxx tuple model: get<8> of a 9-tuple is the ninth stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find("struct _Prism_tuple_get<8, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8>>") !=
+          std::string::npos);
+    CHECK(text.find("return __t._M_8;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 9>") != std::string::npos);
+    CHECK(text.find("struct tuple_element<8, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8>>") !=
+          std::string::npos);
+    CHECK(text.find("using type = _T8;") != std::string::npos);
+    check_no_stand_in(text);
+    expect_get("tuple9_get8",
+               "  const int ninth = 17;\n"
+               "  std::tuple<int, int, int, int, int, int, int, int, int> t(4, 5, 6, 7, 8, 9, 10, 11, ninth);",
+               "std::get<8>(t)", 9,
+               "  std::tuple<int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9);");
+}
+
+TEST_CASE("cxx tuple model: get<9> of a 10-tuple is the tenth stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find("struct _Prism_tuple_get<9, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9>>") !=
+          std::string::npos);
+    CHECK(text.find("return __t._M_9;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 10>") != std::string::npos);
+    CHECK(text.find("struct tuple_element<9, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9>>") !=
+          std::string::npos);
+    CHECK(text.find("using type = _T9;") != std::string::npos);
+    check_no_stand_in(text);
+    expect_get("tuple10_get9",
+               "  const int tenth = 17;\n"
+               "  std::tuple<int, int, int, int, int, int, int, int, int, int> t(4, 5, 6, 7, 8, 9, 10, 11, 12, tenth);",
+               "std::get<9>(t)", 10,
+               "  std::tuple<int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);");
+}
+
+TEST_CASE("cxx tuple model: get<10> of an 11-tuple is the eleventh stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find(
+              "struct _Prism_tuple_get<10, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10>>") !=
+          std::string::npos);
+    CHECK(text.find("return __t._M_10;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 11>") != std::string::npos);
+    CHECK(text.find(
+              "struct tuple_element<10, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10>>") !=
+          std::string::npos);
+    CHECK(text.find("using type = _T10;") != std::string::npos);
+    check_no_stand_in(text);
+    expect_get(
+        "tuple11_get10",
+        "  const int eleventh = 17;\n"
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int> t(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, eleventh);",
+        "std::get<10>(t)", 11,
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);");
+}
+
+TEST_CASE("cxx tuple model: get<11> of a 12-tuple is the twelfth stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find(
+              "struct _Prism_tuple_get<11, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10, _T11>>") !=
+          std::string::npos);
+    CHECK(text.find("return __t._M_11;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 12>") != std::string::npos);
+    CHECK(text.find(
+              "struct tuple_element<11, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10, _T11>>") !=
+          std::string::npos);
+    CHECK(text.find("using type = _T11;") != std::string::npos);
+    check_no_stand_in(text);
+    expect_get(
+        "tuple12_get11",
+        "  const int twelfth = 17;\n"
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int> t(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, twelfth);",
+        "std::get<11>(t)", 12,
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);");
+}
+
+TEST_CASE("cxx tuple model: get<12> of a 13-tuple is the thirteenth stored value") {
+    const std::string text = slurp(model_header());
+    CHECK(text.find("struct _Prism_tuple_get<12, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10, "
+                    "_T11, _T12>>") != std::string::npos);
+    CHECK(text.find("return __t._M_12;") != std::string::npos);
+    CHECK(text.find("integral_constant<size_t, 13>") != std::string::npos);
+    CHECK(text.find("struct tuple_element<12, tuple<_T0, _T1, _T2, _T3, _T4, _T5, _T6, _T7, _T8, _T9, _T10, "
+                    "_T11, _T12>>") != std::string::npos);
+    CHECK(text.find("using type = _T12;") != std::string::npos);
+    check_no_stand_in(text);
+    expect_get(
+        "tuple13_get12",
+        "  const int thirteenth = 17;\n"
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int> t(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, thirteenth);",
+        "std::get<12>(t)", 13,
+        "  std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int> t(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);");
 }
