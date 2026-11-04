@@ -24,6 +24,11 @@
 // deciding pair and does not read past the shorter map. It does not
 // construct a key or a mapped value and it does not return T{}. This is
 // not PROVED and not CLEAN.
+// operator> returns __y < __x, using the existing operator<, so it walks
+// the same node chain. Two empty maps compare not-greater and do not load
+// a node. A non-empty map is greater than an empty map, and that path does
+// not load the empty map. It does not return T{}. This is not PROVED and
+// not CLEAN.
 // operator[] on a missing key inserts a node.
 // at(key) when the key is absent, including on an empty container, throws
 // std::out_of_range and does not return a default mapped T. erase of a
@@ -48,7 +53,9 @@
 // the sorted_unique and container constructors (the sorted_unique
 // precondition is CHECKED), extract() && and replace() over vector<Key> /
 // vector<T>, transparent contains/count/at, iterators (key order), find and
-// erase(iterator), swap, and operator<. Not declared: insert, insert_range,
+// erase(iterator), swap, operator<, and operator>. Container equality and
+// the other container relational operators are not declared.
+// Not declared: insert, insert_range,
 // emplace and the rest; a use of an omitted name fails to compile against
 // this header and pir falls back to libstdc++ (extra.cxx_models).
 #ifndef _PRISM_MODEL_FLAT_MAP
@@ -536,6 +543,12 @@ public:
         }
         return __a == nullptr && __b != nullptr;
     }
+
+    // Returns __y < __x, using the existing operator<.
+    // Two empty maps compare not-greater and do not load a node.
+    // A non-empty map is greater than an empty map, and that path does not load the empty map.
+    // It does not return T{}. This is not PROVED and not CLEAN.
+    friend bool operator>(const flat_map& __x, const flat_map& __y) { return __y < __x; }
 };
 
 _GLIBCXX_END_NAMESPACE_VERSION

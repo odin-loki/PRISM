@@ -20,8 +20,13 @@
 // empty maps compare not-less and do not load a node. An empty map is less
 // than a non-empty map, and that path does not load the empty map's node.
 // The walk stops at the first deciding pair and does not read past the
-// shorter map. It does not return T{}. The no-argument lines are unchanged.
-// This trace is not PROVED and not CLEAN.
+// shorter map. It does not return T{}. "greater" is that order with the
+// arguments swapped: operator> returns __y < __x and uses the existing
+// operator<. Two empty maps compare not-greater and do not load a node. A
+// non-empty map is greater than an empty map, and that path does not load
+// the empty map. It does not return T{}. CountKey and CountMapped define
+// operator< and do not define operator>. The no-argument lines are
+// unchanged. This trace is not PROVED and not CLEAN.
 #include <flat_map>
 #include <cstdio>
 #include <cstring>
@@ -610,6 +615,138 @@ static void less_trace() {
     show_less("kearlyba", (kearly_b < kearly_a) ? 1 : 0);
 }
 
+static void show_greater(const char* name, int result) {
+    std::printf("%s %d key_lt=%d mapped_lt=%d poison=%d copies=%d moves=%d mapped=%d\n", name, result, CountKey::lt,
+                CountMapped::lt, CountKey::poison + CountMapped::poison, CountKey::copies + CountMapped::copies,
+                CountKey::moves + CountMapped::moves, mapped_activity());
+}
+
+static void greater_trace() {
+    std::flat_map<int, int> e1;
+    std::flat_map<int, int> e2;
+    const int empty = (e1 > e2) ? 1 : 0;
+    std::flat_map<int, int> one;
+    one[1] = 10;
+    const int eg = (e1 > one) ? 1 : 0;
+    const int ge = (one > e1) ? 1 : 0;
+    std::flat_map<int, int> one_b;
+    one_b[1] = 10;
+    const int oneeq = (one > one_b) ? 1 : 0;
+    std::flat_map<int, int> key_a;
+    std::flat_map<int, int> key_b;
+    key_a[2] = 20;
+    key_b[1] = 10;
+    const int key_ab = (key_a > key_b) ? 1 : 0;
+    const int key_ba = (key_b > key_a) ? 1 : 0;
+    std::flat_map<int, int> map_a;
+    std::flat_map<int, int> map_b;
+    map_a[1] = 10;
+    map_b[1] = 20;
+    const int map_ab = (map_a > map_b) ? 1 : 0;
+    const int map_ba = (map_b > map_a) ? 1 : 0;
+    std::flat_map<int, int> pre_s;
+    std::flat_map<int, int> pre_l;
+    pre_s[1] = 10;
+    pre_l[9] = 90;
+    pre_l[1] = 10;
+    const int pre = (pre_s > pre_l) ? 1 : 0;
+    const int revpre = (pre_l > pre_s) ? 1 : 0;
+    std::flat_map<int, int> early_a;
+    std::flat_map<int, int> early_b;
+    early_a[1] = 10;
+    early_a[5] = 50;
+    early_b[9] = 90;
+    early_b[1] = 10;
+    early_b[4] = 40;
+    const int early = (early_a > early_b) ? 1 : 0;
+    const int early_ba = (early_b > early_a) ? 1 : 0;
+    std::flat_map<int, int> tail_a;
+    std::flat_map<int, int> tail_b;
+    tail_a[8] = 80;
+    tail_a[1] = 10;
+    tail_b[7] = 70;
+    tail_b[1] = 10;
+    const int tail_ab = (tail_a > tail_b) ? 1 : 0;
+    const int tail_ba = (tail_b > tail_a) ? 1 : 0;
+    std::printf("empty %d\n", empty);
+    std::printf("eg %d\n", eg);
+    std::printf("ge %d\n", ge);
+    std::printf("oneeq %d\n", oneeq);
+    std::printf("key %d %d\n", key_ab, key_ba);
+    std::printf("mapped %d %d\n", map_ab, map_ba);
+    std::printf("prefix %d %d\n", pre, revpre);
+    std::printf("early %d %d\n", early, early_ba);
+    std::printf("tail %d %d\n", tail_ab, tail_ba);
+
+    reset_counts();
+    std::flat_map<CountKey, CountMapped> ke1;
+    std::flat_map<CountKey, CountMapped> ke2;
+    show_greater("kempty", (ke1 > ke2) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kone;
+    (void)kone.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_greater("keg", (ke1 > kone) ? 1 : 0);
+    reset_counts();
+    show_greater("kge", (kone > ke1) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kone_b;
+    (void)kone_b.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_greater("ksame", (kone > kone_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> ktwo_a;
+    std::flat_map<CountKey, CountMapped> ktwo_b;
+    (void)ktwo_a.try_emplace(CountKey(1), 10);
+    (void)ktwo_a.try_emplace(CountKey(2), 20);
+    (void)ktwo_b.try_emplace(CountKey(1), 10);
+    (void)ktwo_b.try_emplace(CountKey(2), 20);
+    reset_counts();
+    show_greater("ktwo", (ktwo_a > ktwo_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kkey_a;
+    std::flat_map<CountKey, CountMapped> kkey_b;
+    (void)kkey_a.try_emplace(CountKey(-1), -1);
+    (void)kkey_a.try_emplace(CountKey(5), 50);
+    (void)kkey_b.try_emplace(CountKey(-1), -1);
+    (void)kkey_b.try_emplace(CountKey(4), 40);
+    reset_counts();
+    show_greater("kkey", (kkey_a > kkey_b) ? 1 : 0);
+    reset_counts();
+    show_greater("kkeyba", (kkey_b > kkey_a) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kmap_a;
+    std::flat_map<CountKey, CountMapped> kmap_b;
+    (void)kmap_a.try_emplace(CountKey(-1), -1);
+    (void)kmap_a.try_emplace(CountKey(2), 20);
+    (void)kmap_b.try_emplace(CountKey(-1), -1);
+    (void)kmap_b.try_emplace(CountKey(2), 30);
+    reset_counts();
+    show_greater("kmap", (kmap_a > kmap_b) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kpre_s;
+    std::flat_map<CountKey, CountMapped> kpre_l;
+    (void)kpre_s.try_emplace(CountKey(1), 10);
+    (void)kpre_l.try_emplace(CountKey(-1), -1);
+    (void)kpre_l.try_emplace(CountKey(1), 10);
+    reset_counts();
+    show_greater("kpre", (kpre_s > kpre_l) ? 1 : 0);
+    reset_counts();
+    show_greater("krev", (kpre_l > kpre_s) ? 1 : 0);
+
+    std::flat_map<CountKey, CountMapped> kearly_a;
+    std::flat_map<CountKey, CountMapped> kearly_b;
+    (void)kearly_a.try_emplace(CountKey(1), 10);
+    (void)kearly_a.try_emplace(CountKey(5), 50);
+    (void)kearly_b.try_emplace(CountKey(-1), -1);
+    (void)kearly_b.try_emplace(CountKey(1), 10);
+    (void)kearly_b.try_emplace(CountKey(4), 40);
+    reset_counts();
+    show_greater("kearly", (kearly_a > kearly_b) ? 1 : 0);
+    reset_counts();
+    show_greater("kearlyba", (kearly_b > kearly_a) ? 1 : 0);
+}
+
 static int uaf() {
     std::flat_map<int, int> m;
     m[1] = 5;
@@ -646,6 +783,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "less") == 0) {
         less_trace();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "greater") == 0) {
+        greater_trace();
         return 0;
     }
     show();
