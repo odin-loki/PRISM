@@ -24,6 +24,14 @@
 // omitted. This is not PROVED and not CLEAN. This is not a proof that the
 // pointer addresses an array.
 //
+// std::size, std::data, and std::cdata cover an array (a bound and a
+// zero-length overload) and, for size and data, one container lvalue.
+// std::empty is the container lvalue only. std::ssize is the same two
+// array shapes plus the container lvalue, and a value past PTRDIFF_MAX
+// is a contract check. std::iter_swap and std::iter_move are the pointer
+// overloads. A null pointer is PTR-NULL-DEREF before a load. Array empty
+// stays omitted.
+//
 // This case reads the header as text. It does not `#include` the model:
 // doctest already pulls in the platform library, and defining
 // _GLIBCXX_ITERATOR here would hide that header or duplicate std::begin.
@@ -136,6 +144,20 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const std::string prev_sig = "constexpr _Tp* prev(_Tp* __p) noexcept";
     const std::string prev_n_sig = "constexpr _Tp* prev(_Tp* __p, std::ptrdiff_t __n) noexcept";
     const std::string advance_sig = "constexpr void advance(_Tp*& __p, std::ptrdiff_t __n) noexcept";
+    const std::string iter_swap_sig = "constexpr void iter_swap(_Tp* __a, _Tp* __b) noexcept";
+    const std::string iter_move_sig = "constexpr _Tp iter_move(_Tp* __p) noexcept";
+    const std::string size_sig = "constexpr size_t size(_Tp (&__arr)[_Nm]) noexcept";
+    const std::string zero_size_sig = "constexpr size_t size(_Arr& __arr) noexcept";
+    const std::string cont_size_sig = "constexpr auto size(const _Tp& __t) noexcept(noexcept(__t.size()))";
+    const std::string cont_empty_sig = "constexpr auto empty(const _Tp& __t) noexcept(noexcept(__t.empty()))";
+    const std::string data_sig = "constexpr _Tp* data(_Tp (&__arr)[_Nm]) noexcept";
+    const std::string zero_data_sig = "constexpr auto data(_Arr& __arr) noexcept";
+    const std::string cont_data_sig = "constexpr auto data(const _Tp& __t) noexcept(noexcept(__t.data()))";
+    const std::string cdata_sig = "constexpr const _Tp* cdata(_Tp (&__arr)[_Nm]) noexcept";
+    const std::string zero_cdata_sig = "constexpr auto cdata(_Arr& __arr) noexcept";
+    const std::string ssize_sig = "constexpr std::ptrdiff_t ssize(_Tp (&)[_Nm]) noexcept";
+    const std::string zero_ssize_sig = "constexpr std::ptrdiff_t ssize(_Arr&) noexcept";
+    const std::string cont_ssize_sig = "constexpr auto ssize(const _Tp& __t) noexcept(noexcept(__t.size()))";
     CHECK(count_occ(code, begin_sig) == 1);
     CHECK(count_occ(code, end_sig) == 1);
     CHECK(count_occ(code, zero_begin_sig) == 1);
@@ -146,21 +168,68 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(count_occ(code, prev_sig) == 1);
     CHECK(count_occ(code, prev_n_sig) == 1);
     CHECK(count_occ(code, advance_sig) == 1);
+    CHECK(count_occ(code, iter_swap_sig) == 1);
+    CHECK(count_occ(code, iter_move_sig) == 1);
+    CHECK(count_occ(code, size_sig) == 1);
+    CHECK(count_occ(code, zero_size_sig) == 1);
+    CHECK(count_occ(code, cont_size_sig) == 1);
+    CHECK(count_occ(code, "-> decltype(__t.size())") == 1);
+    CHECK(count_occ(code, cont_empty_sig) == 1);
+    CHECK(count_occ(code, "-> decltype(__t.empty())") == 1);
+    CHECK(count_occ(code, data_sig) == 1);
+    CHECK(count_occ(code, zero_data_sig) == 1);
+    CHECK(count_occ(code, cont_data_sig) == 1);
+    CHECK(count_occ(code, "-> decltype(__t.data())") == 1);
+    CHECK(count_occ(code, cdata_sig) == 1);
+    CHECK(count_occ(code, zero_cdata_sig) == 1);
+    CHECK(count_occ(code, ssize_sig) == 1);
+    CHECK(count_occ(code, zero_ssize_sig) == 1);
+    CHECK(count_occ(code, cont_ssize_sig) == 1);
+    CHECK(count_occ(code, "-> decltype(__t.size(), std::ptrdiff_t())") == 1);
     CHECK(count_occ(code, "begin(") == 2);
     CHECK(count_occ(code, "end(") == 2);
     CHECK(count_occ(code, "distance(") == 1);
     CHECK(count_occ(code, "next(") == 2);
     CHECK(count_occ(code, "prev(") == 2);
     CHECK(count_occ(code, "advance(") == 1);
-    CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 2);
+    CHECK(count_occ(code, "iter_swap(") == 1);
+    CHECK(count_occ(code, "iter_move(") == 1);
+    // ssize( contains size(. Two array size overloads, three ssize
+    // overloads, three __t.size() spellings on container ssize, and four
+    // spellings on the container size overload.
+    CHECK(count_occ(code, "size(") == 12);
+    // Signature, noexcept operand, decltype operand, and one call.
+    CHECK(count_occ(code, "empty(") == 4);
+    // Two array data overloads, two cdata overloads (the substring data(),
+    // and four spellings on the container data overload).
+    CHECK(count_occ(code, "data(") == 8);
+    CHECK(count_occ(code, "cdata(") == 2);
+    CHECK(count_occ(code, "ssize(") == 3);
+    CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 6);
     // begin and end return _Tp*. distance and _Prism_pointer_diff take four
     // _Tp* parameters. The two next overloads add two _Tp* returns and two
     // _Tp* parameters. The two prev overloads add two more of each.
-    // advance takes one _Tp*&. The check declaration adds two const char*.
-    // No other star: these functions do not dereference.
-    CHECK(count_occ(code, "*") == 17);
+    // advance takes one _Tp*&. iter_swap takes two _Tp* parameters and
+    // dereferences four times. iter_move takes one _Tp* parameter and
+    // dereferences once. data and cdata each add one pointer return on the
+    // bound overload. The check declaration adds two const char*.
+    CHECK(count_occ(code, "*") == 27);
     CHECK(code.find("reverse_iterator") == std::string::npos);
-    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 2);
+    CHECK(code.find("constexpr bool empty(") == std::string::npos);
+    CHECK(code.find("size(_Tp*") == std::string::npos);
+    CHECK(code.find("size(const _Tp*") == std::string::npos);
+    CHECK(code.find("empty(_Tp*") == std::string::npos);
+    CHECK(code.find("empty(const _Tp*") == std::string::npos);
+    CHECK(code.find("data(_Tp*") == std::string::npos);
+    CHECK(code.find("data(const _Tp*") == std::string::npos);
+    CHECK(code.find("cdata(_Tp*") == std::string::npos);
+    CHECK(code.find("ssize(_Tp*") == std::string::npos);
+    CHECK(code.find("ssize(_Arr*") == std::string::npos);
+    CHECK(code.find("ssize(const _Tp*") == std::string::npos);
+    CHECK(count_occ(code, "__t.size()") == 6);
+    CHECK(count_occ(code, "__t.empty()") == 3);
+    CHECK(count_occ(code, "__t.data()") == 3);
+    CHECK(count_occ(src, "This is not PROVED and not CLEAN.") == 15);
     CHECK(count_occ(src, "a backward step") == 2);
     CHECK(code.find("input_iterator_tag") == std::string::npos);
     CHECK(code.find("random_access_iterator_tag") == std::string::npos);
@@ -169,6 +238,11 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
           1);
     CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::next offset is negative\")") == 1);
     CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::prev offset is negative\")") == 1);
+    CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ssize array bound does not fit in ptrdiff_t\")") ==
+          1);
+    CHECK(count_occ(code, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ssize value does not fit in ptrdiff_t\")") == 1);
+    CHECK(count_occ(code, "__prism_check(0, \"PTR-NULL-DEREF\", \"std::iter_swap null pointer\")") == 1);
+    CHECK(count_occ(code, "__prism_check(0, \"PTR-NULL-DEREF\", \"std::iter_move null pointer\")") == 1);
 
     const auto begin_body = body_of(code, begin_sig);
     const auto end_body = body_of(code, end_sig);
@@ -195,6 +269,119 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(zero_end_body.find('*') == std::string::npos);
     CHECK(zero_end_body.find('[') == std::string::npos);
     CHECK(zero_end_body.find("__prism_check") == std::string::npos);
+
+    const auto size_body = body_of(code, size_sig);
+    const auto zero_size_body = body_of(code, zero_size_sig);
+    REQUIRE(size_body.find("return _Nm;") != std::string::npos);
+    REQUIRE(zero_size_body.find("return 0;") != std::string::npos);
+    CHECK(count_occ(size_body, "*") == 0);
+    CHECK(count_occ(zero_size_body, "*") == 0);
+    CHECK(size_body.find("__arr") == std::string::npos);
+    CHECK(size_body.find("begin") == std::string::npos);
+    CHECK(size_body.find("__prism_check") == std::string::npos);
+    CHECK(zero_size_body.find("__arr") == std::string::npos);
+    CHECK(zero_size_body.find("__prism_check") == std::string::npos);
+
+    const auto cont_size_body = body_of(code, cont_size_sig);
+    REQUIRE(cont_size_body.find("return __t.size();") != std::string::npos);
+    CHECK(count_occ(cont_size_body, "return __t.size();") == 1);
+    CHECK(count_occ(cont_size_body, "*") == 0);
+    CHECK(cont_size_body.find("return 0") == std::string::npos);
+    CHECK(cont_size_body.find("__prism_check") == std::string::npos);
+
+    const auto cont_empty_body = body_of(code, cont_empty_sig);
+    REQUIRE(cont_empty_body.find("return __t.empty();") != std::string::npos);
+    CHECK(count_occ(cont_empty_body, "return __t.empty();") == 1);
+    CHECK(count_occ(cont_empty_body, "size(") == 0);
+    CHECK(cont_empty_body.find("return false") == std::string::npos);
+    CHECK(cont_empty_body.find("return true") == std::string::npos);
+    CHECK(count_occ(cont_empty_body, "*") == 0);
+    CHECK(cont_empty_body.find("__prism_check") == std::string::npos);
+
+    const auto data_body = body_of(code, data_sig);
+    const auto zero_data_body = body_of(code, zero_data_sig);
+    REQUIRE(data_body.find("return __arr;") != std::string::npos);
+    REQUIRE(zero_data_body.find("return __arr;") != std::string::npos);
+    CHECK(count_occ(data_body, "*") == 0);
+    CHECK(count_occ(zero_data_body, "*") == 0);
+    CHECK(data_body.find('+') == std::string::npos);
+    CHECK(data_body.find("size") == std::string::npos);
+    CHECK(data_body.find("empty") == std::string::npos);
+    CHECK(zero_data_body.find('+') == std::string::npos);
+    CHECK(data_body.find("__prism_check") == std::string::npos);
+    CHECK(zero_data_body.find("__prism_check") == std::string::npos);
+
+    const auto cont_data_body = body_of(code, cont_data_sig);
+    REQUIRE(cont_data_body.find("return __t.data();") != std::string::npos);
+    CHECK(count_occ(cont_data_body, "return __t.data();") == 1);
+    CHECK(count_occ(cont_data_body, "*") == 0);
+    CHECK(cont_data_body.find("nullptr") == std::string::npos);
+    CHECK(cont_data_body.find("cdata(") == std::string::npos);
+    CHECK(cont_data_body.find("__prism_check") == std::string::npos);
+
+    const auto cdata_body = body_of(code, cdata_sig);
+    const auto zero_cdata_body = body_of(code, zero_cdata_sig);
+    REQUIRE(cdata_body.find("return __arr;") != std::string::npos);
+    REQUIRE(zero_cdata_body.find("return __arr;") != std::string::npos);
+    CHECK(count_occ(cdata_body, "*") == 0);
+    CHECK(count_occ(zero_cdata_body, "*") == 0);
+    CHECK(cdata_body.find("data") == std::string::npos);
+    CHECK(zero_cdata_body.find("data") == std::string::npos);
+    CHECK(cdata_body.find("__prism_check") == std::string::npos);
+    CHECK(zero_cdata_body.find("__prism_check") == std::string::npos);
+
+    const auto ssize_body = body_of(code, ssize_sig);
+    const auto zero_ssize_body = body_of(code, zero_ssize_sig);
+    REQUIRE_FALSE(ssize_body.empty());
+    REQUIRE(zero_ssize_body.find("return 0;") != std::string::npos);
+    const auto ssize_check = ssize_body.find("_Prism_ssize_array_bound_does_not_fit()");
+    const auto ssize_ret = ssize_body.find("return static_cast<std::ptrdiff_t>(_Nm);");
+    REQUIRE(ssize_check != std::string::npos);
+    REQUIRE(ssize_ret != std::string::npos);
+    CHECK(ssize_check < ssize_ret);
+    CHECK(ssize_body.find("static_cast<std::ptrdiff_t>(_Nm)") != std::string::npos);
+    CHECK(count_occ(ssize_body, "*") == 0);
+    CHECK(count_occ(zero_ssize_body, "*") == 0);
+    CHECK(zero_ssize_body.find("__prism_check") == std::string::npos);
+
+    const auto cont_ssize_body = body_of(code, cont_ssize_sig);
+    REQUIRE(cont_ssize_body.find("const auto __n = __t.size();") != std::string::npos);
+    const auto cont_ssize_check = cont_ssize_body.find("_Prism_ssize_value_does_not_fit()");
+    const auto cont_ssize_ret = cont_ssize_body.find("return static_cast<std::ptrdiff_t>(__n);");
+    REQUIRE(cont_ssize_check != std::string::npos);
+    REQUIRE(cont_ssize_ret != std::string::npos);
+    CHECK(cont_ssize_body.find("__n > PTRDIFF_MAX") < cont_ssize_check);
+    CHECK(cont_ssize_check < cont_ssize_ret);
+    CHECK(count_occ(cont_ssize_body, "*") == 0);
+    CHECK(count_occ(cont_ssize_body, "__t.size()") == 1);
+
+    const auto swap_body = body_of(code, iter_swap_sig);
+    REQUIRE_FALSE(swap_body.empty());
+    const auto swap_null = swap_body.find("_Prism_iter_swap_null()");
+    const auto swap_self = swap_body.find("return;");
+    const auto swap_load = swap_body.find("_Tp __tmp = *__a;");
+    REQUIRE(swap_null != std::string::npos);
+    REQUIRE(swap_self != std::string::npos);
+    REQUIRE(swap_load != std::string::npos);
+    CHECK(swap_body.find("__a == nullptr || __b == nullptr") < swap_null);
+    CHECK(swap_null < swap_self);
+    CHECK(swap_self < swap_load);
+    CHECK(swap_body.find("*__a = *__b;") != std::string::npos);
+    CHECK(swap_body.find("*__b = __tmp;") != std::string::npos);
+    CHECK(count_occ(swap_body, "*") == 4);
+    CHECK(swap_body.substr(0, swap_load).find('*') == std::string::npos);
+
+    const auto move_body = body_of(code, iter_move_sig);
+    REQUIRE_FALSE(move_body.empty());
+    const auto move_null = move_body.find("_Prism_iter_move_null()");
+    const auto move_load = move_body.find("return *__p;");
+    REQUIRE(move_null != std::string::npos);
+    REQUIRE(move_load != std::string::npos);
+    CHECK(move_body.find("__p == nullptr") < move_null);
+    CHECK(move_null < move_load);
+    CHECK(count_occ(move_body, "*") == 1);
+    CHECK(move_body.find("T{}") == std::string::npos);
+    CHECK(move_body.substr(0, move_load).find('*') == std::string::npos);
 
     const auto trap = body_of(code, "void _Prism_distance_does_not_fit()");
     REQUIRE_FALSE(trap.empty());
