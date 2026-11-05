@@ -1,0 +1,10 @@
+format_version: 1
+input_files: global_hooks_false.c
+language: C
+property: no-fp-cast
+expected:
+  global_hooks_false: false
+witness:
+  global_hooks_false: [3000000]
+expect_class:
+  global_hooks_false: FLOAT-CAST-OVF

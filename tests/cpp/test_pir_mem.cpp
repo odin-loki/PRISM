@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 #ifdef _WIN32
 #  include <process.h>
@@ -752,6 +753,45 @@ TEST_CASE("pir mem: large zero-initialised globals keep their contents (F8; skip
     CHECK(st["f8_true.c:main"].first == prism::laws::PROVED);
     CHECK(st["f8_false.c:main"].first == prism::laws::FAILED);
     CHECK_FALSE(prism::laws::is_proof(st["f8_dense.c:main"].first));
+}
+
+TEST_CASE("pir mem: the initial-globals re-check reports its own violation, not the arbitrary-globals one (cJSON hooks)") {
+    // cJSON_CreateNumber was FAILED PTR-NULL-DEREF "call through a null
+    // function pointer" with "FAILED also with the globals' initial values":
+    // the re-check failed, but on the (int) conversion, not on the call
+    // through global_hooks.allocate (malloc in the initializer).
+    if (skip_without_frontend()) return;
+    const auto dir = std::filesystem::path(PRISM_SOURCE_DIR) / "testdata" / "conformance" / "prism" / "regress";
+    auto slurp = [](const std::filesystem::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    auto cfg = prism::default_config();
+    auto tmp = std::filesystem::temp_directory_path() / "prism_pir_global_hooks";
+    std::filesystem::remove_all(tmp);
+    std::filesystem::create_directories(tmp);
+    std::vector<std::filesystem::path> paths;
+    for (const char* n : {"global_hooks_false.c", "global_hooks_true.c"}) {
+        std::ofstream(tmp / n) << slurp(dir / n);
+        paths.push_back(tmp / n);
+    }
+    cfg.root = tmp;
+    cfg.jobs = 2;
+    cfg.solver_cache = tmp / "cache";
+    std::map<std::string, prism::Finding> by;
+    for (auto& f : pp::run_pir(paths, cfg))
+        if (f.function) by[*f.function] = f;
+    REQUIRE(by.count("global_hooks_false"));
+    REQUIRE(by.count("global_hooks_true"));
+    const auto& bad = by["global_hooks_false"];
+    CHECK(bad.status == prism::laws::FAILED);
+    CHECK(bad.cls == "FLOAT-CAST-OVF");  // never PTR-NULL-DEREF
+    CHECK(bad.extra.at("prop") != "null-call");
+    CHECK(bad.extra.at("globals").find("initial values") != std::string::npos);
+    CHECK(bad.extra.at("arbitrary_globals_violation").find("null function pointer") != std::string::npos);
+    const auto& good = by["global_hooks_true"];
+    CHECK(good.status == prism::laws::NEEDS_HARNESS);  // the task's expect_status
+    CHECK(good.extra.at("globals") == "arbitrary: FAILED; initial values: PROVED");
 }
 
 TEST_CASE("pir mem: abort() after a failed allocation is OOM handling, not a defect (F9; skips without clang/opt)") {

@@ -279,7 +279,26 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                 v.cex_args.clear();
                 return;
             }
-            v.extra["globals"] = "FAILED also with the globals' initial values";
+            // The re-check stops at its own first violated property, which
+            // need not be the one the arbitrary-globals check reported: a
+            // null call through a hook in a struct of function pointers
+            // needs a hook other than its initializer, while a later
+            // (int)NaN in the same function holds with the initial values
+            // (cJSON_CreateNumber; testdata/conformance/prism/regress/
+            // global_hooks_*). Only the violation the initial state shows is
+            // reported; the other one is a missing precondition.
+            if (v2.prop != v.prop || v2.line != v.line || v2.cls != v.cls) {
+                const std::string other = v.message;
+                f.extra["arbitrary_globals_violation"] = other;
+                auto extra = std::move(v.extra);
+                for (auto& [k, val] : v2.extra) extra[k] = val;
+                v = std::move(v2);
+                v.extra = std::move(extra);
+                v.extra["globals"] = "FAILED with the globals' initial values; the arbitrary-globals violation (" +
+                                     other + ") needs other values of them (precondition)";
+            } else {
+                v.extra["globals"] = "FAILED also with the globals' initial values";
+            }
         }
     }
     // A violation under a drafted (not user-stated) precondition is not a
