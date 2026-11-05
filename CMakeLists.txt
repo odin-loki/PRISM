@@ -13,12 +13,20 @@ endif()
 if(MINGW)
   message(FATAL_ERROR "PRISM does not build with MinGW. Use the pinned clang (clang-cl on Windows).")
 endif()
-# One compiler everywhere: the pinned LLVM clang 23.1.4 (third_party/llvm/PIN.toml,
-# scripts/fetch_llvm.py); clang-cl on Windows. No compiler-specific test exclusions.
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  message(FATAL_ERROR "PRISM builds with clang only (pinned 23.1.4; clang-cl on Windows), got ${CMAKE_CXX_COMPILER_ID}")
-endif()
-if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 23.1.4)
+# Compilers: the pinned LLVM clang 23.1.4 (third_party/llvm/PIN.toml,
+# scripts/fetch_llvm.py) everywhere, clang-cl on Windows; on Windows x64 also
+# Visual C++ (cl, MSVC 19.4x+), the native toolchain (docs/MSVC_PORT.md).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  if(NOT WIN32)
+    message(FATAL_ERROR "MSVC cl is supported on Windows only")
+  endif()
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.40)
+    message(FATAL_ERROR "PRISM needs Visual C++ 19.40 (VS 2022 17.10) or newer for C++23, got ${CMAKE_CXX_COMPILER_VERSION}")
+  endif()
+  set(PRISM_MSVC_CL ON)
+elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "PRISM builds with clang (pinned 23.1.4; clang-cl on Windows) or, on Windows, MSVC cl; got ${CMAKE_CXX_COMPILER_ID}")
+elseif(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 23.1.4)
   message(WARNING "PRISM pins clang 23.1.4 (scripts/fetch_llvm.py); building with ${CMAKE_CXX_COMPILER_VERSION}")
 endif()
 if(WIN32)
@@ -927,7 +935,8 @@ if(PRISM_TESTS)
     tests/cpp/test_scope_pods.cpp
     # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
     tests/cpp/test_llm_hypothesis.cpp)
-  # The stdbit model is PIR (clang) source; every build compiles with clang.
+  # The stdbit model is PIR (clang) source; under MSVC cl its bit builtins come
+  # from tests/cpp/msvc_builtins.hpp (force-included below).
   list(APPEND _prism_test_sources tests/cpp/test_c23_stdbit.cpp)
   # Z3 + POSIX fork/pthread_atfork livelock regression.
   if(PRISM_HAS_Z3 AND NOT WIN32)
@@ -966,6 +975,10 @@ if(PRISM_TESTS)
     "${FORGE_SOURCE_DIR}/tests")  # FORGE tests/tiny_model.hpp: tiny .fpk fixture (forge_test_model.hpp)
   target_link_libraries(prism_tests PRIVATE prism_core prism_qa prism_ai_lib)
   target_compile_definitions(prism_tests PRIVATE PRISM_SOURCE_ROOT="${PRISM_ROOT}")
+  if(PRISM_MSVC_CL)
+    # model headers included by path use __builtin_trap (tests/cpp/msvc_builtins.hpp)
+    target_compile_options(prism_tests PRIVATE "/FI${PRISM_ROOT}/tests/cpp/msvc_builtins.hpp" /utf-8 /bigobj)
+  endif()
   if(_prism_warn)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()

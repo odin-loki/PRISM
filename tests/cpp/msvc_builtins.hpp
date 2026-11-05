@@ -13,3 +13,21 @@ extern "C" __declspec(dllimport) __declspec(noreturn) void __cdecl abort(void);
 extern "C" __declspec(noreturn) void __cdecl abort(void);
 #endif
 __declspec(noreturn) inline void __builtin_trap() { abort(); }
+// The C23 <stdbit.h> model (models/libc/c23/stdbit.h, test_c23_stdbit.cpp)
+// uses the GCC/clang bit builtins. Same contract: clz/ctz of 0 is undefined
+// (callers test for 0 first).
+inline int __builtin_popcountll(unsigned long long x) {
+    int n = 0;
+    for (; x; x &= x - 1) ++n;
+    return n;
+}
+inline int __builtin_clzll(unsigned long long x) {
+    int n = 0;
+    for (unsigned long long m = 1ull << 63; m && !(x & m); m >>= 1) ++n;
+    return n;
+}
+inline int __builtin_ctzll(unsigned long long x) {
+    int n = 0;
+    for (; n < 64 && !(x & 1ull); x >>= 1) ++n;
+    return n;
+}
