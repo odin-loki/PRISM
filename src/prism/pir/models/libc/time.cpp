@@ -7,7 +7,17 @@
  * localtime is not a proof of the local calendar and not a proof of a timezone. */
 #include "prism_model.h"
 
+#ifdef _WIN32
+/* Windows x64 (UCRT): time_t is 64-bit although long is 32-bit (LLP64), and
+ * <time.h> defines time, mktime, difftime, gmtime and localtime inline over
+ * the _*64 functions modelled at the end of this file. */
+typedef long long time_t;
+extern "C" long long __VERIFIER_nondet_longlong(void);
+#define PRISM_NONDET_TIME() __VERIFIER_nondet_longlong()
+#else
 typedef long time_t;
+#define PRISM_NONDET_TIME() __VERIFIER_nondet_long()
+#endif
 typedef long clock_t;
 typedef int clockid_t;
 
@@ -32,7 +42,7 @@ extern "C" {
 
 /* time is not PROVED and not CLEAN. A null pointer stores nothing. */
 time_t time(time_t *t) {
-    time_t v = __VERIFIER_nondet_long();
+    time_t v = PRISM_NONDET_TIME();
     if (t != 0) {
         *t = v;
     }
@@ -92,7 +102,7 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp) {
         return -1;
     }
     (void)clock_id;
-    tp->tv_sec = __VERIFIER_nondet_long();
+    tp->tv_sec = PRISM_NONDET_TIME();
     long nsec = __VERIFIER_nondet_long();
     __prism_assume(nsec >= 0 && nsec <= 999999999);
     tp->tv_nsec = nsec;
@@ -166,5 +176,14 @@ struct tm *localtime(const time_t *timer) {
     storage.tm_isdst = isdst;
     return &storage;
 }
+
+#ifdef _WIN32
+/* The UCRT's inline <time.h> wrappers call these; same models as above. */
+time_t _time64(time_t *t) { return time(t); }
+time_t _mktime64(struct tm *tp) { return mktime(tp); }
+double _difftime64(time_t time1, time_t time0) { return difftime(time1, time0); }
+struct tm *_gmtime64(const time_t *timer) { return gmtime(timer); }
+struct tm *_localtime64(const time_t *timer) { return localtime(timer); }
+#endif
 
 }  // extern "C"

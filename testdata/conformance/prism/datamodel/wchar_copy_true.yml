@@ -1,0 +1,7 @@
+format_version: 1
+input_files: wchar_copy_true.c
+language: C
+property: no-oob
+target: x86_64-pc-windows-msvc
+expected:
+  wchar_copy_true: true

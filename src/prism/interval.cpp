@@ -307,6 +307,9 @@ int sizeof_interval(const std::vector<std::string>& inner) {
         if (i) joined += " ";
         joined += inner.at(i);
     }
+    // long follows the analysed target: 4 bytes on Windows x64 (LLP64)
+    if (joined == "long" || joined == "long int" || joined == "unsigned long")
+        return active_target().abi.long_bytes();
     auto it = kTypeSize.find(joined);
     if (it != kTypeSize.end()) return it->second;
     return kWidth / 8;

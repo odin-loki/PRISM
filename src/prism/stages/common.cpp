@@ -233,8 +233,7 @@ std::string ctype_key(std::string_view typ) {
 int param_nbytes(const std::vector<std::pair<std::string, std::string>>& params) {
     int n = 0;
     for (auto& [typ, _] : params) {
-        auto it = kCTypeSize.find(ctype_key(typ));
-        n += it == kCTypeSize.end() ? 4 : it->second;
+        n += ctype_bytes(ctype_key(typ), 4);
     }
     return n ? n : 1;
 }
@@ -245,7 +244,7 @@ Args decode_args(const FunctionInfo& fn, const std::vector<uint8_t>& data) {
     for (auto& [typ, name] : fn.params) {
         if (name.empty()) continue;
         auto key = ctype_key(typ);
-        int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
+        int sz = ctype_bytes(key, 4);
         std::vector<uint8_t> chunk(static_cast<std::size_t>(sz), 0);
         for (int i = 0; i < sz && off + static_cast<std::size_t>(i) < data.size(); ++i)
             chunk.at(static_cast<std::size_t>(i)) = data.at(off + static_cast<std::size_t>(i));
@@ -283,7 +282,7 @@ std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn) {
     for (auto& [t, name] : fn.params) {
         if (name.empty()) continue;
         auto key = ctype_key(t);
-        sizes.push_back(kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4);
+        sizes.push_back(ctype_bytes(key, 4));
     }
     if (sizes.empty()) sizes.push_back(4);
     auto append_row = [&](const std::vector<int64_t>& per_slot) {

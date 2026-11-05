@@ -56,6 +56,7 @@
 // This executes task code: only the trusted suite in this repository (or the
 // pinned Juliet archive, whose hash is checked) is ever compiled and run.
 
+#include "prism/abi_model.hpp"
 #include "prism/exit.hpp"
 #include "prism/settings.hpp"
 #include "prism/log.hpp"
@@ -165,6 +166,17 @@ std::pair<std::vector<ojson>, int> self_check(const std::vector<Task>& tasks, co
             rec["check"] = "skipped";
             rec["why"] = "native toolchain: " + u->second;
             return rec;
+        }
+        // a task pinned to another data model than the native toolchain's
+        // (an LLP64 task on a Linux host): its witness cannot be replayed here
+        if (!t.target.empty()) {
+            auto want = prism::parse_target(t.target), host = prism::parse_target(prism::host_target_triple());
+            if (!want || !host || want->kind != host->kind) {
+                rec["check"] = "skipped";
+                rec["why"] = "native toolchain builds for " + std::string(prism::host_target_triple()) +
+                             ", the task is for " + t.target;
+                return rec;
+            }
         }
         if (t.expect_status.count(it.fn)) {
             rec["check"] = "skipped";

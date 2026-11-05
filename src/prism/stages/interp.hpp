@@ -17,9 +17,9 @@ bool type_is_unsigned(std::string_view typ);
 int type_width(std::string_view typ);
 
 // A C integer type as the concrete interpreter models it: width in bits
-// (1 = _Bool, 8, 16, 32, 64) and signedness. Widths follow LP64, the same
-// data model as the bmc encoder: long, size_t, ptrdiff_t and pointers are 64
-// bits.
+// (1 = _Bool, 8, 16, 32, 64) and signedness. size_t, ptrdiff_t, long long and
+// pointers are 64 bits; long follows the analysed target (64 on Linux LP64,
+// 32 on Windows x64 LLP64; active_target()).
 struct CT {
     int w = WIDTH;
     bool u = false;

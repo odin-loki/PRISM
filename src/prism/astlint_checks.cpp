@@ -22,6 +22,7 @@
 
 #include "astlint_internal.hpp"
 
+#include "prism/abi_model.hpp"
 #include "prism/checkers.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
@@ -221,13 +222,17 @@ bool is_pointer_type(const std::string& t) {
 
 bool is_int_type(const std::string& t) { return is_signed_int(t) || is_unsigned_int(t); }
 
-// Bit width of an integer type (LP64).
+// Bit width of an integer type for the analysed target (prism/abi_model.hpp
+// active_target): long and wchar_t are 64 / 32 bits on Linux LP64, 32 / 16
+// on Windows x64 (LLP64).
 int int_width(const std::string& t) {
     if (one_of(t, {"char", "signed char", "unsigned char", "bool", "_Bool", "char8_t"})) return 8;
     if (one_of(t, {"short", "short int", "unsigned short", "unsigned short int", "char16_t"})) return 16;
-    if (one_of(t, {"int", "signed", "signed int", "unsigned int", "unsigned", "wchar_t", "char32_t"})) return 32;
-    if (one_of(t, {"long", "long int", "unsigned long", "unsigned long int", "long long", "long long int",
-                   "unsigned long long", "unsigned long long int", "signed long"}))
+    if (t == "wchar_t") return active_target().abi.wchar_w;
+    if (one_of(t, {"int", "signed", "signed int", "unsigned int", "unsigned", "char32_t"})) return 32;
+    if (one_of(t, {"long", "long int", "unsigned long", "unsigned long int", "signed long"}))
+        return active_target().abi.long_w;
+    if (one_of(t, {"long long", "long long int", "unsigned long long", "unsigned long long int"}))
         return 64;
     if (one_of(t, {"__int128", "__int128_t", "unsigned __int128", "__uint128_t"})) return 128;
     return 0;

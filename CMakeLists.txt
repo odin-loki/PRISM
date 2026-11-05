@@ -934,7 +934,9 @@ if(PRISM_TESTS)
     tests/cpp/test_sandbox.cpp
     tests/cpp/test_scope_pods.cpp
     # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
-    tests/cpp/test_llm_hypothesis.cpp)
+    tests/cpp/test_llm_hypothesis.cpp
+    # --target: Linux LP64 / ILP32 and Windows x64 (MSVC, LLP64) analysis targets.
+    tests/cpp/test_target.cpp)
   # The stdbit model is PIR (clang) source; under MSVC cl its bit builtins come
   # from tests/cpp/msvc_builtins.hpp (force-included below).
   list(APPEND _prism_test_sources tests/cpp/test_c23_stdbit.cpp)

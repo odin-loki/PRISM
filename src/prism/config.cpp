@@ -65,6 +65,7 @@ Config default_config() {
     c.pbsd_root = default_pbsd();
     c.fpk = default_fpk();
     c.model = env_or("PRISM_MODEL", "qwen3.5-9b");
+    c.target = env_or("PRISM_TARGET", "");
     unsigned n = std::max(2u, std::thread::hardware_concurrency());
     c.jobs = static_cast<int>(std::max(1u, n / 2));
     return c;
@@ -510,6 +511,8 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PROVER_MODEL", "prover LLM model name"},
     {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
     {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
+    {"PRISM_TARGET", "analysis target triple (--target): x86_64-unknown-linux-gnu, i386-unknown-linux-gnu or x86_64-pc-windows-msvc; default the host"},
+    {"PRISM_MSVC_SYSROOT", "pir off Windows: MSVC + Windows SDK root (clang -Xmicrosoft-windows-sys-root) for the x86_64-pc-windows-msvc target"},
     {"PRISM_TOOLS_DIR", "directory of vendored external tools"},
     {"PRISM_TRIAGE", "enable LLM triage"},
     {"PRISM_VERSION", "override the reported version string"},

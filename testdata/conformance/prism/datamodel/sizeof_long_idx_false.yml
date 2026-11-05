@@ -1,0 +1,9 @@
+format_version: 1
+input_files: sizeof_long_idx_false.c
+language: C
+property: no-oob
+target: x86_64-unknown-linux-gnu
+expected:
+  sizeof_long_idx_false: false
+witness:
+  sizeof_long_idx_false: [0]

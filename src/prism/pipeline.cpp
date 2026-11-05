@@ -2,6 +2,7 @@
 #ifdef __linux__
 #include <malloc.h>
 #endif
+#include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
 #include "prism/pipeline.hpp"
 
@@ -241,6 +242,13 @@ RunReport run_pipeline(const Config& cfg) {
     // see this run's config and log to <out>/ai_audit.jsonl.
     ai::Session ai_session(cfg);
     RunReport report;
+    // --target / PRISM_TARGET: the type widths of the source-level stages
+    // follow the analysed platform (pir sets its own front-end target).
+    const auto target = resolve_target(cfg.target, cfg.data_model);
+    ActiveTargetScope target_scope(target ? target->kind : active_target().kind);
+    if (!target)
+        report.notes.push_back("unsupported target '" + cfg.target + "': the source-level stages used the host widths (" +
+                               std::string(active_target().data_model()) + ") and pir is NOTRUN");
     report.root = cfg.root.string();
     report.started = now_secs();
     std::filesystem::create_directories(cfg.out);

@@ -2,6 +2,7 @@
 
 // PIR clang/opt usability probes for tests and stages (docs/MSVC_PORT.md §7 PIR).
 
+#include "prism/abi_model.hpp"
 #include "prism/config.hpp"
 #include "prism/export.hpp"
 
@@ -33,24 +34,30 @@ PRISM_API std::vector<std::string> lp64_clang_driver_flags();
 PRISM_API std::string lowerswitch_pass(const std::filesystem::path& opt);
 // "-passes=mem2reg,<lowerswitch>,loop-simplify,lcssa,instnamer" for that opt (C PIR pipeline).
 PRISM_API std::string c_ir_passes(const std::filesystem::path& opt);
-// Target of the unit and library-model lowering: LP64 (above) or, with
-// --data-model ILP32, i386-unknown-linux-gnu (32-bit long, size_t and
-// pointers; pir's PtrModel follows the datalayout). Set for a pir run by
-// FrontendTargetScope; the library-model cache is keyed by the triple.
+// Target of the unit and library-model lowering (--target, prism/abi_model.hpp):
+// Linux LP64 (above), with --data-model ILP32 i386-unknown-linux-gnu (32-bit
+// long, size_t and pointers), or Windows x64 x86_64-pc-windows-msvc (LLP64:
+// 32-bit long, 16-bit wchar_t; UCRT and MSVC STL headers). pir's PtrModel
+// follows the datalayout. Set for a pir run by FrontendTargetScope (Linux
+// LP64 outside one); the library-model cache is keyed by the triple.
+PRISM_API const Target& frontend_target();
 PRISM_API bool frontend_ilp32();
+PRISM_API bool frontend_msvc();
 PRISM_API const char* ilp32_target_triple();
+PRISM_API const char* msvc_target_triple();
 PRISM_API const char* frontend_target_triple();
-// target flags for the current frontend target ({} for native LP64 off _WIN32)
+// target flags for the current frontend target ({} for native LP64 on Linux)
 PRISM_API std::vector<std::string> frontend_target_flags();
 class PRISM_API FrontendTargetScope {
 public:
     explicit FrontendTargetScope(bool ilp32);
+    explicit FrontendTargetScope(TargetKind k);
     ~FrontendTargetScope();
     FrontendTargetScope(const FrontendTargetScope&) = delete;
     FrontendTargetScope& operator=(const FrontendTargetScope&) = delete;
 
 private:
-    bool prev_;
+    int prev_;
 };
 
 // True when find_frontend has clang and opt and the LP64 triple probe succeeds.

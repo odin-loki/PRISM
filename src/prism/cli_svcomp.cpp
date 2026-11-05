@@ -114,6 +114,9 @@ std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const
     cfg.root = fs::absolute(task_c);
     cfg.out = fs::absolute(out);
     cfg.data_model = upper(data_model);
+    // SV-COMP tasks are Linux (glibc) programs whatever the host or
+    // PRISM_TARGET: ILP32 above, else x86_64 Linux LP64
+    cfg.target = "x86_64-unknown-linux-gnu";
     try {
         Silence quiet;
         (void)run_pipeline(cfg);

@@ -12,6 +12,7 @@
 //   llm.hpp       the LLM engine and the sandboxed run of LLM-written C (llm.cpp)
 
 #include "prism/stages.hpp"
+#include "prism/abi_model.hpp"
 #include "prism/ai.hpp"
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
@@ -70,6 +71,14 @@ inline const std::map<std::string, int> kCTypeSize = {
     {"int32_t", 4}, {"uint32_t", 4}, {"int64_t", 8}, {"uint64_t", 8},
     {"size_t", 8}, {"ssize_t", 8}, {"bool", 1}, {"_Bool", 1},
 };
+// Bytes of a kCTypeSize key for the analysed target (prism/abi_model.hpp
+// active_target): `long` is 4 bytes on Windows x64 (LLP64), 8 on Linux LP64.
+// def for a type the table does not know.
+inline int ctype_bytes(const std::string& key, int def) {
+    if (key == "long" || key == "unsigned long") return active_target().abi.long_bytes();
+    auto it = kCTypeSize.find(key);
+    return it == kCTypeSize.end() ? def : it->second;
+}
 
 struct ParseFail : std::runtime_error {
     using std::runtime_error::runtime_error;

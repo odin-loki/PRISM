@@ -62,6 +62,9 @@ struct Task {
     // features clang or glibc lack); self-check reports it skipped with the reason
     std::map<std::string, std::string> native_unsupported;
     std::string data_model;
+    // in-house tasks: the --target triple PRISM analyses the task for (yml
+    // `target`); "" = the run's default. Used by the LP64/LLP64 pairs.
+    std::string target;
     std::string std;  // whole-program tasks (esbmc-cpp): language standard of the native self-check
     bool deterministic = false;  // whole program whose one run is its only behaviour
     int unwind = 0;              // per-task --unwind (0: the run's default)

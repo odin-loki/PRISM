@@ -67,6 +67,10 @@ struct Config {
     std::filesystem::path solver_cache;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
+    // --target TRIPLE (else PRISM_TARGET): the platform the scanned code is
+    // built for (prism/abi_model.hpp parse_target). Empty = the host:
+    // x86_64-pc-windows-msvc on Windows x64, x86_64-unknown-linux-gnu elsewhere.
+    std::string target;
 
     PRISM_API bool want(std::string_view name) const;
     PRISM_API std::optional<std::filesystem::path> which(

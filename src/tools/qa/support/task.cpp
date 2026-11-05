@@ -235,6 +235,7 @@ std::optional<Task> load_task(const fs::path& yml, const fs::path& root) {
             }
         }
         t.std = node_str(data.get("std"), "");
+        t.target = node_str(data.get("target"), "");
         if (const auto* d = data.get("deterministic")) t.deterministic = d->truthy_label();
         if (const auto* u = data.get("unwind"); !falsy(u))
             t.unwind = static_cast<int>(prism::i128_to_i64(node_int(*u, yml)));

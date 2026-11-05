@@ -96,6 +96,7 @@ PrismRun run_prism(const std::vector<std::string>& cmd, const Task& task, const 
     argv.insert(argv.end(), {task.source.string(), "--no-llm", "--stage", st_list, "--out", out.string()});
     if (task.unwind || unwind) argv.insert(argv.end(), {"--unwind", std::to_string(task.unwind ? task.unwind : unwind)});
     if (task.query_timeout > 0) argv.insert(argv.end(), {"--timeout", std::to_string(task.query_timeout)});
+    if (!task.target.empty()) argv.insert(argv.end(), {"--target", task.target});
     argv.insert(argv.end(), extra_args.begin(), extra_args.end());
     res.argv = argv;
     timeout = std::max(timeout, task.timeout);

@@ -3,6 +3,7 @@
 
 #include "prism/cli.hpp"
 
+#include "prism/abi_model.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/threads.hpp"
 
@@ -17,6 +18,12 @@ namespace prism {
 namespace fs = std::filesystem;
 
 namespace {
+
+std::string unsupported_target(const std::string& t) {
+    std::string list;
+    for (auto& s : supported_target_triples()) list += (list.empty() ? "" : ", ") + s;
+    return "unsupported target '" + t + "' (choose from " + list + ")";
+}
 
 std::vector<std::string> split_csv(std::string_view s) {
     std::vector<std::string> out;
@@ -241,6 +248,12 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--timeout") {
             auto v = in.take_float();
             if ((ok = v.has_value())) cfg.timeout = *v;
+        } else if (a == "--target") {
+            auto v = in.take();
+            if ((ok = v.has_value())) {
+                if (!parse_target(*v)) return CliError("argument --target: " + unsupported_target(*v));
+                cfg.target = *v;
+            }
         } else if (a == "--fail-on") {
             auto v = in.take();
             if ((ok = v.has_value())) {
@@ -269,6 +282,10 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         }
         if (!ok) return CliError(in.error);
     }
+    // PRISM_TARGET is checked like --target: an unsupported triple is an
+    // error (exit 2), never a scan for some other ABI.
+    if (!cfg.target.empty() && !parse_target(cfg.target))
+        return CliError("PRISM_TARGET: " + unsupported_target(cfg.target));
     return o;
 }
 
@@ -308,7 +325,7 @@ std::string cli_usage() {
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
-        "           [--certified] [--solver-cache DIR] [--timeout S]\n"
+        "           [--certified] [--solver-cache DIR] [--timeout S] [--target TRIPLE]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -334,6 +351,10 @@ std::string cli_usage() {
         "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
         "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
         "  trust. Without it those steps are NOTRUN (Law 9).\n"
+        "--target TRIPLE: the platform the code is built for (else PRISM_TARGET, else the\n"
+        "  host): x86_64-unknown-linux-gnu (LP64; glibc, libstdc++), i386-unknown-linux-gnu\n"
+        "  (ILP32), x86_64-pc-windows-msvc (LLP64: 32-bit long, 16-bit wchar_t; UCRT and\n"
+        "  MSVC STL headers). The default on a Windows x64 host is x86_64-pc-windows-msvc.\n"
         "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
         "  off by default because real code often breaks strict aliasing on purpose.\n"
         "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"

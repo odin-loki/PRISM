@@ -677,7 +677,8 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // Turns ON the C++ library's precondition checks (operator[] bounds,
     // optional/unique_ptr dereference, ...): PIR reports a reachable
     // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
-    if (is_cxx(src)) f.push_back("-D_GLIBCXX_ASSERTIONS");
+    // (libstdc++ only: the MSVC STL target has no such model, see lower_to_ir)
+    if (is_cxx(src) && !frontend_msvc()) f.push_back("-D_GLIBCXX_ASSERTIONS");
     return f;
 }
 
@@ -1362,7 +1363,15 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // against them (an API or specialisation the models leave out, e.g.
     // vector<bool>) is lowered again with the platform library and says so.
     std::optional<prism::exec::ProcOut> modelled;
-    if (cxx && !fe.cxx_models.empty()) {
+    // The models describe libstdc++. A Windows x64 (MSVC) unit is lowered
+    // against the MSVC STL headers it is written for, never the models: no
+    // libstdc++-model verdict for MSVC code. The STL code itself is encoded
+    // like user code (an unencodable part is UNENCODED); the library's
+    // precondition checks (_GLIBCXX_ASSERTIONS on libstdc++) are not run.
+    if (cxx && frontend_msvc() && cxx_models)
+        *cxx_models = "MSVC STL (the target's headers; PRISM's C++ library models describe libstdc++ and are not "
+                      "used, so the library precondition checks are NOTRUN)";
+    if (cxx && !fe.cxx_models.empty() && !frontend_msvc()) {
         auto mf = fl;
         mf.insert(mf.end(), {"-isystem", fe.cxx_models.string()});
         // `import std;` (prism-llvm; merge note in FINAL_TESTS): the modelled
@@ -2649,7 +2658,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // SVCOMP-ILP32: units and library models are lowered for i386 (32-bit
     // long, size_t, pointers); the translator takes PtrModel kILP32 from the
     // datalayout. Lean certificates stay LP64-only (Memory.lean is BitVec 64).
-    FrontendTargetScope target(is_ilp32(cfg.data_model));
+    // --target x86_64-pc-windows-msvc: LLP64 (32-bit long, 16-bit wchar_t)
+    // with the UCRT / MSVC STL headers; pointers stay 64-bit (kLP64).
+    const auto run_target = resolve_target(cfg.target, cfg.data_model);
+    FrontendTargetScope target(run_target ? run_target->kind : TargetKind::linux_lp64);
     std::vector<Unit> units;
     for (auto& p : sources)
         if (is_unit(p)) units.push_back(Unit{p, rel_of(p, cfg.root)});
@@ -2673,7 +2685,19 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         f.extra["install"] = "rebuild with -DPRISM_Z3=ON (vendored third_party/z3)";
         return {f};
     }
-#ifdef _WIN32
+    if (!run_target) {
+        Finding f;
+        f.stage = "pir";
+        f.status = std::string(laws::NOTRUN);
+        f.message = "unsupported target '" + cfg.target + "': pir lowers only for x86_64-unknown-linux-gnu, "
+                    "i386-unknown-linux-gnu and x86_64-pc-windows-msvc";
+        f.strength = std::string(laws::STRENGTH_PROVES);
+        return {f};
+    }
+#ifndef _WIN32
+    // a non-Windows host checks only the cross target (Windows x64) up front
+    if (frontend_msvc())
+#endif
     {
         std::string why;
         if (!frontend_usable(cfg, &why)) {
@@ -2684,10 +2708,10 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             else f.message = std::move(why);
             f.strength = std::string(laws::STRENGTH_PROVES);
             f.extra["install"] = kInstall;
+            f.extra["target"] = run_target->triple;
             return {f};
         }
     }
-#endif
     auto fe = find_frontend(cfg);
     if (units.empty()) return {};
     if (!fe.clang || !fe.opt || (!fe.clangxx && std::any_of(units.begin(), units.end(), [](auto& u) {
@@ -2877,6 +2901,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 if (!f.function || f.file != units_all.at(i).rel || seen.count({f.file, *f.function})) continue;
                 f.extra["lowered_as"] = "the header alone (no unit calls this function)";
             }
+            // the platform the verdict is for (Linux LP64 is the unmarked default)
+            if (run_target->kind != TargetKind::linux_lp64) f.extra["target"] = run_target->triple;
             out.push_back(std::move(f));
         }
     return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");

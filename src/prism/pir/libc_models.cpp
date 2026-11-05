@@ -214,10 +214,17 @@ std::size_t model_source_lowered_count() {
     return n;
 }
 
-bool cached_model_ir_ok(const std::string& ll) {
+// A cached model tree is reused only for the target it was lowered for:
+// the IR's triple must be that target's (clang adds the MSVC version to a
+// Windows triple, so that one is a prefix match).
+bool cached_model_ir_ok(const std::string& ll, TargetKind k) {
     if (ll.empty()) return false;
+    if (k == TargetKind::windows_llp64) {
+        if (ll.find(std::string("target triple = \"") + msvc_target_triple()) == std::string::npos) return false;
+        return ll.find("target datalayout = ") != std::string::npos;
+    }
 #ifdef _WIN32
-    if (frontend_ilp32()) {
+    if (k == TargetKind::linux_ilp32) {
         // ILP32 models: their own cache key (triple); a 64-bit tree never matches
         if (ll.find(std::string("target triple = \"") + ilp32_target_triple() + "\"") == std::string::npos) return false;
         return true;
@@ -228,19 +235,23 @@ bool cached_model_ir_ok(const std::string& ll) {
     if (ll.find("target datalayout = ") == std::string::npos) return false;
     // Native Windows clang IR uses e-m:w- (LLP64); reject pre-LP64 model caches.
     if (ll.find("e-m:w-") != std::string::npos) return false;
+#else
+    // a Windows-target tree is never a Linux one
+    if (ll.find("target triple = \"x86_64-pc-windows") != std::string::npos) return false;
 #endif
     return true;
 }
 
 // Every embedded libc .cpp model must be present and pass cached_model_ir_ok.
-bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::string, std::string>>& out) {
+bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::string, std::string>>& out,
+                          TargetKind k = frontend_target().kind) {
     out.clear();
     std::error_code ec;
     if (!fs::is_directory(cache, ec)) return false;
     for (auto& [name, _] : model_sources()) {
         if (!is_lowered_libc_model(name)) continue;
         auto ll = slurp(cache / (name + ".ll"));
-        if (!cached_model_ir_ok(ll)) return false;
+        if (!cached_model_ir_ok(ll, k)) return false;
         out.emplace_back(name, std::move(ll));
     }
     return out.size() == model_source_lowered_count() && !out.empty();
@@ -266,6 +277,9 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
 #endif
     if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
+    // Windows x64 models: their own key, with the target flags (an MSVC sysroot)
+    if (frontend_msvc())
+        for (auto& f : frontend_target_flags()) key_text += "\n" + f;
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;
@@ -278,8 +292,12 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
             for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); ++it) {
                 if (!it->is_directory(ec)) continue;
                 if (it->path() == cache) continue;
+                // another target's valid tree is kept (LP64, ILP32 and LLP64 runs alternate)
                 std::vector<std::pair<std::string, std::string>> probe;
-                if (!try_load_model_cache(it->path(), probe)) fs::remove_all(it->path(), ec);
+                if (!try_load_model_cache(it->path(), probe, TargetKind::linux_lp64) &&
+                    !try_load_model_cache(it->path(), probe, TargetKind::linux_ilp32) &&
+                    !try_load_model_cache(it->path(), probe, TargetKind::windows_llp64))
+                    fs::remove_all(it->path(), ec);
             }
         }
 #endif

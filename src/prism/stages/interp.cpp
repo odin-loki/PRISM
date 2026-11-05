@@ -113,11 +113,13 @@ bool type_is_unsigned(std::string_view typ) {
 }
 
 int type_width(std::string_view typ) {
-    // LP64, as the bmc encoder: long, long long, size_t and the 64-bit
-    // typedefs are 64 bits wide.
+    // long long, size_t and the 64-bit typedefs are 64 bits wide; a lone
+    // long follows the analysed target (64 on Linux LP64, 32 on Windows
+    // x64 LLP64, prism/abi_model.hpp active_target).
     std::string t = lower_copy(std::string(typ));
-    if (re_search("\\blong\\b|\\b[iu]nt64_t\\b|\\bs?size_t\\b|\\bu?intptr_t\\b|\\bu?intmax_t\\b|\\bptrdiff_t\\b", t))
+    if (re_search("\\blong\\s+long\\b|\\b[iu]nt64_t\\b|\\bs?size_t\\b|\\bu?intptr_t\\b|\\bu?intmax_t\\b|\\bptrdiff_t\\b", t))
         return 64;
+    if (re_search("\\blong\\b", t)) return active_target().abi.long_w;
     return WIDTH;
 }
 
@@ -164,7 +166,7 @@ std::optional<CT> scalar_ctype(std::string_view typ) {
     if (n_short && n_long) return std::nullopt;
     if (n_char) return CT{8, is_u};
     if (n_short) return CT{16, is_u};
-    if (n_long) return CT{64, is_u};
+    if (n_long) return CT{n_long == 2 ? 64 : active_target().abi.long_w, is_u};
     return CT{32, is_u};
 }
 

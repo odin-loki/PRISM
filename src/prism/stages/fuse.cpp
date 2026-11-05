@@ -145,7 +145,7 @@ std::optional<std::vector<uint8_t>> bytes_from_cex(const std::string& cex, const
     std::size_t i = 0;
     for (auto& [typ, name] : fn.params) {
         auto key = ctype_key(typ);
-        int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
+        int sz = ctype_bytes(key, 4);
         uint64_t v = 0;
         if (auto it = by_name.find(name); !name.empty() && it != by_name.end()) v = it->second;
         else if (i < vals.size()) v = vals[i].second;
@@ -616,7 +616,7 @@ std::string afl_harness_source(const FunctionInfo& fn, std::string src_rel) {
         for (char c : typ)
             if (c != '*') key.push_back(c);
         key = strip(key);
-        int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
+        int sz = ctype_bytes(key, 4);
         std::string decl = strip(typ);
         if (decl.empty()) decl = "int";
         dlines += "    " + decl + " " + name + ";\n";
@@ -848,7 +848,7 @@ std::string libfuzzer_harness_source(const FunctionInfo& fn, std::string src_rel
         for (char c : typ)
             if (c != '*') key.push_back(c);
         key = strip(key);
-        int sz = kCTypeSize.contains(key) ? kCTypeSize.at(key) : 4;
+        int sz = ctype_bytes(key, 4);
         std::string decl = strip(typ);
         if (decl.empty()) decl = "int";
         dlines += "    " + decl + " " + name + ";\n";
