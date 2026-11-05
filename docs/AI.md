@@ -405,7 +405,7 @@ their value is **not measured**:
 ## Measured: Goedel-Prover-V2-32B on 8b1b35274 (2026-11-05)
 
 Model: `Goedel-LM.Goedel-Prover-V2-32B.Q4_K_M.gguf` converted with FORGE to
-`.fpk` (19.76 GB; magic `FORGEPK1`, format version 1, architecture `qwen3`,
+`.fpk` (19.76 GB; magic `FORGEPK1`, format version 1, a dense decoder with QK-norm,
 64 layers, 707 tensors: 385 q4_k, 65 q6_k, 257 f32; 40 960-token context).
 Installed as `~/.prism/models/goedel-prover-v2-32b.fpk` (a symlink). Host:
 WSL2, 64 cores, 47 GB RAM, RTX 3090 24 GB, `PRISM_DEVICE=cuda`, FORGE
@@ -454,7 +454,7 @@ later run exited 0).
 punctuation from the following letters, so `v.isProof` encodes as `v . is
 Proof` although the vocabulary has the merge `. is` (token `.is`). The
 model echoes this as `v. isProof` in its Lean. Lean proof quality is likely
-lower than the model's published numbers until FORGE tokenizes Qwen-family
+lower than the model's published numbers until FORGE tokenizes this vocabulary
 text canonically.
 
 **Thinking.** Goedel-Prover-V2 is trained to reason before its Lean. With
