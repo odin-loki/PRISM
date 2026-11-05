@@ -2,6 +2,8 @@
 // Over the budget a function is a reported UNKNOWN, never a crash, and the
 // functions checked after it still get their verdicts (nothing sticky).
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -61,7 +63,7 @@ TEST_CASE("membudget: a budget and the resident set are measured") {
 
 TEST_CASE("membudget: over the budget a function is UNKNOWN with the reason, later functions are checked") {
 #ifndef __linux__
-    MESSAGE("SKIP: RSS is read from /proc");
+    prism_test::notrun("RSS is read from /proc");
     return;
 #endif
     auto ok = tr("ok"), divz = tr("divz");

@@ -1,5 +1,7 @@
 // Table-driven PIR stage on testdata/pir; edit this file directly when adding cases.
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -298,11 +300,11 @@ std::map<std::pair<std::string, std::string>, const prism::Finding*> index(
 bool skip_without_frontend(const prism::Config& cfg) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     if (!pp::z3_available()) {
-        MESSAGE("NOTRUN: pir e2e needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        prism_test::notrun("pir e2e needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;
@@ -468,7 +470,7 @@ TEST_CASE("pir e2e: a function clang rejects is cut out and the rest of the unit
     std::vector<fs::path> paths;
     for (const char* n : {"aligned_unenc.c", "nested_fn.c"})
         if (fs::exists(dir / n)) paths.push_back(dir / n);
-    if (paths.empty()) return;
+    if (paths.empty()) return prism_test::notrun("testdata/planted aligned_unenc.c and nested_fn.c missing");
     std::map<std::string, prism::Finding> m;
     for (auto& f : pp::run_pir(paths, cfg))
         if (f.function) m[*f.function] = f;

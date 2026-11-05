@@ -8,6 +8,8 @@
 // CheckOptions::debug_before_query, so the tests do not depend on how fast
 // the solver is.
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -44,11 +46,11 @@ namespace fs = std::filesystem;
 bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     if (!pp::z3_available()) {
-        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        prism_test::notrun("pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;
@@ -95,7 +97,7 @@ constexpr bool k_pir_budget_simulated_delays_ok = true;
 
 void skip_pir_budget_simulated_delays() {
     if (!k_pir_budget_simulated_delays_ok)
-        MESSAGE("SKIP: pir budget delay tests need a fast plain solver; under ASan/UBSan or on Windows CI "
+        prism_test::notrun("pir budget delay tests need a fast plain solver; under ASan/UBSan or on Windows CI "
                 "the function budget can expire before VCs answer");
 }
 
@@ -278,7 +280,7 @@ TEST_CASE("pir budget: both unwind attempts share one budget (skips without clan
         return;
     }
     auto fn = fn_of("sum_bounded");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     Seen seen;
     auto o = opts(0.5, 8);  // unwind 8: first tried at unwind 4, then at 8
     o.debug_before_query = [&](const std::string& l) {
@@ -309,7 +311,7 @@ TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after ever
         return;
     }
     auto fn = fn_of("sum_bounded");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     Seen seen;
     auto o = opts(0.3);
     o.debug_before_query = [&](const std::string& l) {
@@ -337,7 +339,7 @@ TEST_CASE("pir budget: BOUNDED stays BOUNDED when the budget is spent after ever
         return;
     }
     auto fn = fn_of("two_loops");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     Seen seen;
     auto o = opts(0.3);
     o.debug_before_query = [&](const std::string& l) {
@@ -358,7 +360,7 @@ TEST_CASE("pir budget: the k-induction step is budgeted; k=2 is not tried once i
         return;
     }
     auto fn = fn_of("sum_bounded");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     Seen seen;
     auto o = opts(0.5);
     o.debug_before_query = [&](const std::string& l) {
@@ -388,7 +390,7 @@ TEST_CASE("pir budget: Houdini never runs past what is left of the function budg
         return;
     }
     auto fn = fn_of("loop_long_inv");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     // unbudgeted: Houdini proves it
     auto free_run = pp::check_function(*fn, opts(0));
     REQUIRE(free_run.status == prism::laws::PROVED_UNBOUNDED);
@@ -420,7 +422,7 @@ TEST_CASE("pir budget: a validated violation found by the group search is FAILED
         return;
     }
     auto fn = fn_of("many_props");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     auto free_run = pp::check_function(*fn, opts(0));
     REQUIRE(free_run.status == prism::laws::FAILED);
     REQUIRE(std::stoi(free_run.extra.at("properties")) > 16);
@@ -444,7 +446,7 @@ TEST_CASE("pir budget: a validated violation found by the group search is FAILED
 
 TEST_CASE("pir budget: a VC whose answer the budget cut short is TIMEOUT with the budget message") {
     auto fn = fn_of("factor");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     auto o = opts(1.5);
     const double t0 = now_s();
     auto v = pp::check_function(*fn, o);
@@ -564,7 +566,7 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
           "without clang++/opt)") {
     std::string why;
     if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return;
     }
     auto dir = fs::temp_directory_path() / "prism_pir_budget_static_init";
@@ -612,7 +614,7 @@ TEST_CASE("pir budget: the memory policy's re-checks of main share the function 
 TEST_CASE("pir budget: the final cut-program query keeps its reserve of the function budget (skips without "
           "clang/opt)") {
     auto fn = fn_of("loop_long_inv");
-    if (!fn) return;
+    if (!fn) return prism_test::notrun("pir frontend not usable or lowering the budget source failed");
     auto o = opts(60);
     o.function_budget = std::make_shared<pp::FunctionBudget>(60.0);
     auto v = pp::check_function(*fn, o);

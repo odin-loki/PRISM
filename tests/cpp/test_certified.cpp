@@ -10,6 +10,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/models.hpp"
@@ -42,7 +44,7 @@ namespace fs = std::filesystem;
 bool skip_without_pir_frontend(const prism::Config& cfg = prism::default_config()) {
     std::string why;
     if (!prism::pir::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     return false;
@@ -152,7 +154,7 @@ TEST_CASE("certified: loop-free safe function is PROVED-CERTIFIED with one certi
     const auto nprops = std::stoul(v.extra.at("properties"));
     REQUIRE(nprops >= 2);
     if (!have_cert_chain()) {
-        MESSAGE("cadical/cake_lpr not installed: asserting the fallback");
+        prism_test::notrun("cadical/cake_lpr not installed: asserting the fallback");
         CHECK(v.status == prism::laws::PROVED);
         CHECK(v.extra.at("certify_note").find("not certified") != std::string::npos);
         CHECK_FALSE(v.extra.contains("certificate"));
@@ -186,7 +188,7 @@ TEST_CASE("certified: a closing loop needs the unwinding assertion certified too
     CHECK(v.extra.at("loops") == "1");
     if (!have_cert_chain()) {
         CHECK(v.status == prism::laws::PROVED);
-        return;
+        return prism_test::notrun("cadical/cake_lpr not installed: only the uncertified PROVED path was checked");
     }
     REQUIRE(v.status == prism::laws::PROVED_CERTIFIED);
     const auto nprops = std::stoul(v.extra.at("properties"));
@@ -264,7 +266,7 @@ TEST_CASE("certified: a combined proof the checker cannot finish is split into c
     auto cad = prism::solver::find_tool("cadical", so);
     auto cake = prism::solver::find_tool("cake_lpr", so);
     if (!cad || !cake) {
-        MESSAGE("cadical/cake_lpr not installed: skipped");
+        prism_test::notrun("cadical/cake_lpr not installed: skipped");
         return;
     }
     CertTmp tmp;
@@ -342,7 +344,7 @@ TEST_CASE("certified: a checker that rejects leaves PROVED with the reason") {
     prism::solver::SolveOptions so;
     auto cad = prism::solver::find_tool("cadical", so);
     if (!cad) {
-        MESSAGE("cadical not installed: skipped");
+        prism_test::notrun("cadical not installed: skipped");
         return;
     }
     CertTmp tmp;
@@ -734,7 +736,7 @@ TEST_CASE("certificate store: packing is lossless and much smaller") {
     auto cad = prism::solver::find_tool("cadical", so);
     auto cake = prism::solver::find_tool("cake_lpr", so);
     if (!cad || !cake) {
-        MESSAGE("cadical/cake_lpr not installed: real-proof part skipped");
+        prism_test::notrun("cadical/cake_lpr not installed: real-proof part skipped");
         return;
     }
     const int P = 6, H = 5;
@@ -827,7 +829,7 @@ TEST_CASE("certificate store: a certified answer keeps only its packed proof, un
     namespace certs = prism::solver::certs;
     prism::solver::SolveOptions probe;
     if (!prism::solver::find_tool("cadical", probe) || !prism::solver::find_tool("cake_lpr", probe)) {
-        MESSAGE("cadical/cake_lpr not installed: skipped");
+        prism_test::notrun("cadical/cake_lpr not installed: skipped");
         return;
     }
     CertTmp tmp;

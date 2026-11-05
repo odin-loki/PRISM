@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/polyglot.hpp"
@@ -800,7 +802,7 @@ TEST_CASE("polyglot: each installed tool understands its own output") {
 
 TEST_CASE("polyglot: a syntax error does not blind the type checker to other files") {
     if (!prism::default_config().which({"mypy"})) {
-        MESSAGE("mypy not installed: the NOTRUN case covers python-types");
+        prism_test::notrun("mypy not installed: the NOTRUN case covers python-types");
         return;
     }
     Tree t({{"bad.py", "def f(:\n    pass\n"}, {"typed.py", "x: int = \"s\"\n"}});

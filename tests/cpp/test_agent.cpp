@@ -6,6 +6,8 @@
 // the scanned code (Law 4); a missing model or compiler is NOTRUN (Law 1).
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -171,7 +173,7 @@ TEST_CASE("agent: sandbox output keeps its tail, and a timeout keeps what was pr
     if (!cut.empty()) CHECK((static_cast<unsigned char>(cut.front()) & 0xC0u) != 0x80u);
 
     if (!have_cc()) {
-        MESSAGE("no gcc/clang: sandbox_run tail and timeout not exercised");
+        prism_test::notrun("no gcc/clang: sandbox_run tail and timeout not exercised");
         return;
     }
     auto printed = sd::sandbox_run(
@@ -284,7 +286,7 @@ TEST_CASE("agent: the interpreter loop runs model C only with --allow-exec; CLEA
     if (!have_cc()) {
         auto nc = sd::interpreter_loop(e, "prove it", 2, true);
         CHECK(nc[0].status == prism::laws::NOTRUN);
-        return;
+        return prism_test::notrun("no gcc/clang: only the NOTRUN path of interpreter_loop was checked");
     }
 #ifdef _WIN32
     // NOTRUN: the CLEAN / CRASH shapes below need the POSIX sandbox with a gcc-style
@@ -338,7 +340,7 @@ TEST_CASE("agent: RLEF repair with a replaceable BMC oracle; a proof is about th
     auto off = sd::rlef_repair_with(fail, cfg, [](const std::string&) { return std::string("PROVED"); });
     REQUIRE(off.size() == 1);
     CHECK(off[0].status == prism::laws::NOTRUN);
-    if (!have_cc()) return;
+    if (!have_cc()) return prism_test::notrun("no C compiler on PATH");
     cfg.allow_exec = true;
     std::vector<std::string> asked;
     auto proved = sd::rlef_repair_with(fail, cfg, [&](const std::string& src) {

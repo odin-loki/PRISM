@@ -2,6 +2,8 @@
 // (docs/PIR.md "Memory model", "Library models", "Pointer parameters").
 // Linked into prism_tests next to test_main.cpp (which provides main()).
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -35,11 +37,11 @@ namespace pp = prism::pir;
 bool skip_without_frontend(const prism::Config& cfg = prism::default_config()) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     if (!pp::z3_available()) {
-        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        prism_test::notrun("pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;
@@ -1108,11 +1110,11 @@ int loop_long_cubic(int n) {
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {
 #ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: PRISM_HAS_Z3 off: pir has no solver, so no per-function verdicts");
+    prism_test::notrun("PRISM_HAS_Z3 off: pir has no solver, so no per-function verdicts");
 #else
     std::string why;
     if (!pp::pir_cxx_usable(prism::default_config(), &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return;
     }
     auto cfg = prism::default_config();

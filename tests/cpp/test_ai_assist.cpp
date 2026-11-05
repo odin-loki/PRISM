@@ -4,6 +4,8 @@
 // every deterministic core is tested without one.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -389,7 +391,7 @@ TEST_CASE("ai-assist regress: a missing compiler is not a pass") {
 TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fix") {
     auto root = assist_tmp("regress-run");
     if (!have_clang_sanitizers(root)) {
-        MESSAGE("NOTRUN: clang with UBSan/ASan not available");
+        prism_test::notrun("clang with UBSan/ASan not available");
         return;
     }
     auto report = sample_report(root / "src");
@@ -424,7 +426,7 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
     const bool have_make = std::system("make --version >/dev/null 2>&1") == 0;
     const bool have_ninja = std::system("ninja --version >/dev/null 2>&1") == 0;
     const std::string gen = have_make ? "" : " -G Ninja";
-    if (!have_make && !have_ninja) MESSAGE("NOTRUN: no make or ninja: the ctest project is not built");
+    if (!have_make && !have_ninja) prism_test::notrun("no make or ninja: the ctest project is not built");
     if ((have_make || have_ninja) && std::system("cmake --version >/dev/null 2>&1") == 0) {
         prism::ai::RegressOptions c = opt;
         c.run = false;
@@ -658,7 +660,7 @@ TEST_CASE("ai-assist draft: template claims all link; unlinked or unsupported cl
     auto md = prism::ai::render_draft(d, chk);
     auto rej = md.find("## Rejected claims");
     REQUIRE(rej != std::string::npos);
-    CHECK(md.find("never merged with a proof") > rej);
+    CHECK(prism_test::first_after(md, "never merged with a proof", rej));
     // Hand-made bad claims.
     prism::ai::Draft bad;
     bad.kind = "report";

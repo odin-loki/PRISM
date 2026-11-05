@@ -9,6 +9,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/solver.hpp"
 
 #include "prism/exec.hpp"
@@ -180,7 +182,7 @@ TEST_CASE("leanbb: the serializer round-trips against Z3 on random assignments")
         probe.timeout_ms = 30000;
         auto pr = prism::exec::run(probe);
         if (pr.rc() != 0 || pr.failed) {
-            MESSAGE("NOTRUN: prism-bitblast --eval did not run (need a Windows PE build, not a Linux artefact)");
+            prism_test::notrun("prism-bitblast --eval did not run (need a Windows PE build, not a Linux artefact)");
             bb = std::nullopt;
         }
     }
@@ -330,7 +332,7 @@ TEST_CASE("leanbb: small overflow VCs are PROVED-CERTIFIED through the Lean-prov
         CHECK(fs::exists(w / "query.dag"));
         CHECK(r.certificate_info.find("cnf sha256 " + ps::sha256_file(w / "query.cnf")) != std::string::npos);
     }
-    if (!have_cert_chain()) return;
+    if (!have_cert_chain()) return prism_test::notrun("lean tools, cadical or cake_lpr not installed");
     // A counterexample found on the Lean CNF maps back through the variable
     // map and is validated in Z3.
     auto o = lean_opts(t);
@@ -344,7 +346,7 @@ TEST_CASE("leanbb: small overflow VCs are PROVED-CERTIFIED through the Lean-prov
 }
 
 TEST_CASE("leanbb: a tampered LRAT proof is rejected by Lean's checker") {
-    if (!have_cert_chain()) return;
+    if (!have_cert_chain()) return prism_test::notrun("lean tools, cadical or cake_lpr not installed");
     LeanTmp t;
     z3::context c;
     auto x = c.bv_const("x", 8), y = c.bv_const("y", 8);
@@ -415,7 +417,7 @@ TEST_CASE("leanbb: a tampered LRAT proof is rejected by Lean's checker") {
 }
 
 TEST_CASE("leanbb: a cached Lean certificate is re-checked by both checkers") {
-    if (!have_cert_chain()) return;
+    if (!have_cert_chain()) return prism_test::notrun("lean tools, cadical or cake_lpr not installed");
     LeanTmp t;
     z3::context c;
     auto x = c.bv_const("x", 8);

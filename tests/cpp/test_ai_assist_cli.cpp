@@ -14,6 +14,8 @@
 //     so its source is checked) and assistant_reply answers it.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -159,7 +161,7 @@ struct AssistRun {
 
 TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keeps report.json") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
+        prism_test::notrun("PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -170,7 +172,7 @@ TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keep
     const auto md = slurp(run.out / "report.md");
     REQUIRE(md.find("## Findings") != std::string::npos);
     REQUIRE(md.find("## Clusters") != std::string::npos);
-    CHECK(md.find("## Findings") < md.find("## Clusters"));
+    CHECK(prism_test::appears_before(md, "## Findings", "## Clusters"));
     const auto rep = json::parse(run.report_text);
     std::map<std::string, std::string> statuses;
     for (const auto& s : rep["stages"]) {
@@ -188,7 +190,7 @@ TEST_CASE("ai-assist cli: the pipeline's triage orders only; `prism triage` keep
 
 TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
+        prism_test::notrun("PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -214,7 +216,7 @@ TEST_CASE("ai-assist cli: `prism ask` prints the query with the answer") {
 
 TEST_CASE("ai-assist cli: `prism regress` writes under <out> only; --run without --allow-exec runs nothing") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
+        prism_test::notrun("PRISM_HAS_Z3 off: the pipeline's pir stage gives no FAILED rows");
         return;
     }
     AssistRun run;
@@ -317,7 +319,7 @@ public:
 
 TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked draft claim is rejected") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no FAILED rows to query");
+        prism_test::notrun("PRISM_HAS_Z3 off: no FAILED rows to query");
         return;
     }
     AssistRun run;
@@ -353,7 +355,7 @@ TEST_CASE("ai-assist cli: a model's query is validated and audited; its unlinked
 
 TEST_CASE("ai-assist cli: triage uses the FORGE embedder when one is configured") {
     if (!kHasBmc) {
-        MESSAGE("NOTRUN: PRISM_HAS_Z3 off: no findings to embed");
+        prism_test::notrun("PRISM_HAS_Z3 off: no findings to embed");
         return;
     }
     AssistRun run;

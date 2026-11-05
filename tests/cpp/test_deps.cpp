@@ -2,6 +2,7 @@
 // (fetch/verify/build, linked-tree digests, licence firewall, SBOM), tool
 // SHA in findings, and the CI / Docker / notice files that run them.
 #include "doctest/doctest.h"
+#include "test_support.hpp"
 #include "nlohmann/json.hpp"
 #include "prism/config.hpp"
 #include "prism/deps.hpp"
@@ -637,7 +638,7 @@ TEST_CASE("deps: tar extraction keeps modes and refuses escapes") {
 
 TEST_CASE("deps: a tampered archive hash fails closed and installs nothing") {
     if (!deps::which("git")) {
-        MESSAGE("NOTRUN: git not on PATH");
+        prism_test::notrun("git not on PATH");
         return;
     }
     TempDir td;
@@ -668,7 +669,7 @@ TEST_CASE("deps: a tampered archive hash fails closed and installs nothing") {
 
 TEST_CASE("deps: a good hash installs the verified source and a stamp") {
     if (!deps::which("git")) {
-        MESSAGE("NOTRUN: git not on PATH");
+        prism_test::notrun("git not on PATH");
         return;
     }
     TempDir td;
@@ -697,7 +698,7 @@ TEST_CASE("deps: a good hash installs the verified source and a stamp") {
 
 TEST_CASE("deps: a recipe build installs bin/ and the tool identity is the commit") {
     if (!deps::which("git") || !deps::which("make") || !deps::which("sh")) {
-        MESSAGE("NOTRUN: git, make or sh not on PATH");
+        prism_test::notrun("git, make or sh not on PATH");
         return;
     }
     const std::string configure =
@@ -735,7 +736,7 @@ TEST_CASE("deps: a recipe build installs bin/ and the tool identity is the commi
 
 TEST_CASE("deps: an unknown commit fails") {
     if (!deps::which("git")) {
-        MESSAGE("NOTRUN: git not on PATH");
+        prism_test::notrun("git not on PATH");
         return;
     }
     TempDir td;
@@ -985,7 +986,7 @@ TEST_CASE("deps: optional tools stamp every finding") {
 TEST_CASE("deps: CI runs the licence firewall, linked checks and SBOM with prism-deps") {
     const auto wf = repo_root() / ".github" / "workflows";
     if (!fs::is_directory(wf)) {  // the Docker build context leaves .github/ out
-        MESSAGE("NOTRUN: .github/workflows is not in this tree");
+        prism_test::notrun(".github/workflows is not in this tree");
         return;
     }
     auto ci = slurp(wf / "ci.yml");
@@ -1026,7 +1027,7 @@ TEST_CASE("deps: the Docker build runs prism-deps before the full build") {
 TEST_CASE("deps: self-check and SV-COMP workflow guards") {
     const auto wf = repo_root() / ".github" / "workflows";
     if (!fs::is_directory(wf)) {  // the Docker build context leaves .github/ out
-        MESSAGE("NOTRUN: .github/workflows is not in this tree");
+        prism_test::notrun(".github/workflows is not in this tree");
         return;
     }
     const auto self = slurp(wf / "self-check.yml");
@@ -1080,16 +1081,16 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
 
     const auto root = repo_root();
     if (!deps::which("git")) {
-        MESSAGE("NOTRUN: git not on PATH");
+        prism_test::notrun("git not on PATH");
         return;
     }
     if (!fs::is_directory(root / ".git")) {
-        MESSAGE("NOTRUN: not a git checkout (no .git at repo root)");
+        prism_test::notrun("not a git checkout (no .git at repo root)");
         return;
     }
     auto r = deps::run_process({"git", "ls-files", "--", "*.py"}, root);
     if (r.code != 0) {
-        MESSAGE("NOTRUN: git ls-files failed: " << r.out);
+        prism_test::notrun("git ls-files failed: " + r.out);
         return;
     }
 

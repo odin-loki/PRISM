@@ -5,6 +5,8 @@
 // harness runs only with --allow-exec (Law 9), so each case holds a Policy.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -68,7 +70,7 @@ bool have_cc() { return prism::Config{}.which({"gcc", "clang"}).has_value(); }
 #define PRISM_DIFF_NEED_CC()                                                   \
     do {                                                                       \
         if (!have_cc()) {                                                      \
-            MESSAGE("SKIP: no gcc/clang on PATH; this diff case asserts nothing"); \
+            prism_test::notrun("no gcc/clang on PATH; this diff case asserts nothing"); \
             return;                                                            \
         }                                                                      \
     } while (0)

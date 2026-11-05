@@ -4,6 +4,8 @@
 // deterministic fake backend; Lean checks use the real kernel when lake is
 // installed (skipped with a message otherwise).
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -246,7 +248,7 @@ TEST_CASE("ai9 lean: target location, splice and output parsing") {
 TEST_CASE("ai9 lean: best-first search rejects a wrong proof with the real kernel, accepts the right one") {
     auto lake = ai::find_lake();
     if (!lake) {
-        MESSAGE("SKIP: lake not installed (the search itself is NOTRUN then)");
+        prism_test::notrun("lake not installed (the search itself is NOTRUN then)");
         ai::ProveOptions o;
         o.file = "/nonexistent.lean";
         return;

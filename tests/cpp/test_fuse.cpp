@@ -6,6 +6,8 @@
 // 127.0.0.1 that answers each system prompt with a fixed reply.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -118,7 +120,7 @@ TEST_CASE("bytes_from_cex keeps values above INT_MAX") {
 // engine and the sandbox kind (not a proof).
 TEST_CASE("afl: compile failure is ERROR with engine and sandbox") {
     if (!prism::Config{}.which({"gcc", "clang"})) {
-        MESSAGE("no C compiler: AFL compile ERROR is not exercised");
+        prism_test::notrun("no C compiler: AFL compile ERROR is not exercised");
         return;
     }
     prism::sandbox::Policy allow(true);

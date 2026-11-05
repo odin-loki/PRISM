@@ -9,6 +9,8 @@
 // unless asked.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -805,7 +807,7 @@ TEST_CASE("prism --gui without prism_gui: NOTRUN, exit 0, the pipeline never run
     const auto prism_name = std::string("prism") + EXE_EXT;
     const auto prism = self_dir() / prism_name;
     if (!fs::exists(prism)) {
-        MESSAGE("NOTRUN: prism binary not beside prism_tests");
+        prism_test::notrun("prism binary not beside prism_tests");
         return;
     }
     auto root = temp_dir("cli");
@@ -874,7 +876,7 @@ TEST_CASE("prism --gui without prism_gui: NOTRUN, exit 0, the pipeline never run
 TEST_CASE("prism_gui without a display: NOTRUN, exit 0, no window") {
     const auto gui = self_dir() / "prism_gui";
     if (!fs::exists(gui)) {
-        MESSAGE("NOTRUN: prism_gui not built (PRISM_QT=OFF or Qt 6 Widgets missing)");
+        prism_test::notrun("prism_gui not built (PRISM_QT=OFF or Qt 6 Widgets missing)");
         return;
     }
     auto r = run_shell("env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM '" + gui.string() + "'");
@@ -888,7 +890,7 @@ TEST_CASE("prism_gui without a display: NOTRUN, exit 0, no window") {
 TEST_CASE("prism_gui smoke: an empty findings table is a failure (exit 3), never a pass") {
     const auto gui = self_dir() / pg::gui_binary_name();
     if (!fs::exists(gui) || !fs::exists(self_dir() / (std::string("prism") + EXE_EXT))) {
-        MESSAGE("NOTRUN: prism_gui or prism not built");
+        prism_test::notrun("prism_gui or prism not built");
         return;
     }
     auto root = temp_dir("smoke");

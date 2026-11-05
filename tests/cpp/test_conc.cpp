@@ -4,6 +4,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/conc.hpp"
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
@@ -55,7 +57,7 @@ TEST_CASE("conc: globals of a textual module") {
 }
 
 TEST_CASE("conc: racy counter is a data race (FAILED with a schedule)") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("racy_counter.c");
     CHECK(r.status == prism::laws::FAILED);
     REQUIRE(!r.violations.empty());
@@ -67,7 +69,7 @@ TEST_CASE("conc: racy counter is a data race (FAILED with a schedule)") {
 }
 
 TEST_CASE("conc: mutex-protected counter is BOUNDED, never PROVED") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("mutex_counter.c");
     CHECK(r.status == prism::laws::BOUNDED);
     CHECK(r.violations.empty());
@@ -77,7 +79,7 @@ TEST_CASE("conc: mutex-protected counter is BOUNDED, never PROVED") {
 }
 
 TEST_CASE("conc: lost update fails the assertion") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("lost_update.c");
     CHECK(r.status == prism::laws::FAILED);
     CHECK(has_cls(r, "FUNC-CONTRACT"));  // the assert(counter == 2)
@@ -85,7 +87,7 @@ TEST_CASE("conc: lost update fails the assertion") {
 }
 
 TEST_CASE("conc: opposite lock order deadlocks") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("deadlock.c");
     CHECK(r.status == prism::laws::FAILED);
     REQUIRE(has_cls(r, "CONC-DEADLOCK"));
@@ -94,40 +96,40 @@ TEST_CASE("conc: opposite lock order deadlocks") {
 }
 
 TEST_CASE("conc: a lost wake-up is a deadlock") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("lost_wakeup.c");
     CHECK(r.status == prism::laws::FAILED);
     CHECK(has_cls(r, "CONC-DEADLOCK"));
 }
 
 TEST_CASE("conc: a C11 cnd_wait lost wake-up is a deadlock") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("c11_lost_wakeup.c");
     CHECK(r.status == prism::laws::FAILED);
     CHECK(has_cls(r, "CONC-DEADLOCK"));
 }
 
 TEST_CASE("conc: a wait guarded by its predicate is BOUNDED") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("condvar_ok.c");
     CHECK(r.status == prism::laws::BOUNDED);
 }
 
 TEST_CASE("conc: a thread created by a thread races with main") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("nested_race.c");
     CHECK(r.status == prism::laws::FAILED);
     CHECK(has_cls(r, "CONC-DATA-RACE"));
 }
 
 TEST_CASE("conc: SC atomic_fetch_add is race free and BOUNDED") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("atomic_counter.c");
     CHECK(r.status == prism::laws::BOUNDED);
 }
 
 TEST_CASE("conc: join then read is ordered (no race)") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("join_then_read.c");
     CHECK(r.status == prism::laws::BOUNDED);
 }
@@ -171,7 +173,7 @@ prism::conc::Program one_thread(prism::pir::Function fn) {
 }  // namespace
 
 TEST_CASE("conc: relaxed atomics are encoded by the C11 view model") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     auto r = run_main("relaxed.c");
     CHECK(r.status != prism::laws::NEEDS_HARNESS);
     CHECK(r.message.find("UNENCODED") == std::string::npos);
@@ -229,7 +231,7 @@ TEST_CASE("conc: an escaping throw is not a clean or proved result") {
     CHECK(!quiet.status.empty());
     CHECK(quiet.violations.empty());
 
-    if (!prism::pir::z3_available()) return;
+    if (!prism::pir::z3_available()) return prism_test::notrun("needs Z3 (rebuild with -DPRISM_Z3=ON)");
     prism::pir::Function reported;
     reported.name = "worker";
     prism::pir::Block blk;
@@ -272,7 +274,7 @@ TEST_CASE("conc: an escaping throw is not a clean or proved result") {
 }
 
 TEST_CASE("conc: one round cannot interleave; two rounds find the lost update") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     prism::conc::Options one;
     one.rounds = 1;
     auto r1 = run_main("lost_update.c", one);
@@ -282,7 +284,7 @@ TEST_CASE("conc: one round cannot interleave; two rounds find the lost update") 
 }
 
 TEST_CASE("conc: the sequentialised program is printable") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     prism::Config cfg;
     auto fe = prism::pir::find_frontend(cfg);
     std::string err;
@@ -306,7 +308,7 @@ TEST_CASE("conc: the sequentialised program is printable") {
 }
 
 TEST_CASE("conc: stage rows - no threads, no findings") {
-    if (!have_frontend()) return;
+    if (!have_frontend()) return prism_test::notrun("pir frontend (clang, opt) or Z3 not usable");
     prism::Config cfg;
     cfg.root = conc_dir();
     auto none = prism::conc::run_conc({conc_dir() / "no_threads.c"}, cfg);

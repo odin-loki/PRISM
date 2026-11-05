@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/astlint.hpp"
 #include "prism/checkers.hpp"
 #include "prism/config.hpp"
@@ -490,7 +492,7 @@ TEST_CASE("CTRL-FALLTHROUGH (Clang AST): SwitchStmt terminates only with a defau
     auto fe = prism::pir::find_frontend(cfg);
     auto clang = fe.clang ? fe.clang : fe.clangxx;
     if (!clang) {
-        MESSAGE("clang not installed: AST fallthrough test skipped");
+        prism_test::notrun("clang not installed: AST fallthrough test skipped");
         return;
     }
     auto ast_rows = [&](const char* dir, const char* name) {

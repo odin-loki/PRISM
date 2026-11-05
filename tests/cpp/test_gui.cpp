@@ -9,6 +9,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -445,7 +447,7 @@ TEST_CASE("a real run through the window (prism beside the test binary)") {
     const auto prism = fs::path(QCoreApplication::applicationDirPath().toStdString()) / prism_name;
     const auto src = repo_root() / "testdata" / "planted" / "div_param.c";
     if (!fs::exists(prism) || !fs::exists(src)) {
-        MESSAGE("NOTRUN: prism binary or testdata not found");
+        prism_test::notrun("prism binary or testdata not found");
         return;
     }
     const auto abs_src = fs::absolute(src);

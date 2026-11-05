@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/models.hpp"
@@ -231,7 +233,7 @@ TEST_CASE("pipeline: esbmc missing is NOTRUN with install, never a proof") {
 
 TEST_CASE("pipeline: --resume reuses an ok stage instead of running it again") {
 #ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: pir stage needs PRISM_HAS_Z3");
+    prism_test::notrun("pir stage needs PRISM_HAS_Z3");
     return;
 #endif
     Work w;
@@ -329,7 +331,7 @@ TEST_CASE("pipeline: unify on an empty tree is CLEAN (not a proof) and confidenc
 TEST_CASE("pipeline: an unreadable directory does not fail the ltl stage") {
 #ifndef _WIN32
     if (::geteuid() == 0) {
-        MESSAGE("running as root: permissions do not hide a directory; the walk still uses error codes");
+        prism_test::notrun("running as root: permissions do not hide a directory; the walk still uses error codes");
     }
     Work w;
     w.put("a.c", "int f(void) { return 0; }\n");
@@ -368,7 +370,7 @@ TEST_CASE("pipeline: an unreadable directory does not fail the ltl stage") {
     {
         DenyAcl deny(w.src() / "locked");
         if (!deny.on) {
-            MESSAGE("NOTRUN: icacls could not deny read on the directory; the walk is run on a readable tree");
+            prism_test::notrun("icacls could not deny read on the directory; the walk is run on a readable tree");
         } else {
             std::error_code ec;
             fs::directory_iterator probe(w.src() / "locked", ec);

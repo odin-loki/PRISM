@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prism/astlint.hpp"
 #include "prism/checkers.hpp"
 #include "prism/config.hpp"
@@ -116,7 +118,7 @@ int take(int *p, unsigned n, enum color c, char *buf) {
 TEST_CASE("astlint: planted C bugs are found at their lines") {
     auto clang = find_clang();
     if (!clang) {
-        MESSAGE("clang not installed: AST lint planted test skipped");
+        prism_test::notrun("clang not installed: AST lint planted test skipped");
         return;
     }
     Tree t;
@@ -153,7 +155,7 @@ TEST_CASE("astlint: planted C bugs are found at their lines") {
 
 TEST_CASE("astlint: false-positive guards stay silent") {
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     Tree t;
     auto p = t.put("clean.c", R"(#include <stdio.h>
 #include <string.h>
@@ -200,7 +202,7 @@ int use(int *p, size_t n, enum mode m, tkind k, char **out, int a, int b) {
 
 TEST_CASE("astlint: C++ unit with the standard library, enum class, templates") {
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     Tree t;
     auto p = t.put("m.cpp", R"(#include <vector>
 #include <string>
@@ -221,7 +223,7 @@ int lam() { auto f = [](int q) { int w; w = q; return 0; }; return f(1); }
         INFO("front end: " << fe);
         auto out = lint_with(t, {p}, clang, b);
         if (clang_ast_timed_out(out)) {
-            MESSAGE("clang timed out on this runner: C++ stdlib unit skipped");
+            prism_test::notrun("clang timed out on this runner: C++ stdlib unit skipped");
             continue;
         }
         auto hits = ast_hits(out);
@@ -257,7 +259,7 @@ TEST_CASE("astlint: no clang is NOTRUN for the layer and the regex lints still r
 
 TEST_CASE("astlint: a unit that does not parse is NOTRUN for that file only") {
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     Tree t;
     auto bad = t.put("bad.c", "int f(void) { return }\n");
     auto good = t.put("good.c", "void g(int *p) { int y; y = *p; }\n");
@@ -277,7 +279,7 @@ TEST_CASE("astlint: a unit that does not parse is NOTRUN for that file only") {
 
 TEST_CASE("astlint: an AST finding supersedes the regex finding on the same line") {
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     Tree t;
     auto p = t.put("s.c", "#include <string.h>\nvoid z(char *p, int n) {\n    memset(p, n, 0);\n}\n");
     auto out = lint(t, {p}, clang);
@@ -300,7 +302,7 @@ TEST_CASE("astlint: an AST finding supersedes the regex finding on the same line
 
 TEST_CASE("astlint: compile_commands.json flags reach clang") {
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     Tree t;
     t.put("inc/cfg.h", "#define WIDTH 4\n");
     auto p = t.put("src/u.c", "#include \"cfg.h\"\n#ifndef NEED_FLAG\n#error flag missing\n#endif\n"
@@ -412,7 +414,7 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
     auto clang = find_clang();
     auto fes = front_ends(clang);
     if (fes.empty()) {
-        MESSAGE("clang / libclang not installed: " << name << " skipped");
+        prism_test::notrun("clang / libclang not installed: " + name + " skipped");
         return;
     }
     Tree t;
@@ -443,7 +445,7 @@ void check_marks(const std::string& name, const std::string& text, const std::ve
         INFO("front end: " << fe << ", file " << target);
         auto out = lint_with(t, files, clang, b);
         if (clang_ast_timed_out(out)) {
-            MESSAGE("clang timed out on this runner: " << name << " skipped");
+            prism_test::notrun("clang timed out on this runner: " + std::string(name) + " skipped");
             return;
         }
         std::set<std::pair<int, std::string>> got;
@@ -2290,7 +2292,7 @@ TEST_CASE("astlint: testdata STR-MISSING-NUL, STR-STRNCPY-NUL, MEM-MEMSET-SWAP, 
           "PTR-NULL-DEREF, MEM-STACK-ESCAPE (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
-        MESSAGE("clang not installed: testdata string/memory astlint skipped");
+        prism_test::notrun("clang not installed: testdata string/memory astlint skipped");
         return;
     }
 #ifdef _WIN32
@@ -3059,7 +3061,7 @@ std::set<int> planted_ast_lines(const char* file, const char* cls, const char* f
 TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-SHARED (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
-        MESSAGE("clang not installed: testdata batch 13 astlint skipped");
+        prism_test::notrun("clang not installed: testdata batch 13 astlint skipped");
         return;
     }
     for (auto& [fe, b] : front_ends(clang)) {
@@ -3087,7 +3089,7 @@ TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-S
         std::set<int> any;
         const auto es = prism::astlint::run_lints_ast({root / "enable_shared_ast.cpp"}, root, cfg, clang, b);
         if (clang_ast_timed_out(es)) {
-            MESSAGE("clang timed out on this runner: enable_shared_ast.cpp row check skipped");
+            prism_test::notrun("clang timed out on this runner: enable_shared_ast.cpp row check skipped");
             continue;
         }
         std::string rows;
@@ -3115,7 +3117,7 @@ TEST_CASE("astlint: testdata API-EXEC, API-PIPE, CXX-LAMBDA-DANGLE, CXX-ENABLE-S
 TEST_CASE("astlint: testdata/fp vector guards, move reuse, scoped case labels are silent (both front ends)") {
     auto clang = find_clang();
     if (!clang) {
-        MESSAGE("clang not installed: testdata/fp astlint rows skipped");
+        prism_test::notrun("clang not installed: testdata/fp astlint rows skipped");
         return;
     }
     const auto root = fs::path(PRISM_SOURCE_DIR) / "testdata" / "fp";
@@ -3128,7 +3130,7 @@ TEST_CASE("astlint: testdata/fp vector guards, move reuse, scoped case labels ar
             cfg.root = root;
             const auto out = prism::astlint::run_lints_ast({root / name}, root, cfg, clang, b);
             if (clang_ast_timed_out(out)) {
-                MESSAGE("clang timed out on this runner: " << name << " skipped");
+                prism_test::notrun("clang timed out on this runner: " + std::string(name) + " skipped");
                 continue;
             }
             std::string rows;
@@ -3205,7 +3207,7 @@ TEST_CASE("astlint: ported regex classes, batch 14 (CXX-ATOMIC-FENCE, CXX-ENDIAN
           "CXX-ERROR-CATEGORY)") {
     check_marks("ported14.cpp", kPortedCxx14);
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     for (auto& [fe, b] : front_ends(clang)) {
         INFO("front end: " << fe);
         CHECK(planted_ast_lines("fence_lint.cpp", "CXX-ATOMIC-FENCE", "fence_bad", clang, b) == std::set<int>{5});
@@ -3263,7 +3265,7 @@ int intent_expr_ok(int x) {
 TEST_CASE("astlint: ported regex classes, batch 15 (API-PRECONDITION, INTENT)") {
     check_marks("ported15.c", kPortedC15);
     auto clang = find_clang();
-    if (!clang) return;
+    if (!clang) return prism_test::notrun("clang not installed");
     for (auto& [fe, b] : front_ends(clang)) {
         INFO("front end: " << fe);
         CHECK(planted_ast_lines("api_precond.c", "API-PRECONDITION", "precond_bad", clang, b) == std::set<int>{2});

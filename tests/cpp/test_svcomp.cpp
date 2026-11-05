@@ -8,6 +8,8 @@
 
 #include "prism/exec.hpp"
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -647,7 +649,7 @@ TEST_CASE("svcomp: pir invariants named with the C variables from debug informat
     prism::Config cfg;
     std::string why;
     if (!prism::pir::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return;
     }
     TempDir d;
@@ -797,7 +799,7 @@ TEST_CASE("svcomp fuzz_replay: Law 9, scope, and sanitizer-confirmed answers onl
     CHECK_FALSE(fs::exists(d.path / "w0" / "fuzz.bin"));
     CHECK(fuzz_replay(ovf, "valid-memsafety", true, d.path / "w1")["replay"] == "unsupported");
     if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: fuzz_replay with a real compiler + UBSan");
+        prism_test::notrun("fuzz_replay with a real compiler + UBSan");
         return;
     }
     auto r = fuzz_replay(ovf, "no-overflow", true, d.path / "w2", "LP64", 30.0, 50);
@@ -824,13 +826,13 @@ TEST_CASE("svcomp fuzz_replay: Law 9, scope, and sanitizer-confirmed answers onl
 
 TEST_CASE("svcomp replay: sanitizer runs decide replayed / not-replayed") {
     if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: SV-COMP replay with a real compiler + UBSan: the stub is POSIX C and MSVC-target "
+        prism_test::notrun("SV-COMP replay with a real compiler + UBSan: the stub is POSIX C and MSVC-target "
                 "clang has no usable UBSan here; WIN32 covers replay logic via fake_cc "
                 "(case 'svcomp replay: --allow-exec with a fake compiler')");
         return;
     }
     if (!cc_with_ubsan()) {
-        MESSAGE("NOTRUN: no C compiler with UBSan");
+        prism_test::notrun("no C compiler with UBSan");
         return;
     }
     TempDir d;
@@ -1073,7 +1075,7 @@ TEST_CASE("svcomp solve: unsupported properties; ILP32 width-dependent tasks are
 #else
     // pir needs Z3; a build without Z3 has no stage that can prove the
     // ILP32 task, so the answer must stay unknown (never an unproved true).
-    MESSAGE("NOTRUN: ILP32 pir proof needs a Z3 build (PRISM_HAS_Z3)");
+    prism_test::notrun("ILP32 pir proof needs a Z3 build (PRISM_HAS_Z3)");
     CHECK(oc.decision.answer == "unknown");
 #endif
     auto ovf = d.write("ovf.c",
@@ -1099,7 +1101,7 @@ TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task
         // Not a missing --allow-exec: the cases below pass it. They need a real
         // compiler with UBSan to replay the pinned PostfixIncrement refutation
         // and the PIR/BMC engines on LP64 pins, which are verified on POSIX only.
-        MESSAGE("NOTRUN: SV-COMP solve on the pinned conformance tasks (real compiler + UBSan replay, "
+        prism_test::notrun("SV-COMP solve on the pinned conformance tasks (real compiler + UBSan replay, "
                 "LP64 engines) is POSIX-only; the replay logic itself runs on WIN32 via fake_cc");
         return;
     }
@@ -1109,7 +1111,7 @@ TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task
     opt.allow_exec = true;
     SUBCASE("PostfixIncrement: false(no-overflow)") {
         if (!cc_with_ubsan()) {
-            MESSAGE("NOTRUN: no C compiler with UBSan");
+            prism_test::notrun("no C compiler with UBSan");
             return;
         }
         opt.out = d.path / "o1";
@@ -1169,7 +1171,7 @@ TEST_CASE("svcomp pack: the tool archive") {
     prism::Config cfg;
     auto lister = cfg.which({"tar"});
     if (!cfg.which({"cmake"}) && !lister) {
-        MESSAGE("NOTRUN: neither cmake nor tar on PATH");
+        prism_test::notrun("neither cmake nor tar on PATH");
         return;
     }
     TempDir d;
@@ -1200,7 +1202,7 @@ TEST_CASE("svcomp pack: the tool archive") {
 #ifdef _WIN32
     // NTFS has no mode bits: bsdtar's rwx column says nothing about the executable
     // bit, so it is not asserted here (POSIX-only; MSVC_PORT §7).
-    MESSAGE("NOTRUN: archive executable-bit check (rwxr-xr-x) is POSIX-only; names, manifest and deps were checked");
+    prism_test::notrun("archive executable-bit check (rwxr-xr-x) is POSIX-only; names, manifest and deps were checked");
 #else
     CHECK(ls.text.find("rwxr-xr-x") != std::string::npos);  // the binary stays executable
 #endif
@@ -1267,7 +1269,7 @@ TEST_CASE("run_session: normal exit returns stdout and the exit status") {
 
 TEST_CASE("svcomp fuzz_replay: a loop longer than the 2 s run limit gets one long run; a safe long loop is not refuted") {
     if (!svcomp_exec_portable()) {
-        MESSAGE("NOTRUN: fuzz_replay with a real compiler");
+        prism_test::notrun("fuzz_replay with a real compiler");
         return;
     }
     TempDir d;
@@ -1306,7 +1308,7 @@ TEST_CASE("svcomp neutralize_error_calls: call statements only, definitions and 
 
 TEST_CASE("svcomp solve no-overflow: a reachable reach_error() does not block the proof; an overflow is still found") {
     if (!svcomp_exec_portable() || !cc_with_ubsan()) {
-        MESSAGE("NOTRUN: needs POSIX engines and a C compiler with UBSan");
+        prism_test::notrun("needs POSIX engines and a C compiler with UBSan");
         return;
     }
     TempDir d;

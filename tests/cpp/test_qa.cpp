@@ -11,6 +11,8 @@
 // it; nothing is skipped quietly.
 #include "prism/exec.hpp"
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -340,7 +342,7 @@ TEST_CASE("run_session: normal exit returns stdout, stderr, the exit code, env, 
     CHECK(run({"alloc", "8"}, capped).rc == 0);
     CHECK(run({"alloc", "256"}, capped).rc == 4);
     // no POSIX signals here: "kill -9 $$" (rc -9) has no exit status to check on WIN
-    MESSAGE("NOTRUN on WIN: kill -9 exit status (POSIX signals only)");
+    prism_test::notrun("Windows: kill -9 exit status (POSIX signals only)");
 }
 
 // The process the Job Object holds is gone (or never existed).
@@ -525,7 +527,7 @@ namespace {
 TEST_CASE("pir_lean_check fixtures give their expected verdicts") {
     auto checker = built_checker();
     if (!checker) {
-        MESSAGE("NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)");
+        prism_test::notrun("pir_lean_check not built (cd proofs/refinement && lake build)");
         return;
     }
     std::vector<fs::path> fixtures;
@@ -554,7 +556,7 @@ TEST_CASE("pir-lean-check: testdata/pir agrees with the proved translator") {
                                              "/nonexistent/pir_lean_check"});
         CHECK(r.rc == 2);
         CHECK(r.out.find("NOTRUN") != std::string::npos);
-        MESSAGE("NOTRUN: pir_lean_check not built (cd proofs/refinement && lake build)");
+        prism_test::notrun("pir_lean_check not built (cd proofs/refinement && lake build)");
         return;
     }
     auto r = prism::exec::run_session({sibling("prism-qa").string(), "pir-lean-check",
@@ -642,7 +644,7 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     auto cfg = prism::default_config();
     auto fe = prism::pir::find_frontend(cfg);
     if (!fe.clang || !fe.opt || !fe.lli) {
-        MESSAGE("NOTRUN: clang/opt/lli not found");
+        prism_test::notrun("clang/opt/lli not found");
         return;
     }
     Tmp t("prism_qa_lli_");
@@ -669,7 +671,7 @@ TEST_CASE("llvm-sem-vs-lli: the harness runs the pir stage's IR under lli") {
     if (!fs::exists(repo() / "proofs" / "refinement" / ".lake" / "build" / "bin" / "llvm_eval")) {
         CHECK(r.rc == 2);
         CHECK(r.out.find("NOTRUN: missing llvm_eval") != std::string::npos);
-        MESSAGE("NOTRUN: llvm_eval not built (cd proofs/refinement && lake build llvm_eval)");
+        prism_test::notrun("llvm_eval not built (cd proofs/refinement && lake build llvm_eval)");
     }
 }
 #endif

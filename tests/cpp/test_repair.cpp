@@ -2,6 +2,8 @@
 // Port of tests/test_repair_verdict.py (C++ binary + fake llama-server).
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -103,11 +105,11 @@ struct RepairCase {
 
 TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict, audit clean") {
 #ifndef PRISM_HAS_Z3
-    MESSAGE("NOTRUN: PRISM_HAS_Z3 off, no verdict on the candidate");
+    prism_test::notrun("PRISM_HAS_Z3 off, no verdict on the candidate");
     return;
 #endif
     if (!have_cc()) {
-        MESSAGE("NOTRUN: no gcc/clang on PATH for the LLM candidate");
+        prism_test::notrun("no gcc/clang on PATH for the LLM candidate");
         return;
     }
     prism_test::ScriptedChat llm([](const std::string&) { return std::string(kDivFix); });
@@ -120,7 +122,7 @@ TEST_CASE("repair: verified fix is HYPOTHESIS with patch_verdict, audit clean") 
     if (!fix) {
         for (auto& f : rows)
             if (f.message.find("sandbox") != std::string::npos || f.message.find("bwrap") != std::string::npos) {
-                MESSAGE("NOTRUN: sandbox could not run candidate");
+                prism_test::notrun("sandbox could not run candidate");
                 return;
             }
     }
@@ -147,7 +149,7 @@ TEST_CASE("repair: without --allow-exec the candidate never runs (NOTRUN, Law 9)
 
 TEST_CASE("repair: a model that stops answering mid-repair is NOTRUN, never a verdict") {
     if (!have_cc()) {
-        MESSAGE("NOTRUN: no gcc/clang on PATH");
+        prism_test::notrun("no gcc/clang on PATH");
         return;
     }
     prism_test::ScriptedChat llm([](const std::string&) { return std::string(kDivFix); });

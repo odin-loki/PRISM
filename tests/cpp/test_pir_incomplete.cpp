@@ -2,6 +2,8 @@
 // follow. Reaching it may never yield PROVED (the path is not proved away)
 // nor FAILED (a violation after it is not a counterexample PRISM checked).
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -30,11 +32,11 @@ namespace pp = prism::pir;
 bool skip_without_frontend(const prism::Config& cfg) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     if (!pp::z3_available()) {
-        MESSAGE("NOTRUN: needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        prism_test::notrun("needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;

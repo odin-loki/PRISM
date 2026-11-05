@@ -1,6 +1,8 @@
 // C/C++ front end (src/prism/cparse.cpp) and the report JSON form
 // (src/prism/models.cpp). Ported from tests/test_false_positives.py.
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -30,7 +32,7 @@ namespace {
 #if !defined(PRISM_HAS_Z3)
 #define SKIP_IF_NO_Z3()                                                                        \
     do {                                                                                       \
-        MESSAGE("PRISM_HAS_Z3: skip");                                                         \
+        prism_test::notrun("PRISM_HAS_Z3 off: needs Z3 (rebuild with -DPRISM_Z3=ON)");         \
         return;                                                                                \
     } while (0)
 #else

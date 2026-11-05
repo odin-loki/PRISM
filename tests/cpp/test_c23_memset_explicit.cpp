@@ -2,6 +2,8 @@
 // models/libc/forced/prism_c23_decls.h (the libc may not declare it) and
 // checked by its model in models/libc/string.cpp (memset's contract).
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -30,11 +32,11 @@ namespace pp = prism::pir;
 bool skip_without_frontend(const prism::Config& cfg) {
     std::string why;
     if (!pp::frontend_usable(cfg, &why)) {
-        MESSAGE(why);
+        prism_test::notrun(why);
         return true;
     }
     if (!pp::z3_available()) {
-        MESSAGE("NOTRUN: needs Z3 (rebuild with -DPRISM_Z3=ON)");
+        prism_test::notrun("needs Z3 (rebuild with -DPRISM_Z3=ON)");
         return true;
     }
     return false;

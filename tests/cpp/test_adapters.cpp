@@ -8,6 +8,8 @@
 // branch runs against a real child process.
 #include "prism/exec.hpp"
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -525,7 +527,7 @@ TEST_CASE("sandbox_run: compile then run through the runner; exec held without -
     CHECK(off["ok"] == false);
     CHECK(off["error"] == "exec-disabled");
     if (!sd::which_cc()) {
-        MESSAGE("no C compiler: sandbox_run compile/run half not exercised");
+        prism_test::notrun("no C compiler: sandbox_run compile/run half not exercised");
         return;
     }
     auto ok = sd::sandbox_run("#include <stdio.h>\nint main(void){puts(\"hi\");return 0;}\n", 8, true);
@@ -2094,7 +2096,7 @@ TEST_CASE("afl: without --allow-exec the harness is held (Law 9)") {
 
 TEST_CASE("afl: a planted crash is CRASH, a quiet run CLEAN (not a proof); env and cwd are the child's") {
     if (!prism::Config{}.which({"gcc", "clang"})) {
-        MESSAGE("no C compiler: the AFL harness cannot be built here");
+        prism_test::notrun("no C compiler: the AFL harness cannot be built here");
         return;
     }
     prism::sandbox::Policy allow(true);
@@ -2198,13 +2200,13 @@ TEST_CASE("fuse: PRISM_AFL opt-in; AFL on hand but not opted in; opted in but mi
     EnvVar path("PATH", real_path);  // the harness needs the real gcc/clang
     fuse_trace("which gcc/clang");
     if (!prism::Config{}.which({"gcc", "clang"})) {
-        MESSAGE("no C compiler: the PRISM_AFL=1 run with afl-fuzz present is not exercised");
+        prism_test::notrun("no C compiler: the PRISM_AFL=1 run with afl-fuzz present is not exercised");
         return;
     }
 #ifdef _WIN32
     // AFL++ has no native Windows build and the fake afl-fuzz is a POSIX sh
     // script; the run hung until the 30-minute CI timeout. Not exercised here.
-    MESSAGE("NOTRUN on Windows: no AFL++ (the PRISM_AFL=1 run with afl-fuzz present is POSIX-only)");
+    prism_test::notrun("Windows: no AFL++ (the PRISM_AFL=1 run with afl-fuzz present is POSIX-only)");
     return;
 #endif
     {

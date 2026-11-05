@@ -12,6 +12,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "gen_random.hpp"
 #include "support/cli.hpp"
 #include "support/engine.hpp"
@@ -1011,7 +1013,7 @@ TEST_CASE("qa conformance: a sample of the label self-check passes") {
     // on Windows the probe only accepts clang (UBSan+ASan runtime DLLs on PATH);
     // without one the sample is NOTRUN via the WARN below, never a clean pass
     if (!qa::sanitizers_usable()) {
-        MESSAGE("NOTRUN: no compiler links UBSan+ASan: label self-check sample");
+        prism_test::notrun("no compiler links UBSan+ASan: label self-check sample");
         return;
     }
     std::vector<qa::Task> tasks;
