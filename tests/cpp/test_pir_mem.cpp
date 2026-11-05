@@ -12,6 +12,7 @@
 #include "prism/pir/folded_diag.hpp"
 #include "prism/pir/frontend.hpp"
 
+#include "../../src/prism/pir/memory.hpp"
 #include "../../src/prism/pir/translate_mem.hpp"
 
 #include <cstdlib>
@@ -1192,6 +1193,31 @@ entry:
 }
 
 #ifdef PRISM_HAS_Z3
+#ifdef PRISM_HAS_Z3
+// Regression (nightly ASan, 2026-10-28): materialize_vs held the pointer
+// vs_raw returns (a slot of vs_memo_) across seed_vs, which erases that slot,
+// and then read raw->size(): heap-use-after-free. It must work from a local
+// copy. Under the sanitizer build the old code aborts on the first call.
+TEST_CASE("pir mem: materialize_vs after vs_raw seeds a copy, not the freed memo slot") {
+    namespace pm = prism::pir::mem;
+    z3::context c;
+    std::vector<z3::expr> side;
+    pm::SymMem m(c, prism::pir::MemEncoding::Bv, false, side);
+    const z3::expr i = c.bv_const("i", 64);
+    const z3::expr e = z3::ite(i == c.bv_val(0, 64), c.bv_val(0, 64),
+                               z3::ite(i == c.bv_val(1, 64), c.bv_val(1, 64), c.bv_val(2, 64)));
+    const pm::SymMem::Vs* memo = m.vs_raw(e);  // memoised in vs_memo_
+    REQUIRE(memo != nullptr);
+    CHECK(memo->size() == 3u);
+    m.materialize_vs(e);  // seed_vs erases the memo slot: `memo` is dead now
+    m.materialize_vs(e);  // already seeded: no-op
+    const pm::SymMem::Vs* seeded = m.vs_raw(e);
+    REQUIRE(seeded != nullptr);
+    REQUIRE(seeded->size() == 3u);
+    for (std::size_t k = 0; k < seeded->size(); ++k) CHECK((*seeded)[k].val == k);
+}
+#endif
+
 // Value sets (Bv encoding) survive a 40-option address select (more than the
 // old kVsMax of 32) and an ite nested under its own condition (peel_ite): the
 // store and load through the same pointer agree, and the false twin fails.

@@ -71,7 +71,9 @@ jobs:
       - name: PRISM scans its own tree (report only)
         # inventory + lints + polyglot only: a full pipeline scan of this tree
         # exceeds the 300-minute job limit (run 36211384015 timed out in wp).
-        run: ./build-san/prism . --no-llm --stage inventory,lints,polyglot --out prism-self || true
+        # Findings never fail this step (--fail-on never: exit 0). Exit 2 (a
+        # stage failed) or an ASan/UBSan abort does: that is what this job is for.
+        run: ./build-san/prism . --no-llm --stage inventory,lints,polyglot --fail-on never --out prism-self
       - uses: actions/upload-artifact@v4
         if: always()
         with:
