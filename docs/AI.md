@@ -128,7 +128,7 @@ suggestion"`. The `FAILED` verdict never changes. No model → one `NOTRUN` row.
 
 | File | Output | Decoding |
 |---|---|---|
-| `grammars/invariants.gbnf` | JSON list of C boolean expressions | FORGE mind `grammar_constraint` (in-process sampler mask) |
+| `grammars/invariants.gbnf` | JSON list of C boolean expressions | FORGE inference `grammar_constraint` (in-process sampler mask) |
 | `grammars/harness.gbnf` | `{"assumptions": [nonnull / size / range]}` | same |
 | `grammars/contract.gbnf` | ACSL-ish `requires ...;` / `ensures ...;`, each with an optional trace ` // from R<n>|comment|code` | same (validator `validate_contract`, `Validated.traces`) |
 | `grammars/lean_proof.gbnf` | `{"tactics": [str, ...]}` (1..40 lines) | same (validator `validate_lean_tactics`) |
@@ -144,10 +144,10 @@ files are embedded verbatim at configure time: CMake writes
 embedded copy cannot drift (doctest "ai-assist grammars: every
 grammars/*.gbnf is embedded verbatim").
 
-Backend: FORGE mind, in process (`src/prism/ai/forge_llm.cpp`). The model
+Backend: FORGE inference, in process (`src/prism/ai/forge_llm.cpp`). The model
 is a FORGE `.fpk` (`PRISM_FPK`, default `~/.prism/models/qwen3.5-9b.fpk`) on
 the device `PRISM_DEVICE` (else `FORGE_DEVICE`, else `cpu`). A request with a
-grammar is decoded under `forge::mind::grammar_constraint`, which masks every
+grammar is decoded under `forge::inference::grammar_constraint`, which masks every
 token the grammar cannot accept; the stages' plain chats (hypotheses,
 Fuzz4All, repair) use the same model without a grammar. The context is
 `min(model context, 8192)` tokens and the reply may use what the prompt leaves
@@ -230,7 +230,7 @@ with two).
    `PRISM_PROVER_FPK` (a Goedel-Prover / DeepSeek-Prover / Kimina-Prover
    model converted to a FORGE `.fpk`); else the first `.fpk` in
    `~/.prism/models` whose name contains `prover` or `goedel`. It runs in
-   process on FORGE mind (temperature 0.6, up to 1024 new tokens per call).
+   process on FORGE inference (temperature 0.6, up to 1024 new tokens per call).
    `--prover-model`
    / `PRISM_PROVER_MODEL` names it in the audit. None → `NOTRUN` (exit 3).
 2. **Scratch copy.** The lake package is copied (nested packages and `.git`

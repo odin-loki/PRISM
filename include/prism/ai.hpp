@@ -70,7 +70,7 @@ struct ModelRequest {
     std::string system;
     std::string user;
     std::string grammar;       // grammar name (audit log)
-    std::string grammar_text;  // GBNF for FORGE mind constrained sampling (ident rule narrowed)
+    std::string grammar_text;  // GBNF for FORGE inference constrained sampling (ident rule narrowed)
 };
 struct ModelReply {
     std::string text;
@@ -84,7 +84,7 @@ public:
     virtual ModelReply complete(const ModelRequest& req) = 0;
 };
 
-// FORGE mind in process on cfg.fpk, with GBNF-constrained sampling. Returns
+// FORGE inference in process on cfg.fpk, with GBNF-constrained sampling. Returns
 // nullptr (and a reason) when no .fpk is configured, or when --no-llm.
 PRISM_API std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* why);
 

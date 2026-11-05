@@ -694,7 +694,7 @@ else()
   message(WARNING "PRISM_CUDA=OFF — CUDA kernel skipped (NOTRUN, not a silent disable)")
 endif()
 
-target_link_libraries(prism_core PUBLIC prism_forge_mind)
+target_link_libraries(prism_core PUBLIC prism_forge_inference)
 
 if(PRISM_QT)
   find_package(Qt6 COMPONENTS Widgets QUIET)

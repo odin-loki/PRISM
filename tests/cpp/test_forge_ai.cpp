@@ -1,5 +1,5 @@
 #include <cmath>
-// FORGE mind engine end to end on a tiny real .fpk (FORGE tests/tiny_model.hpp):
+// FORGE inference engine end to end on a tiny real .fpk (FORGE tests/tiny_model.hpp):
 // no test double, the same forge_llm path PRISM uses for Qwen 3.5.
 #include <doctest/doctest.h>
 

@@ -129,7 +129,7 @@ constexpr const char* kProbeExe = "probe";
 
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
     auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <numeric>\n"
+    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <numeric>\n"
                             "int main() {\n"
                             "  int a[3] = {1, 2, 3};\n"
                             "  int d[3] = {};\n"

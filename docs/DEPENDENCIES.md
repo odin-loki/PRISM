@@ -10,7 +10,7 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 | ~~xsimd~~ | **retired** | removed | hash/havoc lanes were load/store only; plain C++ | deleted |
 | nlohmann/json | linked | commit + SHA-256 | MANIFEST.toml | yes |
 | doctest 2.4.11 | linked (tests) | commit + SHA-256 | MANIFEST.toml | yes |
-| ~~llama.cpp b6875~~ | **retired** | removed | replaced by FORGE mind | deleted |
+| ~~llama.cpp b6875~~ | **retired** | removed | replaced by FORGE inference | deleted |
 | LLVM/clang 23.1.4 | toolchain | per-platform SHA-256 | third_party/llvm/PIN.toml (branch prism-llvm) | pinned fetch (too large) |
 | CMake 3.31.6 | toolchain | SHA-256 per platform | third_party/TOOLCHAIN_PINS.toml | pinned fetch |
 | Qt 6.8.3 (qtbase, Widgets) | GUI, optional | source tarball SHA-256 | TOOLCHAIN_PINS.toml | pinned fetch |
@@ -25,7 +25,7 @@ Fetch a pinned toolchain: `python3 scripts/fetch_toolchain.py cmake` (or `qtbase
 A download whose SHA-256 differs from the pin is refused (exit 2).
 
 ## Models
-PRISM's AI runs on FORGE mind in process. Models are FORGE `.fpk` files, never committed:
+PRISM's AI runs on FORGE inference in process. Models are FORGE `.fpk` files, never committed:
 - `PRISM_FPK` — assistant model, default `~/.prism/models/qwen3.5-9b.fpk` (Qwen 3.5 9B converted with FORGE).
 - `PRISM_PROVER_FPK` — Lean prover (e.g. Goedel-Prover 8B `.fpk`); else the first `*prover*`/`*goedel*` `.fpk` in `~/.prism/models`.
 - `PRISM_EMBED_FPK` — optional one-shot embedding graph for triage; else TF-IDF.
