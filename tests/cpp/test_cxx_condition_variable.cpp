@@ -9,6 +9,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prose_text.hpp"
 #include "prism/pir.hpp"
 
@@ -104,8 +106,8 @@ TEST_CASE("cxx condition_variable model: waits explore thread interleavings thro
     CHECK(wp.find("__must_switch") != std::string::npos);
     CHECK(wp.find("__l.lock()") != std::string::npos);
     CHECK(wp.find("__prism_assume") == std::string::npos);
-    CHECK(wp.find("__l.unlock()") < wp.find("__must_switch"));
-    CHECK(wp.find("__must_switch") < wp.find("__l.lock()"));
+    CHECK(prism_test::appears_before(wp, "__l.unlock()", "__must_switch"));
+    CHECK(prism_test::appears_before(wp, "__must_switch", "__l.lock()"));
     // plain wait: an optional switch (spurious wakeup when none runs)
     const std::string wo = body_of(src, "inline void __wait_once(");
     CHECK(wo.find("__maybe_switch") != std::string::npos);
@@ -130,7 +132,7 @@ TEST_CASE("cxx scheduler model: deadlock check, preemption bound, prune of unrep
     CHECK(ms.find("--__budget") != std::string::npos);
     const std::string mu = body_of(s, "inline void __must_switch(");
     CHECK(mu.find("__prism_assume(0)") != std::string::npos);
-    CHECK(mu.find("__prism_assume(0)") < mu.find("CXX-DEADLOCK"));
+    CHECK(prism_test::appears_before(mu, "__prism_assume(0)", "CXX-DEADLOCK"));
     const std::string th = slurp(repo() / "src" / "prism" / "pir" / "models" / "cxx" / "thread");
     CHECK(th.find("\"CXX-THREAD-JOINABLE\"") != std::string::npos);
     CHECK(th.find("__maybe_start()") != std::string::npos);

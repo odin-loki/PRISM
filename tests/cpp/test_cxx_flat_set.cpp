@@ -9,6 +9,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prose_text.hpp"
 
 #include <filesystem>
@@ -126,8 +128,8 @@ TEST_CASE("cxx flat_set model: duplicate insert does not grow size; erase delete
     CHECK(er_key.find("delete ") != std::string::npos);
     CHECK(er_it.find("delete ") != std::string::npos);
     CHECK(er_key.find("return 0;") != std::string::npos);
-    CHECK(er_key.find("return 0;") < er_key.find("delete "));
-    CHECK(er_key.find("return 0;") < er_key.find("--_M_size"));
+    CHECK(prism_test::appears_before(er_key, "return 0;", "delete "));
+    CHECK(prism_test::appears_before(er_key, "return 0;", "--_M_size"));
     CHECK(count_sub(er_key, "delete ") == 1);
     CHECK(count_sub(er_it, "delete ") == 1);
     CHECK(count_sub(src, "delete ") == count_sub(er_key, "delete ") + count_sub(er_it, "delete "));

@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -104,7 +106,7 @@ TEST_CASE("cxx memory_resource model: null deallocate is a no-op or a trap befor
     CHECK(trap_at < handed_at);
     CHECK(de.find("free(") == std::string::npos);
     CHECK(de.find("::operator delete") == std::string::npos);
-    CHECK(de.find("PTR-NULL-DEREF") < de.find("MEM-INVALID-FREE"));
+    CHECK(prism_test::appears_before(de, "PTR-NULL-DEREF", "MEM-INVALID-FREE"));
 
     const auto line_end = de.find('\n', zero_at);
     REQUIRE(line_end != std::string::npos);

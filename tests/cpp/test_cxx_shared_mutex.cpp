@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -76,8 +78,8 @@ TEST_CASE("cxx shared_mutex: exclusive try_lock fails under a shared hold, unloc
     const auto taken = try_lock.find("_M_exclusive = true");
     REQUIRE(failed != std::string::npos);
     REQUIRE(taken != std::string::npos);
-    CHECK(try_lock.find("_M_exclusive") < failed);
-    CHECK(try_lock.find("_M_shared != 0") < failed);
+    CHECK(prism_test::first_before(try_lock, "_M_exclusive", failed));
+    CHECK(prism_test::first_before(try_lock, "_M_shared != 0", failed));
     CHECK(failed < taken);
     CHECK(try_lock.find("++_M_shared") == std::string::npos);
     CHECK(try_lock.find("--_M_shared") == std::string::npos);
@@ -89,14 +91,14 @@ TEST_CASE("cxx shared_mutex: exclusive try_lock fails under a shared hold, unloc
     const auto shared_inc = try_shared.find("++_M_shared");
     REQUIRE(shared_fail != std::string::npos);
     REQUIRE(shared_inc != std::string::npos);
-    CHECK(try_shared.find("_M_exclusive") < shared_fail);
+    CHECK(prism_test::first_before(try_shared, "_M_exclusive", shared_fail));
     CHECK(shared_fail < shared_inc);
 
     const auto unlock = body_of(src, "void unlock() noexcept");
     REQUIRE(!unlock.empty());
     const auto unlock_check = unlock.find("__prism_check(_M_exclusive");
     REQUIRE(unlock_check != std::string::npos);
-    CHECK(unlock_check < unlock.find("_M_exclusive = false"));
+    CHECK(prism_test::first_after(unlock, "_M_exclusive = false", unlock_check));
     CHECK(unlock.find("_M_exclusive = true") == std::string::npos);
     CHECK(unlock.find("++_M_shared") == std::string::npos);
 
@@ -104,7 +106,7 @@ TEST_CASE("cxx shared_mutex: exclusive try_lock fails under a shared hold, unloc
     REQUIRE(!unlock_shared.empty());
     CHECK(unlock_shared.find("__prism_check") != std::string::npos);
     CHECK(unlock_shared.find("_M_shared > 0") != std::string::npos);
-    CHECK(unlock_shared.find("__prism_check") < unlock_shared.find("--_M_shared"));
+    CHECK(prism_test::appears_before(unlock_shared, "__prism_check", "--_M_shared"));
     CHECK(unlock_shared.find("++_M_shared") == std::string::npos);
 
     CHECK(src.find("lock() and lock_shared() are omitted") != std::string::npos);

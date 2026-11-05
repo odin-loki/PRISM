@@ -4,6 +4,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -79,9 +81,9 @@ TEST_CASE("cxx memory_resource model: oversized allocate is a check, header does
     REQUIRE(formed != std::string::npos);
     CHECK(fit < formed);
     CHECK(alloc.find("return nullptr") != std::string::npos);
-    CHECK(alloc.find("return nullptr") < formed);
+    CHECK(prism_test::first_before(alloc, "return nullptr", formed));
     CHECK(alloc.find("return __p") != std::string::npos);
-    CHECK(formed < alloc.find("return __p"));
+    CHECK(prism_test::first_after(alloc, "return __p", formed));
     CHECK(alloc.find("::operator new") == std::string::npos);
     CHECK(alloc.find("_M_buf + _M_size") == std::string::npos);
 

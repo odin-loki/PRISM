@@ -18,6 +18,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #if defined(_MSC_VER)
 #  pragma warning(push)
 #  pragma warning(disable : 4068)  // #pragma GCC system_header in the model
@@ -116,7 +118,7 @@ TEST_CASE("cxx valarray model: operator[] checks the index and a default valarra
     REQUIRE(store != std::string::npos);
     CHECK(drop < store);
     CHECK(release.find("_M_data = nullptr;") != std::string::npos);
-    CHECK(release.find("_M_data = nullptr;") < release.find("::operator delete(__old);"));
+    CHECK(prism_test::appears_before(release, "_M_data = nullptr;", "::operator delete(__old);"));
     CHECK(release.find("__old[__i].~_Tp();") != std::string::npos);
 
     std::valarray<int> empty;
@@ -760,7 +762,7 @@ TEST_CASE("cxx valarray model: operator* multiplies equal sizes and traps otherw
     REQUIRE(!moved.empty());
     CHECK(moved.find("__o._M_data = nullptr;") != std::string::npos);
     CHECK(moved.find("__o._M_size = 0;") != std::string::npos);
-    CHECK(moved.find("__o._M_data = nullptr;") < moved.find("}"));
+    CHECK(prism_test::appears_before(moved, "__o._M_data = nullptr;", "}"));
 
     const auto news = std::string("::operator new(__n * sizeof(value_type))");
     const auto at = src.find(news);

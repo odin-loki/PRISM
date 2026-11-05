@@ -17,6 +17,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -248,8 +250,8 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
     CHECK(count_sub(src, "This is not PROVED and not CLEAN.") == 1);
     CHECK(src.find("basic_ofstream& write(const char*, std::ptrdiff_t)") != std::string::npos);
     const auto write_at = src.find("basic_ofstream& write(const char*, std::ptrdiff_t)");
-    CHECK(write_at > src.find("class basic_ofstream"));
-    CHECK(write_at > src.find("long tellp()"));
+    CHECK(prism_test::first_before(src, "class basic_ofstream", write_at));
+    CHECK(prism_test::first_before(src, "long tellp()", write_at));
     CHECK(count_sub(src, "basic_ofstream& write(const char*, std::ptrdiff_t)") == 1);
     CHECK(has_ident(code, "write"));
     const auto write = body_of(src, "basic_ofstream& write(const char*, std::ptrdiff_t)");
@@ -279,7 +281,7 @@ TEST_CASE("cxx fstream model: a closed ifstream read is a check and writes nothi
 
     const auto gcount_at = src.find("std::ptrdiff_t gcount() const");
     CHECK(gcount_at != std::string::npos);
-    CHECK(gcount_at < src.find("class basic_ofstream"));
+    CHECK(prism_test::first_after(src, "class basic_ofstream", gcount_at));
     CHECK(has_ident(code, "gcount"));
     const auto gcount = body_of(src, "std::ptrdiff_t gcount() const");
     CHECK(gcount == "{ return 0; }");

@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -210,7 +212,7 @@ TEST_CASE("cxx memory model: empty unique_ptr operator* and operator-> trap befo
     CHECK(arr.find("__prism_check(0, \"MEM-OOB-WRITE\", \"make_unique array allocation byte count overflows\")") !=
           std::string::npos);
     CHECK(arr.find("__builtin_trap();") != std::string::npos);
-    CHECK(arr.find("__builtin_trap();") < arr.find("new _Elem[__n]()"));
+    CHECK(prism_test::appears_before(arr, "__builtin_trap();", "new _Elem[__n]()"));
     CHECK(src.find("make_unique_for_overwrite(") == std::string::npos);
 
     CHECK(src.find("class shared_ptr") != std::string::npos);  // modelled on main

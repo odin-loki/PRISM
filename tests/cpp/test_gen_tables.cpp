@@ -2,6 +2,8 @@
 // and the generator that reads lint_discarded* from checkers_*.cpp.
 
 #include <doctest/doctest.h>
+
+#include "test_support.hpp"
 #ifdef ERROR
 #  undef ERROR
 #endif
@@ -101,5 +103,5 @@ void rules() {
     const auto text = prism_gen_discard::render(rows);
     CHECK(text.find(R"(    {"foo", {"API-FOO", false}},)") != std::string::npos);
     CHECK(text.find(R"(    {"bar", {"API-BAR", true}},)") != std::string::npos);
-    CHECK(text.find("\"bar\"") < text.find("\"foo\""));
+    CHECK(prism_test::appears_before(text, "\"bar\"", "\"foo\""));
 }

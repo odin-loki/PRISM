@@ -10,6 +10,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -164,7 +166,7 @@ TEST_CASE("cxx barrier: a negative count is not stored and max does not wait") {
     REQUIRE(store_at != std::string::npos);
     CHECK(check_at < store_at);
     CHECK(ctor_span.find("if (__ok)") != std::string::npos);
-    CHECK(ctor_span.find("if (__ok)") < store_at);
+    CHECK(prism_test::first_before(ctor_span, "if (__ok)", store_at));
 
     CHECK(mx < arrive);
     const auto mx_end = src.find('}', mx);

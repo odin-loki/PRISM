@@ -8,6 +8,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include "prose_text.hpp"
 
 #include <algorithm>
@@ -104,7 +106,7 @@ TEST_CASE("mktime model: month 99 is not a successful calendar time") {
     REQUIRE(!body.empty());
     const auto nullg = body.find("if (tp == 0)");
     REQUIRE(nullg != std::string::npos);
-    CHECK(nullg < body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(body, "tp->tm_mon", nullg));
     const auto cond = body.find("if (mon < 0 || mon > 11 || mday < 1 || mday > 31)");
     REQUIRE(cond != std::string::npos);
     CHECK(body.find("tp->tm_mon") != std::string::npos);
@@ -173,13 +175,13 @@ TEST_CASE("difftime model: a difference that fits is a double, and one that does
 
     const auto ret = body.find("return (double)diff");
     REQUIRE(ret != std::string::npos);
-    CHECK(body.find("__builtin_trap()") < ret);
+    CHECK(prism_test::first_before(body, "__builtin_trap()", ret));
 
     const auto mktime_body = function_body(src, "time_t mktime(");
     REQUIRE(!mktime_body.empty());
     const auto nullg = mktime_body.find("if (tp == 0)");
     REQUIRE(nullg != std::string::npos);
-    CHECK(nullg < mktime_body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(mktime_body, "tp->tm_mon", nullg));
 }
 
 TEST_CASE("difftime harness: fitting difference is true and a zero stand-in is FUNC-CONTRACT") {
@@ -229,7 +231,7 @@ TEST_CASE("clock model: nondet clock_t does not mention tm_mon") {
     REQUIRE(!mktime_body.empty());
     const auto nullg = mktime_body.find("if (tp == 0)");
     REQUIRE(nullg != std::string::npos);
-    CHECK(nullg < mktime_body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(mktime_body, "tp->tm_mon", nullg));
 
     const auto difftime_body = function_body(src, "double difftime(");
     REQUIRE(!difftime_body.empty());
@@ -295,7 +297,7 @@ TEST_CASE("clock_gettime model: null timespec returns -1 before any store") {
     REQUIRE(!mktime_body.empty());
     const auto mnull = mktime_body.find("if (tp == 0)");
     REQUIRE(mnull != std::string::npos);
-    CHECK(mnull < mktime_body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(mktime_body, "tp->tm_mon", mnull));
 
     const auto time_body = function_body(src, "time_t time(");
     const auto difftime_body = function_body(src, "double difftime(");
@@ -392,7 +394,7 @@ TEST_CASE("gmtime model: null time_t returns 0 before any tm field is written") 
     REQUIRE(!mktime_body.empty());
     const auto mnull = mktime_body.find("if (tp == 0)");
     REQUIRE(mnull != std::string::npos);
-    CHECK(mnull < mktime_body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(mktime_body, "tp->tm_mon", mnull));
 
     const auto time_body = function_body(src, "time_t time(");
     const auto difftime_body = function_body(src, "double difftime(");
@@ -498,7 +500,7 @@ TEST_CASE("localtime model: null time_t returns 0 before any tm field is written
     REQUIRE(!mktime_body.empty());
     const auto mnull = mktime_body.find("if (tp == 0)");
     REQUIRE(mnull != std::string::npos);
-    CHECK(mnull < mktime_body.find("tp->tm_mon"));
+    CHECK(prism_test::first_after(mktime_body, "tp->tm_mon", mnull));
 
     const auto time_body = function_body(src, "time_t time(");
     const auto difftime_body = function_body(src, "double difftime(");

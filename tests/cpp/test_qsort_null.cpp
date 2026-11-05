@@ -3,6 +3,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -188,7 +190,7 @@ TEST_CASE("bsearch model: zero count and null pointers return NULL without a rea
     REQUIRE(arm_check != std::string::npos);
     CHECK(arm.find("MEM-OOB-READ") != std::string::npos);
     CHECK(arm.find("return 0") != std::string::npos);
-    CHECK(arm_check < arm.find("return 0"));
+    CHECK(prism_test::first_after(arm, "return 0", arm_check));
     CHECK_FALSE(has_read(arm));
     CHECK(arm.find("for") == std::string::npos);
     CHECK(arm.find("while") == std::string::npos);

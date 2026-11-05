@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -74,15 +76,15 @@ TEST_CASE("cxx memory model: empty operator* checks, reset frees, move does not 
     REQUIRE(!obj_reset.empty());
     REQUIRE(!arr_reset.empty());
     CHECK(obj_reset.find("_M_ptr = __p") != std::string::npos);
-    CHECK(obj_reset.find("_M_ptr = __p") < obj_reset.find("::operator delete("));
+    CHECK(prism_test::appears_before(obj_reset, "_M_ptr = __p", "::operator delete("));
     CHECK(obj_reset.find("__old != nullptr") != std::string::npos);
-    CHECK(obj_reset.find("__old != nullptr") < obj_reset.find("::operator delete("));
+    CHECK(prism_test::appears_before(obj_reset, "__old != nullptr", "::operator delete("));
     CHECK(count_sub(obj_reset, "::operator delete(") == 1);
     CHECK(obj_reset.find("delete[]") == std::string::npos);
     CHECK(arr_reset.find("_M_ptr = __p") != std::string::npos);
-    CHECK(arr_reset.find("_M_ptr = __p") < arr_reset.find("delete[]"));
+    CHECK(prism_test::appears_before(arr_reset, "_M_ptr = __p", "delete[]"));
     CHECK(arr_reset.find("__old != nullptr") != std::string::npos);
-    CHECK(arr_reset.find("__old != nullptr") < arr_reset.find("delete[]"));
+    CHECK(prism_test::appears_before(arr_reset, "__old != nullptr", "delete[]"));
     CHECK(count_sub(arr_reset, "delete[]") == 1);
     CHECK(arr_reset.find("::operator delete(") == std::string::npos);
 

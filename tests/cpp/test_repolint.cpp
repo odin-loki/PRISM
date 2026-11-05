@@ -4,6 +4,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -29,6 +31,23 @@ std::string slurp_lf(const fs::path& p) {
     auto s = slurp(p);
     std::erase(s, '\r');
     return s;
+}
+
+// The end of the CMake block opened by the if( at `at`: the position of its
+// own else() / elseif( / endif(, or npos when it is not closed.
+std::size_t cmake_block_end(const std::string& cmake, std::size_t at) {
+    int depth = 0;
+    for (std::size_t i = at; i < cmake.size(); ++i) {
+        if (i != 0 && cmake[i - 1] != '\n' && cmake[i - 1] != ' ') continue;
+        if (cmake.compare(i, 3, "if(") == 0) {
+            ++depth;
+        } else if (cmake.compare(i, 6, "endif(") == 0) {
+            if (--depth == 0) return i;
+        } else if (depth == 1 && (cmake.compare(i, 5, "else(") == 0 || cmake.compare(i, 7, "elseif(") == 0)) {
+            return i;
+        }
+    }
+    return std::string::npos;
 }
 
 std::string norm_ws(std::string s) {
@@ -246,8 +265,16 @@ TEST_CASE("repolint: solver sources are listed and certified status is one liter
     CHECK_FALSE(std::regex_search(cmake, std::regex("GLOB[^)]*solver")));
     const auto at = cmake.find("src/cuda/probsat.cu");
     CHECK(at != std::string::npos);
-    CHECK(cmake.find("if(PRISM_CUDA)") < at);
-    CHECK(cmake.find("include(cmake/forge_mind.cmake)") > at);
+    // probsat.cu is built only inside the if(PRISM_CUDA) block. (This used to
+    // say "before include(cmake/forge_mind.cmake)", the next section then; that
+    // file is gone, so the check was `npos > at` and always held.)
+    const auto cuda = cmake.find("\nif(PRISM_CUDA)");
+    REQUIRE(cuda != std::string::npos);
+    CHECK(cuda < at);
+    CHECK(prism_test::first_after(cmake, "src/cuda/probsat.cu", cuda));
+    const auto cuda_end = cmake_block_end(cmake, cuda + 1);
+    REQUIRE(cuda_end != std::string::npos);
+    CHECK(at < cuda_end);
     const auto hdr = slurp(repo() / "include" / "prism" / "solver.hpp");
     CHECK(hdr.find("kProvedCertified = laws::PROVED_CERTIFIED") != std::string::npos);
     CHECK(hdr.find("\"PROVED-CERTIFIED\"") == std::string::npos);
@@ -276,7 +303,7 @@ TEST_CASE("repolint: Lean bit-blaster executables and TRUSTED_BASE promises") {
     const auto portfolio = slurp(repo() / "src" / "prism" / "solver" / "portfolio.cpp");
     auto body = portfolio.substr(portfolio.find("Certify run_checkers("));
     body = body.substr(0, body.find("c.certified = true;"));
-    CHECK(body.find("find_tool(\"cake_lpr\"") < body.find("check_lrat_dag(plan.chk"));
+    CHECK(prism_test::appears_before(body, "find_tool(\"cake_lpr\"", "check_lrat_dag(plan.chk"));
     CHECK(body.find("\"not certified: prism-lrat-check not found (NOTRUN)\"") != std::string::npos);
     CHECK(portfolio.find("\"bitblast: lean-proved (toCNF_equisat), prism-bitblast \"") != std::string::npos);
     const auto lake = slurp(repo() / "proofs" / "techniques" / "lakefile.toml");

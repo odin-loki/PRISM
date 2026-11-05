@@ -41,6 +41,8 @@
 
 #include <doctest/doctest.h>
 
+#include "test_support.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -376,7 +378,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const auto cont_ssize_ret = cont_ssize_body.find("return static_cast<std::ptrdiff_t>(__n);");
     REQUIRE(cont_ssize_check != std::string::npos);
     REQUIRE(cont_ssize_ret != std::string::npos);
-    CHECK(cont_ssize_body.find("__n > PTRDIFF_MAX") < cont_ssize_check);
+    CHECK(prism_test::first_before(cont_ssize_body, "__n > PTRDIFF_MAX", cont_ssize_check));
     CHECK(cont_ssize_check < cont_ssize_ret);
     CHECK(count_occ(cont_ssize_body, "*") == 0);
     CHECK(count_occ(cont_ssize_body, "__t.size()") == 1);
@@ -389,7 +391,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     REQUIRE(swap_null != std::string::npos);
     REQUIRE(swap_self != std::string::npos);
     REQUIRE(swap_load != std::string::npos);
-    CHECK(swap_body.find("__a == nullptr || __b == nullptr") < swap_null);
+    CHECK(prism_test::first_before(swap_body, "__a == nullptr || __b == nullptr", swap_null));
     CHECK(swap_null < swap_self);
     CHECK(swap_self < swap_load);
     CHECK(swap_body.find("*__a = *__b;") != std::string::npos);
@@ -403,7 +405,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const auto move_load = move_body.find("return *__p;");
     REQUIRE(move_null != std::string::npos);
     REQUIRE(move_load != std::string::npos);
-    CHECK(move_body.find("__p == nullptr") < move_null);
+    CHECK(prism_test::first_before(move_body, "__p == nullptr", move_null));
     CHECK(move_null < move_load);
     CHECK(count_occ(move_body, "*") == 1);
     CHECK(move_body.find("T{}") == std::string::npos);
@@ -443,7 +445,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const auto runtime = distance_body.find("return _Prism_pointer_diff(__first, __last);");
     REQUIRE(folded != std::string::npos);
     REQUIRE(runtime != std::string::npos);
-    CHECK(distance_body.find("if consteval") < folded);
+    CHECK(prism_test::first_before(distance_body, "if consteval", folded));
     CHECK(folded < runtime);
 
     const auto next_neg = body_of(code, "void _Prism_next_negative()");
@@ -473,7 +475,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     REQUIRE(zero_ret != std::string::npos);
     REQUIRE(pos_ret != std::string::npos);
     CHECK(next_n_body.find("__n < 0") != std::string::npos);
-    CHECK(next_n_body.find("__n < 0") < call_neg);
+    CHECK(prism_test::first_before(next_n_body, "__n < 0", call_neg));
     CHECK(call_neg < zero_ret);
     CHECK(zero_ret < pos_ret);
     CHECK(count_occ(next_n_body, "+") == 1);
@@ -512,7 +514,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     REQUIRE(prev_zero_ret != std::string::npos);
     REQUIRE(prev_pos_ret != std::string::npos);
     CHECK(prev_n_body.find("__n < 0") != std::string::npos);
-    CHECK(prev_n_body.find("__n < 0") < prev_call_neg);
+    CHECK(prism_test::first_before(prev_n_body, "__n < 0", prev_call_neg));
     CHECK(prev_call_neg < prev_zero_ret);
     CHECK(prev_zero_ret < prev_pos_ret);
     CHECK(count_occ(prev_n_body, "-") == 1);
