@@ -911,14 +911,15 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
         "                                    bool (*__pred)(const typename _Prism_count_if_identity<_Tp>::type&))";
     const std::string ci_zero_sig = "constexpr __PTRDIFF_TYPE__ count_if(_Arr&, bool (*)(const _Elem&)) noexcept";
     const auto ci_at = text.find(ci_sig);
-    const auto ci_zero_at = text.find(ci_zero_sig);
     REQUIRE(ci_at != std::string::npos);
-    REQUIRE(ci_zero_at != std::string::npos);
     CHECK(text.find(ci_sig, ci_at + 1) == std::string::npos);
-    CHECK(text.find(ci_zero_sig, ci_zero_at + 1) == std::string::npos);
     CHECK(prism_test::first_before(text, "namespace ranges {", ci_at));
-    CHECK(ci_at < ci_zero_at);
-    const std::string ci_fn = text.substr(ci_at, ci_zero_at - ci_at);
+    // No zero-length overload: libstdc++ 14 under clang 23 rejects count_if on int[0].
+    CHECK(text.find(ci_zero_sig) == std::string::npos);
+    CHECK(text.find("sizeof(_Arr) == 0") == std::string::npos);
+    const auto ci_end = text.find("}  // namespace ranges", ci_at);
+    REQUIRE(ci_end != std::string::npos);
+    const std::string ci_fn = text.substr(ci_at, ci_end - ci_at);
     const auto ci_null = ci_fn.find("if (__pred == nullptr)");
     const auto ci_check = ci_fn.find("__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::count_if null predicate\")");
     const auto ci_trap = ci_fn.find("__builtin_trap()");
@@ -957,23 +958,6 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     REQUIRE(ci_msg != std::string::npos);
     CHECK(text.find("\"std::ranges::count_if null predicate\")", ci_msg + 1) == std::string::npos);
 
-    const std::string ci_zero = text.substr(ci_zero_at);
-    const auto ci_zero_open = ci_zero.find('{');
-    const auto ci_zero_close = ci_zero.find('}', ci_zero_open);
-    REQUIRE(ci_zero_open != std::string::npos);
-    REQUIRE(ci_zero_close != std::string::npos);
-    CHECK(ci_zero.substr(0, ci_zero_open).find("requires(sizeof(_Arr) == 0 && _Prism_count_if_zero_elem<_Arr, _Elem>)") !=
-          std::string::npos);
-    const std::string ci_zero_body = ci_zero.substr(ci_zero_open, ci_zero_close - ci_zero_open + 1);
-    CHECK(ci_zero_body.find("return 0;") != std::string::npos);
-    CHECK(ci_zero_body.find("return __a") == std::string::npos);
-    CHECK(ci_zero_body.find('*') == std::string::npos);
-    CHECK(ci_zero_body.find('[') == std::string::npos);
-    CHECK(ci_zero_body.find('+') == std::string::npos);
-    CHECK(ci_zero_body.find("__pred") == std::string::npos);
-    CHECK(ci_zero_body.find("__a") == std::string::npos);
-    CHECK(ci_zero_body.find("nullptr") == std::string::npos);
-    CHECK(ci_zero_body.find("__prism_check") == std::string::npos);
 }
 
 TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {

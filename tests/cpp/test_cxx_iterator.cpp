@@ -24,12 +24,12 @@
 // omitted. This is not PROVED and not CLEAN. This is not a proof that the
 // pointer addresses an array.
 //
-// std::size, std::data, and std::cdata cover an array (a bound and a
-// zero-length overload) and, for size and data, one container lvalue.
-// std::empty is the same two array shapes plus the container lvalue. The
-// bound overload returns false and the zero-length overload returns true;
-// neither loads an element or calls size, begin, or end. std::ssize is the
-// same two array shapes plus the container lvalue, and a value past
+// std::size, std::data, and std::cdata cover an array (a bound N >= 1; a
+// zero-length array matches no overload, as in libstdc++) and, for size and
+// data, one container lvalue. std::empty is the same array shape plus the
+// container lvalue. The array overload returns false and does not load an
+// element or call size, begin, or end. std::ssize is the same array shape
+// plus the container lvalue, and a value past
 // PTRDIFF_MAX is a contract check. std::iter_swap and std::iter_move are
 // the pointer overloads. A null pointer is PTR-NULL-DEREF before a load.
 //
@@ -165,8 +165,8 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     const std::string cont_ssize_sig = "constexpr auto ssize(const _Tp& __t) noexcept(noexcept(__t.size()))";
     CHECK(count_occ(code, begin_sig) == 1);
     CHECK(count_occ(code, end_sig) == 1);
-    CHECK(count_occ(code, zero_begin_sig) == 1);
-    CHECK(count_occ(code, zero_end_sig) == 1);
+    CHECK(count_occ(code, zero_begin_sig) == 0);
+    CHECK(count_occ(code, zero_end_sig) == 0);
     CHECK(count_occ(code, distance_sig) == 1);
     CHECK(count_occ(code, next_sig) == 1);
     CHECK(count_occ(code, next_n_sig) == 1);
@@ -176,44 +176,44 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(count_occ(code, iter_swap_sig) == 1);
     CHECK(count_occ(code, iter_move_sig) == 1);
     CHECK(count_occ(code, size_sig) == 1);
-    CHECK(count_occ(code, zero_size_sig) == 1);
+    CHECK(count_occ(code, zero_size_sig) == 0);
     CHECK(count_occ(code, cont_size_sig) == 1);
     CHECK(count_occ(code, "-> decltype(__t.size())") == 1);
     CHECK(count_occ(code, empty_sig) == 1);
-    CHECK(count_occ(code, zero_empty_sig) == 1);
+    CHECK(count_occ(code, zero_empty_sig) == 0);
     CHECK(count_occ(code, cont_empty_sig) == 1);
     CHECK(count_occ(code, "-> decltype(__t.empty())") == 1);
     CHECK(count_occ(code, data_sig) == 1);
-    CHECK(count_occ(code, zero_data_sig) == 1);
+    CHECK(count_occ(code, zero_data_sig) == 0);
     CHECK(count_occ(code, cont_data_sig) == 1);
     CHECK(count_occ(code, "-> decltype(__t.data())") == 1);
     CHECK(count_occ(code, cdata_sig) == 1);
-    CHECK(count_occ(code, zero_cdata_sig) == 1);
+    CHECK(count_occ(code, zero_cdata_sig) == 0);
     CHECK(count_occ(code, ssize_sig) == 1);
-    CHECK(count_occ(code, zero_ssize_sig) == 1);
+    CHECK(count_occ(code, zero_ssize_sig) == 0);
     CHECK(count_occ(code, cont_ssize_sig) == 1);
     CHECK(count_occ(code, "-> decltype(__t.size(), std::ptrdiff_t())") == 1);
-    CHECK(count_occ(code, "begin(") == 2);
-    CHECK(count_occ(code, "end(") == 2);
+    CHECK(count_occ(code, "begin(") == 1);
+    CHECK(count_occ(code, "end(") == 1);
     CHECK(count_occ(code, "distance(") == 1);
     CHECK(count_occ(code, "next(") == 2);
     CHECK(count_occ(code, "prev(") == 2);
     CHECK(count_occ(code, "advance(") == 1);
     CHECK(count_occ(code, "iter_swap(") == 1);
     CHECK(count_occ(code, "iter_move(") == 1);
-    // ssize( contains size(. Two array size overloads, three ssize
-    // overloads, three __t.size() spellings on container ssize, and four
-    // spellings on the container size overload.
-    CHECK(count_occ(code, "size(") == 12);
-    // Two array empty overloads, then on the container overload the
+    // ssize( contains size(. One array size overload, two ssize overloads,
+    // three __t.size() spellings on container ssize, and four spellings on
+    // the container size overload. There are no zero-length overloads.
+    CHECK(count_occ(code, "size(") == 10);
+    // One array empty overload, then on the container overload the
     // signature, noexcept operand, decltype operand, and one call.
-    CHECK(count_occ(code, "empty(") == 6);
-    // Two array data overloads, two cdata overloads (the substring data(),
+    CHECK(count_occ(code, "empty(") == 5);
+    // One array data overload, one cdata overload (the substring data(),
     // and four spellings on the container data overload).
-    CHECK(count_occ(code, "data(") == 8);
-    CHECK(count_occ(code, "cdata(") == 2);
-    CHECK(count_occ(code, "ssize(") == 3);
-    CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 7);
+    CHECK(count_occ(code, "data(") == 6);
+    CHECK(count_occ(code, "cdata(") == 1);
+    CHECK(count_occ(code, "ssize(") == 2);
+    CHECK(count_occ(code, "requires(sizeof(_Arr) == 0)") == 0);
     // begin and end return _Tp*. distance and _Prism_pointer_diff take four
     // _Tp* parameters. The two next overloads add two _Tp* returns and two
     // _Tp* parameters. The two prev overloads add two more of each.
@@ -223,7 +223,7 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     // bound overload. The check declaration adds two const char*.
     CHECK(count_occ(code, "*") == 27);
     CHECK(code.find("reverse_iterator") == std::string::npos);
-    CHECK(count_occ(code, "constexpr bool empty(") == 2);
+    CHECK(count_occ(code, "constexpr bool empty(") == 1);
     CHECK(code.find("size(_Tp*") == std::string::npos);
     CHECK(code.find("size(const _Tp*") == std::string::npos);
     CHECK(code.find("empty(_Tp*") == std::string::npos);
@@ -254,12 +254,8 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
 
     const auto begin_body = body_of(code, begin_sig);
     const auto end_body = body_of(code, end_sig);
-    const auto zero_begin_body = body_of(code, zero_begin_sig);
-    const auto zero_end_body = body_of(code, zero_end_sig);
     REQUIRE(begin_body.find("return __arr;") != std::string::npos);
     REQUIRE(end_body.find("return __arr + _Nm;") != std::string::npos);
-    REQUIRE(zero_begin_body.find("return __arr;") != std::string::npos);
-    REQUIRE(zero_end_body.find("return __arr + 0;") != std::string::npos);
     CHECK(begin_body.find('*') == std::string::npos);
     CHECK(begin_body.find('[') == std::string::npos);
     CHECK(begin_body.find('+') == std::string::npos);
@@ -270,25 +266,13 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(end_body.find('&') == std::string::npos);
     CHECK(end_body.find("__prism_check") == std::string::npos);
     CHECK(end_body.find("distance") == std::string::npos);
-    CHECK(zero_begin_body.find('*') == std::string::npos);
-    CHECK(zero_begin_body.find('[') == std::string::npos);
-    CHECK(zero_begin_body.find('+') == std::string::npos);
-    CHECK(zero_begin_body.find("__prism_check") == std::string::npos);
-    CHECK(zero_end_body.find('*') == std::string::npos);
-    CHECK(zero_end_body.find('[') == std::string::npos);
-    CHECK(zero_end_body.find("__prism_check") == std::string::npos);
 
     const auto size_body = body_of(code, size_sig);
-    const auto zero_size_body = body_of(code, zero_size_sig);
     REQUIRE(size_body.find("return _Nm;") != std::string::npos);
-    REQUIRE(zero_size_body.find("return 0;") != std::string::npos);
     CHECK(count_occ(size_body, "*") == 0);
-    CHECK(count_occ(zero_size_body, "*") == 0);
     CHECK(size_body.find("__arr") == std::string::npos);
     CHECK(size_body.find("begin") == std::string::npos);
     CHECK(size_body.find("__prism_check") == std::string::npos);
-    CHECK(zero_size_body.find("__arr") == std::string::npos);
-    CHECK(zero_size_body.find("__prism_check") == std::string::npos);
 
     const auto cont_size_body = body_of(code, cont_size_sig);
     REQUIRE(cont_size_body.find("return __t.size();") != std::string::npos);
@@ -298,12 +282,9 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(cont_size_body.find("__prism_check") == std::string::npos);
 
     const auto empty_body = body_of(code, empty_sig);
-    const auto zero_empty_body = body_of(code, zero_empty_sig);
     REQUIRE(empty_body.find("return false;") != std::string::npos);
-    REQUIRE(zero_empty_body.find("return true;") != std::string::npos);
     CHECK(count_occ(empty_body, "return false;") == 1);
-    CHECK(count_occ(zero_empty_body, "return true;") == 1);
-    for (const auto* b : {&empty_body, &zero_empty_body}) {
+    for (const auto* b : {&empty_body}) {
         CHECK(count_occ(*b, "*") == 0);
         CHECK(b->find('[') == std::string::npos);
         CHECK(b->find('+') == std::string::npos);
@@ -327,17 +308,12 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(cont_empty_body.find("__prism_check") == std::string::npos);
 
     const auto data_body = body_of(code, data_sig);
-    const auto zero_data_body = body_of(code, zero_data_sig);
     REQUIRE(data_body.find("return __arr;") != std::string::npos);
-    REQUIRE(zero_data_body.find("return __arr;") != std::string::npos);
     CHECK(count_occ(data_body, "*") == 0);
-    CHECK(count_occ(zero_data_body, "*") == 0);
     CHECK(data_body.find('+') == std::string::npos);
     CHECK(data_body.find("size") == std::string::npos);
     CHECK(data_body.find("empty") == std::string::npos);
-    CHECK(zero_data_body.find('+') == std::string::npos);
     CHECK(data_body.find("__prism_check") == std::string::npos);
-    CHECK(zero_data_body.find("__prism_check") == std::string::npos);
 
     const auto cont_data_body = body_of(code, cont_data_sig);
     REQUIRE(cont_data_body.find("return __t.data();") != std::string::npos);
@@ -348,20 +324,13 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(cont_data_body.find("__prism_check") == std::string::npos);
 
     const auto cdata_body = body_of(code, cdata_sig);
-    const auto zero_cdata_body = body_of(code, zero_cdata_sig);
     REQUIRE(cdata_body.find("return __arr;") != std::string::npos);
-    REQUIRE(zero_cdata_body.find("return __arr;") != std::string::npos);
     CHECK(count_occ(cdata_body, "*") == 0);
-    CHECK(count_occ(zero_cdata_body, "*") == 0);
     CHECK(cdata_body.find("data") == std::string::npos);
-    CHECK(zero_cdata_body.find("data") == std::string::npos);
     CHECK(cdata_body.find("__prism_check") == std::string::npos);
-    CHECK(zero_cdata_body.find("__prism_check") == std::string::npos);
 
     const auto ssize_body = body_of(code, ssize_sig);
-    const auto zero_ssize_body = body_of(code, zero_ssize_sig);
     REQUIRE_FALSE(ssize_body.empty());
-    REQUIRE(zero_ssize_body.find("return 0;") != std::string::npos);
     const auto ssize_check = ssize_body.find("_Prism_ssize_array_bound_does_not_fit()");
     const auto ssize_ret = ssize_body.find("return static_cast<std::ptrdiff_t>(_Nm);");
     REQUIRE(ssize_check != std::string::npos);
@@ -369,8 +338,6 @@ TEST_CASE("cxx iterator model: array begin and end do not dereference and a poin
     CHECK(ssize_check < ssize_ret);
     CHECK(ssize_body.find("static_cast<std::ptrdiff_t>(_Nm)") != std::string::npos);
     CHECK(count_occ(ssize_body, "*") == 0);
-    CHECK(count_occ(zero_ssize_body, "*") == 0);
-    CHECK(zero_ssize_body.find("__prism_check") == std::string::npos);
 
     const auto cont_ssize_body = body_of(code, cont_ssize_sig);
     REQUIRE(cont_ssize_body.find("const auto __n = __t.size();") != std::string::npos);

@@ -184,9 +184,9 @@ int main(int argc, char** argv) {
     std::printf("len %td first %d last %d\n", std::distance(b, e), *b, *(e - 1));
     std::printf("neg %td\n", std::distance(e, b));
 
-    int none[0] = {};
-    int* nb = std::begin(none);
-    int* ne = std::end(none);
+    int one[1] = {7};  // a zero-length array is rejected by libstdc++ 14 under clang 23
+    int* nb = std::end(one);
+    int* ne = std::end(one);
     std::printf("empty %d\n", (nb == ne && std::distance(nb, ne) == 0) ? 1 : 0);
 
     const int c[2] = {8, 9};

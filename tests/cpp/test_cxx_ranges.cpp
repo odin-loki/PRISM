@@ -12,16 +12,15 @@
 // element and does not load it. end is one past the last and does not load
 // it. N == 0 returns the same pointer from both. data of T(&)[N] is a
 // pointer to the first element by array-to-pointer decay and does not load
-// it. N == 0 returns the decayed pointer and does not load it. cbegin,
+// it. A zero-length array matches no overload (as in libstdc++). cbegin,
 // cend, and cdata of T(&)[N] with N >= 1 are const T* by that same decay.
 // cbegin is the first element and does not load it. cend is one past the
 // last and does not load it. cdata is the decayed pointer and does not load
-// it. N == 0 does not match that parameter. A second overload constrained
-// with sizeof of the array equal to 0 returns the decayed pointer and does
-// not load it. distance of T(&)[N] with N >= 1 is the bound converted to
+// it. N == 0 does not match that parameter, and no other overload takes a
+// zero-length array, as libstdc++ 14 under clang 23 rejects it. distance of T(&)[N] with N >= 1 is the bound converted to
 // ptrdiff_t and does not load an element. A bound that does not fit is a
 // FUNC-CONTRACT check then a trap, not a wrapped negative ptrdiff_t.
-// N == 0 returns 0 and does not load an element. A pointer has no overload,
+// N == 0 matches no overload. A pointer has no overload,
 // so the call fails to compile. This is not a proof that an iterator stays
 // in range or that a pointer has a length. This is not PROVED and not CLEAN.
 //
@@ -239,18 +238,11 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_empty.find('.') == std::string::npos);
     CHECK(arr_empty.find("__t") == std::string::npos);
 
-    const auto zero_empty = body_of(src, "constexpr bool empty(_Arr&) noexcept");
-    REQUIRE_FALSE(zero_empty.empty());
-    CHECK(zero_empty.find("return true;") != std::string::npos);
-    CHECK(zero_empty.find('*') == std::string::npos);
-    CHECK(zero_empty.find('[') == std::string::npos);
-    CHECK(zero_empty.find('.') == std::string::npos);
-    CHECK(zero_empty.find("__t") == std::string::npos);
     // empty, begin, end, data, cbegin, cend, cdata, and distance.
     // empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if,
     // and find_if_not. find_if and find_if_not continue with &&, so this
     // text stops before the closing parenthesis.
-    CHECK(count_of(src, "requires(sizeof(_Arr) == 0") == 11);
+    CHECK(count_of(src, "requires(sizeof(_Arr) == 0") == 0);
 
     const auto mem_empty = body_of(src, "empty(_Tp& __t)");
     REQUIRE_FALSE(mem_empty.empty());
@@ -258,7 +250,7 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(mem_empty.find('*') == std::string::npos);
     CHECK(mem_empty.find('[') == std::string::npos);
     CHECK(count_of(src, "constexpr bool empty(_Tp (&)[_Nm]) noexcept") == 1);
-    CHECK(count_of(src, "constexpr bool empty(_Arr&) noexcept") == 1);
+    CHECK(count_of(src, "constexpr bool empty(_Arr&) noexcept") == 0);
     CHECK(count_of(src, "empty(_Tp& __t)") == 1);
     CHECK(src.find("empty(_Tp*") == std::string::npos);
 
@@ -277,25 +269,12 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_end.find('[') == std::string::npos);
     CHECK(arr_end.find('.') == std::string::npos);
 
-    const auto zero_begin = body_of(src, "constexpr auto begin(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_begin.empty());
-    CHECK(zero_begin.find("return __a;") != std::string::npos);
-    CHECK(zero_begin.find('*') == std::string::npos);
-    CHECK(zero_begin.find('[') == std::string::npos);
-    CHECK(zero_begin.find('.') == std::string::npos);
-    CHECK(zero_begin.find('+') == std::string::npos);
 
-    const auto zero_end = body_of(src, "constexpr auto end(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_end.empty());
-    CHECK(zero_end.find("return __a + 0;") != std::string::npos);
-    CHECK(zero_end.find('*') == std::string::npos);
-    CHECK(zero_end.find('[') == std::string::npos);
-    CHECK(zero_end.find('.') == std::string::npos);
 
     CHECK(count_of(src, "constexpr _Tp* begin(_Tp (&__a)[_Nm]) noexcept") == 1);
     CHECK(count_of(src, "constexpr _Tp* end(_Tp (&__a)[_Nm]) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto begin(_Arr& __a) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto end(_Arr& __a) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto begin(_Arr& __a) noexcept") == 0);
+    CHECK(count_of(src, "constexpr auto end(_Arr& __a) noexcept") == 0);
 
     const auto arr_data = body_of(src, "constexpr _Tp* data(_Tp (&__a)[_Nm]) noexcept");
     REQUIRE_FALSE(arr_data.empty());
@@ -305,16 +284,9 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_data.find('.') == std::string::npos);
     CHECK(arr_data.find('+') == std::string::npos);
 
-    const auto zero_data = body_of(src, "constexpr auto data(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_data.empty());
-    CHECK(zero_data.find("return __a;") != std::string::npos);
-    CHECK(zero_data.find('*') == std::string::npos);
-    CHECK(zero_data.find('[') == std::string::npos);
-    CHECK(zero_data.find('.') == std::string::npos);
-    CHECK(zero_data.find('+') == std::string::npos);
 
     CHECK(count_of(src, "constexpr _Tp* data(_Tp (&__a)[_Nm]) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto data(_Arr& __a) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto data(_Arr& __a) noexcept") == 0);
     CHECK(src.substr(0, src.find("struct _Prism_ptr_elem;")).find(".data()") == std::string::npos);
 
     const auto arr_cbegin = body_of(src, "constexpr const _Tp* cbegin(_Tp (&__a)[_Nm]) noexcept");
@@ -332,21 +304,7 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_cend.find('[') == std::string::npos);
     CHECK(arr_cend.find('.') == std::string::npos);
 
-    const auto zero_cbegin = body_of(src, "constexpr auto cbegin(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_cbegin.empty());
-    CHECK(zero_cbegin.find("return __a;") != std::string::npos);
-    CHECK(zero_cbegin.find('*') == std::string::npos);
-    CHECK(zero_cbegin.find('[') == std::string::npos);
-    CHECK(zero_cbegin.find('.') == std::string::npos);
-    CHECK(zero_cbegin.find('+') == std::string::npos);
 
-    const auto zero_cend = body_of(src, "constexpr auto cend(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_cend.empty());
-    CHECK(zero_cend.find("return __a;") != std::string::npos);
-    CHECK(zero_cend.find('*') == std::string::npos);
-    CHECK(zero_cend.find('[') == std::string::npos);
-    CHECK(zero_cend.find('.') == std::string::npos);
-    CHECK(zero_cend.find('+') == std::string::npos);
 
     const auto arr_cdata = body_of(src, "constexpr const _Tp* cdata(_Tp (&__a)[_Nm]) noexcept");
     REQUIRE_FALSE(arr_cdata.empty());
@@ -356,31 +314,23 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_cdata.find('.') == std::string::npos);
     CHECK(arr_cdata.find('+') == std::string::npos);
 
-    const auto zero_cdata = body_of(src, "constexpr auto cdata(_Arr& __a) noexcept");
-    REQUIRE_FALSE(zero_cdata.empty());
-    CHECK(zero_cdata.find("return __a;") != std::string::npos);
-    CHECK(zero_cdata.find('*') == std::string::npos);
-    CHECK(zero_cdata.find('[') == std::string::npos);
-    CHECK(zero_cdata.find('.') == std::string::npos);
-    CHECK(zero_cdata.find('+') == std::string::npos);
 
     CHECK(count_of(src, "constexpr const _Tp* cbegin(_Tp (&__a)[_Nm]) noexcept") == 1);
     CHECK(count_of(src, "constexpr const _Tp* cend(_Tp (&__a)[_Nm]) noexcept") == 1);
     CHECK(count_of(src, "constexpr const _Tp* cdata(_Tp (&__a)[_Nm]) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto cbegin(_Arr& __a) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto cend(_Arr& __a) noexcept") == 1);
-    CHECK(count_of(src, "constexpr auto cdata(_Arr& __a) noexcept") == 1);
-    CHECK(count_of(src, "decltype(static_cast<const _Arr&>(__a) + 0)") == 3);
+    CHECK(count_of(src, "constexpr auto cbegin(_Arr& __a) noexcept") == 0);
+    CHECK(count_of(src, "constexpr auto cend(_Arr& __a) noexcept") == 0);
+    CHECK(count_of(src, "constexpr auto cdata(_Arr& __a) noexcept") == 0);
+    CHECK(count_of(src, "decltype(static_cast<const _Arr&>(__a) + 0)") == 0);
     CHECK(src.find(".cbegin()") == std::string::npos);
     CHECK(src.find(".cend()") == std::string::npos);
     CHECK(src.find(".cdata()") == std::string::npos);
-    // begin and data (array and zero-length), cbegin and cdata (array and
-    // zero-length), zero-length cend, and the zero-length find, find_if, and
-    // find_if_not. end's zero-length body is still + 0.
-    CHECK(count_of(src, "return __a;") == 12);
+    // begin, data, cbegin, and cdata of T(&)[N]. There is no zero-length
+    // overload, so no body returns __a + 0.
+    CHECK(count_of(src, "return __a;") == 4);
     CHECK(count_of(src, "return __a + _Nm;") == 5);
     CHECK(count_of(src, "return __a + __i;") == 3);
-    CHECK(count_of(src, "return __a + 0;") == 1);
+    CHECK(count_of(src, "return __a + 0;") == 0);
 
     const auto arr_dist = body_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept");
     REQUIRE_FALSE(arr_dist.empty());
@@ -398,18 +348,8 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_dist.find("__a") == std::string::npos);
     CHECK(arr_dist.find("__t") == std::string::npos);
 
-    const auto zero_dist = body_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept");
-    REQUIRE_FALSE(zero_dist.empty());
-    CHECK(zero_dist.find("return 0;") != std::string::npos);
-    CHECK(count_of(zero_dist, "return ") == 1);
-    CHECK(zero_dist.find('*') == std::string::npos);
-    CHECK(zero_dist.find('[') == std::string::npos);
-    CHECK(zero_dist.find('.') == std::string::npos);
-    CHECK(zero_dist.find('+') == std::string::npos);
-    CHECK(zero_dist.find("__a") == std::string::npos);
-    CHECK(zero_dist.find("__t") == std::string::npos);
     CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Tp (&)[_Nm]) noexcept") == 1);
-    CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept") == 1);
+    CHECK(count_of(src, "constexpr std::ptrdiff_t distance(_Arr&) noexcept") == 0);
     CHECK(src.find(".distance()") == std::string::npos);
 
     const auto arr_find =
@@ -425,18 +365,8 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(arr_find.find('.') == std::string::npos);
     CHECK(count_of(arr_find, "return ") == 2);
 
-    const auto zero_find = body_of(src, "constexpr auto find(_Arr& __a, const _Up&) noexcept");
-    REQUIRE_FALSE(zero_find.empty());
-    CHECK(zero_find.find("return __a;") != std::string::npos);
-    CHECK(count_of(zero_find, "return ") == 1);
-    CHECK(zero_find.find('*') == std::string::npos);
-    CHECK(zero_find.find('[') == std::string::npos);
-    CHECK(zero_find.find('.') == std::string::npos);
-    CHECK(zero_find.find('+') == std::string::npos);
-    CHECK(zero_find.find("__value") == std::string::npos);
-    CHECK(zero_find.find("_Up") == std::string::npos);
     CHECK(count_of(src, "constexpr _Tp* find(_Tp (&__a)[_Nm], const _Prism_type_identity_t<_Tp>& __value)") == 1);
-    CHECK(count_of(src, "constexpr auto find(_Arr& __a, const _Up&) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto find(_Arr& __a, const _Up&) noexcept") == 0);
 
     const auto arr_find_if =
         body_of(src, "constexpr _Tp* find_if(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))");
@@ -474,20 +404,9 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(count_of(arr_find_if, "return ") == 2);
     CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if null predicate\")") == 1);
 
-    const auto zero_find_if = body_of(src, "constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept");
-    REQUIRE_FALSE(zero_find_if.empty());
-    CHECK(zero_find_if.find("return __a;") != std::string::npos);
-    CHECK(count_of(zero_find_if, "return ") == 1);
-    CHECK(zero_find_if.find('*') == std::string::npos);
-    CHECK(zero_find_if.find('[') == std::string::npos);
-    CHECK(zero_find_if.find('.') == std::string::npos);
-    CHECK(zero_find_if.find('+') == std::string::npos);
-    CHECK(zero_find_if.find("__pred") == std::string::npos);
-    CHECK(zero_find_if.find("_Elem") == std::string::npos);
-    CHECK(zero_find_if.find("nullptr") == std::string::npos);
     CHECK(count_of(src, "constexpr _Tp* find_if(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))") ==
           1);
-    CHECK(count_of(src, "constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto find_if(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 0);
 
     const auto arr_find_if_not = body_of(
         src, "constexpr _Tp* find_if_not(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))");
@@ -525,22 +444,10 @@ TEST_CASE("cxx ranges model: size, empty, begin, end, data, cbegin, cend, cdata,
     CHECK(count_of(arr_find_if_not, "return ") == 2);
     CHECK(count_of(src, "__prism_check(0, \"FUNC-CONTRACT\", \"std::ranges::find_if_not null predicate\")") == 1);
 
-    const auto zero_find_if_not =
-        body_of(src, "constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept");
-    REQUIRE_FALSE(zero_find_if_not.empty());
-    CHECK(zero_find_if_not.find("return __a;") != std::string::npos);
-    CHECK(count_of(zero_find_if_not, "return ") == 1);
-    CHECK(zero_find_if_not.find('*') == std::string::npos);
-    CHECK(zero_find_if_not.find('[') == std::string::npos);
-    CHECK(zero_find_if_not.find('.') == std::string::npos);
-    CHECK(zero_find_if_not.find('+') == std::string::npos);
-    CHECK(zero_find_if_not.find("__pred") == std::string::npos);
-    CHECK(zero_find_if_not.find("_Elem") == std::string::npos);
-    CHECK(zero_find_if_not.find("nullptr") == std::string::npos);
     CHECK(count_of(
               src, "constexpr _Tp* find_if_not(_Tp (&__a)[_Nm], bool (*__pred)(const _Prism_type_identity_t<_Tp>&))") ==
           1);
-    CHECK(count_of(src, "constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 1);
+    CHECK(count_of(src, "constexpr auto find_if_not(_Arr& __a, bool (*)(const _Elem&)) noexcept") == 0);
 }
 
 TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
@@ -1233,4 +1140,67 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
         "struct Mut { bool empty() { return true; } };\n"
         "bool f() { Mut m; return std::ranges::empty(m); }\n";
     CHECK_FALSE(compile_snippet(c.cxx, c.tmp, "ranges_empty_mut", empty_mut_src, true));
+}
+
+// A model must not accept code the real library rejects. With clang 23,
+// libstdc++ 14 rejects every array access below on a zero-length array
+// (int[0], int[0][4]: T(&)[N] is a substitution failure for N == 0 and no
+// other overload takes it). The models (ranges, iterator, and algorithm's
+// ranges::count_if) have no zero-length overload either, so each call is
+// rejected both ways. int[4][0] has extent 4 and is accepted both ways.
+TEST_CASE("cxx ranges model: zero-length arrays are rejected exactly where libstdc++ rejects them") {
+    auto& c = ctx();
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
+    const auto accepts = [&](const std::string& name, const std::string& header, const std::string& decl,
+                             const std::string& expr, bool with_models) {
+        const fs::path in = c.tmp / (name + ".cpp");
+        std::ofstream(in) << "#include <" << header << ">\n"
+                          << decl << "\nbool fp(const int&);\nint main() { (void)(" << expr << "); }\n";
+        std::vector<std::string> argv{c.cxx, "-std=c++23", "-fsyntax-only", "-w"};
+        if (with_models) {
+            argv.push_back("-isystem");
+            argv.push_back(cxxh::model_dir().string());
+        }
+        argv.push_back(in.string());
+        std::string err;
+        return run_cmd(argv, nullptr, &err);
+    };
+    struct Call {
+        const char* header;
+        const char* expr;
+    };
+    const Call rejected[] = {
+        {"ranges", "std::ranges::empty(z)"},        {"ranges", "std::ranges::begin(z)"},
+        {"ranges", "std::ranges::end(z)"},          {"ranges", "std::ranges::data(z)"},
+        {"ranges", "std::ranges::cbegin(z)"},       {"ranges", "std::ranges::cend(z)"},
+        {"ranges", "std::ranges::cdata(z)"},        {"ranges", "std::ranges::distance(z)"},
+        {"ranges", "std::ranges::size(z)"},         {"ranges", "std::ranges::ssize(z)"},
+        {"ranges", "std::ranges::find(z, 1)"},      {"ranges", "std::ranges::find_if(z, fp)"},
+        {"ranges", "std::ranges::find_if_not(z, fp)"}, {"algorithm", "std::ranges::count_if(z, fp)"},
+        {"iterator", "std::begin(z)"},              {"iterator", "std::end(z)"},
+        {"iterator", "std::data(z)"},               {"iterator", "std::cbegin(z)"},
+        {"iterator", "std::size(z)"},               {"iterator", "std::ssize(z)"},
+        {"iterator", "std::empty(z)"},
+    };
+    int n = 0;
+    for (const char* decl : {"int z[0] = {};", "int z[0][4] = {};"}) {
+        for (const auto& call : rejected) {
+            const std::string name = "zero_" + std::to_string(n++);
+            INFO(call.header << ": " << decl << " " << call.expr);
+            CHECK_FALSE(accepts(name + "_lib", call.header, decl, call.expr, false));
+            CHECK_FALSE(accepts(name + "_model", call.header, decl, call.expr, true));
+        }
+    }
+    const Call accepted[] = {
+        {"ranges", "std::ranges::empty(z)"}, {"ranges", "std::ranges::begin(z)"},
+        {"ranges", "std::ranges::data(z)"},  {"ranges", "std::ranges::distance(z)"},
+        {"iterator", "std::begin(z)"},       {"iterator", "std::size(z)"},
+        {"iterator", "std::empty(z)"},
+    };
+    for (const auto& call : accepted) {
+        const std::string name = "inner_" + std::to_string(n++);
+        INFO(call.header << ": int z[4][0] " << call.expr);
+        CHECK(accepts(name + "_lib", call.header, "int z[4][0] = {};", call.expr, false));
+        CHECK(accepts(name + "_model", call.header, "int z[4][0] = {};", call.expr, true));
+    }
 }

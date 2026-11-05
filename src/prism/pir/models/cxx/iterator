@@ -9,14 +9,15 @@
 // (array-to-pointer decay, not a load). end returns a pointer one past the
 // last.
 //
-// N == 0 is valid. A parameter written T (&)[N] is a substitution failure
-// for that bound (clang: zero-length arrays are not permitted in C++), so
-// the empty array is a second overload: a reference whose size is 0. begin
-// and end then return the same pointer. Neither overload dereferences it.
+// A zero-length array matches no overload. A parameter written T (&)[N] is
+// a substitution failure for N == 0 (clang: zero-length arrays are not
+// permitted in C++), and libstdc++ 14 under clang 23 rejects std::begin,
+// end, data, size, ssize and empty on int[0] too, so this header does not
+// accept what the library rejects.
 //
 // A pointer argument is not an overload of begin or end. It does not match
-// T (&)[N], and its size is not 0, so the call fails to compile against
-// this header and pir falls back to libstdc++. That argument is not stubbed.
+// T (&)[N], so the call fails to compile against this header and pir falls
+// back to libstdc++. That argument is not stubbed.
 //
 // std::distance is only the overload for two pointers of the same type.
 // The result is the element count from the first to the second. A count
@@ -59,10 +60,10 @@
 // value-initialized T{}. This is not a proof that the pointer addresses
 // an array. This is not PROVED and not CLEAN.
 //
-// std::size is the two array overloads and one overload for an lvalue
-// with a size member. The bound overload returns the bound and does not
-// load an element. N == 0 does not match that parameter. The zero-length
-// overload returns 0 and does not load. A pointer argument does not match.
+// std::size is the array overload and one overload for an lvalue with a
+// size member. The array overload returns the bound and does not load an
+// element. N == 0 does not match that parameter, and a zero-length array
+// matches no overload. A pointer argument does not match.
 // There is no pointer overload. The array bodies do not call the other
 // array functions. The lvalue overload returns that member once. The
 // noexcept operator and the decltype operand are unevaluated. That body
@@ -70,22 +71,21 @@
 // without that member does not match, so that call fails to compile and
 // pir falls back. This is not PROVED and not CLEAN.
 //
-// std::empty is the two array overloads and one overload for an lvalue
-// with an empty member. The bound overload returns false and does not
-// load an element. N == 0 does not match that parameter. The zero-length
-// overload returns true and does not load. A pointer argument does not
-// match. There is no pointer overload. The array bodies do not call size,
+// std::empty is the array overload and one overload for an lvalue with
+// an empty member. The array overload returns false and does not load an
+// element. N == 0 does not match that parameter, and a zero-length array
+// matches no overload. A pointer argument does not match. There is no pointer overload. The array bodies do not call size,
 // begin, or end. The lvalue overload returns that member once. The
 // noexcept operator and the decltype operand are unevaluated. That body
 // does not call size and does not load an element. It does not return a
 // fabricated false. A class without that member does not match, so that
 // call fails to compile and pir falls back. This is not PROVED and not CLEAN.
 //
-// std::data is the two array overloads and one overload for an lvalue
-// with a data member. The bound overload returns a pointer to the first
-// element by array-to-pointer decay and does not load an element. N == 0
-// does not match that parameter. The zero-length overload returns the
-// decayed pointer and does not load. A pointer argument does not match.
+// std::data is the array overload and one overload for an lvalue with a
+// data member. The array overload returns a pointer to the first element
+// by array-to-pointer decay and does not load an element. N == 0 does not
+// match that parameter, and a zero-length array matches no overload. A
+// pointer argument does not match.
 // There is no pointer overload. The array bodies do not call the other
 // array functions. The lvalue overload returns that member once. The
 // noexcept operator and the decltype operand are unevaluated. That body
@@ -94,24 +94,22 @@
 // match, so that call fails to compile and pir falls back.
 // This is not PROVED and not CLEAN.
 //
-// std::cdata is the array overloads only, the same two shapes as the array
-// reference and the zero-length reference. The bound overload returns a
-// const pointer to the first element by array-to-pointer decay and does
-// not load an element. N == 0 does not match that parameter. The
-// zero-length overload returns the decayed pointer and does not load. A
-// pointer argument does not match. There is no pointer overload. A class
+// std::cdata is the array overload only. It returns a const pointer to the
+// first element by array-to-pointer decay and does not load an element.
+// N == 0 does not match that parameter, and a zero-length array matches no
+// overload. A pointer argument does not match. There is no pointer overload. A class
 // type does not match, so that call fails to compile and pir falls back.
 // The bodies do not call the other array functions.
 // This is not PROVED and not CLEAN.
 //
-// std::ssize is the two array overloads and one overload for an lvalue
-// with a size member. The bound overload returns the bound as ptrdiff_t
+// std::ssize is the array overload and one overload for an lvalue with a
+// size member. The array overload returns the bound as ptrdiff_t
 // and does not load an element. A bound greater than PTRDIFF_MAX is
 // __prism_check with class FUNC-CONTRACT and message
 // "std::ssize array bound does not fit in ptrdiff_t", then __builtin_trap.
 // That path does not cast the bound and does not return a negative value.
-// N == 0 does not match that parameter. The zero-length overload returns
-// 0 and does not load. A pointer argument does not match. There is no
+// N == 0 does not match that parameter, and a zero-length array matches
+// no overload. A pointer argument does not match. There is no
 // pointer overload. The array bodies do not call the other array
 // functions. The lvalue overload reads that member once. A value greater
 // than PTRDIFF_MAX is __prism_check with class FUNC-CONTRACT and message
@@ -196,40 +194,12 @@ constexpr _Tp* end(_Tp (&__arr)[_Nm]) noexcept {
     return __arr + _Nm;
 }
 
-// N == 0. sizeof of a zero-length array is 0. The result is the decayed
-// pointer, not a load. A pointer argument has a non-zero size, so it does
-// not match.
-template <typename _Arr>
-constexpr auto begin(_Arr& __arr) noexcept -> decltype(__arr + 0)
-    requires(sizeof(_Arr) == 0)
-{
-    return __arr;
-}
-
-// Same pointer as begin. Adding zero does not dereference.
-template <typename _Arr>
-constexpr auto end(_Arr& __arr) noexcept -> decltype(__arr + 0)
-    requires(sizeof(_Arr) == 0)
-{
-    return __arr + 0;
-}
-
 // Element count. The bound is at least 1: N == 0 does not match this
 // parameter. The result is the bound. The body does not load an element.
 template <typename _Tp, size_t _Nm>
     requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
 constexpr size_t size(_Tp (&__arr)[_Nm]) noexcept {
     return _Nm;
-}
-
-// N == 0. sizeof of a zero-length array is 0. The result is 0, not a
-// load. A pointer argument has a non-zero size, so it does not match.
-// There is no pointer overload.
-template <typename _Arr>
-constexpr size_t size(_Arr& __arr) noexcept
-    requires(sizeof(_Arr) == 0)
-{
-    return 0;
 }
 
 // An lvalue with a size member. That member is returned once. The
@@ -252,16 +222,6 @@ constexpr bool empty(_Tp (&)[_Nm]) noexcept {
     return false;
 }
 
-// N == 0. sizeof of a zero-length array is 0. The result is true, not a
-// load. The parameter is unnamed. A pointer argument has a non-zero size,
-// so it does not match. There is no pointer overload.
-template <typename _Arr>
-constexpr bool empty(_Arr&) noexcept
-    requires(sizeof(_Arr) == 0)
-{
-    return true;
-}
-
 // An lvalue with an empty member. That member is returned once. The
 // noexcept operator and the decltype operand are unevaluated. The body
 // does not call size. It does not load an element. It does not return a
@@ -278,16 +238,6 @@ constexpr auto empty(const _Tp& __t) noexcept(noexcept(__t.empty())) -> decltype
 template <typename _Tp, size_t _Nm>
     requires true  // distinct from (and preferred over) the libstdc++ bits/range_access.h overload
 constexpr _Tp* data(_Tp (&__arr)[_Nm]) noexcept {
-    return __arr;
-}
-
-// N == 0. sizeof of a zero-length array is 0. The result is the decayed
-// pointer, not a load. A pointer argument has a non-zero size, so it does
-// not match. There is no pointer overload.
-template <typename _Arr>
-constexpr auto data(_Arr& __arr) noexcept -> decltype(__arr + 0)
-    requires(sizeof(_Arr) == 0)
-{
     return __arr;
 }
 
@@ -311,16 +261,6 @@ constexpr const _Tp* cdata(_Tp (&__arr)[_Nm]) noexcept {
     return __arr;
 }
 
-// N == 0. sizeof of a zero-length array is 0. The result is the decayed
-// pointer, not a load. A pointer argument has a non-zero size, so it does
-// not match. There is no pointer overload.
-template <typename _Arr>
-constexpr auto cdata(_Arr& __arr) noexcept -> decltype(__arr + 0)
-    requires(sizeof(_Arr) == 0)
-{
-    return __arr;
-}
-
 // A bound that does not fit in ptrdiff_t. This path does not cast that
 // bound and does not return a negative value.
 [[noreturn]] inline void _Prism_ssize_array_bound_does_not_fit() noexcept {
@@ -340,16 +280,6 @@ constexpr std::ptrdiff_t ssize(_Tp (&)[_Nm]) noexcept {
     } else {
         return static_cast<std::ptrdiff_t>(_Nm);
     }
-}
-
-// N == 0. sizeof of a zero-length array is 0. The result is 0, not a
-// load. The parameter is unnamed. A pointer argument has a non-zero size,
-// so it does not match. There is no pointer overload.
-template <typename _Arr>
-constexpr std::ptrdiff_t ssize(_Arr&) noexcept
-    requires(sizeof(_Arr) == 0)
-{
-    return 0;
 }
 
 // A stored value that does not fit in ptrdiff_t. This path does not cast
