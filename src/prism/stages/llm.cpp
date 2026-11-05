@@ -146,6 +146,7 @@ ChatResult LlmEngine::complete_raw(const std::vector<std::pair<std::string, std:
     forge_llm::Request req;
     req.messages = messages;
     req.timeout_s = timeout;
+    req.think = false;  // stage chats (hypotheses, Fuzz4All, repair) answer directly
     auto rep = forge_llm::complete(cfg.fpk, req);
     nlohmann::json raw{{"prompt_tokens", rep.prompt_tokens}, {"new_tokens", rep.new_tokens}};
     return {rep.text, "forge", rep.error, raw};

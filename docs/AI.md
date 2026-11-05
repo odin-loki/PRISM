@@ -227,10 +227,11 @@ authoritative behaviour.
 with two).
 
 1. **Prover model (role "prover").** `--prover-fpk PATH` or
-   `PRISM_PROVER_FPK` (a Goedel-Prover / DeepSeek-Prover / Kimina-Prover
-   model converted to a FORGE `.fpk`); else the first `.fpk` in
-   `~/.prism/models` whose name contains `prover` or `goedel`. It runs in
-   process on FORGE inference (temperature 0.6, up to 1024 new tokens per call).
+   `PRISM_PROVER_FPK`; else the assistant model, Goedel-Prover-V2-32B
+   (`PRISM_FPK`, default `~/.prism/models/goedel-prover-v2-32b.fpk`, a Lean 4
+   prover); else the first `.fpk` in `~/.prism/models` whose name contains
+   `prover` or `goedel`. It runs in process on FORGE inference (temperature
+   0.6, up to 1024 new tokens per call, no thinking: see "Measured" below).
    `--prover-model`
    / `PRISM_PROVER_MODEL` names it in the audit. None → `NOTRUN` (exit 3).
 2. **Scratch copy.** The lake package is copied (nested packages and `.git`
@@ -400,6 +401,98 @@ their value is **not measured**:
   model; the quality of drafted contracts and of model assumption flags;
 * the model halves of the assistant features below (model query
   translation, model draft rewording, model embeddings for triage).
+
+## Measured: Goedel-Prover-V2-32B on 8b1b35274 (2026-11-05)
+
+Model: `Goedel-LM.Goedel-Prover-V2-32B.Q4_K_M.gguf` converted with FORGE to
+`.fpk` (19.76 GB; magic `FORGEPK1`, format version 1, architecture `qwen3`,
+64 layers, 707 tensors: 385 q4_k, 65 q6_k, 257 f32; 40 960-token context).
+Installed as `~/.prism/models/goedel-prover-v2-32b.fpk` (a symlink). Host:
+WSL2, 64 cores, 47 GB RAM, RTX 3090 24 GB, `PRISM_DEVICE=cuda`, FORGE
+0cd60ae (CUDA through the driver's `libcuda.so.1`; `PRISM_CUDA` is only
+PRISM's own mutation kernels and does not matter here). The machine was
+shared: load average 15 to 45 from other jobs, and for part of the session a
+Windows process held 3.5 GB of the GPU at 78% use. Numbers are single runs
+through `forge_llm::complete` (a scratch driver; the doctest
+"forge ai: the real model ..." in `tests/cpp/test_forge_ai.cpp` is the
+tracked path, skipped by default).
+
+| What | Measured |
+|---|---|
+| Open the `.fpk` (mmap, no weights read) | 0.5 to 1.1 s |
+| First call: weights to the GPU + first plan | 17 to 121 s (first prefill; varies with contention) |
+| Warm prefill | 77 tokens in 0.18 s; 1 375 tokens in 2.4 s (~400 to 570 tokens/s) |
+| Decode, free text | 18.3 to 20.9 tokens/s (5 runs, 77- and 1 375-token prompts) |
+| Decode under a PRISM grammar | 1.0 to 4.2 tokens/s (CPU-side grammar mask over 151 936 tokens) |
+| Process RSS | 20.3 to 21.3 GB (mapped weights) |
+| VRAM | 19 to 21 GB after load; 24.0 to 24.3 GB of 24.5 GB once long prompts or long outputs ran |
+
+**The 24 GB card is at its limit.** Whenever VRAM reached ~24.2 GB the
+GPU stayed at 100% and decode fell to 0.1 to 1 token/s (WSL spills device
+memory to host memory): a second 160-token answer in the same process took
+186 s (0.86 tokens/s) against 7.7 s for the first. One cause is in PRISM's
+use of FORGE: FORGE caches one execution plan, with its device buffers, per
+input length and never evicts it, so every distinct prompt length added
+buffers. `forge_llm` now feeds prompts in 256-token chunks and power-of-two
+pieces, so at most nine plan sizes exist. **That fix is built and passes the
+tiny-model tests, but was not measured on the GPU**: the GPU became
+unavailable to WSL ("GPU access blocked by the operating system", CUDA error
+999) before the rerun. `FORGE_KV_CACHE_TYPE=int8` did not help (0.13
+tokens/s while thinking, VRAM still 24.3 GB).
+
+**Faults the real model found, fixed here:** every `grammars/*.gbnf` used
+bounded repetition `X{m,n}`, which FORGE's GBNF parser rejects ("expected
+rule name"), so every grammar-constrained feature failed with any real model
+(`forge_llm::lower_grammar` now expands it; the validators still enforce the
+bounds); `<think>`/`</think>` are not special tokens in a GGUF-imported FORGE
+tokenizer, so the chat opener was encoded as text (now built from their
+vocabulary ids); and the process aborted with a double free when a CUDA
+model was torn down at exit (rc 134; models now live until exit, and every
+later run exited 0).
+
+**Fault in FORGE, not fixed here:** FORGE's BPE pre-tokenizer splits
+punctuation from the following letters, so `v.isProof` encodes as `v . is
+Proof` although the vocabulary has the merge `. is` (token `.is`). The
+model echoes this as `v. isProof` in its Lean. Lean proof quality is likely
+lower than the model's published numbers until FORGE tokenizes Qwen-family
+text canonically.
+
+**Thinking.** Goedel-Prover-V2 is trained to reason before its Lean. With
+`Request::think` (free reasoning until `</think>`, then the grammar) one
+Lean prompt reasoned for 112 tokens in 842 s with the card full and timed
+out (int8 KV); the same prompt with f32 KV had not finished after 17 minutes. Without thinking the same
+prompts gave grammar-valid tactic lines in 8 to 63 s. So every code path is
+explicitly `think = false` (assistant backend, prover backend, stage chats);
+thinking stays available per request and is worth measuring again on a card
+with headroom (or a smaller quantisation) once VRAM use is bounded.
+
+**Answer quality (honest, small samples):**
+
+* `ask`-style plain question ("what is wrong with `int avg(int a, int b)
+  { return (a + b) / 2; }`", no grammar, 3 runs): all three talked about
+  integer division truncating 3.5 to 3 and suggested casting to `double`;
+  none named the real defect, signed overflow of `a + b`. One run says
+  `(1 + 1) / 2 = 1` "is correct. But..." and contradicts itself. Not usable
+  for C reasoning; this is a Lean prover, not a code assistant.
+* Lean tactics under `lean_proof.gbnf`, no thinking (`Verdict.lean`
+  theorems with the proof replaced by `sorry`): `isProof_isFormal` gave
+  `cases v <;> simp_all (config := {decide := true})` and a long
+  `rcases ... <;> simp_all [...] <;> norm_num <;> ...`; `mergeRefusal_symm`
+  gave `simp [mergeRefusal] <;> split_ifs <;> ... aesop ... linarith`;
+  `a + b = b + a` on `Nat` gave `rw [add_comm]` / `simp [add_comm]`. The
+  output is well-formed and on topic but leans on Mathlib tactics
+  (`norm_num`, `aesop`, `linarith`) that core Lean rejects. **No candidate was
+  kernel-checked**: Lean (elan, v4.34.0) is not installed on this host and
+  installing it was not permitted, so `prism prove` is `NOTRUN` ("Lean not
+  installed") and the closed-theorem share is unmeasured.
+* The `llm`, `review` and `repair` stages and `prism ask` over a report were
+  **not run with the model**: the run was queued behind the GPU outage.
+
+Windows (MSVC port): FORGE's CUDA runtime loads `nvcuda.dll` by name
+(`gpu/cuda.hpp`), so the same `.fpk` should run with `PRISM_DEVICE=cuda` on
+native Windows; the default path is
+`%USERPROFILE%\.prism\models\goedel-prover-v2-32b.fpk` (`default_fpk()`, and
+`default_prover_fpks()` now reads `USERPROFILE`). Not run on Windows.
 
 ## Assistant features (9.1, 9.3, 9.4)
 

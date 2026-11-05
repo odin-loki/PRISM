@@ -645,7 +645,12 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::strin
                    + (fpk.empty() ? std::string{} : " (not a .fpk: " + fpk.string() + ")");
         return nullptr;
     }
-    return std::make_shared<forge_llm::Backend>(fpk, model.empty() ? fpk.filename().string() : model, 0.6f, 1024);
+    // No thinking for Lean proof search either: measured on an RTX 3090, Goedel's
+    // reasoning ran at well under 1 token/s once the 32B model filled the card, while
+    // grammar-constrained tactic lines came back in seconds; the Lean kernel, not the
+    // model's reasoning, decides (docs/AI.md "Measured: Goedel-Prover-V2-32B").
+    return std::make_shared<forge_llm::Backend>(fpk, model.empty() ? fpk.filename().string() : model, 0.6f, 1024,
+                                                /*think=*/false);
 }
 
 std::vector<LemmaEntry> relevant_lemmas(const std::vector<LemmaEntry>& lib, const std::string& statement, std::size_t k) {

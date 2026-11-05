@@ -582,7 +582,9 @@ std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* wh
         return std::shared_ptr<ModelBackend>{};
     };
     if (!cfg.llm) return say("--no-llm");
-    if (forge_llm::is_fpk(cfg.fpk)) return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model);
+    // Assistant features answer at once under their grammar: no thinking (docs/AI.md "Measured").
+    if (forge_llm::is_fpk(cfg.fpk))
+        return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model, 0.2f, 768, /*think=*/false);
     return say("no FORGE model: set PRISM_FPK to a .fpk (Goedel-Prover-V2-32B converted with FORGE); tried " +
                cfg.fpk.string());
 }

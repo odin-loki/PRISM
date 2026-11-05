@@ -5,12 +5,14 @@
 
 #include <forge/inference/inference.hpp>
 
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <span>
 
 namespace prism::forge_llm {
 namespace fs = std::filesystem;
@@ -57,6 +59,24 @@ std::vector<int> encode_opener(const forge::modelfile::bpe_tokenizer& tok, bool 
 // The decoded text is re-validated by PRISM (validate_*), which enforces the bounds.
 bool ident_char(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+}
+
+
+// Feeds `ids` in chunks of 256 tokens and then power-of-two pieces (128, 64, ..., 1).
+// FORGE caches one execution plan, with its device buffers, per input length and never
+// evicts it; feeding whole prompts made one plan per distinct prompt length, which filled
+// the 24 GB of an RTX 3090 under Goedel-Prover-V2-32B and spilled into shared memory.
+// With these sizes at most nine plans ever exist. Returns the last position's logits.
+std::vector<float> feed(forge::inference::session& sess, std::span<const int> ids) {
+    std::vector<float> logits;
+    std::size_t p = 0;
+    while (p < ids.size()) {
+        const std::size_t left = ids.size() - p;
+        const std::size_t step = left >= 256 ? 256 : std::bit_floor(left);
+        logits = sess.forward(ids.subspan(p, step));
+        p += step;
+    }
+    return logits;
 }
 }  // namespace
 
@@ -238,7 +258,7 @@ Reply complete(const fs::path& fpk, const Request& req) {
         auto secs = [](clock::time_point a) { return std::chrono::duration<double>(clock::now() - a).count(); };
         std::vector<int> hist(prompt.begin(), prompt.end()), out;
         auto t0 = clock::now();
-        auto logits = sess.forward(prompt);
+        auto logits = feed(sess, prompt);
         r.prefill_s = secs(t0);
         t0 = clock::now();
         forge::i64 used = forge::i64(prompt.size());
@@ -280,7 +300,7 @@ Reply complete(const fs::path& fpk, const Request& req) {
             tail.insert(tail.end(), nn.begin(), nn.end());
             r.thinking_capped = !closed;
             if (!tail.empty()) {
-                logits = sess.forward(tail);
+                logits = feed(sess, tail);
                 hist.insert(hist.end(), tail.begin(), tail.end());
                 used += forge::i64(tail.size());
             }
