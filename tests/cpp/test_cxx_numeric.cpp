@@ -22,6 +22,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -32,19 +34,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 fs::path model_header() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "numeric"; }
 
@@ -59,140 +57,23 @@ NumCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) {
-        *out = r.out;
-        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
-    }
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <numeric>\n"
-                            "#include <climits>\n"
-                            "int main() {\n"
-                            "  if (std::midpoint(2, 4) != 3) return 1;\n"
-                            "  if (std::gcd(0, 0) != 0) return 2;\n"
-                            "  if (std::midpoint(INT_MAX, INT_MAX) != INT_MAX) return 3;\n"
-                            "  if (std::lcm(0, 0) != 0 || std::lcm(0, 15) != 0 || std::lcm(15, 0) != 0) return 4;\n"
-                            "  if (std::lcm(12, 18) != 36 || std::lcm(-4, 6) != 12) return 5;\n"
-                            "  return 0;\n"
-                            "}\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <numeric>\n"
+                                  "#include <climits>\n"
+                                  "int main() {\n"
+                                  "  if (std::midpoint(2, 4) != 3) return 1;\n"
+                                  "  if (std::gcd(0, 0) != 0) return 2;\n"
+                                  "  if (std::midpoint(INT_MAX, INT_MAX) != INT_MAX) return 3;\n"
+                                  "  if (std::lcm(0, 0) != 0 || std::lcm(0, 15) != 0 || std::lcm(15, 0) != 0) return 4;\n"
+                                  "  if (std::lcm(12, 18) != 36 || std::lcm(-4, 6) != 12) return 5;\n"
+                                  "  return 0;\n"
+                                  "}\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "numeric_trace.model" : "numeric_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "numeric_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("numeric_trace.cpp"), "numeric_trace", cxxh::asan_flags(), with_models);
 }
 
 bool has_line(const std::vector<std::string>& lines, const std::string& want) {
@@ -556,20 +437,15 @@ TEST_CASE("cxx numeric model: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxnumeric-doctest";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -941,12 +817,12 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
 
     const fs::path acc_bad = c.tmp / "acc_bad.cpp";
     std::ofstream(acc_bad) << "#include <numeric>\n"
-                              "#include <climits>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[1] = {1};\n"
-                              "  return std::accumulate(a, a + 1, INT_MAX);\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "#include <climits>\n"
+                                  "constexpr int bad() {\n"
+                                  "  int a[1] = {1};\n"
+                                  "  return std::accumulate(a, a + 1, INT_MAX);\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, acc_bad, true));
 
     const fs::path acc_ubad = c.tmp / "acc_ubad.cpp";
@@ -961,11 +837,11 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
 
     const fs::path acc_inv = c.tmp / "acc_inv.cpp";
     std::ofstream(acc_inv) << "#include <numeric>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[2] = {4, 5};\n"
-                              "  return std::accumulate(a + 1, a, 0);\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "constexpr int bad() {\n"
+                                  "  int a[2] = {4, 5};\n"
+                                  "  return std::accumulate(a + 1, a, 0);\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, acc_inv, true));
 
     std::string adj_hi;
@@ -1026,14 +902,14 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
 
     const fs::path adj_bad = c.tmp / "adj_bad.cpp";
     std::ofstream(adj_bad) << "#include <numeric>\n"
-                              "#include <climits>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[2] = {-1, INT_MAX};\n"
-                              "  int d[2] = {};\n"
-                              "  std::adjacent_difference(a, a + 2, d);\n"
-                              "  return d[1];\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "#include <climits>\n"
+                                  "constexpr int bad() {\n"
+                                  "  int a[2] = {-1, INT_MAX};\n"
+                                  "  int d[2] = {};\n"
+                                  "  std::adjacent_difference(a, a + 2, d);\n"
+                                  "  return d[1];\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, adj_bad, true));
 
     const fs::path adj_ubad = c.tmp / "adj_ubad.cpp";
@@ -1050,13 +926,13 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
 
     const fs::path adj_inv = c.tmp / "adj_inv.cpp";
     std::ofstream(adj_inv) << "#include <numeric>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[2] = {4, 5};\n"
-                              "  int d[2] = {7, 8};\n"
-                              "  std::adjacent_difference(a + 1, a, d);\n"
-                              "  return d[0];\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "constexpr int bad() {\n"
+                                  "  int a[2] = {4, 5};\n"
+                                  "  int d[2] = {7, 8};\n"
+                                  "  std::adjacent_difference(a + 1, a, d);\n"
+                                  "  return d[0];\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, adj_inv, true));
 
     const fs::path adj_null = c.tmp / "adj_null.cpp";
@@ -1082,81 +958,81 @@ TEST_CASE("cxx numeric model: large midpoint is not negative and gcd(0, 0) is 0"
 
     const fs::path adj_mem = c.tmp / "adj_mem.cpp";
     std::ofstream(adj_mem) << "#include <climits>\n"
-                              "#include <cstdio>\n"
-                              "#include <cstdlib>\n"
-                              "#include <cstring>\n"
-                              "#include <numeric>\n"
-                              "static int gd[3] = {4, 5, 6};\n"
-                              "static unsigned gu[2] = {4u, 5u};\n"
-                              "static signed char gsc[2] = {4, 5};\n"
-                              "static int gs[3] = {3, 5, 9};\n"
-                              "static int mode = 0;\n"
-                              "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
-                              "  if (!ok) {\n"
-                              "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");\n"
-                              "    if (mode == 1)\n"
-                              "      std::fprintf(stderr, \"mem=%u,%u\\n\", gu[0], gu[1]);\n"
-                              "    else if (mode == 3)\n"
-                              "      std::fprintf(stderr, \"mem=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
-                              "    else if (mode == 4)\n"
-                              "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
-                              "    else\n"
-                              "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
-                              "    std::fflush(stderr);\n"
-                              "    std::abort();\n"
-                              "  }\n"
-                              "}\n"
-                              "int main(int argc, char** argv) {\n"
-                              "  const char* arg = (argc > 1 && argv[1]) ? argv[1] : \"ovf\";\n"
-                              "  if (std::strcmp(arg, \"uovf\") == 0) {\n"
-                              "    mode = 1;\n"
-                              "    unsigned s[2] = {1u, 0u};\n"
-                              "    std::adjacent_difference(s, s + 2, gu);\n"
-                              "    std::printf(\"wrapped=%u,%u\\n\", gu[0], gu[1]);\n"
-                              "  } else if (std::strcmp(arg, \"sc\") == 0) {\n"
-                              "    mode = 3;\n"
-                              "    signed char s[2] = {-1, static_cast<signed char>(SCHAR_MAX)};\n"
-                              "    std::adjacent_difference(s, s + 2, gsc);\n"
-                              "    std::printf(\"wrapped=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
-                              "  } else if (std::strcmp(arg, \"part\") == 0) {\n"
-                              "    mode = 0;\n"
-                              "    int s[3] = {5, 8, INT_MIN};\n"
-                              "    std::adjacent_difference(s, s + 3, gd);\n"
-                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
-                              "  } else if (std::strcmp(arg, \"inv\") == 0) {\n"
-                              "    mode = 0;\n"
-                              "    int s[2] = {4, 5};\n"
-                              "    std::adjacent_difference(s + 1, s, gd);\n"
-                              "    std::printf(\"wrapped=%d,%d\\n\", gd[0], gd[1]);\n"
-                              "  } else if (std::strcmp(arg, \"over\") == 0) {\n"
-                              "    mode = 4;\n"
-                              "    std::adjacent_difference(gs, gs + 3, gs + 1);\n"
-                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
-                              "  } else if (std::strcmp(arg, \"null\") == 0) {\n"
-                              "    mode = 0;\n"
-                              "    int s[1] = {3};\n"
-                              "    std::adjacent_difference(s, s + 1, static_cast<int*>(nullptr));\n"
-                              "    std::printf(\"wrapped=1\\n\");\n"
-                              "  } else if (std::strcmp(arg, \"max1\") == 0) {\n"
-                              "    int d[1] = {0};\n"
-                              "    int s[1] = {INT_MAX};\n"
-                              "    int* end = std::adjacent_difference(s, s + 1, d);\n"
-                              "    std::printf(\"adj_hi=%d end=%d\\n\", d[0], static_cast<int>(end - d));\n"
-                              "    return 0;\n"
-                              "  } else if (std::strcmp(arg, \"empty\") == 0) {\n"
-                              "    int s[1] = {4};\n"
-                              "    int d[1] = {7};\n"
-                              "    int* end = std::adjacent_difference(s, s, d);\n"
-                              "    std::printf(\"empty=%d end=%d\\n\", d[0], end == d ? 1 : 0);\n"
-                              "    return 0;\n"
-                              "  } else {\n"
-                              "    mode = 0;\n"
-                              "    int s[2] = {-1, INT_MAX};\n"
-                              "    std::adjacent_difference(s, s + 2, gd);\n"
-                              "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
-                              "  }\n"
-                              "  return 0;\n"
-                              "}\n";
+                                  "#include <cstdio>\n"
+                                  "#include <cstdlib>\n"
+                                  "#include <cstring>\n"
+                                  "#include <numeric>\n"
+                                  "static int gd[3] = {4, 5, 6};\n"
+                                  "static unsigned gu[2] = {4u, 5u};\n"
+                                  "static signed char gsc[2] = {4, 5};\n"
+                                  "static int gs[3] = {3, 5, 9};\n"
+                                  "static int mode = 0;\n"
+                                  "extern \"C\" void __prism_check(int ok, const char* cls, const char* msg) {\n"
+                                  "  if (!ok) {\n"
+                                  "    std::fprintf(stderr, \"CHECK %s: %s\\n\", cls ? cls : \"\", msg ? msg : \"\");\n"
+                                  "    if (mode == 1)\n"
+                                  "      std::fprintf(stderr, \"mem=%u,%u\\n\", gu[0], gu[1]);\n"
+                                  "    else if (mode == 3)\n"
+                                  "      std::fprintf(stderr, \"mem=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                                  "    else if (mode == 4)\n"
+                                  "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
+                                  "    else\n"
+                                  "      std::fprintf(stderr, \"mem=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                                  "    std::fflush(stderr);\n"
+                                  "    std::abort();\n"
+                                  "  }\n"
+                                  "}\n"
+                                  "int main(int argc, char** argv) {\n"
+                                  "  const char* arg = (argc > 1 && argv[1]) ? argv[1] : \"ovf\";\n"
+                                  "  if (std::strcmp(arg, \"uovf\") == 0) {\n"
+                                  "    mode = 1;\n"
+                                  "    unsigned s[2] = {1u, 0u};\n"
+                                  "    std::adjacent_difference(s, s + 2, gu);\n"
+                                  "    std::printf(\"wrapped=%u,%u\\n\", gu[0], gu[1]);\n"
+                                  "  } else if (std::strcmp(arg, \"sc\") == 0) {\n"
+                                  "    mode = 3;\n"
+                                  "    signed char s[2] = {-1, static_cast<signed char>(SCHAR_MAX)};\n"
+                                  "    std::adjacent_difference(s, s + 2, gsc);\n"
+                                  "    std::printf(\"wrapped=%d,%d\\n\", static_cast<int>(gsc[0]), static_cast<int>(gsc[1]));\n"
+                                  "  } else if (std::strcmp(arg, \"part\") == 0) {\n"
+                                  "    mode = 0;\n"
+                                  "    int s[3] = {5, 8, INT_MIN};\n"
+                                  "    std::adjacent_difference(s, s + 3, gd);\n"
+                                  "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                                  "  } else if (std::strcmp(arg, \"inv\") == 0) {\n"
+                                  "    mode = 0;\n"
+                                  "    int s[2] = {4, 5};\n"
+                                  "    std::adjacent_difference(s + 1, s, gd);\n"
+                                  "    std::printf(\"wrapped=%d,%d\\n\", gd[0], gd[1]);\n"
+                                  "  } else if (std::strcmp(arg, \"over\") == 0) {\n"
+                                  "    mode = 4;\n"
+                                  "    std::adjacent_difference(gs, gs + 3, gs + 1);\n"
+                                  "    std::printf(\"wrapped=%d,%d,%d\\n\", gs[0], gs[1], gs[2]);\n"
+                                  "  } else if (std::strcmp(arg, \"null\") == 0) {\n"
+                                  "    mode = 0;\n"
+                                  "    int s[1] = {3};\n"
+                                  "    std::adjacent_difference(s, s + 1, static_cast<int*>(nullptr));\n"
+                                  "    std::printf(\"wrapped=1\\n\");\n"
+                                  "  } else if (std::strcmp(arg, \"max1\") == 0) {\n"
+                                  "    int d[1] = {0};\n"
+                                  "    int s[1] = {INT_MAX};\n"
+                                  "    int* end = std::adjacent_difference(s, s + 1, d);\n"
+                                  "    std::printf(\"adj_hi=%d end=%d\\n\", d[0], static_cast<int>(end - d));\n"
+                                  "    return 0;\n"
+                                  "  } else if (std::strcmp(arg, \"empty\") == 0) {\n"
+                                  "    int s[1] = {4};\n"
+                                  "    int d[1] = {7};\n"
+                                  "    int* end = std::adjacent_difference(s, s, d);\n"
+                                  "    std::printf(\"empty=%d end=%d\\n\", d[0], end == d ? 1 : 0);\n"
+                                  "    return 0;\n"
+                                  "  } else {\n"
+                                  "    mode = 0;\n"
+                                  "    int s[2] = {-1, INT_MAX};\n"
+                                  "    std::adjacent_difference(s, s + 2, gd);\n"
+                                  "    std::printf(\"wrapped=%d,%d,%d\\n\", gd[0], gd[1], gd[2]);\n"
+                                  "  }\n"
+                                  "  return 0;\n"
+                                  "}\n";
 #ifdef _WIN32
     const fs::path adj_mem_exe = c.tmp / "adj_mem.exe";
 #else

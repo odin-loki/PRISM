@@ -10,6 +10,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <climits>
 #include <filesystem>
 #include <fstream>
@@ -18,19 +20,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 fs::path model_header() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "numeric"; }
 
@@ -45,135 +43,21 @@ NumCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) *out = r.out;
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <numeric>\n"
-                            "int main() {\n"
-                            "  int a[3] = {1, 2, 3};\n"
-                            "  int d[3] = {};\n"
-                            "  int* end = std::partial_sum(a, a + 3, d);\n"
-                            "  if (end != d + 3 || d[0] != 1 || d[1] != 3 || d[2] != 6) return 1;\n"
-                            "  return 0;\n"
-                            "}\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <numeric>\n"
+                                  "int main() {\n"
+                                  "  int a[3] = {1, 2, 3};\n"
+                                  "  int d[3] = {};\n"
+                                  "  int* end = std::partial_sum(a, a + 3, d);\n"
+                                  "  if (end != d + 3 || d[0] != 1 || d[1] != 3 || d[2] != 6) return 1;\n"
+                                  "  return 0;\n"
+                                  "}\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "numeric_trace.model" : "numeric_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "numeric_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("numeric_trace.cpp"), "numeric_trace", cxxh::asan_flags(), with_models);
 }
 
 bool has_line(const std::vector<std::string>& lines, const std::string& want) {
@@ -332,20 +216,15 @@ TEST_CASE("cxx numeric partial_sum: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxnumeric-partial-sum";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx numeric partial_sum: prefix sums match and a sum that does not fit does not store") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -473,14 +352,14 @@ TEST_CASE("cxx numeric partial_sum: prefix sums match and a sum that does not fi
 
     const fs::path ps_ubad = c.tmp / "ps_ubad.cpp";
     std::ofstream(ps_ubad) << "#include <numeric>\n"
-                              "#include <climits>\n"
-                              "constexpr unsigned bad() {\n"
-                              "  unsigned a[2] = {1u, UINT_MAX};\n"
-                              "  unsigned d[2] = {};\n"
-                              "  std::partial_sum(a, a + 2, d);\n"
-                              "  return d[1];\n"
-                              "}\n"
-                              "constexpr unsigned v = bad();\n";
+                                  "#include <climits>\n"
+                                  "constexpr unsigned bad() {\n"
+                                  "  unsigned a[2] = {1u, UINT_MAX};\n"
+                                  "  unsigned d[2] = {};\n"
+                                  "  std::partial_sum(a, a + 2, d);\n"
+                                  "  return d[1];\n"
+                                  "}\n"
+                                  "constexpr unsigned v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, ps_ubad, true));
 
     const fs::path ps_inv = c.tmp / "ps_inv.cpp";
@@ -496,23 +375,23 @@ TEST_CASE("cxx numeric partial_sum: prefix sums match and a sum that does not fi
 
     const fs::path ps_null = c.tmp / "ps_null.cpp";
     std::ofstream(ps_null) << "#include <numeric>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[1] = {3};\n"
-                              "  int* d = nullptr;\n"
-                              "  std::partial_sum(a, a + 1, d);\n"
-                              "  return 0;\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "constexpr int bad() {\n"
+                                  "  int a[1] = {3};\n"
+                                  "  int* d = nullptr;\n"
+                                  "  std::partial_sum(a, a + 1, d);\n"
+                                  "  return 0;\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, ps_null, true));
 
     const fs::path ps_over = c.tmp / "ps_over.cpp";
     std::ofstream(ps_over) << "#include <numeric>\n"
-                              "constexpr int bad() {\n"
-                              "  int a[3] = {3, 5, 9};\n"
-                              "  std::partial_sum(a, a + 3, a + 1);\n"
-                              "  return a[1];\n"
-                              "}\n"
-                              "constexpr int v = bad();\n";
+                                  "constexpr int bad() {\n"
+                                  "  int a[3] = {3, 5, 9};\n"
+                                  "  std::partial_sum(a, a + 3, a + 1);\n"
+                                  "  return a[1];\n"
+                                  "}\n"
+                                  "constexpr int v = bad();\n";
     CHECK_FALSE(syntax_only(c.cxx, ps_over, true));
 
     const fs::path ps_mix = c.tmp / "ps_mix.cpp";

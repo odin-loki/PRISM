@@ -7,6 +7,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -27,7 +29,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
 
 fs::path model_file() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "mdspan"; }
 
@@ -111,12 +115,6 @@ bool run_ok(const std::vector<std::string>& argv) {
     return p.ran && p.rc == 0;
 }
 
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
 #ifdef _WIN32
 constexpr const char* kExe = "mdspan_trace.exe";
 #else
@@ -149,34 +147,22 @@ MdCtx& ctx() {
     fs::remove_all(c.tmp);
     fs::create_directories(c.tmp);
     std::ofstream(c.tmp / "check_stub.cpp") << kStub;
-    for (const char* name : {"clang++-18", "clang++"}) {
-        if (run_ok({name, "--version"})) {
-            c.cxx = name;
-            break;
-        }
-    }
-    if (c.cxx.empty()) return c;
     // The model header has to compile, and ASan has to run, or the ownership
     // check below cannot tell a freed pointer from a live one.
     const std::vector<std::string> flags{"-std=c++23", "-O0", "-g", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-w", "-isystem",
-                                         (repo() / "src" / "prism" / "pir" / "models" / "cxx").string()};
-    auto probe = c.tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <mdspan>\n"
-                            "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
-                            "int main() {\n"
-                            "  int a[1] = {7};\n"
-                            "  std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 1);\n"
-                            "  return m(0) == 7 ? 0 : 1;\n"
-                            "}\n";
-    std::vector<std::string> build{c.cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back((c.tmp / "check_stub.cpp").string());
-    build.push_back("-o");
-    build.push_back((c.tmp / "probe").string());
-    if (!run_ok(build)) return c;
-    c.ok = run_ok({(c.tmp / "probe").string()});
+                                         "-fno-sanitize-recover=all", "-w", "-isystem", cxxh::model_dir().string()};
+    c.cxx = cxxh::pick_cxx([&](const std::string& cxx) {
+        return cxxh::probe_clang_asan(cxx, c.tmp,
+                                      "#include <mdspan>\n"
+                                      "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
+                                      "int main() {\n"
+                                      "  int a[1] = {7};\n"
+                                      "  std::mdspan<int, std::dextents<std::size_t, 1>> m(a, 1);\n"
+                                      "  return m(0) == 7 ? 0 : 1;\n"
+                                      "}\n",
+                                      flags, {(c.tmp / "check_stub.cpp").string()});
+    });
+    c.ok = !c.cxx.empty();
     return c;
 }
 
@@ -348,10 +334,7 @@ TEST_CASE("cxx mdspan model: out-of-range operator() is a check and the view doe
 
 TEST_CASE("cxx mdspan model: in-range call reads the real element and the view does not own") {
     auto& c = ctx();
-    if (!c.ok) {
-        MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
-        return;
-    }
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     std::vector<std::string> deps{c.cxx, "-std=c++23", "-M", "-isystem",
                                  (repo() / "src" / "prism" / "pir" / "models" / "cxx").string(),
                                  (repo() / "tests" / "cxx_models" / "mdspan_trace.cpp").string()};

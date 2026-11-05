@@ -28,6 +28,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -36,19 +38,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 struct OptCtx {
     fs::path tmp;
@@ -61,122 +59,15 @@ OptCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) {
-        *out = r.out;
-        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
-    }
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <optional>\n"
-                            "int main() { std::optional<int> o(1); return o.value() - 1; }\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <optional>\n"
+                                  "int main() { std::optional<int> o(1); return o.value() - 1; }\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "optional_trace.model" : "optional_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "optional_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("optional_trace.cpp"), "optional_trace", cxxh::asan_flags(), with_models);
 }
 
 fs::path build_value_or(const std::string& cxx, const fs::path& tmp, const fs::path& src, bool with_models,
@@ -196,16 +87,6 @@ fs::path build_value_or(const std::string& cxx, const fs::path& tmp, const fs::p
     argv.push_back(out.string());
     REQUIRE(run_cmd(argv));
     return out;
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
 }
 
 std::string slurp(const fs::path& p) {
@@ -276,20 +157,15 @@ TEST_CASE("cxx optional model: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxoptional-doctest";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx optional model: engaged value is the stored T and empty value() is a check") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -325,7 +201,7 @@ TEST_CASE("cxx optional model: engaged value is the stored T and empty value() i
 
 TEST_CASE("cxx optional model: value_or returns the stored T or the argument") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = c.tmp / "optional_value_or.cpp";
     // Box has no default constructor. value_or(99) has to convert 99; it
@@ -386,7 +262,7 @@ TEST_CASE("cxx optional model: value_or returns the stored T or the argument") {
 
 TEST_CASE("cxx optional model: and_then calls the function or returns disengaged") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = repo() / "tests" / "cxx_models" / "optional_and_then_trace.cpp";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -447,7 +323,7 @@ TEST_CASE("cxx optional model: and_then calls the function or returns disengaged
 
 TEST_CASE("cxx optional model: or_else calls the function or keeps the stored T") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = repo() / "tests" / "cxx_models" / "optional_or_else_trace.cpp";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -516,7 +392,7 @@ TEST_CASE("cxx optional model: or_else calls the function or keeps the stored T"
 
 TEST_CASE("cxx optional model: transform calls the function or returns disengaged") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = repo() / "tests" / "cxx_models" / "optional_transform_trace.cpp";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -630,22 +506,22 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
     CHECK(eq_body.find("if (__x._M_engaged != __y._M_engaged) return false;") != std::string::npos);
     CHECK(eq_body.find("if (!__x._M_engaged) return true;") != std::string::npos);
     CHECK(eq_body.find("return __x._M_storage._M_value == __y._M_storage._M_value;") != std::string::npos);
-    CHECK(eq_body.find("if (!__x._M_engaged) return true;") < eq_body.find("_M_value"));
+    CHECK(prism_test::appears_before(eq_body, "if (!__x._M_engaged) return true;", "_M_value"));
     CHECK(lt_body.find("if (!__y._M_engaged) return false;") != std::string::npos);
     CHECK(lt_body.find("if (!__x._M_engaged) return true;") != std::string::npos);
     CHECK(lt_body.find("return __x._M_storage._M_value < __y._M_storage._M_value;") != std::string::npos);
     const auto lt_value = lt_body.find("_M_value");
     REQUIRE(lt_value != std::string::npos);
-    CHECK(lt_body.find("if (!__y._M_engaged) return false;") < lt_value);
-    CHECK(lt_body.find("if (!__x._M_engaged) return true;") < lt_value);
+    CHECK(prism_test::first_before(lt_body, "if (!__y._M_engaged) return false;", lt_value));
+    CHECK(prism_test::first_before(lt_body, "if (!__x._M_engaged) return true;", lt_value));
     REQUIRE_FALSE(gt_body.empty());
     CHECK(gt_body.find("if (!__x._M_engaged) return false;") != std::string::npos);
     CHECK(gt_body.find("if (!__y._M_engaged) return true;") != std::string::npos);
     CHECK(gt_body.find("return __x._M_storage._M_value > __y._M_storage._M_value;") != std::string::npos);
     const auto gt_value = gt_body.find("_M_value");
     REQUIRE(gt_value != std::string::npos);
-    CHECK(gt_body.find("if (!__x._M_engaged) return false;") < gt_value);
-    CHECK(gt_body.find("if (!__y._M_engaged) return true;") < gt_value);
+    CHECK(prism_test::first_before(gt_body, "if (!__x._M_engaged) return false;", gt_value));
+    CHECK(prism_test::first_before(gt_body, "if (!__y._M_engaged) return true;", gt_value));
     for (const std::string& body : {eq_body, lt_body, gt_body}) {
         CHECK(body.find("value()") == std::string::npos);
         CHECK(body.find("operator*") == std::string::npos);
@@ -676,7 +552,7 @@ TEST_CASE("cxx optional model: compare is the stored value only when both are en
 
 TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is less") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = c.tmp / "optional_compare.cpp";
     // Box has no default constructor. Comparing two empty optionals must not
@@ -836,7 +712,7 @@ TEST_CASE("cxx optional model: two empty optionals are equal and an empty one is
 
 TEST_CASE("cxx optional model: emplace constructs one T and swap does not read an empty pair") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path src = c.tmp / "optional_emplace.cpp";
     // The model's operator-> calls the PIR intrinsic; this native stand-in
     // aborts on a failing check like the one in optional_trace.cpp.
@@ -881,7 +757,7 @@ TEST_CASE("cxx optional model: emplace constructs one T and swap does not read a
 
 TEST_CASE("cxx optional model: comparison of two different types is not declared") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = c.tmp / "optional_compare_hetero.cpp";
     std::ofstream(src) << "#include <optional>\n"
@@ -969,7 +845,7 @@ TEST_CASE("cxx optional model: operator<= is the stored value only when both are
 
 TEST_CASE("cxx optional model: operator<= agrees with libstdc++ and calls operator<= on T") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = repo() / "tests" / "cxx_models" / "optional_leq_trace.cpp";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
@@ -1004,7 +880,7 @@ TEST_CASE("cxx optional model: operator<= agrees with libstdc++ and calls operat
 
 TEST_CASE("cxx optional model: operator<= of two different types is not declared") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path src = c.tmp / "optional_leq_hetero.cpp";
     std::ofstream(src) << "#include <optional>\n"
@@ -1032,33 +908,33 @@ TEST_CASE("cxx optional model: operator<= of two different types is not declared
 
 TEST_CASE("cxx optional model: operator<= needs operator<= on T, like libstdc++") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const fs::path only_lt = c.tmp / "optional_leq_only_lt.cpp";
     std::ofstream(only_lt) << "#include <optional>\n"
-                              "struct OnlyLt {\n"
-                              "    int v;\n"
-                              "    explicit OnlyLt(int x) : v(x) {}\n"
-                              "    bool operator<(const OnlyLt& o) const { return v < o.v; }\n"
-                              "};\n"
-                              "int main() {\n"
-                              "    std::optional<OnlyLt> a(OnlyLt(1));\n"
-                              "    std::optional<OnlyLt> b(OnlyLt(2));\n"
-                              "    return (a <= b) ? 0 : 1;\n"
-                              "}\n";
+                                  "struct OnlyLt {\n"
+                                  "    int v;\n"
+                                  "    explicit OnlyLt(int x) : v(x) {}\n"
+                                  "    bool operator<(const OnlyLt& o) const { return v < o.v; }\n"
+                                  "};\n"
+                                  "int main() {\n"
+                                  "    std::optional<OnlyLt> a(OnlyLt(1));\n"
+                                  "    std::optional<OnlyLt> b(OnlyLt(2));\n"
+                                  "    return (a <= b) ? 0 : 1;\n"
+                                  "}\n";
     const fs::path only_le = c.tmp / "optional_leq_only_le.cpp";
     std::ofstream(only_le) << "#include <optional>\n"
-                              "struct OnlyLe {\n"
-                              "    int v;\n"
-                              "    explicit OnlyLe(int x) : v(x) {}\n"
-                              "    bool operator<=(const OnlyLe& o) const { return v <= o.v; }\n"
-                              "};\n"
-                              "int main() {\n"
-                              "    std::optional<OnlyLe> a(OnlyLe(1));\n"
-                              "    std::optional<OnlyLe> b(OnlyLe(2));\n"
-                              "    std::optional<OnlyLe> e;\n"
-                              "    return (e <= a && a <= b && !(b <= a) && a <= a && !(a <= e)) ? 0 : 1;\n"
-                              "}\n";
+                                  "struct OnlyLe {\n"
+                                  "    int v;\n"
+                                  "    explicit OnlyLe(int x) : v(x) {}\n"
+                                  "    bool operator<=(const OnlyLe& o) const { return v <= o.v; }\n"
+                                  "};\n"
+                                  "int main() {\n"
+                                  "    std::optional<OnlyLe> a(OnlyLe(1));\n"
+                                  "    std::optional<OnlyLe> b(OnlyLe(2));\n"
+                                  "    std::optional<OnlyLe> e;\n"
+                                  "    return (e <= a && a <= b && !(b <= a) && a <= a && !(a <= e)) ? 0 : 1;\n"
+                                  "}\n";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-w"};
     auto compile = [&](const fs::path& file, bool with_models, const char* stem) {
         std::vector<std::string> argv{c.cxx};

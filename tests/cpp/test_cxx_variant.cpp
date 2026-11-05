@@ -17,6 +17,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -26,19 +28,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 struct VarCtx {
     fs::path tmp;
@@ -51,104 +49,11 @@ VarCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) {
-        *out = r.out;
-        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
-    }
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <variant>\n"
-                            "int main() { std::variant<int, char> v; v.emplace<int>(1); return std::get<int>(v) - 1; }\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <variant>\n"
+                                  "int main() { std::variant<int, char> v; v.emplace<int>(1); return std::get<int>(v) - 1; }\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_text(const std::string& cxx, const fs::path& tmp, const std::string& name, const std::string& src,
@@ -173,31 +78,7 @@ fs::path build_text(const std::string& cxx, const fs::path& tmp, const std::stri
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "variant_trace.model" : "variant_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "variant_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("variant_trace.cpp"), "variant_trace", cxxh::asan_flags(), with_models);
 }
 
 std::string slurp(const fs::path& p) {
@@ -269,20 +150,15 @@ TEST_CASE("cxx variant model: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxvariant-doctest";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx variant model: stored value is the emplaced alternative and inactive get is a check") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -411,7 +287,7 @@ TEST_CASE("cxx variant model: monostate is empty and equal, omitted names are co
 
 TEST_CASE("cxx variant model: swap and operator<=> fail against the model") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     struct Snip {
         const char* name;
         const char* src;
@@ -484,7 +360,7 @@ TEST_CASE("cxx variant model: equality reads only the active alternative") {
     CHECK(helper.find("return false;") != std::string::npos);
     CHECK(helper.find("return true") == std::string::npos);
     CHECK(helper.find("{}") == std::string::npos);
-    CHECK(helper.find("_M_get") < helper.find("return false;"));
+    CHECK(prism_test::appears_before(helper, "_M_get", "return false;"));
 
     const std::string eq_body = code.substr(eq, ne - eq);
     const auto both = eq_body.find("if (__a.valueless_by_exception() && __b.valueless_by_exception())");
@@ -531,7 +407,7 @@ TEST_CASE("cxx variant model: equality reads only the active alternative") {
 
 TEST_CASE("cxx variant model: same-type equality matches libstdc++ and different types do not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* diff_eq =
         "#include <variant>\n"
@@ -609,7 +485,7 @@ TEST_CASE("cxx variant model: same-type equality matches libstdc++ and different
 
 TEST_CASE("cxx variant model: monostate ordering compiles against the model and libstdc++") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path src = c.tmp / "mono_order.cpp";
     std::ofstream(src) << "#include <variant>\n"
                           "int use(){ std::monostate a, b;\n"
@@ -644,7 +520,7 @@ TEST_CASE("cxx variant model: operator< returns before it reads storage") {
     CHECK(helper.find("return false;") != std::string::npos);
     CHECK(helper.find("return true") == std::string::npos);
     CHECK(helper.find("{}") == std::string::npos);
-    CHECK(helper.find("_M_get") < helper.find("return false;"));
+    CHECK(prism_test::appears_before(helper, "_M_get", "return false;"));
     CHECK(helper.find("_M_get<_I>() ==") == std::string::npos);
 
     const std::string lt_body = code.substr(lt, gt - lt);
@@ -708,7 +584,7 @@ TEST_CASE("cxx variant model: operator< returns before it reads storage") {
 
 TEST_CASE("cxx variant model: same-type operator< matches libstdc++ and different types do not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* diff_lt =
         "#include <variant>\n"
@@ -870,7 +746,7 @@ TEST_CASE("cxx variant model: operator> is operator< with the arguments swapped"
 
 TEST_CASE("cxx variant model: same-type operator> matches libstdc++ and different types do not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* diff_gt =
         "#include <variant>\n"
@@ -936,7 +812,7 @@ TEST_CASE("cxx variant model: same-type operator> matches libstdc++ and differen
 
 TEST_CASE("cxx variant model: operator> calls operator< and does not read an inactive alternative") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* prog =
         "#include <cstdio>\n"
@@ -1095,7 +971,7 @@ TEST_CASE("cxx variant model: operator<= is the negation of operator< with the a
 
 TEST_CASE("cxx variant model: same-type operator<= matches libstdc++ and different types do not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* diff_le =
         "#include <variant>\n"
@@ -1176,7 +1052,7 @@ TEST_CASE("cxx variant model: same-type operator<= matches libstdc++ and differe
 
 TEST_CASE("cxx variant model: operator<= calls operator< and does not read an inactive alternative") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* prog =
         "#include <cstdio>\n"
@@ -1346,7 +1222,7 @@ TEST_CASE("cxx variant model: operator>= is the negation of operator<") {
 
 TEST_CASE("cxx variant model: same-type operator>= matches libstdc++ and different types do not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* diff_ge =
         "#include <variant>\n"
@@ -1427,7 +1303,7 @@ TEST_CASE("cxx variant model: same-type operator>= matches libstdc++ and differe
 
 TEST_CASE("cxx variant model: operator>= calls operator< and does not read an inactive alternative") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
 
     const char* prog =
         "#include <cstdio>\n"

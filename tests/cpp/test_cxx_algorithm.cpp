@@ -65,6 +65,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -75,19 +77,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 fs::path model_header() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "algorithm"; }
 
@@ -102,138 +100,21 @@ AlgCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) {
-        *out = r.out;
-        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
-    }
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <bits/c++config.h>\n#include <algorithm>\n#include <climits>\n"
-                            "int main() {\n"
-                            "  if (std::min(7, 3) != 3) return 1;\n"
-                            "  if (std::max(3, 7) != 7) return 2;\n"
-                            "  if (std::clamp(5, 3, 7) != 5) return 3;\n"
-                            "  if (std::min(INT_MIN, INT_MAX) == 0) return 4;\n"
-                            "  return 0;\n"
-                            "}\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <algorithm>\n#include <climits>\n"
+                                  "int main() {\n"
+                                  "  if (std::min(7, 3) != 3) return 1;\n"
+                                  "  if (std::max(3, 7) != 7) return 2;\n"
+                                  "  if (std::clamp(5, 3, 7) != 5) return 3;\n"
+                                  "  if (std::min(INT_MIN, INT_MAX) == 0) return 4;\n"
+                                  "  return 0;\n"
+                                  "}\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "algorithm_trace.model" : "algorithm_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "algorithm_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("algorithm_trace.cpp"), "algorithm_trace", cxxh::asan_flags(), with_models);
 }
 
 bool has_line(const std::vector<std::string>& lines, const std::string& want) {
@@ -958,14 +839,14 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     CHECK(copy_bw_scan < copy_bw_hit);
     CHECK(copy_bw_hit < copy_bw_src);
     // The scan starts at last and stops before first: (first, last].
-    CHECK(copy_bw_fn.find("_Tp* __scan = __last;") < copy_bw_scan);
+    CHECK(prism_test::first_before(copy_bw_fn, "_Tp* __scan = __last;", copy_bw_scan));
     const std::string copy_bw_scan_body = copy_bw_fn.substr(copy_bw_scan, copy_bw_src - copy_bw_scan);
     const auto copy_bw_scan_check = copy_bw_scan_body.find("__prism_check");
     const auto copy_bw_scan_trap = copy_bw_scan_body.find("__builtin_trap");
     REQUIRE(copy_bw_scan_check != std::string::npos);
     REQUIRE(copy_bw_scan_trap != std::string::npos);
     CHECK(copy_bw_scan_check < copy_bw_scan_trap);
-    CHECK(copy_bw_scan_trap < copy_bw_scan_body.find("--__scan"));
+    CHECK(prism_test::first_after(copy_bw_scan_body, "--__scan", copy_bw_scan_trap));
     CHECK(copy_bw_scan_body.find("*__") == std::string::npos);
     CHECK(copy_bw_scan_body.find("<") == std::string::npos);
     CHECK(copy_bw_scan_body.find("return") == std::string::npos);
@@ -1035,7 +916,7 @@ TEST_CASE("cxx algorithm model: header is a file and returns an argument") {
     REQUIRE(ci_zero_at != std::string::npos);
     CHECK(text.find(ci_sig, ci_at + 1) == std::string::npos);
     CHECK(text.find(ci_zero_sig, ci_zero_at + 1) == std::string::npos);
-    CHECK(text.find("namespace ranges {") < ci_at);
+    CHECK(prism_test::first_before(text, "namespace ranges {", ci_at));
     CHECK(ci_at < ci_zero_at);
     const std::string ci_fn = text.substr(ci_at, ci_zero_at - ci_at);
     const auto ci_null = ci_fn.find("if (__pred == nullptr)");
@@ -1101,20 +982,15 @@ TEST_CASE("cxx algorithm model: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxalgorithm-doctest";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp does not return v") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -1443,11 +1319,11 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
 
     const fs::path omitted = c.tmp / "omitted.cpp";
     std::ofstream(omitted) << "#include <algorithm>\n"
-                              "int use(int* a, int n) {\n"
-                              "  std::sort(a, a + n);\n"
-                              "  std::for_each(a, a + n, [](int) {});\n"
-                              "  return a[0];\n"
-                              "}\n";
+                                  "int use(int* a, int n) {\n"
+                                  "  std::sort(a, a + n);\n"
+                                  "  std::for_each(a, a + n, [](int) {});\n"
+                                  "  return a[0];\n"
+                                  "}\n";
     std::string omitted_err;
     CHECK(syntax_only(c.cxx, omitted, false, &omitted_err));
     CHECK_FALSE(syntax_only(c.cxx, omitted, true, &omitted_err));
@@ -1479,11 +1355,11 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
 
     const fs::path find_ok = c.tmp / "find_ok.cpp";
     std::ofstream(find_ok) << "#include <algorithm>\n"
-                              "int use(int* a, int n, const int& v) {\n"
-                              "  int* p = std::find(a, a + n, v);\n"
-                              "  if (p == a + n) return 0;\n"
-                              "  return *p;\n"
-                              "}\n";
+                                  "int use(int* a, int n, const int& v) {\n"
+                                  "  int* p = std::find(a, a + n, v);\n"
+                                  "  if (p == a + n) return 0;\n"
+                                  "  return *p;\n"
+                                  "}\n";
     std::string find_ok_err;
     CHECK(syntax_only(c.cxx, find_ok, false, &find_ok_err));
     CHECK(syntax_only(c.cxx, find_ok, true, &find_ok_err));
@@ -1508,9 +1384,9 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
 
     const fs::path find_if = c.tmp / "find_if.cpp";
     std::ofstream(find_if) << "#include <algorithm>\n"
-                              "int use(int* a, int n) {\n"
-                              "  return *std::find_if(a, a + n, [](int x) { return x == 0; });\n"
-                              "}\n";
+                                  "int use(int* a, int n) {\n"
+                                  "  return *std::find_if(a, a + n, [](int x) { return x == 0; });\n"
+                                  "}\n";
     std::string find_if_err;
     CHECK(syntax_only(c.cxx, find_if, false, &find_if_err));
     CHECK_FALSE(syntax_only(c.cxx, find_if, true, &find_if_err));
@@ -1739,9 +1615,9 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
 
     const fs::path fill_ok = c.tmp / "fill_ok.cpp";
     std::ofstream(fill_ok) << "#include <algorithm>\n"
-                              "void use(int* a, int n, const int& v) {\n"
-                              "  std::fill(a, a + n, v);\n"
-                              "}\n";
+                                  "void use(int* a, int n, const int& v) {\n"
+                                  "  std::fill(a, a + n, v);\n"
+                                  "}\n";
     std::string fill_ok_err;
     CHECK(syntax_only(c.cxx, fill_ok, false, &fill_ok_err));
     CHECK(syntax_only(c.cxx, fill_ok, true, &fill_ok_err));
@@ -1808,9 +1684,9 @@ TEST_CASE("cxx algorithm model: trace matches libstdc++ and an inverted clamp do
 
     const fs::path copy_ok = c.tmp / "copy_ok.cpp";
     std::ofstream(copy_ok) << "#include <algorithm>\n"
-                              "int* use(int* a, int* b, int n) {\n"
-                              "  return std::copy(a, a + n, b);\n"
-                              "}\n";
+                                  "int* use(int* a, int* b, int n) {\n"
+                                  "  return std::copy(a, a + n, b);\n"
+                                  "}\n";
     std::string copy_ok_err;
     CHECK(syntax_only(c.cxx, copy_ok, false, &copy_ok_err));
     CHECK(syntax_only(c.cxx, copy_ok, true, &copy_ok_err));

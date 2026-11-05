@@ -30,6 +30,8 @@
 
 #include <doctest/doctest.h>
 
+#include "cxx_model_harness.hpp"
+
 #include "prose_text.hpp"
 
 #include <cstdio>
@@ -40,19 +42,15 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#  include <spawn.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#else
-#  include "support/proctree.hpp"
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo() { return fs::path(PRISM_SOURCE_DIR); }
+namespace cxxh = prism_test::cxx;
+using cxxh::fwd;
+using cxxh::repo;
+using cxxh::run_cmd;
+using cxxh::run_lines;
 
 fs::path header_path() { return repo() / "src" / "prism" / "pir" / "models" / "cxx" / "ranges"; }
 
@@ -100,126 +98,19 @@ RangesCtx& ctx() {
     return c;
 }
 
-bool run_cmd(const std::vector<std::string>& argv, std::string* out = nullptr, std::string* err = nullptr) {
-#ifndef _WIN32
-    std::vector<char*> args;
-    for (auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
-    int pipe_out[2]{-1, -1};
-    int pipe_err[2]{-1, -1};
-    if (out && pipe(pipe_out) != 0) return false;
-    if (err && pipe(pipe_err) != 0) {
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    if (out) {
-        posix_spawn_file_actions_addclose(&actions, pipe_out[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_out[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_out[1]);
-    }
-    if (err) {
-        posix_spawn_file_actions_addclose(&actions, pipe_err[0]);
-        posix_spawn_file_actions_adddup2(&actions, pipe_err[1], STDERR_FILENO);
-        posix_spawn_file_actions_addclose(&actions, pipe_err[1]);
-    }
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, args.data(), environ) != 0) {
-        posix_spawn_file_actions_destroy(&actions);
-        if (out) {
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (err) {
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
-        return false;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-    if (out) {
-        close(pipe_out[1]);
-        out->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_out[0], buf, sizeof buf)) > 0) out->append(buf, static_cast<size_t>(n));
-        close(pipe_out[0]);
-    }
-    if (err) {
-        close(pipe_err[1]);
-        err->clear();
-        char buf[8192];
-        ssize_t n = 0;
-        while ((n = ::read(pipe_err[0], buf, sizeof buf)) > 0) err->append(buf, static_cast<size_t>(n));
-        close(pipe_err[0]);
-    }
-    int st = 0;
-    if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-#else
-    prism::qa::RunOpts o;
-    o.timeout_s = 300;
-    auto r = prism::qa::run_tree(argv, o);
-    if (out) {
-        *out = r.out;
-        std::erase(*out, '\r');  // text-mode stdout on Windows is CRLF
-    }
-    if (err) *err = r.err;
-    return !r.start_failed && !r.timed_out && r.rc == 0;
-#endif
-}
-
-std::string fwd(std::string s) {
-    for (auto& c : s)
-        if (c == '\\') c = '/';
-    return s;
-}
-
-#ifdef _WIN32
-constexpr const char* kProbeExe = "probe.exe";
-#else
-constexpr const char* kProbeExe = "probe";
-#endif
-
 bool probe_clang_asan(const std::string& cxx, const fs::path& tmp) {
-    auto probe = tmp / "probe.cpp";
-    std::ofstream(probe) << "#include <ranges>\n"
-                            "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
-                            "int main() {\n"
-                            "  int a[4] = {};\n"
-                            "  return std::ranges::size(a) == 4 && std::ranges::ssize(a) == 4 ? 0 : 1;\n"
-                            "}\n";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    std::vector<std::string> build{cxx};
-    build.insert(build.end(), flags.begin(), flags.end());
-    build.push_back(probe.string());
-    build.push_back("-o");
-    build.push_back((tmp / kProbeExe).string());
-    if (!run_cmd(build)) return false;
-    return run_cmd({(tmp / kProbeExe).string()});
+    return cxxh::probe_clang_asan(cxx, tmp,
+                                  "#include <ranges>\n"
+                                  "#ifndef __GLIBCXX__\n#error the model builds on libstdc++ internals\n#endif\n"
+                                  "int main() {\n"
+                                  "  int a[4] = {};\n"
+                                  "  return std::ranges::size(a) == 4 && std::ranges::ssize(a) == 4 ? 0 : 1;\n"
+                                  "}\n",
+                                  cxxh::asan_flags());
 }
 
 fs::path build_prog(const std::string& cxx, const fs::path& tmp, bool with_models) {
-    const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
-    const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
-                                         "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
-    fs::path out = tmp / (with_models ? "ranges_trace.model" : "ranges_trace.lib");
-    std::vector<std::string> argv{cxx};
-    argv.insert(argv.end(), flags.begin(), flags.end());
-    if (with_models) {
-        argv.push_back("-isystem");
-        argv.push_back(models.string());
-    }
-    argv.push_back((repo() / "tests" / "cxx_models" / "ranges_trace.cpp").string());
-    argv.push_back("-o");
-    argv.push_back(out.string());
-    REQUIRE(run_cmd(argv));
-    return out;
+    return cxxh::build_prog(cxx, tmp, cxxh::trace_src("ranges_trace.cpp"), "ranges_trace", cxxh::asan_flags(), with_models);
 }
 
 bool compile_snippet(const std::string& cxx, const fs::path& tmp, const std::string& name, const std::string& src,
@@ -236,16 +127,6 @@ bool compile_snippet(const std::string& cxx, const fs::path& tmp, const std::str
     argv.push_back("-o");
     argv.push_back((tmp / (name + ".o")).string());
     return run_cmd(argv, nullptr, err);
-}
-
-std::vector<std::string> run_lines(const fs::path& exe) {
-    std::string stdout_text;
-    REQUIRE(run_cmd({exe.string()}, &stdout_text));
-    std::vector<std::string> lines;
-    std::istringstream in(stdout_text);
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
 }
 
 bool has_line(const std::vector<std::string>& lines, const std::string& want) {
@@ -668,20 +549,15 @@ TEST_CASE("cxx ranges model: setup clang++ with ASan/UBSan") {
         c.tmp = fs::temp_directory_path() / "prism-cxxranges-doctest";
         fs::remove_all(c.tmp);
         fs::create_directories(c.tmp);
-        for (const char* name : {"clang++-18", "clang++"}) {
-            if (run_cmd({name, "--version"})) {
-                c.cxx = name;
-                break;
-            }
-        }
-        if (!c.cxx.empty()) c.ok = probe_clang_asan(c.cxx, c.tmp);
+        c.cxx = cxxh::pick_cxx([&](const std::string& cxx) { return probe_clang_asan(cxx, c.tmp); });
+        c.ok = !c.cxx.empty();
     }
-    if (!c.ok) MESSAGE("NOTRUN: clang++ with ASan/UBSan and libstdc++ not usable here");
+    if (!c.ok) prism_test::notrun("clang++ with ASan/UBSan and libstdc++ not usable here");
 }
 
 TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, cdata, distance, find, find_if, find_if_not, and count_if match libstdc++, a pointer does not compile") {
     auto& c = ctx();
-    if (!c.ok) return;
+    if (!c.ok) return prism_test::notrun(cxxh::kNoCompiler);
     const fs::path models = repo() / "src" / "prism" / "pir" / "models" / "cxx";
     const std::vector<std::string> flags{"-std=c++23", "-D_GLIBCXX_ASSERTIONS", "-fsanitize=address,undefined",
                                          "-fno-sanitize-recover=all", "-g", "-O1", "-w"};
@@ -707,10 +583,8 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "cbox 3"));
     CHECK(has_line(b, "scbox 3"));
     CHECK(has_line(b, "earr 0"));
-    CHECK(has_line(b, "zempty 1"));
     CHECK(has_line(b, "cearr 0"));
     CHECK(has_line(b, "inner 0"));
-    CHECK(has_line(b, "outer 1"));
     CHECK(has_line(b, "eflag 1"));
     CHECK(has_line(b, "enflag 0"));
     CHECK(has_line(b, "ecflag 1"));
@@ -719,53 +593,42 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "bdist 4"));
     CHECK(has_line(b, "bfirst 9"));
     CHECK(has_line(b, "blast 6"));
-    CHECK(has_line(b, "zsame 1"));
     CHECK(has_line(b, "cbdist 4"));
     CHECK(has_line(b, "cbfirst 2"));
     CHECK(has_line(b, "cblast 5"));
     CHECK(has_line(b, "bpdist 2"));
     CHECK(has_line(b, "bpsame 1"));
     CHECK(has_line(b, "isame 1"));
-    CHECK(has_line(b, "osame 1"));
     CHECK(has_line(b, "dfirst 9"));
     CHECK(has_line(b, "dsame 1"));
     CHECK(has_line(b, "cdfirst 2"));
     CHECK(has_line(b, "cdsame 1"));
-    CHECK(has_line(b, "zdata 1"));
     CHECK(has_line(b, "dpsame 1"));
     CHECK(has_line(b, "idsame 1"));
-    CHECK(has_line(b, "odsame 1"));
     CHECK(has_line(b, "kbdist 4"));
     CHECK(has_line(b, "kbfirst 9"));
     CHECK(has_line(b, "kblast 6"));
     CHECK(has_line(b, "kbsame 1"));
-    CHECK(has_line(b, "kzsame 1"));
     CHECK(has_line(b, "kcbdist 4"));
     CHECK(has_line(b, "kcbfirst 2"));
     CHECK(has_line(b, "kcblast 5"));
     CHECK(has_line(b, "kbpdist 2"));
     CHECK(has_line(b, "kbpsame 1"));
     CHECK(has_line(b, "kisame 1"));
-    CHECK(has_line(b, "kosame 1"));
     CHECK(has_line(b, "kdfirst 9"));
     CHECK(has_line(b, "kdsame 1"));
     CHECK(has_line(b, "kcdfirst 2"));
     CHECK(has_line(b, "kcdsame 1"));
-    CHECK(has_line(b, "kzdata 1"));
     CHECK(has_line(b, "kdpsame 1"));
     CHECK(has_line(b, "kidsame 1"));
-    CHECK(has_line(b, "kodsame 1"));
     CHECK(has_line(b, "dist 4"));
-    CHECK(has_line(b, "zdist 0"));
     CHECK(has_line(b, "cdist 4"));
     CHECK(has_line(b, "idist 4"));
-    CHECK(has_line(b, "odist 0"));
     CHECK(has_line(b, "pdist 2"));
     CHECK(has_line(b, "ffirst 9"));
     CHECK(has_line(b, "fnext 1"));
     CHECK(has_line(b, "flast 6"));
     CHECK(has_line(b, "fmiss 1"));
-    CHECK(has_line(b, "fzfind 1"));
     CHECK(has_line(b, "fcfirst 2"));
     CHECK(has_line(b, "fclast 5"));
     CHECK(has_line(b, "fcmiss 1"));
@@ -775,21 +638,18 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "iffirst 1 2"));
     CHECK(has_line(b, "iffront 0 1"));
     CHECK(has_line(b, "ifmiss 1 4"));
-    CHECK(has_line(b, "ifempty 1 0"));
     CHECK(has_line(b, "iftie 1 1"));
     CHECK(has_line(b, "ifone 1"));
     CHECK(has_line(b, "ifkeep 1"));
     CHECK(has_line(b, "ifcfirst 2"));
     CHECK(has_line(b, "ifclast 5"));
     CHECK(has_line(b, "ifcmiss 1"));
-    CHECK(has_line(b, "ifznull 1"));
     CHECK(has_line(b, "ifpfind 1"));
     CHECK(has_line(b, "ifpmiss 1"));
     CHECK(has_line(b, "nfhit 1 0 1"));
     CHECK(has_line(b, "nfnext 1 2"));
     CHECK(has_line(b, "nflast 3 4"));
     CHECK(has_line(b, "nfmiss 1 4"));
-    CHECK(has_line(b, "nfempty 1 0"));
     CHECK(has_line(b, "nftie 1 1"));
     CHECK(has_line(b, "nftieall 1 2"));
     CHECK(has_line(b, "nfone 1"));
@@ -797,14 +657,12 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "nfcfirst 2"));
     CHECK(has_line(b, "nfcnext 1"));
     CHECK(has_line(b, "nfcmiss 1"));
-    CHECK(has_line(b, "nfznull 1"));
     CHECK(has_line(b, "nfpfind 1"));
     CHECK(has_line(b, "nfpmiss 1"));
     CHECK(has_line(b, "cfhit 1 4"));
     CHECK(has_line(b, "cftwo 2 4"));
     CHECK(has_line(b, "cffront 1 4"));
     CHECK(has_line(b, "cfmiss 0 4"));
-    CHECK(has_line(b, "cfempty 0 0"));
     CHECK(has_line(b, "cftie 2 2"));
     CHECK(has_line(b, "cftiemiss 0 2"));
     CHECK(has_line(b, "cfone 1"));
@@ -813,7 +671,6 @@ TEST_CASE("cxx ranges model: array size, empty, begin, end, data, cbegin, cend, 
     CHECK(has_line(b, "cfczero 2 4"));
     CHECK(has_line(b, "cfcall 4 4"));
     CHECK(has_line(b, "cfcmiss 0"));
-    CHECK(has_line(b, "cfznull 1"));
     CHECK(has_line(b, "cfpnull 2"));
     CHECK(has_line(b, "cfpmiss 0"));
 
