@@ -84,8 +84,15 @@ std::string record_name(std::string_view t);
 // library itself is loaded at run time, so a missing libclang.so is a clean
 // fallback to the process path, never a failure to start PRISM.
 
+// Versioned library or directory names, newest first by the numbers in the
+// file name ("libclang-18.so.18" before "libclang-9.so.9", "llvm-18" before
+// "llvm-9"); ties in reverse string order. Always compiled (tested).
+void sort_newest_first(std::vector<std::string>& paths);
+
 // True when libclang could be loaded; `why` says why not (not built in, not
-// found, missing symbols). `clang` is a clang binary to look next to.
+// found, missing symbols). `clang` is a clang binary to look next to: the
+// pinned LLVM ($PRISM_LLVM_BIN/../lib, then the build's pinned bin/../lib)
+// is tried before it, and the distribution's llvm-N dirs after it.
 bool libclang_load(const std::optional<std::filesystem::path>& clang, std::string* why,
                    std::string* where = nullptr);
 

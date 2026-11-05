@@ -29,6 +29,8 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -46,6 +48,31 @@
 
 namespace prism::astlint::detail {
 namespace fs = std::filesystem;
+
+void sort_newest_first(std::vector<std::string>& paths) {
+    // The digit runs of the file name, as numbers: "libclang-18.so.18" ->
+    // {18, 18}, "llvm-9" -> {9}. String order would put 9 before 18.
+    auto key = [](const std::string& p) {
+        std::vector<unsigned long long> v;
+        const auto n = fs::path(p).filename().string();
+        for (std::size_t i = 0; i < n.size();) {
+            if (!std::isdigit(static_cast<unsigned char>(n[i]))) {
+                ++i;
+                continue;
+            }
+            unsigned long long x = 0;
+            for (; i < n.size() && std::isdigit(static_cast<unsigned char>(n[i])); ++i)
+                x = x > 1'000'000'000ULL ? x : x * 10 + static_cast<unsigned>(n[i] - '0');
+            v.push_back(x);
+        }
+        return v;
+    };
+    std::stable_sort(paths.begin(), paths.end(), [&](const std::string& a, const std::string& b) {
+        auto ka = key(a), kb = key(b);
+        if (ka != kb) return ka > kb;
+        return a > b;
+    });
+}
 
 #ifndef PRISM_HAS_LIBCLANG
 
@@ -156,14 +183,27 @@ std::vector<std::string> candidates(const std::optional<fs::path>& clang) {
                 !n.starts_with("libclang-cpp") && !n.starts_with("libclangBasic"))
                 ver.push_back(e.path().string());
         }
-        std::sort(ver.rbegin(), ver.rend());
+        sort_newest_first(ver);
         out.insert(out.end(), ver.begin(), ver.end());
 #endif
     };
+    // <llvm>/bin -> the libclang of that toolchain (lib/, bin/ for the DLL).
+    auto add_prefix_of_bin = [&](const fs::path& bin) {
+        add_dir(bin.parent_path() / "lib");
+#ifdef _WIN32
+        add_dir(bin);
+#endif
+    };
+    // The pinned LLVM first (third_party/llvm/PIN.toml): $PRISM_LLVM_BIN,
+    // then the pinned fetch dir baked in at build time.
+    if (const char* e = std::getenv("PRISM_LLVM_BIN"); e && *e) add_prefix_of_bin(fs::path(e));
+#ifdef PRISM_LLVM_PINNED_BIN
+    add_prefix_of_bin(fs::path(PRISM_LLVM_PINNED_BIN));
+#endif
     if (clang) {
         std::error_code ec;
         auto real = fs::canonical(*clang, ec);
-        if (!ec) add_dir(real.parent_path().parent_path() / "lib");
+        if (!ec) add_prefix_of_bin(real.parent_path());
     }
 #ifdef PRISM_LIBCLANG_HINT
     out.push_back(PRISM_LIBCLANG_HINT);
@@ -171,11 +211,11 @@ std::vector<std::string> candidates(const std::optional<fs::path>& clang) {
 #if !defined(_WIN32) && !defined(__APPLE__)
     {
         std::error_code ec;
-        std::vector<fs::path> llvm;
+        std::vector<std::string> llvm;
         for (auto& e : fs::directory_iterator("/usr/lib", ec))
-            if (e.path().filename().string().starts_with("llvm-")) llvm.push_back(e.path());
-        std::sort(llvm.rbegin(), llvm.rend());
-        for (auto& d : llvm) add_dir(d / "lib");
+            if (e.path().filename().string().starts_with("llvm-")) llvm.push_back(e.path().string());
+        sort_newest_first(llvm);  // llvm-18 before llvm-9
+        for (auto& d : llvm) add_dir(fs::path(d) / "lib");
     }
     out.push_back("libclang.so.1");
     out.push_back("libclang.so");
@@ -211,7 +251,8 @@ Loaded& loaded(const std::optional<fs::path>& clang) {
             L.resource_dir = find_resource_dir(c);
             return;
         }
-        L.why = missing.empty() ? "libclang not found (install libclang1-18 / libclang-18-dev)"
+        L.why = missing.empty() ? "libclang not found (install the pinned LLVM of third_party/llvm/PIN.toml with "
+                                  "scripts/fetch_llvm.py, or set PRISM_LLVM_BIN to its bin directory)"
                                 : "libclang found but lacks " + missing + " (libclang 17 or newer is needed)";
     });
     return L;
