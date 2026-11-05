@@ -45,6 +45,7 @@ constexpr Command COMMANDS[] = {
     {"solver-bench", prism::qa::solver_bench_main, "portfolio vs Z3 alone on the conformance suite's pir VCs"},
     {"assurance-check", assurance, "every artefact docs/assurance cites exists"},
     {"docs-check", prism::qa::docs_check_main, "--help flags documented, anchors resolve, stage order listed"},
+    {"bench", prism::qa::bench_main, "PRISM vs cppcheck and clang-tidy on pinned real-world projects"},
 };
 
 int usage(std::ostream& o, int rc) {

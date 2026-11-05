@@ -14,6 +14,7 @@
 //   solver-bench              portfolio vs Z3 alone on the pir VCs
 //   assurance-check           cited artefacts of docs/assurance exist
 //   docs-check                --help flags documented, anchors resolve, stage order
+//   bench                     PRISM vs cppcheck/clang-tidy on pinned real projects
 //
 // PRISM runs as a child process in a session of its own
 // (prism::exec::run_session): a timeout or Ctrl-C kills it and every solver,
@@ -111,6 +112,9 @@ struct BenchTask {
 std::vector<BenchTask> discover_tasks(const std::vector<std::filesystem::path>& roots,
                                       const std::filesystem::path& suite);
 int solver_bench_main(const Args& args);
+
+// ---- bench (docs/EVALUATION.md)
+int bench_main(const Args& args);
 
 // ---- docs-check
 // Flags of `help` missing from the guide (sorted).

@@ -573,6 +573,7 @@ set(_prism_qa_sources
   src/tools/qa/llvm_sem_vs_lli.cpp
   src/tools/qa/libc_bounds.cpp
   src/tools/qa/solver_bench.cpp
+  src/tools/qa/bench.cpp
   src/tools/qa/support/yaml_subset.cpp
   src/tools/qa/support/task.cpp
   src/tools/qa/support/replay.cpp
