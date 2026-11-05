@@ -510,6 +510,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PROVER_MODEL", "prover LLM model name"},
     {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
     {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
+    {"PRISM_TESTS_REQUIRE_TOOLS", "prism_tests: 1 = a NOTRUN test case (missing tool, compiler or platform feature) fails instead of passing"},
     {"PRISM_TOOLS_DIR", "directory of vendored external tools"},
     {"PRISM_TRIAGE", "enable LLM triage"},
     {"PRISM_VERSION", "override the reported version string"},

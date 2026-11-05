@@ -728,6 +728,10 @@ if(PRISM_TESTS)
   # test_sanitize_static.cpp are reference-only splits and are not built (they
   # would register the same doctest names twice).
   set(_prism_test_sources
+    # Shared test helpers: NOTRUN registry + listener, ordering checks
+    # (test_support), and the C++ model-test driver (cxx_model_harness).
+    tests/cpp/test_support.cpp
+    tests/cpp/cxx_model_harness.cpp
     tests/cpp/test_env_registry.cpp
     tests/cpp/test_log.cpp
     tests/cpp/test_backends.cpp
