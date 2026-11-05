@@ -91,6 +91,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--certified` | the `pir` stage asks for a checked certificate of every verification condition; a function whose VCs are all certified is `PROVED-CERTIFIED` (section 9) |
 | `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
 | `--timeout S` | solver seconds per query (default 30) |
+| `--target TRIPLE` | the platform the code is built for (else `PRISM_TARGET`, else the host): `x86_64-unknown-linux-gnu` (LP64, glibc, libstdc++), `i386-unknown-linux-gnu` (ILP32) or `x86_64-pc-windows-msvc` (LLP64: 32-bit `long`, 16-bit `wchar_t`, UCRT and MSVC STL headers). The default on a Windows x64 host is `x86_64-pc-windows-msvc`. Any other triple is an error (exit 2). See docs/MSVC_PORT.md |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
 | `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |

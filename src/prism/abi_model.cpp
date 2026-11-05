@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdlib>
 #include <string>
 
 namespace prism {
@@ -141,6 +142,9 @@ const Target& target_ref(TargetKind k) {
 const Target& active_target() {
     const int k = g_active.load();
     if (k < 0) {
+        // outside a run: PRISM_TARGET when it names a supported target, else the host
+        if (const char* e = std::getenv("PRISM_TARGET"); e && *e)
+            if (auto t = parse_target(e)) return target_ref(t->kind);
         static const TargetKind host = parse_target(host_target_triple())->kind;
         return target_ref(host);
     }

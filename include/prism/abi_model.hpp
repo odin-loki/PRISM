@@ -70,7 +70,7 @@ PRISM_API std::optional<Target> resolve_target(std::string_view triple, std::str
 
 // The target of the running analysis, for the source-level width tables
 // (interval, interp, astlint). Set for a pipeline run by ActiveTargetScope;
-// outside one it is the host target.
+// outside one it is PRISM_TARGET when that is a supported triple, else the host.
 PRISM_API const Target& active_target();
 class PRISM_API ActiveTargetScope {
 public:

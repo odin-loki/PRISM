@@ -23,6 +23,15 @@ int time_null_true(void) {
     time_t when = 0;
     (void)gmtime(&when);
     (void)localtime(&when);
+#ifdef _WIN32
+    /* x86_64-pc-windows-msvc: the UCRT's _*64 entry points (mktime's
+     * in-range path ends the execution, so _mktime64 is only named) */
+    (void)_time64(0);
+    (void)(when != 0 ? _mktime64(0) : 0);
+    (void)_difftime64(when, when);
+    (void)_gmtime64(&when);
+    (void)_localtime64(&when);
+#endif
     return 0;
 }
 

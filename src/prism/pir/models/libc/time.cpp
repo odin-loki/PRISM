@@ -13,10 +13,8 @@
  * the _*64 functions modelled at the end of this file. */
 typedef long long time_t;
 extern "C" long long __VERIFIER_nondet_longlong(void);
-#define PRISM_NONDET_TIME() __VERIFIER_nondet_longlong()
 #else
 typedef long time_t;
-#define PRISM_NONDET_TIME() __VERIFIER_nondet_long()
 #endif
 typedef long clock_t;
 typedef int clockid_t;
@@ -42,7 +40,7 @@ extern "C" {
 
 /* time is not PROVED and not CLEAN. A null pointer stores nothing. */
 time_t time(time_t *t) {
-    time_t v = PRISM_NONDET_TIME();
+    time_t v = __VERIFIER_nondet_long();
     if (t != 0) {
         *t = v;
     }
@@ -102,7 +100,7 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp) {
         return -1;
     }
     (void)clock_id;
-    tp->tv_sec = PRISM_NONDET_TIME();
+    tp->tv_sec = __VERIFIER_nondet_long();
     long nsec = __VERIFIER_nondet_long();
     __prism_assume(nsec >= 0 && nsec <= 999999999);
     tp->tv_nsec = nsec;
@@ -178,8 +176,16 @@ struct tm *localtime(const time_t *timer) {
 }
 
 #ifdef _WIN32
-/* The UCRT's inline <time.h> wrappers call these; same models as above. */
-time_t _time64(time_t *t) { return time(t); }
+/* The UCRT's inline <time.h> wrappers call these; the models above, except
+ * that _time64's value is any 64-bit time_t (time() above draws a long,
+ * 32-bit here). A null pointer stores nothing. */
+time_t _time64(time_t *t) {
+    time_t v = __VERIFIER_nondet_longlong();
+    if (t != 0) {
+        *t = v;
+    }
+    return v;
+}
 time_t _mktime64(struct tm *tp) { return mktime(tp); }
 double _difftime64(time_t time1, time_t time0) { return difftime(time1, time0); }
 struct tm *_gmtime64(const time_t *timer) { return gmtime(timer); }

@@ -119,6 +119,20 @@ struct PrivateTmp {
     PrivateTmp& operator=(const PrivateTmp&) = delete;
 };
 const PrivateTmp g_private_tmp;
+
+#ifdef _WIN32
+// The shared corpus (testdata/, the LP64 cases) is Linux code, so on a
+// Windows host the suite analyses it for x86_64 Linux, as on Linux; the
+// default there would be x86_64-pc-windows-msvc. test_target.cpp sets the
+// Windows target explicitly. An explicit PRISM_TARGET is kept.
+struct LinuxTargetForCorpus {
+    LinuxTargetForCorpus() {
+        if (const char* e = std::getenv("PRISM_TARGET"); !e || !*e)
+            _putenv_s("PRISM_TARGET", "x86_64-unknown-linux-gnu");
+    }
+};
+const LinuxTargetForCorpus g_linux_target;
+#endif
 }  // namespace
 
 // MSVC has no setenv/unsetenv. _putenv_s with an empty value removes the

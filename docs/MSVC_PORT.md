@@ -1,4 +1,92 @@
-# MSVC / `__int128` portability (native Windows `prism_core`)
+# Windows x64 and MSVC: hosts, targets, and the `__int128` port
+
+## Supported hosts and targets
+
+PRISM runs **on** a host and checks code built **for** a target. They are set apart:
+`--target TRIPLE` (else `PRISM_TARGET`, else the host) picks the target.
+
+| Host (where `prism` runs) | Compilers that build PRISM | Status |
+|---|---|---|
+| Linux x86-64 | pinned clang 23.1.4 (`scripts/fetch_llvm.py`) | primary; CI runs the full `prism_tests` |
+| Windows x64 | **Visual C++ `cl`** (MSVC 19.40+, VS 2022 17.10+; checked with 19.51 / VS 18) or the pinned `clang-cl` | full `prism_tests` builds and runs with `cl` (see "Windows host: what is NOTRUN") |
+| WSL on Windows | as Linux | build on ext4 (`~/PRISM`), never on `/mnt/c` |
+
+| Target (`--target`) | Data model | C library / C++ library headers | Default on |
+|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | LP64 (`long` 64, `wchar_t` 32) | glibc, libstdc++ (PRISM's C++ library models) | Linux hosts |
+| `i386-unknown-linux-gnu` | ILP32 | glibc | `--data-model ILP32` (SV-COMP) |
+| `x86_64-pc-windows-msvc` | **LLP64** (`long` 32, `long long` / `size_t` / pointers 64, `wchar_t` 16) | UCRT and the **MSVC STL** | Windows x64 hosts |
+
+Any other triple (ARM64, 32-bit Windows, MinGW, macOS) is refused with exit 2, never mapped
+onto a supported ABI. SV-COMP tasks are always analysed as Linux.
+
+What follows the target:
+
+- **pir** lowers with `clang --target=<triple>`. For `x86_64-pc-windows-msvc` it also passes
+  `-fno-wrapv` (clang's MSVC driver adds `-fwrapv`, which would drop every signed-overflow
+  check, Law 8) and `-D_NO_CRT_STDIO_INLINE` (so `printf` and friends stay library calls with
+  models instead of inline UCRT bodies). The libc models are lowered for the target and cached
+  per triple; `time.cpp` models the UCRT's 64-bit `time_t` and its `_time64` family. Pointer
+  width comes from the IR's datalayout (64-bit on LLP64).
+- **C++ on MSVC**: PRISM's C++ library models describe libstdc++ internals and are **never**
+  used for an MSVC target. A C++ unit is lowered against the real MSVC STL headers and every
+  function says so (`extra.cxx_models` = `MSVC STL (...)`). The STL code is encoded like user
+  code (what cannot be encoded is UNENCODED); the library precondition checks
+  (`_GLIBCXX_ASSERTIONS` on libstdc++) are NOTRUN.
+- The **source-level stages** (interval, the concrete interpreter behind concolic / fuse /
+  rapid / muttest, argument packing, astlint widths) take `long` and `wchar_t` widths from the
+  target.
+- **Headers**: on a Windows host clang finds Visual Studio / the Windows SDK by itself. On a
+  Linux host the Windows target needs `PRISM_MSVC_SYSROOT` (a root with `VC/` and
+  `Windows Kits/`, passed as `-Xmicrosoft-windows-sys-root`); without it pir is `NOTRUN`
+  ("needs the MSVC and Windows SDK headers"). The Linux target on a Windows host needs the
+  pinned Linux sysroot (`python scripts/fetch_toolchain.py linux-sysroot`), else `NOTRUN`.
+
+`testdata/conformance/prism/datamodel/` holds four pairs whose answer flips between LP64 and
+LLP64 (`long + 1` at 2^31 − 1, `1L << 32`, `a[sizeof(long)]`, `memcpy` of a `wchar_t`);
+`tests/cpp/test_target.cpp` runs every pair on both targets.
+
+### Windows host: what is NOTRUN
+
+Each of these prints `NOTRUN` / `MESSAGE` with the reason; none is a clean result.
+
+| What | Why |
+|---|---|
+| bwrap sandbox | no bubblewrap on Windows: `--allow-exec` runs in a Job Object (rlimits analogue), not a namespace sandbox |
+| AFL++ | not on Windows (`afl:` / `fuse:` cases say "no C compiler" / missing) |
+| libFuzzer, UBSan+ASan replay | need a clang that links the sanitizers; with only `cl` the label self-check and the real-compiler SV-COMP replay are NOTRUN |
+| `fork` / POSIX signal cases | Job Object equivalents run instead (`test_qa.cpp`) |
+| pir for the Linux target | needs the pinned Linux sysroot; pir for the Windows target needs the VS / Windows SDK headers |
+| Vulkan inference | FORGE's Vulkan backend needs `glslangValidator` and the Vulkan SDK headers at build time; without them `PRISM_DEVICE=vulkan` falls back to the CPU with a warning |
+
+The test suite analyses its shared corpus (written for Linux LP64) for
+`x86_64-unknown-linux-gnu` on Windows too (`tests/cpp/test_main.cpp` sets `PRISM_TARGET`
+unless one is given); the Windows target is tested explicitly in `test_target.cpp`.
+
+### Building with `cl`
+
+From a VS x64 developer environment (`vcvars64.bat`), on a non-OneDrive path:
+
+```
+cmake -S . -B C:\Temp\prism-build-win -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DFORGE_SOURCE_DIR=C:/Temp/forge ^
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON ^
+  -DPRISM_LLVM_PINNED_BIN=%USERPROFILE%/.cache/prism/tools/llvm-23.1.4/bin ^
+  -DFORGE_GPU_CLANG=%USERPROFILE%/.cache/prism/tools/llvm-23.1.4/bin/clang.exe
+cmake --build C:\Temp\prism-build-win -j 16 --target prism prism-qa prism_tests
+```
+
+`PRISM_LLVM_PINNED_BIN` is pir's clang/opt (any compiler builds PRISM; pir always uses the
+pinned LLVM). `FORGE_GPU_CLANG` lets FORGE build its CUDA PTX images with the pinned clang
+(with `cl` as the host compiler FORGE otherwise finds no clang and builds no PTX); then
+FORGE's `cuda` device opens through `nvcuda.dll` at run time (checked on an RTX 3090,
+driver 610.88; `opencl` opens too). A full model run on the GPU from PRISM is not yet
+measured on Windows. PRISM reads `.fpk` models only: a `.gguf` must first be imported with
+FORGE (`forge import model.gguf -o model.fpk`).
+Under `cl`, `prism_tests` force-includes `tests/cpp/msvc_builtins.hpp` (`__builtin_trap` and
+the bit builtins the PIR model headers use).
+
+## The `__int128` port (history)
 
 **Epic:** build `prism_core` and `prism` with MSVC (`cl`) on Windows without relying on
 WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).

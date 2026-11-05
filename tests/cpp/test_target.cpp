@@ -15,6 +15,7 @@
 #include "prism/pir/frontend.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -147,7 +148,11 @@ TEST_CASE("target: the default is the host, ILP32 (SV-COMP) wins over the triple
         }
         CHECK(prism::active_target().msvc());
     }
-    CHECK(prism::active_target().triple == prism::host_target_triple());
+    // outside a run: PRISM_TARGET (the suite pins Linux on Windows, test_main.cpp), else the host
+    const char* env = std::getenv("PRISM_TARGET");
+    auto want = prism::parse_target(env && *env ? env : prism::host_target_triple());
+    REQUIRE(want);
+    CHECK(prism::active_target().triple == want->triple);
 }
 
 TEST_CASE("target: --target sets the config, an unsupported triple is exit 2 (never another scan)") {

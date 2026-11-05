@@ -33,9 +33,21 @@ cmake --build build
 
 # Native MSVC (cl), from a VS/x64 Native Tools prompt — build under
 # C:\Temp\prism-build-* (not OneDrive); see docs/MSVC_PORT.md
-cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+cmake -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build
 ```
+
+### Platforms
+
+| | Supported |
+|---|---|
+| Hosts (where `prism` runs) | Linux x86-64 (pinned clang 23.1.4); Windows x64 (Visual C++ `cl` 19.40+ or the pinned `clang-cl`) |
+| Targets (`--target`, default = host) | `x86_64-unknown-linux-gnu` (LP64, glibc, libstdc++); `i386-unknown-linux-gnu` (ILP32, SV-COMP); `x86_64-pc-windows-msvc` (LLP64: 32-bit `long`, 16-bit `wchar_t`, UCRT, MSVC STL) |
+| NOTRUN on Windows hosts | bwrap sandbox (Job Objects instead), AFL++, sanitizer replay without a sanitizer-capable clang, pir for the Linux target without the pinned Linux sysroot, Vulkan inference without the Vulkan SDK |
+| NOTRUN for the MSVC target | PRISM's C++ library models (libstdc++ only): C++ is checked against the real MSVC STL headers and its library precondition checks are NOTRUN; pir on a Linux host without `PRISM_MSVC_SYSROOT` |
+
+Any other target triple is refused (exit 2). Details: [docs/MSVC_PORT.md](docs/MSVC_PORT.md).
 
 ### Windows + WSL
 

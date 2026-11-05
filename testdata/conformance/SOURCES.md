@@ -18,6 +18,7 @@ Roadmap Part 2.7. Run with `build/prism-qa conformance` (see
 | `pointer/` | local pointers (`&v`, array decay) and a NULL dereference on a path |
 | `ptrparam/` | pointer parameters: Law 6 demands `NEEDS-HARNESS` (`expect_status`), never a proof or a refutation |
 | `macro/` | `INT_MAX`/`INT_MIN`, `#define` bounds and function-like macros (the engine has no preprocessor) |
+| `datamodel/` | LP64 vs LLP64: each pair is one body whose answer flips between `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` (yml `target:`, passed as `--target`): `long + 1` at 2^31 - 1, `1L << 32`, `a[sizeof(long)]`, `memcpy` of a `wchar_t`. The self-check skips the task whose target is not the host's |
 | `c23/` | `bool`, binary literals, digit separators, `typeof`, `[[attributes]]`, one-argument `static_assert`, `ckd_add`, `_BitInt`, empty initialisers, `nullptr`, enums with a fixed underlying type |
 | `cxx/` | C++23: `constexpr`, trailing return types, templates, lambdas, `std::abs`, `if consteval`, `std::array`, C++20 shift semantics, `std::midpoint`, reference parameters, range-for, structured bindings, `[[assume]]` |
 | `regress/` | one `_true`/`_false` pair per encoder soundness bug fixed after the first measurement (docs/CONFORMANCE.md "Known issues"): call arguments, `INT_MIN` constant, promoted comparisons, helper early return, loop early exit / break / continue, dangling else, code after a loop under k-induction, uncomputable enumerators, cast aliasing, side effects under `?:`/`&&`, downward `+` overflow, `long long` width, mixed widths |
