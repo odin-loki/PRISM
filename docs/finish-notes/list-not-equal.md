@@ -91,9 +91,8 @@ tests/cpp/test_cxx_list_ne.cpp
 ```
 
 No existing line was removed. `tests/cpp/test_qa_conformance.cpp` was not
-edited. `src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited.
-`testdata/conformance/libc-models/list_contracts.cpp` and its yml were not
-edited. `tests/cpp/test_cxx_list.cpp` was not edited.
+edited. `testdata/conformance/libc-models/list_contracts.cpp` and its yml
+were not edited. `tests/cpp/test_cxx_list.cpp` was not edited.
 
 ## Tests
 

@@ -81,9 +81,8 @@ tests/cpp/test_cxx_forward_list_ne.cpp
 ```
 
 No existing line was removed. `tests/cpp/test_qa_conformance.cpp` was not
-edited. `src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited.
-`testdata/conformance/libc-models/forward_list_contracts.cpp` and its yml
-were not edited.
+edited. `testdata/conformance/libc-models/forward_list_contracts.cpp` and
+its yml were not edited.
 
 ## Tests
 

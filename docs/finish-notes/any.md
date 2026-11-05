@@ -51,10 +51,7 @@ not edited. `CMakeLists.txt` lists `src/prism/pir/models/cxx/any` in
 `tests/cpp/test_qa_conformance.cpp` names `any` in the header array. The
 iostream file and the `deque/deque` skip in that test are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-any model" from the source text, before the header is inlined. Those exits
-stay. A bmc run of these tasks is still that NEEDS-HARNESS. PIR is the
-stage that puts the header on the include path.
+PIR is the stage that puts the header on the include path.
 
 ## Tests
 

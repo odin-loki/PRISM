@@ -48,17 +48,6 @@ translation unit again with libstdc++ (`extra.cxx_models`). They are not
 stubbed. A flush that returns success without a stream would be a fake
 write. Nothing in this header writes to stdout.
 
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still returns
-`C++ syncbuf unencoded: {} is not a syncbuf model` when the function body
-names `basic_syncbuf`. `src/prism/bmc.cpp` returns
-`C++ syncbuf unencoded: ` plus the engine plus ` is not a syncbuf model`
-when the lowered text contains `syncbuf`. That status is `NEEDS-HARNESS`.
-It is not a proof. Those files were not edited. `src/prism/pir/stage.cpp`
-was not edited. PIR was not run, so this slice does not claim the tasks
-are proved.
-
 ## Wiring
 
 `PRISM_PIR_MODELS` gained one line,

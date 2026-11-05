@@ -71,9 +71,9 @@ The header still does not include `<span>`, `<sstream>`, `<string>`, or
 - `std::spanstream`, `std::ispanstream`, `std::ospanstream`
 - `std::basic_spanstream`, `std::basic_ispanstream`, `std::basic_ospanstream`
 
-`src/prism/bmc.cpp` was not edited. `src/prism/pir/stage.cpp` was not
-edited. `CMakeLists.txt` was not edited. The conformance header-name array
-in `tests/cpp/test_qa_conformance.cpp` was not edited.
+`src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited.
+The conformance header-name array in `tests/cpp/test_qa_conformance.cpp` was
+not edited.
 
 ## Tests
 

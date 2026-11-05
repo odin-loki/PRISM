@@ -168,13 +168,3 @@ array (40321) after `MEM-OOB-READ`, and `extent(7)` returned 8 after
 `FUNC-CONTRACT`. A deduction guide with seven `size_t` arguments compiled
 as `mdspan<int, 7>` and read the element. `prism_tests` was not run. cmake
 was not run.
-
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still returns "is not an mdspan model" from the
-source text (`std::mdspan` or `mdspan<`) before the header is inlined.
-`src/prism/bmc_encoder.inc` still throws `mdspan unencoded` on the same
-spellings. `src/prism/bmc.cpp` still returns that sentence when the engine
-text contains `mdspan unencoded` or `std::mdspan`. Those files were not
-edited. Until that gate is gone, a task that spells `std::mdspan` or
-`mdspan<` stays on that path. `docs/PIR.md` was not edited.

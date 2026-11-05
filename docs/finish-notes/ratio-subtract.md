@@ -69,11 +69,10 @@ The header does not `#include <chrono>` or `<compare>`.
 
 ## Wiring
 
-`src/prism/pir/stage.cpp` was not edited. `src/prism/bmc.cpp` was not
-edited. `PRISM_PIR_MODELS` already lists `src/prism/pir/models/cxx/ratio`.
-`tests/cpp/test_cxx_ratio.cpp` was already a test source. No
-`_prism_test_sources` line was added or removed. `tests/cpp/test_qa_conformance.cpp`
-was not edited. `CMakeLists.txt` was not edited.
+`src/prism/pir/stage.cpp` was not edited. `PRISM_PIR_MODELS` already lists
+`src/prism/pir/models/cxx/ratio`. `tests/cpp/test_cxx_ratio.cpp` was already a test
+source. No `_prism_test_sources` line was added or removed.
+`tests/cpp/test_qa_conformance.cpp` was not edited. `CMakeLists.txt` was not edited.
 
 ## Tests
 

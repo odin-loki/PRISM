@@ -109,10 +109,9 @@ tests/cpp/test_cxx_deque_ne.cpp
 ```
 
 No existing line was removed. `tests/cpp/test_cxx_deque.cpp` is still listed.
-`tests/cpp/test_qa_conformance.cpp` was not edited. `src/prism/bmc.cpp` and
-`src/prism/bmc_unenc.inc` were not edited. `src/prism/pir/models/cxx/algorithm`
-was not edited. `std::equal` is the one already included from
-`<bits/stl_algobase.h>`.
+`tests/cpp/test_qa_conformance.cpp` was not edited.
+`src/prism/pir/models/cxx/algorithm` was not edited. `std::equal` is the one
+already included from `<bits/stl_algobase.h>`.
 
 ## Tests
 

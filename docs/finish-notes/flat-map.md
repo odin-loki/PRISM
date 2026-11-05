@@ -52,11 +52,7 @@ names `flat_map` in the header array. The skips for
 `iostream/prism_ostream.hpp` and `deque/deque` are unchanged.
 `_prism_test_sources` lists `tests/cpp/test_cxx_flat_map.cpp`.
 
-`src/prism/bmc.cpp` still returns `C++ flat_map unencoded`
-(`is not a flat_map model`) when the source text contains `flat_map`, and
-`src/prism/bmc_unenc.inc` still does the same for `std::flat_map` /
-`flat_map<`. Those exits run before the header is inlined. Neither file
-was edited. `docs/PIR.md` was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

@@ -25,7 +25,7 @@ When the flag is omitted, `svcomp_main` keeps `SolveOptions opt` and `SolveOptio
 
 ## Left alone
 
-`decide.cpp`, `witness.cpp`, `replay.cpp`, `stage.cpp`, `bmc.cpp`, and `abi_model.cpp` were not edited. `abi_from_data_model` / `is_ilp32` still treat only the string `ILP32` (any case) as ILP32, and every other string, including empty, as LP64. The CLI parser is the stricter gate: an unknown `--data-model` is an error, not a silent LP64 run.
+`decide.cpp`, `witness.cpp`, `replay.cpp`, `stage.cpp`, and `abi_model.cpp` were not edited. `abi_from_data_model` / `is_ilp32` still treat only the string `ILP32` (any case) as ILP32, and every other string, including empty, as LP64. The CLI parser is the stricter gate: an unknown `--data-model` is an error, not a silent LP64 run.
 
 ## Tests
 

@@ -6,7 +6,7 @@ The contracts stage (`src/prism/pipeline.cpp`) already calls `dafny_specs(fns, 3
 
 ## Statuses
 
-With no reachable backend, `dafny_specs` returns one finding before it walks the function list:
+With no FORGE model (`.fpk`), `dafny_specs` returns one finding before it walks the function list:
 
 | field | value |
 |---|---|
@@ -14,7 +14,7 @@ With no reachable backend, `dafny_specs` returns one finding before it walks the
 | status | `NOTRUN` |
 | strength | `READS` |
 | class | `FUNC-CONTRACT` |
-| message | `llama.cpp/Ollama not reachable` |
+| message | `no FORGE model (.fpk) configured` |
 
 A later `complete()` that fails with an HTTP-shaped error is also `NOTRUN` / `READS` / `FUNC-CONTRACT`. Any other `complete()` error is `ERROR` / `READS` / `FUNC-CONTRACT`. A reply is `HYPOTHESIS` / `READS` / `FUNC-CONTRACT` (`Dafny-style spec (hypothesis, not proved)`).
 
@@ -24,4 +24,4 @@ Those are the only statuses `dafny_specs` assigns. `PROVED`, `PROVED-UNBOUNDED`,
 
 `tests/cpp/test_agent.cpp` is already on the explicit `prism_tests` source list, so the case was added there.
 
-`agent: dafny_specs with no GGUF is one NOTRUN FUNC-CONTRACT read` builds a `Config` with an empty `gguf` (not `default_config()`, which fills `gguf` from `PRISM_GGUF` or a guessed blob) and points llama-server and Ollama at `127.0.0.1:1`. It calls `prism::dafny_specs` on one `SCALAR` and one `VOID` function and expects the single `NOTRUN` / `READS` / `FUNC-CONTRACT` row above. No model is downloaded.
+`agent: dafny_specs with no FORGE model is one NOTRUN FUNC-CONTRACT read` builds a `Config` with an empty `fpk` (not `default_config()`, which fills `fpk` from `PRISM_FPK` or a guessed blob). It calls `prism::dafny_specs` on one `SCALAR` and one `VOID` function and expects the single `NOTRUN` / `READS` / `FUNC-CONTRACT` row above. No model is downloaded.

@@ -143,13 +143,3 @@ that path does not divide by it). A null pointer with extents
 `PTR-NULL-DEREF`. A rank-6 view of a one-element heap array read 42; after
 the view died the element was still 42 under ASan, and `delete[]` freed it.
 `prism_tests` was not run. cmake was not run.
-
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still returns "is not an mdspan model" from the
-source text (`std::mdspan` or `mdspan<`) before the header is inlined.
-`src/prism/bmc_encoder.inc` still throws `mdspan unencoded` on the same
-spellings. `src/prism/bmc.cpp` still returns that sentence when the engine
-text contains `mdspan unencoded` or `std::mdspan`. Those files were not
-edited. Until that gate is gone, a task that spells `std::mdspan` or
-`mdspan<` stays on that path. `docs/PIR.md` was not edited.

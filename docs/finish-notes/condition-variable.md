@@ -81,18 +81,6 @@ memsafety true: it constructs a condition_variable and calls both notifies.
 The yml `expected` value is the YAML boolean `true`. There is no false
 task. PIR was not run.
 
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still returns
-`C++ std::condition_variable unencoded` (`is not a condvar/shared-mutex model`)
-when the function body names `condition_variable` or `shared_mutex`, before
-any header is inlined. `src/prism/bmc.cpp` returns that same reason when the
-lowered text contains `condition_variable unencoded` or `shared_mutex`.
-`src/prism/bmc_encoder.inc` still throws `condition_variable unencoded` for
-those tokens. Those files were not edited. Until that gate is gone,
-`cxx_condition_variable_true` does not reach this header through bmc.
-`docs/PIR.md` was not edited.
-
 ## Update (prism-llvm, LLVM 23 session)
 Superseded in part: wait/wait_for/wait_until now release the lock and run
 queued threads through bits/prism_sched.h (interleaving exploration), and

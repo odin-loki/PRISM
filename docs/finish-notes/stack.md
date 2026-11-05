@@ -61,11 +61,6 @@ is `cxx/stack` and `write_cxx_models` writes a file named `stack`.
 `tests/cpp/test_qa_conformance.cpp` names `stack` in the public-header
 array. The iostream absence checks and the `deque/deque` skip are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::stack unencoded: ... is not a stack model` from the source text.
-`testdata/planted/cxx_stack.cpp` (`stack_unenc_bad`) stays NEEDS-HARNESS
-until those gates are removed. This slice does not edit them.
-
 ## Tests
 
 Differential, clang++ 18, libstdc++ 14 (g++ 13 and g++ 14 agree on the

@@ -25,9 +25,7 @@ negation. It is not a proof, and it is not a fuzzer `CLEAN` result.
 `strtol`, `strtoul`, `rand`, `srand`, `getenv`, and `operator new` / `delete`
 are unchanged. The comment on `rand` still says the seed is not stored. On a
 non-empty `bsearch` range the model still reaches `__prism_assume(0)` and
-returns NULL. `src/prism/bmc_encoder.inc` was not edited. Its call model of
-`abs` still flags the minimum as `INT-SIGNED-OVF`. `docs/PIR.md` was not
-edited.
+returns NULL. `docs/PIR.md` was not edited.
 
 ## Tests
 

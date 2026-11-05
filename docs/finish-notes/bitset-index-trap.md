@@ -73,8 +73,7 @@ They are not stubbed:
 `CMakeLists.txt` gained one line, `tests/cpp/test_cxx_bitset.cpp`, in
 `_prism_test_sources`. No line was removed. `src/prism/pir/models/cxx/bitset`
 was already in `PRISM_PIR_MODELS`. `tests/cpp/test_qa_conformance.cpp` was
-not edited. `bitset` stays in the header-name array. `src/prism/bmc.cpp`,
-`src/prism/bmc_unenc.inc`, and `src/prism/pir/stage.cpp` were not edited.
+not edited. `bitset` stays in the header-name array.
 `testdata/conformance/libc-models/bitset_contracts.cpp` and its yml were not
 edited. `bitset_index_oob_false` is still `operator[]` at `size()`.
 `bitset_test_oob_false` is still `test(4)` leaving a `noexcept` function.

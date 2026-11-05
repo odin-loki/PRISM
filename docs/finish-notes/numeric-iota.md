@@ -88,12 +88,7 @@ No test required `iota` to be absent. The header comment used to list it
 with the omitted algorithms. That sentence no longer names `iota`. The new
 assertions require the overload.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They still report
-`views::iota` / `iota_view` as unencoded. That gate does not name
-`std::iota`. `std::gcd`, `std::lcm`, and `std::midpoint` are still
-unencoded from the source text, before a header is inlined. `docs/PIR.md`
-was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

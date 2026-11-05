@@ -12,7 +12,7 @@ that proves it.
 | `proofs/Prism/Verdict.lean` | The Lean 4 model and the proved laws |
 | `proofs/Prism/Export.lean`, `proofs/Main.lean` | `lake exe verdict_tables`: every function over its whole domain as JSON |
 | `testdata/fixtures/verdict_tables.json` | That JSON, committed |
-| `tests/cpp/test_main.cpp` ("verdict module equals the Lean model"), `tests/cpp/test_verdict_repo.cpp` | The C++ code checked against the table entry by entry; the repo checks (no `sorry`, pinned toolchain) |
+| `tests/cpp/test_main.cpp` ("verdict module equals the Lean model"), `tests/cpp/test_verdict_repo.cpp` | The C++ code checked against the table entry by entry; the repo checks (no `sorry`, pinned toolchain, the audit runs) |
 | `proofs/check.sh`, `.github/workflows/proofs.yml` | Build, no-`sorry`, axiom and table checks in CI |
 
 ## The lattice
@@ -22,12 +22,11 @@ rank 0 and is not a formal claim.
 
 Each verdict has an anchor `#verdict-<name in lower case>` (for example
 `VERDICTS.md#verdict-proved-certified`). Every run copies this file next to
-its reports, and every finding in `report.md` links its verdict here
-(roadmap 6.4).
+its reports, and every finding in `report.md` links its verdict here.
 
 | Verdict | Rank | Class | Meaning |
 |---|---|---|---|
-| <a id="verdict-proved-certified"></a>`PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced (roadmap 3.2). Needs `extra.certificate = "checked"`. |
+| <a id="verdict-proved-certified"></a>`PROVED-CERTIFIED` | 5 | proof | The solver's UNSAT result was checked by a verified checker (cake_lpr or Lean's LRAT checker) against the exact CNF PRISM produced. Needs `extra.certificate = "checked"`. |
 | <a id="verdict-proved-unbounded"></a>`PROVED-UNBOUNDED` | 4 | proof | k-induction closed: the property holds for every unwinding. |
 | <a id="verdict-proved"></a>`PROVED` | 3 | proof | All properties hold, loops closed within k. |
 | <a id="verdict-proved-assuming"></a>`PROVED-ASSUMING` | 2 | proof | Proved under an explicit `requires` or harness assumptions, which the report lists. |
@@ -44,9 +43,9 @@ its reports, and every finding in `report.md` links its verdict here
 | <a id="verdict-noseed"></a>`NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
 | <a id="verdict-sanfail"></a>`SANFAIL` | 0 | defect | A sanitizer reported an error. |
 | <a id="verdict-hypothesis"></a>`HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
-| <a id="verdict-reads"></a>`READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
+| <a id="verdict-reads"></a>`READS` | 0 | model | A reading of the code, not a verdict: an LLM reading (weaker than a hypothesis), or lint advice that claims no defect (cppcheck style, performance, portability and information notes; `extra.severity` keeps the tool word). |
 
-Predicates (same in all three implementations and the model):
+Predicates (the same in the C++ module and the Lean model):
 
 - `is_proof`: the four `PROVED*` verdicts.
 - `is_formal`: a proof or `BOUNDED`. No two distinct formal verdicts merge.
@@ -88,7 +87,7 @@ Every result has an *origin*. Only two origins may prove.
 
 | Origin | May prove | Stages |
 |---|---|---|
-| `solver` | yes | `contracts`, `wp`, `bmc`, `pir`, `harness`, `review` (re-checked proofs, approved contracts), `ltl` |
+| `solver` | yes | `contracts`, `wp`, `pir`, `conc`, `harness`, `review` (re-checked proofs, approved contracts), `ltl` |
 | `external-prover` | yes | `optional` (CBMC), `esbmc`, `dafny` |
 | `fuzzer` | no | `fuzz`, `rapid` |
 | `model` | no | `llm`, `repair` |
@@ -123,16 +122,20 @@ when the result differs from what the stage wrote. On a violation:
 The audit is idempotent. A violation is a bug in a stage; the report shows it
 instead of printing a false proof.
 
-Known consequence: `repair` (origin `model`) returns `PROVED` when the BMC
-oracle proves an LLM-written patch. That proof is about the patch, not about
-the scanned code, so in a pipeline run the audit demotes it to `UNKNOWN` and
-records the `ERROR`. The repair stage should report the patch verdict in
-`extra` instead; until then the audit makes the problem visible.
+The `repair` stage (origin `model`) reports an LLM-written patch as
+`HYPOTHESIS`. When the pir checker proves the patch, the proof word is kept
+in `extra.patch_verdict`: it is about the patch, not about the scanned code.
 
 ## Confidence (Law 5)
 
 `confidence = visibility × answer × resolution`, each factor a ratio of
 counts that is 0 when its denominator is 0 (no data scores 0, never n/a).
+In a run (`confidence_score`, src/prism/pipeline.cpp): visibility is the
+share of the stages that were to run (not left out by `--stage`/`--skip`)
+that ran (status ok, and not every record a no-answer with one NOTRUN,
+ERROR or TIMEOUT among them); answer is the share of all parsed functions
+that pir answered (a formal verdict or `FAILED`; `NEEDS-HARNESS` is no
+answer); resolution is the share of those answers that are resolved.
 `score_counts(n_fun, classified, attempted, answered, resolved)` computes
 `classified/n_fun`, `answered/attempted`, `resolved/answered` and their
 product; `confidence(v, a, r)` is exactly 0 whenever `v` is 0.
@@ -142,8 +145,7 @@ product; `confidence(v, a, r)` is exactly 0 whenever `v` is 0.
 All in `proofs/Prism/Verdict.lean`, namespace `Prism`, core Lean 4 only
 (toolchain pinned in `proofs/lean-toolchain`), no `sorry`, no
 `native_decide`. `proofs/Prism/Axioms.lean` prints the axioms of each; CI
-fails on any axiom outside `propext`, `Classical.choice`, `Quot.sound`
-(today all use only `propext`, and `confidence_le_one` uses none).
+fails on any axiom outside `propext`, `Classical.choice`, `Quot.sound`.
 Statements that range over the finite domain are proved by `decide` over
 the whole domain; the reachability theorems are proved by induction over
 arbitrary chains of rewrites.
@@ -168,7 +170,7 @@ arbitrary chains of rewrites.
 | cert | `admit_certified_iff` | `admit o v c = PROVED-CERTIFIED` iff `o = solver`, `v = PROVED-CERTIFIED`, `c = true` |
 | cert | `certified_only_with_certificate` | any chain of rewrites ending in `PROVED-CERTIFIED` started from a checked certificate on the solver origin |
 | - | `admit_rank_le`, `admit_proof_requires_proof`, `admit_idem` | `admit` never strengthens, never makes a proof out of a non-proof, and is idempotent |
-| audit | `proving_stages` | exactly `optional`, `esbmc`, `dafny`, `contracts`, `wp`, `bmc`, `pir`, `harness`, `review`, `ltl` may prove |
+| audit | `proving_stages` | exactly `optional`, `esbmc`, `dafny`, `contracts`, `wp`, `pir`, `conc`, `harness`, `review`, `ltl` may prove |
 | audit | `audit_nonproving` | the audit never lets a non-proving stage output a formal verdict |
 | audit | `audit_flags_nonproving` | a non-proving stage's formal verdict becomes `UNKNOWN` with a violation |
 | audit | `audit_certified` | the audit never outputs `PROVED-CERTIFIED` without a checked certificate |
@@ -181,19 +183,20 @@ arbitrary chains of rewrites.
 
 ## Connecting the proof to the code
 
-The roadmap (Part 5.1) proposes compiling the Lean model to C and linking it
-into PRISM. PRISM does not do that. Instead:
+The Lean model is not compiled into PRISM. Instead:
 
 1. `lake exe verdict_tables` evaluates every function of the model over its
    **whole** finite domain: 18 verdicts, 324 merge pairs, 324 rewrite pairs,
-   252 `(origin, status, certificate)` admissions, 1,044
-   `(stage, status, certificate)` audits. The output is committed as
+   252 `(origin, status, certificate)` admissions, 1,116
+   `(stage, status, certificate)` audits (31 stages: `STAGE_ORDER` plus
+   `other`). The output is committed as
    `testdata/fixtures/verdict_tables.json`.
-2. The C++ doctest compares `src/prism/verdict/` and the `laws.hpp` string
-   API with that file entry by entry, and checks that the table's stage
-   list is `STAGE_ORDER` plus `other`.
-3. CI (`proofs.yml`) rebuilds the model and fails if the regenerated table
-   differs from the committed one.
+2. The C++ doctests ("verdict module equals the Lean model", four cases in
+   `tests/cpp/test_main.cpp`) compare `src/prism/verdict/` and the
+   `laws.hpp` string API with that file entry by entry, and check that the
+   table's stage list is `STAGE_ORDER` plus `other`.
+3. CI (`proofs.yml`, `proofs/check.sh` step 4) rebuilds the model and fails
+   if the regenerated table differs from the committed one.
 
 Two total functions on a finite domain that agree on every input are equal,
 so this is as strong as linking the compiled model for these functions, and
@@ -203,8 +206,8 @@ trusted base. What stays trusted: the Lean kernel, the export code in
 the tests, and the fact that the tests run on the shipped build.
 
 Confidence ranges over the naturals, so its table is a sample grid (every
-count up to 3, 119 rows) and the laws above are proved for all inputs; the
-The C++ product is compared with the model's exact fractions on the grid to
+count up to 3, 119 rows) and the laws above are proved for all inputs. The
+C++ product is compared with the model's exact fractions on the grid to
 1e-12.
 
 ## Changing the lattice

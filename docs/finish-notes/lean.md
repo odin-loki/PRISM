@@ -3,8 +3,7 @@
 Branch `finish/lean-hobjsz`, started at `e59a8b3df966e33c78ffbd9ced0a8fc90465b16d`
 (`git merge --ff-only` of that commit). The five files of
 `origin/cursor/hobjsz-lean-proof-05dd` (`aa645290bc2aa5e2f9c6bff282c9f647400552a6`)
-were checked out; `docs/ENGINEERING_BACKLOG.md` and `docs/ROADMAP_STATUS.md`
-were not.
+were checked out.
 
 `lake` is not on PATH and `~/.elan` has no toolchain, so nothing here was
 kernel-checked. The notes below are a static review against Lean 4.34

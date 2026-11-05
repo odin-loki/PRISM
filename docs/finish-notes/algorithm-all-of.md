@@ -87,9 +87,6 @@ No `<memory>`, `<functional>`, `<string>`, `<iterator>`, `<ranges>`,
 `tests/cpp/test_cxx_algorithm.cpp` were already on those lists. No new
 `tests/cpp` file was added, so `_prism_test_sources` was not edited and no
 line was dropped. The conformance header-name array was not edited.
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. The existing `std::clamp`
-unencoded gate is unchanged.
 
 ## Tests
 

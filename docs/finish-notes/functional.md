@@ -54,11 +54,6 @@ CMake. `tests/cpp/test_qa_conformance.cpp` names `functional` in the public
 header array. The skips for `iostream/prism_ostream.hpp` and `deque/deque`
 are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return
-"is not a type-erased callable model" when the source text contains
-`std::function`, before any header is inlined. Those exits are still in
-place. This slice does not edit them.
-
 ## Tests
 
 `tests/cxx_models/functional_trace.cpp` includes `<functional>` and only uses

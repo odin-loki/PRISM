@@ -1,469 +1,283 @@
-# MSVC / `__int128` portability (native Windows `prism_core`)
-
-**Epic:** build `prism_core` and `prism` with MSVC (`cl`) on Windows without relying on
-WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
-Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).
-
-**Audit base:** `main` @ `9acaeeeba` (2026-10-25). Native `__int128` uses in `prism_core`
-are migrated to `prism::i128` (phases 2–4). Remaining substring hits are string-only
-BMC/astlint tables or `wide_int.hpp` under `PRISM_HAS_INT128`.
-
-**Epic status:** phases 1–8 (5a / 5b / 5c included) are **done**. Phase 6 (QA on Windows)
-is closed: the label self-check (UBSan+ASan replay) sample **passes** on the `clang-cl`
-smoke, and is `NOTRUN` (logged, Law 1) wherever no clang links the sanitizers, which is
-the case on the MSVC `cl` smoke. Latest green CI on `main` is `4eb0b4ab1`: run
-[`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068) completed
-success. The nine-job breakdown (four Windows smokes, Qt GUI, Linux `prism_tests`,
-licence firewall, SARIF self-check) was checked on the earlier green `7b652bf9f`
-([`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603)), including native `cl` smokes after the LP64 libc shims
-(`src/prism/pir/models/libc/shim/`, `lp64_clang_driver_flags`) and honest `NOTRUN`
-rows for conc C11 atomics, `leanbb` without a PE `prism-bitblast`, and repair when
-only `cl` is on PATH. What is left is listed in [§7](#7-remaining-work-backlog).
-
-**Related:** `docs/ROADMAP_STATUS.md` D7 (WSL primary today); `CMakeLists.txt` rejects
-MinGW and already sets MSVC flags on `prism_core`. `tests/cpp/test_main.cpp` solver integration tests are gated on `PRISM_HAS_Z3` only
-(wide_int migration removed the old `_WIN32` / `__int128` skip).
-
----
-
-## 1. Inventory by subsystem
-
-Legend:
-
-| Kind | Meaning |
-|------|---------|
-| **native** | Code uses `__int128` / `unsigned __int128` as a C++ type (MSVC blocker). |
-| **string** | Regex or keyword tables detect `__int128` in user source only (not a blocker). |
-| **conformance tree** | In `src/tools/qa/`; part of `prism_qa` on WIN32 (`run_tree` is the Job Object runner). |
-
-### Interval (`native` — `prism_core`)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/prism/interval.cpp` | 24 | Interval arithmetic: `clip`, overflow checks, `+`/`-`/`*`/shifts/div on widened bounds. |
-
-### PIR (`native` — `prism_core`)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/prism/pir/pir.cpp` | 8 | Wide signed/unsigned mul for constant folding / overflow checks. |
-| `src/prism/pir/translate_mem.cpp` | 14 | Object size and GEP constant-offset accumulation in `__int128`. |
-
-### SV-COMP (`native` — `prism_core` + public header)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `include/prism/svcomp_witness.hpp` | 3 | `Num::i` and `of_int` / `int_text` API surface. |
-| `src/prism/svcomp/witness.cpp` | 4 | Decimal formatting of 128-bit integers. |
-| `src/prism/svcomp/replay.cpp` | 7 | Parse witness / counterexample integers (up to 128-bit). |
-| `src/prism/svcomp/debug_ir.cpp` | 8 | JSON big-int parsing for debug IR. |
-
-### Solver (`native` — `prism_core`)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/prism/solver/leanbb.cpp` | — | Migrated to `prism::wide_int.hpp` (phase 4). |
-
-### AI / regress (`native` — `prism_core`)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/prism/ai/regress.cpp` | — | Migrated to `prism::wide_int.hpp` (phase 4). |
-
-### BMC / astlint / interp (`string` only — not an MSVC type blocker)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/prism/bmc.cpp` | 2 | Unencoded-syntax detection in scanned code. |
-| `src/prism/bmc_encoder.inc` | 2 | Type name match for 128-bit model gap. |
-| `src/prism/bmc_unenc.inc` | 1 | Same; `#include`d only from `bmc.cpp` (other stages use `unencoded_syntax_reason_cached()`). |
-| `src/prism/stages/interp.cpp` | 1 | `__int128` in scanned source only; host overflow uses `__builtin_*_overflow` on Clang/GCC and manual / `prism::i128` checks on MSVC `cl` (phase 5c). |
-| `src/prism/astlint_checks.cpp` | 5 | Width tables / type names (includes `__int128` as string). |
-
-`src/prism/astlint_libclang.cpp` references libclang `CXType_Int128` enums only (not
-`__int128` in PRISM sources).
-
-### QA tools (`native`; conformance tree builds on WIN with `proctree_win.cpp`, a Job Object `run_tree`)
-
-| File | ~matches | Role |
-|------|----------|------|
-| `src/tools/qa/support/yaml_subset.hpp` | — | Migrated: `Node::as_int()` → `optional<prism::i128>` (phase 6 partial). |
-| `src/tools/qa/support/yaml_subset.cpp` | — | Uses `parse_i128` / `format_i128` (phase 6 partial). |
-| `src/tools/qa/support/task.hpp` / `task.cpp` | — | Migrated: `prism::i128`; built on all platforms (phase 6). |
-| `src/tools/qa/support/replay.cpp` | — | Migrated: `prism::u128` / `i128_shl` (phase 6); portable temp dirs, builds on WIN (`run_tree` is real there; the UBSan+ASan toolchain replay is not exercised). |
-| `src/tools/qa/support/pyrandom.hpp` | — | Migrated: `prism::i128` / `u128` (phase 6); header-only, used by unix replay/soundness. |
-
-All of `prism_qa` (report, cli, engine, fetch, replay, conformance, gen_random, soundness)
-now builds on Windows (`/utf-8`). Temp dirs come from `qa::make_unique_dir` (no `mkdtemp`);
-`proctree.cpp` (POSIX sessions) is replaced by `proctree_win.cpp`: `run_tree` calls
-`prism::detail::run` (`src/prism/proc.cpp`), whose Windows path starts the child suspended,
-puts it in a **Job Object** (`KILL_ON_JOB_CLOSE`, optional per-process memory cap) and gives
-it only its three standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). A timeout or
-`RunSpec::stop` terminates the whole job; `RunSpec::kill_descendants` (set by `run_session`)
-also ends what the child left behind. A child that cannot be started or put in the job is
-`start_failed` / `failed` (Laws 1, 7); a `--no-*-check` flag is refused (Law 8). `which()` is
-PATH + PATHEXT. The sanitizer (UBSan+ASan) replay toolchain runs on Windows with clang only
-(gcc is skipped in the probe, `-lm` is not passed, bwrap is absent so replay is unsandboxed); the clang-cl CI jobs put the clang ASan DLL dir on PATH. When
-the probe cannot link UBSan+ASan the label self-check is `NOTRUN`.
-### Tests (outside `src/` / `include/` but coupled)
-
-| File | Notes |
-|------|-------|
-| `tests/cpp/test_svcomp.cpp` | `static_cast<__int128>(…)` in witness literal check. |
-| `tests/cpp/test_main.cpp` | Solver integration tests run when `PRISM_HAS_Z3` (including Windows). |
-| `tests/cpp/test_qa_conformance.cpp` | Migrated: `prism::i128`, portable `QaTmp` / `self_dir` / `fake_engine`; in the WIN subset (static slice). |
-
----
-
-## 2. Portable helper (`include/prism/wide_int.hpp`)
-
-**`prism::i128` / `prism::u128`** with `PRISM_HAS_INT128` fast path (Clang/GCC) and
-`{hi, lo}` fallback for MSVC. Shared **`parse_i128`** / **`format_i128`**, bitwise
-`u128` ops, and unit tests in `tests/cpp/test_wide_int.cpp`.
-
-The fallback `i128` also provides `<<`, `>>` (arithmetic), `++`/`--`, `+=`, `/`, `%` (truncating),
-bit ops and explicit integral / `double` casts, so generic QA code (`gen_random`, `replay`,
-`pyrandom`) compiles unchanged on MSVC.
-
-**Duplicated ad-hoc helpers (candidates to fold later):**
-
-- `parse_int` / `as_int` style parsers elsewhere in QA (svcomp/regress use `parse_i128`)
-
----
-
-## 3. Strategy options
-
-### A. Windows CI / dev with **clang++** (not `clang-cl`)
-
-- Build with LLVM `clang++` targeting Windows (same as many `-stdlib=libc++` setups) where
-  `__int128` remains available.
-- **Pros:** Near-zero source churn; fastest path to “binary on Windows.”
-- **Cons:** Not a native **MSVC** (`cl`) build; ABI/toolchain differs from Visual Studio
-  defaults; does not satisfy “MSVC `prism_core`” if that means `cl` specifically.
-
-### B. **Portable 128-bit type** in `include/prism/` (recommended for `cl`)
-
-- Add a small header-only or `.cpp` pair, e.g. `prism::wide_int` / `prism::i128`, with:
-  - `int128` / `uint128` storage as `{ uint64_t lo, hi; }` or compiler `__int128` when
-    `PRISM_HAS_INT128` (Clang/GCC).
-  - Operators needed by interval / PIR / svcomp / leanbb / regress (compare, add, sub,
-    mul, shift, sign extend, parse/format decimal).
-- **Pros:** Single `prism_core` source tree; real MSVC support; matches supply-chain
-  discipline (no new linked third_party if header-only).
-- **Cons:** ~800–1 200 LOC touched; must preserve exact parse/format semantics for
-  witnesses and regress artefacts; performance regression possible in interval hot paths
-  (mitigate with `PRISM_HAS_INT128` fast path).
-
-### C. **`_BitInt(128)`** (C23)
-
-- MSVC has been adding `_BitInt` support; availability and codegen quality vary by toolset
-  version.
-- **Pros:** Standard spelling; no manual wide arithmetic if the compiler implements it.
-- **Cons:** PRISM is C++23; mixed `_BitInt` / template code is awkward; still need a
-  fallback typedef for older MSVC and for parity with Clang/GCC builds unless we standardize
-  on `_BitInt` everywhere.
-
-### D. **Split / disable** wide paths on Windows
-
-- Stub SV-COMP 128-bit witnesses, interval wide mul, leanbb wide paths as `NOTRUN` or
-  narrower checks on `_WIN32`.
-- **Pros:** Smallest diff.
-- **Cons:** Violates parity goals; poor fit for “one product, two engines” honesty law
-  (stages must say what they could not check).
-
-**Recommendation:** **B** for production MSVC (`cl`), with optional **A** as an interim dev
-shortcut. Keep **D** only for explicitly documented optional components, not core stages.
-
----
-
-## 4. Phased plan (coding)
-
-| Phase | Scope | Deliverable |
-|-------|--------|-------------|
-| **1** (done) | Audit + this doc | File list, strategies, estimates |
-| **2** (done) | `include/prism/wide_int.hpp` (+ `.cpp` if needed) | `PRISM_HAS_INT128`, shared `parse_i128` / `format_i128`, unit tests in `tests/cpp/test_wide_int.cpp` |
-| **3** (done) | SV-COMP surface | `svcomp_witness.hpp` `Num::i` → portable type; migrate `witness.cpp`, `replay.cpp`, `debug_ir.cpp`; fix `test_svcomp.cpp` |
-| **4** (done) | Analysis core | `interval.cpp`, `pir/pir.cpp`, `translate_mem.cpp`, `solver/leanbb.cpp`, `ai/regress.cpp` |
-| **5a** (done) | MSVC CI smoke | `windows-compile-smoke`: Ninja + `clang-cl`, `PRISM_Z3=OFF`, build `prism_core` + `prism` + `prism-qa` + portable `prism_tests` subset (phase 7). Shims: `utc_tm`, `set_env`, `NOMINMAX`, `wide_int` / `leanbb`, `solver/util.cpp` `windows.h` + `#undef ERROR`. |
-| **5b** (CI done) | Windows CI + Z3 | `windows-compile-smoke-z3`: Ninja + `clang-cl`, `PRISM_Z3=ON`, builds `prism_core` + `prism` + `prism-qa` + phase-7 `prism_tests` subset including `test_leanbb.cpp` (~44 min cold; cache `build-win-z3`; needs `z3gen_shim.bat`). |
-| **5c** (CI done) | Native MSVC `cl` | `windows-compile-smoke-cl`: Ninja + `cl` (not `clang-cl`), `PRISM_Z3=OFF`, same targets/subset as 5a. `stages/interp.cpp` uses `prism::i128` / manual checks instead of `__builtin_*_overflow` (clang-cl only). Configure with default `CMAKE_BUILD_TYPE=Release` (Debug + `prism_core` `/O2` hits cl D8016 vs `/RTC1`). |
-| **6** (done) | QA on Windows | `yaml_subset` + `task` + `pyrandom` on `prism::i128` (done); `prism-qa` in `windows-compile-smoke`; conformance / soundness / replay compile on WIN; `proctree_win.cpp` + `proc.cpp` Job Object `run_tree` (commit B), `test_qa_conformance.cpp` release-gate / solver-kill / `run_tree` cases run in the subset (`fake_prism.exe` + `.lead` sidecar, `fake_session_probe` `spawn-sleep` / `spawn-bg` / `alloc`); label self-check sample passes on the `clang-cl` smoke (run `40038665356`), `NOTRUN` where no clang links UBSan+ASan |
-| **7** (done) | Windows `prism_tests` subset | `PRISM_TESTS_WIN_SUBSET` in `CMakeLists.txt` (gates only the `fake_*` stand-ins; sources are the shared Linux list) (inventory: [§6](#6-acceptance-criteria)). WIN: full `test_adapters.cpp`, `test_sanitize.cpp` (`fake_cc`), `test_qa.cpp` (`fake_session_probe`). Static splits remain reference-only on WIN. `test_cli` (binary cases included) and `test_diff` run in full; `test_pipeline` omits only the POSIX `PATH`-guard esbmc-missing case; `test_conc` skips without Z3. On `_WIN32`, `test_pir_e2e` runs the 17-file C subset when `clang` + `opt` pass the LP64 probe (`frontend_usable`); seven glibc corpus files stay `NOTRUN` by name ([§6](#6-acceptance-criteria), [§7 PIR](#pir-on-windows-lp64)). All four Windows smoke jobs build and run `prism_tests.exe`. |
-| **8** (done) | Qt GUI on Windows | `windows-gui-qt`: Ninja + `cl`, Qt 6 via aqtinstall, `PRISM_QT=ON`, `PRISM_Z3=OFF`; `prism_gui_tests.exe` and the `gui model` doctest suite offscreen, plus the `--smoke-screenshot` smoke. See [§7](#7-remaining-work-backlog). |
-
-**Dependency order:** 2 → 3 (public API) → 4 (largest volume) → 5 → 6 → 7 (subset) → 5b (Z3 + full tests).
-
----
-
-## 5. LOC estimate (order of magnitude)
-
-| Area | New helper | Migrate / touch |
-|------|------------|-----------------|
-| `wide_int` module + tests | 250–400 | — |
-| SV-COMP + header | 50–100 | 200–350 |
-| Interval | — | 120–180 |
-| PIR | — | 150–220 |
-| Solver `leanbb` | — | 60–100 |
-| AI `regress` | — | 150–250 |
-| Tests / CMake | — | 40–80 |
-| QA (phase 6 only) | reuse helper | 200–300 |
-| **Total (phases 2–5)** | **~300–400** | **~800–1 200** |
-
-String-only BMC/astlint files: **0** type migration expected.
-
----
-
-## 6. Acceptance criteria
-
-Status on `main` @ `4eb0b4ab1` (latest green, run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068), workflow success; the nine-job writeup below was checked on `7b652bf9f` / [`40149651603`](https://github.com/odin-loki/PRISM/actions/runs/40149651603), and job-log details were read from run [`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356) on `1f59511ab` where noted): phases **5a**, **5b**, **5c**, **6**, **7** and
-**8** below are **met**. Evidence: run
-[`40038665356`](https://github.com/odin-loki/PRISM/actions/runs/40038665356)
-(`PRISM CI` @ `1f59511ab`) finished **success** on all jobs: `Windows compile smoke`
-(`clang-cl`), `Windows compile smoke (MSVC cl)`, `Windows compile smoke (Z3)`,
-`Windows compile smoke (MSVC cl, Z3)`, `Windows GUI (Qt 6, MSVC cl, offscreen)`,
-`C++ engine (build + prism_tests)`, `Licence firewall + manifest + SBOM`
-and the SARIF self-check. Engine coverage is `prism_tests` on Linux and all
-Windows smoke jobs. Read from the job logs: the `clang-cl` smoke ran 722 doctest cases,
-all passed, and logged no "label self-check sample NOTRUN" (the ASan DLL dir was put on PATH,
-so the sample ran); the `cl` smoke logged that NOTRUN line, as designed. In the same run the
-`repair` cases run on WIN32 (fake llama-server over Winsock; the verdict case is `NOTRUN`
-in the `PRISM_Z3=OFF` smokes because there is no BMC verdict on the candidate). The run includes
-the shared `prism_tests` source list (`447e6bca2`), the WIN32 label self-check with clang
-(`2ef3ba701`) and the ASan PATH step fix (`371010f81`). Remaining epic work is listed in [§7](#7-remaining-work-backlog).
-
-- **Phase 5a (CI smoke) — met:** `windows-compile-smoke` configures with `clang-cl` and builds
-  `prism_core`, `prism`, `prism-qa`, and the phase-7 `prism_tests` subset with `PRISM_Z3=OFF`,
-  then runs `prism_tests.exe` (see `.github/workflows/ci.yml`).
-- **Phase 5c (native `cl`) — met:** `windows-compile-smoke-cl` mirrors 5a with
-  `-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl`, `CMAKE_BUILD_TYPE=Release`, and the same
-  subset run.
-- **Phase 5b (CI + Z3) — met:** `windows-compile-smoke-z3` builds the same targets with Ninja +
-  `clang-cl` and `PRISM_Z3=ON` (vendored Z3 via `cmake/z3.cmake` and `z3gen`; no Python on PATH),
-  runs `prism_tests.exe` (solver / `leanbb` / certified paths; cert-chain cases no-op when
-  CaDiCaL / Lean tools are absent). `z3gen_shim.bat` satisfies `FindPython3` during Z3 configure;
-  cache key includes `cmake/z3-generated/tree_sha256` (`build-win-z3`; cold Z3 build ~44 min on
-  `windows-latest` as of 2026-10-22).
-- **Phase 8 (Qt GUI on Windows) — met:** `windows-gui-qt` (Ninja + `cl`, Qt 6.8.3
-  `win64_msvc2022_64`, `PRISM_QT=ON`, `PRISM_Z3=OFF`) builds `prism`, `prism_gui`,
-  `prism_gui_tests` and `prism_tests`, runs `prism_gui_tests.exe` and the `gui model` doctest
-  suite offscreen, and the `prism_gui.exe … --smoke-screenshot` smoke. Green on all nine jobs
-  @ `f5af2c33b` (run `39985974306`). Only "prism_gui without a display" stays POSIX-only
-  (Windows always has a window station).
-- **Phase 7 (Windows `prism_tests` subset) — met:** all three Windows smoke jobs set
-  `PRISM_TESTS=ON` and `PRISM_TESTS_WIN_SUBSET=ON` (see `CMakeLists.txt`).
-
-  **Epic note — the WIN "subset" inventory equals the Linux `prism_tests` sources.** There is
-  now one shared `_prism_test_sources` list in `CMakeLists.txt` for every platform (49 TUs plus
-  `test_leanbb` / `test_pir_budget` / `test_certified` when `PRISM_HAS_Z3`); platform differences
-  live inside the test files (`#ifdef _WIN32`), not in the source list. `PRISM_TESTS_WIN_SUBSET`
-  survives only as the WIN32 switch that builds the `fake_*` stand-in executables and defines the
-  `PRISM_FAKE_*` paths. The old "Full prism_tests does not build on WIN32 yet" `FATAL_ERROR` is
-  gone; WIN32 with tests on but the flag off now configures with a warning (the fake-dependent
-  cases cannot find their stand-ins), so keep `-DPRISM_TESTS_WIN_SUBSET=ON` on Windows. The
-  name "subset" is historical. Inventory:
-
-  | Kind | Sources |
-  |------|---------|
-  | Doctest main | `tests/cpp/test_main.cpp` (shared with Unix; `test_main_win.cpp` retired) |
-  | Adapter fakes on WIN32 | Full `test_adapters.cpp` + `fake_tool_launcher` (stdio forwarded to `cmd.exe`); `fake_cmd` / `help_then_cmd` / `sh_to_cmd` |
-  | Sanitize fakes on WIN32 | Full `test_sanitize.cpp` + `fake_cc.exe` (PE compiler/runner with `.fakebody` sidecar) |
-  | Certified on WIN32 | `test_certified.cpp` in full when `PRISM_HAS_Z3`, with `fake_session_probe.exe` (sweep) and `fake_cake_lpr.exe` (checker OOM) and `fake_mem_hog.exe` (resident-memory kill) stand-ins; no `NOTRUN` left |
-  | QA on WIN32 | Full `test_qa.cpp` + `fake_session_probe.exe` (incl. Job Object timeout / background-grandchild / memory-cap cases); fork and SIGTERM-to-runner cases POSIX-only |
-  | Conformance on WIN32 | `test_qa_conformance.cpp`: suite shape, scorer rules, `PyRandom` / generator parity, plus the release gate (`fake_prism.exe` copied per status with a `NAME.exe.lead` sidecar), the solver-kill timeout and `run_tree` (via `fake_session_probe.exe`); the label self-check (UBSan+ASan replay) runs with clang and is `NOTRUN` (`WARN_MESSAGE`) when no clang links the sanitizers |
-  | GUI fakes on WIN32 | `fake_prism_gui.exe` (`prism --gui` launcher, `test_gui_model.cpp`) in `prism_tests`; `fake_gui_prism.exe` (window run/done/fail, `test_gui.cpp`) in `prism_gui_tests` (`PRISM_QT=ON` only) |
-  | Static splits (reference only on WIN) | `test_adapters_static.cpp`, `test_sanitize_static.cpp`, `test_qa_static.cpp` |
-  | Portable doctest TUs | `test_wide_int`, `test_interval`, `test_svcomp`, `test_naming`, `test_polyglot`, `test_taxonomy`, `test_repolint`, `test_deps`, `test_cparse`, `test_sarif`, `test_astlint`, `test_ltl`, `test_contracts`, `test_bmc`, `test_checkers_cxx`, `test_checkers_c`, `test_gen_tables`, `test_bmc_svcomp`, `test_havoc`, `test_verdict_repo`, `test_diff`, `test_journal_confidence`, `test_thread_taint`, `test_wp_harness`, `test_concrete`, `test_concolic`, `test_lint_corpus`, `test_pir_mem`, `test_ai_assist`, `test_pbsd`, `test_pir3`, `test_pir_refinement`, `test_cli`, `test_pipeline`, `test_ai9`, `test_conc`, `test_cxx_models`, `test_fuse`, `test_gui_model`, `test_repair`, `test_pir_e2e` |
-  | When `PRISM_HAS_Z3` | `test_leanbb`, `test_pir_budget`, `test_certified` |
-
-  **Not in subset (by design):** other unistd / `fork` / socket-heavy TUs. `test_main.cpp` is the
-  doctest main and its cases run on WIN32; BMC-driven cases there (goto / shift rules, fuzz-goal
-  budget) are `NOTRUN` without `PRISM_HAS_Z3`, and the shell fakes use `fake_tool_launcher` +
-  `.cmd` (`SolverTmp::cmd_tool`, `win_cmd_tool`) on WIN32. `PathGuard` / `ToolsDirGuard` use
-  `tm_setenv` (`_putenv_s`), so these cases run on WIN32 too: polyglot missing tools
-  (`PATH` pointed at a nonexistent directory; `shell-syntax` is not asserted there because
-  `SearchPath` finds the System32 WSL `bash.exe` first), `perl -c` / hostile tree held without
-  `--allow-exec`, pinned adapters never taken from inside the scanned tree (fake `esbmc.exe`
-  under `PRISM_TOOLS_DIR`), `tool_identity` + a fake pinned `cppcheck.exe`, and the polyglot
-  "unparsed tool output is ERROR" case (cmd text; cmd splits `--output-format=concise` at `=`).
-  The `test_pipeline` unreadable-directory / LTL case runs on WIN32 with an `icacls` deny-read
-  ACL in place of `chmod` (lifted before cleanup; without `icacls`, or if the deny does not hide
-  the directory, it says so with a `MESSAGE` and walks a readable tree). `test_cli` binary
-  integration runs on WIN32: `prism.exe` is found next to `prism_tests.exe` with
-  `GetModuleFileNameW`, started with `_popen` and the cmd.exe quoting, and checked for the same
-  exit codes (2 on bad arguments, 1 for `--fail-on=defect`, 0 otherwise).
-  On WIN32, PIR clang lowers use `lp64_clang_driver_flags()` (`--target=x86_64-unknown-linux-gnu`
-  plus `-idirafter` `src/prism/pir/models/libc/shim/` so scanned C sees LP64 `size_t` and
-  pthread/atomic typedefs; native Windows clang is LLP64 without the shim). `test_pir_e2e` uses `frontend_usable` (needs
-  `clang`, `opt`, and a successful LP64 probe); when that passes it runs the 17-file C subset from
-  `testdata/pir/` and skips verdict rows for the seven glibc-only files (`assert`, `fp_arith`, `kind_mem`,
-  `mem_heap`, `mem_libc`, `mem_str`, `sjlj_basic`), each named in a `NOTRUN` message. Without
-  `opt` or a failed probe the whole file is `NOTRUN` (Law 1). The two Windows Z3 CI jobs download
-  LLVM 18.1.8 `clang-18` + `opt` onto PATH for the test run only (runner `clang.exe` unchanged for
-  ASan). Edit `tests/cpp/test_pir_e2e.cpp` directly for e2e rows and guards.
-  Run 40054072810 (`327f7de99`, before the LP64 target work) showed ~38 failures when PIR still
-  used the default LLP64 triple with `opt` present; that path is closed by steps 1–6 in [§7 PIR](#pir-on-windows-lp64).
-  Windows `opt -S` IR uses CRLF: `ir_parser.cpp` must treat `}\r` as the end of a `define` body.
-  Clang diagnostics on merged stderr use CRLF too: `stage.cpp` `split_lines` strips trailing `\r`
-  before `parse_folded` (warning lines must end with `]`).
-  `parse_folded` uses `fs::equivalent` (and filename fallback) so clang diagnostic paths match the source file.
-  `%LOCALAPPDATA%\prism\pir-models` (cache key **v5** includes the LP64 triple): stale or LLP64
-  entries are rejected (`try_load_model_cache`), the cache directory is removed, and models are lowered
-  again automatically; other invalid sibling directories under `pir-models` are pruned on load.
-- **`i128_and` on MSVC fallback (`acc88121b`):** the non-`PRISM_HAS_INT128` path in
-  `wide_int.hpp` now implements bitwise `&` via `i128_and` (used by SV-COMP debug IR and
-  `test_wide_int`); fixes Windows subset link/compile after the portable 128-bit migration.
-- **SV-COMP exec on WIN32:** `test_svcomp.cpp` gates only the cases that need a real C
-  toolchain behind `svcomp_exec_portable()` (false on `_WIN32`): the real-compiler replay
-  case and the pinned `solve` case. Each prints its own `MESSAGE: NOTRUN: ...` naming the
-  reason (it is not a missing `--allow-exec`; the solve case passes it). What can run on
-  WIN32 does, with `--allow-exec` and fake tools:
-  - `svcomp replay: no --allow-exec or no nondet values ...` runs on every OS (Law 9: no
-    compiler is looked up, nothing is built).
-  - `svcomp replay: --allow-exec with a fake compiler ...` (WIN32 subset only, needs
-    `PRISM_FAKE_CC`) puts `tests/cpp/fake_cc.cpp` as the only `gcc.exe` on PATH and checks
-    replayed (line/column), clean = `not-replayed`, a non-overflow UBSan report, a build
-    failure, and `reach_error()` with and without an abort. `fake_cc` now also honours
-    `FAKE_RUN_` (empty sanitizer) like the POSIX fake.
-  - `svcomp pack` runs on WIN32 with a `.cmd` stand-in for the prism binary and `cmake -E
-    tar` / `tar`; only the `rwxr-xr-x` check is POSIX-only (`MESSAGE: NOTRUN`).
-- **`test_leanbb.cpp` on Windows:** no `unistd.h`; the file uses `std::filesystem` temp dirs
-  only. It is in the phase-7 subset when `PRISM_HAS_Z3` (Z3 smoke job). The serializer round
-  trip drives `prism-bitblast --eval` through `detail::run` (stdin pipe), not a POSIX shell
-  redirect. If the file under `PRISM_LEAN_BIN_DIR` is not a runnable Windows PE (e.g. a Linux
-  ELF left from WSL), the serializer case prints `NOTRUN` after a short probe; CI must ship a
-  native build. `lean_build_tool` also accepts `name.exe` on WIN32. Certified-mode cases
-  early-return when `prism-bitblast` / `cake_lpr` / CaDiCaL are missing.
-- **Label self-check on MSVC `cl`:** `qa conformance: a sample of the label self-check passes`
-  prints `MESSAGE: NOTRUN: ...` when `sanitizers_usable()` is false (no clang UBSan+ASan on
-  PATH). The `clang-cl` Z3 jobs put the ASan DLL dir on PATH so the sample runs there; native
-  `cl` smokes do not link sanitizers and stay NOTRUN (Law 1), not a doctest failure.
-- **`repair: verified fix` in `test_main.cpp`:** same `NOTRUN` as `test_repair.cpp` when no
-  `gcc`/`clang` is on PATH (candidates use gcc-style flags, not bare `cl`).
-- **`test_conc.cpp` on Windows:** pthread mutex cases run when `frontend_usable` and Z3 are
-  present; the two C11 `atomic_*` cases print `NOTRUN` when `conc_c11_atomics_on_host()` is false
-  (the LP64 libc shim does not model `<stdatomic.h>` for the conc stage).
-- **`test_certified.cpp` on Windows:** in the Z3 subset with `test_leanbb` / `test_pir_budget`.
-  CaDiCaL / `cake_lpr` cases no-op when the cert chain is absent. The former POSIX-only cases now
-  run on WIN32 too:
-  - `PRISM_CERT_CACHE_MAX` cap checks use `_putenv_s` (`cert_setenv` / `cert_unsetenv`).
-  - The orphan work-dir sweep (was `fork`): `sweep_orphan_work_dirs()` in `certstore.cpp` now
-    has a WIN32 implementation (`OpenProcess` + `WaitForSingleObject`; a process that cannot be
-    inspected counts as alive, only `ERROR_INVALID_PARAMETER` or an exited process is dead), and
-    `make_work_dir` in `portfolio.cpp` names work dirs with `GetCurrentProcessId()` instead of
-    `0`, so a dead PRISM's `prism-solve-*` dirs are reclaimed. The test uses
-    `fake_session_probe.exe` (`exit 0` for the dead pid, `sleep 120` for a live one, ended with
-    `TerminateProcess`), the same stand-in `test_qa` uses for its Job Object cases.
-  - The checker-out-of-memory case (was a `#!/bin/sh` script): `fake_cake_lpr.exe`
-    (`tests/cpp/fake_cake_lpr.cpp`, copied to `cake_lpr.exe`) prints the CakeML heap-exhausted
-    line and records its argv; `check_lrat` must report "ran out of memory (CakeML heap
-    exhausted)" and pass `--CML_HEAP_SIZE=<mb>`. It needs no external tool, so it never
-    no-ops.
-  - The "killed past the resident-memory cap" half (`PRISM_CHECKER_MEM` / the `heap_mb` cap of
-    any checker other than `cake_lpr`, also `prism-bitblast`): the Linux watchdog reads
-    `/proc/<pid>/statm` (`solver/util.cpp`); the Windows counterpart is
-    `RunSpec::rss_cap_bytes` in `proc.cpp`. The Job Object runner samples the child's working
-    set (`K32GetProcessMemoryInfo`, about every 100 ms, root process like the Linux watchdog)
-    and `TerminateJobObject`s the whole tree once it passes the cap (`RunOut::rss_exceeded`,
-    `peak_rss`); `solver::detail::run` maps that to `Proc::mem_exceeded`, so `check_lrat`
-    reports "ran out of memory (resident memory passed the cap of N MB ...)" and never a
-    verdict. This is deliberately not `JOB_OBJECT_LIMIT_PROCESS_MEMORY` / `mem_limit_mb`: that
-    caps *committed* memory (the child sees failed allocations and may exit with any status),
-    which is the `RLIMIT_AS` analogue, not a resident-memory kill. The case runs
-    `fake_mem_hog.exe` (`tests/cpp/fake_mem_hog.cpp`, copied to `lrat-check.exe`; touches
-    400 MB, then sleeps 20 s) against a 100 MB cap and requires the kill well before 15 s, so
-    a missed kill fails instead of passing. A child whose working set cannot be read is not
-    capped (`peak_rss` stays 0); that is visible, not reported as under the cap. Checked
-    locally by a standalone harness (mingw g++): killed at 404 MB peak under a 100 MB cap, not
-    killed under a 1000 MB cap; the full `prism_tests` run is left to CI (Z3 build).
-- **WIN32 test parity notes:** `tm_setenv` / `tm_unsetenv` (`_putenv_s`) in `test_main.cpp` and selected TUs;
-  `test_checkers_c` / `test_concolic` mention `fork` only inside scanned snippet strings.
-  `test_diff` PATH-mutation cases (no gcc/clang, `cl` alone) run on WIN32 through
-  `_putenv_s` (a PE `cl.exe` copy of `fake_tool_launcher` stands in for MSVC). The `scope:`
-  symlink case runs on WIN32: a file symlink needs Developer Mode / `SeCreateSymbolicLinkPrivilege`
-  and otherwise prints `MESSAGE: NOTRUN` (count of the link to a file not asserted); the
-  directory link falls back to a `mklink /J` junction, which needs no privilege, and checks that
-  it is not followed. `Config::which_adapter` on WIN32 accepts
-  `--tool` paths without `.exe` when `tool.exe` exists (parity with `SearchPath`).
-  `Config::which` on WIN32 probes a `python*.exe` under `\WindowsApps\` with `--version`
-  (cached per path); a Microsoft Store stub (exit 9009 / cannot start) is passed over for the
-  next python on PATH, and if there is none the tool is missing (`NOTRUN`, Law 1), not a tool
-  failure. Covered on WIN32 by `tests/cpp/test_main.cpp`
-  (`config: which skips the Microsoft Store python stub`).
-- Witness and regress integer formatting unchanged on golden strings in `tests/cpp/`.
-
----
-
-## 7. Remaining work (backlog)
-
-Phases 5a / 5b / 5c / 6 / 7 / 8 are closed, but that does **not** imply full Windows parity
-with Linux. What is still open:
-
-| Item | Notes |
-|------|--------|
-| **POSIX-only test cases** | Still `#ifndef _WIN32` or `NOTRUN` on WIN32: the process-tree block in `test_main.cpp` (`fork` / signals; on WIN32 it prints `MESSAGE:` pointing at the Job Object cases in `test_qa.cpp`, which cover the equivalent), the file-symlink half of the `scope:` case (needs Developer Mode or `SeCreateSymbolicLinkPrivilege`; `NOTRUN` message when it cannot be created, the junction half always runs), seven `testdata/pir` glibc corpus files in `test_pir_e2e` (and any testcase that needs them), SV-COMP, and "prism_gui without a display". Each prints `MESSAGE: NOTRUN` or is absent from the Windows build. **SV-COMP, exactly:** only two things are still `NOTRUN` on WIN32, and each says why in its message: (1) replay with a *real* compiler + UBSan (the replay stub is POSIX C, `<unistd.h>` / `_exit`, and no MSVC-target clang here has a usable UBSan), and (2) `svcomp solve` on the pinned `PostfixIncrement` / `nested_1` tasks (needs (1) plus the LP64 engines, see [§6](#6-acceptance-criteria)); this is **not** a missing `--allow-exec`. The replay decision logic (Law 9 gate, replayed / not-replayed, UBSan message filter, build failure, `reach_error`) runs on WIN32 against `fake_cc`, and `svcomp pack` runs with a `.cmd` stand-in; only the archive's executable-bit check is POSIX-only. A real-compiler replay on Windows would need a portable stub (no `unistd.h`) and a toolchain with UBSan; not planned. |
-| **Label self-check (phase 6, closed)** | Passes on the `clang-cl` smoke; `NOTRUN` on the `cl` smoke (verified on CI, run `40038665356`). Runs on Windows only when `sanitizers_usable()` finds a clang that links UBSan+ASan (clang-cl CI jobs put the ASan DLL dir on PATH); otherwise `NOTRUN` (`WARN_MESSAGE`). The same probe gates `test_ai_assist` "generated tests fail on the bug and pass on the fix": `regress --run` builds `bin/<name>.exe`, links no `-lm`, and passes `UBSAN_OPTIONS` / `ASAN_OPTIONS` as a child environment overlay; the `sh run_tests.sh` and cmake/ctest halves stay POSIX-only. `test_cxx_models` needs libstdc++ (`<bits/c++config.h>`): a clang on the MSVC STL is `NOTRUN` (still the case on CI), since the model headers replace libstdc++ containers. |
-| **Z3 build time on Windows** | Both Z3 jobs restore/save the build dir with a `restore-keys` prefix (`75aeb6299`), and `libz3` is saved before the PRISM targets. Measured job wall time (`gh run view`), with the `Build vendored Z3 (libz3)` step in brackets: run `40019517666` (`371010f81`, which already includes `75aeb6299`; the `cl` job log shows an exact-key hit, so this run was not a true cold build either, only the first one measured): `clang-cl` 56m54s (libz3 33m25s), `cl` 44m08s (libz3 23m12s). Run `40038665356` (`1f59511ab`, exact-key cache hit on both): `clang-cl` 43m51s (libz3 25m01s), `cl` 28m44s (libz3 13m48s). Run `40043699695` (`3b06ee7be`, `restore-keys` prefix hit, then a new cache saved): `clang-cl` 78m18s (libz3 50m30s; the slowest of the three, so runner variance is large), `cl` 34m13s (libz3 16m31s). **Compared with `40019517666`, the later runs are only partly faster (`cl` -15m and -10m; `clang-cl` -13m, then +21m), and none of those runs was warm in the sense of "libz3 is skipped":** every run restored the ~557 MB (`clang-cl`) / ~221 MB (`cl`) archive in under 20 s, yet `libz3` still compiled for 14-50 min. **Cause (mtime) and fix (`a9154571d`, run [`40067375209`](https://github.com/odin-loki/PRISM/actions/runs/40067375209)):** a fresh checkout stamps every Z3 source (and `cmake/z3-generated/`) with the checkout time, newer than the restored objects, so Ninja considered all of `libz3` stale. Both Z3 jobs now have a `Backdate Z3 sources (exact cache hit only)` step that sets `third_party/z3` and `cmake/z3-generated` to 2000-01-01 before configure, only when `steps.z3cache.outputs.cache-hit == 'true'`. An exact hit means the tree digest in the key is unchanged, so the backdating is safe; a `restore-keys` fallback is deliberately not backdated, because there stale objects must rebuild changed sources (that path still recompiles what Ninja finds out of date). On an exact hit the `libz3` step also runs `ninja -d explain`, so any remaining rebuild reason is in the log. **Result (exact-key hit on both):** the `Build vendored Z3 (libz3)` step dropped from 25m01s to **19 s** (`clang-cl`) and from 13m48s to **12 s** (`cl`) against run `40038665356`, which was also an exact hit; job wall time is 27m33s (`clang-cl`, 5m53s PRISM targets + 20m40s `prism_tests`) and 21m22s (`cl`) against 43m51s and 28m44s. The remaining time is now PRISM's own targets and the test run, not Z3. Limits: the key does not hash `cmake/z3-generated/**` beyond `tree_sha256` (a hand edit of a generated file without `tools/sync_z3_generated.py` would not invalidate the cache), and a runner-image change of the MSVC/clang headers still dirties objects through Ninja's header deps. sccache is not used: `cl` needs `/Z7`, which changes the Release flags of both smokes. |
-
-### PIR on Windows (LP64)
-
-**Status: steps 1–6 implemented; step 7 (CI + docs) closed in-tree.** On `_WIN32`, PIR uses
-`pir::lp64_clang_driver_flags()` (`lp64_target_flags()` plus `-idirafter`
-`src/prism/pir/models/libc/shim/`; see `docs/PIR.md` "Windows host") so libc models keep LP64
-`size_t` despite the LLP64 Windows default triple. Linux is unchanged; WIN32-only paths are
-behind `#ifdef _WIN32` or runtime probes. `test_pir_e2e` runs the 17-file C subset when
-`frontend_usable` and `z3_available()` both pass (Z3-off Windows smokes are `NOTRUN`, not missing
-verdict rows); the seven glibc corpus files are `NOTRUN` by name via
-`pir_test_c_file_supported(basename)`. The two Windows Z3 jobs restore LLVM 18.1.8 `clang-18` +
-`opt` on PATH for the test run.
-
-Concrete steps (reference):
-
-1. **Triple + driver flags.** **Done.** `pir::lp64_target_flags()` / `lp64_clang_driver_flags()`
-   in `src/prism/pir/frontend.cpp`; wired from `base_flags` (`stage.cpp`), `lower_model`
-   (`libc_models.cpp`), and `svcomp/debug_ir.cpp`.
-2. **Cache key.** **Done.** WIN32 disk key `prism-pir-models-v5` includes the LP64
-   triple (`docs/PIR.md` "Windows disk cache (LP64)").
-3. **Gate on the front end.** **Done.** `frontend_usable` in `include/prism/pir/frontend.hpp`
-   (clang + opt + LP64 probe via temp `probe.c`/`probe.ll`; Windows clang with stdin `-` writes
-   `-.ll` on disk, not IR on stdout); `tests/cpp/test_pir_e2e.cpp` holds the table
-   (`skip_without_frontend` also checks `z3_available()`; edit the `.cpp` in place).
-4. **C subset on WIN32.** **Done.** `pir_test_c_file_supported(basename)` /
-   `skip_glibc_corpus_file(basename)` in the generator (`basename` avoids a Windows header name
-   clash); seven glibc files listed in `NOTRUN` messages.
-5. **C++ on WIN32.** **Done.** `lower_to_ir` returns a `NOTRUN`-style error for `.cpp` without
-   libstdc++.
-6. **Other PIR doctests.** **Done.** `test_pir_mem`, `test_pir_budget`, `test_certified`,
-   `test_conc` share `frontend_usable`.
-7. **CI + docs.** **Done.** LLVM 18 steps back on `windows-compile-smoke-z3` and
-   `windows-compile-smoke-cl-z3`; this section and [§6](#6-acceptance-criteria) updated;
-   `docs/PIR.md` "Windows host" and "Windows disk cache (LP64)".
-
-Out of scope: making PIR target-independent (reading the data layout from the IR), which is
-the only fix for `clang-cl` users who cannot add a second target.
-
-Closed: `test_main.cpp` in full on WIN32, GUI tests ported, full QA doctest TUs,
-`windows-gui-qt`, all four Windows compile smokes, the `Config::which` Store-stub probe
-(C++ and Python), and the WIN32 polyglot / tools-dir / diff / cli / scope / ltl cases.
-
-No Python-engine parity test is required for `stages/interp.cpp` overflow on the MSVC path
-(concrete interpreter is C++-only in CI).
-
-### Local Windows build (developer)
-
-- **OneDrive / Desktop tree:** edit here; do **not** run Linux or heavy Windows
-  builds in this directory (slow sync, flaky links). **WSL:** `~/PRISM` on ext4
-  (`scripts/wsl_sync_from_windows.sh` then `scripts/wsl_build.sh`). **MSVC/Z3:**
-  `C:\Temp\...` below — not OneDrive.
-- **Scripts (one worker):** `scripts/win_z3_one.ps1` — **only** supported Z3 pipeline (`libz3` + `prism_tests`,
-  default **`-Jobs 32`** parallel compiles, one cmake/ninja at a time; optional `-RunPirE2e`).
-  Lock: `.win_z3_build.lock` (PID; stale if no cmake/ninja).
-  `win_msbuild_smoke.ps1 -Z3` configures then calls `win_z3_one.ps1`. Do not run poll/resume scripts or
-  extra subagents on the same build dir.
-  Default Z3 dir `C:\Temp\prism-build-win-z3` (non-Z3 smoke: `C:\Temp\prism-build-win-cl`; avoid
-  OneDrive — linker `LNK1104` flakes). **One cmake/ninja process per build tree** (lock file); do not
-  run parallel configures on the same dir. Legacy helpers `win_z3_build_libz3.ps1` /
-  `win_z3_followup.ps1` / `z3_poll_resume2.ps1` are retired — use `win_z3_one.ps1` only.
-- **CMake:** use `C:\Program Files\CMake\bin\cmake.exe` inside `vcvars64.bat`. Strawberry CMake
-  on PATH breaks vendored Z3 configure (`CMAKE_CXX_COMPILER not set` in `try_run`).
-- **PIR e2e on WIN32:** needs `PRISM_Z3=ON`, LLVM 18 `clang-18` + `opt` on PATH (CI unpacks to
-  `C:\llvm18\bin`; see `windows-compile-smoke-cl-z3`), then `prism_tests.exe -tc="pir e2e*"`.
+# PRISM on Windows
+
+PRISM builds and runs natively on Windows x64. This page covers the
+Windows host build, what runs there and what is `NOTRUN`, how scanned code
+is run (`job-object`), and the Windows x64 MSVC analysis target
+(`--target x86_64-pc-windows-msvc`).
+
+It describes `main` plus two branches landing on 2026-11-05:
+`port/winmsvc` (MSVC `cl` builds, `--target`) and `port/harden` (the
+sandbox gate). Linux is the primary platform; SV-COMP runs on Linux only.
+
+## 1. Compilers
+
+| Compiler | Where | Notes |
+|---|---|---|
+| clang-cl from the pinned LLVM 23.1.4 | Windows x64 | The CI compiler. `third_party/llvm/PIN.toml`, fetched by `scripts/fetch_llvm.py`. |
+| MSVC `cl` 19.40 or newer (VS 2022 17.10+) | Windows x64 only | `port/winmsvc`. Older `cl` fails configure (C++23 needs 19.40). |
+| MinGW | — | Rejected by configure. |
+
+`CMakeLists.txt` refuses any other compiler. A clang other than 23.1.4 is
+a configure warning, not an error.
+
+Under `cl`, `prism_tests` force-includes `tests/cpp/msvc_builtins.hpp`
+(`__builtin_trap` and the bit builtins of the C23 `stdbit` model) and
+builds with `/utf-8 /bigobj`. The MSVC 19.51 build (VS 18 Build Tools,
+Ninja, `PRISM_Z3=ON`) compiled and linked `prism_core`, `prism`,
+`prism-qa` and `prism_tests` (2026-11-05, commit af2c47e91). No CI job
+builds with `cl`.
+
+Both MSVC-style drivers (`cl` and clang-cl) get `/W4 /permissive-` on the
+engine targets and `/O2 /arch:AVX2 /utf-8` on `prism_core`. `WIN32` adds
+`NOMINMAX` everywhere and links `winhttp`. See
+[CXX_STANDARD.md](CXX_STANDARD.md) for the warning policy.
+
+`PRISM_SANITIZE=ON` stops configure on any MSVC-style driver.
+`PRISM_FUZZ` needs a clang that accepts `-fsanitize=fuzzer`, and the
+harness `tests/fuzz/fuzz_cparse.cpp` includes `<unistd.h>`, so self-fuzzing
+is a Linux job ([FUZZ_SELF.md](FUZZ_SELF.md)).
+
+## 2. Building on Windows
+
+Build under `C:\Temp\prism-build-*`, never in the OneDrive clone. OneDrive
+sync makes builds slow and makes the linker fail with `LNK1104`. Edit in
+OneDrive if you like; build elsewhere.
+
+Inside a Visual Studio x64 developer prompt (`vcvars64.bat`):
+
+```
+cmake -S <repo> -B C:\Temp\prism-build-win -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=%PRISM_LLVM_BIN%\clang-cl.exe -DCMAKE_CXX_COMPILER=%PRISM_LLVM_BIN%\clang-cl.exe ^
+  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON ^
+  -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
+cmake --build C:\Temp\prism-build-win
+C:\Temp\prism-build-win\prism_tests.exe
+```
+
+- Use `-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl` for a `cl` build.
+- Keep the default `CMAKE_BUILD_TYPE=Release` with `cl`.
+- `-DPRISM_TESTS_WIN_SUBSET=ON` builds the `fake_*` stand-in executables
+  (`fake_tool_launcher`, `fake_cc`, `fake_session_probe`, `fake_prism`,
+  `fake_cake_lpr`, `fake_mem_hog`, …) that the subprocess tests need on
+  Windows. The test sources are the same list as on Linux; without the
+  flag those cases cannot find their stand-ins. The name is historical.
+- `FORGE_SOURCE_DIR` points at a FORGE checkout; when it is empty
+  `cmake/forge.cmake` fetches FORGE (at the SHA in `cmake/FORGE_PIN` once
+  `port/cipin` lands).
+- The vendored Z3 build is slow. Run one cmake/ninja process per build
+  tree.
+- Use the CMake from `C:\Program Files\CMake` (or the pinned one from
+  `scripts/fetch_toolchain.py cmake`). Strawberry Perl's CMake breaks the
+  Z3 configure.
+
+Helper scripts (`scripts/`):
+
+| Script | Does |
+|---|---|
+| `win_msbuild_smoke.ps1 [-BuildDir D] [-Z3]` | Configures with `cl` (default `C:\Temp\prism-build-win-cl`) and builds `prism_tests`; with `-Z3` it calls `win_z3_one.ps1`. Holds a lock file in the build dir. |
+| `win_z3_one.ps1 [-BuildDir D] [-Jobs N] [-RunPirE2e]` | One worker on `C:\Temp\prism-build-win-z3`: `libz3`, then `prism_tests`, then optionally the pir e2e cases. Lock: `.win_z3_build.lock`. |
+| `win_z3_lock.ps1` | The shared lock functions. |
+| `win_z3_build_libz3.ps1`, `win_z3_followup.ps1` | Thin wrappers; prefer `win_z3_one.ps1`. |
+| `win_z3_pipeline.ps1` | Runs `prism_tests -tc="pir e2e*"`. |
+
+The scripts expect VS 18 Build Tools at the default path.
+
+## 3. Windows CI jobs
+
+`.github/workflows/ci.yml` has three Windows jobs. All use clang-cl from the
+pinned LLVM, fetch the pinned Linux sysroot (`scripts/fetch_toolchain.py
+linux-sysroot`) and set `PRISM_LIBCLANG=OFF`.
+
+| Job | Configure | Runs |
+|---|---|---|
+| `windows-compile-smoke` | `PRISM_Z3=OFF` | builds `prism_core`, `prism`, `prism-qa`, `prism_tests`; runs `prism_tests.exe` |
+| `windows-compile-smoke-z3` | `PRISM_Z3=ON` | the same with Z3 (solver, `leanbb`, certified, pir cases) |
+| `windows-gui-qt` | `PRISM_QT=ON`, Qt 6.8.3 `win64_msvc2022_64` | `prism_gui_tests.exe` and the `gui model` suite offscreen, plus a GUI smoke run with `--smoke-screenshot` |
+
+The Z3 job caches its build directory. On an exact cache hit it backdates
+`third_party/z3` and `cmake/z3-generated` so Ninja does not rebuild
+`libz3` from fresh checkout timestamps; a `restore-keys` fallback is not
+backdated. Both smoke jobs put the clang ASan runtime DLL directory on
+`PATH` so the conformance label self-check can link UBSan + ASan.
+
+## 4. Running `prism` on Windows
+
+`prism.exe PATH` runs the same stage list as on Linux
+(`include/prism/pipeline.hpp` `STAGE_ORDER`). The exit codes are the same
+on every host (`include/prism/exit.hpp`): 0 ok, 1 a finding at
+`--fail-on`, 2 usage, 3 internal or environment error.
+`tests/cpp/test_cli.cpp` runs `prism.exe` on Windows and checks them.
+
+| Part | On Windows |
+|---|---|
+| Source stages (inventory, classify, lints, taint, thread, interval, contracts parsing, ltl, …) | Run. Portable C++. |
+| Clang-AST lints | Run through `clang -ast-dump=json` when PRISM is built without libclang (`PRISM_LIBCLANG=OFF`, as in CI). No clang: the layer is `NOTRUN` and the regex lints still run. |
+| `pir` | Runs when clang and opt are found (`PRISM_LLVM_BIN`) and the target's headers are there (section 6 and [§7](#pir-on-windows)). |
+| External tools (cppcheck, esbmc, dafny, clang-tidy, frama-c, …) | Run when found by `--tool`, the `prism-deps tool` home or `PATH`. On Windows the lookup follows the `SearchPath` directory order, and a bare name takes `.exe` before `.bat` before `.cmd` (`src/prism/config.cpp`). Missing is `NOTRUN` (Law 1). |
+| Steps that execute scanned code | Need `--allow-exec`, and on Windows also `--allow-exec=unsandboxed` (section 5). |
+| AI (FORGE, `.fpk`) | Runs in process. Default model path `%USERPROFILE%\.prism\models\`. |
+
+Windows details the engine handles:
+
+- `Config::which` passes over the Microsoft Store `python.exe` stub under
+  `\WindowsApps\` (it exits 9009); with no other python the tool is
+  missing (`NOTRUN`).
+- A crashing child does not hang on a Windows error dialog
+  (`SetErrorMode` in `src/prism/stages/platform.cpp`).
+- Command lines are quoted for `CommandLineToArgvW` / the MSVC CRT
+  (`sandbox::quote_windows_arg`, `windows_command_line`). A `.bat`/`.cmd`
+  target runs through `cmd.exe /d /s /c`; an argument holding `%`, `!`,
+  `"`, CR or LF is refused rather than guessed (`batch_command_line`).
+- 128-bit arithmetic goes through `prism::i128` / `prism::u128`
+  (`include/prism/wide_int.hpp`): native `__int128` when the compiler has
+  it and is not MSVC, a `{hi, lo}` pair otherwise.
+- The lowered pir model cache lives under
+  `%LOCALAPPDATA%\prism\pir-models`. Each entry is keyed and checked per
+  target; an entry for another target is kept, a broken one is removed.
+
+## 5. Running scanned code: the `job-object` sandbox
+
+Law 9: code from the scanned tree runs only with `--allow-exec`
+(`Config.allow_exec`, default off). The exec stages are listed in
+`exec_stages()` (`src/prism/pipeline.cpp`); the full table is
+[ARCHITECTURE.md](ARCHITECTURE.md#running-on-untrusted-code-law-9).
+
+`sandbox::kind()` (`include/prism/sandbox.hpp`) names the sandbox:
+
+| Kind | Host | Isolates file system and network |
+|---|---|---|
+| `bwrap` | Linux with a working bubblewrap | yes |
+| `job-object` | Windows | no |
+| `rlimits-only` | other POSIX | no |
+
+Only `bwrap` isolates (`sandbox::isolates`). So on Windows:
+
+- `--allow-exec` alone is held back. Every step that would execute scanned
+  code is `NOTRUN` with the hint "install bubblewrap, or re-run with
+  `--allow-exec=unsandboxed`", and the report notes say so.
+- `--allow-exec=unsandboxed` (`Config.allow_unsandboxed`) runs those steps
+  with resource limits only. The report notes that scanned code ran
+  without file-system or network isolation.
+
+With `job-object`, FORGE's spawn (`forge::os::spawn_wait`, wrapped by
+`include/prism/exec.hpp`) puts every child in a kill-on-close Job Object
+with the memory and CPU caps of `sandbox::limits_for`: a 2 GiB address
+space (`LIMIT_AS_BYTES`; off for ASan builds) and CPU time of the timeout
+plus one second. A timeout or a stop kills the whole job, so children the
+program started die with it. `Spec::watch_memory_bytes` kills the tree once
+it passes a resident-memory cap; the certified checkers use it for
+`PRISM_CHECKER_MEM`.
+
+The child still sees the user's files and the network. Use
+`--allow-exec=unsandboxed` only on code you trust.
+
+## 6. Analysis target: Windows x64 MSVC
+
+`--target TRIPLE` (else `PRISM_TARGET`, else the host) names the platform
+the scanned code is built for (`include/prism/abi_model.hpp`,
+`parse_target`):
+
+| Triple | Data model | C / C++ headers |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | LP64 | glibc, libstdc++ (PRISM's C++ models) |
+| `i386-unknown-linux-gnu` | ILP32 | glibc |
+| `x86_64-pc-windows-msvc` | LLP64: 32-bit `long`, 16-bit unsigned `wchar_t`, 64-bit pointers and `size_t` | UCRT, MSVC STL |
+
+- The default on a Windows x64 host is `x86_64-pc-windows-msvc`; on every
+  other host it is `x86_64-unknown-linux-gnu`.
+- Common spellings are accepted (`x86_64-windows-msvc`,
+  `x86_64-pc-windows-msvc19.44…`, `amd64-pc-windows-msvc`).
+- An unsupported triple is exit 2, never a scan for another ABI.
+- An SV-COMP data model of ILP32 wins over the triple. `prism svcomp`
+  always uses a Linux target.
+
+What the target changes:
+
+- **Source-level widths.** `interval`, the concrete interpreter, the fuse
+  and diff argument packing and the AST lints read `active_target()`:
+  `long` is 4 bytes and `wchar_t` 2 bytes on LLP64.
+- **pir lowering.** clang gets `--target=x86_64-pc-windows-msvc`,
+  `-fno-wrapv`, `-D_NO_CRT_STDIO_INLINE`, `-D_CRT_SECURE_NO_WARNINGS` and
+  `-D_CRT_NONSTDC_NO_WARNINGS`. `-fno-wrapv` is there because clang's MSVC
+  driver adds `-fwrapv`, which would drop every signed-overflow check
+  (Law 8). `_NO_CRT_STDIO_INLINE` keeps `printf` and friends modelled
+  library calls.
+- **Headers.** On Windows clang finds Visual Studio and the Windows SDK by
+  itself. Off Windows, `PRISM_MSVC_SYSROOT` names a root holding both
+  (clang `-Xmicrosoft-windows-sys-root`). A probe compiles a file that
+  includes `<stdio.h>`, `<stdlib.h>` and `<string.h>`; if it fails, `pir`
+  is `NOTRUN` with clang's first error line.
+- **C library models.** Lowered and cached per target. `time.cpp` models
+  the UCRT's 64-bit `time_t` and the `_time64` family.
+- **C++.** A C++ unit for the MSVC target is lowered against the MSVC STL
+  headers, never PRISM's libstdc++ models. The STL code is encoded like
+  user code; the library precondition checks (`_GLIBCXX_ASSERTIONS` on
+  libstdc++) are `NOTRUN`, and `extra.cxx_models` says so.
+- **Findings.** pir findings for a non-default target carry
+  `extra.target`.
+
+`testdata/conformance/prism/datamodel/` holds four true/false pairs whose
+answer flips between LP64 and LLP64 (`long + 1` at 2^31 − 1, `1L << 32`,
+`a[sizeof(long)]`, `memcpy` of a `wchar_t`). Conformance tasks take a
+`target:` key. `tests/cpp/test_target.cpp` checks the triples, the CLI,
+the front-end flags and the pir verdict of each pair on both targets.
+
+## 7. What is NOTRUN on Windows
+
+Tests and source comments cite this section (`tests/cpp/test_svcomp.cpp`,
+`include/prism/pir/frontend.hpp`). Each item below prints its own `NOTRUN`
+reason; none is a silent skip (Laws 1 and 7).
+
+### PIR on Windows
+
+`frontend_usable` (`include/prism/pir/frontend.hpp`) decides whether pir
+can lower on this host. It is `NOTRUN` with the reason when:
+
+- clang or opt is missing (install the pinned LLVM: `scripts/fetch_llvm.py`);
+- the target is `x86_64-pc-windows-msvc` and the UCRT / Windows SDK headers
+  are not found;
+- the target is a Linux one and the pinned Linux sysroot is missing
+  (`scripts/fetch_toolchain.py linux-sysroot`, under
+  `%USERPROFILE%\.prism\toolchain\linux-sysroot`, or `PRISM_LINUX_SYSROOT`).
+
+The probe compiles through temporary files, because Windows clang given
+stdin `-` writes `-.ll` to disk instead of IR to stdout.
+
+### SV-COMP
+
+SV-COMP tasks are Linux programs. On Windows, `tests/cpp/test_svcomp.cpp`
+(`svcomp_exec_portable()` is false) reports `NOTRUN` for:
+
+- replay with a real compiler and UBSan: the replay stub is POSIX C
+  (`<unistd.h>`, `_exit`) and no MSVC-target clang here has a usable UBSan;
+- `svcomp solve` on the pinned conformance tasks and `fuzz_replay` with a
+  real compiler;
+- the archive executable-bit check in `svcomp pack` (NTFS has no mode bits).
+
+What does run on Windows: the replay decision logic against `fake_cc`
+(replayed / not-replayed, the UBSan message filter, a build failure,
+`reach_error`), the Law 9 gate, and `svcomp pack` with a `.cmd` stand-in.
+
+### Other parts
+
+| Part | Why |
+|---|---|
+| Steps that execute scanned code without `--allow-exec=unsandboxed` | No isolating sandbox on Windows (section 5). |
+| AFL++ | No native Windows build: `afl-fuzz` is not found, so it is `NOTRUN`. The `PRISM_AFL=1` test case says "NOTRUN on Windows". |
+| Sanitizer runs, label self-check | Need a clang that links UBSan + ASan (`sanitizers_usable()`); otherwise `NOTRUN`. CI puts the clang ASan DLLs on `PATH`. |
+| `prism-bitblast --eval` in `test_leanbb` | `NOTRUN` when the file is not a Windows PE build (for example a Linux binary left by WSL). |
+| `kill -9` exit status in `test_qa` | POSIX signals only. The Job Object timeout, background-grandchild and memory-cap cases run instead. |
+| `prism_gui` without a display | POSIX only; Windows always has a window station. |
+
+## 8. Writing portable engine code
+
+- No `__int128` in engine code: use `prism::i128` / `prism::u128`.
+- Spawn processes through `prism::exec` (FORGE), not `fork`/`popen`.
+- Use `sandbox::private_temp_dir` for scratch directories, not fixed
+  `/tmp` paths.
+- Put Windows-only code behind `#ifdef _WIN32` with a POSIX branch next to
+  it, and give a test that cannot run on Windows a `NOTRUN` message
+  (`prism_test::notrun(reason)` from `tests/cpp/test_support.hpp`, branch
+  `port/testharness`).
+- New tests go in the shared `prism_tests` source list; a stand-in program
+  goes behind `PRISM_TESTS_WIN_SUBSET`.

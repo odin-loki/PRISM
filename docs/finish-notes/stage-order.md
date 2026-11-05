@@ -7,11 +7,11 @@ Slice `finish/stage-order`. `parse_cli` (`src/prism/cli.cpp`) accepts a
 
 ## Behaviors
 
-1. Every name in `STAGE_ORDER` parses. The list has 31 names:
+1. Every name in `STAGE_ORDER` parses. The list has 30 names:
 
    inventory, classify, lints, taint, thread, interval, warnings,
    cppcheck, pbsd, sanitize, optional, polyglot, esbmc, dafny, contracts,
-   wp, bmc, pir, conc, harness, review, concolic, fuzz, diff, rapid,
+   wp, pir, conc, harness, review, concolic, fuzz, diff, rapid,
    muttest, ltl, llm, execute, repair, unify.
 
    The allow-list is that array. Each of those names is accepted.

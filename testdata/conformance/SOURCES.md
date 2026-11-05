@@ -1,33 +1,43 @@
 # Conformance suite sources
 
-Roadmap Part 2.7. Run with `build/prism-qa conformance` (see
-`docs/CONFORMANCE.md` for the metric definitions and current numbers).
+Where every task set of `build/prism-qa conformance` comes from, with its
+pin and licence. The task format, the scoring and the release gate are in
+`docs/CONFORMANCE.md`.
 
 ## `prism/` — in-house tasks (this repository)
 
-252 single-function tasks written for PRISM, one `.c`/`.cpp` file plus a
-`.yml` sidecar each, grouped by feature/UB class:
+Tasks written for PRISM: one `.c`/`.cpp` file plus a `.yml` sidecar each,
+grouped by construct or UB class:
 
 | directory | what it covers |
 |---|---|
-| `overflow/` | signed `+ - * / %`, unary minus, `abs`, `++`/`--`, compound assignment, `long`/`long long`, integer promotion of `short`/`char`/`unsigned short`, mixed signedness, casts/truncation, ternary, nested `if`, `switch` (+ fall-through), `for`/`while`/`do` loops, nested loops, `break`, recursion, helper calls, constants |
-| `unsigned/` | unsigned wrap-around (defined, never UB) next to signed UB hidden in unsigned-looking code |
+| `overflow/` | signed `+ - * / %`, unary minus, `abs`, `++`/`--`, compound assignment, `long`/`long long`, integer promotion, mixed signedness, casts, ternary, `switch`, loops, recursion, helper calls, constants |
+| `unsigned/` | unsigned wrap-around (defined) next to signed UB hidden in unsigned-looking code |
 | `div/` | division/remainder by zero, guarded divisors, `LLONG_MIN / -1` |
-| `shift/` | shift exponent out of range or negative, `1 << 31`, left shift of negative values, left-shift overflow, promotion of `unsigned char` before shifting, `int >> unsigned` |
-| `array/` | constant-bound local, 2-D and global arrays; reads, writes, off-by-one loops, negative indices |
+| `shift/` | shift count out of range or negative, `1 << 31`, left shift of negative values, left-shift overflow, promotion before shifting, `int >> unsigned` |
+| `array/` | local, 2-D and global arrays; reads, writes, off-by-one loops, negative indices |
 | `pointer/` | local pointers (`&v`, array decay) and a NULL dereference on a path |
 | `ptrparam/` | pointer parameters: Law 6 demands `NEEDS-HARNESS` (`expect_status`), never a proof or a refutation |
-| `macro/` | `INT_MAX`/`INT_MIN`, `#define` bounds and function-like macros (the engine has no preprocessor) |
-| `c23/` | `bool`, binary literals, digit separators, `typeof`, `[[attributes]]`, one-argument `static_assert`, `ckd_add`, `_BitInt`, empty initialisers, `nullptr`, enums with a fixed underlying type |
-| `cxx/` | C++23: `constexpr`, trailing return types, templates, lambdas, `std::abs`, `if consteval`, `std::array`, C++20 shift semantics, `std::midpoint`, reference parameters, range-for, structured bindings, `[[assume]]` |
-| `regress/` | one `_true`/`_false` pair per encoder soundness bug fixed after the first measurement (docs/CONFORMANCE.md "Known issues"): call arguments, `INT_MIN` constant, promoted comparisons, helper early return, loop early exit / break / continue, dangling else, code after a loop under k-induction, uncomputable enumerators, cast aliasing, side effects under `?:`/`&&`, downward `+` overflow, `long long` width, mixed widths |
+| `macro/` | `INT_MAX`/`INT_MIN`, `#define` bounds, function-like macros |
+| `memory/` | heap and stack bounds, NULL, use after free, double and invalid free, `realloc`, misalignment, `memcpy` overlap, string functions, uninitialised reads |
+| `kindmem/` | k-induction with memory: loops that write through pointers, aliasing, allocation, globals, structs |
+| `c99/`, `c11/`, `c17/`, `c23/` | constructs of each C standard (designated initialisers, flexible arrays, `_Generic`, `_Atomic`, `aligned_alloc`, `typeof`, `_BitInt`, `ckd_add`, `nullptr`, ...) |
+| `cxx/` | C++ language constructs and standard-library use (containers, strings, `optional`, `span`, `mdspan`, `format`, ranges, threads, C++20 shift semantics, ...) |
+| `fp/` | floating point: conversion to integer out of range (`no-fp-cast`), division, rounding |
+| `eh/` | C++ exceptions: catch, cleanups, `noexcept`, exception types (`no-uncaught`) |
+| `coro/` | C++ coroutines |
+| `sjlj/` | `setjmp`/`longjmp` |
+| `virt/` | virtual dispatch and function pointers |
+| `asm/` | inline assembly under a contract |
+| `datamodel/` | pairs whose answer flips between LP64 and LLP64; each sidecar names its `target:` |
+| `regress/` | one `_true`/`_false` pair per wrong proof or false alarm fixed (docs/CONFORMANCE.md "Known issues") |
 
-Every feature has a `_true` variant (no undefined behaviour for any input)
+Every construct has a `_true` variant (no undefined behaviour for any input)
 and a `_false` variant (a violation exists). `false` tasks carry a `witness`
-(concrete arguments that trigger the UB); `build/prism-qa conformance
+(arguments that trigger the violation). `build/prism-qa conformance
 --self-check` compiles every task with `-fsanitize=undefined,address`,
-requires each witness to trip the sanitizer and each `true` function to
-survive an edge-value grid plus 2000 random inputs.
+requires each witness to trip a sanitizer and each `true` function to run
+clean on an edge-value grid plus 2000 random inputs.
 
 Licence: same as this repository.
 
@@ -38,10 +48,8 @@ Licence: same as this repository.
 - Files copied unmodified (`.c`/`.i` input plus the task-definition `.yml`),
   174 tasks: every task of the directories below that has an
   `expected_verdict` for `no-overflow.prp` (117: 75 true, 42 false) or
-  `unreach-call.prp` (127: 98 true, 29 false), the two properties
-  `tools/svcomp/` scores (docs/SVCOMP.md). Whole directories were taken, not
-  a selection by PRISM's results. The first round (45 no-overflow tasks)
-  was enlarged on 2026-09-25 at the same commit.
+  `unreach-call.prp` (127: 98 true, 29 false). Whole directories were
+  taken, not a selection by PRISM's results.
 
 | directory | tasks (no-overflow t/f, unreach-call t/f) | licence |
 |---|---|---|
@@ -58,14 +66,18 @@ at the commit. Every licence above is permissive.
 is the upstream README (licensing and attribution rules).
 `properties/` holds `no-overflow.prp`, `unreach-call.prp` and
 `valid-memsafety.prp` from `c/properties/` at the same commit, copied
-unmodified so the tasks' `../properties/*.prp` references resolve (used by
-`tools/svcomp/`, see `docs/SVCOMP.md`).
+unmodified so the tasks' `../properties/*.prp` references resolve.
 
-SV-COMP tasks are whole programs; their verdict applies to `main`, and only
-to the named property (a FAILED of another class is reported separately, not
-as a false alarm). Their counterexamples are not replayed (inputs come from
-`__VERIFIER_nondet_*`), so SV-COMP detection is reported as "refuted, not
-replayed".
+Two tools read this subset. `prism-qa conformance` scores each task for
+`no-overflow` (else `valid-memsafety`); a task with only an `unreach-call`
+verdict is not one of its tasks. `prism svcomp score` scores both
+`no-overflow` and `unreach-call` with SV-COMP points (docs/SVCOMP.md).
+
+SV-COMP tasks are whole programs: the verdict applies to `main`, and only to
+the named property (a FAILED of another class is reported separately, not
+as a false alarm). In `prism-qa conformance` their counterexamples are not
+replayed (inputs come from `__VERIFIER_nondet_*`), so detection is
+"refuted, not replayed".
 
 ## `esbmc-cpp/` — ESBMC C++ regression tests (curated subset; full set fetched)
 
@@ -108,14 +120,15 @@ be `VERIFICATION SUCCESSFUL` (→ `main: true`) or `VERIFICATION FAILED`
 (→ `main: false`). Skipped, with a count printed per reason: multi-file
 tests, tests using `__ESBMC_*` intrinsics, options that change the checked
 property set (`--overflow-check`, `--memory-leak-check`, `--no-*-check`,
-`--function`, `--data-races-check`, ...), and FAILED labels that come from a
-limit of ESBMC's operational model ("capacity exceeded", "forgotten
-memory"). At the pinned commit: 1906 tasks converted, 1044 THOROUGH, 113
-intrinsics, 55 multi-file, 51 without a single verdict line, 24 KNOWNBUG,
-70 property-changing options (11 of them `--error-label`: a reachable
-`ERROR:` label is ESBMC's violation there, and PRISM checks no labels), 14
-XML descriptions, 6 model limits and 2 labels that contradict the C++
-standard (`ESBMC_DISPUTED`, each with its reason) skipped.
+`--function`, `--data-races-check`, `--error-label`, ...), FAILED labels that
+come from a limit of ESBMC's operational model ("capacity exceeded",
+"forgotten memory"), and labels that contradict the C++ standard
+(`ESBMC_DISPUTED`, each with its reason). At the pinned commit: 1906 tasks
+converted, 1044 THOROUGH, 113 intrinsics, 55 multi-file, 51 without a
+single verdict line, 24 KNOWNBUG, 70 property-changing options (11 of them
+`--error-label`: a reachable `ERROR:` label is ESBMC's violation there, and
+PRISM checks no labels), 14 XML descriptions, 6 model limits and 2 disputed
+labels skipped.
 
 What a label means: ESBMC checks, from `main`, assertions, array bounds,
 pointer safety and division by zero (not signed overflow). The property is
@@ -125,25 +138,35 @@ property", not a false alarm; any proof of `main` on a FAILED task is a wrong
 proof. A SUCCESSFUL under `--no-unwinding-assertions` only speaks up to
 ESBMC's bound (`label_bound:` in the sidecar).
 
-The committed subset (64 tasks: 32 SUCCESSFUL, 32 FAILED; 19 categories, at
-most 3 per category and label) is chosen by `curate_esbmc`: deterministic
-programs only (no `nondet_*`, `rand`, input, threads, time), licence-clean,
-ordered by SHA-256 of the upstream path (not by PRISM's results), and kept
-only when one native run (clang++, `-fsanitize=undefined,address`,
-assertions on) agrees with ESBMC's label. For a deterministic program that
-single run is its only behaviour, so the label is checked, not just
-inherited; `--self-check` repeats it.
+The committed subset (64 tasks: 32 SUCCESSFUL, 32 FAILED; at most 3 per
+category and label) is chosen by `curate_esbmc`: deterministic programs only
+(no `nondet_*`, `rand`, input, threads, time), licence-clean, ordered by
+SHA-256 of the upstream path (not by PRISM's results), and kept only when
+one native run (clang++, `-fsanitize=undefined,address`, assertions on)
+agrees with ESBMC's label. For a deterministic program that single run is
+its only behaviour, so the label is checked, not just inherited;
+`--self-check` repeats it.
 
-## `libc-models/` — contract harnesses for the pir libc models (this repository)
+## `concurrency/` — thread programs (this repository)
 
-Roadmap 8.2. Harnesses that `#include` the model sources of
-`src/prism/pir/models/libc/` and state the C standard's contract of each
-model with `assert()` (`harness.h` explains the scheme). `_true` functions:
-the model meets its contract; `_false` functions: a wrong contract or a
+Whole programs that create threads (`pthread_create` or `thrd_create`),
+in true/false pairs. Each program has one sidecar per property it is
+labelled for (`<name>-norace.yml`, `-noassert.yml`, `-nodeadlock.yml`); the
+verdict applies to `main`. Scored by the `conc` stage only
+(docs/CONCURRENCY.md). Licence: same as this repository.
+
+## `libc-models/` — contract harnesses for PRISM's library models (this repository)
+
+Harnesses that state the contract of PRISM's own library models with
+`assert()`, so the `pir` stage checks the repository's model code, not the
+platform library. The C harnesses `#include` the model sources of
+`src/prism/pir/models/libc/` (`harness.h` explains the scheme); the C++
+harnesses call the C++ model headers. `_true` functions: the model meets its
+contract for every input. `_false` functions: a wrong contract or a
 precondition violation, each naming the class that must refute it
-(`expect_class:`; a refutation for another reason is not a detection).
-Results: `docs/PIR.md` "Library models verified by PRISM". Licence: same as
-this repository.
+(`expect_class:`; a refutation for another reason is not a detection). The
+property is `libc-contract`. Results: `docs/PIR.md` "Library models verified
+by PRISM". Licence: same as this repository.
 
 ## Juliet (not in git)
 

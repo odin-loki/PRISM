@@ -62,10 +62,8 @@ the same way.
 The header does not include `<string>`, `<string_view>`, `<memory>`, or
 `<locale>`.
 
-`src/prism/bmc.cpp` still returns "is not a regex model" when the source
-text contains `std::regex`, before any header is inlined. This slice does
-not edit `bmc.cpp` or `src/prism/pir/stage.cpp`. `stage.cpp` already writes
-every embedded `cxx/` model and passes that directory as `-isystem`.
+`stage.cpp` already writes every embedded `cxx/` model and passes that
+directory as `-isystem`.
 
 ## Wiring
 

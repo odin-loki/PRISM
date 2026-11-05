@@ -132,12 +132,3 @@ printed `size()` 0 and did not fire that check (the zero extent skips the
 divisions, including a division by that zero). A null pointer with extents
 `(1, 0, 0, 0, 0)` and with extents `(0, 1, 0, 0, 0)` aborted with
 `PTR-NULL-DEREF`. `prism_tests` was not run. cmake was not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-mdspan model" from the source text (`std::mdspan` or `mdspan<`) before the
-header is inlined. `src/prism/bmc_encoder.inc` still throws `mdspan unencoded`
-on the same spellings. Those files were not edited. Until that gate is gone,
-a task that spells `std::mdspan` or `mdspan<` stays on that path.
-`docs/PIR.md` was not edited.

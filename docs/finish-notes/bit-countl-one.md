@@ -66,9 +66,7 @@ the pir stage lowers that translation unit again with libstdc++
 `src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited.
 No CMake source line was added or removed. `_prism_test_sources` already
 lists `tests/cpp/test_cxx_bit.cpp`. The conformance header array already
-names `bit`. `src/prism/bmc.cpp` was not edited. A source that contains
-`std::countl_one` or `std::countr_one` still takes the
-`C++ std::countl_zero unencoded` path there.
+names `bit`.
 
 ## Tests
 

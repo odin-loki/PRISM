@@ -50,7 +50,7 @@ falls back to libstdc++ (`extra.cxx_models`). They are not stubbed:
 
 `src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited.
 `tests/cpp/test_qa_conformance.cpp` was not edited; `bitset` was already in
-the header-name array. `src/prism/bmc.cpp` was not edited.
+the header-name array.
 
 ## Tests
 

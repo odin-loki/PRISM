@@ -1,16 +1,16 @@
 # PRISM SV-COMP verifier package
 
-This directory is the BenchExec-facing SV-COMP entry for PRISM (roadmap 6.3).
-See [docs/SVCOMP.md](../../docs/SVCOMP.md) for mapping rules, the pinned subset
-score and witness validation.
+This directory holds the BenchExec-facing files of PRISM's SV-COMP entry.
+[docs/SVCOMP.md](../../docs/SVCOMP.md) describes how answers are decided,
+the witnesses, the data models and what is still missing for an entry.
 
 ## Layout
 
 | file | role |
 |---|---|
 | `prism.py` | BenchExec tool-info module (`BaseTool2`); runs `prism svcomp` |
-| `prism-subset.xml` | local BenchExec benchmark for the pinned subset |
-| `fm-tools.yml` | fm-tools registration metadata (edit before upload) |
+| `prism-subset.xml` | BenchExec benchmark definition for the pinned subset |
+| `fm-tools.yml` | fm-tools registration draft (edit before upload) |
 
 The verifier itself is the PRISM binary:
 
@@ -22,12 +22,15 @@ The verifier itself is the PRISM binary:
 
 ## Dependencies on the competition machine
 
-- `clang` and `opt` on `PATH` for the `pir` stage (tested with LLVM 18); `clang`
-  (or `gcc`) with UBSan/ASan for counterexample replay
-- `bubblewrap` (`bwrap`) optional but recommended for counterexample replay
-- Python only for BenchExec itself, which loads the tool-info module
+- The pinned LLVM toolchain (`third_party/llvm/PIN.toml`) for the `pir`
+  stage: `PRISM_LLVM_BIN`, or the pinned build baked in at build time.
+- `clang`, `gcc` or `cc` on `PATH` with UBSan/ASan for counterexample replay.
+- `bubblewrap` (`bwrap`) to jail the replay; without it the replay runs under
+  resource limits only.
+- Python only for BenchExec itself, which loads the tool-info module.
 
-The archive contains the PRISM C++ binary only. It does **not** bundle clang.
+The archive contains the PRISM binary. It does **not** bundle clang or opt;
+`dependencies.json` records the versions found on `PATH` when it was built.
 
 ## Build the archive
 
@@ -37,8 +40,7 @@ From a built tree:
 build/prism svcomp pack --out prism-svcomp.tar.gz
 ```
 
-It packs the binary it is run as (or `--prism BIN`). Unpack to a BenchExec
-tools directory (or pass `--tool-directory`):
+It packs the binary it is run as (or `--prism BIN`). The archive unpacks to:
 
 ```text
 prism/
@@ -51,19 +53,15 @@ prism/
   dependencies.json
 ```
 
-`dependencies.json` records the clang/opt versions seen when the archive was
-built (not bundled) and optional `PRISM_*` environment knobs documented for
-competition runs.
-
 ## BenchExec
 
-Copy `prism.py` into BenchExec's `benchexec/tools/` (or add this directory to
-`PYTHONPATH` and point `--tool-directory` at the unpacked `prism/` folder).
-Run BenchExec from a directory that has no `prism/` Python package in it, so
+Copy `prism.py` into BenchExec's `benchexec/tools/`, or add this directory to
+`PYTHONPATH` and point `--tool-directory` at the directory holding `prism`.
+Run BenchExec from a directory with no `prism/` Python package in it, so
 that the module name `prism` means this file.
 
 The benchmark must pass `<option name="--allow-exec"/>`: every `false` answer
-replays the counterexample (Law 9).
+replays the counterexample, which compiles and runs the task (Law 9).
 
 ```bash
 PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism \

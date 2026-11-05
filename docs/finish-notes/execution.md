@@ -51,26 +51,6 @@ that trait is true only for the pstl policy types. Clang reports
 `no matching function for call to 'for_each'`. The same call compiles
 against libstdc++ 14.
 
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still returns
-`C++ execution unencoded: bitvector BMC is not an execution model` when the
-function body matches `std::execution::`, before a header is inlined.
-`src/prism/bmc.cpp` `harness_for_parsefail` returns
-`C++ execution unencoded` when the compiler diagnostic contains the
-substring `execution`. Those files were not edited. The task and the
-harness each name `std::execution::seq`, so the source gate matches them.
-Until that gate is gone, `cxx_execution_true` does not reach this header.
-
-The same file still returns `C++ std::task unencoded` for `std::task<` and
-`std::execution::task<`, and `C++ sync_wait unencoded` for `sync_wait(`.
-The task, the harness, and the trace do not use those names. The scored
-function does not use the word `constexpr`, so the `constexpr unencoded`
-gate does not match it.
-
-`src/prism/pir/stage.cpp` was not edited. It already writes every embedded
-`cxx/` model and passes that directory as `-isystem`.
-
 ## Wiring
 
 `PRISM_PIR_MODELS` gained

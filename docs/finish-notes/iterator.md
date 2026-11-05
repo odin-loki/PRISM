@@ -52,9 +52,7 @@ pointer is the caller's expression. This header does not decide whether
 that use stays inside the array.
 
 `src/prism/pir/stage.cpp` was not edited. It already writes every embedded
-`cxx/` model and passes that directory as `-isystem`. `src/prism/bmc.cpp`
-still returns early for `basic_const_iterator` and `counted_iterator`. Those
-gates were not edited. The task source does not name them.
+`cxx/` model and passes that directory as `-isystem`.
 
 ## Wiring
 

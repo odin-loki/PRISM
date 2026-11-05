@@ -116,9 +116,7 @@ The accumulate test used to require that the header text not declare
 the overload. `reduce`, `transform_reduce`, `inner_product`, `partial_sum`,
 and `exclusive_scan` are still not declared.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They do not name
-`std::adjacent_difference`. `docs/PIR.md` was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

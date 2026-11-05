@@ -65,11 +65,3 @@ expected count and does not call `wait` (`expected: true`).
 (`expected: false`). The yml schema matches `cxx_array_true.yml`:
 `format_version`, `input_files`, `language`, `property`, and `expected`
 with a YAML boolean. cmake, `prism_tests`, and pir were not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::latch/barrier unencoded` (`is not a sync primitive model`) from
-the source text, before the header is inlined. Those files were not
-edited. Until that gate is gone, `cxx_barrier_true` and
-`cxx_barrier_false` do not reach this header. `docs/PIR.md` was not edited.

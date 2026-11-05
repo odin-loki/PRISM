@@ -56,17 +56,6 @@ kind of lie.
 same way. The header does not include `<string>`, `<filesystem>`,
 `<memory>`, `<mutex>`, `<iostream>`, `<istream>`, or `<ostream>`.
 
-## Still in front of the model
-
-`src/prism/bmc.cpp` still returns `C++ fstream unencoded: ` plus the engine
-plus ` is not an fstream model` when the lowered text matches
-`ifstream`, `ofstream`, or `fstream`. `src/prism/bmc_unenc.inc` returns the
-same sentence from a function body. `#include <fstream>` matches that word.
-Those files were not edited. `src/prism/pir/stage.cpp` was not edited. It
-already writes every embedded `cxx/` model and passes that directory as
-`-isystem`. PIR was not run, so this slice does not claim the tasks are
-proved or refuted.
-
 ## Wiring
 
 `PRISM_PIR_MODELS` gained

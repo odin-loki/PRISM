@@ -8,8 +8,6 @@ Law 5 is unchanged: confidence = visibility × answer × resolution, and a facto
 
 The published 4-decimal rounding is `prism::round4` in `src/prism/pipeline.cpp`, lines 151–158, applied to visibility, answer, resolution, and confidence in `apply_confidence` at lines 163–166. That file is owned by another slice and was not edited. The old `std::round(x * 10000.0) / 10000.0` (half away from zero) is already gone; `round4` formats the exact binary value with `{:.4f}` and reads that decimal back. On MSVC 14.51 and libstdc++ 13 that format is half to even, and it rounds the decimal expansion of the double, not the scaled product `x * 1e4`.
 
-`docs/CPP_PORT_PLAN.md` still describes the old `std::round` path. That sentence is stale relative to `round4`.
-
 ## Tie cases
 
 `1.00005` is not an exact tie. The double is slightly above `1.00005` (`x * 1e4` is `10000.500000000001819`), so half-to-even and `std::round` both publish `1.0001`.

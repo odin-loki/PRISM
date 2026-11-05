@@ -119,12 +119,3 @@ ASan heap error. A host probe of extents `(SIZE_MAX/2, 2, 1, 1)` stored
 the product-overflow check. Extents `(SIZE_MAX, 0, SIZE_MAX, SIZE_MAX)`
 printed `size()` 0 and did not fire that check. `prism_tests` was not run.
 cmake was not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-mdspan model" from the source text (`std::mdspan` or `mdspan<`) before the
-header is inlined. `src/prism/bmc_encoder.inc` still throws `mdspan unencoded`
-on the same spellings. Those files were not edited. Until that gate is gone,
-a task that spells `std::mdspan` or `mdspan<` stays on that path.
-`docs/PIR.md` was not edited.

@@ -1,6 +1,6 @@
 # concolic args and tried
 
-`docs/CPP_PORT_PLAN.md` (`prism/concolic.py`) asked ERROR rows and
+The port audit asked ERROR rows and
 `skip-pointer` NEEDS-HARNESS rows to carry `extra.args` and `extra.tried`.
 
 `put_args_tried` writes that pair in the crash path's spelling of

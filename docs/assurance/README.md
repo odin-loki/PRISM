@@ -1,7 +1,7 @@
 # PRISM assurance package
 
-Roadmap 6.5. These documents map the evidence that exists in this
-repository to four frameworks a defence or aerospace buyer is likely to use:
+These documents map the evidence that exists in this repository to four
+frameworks a defence or aerospace buyer is likely to use:
 
 | document | framework |
 |---|---|
@@ -30,8 +30,8 @@ repository to four frameworks a defence or aerospace buyer is likely to use:
 ## Rules the documents follow
 
 1. Every claim cites a concrete artefact: a file path, a test
-   (`<path>::<name>`), a Lean theorem (`thm:<Name>`), a workflow or a doc
-   section (`docs/<X>.md#<anchor>`).
+   (`<path>::<name>`), a Lean theorem (`thm:<Name>`), a workflow, or a doc
+   (`docs/<X>.md`, with `#<anchor>` where the section is stable).
 2. `prism_docs_check assurance-check` (`src/tools/qa/docscan.cpp`) verifies
    that every cited path exists, every
    `<path>::<name>` is found in its file, every anchor resolves and every
@@ -41,9 +41,10 @@ repository to four frameworks a defence or aerospace buyer is likely to use:
    or a deleted test breaks CI instead of leaving an unsupported claim.
 3. A Lean theorem proves a statement about a **model** (the verdict lattice,
    the PIR semantics and an encoder of the same design as PRISM's, the
-   verification algorithms). It is never cited as a proof about the C++
-   code in `src/prism/`; the documents say what connects the two, and where
-   nothing does.
+   verification algorithms, a Lean mirror of the LLVM→PIR translator). It
+   is never cited as a proof about the C++ code in `src/prism/` by itself;
+   the documents say what connects the two (a table comparison, a
+   per-function correspondence check), and where nothing does.
 4. Rows that PRISM does not address say "not addressed" and why.
 
 The check script does not judge whether an artefact supports the claim made

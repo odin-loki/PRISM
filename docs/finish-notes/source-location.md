@@ -73,11 +73,3 @@ reported that call's line and, with `__builtin_COLUMN`, that call's column.
 `column()` was 0 and `line()` was still the call's line. The trace, the
 true task, and the contracts function each exited 0. cmake, `prism_tests`,
 and pir were not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ source_location unencoded` (`is not a source_location model`) from the
-source text, before the header is inlined. Those files were not edited.
-Until that gate is gone, `cxx_source_location_true` does not reach this
-header. `docs/PIR.md` was not edited.

@@ -1,1011 +1,506 @@
-# PRISM conformance: metrics, current numbers, known issues
+# PRISM conformance: metrics, release gate, known issues
 
-Roadmap Part 2.7 (conformance suite), 5.5 / 6.2 (random-program testing) and
-6.1 (release gate). The suite and its sources are described in
-[`testdata/conformance/SOURCES.md`](../testdata/conformance/SOURCES.md); verdicts
-are defined in [VERDICTS.md](VERDICTS.md).
+PRISM's verdicts are graded against tasks whose answer is known. This file
+describes the grader (`prism-qa conformance` and `prism-qa soundness`), the
+task format, how a run is scored, the release gate and every wrong proof or
+false alarm found so far. Where each task set comes from, with its pin and
+licence, is in
+[`testdata/conformance/SOURCES.md`](../testdata/conformance/SOURCES.md).
+Verdicts are defined in [VERDICTS.md](VERDICTS.md).
 
-## Metrics
+## The grader: `prism-qa`
 
-Every task names functions and, for each, whether the property holds
-(`true`: no undefined behaviour for any input) or not (`false`: a violation
-exists). The scorer (`src/tools/qa/conformance.cpp`) runs PRISM with
-`--stage inventory,classify,bmc,harness` (plus `pir` whenever `prism
---list-stages` lists it) and scores each verdict stage separately.
+`prism-qa` (`src/tools/qa/`) is built with the engine (`cmake --build build`).
+It is not part of the release archive. It grades whichever PRISM binary it is
+given: `--prism BIN`, else `$PRISM_BIN`, else `build/prism`.
 
-| metric | definition | target |
-|---|---|---|
-| **Soundness** | wrong proofs: `PROVED`, `PROVED-UNBOUNDED`, `PROVED-ASSUMING` or `PROVED-CERTIFIED` on a `false` function | **0** — any wrong proof fails the release gate (exit 1) |
-| **Completeness** | `true` functions proved / `true` functions | grows |
-| **Bug detection** | `false` functions refuted with `FAILED` **and a counterexample that replays** / `false` functions. Replay: the task is compiled with `-fsanitize=undefined,address -fno-sanitize-recover=all`, the counterexample's arguments are passed to the function (inside `bwrap` when it works) and the sanitizer must fire | grows |
-| False alarms | `FAILED` on a `true` function | 0 |
-| Law 6 | pointer-parameter tasks (`expect_status: NEEDS-HARNESS`) must get `NEEDS-HARNESS`, never a proof or a refutation | all |
+| command | what it does |
+|---|---|
+| `prism-qa conformance` | runs PRISM on the conformance suite, scores every verdict, applies the release gate |
+| `prism-qa conformance --self-check` | checks the suite's own labels with sanitizers; PRISM does not run |
+| `prism-qa soundness` | generates random C programs and executes every function PRISM proves |
 
-Rules that keep the numbers honest:
-
-- `BOUNDED` is neither a proof nor a refutation (Law 2): it counts toward
-  neither completeness nor detection, and never toward soundness.
-- A `FAILED` whose counterexample does not replay is reported ("refuted, not
-  replayed") but is not counted as detection: the verdict may be right for a
-  wrong reason (see F4 below).
-- A crashed stage and a function the stage never mentions are listed
-  separately (Law 7), not folded into "no answer".
-- SV-COMP labels speak for one property (`no-overflow`); a `FAILED` of another
-  class on an SV-COMP task is listed as "other property", not as a false
-  alarm or a detection. SV-COMP and Juliet counterexamples are not replayed
-  (their inputs come from `__VERIFIER_nondet_*` / `rand()`/`stdin`).
-- The suite's own labels are validated without PRISM:
-  `build/prism-qa conformance --self-check` requires every `false` witness to
-  trip a sanitizer and every `true` function to survive an edge-value grid
-  plus 2000 random inputs (it caught one mislabelled task while the suite was
-  written).
-- The release gate counts wrong proofs on every stage and every origin.
-  `harness` only speaks about pointer functions under `// requires:`; a scalar
-  function it does not mention is out of its scope, not missing.
-
-## How to run
+`prism-qa --help` lists the other commands (`libc-bounds`, `solver-bench`,
+`pir-lean-check`, `llvm-sem-vs-lli`, `triage-selfscan`, `assurance-check`,
+`docs-check`).
 
 ```
-build/prism-qa conformance --self-check                 # labels (needs clang or gcc with sanitizer runtimes)
-build/prism-qa conformance                              # engine: --prism, $PRISM_BIN, else build/prism; exit 1 on any wrong proof
-build/prism-qa conformance --fetch-juliet /tmp/juliet   # NIST Juliet 1.3 (curl, sha256-checked, unzip)
-build/prism-qa conformance --suite /tmp/juliet/juliet
-build/prism-qa soundness -n 300                         # random programs
+build/prism-qa conformance --self-check                 # labels only (clang with UBSan/ASan runtimes)
+build/prism-qa conformance                              # the suite; exit 1 on any wrong proof
+build/prism-qa conformance --certified                  # also score pir under --certified
+build/prism-qa conformance --fetch-juliet /tmp/juliet   # NIST Juliet 1.3 (sha256-checked)
+build/prism-qa conformance --juliet /tmp/juliet         # add the Juliet tasks
+build/prism-qa conformance --fetch-esbmc /tmp/esbmc     # ESBMC C++ regression tests at the pinned commit
+build/prism-qa conformance --esbmc /tmp/esbmc           # add the fetched ESBMC tasks
+build/prism-qa soundness -n 300                         # random programs, in-house generator
 build/prism-qa soundness --generator csmith -n 100
 ```
 
-`prism-qa` (`src/tools/qa/`) is built with the engine (`cmake --build
-build`) but is not part of the release archive: it grades whichever engine
-binary it is given. It reads the task files with its own YAML-subset reader
-(block maps and sequences, flow lists of scalars, quoted scalars, comments;
-anything else is an error naming the file and line). The random programs and
-the self-check input grids come from a Python-compatible Mersenne Twister
-drawn in the original order, so the seeds quoted below still name the same
-programs they named when the scorers were Python scripts.
+### `prism-qa conformance` options
 
-Outputs: `conformance-out/metrics.json`, `metrics.md`, `results.json` (every
-function, stage, verdict, counterexample and replay). `.github/workflows/conformance.yml`
-runs the self-check and the suite on every push (gating), and the random
-programs and Juliet nightly.
-
-## Current numbers (2026-09-23, after the encoder soundness fixes)
-
-Engines: C++ engine (`/tmp/prism-build-sound/prism`, this branch merged with
-`claude/prism-code-checker-x7538r` incl. the AI layer and the `pir` stage)
-and the frozen Python engine, same tree. Stages `inventory,classify,bmc,
-harness` (+ `pir`, C++ only). The bitvector encoder is the typed rewrite
-described under "Known issues" (all S items fixed in both engines).
-
-Engine parity: on every `bmc` row the two engines give the same outcome
-except where the C++-only AI layer (`k_induction_strengthened`, Houdini
-invariants, roadmap 4.2) closes a loop the plain step leaves `BOUNDED`
-(7 in-house `true` tasks). Juliet and the random programs agree too (the
-Python run has 9 `UNKNOWN` against 3 in C++: solver timeouts on a loaded
-machine, never a different sat/unsat answer).
-
-Label self-check: all in-house tasks ok (the 34 new `regress/` tasks
-included), pointer-parameter tasks skipped.
-
-### In-house suite + SV-COMP (`testdata/conformance`)
-
-The original 263 tasks, `bmc` stage, before → after:
-
-| origin | wrong proofs | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED |
-|---|---|---|---|---|---|---|
-| in-house (C++) | **11 → 0** | 51/106 (48.1%) → 64/106 (60.4%) | 55/106 (51.9%) → 70/106 (66.0%) | 4 → 0 | 8 → 1 | 14 → 11 |
-| in-house (Python) | **11 → 0** | 51/106 → 59/106 (55.7%) | 55/106 → 70/106 (66.0%) | 4 → 0 | 8 → 1 | 14 → 16 |
-| SV-COMP (both) | 0 → 0 | 4/25 (16.0%) → 3/25 (12.0%) | n/a | 11/20 → 15/20 | 1 → 0 | 0 → 0 |
-| all (C++) | **11 → 0** | 55/131 (42.0%) → 67/131 (51.1%) | 55/126 (43.7%) → 70/126 (55.6%) | 15 → 15 | 9 → 1 | 14 → 11 |
-
-With the 34 `regress/` tasks (one `_true`/`_false` pair per encoder bug fixed
-here) the full suite is 291 tasks: C++ `bmc` 0 wrong proofs, completeness
-82/148 (55.4%), detection 84/143 (58.7%), 1 false alarm; Python `bmc` 0 wrong
-proofs, 75/148 (50.7%), 84/143 (58.7%), 1 false alarm.
-
-The one false alarm left in that run was F7 (`cxx_shift_cpp20_true`, C
-semantics of `<<` applied to a C++ file); it is fixed since (Known issues,
-F7).
-
-Per category (C++, `bmc`, proved true / refuted false): overflow 31/41,
-36/41; div 10/10, 10/10; shift 11/11, 11/11; unsigned 5/5, 4/5; c23 3/11,
-3/11; C++ 2/14, 5/14; macro 1/3, 1/3; array 1/9, 0/9; local pointers 0/2,
-0/2; regress 15/17, 14/17; SV-COMP signedintegeroverflow 0/5, 10/10;
-bitvector 0/13, 5/10; loop-simple 3/3.
-
-**`harness` stage (C++ only): 1 wrong proof and 3 Law 6 violations** —
-`ptrparam0_false` is `PROVED-ASSUMING` under a harness the AI layer drafted
-itself (`p != NULL; p points to at least 1 int element`), and
-`ptrparam0_true`/`ptrparam1_true` get `PROVED-ASSUMING` where the suite
-requires `NEEDS-HARNESS` (no `// requires:`). This comes from
-`src/prism/ai/harness.cpp` (`drafted_harness_bmc`, merged from the AI
-branch), not from the encoder: a drafted assumption is not a caller
-contract, so a proof under it must not be scored as a proof of the task.
-The release gate stays red until that stage reports such rows as
-`NEEDS-HARNESS` (or the scorer is taught to treat drafted-harness proofs as
-not-a-proof; the gate must not simply be relaxed). The Python engine has no
-drafted harness and passes (0 wrong proofs, Law 6 6/6).
-
-### Certified mode: plain answers first, capped certificate store (roadmap 3.2)
-
-Branch `claude/certified-3` (2026-09-24). Changes (docs/PIR.md "Solving",
-docs/SOLVERS.md "Query cache"): certificates are asked only for a function
-whose plain answers made it `PROVED` (a `FAILED` or `BOUNDED` function pays
-for none); every certificate query knows its plain answer and runs only
-CaDiCaL-with-LRAT; a certification budget per function
-(`max(240 s, 8 x --timeout)`, `PRISM_CERTIFY_BUDGET`); memory caps for the
-certificate tools (`PRISM_CHECKER_MEM`, 4096 MB) reported as "ran out of
-memory"; Lean DAGs over 2 MB go to the Z3 bit-blaster (a coroutine
-function's 15.7 MB DAG drove `prism-bitblast` past 11 GB resident); the
-proof store keeps packed proofs only (no CNF), capped at 2 GB
-(`PRISM_CERT_CACHE_MAX`) with LRU pruning, and dead solver work directories
-are swept.
-
-Measured task by task (plain `pir` run, then the certified run on the same
-cache, as `prism-qa conformance` does; Lean tools on `PATH`; loaded shared
-machine, so seconds are indicative):
-
-| task | before (tip `232d5da2a`) | after |
-|---|---|---|
-| `sv-comp/loop-invgen/nested6` (BOUNDED) | 73 s, 67 MB cache | 1.5 s, 56 KB |
-| `prism/overflow/nested_loop_true` (BOUNDED) | 346-356 s in the last full run | 0.6 s |
-| `prism/coro/coro_gen_false` | timeout (360 s) | 52 s |
-| `prism/coro/coro_gen_true` | timeout (Lean bit-blast of a 15.7 MB DAG) | 61 s, `PROVED-CERTIFIED` (Z3 bit-blast, recorded) |
-| `prism/coro/coro_step_true` | timeout | 68 s |
-| `libc-models/stdio_contracts` | 44 s (Z3 bit-blast) / timeout in the full run | 51 s |
-| `libc-models/string_contracts` | 79 s (Z3 bit-blast) / timeout in the full run | 119-198 s (18 functions certified through the Lean bit-blaster) |
-
-The full-suite `--certified --no-replay -j 2` comparison run was started
-but not finished when this branch was handed back (usage limit); the
-counts in the section below are still the last complete run.
-`fn_macro_true` and `long_mul_true` stay uncertified: docs/SOLVERS.md has
-the measured limits (2.09 GB proof and 163 s of cake_lpr for the 32-bit
-squaring; no CaDiCaL answer for the negative half of the 64-bit one).
-
-### Certified mode: one certificate per function (roadmap 3.2 speed-up)
-
-`build/prism-qa conformance --certified --no-replay -j 2`,
-C++ engine at branch `claude/certified-speed` (2026-09-24), 491 tasks (the
-suite has grown since the run below: C++ ESBMC tasks, libc models,
-coroutines, k-induction memory tasks), Lean bit-blaster built, 4-core
-machine shared with other agents. `--no-replay` because an earlier full run
-lost its results to a full disk in the replay phase; replay does not affect
-the wrong-proof gate. Release gate: **PASS, 0 wrong proofs on every stage**,
-0 `PROVED-CERTIFIED` on a `false` function.
-
-What changed in certified mode (docs/PIR.md "Solving", docs/TRUSTED_BASE.md 1):
-
-- **one combined certificate per function**: the disjunction of all VCs of
-  the function under the shared path encoding, one bit-blast, one CaDiCaL
-  LRAT proof, one round of cake_lpr + Lean's checker. It certifies exactly
-  the per-VC claim (UNSAT of a disjunction is UNSAT of every disjunct);
-  `certificate_scope = combined`, `certificate_covers` lists the VCs. If the
-  combined query is SAT, has no answer or is not certified, every VC is
-  certified on its own as before (`certificate_scope = per-vc`); if only the
-  checker ran out of time on its proof, its halves are certified instead
-  (`batched`);
-- a **certificate budget**: after the answer, CaDiCaL-with-LRAT may run until
-  `max(60 s, 4 x --timeout)` from the start of the query (it was stopped at
-  `--timeout`); CaDiCaL runs with `--unsat`; cake_lpr and Lean's checker run
-  in parallel.
-
-| | before (367-task suite, 2026-09-23) | after (491-task suite) |
-|---|---|---|
-| loop-free `true` functions pir encodes | 125 | 158 |
-| **PROVED-CERTIFIED** | **109/125** | **136/158** |
-| no VC at all (stay `PROVED`) | 11 | 14 |
-| proved, not certified | 5 (wide multiplications) | 7: 4 floating point (not certifiable), 1 `PROVED-ASSUMING`, `fn_macro_true` (cake_lpr ran out of its 120 s), `long_mul_true` (CaDiCaL did not finish in 120 s) |
-| `true` functions with loops certified | 6/30 | 19/61 |
-| certified functions by one combined certificate / per VC / batches | – / 109 / – | 114 / 41 / 0 (all certified functions, loops included) |
-| certified-run timeouts (360 s per task) | 18 | 14 |
-
-Of the 18 tasks that timed out before, 17 now finish: `mem_uninit_true` (99
-VCs) takes 44 s with one certificate instead of 4 minutes,
-`arr_sum_true` (107 VCs) 48 s, `arr_2d_true` (33 VCs) 13 s, the
-`uninit_elem_*` and six `byte_add*` tasks 1–83 s, `nested_loop_*` 346–356 s
-(BOUNDED: the combined query is SAT, so the per-VC path runs as before).
-`nested6` still times out. The 13 other timeouts are tasks the earlier suite
-did not have: 7 ESBMC C++ tasks, `libc-models/stdio_contracts` and
-`string_contracts` (many functions per task) and the four `coro_*` tasks
-(whose plain run already takes 7–40 s). The sum of the certified runs'
-seconds is 11 160 s over 489 tasks (-j 2; the earlier run did not record
-it; a like-for-like baseline run on this suite was lost twice to container
-restarts and a full disk).
-
-Of the five wide multiplications, `mul_true`, `widen_mul_true` and
-`switch_true` are now `PROVED-CERTIFIED` (`--unsat` and the certificate
-budget; `widen_mul_true`'s proof is 862 MB, cake_lpr needs 4.1 GB for it).
-`fn_macro_true` (32-bit `a*a`) was certified when run alone but its cake_lpr
-check ran out of the 120 s budget on the shared machine; `long_mul_true`
-(64-bit `a*a`, 128-bit product in the overflow check) does not finish in
-CaDiCaL (no answer in 184 s CPU alone; docs/SOLVERS.md has the measured
-CaDiCaL options). CaDiCaL 3.0.1 is the newest upstream release, and Kissat
-writes no LRAT. No word-level preprocessing was added: nothing in the chain
-would check it, and certified mode never certifies through an unchecked
-step.
-
-A/B on 30 conformance files (the same binary with and without these
-changes, interleaved, CPU seconds, heavily loaded machine): 16 functions
-certified by one combined certificate, the same 22 certified functions and
-the same verdicts in both; faster on 16 files, equal on 7, slower on 7 (e.g. faster: `arr_global_true` 134 s
--> 8 s), slower where a combined attempt failed before the batch split
-existed (`arr_2d_true`, `mem_uninit_true`: the checker timed out on the
-combined proof under load) and on multiplications that now use the longer
-certificate budget (`mul_true`, `compound_mul_true`).
-
-### Certified mode after the memory model and the Lean bit-blaster
-
-`build/prism-qa conformance --certified`, C++ engine
-with the pir memory model (QF_BV `MemEncoding::Bv`), the Lean-proved
-bit-blaster (`bitblaster=auto`, `prism-bitblast` / `prism-lrat-check` built
-by `lake build` in `proofs/techniques`) and the solver-library wiring; 367
-tasks, 4-core machine shared with other builds. Release gate: **PASS, 0
-wrong proofs on every stage** (`bmc`, `harness`, `pir`, `conc`,
-`pir-certified`), plain run and certified run alike.
-
-| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| pir | in-house | 147 | 147 | **0** | 131/147 (89.1%) | 129/147 (87.8%) | 5 | 0 | 19 | 10 | 6/6 |
-| pir | SV-COMP | 25 | 20 | **0** | 10/25 (40.0%) | 0/20 | 15 | 0 | 11 | 1 | – |
-| pir-certified | in-house | 147 | 147 | **0** | 127/147 (86.4%) | 129/147 (87.8%) | 3 | 0 | 16 | 19 | 6/6 |
-| pir-certified | SV-COMP | 25 | 20 | **0** | 8/25 (32.0%) | 0/20 | 15 | 0 | 10 | 9 | – |
-
-- loop-free `true` functions pir encodes: 125, all proved under `--certified`;
-- **109/125 `PROVED-CERTIFIED`, all 109 with every CNF made by the
-  Lean-proved bit-blaster** and every LRAT proof accepted by both cake_lpr
-  and Lean's checker (0 via the Z3-tactics fallback, 0 mixed);
-- 11/125 have no verification condition at all and stay `PROVED` ("nothing
-  to certify");
-- 5/125 stay `PROVED`: a 32/64-bit multiplication overflow VC whose CaDiCaL
-  LRAT run did not finish within the budget (`fn_macro_true`,
-  `long_mul_true`, `mul_true`, `switch_true`, `widen_mul_true`);
-- 6 of the 30 `true` functions with loops are `PROVED-CERTIFIED` (loops close
-  within the unwind); 0 `PROVED-CERTIFIED` on a `false` function.
-
-Certified mode costs time: every VC runs Z3, the Lean bit-blaster, CaDiCaL
-with LRAT, cake_lpr, Lean's LRAT checker and lrat-check, about 2.4 s per VC
-on the loaded machine. Memory functions with loops have many VCs
-(`mem_uninit_true`: 99, 4 minutes), so 18 tasks exceed the certified run's
-budget (twice `--timeout`) and are scored as no answer (`arr_sum_true`,
-`mem_uninit_true`, `mem_vla_true`, the `uninit_elem_*` regress tasks,
-`nested_loop_*`, six SV-COMP `byte_add*`, `id_trans`, `nested6`). That is
-the whole difference between the `pir` and `pir-certified` rows: no verdict
-changed except `PROVED` → `PROVED-CERTIFIED` or a timeout.
-
-### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
-
-Identical in both engines:
-
-| stage | true | false | **wrong proofs** | completeness | refuted (not replayed) | false alarms | no answer |
-|---|---|---|---|---|---|---|---|
-| bmc (before) | 306 | 104 | **6** | 190/306 (62.1%) | 17/104 | 1 | 196 |
-| bmc (after) | 306 | 104 | **0** | 129/306 (42.2%) | 20/104 | 0 | 261 |
-
-Completeness dropped because many "proofs" were vacuous: calls such as
-`printIntLine(100 / data)` were never evaluated, `RAND32()` and globals were
-free constants. Every unmodelled call is now `NEEDS-HARNESS` ("UNENCODED:
-call to X"); the `_good()` wrappers that call a helper using `RAND32()`,
-`fscanf`, sockets or `fgets` and the `RAND32()` helpers themselves are the
-bulk of the 261 (100 unmodelled calls, 20 address-of, 18 heap, 22 sockets,
-10 VLA).
-
-### Random programs (`prism-qa soundness`, in-house generator, 300 programs, 900 functions)
-
-| | before | after (C++) | after (Python) |
-|---|---|---|---|
-| `PROVED-UNBOUNDED` | 304 | 466 | 463 |
-| of which wrong (UB under UBSan) | **57** | **0** | **0** |
-| `FAILED` | 153 | 431 | 428 |
-| `FAILED` with a replaying counterexample | 129 | 430 | 427 |
-| suspected false alarms | 17 | 0 | 0 |
-| `ERROR` | 136 | 0 | 0 |
-| `UNKNOWN` (solver timeout) | 1 | 3 | 9 |
-| stage crashed (whole file lost, R1) | 306 functions | 0 | 0 |
-
-After merging the AI layer and the `pir` stage the C++ campaign was re-run
-with both verdict stages: 464 proofs executed under UBSan, **0 wrong**; 431
-`FAILED`, 430 replay; 0 suspected false alarms.
-
-### ESBMC C++ regression tests (roadmap 2.7; `testdata/conformance/esbmc-cpp`, fetched set)
-
-Source, licence and conversion rules: `testdata/conformance/SOURCES.md`
-("`esbmc-cpp/`"). Labels are ESBMC's `VERIFICATION SUCCESSFUL/FAILED` for
-`main`, property-scoped to ESBMC's default checks (assertions, bounds,
-pointers, division by zero). No counterexample is replayed (whole programs):
-detection is "refuted, not replayed". C++ engine, this branch, 2026-09-23.
-
-**Full fetched set** (`--fetch-esbmc` at `653926f9`, 1917 CORE tasks: 1253
-SUCCESSFUL, 664 FAILED; 240 s per task, 3 jobs):
-
-| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
-|---|---|---|---|---|---|---|---|
-| bmc | **0** (was 1, S8) | 64/1253 (5.1%) | 1/664 | 1 (F10) | 0 | 1787 (1735 NEEDS-HARNESS, 52 ERROR) | 64 |
-| pir | **0** (was 3: 1 S8, 2 disputed labels) | 435/1253 (34.7%) | 245/664 (36.9%) | 2 (F8, F9) | 13 | 1150 (1090 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 62 |
-
-**Re-run after the F8–F10 fixes** (branch `claude/false-alarms-f8-f10`:
-`2caeda6a9` plus the fixes, 2026-09-23; 240 s per task, 2 jobs on a
-machine shared with five other runs). The converter now also skips the 11
-`--error-label` tasks (a reachable `ERROR:` label is ESBMC's violation there
-and PRISM checks no labels; `nec_ex7-ctor-throw` was scored as a pir wrong
-proof for that reason alone, by the base binary too), leaving 1906 tasks
-(1253 SUCCESSFUL, 653 FAILED):
-
-| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
-|---|---|---|---|---|---|---|---|
-| bmc | **0** | 64/1253 | 1/653 | **0** (was 1: F10) | 0 | 1794 (1742 NEEDS-HARNESS, 52 ERROR) | 47 |
-| pir | **0** | 581/1253 (46.4%) | 343/653 (52.5%) | 8 (F8, F9 gone; 8 new, F11) | 13 | 897 (835 NEEDS-HARNESS, 59 ERROR, 3 UNKNOWN) | 45 |
-
-Plus 19 pir FAILED of another class. `1006_aggregate`,
-`github_6464_placement_new_incremental` (pir) and `try-catch_tryblock_08`
-(bmc: now NEEDS-HARNESS; pir proves it) are no longer false alarms; their
-`_fail` twins stay refuted. Most of the pir gain over the table above comes
-from PIR round 3 (exceptions, indirect calls; merged at `cd1336cd1`, after
-that run), not from these fixes. The 8 new pir false alarms (F11) come with
-those round 3 features and are FAILED by the base binary as well (checked
-on the base build, same tasks): see "Known issues".
-
-**Re-run after the F11 fixes** (branch `claude/undef-f11`, pir stage only,
-2026-09-24; 240 s per task, 2 jobs on a shared machine). The fetched set
-used predates the `--error-label` skip, so it has 1917 tasks (1254
-SUCCESSFUL, 663 FAILED) including the 11 `--error-label` ones:
-
-| stage | wrong proofs | proved (true) | refuted (false) | false alarms | BOUNDED | no answer | timeout / killed |
-|---|---|---|---|---|---|---|---|
-| pir | **0** (1 scored: `nec_ex7-ctor-throw`, an `--error-label` task, see above) | 594/1254 (47.4%) | 344/663 (51.9%) | **0** (was 8: F11) | 13 | 906 (841 NEEDS-HARNESS, 59 ERROR, 6 UNKNOWN) | 39 (3 timeout, 36 killed) |
-
-All 8 F11 tasks are now PROVED and their `_fail` twins
-(`catch_base_offset_mi_fail`, `github_6308_typeid_name_fail`,
-`irep2_throw_primitive_id_fail`) stay refuted. Plus 20 pir FAILED of
-another class.
-
-Plus 4 + 4 pir FAILED of another class (e.g. UNINIT-READ, signed overflow,
-which ESBMC does not check by default). The first run found **4 wrong
-proofs**: S8 (a global's constructor throws before `main`; bmc and pir both
-proved `main`, fixed, see "Known issues") and two labels that contradict the
-C++ standard — `cpp/github_6199_fail` (`std::string(nullptr, 0)`: an empty
-range is valid) and `cpp/github_6588_multidim_fail` (`new int[2][3]()`
-value-initialises to zero); a native sanitizer run of both deterministic
-programs is clean. PRISM's proofs are right there; the two tasks are skipped
-at conversion with the reason (`ESBMC_DISPUTED` in `src/tools/qa/support/fetch.cpp`),
-not relabelled. S8 also turned one pir false alarm into NEEDS-HARNESS
-(`cpp11/constructors/Constructor9-1`). The fixed build was re-run on the
-whole set: 0 wrong proofs in both stages. The 62–64 tasks without an answer
-by timeout are libstdc++-heavy (`std::string`, `vector::reserve`,
-iterators): 51 exceed 240 s, 11 are killed for memory (exit -9).
-
-Label check of the fetched set (`--self-check`, one native clang++ run under
-UBSan/ASan with assertions on, deterministic programs only): 1639 labels
-confirmed, 162 skipped (nondeterministic), 116 not confirmed (48 do not
-compile with clang/libstdc++, 33 crash otherwise, 19 FAILED labels run
-clean, 16 SUCCESSFUL labels hit a sanitizer or assert natively). Cross-check
-against the PRISM run: **no PRISM proof on any program whose native run
-hits UB or a failed assert**, and no pir/bmc FAILED on a natively clean
-program except the false alarms F8–F10 above (fixed since), `cpp/github_1807` (FAILED
-label, clean natively; refuted by pir) and two FAILED of another class.
-
-**Committed subset** (64 tasks: 32 true, 32 false, deterministic,
-labels confirmed by one native sanitizer run), in `build/prism-qa conformance`:
-
-| stage | wrong proofs | proved (true) | refuted (false) | false alarms | no answer |
-|---|---|---|---|---|---|
-| bmc | **0** | 1/32 | 0/32 | 0 | 63 |
-| pir | **0** | 12/32 (37.5%; 15/32 on an idle machine) | 12/32 | 0 | 40 |
-
-Three subset tasks (`github_5868_find_last_not_of`, `string/compare_ordering`,
-`vector/vector_back_reference`) hit the 180 s default timeout on a loaded
-machine and are listed as "never reported" with `TIMEOUT` (they are proved
-or refuted within it when the machine is idle).
-
-### libc model contracts (roadmap 8.2; `testdata/conformance/libc-models`)
-
-125 functions (53 contract harnesses, 72 false twins); see docs/PIR.md
-"Library models verified by PRISM". C models: 41 harnesses (every function
-defined in `src/prism/pir/models/libc/*.cpp` is called by one), 58 false twins;
-C++ library: 12 harnesses, 14 false twins (`std::vector` model;
-libstdc++'s `std::array`, `std::span`, `std::optional`, `std::unique_ptr`,
-`std::string`). `pir` (2026-10-25): stdlib C harnesses 12/12 `_true` PROVED at
-N=4 (incl. `getenv_true`; harness `extern "C"` + NUL return size; was BOUNDED on
-`getenv` in the 2026-09-24 52/53 run), 72/72 false twins refuted for the planted
-class, 0 wrong proofs, 0 false alarms. The C proofs are size-bounded (objects up to N bytes; every
-size-parametric harness is PROVED at N = 16 by `prism-qa libc-bounds`)
-except `unbounded_contracts.cpp` (memcpy/memmove/memset/realloc on objects of
-any size below 2^40). `bmc`: 0 proofs, 2 refutations (`abs(INT_MIN)`,
-`rand() < 100`), NEEDS-HARNESS elsewhere (no preprocessor: the included
-model code is invisible to it). In the full release-gate run (all stages,
-`-j2`, heavily loaded machine) the three `unique_ptr` harnesses of
-`cxx_std_contracts.cpp` came back NEEDS-HARNESS (`UNENCODED: call @_Znwm`:
-the operator new model was not linked in that run, most likely because the
-per-run model build timed out under load; the run's work directory was not
-kept, so this is not confirmed): 51/53 PROVED, 70/72 refuted there, still 0
-wrong proofs. The vector harness files carry a `timeout:`
-(900–1200 s per PRISM run) in their task files.
-
-### C++ library models: before/after (`esbmc-cpp` subset + in-house `prism/cxx`)
-
-`pir` only, 180 s per run, `-j2` on a loaded machine (2026-09-24). Before:
-C++ engine at `491089ee3` with this branch's C model changes but without the
-C++ model headers; after: this branch (the `<vector>` model, the
-out-of-loop use fix). The in-house suite gained 11 true/false pairs
-(`cxx_vector_{index,front,pop,invalidate,at}`, `cxx_string_{index,substr,cstr}`,
-`cxx_optional_value`, `cxx_unique_ptr`, `cxx_span`).
-
-| suite | before: proved (true) | before: refuted (false) | after: proved | after: refuted | wrong proofs |
-|---|---|---|---|---|---|
-| esbmc-cpp (32 + 32) | 18/32 | 21/32 (not replayable) | 19/32 | 21/32 | 0 |
-| prism/cxx (25 + 25) | 18/25 | 18/25 | 21/25 | 21/25 | 0 |
-
-What changed: `cpp03_vector/vector_back_reference` (three `push_back`s on an
-empty vector) and `cxx_vector_{front,pop,invalidate}` true and false were
-never answered with libstdc++'s vector (Z3 out of memory or the 180 s
-timeout) and are PROVED/refuted with the model; the reference kept across a
-reallocating `push_back` is MEM-UAF. Still unanswered: `cxx_string_substr`
-(libstdc++'s `substr` constructs through out-of-line `basic_string` members:
-timeout), `cxx_constexpr`/`cxx_if_consteval` (no runtime function; unchanged),
-`cxx_ref_param` (Law 6, unchanged), and the esbmc-cpp tasks listed under
-"no answer" above (iostreams, `std::map`/`std::set`, `std::string`
-out-of-line members: `UNENCODED: call`).
-
-### C++ library models, second round (`std::string`, `std::map`/`std::set`; branch `claude/cxx-models-2`)
-
-Single-task `pir` runs (stages `inventory,classify,pir`, default unwind 8,
-heavily loaded shared machine, 2026-09-24). "Base" is the C++ engine at
-`232d5da2a` (the `<vector>` model only); "new" is this branch (the
-`bits/basic_string.tcc` and `<map>`/`<set>` models, two-field aggregate
-returns in the translator, the unwind tried first).
-
-| task | base | new |
-|---|---|---|
-| `cxx_string_substr_true` | no answer (killed after > 10 min) | PROVED, 1.7 s |
-| `cxx_string_substr_false` | not rerun (timed out at 180 s in the first round) | FAILED CXX-THROW-NOEXCEPT, 28 s |
-| `cxx_map_at_true` / `_false` (new) | `NEEDS-HARNESS` (no model: recursive tree code) | PROVED 14 s / FAILED CXX-THROW-NOEXCEPT 47 s |
-| `cxx_map_erase_uaf_true` / `_false` (new) | `NEEDS-HARNESS` | PROVED 9.6 s / FAILED MEM-UAF 84 s |
-| `cxx_set_erase_uaf_true` / `_false` (new) | `NEEDS-HARNESS` | PROVED 17 s / FAILED MEM-UAF 134 s |
-
-0 wrong proofs among these. Not measured on this branch (the session ran
-out of time): the full `esbmc-cpp` + `prism/cxx` before/after table, the
-new `libc-models/map_contracts.cpp` harness file (one run of the whole file
-did not finish within 1200 s; which function is slow was not isolated) and
-`libc-models/vector_insert.cpp` (insert in the middle; the first round
-measured > 900 s for the old harness shape). Measured limits of the map/set
-model: an erase at a position that depends on the input, followed by a
-traversal (the destructor, `clear()`), does not finish within 240–600 s in
-the default `Bv` memory encoding (`map<int,int>` with two elements); the
-same function without the conditional erase takes 10 s. With
-`MemEncoding::Array` (not the stage default) an unconditional erase took
-0.6 s instead of 17 s, the conditional one still did not finish.
-
-### C++ library models, third round: value sets (branch `claude/w6-perf6`)
-
-Single `pir` runs (stages `inventory,classify,pir`, heavily loaded shared
-machine, 2026-09-25), before = `c28ae3faf`, after = this branch (value sets
-in the Bv memory encoding, docs/PIR.md "Encodings"; grouped property
-queries split on no answer; the `basic_string.tcc` fix for libstdc++ 14).
-
-| task | before | after |
-|---|---|---|
-| `map<int,int>`, two elements, `erase(k)` at an input-dependent key, destructor | no answer in 900 s | PROVED, 2.1 s |
-| same, `*it` of the erased element (MEM-UAF twin) / wrong-sum twin / `set` variants | not run | FAILED MEM-UAF / FAILED FUNC-CONTRACT / 2 PROVED, 2 FAILED — 13.5 s for the file of 5 |
-| `libc-models/map_contracts.cpp` (11 harnesses, one file) | NEEDS-HARNESS ×11 in 3 s (the unit did not compile against the model headers with libstdc++ 14 and fell back to libstdc++); with the header fix but without value sets `map_insert_true` alone gave no answer in 600 s (1,295 property VCs, each timing out) | 7/7 PROVED, 4/4 refuted with the planted class, 13–18 s for the file (0.4–2.4 s of solving per harness) |
-| `libc-models/vector_insert.cpp` | not measured | `vector_insert_uaf_false` FAILED MEM-UAF in 146 s; `vector_insert_true` PROVED in ~24 s (unwind 8) after the value-set fixes |
-
-0 wrong proofs among these.
-
-## Before the fixes (2026-09-23, `24a72d40b`)
-
-Engine: C++ engine built from `claude/prism-code-checker-x7538r` at
-`24a72d40b` (stages `inventory,classify,bmc,harness`; no `pir` stage yet).
-The frozen Python engine gives **identical** numbers on the same suite
-(same 11 wrong proofs, same 9 false alarms): the bugs below are in the shared
-encoding design, so the differential oracle cannot catch them.
-
-Label self-check: 212 functions ok, 6 skipped (pointer parameters), 0 failed.
-
-#### In-house suite + SV-COMP (`testdata/conformance`, 263 tasks)
-
-| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| bmc | in-house | 106 | 106 | **11** | 51/106 (48.1%) | 55/106 (51.9%) | 4 | 8 | 14 | 69 | 6/6 |
-| bmc | SV-COMP | 25 | 20 | **0** | 4/25 (16.0%) | n/a (not replayable) | 11/20 | 1 | 0 | 27 | – |
-| bmc | all | 131 | 126 | **11** | 55/131 (42.0%) | 55/126 (43.7%) | 15 | 9 | 14 | 96 | 6/6 |
-| harness | all | – | – | **0** | – | – | – | 0 | – | – | 6/6 |
-
-`pir` and certified mode (roadmap 3.2): run of the `pir` stage with the
-solver library wiring and `--certified`, C++ engine at this branch
-(`build/prism-qa conformance --stages pir --certified`, 2026-09-23;
-`pir-certified` is the second run with `prism --certified`, twice the time
-budget, a fresh solver cache per suite run):
-
-| stage | origin | true | false | **wrong proofs** | completeness | detection (replayed cex) | refuted, not replayed | false alarms | BOUNDED | no answer | Law 6 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| pir | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
-| pir | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
-| pir-certified | in-house | 106 | 106 | **0** | 76/106 (71.7%) | 78/106 (73.6%) | 0 | 0 | 13 | 45 | 6/6 |
-| pir-certified | SV-COMP | 25 | 20 | **0** | 3/25 (12.0%) | n/a | 5 | 0 | 7 | 29 | – |
-
-**Certified mode (roadmap 3 exit criterion), at that time: 74/74 loop-free
-`true` functions that pir encodes were `PROVED-CERTIFIED`** (67 with one
-checked CaDiCaL LRAT proof per VC, 7 then counted vacuously: unsigned-only
-code with no inserted property; such a function now stays `PROVED` with
-`certify_note = "no verification conditions (nothing to certify)"`, see the
-current numbers below), 3 of the 20 `true`
-functions with loops too (loops close within the unwind), and **0**
-`PROVED-CERTIFIED` on a `false` function. Certified mode changed no verdict
-other than `PROVED` → `PROVED-CERTIFIED`. The criterion is met for the
-functions pir encodes; 37 `true` functions are not encoded (pointer
-parameters, arrays, some C++) and so cannot be certified yet.
-
-Two fixes came out of these runs: a certified request that timed out while
-solving again for a certificate turned a cached plain answer into
-`UNKNOWN` (now the plain answer stands, uncertified), and cake_lpr timed
-out on a 59k-step multiplier proof under load (checker budget is now
-`max(60 s, 4 × timeout)`). pir also lowers C23 units that do not compile as
-C17 as C23 (c23 tasks: 8/11 proved and refuted, from 0).
-
-### Concurrency (`testdata/conformance/concurrency`, 22 labels, roadmap 2.6)
-
-This suite is scored by the `conc` stage only (docs/CONCURRENCY.md), and
-`conc` is scored on it only. The labels are `norace`, `noassert` and
-`nodeadlock`, each property-scoped, and the verdict applies to `main`.
-`conc` never proves: completeness is 0 by definition, and every true label
-is `BOUNDED`. Its counterexamples are schedules, so detection is "refuted,
-not replayed".
-
-| stage | true | false | **wrong proofs** | BOUNDED (true) | refuted, not replayed | false alarms | no answer |
-|---|---|---|---|---|---|---|---|
-| conc | 13 | 9 | **0** | 13/13 | 9/9 | 0 | 0 |
-
-(C++ engine at the conc branch, `K = 2` rounds, default unwind.)
-
-Per category (bmc, in-house): overflow 26/41 proved, 30/41 refuted;
-div 8/10, 10/10; shift 8/11, 6/11; unsigned 4/5, 3/5; c23 2/11, 3/11;
-C++ 2/14, 6/14; macro 1/3, 1/3; array 0/9, 0/9 (every array task is
-`ERROR`, see G1); local pointers 0/2, 0/2 (`NEEDS-HARNESS`); SV-COMP
-signedintegeroverflow 1/5 proved, 10/10 refuted; bitvector 0/13, 1/10
-(front-end `ERROR`s, see G2); loop-simple 3/3.
-
-#### NIST Juliet 1.3 (CWE190/191/369/476/680, flow `_01`, 104 files, 410 functions)
-
-| stage | true | false | **wrong proofs** | completeness | refuted (not replayed) | false alarms | no answer |
-|---|---|---|---|---|---|---|---|
-| bmc | 306 | 104 | **6** | 190/306 (62.1%) | 17/104 | 1 | 196 |
-
-By CWE (false functions): CWE190 10 refuted / 35 no answer; CWE191 6 refuted,
-**2 wrong proofs**; CWE369 **4 wrong proofs**, 8 no answer; CWE476 1 refuted;
-CWE680 0 refuted.
-
-#### Random programs (`prism-qa soundness`)
-
-In-house generator, 300 programs, 900 functions, seeds 1–300:
-
-| verdict | functions |
+| option | meaning |
 |---|---|
-| `PROVED-UNBOUNDED` | 304 |
-| `FAILED` | 153 |
-| `ERROR` | 136 |
-| `UNKNOWN` | 1 |
-| stage crashed (whole file lost) | 306 (102 programs) |
+| `--prism BIN` | engine to grade (default `$PRISM_BIN`, else `build/prism`) |
+| `--suite DIR` (repeatable) | task roots (default `testdata/conformance/{prism,sv-comp,concurrency,esbmc-cpp,libc-models}`) |
+| `--juliet DIR`, `--fetch-juliet DIR`, `--juliet-flows LIST` | Juliet tasks; flows default `01` |
+| `--esbmc DIR`, `--fetch-esbmc DIR`, `--esbmc-thorough`, `--curate-esbmc DIR` | ESBMC C++ tasks; `--curate-esbmc` rewrites the committed subset |
+| `--stages LIST` | verdict stages to score (default: `pir` and `conc`, when `prism --list-stages` lists them) |
+| `--certified` | run `pir` a second time with `prism --certified` and score it as the stage `pir-certified` |
+| `--timeout S` | seconds per PRISM run (default 180); the certified run gets twice that |
+| `--unwind N` | `--unwind` for every PRISM run |
+| `--jobs N`, `-j N` | parallel PRISM runs (default: CPU count; cut so each run has at least 2500 MB of memory budget) |
+| `--mem-limit-mb MB` | address-space cap per PRISM run (default 0: none); a run over it is no answer, never a proof |
+| `--filter REGEX` | only tasks whose ident matches |
+| `--no-replay` | do not replay counterexamples |
+| `--solver-cache DIR` | solver query cache (default: a fresh one in the work dir, so no answer comes from an earlier run) |
+| `--out DIR` | output directory (default `conformance-out`) |
 
-- **57 of the 304 proofs are wrong** (18.8%): the function, executed under
-  UBSan on the edge grid plus 3000 random inputs, hits undefined behaviour.
-  45 of the 57 involve an `unsigned char`/`unsigned short` parameter (S4), 9
-  are left shifts (S3), the rest S1/S2.
-- 129 of 153 `FAILED` counterexamples replay; 17 `FAILED` functions neither
-  replay nor show UB on the grid (suspected false alarms, F1/F2/F4).
-- Csmith 2.3 (scalar-only configuration, `--no-safe-math`), 100 programs,
-  224 functions: 175 `NEEDS-HARNESS`, 48 `ERROR`, 1 proof (checked, correct).
-  Csmith output is outside the subset the current front end models, so the
-  in-house generator is the useful one until the Clang front end (Part 2)
-  lands.
+Each PRISM run gets a share of the machine's memory as `PRISM_MEM_BUDGET_MB`;
+PRISM enforces it per function as `UNKNOWN`. Set `PRISM_CONF_KEEP` to keep
+the work directory.
 
-### Roadmap 2.6 categories (`fp`, `eh`, `coro`, `sjlj`, `virt`, `asm`; 30 tasks)
+Outputs in `--out`: `metrics.json` (run metadata and metrics per stage and
+origin), `metrics.md` (the same as tables, plus lists of wrong proofs, false
+alarms, Law 6 rows, stage crashes, functions never reported and
+refutations not replayed), `results.json` (one row per function and
+stage: findings, outcome, replay). `--self-check` writes `selfcheck.json`.
 
-One true/false pair per construct (docs/PIR.md "Roadmap 2.3 / 2.6
-coverage"); two new suite properties: `no-fp-cast` (FLOAT-CAST-OVF, the
-UBSan float-cast-overflow check) and `no-uncaught` (an exception reaching
-`std::terminate`; the replay counts the runtime's "terminate called …" as
-the violation). Label self-check: 30/30 ok. `pir` (2026-09-23): **0 wrong
-proofs**, 15/15 true proved (asm: PROVED-ASSUMING under its contract),
-15/15 false refuted with a replayed counterexample. `bmc` (the old encoder)
-answers none of them (NEEDS-HARNESS / no answer), never a proof. Full suite
-with these tasks (385 functions, before `fp_div_*` moved from double to
-float, when that pair was still a solver timeout): `pir` 0 wrong proofs,
-completeness 144/181, detection 137/176; the only wrong proof in the run is
-the known `bmc` `mem_uninit_false` (being fixed separately).
+`prism-qa` reads task files with its own YAML-subset reader
+(`src/tools/qa/support/yaml_subset.cpp`: block maps and sequences, flow lists
+of scalars, quoted scalars, comments). Anything else is an error naming the
+file and line. Random inputs come from a Python-compatible Mersenne Twister
+(`src/tools/qa/support/pyrandom.hpp`), so a seed names the same programs and
+input grids it named before the scorers were C++.
 
-## Known issues
+## The corpus
 
-**S9 (fixed): an `assume` constrained checks before it in the same block.**
-The pir encoder added each PIR `assume` as a global axiom
-`reach(node) => cond`. Every check in that node is guarded by the same
-`reach(node)`, so a check that executes *before* the assume was evaluated as
-if the assumption already held. Example:
-`int x = __VERIFIER_nondet_int(); int q = 100 / x; __VERIFIER_assume(x != 0);`
-was PROVED although it divides by zero first. A false `__builtin_assume` /
-`llvm.assume` was also silently assumed (refinement finding 8), so
-`f(int x) { __builtin_assume(x > 0); return 100 / x; }` was PROVED.
+| root | origin | what it holds |
+|---|---|---|
+| `testdata/conformance/prism/` | `prism` | in-house tasks: one `.c`/`.cpp` file and one `.yml` sidecar each, true/false pairs grouped by construct |
+| `testdata/conformance/sv-comp/` | `sv-comp` | the pinned SV-COMP subset (upstream task-definition files, read as they are) |
+| `testdata/conformance/concurrency/` | `concurrency` | whole thread programs, scored by the `conc` stage only |
+| `testdata/conformance/esbmc-cpp/` | `esbmc-cpp` | a label-checked subset of ESBMC's C++ regression tests |
+| `testdata/conformance/libc-models/` | `libc-models` | contract harnesses for PRISM's own C and C++ library models |
+| `--juliet DIR` (not in git) | `juliet` | NIST Juliet 1.3, CWE190/191/369/476/680 |
+| `--esbmc DIR` (not in git) | `esbmc-cpp` | every convertible ESBMC C++ regression test |
 
-The fix:
-- `encode.cpp` threads a running guard through each node. An `assume`
-  strengthens it for later statements and for the node's outgoing edges
-  (`exit_reach`), never for earlier ones.
-- `llvm.assume` is a `FUNC-CONTRACT` check before it is assumed.
+The origin is the first directory below `testdata/conformance/`; the category
+is the second (`prism/overflow` has origin `prism`, category `overflow`).
+`SOURCES.md` lists the in-house categories and the upstream pins.
 
-Both programs are now refuted. Regression: the doctest "pir: a false
-llvm.assume is a checked violation, not a silent path cut (refinement
-finding 8)", which also checks that an assume placed before the division
-still protects it. The fixed guard is proved equal to the sequential
-semantics in Lean (`proofs/techniques/PrismTechniques/LoopCut.lean`:
-`encViol_iff`, `encExit_iff`; `s9_old_encoding_misses` is this program under
-the old encoding).
+## Task format
 
+A task is a `.yml` file next to its source:
 
-Every wrong proof found, reduced to a minimal reproducer. Run any of them
-with `./build/prism FILE --no-llm --stage inventory,classify,pir`.
-
-**Status: S1–S7, R1, R2, F1–F6 were found against the retired `bmc` stage
-and fixed there; `pir` (the verdict stage since `bmc` was retired) must refute
-the same reproducers.** Every reproducer below is a regression test
-(doctest `pir soundness: ...` and `pir: ...` in `tests/cpp/test_main.cpp`, conformance tasks under
-`testdata/conformance/prism/regress/`). F7 (a false alarm, not a soundness
-issue) is fixed too. The fix, in one paragraph: every value carries its C type
-(width, signedness; LP64), integer promotions and the usual arithmetic
-conversions are applied before every operator, every signed operation is
-checked in both directions, `&&`/`||`/`?:` evaluate their right operand only
-under their condition, `break`/`continue`/early loop exits are merged instead
-of dropped, the k-induction step havocks every loop and checks the code after
-it, and anything not modelled (unknown identifier, unexpanded macro, call
-that is neither inlined nor modelled) is `NEEDS-HARNESS` "UNENCODED: ...",
-never a proof; call arguments are still checked, and a refutation must hold
-for every value an unmodelled call may return.
-
-Found and fixed while doing this (not in the list below, each also a wrong
-proof): the C++ encoder tagged types per Z3 AST, and Z3 hash-conses ASTs, so
-`(unsigned)x` retyped `x` itself (`regress/cast_alias`); loops dropped every
-path that left the loop before the last unrolled iteration
-(`regress/loop_early_exit`); `break` and `continue` lost their paths
-(`regress/loop_break_path`, `regress/loop_continue`); a dangling `else`
-bound to the outer `if` (`regress/dangling_else`); `if` merged arrays by
-taking the `then` branch's; the inliner turned `return` in the middle of a
-helper into an assignment and declared its result `int`
-(`regress/helper_early_return`); k-induction checked loop bodies only, not
-the code after the loop (`regress/kind_postloop`, `regress/post_loop`);
-`enum { A = 1 << 3, B }` gave `B` the value 1 (`regress/enum_expr`); an
-unknown-callee refutation that needs a particular return value is no longer
-reported; the harness buffer had type `int` whatever the pointee type.
-The concrete oracle (`src/prism/stages/interp.cpp`) had
-S2 and S3 too: fixed there as well.
-
-### Soundness (wrong proofs)
-
-*Fixed:* `+ - *` are checked in both directions.
-**S1. Signed subtraction overflow is only checked downward.** `bmc.cpp`
-`apply_binop` uses `bvsub_no_underflow` alone; `a - b` overflowing upward
-(`b` negative) is never checked.
-```c
-int sub_false(int a, int b) { if (a < 0) return 0; return a - b; }
-/* PROVED-UNBOUNDED; a=5, b=-2147483647 overflows */
-```
-Tasks: `overflow/sub_false`.
-
-*Fixed:* `modovf`.
-**S2. `INT_MIN % -1` is not a property.** `%` adds `mod0` but not the
-`divovf` check that `/` has (C11 6.5.5p6 makes it undefined).
-```c
-int r(int a, int b) { if (b == 0) return 0; return a % b; }   /* PROVED */
-```
-Tasks: `overflow/mod_intmin_false`.
-
-*Fixed:* `shift-neg`, `shift31` (unrepresentable result), `shift` (count).
-**S3. Signed left shift: only `1 << 31` is checked.** Left shift of a
-negative value and left shift whose result does not fit are not properties
-(`shift31` only fires when the left operand is the constant 1).
-```c
-int a(int x) { if (x < -1000 || x > 1000) return 0; return x << 2; }   /* PROVED, x=-1 is UB */
-int b(int x) { if (x < 0 || x > 4) return 0; return x << 30; }         /* PROVED, x=2 is UB */
-int c(int x) { if (x < 0 || x > 7) return 0; return 2147483647 << x; } /* PROVED, x=1 is UB */
-```
-Tasks: `shift/shl_negative_false`, `shift/shl_overflow_false`; 9 random programs.
-
-*Fixed:* parameters have their own width and are promoted to `int`.
-**S4. Integer promotions of `unsigned char` / `unsigned short` are wrong.**
-They are modelled as 32-bit *unsigned* values ("unsigned params use unsigned
-compares and wrap", PLAN.md) instead of values in 0..255 / 0..65535 promoted
-to *signed* `int`. Three consequences:
-```c
-unsigned m(unsigned short a, unsigned short b) { return a * b; }   /* PROVED; 65535*65535 overflows int */
-int s(unsigned char c) { return c << 24; }                         /* PROVED; 255<<24 overflows int */
-int add(int a, unsigned char b) { return a + b; }                  /* PROVED; INT_MAX+1 */
-int v(unsigned char c, int d) {                                    /* PROVED (vacuous): c < -10 is */
-    if (c < -10 || c > 100) return 0;                              /* taken as an unsigned compare, */
-    return 20 / d;                                                 /* so every path "returns 0";    */
-}                                                                  /* d=0 divides by zero           */
-```
-Tasks: `overflow/ushort_mul_false`, `overflow/mixed_sign_false`,
-`shift/char_shift_false`; 45 of 57 random-program wrong proofs. The same
-root cause gives false alarms on `signed char`/`short` (F2).
-
-*Fixed:* the result type is the promoted left operand's.
-**S5. `int >> unsigned` is a logical shift.** The signedness of a shift is
-taken from either operand (`u = ua || ub`); C takes it from the promoted left
-operand, so `-8 >> 1u` is modelled as `0x7FFFFFFC`.
-```c
-int f(int a, unsigned s) { if (s < 1 || s > 7) return 0; return (a >> s) - 2147483647; }
-/* PROVED; a=-8, s=1 gives -4 - INT_MAX */
-```
-Tasks: `shift/shift_by_unsigned_false`.
-
-*Fixed:* `NEEDS-HARNESS` "UNENCODED: ..."; `abs`/`labs`/`llabs` are modelled; limits.h macros and the file's object-like `#define`s are expanded; call arguments are checked.
-**S6. Unmodelled calls and unexpanded macros are treated as UB-free, and
-unknown identifiers as a constant.** There is no preprocessor: `abs`, a
-template call, a function-like macro, or a call whose arguments contain the
-defect are proved; an unexpanded `INT_MIN` is a constant that makes guards
-vacuous.
-```c
-#include <stdlib.h>
-int a(int x) { return abs(x); }                            /* PROVED; abs(INT_MIN) is UB */
-#define SQ(x) ((x) * (x))
-int b(int x) { return SQ(x); }                             /* PROVED; x=46341 overflows */
-void sink(int);
-int c(int d) { sink(100 / d); return 0; }                  /* PROVED; d=0 (call arguments are not checked) */
-#include <limits.h>
-int e(void) { int v = INT_MIN; if (v < 0) return v * 2; return 0; }  /* PROVED; INT_MIN*2 */
-```
-```c++
-template <typename T> T twice(T x) { return x + x; }
-int f(int a) { return twice<int>(a); }                     /* PROVED; a=1500000000 */
-```
-Tasks: `overflow/abs_libc_false`, `macro/fn_macro_false`,
-`cxx/cxx_template_false`; Juliet CWE369 `int_zero_divide`/`modulo`,
-`int_rand_divide`/`modulo` (`printIntLine(100 / data)`), CWE191
-`int_min_multiply`, `int_rand_multiply`.
-Fix direction: an unmodelled call or unknown identifier must make the
-function `NEEDS-HARNESS`/`ERROR` (as unencoded libc calls already do), and
-call arguments must be evaluated for UB.
-
-*Fixed (both engines).*
-**S7. Reading a local array element that was never written is not a
-property.** Scalars carried an "uninitialised" flag, arrays did not, so the
-indeterminate value (C11 6.3.2.1p2, 6.7.9p10) of an unwritten element was
-proved safe. The pir stage refuted it; bmc proved it.
-```c
-int f(int i) { int a[4]; a[0] = 1; return a[i & 3]; }     /* PROVED-UNBOUNDED; i=1 reads a[1] */
-int g(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }  /* n=0 */
-```
-Fix: every local array carries a per-element shadow (`uninit["@a"]`, an
-array from index to "maybe unwritten"): all set at the declaration, cleared
-by a store, all clear for an aggregate initialiser (`= {0}`, `= {1, 2}`,
-`= {}`: listed items in order, the rest zero, each item checked for UB) or
-a string literal; merged over paths like any value; a havocked loop may
-clear elements but never sets one (`U' = λx. U[x] ∧ H[x]`). An in-bounds
-read of a maybe-unwritten element is `UNINIT-READ` with a counterexample.
-An array passed to an unmodelled call (`memset`, `memcpy`, ...) gets
-unknown contents and counts as written, but the call already makes the
-function `NEEDS-HARNESS` "UNENCODED: call to ... not modelled" (S6), so it
-is never a proof. Before the fix, aggregate initialisers were a front-end
-`ERROR` and their items were never evaluated. UNINIT-READ counterexamples
-are "refuted, not replayed" in the scorer: the replay sanitizers (UBSan,
-ASan) cannot see an uninitialised read, the tasks are `sanitizer_blind`.
-Tasks: `memory/mem_uninit_false`, `regress/uninit_elem_loop`,
-`regress/uninit_elem_branch`, `regress/uninit_elem_unbounded`,
-`regress/uninit_memset`, `regress/array_init_list`,
-`regress/array_init_zero`.
-
-*Fixed (both stages; bmc in both engines).*
-**S8. `main` was checked as if the program started at `main`.** C++
-dynamic initialisation (constructors of global objects, non-constant
-initialisers, `llvm.global_ctors`) runs before `main`. `pir` gave `main` the
-globals' *static* initialisers (the IR's `zeroinitializer`) and ignored the
-constructors; `bmc` ignored them as well. Found by the ESBMC C++ tasks:
-```c++
-struct C { C() { throw 1; } };
-C global_c;                   // throws before main: std::terminate
-int main() { return 0; }      /* bmc PROVED-UNBOUNDED, pir PROVED */
-
-struct B { int i; B() : i(5) {} };
-B g;
-int main() { assert(g.i == 0); }   /* pir PROVED; the constructor set 5 */
-```
-Fix: `pir` (`src/prism/pir/stage_mem.cpp`) checks every
-static-initialisation function listed in `llvm.global_ctors`; unless each is
-proved, `main` is `NEEDS-HARNESS` naming it. When they are proved, `main`
-keeps a verdict only if it holds for *arbitrary* values of the mutable
-globals (the constructors' stores are not carried into `main`); otherwise
-`NEEDS-HARNESS`. (The retired `bmc` stage turned a proof or BOUNDED of
-`main` into `NEEDS-HARNESS` whenever the file defined a constructor.) Tasks: ESBMC
-`try_catch/lower-exceptions_static_init_fail`, `cpp11/constructors/Constructor9-1`;
-`testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "pir soundness:
-dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
-
-### Robustness (no verdict where one was possible)
-
-*Fixed:* widths are consistent by construction, and any exception is an `ERROR` for that one function.
-**R1. One Z3 sort error kills the bmc stage for the whole file** (Law 7 is
-kept: the stage is `failed` with the message, but every function in the file
-loses its verdict). 102 of 300 random programs.
-```c
-int w(long long p0) { unsigned v0 = 12; v0 &= (p0 + (~p0)); return (int)v0; }
-int innocent(int a) { if (a < 0 || a > 10) return 0; return a * 2; }  /* also lost */
-/* bmc failed: Argument ((_ sign_extend 32) (bvnot p0)) ... has sort (_ BitVec 96) */
+```yaml
+format_version: 1
+input_files: add_false.c
+language: C                 # or C++
+property: no-overflow
+expected:                   # function -> true (no violation for any input) | false
+  add_false: false
+witness:                    # false functions: inputs that trigger the violation
+  add_false: [2147483647, 1]
 ```
 
-*Fixed* (by the cparse widening, verified: 0 functions never reported).
-**R2. Functions never reported** (not in `classify`/`bmc` at all):
-`[[nodiscard]] int f(...)` (C23 attribute before the declaration) and
-`auto f(int a) -> int` (trailing return type). Tasks: `c23/c23_attr_*`,
-`cxx/cxx_auto_*`. Law 7 wants these listed as not checked.
+| key | meaning |
+|---|---|
+| `input_files` | the source file (a list takes its first entry) |
+| `language` | `C` (default) or `C++` |
+| `property` | the property the labels speak for (table below) |
+| `expected` | function → `true` / `false`, in file order |
+| `witness` | function → argument list that triggers the violation (self-check and label replay) |
+| `expect_status` | function → the exact status the laws demand (pointer parameters: `NEEDS-HARNESS`, Law 6) |
+| `expect_class` | false function → `A\|B`: only a `FAILED` of these classes counts as its refutation |
+| `sanitizer_blind` | functions whose violation no sanitizer reports (an uninitialised read, `memcpy(s, s)`); a clean replay is not a failure |
+| `native_unsupported` | function → reason the native toolchain cannot build it; the self-check skips it with that reason |
+| `timeout` | seconds per PRISM run for this file; raises, never lowers, `--timeout` |
+| `prism_timeout` | PRISM's own `--timeout` (per solver query) for this file |
+| `unwind` | PRISM `--unwind` for this file |
+| `target` | `--target TRIPLE` PRISM analyses this file for (see "Data-model pairs") |
+| `deterministic`, `std` | whole-program tasks (`esbmc-cpp`): one native run is the only behaviour; language standard of that run |
 
-### False alarms and right-for-the-wrong-reason refutations
+Properties and the finding classes that witness them
+(`PROPERTY_CLASSES` in `src/tools/qa/support/task.cpp`):
 
-*Fixed.*
-**F1. Both arms of `?:` are checked unconditionally.**
-```c
-unsigned f(unsigned a, unsigned b) { return b ? a / b : 0; }   /* FAILED div0, b=0 */
-```
-Tasks: `div/udiv0_true`, `cxx/cxx_div_true`; `c23/c23_bool_false` and
-`cxx/cxx_div_false` are refuted with counterexamples that do not replay.
+| property | classes |
+|---|---|
+| `no-overflow` | `INT-SIGNED-OVF` |
+| `no-div0` | `INT-DIV-ZERO` |
+| `no-shift-ub` | `INT-SHIFT-UB` |
+| `no-oob` | `MEM-OOB-READ`, `MEM-OOB-WRITE`, `MEM-PTR-ARITH` |
+| `no-null-deref` | `MEM-NULL-DEREF`, `NULL-DEREF`, `PTR-NULL-DEREF` |
+| `memsafety` | the pir memory-model classes (docs/PIR.md "Memory model") and `UNINIT-READ` |
+| `no-fp-cast` | `FLOAT-CAST-OVF` |
+| `no-uncaught` | `CXX-UNCAUGHT`, `CXX-THROW-NOEXCEPT`, `CXX-TERMINATE` |
+| `norace`, `noassert`, `nodeadlock` | `CONC-DATA-RACE`, `FUNC-CONTRACT`, `CONC-DEADLOCK` (concurrency tasks) |
+| `esbmc-cpp` | ESBMC's default checks: assertions, bounds, pointer safety, division by zero, uncaught exceptions |
 
-*Fixed.*
-**F2. `short`/`signed char` parameters range over all 32-bit values**, so
-`short + short` "overflows" (`overflow/short_promote_true`,
-`char_promote_true`; `short_promote_false` is refuted with a non-replaying
-counterexample).
+A property not in this table (the libc harnesses use `libc-contract`) is
+not property-scoped: any `FAILED` counts.
 
-*Fixed:* returns leave the inlined body; a call that is not inlined is UNENCODED.
-**F3. A static helper's properties are reported on its caller without the
-caller's guards** (`overflow/helper_call_true`: `a` in [-1000,1000],
-`twice(a)`, FAILED with `a=-4`).
+SV-COMP tasks keep the upstream task-definition format 2.0. The scorer reads
+`input_files`, `options.language`, `options.data_model` and the first
+`properties` entry, in the order `no-overflow.prp`, `valid-memsafety.prp`,
+that has an `expected_verdict`. The verdict is about `main`. A task with
+neither property is not a task here (`prism svcomp score` scores
+`unreach-call`; see [SVCOMP.md](SVCOMP.md)).
 
-*Fixed:* LP64.
-**F4. `long` is 32 bits** in the encoder (LP64 Linux is the primary platform,
-D7): `overflow/long_mul_false` is refuted with `a=0x56127fff`, which does not
-overflow a 64-bit `long`.
+### Data-model pairs
 
-*Fixed:* C11 6.4.4.1 literal types with suffixes.
-**F5. Integer literal types.** `-2147483648 - 1` in a `long` context is
-flagged (SV-COMP `NoNegativeIntegerConstant`, true).
+`prism/datamodel/` holds four true/false pairs whose answer flips between
+LP64 (`x86_64-unknown-linux-gnu`) and LLP64 (`x86_64-pc-windows-msvc`):
+`long + 1` at 2^31 − 1, `1L << 32`, `a[sizeof(long)]` and a `memcpy` of a
+`wchar_t`. Each sidecar names its `target:`; the scorer passes it to PRISM
+as `--target`. The self-check skips a task whose target has another data
+model than the host toolchain. Counterexample replay builds for the host.
 
-*Fixed:* known or UNENCODED, never free (enums with a fixed underlying type stay UNENCODED).
-**F6. Macros/enum constants as free values**: `a == INT_MAX` guards
-(`macro/limits_true`) and `enum : unsigned char` constants
-(`c23/c23_enum_fixed_true`).
+## Scoring
 
-*Fixed:* the shift rules follow the language and standard of the unit.
-**F7. C++20 shift semantics.** `1 << 31` is well defined in C++20 but was
-flagged (`cxx/cxx_shift_cpp20_true`): C rules were applied to C++ files.
-Both engines' bmc now pick the rules for `<<` per unit (`Parser::shift_rules`,
-`src/prism/bmc.cpp` shift rules): a C file, a header (it may be C) and a
-C++ unit built as C++98/03 keep the C rules (C11 6.5.7p4: a negative left
-operand, or `E1 × 2^E2` not representable in the type, is undefined); C++11
-to C++17 define `E1 << E2` for `E1 >= 0` when `E1 × 2^E2` fits the
-corresponding *unsigned* type (CWG 1457), so `1 << 31` is defined and
-`3 << 31` and `-1 << 1` are not; C++20 and later define every signed left
-shift whose count is in range (P1236), so only the count check remains.
-The standard is the unit's `-std=` in `compile_commands.json` (the scan
-root or `root/build`, as the Clang-AST lints read it, last `-std=` wins;
-`with_cxx_std` before the bmc stage); without one, the default of the C++
-compilers PRISM runs (clang++ 16–18, g++ 11–14: `gnu++17`), which keeps
-every true refutation of a negative left operand in code built without
-`-std`. Regression tests: doctest "bmc shift rules follow the C++ standard of
-the unit (F7)" and "with_cxx_std reads -std from compile_commands.json" in
-`tests/cpp/test_main.cpp`. Strict gate after the fix
-(`src/tools/qa/conformance.cpp`, C++ engine, 2026-09-24, 303 true / 317 false
-tasks): 0 wrong proofs and 0 false alarms in every stage; bmc proves
-99/303 and refutes 93/317 (`cxx_shift_cpp20_true` is now proved), pir
-232/303 and 158/317.
+The scorer runs PRISM on each task file with
+`--no-llm --stage inventory,classify,<verdict stages> --out DIR`, plus the
+task's `--unwind`, `--timeout` and `--target`. Every function in `expected`
+gets one row per verdict stage. `conc` is scored on `concurrency/` tasks
+only, and those tasks only by `conc`.
 
-*Fixed* (ESBMC C++ tasks, full fetched set; none in the committed subset).
-Regression pairs: `prism/regress/global_zero_table_*`, `malloc_abort_*`,
-`fn_try_block_*` (each `_true` was a false alarm before the fix).
-**F8. pir: zero-initialised global array of structs with 1024 elements.**
-`struct uint3 a[1024]; assert(a[0].x == 0);` in `main` was FAILED
-(`bug_fixes/1006_aggregate`). Cause: every initialised global larger than
-4096 bytes was modelled as arbitrary initialised bytes (a guard against long
-initialiser store chains), although the zero fill itself is one memory entry
-whatever the size. Now only a large global whose initializer needs more than
-256 non-zero stores is havocked (`translate_mem.cpp` `MemTr::init_stores`);
-the over-approximation that remains can only cost proofs, never make one.
-**F9. pir: `abort()` after a failed `malloc`**
-(`cpp/github_6464_placement_new_incremental`). PRISM's `malloc` model may
-return NULL (ESBMC's too: `--force-malloc-success` is off by default), so
-`if (!buf) abort();` is reachable. ESBMC models `abort()` as
-`__ESBMC_assume(0)` (`src/c2goto/library/stdlib.c` at the pinned commit): a
-path that aborts is cut, never an assertion failure. PRISM keeps reporting
-`abort()` as FUNC-CONTRACT ("process crash"), except on an execution where
-a library allocation already failed: there it is the program's
-out-of-memory handling. The malloc/calloc/realloc models record a failure
-(`__prism_alloc_failed`, a hidden flag object zero at function entry) and
-the `abort` check is `flag == 0`. Unchanged: a dereference of an unchecked
-NULL result (PTR-NULL-DEREF), `assert(p)` after `malloc` (FUNC-CONTRACT),
-and `abort()` on any execution where every allocation succeeded.
-**F10. bmc: function-try-block** (`void f(int &x) try { throw 10; } catch
-(const int &i) { x = i; }`, `try_catch/try-catch_tryblock_08`): `assert(v
-== 10)` in `main` was FAILED. The front end does not extract a
-function-try-block (an honest PARSE-GAP row; it is extracted since, see
-below), so `f(v)` was an unmodelled call, whose result is quantified but whose effect on `v` was not: a C++
-callee may take `v` by non-const reference. Both engines' bmc now treat an
-unmodelled call in a C++ file (anything but `.c`/`.i`) as writing what an
-argument may name: a named scalar or the array of an element gets a value
-quantified like a call result (`escape_scalar`, `escape_array`); an
-argument of any other lvalue shape (`(v)`, `++v`, `*p`, `v = x`, `c ? a :
-b`) lets everything it mentions escape. By-value C calls are unchanged. The
-unmodelled call already ruled out a proof (S6), so this only removes wrong
-refutations; `main` is now NEEDS-HARNESS (pir proves it). Since then the
-front end also extracts a function-try-block (`cparse.cpp` `extend_try`,
-`src/prism/cparse.cpp` try extension): the function's body is the try block and
-every handler, `try { ... } catch (...) { ... }`, as written, so no
-PARSE-GAP row is left and every per-function stage sees it. bmc has no
-exception model (`try`/`catch` is "C++ try/catch unencoded",
-NEEDS-HARNESS), and a static callee whose body is a try block inlines as
-exactly that, so the caller is NEEDS-HARNESS as well; try/catch is modelled
-by pir (LLVM `invoke`/landing pads), which proves `fn_try_block_true` and
-refutes `fn_try_block_false`.
+Each row gets one outcome (`classify` in `src/tools/qa/support/report.cpp`),
+checked in this order:
 
-*Fixed* (ESBMC C++ tasks, full fetched set; found by the F8–F10 re-run).
-**F11. pir: typeinfo and exceptions of class type with bases.** 8
-SUCCESSFUL tasks are FAILED since PIR round 3 (base binary and this branch
-alike): `typeid(...).name()` / `std::any` read the C++ runtime's typeinfo
-objects, which PRISM does not model (MEM-OOB-READ: `cpp/typeinfo`,
-`cpp/github_6308_typeid_name`, `cpp17/cpp__github_4377_any_ptr`); a thrown
-object caught by a pointer or through a non-first base of multiple
-inheritance, or rethrown from a nested handler, is not adjusted or kept
-alive (`try_catch/catch_base_offset_mi`, `mi_base_subobject_catch`,
-`lower-exceptions_pointer_catch`, `lower-exceptions_nested_rethrow` (MEM-UAF),
-`cpp/irep2_throw_primitive_id`). Not a soundness issue (no proof is affected).
-*Fix:* (1) a typeinfo object the module only declares (`@_ZTIi = external
-constant ptr`) is modelled as the Itanium `std::type_info` `{ vptr, __name }`
-with `__name` the mangled type (`"i"`), vptr bytes arbitrary; (2) the
-exception header (now 32 bytes) holds the pointer the current handler binds,
-set when a throw enters a handler: the caught base subobject (offset from
-the `__vmi_class_type_info` entry; a base behind a virtual base has a
-run-time offset and is a soft stop, never offset 0) or, for a pointer caught
-by pointer, the thrown pointer's value, and `__cxa_begin_catch` returns it;
-(3) `__cxa_begin_catch` / `__cxa_end_catch` / `__cxa_rethrow` follow the
-Itanium runtime's handler count (negative while rethrown; a rethrown
-exception caught again is not pushed twice and is destroyed only when its
-last handler ends). Regression pairs:
-`testdata/conformance/prism/regress/{eh_catch_base_offset,eh_catch_pointer,eh_nested_rethrow,typeid_fundamental,eh_catch_virtual_base}_{true,false}.cpp`
-(pir 4/4 proved, 4/4 refuted and replayed; the virtual-base pair is
-NEEDS-HARNESS by design).
+| outcome | when |
+|---|---|
+| `missing` | the stage reported nothing for the function (listed separately, Law 7) |
+| `wrong-proof` | `PROVED`, `PROVED-UNBOUNDED`, `PROVED-ASSUMING` or `PROVED-CERTIFIED` on a `false` function |
+| `law-ok` / `law6-violation` / `unexpected-status` | the task has `expect_status`: exactly that status, a proof or refutation where `NEEDS-HARNESS` was demanded, anything else |
+| `false-alarm` | `FAILED` of the property's class on a `true` function |
+| `failed-other-property` | `FAILED` of another class on a property-scoped task (`sv-comp`, `concurrency`, `esbmc-cpp`) |
+| `proved` | a proof of a `true` function |
+| `refuted` | `FAILED` of the property's class (and of an `expect_class` class, if given) on a `false` function |
+| `bounded` | `BOUNDED` |
+| `no-answer` | anything else (`NEEDS-HARNESS`, `UNKNOWN`, `TIMEOUT`, `ERROR`, a crashed run) |
 
-*Fixed* (refinement findings, `docs/PROOFS_REFINEMENT.md` 2, 5, 6, 7).
-**F12. pir: IR the LangRef defines was reported.** `freeze poison`
-(UB-POISON), `llvm.memcpy(p, p, n)` (MEM-OVERLAP; clang emits it for a
-struct assignment `*p = *q` that may be a self-assignment) and
-`llvm.lifetime.start` after `llvm.lifetime.end` (MEM-UAF; objects over 8
-bytes were UNENCODED); `icmp samesign` was ignored (a missed poison, LLVM 19+
-IR only). Of these only the struct self-copy occurs in C compiled at `-O0`.
-*Fix:* `translate.cpp` / `translate_mem.cpp` (see the refinement document);
-the pir stage compiles with `-fno-builtin-memcpy` so a C `memcpy` call keeps
-C's rule (any overlap, `d = s` included) through its library model.
-Regression pair `prism/memory/mem_struct_self_copy_{true,false}.c`
-(`--stages pir`, base binary → this branch: the `true` task FAILED
-MEM-OVERLAP → PROVED, 1 → 0 false alarms; the `false` task, a C
-`memcpy(s, s)`, FAILED in both; ASan skips the overlap check when
-`dst == src`, so it is `sanitizer_blind`). Before the fix, the whole suite
-(`--stages pir`, 328 true and 341 false functions) had 0 false alarms: none of its tasks contained
-these constructs. Doctest "pir: LangRef-defined IR is not reported, samesign
-poison is (refinement findings 2, 5, 6, 7)".
+Metrics, per stage and origin:
 
-### Coverage gaps (honest `ERROR` / `NEEDS-HARNESS`, costing completeness)
+| metric | definition | target |
+|---|---|---|
+| **Soundness** | wrong proofs | **0**; any wrong proof fails the release gate |
+| Completeness | `proved` / `true` functions | grows |
+| Detection | `refuted` with a replayed counterexample / `false` functions | grows |
+| Detection, not replayed | `refuted` / `false` functions | — |
+| False alarms | `false-alarm` rows | 0 |
+| Law 6 | `law-ok` / tasks with `expect_status` | all |
 
-- G1. Local arrays with initialisers (`int a[4] = {0};`), 2-D arrays and
-  globals indexed with `u`-suffixed constants: front-end `ERROR` on all 18
-  array tasks.
-- G2. Declarations of several variables in one statement (`int x, y;`),
-  `L`/`LL`/`U` literal suffixes, binary literals, digit separators,
-  `unsigned x = __VERIFIER_nondet_uint()`: front-end `ERROR` (most SV-COMP
-  bitvector/loop-invgen tasks).
-- G3. Loops whose bound is a parameter end `BOUNDED` (k-induction step open):
-  14 in-house tasks.
-- G4. `NEEDS-HARNESS` by design today: recursion, lambdas, range-for,
-  `std::array`, structured bindings, `typeof`, `nullptr`, `_BitInt`, `ckd_add`
-  (address-of), local pointers.
+Rules that keep the numbers honest:
+
+- `BOUNDED` is neither a proof nor a refutation (Law 2). It never counts
+  toward completeness, detection or soundness.
+- A `FAILED` whose counterexample does not replay is not detection. The
+  verdict may be right for a wrong reason.
+- Replay covers `prism` tasks with scalar parameters. The task is compiled
+  with `-g -O0 -fno-wrapv -fsanitize=undefined,address
+  -fno-sanitize-recover=all`, the counterexample's arguments are passed to
+  the function, and a sanitizer must fire. The run is inside `bwrap` (`/`
+  read-only, private `/tmp`, all namespaces unshared) when bwrap works here;
+  `metrics.json` records which. SV-COMP, concurrency, ESBMC and Juliet tasks
+  are whole programs with nondeterministic inputs or schedules: their
+  refutations are "refuted, not replayed".
+- `conc` never proves (a context-switch bound is not a proof), so its
+  completeness is 0 by definition and every true label is at best `BOUNDED`
+  (docs/CONCURRENCY.md).
+- `--certified` adds the stage `pir-certified`. Its rows count toward the
+  release gate like any other. `metrics.json` then also says how many
+  loop-free `true` functions became `PROVED-CERTIFIED`, why the others did
+  not, and which certified runs timed out.
+
+### Self-check of the labels
+
+`--self-check` validates the labels of `prism` and `esbmc-cpp` tasks without
+PRISM:
+
+- every `false` function's `witness` must trip UBSan/ASan
+  (`sanitizer_blind` functions may run clean);
+- every `true` function must run clean on an edge-value grid (type limits,
+  0, ±1, powers of two, 46340/46341, …) plus 2000 random inputs;
+- a deterministic ESBMC program is run once natively with assertions on; the
+  result must match its label. Nondeterministic ones are skipped.
+
+Functions with non-scalar parameters, `expect_status` tasks,
+`native_unsupported` functions and tasks for another target are skipped and
+listed with the reason. Any `FAIL` exits 1.
+
+<a id="random-programs-prism-qa-soundness-in-house-generator-300-programs-900-functions"></a>
+
+## Random programs (`prism-qa soundness`)
+
+`prism-qa soundness` (`src/tools/qa/soundness.cpp`) generates small C
+programs, runs PRISM's stages `inventory,classify,pir` on them and executes
+every function PRISM proves under UBSan+ASan on the edge-value grid plus
+3000 random inputs. A sanitizer report on a proved function is a wrong
+proof: the program, function, inputs and sanitizer message go to
+`OUT/bugs/`, and the exit status is 1. A `FAILED` whose counterexample does
+not replay and whose grid shows no violation is listed as a suspected false
+alarm.
+
+| option | meaning |
+|---|---|
+| `--programs N`, `-n N` | programs (default 300) |
+| `--funcs N` | functions per in-house program (default 3) |
+| `--seed N` | seed of the first program (default 1) |
+| `--generator G` | `inhouse` (default: scalar expressions, guards, bounded loops), `inhouse-ptr` (pointer programs for the pir memory model), `inhouse-loop` (symbolic-bound loops for loop invariants), `csmith` (scalar-only configuration with `--no-safe-math`; `NOTRUN`, exit 3, when `csmith` is not on `PATH`) |
+| `--prism`, `--out`, `--jobs`, `--timeout` | as for `conformance` (`--out` default `soundness-out`, `--timeout` default 120) |
+
+Only programs this tool generates are compiled and run, inside `bwrap` when
+it works.
 
 ## Release gate
 
-`src/tools/qa/conformance.cpp` exits 1 while any wrong proof exists, and
-`.github/workflows/conformance.yml` runs it on every push. The encoder's
-wrong proofs are gone (was: 11 in the suite, 6 in Juliet, 57 in the random
-campaign; now 0/0/0 in both engines). **The gate is still red on the C++
-engine because of one `harness` row** (`ptrparam0_false`, `PROVED-ASSUMING`
-under an AI-drafted harness, see "Current numbers"); the Python engine's
-gate is green. The gate must not be relaxed to make it green.
+`prism-qa conformance` exits 1 while any row of any stage and origin is a
+wrong proof, and prints `RELEASE GATE FAILED: N wrong proof(s)`.
+`metrics.json` records `release_gate: PASS|FAIL`.
+`.github/workflows/conformance.yml` runs the label self-check and the suite
+(`-j 2 --mem-limit-mb 4096`) on every push and pull request; a wrong proof
+fails the workflow and blocks a release. The same workflow runs nightly the
+random-program campaign (in-house generator and Csmith) and the Juliet
+tasks. The gate is never relaxed to make it pass: a wrong proof is fixed in
+the engine, or the label is shown wrong by the self-check.
+
+## Measured results
+
+<a id="current-numbers-2026-09-23-after-the-encoder-soundness-fixes"></a>
+
+Commit 991c4eafa, 2026-11-05: the `conformance-metrics` artifact of CI run
+41968877547 (`.github/workflows/conformance.yml`, stages
+`inventory,classify,pir,conc`, 1068 files, 1430 scored functions). Release
+gate: PASS, 0 wrong proofs. The metrics record "sandbox for counterexample
+replay: none (bwrap unavailable)".
+
+| stage | origin | true | false | wrong proofs | proved true | refuted with replay | refuted, not replayed | false alarms | BOUNDED | no answer |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pir | esbmc-cpp | 32 | 32 | 0 | 22 | 0 | 25 | 0 | 0 | 17 |
+| pir | libc-models | 219 | 216 | 0 | 180 | 0 | 208 | 0 | 2 | 43 |
+| pir | prism | 388 | 392 | 0 | 334 | 318 | 26 | 0 | 12 | 90 |
+| pir | sv-comp | 75 | 42 | 0 | 37 | 0 | 30 | 0 | 26 | 7 |
+| pir | all | 714 | 682 | 0 | 573 (80.3%) | 318 | 289 | 0 | 40 | 157 |
+| conc | concurrency | 13 | 9 | 0 | 0 | 0 | 8 | 0 | 14 | 0 |
+
+`conc` never proves; its best answer on a `true` task is `BOUNDED`.
+Run `prism-qa conformance` on the commit you care about and read
+`conformance-out/metrics.md`. Results quoted elsewhere must name their date
+and commit.
+
+## Known issues
+
+Every wrong proof and false alarm found so far, each with a minimal
+reproducer. Run one with
+`./build/prism FILE --no-llm --stage inventory,classify,pir`. Each is a
+regression test: a doctest named below and, where listed, a conformance
+task under `testdata/conformance/prism/`. `pir` must refute every
+soundness reproducer.
+
+<a id="before-the-fixes-2026-09-23-24a72d40b"></a>
+
+S1–S7 were found by the first measurement (2026-09-23, commit 24a72d40b)
+against the `bmc` stage, PRISM's hand-written Z3 encoder at the time: 11
+wrong proofs in the suite, 6 in Juliet, and 57 of 304 proofs in 300 random
+programs. The `bmc` stage is deleted (commit c66284cde); the `pir` stage
+(Clang/LLVM IR → PIR → Z3) does all bounded model checking and k-induction
+now. The `regress/` tasks keep one `_true`/`_false` pair for each further
+encoder bug found then (call arguments, `INT_MIN` constant, promoted
+comparisons, helper early return, loop early exit, `break`/`continue`,
+dangling `else`, code after a loop under k-induction, enumerator values,
+cast aliasing, side effects under `?:`/`&&`, `long long` width, mixed
+widths).
+
+IDs are never reused. R1, R2, F1–F6 and G1–G4 were defects or coverage
+gaps of the `bmc` front end and encoder only; they were removed with it.
+
+### Soundness (wrong proofs)
+
+The doctest "pir soundness: known wrong proofs are refuted (S1-S6)" in
+`tests/cpp/test_main.cpp` holds the S1–S6 reproducers and the class each
+must be refuted with.
+
+**S1. Signed subtraction overflowing upward.** `a - b` with `b` negative.
+```c
+int sub_false(int a, int b) { if (a < 0) return 0; return a - b; }   /* a=5, b=-2147483647 */
+```
+Refuted: `INT-SIGNED-OVF`. Task: `overflow/sub_false`.
+
+**S2. `INT_MIN % -1`** is undefined (C11 6.5.5p6).
+```c
+int r(int a, int b) { if (b == 0) return 0; return a % b; }
+```
+Refuted: `INT-SIGNED-OVF`. Task: `overflow/mod_intmin_false`.
+
+**S3. Signed left shift of a negative value, or whose result does not fit.**
+```c
+int a(int x) { if (x < -1000 || x > 1000) return 0; return x << 2; }   /* x=-1 */
+int b(int x) { if (x < 0 || x > 4) return 0; return x << 30; }         /* x=2 */
+int c(int x) { if (x < 0 || x > 7) return 0; return 2147483647 << x; } /* x=1 */
+```
+Refuted: `INT-SHIFT-UB`. Tasks: `shift/shl_negative_false`,
+`shift/shl_overflow_false`.
+
+**S4. Integer promotion of `unsigned char` / `unsigned short` to `int`.**
+```c
+unsigned m(unsigned short a, unsigned short b) { return a * b; }   /* 65535*65535 overflows int */
+int s(unsigned char c) { return c << 24; }                         /* 255<<24 overflows int */
+int add(int a, unsigned char b) { return a + b; }                  /* INT_MAX+1 */
+int v(unsigned char c, int d) {                                    /* c < -10 is a signed compare */
+    if (c < -10 || c > 100) return 0;
+    return 20 / d;                                                 /* d=0 */
+}
+```
+Refuted: `INT-SIGNED-OVF`, `INT-SHIFT-UB`, `INT-SIGNED-OVF`,
+`INT-DIV-ZERO`. Tasks: `overflow/ushort_mul_false`,
+`overflow/mixed_sign_false`, `shift/char_shift_false`.
+
+**S5. `int >> unsigned` is an arithmetic shift**: the result type is the
+promoted left operand's.
+```c
+int f(int a, unsigned s) { if (s < 1 || s > 7) return 0; return (a >> s) - 2147483647; }   /* a=-8, s=1 */
+```
+Refuted: `INT-SIGNED-OVF`. Task: `shift/shift_by_unsigned_false`.
+
+**S6. Library calls, macros and unknown callees are not UB-free.**
+```c
+#include <stdlib.h>
+int a(int x) { return abs(x); }                            /* abs(INT_MIN) */
+void sink(int);
+int c(int d) { sink(100 / d); return 0; }                  /* d=0 in a call argument */
+#include <limits.h>
+int e(void) { int v = INT_MIN; if (v < 0) return v * 2; return 0; }
+```
+`a` and `e` are refuted with `INT-SIGNED-OVF`. `c` calls a function with no
+definition and no model, so it is never a proof. Tasks: `overflow/abs_libc_false`, `macro/fn_macro_false`,
+`cxx/cxx_template_false`.
+
+**S7. Reading a local array element that was never written** is an
+indeterminate value (C11 6.3.2.1p2).
+```c
+int f(int i) { int a[4]; a[0] = 1; return a[i & 3]; }     /* i=1 reads a[1] */
+int g(int n) { int a[4]; for (int k = 0; k < n && k < 4; k++) a[k] = k; return a[0]; }  /* n=0 */
+```
+Refuted: `UNINIT-READ`. Aggregate initialisers (`= {0}`, `= {1, 2}`), string
+literals and a full `memset` count as written; a partial `memset` does not.
+UBSan and ASan cannot see an uninitialised read, so these tasks are
+`sanitizer_blind`. Doctest: "pir soundness: unwritten array elements are
+UNINIT-READ (S7)". Tasks: `memory/mem_uninit_false`,
+`regress/uninit_elem_{loop,branch,unbounded}`, `regress/uninit_memset`,
+`regress/array_init_{list,zero}`.
+
+**S8. `main` checked as if the program started at `main`.** C++ dynamic
+initialisation (constructors of globals, non-constant initialisers,
+`llvm.global_ctors`) runs first.
+```c++
+struct C { C() { throw 1; } };
+C global_c;                   // throws before main: std::terminate
+int main() { return 0; }
+
+struct B { int i; B() : i(5) {} };
+B g;
+int main() { assert(g.i == 0); }   // the constructor set 5
+```
+`pir` (`src/prism/pir/stage_mem.cpp`) checks every static-initialisation
+function of the unit. Unless each is proved, `main` is `NEEDS-HARNESS`
+naming it. When they are proved, `main` keeps a verdict only if it holds for
+arbitrary values of the mutable globals; otherwise `NEEDS-HARNESS`. Doctest:
+"pir soundness: dynamic initialisation before main (S8)";
+`testdata/pir/static_init_{throw,value,ok}.cpp`; ESBMC tasks
+`try_catch/lower-exceptions_static_init_fail`,
+`cpp11/constructors/Constructor9-1`.
+
+**S9. An `assume` constrained checks before it in the same block.**
+```c
+int x = __VERIFIER_nondet_int(); int q = 100 / x; __VERIFIER_assume(x != 0);   /* divides by zero first */
+int f(int x) { __builtin_assume(x > 0); return 100 / x; }                      /* false assume */
+```
+`pir`'s encoder (`src/prism/pir/encode.cpp`) threads a running guard through
+each node: an `assume` strengthens it for later statements and outgoing
+edges only. `llvm.assume` is a `FUNC-CONTRACT` check before it is assumed.
+The guard is proved equal to sequential semantics in Lean
+(`proofs/techniques/PrismTechniques/LoopCut.lean`: `encViol_iff`,
+`encExit_iff`; `s9_old_encoding_misses` is this program under the old
+encoding). Doctest: "pir: a false llvm.assume is a checked violation, not a
+silent path cut (refinement finding 8)".
+
+### False alarms
+
+**F7. Shift rules follow the language and standard of the unit.** A C file
+or header uses C11 6.5.7p4 (a negative left operand, or `E1 × 2^E2` not
+representable, is undefined). C++11 to C++17 define `E1 << E2` for
+`E1 >= 0` when the result fits the unsigned type (CWG 1457), so `1 << 31` is
+defined and `3 << 31`, `-1 << 1` are not. C++20 defines every signed left
+shift with an in-range count (P1236). The standard is the unit's `-std=` from
+`compile_commands.json` (`with_cxx_std`); without one, `gnu++17`. Doctests:
+"pir shift rules follow the C++ standard of the unit (F7)" and "with_cxx_std
+reads -std from compile_commands.json". Task: `cxx/cxx_shift_cpp20_true`.
+**Open:** under `-std=c++03`, `1 << 31` is undefined, but clang's
+`shift-base` check applies the C++11 rule in every C++ mode, so `pir`
+proves it. The doctest records this as a `WARN`, not a `CHECK`.
+
+**F8. Zero-initialised large global.** `struct uint3 a[1024];
+assert(a[0].x == 0);` in `main` was `FAILED` (ESBMC `bug_fixes/1006_aggregate`).
+Only a large global whose initialiser needs more than 256 non-zero stores is
+havocked (`MemTr::init_stores` in `src/prism/pir/translate_mem.cpp`); the zero
+fill is one memory entry whatever the size. The over-approximation left can
+only cost proofs. Doctest: "pir mem: large zero-initialised globals keep
+their contents (F8; …)" in `tests/cpp/test_pir_mem.cpp`. Tasks:
+`regress/global_zero_table_{true,false}`.
+
+**F9. `abort()` after a failed allocation.** PRISM's `malloc` model may
+return NULL, so `if (!buf) abort();` is reachable (ESBMC
+`cpp/github_6464_placement_new_incremental`). `abort()` stays a
+`FUNC-CONTRACT` violation, except on an execution where a library allocation
+already failed: there it is the program's out-of-memory handling. The
+`malloc`/`calloc`/`realloc` models record a failure in a hidden flag
+(`__prism_alloc_failed`), and the `abort` check is "flag is zero".
+Unchanged: a dereference of an unchecked NULL result (`PTR-NULL-DEREF`) and
+`assert(p)` after `malloc` (`FUNC-CONTRACT`). Doctest: "pir mem: abort()
+after a failed allocation is OOM handling, not a defect (F9; …)". Tasks:
+`regress/malloc_abort_{true,false}`.
+
+**F10. Function-try-blocks and unmodelled C++ callees.**
+`void f(int &x) try { throw 10; } catch (const int &i) { x = i; }` then
+`assert(v == 10)` after `f(v)` (ESBMC `try_catch/try-catch_tryblock_08`). The
+front end (`src/prism/cparse.cpp`) extracts a function-try-block with every
+handler; `pir` models `try`/`catch` (LLVM `invoke` and landing pads) and
+proves `main`. A call to an unmodelled C++ callee, which may write through a
+reference argument, makes the function never a proof. Doctests: "cparse
+extracts a function-try-block with its handlers (F10)", "pir soundness: an
+unmodelled C++ callee may write reference arguments (F10)". Tasks:
+`regress/fn_try_block_{true,false}`.
+
+**F11. Typeinfo and exceptions of class type with bases.**
+`typeid(...).name()` and `std::any` read the C++ runtime's typeinfo objects;
+a thrown object caught by pointer or through a non-first base, or rethrown
+from a nested handler, must be adjusted and kept alive. `pir` models a
+declared-only typeinfo object as the Itanium `std::type_info`
+`{ vptr, __name }`; the exception header holds the pointer the current
+handler binds (the caught base subobject, or the thrown pointer);
+`__cxa_begin_catch` / `__cxa_end_catch` / `__cxa_rethrow` follow the Itanium
+handler count. A base behind a virtual base has a run-time offset and is
+`NEEDS-HARNESS`. Tasks:
+`regress/{eh_catch_base_offset,eh_catch_pointer,eh_nested_rethrow,typeid_fundamental,eh_catch_virtual_base}_{true,false}`
+(the virtual-base pair is `NEEDS-HARNESS` by design).
+
+**F12. IR the LangRef defines was reported.** `freeze poison`,
+`llvm.memcpy(p, p, n)` (clang emits it for a struct assignment that may be a
+self-assignment) and `llvm.lifetime.start` after `llvm.lifetime.end` are
+defined; `icmp samesign` poison was missed. The fix is in `translate.cpp` and
+`translate_mem.cpp` (docs/PROOFS_REFINEMENT.md findings 2, 5, 6, 7). The
+`pir` stage compiles with `-fno-builtin-memcpy`, so a C `memcpy` call keeps
+C's rule (any overlap is undefined, `d == s` included) through its library
+model. Doctest: "pir: LangRef-defined IR is not reported, samesign poison is
+(refinement findings 2, 5, 6, 7)". Tasks:
+`memory/mem_struct_self_copy_{true,false}` (the `false` task is
+`sanitizer_blind`: ASan skips the overlap check when `dst == src`).
+
+### Disputed upstream labels
+
+Two ESBMC labels contradict the C++ standard: `cpp/github_6199_fail`
+(`std::string(nullptr, 0)`: an empty range is valid) and
+`cpp/github_6588_multidim_fail` (`new int[2][3]()` value-initialises to
+zero). PRISM proves both. They are skipped at conversion with the reason
+(`ESBMC_DISPUTED` in `src/tools/qa/support/fetch.cpp`), not relabelled.
+ESBMC tasks run with `--error-label` are skipped too: a reachable `ERROR:`
+label is ESBMC's violation there, and PRISM checks no labels.

@@ -113,9 +113,7 @@ test used to require that the header text not declare `inner_product`.
 Those assertions are gone. The new test requires the overload. `reduce`,
 `transform_reduce`, and `exclusive_scan` are still not declared.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They do not name
-`std::inner_product`. `docs/PIR.md` was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

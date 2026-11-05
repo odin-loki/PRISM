@@ -88,11 +88,10 @@ the contiguous text `A mismatch returns false and does not dereference.`
 The header already breaks that sentence across two comment lines, and those
 lines were not edited.
 
-`CMakeLists.txt` lists `tests/cpp/test_cxx_memory_deref.cpp` as one new
-line in `_prism_test_sources`, directly after `tests/cpp/test_cxx_memory.cpp`.
-No existing line was removed. `tests/cpp/test_qa_conformance.cpp` was not
-edited. `memory` stays in the header-name array. `src/prism/pir/stage.cpp`
-and `src/prism/bmc.cpp` were not edited.
+`CMakeLists.txt` lists `tests/cpp/test_cxx_memory_deref.cpp` as one new line
+in `_prism_test_sources`, directly after `tests/cpp/test_cxx_memory.cpp`. No
+existing line was removed. `tests/cpp/test_qa_conformance.cpp` was not edited.
+`memory` stays in the header-name array.
 
 `tests/cpp/test_cxx_memory_deref.cpp` was compiled by itself with clang++
 18.1.3, `-std=c++23 -Wall -Wextra -Werror`, and its `TEST_CASE` passed

@@ -76,10 +76,6 @@ include `<string>` or `<memory>`.
 `CMakeLists.txt` was not edited. `tests/cpp/test_qa_conformance.cpp` was
 not edited.
 
-`src/prism/bmc.cpp` was not edited. `docs/ENGINEERING_BACKLOG.md`,
-`docs/ROADMAP_STATUS.md`, `README.md`, and `docs/CPP_PORT_PLAN.md` were not
-edited.
-
 ## Tests
 
 `tests/cpp/test_cxx_format.cpp` reads the header. The `int` null check is

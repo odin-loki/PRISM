@@ -68,10 +68,8 @@ do that.
 ## Wiring
 
 `PRISM_PIR_MODELS`, `_prism_test_sources`, and the conformance header-name
-array were not edited. `syncstream` was already on each of them.
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited. A unit
-whose lowered text contains `syncbuf` is still `NEEDS-HARNESS`
-(`C++ syncbuf unencoded`). This slice does not claim the tasks are proved.
+array were not edited. `syncstream` was already on each of them. This slice
+does not claim the tasks are proved.
 
 ## Tests
 

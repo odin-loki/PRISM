@@ -10,7 +10,7 @@ The missing-store result is an empty finding list. The check still runs and writ
 
 An artefact the checker cannot re-apply (invariants that are not JSON) comes back from `recheck_artefact` as `laws::UNKNOWN`. `run_proof_regression` reports one `UNKNOWN` row, class `PROOF-REGRESSION`, `extra.regression = "true"`. With no model bound, `extra.repair` starts with `NOTRUN`.
 
-On a build without Z3, `run_bmc` returns `laws::NOTRUN` (`"z3 not built"`). Re-checking a stored BMC artefact keeps that `NOTRUN` on the re-check, and the regression row is `PROOF-REGRESSION`. Builds with Z3 keep the existing contract and Houdini cases.
+On a build without Z3, the pir stage returns `laws::NOTRUN` (`"z3 not built"`). Re-checking a stored proof artefact keeps that `NOTRUN` on the re-check, and the regression row is `PROOF-REGRESSION`. Builds with Z3 keep the existing contract and Houdini cases.
 
 `proof_repair.cpp` does not call Lean. A missing lake is `prove_theorem` in `src/prism/ai/proof_search.cpp`: status `laws::NOTRUN`, an empty proof, and a reason that names lake. An explicit `PRISM_LAKE` that is not a file stays missing; `PATH` does not replace it.
 

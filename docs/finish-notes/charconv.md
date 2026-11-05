@@ -51,12 +51,6 @@ lists `src/prism/pir/models/cxx/charconv`, so the embedded name is
 header array. The iostream file and the `deque/deque` skip in that test are
 unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not a
-charconv model" from the source text, before the header is inlined. Those
-exits are still in place. `tests/cpp/test_concolic.cpp` still expects
-`from_chars_unenc_bad` and `to_chars_unenc_bad` to be `NEEDS-HARNESS` until
-they go.
-
 ## Tests
 
 `testdata/conformance/libc-models/charconv_contracts.cpp` is the libc-contract

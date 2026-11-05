@@ -82,10 +82,3 @@ stores 5. `tuple<>` has `tuple_size` 0. `get<1>` of `tuple<int>` fails
 reads `get<0>` of a `tuple<int>` that holds the argument. There is no false
 task. A runtime out-of-range `get` is not a defect this header can report;
 that call is ill-formed, which is the fallback.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` (`low.find("tuple")`) and `src/prism/bmc_unenc.inc`
-(`tuple\s*<`) still return "not a tuple model" from the source text, before
-the header is inlined. Those files were not edited. Until that gate is gone,
-`cxx_tuple_true` does not reach this header. `docs/PIR.md` was not edited.

@@ -1,164 +1,161 @@
-# Box memory rules (15 GB RAM, no swap, shared by every worker)
+# Memory rules for heavy PRISM runs
 
-1. Run every heavy PRISM command (prism on a file/dir, conformance, svcomp score,
-   prism_tests) through `/workspace/bin/prism-run CMD...`:
-   - at most 2 heavy runs box-wide (flock slots in /tmp/prism-run-locks; others wait),
-   - exports PRISM_MEM_BUDGET_MB = 60% of MemAvailable / 2 (max 6000) -- PRISM
-     (fix/memory-budget and later) ends a function as UNKNOWN past it,
-   - kills the run's process tree at 1.25x budget RSS (reported, exit 137),
-   - prlimit --as at 4x budget (backstop only: a tight --as crashes Z3 at low RSS),
-   - oom_score_adj 800 so the kernel kills the prism run, not an agent session.
-   Override: PRISM_RUN_SLOTS, PRISM_MEM_BUDGET_MB.
-2. Builds: `-j4` max.
-3. Do not use `prlimit --as=<small>` as a memory cap; it limits address space and
-   makes Z3 fail at ~28 MB RSS (th_rewriter null deref). Use prism-run.
-4. Profiling one file: `/workspace/bin/rsscap MB cmd...` (kills at MB, prints peak).
+A PRISM run can need gigabytes: Z3 queries, the pir encoder and solver
+children all grow. On a shared machine with no swap, one run that grows too
+far gets the kernel's OOM killer, and the victim may be another program.
+This page has two parts:
 
-## PRISM side (branch fix/memory-budget, merge it into your branch)
-- PRISM itself now enforces PRISM_MEM_BUDGET_MB (default 75% of MemAvailable at start):
-  over 80% of it, or MemAvailable < 800 MB, the current function becomes UNKNOWN
-  "memory budget reached ..." and later functions continue. No crash under prlimit --as=4G.
-- `prism-qa conformance` now gives each run MemAvailable*0.75/jobs and cuts --jobs to fit
-  (~1 GB/run). Still prefer `--jobs 2-3` on this box.
+- the rules for running heavy work on such a machine (`tools/prism-run`,
+  `tools/rsscap`);
+- how PRISM bounds its own memory (`src/prism/membudget.cpp`), so that
+  running out of memory is a reported `UNKNOWN`, never a crash (Law 7).
 
-## prism-run enforces RSS, not address space (2026-10-29)
-- prism-run no longer sets RLIMIT_AS: ASan builds reserve terabytes of virtual memory, so the
-  6 ASan cases in prism_tests failed under the old 4x --as cap. Memory is enforced by the RSS
-  watchdog (kills the tree at 1.25x budget) plus PRISM's own PRISM_MEM_BUDGET_MB.
-- Opt back in for non-ASan binaries with PRISM_RUN_AS=1. Never put prlimit --as on ASan binaries.
+## Rules for a shared machine
 
-## prism-run admission control (2026-10-29, after box-wide OOM kills)
-- FIFO across workers: each call takes a ticket in /tmp/prism-run-locks/queue; only the oldest
-  waiting ticket may start.
-- It starts only if fewer than PRISM_RUN_SLOTS (4) jobs run (jobs with budget <= 1 GB skip the
-  count and the queue order) and MemAvailable minus the running
-  jobs' remaining headroom (budget - current RSS) >= its budget + 1.5 GB (PRISM_RUN_RESERVE_MB).
-  Always, even with no other job registered (fixed 2026-10-29 late). Install prism-run only via temp file + mv.
-- Watchdog kills a job at 1.25x budget, or at 1x budget when MemAvailable < 1 GB.
-- RSS, kills and oom_score_adj cover all descendants by parent pid, including children that
-  setsid into new sessions (svcomp score).
-- oom_score_adj = 500 x RSS/budget (min 100, max 1000), updated every 0.5 s: the kernel's victim
-  is the job furthest over its budget, not a small run.
+1. Run every heavy command through `prism-run`: `prism` on a file or a tree,
+   `prism-qa conformance`, `prism svcomp score`, `prism_tests`.
+2. Limit build parallelism (for example `-j4`) on a shared machine.
+3. Do not cap memory with `prlimit --as` (RLIMIT_AS). It limits address
+   space, not memory. Sanitizer (ASan) builds reserve terabytes of address
+   space, and glibc reserves a 64 MB heap arena per thread. Under a tight
+   RLIMIT_AS, Z3 failed an allocation at low resident memory and crashed.
+   Use `prism-run`, or set `PRISM_MEM_BUDGET_MB`.
+4. To measure the peak of one command, use `rsscap MB CMD...`.
+5. Install `prism-run` by copying it to a temporary file next to its target
+   and then `mv` it into place. Never edit an installed copy in place: a
+   running wrapper reads its script while it runs.
 
-## Handoff (fix/memory-budget, 2026-10-29 late)
-- Done: FIFO+admission prism-run (strict MemAvailable >= budget+1.5 GB), descendant tracking,
-  oom_score_adj by RSS/budget; Z3 hard limit = budget (soft 80%); low-box stop only at >= half
-  budget; prism-qa conformance: no default --as cap, 2.5 GB floor, inherited budget split among
-  --jobs at 3/4 share.
-- Not possible: per-job cgroup (agent cgroup root-owned with processes; no user systemd).
-- prism-run admission is first fit in ticket order; a ticket waiting > 600 s gets priority.
-  Wrappers started before 72be5de8d keep the old strict-FIFO loop: restart queued ones.
-- Watchdog polls 20 ms from 60% of budget. Z3 hard limit stays 1.5x (1.0x segfaulted Z3 at 2.8 GB).
-  Peaks at budget 3000 (single file): priority_queue_contracts 3343 MB (was 3609; UNKNOWNs, no kill),
-  vector_insert 208 MB (correct verdicts), unbounded_string: 900 s timeout, cxx_priority_queue_true:
-  segfault rc 139 under the 1.0x Z3 limit (re-measure with 1.5x).
-- Open: overshoot now ~11%; libc conformance
-  conf4 (/tmp/mf/conf4, log /workspace/logs/memfix-conf4.log, PRISM_MEM_BUDGET_MB=3400 --jobs 1)
-  vs lm-conf5 175/202, 0 wrong. Peaks for unbounded_string / vector_insert not yet measured.
-  test_pir_refinement "memory checks in XTranslate.lean" fails after the libc-models merge (not memfix).
+## `tools/prism-run`
 
-- conf4 (build-mf2, PRISM_MEM_BUDGET_MB=3400 --jobs 1, 2026-10-30 ~00:55): 172/202, 0 wrong, no
-  process killed (old: 26 exit -9). Peak tree 3938 MB. vs lm-conf5 175: lm-only regex_owns,
-  stacktrace_current_bound, typeindex_same_type (UNENCODED here: check whether lm-conf5's build had
-  uncommitted code) and vector_insert_true (memory budget at 765 MB RSS of 2550 after 232 s, though
-  standalone it proves in 5 s at 208 MB: investigate the trip). memfix-only: priority_queue_push_true.
-  Remaining misses: 14 unbounded_string + 6 unordered_map TIMEOUT (300 s file limit).
-- prism-run: up to 4 jobs; budget <= 1 GB bypasses slots and queue order.
-- CORRECTION: conf2-conf4 ran build/prism (old, 20:07 Oct 29), not build-mf2/prism: prism-qa
-  conformance defaults to build/prism. Always pass --prism <build>/prism. conf5 (/tmp/mf/conf5,
-  log /workspace/logs/memfix-conf5.log) is the first run on the memfix binary.
-- 2026-10-30 ~01:50: cxx_priority_queue_true at 1.5x Z3 limit, budget 3400: rc 0, peak 3451 MB.
-  libc commits 1c507b08b/c8345e526 are in this branch and in build-mf2/prism; conf4 missed them only
-  because it ran build/prism. conf5 (memfix binary) running: check
-  grep '| pir | libc' /tmp/mf/conf5/metrics.md (target >= 175, 0 wrong, no exit -9).
-- Box OOM kills seen while conf5 ran come from outside PRISM too: retdec-decompiler
-  (/workspace/rd-core-build, ~4.2 GB RSS) runs without prism-run.
-- conf5 (memfix binary, 2026-10-30 02:12): pir libc 176/203 proved (lm-conf5 175/202), 0 wrong.
-  3 priority_queue functions "exit -9": kernel global OOM (prism 2.0 GB killed while
-  retdec-decompiler held 4-6.7 GB outside prism-run), not PRISM. Others: 14 unbounded_string +
-  6 unordered_map TIMEOUT, 3 sstream clang timeouts (loaded box), fs one memory-budget UNKNOWN.
-- prism-run admission now reserves half the RSS of >1 GB processes outside prism-run trees.
-- Registration-file loss: not reproduced (own trap/cleanup keep the file in tests); no inotify on
-  the box to catch the deleter. Mitigated: wrapper re-registers every 0.5 s.
+`prism-run CMD...` runs `CMD` as a budgeted job. It is a bash script for
+Linux. Jobs coordinate through `$PRISM_RUN_DIR` (default
+`/tmp/prism-run-locks`), so every user of the machine must use the same
+directory.
 
-## Handoff 2026-10-30 03:55 AEDT
-- c6ac46893: prism-qa run_prism prefixes `env PRISM_FUNCTION_BUDGET=max(120, timeout/4)` unless set. us2 test (budget 120): unbounded_string 0 -> 8 _true PROVED.
-- conf6 running (setsid, detached): `prism-run prism-qa conformance --prism /tmp/mf/prism-fix --jobs 1 --out /tmp/mf/conf6`, log /tmp/mf/conf6.log. Check `pgrep -af prism-fix` before restarting.
-- TODO: compare conf6 vs conf5 (176/203, 0 wrong); unordered_map profile; peak overshoot (~13%, conf5 3851MB/3400).
+**Budget.** `PRISM_MEM_BUDGET_MB` if it is set. Otherwise 30% of
+MemAvailable (or of the cgroup `memory.max`, if smaller), at most 6000 MB.
+Never less than 512 MB. The wrapper exports `PRISM_MEM_BUDGET_MB` to the
+job, so PRISM enforces the same number itself (next section).
 
-## conf6 result (2026-10-30 ~04:30 AEDT), head c6ac46893 + prism-fix
-- release gate PASS, 0 wrong proofs. pir libc-models proved true 188/203 (conf5: 176), refuted 199/203.
-- unbounded_string now finishes. unordered_map_contracts: all 8 functions "never reported" by harness/pir (whole file lost: per-function budget 600s x 8 > file timeout). Next: lower budget for that file or profile umap_insert_true.
-- peak tree RSS 4000MB vs budget 3400 (+18%, includes prism-qa). Overshoot still open.
-- Full log: /tmp/mf/conf6.keep
+**Admission.** Each call takes a ticket (time and pid) in the queue. A job
+starts only when all of these hold:
 
-## Handoff 2026-10-30 06:00 AEDT (umap)
-- fe579ccde: prism_hash_table.h zeroes buckets with memset (the 13-bucket loop exceeded unwind 4/8).
-- Single-file qa run with it (/tmp/mf/um1, binary /tmp/mf/prism-umap): unordered_map_contracts still
-  "missing" (all 8 x 3 stages, 900 s file timeout). Not fixed yet. Profiling pir alone with
-  PRISM_FUNCTION_BUDGET=60: /tmp/mf/up1.log.
-- cxx_unordered_map_{true,false} pir: memory-budget UNKNOWN at 432/579 MB RSS of 2550 (false trip? same
-  pattern as vector_insert 765 MB in conf4): investigate.
+- fewer than `PRISM_RUN_SLOTS` (default 4) jobs run;
+- free memory is at least its budget plus `PRISM_RUN_RESERVE_MB` (default
+  1536). Free memory is MemAvailable, minus the headroom the running jobs
+  may still use (budget minus current RSS), minus half the RSS of large
+  (over 1 GB) processes that are not under `prism-run`;
+- it is the oldest ticket that fits. A ticket that has waited
+  `PRISM_RUN_HOL_S` (default 600) seconds blocks every younger one, so
+  memory drains for it.
 
-## Handoff 2026-10-30 07:00 AEDT (umap, cont.)
-- c3a008af8: rehash policy takes an exact integer path at max_load_factor 1.0 (n < 2^53, bit-identical
-  to libstdc++'s double math); clear() memsets. Binary frozen at /tmp/mf/prism-umap2.
-- Still no answer: unordered_map_contracts never answered in any earlier conformance run either
-  (libc-conf-full, lm-conf..lm-conf5), so this is not a memfix regression.
-- Minimal repro /tmp/mf/t1.cpp (one insert of symbolic int, assert .second): 8 loops, Z3 memory blows past
-  1 GB within ~60 s (budget-UNKNOWN, no wrong verdict). Equivalent C shape (/tmp/mf/t2.c: 13 buckets,
-  h % 13, chain walk, malloc node) encodes in 1 s at 148 MB, so the cost is in the C++ layer
-  (operator new/bad_alloc landing pads, pair/node construction, _M_owner iterator bookkeeping): bisect
-  those next by trimming the model (each build-mf2 rebuild ~20 min under load).
-- prism-run queue: full of 4 svcomp/astlint jobs for hours; budget <= 1000 MB bypasses it for profiling.
+A job whose budget is at most `PRISM_RUN_SMALL_MB` (default 1024) ignores
+the slot count and the queue order, so small test runs do not wait behind
+large ones. A budget that never fits waits forever; lower it. A waiting job
+prints a `prism-run: queued ...` line every minute.
 
-## Handoff 2026-10-30 ~08:30 AEDT (umap ablation, no rebuild needed)
-- Ablation harness: copy the model headers to /tmp/mf/abl/<v>/ and include them by absolute path from the
-  test (the include guards keep the embedded model out). Each variant runs in about 1 min at a 1 GB budget,
-  which skips the prism-run queue. Kept in /workspace/logs/umap-abl (run.sh, mkh.sh, h8, h9).
-- Single insert (/tmp/mf/abl/v3): base UNKNOWN (Z3 > 1 GB). Variants changed one thing each:
-  without _M_prepare_insert PROVED 10 s; without find_node, iter-link or the destructor still UNKNOWN; % 13
-  fast path still UNKNOWN; __builtin_trap before the prime-table slow path PROVED 38 s.
-  => CAUSE: _M_next_bkt's std::lower_bound over the 304-entry prime table (symbolic index into a
-  constant array). It is only taken for n >= 14, but n arrives through memory, so it is always encoded.
-- h8 (297-way if-chain of constant compares): one insert PROVED 7-48 s, but the full file hits
-  "unrolling exceeds 6000 block instances". h9 (straight-line masks, no branches): one insert PROVED
-  111 s, but the full file runs out of budget at 1 GB. Neither is committed yet. Both match the original
-  on n in [0, 2e5], 2^k +- 3 and every prime +- 1, including _M_next_resize (eq_*.cpp).
-- Next: test h9 at the real budget (3400) once a prism-run slot frees; or cut the number of _M_next_bkt
-  call sites (prepare_insert re-calls it on a prime it already returned; do_rehash can skip it when
-  bkt >= bkt_for_elements(n+1)); or two levels (branch on about 18 coarse ranges, masks within one).
+**While the job runs.** Every 0.5 s the wrapper:
 
-## Handoff 2026-10-30 ~10:00 AEDT (after box restart)
-- /workspace/bin/prism-run was already restored and is byte-identical to tools/prism-run (1e9e53bcd).
-  Smoke test passes. To reinstall: cp tools/prism-run /workspace/bin/.prism-run.new && mv it into place
-  (atomic; never edit in place).
-- build-mf2's cache points at the removed /opt paths (libomp): use build/ (Release, PRISM_Z3=ON). An
-  incremental `cmake --build build --target prism` takes about 10 s.
-- 2c73112db: h10 is in the model. tools/models/gen_prime_lb.cpp regenerates it (idempotent);
-  tools/models/check_prime_lb.sh <orig> <new> checks equality (201360 inputs IDENTICAL).
-- Running: full unordered_map_contracts pir at 3000 MB, binary /tmp/mf/prism-h10, log /tmp/mf/u3.log.
+- measures the RSS of the whole process tree, by parent pid, including
+  children that start their own session;
+- kills the tree at 1.25 × budget, or at 1 × budget when MemAvailable is
+  under 1 GB. The kill is printed, never silent;
+- sets `oom_score_adj` of every process in the tree to `500 × RSS / budget`
+  (between 100 and 1000), so a kernel OOM kill picks the job furthest over
+  its budget;
+- re-registers the job if its registration file was removed.
 
-## unordered_map at 3000 MB with h10 (2026-10-30 ~10:15 AEDT, /tmp/mf/u3, /tmp/mf/u4)
-- 3/8 correct, 0 wrong: umap_erase_true PROVED; erase_uaf_false MEM-UAF and end_deref_false FUNC-CONTRACT
-  refuted. 5 end as memory-budget UNKNOWN (before h10, all 8 were missing).
-- Overshoot: peak 3461/3413 MB of 3000 (+14%). PRISM_MEM_TRIP_PCT=65 changed it only from 3066 to 2941 MB
-  (umap_index_true): not trip latency. Suspect Z3 hard limit 1.5x.
-- Rerun child now gets budget minus parent RSS (defensive; no rerun happened in u4).
-- Pushes failing (classifier error): commits are local only until pushed.
-- Z3 hard-limit test (PRISM_Z3_HARD_PCT knob, default 150; MALLOC_ARENA_MAX=4, umap_index_true, budget 3000):
-  150% peak 3112 MB, 120% peak 3496 MB, both UNKNOWN, no crash. A lower hard limit does not cut the
-  overshoot: the default stays 150. The overshoot is probably RSS that is not Z3's own estimate (encoder/SymMem,
-  allocator) growing between watchdog polls.
-- conf7 started ~10:40 AEDT: prism-run prism-qa conformance --prism /tmp/mf/prism-conf7 (9fc143692) --jobs 1 --out /tmp/mf/conf7, budget 3400, log /tmp/mf/conf7.log. Compare vs conf6 188/203.
+If the wrapper is killed (timeout, ^C), it kills the job tree too. At the
+end it prints the exit code and the peak tree RSS.
 
-## Handoff 2026-10-30 ~11:10 AEDT (second box restart)
-- The section above was recovered from the stale pre-restart snapshot. 9fc143692 and the /tmp/mf binaries/logs
-  (u3, u4, conf7) did not survive: conf7 never reported. The Z3 hard-limit knob (PRISM_Z3_HARD_PCT) and the
-  rerun child budget (budget minus parent RSS) were never pushed; the diff is kept in
-  /workspace/PRISM-rescue-2354/memfix.patch (applies cleanly to 3a343af85, not built or tested yet).
-- Box toolchain is gone after the restart: no g++/cc1plus, no libstdc++ headers, no ccache, and
-  /workspace/.venv (ziglang, used by /workspace/bin/c++) is missing. Reinstall first:
-  `python3 -m venv /workspace/.venv && /workspace/.venv/bin/pip install ziglang`, plus a ccache binary.
-- Next: rebuild build/ (Release, PRISM_Z3=ON, -j4), apply memfix.patch, run prism_tests via prism-run, commit;
-  then rerun conf7 and compare against conf6 (188/203, 0 wrong).
+**No address-space cap.** `PRISM_RUN_AS=1` adds a backstop of
+`prlimit --as` at 4 × budget. Never use it for ASan builds.
+
+**What it cannot do.** It does not put jobs in their own cgroup, so the
+kernel does not enforce the budget. Programs not started through it are
+seen only through MemAvailable and the large-process reserve.
+
+## `tools/rsscap`
+
+`rsscap MB CMD...` runs `CMD` in its own process group. It kills the group
+when the group's total RSS passes `MB`, and prints
+`rsscap: peak_tree_rss_mb=N rc=R` at the end. Use it to profile one file.
+It has no queue and no budget export.
+
+## PRISM's own memory budget
+
+`include/prism/membudget.hpp`, `src/prism/membudget.cpp`. Tests:
+`tests/cpp/test_membudget.cpp`.
+
+**The budget** is fixed on first use for the whole process:
+
+- `PRISM_MEM_BUDGET_MB` (or `PRISM_PIR_MEM_MB`) when set; `0` means no
+  budget;
+- otherwise 75% of the smallest of: the cgroup limit minus what the cgroup
+  already uses, MemAvailable at start, and half of RLIMIT_AS.
+
+The budget is for the process tree: PRISM plus every process it started
+(solver children, `prism z3-worker`). On Linux, PRISM also sets glibc's
+`M_ARENA_MAX` to 2 unless `MALLOC_ARENA_MAX` is set.
+
+**Over budget** (`over_budget()`) means any of:
+
+- the tree's RSS is at least 80% of the budget (headroom for the stop
+  latency);
+- the RSS grows faster than about 1 GB/s and is at least 70% of the budget;
+- MemAvailable is under `PRISM_MEM_RESERVE_MB` (default 1500; 0 turns it
+  off) and the tree holds at least half the budget. Other programs grow too,
+  and the start-time budget cannot see them.
+
+**The watchdog.** While any computation is registered (`membudget::Watch`),
+one thread per process polls every 50 ms, and every 20 ms from 60% of the
+budget. Over budget, it calls every registered stop function (for example
+`Z3_interrupt`). If the process stays over budget for `PRISM_MEM_STUCK_MS`
+(default 1000 ms), it calls the stuck hook once: the running call ignores
+interrupts. `PRISM_MEM_TRACE=1` prints each trip with the phase every thread
+is in (`membudget::Phase`).
+
+**What a trip means.** The function being checked ends as `UNKNOWN` with
+"memory budget reached ... (process RSS, budget, source); no proof", or
+"machine memory low ..." for the MemAvailable case. Freed heap is returned to
+the kernel (`malloc_trim`), and later functions are checked normally. How
+the pir stage uses the budget (Z3 soft and hard limits, fresh-process
+re-checks) is in [PIR.md](PIR.md#memory-budget).
+
+**Solver children** ([SOLVERS.md](SOLVERS.md)). Under a budget:
+
+- a query with more than 1000 nodes per budget MB is `Unknown` up front;
+- large queries run Z3 in a killable child (`prism z3-worker`);
+- each solver child gets a resident cap from the room left in the budget.
+
+## `prism-qa` and the budget
+
+- `prism-qa conformance` splits the budget among its parallel runs and sets
+  `PRISM_MEM_BUDGET_MB` for each. The total is `PRISM_MEM_BUDGET_MB` from
+  the environment (for example from `prism-run`), else 75% of the tightest
+  limit. Each run gets at least 2500 MB; `--jobs` is cut to fit. Under an
+  inherited budget each run gets 3/4 of its share, because a run can
+  overshoot its own budget before the stop lands and `prism-run` kills at
+  1.25 ×.
+- Each task run gets `PRISM_FUNCTION_BUDGET=max(120, file timeout / 4)`
+  seconds unless it is set, so one slow function cannot turn a whole file
+  into a timeout with no report (`src/tools/qa/support/engine.cpp`; not on
+  Windows).
+- `prism-qa conformance` runs `--prism PATH`, else `$PRISM_BIN`, else
+  `build/prism`. Pass `--prism` when you test a different build.
+
+## Environment variables
+
+The `PRISM_MEM_*` variables, `PRISM_PIR_MEM_MB`, `PRISM_FUNCTION_BUDGET` and
+`PRISM_Z3_WORKER` are in the generated table in
+[USER_GUIDE.md](USER_GUIDE.md) ("Environment variables"). The `PRISM_RUN_*`
+variables belong to the `prism-run` script only:
+
+| variable | default | meaning |
+|---|---|---|
+| `PRISM_RUN_SLOTS` | 4 | jobs that may run at once |
+| `PRISM_RUN_SMALL_MB` | 1024 | budgets at or under this skip the slot count and queue order |
+| `PRISM_RUN_RESERVE_MB` | 1536 | free memory kept beyond a job's budget at admission |
+| `PRISM_RUN_HOL_S` | 600 | seconds before the oldest waiting ticket blocks younger ones |
+| `PRISM_RUN_DIR` | `/tmp/prism-run-locks` | queue and registration directory |
+| `PRISM_RUN_AS` | 0 | 1: add `prlimit --as` at 4 × budget |

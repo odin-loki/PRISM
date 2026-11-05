@@ -83,12 +83,3 @@ values are YAML booleans. PIR was not run.
 harness (`#include <future>`): the round trip and a default `valid()` are
 true; empty `get()` and a second `get()` are `CXX-FUTURE-GET`; a second
 `set_value` is `FUNC-CONTRACT`.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::async unencoded` (`is not a future model`) from the source text
-when the function names `std::future`, `std::promise`, or `std::async`,
-before any header is inlined. Those files were not edited. Until that gate
-is narrowed, a BMC run of these tasks does not reach this header.
-`docs/PIR.md` was not edited.

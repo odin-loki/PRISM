@@ -97,11 +97,10 @@ falls back to libstdc++. They are not stubbed:
 
 ## Wiring
 
-`src/prism/pir/stage.cpp` was not edited. `src/prism/bmc.cpp` was not
-edited. `CMakeLists.txt` was not edited: `_prism_test_sources` already
-lists `tests/cpp/test_cxx_string_view.cpp`. The conformance header array
-in `tests/cpp/test_qa_conformance.cpp` is unchanged. `string_view` stays
-in that list.
+`src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited:
+`_prism_test_sources` already lists `tests/cpp/test_cxx_string_view.cpp`.
+The conformance header array in `tests/cpp/test_qa_conformance.cpp` is
+unchanged. `string_view` stays in that list.
 
 ## Tests
 

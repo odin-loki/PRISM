@@ -48,9 +48,7 @@ the pir stage lowers that translation unit again with libstdc++
 
 `src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited.
 `_prism_test_sources` already lists `tests/cpp/test_cxx_bit.cpp`. The
-conformance header array already names `bit`. `src/prism/bmc.cpp` was not
-edited. A source that contains `byteswap` still takes the
-`C++ byteswap unencoded` path there.
+conformance header array already names `bit`.
 
 ## Tests
 

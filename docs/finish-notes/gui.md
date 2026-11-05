@@ -1,11 +1,9 @@
 # GUI stages slice
 
-Checked `src/gui` at `e59a8b3df` against the first three `prism/gui.py` gaps in
-`docs/CPP_PORT_PLAN.md`. That appendix row is the 2026-09-30 audit: it still
-says the stages table, the journal poll, and the resume checkbox are missing.
-The status block at the top of the same plan already records Qt GUI parity
-(the model, the stages table, and the journal poll) as merged. This slice
-did not add a second table, timer, or checkbox.
+Checked `src/gui` at `e59a8b3df` against three GUI gaps from the 2026-09-30
+port audit: the stages table, the journal poll, and the resume checkbox. All
+three were already in the Qt window. This slice did not add a second table,
+timer, or checkbox.
 
 The GUI was not launched. No display, and no `cmake` / `ninja`. The
 `--smoke-screenshot` path in `src/gui/main.cpp` was not edited. It still
@@ -53,17 +51,10 @@ not this checkbox.
 
 ## Left as they are
 
-The same appendix cell continues with an optional-skip checkbox and then
-stops at "(+9 more)". The optional checkbox is already on the window
-(object name `skip_optional`, default off, passed as `--skip optional`).
-The rest of that cell was never stored past the truncation, so it is not
-reconstructed here.
+The optional-skip checkbox is already on the window (object name
+`skip_optional`, default off, passed as `--skip optional`).
 
-The last `prism/gui.py` (`d16a3017`) had two dialogs: the directory picker
-("Open…") and a critical box when the run failed. Both are already in
-`MainWindow` (the failure box is non-modal, object name `run_failure`, so
-an offscreen test can keep running). No remaining Python window behavior
-needs a new dialog. Not copied, and not dialogs: the Python window ran the
-pipeline in-process on a `Config`; this window runs the `prism` CLI. The
-Python default output directory was `prism-out`; this window uses
+`MainWindow` has two dialogs: the directory picker ("Open…") and a box when
+the run failed (non-modal, object name `run_failure`, so an offscreen test
+can keep running). This window runs the `prism` CLI and writes to
 `prism-out-gui`.

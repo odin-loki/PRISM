@@ -100,7 +100,7 @@ after `namespace ranges {`; the null check and trap come before the loop;
 no call, load or return before the loop; one return; the zero-length body
 is `return 0;` with no load, no call and no check.
 
-The ranges trace was built with clang++ 18.1.3 (the compiler the doctest
-picks), `-std=c++23 -D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined
+The ranges trace was built with clang++ 18.1.3,
+`-std=c++23 -D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined
 -fno-sanitize-recover=all -g -O1 -w`. Stdout of the model binary matched
 libstdc++ (116 lines).

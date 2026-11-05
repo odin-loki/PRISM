@@ -357,19 +357,11 @@ started 31 Oct) and are not re-done here to avoid conflicting work; the
 sections below describe the state on prism-cov until that branch merges.
 
 ## Modules (`import std;`)
-**prism-llvm:** models/cxx/std.cppm is a modelled `std` module (global module
+`src/prism/pir/models/cxx/std.cppm` is a modelled `std` module (global module
 fragment includes the model headers; `export using` the modelled names).
-`source_imports_std` and `build_cxx_std_module` (libc_models.cpp) detect the
-import and precompile it; lower_to_ir must add `-fmodule-file=std=<pcm>` -
-that one call is in stage.cpp and is left for the cohesion merge. Old note:
-Not supported, and not fixable inside the model directory: the models are
-headers placed first on the include path. `import std;` loads a prebuilt
-BMI of the real library and never reads an include path, so no model is
-used; and PRISM's IR front end (clang 18) needs a matching `std.cppm` BMI
-built per configuration. A unit using `import std;` must keep falling back
-(NEEDS-HARNESS / ERROR row), not be reported PROVED. Revisit with the clang
-19+ bump (pin-and-vendor step): it would need a modelled `std.cppm` that
-re-exports the model headers.
+`source_imports_std` and `build_cxx_std_module`
+(`src/prism/pir/libc_models.cpp`) detect the import and precompile it, and
+`src/prism/pir/stage.cpp` passes `-fmodule-file=std=<pcm>` to the front end.
 
 ## Truly blocked
 - `constexpr` C23 objects and `#embed`: need clang >= 19; resolved by the prism-llvm bump (tasks written, compile with clang 23.1.4).

@@ -1,11 +1,9 @@
 # ltl `extract_fsm`
 
-`extract_ltl_fsm` in `src/prism/stages/ltl.cpp` is the C++ owner of
-`prism/ltl.py:extract_fsm`. The four extraction gaps in the
-`docs/CPP_PORT_PLAN.md` ltl row are already implemented on this base
+`extract_ltl_fsm` in `src/prism/stages/ltl.cpp` extracts the FSM. The four
+extraction gaps from the port audit are already implemented on this base
 (`f67c14a23`, tightened in `5166c3a3e`). This slice does not add LTL
-formulas, verdicts, or a second extractor. `docs/CPP_PORT_PLAN.md` is
-outside this slice, so that appendix row is unchanged.
+formulas, verdicts, or a second extractor.
 
 ## Behaviours
 

@@ -67,13 +67,12 @@ The header still does not include `<string>`, `<filesystem>`, `<memory>`,
 
 ## Wiring
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and `src/prism/pir/stage.cpp`
-were not edited. `CMakeLists.txt` was not edited. No CMake line was dropped.
-The existing `_prism_test_sources` line for `tests/cpp/test_cxx_fstream.cpp`
-is still there. No new test file was added. `PRISM_PIR_MODELS` already lists
+`CMakeLists.txt` was not edited. No CMake line was dropped. The existing
+`_prism_test_sources` line for `tests/cpp/test_cxx_fstream.cpp` is still
+there. No new test file was added. `PRISM_PIR_MODELS` already lists
 `src/prism/pir/models/cxx/fstream`. `tests/cpp/test_qa_conformance.cpp` was
-not edited. No new conformance task was added, so this slice does not
-record an `expected` value for `tellp`.
+not edited. No new conformance task was added, so this slice does not record
+an `expected` value for `tellp`.
 
 ## Tests
 

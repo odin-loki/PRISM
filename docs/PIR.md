@@ -1,388 +1,294 @@
-# PIR: the Clang/LLVM front end (roadmap Part 2, first slice)
+# PIR: the Clang/LLVM front end and the pir stage
 
-The `pir` stage runs right after `bmc` on the C++ engine (roadmap D8: the
-deleted Python oracle is replaced by `prism-qa pir-vs-bmc` and doctests).
+The `pir` stage does PRISM's bounded model checking and k-induction for C and C++. It compiles each
+unit with clang, rewrites the IR, translates it to PIR (PRISM's typed SSA over bitvectors), inserts
+the property checks itself (Law 8) and asks Z3 and the solver portfolio about each one.
 
 ```
 C/C++ unit ──clang -O0──▶ LLVM IR ──PRISM instrumentation──▶ opt (fixed passes)
-          ──▶ textual IR parser ──▶ PIR (+ property checks) ──▶ Z3 bitvectors
-          ──▶ FAILED / PROVED / BOUNDED / PROVED-UNBOUNDED / NEEDS-HARNESS
+          ──▶ textual IR parser ──▶ PIR (+ property checks) ──▶ SMT (QF_BV, FP)
+          ──▶ FAILED / PROVED / BOUNDED / PROVED-UNBOUNDED / NEEDS-HARNESS / …
           ──(--allow-exec)──▶ translation validation against lli
 ```
 
-Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode,stage}.cpp`;
-floating point `src/prism/pir/{fp,translate_fp}.cpp`; exceptions, setjmp/longjmp,
-indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_ctl.cpp`);
-memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
-models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.cpp`.
-Tests: `testdata/pir/*` (true and false variants; `mem_*.c` for the memory
-model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6),
-doctests in `tests/cpp/test_pir_e2e.cpp`, `test_main.cpp` (`pir: …`), `test_pir_mem.cpp`
-(`pir mem: …`) and `test_pir3.cpp` (`pir3 …`). Differential oracle: `prism-qa pir-vs-bmc`.
+Defaults and limits below are as of main `991c4eafa` (2026-11-05).
+
+| Part | Code |
+|---|---|
+| Stage driver, clang/opt calls, reruns | `src/prism/pir/stage.cpp`, `stage_mem.cpp` |
+| Front end probes, target flags | `src/prism/pir/frontend.cpp`, `include/prism/pir/frontend.hpp` |
+| Pre-`opt` rewrites | `src/prism/pir/lower_ctl.cpp`, `folded_diag.cpp` |
+| IR parser | `src/prism/pir/ir_parser.cpp` |
+| PIR types, printer, interpreter | `include/prism/pir.hpp`, `src/prism/pir/pir.cpp` |
+| Translation | `translate.cpp`, `translate_mem.cpp`, `translate_fp.cpp`, `translate_ctl.inc` |
+| Memory model | `memory.cpp` (`SymMem`, `ConcMem`), `contracts.cpp` |
+| Floating point | `fp.cpp`, `translate_fp.cpp` |
+| Encoder, verdicts, k-induction | `encode.cpp` |
+| Loop invariants (Houdini) | `houdini.inc` |
+| Library models | `libc_models.cpp`, `libc_format.cpp`, `models/libc/`, `models/cxx/` |
+| Lean export | `export_lean.cpp` |
+
+Tests: `testdata/pir/*`, `testdata/conformance/{prism,libc-models}/`, and
+`tests/cpp/test_pir_*.cpp`, `test_pir3.cpp`, `test_main.cpp` (`pir: …`), `test_cxx_*.cpp`.
 
 ## Front end
 
-Clang and opt are external processes (`detail::run_process`, argv, no shell);
-nothing is linked yet. For every `.c` unit:
+Clang and opt are external processes (argv, no shell). The tools come from `Config::llvm_tool` (the
+pinned LLVM 23.1.4, `third_party/llvm/PIN.toml`, else PATH). Each unit is compiled as:
 
 ```
 clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone -fno-discard-value-names \
-      -gline-tables-only -std=c17 <UB-folding warnings on> file.c
-opt -passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer -S
+      -gline-tables-only -std=c17|c++23 -fno-builtin-memcpy <UB-folding warnings> file
+opt -passes=mem2reg,lower-switch,loop-simplify,lcssa,instnamer -S          (C)
+opt -passes=function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,\
+    function(lower-switch,fix-irreducible,loop-simplify,lcssa,instnamer)   (C++)
 ```
 
-`.cc/.cpp/.cxx` units use `clang++ -std=c++23` and the same passes with
-LLVM's coroutine lowering in between (roadmap 2.3):
-`function(mem2reg),coro-early,cgscc(coro-split),coro-cleanup,function(lower-switch,fix-irreducible,loop-simplify,lcssa,instnamer)`
-("Coroutines" below). `invoke`/`landingpad` are lowered to explicit
-exception edges by the translator itself ("Exceptions"). No
-optimising pass runs (they may exploit the UB being checked) and no
-`-fsanitize` check is inserted (Law 8: PRISM owns the check polarity). For C
-units `-Wno-error=implicit-function-declaration` keeps a unit with an
-undeclared call compiling (C89 rule); the call itself is an unknown external
-and becomes `UNENCODED: call @f` — leniency of the front end, not a disabled
-check. Compiling scanned code does not execute it, so the stage needs no
-`--allow-exec`; clang/opt missing is `NOTRUN` with an install hint; a unit
-that does not compile is one `ERROR` row ("clang front end failed: …").
+`base_flags` and `lower_to_ir` in `stage.cpp` build these lines.
 
-**Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits); the libc models and
-memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, every PIR (and SV-COMP debug
-IR) clang invocation uses `lp64_clang_driver_flags()`: `--target=x86_64-unknown-linux-gnu` and
-`-idirafter` `src/prism/pir/models/libc/shim/` (minimal `string.h` / `stdlib.h` / `assert.h` /
-`pthread.h` / `stdatomic.h` typedefs so scanned C compiles; no sysroot). The 17-file `testdata/pir`
-C subset runs in CI; glibc-heavy corpus files stay `NOTRUN` via
-`pir_test_c_file_supported(basename)`. The shim's `stdatomic.h` maps C11 atomics onto clang's
-`__c11_atomic_*` builtins, so the IR keeps the real memory order and the `conc` stage sees the same
-seq_cst / monotonic atomics as with glibc. `frontend_usable` verifies the LP64 triple with
-a temp-file LP64 probe (not clang stdin `-`, which writes `-.ll` on disk instead of IR on
-stdout). The `test_pir_e2e` doctest also requires `z3_available()` so Z3-off Windows smokes stay
-`NOTRUN` rather than failing on missing verdict rows. C++ units still need libstdc++ and are not
-lowered on Windows.
+No optimising pass runs (it could exploit the UB being checked) and no `-fsanitize` check is
+inserted (Law 8). `-fno-builtin-memcpy` keeps a C `memcpy` a call, so its model checks C's
+no-overlap rule. C units get `-Wno-error=implicit-function-declaration`: an undeclared call compiles
+and becomes `UNENCODED: call @f` (front-end leniency, not a disabled check). C++ units get
+`-D_GLIBCXX_ASSERTIONS` ("C++ library"). Fallbacks change only the language level: C17 → C23,
+C++23 → C++14 on "ISO C++17 does not allow", C23 `_Decimal*` as C++23 with the shim
+`models/cxx/prism_dfp.hpp`, `import std;` via the modelled `models/cxx/std.cppm`. A C header that
+defines functions is also lowered alone; only functions no unit reported are kept
+(`extra.lowered_as`; `PRISM_PIR_NO_HEADERS` turns this off).
+
+Compiling scanned code does not execute it, so the stage needs no `--allow-exec`. Missing clang or
+opt is `NOTRUN` with an install hint; a unit that does not compile is one `ERROR` row.
+
+### Analysis target
+
+Main lowers for Linux LP64 (`x86_64-unknown-linux-gnu`); SV-COMP's `--data-model ILP32` lowers for
+`i386-unknown-linux-gnu`. Units and libc models use the same triple (`FrontendTargetScope`); the
+pointer model follows the datalayout and the model cache is keyed by the triple.
+
+Branch `port/winmsvc` (commit `862d6dac2`, landing) makes the target a setting: `--target TRIPLE` or
+`PRISM_TARGET`: `x86_64-unknown-linux-gnu`, `i386-unknown-linux-gnu` or `x86_64-pc-windows-msvc`
+(default: the host; an unsupported triple is exit 2). For the MSVC target (LLP64: 32-bit `long`,
+16-bit `wchar_t`, 64-bit pointers) pir passes `-fno-wrapv` (clang's MSVC driver adds `-fwrapv`,
+which would remove every `nsw` and so every signed-overflow check) and `_NO_CRT_STDIO_INLINE` (so
+`printf` stays a modelled call). The probe needs the UCRT headers (`PRISM_MSVC_SYSROOT` off
+Windows), else pir is `NOTRUN`. C++ is lowered against the MSVC STL headers, never the libstdc++
+models, and `extra.cxx_models` says so. Non-default targets put `extra.target` on every row.
+SV-COMP stays Linux. Tests: `tests/cpp/test_target.cpp`, `testdata/conformance/prism/datamodel/`.
+
+**Windows host.** On main, a Windows build lowers for `x86_64-unknown-linux-gnu` against the pinned
+Linux sysroot (`PRISM_LINUX_SYSROOT`, else `scripts/fetch_toolchain.py linux-sysroot` under
+`~/.prism/toolchain/linux-sysroot/`). Without it pir is `NOTRUN`. `frontend_usable` also lowers a
+probe file for that triple (a temp file, not stdin) and checks the IR's `target triple`.
+`lp64_clang_driver_flags()` adds the target, the sysroot and `-idirafter models/libc/c23` (C23
+headers such as `<stdbit.h>` a libc may lack). The SV-COMP debug IR uses the same flags.
 
 ### Instrumentation before mem2reg
 
-Three things would be lost by `mem2reg` or by clang's constant folding, so
-PRISM rewrites the `-O0` IR before `opt`:
+Some facts would be lost by `mem2reg` or by clang's constant folding, so PRISM rewrites the `-O0` IR
+before `opt`:
 
-* **Uninitialised locals.** Every promotable `iN` alloca (except `%retval`)
-  gets `store (call @__prism.uninit.iN()), %x`. After mem2reg a read before
-  the first store is a use of that call (mem2reg would otherwise fold the
-  `undef` away). PIR tracks a one-bit "uninit" shadow through phis and checks
-  every non-phi use: `UNINIT-READ`.
+* **Uninitialised locals.** Every promotable `iN` alloca (except `%retval`) and every
+  `half`/`float`/`double` alloca gets `store (call @__prism.uninit.<ty>()), %x`. After mem2reg a
+  read before the first store uses that call. PIR tracks a one-bit "uninit" shadow through phis and
+  checks every non-phi use: `UNINIT-READ`.
+* **`undef` that remains** follows the LangRef: each use reads a fresh havoc, `freeze` picks one
+  value. Branching on it or passing it as `noundef` is `UB-POISON`.
+* **Folded UB to poison.** Clang folds `7 % 0`, `INT_MIN / -1`, `1 << 40` to `poison`. Each `iN
+  poison` operand becomes `call @__prism.poison.iN()`, a reachability check (`UB-POISON`).
+* **Folded UB to a value.** `1 << 31` or `INT_MAX + 1` fold to constants with only a warning. The
+  warning's line:column is mapped to an instruction on that line and `call @__prism.folded(i32 k)`
+  is inserted there (`folded_diag.cpp`). A warning with no instruction on its line makes the
+  function `NEEDS-HARNESS`. Warnings in headers are not attributed.
+* **setjmp functions.** Every alloca of a function that calls `setjmp` gets a `@__prism.keep` use,
+  so mem2reg keeps it in memory ("setjmp/longjmp").
 
-**`undef` that remains** (hand-written or optimised IR, phi inputs) follows
-the LangRef: every use of `undef`, or of a value computed from it, may see a
-different value. A static may-undef analysis gives each such value a
-one-bit "undef" shadow (through phis, dynamically per path); each non-phi use
-of a value whose shadow is set reads a fresh havoc (per use site and per
-execution), `freeze` picks one value, and a store writes indeterminate
-(uninitialised) bytes. Branching on it, returning it from a `noundef`
-function or passing it as a `noundef` argument is UB (`UB-POISON`, prop
-`undef`); passing it to an inlined callee without `noundef`, or returning it
-from one, is refused (`UNENCODED`), since the callee would use it as one value.
-* **Folded UB to poison.** Clang folds e.g. `7 % 0`, `INT_MIN / -1`,
-  `1 << 40` to `poison`; each `iN poison` operand becomes
-  `call @__prism.poison.iN()` at that instruction, which PIR turns into a
-  reachability check (`UB-POISON`).
-* **Folded UB to a value.** `1 << 31`, `INT_MAX + 1`, `-1 << 3` fold to plain
-  constants with only a warning (`-Wshift-sign-overflow`, `-Winteger-overflow`,
-  `-Wshift-negative-value`, `-Wshift-overflow`). The warning's line:column is
-  mapped to the instruction on that line with the largest column not past the
-  warning, and `call @__prism.folded(i32 k)` is inserted there (a reachability
-  check with the warning's class). A warning with no instruction on its line
-  makes the enclosing function `NEEDS-HARNESS` ("clang-folded UB … not
-  attributable"). Warnings inside headers are not attributed.
-* **Floating-point locals.** `alloca half|float|double` get the same
-  initial `@__prism.uninit.<type>()` value (`lower_ctl.cpp`
-  `uninit_fp_locals`): UNINIT-READ covers them too.
-* **setjmp functions.** In a function that calls `setjmp`, every alloca
-  gets a `call void @__prism.keep(ptr %x)` use so mem2reg keeps it in
-  memory (`keep_setjmp_locals`): after a `longjmp` the program reads what
-  the -O0 build reads (the last stored value), not the SSA value of the
-  `setjmp` call ("setjmp/longjmp").
-
-**C signed left shift.** IR does not say whether `shl` came from a signed C
-`<<`. For C units that contain a `shl`, clang runs a second time with
-`-fsanitize=shift-base` only to *locate* signed shifts (the ubsan source
-locations); nothing from that build is used otherwise. Each `shl` whose
-`!dbg` line:column matches gets the C17 6.5.7p4 check (negative base, or
-`a·2^b` not representable). C++20 and later define signed `<<`, so C++ units
-get no base check (`testdata/pir/cxx.cpp:cxx_shl_ok` is PROVED).
+**C signed left shift.** IR does not say whether `shl` came from a signed C `<<`. For C units with a
+`shl`, clang runs once more with `-fsanitize=shift-base` only to locate signed shifts by debug
+location. Nothing else from that build is used. Each matching `shl` gets the C17 6.5.7p4 check.
+C++20 defines signed `<<`, so C++ units get no base check.
 
 ## IR parser
 
-`ir::parse_module` is a tokenizer plus recursive-descent parser for what
-`opt -S` prints: types (`iN`, `ptr`, floats, structs, packed structs,
-arrays, vectors, function types), values (locals, globals, integer literals,
-`true/false/undef/poison/null/zeroinitializer`, constant expressions kept
-opaque), metadata attachments (`!dbg`), `DILocation`, `DISubprogram`,
-`DIFile`. Every instruction line is parsed; opcodes outside the subset keep
-their name (`parsed = false`) so the translator can report them.
+`ir::parse_module` is a tokenizer and recursive-descent parser for what `opt -S` prints: types,
+values, constant expressions (kept opaque), `!dbg` attachments and the debug-info nodes PRISM reads.
+Every instruction line is parsed. An opcode outside the subset keeps its name with `parsed = false`,
+so the translator can report it. `volatile` loads and stores are kept and checked like any access;
+`atomic` ones are not parsed (`UNENCODED`).
+
+Branch `port/precision` (commit `ab9e29bb6`, landing) adds LLVM 23's special float literals
+(`+qnan`, `-inf`, `+nan(0x…)`, `+snan(0x…)`) and IR comments such as `/* (nan) */` after
+`is.fpclass` masks. Before it, those functions were `UNENCODED`.
 
 ## PIR
 
-Typed SSA over bitvectors of width 1..64 (`include/prism/pir.hpp`):
-
-* statements: `assign` (operators below), `check` (PRISM property:
-  violation when the i1 argument is 1), `assume`;
-* terminators: `jmp`, `br`, `ret`, `stop` (path ends without returning,
-  e.g. `exit`);
-* phis per block; loops are back edges.
-
-Operators: `add sub mul udiv sdiv urem srem shl lshr ashr and or xor`,
-comparisons, `select zext sext trunc`, `smax smin umax umin abs ctlz cttz
-ctpop bswap`, `copy`, `havoc`, the i1 property predicates
-(`sadd.ovf … sdiv.ovf shift.oob shl.signed.ovf shl.nsw.ovf shl.nuw.ovf
-lshr/ashr.inexact udiv/sdiv.inexact`), and the IEEE operators on the bits
-of half/float/double values (`fadd fsub fmul fdiv frem fsqrt ffma fmuladd
-fminnum fmaxnum fminimum fmaximum ffloor fceil ftrunc fround froundeven`,
-`fcmp.oeq/olt/ole/uno`, `fptosi fptoui sitofp uitofp fpconv`, the range
-predicates `fptosi.ovf fptoui.ovf`, `fisnan fiszero fisinf`, and `libm`,
-an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its SHA-256 is
+PIR (`include/prism/pir.hpp`) is typed SSA over bitvectors of width 1..64. Statements are `assign`,
+`check` (violation when the i1 argument is 1), `assume` and the memory statements; terminators are
+`jmp`, `br`, `ret` and `stop` (the path ends); loops are back edges. Operators are the LLVM integer
+operators, comparisons, casts, bit intrinsics, `havoc`, the i1 property predicates (`sadd.ovf`,
+`shift.oob`, …) and IEEE operators on FP bits. `to_text` prints PIR; its SHA-256 is
 `extra.pir_hash`.
+
+Calls to functions defined in the unit (or a linked model) are **inlined**: depth 4, or 12 in C++
+units. Recursion is `UNENCODED: recursive call @f`. `exit`/`_Exit`/`_exit`/`quick_exit` end the
+path. `__VERIFIER_nondet_*` and `nondet_*` are havocs; `__VERIFIER_assume` is an assume.
 
 ### Properties (inserted by PRISM, Law 8)
 
 | IR | check | class |
 |---|---|---|
-| `add/sub/mul nsw` (clang marks signed C arithmetic `nsw` exactly when overflow is UB) | signed overflow | INT-SIGNED-OVF |
+| `add/sub/mul nsw` (clang sets `nsw` exactly when signed overflow is UB) | signed overflow | INT-SIGNED-OVF |
 | `sdiv/srem` | divisor 0; `INT_MIN / -1` | INT-DIV-ZERO / INT-SIGNED-OVF |
 | `udiv/urem` | divisor 0 | INT-DIV-ZERO |
-| `shl/lshr/ashr` | amount ≥ width (negative amounts included) | INT-SHIFT-UB |
-| C signed `<<` (located as above) | negative base or overflow | INT-SHIFT-UB |
+| `shl/lshr/ashr` | amount ≥ width | INT-SHIFT-UB |
+| C signed `<<` | negative base or overflow | INT-SHIFT-UB |
 | `nuw`, `exact`, `or disjoint`, `zext nneg` | the poison condition | UB-POISON |
 | `llvm.abs(x, true)` | `x == INT_MIN` | INT-SIGNED-OVF |
 | `llvm.ctlz/cttz(x, true)` | `x == 0` | INT-CLZ-ZERO |
 | `unreachable`, `llvm.trap` | reached | CXX-UNREACHABLE |
 | `__assert_fail`, `reach_error`, `__VERIFIER_error` | reached | FUNC-CONTRACT |
-| `abort` | reached on an execution where no library allocation failed (after a failed `malloc`/`calloc`/`realloc` it is out-of-memory handling, CONFORMANCE.md F9) | FUNC-CONTRACT |
-| uninitialised local read | reached with shadow set | UNINIT-READ |
+| `abort` | reached on a path where no library allocation failed (after a failed allocation it is out-of-memory handling; CONFORMANCE.md F9) | FUNC-CONTRACT |
+| uninitialised local read | shadow set | UNINIT-READ |
 | clang-folded UB | reached | per warning / UB-POISON |
-| `fptosi`/`fptoui` | value (truncated) outside the integer type, NaN, ±inf (C11 6.3.1.4p1) | FLOAT-CAST-OVF |
-| `fdiv`/… under `--fp-checks` (opt-in) | division by ±0; NaN from non-NaN operands; infinite result from finite operands | FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW |
-| exception reaching `__clang_call_terminate` | a `noexcept` function (or a destructor during unwinding) throws | CXX-THROW-NOEXCEPT |
-| exception leaving `main` | uncaught: `std::terminate` | CXX-UNCAUGHT |
-| `std::terminate()`, `throw;` with no handled exception | reached | CXX-TERMINATE |
-| `__cxa_pure_virtual` | pure virtual call | CXX-PURE-VIRTUAL |
-| `longjmp` | its `setjmp` caller has returned (C11 7.13.2.1p2) | CTRL-LONGJMP-INVALID |
+| `fptosi`/`fptoui` | truncated value outside the type, NaN, ±inf | FLOAT-CAST-OVF |
+| FP ops under `--fp-checks` (opt-in) | ÷ ±0; NaN from non-NaN; inf from finite | FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW |
+| exception reaching `__clang_call_terminate` | throw out of `noexcept` | CXX-THROW-NOEXCEPT |
+| exception leaving `main` | uncaught | CXX-UNCAUGHT |
+| `std::terminate()`, `throw;` with none handled | reached | CXX-TERMINATE |
+| `__cxa_pure_virtual` | reached | CXX-PURE-VIRTUAL |
+| `longjmp` | its `setjmp` caller has returned | CTRL-LONGJMP-INVALID |
 | call through a null function pointer | reached | PTR-NULL-DEREF |
+| memory accesses, frees, pointer arithmetic | "Memory model" table | MEM-*, PTR-* |
+| `std::__glibcxx_assert_fail` | reached | "C++ library" |
 
-Modelled calls: `llvm.{s,u}{add,sub,mul}.with.overflow` (+ `extractvalue`),
-`llvm.{s,u}{max,min}`, `abs`, `ctlz`, `cttz`, `ctpop`, `bswap`, `expect`,
-`assume`; `llvm.dbg.*` etc. ignored; `exit/_Exit/_exit/quick_exit` end the
-path; `__VERIFIER_nondet_*` / `nondet_*` are havocs; `__VERIFIER_assume` is
-an assume. Calls to functions defined in the same unit are **inlined**
-(depth 4; recursion is `UNENCODED: recursive call @f`).
+<a id="what-is-not-encoded-named-never-dropped--roadmap-21"></a>
 
-### What is not encoded (named, never dropped — roadmap 2.1)
+### What is not encoded (named, never dropped)
 
-Everything else makes the function `NEEDS-HARNESS` with
-`UNENCODED: <construct>`: floating-point formats other than
-half/float/double (`long double` = x86_fp80, `__float128`, bfloat),
-fast-math flags, fused multiply-add on half, integers wider than 64 bits,
-external calls without a library model (`UNENCODED: call @f`), `switch` if
-lower-switch did not run, irreducible control flow (e.g. a `longjmp` from
-code the `setjmp` does not dominate), vectors and first-class aggregates
-other than the `{ ptr, i32 }` exception pair, `ptrtoint` other than pointer
-differences, `inttoptr` other than of 0, volatile/atomic loads and stores,
-`thread_local` globals, extern arrays of unknown size, dynamic exception
-specifications (`__cxa_call_unexpected`, `filter` clauses), indirect calls
-with more than 16 candidate targets, and inline assembly without a
-contract. Some constructs end only *one path* instead of the whole function
-(a *soft* check, `prop = unmodelled`: reachable means `NEEDS-HARNESS`,
-never FAILED and never proved away): a landing pad whose code cannot be
-translated, a thrown type whose match against a catch clause PRISM cannot
-decide, an indirect call whose pointer is none of its candidate targets
-(the "havoc fallback"), or an exception type it cannot identify. Pointer parameters are
-`NEEDS-HARNESS` by Law 6 unless a precondition gives the object size
-("Pointer parameters" below; C++ member functions have `this`). In C++
-units, a function whose source contains `const_cast` is
-`UNENCODED: const_cast`. Known gaps of the *property set* (a PROVED means
-these were not checked): reading an indeterminate value that is only copied
-(`int y = x;` with `y` unused — the read has no IR instruction after
-mem2reg), falling off the end of a non-void C function (UB only when the
-caller uses the value), sub-array bounds of the last struct field
-(flexible-array idiom) and dereferences of a one-past-the-end sub-array
-address computed separately, memory leaks (valid-memtrack), effective types unless `--strict-aliasing`, pointer
-arithmetic on an already freed object, reads of a non-volatile local
-modified between `setjmp` and `longjmp` (C11 7.13.2.1p3 makes its value
-indeterminate; PIR reads the stored value, as the -O0 build does), and
-exceptions that leave a function other than `main` (not UB there: the
-path ends and `extra.throws_not_followed` names the types).
+A construct PIR cannot encode makes the function `NEEDS-HARNESS` with `UNENCODED: <construct>` in
+the message. The main ones: integers wider than 64 bits; `long double` (x86_fp80), `__float128`,
+bfloat, fast-math flags, fused multiply-add on half; external calls without a library model
+(`UNENCODED: call @f`); `atomic` loads and stores; `thread_local` globals; extern arrays of unknown
+size; vectors and first-class aggregates other than two scalar fields and the `{ ptr, i32 }`
+exception pair; `ptrtoint` other than pointer differences and comparisons; `inttoptr` other than of
+0; `switch` if lower-switch did not run; irreducible control flow; recursion and calls deeper than
+the inline limit; dynamic exception specifications; indirect calls with more than 16 candidates;
+inline assembly without a contract; objects of 2^47 bytes or more (2^21 under ILP32) or more objects
+than the id bits hold; in C++ units, a function whose source contains `const_cast`. The full list is
+every `Unenc{"UNENCODED: …"}` in `src/prism/pir/`.
 
-## Memory model (roadmap 2.5)
+Some constructs end only one path (a *soft* check, `prop = unmodelled`): reachable means
+`NEEDS-HARNESS`, never FAILED, never proved away. Examples: a landing pad that cannot be translated,
+an undecidable catch match, the indirect-call havoc fallback.
 
-Follows ESBMC/SMACK and the Lean model `proofs/semantics/PrismSem/Memory.lean`.
+Pointer parameters are `NEEDS-HARNESS` by Law 6 unless a precondition gives the object size
+("Pointer parameters").
 
-**Pointers** are one 64-bit PIR value: object id in bits 63..48 (`0` is the
-null object, never allocated), byte offset in bits 47..0. Every object is
-smaller than 2^47 bytes and every `getelementptr` is checked to stay inside
-its object (or one past its end), so on every execution without a reported
-violation the packed value *is* the Lean pair `(obj, off)`: `p + d` keeps the
-object bits and adds `d` to the offset (proof sketch: `obj·2^48 + off + d ≡
-obj'·2^48 + off' (mod 2^64)` with `off, off' ∈ [0, 2^48)` and `d ∈ [-2^63,
-2^63)` forces `obj' = obj`, `off' = off + d` exactly when the checked
-offset stays in range).
+**Gaps of the property set.** A PROVED means these were not checked: an indeterminate value that is
+only copied (`int y = x;`, `y` unused); falling off the end of a non-void C function; sub-array
+bounds of the last struct field (flexible-array idiom) and a separately computed one-past-the-end
+sub-array address; memory leaks; effective types unless `--strict-aliasing`; pointer arithmetic on
+an already freed object; a non-volatile local modified between `setjmp` and `longjmp` (C11
+7.13.2.1p3); an exception that leaves a function other than `main` (the path ends;
+`extra.throws_not_followed` names the types).
 
-**Objects** carry size (64-bit, possibly symbolic: VLAs, `malloc(n)`),
-liveness, allocation kind (`stack`, `heap`, `static`, `const` (string
-literals, `constant` globals), `new`, `new[]`, `extern` (contract objects),
-`FILE`) and base alignment. Every memory byte is a *cell*: value (8 bits),
-initialised (1 bit) and, with `--strict-aliasing`, an effective-type tag.
+<a id="memory-model-roadmap-25"></a>
 
-**PIR statements**: `alloc` (size, kind, initial contents: uninitialised,
-zero, or initialised with arbitrary bytes), `free` (end of lifetime),
-`load` (value + "some byte uninitialised" + "effective-type mismatch"),
-`store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
-`stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
-again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
-usable in any expression. The translator (`translate_mem.cpp`) turns every
-property into ordinary `check`s over these (Law 8):
+## Memory model
+
+The model follows ESBMC/SMACK and the Lean model `proofs/semantics/PrismSem/Memory.lean`.
+
+**Pointers** are one PIR value. Under LP64 the object id is bits 63..48 (`0` is null, never
+allocated) and the byte offset bits 47..0 (`PtrModel kLP64`). ILP32 packs id 31..22 and offset 21..0
+(`kILP32`). Every object is smaller than 2^47 (ILP32: 2^21) bytes. Every `getelementptr` is checked
+to stay in its object or one past it. So on every execution without a reported violation the packed
+value is the Lean pair `(obj, off)`.
+
+**Objects** carry size (possibly symbolic: VLAs, `malloc(n)`), liveness, kind (`stack`, `heap`,
+`static`, `const`, `new`, `new[]`, `extern` for contract objects, `FILE`) and base alignment. Each
+byte is a cell: 8-bit value, an initialised bit and, with `--strict-aliasing`, an effective-type
+tag.
+
+**Statements**: `alloc`, `free`, `load`, `store`, `memcpy` (memmove semantics), `memset`,
+`stacksave`, `stackrestore`, `revive` (`llvm.lifetime.start`). Queries `obj.size`, `obj.live`,
+`obj.kind`, `obj.align` can appear in any expression. `translate_mem.cpp` turns each property into
+ordinary `check`s:
 
 | IR | check | class |
 |---|---|---|
 | load/store through object 0 | null dereference | PTR-NULL-DEREF |
-| load/store, object id not allocated | wild pointer | PTR-INVALID-DEREF |
-| load/store, object not live | use after free / after its lifetime | MEM-UAF |
+| load/store, id not allocated | wild pointer | PTR-INVALID-DEREF |
+| load/store, object not live | use after free / lifetime | MEM-UAF |
 | load/store, `off + n > size` | out of bounds | MEM-OOB-READ / MEM-OOB-WRITE |
-| load/store `align a`, `off % a ≠ 0` or object alignment `< a` | misaligned access | MEM-MISALIGNED |
+| load/store `align a` not met | misaligned access | MEM-MISALIGNED |
 | store to a `const` object | write to read-only memory | MEM-WRITE-CONST |
-| load of a byte never written | uninitialised memory read | UNINIT-READ |
+| load of a byte never written | uninitialised read | UNINIT-READ |
 | load, effective type differs (`--strict-aliasing`) | strict aliasing | MEM-STRICT-ALIAS |
-| `getelementptr` offset `idx·size` / sum overflows | offset overflow | MEM-PTR-ARITH |
-| `getelementptr inbounds` on null with offset ≠ 0, or result outside `[0, size]` | invalid pointer arithmetic | MEM-PTR-ARITH |
-| `getelementptr` index into a nested array `[N x T]` (not the last struct field): `≥ N` when dereferenced, `> N` otherwise | sub-array bounds (`a[1][7]` in `int a[4][5]`, C17 J.2) | MEM-PTR-ARITH |
-| `icmp ult/ule/…` on pointers, `ptrtoint`-`sub` | pointers into different objects | PTR-COMPARE |
-| `llvm.memcpy` (not memmove) | overlapping ranges, other than an exact self-copy (`d = s`, defined by the LangRef: a struct self-assignment); a C `memcpy` call reaches its library model (`-fno-builtin-memcpy`), where `d = s` is an overlap too (C17 7.24.2.1) | MEM-OVERLAP |
-| `free`/`delete`/`delete[]`/`fclose` | not an object, not its start, not heap memory | MEM-INVALID-FREE |
-| same | allocated by another allocator (malloc/new/new[]) | MEM-MISMATCHED-FREE |
+| `getelementptr` offset overflow, `inbounds` outside `[0, size]`, nested-array index out of range | invalid pointer arithmetic | MEM-PTR-ARITH |
+| ordered compare or difference of pointers | different objects | PTR-COMPARE |
+| `llvm.memcpy`, C `memcpy` model | overlapping ranges | MEM-OVERLAP |
+| `free`/`delete`/`delete[]`/`fclose` | not an object start, not heap | MEM-INVALID-FREE |
+| same | wrong allocator | MEM-MISMATCHED-FREE |
 | same | already released | MEM-DOUBLE-FREE |
-| `alloca T, iN n` (VLA) | `n <= 0` (C17 6.7.6.2p5), size overflow, size `>= 2^47` | MEM-VLA-SIZE |
-| `ret` of a pointer | into the function's own stack object | MEM-STACK-ESCAPE |
+| VLA `alloca T, iN n` | `n <= 0`, size overflow, too large | MEM-VLA-SIZE |
+| `ret` of a pointer | into the function's own stack | MEM-STACK-ESCAPE |
 
-Lifetimes: `alloca`s of an inlined callee end at its `ret`; VLAs end at
-`llvm.stackrestore` (objects allocated after the matching `stacksave`);
-`llvm.lifetime.end` ends the object's lifetime and `llvm.lifetime.start`
-starts a stack object's lifetime again (LangRef), its bytes indeterminate.
-Struct layout, field offsets, sizes and alignments come from the module's
-`target datalayout` (`Layout`, x86-64 defaults). A `byval` parameter is a
-fresh copy for the callee; `sret` is a fresh uninitialised return slot.
+`llvm.memcpy` with `d = s` exactly is allowed (the LangRef defines it: struct self-assignment). A C
+`memcpy` call reaches its model, where it is an overlap (C17 7.24.2.1).
 
-**Uninitialised bytes.** A load checks that its bytes are initialised
-(UNINIT-READ), except an integer load of a whole aggregate location (the
-ABI coercion of a struct passed or returned by value, e.g. `load i64` of a
-`std::optional<int>`): padding bytes may legitimately be indeterminate, so
-such a load carries a per-byte mask that follows the value (stores copy it
-back to memory, inlined calls and returns pass it on) and is checked only
-where the value is used.
+**Lifetimes.** An inlined callee's allocas end at its `ret`, VLAs at `llvm.stackrestore`;
+`llvm.lifetime.end/start` end and restart a stack object (bytes indeterminate). Layout comes from
+the module's `target datalayout`. An integer load of a whole aggregate (ABI coercion of a struct by
+value) carries a per-byte initialised mask, checked where the value is used, since padding may be
+indeterminate.
 
-**Global state.** Globals referenced by the function are allocated in a
-prologue. `constant` globals hold their initializer; mutable globals hold
-arbitrary initialised bytes, except when the function is `main` (program
-entry: initializers). An initializer is a zero fill (one memory entry, any
-size) plus one store per non-zero scalar; a global larger than 4096 bytes
-whose initializer needs more than 256 such stores holds arbitrary
-initialised bytes instead (an over-approximation; CONFORMANCE.md F8). A `FAILED` that disappears when the mutable globals
-hold their initializers is reported `NEEDS-HARNESS` ("the global state the
-function is called in is an unstated precondition"; `extra.globals`).
-`stdin`/`stdout`/`stderr` point to valid `FILE` objects.
+**Global state.** Globals the function uses are allocated in a prologue. `constant` globals hold
+their initializer. Mutable globals hold arbitrary initialised bytes, except in `main`, which starts
+from the initializers. A global over 4096 bytes whose initializer needs more than 256 stores holds
+arbitrary bytes instead (CONFORMANCE.md F8). A FAILED that disappears with the initializers is
+`NEEDS-HARNESS` (the global state is an unstated precondition; `extra.globals`). Branch
+`port/precision` (commit `a8e9f1676`, landing): when the re-check with initializers fails on a
+*different* property, that verdict replaces the first one, and the arbitrary-globals violation is
+kept as `extra.arbitrary_globals_violation`. `stdin`/`stdout`/`stderr` point to valid `FILE`
+objects.
 
 ### Encodings
 
-The unrolled program is a DAG encoded in topological order, and every memory
-update is guarded by the reach condition of its block instance: guards of
-instances off the executed path are false, so one global memory state is
-exact (no merge at joins). Each `alloc` instance of the DAG runs at most once
-per path and gets the next constant object id (the Lean `next` counter).
+The unrolled program is a DAG encoded in topological order. Every memory update is guarded by its
+block instance's reach condition, so one global memory state is exact, and each `alloc` instance
+gets the next constant object id (the Lean `next` counter). `MemEncoding::Bv` is the default
+(QF_BV, what certified mode accepts): a load is an `ite` chain over the guarded writes before it
+(read-over-write, as `PrismSem/MemEncode.lean` `menc`), and arbitrary bytes are fresh variables with
+Ackermann constraints. `MemEncoding::Array` (one SMT array, ranged writes as lambdas) is slower on
+symbolic lengths and not the default.
 
-* `MemEncoding::Array` (`EncodeOptions`, unbounded mode): one SMT array
-  from address to cell; ranged writes (`memcpy`, `memset`, arbitrary-byte
-  initialisation) are lambdas. Z3 handles the lambdas of symbolic-length
-  `memcpy` poorly (a random pointer program: 53 s vs 0.24 s for Bv), so it
-  is not the stage default.
-* `MemEncoding::Bv` (default of `check_function`, the stage and `pir_vcs`;
-  QF_BV, what the certified back end accepts):
-  arrays eliminated. A load is an ite chain over the guarded writes before
-  it (read-over-write, as `PrismSem/MemEncode.lean` `menc`), writes to other
-  objects are skipped when both object ids are known; arbitrary initial bytes
-  are fresh variables with pairwise Ackermann constraints
-  (`a = a' → h = h'`). The VCs are QF_BV.
+**Value sets (Bv).** `SymMem` computes, from a term's structure alone, a small set of guarded
+constants the term equals (guards exhaustive and exclusive). Loads and writes at such addresses are
+decided per constant without the solver, and word loads are built from whole writes
+(`SymMem::word_at`). This keeps linked structures (the map/set models, lists) tractable.
 
-**Value sets (Bv).** Pointers loaded from memory made the read-over-write
-chains of linked structures expensive: every load of `node->next` was a
-symbolic address compared against every earlier write, and a map/set erase
-at an input-dependent position followed by a traversal (the destructor,
-`clear()`) did not finish within 240–900 s. `SymMem` now computes, from a
-term's structure alone, a *value set*: at most 32 constants, each under a
-guard, the guards exhaustive and pairwise exclusive, so the term *equals*
-`ite(g1, k1, ite(g2, k2, … kn))` (numerals; `ite`; an extract pushed
-through an `ite` or into the `concat` operands it covers; any other
-bit-vector operation whose operands have value sets, evaluated per
-combination, or position by position when the operands share one guard
-list, e.g. the eight bytes of one chain). Nothing is assumed; each fact is
-an equality of terms. Uses:
-
-* a load or byte read from an address with a value set reads each constant
-  address under its guard; at a constant address a write to a constant (or
-  value-set) address is decided without the solver (equal: the write's
-  guard and the value's guard; different: skipped), a ranged write into
-  another object is skipped, and `size`/`live`/`kind`/`free` of such a
-  pointer are the few objects it can point to;
-* word-level loads: the n bytes at a constant address are built from whole
-  writes (`SymMem::word_at`): a store at least as wide that contains them,
-  a `memset`/`memcpy`/havoc of constant length that contains them, a
-  whole-object havoc; a narrower write splits the word into halves
-  (`word_split`). The value is `ite(cond_j, value_j, …)` over those writes,
-  byte for byte the chain `read_cell_log` builds, so a pointer stored and
-  loaded again keeps its value set. The uninitialised and type-tag bits
-  still come from the byte cells. Any other write that may reach the bytes
-  (a symbolic address or length) keeps the byte-level value;
-* `known()` (provenance) is also "every value is in one object".
-
-Measured (single `pir` runs, loaded shared machine, 2026-09-25):
-`map<int,int>` with two elements, `erase(k)` at an input-dependent key, then
-the destructor: did not finish in 900 s, now PROVED in 1.5 s; its MEM-UAF
-twin (an iterator to the erased element) and a wrong-sum twin are FAILED in
-seconds (doctest `pir: value sets: map erase at an input-dependent
-position`). `testdata/conformance/libc-models/map_contracts.cpp`: 11/11 in
-13.5 s as one file (per harness 0.4–2.4 s of solving;
-before: `map_insert_true` alone did not finish in 600 s). Where an address
-depends on a symbolic index (`vector::insert` at a symbolic position), the
-byte-level chain stays, and so does the cost.
-
-`tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
-and class on every property (true and false variants) and that the PIR
-interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
-counterexample. For functions with memory, the k-induction step havocs the
-loop's write footprint ("k-induction with memory" below); a loop that
-allocates or frees memory is not attempted (`extra.k_induction =
-"not-attempted (allocation or free in the loop)"`), so it is PROVED only
-when the unwinding assertion closes, else BOUNDED.
+`tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict and class on every
+property, and that the PIR interpreter (`ConcMem`) reproduces each counterexample.
 
 ### Correspondence to the Lean model
 
 | `PrismSem/Memory.lean` | C++ |
 |---|---|
-| `Ptr = (obj, off : BitVec 64)` | packed 16/48 bits (faithful on violation-free runs, above) |
+| `Ptr = (obj, off : BitVec 64)` | packed id/offset bits (faithful on violation-free runs) |
 | `Obj.size/live/data` | `SymMem::Obj::size/alive` + byte cells (`ConcMem` concretely) |
-| `MState.next` (fresh ids from 1) | constant id per `alloc` instance, in encoding order |
-| `MCond.live` / `inBounds` / `atBase` | `obj.live`; `off + n <= obj.size`; `off == 0` in the free checks |
-| `mrun` `.load`/`.store` UB (dead or out of bounds) | MEM-UAF / MEM-OOB-* / PTR-NULL-DEREF / PTR-INVALID-DEREF checks |
-| `mrun` `.free` UB (dead or not at base) | MEM-DOUBLE-FREE / MEM-INVALID-FREE checks |
-| `MemEncode.menc` select chains, `MSym.WF` congruence | `MemEncoding::Bv` read-over-write + Ackermann constraints |
-| `uaf_is_ub`, `double_free_is_ub` | doctests `pir mem: every property …` |
+| `MState.next` | constant id per `alloc` instance, in encoding order |
+| `MCond.live` / `inBounds` / `atBase` | `obj.live`; `off + n <= obj.size`; `off == 0` in free checks |
+| `mrun` load/store UB | MEM-UAF / MEM-OOB-* / PTR-NULL-DEREF / PTR-INVALID-DEREF |
+| `mrun` free UB | MEM-DOUBLE-FREE / MEM-INVALID-FREE |
+| `MemEncode.menc`, `MSym.WF` | `MemEncoding::Bv` read-over-write + Ackermann constraints |
 
-Not covered by the Lean proofs (trusted C++ code): multi-byte little-endian
-loads/stores (sequences of byte cells), the uninitialised-byte shadow (Lean
-objects are zero-filled), allocation kinds and their free checks, ranged
-`memcpy`/`memset`, alignment, the Array encoding, and the packing argument
-above (a paper proof).
+Not covered by the Lean proofs (trusted C++): multi-byte little-endian accesses, the
+uninitialised-byte shadow, allocation kinds and their free checks, ranged `memcpy`/`memset`,
+alignment, the Array encoding, the ILP32 packing, and the packing argument (a paper proof).
 
 ## Pointer parameters (Law 6)
 
-A pointer parameter stays `NEEDS-HARNESS` unless a precondition gives the
-size of its object, in the comment block right before the function or the
-leading comment lines of its body:
+A pointer parameter stays `NEEDS-HARNESS` unless a precondition gives its object's size. It goes in
+the comment block before the function or the leading comment lines of its body (`contracts.cpp`):
 
 ```c
 // requires: \valid(p + (0..n-1))        n elements, n an int parameter
@@ -392,1172 +298,410 @@ leading comment lines of its body:
 /*@ requires \valid(p + (0..n-1)); */   ACSL block
 ```
 
-With `--pir-drafts` (opt-in; the default keeps Law 6's NEEDS-HARNESS) and
-without such a clause (C units), the deterministic template harness draft
-(`ai::draft_harness`, the one the `harness` stage uses; never an LLM here,
-Law 4) may supply the size: "`a` points to exactly `n` int elements"
-(a length parameter) with its drafted range "`1 <= n <= 4`", or "at least
-K elements" when an early return bounds the index. A size read off the
-largest literal index is not used (it would make exactly those accesses
-in bounds by construction). The draft's assumptions are listed like a
-`requires` clause (`source: harness (template draft)`). A violation found
-only under a drafted precondition is reported NEEDS-HARNESS (the
-precondition was invented), never FAILED.
+`p` is then bound to a fresh `extern` object of `max(n, 0) × elem` bytes with arbitrary contents,
+16-byte aligned. The element size is that of the first access through `p`. A proof is
+**PROVED-ASSUMING**, never PROVED, with every assumption in `extra.assumptions`. A violation is
+FAILED under the stated precondition. Translation validation does not replay such functions (`tv =
+PARTIAL`).
 
-The element size is that of the first access through `p` in the IR. `p` is
-bound to a fresh `extern` object of `max(n, 0) × size` bytes, initialised
-with arbitrary bytes, 16-byte aligned; several such parameters are distinct
-objects. A proof is then **PROVED-ASSUMING**, never PROVED, with every
-assumption in `extra.assumptions` and the message; a violation is FAILED
-under the stated precondition. Translation validation does not replay such
-functions (`tv = PARTIAL`).
+With `--pir-drafts` (opt-in), a C function without a clause may take its size from the deterministic
+template harness draft (`ai::draft_harness`, never an LLM, Law 4). A violation found only under a
+drafted precondition is NEEDS-HARNESS, never FAILED.
 
-## Library models (roadmap 2.6)
+## Library models
 
-Operational models are C++ sources (`extern "C"` libc API) in
-`src/prism/pir/models/libc/` (`string.cpp`, `stdlib.cpp`, `stdio.cpp`,
-`prism_model.h`), embedded in the binary
-at build time (CMake), lowered once per run with the same clang/opt pipeline
-(`-fno-builtin -ffreestanding`), and linked into every unit that declares a
-modelled symbol and does not define it (`link_models`, on the parsed
-module: model metadata and private globals are renamed, so no `llvm-link`
-run is needed). Model code is checked like user code, so the models'
-preconditions (`requires:` comments) are enforced by the memory model;
-checks inside a model report the call site's line and name the model
-("… (in the strcpy library model)"). Model intrinsics `__prism_alloc`,
-`__prism_free`, `__prism_check`, `__prism_assume`, `__prism_memcpy`,
-`__prism_havoc_bytes`, `__prism_fresh_cstr`, … are PIR statements
-(`translate.cpp` `model_intrinsic`).
+Operational models are C++ sources with an `extern "C"` libc API in `src/prism/pir/models/libc/`.
+CMake embeds the files listed in `PRISM_PIR_MODELS`. They are lowered once per run (plus
+`-fno-builtin -ffreestanding`) and linked into every unit that declares a modelled symbol without
+defining it (`link_models`, on the parsed module). Model code is checked like user code; a check
+inside a model reports the call site and names the model ("… (in the strcpy library model)"). The
+`__prism_*` intrinsics (`__prism_alloc`, `__prism_check`, `__prism_havoc_bytes`, …) are PIR
+statements (`translate.cpp` `model_intrinsic`).
 
-| models | behaviour |
+Linked into scanned units (embedded):
+
+| file | functions |
 |---|---|
-| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL; the failure is recorded, `__prism_alloc_failed`, so a later `abort()` is not reported); calloc zero-fills and checks `n*size` overflow; `realloc(p, 0)` frees p and returns NULL (glibc) |
-| `operator new/new[]/delete/delete[]` (`_Znwm` … `_ZdaPvm`) | never NULL; kinds checked against the matching delete |
-| `strlen`, `strnlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strdup` | C loops over the bytes (bounds and termination checked) |
-| `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` | ranges checked; memcpy overlap |
-| `abs`, `labs`, `llabs` | `-x` is a checked `sub nsw` (abs(INT_MIN)) |
-| `atoi`, `atol`, `strtol`, `strtoul` | argument must be a string; value unknown |
-| `getenv` | NULL or a read-only string of unknown contents |
-| `rand`, `srand` | unknown non-negative value |
-| `fopen`, `fclose`, `fgets`, `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `fputc`, `putc`, `putchar`, `fputs`, `puts`, `fflush` | fopen may fail; FILE objects checked (double fclose); input bytes unknown |
-| `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` (translator, `libc_format.cpp`) | literal format: argument count and IR types per conversion (FMT-ARGS), `%n` (FMT-PERCENT-N), `%s` arguments must be strings, sprintf/snprintf write up to the maximal output length into the buffer; non-literal format, `v*printf`, `scanf` are UNENCODED |
+| `string.cpp` | `strlen strnlen strcpy strncpy strcat strncat strcmp strncmp strcasecmp strncasecmp strcoll strchr strrchr strstr strspn strcspn strpbrk strdup strndup memcpy memmove memset memset_explicit memcmp memchr memrchr memccpy memmem` |
+| `stdlib.cpp` | `malloc calloc realloc free aligned_alloc free_sized free_aligned_sized memalignment`, `operator new/new[]/delete/delete[]` (incl. sized), `abs labs llabs div ldiv lldiv atoi atol atoll strtol strtoll strtoul strtoull strtof strtod strtold qsort bsearch getenv rand srand`, `__VERIFIER_nondet_*` for float types |
+| `stdio.cpp` | `fopen fclose fflush fgets fread fwrite fgetc getc getchar fputc putc putchar fputs puts ungetc fseek ftell rewind feof ferror clearerr` |
+| `fmtdouble.cpp` | `__prism_fmtv`: exact `sprintf`/`snprintf` output for formats with a double |
 
-Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
+Behaviour worth knowing: allocation may fail (NULL; the failure is recorded, so a later `abort()` is
+not reported). `calloc` checks `n*size` overflow. `realloc(p, 0)` frees `p` and returns NULL
+(glibc's choice). `operator new` never returns NULL. Output functions may return EOF. Input bytes,
+`getenv` contents, `rand` values and conversion results are unknown. `strtold` returns an unknown
+`long double`, which stays `UNENCODED` on LP64.
 
-**Building the models.** The lowered models are built once per run, before
-any unit, with their own time limit (`max(120 s, 4 × --timeout)` per clang
-and opt call, where a unit gets `--timeout`), and a call that times out is
-retried once with twice the time: every library call of every unit depends
-on them, and on a loaded machine the per-unit limit was not always enough
-(the `unique_ptr` contract harnesses once came back `UNENCODED: call @_Znwm`
-because `operator new`'s model was missing from that run). The lowered IR is
-kept on disk (`$XDG_CACHE_HOME/prism/pir-models/<key>/` or
-`~/.cache/prism/pir-models/<key>/`, the key a hash of the model sources, the
-front end's version and paths; written to a temporary name and renamed, so
-concurrent runs never read a partial file), so later runs reuse it without
-running clang. If the models still cannot be built, the stage records one
-ERROR row saying why (Law 7), and every function whose translation stopped
-at an unmodelled call is `NOTRUN` (`library models could not be built
-(<why>): UNENCODED: call @name`, `extra.models_error`) instead of
-`NEEDS-HARNESS`: the call may be one the models define, so the missing
-answer is the stage's, not the function's.
+`printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` are lowered by the translator
+(`libc_format.cpp`), not linked. With a literal format it checks argument count and IR types per
+conversion (FMT-ARGS), reports `%n` (FMT-PERCENT-N), requires `%s` arguments to be strings, and
+writes sprintf/snprintf output into the buffer. A non-literal format, `v*printf` and `scanf` are
+`UNENCODED`.
+
+`ctype.cpp`, `time.cpp` and `strings_compat.cpp` (`ffs ffsl ffsll`) exist and have contract
+harnesses, but they are **not** in `PRISM_PIR_MODELS` on main, so scanned calls to them are
+`UNENCODED: call @name`. `models/libc/c23/stdbit.h` and `forced/prism_c23_decls.h` supply C23
+declarations a libc may lack.
+
+Any other external call stays `NEEDS-HARNESS` (`UNENCODED: call @name`).
+
+**Building the models.** Models are lowered before any unit, with `max(120 s, 4 × --timeout)` per
+clang and opt call; a timed-out call is retried once with twice the time. The lowered IR is cached
+on disk under `$XDG_CACHE_HOME/prism/pir-models/<key>/` or `~/.cache/prism/pir-models/<key>/`. The
+key hashes `prism-pir-models-v5`, the model sources, the clang version, the tool paths and the
+target triple. Files are written under a temporary name and renamed. If the models cannot be built,
+the stage records one ERROR row saying why (Law 7), and every function stopped at an unmodelled call
+is `NOTRUN` (`extra.models_error`), not `NEEDS-HARNESS`: the missing answer is the stage's.
 
 ### Windows disk cache (LP64)
 
-On `_WIN32` the lowered models live under
-`%LOCALAPPDATA%\prism\pir-models\<key>\` when `LOCALAPPDATA` is set (no
-disk cache otherwise). The key hashes `prism-pir-models-v5`, the embedded
-model sources, the front end's version, and the `clang` and `opt` paths
-(Windows also hashes the LP64 triple `x86_64-unknown-linux-gnu`). Before reuse,
-`try_load_model_cache` loads every embedded libc `.cpp` model's `.ll` and insists
-the IR matches that triple (`cached_model_ir_ok` rejects native LLP64
-caches: a Windows `target triple`, or `e-m:w-` in the datalayout). A bad or
-incomplete tree drops the keyed directory and the models are lowered again;
-on load, any other subdirectory of `pir-models` that fails the same check is
-removed too, so older v1/v2 keys and partial trees need no manual delete.
+On Windows the cache root is `%LOCALAPPDATA%\prism\pir-models\`. Before reuse,
+`try_load_model_cache` loads every lowered libc model and `cached_model_ir_ok` rejects IR for the
+wrong triple or native LLP64 IR (`e-m:w-`); a bad tree is deleted and lowered again. On
+`port/winmsvc` the cache is keyed and validated per target, and other targets' valid trees are kept.
 
-**C++ library.** C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which
-turns on libstdc++'s own precondition checks; library code is ordinary IR
-and is inlined (depth 12 for C++). A reachable `std::__glibcxx_assert_fail`
-is a violation: bounds (`__n < this->size()`, `std::span`, `std::array`
-`operator[]`) are MEM-OOB-READ, `std::optional::operator*` on an empty
-optional is CXX-OPTIONAL-NULL, `std::unique_ptr::operator*` on null is
-PTR-NULL-DEREF. Library throws (`std::__throw_*`, e.g. `vector::at`,
-`optional::value`, the vector length check) throw the libstdc++ exception
-class they name (`std::out_of_range`, `std::length_error`, …) along the
-explicit exception edges of "Exceptions" below, so a `catch` of that
-class or one of its bases catches them. With this, `std::vector`
-(`operator[]`), `std::span`, `std::array`, `std::optional` (`operator*`),
-`std::unique_ptr` (`operator*`) and `std::string_view` work
-(`testdata/pir/mem_stl.cpp`). The platform C++ library is
-libstdc++ (D7, Linux); libc++ would need the same treatment of
-`_LIBCPP_HARDENING_MODE`.
+### C++ library
 
-### C++ library models (roadmap 2.6)
+C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which turns on libstdc++'s own precondition
+checks. Library code is ordinary IR and is inlined. A reachable `std::__glibcxx_assert_fail` is a
+violation: bounds (`operator[]`, `std::span`) are MEM-OOB-READ, `std::optional::operator*` on an
+empty optional is CXX-OPTIONAL-NULL, `std::unique_ptr::operator*` on null is PTR-NULL-DEREF. Library
+throws (`std::__throw_*`) throw the exception class they name along the explicit exception edges
+("Exceptions"), so a `catch` of that class or a base catches them. libc++ (`_LIBCPP_HARDENING_MODE`)
+is not handled. On the MSVC target (`port/winmsvc`) these checks are not run.
 
-Some libstdc++ code is too expensive for the encoder: `std::vector`'s
-`_M_realloc_insert` (relocation through `__relocate_a`, `memmove` of a
-symbolic length, the `_M_check_len` arithmetic, exception guards) makes Z3
-run out of memory after two `push_back`s on an empty vector. For such
-containers PRISM ships **model headers** in `src/prism/pir/models/cxx/`,
-embedded in the binary like the C models (CMake list `PRISM_PIR_MODELS`,
-names `cxx/<header>`), written to a temporary directory once per run and put
-first on the C++ include path (`-isystem`, `lower_to_ir`), so the unit's
-`#include <vector>` reaches the model instead of libstdc++'s header.
+### C++ library models
 
-A model replaces library code only where it is sound — it must reach every
-behaviour the real library can:
+Some libstdc++ code is too expensive or too recursive for the encoder (`vector::_M_realloc_insert`,
+the red-black tree's recursive erase). PRISM ships model headers in `src/prism/pir/models/cxx/`,
+embedded like the C models (`cxx/<path>`), written to a temporary directory once per run and put
+first on the C++ include path (`-isystem`, `lower_to_ir`), so `#include <vector>` reaches the model.
 
-* **`<vector>`** (`std::vector<T, std::allocator<T>>`): a plain three-pointer
-  implementation of the whole C++23 interface with libstdc++ 13's own
-  capacity policy (`reserve`/`assign`/copy allocate exactly; growth is
-  `size + max(size, n)` clamped to `max_size()`), so the same insertions
-  reallocate and `capacity()`/`data()` read the same values; storage from
-  `std::allocator<T>` (the `operator new/delete` models), so a pointer,
-  reference or iterator kept across a reallocation points into a freed
-  object and its use is **MEM-UAF** (iterator invalidation); the same
-  exceptions (`length_error`, `out_of_range` from `at`) with the strong
-  guarantee for throwing element copies; the same element construction and
-  destruction order (relocation for nothrow-movable elements, move-if-noexcept
-  otherwise); the `_GLIBCXX_ASSERTIONS` preconditions with libstdc++'s
-  condition text (`operator[]`: `__n < this->size()` → MEM-OOB-READ;
-  `front`/`back`/`pop_back`: `!this->empty()` → FUNC-CONTRACT) plus the
-  standard's preconditions on `insert`/`erase` positions (an iterator into
-  another vector, `erase(end())` → FUNC-CONTRACT). The model was checked
-  differentially against libstdc++ under ASan/UBSan: a program exercising
-  every member (growth sequence, fill/range/initializer-list insertion,
-  erase, resize, shrink_to_fit, assign, copy/move, comparisons, erase_if,
-  `at` and `reserve` exceptions, a throwing-copy element type, strings,
-  `unique_ptr` elements, deduction guides) prints an identical trace of
-  sizes, capacities, contents and constructor/destructor calls with both
-  (`tests/cxx_models/vector_trace.cpp`, run by `tests/cpp/test_cxx_models.cpp`).
-* **`<map>`, `<set>`** (`std::map`, `std::multimap`, `std::set`,
-  `std::multiset` with `std::allocator`; `prism_tree.h` is their shared
-  core). libstdc++'s red-black tree erases and copies recursively, which the
-  translator does not inline (`UNENCODED: recursive call`), so every
-  associative container was `NEEDS-HARNESS`. The model keeps the elements in
-  a sorted, circular, doubly linked list of heap nodes around a sentinel
-  header inside the container object (the `end()` position); lookups are
-  linear. Everything the standard makes observable is libstdc++ 13's: the
-  order (`key_compare`), uniqueness, where an equivalent key goes in a
-  multimap/multiset (after the equivalent keys; a hinted insert with
-  libstdc++'s exact `_M_get_insert_hint_equal_pos` rule); one heap node per
-  element from `std::allocator` (the `operator new/delete` models), so
-  insertion never invalidates and `erase` frees exactly the erased node — an
-  iterator, pointer or reference to an erased element points into a freed
-  object and its use is **MEM-UAF**, as it is undefined behaviour with
-  libstdc++ (`clear()`, the destructor and assignment free every node of the
-  target); when elements are constructed (`emplace`/`emplace_hint`/
-  `insert(P&&)` build the node first and drop it if the key exists;
-  `insert(value_type)`, `try_emplace`, `operator[]`, `insert_or_assign` and
-  `emplace(key, mapped)` look up first); a throwing element copy leaves the
-  container unchanged, except copy assignment, which leaves the target empty
-  as libstdc++'s node-reusing assignment does; `max_size()` from the size of
-  libstdc++'s node; `map::at`'s `out_of_range`. Preconditions are checked as
-  `_GLIBCXX_ASSERTIONS` checks (FUNC-CONTRACT): dereferencing or incrementing
-  `end()`, decrementing `begin()`, `erase(end())`, and an iterator or hint of
-  another container (every node records its container). Not the same, and
-  not observable through the standard: the number and order of comparator
-  calls, and the order in which `clear()`/the destructor destroy elements.
-  Node handles (`extract`, `insert(node_type)`, `merge`) and other allocators
-  (`pmr::map`) are not provided: such a unit falls back to libstdc++.
-  Differential test: `tests/cxx_models/map_set_trace.cpp` (every member,
-  hinted multimap inserts, transparent comparators, deduction guides,
-  `erase_if`, throwing copies, element construction counts) prints the same
-  trace with libstdc++ and with the model under ASan/UBSan, and an iterator
-  to an erased element is a heap-use-after-free with both.
-* **`std::string`** (`bits/basic_string.tcc`). `<string>` is reached from
-  every iostream/exception header, so the class cannot be swapped; but under
-  `_GLIBCXX_ASSERTIONS` libstdc++ disables its explicit-instantiation
-  declarations for `basic_string` (and C++20 code instantiates it
-  implicitly anyway), so its out-of-line members are compiled into the unit
-  and inlined like any code — they were never `NEEDS-HARNESS` for that
-  reason. What made them unanswerable was cost: they copy with
-  `memcpy`/`memmove` of a symbolic length (`traits_type::copy`), which PIR
-  encodes as a ranged copy the solver handles slowly (`cxx_string_substr`
-  timed out at 180 s). libstdc++'s `<string>` includes
-  `<bits/basic_string.tcc>` after the class definition; the model directory
-  has a file of that name, so the include reaches PRISM's definitions of
-  those members (`_M_create`, the three `_M_construct`s, `_M_assign`,
-  `_M_mutate`, `_M_erase`, `_M_append`, `_M_replace`, `_M_replace_aux`,
-  `_M_replace_cold`, `_M_replace_dispatch`, `reserve`, `resize`, `swap`,
-  `copy`, `resize_and_overwrite`, the `find` family) with element loops
-  instead of ranged copies, and the rest of libstdc++ 13's behaviour: the
-  15-character local buffer and `_M_create`'s growth policy (the same
-  capacity after every operation), allocation through `std::allocator`
-  (MEM-UAF for a pointer kept across a reallocation), the same exceptions
-  with the same messages, the same results for arguments that alias the
-  string itself. The class body, its inline members and its assertions stay
-  libstdc++'s. Only the new ABI is modelled (the old copy-on-write string
-  includes libstdc++'s file); `operator>>`/`getline` stay libstdc++'s
-  explicit instantiations (they need iostreams). Differential test:
-  `tests/cxx_models/string_trace.cpp` (constructors, the growth sequence,
-  `reserve`/`shrink_to_fit`/`resize`, every modifier including
-  self-referencing `append`/`replace`/`insert`, the `find` family,
-  `compare`, `substr`, `copy`, concatenation, and every exception with its
-  message) prints the same trace with libstdc++ and with the model.
-* **Not modelled, and why.** `vector<bool>` (a bit container) and allocators
-  other than `std::allocator<T>` (including `pmr::vector`) are left
-  undefined in the model: a unit that uses them does not compile against
-  it, and the pir stage lowers it again with libstdc++'s header — every
-  function's `extra.cxx_models` says which library it was checked against
-  (`"model: vector"`, `"model: map, set"`, `"model: bits/basic_string.tcc"`,
-  or `"libstdc++ (fallback: …)"` with the compiler's reason). A unit that
-  also includes a libstdc++ header using the tree or the vector internally
-  (`<regex>` includes `bits/stl_map.h` and `bits/stl_vector.h`) falls back
-  the same way. `std::array`, `std::span`, `std::optional` and
-  `std::unique_ptr` are not replaced: their libstdc++ code is small,
-  loop-free and already checks exactly the standard's preconditions under
-  `_GLIBCXX_ASSERTIONS`, so the library code is its own sound model.
-  `std::deque` is the model `models/cxx/deque` (one heap node per element,
-  invalidation is a real free, `docs/finish-notes/deque.md`;
-  `libc-models/deque_contracts`). Iostreams are libstdc++'s code (`NEEDS-HARNESS` where it recurses or calls
-  into `libstdc++.so`).
+A model must reach every behaviour the real library can. Containers keep libstdc++ 13's observable
+behaviour (capacity growth, construction order, exceptions) and allocate through `std::allocator`
+(the `operator new/delete` models), so an iterator or pointer kept across a reallocation or erase is
+**MEM-UAF** when used. Preconditions are checked as `_GLIBCXX_ASSERTIONS` checks. Each model has a
+differential trace test against libstdc++, `tests/cxx_models/<name>_trace.cpp`, run by
+`tests/cpp/test_cxx_models.cpp` and `test_cxx_*.cpp`.
 
-Encoder support added for the model: a use of a loop value outside its loop
-that LLVM's LCSSA form never has, but that the translator creates on an
-exception path leaving a loop through an inlined callee (the end of the
-unwound frames' stack objects), takes the value of the iteration the path
-left from (an implicit LCSSA phi over the node's incoming edges) instead of
-giving up with `UNENCODED: value used outside its loop`.
+`models/cxx/` has 73 top-level entries (2026-11-05, main `991c4eafa`): 65 standard-header models,
+the `bits/` and `iostream/` directories, and helpers.
 
-Encoder support added for the map/set models (and user code alike):
+| family | model files |
+|---|---|
+| sequences | `vector array deque list forward_list span mdspan valarray bitset initializer_list` |
+| associative (`prism_tree.h`, `prism_hash_table.h`) | `map set unordered_map unordered_set flat_map flat_set` |
+| adaptors | `stack queue priority_queue` |
+| strings and text | `bits/basic_string.tcc` (std::string's out-of-line members), `string_view charconv format print regex sstream spanstream fstream syncstream` |
+| vocabulary and utilities | `optional expected variant any tuple functional memory memory_resource typeindex source_location system_error stacktrace ratio` |
+| numerics | `cmath complex numbers numeric bit random chrono` |
+| algorithms and iterators | `algorithm iterator ranges execution` |
+| concurrency (`bits/prism_sched.h`, `bits/prism_conc.h`) | `thread mutex shared_mutex condition_variable atomic future latch barrier semaphore stop_token` |
+| coroutines | `coroutine generator` |
+| other | `filesystem`; `std.cppm` (`import std;`) |
+| helpers | `prism_fpfmt.h` (exact FP text), `prism_dfp.hpp`, `prism_dfp_mp.hpp` (C23 decimal FP shim), `iostream/prism_ostream.hpp` |
 
-* **Two-field aggregates.** A first-class struct of two scalars (`iN ≤ 64`
-  or `ptr`) — the `{ ptr, i8 }` in which the x86-64 ABI returns
-  `std::pair<iterator, bool>` from `insert`/`emplace`, `{ ptr, ptr }` from
-  `equal_range` — is kept as two variables: a call returning one, `load`
-  and `store` of one (field by field, the padding is not read),
-  `insertvalue`/`extractvalue`, and `ret` of one from an inlined callee
-  (continuation phis per field; a pointer field is stack-escape checked
-  like a returned pointer). Before, any such call was `UNENCODED: call @f
-  returning { ptr, i8 }`. Other aggregates stay `UNENCODED`.
-* **The unwind tried first.** The unrolled program grows with the unwind to
-  the power of the loop nesting depth (a lookup loop inside the insertion
-  loop of an initializer-list constructor), so `check_function` first checks
-  a function with loops at unwind 4 (same time limit per query) when
-  the requested unwind is larger. Only answers that are exact at the
-  requested unwind too are taken from it: PROVED with every loop closed (no
-  path reaches the unwinding cut, so a larger unwind adds no path) and
-  FAILED (the violating path exists at any larger unwind); `extra.unwind`
-  then says 4 and `extra.unwind_requested` the requested bound. Anything
-  else (BOUNDED — k-induction is not attempted in the first try —, unknown,
-  a timeout) is decided at the requested unwind exactly as before
-  (`extra.unwind_first_tried` records the first attempt), so a loop that
-  closes between 5 and the requested bound is still PROVED there, never
-  turned into PROVED-UNBOUNDED. Certified mode keeps the requested unwind.
+Several models are partial on purpose (`algorithm`, `numeric`, `cmath`, `ranges`, `ratio`, `regex`,
+`semaphore`, `numbers`); each header's leading comment says what it covers. `<string>` itself is
+libstdc++'s; only `bits/basic_string.tcc` is replaced, with element loops instead of ranged copies
+(new ABI only). `iostream/` holds a recording buffer included by path; it is not a `<iostream>`
+model. The thread models schedule threads at sync points (`bits/prism_sched.h`); the `conc` stage
+uses `bits/prism_conc.h` (docs/CONCURRENCY.md).
 
-### Library models verified by PRISM (roadmap 8.2)
+**Not modelled.** `vector<bool>` and allocators other than `std::allocator<T>` (including `pmr::`
+containers) are left undefined, and so are node handles of the associative containers. A unit that
+uses them does not compile against the models. The stage then lowers it again with libstdc++'s
+headers. Every function's `extra.cxx_models` says which library it was checked against: `"model:
+vector, map"` (the model headers the IR used), or `"libstdc++ (fallback: …)"` with the compiler's
+first error.
 
-The models are checked by PRISM itself: `testdata/conformance/libc-models/`
-holds contract harnesses that `#include` the model sources
-(`string.cpp`, `stdlib.cpp`, `stdio.cpp`; the C++ allocation models through the
-linked copy of `stdlib.cpp`, since their names are mangled) and state each
-function's contract from the C standard with `assert()`. Every harness
-builds its own objects with symbolic contents and symbolic sizes/positions
-(scalar parameters, so no pointer-parameter precondition is assumed, Law 6),
-calls the model, and asserts the contract, e.g. "strlen returns the index of
-the first NUL", "strcmp's sign is the sign of the first differing byte as
-`unsigned char`, and it is antisymmetric", "memcpy copies n bytes and leaves
-the rest of the destination untouched", "strchr(s, 0) points at the
-terminator", "realloc keeps min(old, new) bytes and leaves the old object
-valid on failure", "fgets NUL-terminates within n". Every load and store in
-the model is checked by the memory model on the way. Each `_true` harness
-has `_false` twins (a wrong contract, or a precondition violation such as an
-unterminated string) that must be refuted for the class they plant
-(`expect_class:` in the task file), so a proof is not vacuous. They run in
-the conformance suite (`build/prism-qa conformance`).
+The encoder keeps a first-class struct of two scalars (`{ ptr, i8 }` for `pair<iterator, bool>`) as
+two variables; other aggregates stay `UNENCODED`.
 
-**Scope of the proofs.** The objects in the harnesses have `N` bytes
-(`harness.h`, default `N = 4`; `2N`/`2N + 1` for a `strcat`/`strncat`
-destination), so the model loops run at most `2N + 1` times and close within
-the unwinding bound: the verdict is PROVED (the unwinding assertion is
-proved), but what is proved is the contract **for every content, position
-and length of objects up to N bytes**, not for strings of arbitrary length.
-That is a size-bounded result; it is not claimed as a proof for all sizes
-(Law 2). k-induction alone (including the memory-writing loops) does not
-close the byte loops of the string models on a symbolic-length object; loop
-invariants do (next paragraph but one, "Size-unbounded string contracts").
+### Library models verified by PRISM
 
-`prism-qa libc-bounds` re-runs every `_true` harness alone with
-`-DN=4, 8, 16, 32, 64` and `--unwind 2N + 2` and reports the largest N still
-PROVED within the conformance timeout (180 s per run). On 2026-09-23 every
-size-parametric harness was PROVED at N = 4, 8 and 16 (longest run 85 s:
-`calloc` and `realloc` at N = 8/16; the string models 1–8 s); 16 is the
-bound reported below (larger sizes were not part of that sweep).
+`testdata/conformance/libc-models/` holds contract harnesses that `#include` the model sources and
+`assert()` each function's C-standard contract (e.g. "strlen returns the index of the first NUL")
+on objects with symbolic contents and sizes. Each `_true` harness has `_false` twins that must be
+refuted with the planted class (`expect_class:`), so a proof is not vacuous. `*_contracts.cpp`
+harnesses do the same for the C++ models. They run in `build/prism-qa conformance`;
+`tests/cpp/test_qa_conformance.cpp` checks that every libc model function is called by a harness.
 
-**Size-unbounded contracts.** The ranged models — `memcpy`, `memmove`,
-`memset` (PIR's ranged memory statements) and `realloc`'s copy — have no
-loop, so `unbounded_contracts.cpp` checks them on heap objects of a symbolic
-size n < 2^40: those PROVED verdicts hold for every size in that range, not
-only up to N.
+**Scope.** Harness objects have `N` bytes (`harness.h`, default 4), so most verdicts are
+size-bounded (Law 2): PROVED means "for every content and position of objects up to N bytes".
+`prism-qa libc-bounds` re-runs each `_true` harness at `-DN=4, 8, 16, 32, 64`; on 2026-09-23 every
+size-parametric harness was PROVED at N = 16. Two harness files prove contracts for any size below
+2^40: `unbounded_contracts.cpp` (the loop-free ranged models `memcpy`, `memmove`, `memset`,
+realloc's copy) and `unbounded_string_contracts.cpp` (byte-loop string models, closed by Houdini
+invariants, "Loop invariants"). `getenv` stays BOUNDED (its string has unknown length).
 
-**Size-unbounded string contracts.** `unbounded_string_contracts.cpp` checks
-the byte-loop models on heap objects of a symbolic size below 2^40 with
-arbitrary contents: `NEW_STR(s, n, k)` havocs n bytes (`__prism_havoc_bytes`),
-assumes the first k non-NUL in a read-only loop and stores a NUL at k, so a
-string of any length and content; positions in the contract are the
-harness's parameters (the assert states it for every position). Neither the
-harness's loops nor the model's close within any unwinding bound: a
-PROVED-UNBOUNDED there comes from loop invariants proved inductive by
-Houdini ("Loop invariants"), e.g. for `strcpy` `i ≤ k`, `∀x < i: d[x] ==
-s[x]`, `∀x < i: d[x]` initialised, and the harness loop's `∀x < i: s[x] !=
-0`, and it holds for every size in the range. The contracts are the ones of
-the size-bounded harnesses, stated for objects of any size (`strcmp`/`strncmp`
-on two strings equal except at one position j, and a proper prefix; `memcmp`
-on a copy with one byte changed). Each has false twins refuted for the class
-they plant, including adversarial loops: a length loop that reads one past
-the terminator, an off-by-one copy loop writing one past the destination,
-an unterminated string, a destination one byte short, and wrong contracts.
-Results in the table below ("any size").
-
-Results (C++ engine, `pir` stage, 2026-09-24):
-
-| model | contract harness | verdict (largest N proved) | false twins refuted (planted class) |
-|---|---|---|---|
-| `strlen` | first NUL index | PROVED (objects ≤ 16 bytes) | earlier NUL (FUNC-CONTRACT), unterminated (MEM-OOB-READ) |
-| `strnlen` | min(strlen, n), reads ≤ n bytes | PROVED (≤ 16) | n past the object (MEM-OOB-READ) |
-| `strcpy` | copies through the NUL, returns d | PROVED (≤ 16) | short destination (MEM-OOB-WRITE) |
-| `strncpy` | exactly n bytes: string then NULs | PROVED (≤ 16) | "always terminates" (FUNC-CONTRACT) |
-| `strcat` | appends at d's NUL | PROVED (d ≤ 32, s ≤ 16) | overflowing destination (MEM-OOB-WRITE) |
-| `strncat` | appends ≤ n chars + NUL | PROVED (d ≤ 33, s ≤ 16) | "appends n chars" (FUNC-CONTRACT) |
-| `strcmp` | 0 iff equal, antisymmetric, sign of first difference as `unsigned char` | PROVED (≤ 16) | signed-char comparison (FUNC-CONTRACT) |
-| `strncmp` | n = 0 gives 0, equality up to n, antisymmetric | PROVED (≤ 16) | "ignores n" (FUNC-CONTRACT) |
-| `strchr` | first `(char)c`, NUL included | PROVED (≤ 16) | `strchr(s, 0) == NULL` (FUNC-CONTRACT) |
-| `strrchr` | last `(char)c` | PROVED (≤ 16) | "first occurrence" (FUNC-CONTRACT) |
-| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 16); **any size < 2^40** (`memcpy_any_size_true`) | overlap (MEM-OVERLAP), also at any size |
-| `memmove` | overlapping copy as through a temporary | PROVED (≤ 16); any size < 2^40 | source too short (MEM-OOB-READ/WRITE) |
-| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 16); any size < 2^40 | "stores the int" (FUNC-CONTRACT), one past a heap object of any size (MEM-OOB-WRITE) |
-| `memcmp` | sign of first difference as `unsigned char` | PROVED (≤ 16) | "stops at NUL" (FUNC-CONTRACT) |
-| `memchr` | first `(unsigned char)c` in n bytes | PROVED (≤ 16) | n past the object (MEM-OOB-READ) |
-| `strdup` | NULL or a distinct copy | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
-| `malloc` / `free` | NULL or n writable bytes; `free(NULL)` | PROVED (≤ 16) | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
-| `calloc` | zero-filled; `n*size` overflow gives NULL | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
-| `realloc` | keeps min(old, new) bytes; old object valid on failure | PROVED (≤ 16); prefix kept for any sizes < 2^40 | old pointer after success (MEM-UAF), grown tail read (UNINIT-READ, also at any size) |
-| `realloc(NULL, n)` | behaves as malloc(n) | PROVED (≤ 16) | read before write (UNINIT-READ) |
-| `realloc(p, 0)` | frees p, returns NULL (glibc; the model's documented choice) | PROVED | p used after (MEM-UAF), p freed again (MEM-DOUBLE-FREE) |
-| `realloc` shrink / grow | shrink keeps the first m bytes, exactly m; grow keeps all old bytes, tail writable | PROVED (≤ 16) | old size written after a shrink (MEM-OOB-WRITE), grown tail read (UNINIT-READ), realloc of a stack array (MEM-INVALID-FREE), of a freed pointer (MEM-DOUBLE-FREE) |
-| `abs`, `labs`, `llabs` | `|x|` for x ≠ MIN | PROVED | `abs(INT_MIN)`, `labs(LONG_MIN)`, `llabs(LLONG_MIN)` (INT-SIGNED-OVF) |
-| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]`; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ) |
-| `rand`, `srand` | 0 ≤ r | PROVED | "r < 100" (FUNC-CONTRACT) |
-| `getenv` | NULL or a string | **BOUNDED** (the returned string has unknown length; `strlen` over it does not close) | unchecked NULL (PTR-NULL-DEREF) |
-| `fopen`, `fclose`, `fflush` | NULL or an open stream; fflush(NULL/f) and fclose return 0 or EOF | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL, `fclose(NULL)` (PTR-NULL-DEREF), fflush of a closed stream (MEM-UAF) |
-| `fgets` | returns buf, NUL within n | PROVED (≤ 16) | n larger than the buffer (MEM-OOB-WRITE) |
-| `fread`, `fwrite` | return ≤ nmemb | PROVED (≤ 16) | fread past the buffer (MEM-OOB-WRITE), fwrite past the buffer (MEM-OOB-READ) |
-| `fgetc`, `getc`, `getchar` | EOF or 0..255 | PROVED | "never EOF" (FUNC-CONTRACT) |
-| `fputc`, `putc` | `(unsigned char)c` or EOF | PROVED | "returns c" (FUNC-CONTRACT), write after fclose (MEM-UAF), NULL stream (PTR-NULL-DEREF) |
-| `fputs` | ≥ 0 or EOF; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ), "returns the length" (FUNC-CONTRACT) |
-| `putchar`, `puts` | `(unsigned char)c` or EOF; puts ≥ 0 or EOF | PROVED | "never EOF" (FUNC-CONTRACT), unterminated `puts` argument (MEM-OOB-READ) |
-| `operator new[]/new/delete[]/delete` | n usable elements, never NULL | PROVED | `delete` of `new[]` (MEM-MISMATCHED-FREE), one past the end (MEM-OOB-WRITE) |
-| sized `operator delete(p, n)` / `delete[](p, n)` (`_ZdlPvm`, `_ZdaPvm`) | release the matching allocation | PROVED | twice (MEM-DOUBLE-FREE), array form of a single `new` (MEM-MISMATCHED-FREE) |
-
-Model change found by the new harnesses: the output functions (`fputc`,
-`putc`, `putchar`, `fputs`, `puts`, `fflush`, `fclose`) never returned EOF,
-so code ignoring a write error was unreachable in the model although the
-real library can fail on any write; they now return EOF on some path, and
-`fclose(NULL)` is a PTR-NULL-DEREF (glibc dereferences it). A model whose
-only memory statement is a range check (`putc(c, NULL)`) crashed the encoder
-("memory statement without memory model"); range checks now mark the
-function as using memory.
-
-Every function defined in a model file is called by a harness
-(`testdata/conformance/test_conformance_suite.py`
-`test_every_model_function_is_called`). The `bmc` stage has no preprocessor
-and does not see the models (NEEDS-HARNESS apart from its own built-in
-`abs`/`rand` models).
-
-The `printf`/`fprintf` family (`sprintf`, `snprintf`, …) is intentionally
-**outside** the libc-models contract harnesses above (roadmap 8.2 boundary):
-those calls are lowered in the PIR translator (`libc_format.cpp`), not as C
-sources under `testdata/conformance/libc-models/`, so they are not proved via
-the `#include` harness loop that fills the table. Format-string and buffer
-contracts for that family are verified in `testdata/pir/mem_libc.c` instead. The
-`__prism_*` intrinsics themselves are PIR statements whose encoding the
-harnesses exercise but do not verify in isolation.
-
-**C++ library contracts.** The same directory holds C++ contract harnesses
-for the C++ library ("C++ library models" above): `vector_contracts.cpp`,
-`vector_erase.cpp` and `vector_resize.cpp` check the `std::vector` model
-(push_back across two reallocations, reserve keeps `data()` stable, `at`
-throws iff out of range, erase moves the tail down and returns the next
-position, resize value-initialises and keeps the prefix, copies are
-independent; false twins: `v[size()]`, a pointer kept across a reallocation
-(MEM-UAF), pop_back/front on empty, `erase(end())`, wrong contracts). All
-PROVED/refuted (2026-09-24; the vector files take 60–460 s per file on a
-loaded machine, hence their `timeout:` in the task file). `insert` in the
-middle of a vector did not finish within 900 s in the first round (the
-element shift plus the symbolic position); `vector_insert.cpp` (insert at a
-position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
-twin) is in the suite now; measured 2026-09-25 per harness on a loaded
-machine: `vector_insert_uaf_false` FAILED MEM-UAF in 146 s,
-`vector_insert_true` did not finish within 1800 s then; on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default the smaller of 60% of RAM and a quarter of RLIMIT_AS), checked before every query (a soft cap; Z3's own `memory_max_size` is twice that, because past it Z3 is not reliably recoverable: `priority_queue_contracts.cpp` under the conformance runner's 4 GB RLIMIT_AS hit SIGSEGV in `Z3_simplify` about one run in two), and a function that starts while the process's Z3 memory is over the cap is UNKNOWN "not checked". Measured 2026-10-29 under 4 GB: `vector_insert` true PROVED / false refuted, `priority_queue_contracts` reports all 7 functions (1 PROVED, 6 UNKNOWN on memory) instead of crashing. `map_contracts.cpp` checks the map/set
-models (insert/operator[]/erase/at/order, multiset counts; false twins: an
-erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
-order contract). It did not finish within 1200 s before value sets
-(`map_insert_true` alone: no answer in 600 s, every one of its 1,295
-property VCs timing out); with value sets ("Memory model", "Encodings")
-all 11 harnesses answer in 13–18 s as one file (7/7 PROVED, 4/4 refuted
-with the planted class; 0.4–2.4 s of solving per harness). On this branch
-the file first failed to compile against the model headers at all
-(libstdc++ 14's `<stdexcept>` builds a `wstring` from a `const char*`
-range, which `basic_string.tcc`'s pointer fast path did not accept, so the
-unit silently fell back to libstdc++ and every harness was NEEDS-HARNESS);
-the fast path is now taken only for pointers to the string's own character
-type. `cxx_std_contracts.cpp` checks libstdc++'s
-`std::array`, `std::span`, `std::optional`, `std::unique_ptr` and
-`cxx_string_contracts.cpp` `std::string` (`s[size()]` is the terminator,
-`at` throws iff out of range, `c_str()` after destruction is MEM-UAF). Their
-objects hold at most 4 elements (size-bounded proofs).
+The `printf` family is lowered in the translator, so `testdata/pir/mem_libc.c` checks it instead.
 
 ## C features
 
-* `_Generic`: resolved by clang (`testdata/pir/mem_libc.c:generic_ok` PROVED).
-* VLAs: `alloca T, iN n` with a symbolic size; the size must be positive
-  (checked on the value before its `zext`/`sext`) and below 2^47; the
-  object ends at `llvm.stackrestore`.
-* `setjmp`/`longjmp`: exception-like edges ("setjmp/longjmp" below).
+`_Generic` is resolved by clang. VLAs are symbolic-size allocas, checked positive and below the
+object bound (MEM-VLA-SIZE). `setjmp`/`longjmp` are exception-like edges. C23 units are retried as
+C23 ("Front end").
 
-## Floating point (roadmap 2.6)
+## Floating point
 
-`half`, `float` and `double` values are PIR bitvectors of width 16/32/64
-holding their IEEE bits (`Var::fp` marks them); `long double` (x86_fp80),
-`__float128`, `bfloat` and vectors stay `UNENCODED`. The encoder uses Z3's
-floating-point theory with round to nearest even (the C default
-environment; PRISM does not model `fesetround`): every FP operator reads its
-arguments with `(_ to_fp e s)` and gives back the bits of the result through
-a fresh bitvector `b` with `to_fp(b) = result`, so a NaN result has an
-unspecified payload (LLVM's NaN semantics). `frem` is C `fmod` (derived from
-the IEEE remainder, exact), `llvm.fmuladd` is fused *or* not (a free choice
-per call), `minnum`/`maxnum` of `+0`/`-0` may return either.
+`half`, `float` and `double` are PIR bitvectors of width 16/32/64 holding IEEE bits (`Var::fp`). The
+encoder uses Z3's floating-point theory with round to nearest even (PRISM does not model
+`fesetround`). A NaN result has an unspecified payload. `frem` is C `fmod`; `llvm.fmuladd` is fused
+or not (a free choice per call); `minnum`/`maxnum` of `+0`/`-0` may return either.
 
-Translated: `fadd fsub fmul fdiv frem fneg fcmp` (all 16 predicates from
-`oeq olt ole uno`), `fptosi fptoui sitofp uitofp fpext fptrunc`, `bitcast`
-between FP and integers of the same width, loads/stores/phis/selects of FP
-values, `llvm.{fabs,copysign,sqrt,fma,fmuladd,minnum,maxnum,minimum,maximum,
-floor,ceil,trunc,round,roundeven,rint,nearbyint}` and the same libm functions
-by name (`sqrt`, `fabs`, `floor`, `fmod`, `fmin`, … and their `f` forms).
-Other pure libm functions (`sin cos tan asin acos atan atan2 sinh cosh tanh
-asinh acosh atanh exp exp2 expm1 log log2 log10 log1p pow cbrt hypot erf
-erfc tgamma` and `f` forms) return an **unconstrained** value (`Op::FLibm`,
-listed in `extra.libm_unconstrained`) apart from range facts every IEEE libm
-keeps: `|sin|`, `|cos|`, `|tanh|` ≤ 1 and `exp`, `exp2`, `cosh` ≥ +0 (or
-NaN). Any fast-math flag makes the instruction `UNENCODED` (the flags allow
-results IEEE does not). errno is not modelled (a program reading `errno`
-calls `__errno_location`, which is `UNENCODED`).
+Translated: `fadd fsub fmul fdiv frem fneg fcmp` (all predicates), `fptosi fptoui sitofp uitofp
+fpext fptrunc`, `bitcast` between FP and same-width integers, FP loads/stores/phis/selects, the
+`llvm.*` intrinsics `fabs copysign sqrt fma fmuladd minnum maxnum minimum maximum floor ceil trunc
+round roundeven rint nearbyint` and the same libm functions by name. Other
+pure libm functions (`sin`, `exp`, `pow`, …) return an **unconstrained** value (`Op::FLibm`,
+`extra.libm_unconstrained`) apart from range facts every IEEE libm keeps (`|sin| ≤ 1`, `exp ≥ +0`,
+…). Any fast-math flag is `UNENCODED`. `errno` is not modelled.
 
-Properties: `fptosi`/`fptoui` whose truncated value is outside the target
-type, or NaN/±inf, is FLOAT-CAST-OVF (always on: C11 6.3.1.4p1 undefined
-behaviour; `-0.9 → unsigned` is fine, it truncates to 0). With
-`--fp-checks` (opt-in; Annex F defines these results) PRISM also reports
-division by ±0 (FLOAT-DIV-ZERO), a NaN produced from non-NaN operands
-(FLOAT-INVALID) and an infinite result from finite operands
-(FLOAT-OVERFLOW), for `fdiv fadd fsub fmul frem sqrt fma fptrunc`.
+Properties: FLOAT-CAST-OVF is always on (C11 6.3.1.4p1). With `--fp-checks` (opt-in; Annex F defines
+these results) PRISM also reports FLOAT-DIV-ZERO, FLOAT-INVALID and FLOAT-OVERFLOW for `fdiv fadd
+fsub fmul frem sqrt fma fptrunc`.
 
-The interpreter (`fp.cpp`) computes float/double with the host's SSE
-arithmetic (round to nearest even, no excess precision on x86-64) and half
-in double with one final rounding (exact for `+ - * / sqrt` since
-53 ≥ 2·11 + 2); results the encoder leaves open (`fmuladd`, `minnum(+0,-0)`)
-taint the value, so translation validation skips inputs that depend on them,
-and an FP return compares NaN with any NaN. Translation validation passes FP
-arguments as LLVM hex literals and draws ordinary values (0.5, -1000.25,
-3e9, 1e300, ±inf, NaN, 16777217, …) besides raw bit patterns.
-`testdata/pir/fp_arith.c`.
+The interpreter (`fp.cpp`) computes float/double with the host's SSE arithmetic and half in double
+with one final rounding. Results the encoder leaves open (`fmuladd`, `minnum(+0,-0)`) taint the
+value, so translation validation skips inputs that depend on them. `testdata/pir/fp_arith.c`.
 
-## Exceptions (roadmap 2.3, 2.6)
+## Exceptions
 
-Every call is inlined, so the chain of enclosing `invoke`s of a throw is
-known while it is translated. `invoke` becomes its call plus the normal
-edge, with its landing pad pushed as the exception destination of
-everything inside the call. A throw (`__cxa_throw`, a library
-`std::__throw_*`, `resume`, `throw;`) becomes an explicit jump to the
-innermost landing pad whose clauses catch the thrown type — exact typeinfo,
-public unambiguous bases read from the module's `__si_class_type_info` /
-`__vmi_class_type_info` typeinfo, the libstdc++ exception hierarchy,
-`catch (...)` — or that has cleanup code; the frames between the throw and
-that landing pad are unwound (their locals end). The landing pad's
-`{ ptr, i32 }` value is a phi over those edges (exception pointer and the
-`llvm.eh.typeid.for` selector of the matching clause). The exception object
-gets a 32-byte PRISM header in front of the thrown object (type id, the
-Itanium runtime's handler count, negative while rethrown, and the pointer
-the current handler binds): entering a handler sets that pointer to the
-caught subobject (a base at a non-zero offset of multiple inheritance, read
-from the `__vmi_class_type_info` offset; a base behind a virtual base is not
-modelled: soft stop) or, for a pointer caught by pointer, to the thrown
-pointer's value, and `__cxa_begin_catch` returns it. `__cxa_begin_catch` /
-`__cxa_end_catch` keep a stack of handled exceptions with the runtime's
-counting (a rethrown exception caught again is not pushed twice and stays
-alive until its last handler ends), `__cxa_end_catch` runs the thrown type's
-destructor and frees the object when its count drops to zero unless it was
-rethrown, `throw;` re-raises the innermost
-handled exception (`throw;` with none is CXX-TERMINATE), and `resume` re-throws
-with the type read back from the header. Landing pads are translated after
-the normal blocks of their function, and only when a throw reaches them.
-An exception reaching `__clang_call_terminate` (a `noexcept` boundary or a
-destructor throwing during unwinding) is CXX-THROW-NOEXCEPT, one that
-leaves `main` is CXX-UNCAUGHT, `std::terminate()` is CXX-TERMINATE, a pure
-virtual call is CXX-PURE-VIRTUAL. An exception that leaves any other
-analysed function is not a defect there: the path ends and the type is
-listed in `extra.throws_not_followed`. Soft (NEEDS-HARNESS when reachable):
-a type match PRISM cannot decide (pointer conversions, ambiguous bases,
-typeinfo not in the module), handlers nested deeper than 8, landing pad
-code that cannot be translated. Not modelled (`UNENCODED`): dynamic
-exception specifications (`filter`, `__cxa_call_unexpected`),
-`std::exception_ptr`, `std::uncaught_exceptions`. `testdata/pir/eh_*.cpp`.
+Every call is inlined, so the enclosing `invoke`s of a throw are known. A throw (`__cxa_throw`,
+`std::__throw_*`, `resume`, `throw;`) jumps to the innermost landing pad that catches the type or
+has cleanup code, unwinding the frames in between. Matching uses typeinfo, public unambiguous bases
+from `__si_/__vmi_class_type_info`, the libstdc++ exception hierarchy and `catch (...)`.
 
-**Runtime typeinfo.** A typeinfo object the module only declares
-(`@_ZTIi = external constant ptr`: fundamental and pointer types, library
-classes) is modelled as the Itanium ABI `std::type_info` layout
-`{ vptr, __name }` with `__name` the mangled type (`"i"`), as libstdc++'s
-`_ZTS` strings, so `typeid(T).name()`, `==`, `before()` and `std::any`'s
-type check read defined bytes; the vptr bytes are arbitrary.
+The exception object has a 32-byte PRISM header (type id, handler count, bound pointer);
+`__cxa_begin_catch`/`__cxa_end_catch` follow the Itanium runtime's counting and free the object
+with its last handler. A typeinfo the module only declares gets the Itanium `{ vptr, __name }`
+layout, so `typeid(T).name()` reads defined bytes.
 
-## Coroutines (roadmap 2.3, 2.6)
+Escape from `noexcept` is CXX-THROW-NOEXCEPT, from `main` CXX-UNCAUGHT; `std::terminate()` is
+CXX-TERMINATE. An exception leaving any other function ends the path (`extra.throws_not_followed`).
+Soft (NEEDS-HARNESS when reachable): undecidable type matches, a base behind a virtual base,
+handlers nested deeper than 8, untranslatable landing pads. `UNENCODED`: dynamic exception
+specifications, `std::exception_ptr`, `std::uncaught_exceptions`. `testdata/pir/eh_*.cpp`.
 
-C++ units run LLVM's coroutine passes (`coro-early`, `coro-split`,
-`coro-cleanup`) after `mem2reg`: each coroutine becomes a ramp function
-that allocates its frame with `operator new`, plus `.resume`, `.destroy`
-and `.cleanup` functions that switch on the suspend index stored in the
-frame. A loop around a `co_yield` is re-entered at the suspend point in the
-resume function (a second loop entry); `fix-irreducible` gives such loops a
-single header with a dispatch phi, so the encoder's natural-loop unrolling
-applies. PRISM encodes the result like any other code: `coroutine_handle::
-resume()`/`destroy()` are indirect calls through the frame's function
-pointers ("Indirect calls"), the frame is a `new` object of the memory
-model (use after `destroy()` and double destroy of the frame are
-memory-model properties), and `llvm.lifetime.end` of a frame temporary
-ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
-again and starts a new lifetime of a stack object; a heap object, such as
-the frame, already ended stays dead, so a later access is reported, never
-assumed valid). `testdata/pir/coro_gen.cpp`.
+## Coroutines
 
-## setjmp/longjmp (roadmap 2.6)
+C++ units run LLVM's `coro-early`, `coro-split` and `coro-cleanup` after `mem2reg`. Each coroutine
+becomes a ramp that allocates its frame with `operator new`, plus `.resume`/`.destroy`/`.cleanup`
+functions. `fix-irreducible` gives loops re-entered at a suspend point a single header.
+`coroutine_handle::resume()`/`destroy()` are indirect calls through the frame ("Indirect calls").
+The frame is a `new` object, so use after `destroy()` and double destroy are memory-model
+properties. The `coroutine` and `generator` model headers build on this.
+`testdata/pir/coro_gen.cpp`.
 
-`setjmp` (`_setjmp`, `__sigsetjmp`, …) splits its block: it stores a site
-id in the first 8 bytes of the `jmp_buf` and continues in a new block whose
-phi is the return value (0 on the direct path). `longjmp` reads the id back
-(an unset `jmp_buf` is UNINIT-READ, a bad pointer a memory violation) and
-jumps to the continuation of the site with that id whose frame is still
-active, unwinding the frames in between; the value is `v`, or 1 for
-`v == 0`. A site whose function has returned is C11 7.13.2.1p2 undefined
-behaviour: CTRL-LONGJMP-INVALID. Locals of a function that calls `setjmp`
-stay in memory (pre-mem2reg `@__prism.keep`), so after the jump they hold
-their last stored value, as in the -O0 build; C11 7.13.2.1p3 calls a
-non-volatile local modified in between indeterminate, which PRISM does not
-report (a gap listed above). A `longjmp` from code the `setjmp` does not
-dominate makes the control flow irreducible (`UNENCODED`).
-`testdata/pir/sjlj_basic.c`.
+## setjmp/longjmp
 
-## Indirect calls (roadmap 2.6)
+`setjmp` (`_setjmp`, `__sigsetjmp`, …) splits its block. It stores a site id in the first 8 bytes of
+the `jmp_buf`; the continuation's phi is the return value (0 on the direct path). `longjmp` reads
+the id back (an unset `jmp_buf` is UNINIT-READ) and jumps to that site's continuation if its frame
+is active, unwinding frames in between; the value is `v`, or 1 for `v == 0`. A site whose function
+has returned is CTRL-LONGJMP-INVALID. Locals of a `setjmp` function stay in memory, so they hold
+their last stored value, as in the -O0 build. A `longjmp` from code the `setjmp` does not dominate
+is irreducible control flow (`UNENCODED`). `testdata/pir/sjlj_basic.c`.
 
-The address of a function is a constant pointer whose object id lies in
-`[kFnObjBase, kMaxObjects)` (0xF000 … 0xFFFE): never allocated, never
-dereferenceable (loads and stores through it are memory violations;
-allocations stay below `kFnObjBase`). A call through a pointer compares the
-pointer with each candidate target and inlines the matching one:
+## Indirect calls
 
-* the pointer is loaded from a vtable slot (`load (gep (load p))`): the
-  functions stored in the module's `_ZTV*` vtables with the call's
-  signature — class hierarchy analysis over the classes the unit defines;
-  virtual functions declared but defined elsewhere are soft branches;
-* otherwise (or when no vtable function fits): every address-taken function
-  of the module with the call's signature.
+A function's address is a constant pointer with an object id in `[fn_obj_base, max_objects)`: never
+allocated, never dereferenceable. A call through a pointer compares it with each candidate and
+inlines the match:
 
-A null pointer is PTR-NULL-DEREF; any other value — a function outside the
-candidate set — is the **havoc fallback**: a soft check reported as
-`NEEDS-HARNESS` ("indirect call to a target outside …") when reachable.
-Choosing candidates therefore only affects completeness, never soundness.
-More than 16 candidates is `UNENCODED`. `testdata/pir/virt_dispatch.cpp`.
+* loaded from a vtable slot: the functions in the module's `_ZTV*` vtables with the call's signature
+  (class hierarchy analysis);
+* otherwise: every address-taken function with the call's signature.
 
-## Inline assembly (roadmap 2.6)
+A null pointer is PTR-NULL-DEREF. Any other value is the **havoc fallback**, a soft check
+(`NEEDS-HARNESS` when reachable). Candidate choice affects only completeness, never soundness. More
+than 16 candidates is `UNENCODED`. `testdata/pir/virt_dispatch.cpp`.
 
-An `asm` call is `UNENCODED: inline assembly` unless the source states its
-effect on the asm statement's line or one of the three lines above it:
+## Inline assembly
+
+An `asm` call is `UNENCODED: inline assembly` unless the source states its effect on the asm line or
+one of the three lines above:
 
 ```c
 // prism: asm ensures r >= 0 && r <= 7
 __asm__("movl %1, %0\n\tandl $7, %0" : "=r"(r) : "r"(x));
 ```
 
-`cond` is `true` or comparisons (`== != < <= > >=`) of the output with
-integer constants joined by `&&`. PRISM then assumes the block writes only
-its (integer) output and that `cond` holds afterwards; the contract is
-listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
-PROVED. Asm with memory operands, several outputs or non-integer outputs
-stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
-
-## k-induction with memory (roadmap 2.6)
-
-The step case encodes the code before the loop concretely, then starts the
-loop from an arbitrary header state and asks whether k violation-free
-iterations can be followed by a violation (iteration k or the code after the
-loop). For a function with memory the header state is the header phis
-**and the memory the loop may have written**:
-
-1. **Footprint.** Every store, `memcpy` and `memset` in a block of the loop
-   is mapped to the object its target points into by the memory model's
-   provenance analysis (`SymMem::known`: allocation results, checked pointer
-   arithmetic, selects and phis whose inputs agree). Provenance is
-   structural — never read from memory or from the havocked phis — so an
-   object it names is the target of that write in every iteration of every
-   run that has reported no violation (pointer arithmetic is checked to stay
-   in its object). The footprint is the set of those objects, computed on
-   the bounded encoding and re-checked on the step encoding. If some write's
-   target is not resolved (a pointer loaded from memory, a phi or select over
-   different objects, a havocked induction pointer), the footprint is every
-   object allocated before the loop except `const` ones. That set is finite
-   and sound: the loop allocates nothing, and a write that reports no
-   violation goes to a live, non-`const` object that already exists.
-2. **Havoc.** At the header, every byte of every footprint object gets an
-   arbitrary value and tag (`SymMem::havoc_objects`, both encodings; Bv: one
-   fresh cell per read address with Ackermann constraints). Its
-   *initialised* flag becomes `old | arbitrary` when every write in the loop
-   initialises the bytes it writes (plain stores with a constant all-ones
-   mask, `memset`): a byte that may be uninitialised before the loop stays
-   "maybe initialised", never assumed initialised. When the loop has a
-   `memcpy` or a store with a per-byte mask (which can copy uninitialised
-   bytes), the flag is fully arbitrary.
-3. **Allocation.** A loop that allocates, frees or restores the stack is not
-   attempted (`extra.k_induction = "not-attempted (allocation or free in the
-   loop)"`): the number and liveness of objects would change across
-   iterations, which the havoc does not cover. Sizes, kinds and liveness of
-   the objects that exist are unchanged by the loop and are not havocked.
-
-The base case is the concrete unrolling of `--unwind` iterations (k ≤ unwind).
-A closed step makes the function **PROVED-UNBOUNDED** exactly as for scalar
-loops; an open or unknown step leaves it **BOUNDED** (Law 2). Evidence in the
-verdict: `extra.k_induction_memory` (`read-only loop` for an empty footprint,
-else `write footprint havocked`) and `extra.k_induction_footprint` (objects
-havocked, whether the footprint was resolved, and the initialised-flag
-mode).
-
-Soundness in short: on any run whose first violation is at iteration
-N ≥ unwind, the state at header visit N − k agrees with the prefix outside
-the footprint, has the prefix's objects, and has footprint bytes whose
-initialised flags only grew (when every write initialises); the havocked
-header state covers it, and the step encoding then follows the run exactly
-for k + 1 iterations, so the step query is satisfiable. The abstract form of
-this argument is `PrismTechniques.KInduction.kinduction_frame_sound`
-(`proofs/techniques`, frame predicate `J`); what the Lean memory semantics
-(`proofs/semantics/PrismSem/Memory.lean`) would still need to prove it for
-PIR is a frame lemma "a loop body with no `alloc`/`free` whose stores all
-target objects in F leaves every other object's bytes, every object's size
-and liveness, and `next` unchanged", a provenance lemma for `gep`, and a
-per-byte initialised flag in `Obj` (the Lean model zero-fills fresh objects
-and has no uninitialised memory yet).
-
-Precision is object-granular: a loop that writes `d[1]` havocs all of `d`,
-so a later read of `d[0]` is arbitrary (`conformance/prism/kindmem/
-kindmem_overwrite_true` stays BOUNDED). k-induction infers no loop
-invariant, so "`a[0..i)` is initialised" style facts are not available to
-its step (the loop invariants of the next section supply them): after
-the loop, a read of an element written by an earlier iteration stays BOUNDED
-when the array was uninitialised before the loop, while one written by the
-last k iterations is seen by the step itself (`array/arr_loop_true` reads
-`a[9]`, written by the final iteration).
-
-Tasks: `testdata/pir/kind_mem.c`; `testdata/conformance/prism/kindmem/` (13
-true/false pairs: prefix writes then a read beyond the prefix, even-only
-writes, late out-of-bounds writes, writes through aliasing, selected and
-loaded pointers, `memcpy` of uninitialised bytes, pointer walks, struct
-buffers, globals, frees and allocations inside the loop); doctests `pir mem:
-k-induction havocs the write footprint …` (each footprint rule, both
-encodings; mutating the havoc to "no havoc", "assume initialised" or
-"memcpy initialises" makes them fail).
-
-Measured (unwind 8): of the 13 `kindmem` pairs, 8 true functions are
-PROVED-UNBOUNDED and none of the 13 false ones is proved (the other five
-true ones stay BOUNDED: allocation or free in the loop, a `memcpy`, an
-object-granular overwrite, a havocked pointer walk). On the rest of the
-conformance suite two BOUNDED true tasks become PROVED-UNBOUNDED
-(`array/arr_loop_true`, `regress/uninit_elem_unbounded_true`), in
-`testdata/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
-`prism-qa soundness` (`--generator inhouse-ptr -n 80`, `--generator
-inhouse -n 60`) finds 0 wrong proofs. Those generators produce few
-single-loop functions that write memory, so a targeted run was added (an
-ad-hoc generator of 300 single-loop functions writing partly initialised
-arrays through plain, aliased, selected and loaded pointers, with late
-conditional writes and `memcpy`): 49 PROVED-UNBOUNDED, each executed on a
-228-point input grid under ASan+UBSan and again under MSan (which sees
-uninitialised reads): 0 sanitizer reports.
-
-## Loop invariants (roadmap 8.2, M8)
-
-When the unwinding assertion is open and k-induction does not close (or the
-function has several loops, where k-induction is not attempted), the pir
-stage looks for inductive loop invariants (`src/prism/pir/houdini.inc`).
-Only invariants proved inductive are ever used, and only a closed proof
-changes the verdict: BOUNDED stays BOUNDED otherwise (Law 2).
-
-**Cut program.** The function is encoded with every loop cut once
-(`Encoding::cut_mode`, unwind 1). At each loop header the *entry* state is
-recorded (the header phis on the entry edges and the memory there); then the
-phis and the loop's write footprint are havocked (an arbitrary later header
-visit, the *havoc* state); every back edge is an unwinding cut and records
-the *next* state (the phis' incoming values from that latch and the memory
-there). Nested and sequential loops are all cut in the same encoding. The
-write footprint follows "k-induction with memory": objects the provenance
-analysis resolves, else the object of the pointer variable (defined before
-the loop) the target is derived from by copies and checked pointer
-arithmetic (`SymMem::havoc_pointed`, a symbolic object id), else every
-object; it is learnt from the cut encoding and re-checked on it. Loops that
-allocate, free or restore the stack are not attempted
-(`extra.invariants_note`).
-
-**Candidates** (templates over the header phis, *scope values* — parameters
-and values defined before the loop that the loop uses, nondet values and
-merged values — constants of the loop body, and the objects the loop
-accesses):
-
-* comparisons `a rel b` (`== != <=u <u >=u >u`, and the signed ones for a
-  phi the program uses as signed) of a phi with another phi, a scope value,
-  a constant, its own entry value, or the size of an accessed object;
-* `(a & m) == (entry(a) & m)` for m = 1, 3, 7 (parity), and
-  `a ∓ b == entry(a) ∓ entry(b)` for two phis;
-* universally quantified memory facts over the prefix of an index phi `i`
-  (the element size from the loop's accesses, the index sign- or
-  zero-extended as the loop does): `∀x < i: p[x] != 0`, `p[x] == q[x]`,
-  `p[off + x] == q[x]`, `p[x]` initialised, `p[x] == c`,
-  `p[x] != (char)v`, `∀ entry(i) ≤ x < i: p[x] == c`, the frame
-  `∀x < off + entry(i): p[x]` equals its value at loop entry, and for a
-  pointer phi `r` that remembers a match: `r == 0 || r ∈ p[0, i)`,
-  `r == 0 || *r == (char)v`, `∀x < i: p[x] == (char)v → r ≠ 0 && x ≤ r − p`.
-
-**Houdini.** A candidate survives when it holds in the entry state (*base*)
-and in the next state of every back edge (*step*), with the surviving
-candidates of the loop itself assumed in its havocked state. Queries go to
-Z3 in-process (one incremental solver, a selector literal per candidate);
-each satisfiable query drops every candidate its model falsifies; a query
-without an answer is split, and a single candidate without an answer is
-dropped. Only the fixpoint is used: the function is PROVED-UNBOUNDED when,
-with every survivor assumed at every havocked header (the universal ones
-instantiated at the index terms of the encoding: every loop's havocked index
-phis and the parameters), no property instance of the cut program is
-violated (`extra.k_induction = "closed-invariants"`, the survivors in
-`extra.pir_invariants`, `extra.houdini_rounds`, `extra.houdini_candidates`,
-`extra.invariant_footprint`). The whole search gets six times the solver
-timeout (`--timeout`, default 30 s → 180 s) plus at least three for the
-final query; out of time is no proof.
-With a function budget (`PRISM_FUNCTION_BUDGET`) the search stops at 70% of
-what was left of it when Houdini started and the final query gets the rest
-(`PRISM_HOUDINI_FINAL_RESERVE`, a fraction in [0, 0.9], default 0.3;
-`extra.houdini_final_budget` is what it got). Each group of properties in
-the final (and optimistic) query assumes only the candidates of loops whose
-header is encoded before some property of the group (a property encoded
-earlier cannot use them); assuming fewer is only weaker, so UNSAT is still a
-proof. A group without an answer is split in halves down to single
-properties, each with at most `--timeout`. `PRISM_PIR_DUMP_INVARIANTS=1`
-writes the survivors of a search that did not prove to
-`extra.pir_invariants_surviving` (diagnostic only).
-
-**Cost.** A BOUNDED function could spend 4.5 minutes here (180 s search +
-90 s final query) and a large code base has many. Four things keep it
-cheap without changing what can be proved:
-
-* *Optimistic final query.* After the base queries (cheap: they drop every
-  candidate that fails on loop entry, e.g. one of `i == 0` / `i != 0`) and
-  after every round that dropped something, the final query is asked with
-  every candidate still alive assumed (at most a third of the query time).
-  Houdini only drops candidates and assuming fewer allows more runs, so a
-  property violated here is violated with the fixpoint too: the search
-  stops with "no proof" (`invariants_note: a property is violated even with
-  every candidate that holds on loop entry assumed`). UNSAT is remembered:
-  when nothing is dropped afterwards it *is* the final query. A proof is
-  only ever read off the final query at the fixpoint. These queries run in
-  a solver of their own (the instances of candidates dropped later never
-  reach the search solver); after two without an answer no more are asked;
-  the final query at the fixpoint is asked, as before, in the search solver
-  with the survivors' instances only.
-* *Outcome cache* (`<solver cache>/houdini/<sha256>.json`, keyed by the
-  function's PIR text, memory encoding, time limit and every candidate's
-  text; off with the solver cache). A proof stores its survivors; the next
-  run starts Houdini from them and checks base, step and the final query
-  again (never taken on trust; `extra.houdini_cache = "hit (proof
-  re-checked)"`). A "no proof" is stored only when no time limit or unknown
-  answer decided it, and is then taken as it is (`"hit (no proof)"`).
-* *Run budget.* All functions of a run share `PRISM_HOUDINI_BUDGET` seconds
-  of Houdini (default max(3600 s, 120 × `--timeout`); 0: none). A function
-  that finds it spent stays BOUNDED with `invariants_note: not attempted
-  (the run's Houdini budget of N s is spent; PRISM_HOUDINI_BUDGET)`; one
-  that starts with less left than its search limit gets what is left.
-* `extra.houdini_seconds` records the time each attempt took.
-
-Measured (C++ engine, loaded shared machine, 2026-09-25): `testdata/`
-(1,069 checked functions): 9 reach Houdini, 7 of them end with "no proof";
-before, each of those ran the full final query ("not implied"), now the
-optimistic query decides them; Houdini total 7.5 s, the same verdicts (971
-PROVED, 14 PROVED-UNBOUNDED, 7 BOUNDED). The pir stage there is dominated
-by the Clang front end, not by Houdini. `strcat`/`strncat` of
-`unbounded_string_contracts.cpp` (4 loops each): BOUNDED before and after at
-the default 30 s (search out of time, 181 s each); with `--timeout 100`
-the search reaches its fixpoint and the optimistic query is SAT for both
-(after 293 s / 489 s): the templates do not contain the invariant these
-two need, so more time would not prove them.
-
-**Why this is sound.** Positions are encoding (topological) order; on the
-one path a model makes reachable they are execution order. Take a run and
-its first violation V (if any). By induction over the header visits before
-V, every survivor holds at each of them: the abstract path from the entry to
-that visit follows the run, choosing every earlier loop's havocked state as
-the run's state at that loop's last header visit (true for its survivors by
-induction; memory outside the footprint is the prefix's, the loop allocates
-and frees nothing); a first visit is a base query, a later one a step query
-from the previous visit. A base or step query assumes only the havoc
-assumptions of loops whose header comes earlier on the path and that no
-property before the checked point is violated (both true before V).
-The same abstract path then reaches V, so V's property query is
-satisfiable. Havoc assumptions are guarded by "no property violated before
-this header", so a path that already violated a property is never cut off.
-The memory templates are checked pointwise at one fresh index x0 (base and
-step valid for every x0, so the universal statement is inductive) and read
-the recorded memory states exactly (`SymMem::load_exact`, no provenance
-shortcut, so a template is about the bytes of that state for any x). Only
-the final query instantiates them at other terms (instances of a proved
-universal statement).
-
-This argument is proved in Lean for a structured-program model of the
-encoding (`proofs/techniques/PrismTechniques/LoopCut.lean`,
-`LoopCut.loopcut_sound`, docs/PROOFS_TECHNIQUES.md "2b"): nested,
-sequential and multi-exit loops, havoc assumptions guarded by "no
-violation before this header", each query assuming only the loops before
-its point; the premises are that the havoc covers every header state a
-violation-free iteration reaches (the footprint) and that assignments are
-total. The same file proves that the per-statement `assume` guard (S9) is
-the sequential semantics (`LoopCut.encViol_iff`). The encoder facts the
-model relies on are locked to the C++ text by `tests/cpp/test_repolint.cpp`.
-
-**Exported invariants.** `extra.invariant_loops` (the loop's source start
-line and column, from clang's `llvm.loop` metadata; the function's own
-loops only) and `extra.invariant_conjuncts` (per loop: the surviving
-comparisons, masks and differences whose terms are program values by their
-IR name, or constants) let the SV-COMP wrapper write the invariants into a
-correctness witness (docs/SVCOMP.md). The wrapper maps IR names to C
-variables with full debug information and exports a conjunct only where C's
-meaning of the text is the proved bit-vector relation.
-
-Tasks: `testdata/conformance/libc-models/unbounded_string_contracts.cpp` (below),
-doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
-refuted` (strlen and copy loops over heap objects of any size; reading one
-past the terminator, an off-by-one write, an unterminated string and a write
-through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
-(`loop_long_inv` closes; `loop_long_sum`, whose invariant
-`2s == i(i-1)` is non-linear, closes through the bounded triangular
-template, admitted only by Houdini and the induction check).
-
-## Roadmap 2.3 / 2.6 coverage
-
-Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
-(all units); coroutine lowering `coro-early`, `cgscc(coro-split)`,
-`coro-cleanup` and `fix-irreducible` (C++ units); `invoke`/`landingpad` →
-explicit exception edges (in the translator, "Exceptions"). No optimising
-pass; no `-fsanitize` check insertion (Law 8).
-
-| 2.6 row | how PIR handles it | status | evidence |
-|---|---|---|---|
-| Templates, concepts, overloading, `constexpr`/`consteval`, `if consteval`, deducing `this`, lambdas | resolved by Clang before IR | DONE (no encoder work) | `testdata/pir/cxx.cpp`, `testdata/conformance/prism/cxx` |
-| Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `testdata/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
-| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `testdata/pir/eh_*.cpp`, `conformance/prism/eh` |
-| Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `testdata/pir/coro_gen.cpp`, `conformance/prism/coro` |
-| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; `vector::insert` at a symbolic position does not finish within 1800 s; libc++ not modelled) | "Library models", "C++ library models" |
-| Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `testdata/pir/fp_arith.c`, `conformance/prism/fp` |
-| Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
-| Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
-| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `testdata/pir/asm_contract.c`, `conformance/prism/asm` |
-| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `testdata/pir/mem_libc.c`, `testdata/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
-| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular | `testdata/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
-| Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3; universal memory templates checked pointwise; only the fixpoint is used | DONE for loops that do not allocate or free; templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.cpp`, `extra.pir_invariants` |
+`cond` is `true` or comparisons of the output with integer constants joined by `&&`. PRISM assumes
+the block writes only its integer output and that `cond` holds after it. The contract goes in
+`extra.assumptions`; a proof is **PROVED-ASSUMING**. Memory operands, several outputs or non-integer
+outputs stay `UNENCODED`. `testdata/pir/asm_contract.c`.
 
 ## Encoder and verdicts
 
-Bounded unrolling over the loop nest: each block is instantiated once per
-vector of iteration counts of its enclosing natural loops (outer → inner); a
-back edge increments its loop's count; count = `--unwind` is an *unwinding
-cut*. Values follow SSA dominance (LCSSA makes every use see its definition in
-the same iteration of each shared loop). Phis are `ite` chains over incoming
-edge guards; each check contributes `reach ∧ violation`; assumes contribute
-`reach → cond`.
+Bounded unrolling over the loop nest (`encode.cpp`): each block is instantiated once per vector of
+iteration counts of its enclosing loops; a back edge increments its loop's count; count = `--unwind`
+(default 8) is an *unwinding cut*. Phis are `ite` chains over edge guards; each check contributes
+`reach ∧ violation`; assumes contribute `reach → cond`. More than 6000 block instances is UNKNOWN.
 
-* **FAILED** — some check is satisfiable. `counterexample` = `extra.cex` =
-  parameter values (signed decimal), `extra.prop`, `cls`, `line`. When the
-  function calls `__VERIFIER_nondet_*` itself (not inside a library model),
-  `extra.nondet` lists the values those calls return on the violating path,
-  in call order, as `fn=value, ...` (signed per the C type, the same shape
-  as the `bmc` stage), and `extra.nondet_loc` the calls' debug locations
-  `line:col, ...` (`0:0` when unknown). A call is listed when the model makes
-  its block instance reachable and it runs before the violated check (the
-  reachable instances form one chain, and topological order is execution
-  order along it). The values come from one Z3 model of the same VC with
-  the parameters and nondet values pinned to the winning solver's model; if
-  that re-query finds no model, `extra.nondet_note` says so and there is no
-  `nondet` key. The SV-COMP wrapper replays these values and writes a
-  `function_return` waypoint at each call ([SVCOMP.md](SVCOMP.md)).
-* **PROVED** — no check is satisfiable and no unwinding cut is reachable
-  (loop-free, or every loop closes within the bound: the unwinding assertion
-  is proved).
-* **BOUNDED** — no violation within the bound, but a cut is reachable.
-* **PROVED-UNBOUNDED** — BOUNDED plus exactly one loop whose k-induction step
-  closes (k = 1, 2): from an arbitrary header state (header phis havocked),
-  k violation-free iterations that loop back imply iteration k and the code
-  after the loop are violation-free. Same discipline as the old stage: only a
-  closed step promotes, BOUNDED is never folded into a proof (Law 2). When
-  k-induction does not close (or there are several loops), inductive loop
-  invariants can close every loop at once (`extra.k_induction =
-  "closed-invariants"`, "Loop invariants").
-* **UNKNOWN** — solver unknown / timeout / unrolling over 6000 block
-  instances.
+A function with loops is first checked at unwind 4 when the requested unwind is larger. Only exact
+answers are taken from it: FAILED, or PROVED with every loop closed (`extra.unwind`,
+`extra.unwind_requested`). Anything else is decided at the requested unwind
+(`extra.unwind_first_tried`). Certified mode skips the first try. A single loop still BOUNDED is
+re-checked at twice the unwind, up to `PRISM_PIR_DEEPEN_MAX` (default 64, 0 = off), while the
+function budget lasts; only a FAILED or a closed PROVED replaces the answer.
 
-`std::vector<pir::Vc> pir::pir_vcs(fn, unwind)` returns one solver-neutral
-SMT-LIB2 VC per property (SAT = violated) plus the unwinding VC, for the
-certified back end (roadmap 3.2).
+Verdicts the stage emits (definitions: docs/VERDICTS.md):
 
-### Solving (roadmap 3.1 / 3.2)
+* **FAILED**: a check is satisfiable. `extra.cex` holds the parameter values, `extra.nondet` the
+  values of the function's own `__VERIFIER_nondet_*` calls (replayed by the SV-COMP wrapper).
+* **PROVED**: no check satisfiable and no unwinding cut reachable.
+* **PROVED-UNBOUNDED**: BOUNDED, plus a closed k-induction step (one loop, k = 1 or 2) or closed
+  loop invariants (`extra.k_induction = "closed-invariants"`). Only a closed step promotes (Law 2).
+* **PROVED-ASSUMING**: proved under a stated precondition (pointer contract, asm contract, template
+  draft).
+* **PROVED-CERTIFIED**: PROVED, and every VC certified ("Solving").
+* **BOUNDED**: no violation within the bound, but a cut is reachable.
+* **NEEDS-HARNESS**: an `UNENCODED` construct, a reachable soft check, a Law 6 pointer parameter, or
+  a violation that depends on unstated global state.
+* **UNKNOWN**: solver unknown, unrolling too large, memory budget reached.
+* **TIMEOUT**: the function budget ran out before every VC was answered.
+* **ERROR**: the unit did not compile, or translation validation diverged.
+* **NOTRUN**: clang/opt/Z3 or the sysroot missing, or the models could not be built.
 
-`check_function(fn, CheckOptions)` asks one query per verification condition
-and sends every one of them to the solver library,
-`prism::solver::solve` ([SOLVERS.md](SOLVERS.md)): the portfolio (Z3
-in-process, CaDiCaL / Kissat on the bit-blasted CNF, Bitwuzla when present,
-the ProbSAT walker for counterexamples) and the query cache.
+`pir::pir_vcs(fn, unwind)` returns one solver-neutral SMT-LIB2 VC per property plus the unwinding
+VC. `prism --pir-vcs FILE --out DIR` writes them and `prism --solve-smt2 VC [--z3-only]` answers one
+(for `prism-qa solver-bench`).
 
-1. One VC per property: `assumptions ∧ reach ∧ violation`. The properties are
-   asked in order; the first SAT answer is the `FAILED` verdict. With more
-   than 16 properties, one query for "some property is violated" comes
-   first: UNSAT answers all of them; on SAT the group's model is evaluated
-   on each property and the first one it violates is asked alone (SAT
-   there, and UNSAT for the group of properties before it, is the verdict:
-   the same first violated property the halving finds, in two or three
-   queries instead of two per halving level); otherwise SAT is split in
-   halves until one property is left. No answer is split in halves too,
-   down to groups of 16 (a smaller query often answers where the whole did
-   not); the properties a group answered UNSAT are not asked again one by
-   one. Measured on a linked-list file (7 functions: remove at an
-   input-dependent position, traversal, free; loaded machine): 378–404 s
-   before, 100–134 s after, the same verdicts. Its model
-   was already evaluated on the VC in Z3 by the solver library; the
-   counterexample is the model's parameter values (`extra.cex_solver` names
-   the member that found it). An answer that is neither SAT nor UNSAT makes
-   the function `UNKNOWN` unless a later property is SAT.
-2. When every property VC is UNSAT and a loop cut is reachable in the
-   unrolling, the unwinding VC `assumptions ∧ (cut₁ ∨ cut₂ ∨ …)`: UNSAT means
-   `PROVED` (the loops close), anything else `BOUNDED`.
-3. The k-induction step (single-loop `BOUNDED` functions) is not a property
-   VC: Z3 answers it in-process (`extra.k_induction_solver`).
+<a id="solving-roadmap-31--32"></a>
 
-`extra.solver` summarises the run: the number of VCs, which member answered
-each (`z3:3, cadical:1`, `(cache)` for a cache hit) and the cache hits.
+### Solving
 
-The stage uses `--solver-cache DIR` (default `$XDG_CACHE_HOME/prism/solver`)
-and gives each query `max(2, cores / --jobs)` solver members at once.
-`--timeout S` (default 30) is the budget of **each** VC.
+`check_function(fn, CheckOptions)` sends each VC to the solver library, `prism::solver::solve`
+([SOLVERS.md](SOLVERS.md)): the portfolio (Z3 in-process, CaDiCaL/Kissat on bit-blasted CNF,
+Bitwuzla when present, ProbSAT for counterexamples) and the query cache (`--solver-cache DIR`,
+default `$XDG_CACHE_HOME/prism/solver`). Each query gets `max(2, cores / --jobs)` members and at
+most `--timeout` seconds (default 30).
 
-**Certified mode** (`--certified`, roadmap 3.2). Each VC is also bit-blasted
-to CNF, CaDiCaL writes an LRAT proof of its unsatisfiability, and cake_lpr
-must accept it. The bit-blaster is chosen by the solver library
-(`bitblaster = auto`): the Lean-proved bit-blaster (`prism-bitblast`) when the
-VC is inside its fragment and the Lean tools are built, and then Lean's
-verified LRAT checker (`prism-lrat-check`) must accept the proof too;
-otherwise Z3's tactics, and the certificate says so. Memory VCs are certified
-like any other: the default memory encoding (`MemEncoding::Bv`) is QF_BV.
-A function is `PROVED-CERTIFIED` only when it is `PROVED`, has at least one
-VC, and **every** VC (each property and the unwinding assertion) is
-certified.
+One VC per property (`assumptions ∧ reach ∧ violation`) is asked in order; the first SAT is the
+FAILED verdict. With more than 16 properties a grouped "some property is violated" query comes
+first, and unanswered groups are halved down to 16. When every property is UNSAT and a cut is
+reachable, the unwinding VC decides PROVED (UNSAT) or BOUNDED. The k-induction step goes to Z3
+in-process. `extra.solver` says which member answered each VC.
 
-Certified mode answers every VC with **plain** queries first, exactly as
-plain mode does (the query cache, the portfolio, the grouping of many
-properties), and asks for certificates only once the function is `PROVED`.
-A function that is `FAILED`, `BOUNDED`, `UNKNOWN` or `NEEDS-HARNESS` pays
-for no certificate at all: none could make it `PROVED-CERTIFIED`. With two
-or more VCs the first plain query is **one combined query**,
-`assumptions ∧ reach ∧ (viol₁ ∨ … ∨ violₙ ∨ cut₁ ∨ …)`, built from the same
-VC terms. It is UNSAT exactly when every VC is UNSAT, so UNSAT makes the
-function `PROVED` at once; SAT (a validated model) means some VC is violated
-and the per-VC queries decide the verdict with no certificate attempted
-(`extra.certificate_combined` says so; before, a `BOUNDED` loop such as
-`nested6` paid for a certificate of every UNSAT VC).
+**Certified mode** (`--certified`). VCs are answered with plain queries first (one combined query
+when there are two or more); certificates are asked for only once the function is PROVED. The
+combined formula is bit-blasted to CNF, CaDiCaL writes an LRAT proof and cake_lpr must accept it;
+with the Lean-proved bit-blaster (`prism-bitblast`) the Lean LRAT checker must accept it too. A
+proof too large for a checker is split, down to per-VC proofs (`extra.certificate_scope`). A
+function is PROVED-CERTIFIED only when every VC is certified (`extra.certificate = "checked"`,
+`certificate_info`, `cnf_sha256`); otherwise it stays PROVED and `extra.certify_note` says why.
+BOUNDED and PROVED-UNBOUNDED are never certified. Trust: docs/TRUSTED_BASE.md.
 
-Certification of a `PROVED` function then asks the certified query of the
-same combined formula: one checked LRAT proof of it certifies the same claim
-as n per-VC proofs, with one bit-blast, one CaDiCaL run and one round of
-checking instead of n (`extra.certificate_scope = "combined"`,
-`extra.certificate_proofs = "1"`, `extra.certificate_vcs = n`,
-`extra.certificate_covers` lists the labels of the n VCs). If CaDiCaL wrote
-its proof but a checker ran out of time or memory on it (a large proof), its
-two halves are tried the same way, recursively down to batches of 2-3 VCs;
-when every batch comes back certified the function is certified with one
-proof per batch (`extra.certificate_scope = "batched"`,
-`extra.certificate_covers` lists each batch as `[label, …]`). Only
-**certified** UNSAT answers are used. If the combined certificate is not
-obtained or is rejected, it is discarded (its outcome is written to
-`extra.certificate_combined`) and every VC is certified on its own, in
-order, stopping at the first VC that is not (`certificate_scope =
-"per-vc"`). Every certificate query already knows its plain answer
-(`SolveOptions::known_unsat`), so only CaDiCaL-with-LRAT runs for it and it
-may use the whole certificate budget; if no certificate comes back, the plain
-answer stands, uncertified. The certificate queries of one function share a
-**certification budget** (`CheckOptions::certify_budget_s`; the pir stage
-uses `max(240 s, 8 × --timeout)`, or `$PRISM_CERTIFY_BUDGET` seconds, 0 for
-none): once it is spent the function stays `PROVED` with
-`certify_note = "not certified: the certification budget of this function
-(N s) was spent after k/n VCs were certified; verdict stays PROVED"`, and
-each certificate query gets at most what is left. `extra.certificate_solver`
-summarises the certificate queries. `CheckOptions::certify_combined = false`
-switches the combined query off (plain answers and certificates per VC). Plain mode is unchanged.
+## k-induction with memory
 
-The plain property queries, the unwinding assertion, k-induction and Houdini
-of one function share a **function budget** (`CheckOptions::function_budget_s`;
-the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none; unset, max(300 s, 10 x `--timeout`)). One clock
-covers both unwind attempts of `check_function` and the stage's memory-policy
-re-checks of the same function (static initialisation, arbitrary or initial
-globals), which also use the run's solver cache, Houdini budget and core share.
-Once it is spent before every VC is answered the function is `TIMEOUT` with
-`message = "pir function budget of N s spent before <label>
-(PRISM_FUNCTION_BUDGET)"` (or `during <label>` when that VC's query was cut
-short; `extra.function_budget_capped` lists such VCs) and
-`extra.function_budget_s = N` (N as given, e.g. `0.5`; Law 7: it says what was
-not tried). Once every VC is answered the verdict stands: a validated violation
-stays `FAILED` (`extra.earlier_properties` notes when the budget stopped the
-search for an earlier one), and a `BOUNDED` stays `BOUNDED` with
-`extra.k_induction` / `extra.invariants_note` = "not attempted (function budget
-of N s spent; PRISM_FUNCTION_BUDGET)" (a BOUNDED at the first unwind is kept
-the same way, `extra.unwind_requested_note`). Each VC query, k-induction step
-and Houdini query (its final query and per-query minimums included) gets at
-most what is left of the function budget. Certification queries are not
-counted (they use the certification budget above). A value of
-`$PRISM_FUNCTION_BUDGET`, `$PRISM_HOUDINI_BUDGET` or `$PRISM_CERTIFY_BUDGET`
-that is not a number of seconds >= 0 is ignored, and every checked pir row says
-so in `extra.env_rejected`.
+The step case encodes the code before the loop concretely, then starts the loop from an arbitrary
+header state and asks whether k violation-free iterations (k = 1, 2) can be followed by a violation.
+For a function with memory the header state is the header phis **and the memory the loop may have
+written**:
 
-A certified function then carries `extra.certificate = "checked"` (what the verdict
-audit requires of a `PROVED-CERTIFIED` from this stage),
-`extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;
-cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`, or one entry
-`combined[<labels>]: …` for each combined or batch proof),
-`extra.certificate_bitblast` (`N/M lean-proved`) and `extra.cnf_sha256` (one
-hash per checked CNF, comma-separated). Otherwise the verdict is unchanged and
-`extra.certify_note` names the first VC that was not certified and why (for
-example `not certified: cake_lpr not found (NOTRUN)`). `BOUNDED` and
-`PROVED-UNBOUNDED` are never certified; a function with no VC at all stays
-`PROVED` with `extra.certify_note = "no verification conditions (nothing to
-certify)"` (a certificate that checks nothing is not one); and a certified
-proof under assumptions is `PROVED-ASSUMING`.
-Translation validation that diverges turns a certified function into `ERROR`
-and drops the certificate. What a certificate still trusts is in
-[TRUSTED_BASE.md](TRUSTED_BASE.md).
+1. **Footprint.** Each store, `memcpy` and `memset` in the loop is mapped to its target object by
+   the structural provenance analysis (`SymMem::known`). If some target is not resolved, the
+   footprint is every non-`const` object allocated before the loop.
+2. **Havoc.** At the header every byte of every footprint object gets an arbitrary value and tag
+   (`SymMem::havoc_objects`). Its initialised flag becomes `old | arbitrary` when every write in the
+   loop initialises what it writes; otherwise (a `memcpy` or a masked store) it is fully arbitrary.
+3. **Allocation.** A loop that allocates, frees or restores the stack is not attempted
+   (`extra.k_induction = "not-attempted (allocation or free in the loop)"`).
 
-`prism --pir-vcs FILE --out DIR` writes the VCs of every function of one unit
-as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
-print JSON and exist for `prism-qa solver-bench`.
+A closed step makes the function PROVED-UNBOUNDED; an open or unknown step leaves it BOUNDED
+(Law 2). Evidence: `extra.k_induction_memory`, `extra.k_induction_footprint`. Precision is
+object-granular: a loop that writes `d[1]` havocs all of `d`. The abstract argument is
+`KInduction.kinduction_frame_sound` (`proofs/techniques/PrismTechniques/KInduction.lean`); the Lean
+memory semantics still lacks the frame and provenance lemmas and per-byte initialised flags it would
+need for PIR. Tasks: `testdata/pir/kind_mem.c`, `testdata/conformance/prism/kindmem/`.
 
-## Translation validation (roadmap 2.4)
+## Loop invariants
 
-For every function with a verdict: 64 input vectors (the counterexample,
-`INT_MIN, -1, 0, 1, INT_MAX` per width, then seeded random mixes). The PIR
-interpreter runs each; inputs where PIR reports a violation, an assume
-failure, a stop, a step-limit or a return that depends on a havoc are
-excluded (no UB inputs are compared). A driver `@__prism_tv_main` calling the
-function on the remaining inputs is appended to the lowered module
-(`__prism.*` markers get trivial bodies), reduced with
-`opt -passes=internalize,globaldce`, and run with
-`lli --entry-function=__prism_tv_main` inside the Law 9 sandbox
-(`sandbox::wrap_argv` = bwrap, plus `prlimit` with the sandbox rlimits).
+When the unwinding assertion is open and k-induction does not close (or the function has several
+loops), the stage searches for inductive loop invariants (`src/prism/pir/houdini.inc`). Only
+invariants proved inductive are used, and only a closed proof changes the verdict (Law 2).
 
-* without `--allow-exec`: `extra.tv = "NOTRUN (needs --allow-exec)"`,
-  `extra.exec = NOTRUN`, one stage-level NOTRUN row; the verdict stands and
-  the missing validation is recorded, not hidden;
-* agreement: `extra.tv = "PASS (n inputs agree with lli)"`;
-* any mismatch or missing lli result on a UB-free input: the verdict becomes
-  **ERROR** "translation validation diverged: f(args) PIR=… lli=…"
-  (`extra.verdict_before_tv` keeps the old one);
-* functions using nondet sources: `PARTIAL (… not validated)`.
+**Cut program.** The function is encoded with every loop cut once (`Encoding::cut_mode`). At each
+header the *entry* state is recorded, then the phis and the loop's write footprint are havocked;
+each back edge records the *next* state. The footprint follows "k-induction with memory", plus the
+object a pre-loop pointer variable points to (`SymMem::havoc_pointed`). Loops that allocate or free
+are not attempted (`extra.invariants_note`).
 
-## Differential oracle vs the old encoder (roadmap 2.8)
+**Houdini.** Candidates are templates: comparisons, parity masks and differences of header phis,
+scope values and constants, and quantified memory facts over an index prefix (`∀x < i: p[x] != 0`,
+`p[x] == q[x]`, `p[x]` initialised, …). A candidate survives when it holds at entry (base) and at
+every back edge (step), with the loop's survivors assumed in its havocked state. At the fixpoint the
+function is PROVED-UNBOUNDED when no property of the cut program is violated with every survivor
+assumed (`extra.pir_invariants`). An early optimistic query with all live candidates stops a search
+that cannot prove. Outcomes are cached in `<solver cache>/houdini/`; a cached proof is re-checked.
 
-`build/prism-qa pir-vs-bmc testdata --bin build/prism` runs
-`prism testdata --no-llm --stage inventory,classify,bmc,pir` and prints the
-per-function matrix (rows = bmc, columns = pir):
+**Why it is sound.** By induction over header visits before the first violation, every survivor
+holds at each visit; havoc assumptions are guarded by "no property violated before this header". The
+argument is proved in Lean for a structured model of the encoding (`LoopCut.loopcut_sound`,
+`LoopCut.encViol_iff` in `proofs/techniques/PrismTechniques/LoopCut.lean`;
+docs/PROOFS_TECHNIQUES.md); `tests/cpp/test_repolint.cpp` locks the encoder facts the model relies
+on.
 
-Run of this branch (clang 18.1.3, `--unwind 8`, 1726 units: 1225 C, 498 C++):
+`extra.invariant_loops` and `extra.invariant_conjuncts` feed SV-COMP correctness witnesses
+(docs/SVCOMP.md). Tasks: `libc-models/unbounded_string_contracts.cpp`, `testdata/pir/loops.c`.
 
-```
-functions: 3559 (bmc 3543, pir 2478)
-rows = bmc, columns = pir
-               PROVED*  BOUNDED   FAILED  NEEDS-HARNESS  ERROR  UNKNOWN  absent
-PROVED*            829        0        0              5      0        0     348
-BOUNDED              0        2        0              0      0        0       0
-FAILED               3        0       25              8      0        0       1
-NEEDS-HARNESS       40        0        7           1542      0        0     732
-ERROR                1        0        0              0      0        0       0
-UNKNOWN              0        0        0              0      0        0       0
-absent               0        0        0             16      0        0       0
-same bucket where both report: 2398/2462
-hard conflicts (PROVED* vs FAILED): 3
-```
+## Budgets and reruns
 
-pir verdicts on `testdata/`: 863 PROVED, 10 PROVED-UNBOUNDED, 2 BOUNDED,
-32 FAILED, 1571 NEEDS-HARNESS, 523 units that clang rejects (ERROR), 0
-UNKNOWN. With `--allow-exec`, of the 907 formal verdicts 891 passed
-translation validation against `lli` (857 on all 64 inputs, the rest on the
-UB-free subset) and 16 had no UB-free terminating input (`tv = NONE`);
-**0 divergences**.
+| setting | default | effect |
+|---|---|---|
+| `--timeout S` | 30 | each VC query |
+| `--unwind N` | 8 | loop bound |
+| `PRISM_FUNCTION_BUDGET` | max(300 s, 10 × timeout); 0 = none | all plain queries, k-induction and Houdini of one function; spent → TIMEOUT, or the BOUNDED stays with a note |
+| `PRISM_CERTIFY_BUDGET` | max(240 s, 8 × timeout); 0 = none | certificate queries of one function; spent → stays PROVED with `certify_note` |
+| `PRISM_HOUDINI_BUDGET` | max(3600 s, 120 × timeout); 0 = none | Houdini seconds for the whole run |
+| `PRISM_HOUDINI_FINAL_RESERVE` | 0.3 | share of the function budget kept for Houdini's final query |
+| `PRISM_PIR_DEEPEN_MAX` | 64; 0 = off | largest unwind a BOUNDED single loop is re-checked at |
+| `PRISM_PIR_BATCH` | all units | units per batch |
+| `PRISM_PIR_DIVERT_S` | off | seconds in the main process before an UNKNOWN is re-checked in a child |
+| `PRISM_PIR_MEM_MB` | — | memory budget when `PRISM_MEM_BUDGET_MB` is unset |
+| `PRISM_PIR_DUMP_INVARIANTS`, `PRISM_HOUDINI_TRACE`, `PRISM_PIR_PROGRESS`, `PRISM_PIR_NO_HEADERS` | off | diagnostics |
+| `PRISM_PIR_LEAN_EXPORT`, `PRISM_PIR_EXPORT_ONLY` | off | Lean export ("Translation validation") |
+| `PRISM_PIR_ONLY` | — | internal: set in rerun children |
 
-Independent check (not in CI; a scratch script): 8×12 random loop-free /
-small-loop C functions per seed over `int/unsigned/short/long/unsigned char`
-with `+ - * / % << >> & | ^ ?:` and casts, 5 seeds (≈480 functions):
-every PROVED function ran ~220 inputs under `-fsanitize=undefined` with no
-report (0 wrong PROVED), and every FAILED counterexample was confirmed by
-UBSan except where clang had constant-folded the UB (UBSan cannot see it,
-e.g. `(-5) << 7`).
+The registry with one line each is `prism::env_vars()` in `src/prism/config.cpp` (docs/USER_GUIDE.md
+"Environment variables"). Houdini gets at most six times `--timeout` per search. A budget value that
+is not a number of seconds ≥ 0 is ignored and every checked row says so in `extra.env_rejected`. The
+function budget covers both unwind attempts and the global-state re-checks of the same function
+(`tests/cpp/test_pir_budget.cpp`).
 
-### Hard conflicts (PROVED* vs FAILED) — all investigated
-
-All three are **false alarms of the old bmc encoder** (a wrong FAILED, not a
-wrong PROVED); PIR is right. `bmc.cpp` is left unchanged (it is the oracle):
-
-1. `testdata/interval_ops.c::wrap_u_local`, `wrap_u_branch` — bmc reports
-   `ovf+: INT-SIGNED-OVF` on `unsigned x = 2000000000; return x + 2000000000;`.
-   Unsigned arithmetic wraps by definition (C17 6.2.5p9); there is no UB.
-   Repro: `prism testdata/interval_ops.c --no-llm --stage inventory,classify,bmc,pir`.
-2. `testdata/trunc.c::trunc_bad` — bmc reports `ovf+` with `n=0x40000000` on
-   `char c = n; short s = n; char d = (char)n; return c + s + d;`. After the
-   (implementation-defined, not UB) conversions `c,d ∈ [-128,127]`,
-   `s ∈ [-32768,32767]`; the sum cannot overflow `int`. The old encoder keeps
-   `c` and `s` as 32-bit values (it does not model the narrowing).
-
-No wrong PROVED was found in either engine on `testdata/`.
-
-### Other disagreements (not conflicts)
-
-* bmc NEEDS-HARNESS → pir FAILED: new real defects PIR finds, e.g.
-  `builtin_clz.c` / `clz_zero.c` (`__builtin_clz(0)`), `builtin_vacuous.c`
-  (`__builtin_trap`, `__builtin_unreachable` reached), `wide_string.c` /
-  `widech_unenc.c` (`L'A' + n` overflows), `sandbox_abort.c` (`abort()`).
-* bmc NEEDS-HARNESS → pir PROVED: constructs Clang resolves that the old
-  parser refused (`_Generic`, `_Alignas`, statement expressions, anonymous
-  enums, `const` locals, `vector_size` locals left unused, `try` without
-  throwing calls, `[[assume]]`, …).
-* bmc FAILED/PROVED → pir NEEDS-HARNESS: arrays and address-taken locals
-  (`alloca`, memory model not in this slice) and C++ member functions (`this`).
-* Units that clang rejects (undeclared identifiers, missing headers in the
-  lint-oriented `_api`/`_lint` snippets) are one `ERROR` row per unit; the
-  old parser still extracts functions from them (the "absent" column).
-
+**Reruns.** Past Z3's hard memory limit Z3 cannot be used again in the process. The remaining
+functions are marked `pir_rerun = pending` and checked again by a child PRISM (same command line,
+pir only, `PRISM_PIR_ONLY=<unit>\t<fn>…`) whose verdicts replace the UNKNOWN rows
+(`rerun_after_oom`, Linux only; elsewhere the rows stay UNKNOWN and say so).
 
 ## Memory budget
 
-Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill
-or a crash. `src/prism/membudget.cpp` fixes one budget per process at start:
-`$PRISM_MEM_BUDGET_MB` (or `$PRISM_PIR_MEM_MB`), else 75% of the smallest of
-the cgroup limit (v2 `memory.max` minus `memory.current`, or v1), MemAvailable
-and half of RLIMIT_AS (address space only bounds; it is not memory). The
-process's resident set is compared with 80% of it (headroom for the stop
-latency), and the machine's MemAvailable with `$PRISM_MEM_RESERVE_MB`
-(default 800), in three places: the encoder (SymMem's read-over-write chain,
-value-set walks and havoc reads, sampled every 4096 steps, plus every encoded
-node), before every query, and a 100 ms watchdog that interrupts every live
-Z3 context (pir's and the portfolio's) mid-query. The function then ends as
-UNKNOWN with "memory budget reached ... (process RSS, budget, source)"; its
-contexts are freed and the heap is trimmed, so the next function is checked
-normally. With `--jobs N` the threads share the one process budget.
-Past half the budget the portfolio solves without the query-cache key (that
-key copies, simplifies and prints the whole formula) and one in-process solver
-at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort; past
-it Z3 is not reused in the process and the remaining functions are re-checked
-in a fresh process (`rerun_after_oom`). Tests: `tests/cpp/test_membudget.cpp`.
+Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill.
+`src/prism/membudget.cpp` fixes one budget per process: `$PRISM_MEM_BUDGET_MB` (or
+`$PRISM_PIR_MEM_MB`), else 75% of the smallest of the cgroup limit, MemAvailable at start and half
+of RLIMIT_AS. The process is over budget at 80% of it in resident set, or when MemAvailable falls
+under `$PRISM_MEM_RESERVE_MB`. The encoder (sampled), every query and a watchdog that interrupts
+live Z3 contexts check it; the function then ends UNKNOWN and the next one runs normally. A call
+that ignores interrupts for `PRISM_MEM_STUCK_MS` is failed through Z3's hard limit and the rest is
+rerun ("Budgets and reruns"). Tests: `tests/cpp/test_membudget.cpp`.
+
+<a id="translation-validation-roadmap-24"></a>
+
+## Translation validation
+
+For every function with a verdict, the PIR interpreter runs 64 input vectors (the counterexample,
+boundary values, seeded random mixes) and drops inputs with a violation, failed assume, stop, step
+limit or havoc-dependent return. A driver calling the function on the rest is appended to the
+lowered module and run with `lli` in the Law 9 sandbox. Without `--allow-exec`, `extra.tv = "NOTRUN
+(needs --allow-exec)"` and one stage-level NOTRUN row record the gap; the verdict stands. Agreement
+is `PASS (n inputs agree with lli)`. A mismatch on a UB-free input turns the verdict into **ERROR**
+(`extra.verdict_before_tv`) and drops any certificate. Nondet sources and object parameters are
+`PARTIAL`.
+
+This is testing, not proof. With `PRISM_PIR_LEAN_EXPORT=DIR` each translated function is also
+written as an (LLVM fragment, PIR) pair; `prism-qa pir-lean-check` re-translates it with the Lean
+translator the refinement theorems are about and checks the C++ output matches (`export_lean.cpp`,
+docs/PROOFS_REFINEMENT.md).

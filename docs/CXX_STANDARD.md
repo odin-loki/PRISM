@@ -1,78 +1,102 @@
-# C++ programming standard (PRISM engine)
+# C++ coding standard
 
-**Owner intent (2026-10-24):** PRISM’s own C++ (`src/prism/`, `src/gui/`,
-`src/tools/`, `include/prism/`, `tests/cpp/`) should be **memory-safe ISO C++23**
-— the strictest practical rules for **safety** and **performance**. This document
-records that goal and what is **not** enforced yet.
+PRISM's own C++ (`src/prism/`, `src/gui/`, `src/tools/`, `include/prism/`,
+`tests/cpp/`) is ISO C++23 and aims to be memory-safe. This page lists the
+rules and says, for each one, what enforces it today. "Review" means only
+code review enforces it.
 
-`third_party/` is pinned vendored code; do not edit it. Rules below apply to
-PRISM sources only.
+`third_party/` is pinned upstream code. These rules do not apply to it;
+never edit it.
 
-## Baseline today
+## Build settings
 
-| Item | Status |
-|------|--------|
-| Language | **C++23** — `CMAKE_CXX_STANDARD 23` / `CMAKE_CXX_STANDARD_REQUIRED ON` in root `CMakeLists.txt`; MSVC uses `/std:c++latest` where applicable. |
-| Product direction | C++23-only engine — [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md). |
-| Optional ASan+UBSan | `PRISM_SANITIZE=ON` adds `-fsanitize=address,undefined` (Clang/GCC). |
-| Fuzzing | `PRISM_FUZZ` + libFuzzer on supported Clang builds. |
-| External lint | cppcheck / clang-tidy via polyglot when installed (`NOTRUN` if missing — Law 1). |
-| **Written coding standard** | **This file only** — not yet wired into CI as hard gates. |
+| Setting | Where | Value |
+|---|---|---|
+| Language | `CMakeLists.txt` | `CMAKE_CXX_STANDARD 23`, `CMAKE_CXX_STANDARD_REQUIRED ON`, `CMAKE_CXX_EXTENSIONS OFF` (ISO, not `gnu++23`) |
+| Compiler | `CMakeLists.txt` | clang (pinned 23.1.4), clang-cl on Windows; MSVC `cl` 19.40+ on Windows x64 ([MSVC_PORT.md](MSVC_PORT.md)). Anything else, and MinGW, fails configure. |
+| Warnings | `prism_engine_warning_flags()` | clang/GCC: `-Wall -Wextra -Wpedantic`; `cl` and clang-cl: `/W4 /permissive-` |
+| Warnings as errors | `-DPRISM_WERROR=ON` | adds `-Werror` (clang/GCC only). Default `OFF`. No CI job sets it. |
+| Optimisation | `prism_core` | `-O3 -mavx2` (clang); `/O2 /arch:AVX2 /utf-8` (MSVC-style drivers). Default build type `Release`. |
+| ASan + UBSan | `-DPRISM_SANITIZE=ON` | `-fsanitize=address,undefined -fno-sanitize-recover=undefined`. clang/GCC only. |
+| compile database | `CMAKE_EXPORT_COMPILE_COMMANDS ON` | `build/compile_commands.json`, for clang-tidy |
 
-Assurance: [DO-333.md](assurance/DO-333.md) points here; enforcement items below
-are still in progress.
+The warning flags apply to `prism_core`, `prism`, `prism_qa`, `prism-qa`
+and `prism_tests`. `src/prism/taxonomy.cpp` and `src/prism/checkers_cxx.cpp`
+are compiled at `-O0`.
 
-## Target standard (to enforce)
+## Rules
 
 ### Language and library
 
-- **ISO C++23** only for new code; no C++17/20 downgrade in `src/prism/`.
-- Prefer **standard library** facilities (`std::span`, `std::string_view`, containers,
-  `std::optional`, `std::expected` where appropriate) over ad-hoc buffers.
-- **No owning raw pointers** in interfaces; no `new`/`delete` except inside vetted
-  low-level adapters (document exceptions in code review).
-- **No unchecked undefined behaviour** in PRISM code paths; use sanitizers and tests
-  to catch slips; `PRISM_HAS_INT128` / portable wide-int paths must stay explicit.
+| Rule | Enforced by |
+|---|---|
+| ISO C++23 only; no compiler extensions in engine code. | Compiler (`CMAKE_CXX_EXTENSIONS OFF`, `-Wpedantic`) |
+| Prefer the standard library: `std::span`, `std::string_view`, `std::optional`, `std::expected`, containers, `std::jthread`. | Review; clang-tidy `modernize-*` (run by hand) |
+| No `__int128` in engine code. Use `prism::i128` / `prism::u128` (`include/prism/wide_int.hpp`), which builds on MSVC `cl`. | Review |
+| Processes start through `prism::exec` (`include/prism/exec.hpp`, FORGE spawn), not `system`, `popen` or `fork`. | Review |
 
 ### Memory safety
 
-- Treat **memory safety** as a design requirement: bounds-checked access, no
-  unbounded `memcpy` without proof, no `reinterpret_cast` except at documented FFI
-  boundaries (Z3, process, CUDA).
-- **Law 9 / sandbox:** executing scanned code stays behind `--allow-exec`; engine
-  code must not introduce silent execution paths.
+| Rule | Enforced by |
+|---|---|
+| No owning raw pointers in interfaces; no bare `new`/`delete` outside low-level adapters. | Review. clang-tidy `cppcoreguidelines-owning-memory` is disabled in `.clang-tidy`. |
+| Bounds-checked access; no `memcpy` without a size the code has checked. | Review; ASan in the nightly job |
+| `reinterpret_cast` only at FFI boundaries (Z3, process, CUDA, libclang, fuzz entry). | Review. clang-tidy `cppcoreguidelines-pro-type-reinterpret-cast` is disabled. |
+| No undefined behaviour. | UBSan (`PRISM_SANITIZE`) in the nightly job |
 
-### Safety (compile-time and runtime)
+`.github/workflows/self-check.yml` runs nightly: it builds PRISM with
+`PRISM_SANITIZE=ON` and runs `prism_tests` and `prism-qa conformance`
+under ASan + UBSan. It is not a gate on pull requests.
 
-- Aim for **warnings as errors** on Clang CI (`-Werror` with a curated allowlist).
-- Add a **root `.clang-tidy`** profile (e.g. `bugprone-*`, `cppcoreguidelines-*`,
-  `modernize-*`, `performance-*`) with incremental cleanup — not `-warnings-as-errors`
-  on day one.
-- **MSVC:** subset builds use `/W4` or stricter where green; document divergences
-  in [MSVC_PORT.md](MSVC_PORT.md).
+### Laws
+
+Engine code follows the laws in [CLAUDE.md](../CLAUDE.md). For C++ this
+means in particular:
+
+- A step that cannot run returns a `NOTRUN` finding with the reason; it
+  never returns an empty result (Laws 1 and 7).
+- Code from the scanned tree runs only behind `--allow-exec` and the
+  sandbox gate (Law 9, `include/prism/sandbox.hpp`).
+- No flag that disables a check is passed to a tool (Law 8).
+  `prism::exec::refuse_disabled_checks` throws on any `--no-…-check`
+  argument.
 
 ### Performance
 
-- **Release** builds stay optimized (`-O2` / MSVC `/O2`); avoid pessimizing
-  “safety” patterns (e.g. redundant copies in hot paths) — profile before micro-opts.
-- Hot paths (`pir/`, `solver/`, `proc/`) favor **contiguous data**, minimal
-  allocations per unit of work, and **no accidental sync** in parallel stages.
+| Rule | Enforced by |
+|---|---|
+| Release builds stay optimised; measure before micro-optimising. | Build settings above |
+| Hot paths (`src/prism/pir/`, `src/prism/solver/`) keep data contiguous and allocate little per unit of work. | Review |
+| Parallel stages share no mutable state without a lock. | Review; TSan is not run in CI |
 
-### Process
+## clang-tidy
 
-- New stages and tools follow [CLAUDE.md](../CLAUDE.md) laws and status vocabulary.
-- Python engine is reference/oracle only per port plan; **new behaviour lands in C++ first**.
+The root `.clang-tidy` enables `bugprone-*`, `cppcoreguidelines-*` and
+`modernize-*`, with these groups disabled:
 
-## Tooling
+- `bugprone-`: easily-swappable-parameters, implicit-widening-of-multiplication-result,
+  misplaced-widening-cast, narrowing-conversions, reserved-identifier,
+  too-small-loop-variable.
+- `cppcoreguidelines-`: avoid-c-arrays, avoid-do-while, avoid-magic-numbers,
+  macro-usage, non-private-member-variables-in-classes, owning-memory,
+  pro-bounds-array-to-pointer-decay, pro-bounds-constant-array-index,
+  pro-bounds-pointer-arithmetic, pro-type-const-cast,
+  pro-type-reinterpret-cast, pro-type-union-access, pro-type-vararg.
+- `modernize-`: avoid-c-arrays, concat-nested-namespaces, loop-convert,
+  pass-by-value, use-nodiscard, use-trailing-return-type, use-using.
 
-| Tool | Use |
-|------|-----|
-| `.clang-tidy` | Engine code only (`HeaderFilterRegex`); run with `compile_commands.json`. |
-| `PRISM_WERROR=ON` | CMake: `-Werror` on Clang/GCC for `prism_core` (and tests when wired). |
-| MSVC | `/W4 /permissive-` on `prism_core` via `prism_engine_warning_flags()`. |
+`HeaderFilterRegex` is `(src/|include/prism/).*`. There is no
+`WarningsAsErrors`. Run it by hand with the compile database:
 
-## Next engineering work (tracked)
+```
+clang-tidy -p build src/prism/<file>.cpp
+```
 
-- Wire `prism_engine_warning_flags` on `prism_tests`, `prism`, `prism-qa`.
-- Optional CI job: `PRISM_WERROR=ON` on Linux (fix fallout incrementally).
-- Expand clang-tidy in polyglot / a dedicated CI step with `compile_commands.json`.
+No CI job runs clang-tidy on PRISM's own sources.
+
+## Not enforced yet
+
+- `-Werror` in CI (`PRISM_WERROR=ON` exists; no job sets it).
+- clang-tidy in CI.
+- The memory-safety rules that clang-tidy has disabled (owning memory,
+  pointer arithmetic, `reinterpret_cast`) are review-only.

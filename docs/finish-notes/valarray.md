@@ -48,9 +48,7 @@ subscript are omitted the same way. Construction from a pointer or an
 memory, or initializer_list headers, or any other container.
 
 `src/prism/pir/stage.cpp` was not edited. It already writes every embedded
-`cxx/` model and passes that directory as `-isystem`. `src/prism/bmc.cpp`
-still returns "is not a valarray model" from the source text before a header
-is inlined. That exit is unchanged.
+`cxx/` model and passes that directory as `-isystem`.
 
 ## Wiring
 

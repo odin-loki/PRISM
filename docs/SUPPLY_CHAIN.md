@@ -1,30 +1,53 @@
 # Supply chain
 
-Roadmap Part 1: every byte PRISM compiles or runs is pinned, hashed and
-licence-checked, and a release can be rebuilt bit for bit.
+Every dependency PRISM compiles, links or runs is pinned and hashed. Linked
+code is licence-checked. A release can be rebuilt bit for bit.
 
-## What is in the repository
+## Dependencies
 
-`third_party/` holds only the four libraries PRISM links, each an unmodified
-upstream copy pinned in `third_party/MANIFEST.toml`:
-
-| Component | Version | Upstream commit | Licence |
+| Dependency | Kind | Pin | Where |
 |---|---|---|---|
-| Z3 | 4.13.4 | `6f24123f0c9d` (z3-4.13.4) | MIT |
-| PCRE2 | 10.44 | `6ae58beca071` (pcre2-10.44) | BSD-3-Clause WITH PCRE2-exception |
-| nlohmann/json | 3.11.3 | `9cca280a4d0c` (v3.11.3) | MIT |
-| doctest | 2.4.11 | `ae7a13539fb7` (v2.4.11) | MIT |
+| Z3 4.13.4, PCRE2 10.44, nlohmann/json 3.11.3, doctest 2.4.11 | linked, vendored | commit + archive and tree SHA-256 | `third_party/` and `third_party/MANIFEST.toml` |
+| FORGE (odin-loki/FORGE) | linked, mandatory, not vendored | branch port/cipin (landing): full commit SHA in `cmake/FORGE_PIN`. On main (991c4eafa): unpinned, tracks `main` | `FORGE_SOURCE_DIR`, else fetched by `cmake/forge.cmake` |
+| LLVM/clang 23.1.4 | toolchain (compiler, `pir` front end, libclang) | tag + SHA-256 per platform | `third_party/llvm/PIN.toml`, fetched by `scripts/fetch_llvm.py` |
+| CMake 3.31.6, Qt 6.8.3 qtbase, CUDA 12.6, Lean 4 v4.34.0, Linux sysroot, lint tools | toolchain | version + SHA-256 | `third_party/TOOLCHAIN_PINS.toml`, fetched by `scripts/fetch_toolchain.py NAME` |
+| ESBMC, CBMC, KLEE, cppcheck, Frama-C, Infer, Semgrep, Coccinelle, AFL++, Dafny, Strix, CaDiCaL, Kissat, Bitwuzla, cake_lpr, lean4export, nanoda | external processes | commit + archive SHA-256 | `MANIFEST.toml` `kind = "external"`, built by `prism-deps tool NAME` |
+| clang-tidy, gcc, bwrap, the polyglot linters | host tools | not pinned in the manifest; findings record the binary that ran | `MANIFEST.toml` `kind = "system"` |
+| Lean libraries | proofs | `lean-toolchain` and `lake-manifest.json` revisions | `proofs/` |
+| Docker base image | build image | `ubuntu:24.04` by digest | `Dockerfile` |
+| Language model | data, never committed | a FORGE `.fpk` file the user provides | [AI.md](AI.md) |
 
-The fifteen mined source trees (AFLplusplus, Frama-C, FuSeBMC, Fuzz4All,
-cbmc, coccinelle, codeql, cppcheck, dafny, esbmc, infer, klee, rapidcheck,
-semgrep, strix; about 170,000 files) were deleted. They were never built;
-`docs/MINED.md` records what PRISM re-implemented from each, and
-`[[mined]]` rows in the manifest keep their URLs and licences. On disk the
-four linked trees are about 50 MB of source (Z3 ~33 MB, PCRE2 ~16 MB;
-llama.cpp and xsimd were removed when FORGE became the platform layer and
-model engine); that size is not a roadmap target — only pins, hashes and
-licences are. The `.git` directory only shrinks after the optional history
-rewrite below.
+A download whose SHA-256 differs from its pin is refused.
+
+The only tracked Python outside `third_party/` is the CI bootstrap
+(`scripts/fetch_llvm.py`, `scripts/fetch_toolchain.py`, which run before any
+build exists) and the BenchExec plugin `tools/svcomp/prism.py`.
+`tests/cpp/test_deps.cpp` ("deps: tracked .py files match the phase-5
+allow-list") fails on any other tracked `.py`.
+
+## FORGE
+
+FORGE is the platform layer (logging, processes, thread pool, settings) and
+the language-model engine. It is linked and mandatory but not vendored.
+
+Branch port/cipin (landing) pins it to one full commit SHA in
+`cmake/FORGE_PIN`, the single source of truth:
+
+- `cmake/forge.cmake` reads the file. When `FORGE_SOURCE_DIR` is empty it
+  fetches that commit with `git fetch --depth 1` into
+  `build/_deps/forge-src` and checks that `HEAD` is the pin. With
+  `-DFORGE_SOURCE_DIR=PATH` it builds that checkout and warns when its `HEAD`
+  is not the pin.
+- Every workflow that builds PRISM reads the file and checks out FORGE at
+  that SHA.
+
+Bumping the pin is a one-line reviewed change:
+
+```
+scripts/bump_forge_pin.sh          # the current FORGE main SHA
+scripts/bump_forge_pin.sh <sha>    # or an exact commit
+git commit cmake/FORGE_PIN
+```
 
 ## MANIFEST.toml
 
@@ -32,155 +55,112 @@ One `[[component]]` per dependency:
 
 - `kind = "linked"`: compiled into PRISM from `path`. Records `tag`,
   `commit`, `archive_sha256`, `tree_sha256` (digest of the in-tree copy),
-  `tree_version_*` (the version marker in the source) and `drift` (the few
-  files where the in-tree copy differs from upstream: line endings and files
-  the original vendoring dropped).
-- `kind = "external"`: a tool PRISM runs as a separate process (ESBMC, CBMC,
-  KLEE, cppcheck, Frama-C, Infer, Semgrep, Coccinelle, AFL++, Dafny, Strix,
-  CaDiCaL, Kissat, cake_lpr). Pinned to an upstream release tag's commit.
-- `kind = "system"`: host tools (clang, clang-tidy, gcc, bwrap, the polyglot
-  linters). Not pinned; findings still record which binary ran (below).
+  `tree_version_*` (the version marker in the source) and `drift` (files
+  where the in-tree copy differs from upstream).
+- `kind = "external"`: a tool PRISM runs as a separate process, pinned to an
+  upstream release commit.
+- `kind = "system"`: host tools. Not pinned; findings still record which
+  binary ran.
+- `[[mined]]`: the source trees PRISM's techniques came from. The trees are
+  deleted; the rows keep their URLs and licences ([MINED.md](MINED.md)).
 
 `archive_sha256` is the SHA-256 of the uncompressed tar that
 `git archive --format=tar --prefix=<name>-<commit>/ <commit>` produces after
-`git fetch --depth 1 <url> <commit>`. The fetch itself is content-addressed
-by the commit id; the SHA-256 is a second, collision-resistant check over the
-exact bytes PRISM builds from. (GitHub's `.tar.gz` endpoints were not
-reachable from the pinning machine, and their gzip bytes are not a stable
-contract.)
-
-### How the pins were resolved
-
-`third_party/vendor.log` (now removed; its content is summarised in the
-manifest header) recorded clone URLs and timestamps from 2026-09-19 but no
-commit hashes, because the trees were shallow clones with `.git` removed.
-
-- Linked libraries: read the version from the in-tree source, resolve the
-  matching tag with `git ls-remote`, fetch the tag's tree and compare it file
-  by file with the in-tree copy. All four match except the files listed under
-  `drift`.
-- External tools: the mined copies were development heads (for example
-  cppcheck 2.21.99, KLEE 3.3-pre), which cannot be reproduced. Each is pinned
-  to the upstream release at or just below that version.
+`git fetch --depth 1 <url> <commit>`.
 
 ## prism-deps
 
-Std-only C++ binary (`src/tools/prism_deps/`, build target `prism-deps`). Uses
-the `git` CLI for fetches. Fails closed: any commit, hash or version mismatch
-exits non-zero (3 for a hash mismatch) and installs nothing.
+`prism-deps` (`src/tools/prism_deps/`) is a standard-library-only C++ tool.
+It uses the `git` CLI for fetches. It fails closed: any commit, hash or
+version mismatch exits non-zero (3 for a hash mismatch) and installs
+nothing.
 
 ```
 build/prism-deps list
 build/prism-deps linked              # offline: version marker + tree digest
-build/prism-deps linked --refetch    # + fetch each pinned archive, verify sha256, diff vs tree
+build/prism-deps linked --refetch    # also fetch each pinned archive and compare
 build/prism-deps tool cadical kissat cake_lpr
-build/prism-deps tool esbmc --no-build
+build/prism-deps licence-check
+build/prism-deps sbom --version vX.Y.Z -o prism.cdx.json
 ```
 
-`tool NAME` fetches the pinned commit, verifies `archive_sha256`, and
-installs into `~/.prism/tools/<name>/<commit>/` (override the root with
-`PRISM_TOOLS_DIR`): `src/` (verified source), `bin/` (executables) and
-`PRISM-TOOL.json`. Everything is staged in a temporary sibling directory and
-renamed into place only after every step passed. Build recipes exist for
-CaDiCaL and Kissat (`./configure && make`) and cake_lpr (compile the shipped,
-CakeML-verified `cake_lpr.S` with its C FFI shim). For the other tools the
-script verifies and unpacks the source, prints the build hint from the
-manifest, and tells you where to put the binary.
-
-Checked on 2026-09-23: `tool cadical kissat cake_lpr` built
-CaDiCaL 3.0.1 and Kissat 4.0.4, and
-`cadical --lrat u.cnf u.lrat && cake_lpr u.cnf u.lrat` printed
-`s VERIFIED UNSAT`.
+`tool NAME` fetches the pinned commit, checks `archive_sha256` and installs
+into `~/.prism/tools/<name>/<commit>/` (root: `PRISM_TOOLS_DIR`), with
+`src/`, `bin/` and `PRISM-TOOL.json`. It stages everything in a temporary
+directory and renames it into place only when every step passed. CaDiCaL,
+Kissat and cake_lpr have build recipes. For the other tools it unpacks the
+checked source and prints the build hint from the manifest.
 
 ## How PRISM finds and records tools
 
 Search order (`src/prism/config.cpp`):
 
-1. `--tool NAME=PATH` / `Config.tools`
-2. `~/.prism/tools/<component>/<pinned commit>/bin/<exe>`: only the commit
-   the manifest pins. Pins are read at CMake configure time into the generated
-   `prism/manifest_pins.hpp`, so a binary trusts the builds its own manifest
-   named.
-3. `PATH`
+1. `--tool NAME=PATH`.
+2. `~/.prism/tools/<component>/<pinned commit>/bin/<exe>`, only for the
+   commit the manifest pins. CMake writes the pins into the generated header
+   `prism/manifest_pins.hpp`, so a binary trusts only the builds its own
+   manifest names.
+3. `PATH`.
 
 A missing tool is `NOTRUN` with the hint
-`prism-deps tool <component> (pinned in third_party/MANIFEST.toml)`.
-Law 9: a tools directory inside the scanned tree is ignored unless
-`--allow-exec` is given.
+`prism-deps tool <component> (pinned in third_party/MANIFEST.toml)`. A
+tools directory inside the scanned tree is ignored unless `--allow-exec` is
+given (Law 9).
 
 Every finding an external tool produced carries `extra["tool_sha"]`: the
-manifest commit when the binary lives under
-`~/.prism/tools/<name>/<commit>/`, otherwise
-`path:<absolute path>;sha256:<SHA-256 of the binary>` (cached per path, size
-and mtime). This is in place for cppcheck, ESBMC, Dafny and every optional
-tool (KLEE, AFL++, Frama-C, Infer, clang-tidy, CBMC, Strix, Semgrep, spatch)
-in both engines.
+manifest commit for a binary under `~/.prism/tools/<name>/<commit>/`, else
+`path:<absolute path>;sha256:<SHA-256 of the binary>`.
 
 ## Licence firewall
 
-`prism-deps licence-check` (run in CI and in the Docker build) fails when a
-`linked` component carries a copyleft SPDX id: GPL, LGPL, AGPL, SSPL, EUPL,
-OSL and similar, and also weak copyleft (MPL, EPL, CDDL) unless the component
-is added to `ALLOW_WEAK_COPYLEFT` after review. It also fails on a missing or
-NOASSERTION licence, or a missing licence file. External and system tools may
-carry any licence because PRISM only runs them as separate, unmodified
-processes.
+`prism-deps licence-check` runs in CI and in the Docker build. It fails when
+a `linked` component carries a copyleft SPDX id (GPL, LGPL, AGPL, SSPL,
+EUPL, OSL and the like), or a weak copyleft one (MPL, EPL, CDDL) not listed
+in `ALLOW_WEAK_COPYLEFT`. It also fails on a missing or `NOASSERTION`
+licence or a missing licence file. External and system tools may carry any
+licence, because PRISM only runs them as separate, unmodified processes.
 
-The CodeQL adapter was removed from both engines: the CodeQL engine is under
-the GitHub CodeQL Terms, which restrict commercial use. The MIT repository
-only contains queries.
+There is no CodeQL adapter: the CodeQL engine's terms restrict commercial
+use.
 
-Before any release, verify these licences against current upstream: AFL++
-(the licence file in the mined copy said AGPL-3.0-or-later, while older
-releases were Apache-2.0) and Strix (AGPL v3 in tree). PRISM's own code is
-the GNU Affero General Public License, version 3 (`LICENSE`). The third-party
-table still needs review before the first sale.
-
-## Phase-5 Python allow-list (C++ port)
-
-`prism_tests` runs `deps: tracked .py files match the phase-5 allow-list` in
-`tests/cpp/test_deps.cpp` with `k_python_engine_deleted = true`: tracked `.py`
-outside `third_party/` must be only `tools/svcomp/prism.py` (BenchExec
-tool-info). See [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md).
+PRISM's own licence is the GNU Affero General Public License, version 3
+(`LICENSE`). Open before a release: check the AFL++ and Strix licences
+against current upstream, and a legal review of the third-party table.
 
 ## SBOM
 
-`prism-deps sbom --version vX.Y.Z -o prism.cdx.json` writes a
-CycloneDX 1.5 JSON SBOM from the manifest, using only the standard library.
-Linked libraries are `library`/`required`, external and system tools are
-`application`/`optional`. Each entry carries its purl
-(`pkg:github/<owner>/<repo>@<commit>`), SHA-256 and licence, plus `prism:*`
-properties (commit, tag, tree digest, drift). The output is deterministic: the
-serial number is a UUIDv5 of the manifest and version, and the timestamp is
-`SOURCE_DATE_EPOCH` when set. CI uploads it as the `prism-sbom` artifact on
-every push.
+`prism-deps sbom` writes a CycloneDX 1.5 JSON SBOM from the manifest.
+Linked libraries are `library`/`required`; external and system tools are
+`application`/`optional`. Each entry has its purl
+(`pkg:github/<owner>/<repo>@<commit>`), SHA-256 and licence. The output is
+deterministic: the serial number is a UUIDv5 of the manifest and version,
+and the timestamp is `SOURCE_DATE_EPOCH` when set. CI uploads it as the
+`prism-sbom` artifact on every push.
 
 ## Reproducible, signed releases
 
-`Dockerfile`:
+The `Dockerfile`:
 
-- `ubuntu:24.04` pinned by index digest
-  (`sha256:008173c2…`, resolved 2026-09-23; re-resolve with
-  `docker buildx imagetools inspect ubuntu:24.04`).
-- apt pointed at `snapshot.ubuntu.com/ubuntu/<UBUNTU_SNAPSHOT>` so
-  `clang-18`, `lld-18` and `llvm-18` resolve to the same packages every time.
-  The compiler is used by absolute path.
-- `SOURCE_DATE_EPOCH` (build arg, the tagged commit's time),
-  `-ffile-prefix-map=/src=.`, `-ffile-prefix-map=/build=build`,
-  `-Wl,--build-id=sha1`, and deterministic `llvm-ar`.
-- `prism-deps licence-check` and `prism-deps linked` run before compiling;
-  `prism_tests` runs after.
-- The `artefacts` stage exports `prism`, `prism.cdx.json` and `SHA256SUMS`.
-  Optional `-DPRISM_NATIVE=ON` also builds `libprism_native.so` (C ABI for
-  external fuzz mutators; not part of the release tarball).
+- starts from `ubuntu:24.04` pinned by digest, with apt pointed at a
+  snapshot date;
+- fetches LLVM 23.1.4 with `scripts/fetch_llvm.py` and builds with it by
+  absolute path;
+- sets `SOURCE_DATE_EPOCH`, `-ffile-prefix-map`, `-Wl,--build-id=sha1` and
+  uses the deterministic `llvm-ar`;
+- runs `prism-deps licence-check` and `prism-deps linked` before compiling
+  and `prism_tests` after;
+- exports `prism`, `prism.cdx.json` and `SHA256SUMS` from its `artefacts`
+  stage.
 
-`.github/workflows/release.yml` runs on tags `v*`. It builds twice from
-scratch with `--no-cache` and fails if the two `SHA256SUMS` differ. It then
-signs each artefact keylessly with Sigstore (`cosign sign-blob --bundle`,
-GitHub OIDC with `id-token: write`), verifies the signatures, and attaches
-everything to a GitHub release.
+`.github/workflows/release.yml` runs on `v*` tags. It builds twice from
+scratch with `--no-cache` and fails if the two `SHA256SUMS` differ. It signs
+each artefact keylessly with Sigstore (`cosign sign-blob --bundle`, GitHub
+OIDC), verifies the signatures and attaches everything to a GitHub release.
+No `v*` tag has been pushed yet, so the workflow has not run.
 
-### Checking a release (buyer or auditor)
+Rebuilds are expected to match only on x86-64 with AVX2 (`-mavx2`).
+
+### Checking a release
 
 ```
 # 1. signatures: the certificate must name this repository's release workflow
@@ -196,52 +176,16 @@ docker build --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 diff rebuild/SHA256SUMS SHA256SUMS        # must be empty
 
 # 3. dependencies
-build/prism-deps linked --refetch   # in-tree libs == pinned upstream archives
+build/prism-deps linked --refetch
 build/prism-deps licence-check
 ```
 
-Verified 2026-09-23 at commit `0423d6c54` (`SOURCE_DATE_EPOCH` = that
-commit's time, `PRISM_VERSION=0.1.0`). Two independent `--no-cache` builds,
-run one after the other with the build cache pruned between them, each
-passed `prism_tests` (287/287) and wrote identical `SHA256SUMS`:
-
-```
-946419ea646243e6eea40cf3421d1e1ba850e595d55de83b00d49c65d0d7ecd1  prism
-d740568217f39451c3764aeb56d241b5bb154f7728d9ac2cade5ce805e9880a1  prism.cdx.json
-```
-
-The only edits made for that run were to the build environment. This
-machine reaches the network through a TLS-intercepting proxy, so the build
-context also held the proxy's CA certificate (`COPY` and apt `CaInfo`) and
-used `https://` snapshot URLs, since the proxy refuses plain http. None of
-this reaches the build stage's compile step or the artefacts. The run did
-two things beyond confirming reproducibility:
-
-- It found that `-ffile-prefix-map` makes `__FILE__` relative, so
-  `prism_tests` now runs from `/src`.
-- It found a test that assumed the certificate tools were installed
-  (`test_certified.cpp`).
-
-Both are fixed. A tagged release on GitHub's runners is still the first
-check on another machine. If two builds ever differ, run `diffoscope` on the
-pair to see where. Z3's build may embed its own version string, but not a
-date.
-Rebuilds are expected to match only on x86-64 with AVX2, the configured
-target (`-mavx2`).
-
-## Phase 5: tracked Python (engine deleted)
-
-`tests/cpp/test_deps.cpp` runs `git ls-files '*.py'` and fails on any tracked
-`.py` outside the allow-list (`deps: tracked .py files match the phase-5
-allow-list`). Vendored `third_party/**` is ignored; the only permitted path
-outside it is `tools/svcomp/prism.py` (BenchExec tool-info plugin).
+If two builds differ, run `diffoscope` on the pair.
 
 ## History rewrite (owner action)
 
-Deleting the trees does not shrink `.git`: the mined files are still in the
-history, about 200 MB packed. `scripts/rewrite_history.sh` removes the fifteen
-paths from every commit with `git filter-repo --invert-paths`. Run it on a
-fresh `git clone --mirror`. It asks you to type `I UNDERSTAND` and never
-pushes. The owner decides on the one force-push
-(`git push --force --mirror origin`), after which every collaborator must
-re-clone. Commit ids change, so do this before anything cites them.
+The deleted mined trees are still in git history. `scripts/rewrite_history.sh`
+removes them from every commit with `git filter-repo --invert-paths`. Run it
+on a fresh `git clone --mirror`. It asks you to type `I UNDERSTAND` and
+never pushes. The force-push is the owner's decision, and afterwards every
+collaborator must re-clone.

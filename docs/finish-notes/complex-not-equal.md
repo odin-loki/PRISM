@@ -65,10 +65,8 @@ They are not stubbed:
 `_prism_test_sources` line was added or dropped.
 `tests/cpp/test_cxx_complex.cpp` was already one line.
 `tests/cpp/test_qa_conformance.cpp` was not edited. `complex` stays in the
-header-name array. `src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/pir/stage.cpp` were not edited.
-`testdata/conformance/libc-models/complex_contracts.cpp` and its yml were
-not edited. `complex_div0_false` still divides by `(0, 0)`.
+header-name array. `testdata/conformance/libc-models/complex_contracts.cpp`
+and its yml were not edited. `complex_div0_false` still divides by `(0, 0)`.
 
 ## Tests
 

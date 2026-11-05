@@ -16,8 +16,8 @@ rejects is still written as `skipped` (`excluded by --stage/--skip`).
    (`argument --stage: unknown stage '…'`), which `main` turns into exit
    2. It was not ignored. A later unknown name fails the parse the same
    way. This slice did not change that path.
-3. Repeating `--stage` appends. `--stage bmc --stage pir --stage=fuzz`
-   keeps `bmc`, `pir`, and `fuzz`. The previous assignment replaced the
+3. Repeating `--stage` appends. `--stage wp --stage pir --stage=fuzz`
+   keeps `wp`, `pir`, and `fuzz`. The previous assignment replaced the
    vector, so an earlier name was dropped. A later empty `--stage` does
    not clear names already chosen.
 4. There is no `--disable` or `--skip-stage` flag. `--no-bmc`,

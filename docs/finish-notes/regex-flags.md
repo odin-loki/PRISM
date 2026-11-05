@@ -47,7 +47,6 @@ header still does not include `<string>`, `<string_view>`, `<memory>`, or
 
 ## Wiring
 
-`src/prism/bmc.cpp` and `src/prism/pir/stage.cpp` were not edited.
 `CMakeLists.txt` was not edited. `_prism_test_sources` already lists
 `tests/cpp/test_cxx_regex.cpp`. `PRISM_PIR_MODELS` already lists
 `src/prism/pir/models/cxx/regex`. `tests/cpp/test_qa_conformance.cpp` was

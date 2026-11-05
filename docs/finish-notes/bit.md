@@ -42,7 +42,3 @@ so the existing embed writes `cxx/bit`. `_prism_test_sources` gained `tests/cpp/
 `tests/cpp/test_cxx_bit.cpp` checks that `countl_zero(0)` is the width, that `popcount(0xA)` is 2, that the header is a file, and that the header text does not contain `__builtin_clz(0)`. cmake, `prism_tests`, and pir were not run.
 
 `testdata/conformance/prism/cxx/cxx_bit_true.cpp` calls `countl_zero` on 0 and `popcount` on `0xA` and checks the counts (`memsafety` true). There is no false task.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` still returns `C++ bit_ceil unencoded` when the source contains `std::popcount` (and when it contains `bit_ceil`, `bit_floor`, or `has_single_bit`). It returns `C++ std::countl_zero unencoded` when the source contains `std::countl_zero`. The popcount check is earlier, so `cxx_bit_true` hits the bit_ceil gate. `src/prism/bmc_unenc.inc` and `src/prism/bmc_encoder.inc` have the same gates. Those files were not edited. Until they go, `cxx_bit_true` does not reach this header.

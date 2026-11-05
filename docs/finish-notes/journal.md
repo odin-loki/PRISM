@@ -49,8 +49,3 @@ discards the list, never a partial one` (hand-written mix, count 2).
 Not executed in this worktree: no `prism_tests` binary is here, and the
 build stays off this tree.
 
-## Stale sentence
-
-`docs/CPP_PORT_PLAN.md` still says the reader stops at the first malformed
-element because one try wraps the loop. The reader counts every bad element,
-then returns nothing when the count is non-zero. That file was not edited.

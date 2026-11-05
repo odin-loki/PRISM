@@ -101,12 +101,3 @@ libstdc++. `resume`, `destroy`, and `done` on a default handle aborted with
 `CHECK FUNC-CONTRACT:` and did not print `resumed`, `destroyed`, or
 `done=1`. A `__prism_check` that returns still reaches `__builtin_trap`
 and does not print those lines.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ coroutine_handle unencoded` (`is not a coroutine_handle model`) from
-the source text, before a header is inlined. A `co_await` / `co_yield` /
-`co_return` is still `C++ coroutine unencoded` (`is not a coroutine model`).
-Those files were not edited. Until that gate is gone, these tasks do not
-reach this header. `docs/PIR.md` was not edited.

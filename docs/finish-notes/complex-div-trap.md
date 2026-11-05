@@ -60,14 +60,14 @@ back to libstdc++ (`extra.cxx_models`). They are not stubbed:
 
 ## Wiring
 
-`src/prism/pir/stage.cpp` was not edited. `src/prism/bmc.cpp` was not
-edited. `CMakeLists.txt` was not edited. `tests/cpp/test_cxx_complex.cpp`
-was already one `_prism_test_sources` line. No test source line was added
-or removed. `tests/cpp/test_qa_conformance.cpp` was not edited.
+`src/prism/pir/stage.cpp` was not edited. `CMakeLists.txt` was not edited.
+`tests/cpp/test_cxx_complex.cpp` was already one `_prism_test_sources` line.
+No test source line was added or removed.
+`tests/cpp/test_qa_conformance.cpp` was not edited.
 `testdata/conformance/libc-models/complex_contracts.cpp` and its yml were
-not edited. `complex_div0_false` still divides by `(0, 0)`. The check
-still runs before the trap. `tests/cxx_models/complex_trace.cpp` was not
-edited and still does not divide by zero.
+not edited. `complex_div0_false` still divides by `(0, 0)`. The check still
+runs before the trap. `tests/cxx_models/complex_trace.cpp` was not edited
+and still does not divide by zero.
 
 ## Tests
 

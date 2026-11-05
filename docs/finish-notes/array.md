@@ -49,11 +49,8 @@ and the pir stage lowers the whole translation unit with libstdc++
 `front` / `back` on a zero-length array are the precondition above. There is
 no fake element to read.
 
-`src/prism/bmc.cpp` still returns "not an array model" from the source text
-before any header is inlined. This slice does not change that, and it does
-not edit `stage.cpp`. `docs/PIR.md` still describes `std::array` as
-libstdc++'s own header under `_GLIBCXX_ASSERTIONS`. That page is not edited
-here.
+`docs/PIR.md` still describes `std::array` as libstdc++'s own header under
+`_GLIBCXX_ASSERTIONS`. That page is not edited here.
 
 ## Tests
 

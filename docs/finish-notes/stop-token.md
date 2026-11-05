@@ -86,11 +86,3 @@ not what this header checks.
 `testdata/conformance/prism/cxx/cxx_stop_token_true.cpp` is memsafety true.
 It calls `request_stop` once and again, and reads `stop_requested` after
 that. The yml `expected` value is the YAML boolean `true`. PIR was not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ stop_token unencoded` (`is not a stop_token model`) from the source
-text, before the header is inlined. Those files were not edited. Until that
-gate is gone, `cxx_stop_token_true` does not reach this header.
-`docs/PIR.md` was not edited.

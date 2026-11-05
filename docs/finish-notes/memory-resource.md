@@ -58,11 +58,7 @@ not stubbed:
 `src/prism/pir/models/cxx/memory` is a `unique_ptr` model. It does not
 provide `allocator`. This header does not include it.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not a pmr
-model" when the source text contains `std::pmr` or `pmr::`, before any
-header is inlined. This slice does not change those exits, and it does not
-edit `stage.cpp`. `stage.cpp` already puts the embedded `cxx/` directory on
-the include path.
+`stage.cpp` already puts the embedded `cxx/` directory on the include path.
 
 ## Tests
 

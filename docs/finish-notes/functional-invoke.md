@@ -54,13 +54,6 @@ already in `_prism_test_sources`. `tests/cpp/test_qa_conformance.cpp` already
 lists `functional` in the public header array. That array was not edited.
 The skips for `iostream/prism_ostream.hpp` and `deque/deque` are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-invoke model" when the source text contains `std::invoke`, and "is not a
-type-erased callable model" when it contains `std::function`, before a
-header is inlined. Those files were not edited. The conformance tasks in
-`testdata/conformance/` still call `std::function` only, so this slice does
-not add an invoke harness those gates would reject.
-
 ## Tests
 
 `tests/cpp/test_cxx_functional.cpp` reads the header. It is a regular file.

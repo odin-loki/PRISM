@@ -65,9 +65,8 @@ standard header.
 `CMakeLists.txt` was not edited. `src/prism/pir/models/cxx/functional` was
 already in `PRISM_PIR_MODELS`, and `tests/cpp/test_cxx_functional.cpp` was
 already in `_prism_test_sources`. `tests/cpp/test_qa_conformance.cpp` already
-lists `functional` in the public header array. That array was not edited.
-No conformance harness was added. `src/prism/bmc.cpp` and
-`src/prism/bmc_unenc.inc` were not edited.
+lists `functional` in the public header array. That array was not edited. No
+conformance harness was added.
 
 ## Tests
 

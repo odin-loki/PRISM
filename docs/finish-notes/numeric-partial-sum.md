@@ -118,9 +118,7 @@ the header text not declare `partial_sum`. Those two assertions are gone.
 The new test requires the overload. `reduce`, `transform_reduce`,
 `inner_product`, and `exclusive_scan` are still not declared.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They do not name
-`std::partial_sum`. `docs/PIR.md` was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

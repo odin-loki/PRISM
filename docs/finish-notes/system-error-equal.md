@@ -105,11 +105,3 @@ is 0: value 5 is not value 0. `value` is 5 and `def_bool` is 0.
 `testdata/conformance/prism/cxx/cxx_system_error_true.cpp` and
 `testdata/conformance/libc-models/system_error_contracts.cpp` were not
 edited. They still check `value()` 5 and a default code that is false.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still reject source text
-that contains `system_error` or `error_code` (`is not a system_error model`,
-`is not an error_code model`) before the header is inlined. Those files
-were not edited. Until that gate is gone, `cxx_system_error_true` does not
-reach this header. `docs/PIR.md` was not edited.

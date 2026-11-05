@@ -87,9 +87,3 @@ with 1, requires the first output to be 48271, and requires `discard(0)` to
 leave the next output unchanged relative to a twin engine (`no-overflow`,
 true). There is no false task. Treating nondeterministic `random_device` as
 a defect would be the wrong claim.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited. They still
-report unconstrained `getrandom` and `arc4random` as not a proof. They do
-not name `minstd_rand`. `docs/PIR.md` was not edited.

@@ -70,11 +70,3 @@ of 1 (`expected: false`, witness `[0]`). Both `expected` values are YAML
 booleans. A clang++ `-fsanitize=undefined` build of the false task against
 libstdc++ aborts on that signed addition. Against this header the same sum
 calls `__prism_check` and does not return a negative count.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ chrono unencoded` (`is not a chrono model`) from the source text,
-before the header is inlined. Those files were not edited. Until that gate
-is gone, a unit that names `std::chrono` does not reach this header.
-`docs/PIR.md` was not edited.

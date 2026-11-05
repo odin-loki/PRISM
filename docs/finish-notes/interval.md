@@ -23,8 +23,6 @@ A bad digit such as octal `08` stays `ParseFail("nud ...")`. That is also silenc
 
 Binary `0b` literals are unchanged. The concrete interpreter parses them; this slice does not.
 
-`docs/CPP_PORT_PLAN.md` still says `decl` treats an empty initialiser as a missing declaration via `init.empty()`, and that `std::stoll` throws `ParseFail("nud ...")` on a hex literal above `INT64_MAX`. That description is stale.
-
 ## Tests
 
 `tests/cpp/test_interval.cpp`

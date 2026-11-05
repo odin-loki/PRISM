@@ -35,10 +35,7 @@ header is intentional. They are not stubbed:
 
 The header does not `#include <thread>`, `<memory>`, or `<shared_mutex>`.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not a C++
-mutex model" from the source text before any header is inlined. This slice
-does not change that, and it does not edit `stage.cpp`. `stage.cpp` already
-puts the embedded `cxx/` directory on the include path.
+`stage.cpp` already puts the embedded `cxx/` directory on the include path.
 `tests/cpp/test_concolic.cpp` still expects `mutex_unenc_bad` to be
 `NEEDS-HARNESS`.
 

@@ -1,10 +1,10 @@
 # diff
 
-Closed the three `prism/diff.py` gaps in `src/prism/stages/diff.cpp`. Statuses are unchanged: a disagreement stays `FAILED`, agreement stays `CLEAN`, and a timeout or crash stays `TIMEOUT` or `CRASH`.
+Closed three port-audit gaps in `src/prism/stages/diff.cpp`. Statuses are unchanged: a disagreement stays `FAILED`, agreement stays `CLEAN`, and a timeout or crash stays `TIMEOUT` or `CRASH`.
 
 ## Sandbox on a disagreement
 
-A `FAILED` pair sets `extra["sandbox"]` to `sandbox::kind()`. The harness run is the step inside the sandbox (`sandbox::wrap_argv`). Compilation stays on `run_argv` with the compiler's own argv, the same as the Python harness, which compiled outside the sandbox and wrapped only the built binary.
+A `FAILED` pair sets `extra["sandbox"]` to `sandbox::kind()`. The harness run is the step inside the sandbox (`sandbox::wrap_argv`). Compilation stays on `run_argv` with the compiler's own argv, outside the sandbox; only the built binary is wrapped.
 
 ## Stderr evidence
 

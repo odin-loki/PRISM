@@ -1,97 +1,67 @@
 # LLVM IR to PIR: refinement proof, correspondence checking, independent rechecking
 
-This document covers roadmap Part 8.2 rows "LLVM IR to PIR translation"
-and "Property instrumentation" (for the C++ instrumentation list itself),
-the "Floating point" row (IEEE operations, flags and PRISM's floating-point
-checks; see "Floating point" below for what is not covered), the Part 8.3 mitigation
-"formal LLVM semantics … tested against `lli`", and Part 8.5 (independent
-proof rechecking in CI).
-
-The short version:
+`proofs/refinement/` proves that PRISM's LLVM→PIR translator
+(`src/prism/pir/translate*.cpp`) does not lose undefined behaviour, for the
+functions in a fragment of LLVM IR. It also proves PRISM's floating-point
+checks against IEEE 754 and C11, and holds the tools that recheck every Lean
+project in `proofs/`.
 
 * A fragment of LLVM IR is given a formal semantics in Lean, twice: the
   LangRef semantics with lazy poison, and the strict semantics PRISM's
   instrumentation implements.
-* The translator `src/prism/pir/translate.cpp` is mirrored in Lean,
-  check for check, and proved correct: for every function it accepts, every
-  input and every bound on executed blocks, **if the LLVM function reaches
-  undefined behaviour or creates poison, the PIR program fails a check**
-  (`pir_sound`), and every PIR outcome is an LLVM outcome (`pir_faithful_*`).
-  Loops are covered for any number of iterations: the theorems hold for
-  every fuel bound, so they are not bounded results.
-* An **extended fragment** adds `freeze`, `undef` under `freeze`, direct
-  calls (inlined as `translate.cpp` inlines them), a stack memory
-  fragment (`alloca`, integer `load`/`store`, `getelementptr`, with the
-  bounds, lifetime, alignment, read-only and uninitialised-read checks the
-  translator inserts), the intrinsics `translate.cpp` translates specially
-  (`llvm.smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`,
-  `expect`, the six `*.with.overflow` with `extractvalue`,
-  `lifetime.start`/`end`, `memcpy`/`memmove`/`memset` with constant or
-  variable lengths) and globals (read-only data, the globals of `main`, and
-  mutable or external globals of arbitrary contents); **pointers** (pointer
-  values in phis, selects, loads, stores, calls and returns; relational
-  comparisons with their PTR-COMPARE check; a returned pointer with the
-  MEM-STACK-ESCAPE check; pointer parameters bound to harness objects —
-  `byval`/`sret` and constant-size contracts — while unbound ones are refused
-  by both translators, Law 6); and the **heap of the libc models**
-  (`malloc`/`calloc`/`free`, `operator new`/`delete`: the model code inlined,
-  its `__prism_alloc`/`__prism_free` with the null/invalid/mismatched/double
-  free checks, `__VERIFIER_nondet_*` values and `__VERIFIER_assume` /
-  `__prism_assume`). It is proved for every
-  function whose translation carries a certificate the checker validates
-  (`agree-ext`), for every choice of the values LLVM leaves open.
-* Each run can check that the C++ translator's output **is** the proved
-  translator's output: the pir stage exports (LLVM, PIR) pairs, and
-  `pir_lean_check` compares them. On `testdata/pir` and `testdata` there are no
-  disagreements (numbers below).
-* Every Lean project in `proofs/` is rechecked in CI by `leanchecker` (the
-  toolchain's replay checker, formerly lean4checker) and by **nanoda**, an
-  independent Lean kernel written in Rust, and every declaration's axioms
-  are audited.
+* The translator is mirrored in Lean, check for check, and proved correct:
+  for every function it accepts, every input and every bound on executed
+  blocks, **if the LLVM function reaches undefined behaviour or creates
+  poison, the PIR program fails a check** (`pir_sound`), and every PIR
+  outcome is an LLVM outcome (`pir_faithful_*`). The theorems hold for every
+  fuel bound, so loops are covered for any number of iterations.
+* An **extended fragment** (`freeze`, calls, stack and heap memory,
+  pointers, globals, intrinsics, the libc models, exceptions) is proved per
+  function, under a certificate the checker validates (`pir_sound_x`).
+* `pir_lean_check` checks that the C++ translator's output **is** the proved
+  translator's output, function by function.
+* Every Lean project in `proofs/` is rechecked in CI by `leanchecker` and by
+  nanoda, an independent Lean kernel, and every declaration's axioms are
+  audited.
 
-What is *not* proved, and the gaps this work found in
-`translate.cpp`, are listed in [What remains](#what-remains) and
+What is *not* proved is in [What remains](#what-remains); the places where
+this work found `translate.cpp` unsound are in
 [Findings](#findings-in-translatecpp).
 
 ## Project
 
 | | |
 |---|---|
-| Location | `proofs/refinement/`, a Lake project |
+| Location | `proofs/refinement/`, a Lake project (`PrismRefine`) |
 | Toolchain | `leanprover/lean4:v4.34.0`, core Lean only (no Mathlib) |
-| Dependencies | `proofs/semantics` (PIR expression semantics: `PrismSem.evalBin`, `evalPred`, `ubBin`) and `proofs/techniques` (`PrismTechniques.FloatRound.rne`), both as Lake *path* dependencies: imported, not copied |
+| Dependencies | `proofs/semantics` (`PrismSem.evalBin`, `evalPred`, `ubBin`) and `proofs/techniques` (`PrismTechniques.FloatRound.rne`), both as Lake path dependencies |
 | Build | `cd proofs/refinement && lake build` |
-| Audit | `./check.sh`: build with no warning, no escape hatch in any source (`sorry`, `admit`, `native_decide`, `bv_decide`, `implemented_by`, `extern`, `axiom`, `unsafe`), every theorem in `Audit.lean` within `propext` / `Classical.choice` / `Quot.sound`, checker fixtures |
-| Size | about 12 700 lines of Lean, 96 audited theorems |
+| Audit | `./check.sh`: build with no warning; no escape hatch in any source (`sorry`, `admit`, `native_decide`, `bv_decide`, `implemented_by`, `extern`, top-level `axiom` or `unsafe`); every theorem in `Audit.lean` within `propext` / `Classical.choice` / `Quot.sound`; every `fixtures/*.pirl` gives exactly its `fixtures/*.expected` line. `proofs/check.sh` runs it as step 5 |
+| Executables | `pir_lean_check` (`CheckMain.lean`), `llvm_eval` (`EvalMain.lean`), `axiom_report` (`AxiomReport.lean`) |
+| Size (2026-11-05, commit 991c4eafa) | 15 778 lines of Lean; 104 theorems in `Audit.lean`; 55 fixtures |
 
 | File | Contents |
 |---|---|
 | `PrismRefine/Llvm.lean` | LLVM fragment syntax; LangRef semantics `lRun` (lazy poison); strict semantics `sRun` |
-| `PrismRefine/Pir.lean` | PIR exactly as `include/prism/pir.hpp` represents it (CFG, phis, `check`/`assume`, var table) and the semantics of `prism::pir::interpret` |
-| `PrismRefine/Translate.lean` | The translator, mirroring `translate.cpp` |
+| `PrismRefine/Pir.lean` | PIR as `include/prism/pir.hpp` represents it (CFG, phis, `check`/`assume`, var table) and the semantics of `prism::pir::interpret` |
+| `PrismRefine/Translate.lean` | The base translator, mirroring `translate.cpp` |
 | `PrismRefine/Ops.lean` | The C++ test operators (`sadd.ovf`, `shl.nsw.ovf`, …) equal the LangRef conditions |
-| `PrismRefine/Refine.lean` | Simulation: `translate_exact` |
-| `PrismRefine/Lazy.lean` | Strict vs LangRef semantics: `strict_lazy` |
-| `PrismRefine/Sound.lean` | Headline theorems; link to `PrismSem.ubBin` |
+| `PrismRefine/Refine.lean`, `Lazy.lean`, `Sound.lean` | Simulation (`translate_exact`), strict vs LangRef (`strict_lazy`), headline theorems and the link to `PrismSem.ubBin` |
 | `PrismRefine/XMem.lean` | Extended fragment: the byte memory and the `World` (oracle counter + memory) both sides share |
-| `PrismRefine/XLlvm.lean`, `XPir.lean` | Extended LLVM syntax (`freeze`, calls, memory), strict and LangRef-side semantics on a frame stack; PIR with oracle `havoc` and memory statements |
-| `PrismRefine/XTranslate.lean`, `XValid.lean` | The translator with inlining and `MemTr` mirrored, its certificate, the executable check `validB` |
-| `PrismRefine/XMemSim.lean` | The memory checks and `getelementptr` arithmetic compute the semantics' conditions |
-| `PrismRefine/XMemOps.lean` | `llvm.memcpy`/`memmove`/`memset`: the guarded access checks and the overlap check compute `cpyBad` for every length |
-| `PrismRefine/XHeap.lean` | The libc models' release (`__prism_free`): `MemTr::dealloc`'s checks compute `freeBad` |
-| `PrismRefine/XEscape.lean` | A returned pointer: `MemTr::stack_escape_check` computes the stack-escape rule |
+| `PrismRefine/XLlvm.lean`, `XPir.lean` | Extended LLVM syntax and semantics on a frame stack; PIR with oracle `havoc` and memory statements |
+| `PrismRefine/XTranslate.lean`, `XValid.lean` | The extended translator (inlining, `MemTr`, exceptions), its certificate, the executable check `validB` |
+| `PrismRefine/XMemSim.lean`, `XMemOps.lean`, `XHeap.lean`, `XEscape.lean`, `XHavoc.lean` | The memory checks, `getelementptr`, `memcpy`/`memmove`/`memset`, the libc models' allocation and release, the stack-escape check, the stdio model primitives |
 | `PrismRefine/XRefine.lean`, `XStep.lean`, `XRun.lean`, `XValidSpec.lean` | Simulation: `translateX_exact` |
 | `PrismRefine/XLazy.lean`, `XSound.lean` | Strict vs LangRef side (`strict_lazyX`); headline theorems `pir_sound_x` … |
 | `PrismRefine/Check.lean`, `CheckMain.lean` | `pir_lean_check`: the correspondence checker |
+| `PrismRefine/Float.lean`, `FloatOps.lean` | IEEE 754 binary formats and operations; PRISM's FLOAT-* conditions |
 | `EvalMain.lean` | `llvm_eval`: runs the three semantics on concrete inputs (for `prism-qa llvm-sem-vs-lli`) |
-| `AxiomReport.lean` | `axiom_report`: axioms of every declaration of a project (8.5) |
-| `PrismRefine/Float.lean` | IEEE 754 binary formats, correctly rounded addition with special values |
-| `PrismRefine/FloatOps.lean` | Correctly rounded subtraction, multiplication, division; IEEE exception flags; PRISM's FLOAT-* conditions against IEEE 754 and C11 |
-| `recheck.sh` | Independent recheck of any of the four Lean projects (8.5) |
+| `AxiomReport.lean` | `axiom_report`: axioms of every declaration of a project |
+| `recheck.sh` | Independent recheck of any of the four Lean projects |
 
 ## The LLVM fragment and its semantics
 
-The fragment is everything `translate.cpp` handles in a single function
+The base fragment is what `translate.cpp` handles in a single function
 without calls whose values are all integers:
 
 * SSA registers of type `iN`, `1 ≤ N ≤ 64`; integer constants; `poison`;
@@ -102,15 +72,12 @@ without calls whose values are all integers:
   `phi`;
 * `br label`, `br i1`, `ret`, `ret void`, `unreachable`;
 * `call iN @__prism.uninit.iN()`, the marker the pir stage inserts before
-  mem2reg for every scalar local (and every parameter slot). Almost every
-  real function contains it, so without it the fragment would only cover
-  hand-lowered IR.
+  mem2reg for every scalar local and parameter slot.
 
 Control state is (previous block, current block, register file); a run is a
 deterministic interpreter whose fuel counts executed blocks. Values are
-naturals read as `BitVec.ofNat w` by an instruction of width `w`; the value
-of every operation is `PrismSem.evalBin` / `evalPred` from the PIR
-semantics.
+naturals read as `BitVec.ofNat w`; the value of every operation is
+`PrismSem.evalBin` / `evalPred` from the PIR semantics.
 
 **LangRef semantics (`lRun`)** — the documented assumptions:
 
@@ -118,21 +85,21 @@ semantics.
 |---|---|
 | `add/sub/mul nsw` | poison if the mathematical signed result is out of range |
 | `add/sub/mul nuw` | poison if the mathematical unsigned result is out of range |
-| `udiv/urem`, `sdiv/srem` | UB if the divisor is 0; UB for `INT_MIN / -1` and `INT_MIN % -1`; UB if the divisor is poison; with a poison dividend, UB when the divisor makes some dividend UB (0, or −1 for the signed forms) |
+| `udiv/urem`, `sdiv/srem` | UB if the divisor is 0; UB for `INT_MIN / -1` and `INT_MIN % -1`; UB if the divisor is poison; with a poison dividend, UB when the divisor makes some dividend UB |
 | `udiv/sdiv exact` | poison if the dividend is not a multiple of the divisor |
 | `shl/lshr/ashr` | poison if the amount is `≥ w` |
 | `shl nuw` / `shl nsw` | poison if `a·2^b` is out of the unsigned / signed range |
-| `lshr/ashr exact` | poison if a set bit is shifted out (`a mod 2^b ≠ 0`) |
+| `lshr/ashr exact` | poison if a set bit is shifted out |
 | `or disjoint` | poison if the operands share a set bit |
 | `zext nneg` | poison if the operand is negative |
 | arithmetic, `icmp`, casts | poison in, poison out |
-| `select` | poison condition gives poison; otherwise the chosen operand (poison or not) |
+| `select` | poison condition gives poison; otherwise the chosen operand |
 | `phi` | copies the incoming value, poison included |
 | `br i1 poison` | UB |
 | `ret poison` | UB — PRISM's rule, matching clang's `noundef` on C return values |
 | `unreachable` | UB |
-| `@__prism.uninit.iN()` | an *indeterminate* value; using it (any operand except a phi input) is UB (C11 6.3.2.1p2: an automatic object whose address is never taken, read while indeterminate); phis copy it |
-| `shl` marked `csigned` | UB if the base is negative or `a·2^b ≥ 2^(w-1)` (C11 6.5.7p4). Not an LLVM flag: the pir stage learns from clang which `shl` came from a C signed `<<` (`TranslateOptions::signed_shl`) and the exporter passes that fact per instruction |
+| `@__prism.uninit.iN()` | an *indeterminate* value; using it (any operand except a phi input) is UB (C11 6.3.2.1p2); phis copy it |
+| `shl` marked `csigned` | UB if the base is negative or `a·2^b ≥ 2^(w-1)` (C11 6.5.7p4). The pir stage learns from clang which `shl` came from a C signed `<<` (`TranslateOptions::signed_shl`) and the exporter passes that fact per instruction |
 | undefined register, missing phi entry, branch to a missing block | *stuck* (IR the verifier rejects; no claim is made) |
 
 The run also reports whether poison was ever **created** (a flag violation,
@@ -142,30 +109,22 @@ or the literal `poison` read).
 itself UB. This is what PRISM checks: `translate.cpp` inserts every check at
 the instruction, not at the use.
 
-Modelled on Vellvm's approach (a formal operational semantics of LLVM IR
-with poison and UB as explicit outcomes) but written directly in Lean for
-this fragment: there are no interaction trees. Memory, calls and
-`undef`/`freeze` are in the extended fragment (next sections but one).
+The approach follows Vellvm (a formal operational semantics of LLVM IR with
+poison and UB as explicit outcomes) but is written directly in Lean for this
+fragment, without interaction trees.
 
 ## The translator and the theorems
 
 `Translate.lean` mirrors `translate.cpp` statement for statement: variable
-numbering (parameters, then one variable per SSA result in textual order,
-phis first, `icmp` results `i1`, then temporaries in allocation order);
-block `i` of the LLVM function is PIR block `i`; each operand, check and
-assignment is emitted in the same order with the same arguments, argument
-widths, property name and taxonomy class; `unreachable` becomes
-`check 1; stop`; unresolvable phi predecessors are dropped as
-`resolve_phis` does. Uninitialised locals are mirrored from
-`Tr::enter_frame` / `Tr::operand`: the marker becomes `havoc`; the
-registers that may carry its value are the least fixpoint over phi inputs;
-each gets a shadow — the constant `1` for the marker's result, a fresh `i1`
-variable (numbered after the SSA results, before temporaries) plus a shadow
-phi for such a phi — and every use of a register with a shadow is preceded
-by `check shadow` (UNINIT-READ). The simulation relation carries the
-shadows: a defined register has its value in its variable and a clear
-shadow, an indeterminate one a set shadow (`ShOK`, `ShWF`). Where the C++ translator would throw `UNENCODED`, or
-the input is outside the fragment, `translate` returns an error.
+numbering, block numbering, each operand, check and assignment emitted in
+the same order with the same arguments, widths, property name and taxonomy
+class; `unreachable` becomes `check 1; stop`; unresolvable phi predecessors
+are dropped as `resolve_phis` does. Uninitialised locals are mirrored from
+`Tr::enter_frame` / `Tr::operand`: the marker becomes `havoc`, every
+register that may carry its value gets a shadow, and every use of a
+register with a shadow is preceded by `check shadow` (UNINIT-READ). Where
+the C++ translator would throw `UNENCODED`, or the input is outside the
+fragment, `translate` returns an error.
 
 | Theorem (`PrismRefine.`) | Statement |
 |---|---|
@@ -177,130 +136,114 @@ the input is outside the fragment, `translate` returns an error.
 | `pir_faithful_fail` | PIR fails a check ⇒ LangRef has UB or creates poison (or is stuck) |
 | `pir_faithful_fuel`, `pir_no_stop` | PIR out of fuel ⇒ LangRef out of fuel; PIR never stops or blocks on its own |
 
-"Straight-line code, then branches/phi, then loops (bounded)" is covered by
-one proof: blocks, phis (parallel assignment from the predecessor) and
-back edges are all handled by `run_sim`, by induction on fuel.
+Straight-line code, branches with phis (parallel assignment from the
+predecessor) and back edges are all handled by `run_sim`, by induction on
+fuel.
 
-## The extended fragment: `freeze`, `undef`, calls, memory
+## The extended fragment
 
-The theorems above are unconditional: they hold for every function the
-base translator accepts. The extended fragment adds four constructs and is
-proved *per function, under a certificate*: `pir_lean_check` re-runs a
-second Lean translator (`translateX`) that also returns a certificate, demands
-that the C++ PIR be exactly that translator's output, and evaluates the
-executable check `validB M F P C`. Every theorem below is stated for every
-module `M`, function `F`, PIR function `P` and certificate `C` with
-`validB M F P C = true`; the verdict for such a function is `agree-ext`.
+The theorems above hold for every function the base translator accepts.
+The extended fragment is proved *per function, under a certificate*:
+`pir_lean_check` runs a second Lean translator (`translateX`) that also
+returns a certificate, demands that the C++ PIR be exactly that
+translator's output, and evaluates the executable check `validB M F P C`.
+Every theorem below is stated for every module `M`, function `F`, PIR
+function `P` and certificate `C` with `validB M F P C = true`; the verdict
+for such a function is `agree-ext`.
 
 | Construct | Accepted | Semantics (strict / LangRef side) |
 |---|---|---|
-| `freeze` | of any fragment operand, of `poison`, of `undef` | the operand's value; `freeze undef` and `freeze poison` draw one arbitrary value from the oracle (reading the literal `poison` still counts as creating poison, see finding 5) |
-| `undef` | **only** as the operand of `freeze` or of `store` | anywhere else it is refused (finding 4) |
-| `call @f(…)` | direct calls to a function defined in the module that `Tr::call` hands to `Tr::inline_call` (not an intrinsic, not `__prism.*` / `__cxa_*`; library models and functions of other files included — no `shl` there is a C signed shift, since `Tr` gives their instructions the call site's line with column 0), up to the translator's inline depth, non-recursive; not a by-value aggregate parameter of a callee (copied: outside) | a new frame; parameters bound to the argument values; `ret` resumes the caller after the call |
-| `alloca` | constant size below 2^47 bytes, in the analysed function (not in an inlined callee) | a new live stack object, every byte uninitialised |
-| `load iN` / `store iN` | `N ≤ 64`, alignment none or a power of two below 2^32, pointer a register; not an integer load of a whole aggregate | UB through null, a pointer to no object, a freed object, out of bounds, misaligned (address or object), or (store) into a read-only object; reading an uninitialised byte is UB in the strict semantics (PRISM's rule) and *flagged* on the LangRef side, like poison creation; storing `undef`, `poison` or an indeterminate register writes uninitialised bytes |
-| `getelementptr [inbounds]` | constant struct field indices, integer (≤ 64-bit) first and array indices | the offset is accumulated in signed 64 bits, each scaling and addition overflow-checked (C17 6.5.6p8); an array index must stay within its array (one past the end for an address that is not dereferenced; also in nested arrays); arithmetic on null, `inbounds` leaving the object or its address range, any other move to another object: UB (strict) / poison (LangRef side) |
-| `llvm.smax`/`smin`/`umax`/`umin` | integer, ≤ 64 bits | the signed / unsigned maximum or minimum (`Op::SMax` …) |
-| `llvm.abs(x, f)`, `ctlz(x, f)`, `cttz(x, f)`, `ctpop`, `bswap` | integer, ≤ 64 bits (`bswap`: a multiple of 16) | the LangRef values (`ctlz`/`cttz` of 0 is the width); with the flag `f` set, `abs(INT_MIN)` and `ctlz`/`cttz` of 0 are poison (strict: UB); PRISM checks `x == INT_MIN` (INT-SIGNED-OVF) and `x == 0` (INT-CLZ-ZERO) |
-| `llvm.expect` | integer | its first operand |
-| `{iN, i1} llvm.{s,u}{add,sub,mul}.with.overflow` and `extractvalue` of its fields | the call's two fields are two registers | the wrapped result and the overflow bit (`ovfTest`, proved equal to the LangRef conditions in `Ops.lean`); never poison |
-| `llvm.lifetime.start(n, p)` | `1 ≤ n ≤ 8` (the translator refuses larger objects) | PRISM's model: a store of `n` uninitialised bytes through `p`, with a write's checks (so an object whose lifetime ended stays dead: see finding 7) |
-| `llvm.lifetime.end(n, p)` | | the object's lifetime ends (`Stmt::Free`, no check) |
-| `llvm.memcpy` / `memmove` / `memset` | pointer registers or entry globals; length a register or constant of ≤ 64 bits; the `memset` byte `i8` | with a non-zero length: UB if either access is bad (null, wild, freed, out of bounds, read-only destination; byte alignment) or — `memcpy` — the ranges overlap (C17 7.24.2.1; see finding 6); then the bytes (initialised or not) are copied, reads before writes, or `n` initialised bytes are written; a zero length does nothing |
-| pointer values | `ptr` (opaque pointers) in `phi`, `select`, `load`/`store` (8 bytes), `icmp eq`/`ne`, call arguments and returns, the uninitialised-local marker; `null` | the 64-bit pointer (object id in bits 63..48): phis, selects, loads and stores copy it; `eq`/`ne` compare it (PRISM's model: distinct objects never compare equal); `null` is 0 |
-| `icmp ult`… `sge` on pointers | | UB (C17 6.5.8p5, PRISM's rule) unless both point into the same object (`obj(a) != obj(b)`, PTR-COMPARE); then the comparison of the two 64-bit pointers; the translator's unsigned predicate for a signed one equals it there (`pcmp_val`: both have the object id's top bit) |
-| `ret ptr` of the analysed function | | UB (C17 6.2.4p2, PRISM's rule) if the returned pointer is not null and points into one of the function's own stack objects — the `alloca`s of the entry block before its first call, `Frame::allocas` (MEM-STACK-ESCAPE) |
-| pointer parameters of the analysed function | `byval`/`byref`/`sret`, or a contract with a constant element count | the object the harness provides, allocated on entry before the globals (`translate()`'s prologue): a stack copy of arbitrary bytes (`byval`), an uninitialised return slot (`sret`), an `Extern`/`Const` object of arbitrary bytes (contract, Law 6); the parameter register holds its pointer. A pointer parameter no harness binds is refused by both translators (`agree-reject`, NEEDS-HARNESS); a contract whose size is another parameter (assumptions on it) is outside |
-| `__prism_alloc(n, kind, init)` (in the libc models) | `n` a 64-bit register, or a constant below 2^47; `kind`, `init` constants | a fresh object of `n` bytes of that kind (heap, `new`, `new[]`), alignment 16, uninitialised / zero / arbitrary bytes; a size of 2^47 or more is not modelled (the semantics is stuck; PIR assumes the size below 2^47, the models test it first) |
-| `__prism_free(p, kind)`, `__prism_free_check(p, kind)` | not `FILE` | UB unless `p` is null or the start of a live object of that kind (`freeBad`: MEM-INVALID-FREE, MEM-MISMATCHED-FREE, MEM-DOUBLE-FREE); `__prism_free` then ends its lifetime |
-| `__prism_alloc_failed()` | | a store of 1 into the hidden "an allocation failed" flag object (one zero byte, allocated on entry after the globals when the function can reach this call; the export passes its pointer to the inlined models as an extra argument) |
-| `__VERIFIER_nondet_*()`, `nondet_*()` | not defined in the module; the result used | an arbitrary value drawn from the oracle (PIR `havoc`) |
-| `__VERIFIER_assume(c)`, `__prism_assume(c)` | | an execution where `c` is 0 is not considered (the LLVM semantics is stuck: no claim; PIR `assume`) |
-| a global `@g` named by the analysed function | not thread-local; not the C++ runtime's objects or `stdin`/`stdout`/`stderr`; an initialiser of numbers, strings and zeros | a fresh object allocated at the start of the entry block (which has no predecessors): read-only data (kind 4) and every global of `main` zero-filled then written with the initialiser's non-zero stores; any other mutable global, an external object and a large table: arbitrary initialised bytes drawn from the oracle (`MemTr::global`'s choices) |
+| `freeze` | of any fragment operand, of `poison`, of `undef` | the operand's value; `freeze undef` and `freeze poison` draw one arbitrary value from the oracle |
+| `undef` | only as the operand of `freeze` or of `store` | anywhere else it is refused (finding 4) |
+| direct `call @f(…)` | functions defined in the module that `Tr::call` inlines, up to the inline depth, non-recursive; not a by-value aggregate parameter of a callee | a new frame; `ret` resumes the caller. An inlined frame's `alloca`s are freed at its `ret` |
+| `alloca` | constant size below 2^47 bytes | a new live stack object, every byte uninitialised |
+| `load iN` / `store iN`, pointers | `N ≤ 64`; `ptr` values in phis, selects, loads/stores (8 bytes), calls and returns; `null` | UB through null, a pointer to no object, a freed object, out of bounds, misaligned, or (store) into a read-only object; reading an uninitialised byte is UB in the strict semantics (PRISM's rule) and flagged on the LangRef side |
+| `getelementptr [inbounds]` | constant struct field indices, integer first and array indices | offset in signed 64 bits, each step overflow-checked (C17 6.5.6p8); an array index stays within its array; arithmetic on null, `inbounds` leaving the object, a move to another object: UB / poison |
+| `icmp` on pointers | `eq`/`ne`; relational predicates | `eq`/`ne` compare the 64-bit pointer (distinct objects never compare equal); relational: UB unless both point into the same object (PTR-COMPARE) |
+| `ptrtoint`, `sub` of two `ptrtoint`s | | a copy; the difference is UB on different objects (as PTR-COMPARE) |
+| `ret ptr` | of the analysed function or an inlined callee | UB if the pointer points into one of that frame's own stack objects (MEM-STACK-ESCAPE) |
+| pointer parameters | `byval`/`byref`/`sret`, or a contract with a constant element count | the object the harness provides. An unbound pointer parameter is refused by both translators (`agree-reject`, NEEDS-HARNESS, Law 6) |
+| globals | named by the analysed function or an inlined callee; not thread-local | allocated in the prologue (see [Globals](#globals)); read-only data and globals of `main` hold their initialiser, other mutable or external globals arbitrary bytes |
+| intrinsics | `llvm.smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`, `bswap`, `expect`, the six `*.with.overflow` with `extractvalue`, `lifetime.end`, `memcpy`/`memmove`/`memset` | the LangRef values; the poison cases of `abs`/`ctlz`/`cttz` are checked (INT-SIGNED-OVF, INT-CLZ-ZERO); `memcpy`/`memmove`/`memset` with a non-zero length are UB on a bad access or (`memcpy`) overlapping ranges |
+| libc model primitives | `__prism_alloc`, `__prism_free`/`__prism_free_check`, `__prism_obj_size`, `__prism_alloc_failed`, `__prism_havoc_bytes`, `__prism_read_range`, `__prism_check`, `__prism_memset`, `__prism_fresh_cstr`, FILE release | the model's allocation (kinds heap, `new`, `new[]`), release checks (MEM-INVALID-FREE, MEM-MISMATCHED-FREE, MEM-DOUBLE-FREE) and stdio primitives |
+| nondeterminism | `__VERIFIER_nondet_*()`, `nondet_*()` (undefined in the module); `__VERIFIER_assume`, `__prism_assume` | a value from the oracle (PIR `havoc`); a false assumption makes the LLVM run stuck (no claim), PIR `assume` |
+| noreturn failure calls | undefined `__assert_fail` and its variants, `reach_error`/`__VERIFIER_error`, `llvm.trap`/`debugtrap`/`ubsantrap`, `std::__glibcxx_assert_fail`, `abort()` (unless the function can reach `__prism_alloc_failed`) | UB at the block's end; PIR: the failing check, then `stop` |
+| scalar pairs | `{ptr\|iN, ptr\|iN}` returned by inlined callees or the analysed function | two values; each pointer field gets the stack-escape check |
+| exceptions | `invoke`; landing pads; user `throw` in clang's exact pattern; `std::__throw_*`; `catch (...)` and catch by exact type; `__cxa_end_catch` with destructors; `__cxa_rethrow`; `std::terminate` and `__clang_call_terminate` | the LLVM run makes no claim past a throw (*stuck*); PIR mirrors `Tr`'s dispatch. A catch through a base class is refused |
 
 **Nondeterminism.** Both semantics take an oracle `ω : Nat → Nat` and read it
-in execution order (`World.t`): `freeze undef` / `freeze poison`, a stored
-`undef`/`poison` (and `llvm.lifetime.start`) and the uninitialised-local
-marker each draw one value, a global of arbitrary contents one per byte, and
-the PIR semantics (`XPir.lean`) gives the `t`-th `havoc` the value `ω t`
-(reduced to its width). The theorems quantify over every `ω`, the same on
-both sides: for every choice of the values LLVM leaves open, PIR making the
-same choices has the same outcome. `pir_sound_all_x` quantifies over all
-of them.
+in execution order; the PIR semantics gives the `t`-th `havoc` the value
+`ω t`. The theorems quantify over every `ω`, the same on both sides: for
+every choice of the values LLVM leaves open, PIR making the same choices has
+the same outcome.
 
 **Calls.** The LLVM machine is a stack of frames; a block is split at its
-calls into segments, and one machine step runs one segment. The translator
-mirrors `Tr::inline_call`: each inlined call is an *instance* of the callee
-with its own names, shadows and variable range `[lo, hi)`, its blocks
-appended to the caller's PIR, its `ret` values flowing into a continuation
-phi. The certificate records, per instance, the function, the name and
-shadow maps, the variable range, the return target and the PIR block of
-every segment; `validB` checks what the proof needs of it (per instance: `lo ≤ hi`,
-every name and shadow below `hi`, one entry per block and segment, and per
-segment that its PIR block holds exactly the translated instructions, that
-the call's callee instance starts at or above the caller's `hi`, and that
-terminators and continuation phis point where the machine goes).
+calls into segments, and one machine step runs one segment. Each inlined
+call is an *instance* of the callee with its own names, shadows and
+variable range. The certificate records, per instance, the function, the
+maps, the variable range, the return target and the PIR block of every
+segment; `validB` checks what the proof needs of it.
 
 **Memory** (`XMem.lean`). The object/offset model of `proofs/semantics`
-(`PrismSem/Memory.lean`: objects with a size and a liveness bit, object 0 is
-null, allocation takes the next id) extended to what the C++ engine models
-(`ConcMem`): each object also has a kind (stack, static, read-only, …) and
-a base alignment, each byte is initialised or not, and a pointer is one
-64-bit value with the object id in bits 63..48 and the offset in bits
-47..0. The LLVM semantics and the PIR semantics (`alloc`, `load`, `store`,
-`obj.size/live/kind/align`) share this memory and thread it with the oracle
-counter as one `World`.
+extended to what the C++ engine models (`ConcMem`): each object has a kind
+(stack, static, read-only, …) and a base alignment, each byte is
+initialised or not, and a pointer is one 64-bit value with the object id in
+bits 63..48 and the offset in bits 47..0. Both semantics share this memory
+and thread it with the oracle counter as one `World`.
 
 | Theorem (`PrismRefine.`) | Statement |
 |---|---|
 | `translateX_exact` | strict LLVM returns `v` ⇒ PIR returns `v`; strict UB ⇒ PIR fails a check; out of fuel ⇒ out of fuel (same oracle, every fuel bound) |
-| `strict_lazyX` | the strict semantics refines the LangRef-side semantics (as `strict_lazy`) |
+| `strict_lazyX` | the strict semantics refines the LangRef-side semantics |
 | **`pir_sound_x`** | LangRef-side run has UB, creates poison or reads uninitialised memory within `n` segments ⇒ PIR fails a check within `n` blocks |
 | `pir_sound_all_x` | no PIR run fails for any oracle and bound ⇒ no LLVM run is bad for any oracle and bound |
 | `pir_faithful_ret_x` / `_fail_x` / `_fuel_x`, `pir_no_stop_x` | every PIR outcome is an LLVM outcome for the same oracle (or LLVM is stuck) |
 | `accessChecks_run` | the statements of `MemTr::access_checks` fail exactly when the access is bad (`accessBad`) |
 | `gLoop_sim`, `gEnd_sim`, `gFin_run` | the statements of `MemTr::gep` compute the `getelementptr` result and fail exactly where it is undefined |
-| `storeVal_sim`, `idxOps_sim` | the stored value and its "initialised" bit; the index operands |
 | `unChecks_bad` | the checks inserted for `llvm.abs` / `ctlz` / `cttz` fail exactly when the LangRef result is poison |
-| `accChkG_run`, `overlapChk_run` | `MemTr::access_checks` under the guard `n ≠ 0` (byte alignment) and the `memcpy` overlap check fail exactly when `n ≠ 0` and the access is bad / the ranges overlap, for every 64-bit length |
-| `memcpy_run`, `memset_run` | the statements of `MemTr::memcpy_` / `memset_` after the operands (the widened length, the guard, the checks, the copy or fill) fail exactly on `cpyBad` and otherwise produce the LLVM memory |
-| `store_simX`, `globStores_run` | a store (and `llvm.lifetime.start`); a global's allocation and initialiser stores |
+| `accChkG_run`, `overlapChk_run`, `memcpy_run`, `memset_run` | the guarded access checks and the `memcpy` overlap check fail exactly on `cpyBad`, for every 64-bit length; otherwise the statements produce the LLVM memory |
+| `pcmp_val`, `pcmp_run` | the relational pointer comparison `MemTr::icmp` emits fails exactly on pointers into different objects and otherwise computes LLVM's predicate |
+| `escLoop_run`, `escChk_run`, `escHit_ok` | `MemTr::stack_escape_check` fails exactly when the returned pointer points into one of the frame's own stack objects |
+| `freeChk_run`, `freeChkF_run` | `MemTr::dealloc` fails exactly on `freeBad`; the FILE release |
+| `hobjszCore_run`, `havoc_run`, `hread_run`, `pred_eq`, `hmemset_run`, `freshCore_run` | the libc model primitives |
+| `freeAll_ok` | an inlined frame's stack objects are freed at its `ret` |
 | `sinstX_sim`, `phisX_sim`, `enter_sim`, `step_sim`, `run_simX` | one instruction, the phis, a call, one segment, a run |
-| `pcmp_val`, `pcmp_run` | the object check and unsigned comparison `MemTr::icmp` emits for a relational pointer comparison fail exactly on pointers into different objects and otherwise compute LLVM's (signed or unsigned) predicate |
-| `escLoop_run`, `escChk_run`, `escHit_ok` | the statements of `MemTr::stack_escape_check` fail exactly when the returned pointer is not null and its object is one of the function's own stack objects, which is the LLVM-side rule on the related registers |
-| `freeChk_run` | the 25 statements of `MemTr::dealloc` fail exactly on `freeBad` (null excepted: not an allocated object, not its start, another kind, lifetime ended) |
 
-What this does **not** say: the memory model is PRISM's, shared by both
-sides, so the theorem is "PIR agrees with LLVM *in this memory model*", not a
-proof that the model is LLVM's (a flat 48-bit offset per object, at most
-2^16 objects, provenance only through the object id). The exporter computes
-allocation sizes, field offsets and array lengths with the translator's own
-`pirmem::Layout`, and a global's size, alignment, kind and initialiser
-stores with the functions the translator uses (`pirmem::entry_global`,
-`flat_init`); those computations are trusted, as is the exporter's
-rendering of LLVM into the fragment syntax.
+The memory model is PRISM's, shared by both sides, so the theorem is "PIR
+agrees with LLVM *in this memory model*" (a flat 48-bit offset per object,
+at most 2^16 objects, provenance only through the object id), not a proof
+that the model is LLVM's. The exporter computes allocation sizes, field
+offsets and array lengths with the translator's own `pirmem::Layout`, and a
+global's size, alignment, kind and initialiser with the functions the
+translator uses (`pirmem::entry_global`, `flat_init`); those computations
+are trusted, as is the exporter's rendering of LLVM into the fragment
+syntax.
 
-**Globals.** `MemTr::global` allocates a global lazily, when an operand first
-names it, so its PIR variable used to fall among the temporaries of that
-instruction, where no instance owns it. The translator now allocates the
-variables of the globals the analysed function names directly
-(`pirmem::entry_globals`, the same choices as `MemTr::global`) with the
-function's own values, before its results (`Tr::enter_frame`), and
-initialises them first thing in the prologue (`Tr::run_frame`,
-`MemTr::emit_entry_globals`); the statements are the ones `MemTr::global`
-emitted before, only the variable numbering changed. The Lean model treats
-each such global as an instruction at the start of the entry block that
-allocates and initialises it (`SInst.glob`): the entry block has no
-predecessors, so this runs once, before anything reads the global. Globals
-named only inside an inlined callee, or through a constant expression, stay
-lazy and outside the fragment.
+### Globals
+
+The translator allocates the variables of the globals the analysed function
+and its inlined callees name (`pirmem::entry_globals`, in call order) with
+the function's own values, before its results (`Tr::enter_frame`), and
+initialises them first in the prologue (`Tr::run_frame`,
+`MemTr::emit_entry_globals`). The hidden "an allocation failed" flag object
+of the malloc models follows, when the function can reach
+`__prism_alloc_failed` (`pirmem::reaches_alloc_failed`), and then the
+caught-exception slot when it can reach `__cxa_begin_catch`,
+`__cxa_end_catch` or `__cxa_rethrow` (`pirmem::reaches_caught_slot`). The
+Lean model treats each as an instruction at the start of the entry block
+that allocates and initialises it (`SInst.glob`, exported as `L glob`): the
+entry block has no predecessors, so this runs once, before anything reads
+it. The exporter passes these objects to inlined callees as extra
+parameters. Globals with an `undef` initialiser and thread-local globals
+stay outside.
 
 ## Property instrumentation: the C++ list, proved
 
-Every check `translate.cpp` inserts in the fragment, the condition it tests
-(the C++ `eval_op`, written in Lean in `Pir.lean`), and the lemma proving it
-is the LangRef condition. `checks_bad` combines them: the checks inserted for
-one instruction fire exactly when the strict semantics has UB there.
+Every check `translate.cpp` inserts in the base fragment, the condition it
+tests (the C++ `eval_op`, written in Lean in `Pir.lean`), and the lemma
+proving it is the LangRef condition. `checks_bad` combines them: the checks
+inserted for one instruction fire exactly when the strict semantics has UB
+there.
 
 | Instruction | C++ check (`Op`, prop, class) | Proved equal to | Lemma |
 |---|---|---|---|
@@ -314,409 +257,140 @@ one instruction fire exactly when the strict semantics has UB there.
 | `sdiv exact` | `InexactS`, `exact`, UB-POISON | `b ∤ a` (integers) | `test_inexactS` |
 | `shl`, `lshr`, `ashr` | `ShiftOob`, `shift`, INT-SHIFT-UB | amount `≥ w` | `checks_bad` |
 | `shl` (C signed `<<`) | `ShlSOvf`, `shift-base`, INT-SHIFT-UB | base negative or `a·2^b ≥ 2^(w-1)` | `shlS_core`, `test_shlS` |
-| `shl nsw` | `ShlNswOvf` (`(a<<b)>>s b ≠ a`), `shl-nsw` | `a·2^b` out of the signed range | `shlNsw_core`, `test_shlNsw` |
-| `shl nuw` | `ShlNuwOvf` (`(a<<b)>>u b ≠ a`), `shl-nuw` | `a·2^b ≥ 2^w` | `shlNuw_core`, `test_shlNuw` |
-| `lshr exact` | `LostBitsL` (`(a>>u b)<<b ≠ a`), `exact` | `a mod 2^b ≠ 0` | `lostL_core`, `test_lostL` |
-| `ashr exact` | `LostBitsA` (`(a>>s b)<<b ≠ a`), `exact` | `a mod 2^b ≠ 0` | `ashr_shl_eq`, `test_lostA` |
+| `shl nsw` | `ShlNswOvf`, `shl-nsw` | `a·2^b` out of the signed range | `shlNsw_core`, `test_shlNsw` |
+| `shl nuw` | `ShlNuwOvf`, `shl-nuw` | `a·2^b ≥ 2^w` | `shlNuw_core`, `test_shlNuw` |
+| `lshr exact` | `LostBitsL`, `exact` | `a mod 2^b ≠ 0` | `lostL_core`, `test_lostL` |
+| `ashr exact` | `LostBitsA`, `exact` | `a mod 2^b ≠ 0` | `ashr_shl_eq`, `test_lostA` |
 | `or disjoint` | `And` then `Ne 0`, `disjoint`, UB-POISON | common set bit | `checks_bad` |
-| `zext nneg` | `Slt a 0`, `nneg`, UB-POISON | operand negative | `nneg_bad` |
+| `zext nneg` | `Slt a 0`, `nneg`, UB-POISON | operand negative | `cast_bad` |
 | `poison` operand | `check 1`, `poison`, UB-POISON | use of poison | `opnd_sim` |
 | `unreachable` | `check 1`, `unreachable`, CXX-UNREACHABLE | reached | `term_sim` |
 | use of a register carrying `@__prism.uninit` | `check shadow`, `uninit`, UNINIT-READ | indeterminate value used | `opnd_sim`, `phis_sim` |
-| `llvm.abs(x, true)` | `Eq x INT_MIN`, `abs`, INT-SIGNED-OVF | the LangRef poison condition | `unChecks_bad` |
-| `llvm.ctlz/cttz(x, true)` | `Eq x 0`, `clz0`, INT-CLZ-ZERO | the LangRef poison condition | `unChecks_bad` |
-| `llvm.memcpy/memmove/memset` | `MemTr::access_checks` under `n ≠ 0` (null, wild, uaf, oob, write-const) and, for `memcpy`, `overlap` MEM-OVERLAP | `cpyBad` | `accChkG_run`, `overlapChk_run`, `memcpy_run`, `memset_run` |
 
-Link to the PIR semantics: `checks_eq_ubBin` proves that, on the flags
-`PrismSem.Flags` models (`nsw`/`nuw` on `add`/`sub`/`mul`, division and
-shift-amount UB), these checks fire exactly when `PrismSem.ubBin` — the UB
-definition the PIR instrumentation theorems (`PrismSem.instr_fail_ub_iff`)
-use — holds, and `checks_cover_ubBin` that for every flag combination they
-cover it. `PrismSem.ubBin` does not model `exact`, `disjoint`, `nneg`,
-`shl nsw/nuw` or the C signed-shift rule; the C++ checks do, and those are
-proved here against the LangRef conditions instead.
+`checks_eq_ubBin` proves that, on the flags `PrismSem.Flags` models (`nsw`/
+`nuw` on `add`/`sub`/`mul`, division and shift-amount UB), these checks fire
+exactly when `PrismSem.ubBin` — the UB definition behind
+`PrismSem.instr_fail_ub_iff` — holds, and `checks_cover_ubBin` that they
+cover it for every flag combination. `PrismSem.ubBin` does not model
+`exact`, `disjoint`, `nneg`, `shl nsw/nuw` or the C signed-shift rule; the
+C++ checks do, and those are proved here against the LangRef conditions.
+`tests/cpp/test_pir_refinement.cpp` locks the check-name and operator-name
+parity between `translate.cpp` and the Lean files without running Lean.
 
-Not covered here (outside the fragment): `llvm.assume` (finding 8), traps,
-`__assert_fail` / `reach_error` / `abort`, clang-folded UB markers
-(`__prism.folded`, `__prism.poison`). The intrinsic checks above are in the
-extended fragment (`agree-ext`), not the unconditional base fragment.
-
-## Coverage of `translate.cpp`
-
-By handler case (the branches of `Tr::operand`, `run_frame`,
-`terminator`, `binop`, `inst`, `call`, `resolve_phis`): **31 of 57 cases
-(54 %)** are in the proved fragment — all 13 integer binary operators with
-all their flags, `icmp`, `select`, the three casts, `phi`, all
-terminators, constant/register/`poison` operands, and the
-uninitialised-local instrumentation (marker, shadow phis, read check). By
-inserted-check site: **21 of 29 (72 %)**. Not covered by the base fragment: calls (inlining and
-the 24 other intrinsic / library handlers), `undef` operands and phi inputs,
-`freeze`, `extractvalue` / `*.with.overflow`.
-
-With the extended fragment, also in the proved fragment: `freeze`,
-`undef` under `freeze` or `store`, `Tr::inline_call` (argument binding,
-callee instances, the continuation phi of an inlined `ret`), and from
-`translate_mem.cpp` `alloca`, `load`, `store`, `getelementptr` with
-`MemTr::access_checks` (null, wild, freed, bounds, alignment, read-only),
-`MemTr::gep` (overflow, C array bounds, `inbounds`, leaving the object) and
-the uninitialised-memory read check; from `Tr::call` the handlers of
-`llvm.smax`/`smin`/`umax`/`umin`, `abs`, `ctlz`/`cttz`, `ctpop`/`bswap`,
-`expect`, the overflow intrinsics with `extractvalue`, `lifetime.start`/`end`
-and `memcpy`/`memmove`/`memset` (`MemTr::memcpy_`/`memset_` with their
-guarded access checks and the overlap check), and `MemTr::global` for the
-globals the analysed function names; with pointers and the heap also
-`MemTr::icmp` (relational pointer comparisons), `MemTr::stack_escape_check`,
-the pointer-parameter bindings of `translate()` (`byval`/`sret`,
-`bind_contract` with a constant count), and from `Tr::model_intrinsic`
-`__prism_alloc` (`MemTr::alloc`), `__prism_free`/`__prism_free_check`
-(`MemTr::dealloc` except its `FILE` branch), `__prism_assume` and
-`__prism_alloc_failed`, and from `Tr::call` the nondet sources and
-`__VERIFIER_assume`. Not covered: `llvm.assume`, traps,
-`stacksave`/`stackrestore`, the floating-point intrinsics, the other model
-intrinsics (`__prism_obj_size`, `__prism_memcpy`, `__prism_check`, …), the
-format family.
-
-By function, on the repository's own C/C++ corpus
-(`prism-qa pir-lean-check testdata/pir testdata --bin <build>/prism`:
-the real pir stage with its uninitialised-local and folded-UB
-instrumentation and C signed-shift locations), before and after the
-extended fragment:
-
-| Input | Functions | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch |
-|---|---|---|---|---|---|---|
-| `testdata/pir`, before | 226 | 46 | — | 0 | 180 | **0** |
-| `testdata/pir`, after | 226 | 46 | **8** | 1 | 171 | **0** |
-| `testdata/pir`, after merging the latest mainline (2 more functions) | 228 | 46 | **9** | 1 | 172 | **0** |
-| `testdata`, before | 2 506 | 915 | — | 2 | 1 589 | **0** |
-| `testdata`, after | 2 506 | 915 | **21** | 4 | 1 566 | **0** |
-| `testdata`, after the merge (one file not exported in that run) | 2 502 | 914 | **21** | 4 | 1 563 | **0** |
-| `testdata/pir`, before the intrinsics and globals (this commit's base) | 228 | 46 | 9 | 1 | 172 | **0** |
-| `testdata/pir`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 228 | 46 | **29** | 1 | 152 | **0** |
-| `testdata`, before the intrinsics and globals | 2 506 | 915 | 21 | 4 | 1 566 | **0** |
-| `testdata`, with intrinsics, `memcpy`/`memset`, lifetime markers, globals | 2 506 | 915 | **32** | 4 | 1 555 | **0** |
-| `testdata/pir`, findings 2, 5–7 fixed (2 new functions; `mem_str.c` `memcpy_ok`, `memcpy_bad`, `overlap_bad` call C `memcpy`, now the library model: outside) | 231 | 47 | **26** | 1 | 157 | **0** |
-| `testdata`, findings 2, 5–7 fixed (mainline has 9 more functions) | 2 515 | 924 | **32** | 4 | 1 555 | **0** |
-| `testdata/pir`, before pointers and the heap (2026-09-25, this branch's base) | 229 | 47 | 29 | 1 | 152 | **0** |
-| `testdata/pir`, with pointer values, comparisons, returns, harness parameters | 229 | 47 | **46** | 16 | 120 | **0** |
-| `testdata/pir`, … and the libc models' heap, nondet values, assumptions, library callees | 229 | 47 | **68** | 20 | 94 | **0** |
-| `testdata`, before pointers and the heap | 2 515 | 924 | 32 | 4 | 1 555 | **0** |
-| `testdata`, with pointer values, comparisons, returns, harness parameters | 2 515 | 927 | **49** | 36 | 1 500 | **0** |
-| `testdata`, … and the libc models' heap, nondet values, assumptions, library callees | 2 515 | 927 | **78** | 52 | 1 458 | **0** |
-| `testdata/pir`, D118 (`hobjsz`, memcpy `selfOk`) | 231 | 47 | **65** | 17 | 102 | **0** |
-| `testdata`, D118 (`hobjsz`, memcpy `selfOk`) | 2 532 | 937 | **74** | 54 | 1 467 | **0** |
-
-All six trees (2026-10-29, `prism-qa pir-lean-check testdata/conformance
-testdata/fixtures testdata/fp testdata/pir testdata/planted testdata/tp`, no
-trailing slashes; `testdata/fixtures` exports nothing). "Before" is the
-`origin/fix/sarif-doctest` checker (beaef75ca, the base plus the XHeap build
-fix) with the base's `prism`; each later row is `work/proofs`' checker and
-exporter:
-
-| Run | `agree` | `agree-ext` | `agree-reject` | `outside` | Mismatch | In the proved fragment |
-|---|---|---|---|---|---|---|
-| before (base) | 1 039 | 221 | 183 | 2 216 | **0** | 1 260 |
-| D136 stdio primitives (57b4be78e) | 1 039 | 287 | 231 | 2 100 | **0** | 1 326 |
-| `assert`/`reach_error` noreturn blocks + unreachable LLVM blocks (511404056) | 1 039 | 396 | 243 | 1 981 | **0** | 1 435 |
-| `llvm.trap`, libstdc++ assertions (224381460) | 1 039 | 419 | 245 | 1 956 | 0 | 1 458 |
-| `invoke` as call + `br`, stubbed landing pads (65d994197) | 1 039 | **479** | 266 | 1 875 | **0** | **1 518** |
-| `ptrtoint`/`psub`, `std::__throw_*` without handlers (64b4cdd34) | 1 039 | **491** | 267 | 1 869 | **0** | **1 530** |
-| allocas in inlined callees, freed at `ret` (8920b58bc, ca7cd088d)\* | 1 039 | 491 | 267 | 1 865 | **0** | 1 530 |
-
-Per tree, base → now (`agree-ext` / `outside`): conformance 67 → 235 / 566 →
-387, fp 12 → 13 / 36 → 24, pir 57 → 78 / 110 → 88, planted 73 → 81 / 1 485 →
-1 451, tp 12 → 12 / 19 → 6.
-
-The largest causes outside the fragment at the base were `invoke` (210),
-undefined `__assert_fail` (170) and `__cxa_begin_catch` (63); `alloca` in an
-inlined function was only 11. The two that moved:
-
-* **Noreturn failure calls.** `Tr::call` translates an undefined
-  `__assert_fail` (and `__assert_rtn`, `_assert`, `__assert`, `__assert2`,
-  `_wassert`), `reach_error`/`__VERIFIER_error`, `llvm.trap`/`debugtrap`/
-  `ubsantrap` and `std::__glibcxx_assert_fail` as `check(1, prop, cls)` and
-  ends the block (`noreturn`). The exporter writes `L afail <prop> <cls>
-  [br <target>]` in place of the call and the rest of the block (only when
-  that rest defines no variable and ends in `unreachable`, `ret` or an
-  unconditional `br`, which `normal_blocks` still follows). `XBlock.nr`: the
-  LLVM semantics (`sEnd`/`lEnd`) is UB on reaching such a block's end, the
-  translation (`trTermN`) is the failing check then `stop`.
-* **`invoke` and landing pads (no throw in the fragment).** `Tr::translate_block`
-  translates an `invoke` as the call with its landing pad pushed as a handler,
-  then `Jmp` to the normal label; the handler is used only by `raise` /
-  `dispatch_type` (`__cxa_throw`, `std::__throw_*`, `__cxa_rethrow`, `resume`),
-  none of which is in the fragment, so landing pads stay untranslated
-  (`normal_blocks`). The exporter writes the call then `L br <normal>`; a block
-  `normal_blocks` does not reach is written as `L dead %r w [w2]` placeholders
-  (the variables `Tr::enter_frame` numbers: `{ptr,i32}` landing pad 64+32, ...)
-  and `L stub` (Lean `XBlock.stub`; `nondet` placeholders, parse error outside a
-  stub block, and `runFrame` refuses a stub block `xLive` reaches). Phi incomings
-  from such blocks are dropped as `resolve_phis` does (refused where a dropped
-  input is undef or maybe-uninitialised, or a dead block needs an `.undef` /
-  `.uninit` shadow). Exporter-trust assumption: nothing the fragment admits
-  unwinds, so an `invoke` is its call + `br` and unreachable blocks are
-  irrelevant. Typical gain: `operator delete` (model `invoke __prism_free` with a
-  terminate pad), `new` inside `try`. Fixture `cxx_invoke` (4 agree-ext, 2
-  outside negatives). 419 → **479** agree-ext, mismatch 0. Still outside:
-  actual throws/catches (`__cxa_begin_catch` 63, `__cxa_allocate_exception` 33,
-  `std::__throw_bad_array_new_length` 29), indirect calls 30, `ptrtoint` 27,
-  float/double 42, `pthread_mutex_lock` 20, `alloca` in an inlined function 18,
-  `pthread_create` 17, `mtx_lock` 15, constant-GEP operands 14.
-* **Pointer difference and library throws (d02bdb7f5, 64b4cdd34).** `sub` of two
-  `ptrtoint`s is `SInst.psub` (ub on different objects, mirroring the
-  `PTR-COMPARE` check); a bare `ptrtoint` is a copy. `std::__throw_*` with no
-  arguments, when no `invoke` can be on the stack (`under_invoke`), is
-  `L throw <typeinfo>`: `XBlock.thr` makes the LLVM run stuck there (no claim),
-  `segOK` checks only the prefix, and `runFrame` mirrors `Tr::raise` exactly
-  (Extern alloc of 96 bytes, three header stores via `Tr::at`, `type_id` in
-  first-use order, `CXX-UNCAUGHT` when the top is `main` / a global init, stop,
-  fresh block). Fixtures `ptr_sub`, `std_throw`. 479 → **491** agree-ext.
-* **Allocas in inlined callees** (8920b58bc): an inlined frame's allocas are
-  freed at its `ret` (`freeStmts` / `retFree`, `freeAll_ok`); an inlined callee
-  returning a pointer while owning stack objects stays outside, and `L retptr`
-  is now exported for every pointer-returning function. Fixture
-  `inlined_alloca`. Coverage: **no net change** (491 agree-ext, outside 1 869 →
-  1 865, mismatch 0) — every inlined-alloca function in `testdata` is blocked
-  by something else (mostly throw-under-`invoke`, `__cxa_begin_catch`,
-  iostream calls).
-* **Throws under an `invoke`, per call path** (this commit): the exporter no
-  longer refuses `std::__throw_*` module-wide (`under_invoke`); the call an
-  `invoke` became is exported as `L icall` (`CallI.inv`), and `runFrame`
-  counts live handlers (`TS.hdl`, `Tr::handlers`) and refuses a throw while
-  one is live (dispatch to a landing pad not modelled yet). A function that
-  throws with no handler on its own inlined path is in the fragment even when
-  some other function invokes it. Fixture `invoke_throw` (3 agree-ext, `h`
-  outside: its own `invoke` has a cleanup pad). Coverage (six trees, same
-  method as `/workspace/logs/cov3`): agree 1 019, agree-ext 308, agree-reject
-  233, outside 1 744, mismatch 0 — **no net change**: the 19
-  `__throw_bad_array_new_length` functions move to their next blocker (7 to
-  the throw-under-invoke refusal, i.e. need real dispatch; 9 to an inlined
-  pointer-returning callee with stack objects; 3 to `__cxa_allocate_exception`).
-* **Coverage reproducibility (491 vs 308).** The 308 runs (`cov3`, `cov4`)
-  were truncated: `prism` over the whole `testdata/conformance` tree was killed
-  (kernel OOM / box memory pressure) partway, after the newly merged
-  `libc-models` tasks, so `conformance/prism/*` and `sv-comp/*` never exported
-  (116 of 228 conformance files). The 479/491 rows came from full runs
-  earlier in the day. Reproducible method now: `/workspace/bin/prism-run
-  prism-qa pir-lean-check` with the conformance tree split into its five
-  subdirectories (one `prism` run each), the other trees as before.
-* **`L throw` with arguments** (8954fa5ce): `Tr::eh_call` evaluates the
-  non-float arguments of `std::__throw_*` before raising; the exporter writes
-  them after the typeinfo and `runFrame` translates them (`trArgsX`) before
-  `throwX`. Fixture `throw_args` (3 agree-ext).
-* **Coverage after the `fix/memory-budget` merge (3c64dac94, which brings
-  `work/libc-models`' new testdata) and the two throw changes, 2026-10-29,
-  split method:** agree 1 061, agree-ext **641**, agree-reject 274, outside
-  2 078, mismatch **0** (conformance: concurrency 43 functions / 0 agree-ext,
-  esbmc-cpp 186 / 19, libc-models 442 / 246, prism 332 / 119, sv-comp 157 / 48;
-  the run was killed by the RSS watchdog during or after `sv-comp`, so that
-  subtree may be partial — a lower bound). Not comparable row-for-row with
-  the table above (more test functions).
-  \*Measured under the 4 GB `prlimit --as` cap, one tree at a time: 112 files
-  the tree run dropped were re-run one file each; 7 `conformance/*_contracts.cpp`
-  files (132 functions: 108 agree-ext, 23 outside, 1 agree) do not export under
-  the cap at all, so their verdicts are this checker on the previous export.
-  pthread/mtx stay outside because `translate.cpp` itself leaves them UNENCODED.
-* **Unreachable LLVM blocks.** `Tr::run_frame` translates only
-  `normal_blocks`; every `assert` leaves a dead block behind. `xLive` /
-  `xSucc` (XTranslate) mirror it, `runFrame` skips the dead blocks (their
-  PIR head stays empty), and `validB` checks `xLiveClosed` (the entry is
-  live, live blocks' successors are live) and `segOK` only for live blocks.
-  The simulation carries liveness of the current block in `InvX` and of every
-  suspended caller in `TailX` (`InstFacts.live0`, `.closed`). A live phi with
-  an incoming from a dead block stays outside (`Tr` drops such incomings).
-
-Fixtures `assert_dead` (3 `agree-ext`) and `trap` (2 `agree-ext`). Top
-remaining causes (kept `.pirl`s of the last run): `invoke` 225,
-`__cxa_begin_catch` 61, `__cxa_allocate_exception` 24, indirect calls 22,
-`float`/`double` 21/20, `pthread_mutex_lock` 20, `pthread_create` 17,
-`mtx_lock` 15, constant-GEP pointer operands 14, `alloca` in an inlined
-function 13, `printf` 12 (counts over kept `.pirl` files, which repeat inlined callees). The `agree-reject` verdicts are unguarded pointer parameters (Law 6).
-
-Pointers and the heap (2026-09-25): 85 more `agree-ext` functions over both
-trees (61 → 146), 0 mismatches. D118 (2026-10-25): **139** `agree-ext` total
-(65 + 74), 0 mismatches. Among them 24 of the pointer fixture
-`fixtures/pointers.pirl` (`testdata/pir/mem_ptr.c`, `mem_contract.c`,
-`testdata/planted/stack_escape.c`: relational comparisons in and across objects,
-pointer phis and selects, null dereferences, all seven stack-escape
-variants, contract-bound parameters incl. a write to a read-only one) and 42
-functions with heap objects: `malloc`/`calloc`/`free` and `new`/`delete`
-(`testdata/pir/mem_heap.c`, `mem_cxx.cpp`; `testdata` double free, use after
-free, invalid and offset free, mismatched `new[]`/`delete`, unchecked
-`malloc` results, flexible array members, leaks). `fixtures/heap.pirl` is 12
-functions after D118 (five `new`/`delete` records left the older 15 + 2
-summary). The summary kept with the `hobjsz` proof is `agree-ext=12`,
-`outside=0`, `mismatch=0`, because `L hobjsz` is `hobjszCore` and
-`__prism_memcpy` is the existing `memcpy` line (not re-measured in this
-slice; if `realloc_*` is still outside, the honest line is `agree-ext=10
-outside=2`, and `mismatch` stays 0); `dropped_ptr_check` and
-`dropped_heap_check` remove a PTR-COMPARE, a MEM-STACK-ESCAPE, a
-MEM-DOUBLE-FREE and a MEM-MISMATCHED-FREE check and are (as they must be)
-4 mismatches. The new `agree-reject`s (5 → 72) are pointer parameters no
-harness binds: the C++ translator refuses them (NEEDS-HARNESS, Law 6) and so
-does the Lean one; before, the exporter could not write them and they were
-`outside`. Two translator-side changes made this exact: a contract's
-element size is now one function (`pirmem::contract_elem_bytes`) shared by
-the translator and the export, and the hidden "an allocation failed" flag
-object of the malloc models is allocated up front — its variable after the
-entry globals', its object after theirs in the prologue — whenever the
-analysed function can reach `__prism_alloc_failed` through direct calls
-(`pirmem::reaches_alloc_failed`, also shared), instead of at the first call
-the translator happened to meet. Before, an `abort()` translated before the
-first allocation site saw no flag and was always reported; it now reads the
-flag (a report only when no allocation failed before it, the documented F9
-rule), so the change can only remove a false alarm.
-
-The new `agree-ext` functions: array initialisers (`memcpy` from a
-`@__const` global, `memset` of a zeroed array), `memcpy`/`memmove`/`memset`
-with correct and incorrect lengths and an overlapping copy, tables and
-string constants read by index, `llvm.abs`, `llvm.ctlz` with and without
-the zero guard, `__builtin_add_overflow`-style checks, and functions reading
-a mutable global. The fixture `fixtures/intrinsics.pirl` (22 functions, one
-per intrinsic kind, and the IR of the doctest "pir: lean export of
-intrinsics, …") checks as 1 `agree` + 21 `agree-ext`; `dropped_intr_check`
-removes the overlap, INT-CLZ-ZERO, MEM-UAF and signed-overflow checks from
-four of them and must be (and is) 4 mismatches.
-
-`agree-ext` in `testdata/pir`: two inlined calls, a C++ template call and a
-`constexpr` call, and four stack-memory functions (a struct on the stack,
-an uninitialised stack read and its fixed twin, a pointer to a local pair);
-in `testdata`: three inlined calls and 18 stack-memory functions (designated
-initialisers, packed structs, one-sided index checks, an out-of-bounds
-write, a lambda capture, object slicing). The new `agree-reject`s are
-recursive calls, which both translators refuse. What keeps the other
-`testdata` functions outside (before the intrinsics and globals): a call to
-a library function or an intrinsic (1 340), a pointer-typed parameter,
-return, phi, select or comparison (209), a global (6), floating point (5),
-`volatile` (3), `undef` outside `freeze` (2). After: a call to a library
-function (1 330; the exporter now names the callee: libc and C++ runtime
-models, `__assert_fail`, nondet sources; one `llvm.trap`), pointers (209),
-floating point (5), `volatile` stores (3), a global named only through a
-constant expression or in a callee (3), `undef` (2), `alloca` in an inlined
-callee (2). The intrinsics themselves were rarely the only obstacle: most
-functions that call them also call a library function or take a pointer.
-
-The pir stage has a time budget; on a loaded machine a run can leave a
-few files unexported (two `testdata` files in one of the runs above), so
-the counts are per exported file; the mismatch count was 0 in every run.
-
-## Per-run correspondence checking (8.2, 2.4)
+## Per-run correspondence checking
 
 `src/prism/pir/export_lean.cpp`: when `PRISM_PIR_LEAN_EXPORT` is set (`1`
-for `<out>/pir-lean/`, or a directory), the pir stage appends, per
-function, the LLVM function in fragment syntax and the PIR `translate()`
-produced (or its UNENCODED reason) to `<unit>.pirl`. Anything outside the
-fragment is written as `L unsupported <why>`. Pointer values are written with width 64 (as
-`translate.cpp` keeps them); `L pcmp` is a relational pointer comparison,
-`L retptr` marks the analysed function as returning a pointer (the
-stack-escape check), a harness-bound pointer parameter is an `L glob` line
-at the start of the entry block and an unbound one `L ptrparam`; the model
-intrinsics are `L halloc`, `L hfree`, `L hobjsz`, `L hhavoc` (`__prism_havoc_bytes`), `L hread`, `L hmemset`, `L hfresh`, `L vcheck` (all proved in `XHavoc.lean`), `L vassume` and `L nondet`, and
-`__prism_alloc_failed()` is written as the one-byte store it is into the flag
-object `%__prism.oom` (an `L glob` after the entry globals, passed to the
-inlined functions that can reach it as an extra last argument — the
-translator refers to its variable directly, so the PIR is the same).
+for `<out>/pir-lean/`, or a directory), the pir stage appends, per function,
+the LLVM function in fragment syntax and the PIR `translate()` produced (or
+its UNENCODED reason) to `<unit>.pirl`. Anything outside the fragment is
+written as `L unsupported <why>`. With `PRISM_PIR_EXPORT_ONLY=1` as well,
+the stage only exports and records each function `NOTRUN` (no model
+checking).
 
-`pir_lean_check FILE.pirl…` (proofs/refinement) re-translates the LLVM side
-with the proved translator and demands the C++ PIR be *exactly* its output
-(variables and widths, blocks, phis, statements, operators, argument
-widths, check names and classes, terminators). Verdicts: `agree` (the
-theorems hold of the PIR PRISM verified), `agree-ext` (the function is in the
-extended fragment, its PIR is exactly `translateX`'s and the certificate
-checks: the `_x` theorems hold of it), `agree-reject`, `outside`,
-`MISMATCH` (exit 1). `prism-qa pir-lean-check [TREE…] --bin build/prism`
-(`src/tools/qa/pir_lean_check.cpp`) drives it end to end; `prism_tests`
-runs it and the fixtures when the checker is built (`tests/cpp/test_qa.cpp`,
-NOTRUN otherwise), and `tests/cpp/test_pir_refinement.cpp` locks the check-name /
-operator-name parity between `translate.cpp` and the Lean files without
-Lean. `check.sh` runs the
-checker on `fixtures/` (real C++ output for `testdata/pir`, plus a hand-made
-dropped-check pair that must be reported as a mismatch; for the extended
-fragment `calls_freeze.pirl` and `memory.pirl`, and `dropped_call_check`,
-`dropped_mem_check` with an inlined callee's check, an uninitialised-memory
-check and a bounds check removed).
+`pir_lean_check FILE.pirl…` re-translates the LLVM side with the proved
+translator and demands the C++ PIR be *exactly* its output (variables and
+widths, blocks, phis, statements, operators, argument widths, check names
+and classes, terminators). Verdicts:
 
-## Testing the formal semantics against `lli` (8.3)
+| Verdict | Meaning |
+|---|---|
+| `agree` | base fragment; the base theorems hold of the PIR PRISM verified |
+| `agree-ext` | extended fragment; the PIR is exactly `translateX`'s and the certificate checks, so the `_x` theorems hold of it |
+| `agree-reject` | both translators refuse the function (unbound pointer parameter, recursion, …) |
+| `outside` | outside the fragment; no claim |
+| `MISMATCH` | the C++ PIR differs from the proved translator's (exit 1) |
+
+`prism-qa pir-lean-check [TREE…] --bin build/prism`
+(`src/tools/qa/pir_lean_check.cpp`) runs PRISM with both variables set and
+prints a total line `total: agree=… agree-ext=… agree-reject=… outside=…
+mismatch=… (functions in the proved fragment: …)`. `prism_tests` runs the
+fixtures when `pir_lean_check` is built and reports NOTRUN otherwise
+(`tests/cpp/test_qa.cpp`).
+
+The 55 fixtures in `proofs/refinement/fixtures/` are real C++ output for
+`testdata/pir` and hand-written cases, one per construct. The `dropped_*`
+and `*_neg*` fixtures have a check removed or a field swapped and must be
+reported as `MISMATCH` (or `outside` where the construct is refused).
+
+### Coverage
+
+Last full measurement: 2026-10-30, commit 30eca81b3, `prism-qa
+pir-lean-check` over the five subdirectories of `testdata/conformance`
+(concurrency, esbmc-cpp, libc-models, prism, sv-comp), one PRISM run each:
+
+| `agree` | `agree-ext` | `agree-reject` | `outside` | `MISMATCH` |
+|---|---|---|---|---|
+| 249 | 785 | 288 | 652 | **0** |
+
+The largest causes outside the fragment at 36dfbca60 (2026-10-30), counted
+over the exported `.pirl` files (which repeat inlined callees): `call @abort`
+341, `getelementptr` cases about 70, indirect calls 25,
+`__cxa_allocate_exception` 17, `pthread_create` 16, `__throw_logic_error`
+14, `pthread_mutex_lock` 12, `printf` 12, floating point about 42, raw
+aggregate loads 14. `abort()` entered the fragment after that tally; the
+coverage has not been re-measured since.
+
+## Testing the formal semantics against `lli`
 
 `prism-qa llvm-sem-vs-lli` (`src/tools/qa/llvm_sem_vs_lli.cpp`) runs every
 fragment function of the given C files on edge-case and random inputs with
 `llvm_eval` (LangRef, strict and PIR semantics), executes each input the
 LangRef semantics says is defined with `lli` on the IR the pir stage
-verifies (`pir::lower_to_ir`; its instrumentation markers get stub
-definitions), and compares the printed result. It also checks
-the three Lean semantics agree as proved. On `testdata/pir` through the `prism` binary: 417 runs, 378
-compared with `lli`, **0 disagreements** (39 inputs have UB or poison and
-are not executed). On `testdata/planted/*.c` (6 inputs per function): 3 603
-compared, **0 disagreements**; 1 602 inputs belong to modules `lli` cannot
-run (unresolved externals elsewhere in the module) and are counted, not
-compared.
+verifies (`pir::lower_to_ir`), and compares the printed result. It also
+checks that the three Lean semantics agree as proved. It runs the given
+programs under `lli`: use it on trusted test programs only. Exit 1 on any
+disagreement, 2 when a tool is missing.
 
-## Floating point (8.2)
+## Floating point
 
 `Float.lean` models IEEE 754 binary formats (`binary32 = ⟨24, 8⟩`,
 `binary64 = ⟨53, 11⟩`, `binary16 = ⟨11, 5⟩`; any precision `p ≥ 2` and
-exponent width `ew ≥ 2`) at the bit level (sign, biased exponent, fraction),
-with `decode` per IEEE 754-2019 §3.4. Every finite datum is an integer
-multiple of the smallest subnormal `2^-D` (`Fmt.D`; binary32: 149), so a
-finite magnitude is a natural number in that unit. Sums are exact integers;
-products (`nx·ny / 2^D`) and quotients (`nx·2^D / ny`) are rationals `a / b`,
-rounded by `roundQ`/`roundF`, with nearness proved on distances scaled by
-`b` (`dist (r·b) a = b·|r − a/b|`). Round to nearest, ties to even
+exponent width `ew ≥ 2`) at the bit level, with `decode` per IEEE 754-2019
+§3.4. Every finite datum is an integer multiple of the smallest subnormal
+`2^-D`, so sums are exact integers and products and quotients are rationals
+`a / b`, rounded by `roundQ`/`roundF`. Round to nearest, ties to even
 throughout.
 
 | Theorem (`PrismRefine.Float.`) | Statement |
 |---|---|
 | `roundU_repr`, `roundU_nearest`, `roundU_tie_even` | round-to-nearest-even of an integer with unbounded exponent returns a `p`-bit value at least as close as every `p`-bit value; ties give an even significand |
 | `roundQ_repr`, `roundQ_nearest`, `roundQ_tie_even` | the same for a rational `a / b` (`roundQ_one`: with `b = 1` it is `roundU`) |
-| `round_correct`, `roundF_correct` | in the format: the nearest finite datum when it does not overflow; overflow (to infinity, §7.4) only when the exact magnitude exceeds the largest finite one |
+| `round_correct`, `roundF_correct` | in the format: the nearest finite datum when it does not overflow; overflow to infinity only when the exact magnitude exceeds the largest finite one |
 | `decode_encode` | every representable magnitude is encoded exactly |
 | `add_correct`, `sub_correct` | bit-level `add` / `sub` of two finite data decode to the correctly rounded exact sum / difference, with IEEE's sign of an exact zero and overflow to infinity |
-| `mul_correct`, `div_correct` | bit-level `mul` / `div` (non-zero divisor) of finite data decode to the correctly rounded exact product / quotient with sign `sx xor sy`: a signed zero on underflow to zero, infinity on overflow |
+| `mul_correct`, `div_correct` | bit-level `mul` / `div` (non-zero divisor) of finite data decode to the correctly rounded exact product / quotient |
 
-`add`, `sub` (`x + (−y)`), `mul` and `div` also define every special case as
-IEEE 754 §6–7: NaN operands give the default quiet NaN, `∞ − ∞`, `0 × ∞`,
-`0 / 0` and `∞ / ∞` are NaN (invalid), a finite non-zero `x / ±0` is an exact
-signed infinity, `∞ / y` is infinite, `x / ∞` is a signed zero.
+`add`, `sub`, `mul` and `div` also define every special case as IEEE 754
+§6–7 (NaN operands, `∞ − ∞`, `0 × ∞`, `0 / 0`, `∞ / ∞`, `x / ±0`, `∞ / y`,
+`x / ∞`).
 
 **PRISM's floating-point checks.** `FloatOps.lean` mirrors, operator by
 operator, the conditions `FpTr::checks` (`src/prism/pir/translate_fp.cpp`,
-`--fp-checks`) builds for `fadd`/`fsub`/`fmul`/`fdiv`, and the FLOAT-CAST-OVF
-condition the encoder builds for `fptosi`/`fptoui` (`Op::FToSIOvf` /
-`Op::FToUIOvf` in `src/prism/pir/encode.cpp`; the interpreter in `fp.cpp`
-computes the same). `tests/cpp/test_repolint.cpp` locks every C++
-expression to its Lean definition: changing either side fails the test. The
-IEEE side (`ieeeOverflow`, `ieeeInvalid`, `ieeeDivByZero`, `inRange`) is
-written from IEEE 754-2019 §7.2–7.4 and C11 6.3.1.4, not from the code.
+`--fp-checks`) builds for `fadd`/`fsub`/`fmul`/`fdiv`, and the
+FLOAT-CAST-OVF condition the encoder builds for `fptosi`/`fptoui`
+(`Op::FToSIOvf` / `Op::FToUIOvf` in `src/prism/pir/encode.cpp`).
+`tests/cpp/test_repolint.cpp` locks every C++ expression to its Lean
+definition. The IEEE side is written from IEEE 754-2019 §7.2–7.4 and C11
+6.3.1.4, not from the code.
 
 | Theorem | Statement |
 |---|---|
-| `prism_overflow_eq` | FLOAT-OVERFLOW (`isInf(r) ∧ both operands finite`, and `¬isZero(y)` for `fdiv`) **equals** IEEE overflow, for every operation and every pair of operands, special values included |
-| `prism_invalid_eq` | FLOAT-INVALID (`isNaN(r) ∧ no NaN operand`) **equals** IEEE invalid operation on quiet operands (`∞ − ∞`, `0 × ∞`, `0 / 0`, `∞ / ∞`) |
+| `prism_overflow_eq` | FLOAT-OVERFLOW **equals** IEEE overflow, for every operation and every pair of operands, special values included |
+| `prism_invalid_eq` | FLOAT-INVALID **equals** IEEE invalid operation on quiet operands |
 | `ieee_invalid_eq` | IEEE invalid = FLOAT-INVALID **or** a signalling-NaN operand. PRISM does not report the signalling-NaN case: Z3's FP theory has one NaN and LLVM's default floating-point environment does not preserve signalling NaNs |
-| `prism_divzero_eq` | FLOAT-DIV-ZERO (`isZero(y) ∧ ¬isNaN(x)`) = IEEE divide-by-zero **or** `0 / 0` **or** `±∞ / 0`. It is wider than IEEE: `0 / 0` is IEEE invalid (PRISM also reports it as FLOAT-INVALID), and `∞ / 0` raises no IEEE exception (the result is an exact infinity). `prism_divzero_extra` shows both extra cases are real |
+| `prism_divzero_eq` | FLOAT-DIV-ZERO = IEEE divide-by-zero **or** `0 / 0` **or** `±∞ / 0` (wider than IEEE; `prism_divzero_extra` shows both extra cases are real) |
 | `ieee_divzero_imp_prism` | every IEEE divide-by-zero is reported |
-| `cast_ovf_iff` | for any format, any `k`, signed or unsigned, and any well-formed datum: FLOAT-CAST-OVF (`isNaN(x) ∨ isInf(x) ∨ t < lo ∨ t ≥ hi`, `t` = `x` truncated toward zero, `lo = −2^(k−1)` or `+0`, `hi = 2^(k−1)` or `2^k` as numerals of the format) holds **iff** the value is outside the range of `iK` (C11 6.3.1.4). This includes formats where the bound is not representable (binary16 and `k ≥ 17`: `hi` rounds to `+∞`, and only NaN and infinities are out of range) |
+| `cast_ovf_iff` | for any format, any `k`, signed or unsigned, and any well-formed datum: FLOAT-CAST-OVF holds **iff** the value is outside the range of `iK` (C11 6.3.1.4), including formats where the bound is not representable |
 
-Trusted, not proved: that Z3's floating-point theory (`Z3_mk_fpa_*`)
-implements IEEE 754, and that `Z3_mk_fpa_numeral_double` rounds a numeral to
-nearest even (`pow2Val` models `fnum` that way). The model's `k` is a natural
-number; LLVM has no `i0`.
+Trusted, not proved: that Z3's floating-point theory implements IEEE 754,
+and that `Z3_mk_fpa_numeral_double` rounds a numeral to nearest even. Not
+covered: the other rounding modes; `frem`, `sqrt`, `fma`/`fmuladd` and libm;
+NaN payloads; the underflow and inexact flags (PRISM does not check them);
+the `fptrunc` overflow condition (same shape as the others, not a Lean
+theorem); and the step from these Lean definitions to the Z3 terms beyond
+the text-level lock of the test.
 
-Not covered: the other rounding modes; `frem`, `sqrt`, `fma`/`fmuladd` and
-libm (they get the same `--fp-checks` conditions, but their IEEE semantics is
-not modelled here); NaN payloads; the underflow and inexact flags (PRISM
-does not check them); `fptrunc` (see below); and the connection between these
-Lean definitions and the Z3 terms beyond the text-level lock of the test.
-
-A finding from this work: `fptrunc` called `checks(cur, Op::FConv, w, {}, r,
-c.line)` with no operands, and `checks` returns early when no operand is a
-floating-point value of width `w`. So FLOAT-OVERFLOW was never reported for a
-`double`→`float` truncation that overflows, even with `--fp-checks`. This is
-fixed: `fptrunc` now checks "finite operand, infinite result" directly
-(doctest "pir3 fp: --fp-checks reports a double->float narrowing that
-overflows"). The Lean overflow theorem covers `fadd`/`fsub`/`fmul`/`fdiv`;
-the `fptrunc` condition is the same shape, but it is not yet a Lean theorem.
-
-## Independent proof rechecking (8.5)
+## Independent proof rechecking
 
 `proofs/refinement/recheck.sh PROJECT ROOT…` runs, for one Lean project:
 
@@ -724,477 +398,101 @@ the `fptrunc` condition is the same shape, but it is not yet a Lean theorem.
 2. a source scan (no `sorry`, `native_decide`, `bv_decide`, top-level
    `axiom` or `unsafe`);
 3. `axiom_report`: the axioms of **every** declaration under the root
-   modules (not only curated theorems); fails on anything but `propext`,
-   `Classical.choice`, `Quot.sound` — so `sorryAx`, `Lean.ofReduceBool`
-   and `Lean.trustCompiler` all fail;
-4. `leanchecker` (lean4checker, upstreamed into the toolchain from v4.28;
-   the separate repository is deprecated and has no v4.34 tag): replays every
+   modules; fails on anything but `propext`, `Classical.choice`,
+   `Quot.sound` (so `sorryAx`, `Lean.ofReduceBool` and `Lean.trustCompiler`
+   all fail);
+4. `leanchecker` (shipped with the Lean toolchain): replays every
    declaration of every `.olean` module into a kernel environment;
-5. **nanoda** (independent Rust kernel) type-checks the `lean4export` NDJSON
-   export of the roots and all their dependencies from scratch.
-   `Lean.trustCompiler` is permitted for the *environment* only (core `Init`
-   declares it); step 3 already rejects any PRISM declaration that uses it.
+5. **nanoda** (an independent Lean kernel in Rust) type-checks the
+   `lean4export` export of the roots and all their dependencies from
+   scratch. `Lean.trustCompiler` is permitted for the environment only (core
+   `Init` declares it); step 3 already rejects any PRISM declaration that
+   uses it.
 
-`lean4export` (v4.34.0) and `nanoda` (0.4.19) are pinned in
-`third_party/MANIFEST.toml` as external tools and built by
-`build/prism-deps tool lean4export` / `build/prism-deps tool nanoda`
-(recipes `lake` and `cargo`). A missing checker is NOTRUN (exit 3), never a
-pass. `.github/workflows/proofs-recheck.yml` runs the recheck for
-`proofs/`, `proofs/semantics`, `proofs/techniques` and `proofs/refinement`
-on every change under `proofs/`, uploads each axiom list, and attaches them
-to every published release.
-
-Local run (this machine, 4 cores):
-
-| Project | Declarations audited | Axioms used | leanchecker | nanoda (declarations checked incl. dependencies) |
-|---|---|---|---|---|
-| `proofs` (`Prism`) | 492 | propext, Classical.choice, Quot.sound | ok | 60 118, no errors |
-| `proofs/semantics` (`PrismSem`) | 1 455 | propext, Classical.choice, Quot.sound | ok | 60 989, no errors |
-| `proofs/techniques` (`PrismTechniques`) | 746 | propext, Classical.choice, Quot.sound | ok | 172 973, no errors |
-| `proofs/refinement` (`PrismRefine`) | 2 254 | propext, Classical.choice, Quot.sound | ok | 62 092, no errors |
+`lean4export` and `nanoda` are pinned in `third_party/MANIFEST.toml` and
+built by `prism-deps tool lean4export nanoda`. A missing checker is NOTRUN
+(exit 3), never a pass. `.github/workflows/proofs-recheck.yml` runs the
+recheck and each project's own check script for `proofs/`,
+`proofs/semantics`, `proofs/techniques` and `proofs/refinement` on every
+change under `proofs/`, uploads each axiom list, and attaches them to every
+published release.
 
 ## Findings in `translate.cpp`
 
-The proof attempts surfaced five places where the C++ translator is not a
-sound over-approximation of the LangRef semantics. The Lean translator
-refuses them (the checker reports `outside`, not `agree`), so no theorem
-is claimed for them:
+The proofs found places where the C++ translator was not a sound
+over-approximation of the LangRef semantics. Source comments and doctests
+cite them by number.
 
-1. **Poison incoming to a phi is havocked without a check.** `resolve_phis`
-   turns a `poison` (or `undef`) incoming value into an unconstrained
-   `havoc` on that edge. If that value then reaches a `br` or a `ret`, LLVM
-   has UB but the PIR program takes an arbitrary branch or returns an
-   arbitrary value and fails no check. Clang at `-O0` + mem2reg produces
-   `undef` phi inputs for uninitialised locals (those are covered by the
-   separate uninitialised-read instrumentation), and `poison` phi inputs
-   rarely. **Fixed in `translate.cpp`:** a `check 1` (UB-POISON) is now
-   emitted on the poison edge, as `Tr::operand` does for a non-phi use
-   (doctest "pir: poison flowing into a phi is a checked violation"). The
-   Lean translator still refuses poison phi inputs, so such functions stay
-   `outside` the proved fragment until it is extended to match.
-2. **`icmp samesign` was ignored (fixed).** Newer LLVM (the flag was added
-   after LLVM 18) makes `icmp samesign` poison when the operands' signs
-   differ; `translate.cpp` dropped the flag, so `icmp samesign ult i32 %a, %b`
-   with `a = -1`, `b = 1` was PROVED. It now fails a `UB-POISON` check (prop
-   `samesign`) where the poison is created, like `nneg` (finding 3); on
-   pointers it is `UNENCODED`. Clang 18 (the pinned front end) does not emit
-   it. The Lean model has no such flag: the exporter still refuses it, so
-   such functions stay `outside` (doctest "pir: LangRef-defined IR is not
-   reported, samesign poison is ...").
-3. **Checks at creation over-approximate.** PRISM fails a check where
-   poison is *created* (`add nsw` that wraps), even if the value is never
-   used. For C this is the C semantics (signed overflow is UB at the
-   operation); for optimiser-introduced flags (`nuw`, `exact`, `disjoint`,
+1. **Poison incoming to a phi was havocked without a check.** Fixed: a
+   `check 1` (UB-POISON) is emitted on the poison edge (doctest "pir: poison
+   flowing into a phi is a checked violation"). The Lean translator still
+   refuses poison phi inputs, so such functions stay `outside`.
+2. **`icmp samesign` was ignored.** Fixed: it fails a UB-POISON check (prop
+   `samesign`) where the poison is created; on pointers it is `UNENCODED`.
+   The Lean model has no such flag, so such functions stay `outside`.
+3. **Checks at creation over-approximate.** PRISM fails a check where poison
+   is *created*, even if the value is never used. For C this is the C
+   semantics; for optimiser-introduced flags (`nuw`, `exact`, `disjoint`,
    `nneg`) it can report a failure LLVM would not have. `pir_faithful_fail`
    states this precisely: a PIR failure means UB *or poison creation*.
-
-4. **`undef` outside `freeze` is havocked once.** `Tr::operand` turns an
-   `undef` operand into one `havoc`. In the LangRef a value computed from
-   `undef` is a *set*: every use of it may observe a different member
-   (`%a = xor i32 undef, 0` compared with itself may be false), so fixing
-   one value under-approximates LLVM's behaviours; and `br i1 undef`,
-   `switch undef` and `ret undef` from a `noundef` function are UB, which
-   the havoc hides (it takes an arbitrary branch, returns an arbitrary
-   value). The Lean model accepts `undef` only under `freeze` and as a
-   stored value, where one arbitrary value is the LangRef semantics; the
-   exporter prints `undef` and the checker refuses it elsewhere (2 functions
-   in `testdata`). **Fixed in `translate.cpp`:** a static may-undef analysis
-   gives every value computed from `undef` (through phis, `select`, casts,
-   arithmetic, non-inlined calls) a one-bit undef shadow, set per path; each
-   non-phi use of such a value reads a fresh havoc (per use site and per
-   execution; `freeze` picks one value), a store of it writes uninitialised
-   bytes (as does an `undef` global initialiser), and `br` on it, a `noundef`
-   return or a `noundef` argument fails a `UB-POISON` check (prop `undef`).
-   An undef argument to an inlined callee without `noundef`, or an undef
-   return from one, is refused (`UNENCODED`). A division, load or store
-   through such a value fails its existing check, since the fresh value
-   ranges over everything. Before the fix, 7 of the adversarial IR cases of
-   the doctest "pir: undef is a fresh value at every use ..." were wrong
-   `PROVED`s (`x - x` of one undef-derived value, of an undef phi, `br` on
-   undef and on `icmp undef`, `ret` from a `noundef` function, a `noundef`
-   argument, and a stored-then-loaded undef); all are now `FAILED`, and the
-   path-sensitive, `freeze` and non-`noundef` return cases stay `PROVED`.
-   The Lean side is unchanged (it still accepts `undef` only under
-   `freeze`/`store`, whose C++ translation did not change), so functions
-   with `undef` elsewhere stay `outside`; `pir-lean-check` after
-   the fix: `testdata` 915 `agree` + 21 `agree-ext`, `testdata/pir` 46 + 9,
-   0 mismatches.
-5. **`freeze poison` was reported (fixed).** `freeze` translated its operand
-   with `Tr::operand`, which fails `UB-POISON` on a literal `poison`; in LLVM
-   `freeze poison` is defined (an arbitrary, fixed value). `translate.cpp`
-   now translates `freeze poison` exactly as `freeze undef`: one `havoc`, no
-   check. The Lean checker reads a literal `poison` operand of `freeze` (and
-   the value of a `store`) as `undef` (`Check.lean` `fopnd?`): the LangRef
-   defines `freeze poison` as `freeze undef`, and a stored `poison` or `undef`
-   both write uninitialised bytes in both semantics (`sStoreVal`,
-   `trStoreVal`), so no theorem changed; the fixture function `frz_poison`
-   (`calls_freeze.pirl`) is `agree-ext`. Clang does not emit `freeze poison`
-   for C.
-6. **`llvm.memcpy` with the same source and destination was reported
-   (fixed).** The LangRef lets `llvm.memcpy` copy an object onto itself
-   exactly (clang emits it for a struct assignment `*p = *q` that may be a
-   self-assignment); `MemTr::memcpy_` reported every overlap, `d = s`
-   included, which is C's rule for the `memcpy` *function* (C17 7.24.2.1),
-   and a C `memcpy` call was lowered to the same intrinsic. The pir stage now
-   compiles with `-fno-builtin-memcpy`, so a C `memcpy` call stays a call and
-   reaches its library model (`__prism_memcpy`, C's rule: any overlap,
-   `d = s` included, is `MEM-OVERLAP`), while the intrinsic follows the
-   LangRef: its overlap check also requires the offsets to differ
-   (`testdata/pir/mem_str.c` `struct_self_assign_ok` PROVED, was a false
-   `MEM-OVERLAP`; `memcpy_self_bad` still FAILED). `__builtin_memcpy` in C is
-   still the intrinsic, so `__builtin_memcpy(p, p, n)` is no longer reported.
-   The Lean side changed with it: `cpyBad` (`XLlvm.lean`) excludes
-   `ptrOff d = ptrOff s` in one object, `overlapChk` (`XTranslate.lean`) has
-   the two extra statements the C++ emits, and `overlapChk_run` / `cpyBad_eq`
-   (`XMemOps.lean`) are re-proved; no `sorry`, same three axioms.
-7. **`llvm.lifetime.start` on an object whose lifetime ended was reported
-   (fixed in the C++ translator).** In the LangRef it begins a new lifetime;
-   PRISM stored uninitialised bytes with a write's checks, so the object
-   stayed dead and MEM-UAF failed (and objects larger than 8 bytes were
-   UNENCODED). A new PIR statement `revive` (`Stmt::Revive`) makes a *stack*
-   object live again (other objects keep their liveness, as the LangRef says
-   for non-stack objects), then the `size` bytes become uninitialised with a
-   write's checks: one store of an uninitialised value for 1 to 8 bytes, as
-   before, otherwise (`-1`: to the end of the object) a copy from a fresh
-   uninitialised object; any size is encoded. The loop invariant and k-induction paths
-   treat `revive` like `free`. The Lean PIR has no such statement, so the
-   Lean translator now refuses `llvm.lifetime.start` (`outside fragment`):
-   functions with it left the extended fragment (in `fixtures/intrinsics.pirl`
-   `life` and `life_bad`, now `agree-reject`). The pir stage compiles at
-   `-O0`, where clang emits no lifetime markers, so this concerns coroutine
-   code and IR given directly. Still open: `llvm.lifetime.end` on a pointer
-   into a non-stack object (a coroutine frame) ends that whole object, where
-   the LangRef only makes its bytes poison.
-8. **A false `llvm.assume` was not reported (fixed).** The LangRef makes
-   `llvm.assume(false)` undefined behaviour, and so is a false
-   `__builtin_assume` in C. Clang emits `llvm.assume` for `__builtin_assume`
-   even at `-O0`; only `[[assume(...)]]` is dropped there
-   (`testdata/planted/cxx_assume.cpp` has no call). `Tr::call` used to turn it
-   straight into a PIR `assume`, which discards the path, so
-   `f(int x) { __builtin_assume(x > 0); return 100 / x; }` was PROVED
-   although `f(0)` is undefined. It is now a `FUNC-CONTRACT` check of the
-   condition (prop `assume`), then the `assume`.
-   While fixing it, a wider bug in the encoder showed up, soundness bug S9 in
-   `docs/CONFORMANCE.md`: every `assume` was a global axiom of its node, so
-   it also constrained checks *before* it in the same block. A division by a
-   nondet value followed by `__VERIFIER_assume(x != 0)` was PROVED. An
-   `assume` now strengthens only the guard of the statements after it and the
-   node's outgoing edges (`exit_reach` in `encode.cpp`). The Lean translator
-   still refuses `llvm.assume`, so no theorem covers it.
-
-In the Lean model, `Stmt::Alloc` with `init = 2` (arbitrary initialised
-bytes, `ConcMem`) was read as uninitialised memory; it is now arbitrary
-bytes drawn from the oracle (`World.allocW`), as the C++ engine models it.
-It was never in a proved function before (only mutable globals use it).
+4. **`undef` outside `freeze` was havocked once.** Fixed: every value
+   computed from `undef` carries a one-bit undef shadow; each non-phi use
+   reads a fresh havoc, a store writes uninitialised bytes, and `br` on it,
+   a `noundef` return or a `noundef` argument fails a UB-POISON check (prop
+   `undef`). The Lean model accepts `undef` only under `freeze` and `store`,
+   so functions with `undef` elsewhere stay `outside`.
+5. **`freeze poison` was reported.** Fixed: translated exactly as
+   `freeze undef` (one `havoc`, no check). The Lean checker reads a literal
+   `poison` under `freeze` or `store` as `undef` (`fopnd?` in `Check.lean`).
+6. **`llvm.memcpy` with the same source and destination was reported.**
+   Fixed: the pir stage compiles with `-fno-builtin-memcpy`, so a C `memcpy`
+   call reaches its library model (C's rule: any overlap is MEM-OVERLAP),
+   while the intrinsic follows the LangRef (exact self-copy allowed). The
+   Lean `cpyBad` and `overlapChk` changed with it (`overlapChk_run`,
+   `cpyBad_eq`).
+7. **`llvm.lifetime.start` on an object whose lifetime ended was
+   reported.** Fixed in the C++ translator with a `revive` statement that
+   makes a stack object live again. The Lean PIR has no such statement, so
+   the Lean translator refuses `llvm.lifetime.start`: no theorem covers
+   such functions. The
+   pir stage compiles at `-O0`, where clang emits no lifetime markers. Open:
+   `llvm.lifetime.end` on a pointer into a non-stack object ends that whole
+   object, where the LangRef only makes its bytes poison.
+8. **A false `llvm.assume` was not reported.** Fixed: it is a
+   FUNC-CONTRACT check of the condition (prop `assume`), then the `assume`.
+   This also exposed soundness bug S9 (`docs/CONFORMANCE.md`): an `assume`
+   used to constrain checks before it in the same block; it now strengthens
+   only the guard of later statements (proved in
+   `proofs/techniques/PrismTechniques/LoopCut.lean`). The Lean translator
+   still refuses `llvm.assume`.
 
 A value difference that is not a soundness issue: after a failed division
-check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model Lean's
+check the C++ interpreter uses Z3's `bvudiv x 0 = ~0`, the Lean model
 `x / 0 = 0`; the value is unobservable because the check already failed.
-
-## WIP: exception landing pads (work/proofs)
-
-Done (fixture `cxx_cleanup_pad`, agree-ext 3, 0 mismatch; check.sh OK):
-* Exporter (`export_lean.cpp`): blocks reached from a live `invoke`'s unwind
-  edge (`padset`) are exported (`L lpad`, `L insv`, `L resume`, `L xv` of a
-  pair; the invoke's call is `L ivk PAD ...`; `L thrown` = sorted
-  `thrown_types()`); a pad that fails to export is still a stub
-  (`PRISM_LEAN_PAD_DEBUG=1` prints why).
-* Lean: `SInst.lpad`/`insv` are `.stuck` (the LLVM run makes no claim past a
-  throw; pad blocks are not in `xLive`, so no proof changes beyond
-  impossible cases). `XTranslate` mirrors `Tr::handlers`/`frames`,
-  `dispatch_type` (cleanup pads; a filter soft-stops; catch clauses are
-  refused), `raise` of an unknown type (`resume`, `Tr::ld` + per-type
-  branches), `eh_pass`/`region` (region calls are not certificate segments),
-  landing-pad head phis (`add_phi`), `upair` for `resume` (UB-POISON).
-Refused (outside): catch clauses / `__cxa_begin_catch`, terminate.lpad,
-phis in pads, region code joining a live block with phis or returning,
-region phis from untranslated blocks, insertvalue operands not from a pad.
-Catch dispatch (fd97e1fae): `Tr::enters`/`catches` mirrored in `dispatchX`
-(catch(...) selector 0x7FFFFFF0, exact type selector `type_id`, pointer /
-fundamental pass-by, -1 cases soft-stop, bound-pointer store at exn+16);
-`derives` (catch through a base) is refused (typeinfo initialisers not
-exported). NOT yet covered, so every catch pad is still refused at
-`__cxa_begin_catch` (`UNENCODED: call`). Handoff for the rest:
-1. `caught_slot()` is `mt.alloc(-1, 72, Static, init 1)`: block -1 is
-   `Tr::prologue`, prepended to PIR block 0 at the end
-   (`translate.cpp` ~2064). Lean has no prologue: add `TS.prologue`, prepend
-   in `translateX`, and let `segOK` of instance 0 / block 0 / seg 0 accept
-   `prologue ++ s1 ++ ...`. Proof work (XRefine/XMemSim): running the
-   prologue (one fresh object nobody names in LLVM) keeps `RelX` and the
-   memory relation; check how `.glob`/`L glob` objects are already
-   related, likely the model to follow.
-2. Mirror `eh_call` for `__cxa_begin_catch` (`translate_ctl.inc` ~520:
-   depth ld, soft_guard d<8 = br eh.ok/eh.unmodelled, count update, slot
-   gep `mt.gep(...,{d},...,1)`, push compare, store), `__cxa_end_catch`
-   (~555; destroy path inlines `type_dtor` destructors via `call`: needs
-   the exporter to emit `type_dtor` and the dtor bodies; first version can
-   refuse when any thrown type has a dtor), `llvm.eh.typeid.for` (constant
-   `type_id`), `__cxa_rethrow`. The exporter must emit these calls as
-   dedicated lines (now `call` to an unknown function).
-   FINDING (blocks step 1 as written): the extended simulation runs LLVM
-   and PIR on the SAME world (`SimX`: `p = .ok σ' t'` with the LLVM `t'`).
-   `L glob` works because the LLVM side has the same `.glob` SInst
-   (`globAlloc`), so both worlds allocate in lockstep. A PIR-only prologue
-   alloc (the caught slot) would shift every later object id and oracle
-   draw, which breaks `RelX` for all later pointers; proving it needs a
-   renaming relation between the worlds (an XMemSim rewrite). Cheaper
-   options: (a) make the LLVM side allocate it too: the exporter emits
-   `L glob %__prism.caught 72 ...` first in the entry block (after the other
-   globs, as `emit_entry_globals` then `caught_slot` order in the
-   prologue) and `.glob` already has its proof; this needs the C++
-   translator to allocate the slot eagerly under the same static condition
-   the exporter uses (e.g. "the export closure calls __cxa_begin_catch /
-   end_catch / rethrow"), since `caught_slot()` is lazy today (first
-   use, var number mid-stream). Changing translate.cpp affects product
-   output: needs sign-off. (b) the renaming relation. Recommend (a).
-   STATUS (option (a) approved): implemented in the working tree, commit
-   held until verified: `pirmem::reaches_caught_slot` (translate_mem.cpp:
-   call/invoke closure reaching __cxa_begin_catch/end_catch/rethrow);
-   `Tr::enter_frame` preassigns `caught_var_` after `oom_`; `run_frame`
-   allocates `caught_` in the prologue after the oom object; exporter emits
-   `L glob %__prism.caught 72 16 3 1 0` after the oom line. Verification
-   queued (prism-run queue stalled by other agents' jobs):
-   `/workspace/eh/tests1.log` (prism_tests -tc=*pir*,*PIR*,*cxx*,*C++*,*xception*),
-   `/workspace/eh/cmp.sh` -> cs-base/ vs cs-new/ (14 catch-heavy
-   conformance files, binaries /workspace/eh/prism-base and prism-new;
-   compare verdicts in out/report.md). Then commit, then Lean mirrors of
-   begin/end_catch etc. (step 2).
-3. Fixture: catch(...) and catch(T&) of `std::__throw_bad_alloc`, then
-   list_contracts.
-DONE (ca55edb53, cbd942f88, c7fbf3a77): eager caught slot committed (14
-catch-heavy cs verdicts identical base/new; pir tests pass except 2 astlint
-cases failing on a missing libclang resource dir, unrelated). Lean `ehCallX`
-mirrors `__cxa_begin_catch`, `__cxa_end_catch` (refused when `L thrdtor`: a
-`__cxa_throw` passes a destructor), `llvm.eh.typeid.for` (exported as
-`L call %r 32 llvm.eh.typeid.for:<TI> 0`), `__cxa_rethrow` (plain call only;
-an `invoke` of it, e.g. inside a cleanup pad, is refused). Region blocks now
-append statements (several eh calls in one LLVM block). Fixture
-`cxx_catch` (catch(...), catch(std::bad_alloc&): agree-ext; rethrow refused:
-invoke + terminate.lpad). check.sh OK, 0 mismatch, testdata/pir agree-ext 87.
-Open: invoke of rethrow / terminate.lpad (`__clang_call_terminate`), thrown
-dtors in end_catch, region code joining a block with phis.
-Next: re-measure list_contracts (7 list_* fns) and the conformance subdirs
-via `prism-qa pir-lean-check`; then catch clauses (`enters`, bind store).
-
-DONE (6fa8a9de6): user-written throw. Exporter emits `L xalloc %d <sz> 64`
-and `L uthrow <TI> <ptr> <pad|-> <normal|->` only for the exact clang
-pattern (call-free stores between `__cxa_allocate_exception` and
-`__cxa_throw(result, @TI, dtor)`; else unsupported, e.g. a throw of a class
-with an out-of-line ctor). Lean trB mirrors Tr::eh_call's throw (header
-object, payload, dispatch; an invoke pushes the pad on hs) and translates
-the invoke's normal `unreachable` block as `check unreachable; stop`.
-LLVM side stays `.stuck` (thr), so no proof change. Fixtures cxx_uthrow
-(g, t2 invoke, t3: agree-ext) and cxx_uthrow_neg (ctor throw refused).
-Re-measure: final binaries in /workspace/eh/final (REV); libc-models per
-file at 700MB in /workspace/eh/lcper.log.
-
-Negative export tests (90e8fea64, test_main "user throw only in clang's
-exact pattern"): thrown pointer not the allocation, non-constant typeinfo.
-Checker speed (3dc99bf64): `xLive` was a layered list fixpoint (cubic) and
-dominated translateX/validB on large sv-comp reducers (apache-get-tag
-p+lhb: 150 s); now a linear BFS in the same order (proofs only use
-`xLiveClosed`, which checks it): 0.16 s; all 174 sv-comp pairs in 22 s.
-libc-models per file at 700MB (/workspace/eh/lcper.log): killed
-priority_queue_contracts (1006MB), sstream_contracts (939MB),
-unordered_map_contracts (983MB): skipped in the final measure
-(/workspace/eh/lcskip). Per-file exit 2 (ctype, expected, ratio, stdio, ...)
-is the per-file copy losing `harness.h`, not a product issue.
-Final measure: /workspace/eh/final5.sh -> /workspace/eh/fin_<subdir>.log.
-
-Final measure (binaries /workspace/eh/final, REV 3dc99bf64), all mismatch=0:
-concurrency agree=0 ext=0 reject=6 outside=37; esbmc-cpp 8/20/86/72 (28
-proved); libc-models minus 3 skipped 4/87/3/146 (91 proved); sv-comp
-32/180/0/362 (212 proved); prism killed at 1951MB (budget 1500): per-subdir
-sweep at 1000MB in /workspace/eh/prper.log: every subdir fine (mismatch=0)
-except prism/cxx (killed 1300MB); per-file sweep in /workspace/eh/cxxper.log.
-
-Memory root cause (3c5fc60fa): the ~1GB in pir-lean-check was the pir
-stage's model checking (Z3), not export or Lean (checker 15MB, export
-<80MB). pir-lean-check only needs the translation: prism-qa now sets
-PRISM_PIR_EXPORT_ONLY=1 (with PRISM_PIR_LEAN_EXPORT), and stage.cpp records
-each function NOTRUN after exporting. libc-models priority_queue / sstream /
-unordered_map: 1GB -> 21/77/60MB, same verdicts; prism/cxx culprits were the
-same containers (cxx_priority_queue/sstream/unordered_map/unordered_set_true).
-Final rerun without skips: /workspace/eh/fin_<subdir>.log (old in fin_old/).
-
-Final measure, no skips (REV 3c5fc60fa, 1500MB), all mismatch=0:
-concurrency 0/0/6/37; esbmc-cpp 8/20/86/72 (28 proved); libc-models
-6/246/4/186 (252 proved; was 4/87/3/146 with skips and checking on);
-prism 203/230/69/227 (433 proved; was killed); sv-comp 32/180/0/362 (212).
-Peak RSS 20-173MB per subdir. libc-models 240 -> 442 is not memory: harness.h
-#includes model sources by repo-relative path, so the out-of-tree copies
-(lcper, lcskip) lost those units (ctype in tree: 28 agree-ext; copied: 0).
-
-Outside tally (5 subdirs, before d/terminate): call @_ZSt9terminatev 123
-(all the `__clang_call_terminate` helper), pointer operand @global 96,
-inlined fn returning a pointer with stack objects 48, type {ptr,iN} 40,
-indirect call 25, gep operand / constant-bound gep 19+19, float/double 30.
-std::terminate done: exporter `L terminate` (call right before
-`unreachable`, not invoke); Lean: thr block (LLVM stuck), begin/end_catch
-before it via ehCallX, then `check 1 terminate CXX-TERMINATE; stop`.
-Fixtures cxx_terminate_call, cxx_terminate_neg (inlined call before
-terminate refused); doctest "std::terminate only right before unreachable".
-Re-measure (b49996efa): outside 884 -> 761, all mismatch=0; the 123
-`__clang_call_terminate` helpers now agree-reject (pointer parameter, Law 6,
-same as C++), so the proved count is unchanged (28/252/433/212; user
-std::terminate calls rarely occur in these trees). concurrency 0/0/6/37,
-esbmc-cpp 8/20/101/57, libc-models 6/246/35/155, prism 203/230/146/150,
-sv-comp 32/180/0/362.
-Next candidate: pointer operand @global (96; .str, typeinfo, vtables).
-
-### Globals named by inlined callees (bca67906e, 676b3bead)
-All 96 "pointer operand @global" outsides were globals named only inside an
-inlined callee (MemTr::global allocated them lazily, mid-numbering, so the
-export refused them). Now `pirmem::entry_globals` also collects the globals
-of the transitively callable functions (DFS, call order), so C++ allocates
-them in the prologue like the function's own; the exporter writes them as
-`L glob` lines and passes every entry global to every inlined callee as extra
-`@name 64` parameters (after its own, before `__prism.oom`), each call passing
-`%@name` — the same rewrite as the oom flag, no Lean change. thread_local
-globals stay outside. Fixture `callee_global`, doctest "lean export passes
-globals to inlined callees, not thread_local ones". Re-measure (final/,
-676b3bead, mismatch 0 everywhere): concurrency 0/0/6/37, esbmc-cpp
-8/21/101/56, libc-models 6/259/35/142, prism 203/235/146/145, sv-comp
-32/180/0/362 (agree/ext/reject/outside): outside 761 -> 742, proved +19; the
-other callee-global functions now stop at a later fragment limit. Left:
-`__const.*` globals with an `undef` initialiser (flat_init fails, still
-lazy). Next, `{ptr,iN}`/`{i64,i64}` scalar pairs (49): C++ Frame::pairs
-(two variables per register, insertvalue/extractvalue, pair-returning
-inlined calls, pair load/store, upair undef tracking) — needs a two-value
-return in XLlvm/XFunc and its proofs, not an exporter-only rewrite.
-
-### Inlined callees returning a pointer (98dadedab)
-
-- **Semantics (XLlvm `sEnd`/`lEnd`):** a `ret` of a pointer from *any* frame with `retPtr` (the analysed function or an inlined callee) now runs the stack-escape check against that frame's own `escNames` before `retFree`. Previously an inlined callee was outside.
-- **Translator (XTranslate):** `escStmts` no longer requires `retTo = none`. `freeStmts` frees the callee's objects after the check.
-- **Proofs:**
-  - XRun `step_sim`'s `ret (some o)` cons case is proved: `escChk_run` plus `escHit_ok`, then the new `freeW_agree` and `freeAll_ok`, then the continuation.
-  - XLazy gets `retFree_lift'`.
-- **Fixtures:**
-  - `callee_retptr` gives agree-ext=3 and agree-reject=1.
-  - `callee_retptr_neg` drops the callee's escape check, giving MISMATCH.
-  - `inlined_alloca` moved from outside=1 to agree-ext=5.
-- **Re-measure (agree/ext/reject/outside):**
-
-  | Subdir | Result |
-  |---|---|
-  | concurrency | 0/0/6/37 |
-  | esbmc-cpp | 8/21/101/56 |
-  | libc-models | 6/303/35/98 |
-  | prism | 203/252/146/128 |
-  | sv-comp | 32/180/0/362 |
-
-  Outside went from 742 to 681, with 0 mismatches. check.sh is green and pir tests pass at 1735.
-- **Next:** `{ptr,iN}` scalar pairs, per the design: `CallI.pw`, a pair `ret`, pend packing, the `contOK`/`EntryX` pair variant, and exporter lines.
-
-## Scalar pairs ({ptr|iN, ptr|iN}) of inlined callees
-
-- Model: `packP v0 v1 = 2^v0*(2*v1+1)` (lossless, `unpk_packP`); `setRet`/`lSetRet` unpack; `XFunc.pret`, `CallI.pw`.
-- Translator/validator/proofs (aeda92a89): pair `ret` escape-checks each pointer field, ends the frame, jumps to the continuation whose two phis take the fields in order.
-- Syntax (30eca81b3): `L ret 0` + `L pret W0 W1 P0 P1`; call width `pW0:W1`; `L pload %x W0 W1 SIZE OFF1 P A0 A1` = load `.0`, gep `.2`, load `.1` (translate.cpp now numbers the field-1 address between the fields); `L dead %x W0 W1 64` for a dead pair load; `L xv` of a pair load/call/invoke.
-- The analysed function's own pair return: each pointer field's escape check, then `ret` without a value (PIR's `ret` has one value; `pairOut` makes the LLVM side return none at the top frame, so `pir_faithful_ret_x` reads `ret none`); `ret_width` 0. Fixtures top_pair (agree-ext x2), top_pair_neg_esc (escape check dropped: mismatch). A pair constant returned stays UNENCODED.
-- Re-measure at 30eca81b3 (five conformance suites): agree=249 agree-ext=785 agree-reject=288 outside=652 (was 681) mismatch=0.
-- Fixtures: callee_pair (agree-ext), callee_pair_neg_phi (phis swapped), callee_pair_neg_esc (escape check dropped), both mismatch.
-
-## Outside tally at 36dfbca60 and abort()
-
-- Tally (all five suites, 652 outside): `call @abort` 341, getelementptr cases ~70 (`pointer operand @global` 37, constant-bound index 39, `operand ptr getelementptr` 19), `call @<indirect>` 25, `__cxa_allocate_exception` 17, `pthread_create` 16, `__throw_logic_error` 14, `pthread_mutex_lock` 12, `printf` 12, float/double ~42, raw aggregate load 14.
-- abort(): translate.cpp's check(1, "abort", FUNC-CONTRACT) + noreturn, exactly a noreturn failure call (`afail_kind`), unless the analysed function reaches `__prism_alloc_failed` (then the check reads the oom flag: still outside). Fixtures abort_call (agree-ext x2), abort_call_neg (check dropped: mismatch).
 
 ## What remains
 
-* **Library calls.** Most `testdata` functions outside the fragment call a
-  function PRISM does not inline or model in the fragment (1 421 of 1 458
-  after the heap): the C++ exception runtime (`__cxa_*`), `printf` and the
-  rest of the format family (modelled in the translator, `libc_format.cpp`),
-  threads, unmodelled POSIX calls (`system`, `fork`, `mmap`, … — the C++
-  translator refuses them too), `__assert_fail`, `exit`, `abort`, traps, the
-  `__prism.folded` / `__prism.poison` markers; also `llvm.assume`
-  (finding 8) and the intrinsics `translate.cpp` refuses (`fshl`/`fshr`, …:
-  both translators refuse them). The libc models written in C are inlined
-  and in the fragment as far as their code is (`malloc`, `calloc`, `free`,
-  `new`, `delete`, `strlen`, `atoi`, …).
-* **More memory.** In the proved fragment: stack objects of constant size,
-  integer and pointer loads and stores, `getelementptr`,
-  `llvm.memcpy`/`memmove`/`memset`, `llvm.lifetime.*`, globals the analysed
-  function names, pointer phis/selects/comparisons/returns, harness-bound
-  pointer parameters (`byval`, `sret`, constant-size contracts), and the
-  heap of the libc models through `__prism_alloc`/`__prism_free`, and
-  `__prism_obj_size` (`hobjszCore_run`; the `hobjsz` case of `sinstX_sim`).
-  `__prism_memcpy` is the existing `memcpy` statement. The stdio / FILE
-  primitives (D136, `XHavoc.lean`, `XHeap.lean`) are proved: `L hhavoc`
-  (`__prism_havoc_bytes`, `havoc_run`), `L hread` (`__prism_read_range`,
-  `hread_run`), `L vcheck` (`__prism_check` with a literal class,
-  `pred_eq`), `L hmemset` (`__prism_memset`, i32 byte truncated after the
-  checks, `hmemset_run`), `L hfresh` (`__prism_fresh_cstr`, drawn length
-  below 4096, `freshCore_run`), and `L hfree p 8` (FILE release, the single
-  `free-invalid` kind check of `MemTr::dealloc`, `freeChkF_run`); fixtures
-  `stdio_file` (fopen/fgets/fclose/getenv) and `stdio_prims` are `agree-ext`.
-  Not yet: `abort()` (it reads the allocation-failed flag and
-  ends the block), `exit`, contracts whose size is another parameter (the
-  harness assumes a range on it: a theorem conditional on that assumption),
-  `ptrtoint`/`inttoptr`, globals whose initialiser holds pointers, globals
-  named only in an inlined callee or through a constant expression,
-  variable-size `alloca`, aggregate loads (raw byte copies with per-byte
-  shadows), `llvm.stacksave`/`stackrestore`, a by-value aggregate parameter
-  of an inlined callee (copied). The memory model is PRISM's (distinct
-  objects never compare equal, object ids are not addresses): the theorems
-  say PIR agrees with LLVM in that model.
-* **Nondeterminism beyond `freeze`.** `undef` elsewhere (finding 4, fixed
-  in the C++ translator by per-use fresh values) needs set-valued registers
-  in the Lean model; the oracle semantics covers exactly the places where
-  LLVM makes one arbitrary choice.
+* **Constructs outside the fragment.** Library calls the fragment does not
+  inline or model (the format family, threads, unmodelled POSIX calls,
+  `exit`), indirect calls, floating point, `inttoptr`, variable-size
+  `alloca`, aggregate loads, globals whose initialiser holds pointers or
+  `undef`, constant-expression `getelementptr` operands, a contract whose
+  size is another parameter, catch through a base class,
+  `llvm.stacksave`/`stackrestore`, the floating-point
+  intrinsics, and `__prism.folded` / `__prism.poison`.
+* **The C++ fixes not yet modelled in Lean**: `icmp samesign` (finding 2),
+  `revive` (finding 7), `undef` outside `freeze`/`store` (finding 4),
+  `llvm.assume` (finding 8), poison phi inputs (finding 1).
 * **Certificates, not a translator theorem.** The extended theorems hold for
-  every function whose certificate `validB` accepts, which the checker
-  evaluates at each run; there is no theorem that `translateX` always
-  produces a valid certificate. Such a theorem is a proof about the stateful
-  mirror itself (`enterFrame`/`runFrame`: `for` loops in `StateT` over
-  `Except`, arrays of blocks and instances updated in place, variables
-  numbered as they are pushed), not about the translation, and was not
-  attempted here; measured instead: every function whose Lean and C++
-  translations agree also passed `validB` (0 certificate failures on
-  `testdata/pir` and `testdata`). `validB` was shrunk where the proof never
-  used a check: the lengths of the per-block first-temporary and
-  child-instance lists (`segOK` already fails when an entry it reads is
-  missing).
+  every function whose certificate `validB` accepts, evaluated at each
+  check; there is no theorem that `translateX` always produces a valid
+  certificate.
 * **The PIR semantics used here is the C++ CFG form.** It is linked to
   `PrismSem` through `evalBin`/`evalPred`/`ubBin` (`checks_eq_ubBin`), not
   through a proof that the CFG and `PrismSem.Stmt` programs are equivalent.
-* **The C++ encoder.** Relating `pir_vcs` (Z3) to this PIR semantics is the
-  encoder row of 8.2 (proofs/semantics proves a model of it).
-* **Modelling what the C++ fixes added**: `icmp samesign` (finding 2) and the
-  `revive` statement of `llvm.lifetime.start` (finding 7) in the Lean model,
-  so those functions come back into the fragment; `undef` outside
-  `freeze`/`store` (finding 4); `llvm.assume` (finding 8).
-
-### Catch code joining phis (1d6447234)
-- Exporter keeps phi incomings from landing-pad blocks (`live || padset`).
-- Lean: a live phi incoming from a translated region block uses its PIR tail;
-  after the phi loop each region block's `IInfo.blks` entry is set to `[tail]`
-  so `validB` (segOK s=0, `I.tails`) recomputes the same phis; no proof change.
-  An incoming from an untranslated block (pad no throw reached) is refused.
-- Fixture fixtures/cxx_catch_phi (source /workspace/eh/catch_phi.cpp): agree-ext=4.
-- Next: dtors in `__cxa_end_catch` (C++ type_dtor loop; exporter must emit the
-  dtor map), then rethrow invoke / terminate.lpad (`__clang_call_terminate`).
-- Re-measure queued: /workspace/eh/rm_{concurrency,esbmc-cpp,libc-models,prism,sv-comp}.log;
-  list_contracts still queued: /workspace/eh/lc.log.
-
-### Destructors, rethrow invoke, terminate pad (a711b71d4, 36662af06)
-- Exporter: `L thrdtor T D ...` (Tr::type_dtor, first `__cxa_throw` per type,
-  entries with a destructor; bare `L thrdtor` = not exported -> Lean refuses
-  `__cxa_end_catch`). When the module has `__cxa_end_catch`, the destructors
-  are added as `L fn` callees. `__clang_call_terminate` in pads -> `L call`.
-- Lean: `ehCallX` end_catch leaves `eh.destroy` in `pendD`; `runFrame.trB` runs
-  the type_dtor loop (type-id compare, inline the destructor via `callAt` on a
-  temp env entry `__prism.eh.obj` = payload, then `free E`, `jmp eh.done`).
-  A destructor that fails is refused (C++ snap/restore does not roll back
-  vars, so a soft stop is not mirrored). The generic inlined call is now the
-  closure `callAt`.
-- `invoke` of an eh call pushes its pad on `hs` around the call (and the dtor
-  loop); `__clang_call_terminate`: `check 1 terminate CXX-THROW-NOEXCEPT`, stop.
-- Fixtures: cxx_catch_dtor (agree-ext 4), cxx_rethrow, cxx_terminate; cxx_catch
-  now agree-ext 4 (f_rethrow accepted).
-- list_contracts (lc2.log): outside=8, all "inlined function returning a
-  pointer with stack objects" (not EH) + __clang_call_terminate (calls std::terminate).
-- Known: user `throw` (`__cxa_allocate_exception`/`__cxa_throw`) is still
-  outside; that is the next big EH gap.
+* **The C++ encoder.** Relating the Z3 formulas of `encode.cpp` to this PIR
+  semantics is not done; `proofs/semantics` proves a model of the encoder
+  ([PROOFS_SEMANTICS.md](PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder)).
+* **Not part of a normal run.** `pir_lean_check` runs from `prism-qa`,
+  `prism_tests` and `proofs/refinement/check.sh`; a `prism PATH` run does
+  not export or check its translations.

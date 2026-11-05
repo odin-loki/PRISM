@@ -10,7 +10,7 @@ A non-null `s` follows `strtol`. The model calls `strlen`. When `end` is non-nul
 
 The value is unknown. This is not a conversion proof. Neither function returns a parsed numeral.
 
-`strtoll` returns `__VERIFIER_nondet_longlong`. That name is a nondet intrinsic: the PIR translator treats an undefined `__VERIFIER_nondet_*` call as a havoc of the result width, and the bmc encoder gives `__VERIFIER_nondet_longlong` the width of `long long`. `prism_model.h` does not declare it, so `stdlib.cpp` declares it with C linkage. `strtoull` returns `__VERIFIER_nondet_ulonglong`, declared the same way. That result is unsigned. `strtoull` does not call `strtol` or `strtoll`, and it does not cast either of them, so a negative value does not become the unsigned result.
+`strtoll` returns `__VERIFIER_nondet_longlong`. That name is a nondet intrinsic: the PIR translator treats an undefined `__VERIFIER_nondet_*` call as a havoc of the result width. `prism_model.h` does not declare it, so `stdlib.cpp` declares it with C linkage. `strtoull` returns `__VERIFIER_nondet_ulonglong`, declared the same way. That result is unsigned. `strtoull` does not call `strtol` or `strtoll`, and it does not cast either of them, so a negative value does not become the unsigned result.
 
 The comment above the two functions says they are not PROVED and not CLEAN. This is a partial model of the null check and of an end pointer inside the string. It is not a proof, and it is not a fuzzer `CLEAN` result.
 

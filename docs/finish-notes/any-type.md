@@ -57,11 +57,6 @@ lists `tests/cpp/test_cxx_any.cpp`. The trace cpp is not in that list.
 `tests/cpp/test_qa_conformance.cpp` was not edited. No other model file
 was edited.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited. A
-function body that contains `std::any` is still `is not an any model`. A
-function body that contains `typeid(` is still `C++ typeid unencoded` /
-`is not an RTTI model`. Those exits stay in front of this header.
-
 ## Tests
 
 `tests/cpp/test_cxx_any.cpp` reads the header. `type()` is

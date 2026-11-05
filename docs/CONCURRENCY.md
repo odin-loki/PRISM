@@ -1,136 +1,176 @@
 # Concurrency: the `conc` stage
 
-Roadmap 2.6, "Threads and atomics". This is a separate stage that checks
-programs that create threads. It uses lazy sequentialisation, the Lazy-CSeq
-method, which bounds the number of context switches. Atomics are sequentially
-consistent (SC) unless a scalar atomic names a weaker order, which selects
-the C11 view model (section 6). A
-data race counts as a property violation.
+The `conc` stage checks programs that create threads. It uses lazy
+sequentialisation (the Lazy-CSeq method), which bounds the number of context
+switches. Every thread is checked for data races, deadlocks, bad unlocks,
+memory errors and every PIR property. The memory model is sequential
+consistency (SC) by default. An atomic with a weaker C11 order selects the
+C11 view model. `--memory-model tso` selects x86-TSO instead.
+
+The stage **never** reports `PROVED`. A clean result is `BOUNDED`: a
+context-switch bound is not a proof (Law 2).
 
 | | |
 |---|---|
-| Stage | `conc`, placed after `pir` in `STAGE_ORDER` (both engines) |
-| Engine | C++ only: `src/prism/conc/`, `include/prism/conc.hpp`. The Python engine is frozen (roadmap D8) and records one `NOTRUN` row: "C++ engine only (Python engine frozen as oracle, roadmap D8)" |
-| Verdict audit | origin `solver` in `proofs/Prism/Verdict.lean`, `src/prism/verdict/verdict.cpp`. The stage **never** emits `PROVED*` |
-| Executes scanned code | no. It runs clang/opt to compile, then Z3 in-process (Law 9: not in `EXEC_STAGES`) |
-| Tests | `tests/conc/*.c`, `tests/cpp/test_conc.cpp` (doctest), `testdata/conformance/concurrency/` (scored by `prism-qa conformance`) |
+| Stage | `conc`, after `pir` in `STAGE_ORDER` (`include/prism/pipeline.hpp`) |
+| Code | `src/prism/conc/stage.cpp` (stage, lowering), `extract.cpp` (front end), `lazy.cpp` (encoding and solving); API in `include/prism/conc.hpp` |
+| C++ thread models | `src/prism/pir/models/cxx/bits/prism_conc.h` |
+| Verdict origin | `solver` (`src/prism/verdict/verdict.cpp`, `proofs/Prism/Verdict.lean`) |
+| Executes scanned code | no. It runs clang and opt to compile, then Z3 in process. It is not in `EXEC_STAGES` (Law 9) |
+| Tests | `tests/cpp/test_conc.cpp` (doctest) on the corpus `tests/conc/`; `testdata/conformance/concurrency/` (scored by `prism-qa conformance`) |
+
+Each file in `tests/conc/` says in its first comment what the stage should
+report. `test_conc.cpp` runs only some of them; the rest are a corpus for
+manual runs with `prism --stage conc FILE`.
 
 ## What it reports
 
 A **harness** is `main` when `main` creates threads, directly or through
 callees. Otherwise it is every function that creates threads and that no
-other function calls. For each harness the stage reports:
+other function calls (`conc::harnesses`). For each harness:
 
 | status | when |
 |---|---|
-| `FAILED` | A violation is reachable within the bound. There is one row per distinct violation, up to 8. `counterexample` holds the schedule and `evidence` holds the interleaving, one visible operation per line with the values read and written |
+| `FAILED` | A violation is reachable within the bound. One row per distinct violation, up to `max_findings`. `counterexample` holds the schedule; `evidence` holds the interleaving, one visible operation per line with the values read and written |
 | `BOUNDED` | No violation within `K` rounds: "no data race, deadlock, assertion failure or UB within K round(s) of N thread(s) (loop unwind U); a context-switch bound is not a proof" |
-| `NEEDS-HARNESS` | The program uses something the stage does not model. The reason is an `UNENCODED: ...` string, listed below |
-| `UNKNOWN` | Z3 returned unknown or timed out |
-| `NOTRUN` | Z3 was not built, or clang/opt were not found (Law 1, Law 7) |
+| `NEEDS-HARNESS` | The program uses something the stage does not model. The message is an `UNENCODED: ...` reason |
+| `UNKNOWN` | Z3 returned unknown or timed out, or an unrolled thread exceeded `max_nodes` |
+| `NOTRUN` | Z3 was not built, or clang, opt (or clang++ for C++ units) was not found (Laws 1 and 7) |
+| `ERROR` | The clang front end failed on the unit |
 
-A function that creates no threads gets no finding. A unit whose source does
-not mention `pthread_create`, `thrd_create`, `std::thread` or `std::jthread`
-is not even lowered.
+A function that creates no threads gets no row. A unit whose source does not
+mention `pthread_create`, `thrd_create`, `std::thread` or `std::jthread` is
+not even lowered.
 
-The following are checked in every thread:
+`extra` on each row names the bound: `rounds`, `unwind`, `threads`,
+`context_switch_bound`, `method` (the memory model), `unwind_cut`,
+`heap_slots`, `max_alloc`, and, when they apply, `c11_locations` and
+`loop_thread_slots`.
 
-- **Data race** (`CONC-DATA-RACE`, CWE-362). Thread *t* accesses shared
-  variable *v*, and the visible operation just before it, in the global
-  order, was an access to *v* by another thread. At least one of the two
-  accesses must be a write, and they must not both be atomic. Locks,
-  unlocks, creates and joins are visible operations themselves. Two accesses
-  ordered by one of these operations are therefore never adjacent, and are
-  not a race. Two conflicting accesses that nothing orders can always be
-  scheduled back to back, so this "adjacent across a context switch" check
-  finds them, given enough rounds.
-- **Every PIR property**. This covers assertions, `reach_error`, `abort`,
-  and the signed-overflow, division, shift and poison checks. They come from
-  `pir::translate` unchanged (`FUNC-CONTRACT`, `INT-SIGNED-OVF`, ...).
-- **Deadlock** (`CONC-DEADLOCK`, CWE-833). At the end of a round, every live
-  thread is blocked. A thread is blocked when it waits at a
-  `pthread_mutex_lock` whose mutex is held (by anyone, itself included), or
-  at a join of an unfinished thread. The program must not have exited.
+### Properties
+
+Checked in every thread:
+
+- **Data race** (`CONC-DATA-RACE`, CWE-362). Under SC and TSO: thread *t*
+  accesses a shared location, and the visible operation just before it in
+  the global order was a conflicting access to the same location by another
+  thread. At least one access is a write, and they are not both atomic.
+  Locks, unlocks, creates and joins are visible operations themselves, so two
+  accesses they order are never adjacent. Two conflicting accesses that
+  nothing orders can always be scheduled back to back, so this check finds
+  them, given enough rounds. Under the C11 view model the race check is
+  happens-before instead ("C11 orders" below).
+- **Every PIR property**: assertions, `reach_error`, `abort`, signed
+  overflow, division, shift and poison checks, and uncaught exceptions. They
+  come from `pir::translate` unchanged (`FUNC-CONTRACT`, `INT-SIGNED-OVF`,
+  `CXX-UNCAUGHT`, ...).
+- **Deadlock** (`CONC-DEADLOCK`, CWE-833). At the end of a round every live
+  thread is blocked, and the program has not exited. A thread is blocked at
+  a lock whose mutex is held (by anyone, itself included), at a join of an
+  unfinished thread, or at a condition-variable wait with no signal since it
+  started.
 - **Unlock of a mutex the thread does not hold** (`LOCK-DOUBLE-UNLOCK`).
+- **Memory errors in the bounded memory**: `MEM-OOB-READ`, `MEM-OOB-WRITE`,
+  `MEM-USE-AFTER-FREE`, `MEM-DOUBLE-FREE`, `MEM-INVALID-FREE` (including
+  `free` of a stack object).
 
-Options (`conc::Options`):
+### Options
 
-| option | default | meaning |
-|---|---|---|
-| `rounds` | 2 | `K` round-robin rounds |
-| `unwind` | `--unwind` | loop bound inside threads |
-| `max_threads` | 4 | the most thread creation sites allowed |
-| `timeout_s` | `--timeout` | timeout per solver query |
-| `max_findings` | 8 | the most distinct violations reported per harness |
+`conc::Options`; the stage fills them from `Config` (`options_of` in
+`stage.cpp`).
+
+| option | default | set by | meaning |
+|---|---|---|---|
+| `rounds` | 2 | — | `K` round-robin rounds |
+| `unwind` | 4 | `--unwind` | loop bound inside each thread; also the thread slots per looped creation site |
+| `max_threads` | 4 | — | most thread creation sites allowed |
+| `timeout_s` | 30 | `--timeout` | per solver query |
+| `max_findings` | 8 | — | most distinct violations per harness |
+| `max_nodes` | 20000 | — | unrolled nodes per thread (past it: `UNKNOWN`) |
+| `tso` | false | `--memory-model tso` | x86-TSO instead of SC |
+| `tso_buffer` | 2 | `--store-buffer k` | TSO store-buffer entries per thread |
+| `max_alloc` | 4096 | — | largest symbolic `malloc` size explored, in bytes |
 
 With `N` threads (the harness is `T0`), a run has `K·N` slots plus a final
-slot for `T0`. That allows up to `K·N` context switches.
+slot for `T0`.
 
 ## Modelled API
 
 | construct | model |
 |---|---|
-| `pthread_create(&h, NULL, f, arg)`, `thrd_create(&h, f, arg)` | Marks thread `h` active. `f` must be a defined function, and `arg` must be unused by `f`. Each creation site has a static thread index, and handles in local or global `pthread_t` variables are resolved to that index |
-| `pthread_join(h, NULL)`, `thrd_join(h, NULL)` | Blocks until thread `h` has finished (`assume`). A non-null result pointer is `NEEDS-HARNESS` |
-| `pthread_mutex_lock/unlock`, `mtx_lock/unlock` on a global mutex | Lock is `assume(owner == 0); owner = self`. Unlock checks `owner == self`, then sets `owner = 0` |
+| `pthread_create(&h, NULL, f, arg)`, `thrd_create(&h, f, arg)` | Marks a thread slot active. `f` must be a defined function. Each creation site has a static thread index. `arg` may be null or a pointer into the bounded memory; the thread entry reads it as its argument |
+| creation in a loop (handles in an array) | One thread slot per unrolled execution, up to `unwind` slots per site |
+| creation by a created thread | Encoded when each such site runs in one thread at most once and creates a slot above its creator's |
+| `pthread_join(h, NULL)`, `thrd_join(h, NULL)` | Blocks until thread `h` has finished. A non-null result pointer is `NEEDS-HARNESS` |
+| `pthread_mutex_lock/unlock`, `mtx_lock/unlock` | Lock is `assume(owner == 0); owner = self`. Unlock checks `owner == self`, then sets `owner = 0`. The mutex may be a global or live in the bounded memory (struct field, array element, heap) |
 | `pthread_mutex_trylock`, `mtx_trylock` | Returns 0 and takes the mutex if it is free. Otherwise returns `EBUSY` (16) or `thrd_busy` (1) |
-| `pthread_mutex_init(&m, NULL)`, `mtx_init` | `owner = 0` |
-| `pthread_cond_wait(&c, &m)` | Modelled as unlock `m`, then a context-switch point, then lock `m`. POSIX allows spurious wake-ups, so this allows exactly the behaviours POSIX allows (`condvar_false.c` fails because of it). `signal`, `broadcast`, `init` and `destroy` have no effect |
+| `pthread_mutex_init(&m, NULL)`, `mtx_init` | `owner = 0`. Attributes are `NEEDS-HARNESS` |
+| `pthread_cond_wait(&c, &m)`, `cnd_wait` | Unlock `m` and join the wait set; block until a signal or broadcast on `c` after the release; lock `m` |
+| `pthread_cond_signal/broadcast`, `cnd_signal/broadcast` | Wake every waiter (POSIX allows the extra wake-ups) |
+| `pthread_cond_init(&c, NULL)`, `cnd_init`, `*_destroy`, `sched_yield`, `thrd_yield` | No effect: every schedule is explored anyway |
 | `pthread_exit`, `thrd_exit` in a thread entry | The thread returns |
 | `exit`, `abort`, a failed assertion, `main` returning | The whole program stops, and no thread runs after it |
-| scalar integer globals (`i1`..`i64`) | Shared state. Plain loads and stores are visible operations |
-| `atomic_*` / `__atomic_*` / `__sync_*` with `seq_cst`: `load atomic`, `store atomic`, `atomicrmw` (`xchg add sub and or xor nand max min umax umin`), `cmpxchg` (strong; weak may also fail spuriously), `fence seq_cst` | Each is one atomic visible step. A `cmpxchg` or `atomicrmw` reads and writes in the same step |
-| `sched_yield`, `thrd_yield` | No effect. Every schedule is explored anyway |
-| `__VERIFIER_nondet_*`, `__VERIFIER_assume` | Symbolic value, and assumption |
-| `__VERIFIER_atomic_begin/end`, calls to defined `__VERIFIER_atomic_*` functions (SV-COMP) | An atomic section. It is a pseudo-mutex, and while one thread holds it no other thread is runnable |
+| scalar integer globals (`i1`..`i64`, or a struct of one, such as `std::atomic<int>`) | Shared variables. Plain loads and stores are visible operations |
+| arrays, structs, heap, escaping locals, address-taken or mixed-width globals | The bounded memory ("Memory" below) |
+| `load atomic`, `store atomic`, `atomicrmw` (`xchg add sub and or xor nand max min umax umin`), `cmpxchg` (a weak one may also fail spuriously), `fence` | One atomic visible step. An RMW or `cmpxchg` reads and writes in the same step. The order selects the memory model ("C11 orders") |
+| `malloc`, `calloc`, `operator new`, `free`, `operator delete` | Heap slots in the bounded memory, one per unrolled execution of the allocation site |
+| `__VERIFIER_nondet_*`, `__VERIFIER_assume` | A symbolic value, and an assumption |
+| `__VERIFIER_atomic_begin/end`, calls to defined `__VERIFIER_atomic_*` functions (SV-COMP) | An atomic section: a pseudo-mutex, and while one thread holds it no other thread is runnable |
 
-Not modelled. Each of these gives `NEEDS-HARNESS` with an `UNENCODED:`
-reason:
+**C++ threads.** The stage lowers C++ units with
+`-D__PRISM_CONC_THREADS=1 -fignore-exceptions` against the PRISM models
+(`bits/prism_conc.h`). Then opt runs `sroa,mem2reg` (plus `sccp` when the
+source names a weaker memory order). `std::thread`, `std::mutex`,
+`lock_guard`, `unique_lock`, `condition_variable` and `std::atomic` then
+reach the encoder as the pthread and `__atomic` calls above. `joinable()` is
+always true. libstdc++'s own `std::thread` (a virtual `_State` object) and
+OpenMP regions are `NEEDS-HARNESS`. The pir stage's in-model scheduler
+(`bits/prism_sched.h`) is a separate, weaker model; it does not use
+`prism_conc.h`.
 
-- `syncscope`. (Weaker orders on scalar globals are encoded by the C11 view
-  model, section 6. A weaker order on an atomic in the bounded memory
-  (arrays, structs, heap, address-taken globals) is still encoded as seq_cst
-  and recorded in `Program::weak_order`; a clean result there is withheld.)
-- Shared data that is not a scalar integer global: heap, arrays, structs,
-  pointers, and mutexes that are not globals. These wait for the PIR memory
-  model (roadmap 2.5). See "Memory model hook" below.
-- A thread argument that the thread entry uses, and a join result pointer.
-- A creation site inside a loop, or in a function called more than once, or
-  reached by several threads (dynamic thread sets). Threads created by
-  threads are encoded when each such site runs in one thread at most once
-  (nested_race.c).
-- libstdc++'s own `std::thread` / `std::jthread` (a virtual `_State` object),
-  and OpenMP. The stage lowers C++ units against the PRISM models with
-  `-D__PRISM_CONC_THREADS=1 -fignore-exceptions` (models/cxx/bits/prism_conc.h),
-  then runs `sroa,mem2reg`, so `std::thread`, `std::mutex`, `lock_guard`,
-  `unique_lock`, `condition_variable` and seq_cst `std::atomic` reach the
-  encoder as the pthread / `__atomic` calls above. A callable with captures or
-  arguments is a thread argument (UNENCODED); `joinable()` is always true.
-  This is the complete-within-K-rounds path for C++ threads (every thread has
-  its own saved pc, so a resumed thread can itself be preempted again). The
-  pir stage's in-model scheduler (bits/prism_sched.h) is still an
-  under-approximation.
-- Condition variables: a wait is "unlock and join the wait set; block until a
-  signal or broadcast on that variable after the release; lock". Every
-  signal wakes every waiter (POSIX allows the extra wake-ups), so a wait
-  that never returns, a lost wake-up, is CONC-DEADLOCK when every live thread
-  is blocked (lost_wakeup.c; condvar_ok.c is BOUNDED). Spurious wake-ups that
-  could rescue such a run are not counted.
-- Everything `pir::translate` does not encode, such as floating point, calls
-  to unknown externals, and memory. Its own `UNENCODED:` reason is passed
-  through, with the thread named.
+### Not modelled
+
+Each of these gives `NEEDS-HARNESS` with an `UNENCODED:` reason:
+
+- atomics with a `syncscope`;
+- a thread argument that is not null and not into the bounded memory (stack
+  scalars, scalar globals), and a join result pointer;
+- more creation sites than `max_threads`; a non-looped creation site run more
+  than once, or reached by several threads; a looped site run more than
+  `unwind` times;
+- mutex or condition-variable attributes;
+- external globals and aggregates, `thread_local` aggregates, and
+  initialisers that hold pointers;
+- pointers that leave the bounded memory (stored into it from outside,
+  passed to unknown functions);
+- floating point in a threaded program, irreducible control flow, and an
+  exception that escapes a thread;
+- `--memory-model tso` together with a C11 weaker order (see "Weak memory");
+- everything `pir::translate` does not encode, such as calls to unknown
+  externals (for example `pthread_rwlock_*`). Its own `UNENCODED:` reason is
+  passed through.
+
+Timed waits, `try_lock_for`, recursive or timed mutexes, `jthread` stop
+tokens and atomic wait/notify are not in `prism_conc.h`; such units fail to
+compile or are `UNENCODED`.
+
+A source that names a weaker memory order which does not reach the IR (for
+example through a `<stdatomic.h>` shim that drops it) is caught by a source
+scan in `stage.cpp`. A clean result, or a result that is only data races,
+becomes `NEEDS-HARNESS` ("encoded as seq_cst: a failure found is a real run,
+but a clean result is no proof under the weaker order").
 
 ## How it works
 
-### 1. Front end: the PIR one, plus visible-operation markers (`src/prism/conc/extract.cpp`)
+### 1. Front end: PIR plus visible-operation markers (`extract.cpp`)
 
 `pir::lower_to_ir` lowers the unit (clang `-O0`, then `mem2reg`,
-`lower-switch`, `loop-simplify`, `lcssa`, `instnamer`) and `ir::parse_module`
-parses it. `pir::translate` models the memory of one function
-(docs/PIR.md), not memory shared between threads. So the stage copies the
-module and rewrites every *visible* operation into a **marker**, an
-instruction that `translate` already understands and whose result name
-`__prism.conc.<k>` indexes `Program::ops`:
+`lower-switch`, `loop-simplify`, `lcssa`, `instnamer`), and
+`ir::parse_module` parses it. `pir::translate` models the memory of one
+function, not memory shared between threads. So the stage copies the module
+and rewrites every *visible* operation into a **marker**: an instruction
+that `translate` already understands, whose result name `__prism.conc.<k>`
+indexes `Program::ops`.
 
 ```
 load  iN @g            ->  %__prism.conc.k  = call iN @__VERIFIER_nondet_conc()      ; PIR Havoc = the value read
@@ -140,24 +180,33 @@ cmpxchg @g, c, n       ->  read marker k; eq = (old == c); new = eq ? n : old; w
 lock / unlock / create / join / init -> copy marker (join copies the thread handle)
 ```
 
-Everything else goes through `pir::translate` unchanged. That is why the PIR
-UB checks and assertions apply in every thread. Thread entries lose their
-unused `void *` parameter and their return value.
+An access through the bounded memory has two markers: the head (the i64
+address; the context-switch point) and the tail (`ks`, the value read or
+written in the same step).
 
-### 2. Thread graphs (`src/prism/conc/lazy.cpp`)
+Everything else goes through `pir::translate` unchanged. That is why the PIR
+UB checks and assertions apply in every thread.
+
+A function whose pointer parameter receives bounded-memory pointers at some
+call sites and other pointers at others is cloned (`name__prism_mem`) for
+the bounded-memory sites. The extraction is then rebuilt, up to three
+rounds, so each copy has one pointer kind per parameter.
+
+### 2. Thread graphs (`lazy.cpp`)
 
 Each thread's PIR body is split so that every visible operation starts a
-block. That start is a context-switch point. The body is then unrolled into a
-DAG, with each loop run up to `unwind` times. A path that would go past the
-bound is *cut*, meaning it is assumed away. This is fine because the verdict
-is `BOUNDED` anyway. The nodes are numbered in topological order, and these
-numbers are the Lazy-CSeq program-counter labels. `END` = number of nodes.
+block. That start is a context-switch point. The body is then unrolled into
+a DAG, each loop up to `unwind` times. A path that would go past the bound is
+*cut* (assumed away); the verdict is `BOUNDED` anyway, and `extra.unwind_cut`
+says whether it happened. The nodes are numbered in topological order. These
+numbers are the Lazy-CSeq program-counter labels; `END` is the number of
+nodes.
 
 ### 3. The sequentialised program as one formula
 
-The driver runs `K` rounds. In each round, `T0 … TN-1` run in that order,
-and then `T0` gets one final slot (as in Lazy-CSeq, so that the code after
-the harness's joins runs). Each *slot* re-enters the thread's whole body:
+The driver runs `K` rounds. In each round `T0 … TN-1` run in that order.
+Then `T0` gets one final slot, so the code after the harness's joins runs.
+Each slot re-enters the thread's whole body:
 
 ```
 runnable = active[t] && !exited && pc[t] != END
@@ -167,133 +216,183 @@ exec(n)  = reach(n) && n < cs
 pc[t]'   = END if a return executed, else the n with reach(n) && n >= cs
 ```
 
-This is Lazy-CSeq's `if (pc > L) goto saved; … L: if (L >= cs) { pc = L;
-return; }` guarded-jump program, written as a formula. `lazy_text()` prints it
-as pseudo-C for inspection.
+This is Lazy-CSeq's guarded-jump program (`if (pc > L) goto saved; …
+L: if (L >= cs) { pc = L; return; }`) written as a formula.
+`conc::lazy_text()` prints it as pseudo-C for inspection.
 
-**Thread-local values** are "static", as in Lazy-CSeq. Each SSA value
-instance keeps its value from earlier rounds: `v = ite(exec(def), new, v)`.
+- **Thread-local values** are "static", as in Lazy-CSeq. Each SSA value keeps
+  its value from earlier rounds: `v = ite(exec(def), new, v)`.
+- **Shared state is threaded through the slots in order**: shared variables,
+  the memory, mutex owners, condition-variable generations, pcs, `active`
+  flags, `exited`, and the "last visible operation" record the race check
+  reads.
+- **Assumptions are prefix-guarded.** A violation is `ok ∧ cond`, where `ok`
+  is the conjunction of every assumption before it in the global order. A
+  later blocking `assume` cannot hide an earlier failure.
 
-**Shared state is threaded through the slots in order.** This covers
-globals, mutex owners, pcs, the `active` flags, `exited`, and the "last
-visible operation" record (thread, variable, write?, atomic?, op) that the
-race check reads.
+Z3 checks the disjunction of all violations. When it is SAT, the earliest
+violation in the model is reported with its interleaving. That violation is
+then excluded and Z3 is asked again, up to `max_findings`. UNSAT gives
+`BOUNDED`. A later query that times out leaves the found rows and sets
+`extra.incomplete`.
 
-Assumptions are **prefix-guarded**. A violation is `ok ∧ cond`, where `ok`
-is the conjunction of every assumption that comes *before* it in the global
-order. A later blocking `assume` therefore cannot hide an earlier failure.
+## Memory
 
-Z3 checks the disjunction of all violations. When the result is SAT, the
-earliest violation in the model is reported with its interleaving. That
-violation is then excluded and Z3 is asked again, up to `max_findings`.
-Z3 answering UNSAT gives `BOUNDED`.
+Shared data that is not a plain scalar integer global lives in a bounded
+memory: arrays and structs (`Program::objects`), heap allocations, the
+harness's aggregate locals, locals that escape their frame, and scalar
+globals whose address is taken or that are accessed at more than one type.
 
-### 4. Bounded memory (shared aggregates)
+- **Addresses.** Object `k` has i64 addresses `((k + 1) << 32) | offset`, so
+  objects never alias. Heap slots and escaping locals get their own object
+  ids the same way. The extractor rewrites `getelementptr` on such an object
+  (or on a pointer derived from one, through phis, selects and pointers
+  stored in the memory) into i64 arithmetic with the module's data layout.
+- **Bytes.** The encoder keeps one Z3 array `M` from byte address to byte.
+  An access of `w` bits reads or writes its `ceil(w/8)` bytes,
+  little-endian, so overlapping accesses of different widths agree.
+- **Heap.** Each unrolled execution of an allocation site is one heap slot,
+  live from its allocation to its `free`. A symbolic size is bounded by
+  `max_alloc`. An escaping local is a slot per activation that dies when its
+  frame returns.
+- **Checks.** Every access is bounds-checked against its object and checked
+  against freed slots. `free` checks for double free and for pointers that
+  are not the start of a heap allocation.
+- **Races** compare start addresses. Overlapping accesses that start at
+  different bytes are not race-checked against each other.
 
-Shared globals that are arrays or structs of integers live in a bounded
-memory (`Program::objects`). Object `k` has addresses
-`((k + 1) << 32) | offset`, so objects never alias. The extractor rewrites a
-`getelementptr` on such an object (or on an address derived from one) into
-i64 arithmetic with the module's data layout, and a load or store through it
-into two markers: the head (`__prism.conc.k`, the address; the context-switch
-point) and the tail (`__prism.conc.ks`, the value read or written in the same
-step). The encoder keeps one Z3 array `M` from byte address to byte; an access of
-w bits reads or writes its ceil(w/8) bytes little-endian, so overlapping
-accesses of different widths agree. A scalar global loaded or stored at more
-than one type lives in this memory too (as an address-taken one does). The
-race check still compares start addresses (overlapping accesses that start
-at different bytes are not race-checked against each other). Every access
-is bounds-checked (`MEM-OOB-READ`/`MEM-OOB-WRITE`), and the race check
-compares addresses. Not yet: constant-expression GEP operands, pointers
-stored in memory or passed to calls, heap (`malloc`/`free`), non-global
-mutexes, thread arguments.
+## Weak memory
 
-### 5. Memory model hook
+### x86-TSO
 
-Shared state is a vector of bit-vectors, `G[var]`, and the access rules are
-in `Enc::visible`. When the PIR memory model lands (roadmap 2.5), a `Load`,
-`Store` or `Rmw` marker will carry an (object, offset) pointer instead of a
-global index. `G` will become the byte-array memory, and the race check will
-compare addresses instead of variable indices. `Rewriter::shared_var` is the
-single place where non-scalar shared data becomes `NEEDS-HARNESS` today.
+`--memory-model tso` (`Config::conc_tso`, `conc::Options::tso`) checks x86-TSO
+instead of SC, for scalar globals and the bounded memory.
 
-## Correspondence with the Lean proof
+- Each thread has a FIFO store buffer of `--store-buffer k` entries
+  (default 2).
+- A plain store is appended. When the buffer is full, the oldest entry
+  commits first.
+- A thread's own plain loads forward per byte from the newest buffered store
+  that covers that byte, else read `M`.
+- Any other visible operation of the thread (atomics, locks, fences, create,
+  join, alloc, free) drains its buffer. A join also drains the joined
+  thread's buffer.
+- Before every visible step each buffer may commit its oldest entry,
+  nondeterministically.
+- The race check of a buffered store runs when it commits (it becomes
+  visible then). Loads are checked when issued.
 
-**`N` threads, `K` rounds.** `proofs/techniques/PrismTechniques/LazySeqN.lean`
-(docs/PROOFS_TECHNIQUES.md §5b) models the schedule this stage runs:
-`prismSched N K` = `K` rounds of `T0 … T(N−1)` plus `T0`'s final slot
-(`tests/cpp/test_repolint.cpp` locks it to `lazy.cpp`). A thread there is
-any transition system on its local state (`pc`, locals) and the shared state,
-so the unrolled thread DAG with its node labels is an instance. Proved, under
-sequential consistency:
+A bounded `k` under-approximates TSO. Litmus tests such as store buffering
+(`tests/conc/tso_sb.c`) need `k ≥ 1`.
+
+TSO and the C11 view model are exclusive. A program with a weaker C11 order
+run under `--memory-model tso` is `NEEDS-HARNESS` ("UNENCODED:
+--memory-model tso together with C11 weaker orders"). TSO is a hardware model
+for SC-compiled programs; a C11 program is checked against C11 alone. Run it
+under the default model, whose C11 encoding already contains every TSO
+behaviour of a race-free program.
+
+### C11 orders (view model)
+
+When an atomic access has a `relaxed`, `acquire`, `release` or `acq_rel`
+order (`Program::views`), `lazy.cpp` runs a promise-free view machine in the
+style of the Promising semantics, restricted to RC11 (no load buffering, as
+RC11 forbids po;rf cycles). `extract.cpp` records the order of every atomic.
+The C++ `<atomic>` model passes the order through, and the stage folds it
+with `sccp` (only for sources that name a weaker order).
+
+- **Messages.** Each such location keeps one message per store-site
+  execution plus its initial message: a symbolic distinct bv16 timestamp
+  (the modification order), the value, and the view released with it.
+- **Views.** A thread's view has one timestamp per location and one clock per
+  thread. A store takes a timestamp above its view. A load reads any written
+  message at or above its view. Acquire (or a later acquire fence) joins the
+  message view. Release (or an earlier release fence) attaches the thread
+  view. A relaxed store carries the last release fence or release store to
+  that location (release sequences). An RMW reads message `ts`, writes
+  `ts + 1` and carries the read view on. A failed compare-exchange is a load
+  with the failure order.
+- **Bounded memory.** When an atomic in the bounded memory has a weaker
+  order, the view gets one more entry: an array from address to timestamp.
+  Each memory atomic store or RMW execution is a message (address,
+  timestamp, value, view). The plain contents of `M` are one more message
+  per address, whose timestamp a plain store sets. Every load of the memory,
+  plain or atomic, reads one of the messages at its address at or above its
+  view.
+- **Synchronisation.** Create, join, mutexes and condition variables
+  transfer views. A wait is unlock, block, re-lock; the re-lock acquires the
+  view of the last unlock.
+- **SC fences.** One SC view in the fences' total order (RC11 `psc_F`). A
+  seq_cst fence joins it into the thread view and stores the result back.
+  Store buffering with seq_cst fences between relaxed accesses is forbidden
+  (`tests/conc/c11_sc_fence_sb.c`).
+- **Races** are happens-before (epochs against the view clocks), for scalars
+  and the bounded memory. A non-atomic access races with any conflicting
+  access it is not ordered with. An atomic access races only with
+  non-atomic ones. Values of non-atomic locations stay SC.
+
+Approximations (each only adds behaviours, so clean results stand):
+
+- seq_cst accesses (not fences) to a location that also has weaker accesses
+  are treated as acq_rel. RC11's psc constraints for SC accesses are not
+  encoded. Locations with only seq_cst accesses stay SC.
+- An atomic location in the memory is identified by its start address, so
+  atomic accesses of different widths or overlapping starts are distinct
+  locations.
+
+`extra.method` names the model. `extra.c11_locations` counts the scalar
+locations.
+
+## Correspondence with the Lean proofs
+
+Two Lean files model the schedule. See
+[PROOFS_TECHNIQUES.md](PROOFS_TECHNIQUES.md) (the lazy sequentialisation
+sections) for the proofs themselves.
+
+**`N` threads, `K` rounds**:
+`proofs/techniques/PrismTechniques/LazySeqN.lean`. `prismSched N K` is `K`
+rounds of `T0 … T(N−1)` plus `T0`'s final slot.
+`tests/cpp/test_repolint.cpp` ("repolint: lazy.cpp schedule mirrors
+LazySeqN.lean") locks it to `lazy.cpp` and checks the theorems' axioms. A
+thread there is any transition system on its local state and the shared
+state, so the unrolled thread DAG is an instance. Proved, under SC:
 
 - `lazy_sound`: every run of the sequentialised program is a real
-  interleaving with `K·N` switches, so a `FAILED` schedule is real (modulo
-  items 5–8 below);
+  interleaving, so a `FAILED` schedule is real (modulo the unproved items
+  below);
 - `lazy_covers`: every interleaving from `T0` with at most `K − 1` context
-  switches in total is covered; `lazy_covers_runs`: more generally every
-  schedule that splits into at most `K` increasing runs of thread ids;
-- `lazy_covers_two`: with two threads (`T0` and one created thread), every
-  interleaving with at most `2K` switches is covered;
-- `per_thread_bound_not_enough`: for `N ≥ 3`, a bound on switches *per
-  thread* is **not** enough. With `N = 3`, `K = 1`, the schedule `T0, T2, T1`
-  (nobody preempted) reaches a state no run of `T0 T1 T2 T0` reaches. A
-  `BOUNDED` verdict covers only schedules of round-robin shape.
+  switches is covered; `lazy_covers_runs`: every schedule that splits into
+  at most `K` increasing runs of thread ids is covered;
+- `lazy_covers_two`: with two threads, every interleaving with at most `2K`
+  switches is covered;
+- `per_thread_bound_not_enough`: for `N ≥ 3` a bound on switches *per
+  thread* is not enough. A `BOUNDED` verdict covers only schedules of
+  round-robin shape.
 
-Items 1–4 below are therefore covered by `LazySeqN` (item 4: loops inside a
-thread are allowed; cutting paths past `unwind` only loses interleavings).
-Items 5–9 remain outside any proof. The older two-thread proof follows.
+**Two threads, straight-line actions**:
+`proofs/techniques/PrismTechniques/LazySeq.lean` proves `lazy_seq_covers`
+(every interleaving with at most `2K−1` switches is matched),
+`lazy_seq_sound` and `seqLR_iff_seg`, through the segment normal form
+`Seg`.
 
-`proofs/techniques/PrismTechniques/LazySeq.lean` (docs/PROOFS_TECHNIQUES.md
-§5) proves the following, for **two** threads, each a **straight-line list
-of atomic actions** `G → G → Prop` (actions may be nondeterministic or
-blocking; thread-local variables live in `G`):
+Not proved:
 
-- `lazy_seq_covers`: every interleaving with at most `2K−1` context switches
-  (finished or not) is matched by a run of the `K`-round sequentialised
-  program;
-- `lazy_seq_sound`: every such run is a real interleaving;
-- the proof goes through the segment normal form `Seg`:
-  `seqLR_iff_seg : SeqLR K ↔ Seg (2K) true` (alternating segments, thread 1
-  first), `seg_of_star` / `star_of_seg` (interleavings ↔ normal forms).
-
-How the implementation corresponds:
-
-| Lean | implementation |
-|---|---|
-| an action `G → G → Prop` | The code a slot runs from one context-switch point to the next: one visible operation plus the invisible (thread-local) code after it, up to the next visible operation. Nondeterminism: `__VERIFIER_nondet_*`, `havoc`, the choice of branch. Blocking: `assume(owner == 0)` of a lock, `assume(finished)` of a join, `__VERIFIER_assume` |
-| thread-local variables live in `G` | Value instances persist across rounds ("static locals"). Shared state (`G[var]`, owners, pcs) is threaded through the slots |
-| `Seg n c p1 p2`: alternating segments; `Exec s` runs a segment; a segment may be empty (`Exec [] g g`) | A slot runs the thread from `pc[t]` to the chosen `cs`. `cs == pc[t]` is the empty segment. Slots alternate in the fixed order T0, T1, … |
-| `SeqLR K` (eager guess-and-check: thread 1 runs all rounds on guessed states, then thread 2 checks the guesses) | Not used. The lazy scheme computes each round's state sequentially instead of guessing it. What the formula encodes is `Seg` itself, and Lean proves `Seg (2K) true ↔ SeqLR K` (`seqLR_iff_seg`) and `Seg ↔` interleavings (`seg_of_star`, `star_of_seg`) |
-| `lazy_seq_covers` (coverage within `2K−1` switches) | For a harness `T0` and one created thread, with loop-free bodies (or loops within the unwind bound), every interleaving with at most `2K−1` switches is a model of the formula. A violation reachable in that interleaving is found |
-| `lazy_seq_sound` (no spurious runs) | Every model is a real interleaving, so a `FAILED` schedule is real (modulo the trusted parts listed below) |
-
-Where the implementation goes **beyond** what is proved:
-
-1. **More than two threads.** `K` rounds over `N` threads is the `N`-cyclic
-   generalisation of `Seg` (at most `K·N` switches with the final `T0`
-   slot). The Lean model fixes two threads.
-2. **Thread creation.** A not-yet-created thread has only empty segments.
-   Creation is a visible operation of `T0` that sets `active`. Lean starts
-   both threads at once.
-3. **The final `T0` slot** is one extra segment. Lean's `SeqLR K` has exactly
-   `2K`.
-4. **Loops.** The Lean threads are straight-line lists. PRISM unrolls loops
-   to `unwind` and *cuts* longer paths. This can only lose interleavings
-   (which is why the verdict is `BOUNDED`), never add them.
-5. **The formula encoding.** That `reach`/`exec`/`pc'` over the unrolled DAG
-   implements "`Exec` of the segment from `pc` to `cs`" is argued in this
-   document and tested (`tests/cpp/test_conc.cpp`,
-   `testdata/conformance/concurrency`), not proved.
-6. **Context-switch points only before visible operations** (partial-order
+1. **The formula encoding.** That `reach`/`exec`/`pc'` over the unrolled DAG
+   implements "run the segment from `pc` to `cs`" is argued here and tested,
+   not proved.
+2. **Loops.** PRISM unrolls loops to `unwind` and cuts longer paths. This can
+   only lose interleavings, never add them.
+3. **Context-switch points only before visible operations** (partial-order
    reduction). Invisible thread-local code commutes with the other threads'
-   steps. This is the standard argument, but it is not in Lean.
-7. **The properties.** Neither the race definition ("adjacent conflicting
-   accesses") nor the deadlock and unlock checks are formalised.
-8. **Front end.** The IR rewrite to markers and `pir::translate` are trusted
-   here, in the same way as for the `pir` stage (docs/TRUSTED_BASE.md T1).
-9. **Weak memory** is not modelled at all. Non-SC orders are `NEEDS-HARNESS`,
-   so no verdict depends on them.
+   steps. This is the standard argument; it is not in Lean.
+4. **Thread creation** as a visible operation that sets `active`, and
+   looped creation slots.
+5. **The properties.** The race definitions, the deadlock and unlock checks
+   and the memory checks are not formalised.
+6. **Front end.** The rewrite to markers and `pir::translate` are trusted,
+   as for the `pir` stage ([TRUSTED_BASE.md](TRUSTED_BASE.md)).
+7. **Weak memory.** The proofs assume SC. The TSO and C11 encodings are
+   tested (`tests/conc/tso_*`, `tests/conc/c11_*`), not proved.
 
 Nothing here claims a proof. `BOUNDED` means "within `K` rounds and `unwind`
 iterations", and Law 2 keeps it apart from `PROVED`.
@@ -301,149 +400,30 @@ iterations", and Law 2 keeps it apart from `PROVED`.
 ## Conformance
 
 `testdata/conformance/concurrency/` holds 18 thread programs as true/false
-pairs, with 22 property labels (`norace`, `noassert`, `nodeadlock`):
+pairs with 22 property labels (`norace`, `noassert`, `nodeadlock`), counted
+2026-11-05 at commit 991c4eafa:
 
 - racy counter, and the same counter under a mutex;
 - lost update, and the same update under a mutex;
 - two locks taken in opposite orders (deadlock), and in the same order;
-- SC `atomic_fetch_add`, and atomic load followed by a separate store;
+- SC `atomic_fetch_add`, and an atomic load followed by a separate store;
 - join then read, and read before join;
 - a CAS spin lock, and a non-atomic test-then-set;
-- a condition variable waited on with `while`, and with `if` (spurious
-  wake-up);
+- a condition variable waited on with `while`, and with `if`;
 - nondeterministic inputs;
 - C11 `<threads.h>`.
 
-`src/tools/qa/conformance.cpp` scores these with the `conc` stage only, and scores
-`conc` on these only. The labels are property-scoped: a race reported on a
-`noassert` task is "failed-other-property", not a false alarm. `conc` never
-proves, so its soundness line is zero wrong proofs by construction.
-Completeness is 0 by definition, because every true task is `BOUNDED`.
-Detection is measured as "refuted, not replayed", because a counterexample
-is a schedule, not an input vector.
+`src/tools/qa/conformance.cpp` scores these with the `conc` stage only, and
+scores `conc` on these only (`src/tools/qa/support/task.cpp`). The labels
+are property-scoped: a race reported on a `noassert` task is
+"failed-other-property", not a false alarm. `conc` never proves, so its
+soundness line is zero wrong proofs by construction, and completeness is 0
+by definition (every true task is `BOUNDED`). Detection is measured as
+"refuted, not replayed": a counterexample is a schedule, not an input
+vector.
 
-Result (`build/prism-qa conformance --suite
-testdata/conformance/concurrency --no-replay`; see also docs/CONFORMANCE.md):
-0 wrong proofs, 9/9 `false` labels refuted in their property class, 13/13
-`true` labels `BOUNDED`, and 0 false alarms. A non-vacuity probe appended
-`assert(0)` to the end of `main` in every true task, and every probe was
-`FAILED`, so the end of `main` is reachable within the bound and `BOUNDED`
-is not a side effect of an unsatisfiable encoding.
+```
+build/prism-qa conformance --suite testdata/conformance/concurrency --no-replay
+```
 
-### Informal check on SV-COMP `pthread-atomic` (not in the suite)
-
-The 19 tasks of `c/pthread-atomic` at the pinned SV-COMP commit were run
-through the stage, with defaults `K = 2` and unwind 4:
-
-- **Data races.** All five `no-data-race: false` mutual-exclusion variants
-  (`dekker-b`, `dekker-b-unfair`, `lamport-b`, `peterson-b`, `szymanski-b`)
-  get `FAILED` data race.
-- **Race-free protocols.** The five `no-data-race: true` protocols
-  (`dekker`, `dekker-unfair`, `lamport`, `peterson`, `szymanski`) and
-  `time_var_mutex` get `BOUNDED`. They use `__VERIFIER_atomic_*` sections,
-  which the stage models as a pseudo-mutex whose holder is the only runnable
-  thread.
-- **Not modelled.** `pthread_rwlock_*`, the `scull` driver model and
-  `qrcu-1` (a local array) are `NEEDS-HARNESS` with the construct named.
-- **`abort()` rows.** `gcd-2`, `qrcu-2` and `read_write_lock-2/-2b` report
-  `abort() is reachable` first. The cause is SV-COMP's
-  `assume_abort_if_not`: PIR treats `abort` as a crash, not an assumption.
-  This is PIR's policy, and a later row carries the property-specific
-  finding.
-
-## 5. Weak memory (x86-TSO)
-
-`--memory-model tso` (Config::conc_tso, conc::Options::tso) checks x86-TSO
-instead of sequential consistency, for scalar globals and the bounded memory
-(arrays, structs, heap, escaping locals). Each thread has a FIFO store buffer
-of `--store-buffer k` entries (default 2; Options::tso_buffer). A plain store
-is appended (when the buffer is full the oldest entry commits first), the
-thread's own plain loads forward from the newest matching entry, any other
-visible operation of the thread (atomics, locks, fences, create, join,
-alloc/free) drains its buffer, a join drains the joined thread's buffer, and
-before every visible step each buffer may commit its oldest entry
-nondeterministically. A bounded k under-approximates TSO; litmus tests such
-as store buffering (tests/conc/tso_sb.c) need k >= 1. Forwarding is per byte: each byte of a
-load comes from the newest buffered store that covers it, else from `M`.
-The race check of a buffered plain store runs when it commits (it becomes
-visible then), not when it is issued; loads are checked when issued. TSO and
-the C11 view model are exclusive: a program with a weaker C11 order run
-under `--memory-model tso` is NEEDS-HARNESS ("UNENCODED: --memory-model tso
-together with C11 weaker orders"); run it under the default model, whose
-C11 encoding already contains every TSO behaviour of a race-free program.
-
-## 6. C11 orders (view model)
-
-When a scalar global (including a one-field wrapper such as `std::atomic<int>`)
-has an atomic access with `relaxed`, `acquire`, `release` or `acq_rel`
-(Program::views), lazy.cpp runs a promise-free view machine in the style of
-the Promising semantics restricted to RC11 (no load buffering, as RC11
-forbids po;rf cycles):
-
-- each such location keeps one message per store-site execution plus its
-  initial message: symbolic distinct bv16 timestamps (the modification
-  order), value, and the view released with it;
-- a thread's view has one timestamp per location and one clock per thread;
-  a store takes a timestamp above its view, a load reads any written message
-  at or above it; acquire (or a later acquire fence) joins the message view,
-  release (or an earlier release fence) attaches the thread view, a relaxed
-  store carries the last release fence / release store to that location
-  (release sequences); an RMW reads message ts and writes ts + 1 and carries
-  the read view on; a failed compare-exchange is a load with the failure
-  order;
-- atomics in the bounded memory (arrays, structs, heap, address-taken or
-  mixed-width globals), when one of them has a weaker order: the view gets
-  one more entry, an array from address to timestamp (joined pointwise with
-  a lambda). Each memory atomic store / RMW site execution is a message
-  (address, timestamp, value, view); the plain contents of `M` are one more
-  message per address whose timestamp `Pts[a]` a plain store sets (above the
-  storing thread's view). Every load of the memory, plain or atomic, reads
-  one of the messages at its address at or above its view;
-- create, join, mutexes (by name or address) and condition variables
-  transfer views: a wait is unlock / block / re-lock, and the re-lock is an
-  ordinary lock, so it acquires the view of the last unlock (the signaller's,
-  when it held the mutex);
-- seq_cst fences: one SC view in the fences' total order (RC11 psc_F): a
-  seq_cst fence joins it into the thread view and stores the result back.
-  Store buffering with seq_cst fences between relaxed accesses is forbidden
-  (tests/conc/c11_sc_fence_sb.c);
-- race check, happens-before (epochs against the view clocks), for scalars
-  and the bounded memory: a non-atomic access races with any conflicting
-  access it is not ordered with, atomic or not (each thread's last atomic
-  read / write clock per location is kept); an atomic access races only with
-  non-atomic ones. Values of non-atomic locations stay SC.
-
-A failed compare-exchange is a load (flag marker "c") on both the scalar
-and the memory path.
-
-Approximations (each only adds behaviours, so clean results stand):
-seq_cst accesses (not fences) to a location that also has weaker accesses
-are acq_rel; RC11's psc constraints for SC accesses are not encoded (an
-operational encoding stronger than acq_rel would exceed RC11, e.g. the
-C++20 SC-access strengthening, and could drop behaviours). Locations with
-only seq_cst accesses stay SC. An atomic location in the memory is
-identified by its start address, so atomic accesses of different widths or
-overlapping starts to one location are distinct locations. --memory-model tso
-together with C11 weaker orders is refused as NEEDS-HARNESS ("UNENCODED:
---memory-model tso together with C11 weaker orders"): TSO is a hardware model
-for SC-compiled programs, and a C11 program is checked against C11 alone.
-extract.cpp records the order of every atomic; the C++ `<atomic>` model
-passes it through and the stage folds it with sccp (only for sources naming
-a weaker order). extra["method"] names the model, extra["c11_locations"]
-counts the scalar locations.
-
-### Bounded memory, byte addressed
-
-M maps byte addresses to bytes (little-endian): an access of w bits reads or
-writes ceil(w/8) bytes from its address, so mixed-width and overlapping
-accesses agree; a scalar global accessed at two types lives in the memory.
-Under TSO a buffered store keeps its byte count, and a load takes each byte
-from the newest buffered store covering it (overlap forwarding), else M.
-Race checks and the adjacent-access check still key on the start address.
-
-### Mixed pointer call sites
-
-When a function's pointer parameter receives bounded-memory pointers at some
-call sites and other pointers at others, extract.cpp clones it
-(`name__prism_mem`) for the bounded-memory sites and rebuilds (up to three
-rounds), so each copy carries one pointer kind per parameter.
+See [CONFORMANCE.md](CONFORMANCE.md) for the scoring rules.

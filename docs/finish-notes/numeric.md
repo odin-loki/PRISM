@@ -95,11 +95,3 @@ slice does not add another, and the model does not produce a wrapped result.
 The in-house pair check still wants a `_false` stem for every `_true` stem.
 `cxx_initializer_list_true` is already unpaired on this base. This slice does
 not add a wrapped-sum false to balance that count.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and `src/prism/bmc_encoder.inc`
-still report `std::midpoint`, `std::gcd`, and `std::lcm` as unencoded from
-the source text, before the header is inlined. Those files were not edited.
-Until that gate is gone, `cxx_numeric_true` does not reach this header.
-`docs/PIR.md` was not edited.

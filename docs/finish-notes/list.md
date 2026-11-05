@@ -23,7 +23,7 @@ edit. Two CMake lines do, and this slice does not touch `CMakeLists.txt`:
    `cxx/list`. Until that line exists, `qa conformance: every C++ library
    model header is embedded and exercised` fails: it walks
    `src/prism/pir/models/cxx` and requires each file in `CMakeLists.txt`.
-   The harness and the prism/cxx tasks already `#include <list>`, which is
+   The harness and the `testdata/conformance/prism/cxx` tasks already `#include <list>`, which is
    the other half of that check.
 
 2. Link the doctest. `tests/cpp` is not a glob. `_prism_test_sources` needs

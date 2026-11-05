@@ -91,13 +91,3 @@ libstdc++ on the include path, and again against libstdc++, the trace
 printed the same five lines (`same 1`, `diff 0`, `hash 1`, `name 1`,
 `less 0`) and both binaries exited 0. `less` is
 `typeid(int).before(typeid(double))` on that libstdc++.
-
-## Still in front of the model
-
-`src/prism/bmc_unenc.inc` still rejects a function body that contains
-`typeid(` (`C++ typeid unencoded`, `is not an RTTI model`) before a
-header is inlined. `src/prism/bmc.cpp` repeats that message when the
-lowered text already says `typeid unencoded`. Those files were not
-edited. The task, the harness, and the trace each call `typeid`, so
-until that gate is gone `cxx_typeindex_true` does not reach this header.
-There is no separate `type_index` gate. `docs/PIR.md` was not edited.

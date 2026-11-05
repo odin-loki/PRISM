@@ -125,11 +125,3 @@ prism tasks, and the contracts file (`-std=c++23 -Wall -Wextra -Werror`).
 The doctest translation unit was syntax-only. `prism_tests` was not run, so
 the `TEST_CASE` bodies were not executed. Compiling that file did typecheck
 the `empty()` calls.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ stacktrace unencoded` (`is not a stacktrace model`) from the source
-text, before the header is inlined. Those files were not edited. Until that
-gate is gone, `cxx_stacktrace_true` and `cxx_stacktrace_false` do not reach
-this header. `docs/PIR.md` was not edited.

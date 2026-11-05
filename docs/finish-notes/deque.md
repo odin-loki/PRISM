@@ -4,7 +4,7 @@ Minimal operational model of `std::deque<T, std::allocator<T>>`. It is not libst
 
 Checked with clang++-18, `-std=c++23 -D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined -O1`, against libstdc++ 14's `<deque>`: `tests/cxx_models/deque_trace.cpp` prints the same trace both ways. `deque_trace uaf` (iterator used after `push_back`) is ASan `heap-use-after-free` on the model anchor (`operator delete` in `emplace_back`). libstdc++ does not free a block on that push, so the doctest runs `uaf` only on the model binary.
 
-The header is **not** on the pir include path yet. Tests pass `-isystem src/prism/pir/models/cxx/deque` so `#include <deque>` is this file. `tests/cpp/test_cxx_deque.cpp` is not in the `prism_tests` source list yet.
+The header is the file `src/prism/pir/models/cxx/deque`, embedded as `cxx/deque` (`PRISM_PIR_MODELS` in `CMakeLists.txt`). `write_cxx_models` writes it next to `vector` and `map`, and `lower_to_ir` passes that directory as `-isystem`, so `#include <deque>` is this file. `tests/cpp/test_cxx_deque.cpp` is in `prism_tests`; it copies the header alone into a temp include dir.
 
 ## Coverage
 
@@ -24,7 +24,7 @@ Implemented, and matched against libstdc++ for values (and for constructor/destr
 
 ## Fall-throughs (not modelled)
 
-A use that does not compile against this header is how the pir stage, once the header is wired, drops back to libstdc++ for the whole translation unit (`extra.cxx_models`).
+A use that does not compile against this header is how the pir stage drops back to libstdc++ for the whole translation unit (`extra.cxx_models`).
 
 - Allocators other than `std::allocator<T>` (`static_assert`, including `std::pmr::deque`)
 - Over-aligned `T` (`alignof(T)` above `__STDCPP_DEFAULT_NEW_ALIGNMENT__`)
@@ -38,21 +38,6 @@ A use that does not compile against this header is how the pir stage, once the h
 - `pop_back`, `clear`, and suffix `erase` allocate a replacement end cookie (`::operator new`). libstdc++ does not. `pop_back` is `noexcept`, so that `bad_alloc` terminates. Move construction allocates a fresh empty control block for the source; libstdc++ only steals pointers
 - Iterator arithmetic walks the node list (linear in the distance). It is not constant-time block arithmetic. `operator[]` walks `n` links, so a symbolic index needs an unwind bound of at least `n`
 
-## Wiring follow-up
+## Wiring (work/libc-models, 2026-10-29)
 
-Do not edit `src/prism/pir/stage.cpp` for this. The include path is already `-isystem` on the directory `write_cxx_models` fills (`lower_to_ir` inserts `-isystem` + `fe.cxx_models`). The gap is the **embed name**.
-
-1. `CMakeLists.txt` `PRISM_PIR_MODELS`: add `src/prism/pir/models/cxx/deque/deque`. The loop that sets `_mn` turns a path under `models/cxx/` into `cxx/<relative>`. That would embed `cxx/deque/deque` and write `<models>/deque/deque`, which `#include <deque>` does not open (it looks for a **file** named `deque`). Special-case this one path so the embedded name is `cxx/deque` (do not flatten `bits/basic_string.tcc`). `write_cxx_models` then writes `<models>/deque` next to `vector` and `map`, and the existing `-isystem` is enough.
-2. `CMakeLists.txt` `_prism_test_sources`: add `tests/cpp/test_cxx_deque.cpp` next to `tests/cpp/test_cxx_models.cpp`.
-3. Early "not a deque model" exits still fire on the source text, before the header is inlined:
-   - `src/prism/bmc.cpp` (`low.find("deque")`)
-   - `src/prism/bmc_unenc.inc` (`deque\s*<`)
-   Remove those once the header is actually on the include path. `tests/cpp/test_concolic.cpp` expects `deque_unenc_bad` to be NEEDS-HARNESS until that changes.
-4. `tests/cpp/test_qa_conformance.cpp` ("every C++ library model header is embedded and exercised") lists every file under `models/cxx/`. `deque/deque` has a slash, so it is treated as an internal header unless the `pub` map gains `pub["deque/deque"] = "deque"` (same idea as `bits/basic_string.tcc` → `string`). The case then requires `#include <deque>` both in `testdata/conformance/prism/cxx/` (the new `cxx_deque_true.cpp` / `cxx_deque_false.cpp` already do) and in some `testdata/conformance/libc-models/*.cpp` harness, which does not exist yet. Until the CMake line and that `pub` entry land, this case fails.
-5. `docs/PIR.md` still lists `std::deque` under "Not modelled". Update that paragraph when the header is wired. Not in this slice.
-
-Until (1) and (3), `cxx_deque_true` / `cxx_deque_false` still take the unmodelled-deque NEEDS-HARNESS path. After wiring, the false task is an iterator used after `push_back` (MEM-UAF on the anchor) and the true task is a reference kept across `push_back`.
-
-## Wired (work/libc-models, 2026-10-29)
-
-Steps 1, 2, 4 and 5 are done: the header is the file `src/prism/pir/models/cxx/deque` (embedded as `cxx/deque`), `tests/cpp/test_cxx_deque.cpp` is in `prism_tests` (it copies the header alone into a temp include dir), `test_qa_conformance` checks `<deque>` like the other models, and `testdata/conformance/libc-models/deque_contracts.{cpp,yml}` exists. Measured: pir proves 4/4 true (3 libc-models + `cxx_deque_true`) and refutes 5/5 false, 0 wrong proofs. Step 3 (the bmc-stage early exits) is left: the bmc engines do not use the pir models, so their NEEDS-HARNESS stays honest.
+`tests/cpp/test_qa_conformance.cpp` checks `<deque>` like the other models, and `testdata/conformance/libc-models/deque_contracts.{cpp,yml}` exists. The false task `cxx_deque_false` is an iterator used after `push_back` (MEM-UAF on the anchor); the true task `cxx_deque_true` is a reference kept across `push_back`. Measured on 2026-10-29: pir proves 4/4 true (3 libc-models + `cxx_deque_true`) and refutes 5/5 false, 0 wrong proofs. `tests/cpp/test_concolic.cpp` still expects `deque_unenc_bad` to be NEEDS-HARNESS.

@@ -34,8 +34,7 @@ back to libstdc++ (`extra.cxx_models`). They are not stubbed: insert,
 `clear`, `swap`, and the `Compare` / `KeyContainer` / `MappedContainer`
 parameters. The header does not include `<set>`, `<vector>`, or `<memory>`.
 
-`src/prism/pir/stage.cpp`, `src/prism/bmc.cpp`, and `docs/PIR.md` were not
-edited. `CMakeLists.txt` was not edited. The conformance header array in
+`CMakeLists.txt` was not edited. The conformance header array in
 `tests/cpp/test_qa_conformance.cpp` was not edited.
 
 ## Tests

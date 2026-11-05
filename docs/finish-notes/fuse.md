@@ -1,6 +1,6 @@
 # fuse counterexamples and AFL
 
-Closed the `prism/fuzz.py` / `prism/afl.py` gaps named for this slice. Performance caches (the harness build cache, the parallel binary window, the syntax memo) were already in `src/prism/stages/fuse.cpp` and were left as they are. `decode_args` stays in `common.cpp` and was not edited. `platform.cpp` was not edited: `run_argv` still has no working directory, and its default is still the process cwd.
+Closed the port-audit gaps named for this slice. Performance caches (the harness build cache, the parallel binary window, the syntax memo) were already in `src/prism/stages/fuse.cpp` and were left as they are. `decode_args` stays in `common.cpp` and was not edited. `platform.cpp` was not edited: `run_argv` still has no working directory, and its default is still the process cwd.
 
 ## Counterexample bytes
 

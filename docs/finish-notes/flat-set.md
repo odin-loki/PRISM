@@ -52,9 +52,6 @@ They are not stubbed:
 - a third template argument (the key container, including `vector`)
 - an `initializer_list` constructor
 
-`src/prism/bmc.cpp` still reports `C++ flat_set unencoded` from the source
-text. This slice does not edit that, and it does not edit `stage.cpp`.
-
 ## Tests
 
 `tests/cpp/test_cxx_flat_set.cpp` reads the header. Both `insert` overloads

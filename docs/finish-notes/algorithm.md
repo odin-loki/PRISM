@@ -112,12 +112,3 @@ property is `no-overflow`. `expected` is the boolean `true`.
 function. A native replay compiles without `_GLIBCXX_ASSERTIONS`, and
 libstdc++ then returns one of the arguments instead of trapping, so UBSan
 stays clean. The model's failure is `__prism_check`, not a wrapped sum.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and `src/prism/bmc_encoder.inc`
-still report `std::clamp` as unencoded from the source text, before the
-header is inlined (`C++ std::clamp unencoded` / `is not a clamp model`).
-Those files were not edited. `std::min` and `std::max` are not gated there.
-Until the clamp gate is gone, a task whose source calls `std::clamp` does
-not reach this header. `docs/PIR.md` was not edited.

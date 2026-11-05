@@ -111,10 +111,3 @@ nothing is constructed. `kshort` is two keys against one: unequal, with
 zero key-equality calls and zero constructions. That run is not PROVED
 and not CLEAN. libstdc++ on this machine has no `<flat_set>` header, so
 the same driver was not built against it.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` still reports `C++ flat_set unencoded` from the source
-text before a header is inlined. `src/prism/pir/stage.cpp` was not edited.
-Until that gate is gone, a flat_set task does not reach this header.
-`docs/PIR.md` was not edited.

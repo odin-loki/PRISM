@@ -68,9 +68,7 @@ No `<memory>`, `<functional>`, `<string>`, `<iterator>`, `<ranges>`,
 `src/prism/pir/stage.cpp`, `CMakeLists.txt`, and
 `tests/cpp/test_qa_conformance.cpp` were not edited. The model path and
 `tests/cpp/test_cxx_algorithm.cpp` were already on those lists. The
-conformance header-name array was not edited. `src/prism/bmc.cpp`,
-`src/prism/bmc_unenc.inc`, and `src/prism/bmc_encoder.inc` were not edited.
-The existing `std::clamp` unencoded gate is unchanged.
+conformance header-name array was not edited.
 
 ## Tests
 

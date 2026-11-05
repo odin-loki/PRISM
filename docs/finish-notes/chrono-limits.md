@@ -114,10 +114,9 @@ applied. `1000 * 2` is `2000`.
 
 `CMakeLists.txt` was not edited. `src/prism/pir/models/cxx/chrono` was
 already in `PRISM_PIR_MODELS`, and `tests/cpp/test_cxx_chrono.cpp` was
-already in `_prism_test_sources`. The conformance header-name array was
-not edited. No new test source was added. `tests/cxx_models/chrono_trace.cpp`
-is not listed in `CMakeLists.txt`. `src/prism/bmc.cpp` and
-`src/prism/pir/stage.cpp` were not edited.
+already in `_prism_test_sources`. The conformance header-name array was not
+edited. No new test source was added. `tests/cxx_models/chrono_trace.cpp` is
+not listed in `CMakeLists.txt`.
 
 ## Tests
 

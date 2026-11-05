@@ -70,11 +70,3 @@ check (`no-oob` true). `expected` in the yml is the boolean `true`.
 `testdata/conformance/libc-models/system_error_contracts.cpp` is the
 `#include <system_error>` the conformance case searches for. It is not a
 scored task.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still reject source text
-that contains `system_error` or `error_code` (`is not a system_error model`,
-`is not an error_code model`) before the header is inlined. Those files
-were not edited. Until that gate is gone, `cxx_system_error_true` does not
-reach this header. `docs/PIR.md` was not edited.

@@ -60,11 +60,7 @@ lists `src/prism/pir/models/cxx/bitset`, so the embedded name is `cxx/bitset`.
 `tests/cpp/test_qa_conformance.cpp` names `bitset` in the header array. The
 iostream file and the `deque/deque` skip in that test are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not a
-bitset model" from the source text, before the header is inlined. Those
-exits are still in place. `tests/cpp/test_concolic.cpp` still expects
-`bitset_unenc_bad` to be `NEEDS-HARNESS` until they go. `houdini.inc` was
-not edited.
+`houdini.inc` was not edited.
 
 ## Tests
 

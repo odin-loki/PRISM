@@ -68,7 +68,7 @@ conformance header array in `tests/cpp/test_qa_conformance.cpp` was not
 edited. `random` stays in that list. No conformance yml was added.
 `testdata/conformance/prism/cxx/cxx_random_true.cpp` and
 `testdata/conformance/libc-models/random_contracts.cpp` were not edited.
-They still cover `minstd_rand` only. `src/prism/bmc.cpp` was not edited.
+They still cover `minstd_rand` only.
 
 ## Tests
 

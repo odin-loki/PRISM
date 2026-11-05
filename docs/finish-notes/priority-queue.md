@@ -24,18 +24,14 @@ This slice does add the header to `PRISM_PIR_MODELS`:
 `write_cxx_models` then emits `cxx/priority_queue`.
 `tests/cpp/test_qa_conformance.cpp` lists `priority_queue` with the other
 public header names. The `iostream/prism_ostream.hpp` and `deque/deque`
-skips are unchanged. The libc harness and the prism/cxx tasks
+skips are unchanged. The libc harness and the `testdata/conformance/prism/cxx` tasks
 `#include <priority_queue>`.
 
 Still open, same shape as the deque note:
 
-1. `src/prism/bmc.cpp` (`low.find("priority_queue")`) and
-   `src/prism/bmc_unenc.inc` (`priority_queue\s*<`) still refuse the source
-   text before the header is inlined. `tests/cpp/test_concolic.cpp` expects
-   `pqueue_unenc_bad` to be NEEDS-HARNESS until those gates go.
-2. `tests/cxx_models/priority_queue_trace.cpp` is not in `_prism_test_sources`.
+1. `tests/cxx_models/priority_queue_trace.cpp` is not in `_prism_test_sources`.
    There is no `tests/cpp/test_cxx_priority_queue.cpp` in this slice.
-3. `docs/PIR.md` still does not describe this header.
+2. `docs/PIR.md` still does not describe this header.
 
 ## What the model covers
 

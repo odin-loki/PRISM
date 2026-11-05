@@ -1,799 +1,357 @@
-# SV-COMP readiness
+# PRISM as an SV-COMP verifier
 
-Roadmap 6.3: "Enter SV-COMP once the Clang pipeline is stable." PRISM has
-**not** entered SV-COMP. This file describes the pieces built so far, the
-local score they give on the pinned SV-COMP subset in this repository, and
-what is still missing for a real entry. The scores below are computed by this
-repository's own scripts, first on 45 (no-overflow) and 20 (unreach-call)
-tasks, since 2026-09-25 on 117 and 127 tasks (174 task files, see
-"2026-09-25" below); they are not SV-COMP results. PRISM's violation and correctness witnesses for
-that subset have been run through two format-2.0 validators, CPAchecker
-4.2.2 and UAutomizer 0.3.1 (see "Witness validation" below), and the subset
-has been run in BenchExec with the competition's resource limits (see
-"BenchExec").
+PRISM has **not** entered SV-COMP. This file describes the pieces that would
+make an entry, as the code is: `prism svcomp` (one task), `prism svcomp
+score` (the pinned subset), `prism svcomp pack` (the tool archive), the
+BenchExec tool-info module, how an answer is decided, the witnesses, the
+data models, and what is still missing.
 
 ## Pieces
 
-| file | what it is |
+| piece | what it is |
 |---|---|
-| `tools/svcomp/prism.py` | BenchExec tool-info module (`BaseTool2`), the only Python file of the entry (BenchExec's plugin interface; it moves upstream into BenchExec). Loads as `benchexec.tools.prism` once copied into BenchExec, or from this directory (`PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism --tool-directory build --no-container`, run outside the repository root, passes BenchExec's own tool-info check; CI runs it). |
-| `prism svcomp` (`src/prism/cli_svcomp.cpp`, `src/prism/svcomp/`) | the executable the module runs (called "the wrapper" below): runs PRISM on one task in-process, maps the report to an answer, replays the counterexample, writes the witness (format 2.0 YAML, `src/prism/svcomp/witness.cpp`) |
-| `tools/svcomp/prism-subset.xml` | BenchExec benchmark definition for the subset (SV-COMP limits: 15 min CPU, 15 GB, 4 cores) |
-| `prism svcomp score` | runs `prism svcomp` on every task of the pinned subset (one process session per task) and scores it |
-| `prism svcomp pack` | builds the submission archive |
-| `testdata/conformance/sv-comp/properties/` | the upstream property files (`no-overflow.prp`, `unreach-call.prp`, `valid-memsafety.prp`) at the pinned sv-benchmarks commit |
-| `tests/cpp/test_svcomp.cpp` | mapping, scoring, witness shape, replay, waypoints, invariants, task-definition reader, archive and end-to-end doctests |
+| `prism svcomp` (`src/prism/cli_svcomp.cpp`, `src/prism/svcomp/`, `include/prism/svcomp.hpp`) | runs PRISM on one task in-process, decides the answer, replays the counterexample, writes the witness |
+| `prism svcomp score` | runs `prism svcomp` on every task of the pinned subset and scores it with SV-COMP points |
+| `prism svcomp pack` | builds the tool archive |
+| `tools/svcomp/prism.py` | BenchExec tool-info module (`BaseTool2`): builds the command line and reads the result line |
+| `tools/svcomp/prism-subset.xml` | BenchExec benchmark definition for the subset (15 min CPU, 15 GB, 4 cores; passes `--allow-exec`) |
+| `tools/svcomp/fm-tools.yml` | fm-tools registration draft (`id: prism-svcomp`) |
+| `testdata/conformance/sv-comp/` | the pinned subset: upstream task files and the property files `no-overflow.prp`, `unreach-call.prp`, `valid-memsafety.prp` (pin and licences: `testdata/conformance/SOURCES.md`) |
+| `tests/cpp/test_svcomp*.cpp` | doctests: properties, decisions, replay, fuzzing, waypoints, witnesses, invariants, data models, scoring, archive, tool-info module |
 
-## What PRISM runs
-
-```
-prism svcomp --prop PROPERTY.prp [--data-model ILP32|LP64] [--allow-exec] TASK.c
-```
-
-runs the pipeline in its own process exactly as
+## `prism svcomp`
 
 ```
-prism TASK.c --no-llm --stage inventory,classify,bmc,pir --out DIR
+prism svcomp [--allow-exec] [--data-model ILP32|LP64] [--out DIR] [--witness FILE]
+             --prop PROPERTY.prp TASK.c
 ```
 
-would (no LLM, no execution of task code: `--allow-exec` only enables the
-replay below). A `.i` task is copied to `.c` first, because the `pir` stage only takes
-`.c`/`.cpp` units (see "Findings" below). The data model comes from the task
-(`--data-model`). The default is LP64. `--data-model ILP32` is opt-in:
-`bmc` then uses 32-bit `long`, `size_t` and pointers, and replay adds
-`-m32`. `pir` stays LP64 (`NOTRUN` on ILP32).
+| option | meaning |
+|---|---|
+| `--prop FILE` | the SV-COMP property file (required) |
+| `--allow-exec` | allow counterexample replay and fuzzing, which compile and run the task (Law 9); without it every refutation is `unknown` |
+| `--data-model ILP32\|LP64` | the task's data model (default LP64; any other value is exit 2) |
+| `--out DIR` | work directory (default `prism-svcomp-out`) |
+| `--witness FILE` | witness path (default `witness.yml`) |
+| `--version` | prints the PRISM version |
+
+It prints exactly these lines:
+
+```
+PRISM-SVCOMP-RESULT: true | false(no-overflow) | false(unreach-call) | false(valid-deref) | false(valid-free) | unknown | error
+PRISM-SVCOMP-REASON: <why>
+PRISM-SVCOMP-WITNESS: <file>          (only when a witness was written)
+```
+
+What it does:
+
+1. Reads the property file. An unsupported property is `unknown`.
+2. Copies the task to `DIR/<stem>.c` (a preprocessed `.i` task is C).
+3. For `no-overflow` only, rewrites the copy so the error calls cannot block
+   a proof (`neutralize_error_calls`, `src/prism/svcomp/property.cpp`):
+   every call statement `reach_error()`, `__VERIFIER_error()` or `abort()`
+   becomes `exit(0)`, line numbers kept. All three end the execution, so the
+   set of reachable overflows is the same. A `__VERIFIER_assert` whose body
+   is then only "exit on a false condition" is renamed to
+   `__VERIFIER_assume` at every call. Nothing is rewritten when the task
+   defines its own `exit()` or already names `__VERIFIER_assume`. Replay,
+   fuzzing and the witness use the original task.
+4. Runs the pipeline in its own process with the stages
+   `inventory,classify,pir`, no LLM, and `allow_exec` off: the pipeline
+   never runs task code. The task is analysed as a Linux program
+   (`x86_64-unknown-linux-gnu`, or i386 with `--data-model ILP32`),
+   whatever the host or `PRISM_TARGET`.
+5. Decides the answer from `report.json` (next section).
+6. If the answer is `unknown`, `--allow-exec` is given and the property is
+   `no-overflow` or `unreach-call`, tries the fuzz fallback.
+7. Writes the witness.
+
+## Properties
+
+`parse_property` reads the LTL formula of the property file. A file that
+names exactly one of these is supported:
+
+| property | formula |
+|---|---|
+| `no-overflow` | `LTL(G ! overflow)` |
+| `unreach-call` | `LTL(G ! call(reach_error()))` |
+| `valid-memsafety` | `LTL(G valid-free)`, `LTL(G valid-deref)`, `LTL(G valid-memtrack)` |
+
+Every other property (`termination`, `no-data-race`, `valid-memcleanup`,
+coverage) is `unknown`.
 
 ## Mapping report.json to an SV-COMP answer
 
-The mapping may never turn a weaker verdict into a stronger answer; it
-follows the verdict laws in [VERDICTS.md](VERDICTS.md).
+`decide` (`src/prism/svcomp/decide.cpp`) reads the findings about `main` of
+the `pir` stage; a crashed `pir` stage is a `STAGE-FAILED` row. It follows
+the verdict laws in [VERDICTS.md](VERDICTS.md): a weaker verdict never
+becomes a stronger answer.
 
-- **`true`** only when a verdict stage that covers the property reports
-  `PROVED`, `PROVED-UNBOUNDED` or `PROVED-CERTIFIED` for `main`, and no
-  verdict stage reports a `FAILED` of the property's class for `main`.
-  Covering stages: `bmc` and `pir` for `no-overflow` and for
-  `unreach-call` (both stages check a reachable `reach_error()` /
-  `__VERIFIER_error()` call as a `FUNC-CONTRACT` property named
-  `reach_error`, and a canonical `__VERIFIER_assert` as `assert`; see
-  "bmc and unreach-call"); none for `valid-memsafety`
-  (the `pir` memory model checks dereferences and frees but no stage
-  encodes `valid-memtrack`, memory leaks), so `valid-memsafety` is never
-  `true`.
-  `PROVED-ASSUMING` and `BOUNDED` are never `true` (Law 2).
-- **`false(...)`** only when a verdict stage reports `FAILED` of the
-  property's class (`INT-SIGNED-OVF`, or an `INT-SHIFT-UB` whose check is a
-  signed left shift overflow — `pir` `shift-base`, `bmc` `shift31` — for
-  no-overflow, see "Shifts and no-overflow"; `FUNC-CONTRACT` whose check
-  is `reach_error`/`assert` for unreach-call (`pir`: `extra["prop"]`,
-  `bmc`: the message prefix `reach_error:`); `MEM-OOB-*` /
-  `PTR-NULL-DEREF` for valid-memsafety) **and the counterexample replays**:
-  the task is compiled with clang or gcc
-  (`-fsanitize=signed-integer-overflow,shift-base` for no-overflow, where
-  a shift must report "left shift of N by M places cannot be represented";
-  a negative left operand does not count), `-fsanitize=address` for memory safety), given the
-  counterexample's `__VERIFIER_nondet_*` values through generated stubs, run
-  in bubblewrap with rlimits, and the sanitizer (or `reach_error`) must fire.
-  Replay executes task code, so it needs `--allow-exec` (Law 9); the
-  benchmark definition must pass it.
-- **`unknown`** otherwise: `NEEDS-HARNESS`, `BOUNDED`, `UNKNOWN`,
-  `TIMEOUT`, `ERROR`, a stage that crashed, a refutation that does not
-  replay, and every other property. Width-dependent ILP32 code is not
-  unknown by itself. `--data-model ILP32` (opt-in; the default is LP64)
-  makes `bmc` encode 32-bit `long`, `size_t` and pointers. `pir` is
-  `NOTRUN` on that model, so it cannot prove the task as LP64.
+| property | a `true` needs | a refutation is a `FAILED` of |
+|---|---|---|
+| `no-overflow` | a `pir` proof of `main` | `INT-SIGNED-OVF`, or `INT-SHIFT-UB` whose check is `shift-base` |
+| `unreach-call` | a `pir` proof of `main` | `FUNC-CONTRACT` whose check is `reach_error` or `assert` |
+| `valid-memsafety` | never `true` | `MEM-OOB-READ`, `MEM-OOB-WRITE`, `PTR-NULL-DEREF` |
 
-A `false` answer comes with `witness.yml`: one `violation_sequence` entry,
-a `function_return` waypoint per nondet value (when the engine reports them)
-and a `target` waypoint.
+The check name is `extra["prop"]` of the finding, else the message prefix
+before `:`. In order:
 
-- `function_return`: constraint `\result == <value>` with format
-  `acsl_expression` (format 2.0 allows only ACSL `\result <op> <constant>`
-  there), located at the closing parenthesis of the call. The call is found
-  at the location the engine reports for it (`extra["nondet_loc"]`, checked
-  against the task text: the call must start exactly there), else at the
+1. No finding about `main` → `unknown`.
+2. Every refutation is replayed (next section), those that report nondet
+   call locations first. The first that replays gives `false(<property>)`;
+   for `valid-memsafety` the replay names the subproperty (`valid-deref` or
+   `valid-free`). If `pir` also proved `main`, the reason says
+   `DISAGREEMENT`.
+3. A refutation that does not replay → `unknown`. It also blocks a proof.
+4. `PROVED`, `PROVED-UNBOUNDED` or `PROVED-CERTIFIED` of `main` by a stage
+   that covers the property → `true`. `PROVED-ASSUMING` and `BOUNDED` are
+   never `true` (Law 2).
+5. Anything else (`NEEDS-HARNESS`, `BOUNDED`, `UNKNOWN`, `TIMEOUT`,
+   `ERROR`, `NOTRUN`, a crashed stage) → `unknown`.
+
+No stage encodes memory leaks (`valid-memtrack`), so a proof never covers
+`valid-memsafety`.
+
+### unreach-call
+
+`pir` (`src/prism/pir/translate.cpp`) checks every call of `reach_error()` or
+`__VERIFIER_error()` as a `FUNC-CONTRACT` property named `reach_error`: a
+reachable call is the violation, whatever the unit's definition of the sink
+does (an empty `static void reach_error(void) {}` included), and the path
+ends there. A `__VERIFIER_assert` declared without a body is checked at the
+call site as the property `assert`; a defined one is analysed like any
+function, so the `reach_error()` call in its body is checked.
+`__VERIFIER_assume` and `assume_abort_if_not` (declared without a body)
+constrain the path; `abort()` inside `assume_abort_if_not` only ends it.
+
+A failing C `assert()` (`__assert_fail` and its variants) is also a
+`FUNC-CONTRACT` check named `assert`, so it is a candidate refutation of
+`unreach-call`. It answers `false` only when the replay shows
+`reach_error`; otherwise the answer is `unknown`. A reachable `abort()`
+elsewhere is a `FUNC-CONTRACT` check named `abort`: it is not an
+`unreach-call` refutation, but it prevents a proof of `main`, so the answer
+is `unknown`. `exit()` ends the path.
+
+### Shifts and no-overflow
+
+The SV-COMP rules define `no-overflow` as an operation whose result type is
+a signed integer type but whose value is out of its range (C11 undefined
+behaviour; conversions to signed types do not count). A signed `E1 << E2`
+with `E1 >= 0` whose value `E1 × 2^E2` does not fit is such an operation
+(C11 6.5.7p4). A negative or too large shift count, and a negative left
+operand, are undefined but do not produce an out-of-range value, so they
+are not `no-overflow` violations.
+
+PRISM reports all of these as `INT-SHIFT-UB`. The mapping accepts only the
+check `shift-base`, which also fires for a negative left operand. The replay
+then decides: only UBSan's report "left shift of N by M places cannot be
+represented" counts.
+
+## Replay
+
+`replay` (`src/prism/svcomp/replay.cpp`) proves a refutation by running it:
+
+- The refutation must carry the values of the `__VERIFIER_nondet_*` calls on
+  its path (`extra["nondet"]`, `fn=value, ...` in call order), unless the
+  task has no nondet call. `pir` reports them from one Z3 model of the
+  violation, only calls that run before the violated check
+  (`src/prism/pir/encode.cpp` `nondet_trace`). Calls inside PRISM's own
+  library models (a failing `malloc`) are not in the list.
+- Without `--allow-exec` the replay is `notrun` (Law 9), and the answer is
+  `unknown`.
+- Generated stubs define each nondet function the task does not define
+  (returning the values in order), `__VERIFIER_assume` (exit 0 when false)
+  and `reach_error` (abort). An unsupported nondet type is `unsupported`.
+- The task and stubs are compiled with `clang`, `gcc` or `cc` from `PATH`:
+  `-g -O0 -w -std=gnu11`, plus `-fsanitize=signed-integer-overflow,shift-base`
+  for `no-overflow` and `-fsanitize=address` for `valid-memsafety`, with
+  `-fno-sanitize-recover=all`, plus `-m32` for ILP32.
+- The binary runs with a 10 s limit in the sandbox (`sandbox::wrap_argv`:
+  bwrap when it works here, resource limits always; the reason records
+  which).
+- It replays when the run shows the violation: a UBSan report of signed
+  overflow, negation, division or a non-representable left shift
+  (`no-overflow`); an abort naming `reach_error` (`unreach-call`); an ASan
+  invalid access (`valid-deref`) or invalid free (`valid-free`).
+
+### Fuzz fallback
+
+When the answer is still `unknown`, `--allow-exec` is given and the property
+is `no-overflow` or `unreach-call`, `fuzz_replay` compiles the task once
+(`-no-pie`, the `no-overflow` sanitizer) and runs it on up to 400 seeds
+within 60 s, 2 s per run. Odd seeds draw small values; even seeds mix in
+type extremes. If every early run times out, seed 1 gets one longer run
+(up to 30 s). The answer becomes `false` only when a run shows the violation
+under the same check as replay. Fuzzing never answers `true` (Law 3). The
+run's nondet values become the witness's waypoints; their call sites come
+from `llvm-symbolizer` and are dropped unless every one resolves in the task
+file.
+
+## Witnesses
+
+Witnesses are format 2.0 YAML (`src/prism/svcomp/witness.cpp`,
+`include/prism/svcomp_witness.hpp`). The metadata names the producer
+(`PRISM` and the binary's version), a UUID, the UTC creation time, and the
+task: input file, its SHA-256, the specification, the data model and the
+language.
+
+**Violation witness** (`false`): one `violation_sequence` entry.
+
+- One `function_return` waypoint per nondet value, constraint
+  `\result == <value>` in format `acsl_expression`, located at the call's
+  closing parenthesis. The call is found at the location the finding reports
+  (`extra["nondet_loc"]`; it must start exactly there), else at the
   function's only call site in the task. A call that is neither ends the
-  waypoint list (a waypoint at the wrong call would make the witness wrong, a
-  missing one only weaker). `pir` reports debug locations, which are ignored
-  for a task with line markers (`# 12 "file.c"`: debug lines then name
-  another file's lines); `bmc` reports physical positions in the analysed
-  text (`extra["nondet_loc_kind"] = "physical"`), which are kept. When both
-  stages refute, a refutation with call locations is replayed first, `pir`'s
-  before `bmc`'s.
-- `target`: for unreach-call, the `reach_error()` call; for no-overflow, the
-  statement or full expression holding the operator UBSan reported. A
-  statement that is the first on its line gets no column (format 2.0 then
-  means the first statement or full expression in that line); a later one
-  gets its start column; a `for` header or a statement continued from an
-  earlier line keeps UBSan's column. The target location has no `function`
+  waypoint list: a waypoint at the wrong call would make the witness wrong,
+  a missing one only weaker. Locations not marked
+  `extra["nondet_loc_kind"] = "physical"` are ignored in a task with line
+  markers (`# 12 "file.c"`); `pir` and the fuzz fallback mark theirs
+  physical.
+- One `target` waypoint. For `unreach-call`: the `reach_error()` call, the
+  only call site or the one on the finding's line; if that is ambiguous, no
+  witness is written. For the other properties: the statement or full
+  expression holding the operation the sanitizer reported. A statement that
+  is the first on its line gets no column (format 2.0 then means the first
+  statement or full expression of the line); a later one gets its start
+  column; a `for` header, several declarators or a statement continued from
+  an earlier line keep the sanitizer's column. The target has no `function`
   field (the violation need not be in `main`).
 
-A `true` answer comes with a correctness witness: one `invariant_set`
-entry (format 2.0). It carries only invariants the engine proved:
-
-- `bmc` `PROVED-UNBOUNDED` with `k_induction = closed-invariants`: the
-  Houdini-filtered loop invariants (`extra["invariants"]`, one list per cut
-  loop) at each loop's keyword (`extra["invariant_loops"]`: kind, line,
-  column of `for`/`while`/`do`, computed from the function body's source
-  position, `FunctionInfo::body_line`/`body_col`; 0 when the body was
-  rewritten by inlining). They are `loop_invariant`s: Houdini checks each
-  one after the loop's init and after every body+increment, i.e. wherever
-  the loop condition is about to be evaluated, which is what format 2.0
-  asks. Left out: `do` loops (proved at the top of the body instead), loops
-  whose keyword is not at the reported position in the task, conjuncts over
-  a name declared in a `for` init (not in scope at the keyword), and
-  conjuncts with `+ - *` unless constant bounds among the exported
-  comparisons keep every subterm within `int` (the engine proves them over
-  wrapping bit-vectors; in C an overflow there would be UB). Dropping a
-  conjunct keeps the witness valid, it only helps the validator less.
-- `pir` `PROVED-UNBOUNDED` with `k_induction = closed-invariants`: the
-  surviving Houdini invariants of the function's own loops
-  (`extra["invariant_conjuncts"]`, structured, over IR value names, and
-  `extra["invariant_loops"]`, the loop start from clang's `llvm.loop`
-  metadata). The wrapper compiles the task once more with `-g` and maps a
-  value to a C variable only when certain at the loop head (one variable,
-  unique name, in scope, no other assignment on the way from its definition
-  to the header), and renders a conjunct only where C means the proved
-  bit-vector relation (signedness, promotion, wrap-around). Tasks with line
-  markers get none.
-- every other proof (`pir` PROVED with loops closed within the unwind, loop
-  free, plain k-induction of `pir` or `bmc`): neither stage exports a loop
-  invariant for these (k-induction proves the step without one), so the
-  witness is the empty invariant set, which is trivially valid and leaves
-  the proof to the validator. No invariant is ever guessed.
-
-## Shifts and no-overflow
-
-The SV-COMP rules define `no-overflow` as: "It can never happen that the
-resulting type of an operation is a signed-integer type but the resulting
-value is not in the range of values that are representable by that type. A
-violation of this property matches what C11 defines as undefined behavior.
-(Hence, conversions to signed-integer types do not violate this property.)"
-(sv-comp.sosy-lab.org, rules page, read 2026-09-23.) A signed `E1 << E2`
-with `E1 >= 0` whose value `E1 × 2^E2` does not fit is such an operation
-(C11 6.5.7p4 makes it undefined). The pinned tasks agree: `byte_add-1`
-(`true`) and `byte_add-2` (`false`) differ only in
-`(unsigned int)r3 << 24U` versus `r3 << 24U`. A negative or too large
-shift count and a negative left operand are undefined too, but their
-result is not an out-of-range value, so the wrapper does not answer
-`false(no-overflow)` for them (they stay `unknown`). PRISM reports all of
-these as `INT-SHIFT-UB`; the mapping accepts the checks that can be a shift
-overflow (`pir` `shift-base`, which also fires for a negative base; `bmc`
-`shift31`), and the replay decides: only UBSan's `shift-base` report "left
-shift of N by M places cannot be represented" counts.
-
-## goto
-
-`loop-invgen/nested6` has a `goto END` out of an `if`, which the `bmc`
-front end used to reject (`ERROR`, "goto unencoded"). Both engines' `bmc`
-now encode structured gotos (`src/prism/bmc_encoder.inc` `goto_stmt` /
-`label_stmt`, `src/prism/bmc.cpp` goto/label handling):
-
-- **Forward, out of blocks:** `goto L` keeps its state until `L:`, which
-  must label a later statement of the goto's own statement list or of an
-  enclosing one (a jump out of nested blocks, loops and switches, as in
-  nested6, or ahead in the same list). The state is merged at the label
-  like a `break` at the end of a loop. A jump past the declaration of a
-  name the label can see is refused (the name is indeterminate there).
-- **Backward, forming a loop:** when `goto L` follows `L:` in the same list
-  (at any depth inside the later statements), the statements from `L:` to
-  the last one containing `goto L` are the body of a loop whose `goto L` is
-  a `continue`: unwound like every other loop (a pass still jumping back
-  after the unwind bound makes the result `BOUNDED`), and havocked in the
-  k-induction step like `Parser::loop_havoc`.
-- **Anything else** (a jump into a block, into an `else` branch, into a
-  later switch arm past a `break`, a label never reached) is `NEEDS-HARNESS`
-  with "unstructured goto unencoded", never `ERROR` and never a guess. A
-  static callee that contains `goto` is not inlined (its labels would be
-  copied per call site).
-
-Tests: `testdata/goto_structured.c` (both engines: forward out of nested
-loops, backward loops that close, an unbounded backward loop proved by
-k-induction, a failure beyond the unwind bound that stays `BOUNDED`, an
-uninitialised read on the goto path, the two unstructured shapes),
-doctest "bmc goto: ..." in `tests/cpp/test_main.cpp` and `tests/cpp/test_bmc_svcomp.cpp`.
-
-nested6 itself does not change its answer: `bmc` is now `NEEDS-HARNESS`
-(its `main` calls the task's own `__VERIFIER_assert`, which is not
-modelled) instead of `ERROR`, and `pir` is still `BOUNDED`, so both
-properties stay `unknown` (re-run 2026-09-24 with `--only nested6`; the
-subset score is unchanged).
-
-## bmc and unreach-call
-
-Until 2026-09-25 `bmc` treated `reach_error()` and `__VERIFIER_error()` like
-`abort()`: the path ended there and nothing was reported, so a `bmc` proof
-said nothing about unreach-call. `loop-simple/deep-nested` (expected
-`false`) shows why that mattered: the old `bmc` reported
-`PROVED-UNBOUNDED` for it, which the mapping correctly ignored for
-unreach-call.
-
-`pir` (`src/prism/pir/translate.cpp`) encodes such a call as a property, as
-the retired `bmc` stage did: reaching it is a violation, a `FAILED`
-`FUNC-CONTRACT` with the check name `reach_error` (message
-`reach_error: FUNC-CONTRACT`); the path still ends there.
-A static definition of the error function in the unit is never inlined over
-the call (the retired `bmc` inliner excluded it; `pir` models `reach_error`
-by name, doctest "pir: a reachable reach_error() call is a FUNC-CONTRACT
-violation"), so an empty
-`static void reach_error(void) {}` cannot make the violation disappear.
-`abort()`, `exit()` and `__assert_fail()` still only end the path (SV-COMP's
-unreach-call is about `reach_error` alone). The Python engine also gained
-the canonical `__VERIFIER_assert` rewrite the C++ `bmc` got in the
-invariants round (`_canonical_verifier_assert`, `_rewrite_verifier_assert`),
-so both engines give the same verdicts (doctest "bmc: a reachable reach_error()
-call ..." in `tests/cpp/test_main.cpp`).
-
-A `bmc` proof of `main` now covers unreach-call: every call of the error
-function reachable from `main` is either encoded (inlined static callees,
-the canonical `__VERIFIER_assert`) or sits in an unmodelled callee, which
-already makes the verdict "not a proof". A `bmc` refutation counts when it
-replays like any other (`reach_error()` must be called in the replay). On
-`deep-nested` the new `bmc` reports `BOUNDED` (the call is reachable only
-after about 2^32 iterations, far beyond the unwind bound, and the
-k-induction step, which closed before, is now open on the `reach_error`
-property), so the answer stays `unknown`.
-
-The cost is on no-overflow: a task whose `reach_error()` is reachable now
-gets `FAILED` (of `FUNC-CONTRACT`) from `bmc` instead of a proof of the
-other properties, exactly as `pir` already did. In the subset that is
-`loop-simple/nested_1b` (expected `true` for no-overflow, `false` for
-unreach-call): no-overflow `true` → `unknown` (−2), unreach-call unchanged.
-
-## Results (local)
-
-### Full pinned set, 2026-10-29 (`work/svcomp`)
-
-Built from `work/svcomp` (clang 18.1.8, Release, Z3 on), on the shared box:
-`build/prism svcomp score --jobs 6` and `build/prism svcomp score --property unreach-call --jobs 6`.
-The witnesses were not validated in this run, so these are unvalidated upper bounds.
-
-| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown/error |
-|---|---|---|---|---|---|---|---|
-| no-overflow | 117 (75 / 42) | **118** | 192 | 38 | 42 | **0** | 37 |
-| unreach-call | 127 (98 / 29) | **130** | 225 | 53 | 24 | **0** | 50 |
-
-no-overflow is 118 on the latest rescore (`--jobs 2`, under a 4 GB address-space cap; fuzz witnesses now carry nondet values). unreach-call is 127 on the same rescore (was 125; 3 tasks hit the per-task timeout at `--jobs 2`). no-overflow went from 114 before that, from 99 (same day, before the fuzz fallback; 38 / 23 / 0 / 56) to 114, and
-from 36 on the earlier baseline. One `true` answer (`bitvector/gcd_3`) dropped to unknown
-because bmc returned UNKNOWN under heavier load; that is a solver timeout, not a logic change.
-
-**Fuzz fallback** (`fuzz_replay`, `src/prism/svcomp/replay.cpp`). When every stage leaves a
-task `unknown` and `--allow-exec` is given, the task is compiled once with the property's
-sanitizer and run on up to 400 seeded input streams (60 s budget, 2 s per run). Odd seeds
-draw small values and even seeds mix in type extremes. The answer becomes `false` only when
-a run shows the violation under the same check replay uses (a UBSan overflow report, or a
-`reach_error()` abort). It never produces `true`. It decided 17 no-overflow tasks (the
-`s3_*` CIL tasks whose gotos bmc cannot encode, plus `soft_float_1-*`) and 12 unreach-call
-tasks. The violation witness gives the target only, with no nondet waypoints.
-
-**Remaining unknowns, by cause.**
-- no-overflow (40). 38 are expected `true` and need a proof. The causes are bmc BOUNDED
-  (loops not closed: loop-acceleration, loop-invgen, loop-new, sum02, jain_7-2), unencoded
-  CIL gotos into a loop body (`s3_*a` variants and `soft_float_*a`, NEEDS-HARNESS), and
-  timeouts (`nested6`, `nested9`). 2 are expected `false` (`s3_clnt_1*-1a/-2a`): the
-  overflow lies behind a deep protocol-state path, and 20,000 fuzz seeds did not reach it.
-- unreach-call (53). 47 are expected `true`: 25 BOUNDED, 12 NEEDS-HARNESS, 6 bmc UNKNOWN
-  and 5 timeouts. 6 are expected `false` and fuzzing did not reach them.
-- The largest sound next steps are general `goto` encoding in bmc (about 23 tasks across
-  both properties) and loop-invariant inference for BOUNDED mains.
-
-### Earlier subset results
-
-Run on 2026-09-24 with the C++ engine built from `claude/svcomp-2`
-(binary SHA-256 prefix `4cab37bffd21`), clang 18.1.3, bubblewrap available,
-BenchExec 3.35 installed (so the answers went through the tool-info
-module's `determine_result`), on a shared machine:
-
-```
-build/prism svcomp score --jobs 2
-build/prism svcomp score --property unreach-call --jobs 2
-```
-
-(The runs before 2026-09-30 used the former Python runner
-`tools/svcomp/run_subset.py` with the same scoring; `prism svcomp score`
-replaced it and gave the same answers, task for task, on the whole
-enlarged subset.)
-
-Scoring as in SV-COMP: correct `true` +2, correct `false` +1, incorrect
-`true` −32, incorrect `false` −16, `unknown` 0. SV-COMP awards the points
-of an answer only when a validator confirms its witness; every witness of
-the answers below (38: 16 correctness, 22 violation) was confirmed by
-CPAchecker 4.2.2, and 30 of them also by UAutomizer 0.3.1 (see "Witness
-validation"), so these are the points the rules would give.
-
-| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown |
-|---|---|---|---|---|---|---|---|
-| no-overflow | 45 (25 / 20) | **41** | 70 | 11 | 19 | **0** | 15 |
-| unreach-call | 20 (16 / 4) | **13** | 36 | 5 | 3 | **0** | 12 |
-
-The previous branch scored 37 and 13, with the same `true` answers but no
-correctness witnesses (so those points were an upper bound). Two runs of
-this branch (before and after merging the latest main line) gave the same
-numbers.
-
-Where the points moved (no-overflow, +4):
-
-- `byte_add-2`, `byte_add_1-2`, `byte_add_2-1` (`pir` `shift-base`) and
-  `modulus-1` (`bmc` `shift31`, `1 << 31`) answer `false(no-overflow)`:
-  a signed left shift overflow is an overflow under the rules (see "Shifts
-  and no-overflow"), and each replays under `-fsanitize=shift-base`
-  ("left shift of 1 by 31 places cannot be represented in type 'int'" for
-  `modulus-1`). `modulus-1` is a `bmc`-only refutation with two calls of
-  `__VERIFIER_nondet_uint()`; its witness has both `function_return`
-  waypoints at the exact calls (bmc call sites, see "Mapping"); without
-  them the waypoint list would stop before the first call (two call sites,
-  no location).
-
-Where the points are still lost (no-overflow):
-
-- `jain_5-1` (`false`) and the `true` tasks `gcd_2`, `jain_1-1`, `jain_2-1`,
-  `jain_5-2`, `num_conversion_1`, `parity`, `sum02-1`, `half_2`, `nested6`
-  are `BOUNDED` (loops not closed within unwind 8, `pir` k-induction step
-  open at k = 1, 2); `bmc` is `NEEDS-HARNESS` on all of them (the task's own
-  `__VERIFIER_assert` is not modelled; nested6 was a front-end `ERROR` on
-  its `goto` before the goto model, see "goto"), so the Houdini invariants
-  that could close them are never tried; `large_const` is `NEEDS-HARNESS`;
-  `interleave_bits` is an ILP32 task using `sizeof`.
-- `byte_add-1`, `modulus-2`, `id_trans` (`true`): the `pir` stage stops at a
-  reachable `assert`/`abort` failure; a `FAILED` of another property says
-  nothing about overflow on the other paths.
-
-unreach-call: `sum02-1` (`false`) is `BOUNDED`; the other 3 `false` tasks
-answer `false(unreach-call)`.
-
-### 2026-09-24: loop invariants (branch `claude/invariants`)
-
-`pir` loop invariants (docs/PIR.md "Loop invariants") and `bmc` checking a
-canonical `__VERIFIER_assert` call as `assert((int)(E))`: no-overflow
-**51**/70 (16 correct true, 19 correct false, 0 incorrect), unreach-call
-**21**/36 (9 / 3 / 0). Newly `true`: `jain_1-1`, `jain_2-1`, `jain_5-2`,
-`nested6` (pir, both properties; their witnesses carry 5, 10, 10 and 15
-invariant conjuncts, e.g. `(y & 1) == 1` and `k == n`) and `num_conversion_1`
-(bmc, no-overflow). Validation of the no-overflow correctness witnesses:
-31 of 32 runs confirmed (CPAchecker 4.2.2 and UAutomizer 0.3.1 confirm the
-four invariant-carrying witnesses except CPAchecker on `nested6`, a
-timeout); the unreach-call validation did not finish before that report
-and was completed on 2026-09-25 (table below).
-`bmc` now reaches `BOUNDED` with Houdini on `jain_5-2`, `half_2` & co.
-(its invariants do not close them). A `bmc` proof was then still not used
-for unreach-call (see "bmc and unreach-call" for the change that followed).
-
-Unreach-call witnesses of that run (all 12 answers: 9 `true`, 3 `false`),
-each given to both validators as in "Witness validation" (900 s limit;
-UAutomizer killed after 1020 s wall):
-
-| task | answer | witness | CPAchecker 4.2.2 | UAutomizer 0.3.1 |
-|---|---|---|---|---|
-| bitvector/byte_add_1-1 | true | empty invariant set | confirmed (30 s) | timeout |
-| bitvector/byte_add_2-2 | true | empty invariant set | confirmed (16 s) | timeout |
-| bitvector/gcd_1 | true | empty invariant set | confirmed (19 s) | confirmed (688 s) |
-| bitvector/jain_1-1 | true | pir invariants | confirmed (7 s) | confirmed (31 s) |
-| bitvector/jain_2-1 | true | pir invariants | confirmed (7 s) | confirmed (38 s) |
-| bitvector/jain_5-2 | true | pir invariants | confirmed (9 s) | confirmed (18 s) |
-| loop-invgen/nested6 | true | pir invariants | timeout | confirmed (23 s) |
-| loop-simple/nested_1 | true | empty invariant set | confirmed (6 s) | confirmed (10 s) |
-| loop-simple/nested_2 | true | empty invariant set | confirmed (31 s) | confirmed (13 s) |
-| bitvector/byte_add-1 | false | 2 function_return + target | confirmed (13 s) | rejected (function_return not matched) |
-| loop-invgen/id_trans | false | 3 function_return + target | confirmed (12 s) | rejected (function_return not matched) |
-| loop-simple/nested_1b | false | target | confirmed (11 s) | confirmed (22 s) |
-
-CPAchecker confirmed 11 of 12 (nested6: timeout), UAutomizer 8 of 12 (two
-timeouts on empty invariant sets, the two known `function_return`
-rejections, see "Witness validation"); every answer has at least one
-confirming validator. No witness was refuted with a counterexample or
-"invalid invariant".
-
-### 2026-09-25: bmc covers unreach-call; subset enlarged to 174 tasks
-
-The pinned subset now holds every task of `c/bitvector`, `c/loop-simple`,
-`c/loop-invgen`, `c/loop-new`, `c/loop-acceleration` and
-`c/signedintegeroverflow-regression` at the pinned commit that has a
-verdict for no-overflow or unreach-call (testdata/conformance/SOURCES.md; whole
-directories, not a selection by PRISM's results): 117 no-overflow tasks
-(75 `true`, 42 `false`) and 127 unreach-call tasks (98 / 29). `bmc` proofs
-now count for unreach-call ("bmc and unreach-call"), and `pir` passes
-`-fbracket-depth=4096` to clang (four `*-reducer` tasks nest parentheses
-deeper than clang's default 256 and failed in the front end; they now
-reach the encoder, without changing an answer). Binary SHA-256 prefix
-`c59b5e977165`, clang 18.1.3, BenchExec 3.35 installed:
-
-| property | tasks (true / false) | score | max | correct true | correct false | incorrect | unknown |
-|---|---|---|---|---|---|---|---|
-| no-overflow | 117 (75 / 42) | **88** | 192 | 35 | 18 | **0** | 64 |
-| unreach-call | 127 (98 / 29) | **117** | 225 | 54 | 9 | **0** | 64 |
-
-By directory (points / max; correct true, correct false, unknown):
-
-| directory | no-overflow | unreach-call |
-|---|---|---|
-| bitvector | 28 / 104 (10, 8, 50) | 21 / 66 (10, 1, 25) |
-| loop-acceleration | 4 / 16 (2, 0, 6) | 42 / 66 (18, 6, 19) |
-| loop-invgen | 20 / 32 (10, 0, 6) | 35 / 57 (17, 1, 11) |
-| loop-new | 6 / 8 (3, 0, 1) | 8 / 22 (4, 0, 7) |
-| loop-simple | 10 / 12 (5, 0, 1) | 11 / 14 (5, 1, 2) |
-| signedintegeroverflow-regression | 20 / 20 (5, 10, 0) | – |
-
-On the 45 / 20 tasks of the earlier rounds: no-overflow 51 → 48,
-unreach-call 21 → 23. For comparison, the invariants round's binary
-(`a573b2ab1`) with that round's wrapper, on the whole enlarged set:
-no-overflow 91, unreach-call 105, also 0 incorrect.
-
-Where the points moved:
-
-- unreach-call **+12**: `bitvector/num_conversion_1`, `num_conversion_2`,
-  `loop-acceleration/simple_2-1_abstracted`, `simple_4-2_abstracted`,
-  `loop-simple/nested_4`, `nested_5` answer `true` from a `bmc`
-  `PROVED-UNBOUNDED` (`pir` is `BOUNDED`, `UNKNOWN`, or stops at a
-  reachable `abort()`, which `pir` reports and SV-COMP does not count).
-- no-overflow −2: `loop-simple/nested_1b` (see "bmc and unreach-call").
-- no-overflow −1: `bitvector/byte_add-2` (`false`) is `unknown`: `pir` now
-  reports the reachable `__VERIFIER_assert` failure first instead of the
-  `shift-base` overflow. This comes from the `pir` changes merged since the
-  invariants round (certified mode, C++ models), not from this branch: the
-  invariants binary still reports `shift-base`, and this branch does not
-  touch `pir` apart from the clang flag above (the same flag-less `pir`
-  run gives the same `assert` finding).
-
-Where the points are still lost:
-
-- **ILP32 tasks with width-dependent types: 64 of the 128 `unknown`
-  answers** (41 no-overflow, 23 unreach-call: every `s3_*` and
-  `soft_float_*` task of `bitvector`, plus `gcd_4`, `sum02-2`,
-  `interleave_bits`). This run predates `--data-model ILP32`. The wrapper
-  answered `unknown` for these because the encoders were LP64 only. That
-  early refusal is gone (see "What is missing" item 4). The tables above
-  were not remeasured after the change.
-- `BOUNDED` without a closing invariant: most of the rest (`gcd_2/3`,
-  `jain_7-2`, `parity`, `sum02-1`, `half_2`, `nest-if3`, `seq-3`,
-  `fragtest_simple`, `count_by_k`, `gauss_sum`, `half`, `nested-1`, and the
-  `loop-acceleration` `false` tasks whose violation needs more iterations
-  than the unwind bound: `array_1-1`, `array_2-1`, `const_1-2`,
-  `diamond_1-2`, `nested_1-2`, `phases_1-2`, `simple_1-1`, `simple_4-1`,
-  `array_3-2`).
-- `NEEDS-HARNESS`: `large_const`, `heapsort`, the `id_build`/
-  `apache-get-tag`/`gauss_sum` `p+`-reducers (`bmc`: the reducers'
-  `__return_main` global and pointer code; `pir`: `BOUNDED`,
-  `NEEDS-HARNESS`, or an uninitialised read in `apache-get-tag.i.p+sep`);
-  `MADWiFi-encode_ie_ok` is a `bmc` `ERROR` (as before this branch) and
-  `pir` `BOUNDED`.
-- `loop-simple/nested_6` (unreach-call): timeout (see "BenchExec").
-- A `pir` `FAILED` of another property stops `pir` before a proof:
-  `byte_add-1`, `modulus-2`, `id_trans` (no-overflow, a reachable
-  assertion failure) and `modulus-2` (unreach-call, a reachable `abort()`).
-
-## BenchExec
-
-The same subset was run in BenchExec 3.35 (`benchexec` with the tool-info
-module `tools/svcomp/prism.py` and the benchmark definition
-`tools/svcomp/prism-subset.xml`), inside BenchExec's container. cgroups (v1)
-are available in this environment; the container needs
-`--read-only-dir / --overlay-dir /tmp --overlay-dir /home` because the
-overlay mount of `/` fails here:
-
-```
-PYTHONPATH=tools/svcomp benchexec tools/svcomp/prism-subset.xml --tool-directory DIR \
-    --read-only-dir / --overlay-dir /tmp --overlay-dir /home -M 12GB
-```
-
-(DIR holds the `prism` binary; the runs above used the former Python wrapper scripts next to it.) Limits:
-15 min CPU time and 4 cores as in SV-COMP; memory 12 GB instead of 15 GB,
-because this container's cgroup allows only 14.3 GB and BenchExec refuses
-a larger limit (the benchmark definition asks for 15 GB). BenchExec needs
-every property file a task definition names, so the run used a copy of the
-suite with the five property files the repository does not carry
-(`coverage-*.prp`, `termination.prp`) added from the pinned sv-benchmarks
-commit.
-
-Result: the same answers as above, task for task: no-overflow 11 correct
-`true`, 19 correct `false`, 15 `unknown`; unreach-call 5 / 3 / 12; 0
-incorrect; BenchExec score 54 of 106 (= 41 + 13). No run came near a
-limit: the most CPU time was 52.6 s (`gcd_1`, unreach-call), the most
-memory 661 MB; the 65 runs took 151 s of CPU time together. The validators
-were not run under BenchExec (they ran as below, with their own time
-limits).
-
-**2026-09-26, verified on merged `main` (`02d7da9be`)** with
-`PRISM_BIN=build/prism python tools/svcomp/run_subset.py -j 2` on a loaded
-WSL host: no-overflow score **88** (35 correct `true`, 18 correct `false`, 0
-incorrect); unreach-call score **115** (53 correct `true`, 9 correct `false`,
-0 incorrect); combined **203** of 417. Matches the 2026-09-25 enlarged-subset
-run below.
-
-**2026-09-25, enlarged subset (244 runs: 117 no-overflow, 127
-unreach-call), same limits and command line**, binary of this branch
-(SHA-256 prefix `c59b5e977165`), on a machine shared with other jobs (load
-average 13–20 on 4 cores): BenchExec score **203** of 417, 88 correct
-`true`, 27 correct `false`, 0 incorrect, 129 `unknown`. That is the
-`run_subset.py` result (88 + 117 = 205) task for task except
-`loop-invgen/apache-escape-absolute.i.v+cfa-reducer` (no-overflow), which
-BenchExec ended as `OUT OF MEMORY` at a measured peak of 280 MB, far below
-the 12 GB limit (host memory pressure from the other jobs, not the run's
-own use); re-run alone in BenchExec it answers `true` for both properties
-(35 s and 26 s CPU). The only other limit reached was
-`loop-simple/nested_6` (unreach-call, expected `true`): BenchExec killed it
-at its wall-time limit (931 s wall, 281 s CPU on the loaded machine); its
-six nested constant loops make `bmc` unroll 6^6 iterations with a solver
-call each (`pir` stops at its 6000-block budget with `UNKNOWN`); run alone,
-outside BenchExec, `bmc` did not finish within 300 s wall either, so it is
-most likely a timeout under the 15 min CPU limit too (not measured). Apart from `nested_6` the most CPU time was 181.6 s
-(`loop-invgen/SpamAssassin-loop.i.v+cfa-reducer`, no-overflow) and the
-most memory 682 MB (`bitvector/gcd_2`); the 244 runs took 1528 s of CPU
-time together.
+**Correctness witness** (`true`): one `invariant_set` entry. It carries only
+invariants `pir` proved: when the deciding finding is a proof (not
+`PROVED-ASSUMING`) with `k_induction = closed-invariants`, its Houdini loop
+invariants (`extra["invariant_conjuncts"]`, over IR value names, and
+`extra["invariant_loops"]`, the loop positions). `src/prism/svcomp/debug_ir.cpp`
+compiles the task once more with `-g` and maps a value to a C variable only
+when that is certain at the loop head (one variable, a unique name, in scope,
+not reassigned on the way to the header). A conjunct is rendered only where
+C means the proved bit-vector relation (signedness, promotion,
+wrap-around). Left out: `do` loops, loops whose keyword is not at the
+reported position, conjuncts over a name declared in a `for` init, and every
+invariant of a task with line markers. Every other proof exports the empty
+invariant set, which is trivially valid and leaves the proof to the
+validator. No invariant is ever guessed, and dropping a conjunct keeps the
+witness valid.
 
 ## Witness validation
 
-Every `witness.yml` of the runs above (30 no-overflow, 8 unreach-call) was
-given to two SV-COMP validators that read format 2.0. Both were downloaded
-through this environment's proxy and run on the task file the witness names,
-with the task's data model and the validators' default configuration:
+Nothing in this repository validates a witness. To check one, give it to a
+format-2.0 validator with the task and its data model, for example:
 
-- **CPAchecker 4.2.2** (`CPAchecker-4.2.2-unix.zip` from
-  cpachecker.sosy-lab.org, OpenJDK 21):
-  `bin/cpachecker --witnessValidation --witness witness.yml --spec PROP.prp --32|--64 --timelimit 900s TASK.i`.
-  Confirmed = `Verification result: FALSE` for a violation witness, `TRUE`
-  for a correctness witness.
-- **UAutomizer 0.3.1** (`UltimateAutomizer-linux.zip` of the
-  `ultimate-pa/ultimate` GitHub release `v0.3.1`; `--ultversion`:
-  `0.3.1-dev-35a8436538`):
-  `python3 Ultimate.py --spec PROP.prp --architecture 32bit|64bit --file TASK.i --validate witness.yml --witness-type violation_witness|correctness_witness`.
-  Confirmed = result `FALSE(...)` for a violation witness, `TRUE` for a
-  correctness witness. Killed after 1020 s wall time (the competition
-  gives correctness validation 900 s).
+```
+cpachecker --witnessValidation --witness witness.yml --spec PROP.prp --64 --timelimit 900s TASK.i
+Ultimate.py --spec PROP.prp --architecture 64bit --file TASK.i --validate witness.yml --witness-type violation_witness
+```
 
-Correctness witnesses (`true` answers). All are the empty invariant set:
-no proof in the subset exports a loop invariant (see "Mapping").
+A validator confirms a violation witness with `FALSE` and a correctness
+witness with `TRUE`. UAutomizer 0.3.1 did not match `function_return`
+waypoints on plain assignments `x = __VERIFIER_nondet_int();` (it rejects the
+sv-witnesses format-2.0 example witness the same way); PRISM keeps
+`function_return`, which format 2.0 defines for a nondet return value.
 
-| task | property | proof | CPAchecker 4.2.2 | UAutomizer 0.3.1 |
-|---|---|---|---|---|
-| bitvector/byte_add_1-1 | no-overflow | pir PROVED (unwind) | confirmed | confirmed |
-| bitvector/byte_add_2-2 | no-overflow | pir PROVED (unwind) | confirmed | confirmed |
-| bitvector/gcd_1 | no-overflow | pir PROVED (unwind) | confirmed | confirmed |
-| loop-simple/nested_1 | no-overflow | bmc PROVED-UNBOUNDED | confirmed | confirmed |
-| loop-simple/nested_1b | no-overflow | bmc PROVED-UNBOUNDED | confirmed | confirmed |
-| loop-simple/nested_2 | no-overflow | bmc PROVED-UNBOUNDED | confirmed | confirmed |
-| signedintegeroverflow-regression/ConversionToSignedInt | no-overflow | pir PROVED (loop-free) | confirmed | confirmed |
-| signedintegeroverflow-regression/IntegerPromotion-1 | no-overflow | pir PROVED (loop-free) | confirmed | confirmed |
-| signedintegeroverflow-regression/Multiplication-1 | no-overflow | pir PROVED (loop-free) | confirmed | confirmed |
-| signedintegeroverflow-regression/NoNegativeIntegerConstant | no-overflow | pir PROVED (loop-free) | confirmed | confirmed |
-| signedintegeroverflow-regression/UsualArithmeticConversions | no-overflow | pir PROVED (loop-free) | confirmed | confirmed |
-| bitvector/byte_add_1-1 | unreach-call | pir PROVED (unwind) | confirmed | timeout |
-| bitvector/byte_add_2-2 | unreach-call | pir PROVED (unwind) | confirmed | timeout |
-| bitvector/gcd_1 | unreach-call | pir PROVED (unwind) | confirmed | timeout |
-| loop-simple/nested_1 | unreach-call | pir PROVED (unwind) | confirmed | confirmed |
-| loop-simple/nested_2 | unreach-call | pir PROVED (unwind) | confirmed | confirmed |
+## Data models
 
-CPAchecker confirmed 16 of 16, UAutomizer 13 (3 timeouts, no rejection).
-An empty invariant set gives the validator nothing to check and nothing to
-use: it re-proves the program itself. The validators do check the
-invariants they get: for `gcd_1`, a witness with the `loop_invariant` `0`
-or `b < 0` at the `while` of `gcd_test` is rejected by CPAchecker ("invalid
-invariant") and UAutomizer, one with `1` is confirmed by both.
+The default data model is LP64. `--data-model ILP32` (the score harness and
+`tools/svcomp/prism.py` pass the task's `options.data_model`) makes `pir`
+lower the task and its library models for `i386-unknown-linux-gnu`: 32-bit
+`long`, `size_t` and pointers (`include/prism/pir/frontend.hpp`). That needs
+the 32-bit glibc headers (Debian: `libc6-dev-i386`). Replay and fuzzing add
+`-m32`, so they need a 32-bit C toolchain with the i386 sanitizer runtimes;
+without one the build fails and a refutation stays `unknown`. On Windows an
+ILP32 replay is `notrun`. SV-COMP tasks are always analysed as Linux
+programs.
 
-Houdini invariants: no `true` answer of the subset comes from a
-`closed-invariants` proof (see "Results"), so that path was checked on a
-small program outside the subset (`n` nondet in `[0, 1000]`,
-`while (i < n) { s = s + 2; i = i + 1; }`, no-overflow): `bmc` proves it
-`PROVED-UNBOUNDED` with 25 template invariants; the witness carries 13 of
-them at the `while` (for example `i <= 1000` and `s == 2 * i`; those with
-arithmetic over the unbounded `s` or `n`, such as `s <= 2 * n`, are left
-out), and both validators confirm it (CPAchecker in 21 s, UAutomizer in
-107 s).
+## `prism svcomp score`
 
-Violation witnesses (`false` answers):
+```
+prism svcomp score [--property no-overflow|unreach-call] [--jobs N] [--out DIR]
+                   [--timeout S] [--only SUBSTRING] [--suite DIR] [--prism BIN]
+```
 
-| task | property | waypoints | CPAchecker 4.2.2 | UAutomizer 0.3.1 |
-|---|---|---|---|---|
-| bitvector/byte_add-1 | unreach-call | 2 function_return + target | confirmed | rejected (function_return not matched) |
-| loop-invgen/id_trans | unreach-call | 3 function_return + target | confirmed | rejected (function_return not matched) |
-| loop-simple/nested_1b | unreach-call | target | confirmed | confirmed |
-| bitvector/jain_1-2 | no-overflow | 1 function_return + target | confirmed | confirmed |
-| bitvector/jain_2-2 | no-overflow | 1 function_return + target | confirmed | confirmed |
-| bitvector/jain_4-1 | no-overflow | 1 function_return + target | confirmed | confirmed |
-| bitvector/jain_6-2 | no-overflow | 1 function_return + target | confirmed | confirmed |
-| bitvector/jain_7-1 | no-overflow | 1 function_return + target | confirmed | confirmed |
-| bitvector/byte_add-2 | no-overflow | 2 function_return + target | confirmed | rejected (function_return not matched) |
-| bitvector/byte_add_1-2 | no-overflow | 1 function_return + target | confirmed | rejected (function_return not matched) |
-| bitvector/byte_add_2-1 | no-overflow | 1 function_return + target | confirmed | rejected (function_return not matched) |
-| bitvector/modulus-1 | no-overflow | 2 function_return (bmc call sites) + target | confirmed | rejected (function_return not matched) |
-| signedintegeroverflow-regression/AdditionIntMax | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/AdditionIntMin | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/Division-1 | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/Multiplication-2 | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/NoConversion | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/PostfixDecrement | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/PostfixIncrement | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/PrefixDecrement | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/PrefixIncrement | no-overflow | target | confirmed | confirmed |
-| signedintegeroverflow-regression/UnaryMinus | no-overflow | target | confirmed | confirmed |
+It runs `prism svcomp --allow-exec` on every task of the subset with a
+verdict for the property (default `no-overflow`), one process session per
+task (a timeout kills the whole tree; default 900 s, `--jobs` default 2).
+The pinned subset in this repository is trusted, so its tasks run with
+`--allow-exec`. Points as in SV-COMP: correct `true` +2, correct `false` +1,
+incorrect `true` −32, incorrect `false` −16, `unknown`, `error` and timeout
+0. No validator runs, so the score is an unvalidated upper bound. It writes
+`DIR/score.md` and `DIR/results.json` and exits 1 on any incorrect answer.
+The suite defaults to `testdata/conformance/sv-comp` above the working
+directory or the binary.
 
-CPAchecker confirmed 22 of 22, UAutomizer 17 of 22. In SV-COMP a witness
-counts when a validator confirms it, so all 22 `false` answers would score.
-The five UAutomizer rejections are all plain `x = __VERIFIER_nondet_*();`
-calls (see below).
+### Last recorded scores
 
-An intermediate run of this branch showed why the `bmc` trace needs a cut:
-`bmc` listed every nondet call whose path guard the model makes true,
-including calls encoded after the violated check (`jain_4-1`: three values,
-the overflow is in the first loop iteration), and once both stages reported
-call locations the `bmc` trace was used; CPAchecker rejected the four
-`jain_*` witnesses whose waypoints went past the target. `bmc` now lists
-only the calls encoded before the violated check, `pir`'s trace (which
-stops at the check) is preferred, and all 22 are confirmed.
+These are the last rescores of the pinned subset with a recorded commit.
+That binary still had the `bmc` stage (deleted since, commit c66284cde), so
+they do not describe the current engine; the subset has not been rescored
+since.
 
-Checks that the validators really read the waypoints:
+| property | date, commit | score / max | correct true | correct false | incorrect | unknown |
+|---|---|---|---|---|---|---|
+| no-overflow | 2026-10-30, 237a3b309 | 156 / 192 | 57 | 42 | 0 | 18 |
+| unreach-call | 2026-10-30, e4deccc86 | 152 / 225 | 64 | 24 | 0 | 39 |
 
-- CPAchecker's log shows the `WitnessAutomaton` in the analysis, and its
-  counterexample for `id_trans` has exactly the witness's values
-  (`nlen = 0`, `idBitLength = 28`, `material_length = 7`). With one value
-  changed (`\result == 3` instead of 28, a run that never reaches
-  `reach_error`) CPAchecker answers `TRUE`, i.e. rejects the witness.
-- With the `AdditionIntMax` target moved one line down (to the `printf`),
-  both validators reject the witness.
+## `prism svcomp pack`
 
-The two UAutomizer rejections: its log lists every `function_return`
-waypoint of `byte_add-1` and `id_trans` as "unmatched", so it explores no
-path at all. Those calls are simple assignments (`a = __VERIFIER_nondet_uint();`);
-the `jain_*` calls that it does match sit inside an expression
-(`y = y + 2*__VERIFIER_nondet_int();`). UAutomizer 0.3.1 matched none of
-the placements tried for the `id_trans` calls (the closing parenthesis as
-format 2.0 specifies, the call's start, the statement's start, the `;`, no
-column), and it also rejects the format-2.0 example witness of the
-sv-witnesses repository (`examples/unsafe-program-example.symbiotic.witness-2.0.yml`,
-same kind of calls) with the same "unmatched" message. A witness from
-CPAchecker for `id_trans`, which uses `assumption` waypoints on the
-assigned variables instead of `function_return`, is confirmed by
-UAutomizer. PRISM keeps `function_return` (what format 2.0 defines for a
-nondet return value, and what CPAchecker confirms).
+```
+prism svcomp pack [--out prism-svcomp.tar.gz] [--prism BIN] [--repo DIR]
+```
 
-Witness format problems the validators showed, fixed on this branch:
+It builds a tarball (with `cmake -E tar`, else `tar`) that unpacks to
+`prism/`: the `prism` binary (BIN, default the running executable), the
+tool-info module `prism.py`, `README.md` and `fm-tools.yml` from
+`tools/svcomp/`, the repository `LICENSE`, `MANIFEST.json` (format version,
+creation time, PRISM version, git commit, file list) and
+`dependencies.json` (the `clang` and `opt` versions found on `PATH`, whether
+`bwrap` is there, and the optional `PRISM_FUNCTION_BUDGET`,
+`PRISM_HOUDINI_BUDGET` and `PRISM_CERTIFY_BUDGET` knobs). clang and opt are
+recorded, not bundled. CI builds the archive and lists it
+(`.github/workflows/ci.yml`).
 
-- `function_return` constraints were written with format `c_expression`;
-  format 2.0 requires `acsl_expression` for `\result <op> <constant>` (the
-  schema text; CPAchecker accepted either).
-- The no-overflow `target` pointed at the operator UBSan reports
-  (`int x = (2147483647 ` **`+`** ` 1) - 23;`). Format 2.0 wants the first
-  character of the statement or full expression; UAutomizer rejected 12 of
-  15 no-overflow witnesses for it. Now a statement first on its line gets
-  no column (see "Mapping" above), which both validators accept. UAutomizer
-  does not match the target at a leading `(` of an initializer, only at the
-  first operand or without a column.
-- The target carried `function: main` although the `reach_error()` call or
-  the overflow can be in another function; the field is now left out.
+## BenchExec
 
-The format linter of the sv-witnesses repository (`witnesslint` 2.2.1-dev,
-`--svcomp --expectViolationWitness --expectedWitnessVersion 2.0`) accepts
-the witnesses. Its `--strictChecking` mode stops at every `target`
-waypoint with "Unknown waypoint type target" (a linter limitation: that
-check only knows assumption, branching and function waypoints).
+`tools/svcomp/prism.py` is the one Python file of the entry: BenchExec
+loads tool-info modules as Python classes. It runs
+`prism svcomp OPTIONS --prop PROPERTY.prp [--data-model DM] TASK` and maps
+the `PRISM-SVCOMP-RESULT:` line to BenchExec's results; no result line is
+`TIMEOUT` when BenchExec stopped the run for time, else `ERROR`. CI runs
+BenchExec's own check of the module:
 
-The validators, their downloads and the scripts that ran them are not part
-of this repository (the six linked libraries in `third_party/` are the only
-vendored code). Re-running needs Java 21 and the two archives above.
+```
+PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism --tool-directory build --no-container
+```
 
-## What is missing for an actual entry
+Run it outside the repository root, so that the module name `prism` means
+this file. The subset runs in BenchExec with:
 
-1. **Nondet values, remaining gaps.** `bmc` and `pir` report the values of
-   the `__VERIFIER_nondet_*` calls a refutation of `main` executes, in call
-   order, and each call's location (`pir`: debug location; `bmc`: physical
-   position, tagged into the call's name before inlining and unrolling).
-   Calls inside PRISM's own library models (for example `malloc` failing)
-   are not in the list, so a replay can take another path than the model
-   did (the replay then fails and the answer stays `unknown`). A `bmc` call
-   site's column is off when a block comment precedes the call on the same
-   line (the front end drops the comment delimiters); the wrapper then
-   finds no call at that position and falls back to the unique call site.
-   Floating-point nondet values are reported by `pir` but not yet exercised
-   by any task in the subset. Witness validation ran with default
-   validator settings, outside BenchExec.
-2. **Correctness witnesses, remaining gaps.** Every `true` answer has one
-   (all 16 confirmed by CPAchecker), but in the subset they are all empty:
-   `pir`'s k-induction and bounded proofs have no invariant to export, and
-   `bmc`'s Houdini invariants (exported at the loop keyword) only reach
-   tasks `bmc` can encode. A validator must re-prove the program, which
-   UAutomizer did not do within 900 s for three unreach-call tasks.
-3. **Other properties.** `unreach-call` is mapped and scored above;
-   `valid-memsafety` can only ever answer `false(valid-deref)` /
-   `false(valid-free)` from a replayed refutation; `termination`,
-   `no-data-race`, `valid-memcleanup` and the coverage properties are
+```
+PYTHONPATH=tools/svcomp benchexec tools/svcomp/prism-subset.xml --tool-directory DIR
+```
+
+where DIR holds the `prism` binary. The benchmark definition passes
+`--allow-exec` (a `false` answer needs a replay) and collects
+`witness.yml`. BenchExec needs every property file a task definition names;
+the subset carries only `no-overflow.prp`, `unreach-call.prp` and
+`valid-memsafety.prp`. Where BenchExec's overlay mount of `/` fails, add
+`--read-only-dir / --overlay-dir /tmp --overlay-dir /home`; where the cgroup
+allows less than 15 GB, lower the limit with `-M`.
+
+## What is missing for an entry
+
+1. **Bundled toolchain.** The archive records `clang`/`opt`; it does not
+   carry them. The `pir` stage needs the pinned LLVM (`PRISM_LLVM_BIN`, or
+   the pinned build baked in at build time); replay needs a C compiler with
+   sanitizer runtimes.
+2. **Registration.** `prism.py` is not merged into BenchExec, and
+   `fm-tools.yml` is a draft without versions, an archived release URL or
+   maintainers.
+3. **Properties.** `valid-memsafety` can only answer `false(valid-deref)` or
+   `false(valid-free)`; `termination`, `no-data-race`, `valid-memcleanup` and
+   the coverage properties are `unknown`.
+4. **Correctness witnesses** are empty unless `pir` closed the loops with
+   Houdini invariants; a validator must then re-prove the program.
+5. **Nondet values from library models** (a failing `malloc`) are not in
+   the trace, so such a refutation replays down another path and stays
    `unknown`.
-4. **ILP32.** **`bmc` + replay, not re-scored.** The default data model
-   stays LP64. `prism svcomp --data-model ILP32` (the score harness and
-   `tools/svcomp/prism.py` pass the task YAML's `data_model`) threads
-   `Config::data_model` into the hand encoder (`include/prism/abi_model.hpp`,
-   `src/prism/bmc_encoder.inc`: 32-bit `long`, `size_t`, `sizeof`, `intptr_t`,
-   literals under C11 6.4.4.1, limits macros, and `__VERIFIER_nondet_*`).
-   Anything other than `ILP32` stays LP64. Counterexample replay adds `-m32`
-   only for that opt-in. Without a 32-bit toolchain the build does not
-   confirm, so a refutation stays `unknown` rather than `false`. **`pir`
-   stays LP64** (`NOTRUN` on ILP32, so it cannot prove a width-dependent
-   task under the wrong model). A correctness witness still exports a loop
-   invariant only when the deciding finding is `PROVED`, `PROVED-UNBOUNDED`
-   or `PROVED-CERTIFIED` and `k_induction` is `closed-invariants`. Loop
-   locations plus invariant text on any other proof are not emitted. Full
-   `pir` ILP32 still needs `clang -m32` IR and a 32-bit pointer memory
-   model. The pinned-subset tables in this file are the measurement from
-   before this change. They have not been re-scored.
-5. **Archive and registration.** A competition entry needs, per the current
-   rules: a self-contained archive of the tool runnable on the competition
-   machines (PRISM binary, the clang/opt it calls for the `pir` stage, the
-   wrapper and witness writer), a licence and README in the archive, the
-   tool-info module merged into BenchExec, a benchmark definition (a local
-   one for the subset is `tools/svcomp/prism-subset.xml`), and the
-   registration the rules ask for (the fm-tools metadata and an archived
-   release).    **Partial (2026-09-30):** `prism svcomp pack`
-   builds `prism-svcomp.tar.gz` (the binary, which is also the wrapper and
-   witness writer, the tool-info module, `LICENSE`, `README.md`,
-   `fm-tools.yml`, `MANIFEST.json` listing every file, `dependencies.json`
-   with the host clang/opt lines seen at pack time); `tools/svcomp/fm-tools.yml`
-   is a format-2.0 fm-tools registration draft (`id: prism-svcomp`). Still
-   missing: clang/opt bundling (only recorded, not
-   vendored), merging `prism.py` into upstream BenchExec, an archived release
-   URL, and fm-tools upload.
-6. **A version string.** `prism --version` reports `prism 0.1.0 (C++ engine)`;
-   `prism svcomp` puts
-   the same version into witness `producer.version` (it is that binary, so
-   there is no fallback).
-7. **Scale.** Only the pinned subset (45 no-overflow and 20 unreach-call
-   tasks) has been run, in BenchExec with the competition's CPU-time and
-   core limits and 12 GB of memory (see "BenchExec"); the largest run used
-   53 s of CPU time and 661 MB. The competition categories are hundreds to
-   thousands of tasks.
-
-## Findings for the engines (not fixed here)
-
-- The wrapper copies a preprocessed `.i` task to `.c` before running PRISM so
-  clang names the unit consistently (`src/prism/cli_svcomp.cpp`). The `pir` stage accepts
-  `.i` units (`is_unit` in `src/prism/pir/stage.cpp`).
-- A `FAILED` counterexample for a function without parameters is just
-  `<prop>=sat` (for example `ovf+=sat`); the nondet inputs of such a
-  refutation are in `extra["nondet"]` instead (item 1).
-- `INT-SHIFT-UB` covers both a shift overflow (an SV-COMP `no-overflow`
-  violation) and a bad shift count or negative base (not one); the wrapper
-  tells them apart by the check name (`shift-base` / `shift31`) and the
-  UBSan replay. `pir`'s `shift-base` check also fires for a negative base,
-  which the replay then rejects.
-- `bmc` is `NEEDS-HARNESS` on some SV-COMP `main`s when `__VERIFIER_assert`
-  is defined with a non-canonical body in the unit. Call sites with no
-  definition (extern only) are rewritten like the canonical SV-COMP shape;
-  a non-`static` definition in the same file is still not inlined, so
-  Houdini invariants on `main` may not see it.
-
-## Proof-yield work (work/svcomp, 2026-10-29)
-
-Each change only lets an existing sound engine see more of the program;
-none relaxes what counts as a proof or a refutation.
-
-- **ILP32 replay environment:** UBSan replay of ILP32 tasks needs 32-bit
-  glibc headers and the i386 `libclang_rt.ubsan_standalone`/`asan` from the
-  same LLVM (18). Without them every `-m32` replay failed to build, so true
-  refutations stayed `unknown`. Debian: `libc6-dev-i386 lib32gcc-14-dev`
-  plus the i386 clang_rt files of `libclang-rt-18-dev` in
-  `<resource-dir>/lib/linux/`.
-- **Inlining callees with loops and several returns** (`inline.cpp`
-  `adapt_callee_body`): each `return` becomes `{ ret = X; goto <site>_end; }`,
-  a forward jump out of the callee's block that the bmc goto model encodes.
-- **Inlining goto-bearing (CIL) callees:** the callee's labels are renamed
-  per call site (`<site>_L_<label>`); a label name the caller also uses
-  blocks inlining.
-- **Deepening** (`cli_svcomp.cpp` `solve`): when the answer is `unknown`
-  because bmc's main is only `BOUNDED`, bmc is re-run with unwind 32, then
-  128. A deeper run proves only if its loops close and refutes only with a
-  counterexample that replays.
-- **Main-only globals** (`bmc.cpp` `localize_main_globals`): an integer
-  file-scope scalar with a literal or no initialiser that only main names
-  (one declaration, every other mention in main) becomes a local of main
-  with that initialiser, when every mention of `main` in the unit is its
-  definition head or a prototype (main runs once).
-- **Shadowed declarations** (`bmc.cpp` `rename_shadowed`): a block
-  declaration that shadows a visible name is alpha-renamed for the rest of
-  its block. Bodies with declarations the scan does not type (typedef
-  names, struct, float, for-headers, literals) are left unchanged.
-- **pir on data-model-neutral ILP32 units** (`pir/stage.cpp`
-  `ilp32_neutral`): a C unit that spells no `long`, `size_t`, `ptr*`,
-  `wchar`, `time_t`, `off_t`, `sizeof`/`alignof`/`offsetof`, struct/union,
-  `->`, pointer declaration (except the SV-COMP `__assert_fail`
-  prototype) or allocator computes the same under ILP32 and LP64, so pir's
-  LP64 proof holds. Refutations replay with `-m32` as before.
-
-### goto into a block (bmc)
-
-bmc now encodes a forward goto into a block that comes later in the text, which is how CIL writes a `switch` (`goto L; ... if (0) { L: ... }`). The jump stays unencoded (NEEDS-HARNESS) in three cases: it would enter a loop-body pass or switch arm from outside, it would enter a block past a declaration, or it would skip a declaration in a block the goto and the label share. The `s3_*` tasks now get past the goto. They are still unknown because of other gaps: an unbounded state-machine loop, calls to bounded callees, `void *` casts and uninit reads. Rescore with this change: no-overflow 118/192, 0 incorrect, unchanged. unreach-call (goto plus `(void *)0` as 0, `--jobs 2`, 2026-10-30): **130**/225 (53 true, 24 false, 0 incorrect, 50 unknown), was 127. Rescore with the Houdini changes (nondet calls in loop bodies, congruence and non-linear templates, two-phase candidates; build at 90ea52eb6): no-overflow **124**/192 (41 true, 42 false, 0 incorrect, 34 unknown), was 118. A rewrite of goto-built loops (`L:; if (c) { B goto L; }` to `while`) for Houdini now proves `gauss_sum.i.p+cfa-reducer` and `+lhb-reducer` (not yet in a rescore). unreach-call rescore 6 (same build): **143**/225 (60 true, 23 false, 0 incorrect, 44 unknown), was 130. New trues: gcd_3, half_2, up, count_by_2, count_by_k, count_by_nondet, gauss_sum. Regressions: nested_1-2 went from false to unknown, and s3_srvr_1a and seq-3 now time out. unreach-call rescore 7 (frozen 4252890f4: goto-loop rewrite, phase-guard templates): **151**/225 (64 true, 23 false, 0 incorrect, 40 unknown), was 143. no-overflow rescore 7 (frozen e4deccc86: step fact, som retry, fuzz before deepening): **124**/192 (41 true, 42 false, 0 incorrect, 34 unknown), unchanged. unreach-call rescore 8 (frozen e4deccc86): **152**/225 (64 true, 24 false, 0 incorrect, 39 unknown), was 151. no-overflow rescore 8 (frozen 237a3b309: reach_error/abort as exit(0) and canonical __VERIFIER_assert as assume, no-overflow only): **156**/192 (57 true, 42 false, 0 incorrect, 18 unknown), was 124.
+6. **Scale and validation.** Only the pinned subset has been scored, and no
+   witness is validated in the repository.

@@ -16,7 +16,7 @@ The supported set stays these three:
 
 `valid-memsafety` and `no-overflow` are different ids. `supported_property` is true only for the three ids above.
 
-`decide` answers `unknown` for any other id. The reason is `property <id> is not supported`. That holds when `bmc` reports `PROVED` of `main` (a `no-overflow` proof would be `true`) and when `bmc` reports a replayed `INT-SIGNED-OVF` (a `no-overflow` refutation would be `false(no-overflow)`). The same proof is `unknown` for `valid-memsafety`. The same overflow refutation is `unknown` for `valid-memsafety`.
+`decide` answers `unknown` for any other id. The reason is `property <id> is not supported`. That holds when `pir` reports `PROVED` of `main` (a `no-overflow` proof would be `true`) and when `pir` reports a replayed `INT-SIGNED-OVF` (a `no-overflow` refutation would be `false(no-overflow)`). The same proof is `unknown` for `valid-memsafety`. The same overflow refutation is `unknown` for `valid-memsafety`.
 
 `solve` answers `unknown` for a property file that parses as `unsupported`, with reason `unsupported property file <name>`. A property file that cannot be read answers `error`.
 

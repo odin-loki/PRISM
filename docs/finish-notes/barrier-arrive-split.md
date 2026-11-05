@@ -69,10 +69,7 @@ arrival token stay omitted.
 line was added or dropped. The conformance header array in
 `tests/cpp/test_qa_conformance.cpp` already names `barrier`.
 
-`src/prism/bmc.cpp` still reports `C++ std::latch/barrier unencoded`
-(`is not a sync primitive model`) from the function body, before this
-header is inlined. That file was not edited. `src/prism/conc/` was not
-edited. `src/prism/pir/stage.cpp` was not edited.
+`src/prism/conc/` was not edited. `src/prism/pir/stage.cpp` was not edited.
 
 ## Tests
 

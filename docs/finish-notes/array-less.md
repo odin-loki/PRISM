@@ -80,8 +80,7 @@ They are not stubbed:
 `_prism_test_sources` line was added or dropped. `src/prism/pir/models/cxx/array`
 was already in `PRISM_PIR_MODELS`. There is still no
 `tests/cpp/test_cxx_array.cpp`. `tests/cpp/test_qa_conformance.cpp` was not
-edited. `array` stays in the header-name array. `src/prism/bmc.cpp`,
-`src/prism/bmc_unenc.inc`, and `src/prism/pir/stage.cpp` were not edited.
+edited. `array` stays in the header-name array.
 `testdata/conformance/libc-models/array_contracts.cpp` and its yml were not
 edited.
 
@@ -135,10 +134,3 @@ and a false result, because neither element is less. `nzero=0` with
 `array<int, 1> < array<int, 2>` is ill-formed against this header
 (`deduced conflicting values for parameter '_Nm'`) and against libstdc++.
 `prism_tests` was not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::array unencoded` (`is not an array model`) from the source text,
-before a header is inlined. Those files were not edited. Until that gate
-is gone, these tasks do not reach this header. `docs/PIR.md` was not edited.

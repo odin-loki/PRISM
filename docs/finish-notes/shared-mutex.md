@@ -37,13 +37,9 @@ way (`extra.cxx_models`).
 
 The header does not include `<mutex>`, `<thread>`, or `<memory>`.
 
-`src/prism/bmc.cpp` still returns "not a condvar/shared-mutex model" when the
-function source contains `shared_mutex`. `src/prism/bmc_unenc.inc` and
-`src/prism/bmc_encoder.inc` still throw that same unencoded reason. This
-slice does not edit those gates. The hand parser is not this model. PIR's
-clang path is what puts `cxx/shared_mutex` on the include path. The header
-is not a concurrency proof, and it does not remove the `CXX-SHARED-MUTEX`
-lint.
+PIR's clang path is what puts `cxx/shared_mutex` on the include path. The
+header is not a concurrency proof, and it does not remove the
+`CXX-SHARED-MUTEX` lint.
 
 ## Tests
 

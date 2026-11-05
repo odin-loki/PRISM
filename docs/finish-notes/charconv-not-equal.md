@@ -98,9 +98,7 @@ tests/cpp/test_cxx_charconv_ne.cpp
 ```
 
 No existing line was removed. `tests/cpp/test_cxx_charconv.cpp` is still
-listed once.
-`tests/cpp/test_qa_conformance.cpp` was not edited. `src/prism/bmc.cpp` and
-`src/prism/bmc_unenc.inc` were not edited.
+listed once. `tests/cpp/test_qa_conformance.cpp` was not edited.
 `testdata/conformance/libc-models/charconv_contracts.cpp` and its yml were
 not edited. The trace `tests/cxx_models/charconv_ne_trace.cpp` is compiled
 by the new driver, not by CMake.

@@ -109,12 +109,3 @@ Checked with Ubuntu clang++ 18.1.3 (ASan/UBSan), `-std=c++23 -O0 -g
 printed the lines above and exited 0. The failing modes aborted (`SIGABRT`),
 including `operator()(0, 0, 4)` built at `-O1`. Those are the check, not an
 ASan heap error. `prism_tests` was not run. cmake was not run.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-mdspan model" from the source text (`std::mdspan` or `mdspan<`) before the
-header is inlined. `src/prism/bmc_encoder.inc` still throws `mdspan unencoded`
-on the same spellings. Those files were not edited. Until that gate is gone,
-a task that spells `std::mdspan` or `mdspan<` stays on that path.
-`docs/PIR.md` was not edited.

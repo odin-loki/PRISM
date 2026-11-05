@@ -34,13 +34,8 @@ so `operator<=>` stays omitted.
 
 ## Wiring left as it was
 
-`CMakeLists.txt` was not edited. `tests/cpp/test_qa_conformance.cpp` was
-not edited, so the conformance header-name array is unchanged.
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited. A
-function body that contains `typeid(` is still `C++ typeid unencoded` /
-`is not an RTTI model` before a header is inlined.
-`testdata/conformance/prism/cxx/cxx_typeindex_true.cpp` was not edited, so
-that task still calls `typeid` and still stops at that gate.
+`CMakeLists.txt` was not edited. `tests/cpp/test_qa_conformance.cpp` was not
+edited, so the conformance header-name array is unchanged.
 
 ## Tests
 

@@ -2,156 +2,83 @@
 
 **PRISM** = Performance, Regression, Integration and Security Module.
 
-One command that finds every error it can in a code base — and says, just as
-loudly, what it could **not** check. Deterministic instruments first, then
-bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
-*hypothesize*.
+PRISM is a code checker. One command finds every error it can in a code
+base, and says just as plainly what it could **not** check. It runs
+deterministic instruments first, then proofs, then fuzzing, then a language
+model that may only propose.
 
-> The name is **PRISM** (an earlier name is retired) — see [CLAUDE.md](CLAUDE.md).
-> PRISM is the C++23 engine (`src/prism`, binary `prism`). The Python engine
-> is deleted; only `tools/svcomp/prism.py` remains for BenchExec tool-info.
+PRISM is one C++23 program, `prism`.
 
 ## What it checks
 
 | Area | How |
 |---|---|
-| C / C++ | ~600-class defect taxonomy: pattern lints, taint, threads, interval ranges, compiler warnings, cppcheck, sanitizers (ASan/UBSan/TSan), Z3 bounded model checking + k-induction, Dafny/ACSL contracts, Frama-C-style WP, harness BMC, concolic, greybox fuzzing (FuSeBMC loop, AFL++/libFuzzer when present), differential + property + mutation testing, LTL on state machines |
-| Every other language | `polyglot` stage: Python/JSON/TOML syntax, ruff or pyflakes, mypy, `node --check`, tsc, eslint, `bash -n`, shellcheck, gofmt, cargo clippy, `ruby -wc`, `php -l`, `perl -c`, `luac -p`, yamllint |
-| Any text file | merge-conflict markers; leaked credentials (private keys, AWS, GitHub, Slack, Google, Stripe) — every text file in scope, whatever its name (`id_rsa`, `key.pem`, `.npmrc`, `Dockerfile`) |
-| External analyzers | ESBMC, CBMC, Infer, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Strix — run when installed (`build/prism-deps tool NAME` builds the pinned version) |
+| C and C++ | pattern lints on regex and Clang-AST layers, taint, thread and interval checks, compiler warnings, cppcheck, sanitizers, the `pir` model checker (Clang/LLVM IR to Z3, bounded checking, k-induction, loop invariants, libc and C++ library models), threads by lazy sequentialisation, contracts, concolic runs, fuzzing, differential, property and mutation testing, LTL on state machines |
+| Every other language | the `polyglot` stage: syntax checks, linters and type checkers for Python, JSON, TOML, JavaScript, TypeScript, shell, Go, Rust, Ruby, PHP, Perl, Lua and YAML |
+| Every text file | merge-conflict markers and leaked credentials |
+| External analysers | ESBMC, CBMC, Infer, Semgrep, Coccinelle, KLEE, Frama-C, clang-tidy, Dafny, Strix, when installed |
 
-## Run
+A tool that is not installed is reported as `NOTRUN`, never as a clean
+result.
+
+## Build and run
+
+You need CMake, Ninja and the pinned clang (LLVM 23.1.4;
+`python3 scripts/fetch_llvm.py` downloads it).
 
 ```
-# C++ engine (primary)
-cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+L=/path/to/llvm-23.1.4/bin
+cmake -B build -G Ninja -DCMAKE_C_COMPILER=$L/clang -DCMAKE_CXX_COMPILER=$L/clang++ \
+  -DPRISM_LLVM_PINNED_BIN=$L -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
 cmake --build build
-./build/prism path/to/code --no-llm --jobs 8
-./build/prism path/to/code --resume
-./build/prism_tests
-
-# Native MSVC (cl), from a VS/x64 Native Tools prompt — build under
-# C:\Temp\prism-build-* (not OneDrive); see docs/MSVC_PORT.md
-cmake -B build -G Ninja -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
-cmake --build build
+./build/prism path/to/code --no-llm
 ```
 
-### Windows + WSL
+The report lands in `prism-out/`:
 
-| Location | Use for |
-|----------|---------|
-| `C:\Users\...\OneDrive\Desktop\PRISM` (or any sync’d Desktop tree) | **Edit** in the IDE, git, docs |
-| `~/PRISM` on WSL **ext4** | **Linux** `cmake` / `ninja` / `prism_tests` (`build-wsl/`) |
-| `C:\Temp\prism-build-*` (or other non-OneDrive path) | **Windows** MSVC / Z3 builds ([docs/MSVC_PORT.md](docs/MSVC_PORT.md)) |
+- `report.md`: the human report
+- `report.json`: the full machine report
+- `report.sarif`: SARIF 2.1.0 for code scanning and IDEs
+- `TRUSTED_BASE.md`, `VERDICTS.md`: what a proof trusts, and what each verdict means
 
-Do **not** run `cmake`, `ninja`, or full `prism_tests` on **OneDrive** paths
-(including `build-wsl/` next to the Desktop clone). DrvFS (`/mnt/c/...`) is
-slow and flaky for large link steps and test I/O.
+`--fail-on defect` makes the exit code fail CI on a defect.
+`--fail-on gap` also fails it when something was not checked.
 
-Keep a **full git checkout** on ext4, e.g. `~/PRISM` (must include
-`third_party/` and `.git/` per `MANIFEST.toml`). After editing on OneDrive,
-sync into ext4 from WSL:
+PRISM never runs the code it checks unless you pass `--allow-exec`.
 
-```
-scripts/wsl_sync_from_windows.sh    # from repo root (default: Desktop PRISM → ~/PRISM)
-cd ~/PRISM && scripts/wsl_build.sh
-```
-
-Or `git clone` / `git pull` in `~/PRISM` if the remote is up to date. Do not
-`rsync --delete` from `/mnt/c` without preserving `.git` (breaks
-`tests/cpp/test_deps.cpp`).
-
-Output under `--out` (default `prism-out/`):
-
-- `report.md` — human report; `report.json` — full machine report
-- `report.sarif` — SARIF 2.1.0 for GitHub code scanning, VS Code, CI dashboards
-- `stages.jsonl` — live stage log (`--resume` picks up from it)
-- `taxonomy.json` — which defect classes were COVERED / PARTIAL / GAP
-
-## Running on untrusted code
-
-PRISM never runs the code it checks unless you say so. Stages that would
-execute code from the scanned tree — sanitizer runs, compiled fuzz/diff
-harnesses, AFL++/libFuzzer, KLEE, `perl -c`, `cargo clippy`, `eslint`,
-Coccinelle script rules, LLM-written programs — are `NOTRUN` with the hint
-`re-run with --allow-exec (only on code you trust)`. Parsing, lints, BMC
-(Z3), the concrete interpreter, and compile-only diagnostics still run.
-
-With `--allow-exec`, built binaries run in a bubblewrap jail when `bwrap` is
-installed (read-only filesystem, private /tmp, no network) and always under
-rlimits; findings record `extra.sandbox`. The sanitize stage only calls
-functions you mark with `// prism: run`. The per-stage table is in
-[docs/PLAN.md](docs/PLAN.md#running-on-untrusted-code-law-9).
-
-The ParanoidBSD bridge (`pbsd` stage) uses a ParanoidBSD tree only when you
-name it with `--pbsd PATH` or `PRISM_PBSD`; importing its `tools/verify`
-modules is external code, so it also needs `--allow-exec`. Without either,
-only PRISM's portable copies of those checks run and the rest is `NOTRUN`.
-
-CI gating: `--fail-on defect` exits 1 on any FAILED/CRASH/SANFAIL finding
-at error level — a finding whose `extra.severity` is `warning`, `note` or
-`style` (compiler `-Wall` warnings, shellcheck/ruby/yamllint warnings) is
-still reported (SARIF level `warning`) but does not fail the build.
-`--fail-on gap` also exits 1 when anything was NOTRUN/ERROR/TIMEOUT. A stage
-that crashed is exit 2.
-
-Nothing is skipped quietly: vendor/build directories (`third_party/`,
-`node_modules/`, `build*/`, `.venv/`, `target/`, ...; one list in
-`src/prism/scope.cpp`) are skipped by every stage, and the inventory stage lists
-each one that holds source files as `UNKNOWN`. A tool whose output PRISM
-cannot parse is `ERROR "output not understood"`, never a quiet
-"no diagnostics".
+The [user guide](docs/USER_GUIDE.md) has every option, the report format
+and a CI recipe.
 
 ## Laws
 
-A missing tool is `NOTRUN`. It is never a clean result. `PROVED` and
-`BOUNDED` are never merged. A fuzzer `CLEAN` is not a proof. LLM output
-is `HYPOTHESIS`. A Dafny-style proof under `requires` is `PROVED-ASSUMING`.
-A linter that ran and said nothing is `UNKNOWN`, not clean.
-Executing scanned code requires `--allow-exec`; without it that step is
-`NOTRUN`. `PROVED-CERTIFIED` (an UNSAT result checked by a verified
-checker) is never merged with a weaker verdict either.
+- A missing tool is `NOTRUN`. It is never a clean result.
+- `PROVED` and `BOUNDED` are never merged.
+- A fuzzer `CLEAN` is not a proof.
+- Model output is `HYPOTHESIS` or `READS`. It is never evidence.
+- Running scanned code needs `--allow-exec`.
 
-These laws are proved in Lean 4 (`proofs/`) and the C++ and Python verdict
-code is tested entry by entry against the proved model; see
-[docs/VERDICTS.md](docs/VERDICTS.md) for the full lattice.
+The full list is in [CLAUDE.md](CLAUDE.md). The verdict lattice is proved in
+Lean 4 (`proofs/`), and the C++ verdict code is tested against the proved
+model entry by entry ([docs/VERDICTS.md](docs/VERDICTS.md)).
 
-See [docs/PLAN.md](docs/PLAN.md) and [docs/MINED.md](docs/MINED.md).
+## Documentation
 
-## Architecture
+| For | Read |
+|---|---|
+| Running PRISM | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) |
+| What works today | [docs/STATUS.md](docs/STATUS.md) |
+| How the pipeline works | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Verdicts and what a proof trusts | [docs/VERDICTS.md](docs/VERDICTS.md), [docs/TRUSTED_BASE.md](docs/TRUSTED_BASE.md) |
+| The model checker | [docs/PIR.md](docs/PIR.md), [docs/SOLVERS.md](docs/SOLVERS.md), [docs/CONCURRENCY.md](docs/CONCURRENCY.md) |
+| How trustworthy the verdicts are | [docs/CONFORMANCE.md](docs/CONFORMANCE.md), [docs/EVALUATION.md](docs/EVALUATION.md), [docs/SVCOMP.md](docs/SVCOMP.md) |
+| Language-model features | [docs/AI.md](docs/AI.md) |
+| Proofs | [docs/PROOFS_SEMANTICS.md](docs/PROOFS_SEMANTICS.md), [docs/PROOFS_TECHNIQUES.md](docs/PROOFS_TECHNIQUES.md), [docs/PROOFS_REFINEMENT.md](docs/PROOFS_REFINEMENT.md), [docs/assurance/](docs/assurance/README.md) |
+| Windows | [docs/MSVC_PORT.md](docs/MSVC_PORT.md) |
+| Dependencies, pins, releases | [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) |
+| Contributing | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md), [docs/CXX_STANDARD.md](docs/CXX_STANDARD.md) |
 
-PRISM is a **single C++23 pipeline** (`include/prism/pipeline.hpp` defines
-`STAGE_ORDER`: inventory → classify → lints → … → unify). Each stage writes
-findings with a fixed status vocabulary (`include/prism/laws.hpp`); nothing
-is skipped quietly. Reports are emitted at the end (`report.json`, `report.md`,
-`report.sarif`).
+## Licence
 
-| Layer | Location |
-|-------|----------|
-| CLI + orchestration | `src/prism/pipeline.cpp`, `src/prism/cli.cpp` |
-| Per-stage logic | `src/prism/stages/`, `src/prism/bmc.cpp`, `src/prism/pir/`, adapters in `adapters.cpp` |
-| External tools | `prism-deps` pins in `third_party/MANIFEST.toml`; binaries under `~/.prism/tools/` |
-| Formal proofs | Lean 4 in `proofs/` (verdict lattice, refinement checker for PIR export) |
-| Corpora & conformance | `testdata/` — see [testdata/README.md](testdata/README.md) |
-
-`prism-qa` (`src/tools/qa/`) runs conformance scoring, docs drift checks, and
-the release gate (0 wrong proofs) described in [docs/ENGINEERING_BACKLOG.md](docs/ENGINEERING_BACKLOG.md).
-
-## Stack
-
-GUI is Qt. The platform layer (log, exec, pool, settings, OS) and the only
-language-model engine are FORGE (odin-loki/FORGE, mandatory, tracks `main`;
-models are FORGE `.fpk` files). GPU mutation is CUDA. SMT is vendored Z3.
-Regex is vendored PCRE2. clang/LLVM is pinned in `third_party/llvm/PIN.toml`.
-
-`third_party/` holds only the four linked libraries (Z3, PCRE2,
-nlohmann/json, doctest), about 50 MB of source. They are unmodified
-upstream copies, each pinned by commit and SHA-256 in
-[`third_party/MANIFEST.toml`](third_party/MANIFEST.toml). External tools are
-not in the repo: `build/prism-deps tool NAME` fetches the pinned
-commit, checks its hash and builds it into `~/.prism/tools/`. Every finding
-records the exact tool build (`extra["tool_sha"]`). Licence firewall, SBOM and
-reproducible signed releases:
-[`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md). Licence: GNU AGPL version 3
-([`LICENSE`](LICENSE)) and [`NOTICE`](NOTICE).
+GNU Affero General Public License, version 3 ([LICENSE](LICENSE)); see also
+[NOTICE](NOTICE). The four linked third-party libraries are pinned in
+[third_party/MANIFEST.toml](third_party/MANIFEST.toml).

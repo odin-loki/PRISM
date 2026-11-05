@@ -51,15 +51,10 @@ and the pir stage lowers the whole translation unit with libstdc++
 
 The header does not include `<span>`, `<vector>`, or `<memory>`.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return "is not an
-mdspan model" from the source text (`std::mdspan` or `mdspan<`) before the
-header is inlined. `src/prism/bmc_encoder.inc` still throws `mdspan unencoded`
-on the same spellings. This slice does not change those exits, and it does
-not edit `stage.cpp`. `write_cxx_models` already copies every embedded
-`cxx/` header and the stage already passes that directory as `-isystem`.
-Until the early exits go, a task that spells `std::mdspan` or `mdspan<`
-stays on that path. `docs/PIR.md` still lists `std::mdspan` with the
-unmodelled library surface. That page is not edited here.
+`write_cxx_models` already copies every embedded `cxx/` header and the stage
+already passes that directory as `-isystem`. `docs/PIR.md` still lists
+`std::mdspan` with the unmodelled library surface. That page is not edited
+here.
 
 ## Tests
 

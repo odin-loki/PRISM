@@ -93,11 +93,3 @@ same lines both ways. cmake, `prism_tests`, and pir were not run.
 reads `get<6>` of a `tuple<int, int, int, int, int, int, int>` whose seventh
 element is the argument. There is no false task. An index that is not stored
 does not compile, which is the fallback. The task is not PROVED and not CLEAN.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` (`low.find("tuple")`) and `src/prism/bmc_unenc.inc`
-(`tuple\s*<`) still return "not a tuple model" from the source text, before
-the header is inlined. Those files were not edited. Until that gate is gone,
-`cxx_tuple7_true` does not reach this header, so the result stays not PROVED
-and not CLEAN. `docs/PIR.md` was not edited.

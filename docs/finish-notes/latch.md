@@ -48,15 +48,6 @@ This object stores a `ptrdiff_t`, so publishing `PTRDIFF_MAX` would not
 match that header, and publishing 2147483647 would pretend the counter is
 the platform wait word.
 
-## Still in front of the model
-
-`src/prism/bmc.cpp` (via `src/prism/bmc_unenc.inc`) still returns
-`C++ std::latch/barrier unencoded: bitvector BMC is not a sync primitive model`
-from the function body, before any header is inlined. That status is
-`NEEDS-HARNESS`. It is not a proof. Those files were not edited.
-`src/prism/pir/stage.cpp` and `src/prism/conc/` were not edited. PIR was
-not run, so this slice does not claim the tasks are proved.
-
 ## Wiring
 
 `PRISM_PIR_MODELS` gained one line,

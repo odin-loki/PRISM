@@ -6,11 +6,11 @@ unchanged and is false for `ERROR` and `NEEDS-HARNESS`.
 
 ## Rows
 
-`bmc_one` in `src/prism/stages/common.cpp`. When `run_bmc` returns no
-finding, the `ERROR` row whose message is `BMC produced no result` uses
-`laws::STRENGTH_READS`.
+`pir_one` in `src/prism/stages/common.cpp`. When the pir stage returns no
+finding for the function, the `ERROR` row whose message is `pir produced no
+result for the function` uses `laws::STRENGTH_READS`.
 
-`fail` inside `bmc_with_assume` (`src/prism/stages/contracts.cpp`) builds
+`fail` inside `check_with_assume` (`src/prism/stages/contracts.cpp`) builds
 every `ERROR` for that helper with `laws::STRENGTH_READS`. That covers an
 invariant or a decreases clause that cannot be encoded or instrumented, and
 a value-returning function whose body has `return;` under an ensures.
@@ -51,10 +51,6 @@ and `tests/cpp/test_ltl.cpp` were not edited.
   third is `ERROR`. All three are `READS`.
 - `prove_contracts` on a scalar whose decreases clause is `n * 2` hits
   `fail`: status `ERROR`, strength `READS`, `decreases_unencoded` is `true`.
-- `run_bmc` on one function does not return an empty list without Z3 (the
-  missing backend is one `NOTRUN` row). The test reads
-  `src/prism/stages/common.cpp` and checks the `BMC produced no result`
-  `make_find` passes `laws::STRENGTH_READS`.
 - `testdata/planted/contract_add.c` function `inc` stays `PROVED-ASSUMING`
   with `STRENGTH_PROVES`, and `is_proof` is true.
 

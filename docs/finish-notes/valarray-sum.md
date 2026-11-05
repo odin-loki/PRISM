@@ -120,11 +120,3 @@ return those values.
 `operator+` compiles against libstdc++ and does not compile against this
 header. `std::slice` and `std::gslice` do not compile against this header.
 `std::slice` compiles against libstdc++.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still return
-`C++ valarray unencoded: ... is not a valarray model` from the source
-text, before a header is inlined. Those files were not edited. Until that
-gate is gone, a unit that names `valarray` does not reach this header.
-`docs/PIR.md` was not edited.

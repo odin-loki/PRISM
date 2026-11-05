@@ -52,8 +52,7 @@ expects `pair<iterator, bool>` (`.second`, or a structured binding) does
 not match `try_emplace`'s `bool` and falls back the same way. The header
 does not include `<set>`, `<vector>`, or `<memory>`.
 
-`src/prism/pir/stage.cpp`, `src/prism/bmc.cpp`, and `docs/PIR.md` were not
-edited. `CMakeLists.txt` was not edited. The conformance header array in
+`CMakeLists.txt` was not edited. The conformance header array in
 `tests/cpp/test_qa_conformance.cpp` was not edited.
 `testdata/conformance/libc-models/flat_map_contracts.cpp` was not edited.
 Its harnesses still use `operator[]`, `at()`, and `erase()`.

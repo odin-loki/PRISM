@@ -64,7 +64,7 @@ header names. The skips for `iostream/prism_ostream.hpp` and `deque/deque`
 are unchanged.
 
 The conformance check that every public model header is included from both a
-libc-models harness and a prism/cxx task is why
+libc-models harness and a `testdata/conformance/prism/cxx` task is why
 `testdata/conformance/libc-models/complex_contracts.cpp` exists. Its false
 function is `complex_div0_false`, class `FUNC-CONTRACT`.
 

@@ -69,11 +69,3 @@ elements still sum to 6. The walk uses `size()` as the bound. cmake,
 true: it walks `size()` elements of `{1, 2, 3, 4}` and does not read
 `end()`. There is no false task. This model does not plant a check of its
 own, and a past-the-end read is not a defect it can name.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ initializer_list unencoded` (`is not a temporary-lifetime model`)
-from the source text, before the header is inlined. Those files were not
-edited. Until that gate is gone, `cxx_initializer_list_true` does not reach
-this header. `docs/PIR.md` was not edited.

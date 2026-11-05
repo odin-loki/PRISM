@@ -78,13 +78,9 @@ src/prism/pir/models/cxx/queue
 `set`, `unordered_map`, `unordered_set`, `sstream`, and `list`. The
 `iostream/prism_ostream.hpp` skip and the `deque/deque` skip are unchanged.
 
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::queue unencoded: ... is not a queue model` from the function
-body. concolic, the fuzzer, FuSeBMC, and interval consult that gate.
 `tests/cpp/test_concolic.cpp` expects `queue_unenc_bad` to be
-`NEEDS-HARNESS`. Those files were not edited. There is no
-`tests/cpp/test_cxx_queue.cpp`, so `prism_tests` does not compile
-`tests/cxx_models/queue_trace.cpp`.
+`NEEDS-HARNESS`. There is no `tests/cpp/test_cxx_queue.cpp`, so
+`prism_tests` does not compile `tests/cxx_models/queue_trace.cpp`.
 
 ## Tests
 

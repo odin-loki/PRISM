@@ -8,7 +8,7 @@ A null `s` is `__prism_check` with class `STR-NULL-ARG`. The message is `atoll()
 
 A non-null `s` may call `strlen`, so the end is inside the string. The call is `(void)strlen(s)`. There is no end pointer to store.
 
-The value is unknown. This is not a conversion proof. `atoll` does not return a parsed numeral. It returns `__VERIFIER_nondet_longlong()`. That name is already declared for `strtoll`: the PIR translator treats an undefined `__VERIFIER_nondet_*` call as a havoc of the result width, and the bmc encoder gives `__VERIFIER_nondet_longlong` the width of `long long`. `atoll` does not call `strtol` or `strtoll`.
+The value is unknown. This is not a conversion proof. `atoll` does not return a parsed numeral. It returns `__VERIFIER_nondet_longlong()`. That name is already declared for `strtoll`: the PIR translator treats an undefined `__VERIFIER_nondet_*` call as a havoc of the result width. `atoll` does not call `strtol` or `strtoll`.
 
 The comment above `atoll` says this is not PROVED and not CLEAN. This is a partial model of the null check and of a terminator inside the string. It is not a proof, and it is not a fuzzer `CLEAN` result.
 

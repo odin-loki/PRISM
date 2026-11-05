@@ -68,12 +68,7 @@ The header does not include `<memory>`.
 `tests/cpp/test_cxx_numeric.cpp`. `CMakeLists.txt` was not edited.
 `tests/cpp/test_qa_conformance.cpp` was not edited.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They still report `std::lcm` as
-unencoded (`C++ std::lcm unencoded`) before a header is inlined. The
-`std::gcd` gate is earlier in the same list. Until those gates are gone, a
-task that names `std::lcm` does not reach this header. `docs/PIR.md` was not
-edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

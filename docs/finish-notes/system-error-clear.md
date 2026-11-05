@@ -166,15 +166,6 @@ uncleared generic 5 still has `value()` 5. It printed `null_ok` and exited
 `testdata/conformance/libc-models/system_error_contracts.cpp` were not
 edited. They still check `value()` 5 and a default code that is false.
 
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still reject source text
-that contains `system_error` or `error_code` (`is not a system_error model`,
-`is not an error_code model`) before the header is inlined. Those files
-were not edited. Until that gate is gone, `cxx_system_error_true` does not
-reach this header. `docs/PIR.md` was not edited. `src/prism/pir/stage.cpp`
-was not edited.
-
 ## Ported onto main
 
 Main already had `clear()`, storing value 0 and `system_category()` (id 2),

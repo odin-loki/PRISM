@@ -124,11 +124,3 @@ That run is not PROVED and not CLEAN.
 `prism_tests` was not run, so the `TEST_CASE` bodies were not executed.
 The header text checks were applied to this file separately and passed.
 Compiling the size trace typechecked `size()` and `empty()`.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ initializer_list unencoded` (`is not a temporary-lifetime model`)
-from the source text, before the header is inlined. Those files were not
-edited. Until that gate is gone, `cxx_initializer_list_true` does not reach
-this header. `docs/PIR.md` was not edited.

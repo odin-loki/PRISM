@@ -67,12 +67,6 @@ so the embedded name is `cxx/ranges`. `_prism_test_sources` gained
 `iostream/prism_ostream.hpp` and `deque/deque` are unchanged. `iostream`
 and `ostream` stay absent.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They still stop a unit that
-names `std::ranges::views` (`C++ ranges views unencoded`) or `ranges::to`
-(`C++ ranges::to unencoded`) before a header is inlined. The tasks in this
-slice call `size` and `ssize` only, so those gates do not match them.
-
 ## Tests
 
 `tests/cpp/test_cxx_ranges.cpp` reads the header. It is a regular file.

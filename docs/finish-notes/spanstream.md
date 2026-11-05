@@ -37,9 +37,8 @@ Not declared, so a use fails to compile against this header and
 - a constructor or `span()` that takes or returns `std::span`
 - `basic_spanbuf`'s traits parameter, and `wchar_t` spanbufs
 
-`src/prism/bmc.cpp` still reports spanstream as unencoded from a parse
-failure that names it. `src/prism/pir/stage.cpp` was not edited. It already
-puts the embedded `cxx/` directory on the include path.
+`src/prism/pir/stage.cpp` was not edited. It already puts the embedded
+`cxx/` directory on the include path.
 
 ## Tests
 

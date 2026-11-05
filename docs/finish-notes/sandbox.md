@@ -4,7 +4,7 @@ A sandboxed run that hits its wall-clock deadline keeps the stdout and stderr th
 
 ## Behavior
 
-`detail::run` (`src/prism/proc.cpp`) is the runner behind `sandbox::wrap_argv` and `sandbox::limits_for`. While the child runs it reads both pipes. When the deadline fires it kills the child, sets `timed_out`, and reads what is still in the pipes. Those bytes come back on `out` and `err`.
+`prism::exec::run` (`include/prism/exec.hpp`) is the runner behind `sandbox::wrap_argv` and `sandbox::limits_for`. While the child runs it reads both pipes. When the deadline fires it kills the child, sets `timed_out`, and reads what is still in the pipes. Those bytes come back on `out` and `err`.
 
 `rc` is the kill status (not 0). `failed` stays false: the tool did start, so this is not a missing-tool `NOTRUN`. `crashed` stays false: the kill is the deadline. The status shape of that result is `TIMEOUT`.
 

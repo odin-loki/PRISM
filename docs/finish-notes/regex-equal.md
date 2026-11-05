@@ -85,7 +85,6 @@ or `<locale>`.
 
 ## Wiring
 
-`src/prism/bmc.cpp` and `src/prism/pir/stage.cpp` were not edited.
 `CMakeLists.txt` was not edited. No new test file was added, so no
 `_prism_test_sources` line was added or dropped.
 `tests/cpp/test_cxx_regex.cpp` was already listed. `PRISM_PIR_MODELS`

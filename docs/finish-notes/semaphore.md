@@ -82,14 +82,3 @@ On libstdc++ (GCC 14) `counting_semaphore<N>::max()` returns N, and `release`
 still adds with no check against that N (the atomic backend's limit is
 `INT_MAX`). The label self-check does not define `_GLIBCXX_ASSERTIONS`, and
 ASan/UBSan stay clean when the counter moves from 1 to 2.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ std::latch/barrier unencoded` (`is not a sync primitive model`) when
-the source text contains `counting_semaphore`, before this header is
-inlined. A separate gate still reports `C++ binary_semaphore unencoded`
-when the source names `binary_semaphore`. Those files were not edited.
-Until the `counting_semaphore` gate is gone, `cxx_semaphore_true` and
-`cxx_semaphore_false` do not reach this header through bmc. `docs/PIR.md`
-was not edited.

@@ -4,25 +4,29 @@ Every artefact the assurance documents cite, with what it shows and, as
 importantly, what it does not. Identifiers (E01...) are used by
 [ASSURANCE_CASE.md](ASSURANCE_CASE.md) and the framework mappings.
 `prism_docs_check assurance-check` (`src/tools/qa/docscan.cpp`) verifies
-every path, test name, anchor and theorem name below exists. "CI" means a workflow defined in this
-repository; this package does not include CI run results.
+every path, test name, anchor and theorem name below exists. "CI" means a
+workflow defined in this repository; this package does not include CI run
+results.
 
 ## Formal proofs (Lean 4, core library only, no Mathlib)
 
-The three Lean projects were built and audited locally on 2026-09-23 on the
-branch that added this package, with Lean `v4.34.0` (the version pinned in
-each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
-(no `sorry`, clean `lake build`, axioms within `propext`,
-`Classical.choice`, `Quot.sound`, truth tables equal to
-`testdata/fixtures/verdict_tables.json`), `proofs/semantics/check.sh` passed, and
-`lake build` plus `lake env lean PrismTechniques/Audit.lean` in
-`proofs/techniques/` passed. CI re-runs the same checks (workflows below).
+Four Lean projects, each pinned to Lean `v4.34.0` by its `lean-toolchain`:
+`proofs/` (verdict lattice), `proofs/semantics/` (PIR semantics and
+encoder), `proofs/techniques/` (verification algorithms, bit-blaster) and
+`proofs/refinement/` (LLVM→PIR translator, floating point). Each has a
+build-and-audit script or audit file that fails on `sorry`, on escape
+hatches such as `native_decide`, and on any audited theorem using an axiom
+other than `propext`, `Classical.choice`, `Quot.sound`.
+`.github/workflows/proofs-recheck.yml` rechecks all four with `leanchecker`
+and with nanoda, an independent kernel, and audits the axioms of every
+declaration (`proofs/refinement/recheck.sh`; see
+`docs/PROOFS_REFINEMENT.md#independent-proof-rechecking`).
 
 ### E01 The verdict vocabulary and laws (specification)
 
 - Artefacts: `docs/VERDICTS.md`, `include/prism/laws.hpp`,
   `include/prism/verdict.hpp`, `src/prism/verdict/verdict.cpp`, the laws
-  in `CLAUDE.md` and `docs/PLAN.md#laws-inherited-not-optional`.
+  in `CLAUDE.md`.
 - Shows: the closed status vocabulary (18 verdicts), which are proofs,
   which are answers, which stages may prove, and the nine laws.
 - Does not show: that any stage computes its verdict correctly.
@@ -51,7 +55,7 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   build warning, on any audited theorem using an axiom other than
   `propext`, `Classical.choice`, `Quot.sound`, and when the exported truth
   tables differ from the committed ones.
-- Does not show: anything about the C++ or Python code by itself (see E03).
+- Does not show: anything about the C++ code by itself (see E03).
 
 ### E03 The shipped verdict code equals the Lean model
 
@@ -93,15 +97,17 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `thm:instr_encode_sound`, `thm:loopFree_encode_exact`); the same for the
   memory model (`thm:Mem.mbmc_sound`, `thm:Mem.mbmc_complete`,
   `thm:Mem.minstr_fail_ub_iff`, `thm:Mem.oob_is_ub`, `thm:Mem.uaf_is_ub`).
-- Does not show: that `src/prism/pir/` implements
-  this design correctly. The C++ encoder is not proved; the remaining steps
-  are listed in
+  (`bmc_` names bounded model checking in the model, not the deleted `bmc`
+  stage.)
+- Does not show: that the C++ encoder in `src/prism/pir/` implements
+  this design. The remaining steps are listed in
   `docs/PROOFS_SEMANTICS.md#the-gap-between-this-model-and-the-c-encoder`.
 
 ### E06 Verification techniques (models of the algorithms)
 
 - Artefacts: `proofs/techniques/PrismTechniques/KInduction.lean`,
   `proofs/techniques/PrismTechniques/Houdini.lean`,
+  `proofs/techniques/PrismTechniques/LoopCut.lean`,
   `proofs/techniques/PrismTechniques/Contracts.lean`,
   `proofs/techniques/PrismTechniques/Bitblast.lean`,
   `proofs/techniques/PrismTechniques/BitblastEncode.lean`,
@@ -114,16 +120,43 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `docs/PROOFS_TECHNIQUES.md`.
 - Theorems: `thm:KInduction.kinduction_sound`,
   `thm:KInduction.kinduction_strengthened`, `thm:Houdini.houdini_sound`,
-  `thm:Houdini.houdini_then_kinduction`, `thm:Contracts.modular_sound`,
+  `thm:Houdini.houdini_then_kinduction`, `thm:LoopCut.loopcut_sound`,
+  `thm:Contracts.modular_sound`,
   `thm:Contracts.proved_assuming_not_proved`,
   `thm:Contracts.harness_assumption_discharged`,
   `thm:Bitblast.toCNF_equisat`, `thm:Bitblast.certified_unsat`,
   `thm:LazySeq.lazy_seq_sound`, `thm:LazySeqN.lazy_sound`,
   `thm:LazySeqN.lazy_covers`, `thm:FloatRound.rne_nearest`,
   `thm:Float.prism_overflow_eq`, `thm:Float.cast_ovf_iff`.
-- Does not show: that the C++ k-induction/Houdini code
-  matches the model; see
+- Does not show: that the C++ k-induction, Houdini or lazy-sequentialisation
+  code matches the model; see
   `docs/PROOFS_TECHNIQUES.md#gap-to-the-c-implementation-what-these-proofs-do-and-do-not-cover`.
+
+### E24 The LLVM→PIR translator, proved for a fragment and checked per function
+
+- Artefacts: `proofs/refinement/PrismRefine/Translate.lean`,
+  `proofs/refinement/PrismRefine/Sound.lean`,
+  `proofs/refinement/PrismRefine/XTranslate.lean`,
+  `proofs/refinement/PrismRefine/XSound.lean`, the checker
+  `proofs/refinement/PrismRefine/Check.lean`, audit
+  `proofs/refinement/Audit.lean` and `proofs/refinement/check.sh` (with the
+  fixtures in `proofs/refinement/fixtures/`), the exporter
+  `src/prism/pir/export_lean.cpp`, the driver
+  `src/tools/qa/pir_lean_check.cpp` (`prism-qa pir-lean-check`),
+  `tests/cpp/test_qa.cpp::pir_lean_check fixtures give their expected verdicts`,
+  `tests/cpp/test_pir_refinement.cpp`, write-up `docs/PROOFS_REFINEMENT.md`.
+- Theorems: `thm:pir_sound`, `thm:pir_sound_all`, `thm:translate_exact`,
+  `thm:pir_faithful_fail`, and for the extended fragment
+  `thm:pir_sound_x`, `thm:pir_sound_all_x`, `thm:translateX_exact`.
+- Shows: for a function in the fragment, if the LLVM function has UB or
+  creates poison, the PIR program fails a check; `pir_lean_check` shows per
+  function that the C++ translator's output is exactly the proved
+  translator's. The last full measurement (2026-10-30, commit 30eca81b3,
+  five subdirectories of `testdata/conformance`) found 0 mismatches
+  (`docs/PROOFS_REFINEMENT.md#coverage`).
+- Does not show: anything for functions outside the fragment; anything in a
+  normal `prism PATH` run, which does not run the check; the memory model
+  being LLVM's (both sides share PRISM's); the C++ encoder (E05).
 
 ## Trusted base and certificates
 
@@ -131,15 +164,14 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefact: `docs/TRUSTED_BASE.md`.
 - Shows: what a proof verdict depends on, component by component, with
-  the mitigation in place today.
+  the mitigation in place.
 - Does not show: that any trusted component is correct.
 
 ### E08 Certified mode (`--certified`)
 
 - Artefacts: `src/prism/solver/portfolio.cpp`, `src/prism/solver/query.cpp`,
   `src/prism/solver/leanbb.cpp`, `src/prism/pir/encode.cpp`,
-  `docs/SOLVERS.md#certified-mode`, `docs/PIR.md#solving-roadmap-31--32`,
-  `docs/TRUSTED_BASE.md`,
+  `docs/SOLVERS.md`, `docs/TRUSTED_BASE.md`,
   `tests/cpp/test_main.cpp::solver: certified unsat end to end (CaDiCaL LRAT checked by cake_lpr)`,
   `tests/cpp/test_main.cpp::solver: a cached plain unsat never satisfies a certified request`,
   `tests/cpp/test_certified.cpp::certified: loop-free safe function is PROVED-CERTIFIED with one certificate per VC`,
@@ -159,10 +191,10 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   admits `PROVED-CERTIFIED` only with `certificate = "checked"`
   (`thm:audit_certified`).
 - Does not show: that the VC means what the C function does (clang, the
-  PIR encoder and memory model are trusted, T1/L1-L3 in
-  `docs/TRUSTED_BASE.md`). `BOUNDED`, `PROVED-UNBOUNDED`, plain `PROVED` and
-  the `bmc` stage trust Z3. On the Z3 fallback path Z3's bit-blasting
-  tactics are trusted (T3).
+  LLVM→PIR translation, the PIR encoder and memory model are trusted, L1–L3
+  and T1 in `docs/TRUSTED_BASE.md`). `BOUNDED`, `PROVED-UNBOUNDED` and plain
+  `PROVED` trust Z3. On the Z3 fallback path Z3's bit-blasting tactics are
+  trusted (T3).
 
 ## Testing and measurement
 
@@ -172,55 +204,48 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   tasks under `testdata/conformance/prism/` and `testdata/conformance/sv-comp/`,
   scorer tests `tests/cpp/test_qa_conformance.cpp` (the gate itself:
   `tests/cpp/test_qa_conformance.cpp::qa conformance: a wrong proof fails the release gate`), CI
-  `.github/workflows/conformance.yml`, metrics and history in
-  `docs/CONFORMANCE.md`.
+  `.github/workflows/conformance.yml`, metrics in `docs/CONFORMANCE.md`.
 - Shows: soundness (wrong proofs), completeness, detection with replayed
   counterexamples and false alarms, measured per stage on tasks with known
-  answers; the workflow fails on any wrong proof.
-- Does not show: soundness outside the suite. `docs/CONFORMANCE.md#release-gate`
-  records the gate as red on the C++ engine because of one `harness` row at
-  the time it was written; commit `7ff59c5` ("harness: drafted assumptions
-  never yield a proof class") addresses that row. Re-measured locally on
-  2026-09-23 with the C++ engine built from this branch (engine sources as
-  at `9135d97`; `prism-qa conformance --prism ...`, stages
-  `inventory,classify,bmc,pir,harness`, 297 tasks): **release gate PASS,
-  0 wrong proofs** in every stage; `bmc` completeness 82/148, detection with
-  replayed counterexample 84/143, 1 false alarm; `pir` completeness 90/148,
-  detection 90/143, 0 false alarms; Law 6 6/6. Juliet and the random
-  programs were not re-run for this package.
+  answers; the workflow fails on any wrong proof. Measured on 2026-09-23
+  with engine sources at commit 9135d97 (297 tasks): release gate PASS,
+  0 wrong proofs; `pir` completeness 90/148, detection with replayed
+  counterexample 90/143, 0 false alarms; Law 6 6/6.
+- Does not show: soundness outside the suite. Juliet and the random programs
+  were not part of that measurement.
 
 ### E10 Random-program soundness testing
 
 - Artefacts: `src/tools/qa/soundness.cpp`, `src/tools/qa/gen_random.cpp`, the `random-programs` job in
-  `.github/workflows/conformance.yml`,
-  `docs/CONFORMANCE.md#random-programs-prism-qa-soundness-in-house-generator-300-programs-900-functions`.
+  `.github/workflows/conformance.yml`, `docs/CONFORMANCE.md`.
 - Shows: every `PROVED*` verdict on generated programs is executed under
   UBSan on inputs; any sanitizer report is a wrong proof.
 - Does not show: absence of wrong proofs for program shapes the generators
   do not produce.
 
-### E11 Differential testing between engines and encoders
+### E11 Differential testing
 
-- Artefacts: `tests/cpp/test_sarif.cpp` (polyglot SARIF), `tests/cpp/test_main.cpp` (inventory/warnings),
-  `docs/retirement/pvb9.txt` (the final `prism-qa pir-vs-bmc` report, before bmc was retired),
-  `docs/PIR.md#differential-oracle-vs-the-old-encoder-roadmap-28`,
+- Artefacts: `src/tools/qa/llvm_sem_vs_lli.cpp` (`prism-qa llvm-sem-vs-lli`:
+  the Lean LLVM semantics against `lli`),
   `tests/cpp/test_cli.cpp::every STAGE_ORDER name is run, in order`.
-- Shows: the C++ engine and the frozen Python engine (roadmap D8) agree on
-  report shape and verdicts on shared inputs; the `pir` stage is compared
-  with the older `bmc` encoder and every hard conflict was investigated.
-- Does not show: correctness where both engines share a design error (the
-  pre-fix conformance run found 11 such wrong proofs in both engines; see
-  `docs/CONFORMANCE.md#before-the-fixes-2026-09-23-24a72d40b`).
+- Shows: the formal LLVM semantics behind E24 agrees with `lli` on the
+  inputs tried; every stage in `STAGE_ORDER` runs and writes a row.
+- History: PRISM had a second, hand-written encoder, the `bmc` stage, which
+  was compared with `pir`. `bmc` was deleted on 2026-10-31 (commit
+  c66284cde); `pir` does all bounded model checking and k-induction.
+- Does not show: correctness where the semantics and `lli` share an error,
+  or for inputs not tried.
 
 ### E12 Translation validation of the `pir` front end
 
-- Artefacts: `src/prism/pir/stage.cpp`,
-  `docs/PIR.md#translation-validation-roadmap-24`.
-- Shows: for each proved or refuted function, PRISM runs the LLVM IR under
-  `lli` on sample inputs and requires the PIR semantics to agree; a
-  divergence turns the verdict into `ERROR`.
-- Does not show: equivalence for all inputs (it is testing, not proof), or
-  anything about the object code a production compiler emits.
+- Artefacts: `src/prism/pir/stage.cpp`, `docs/PIR.md`.
+- Shows: with `--allow-exec`, for each proved or refuted function, PRISM
+  runs the LLVM IR under `lli` (in the sandbox, E16) on sample inputs and
+  requires the PIR semantics to agree; a divergence turns the verdict into
+  `ERROR`.
+- Does not show: equivalence for all inputs (it is testing, not proof);
+  anything without `--allow-exec`; anything about the object code a
+  production compiler emits.
 
 ### E13 Counterexample replay
 
@@ -231,51 +256,40 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   counterexample, compiled with sanitizers and executed, triggers the
   violation.
 - Does not show: replay of whole programs with `__VERIFIER_nondet_*`
-  inputs; the engines do not report nondet values yet (`docs/SVCOMP.md`).
+  inputs (`docs/SVCOMP.md`).
 
 ### E14 Unit and integration tests
 
 - Artefacts: `tests/cpp/test_main.cpp`, `tests/cpp/test_ai9.cpp`, the
-  Python suite under `tests/`, CI `.github/workflows/ci.yml` (jobs `cpp`
-  and `python`).
+  doctest suite under `tests/cpp/`, CI `.github/workflows/ci.yml` (job
+  `cpp` on Linux; the Windows jobs build and run a portable subset).
 - Shows: the behaviour each test asserts, on every push.
 - Does not show: structural coverage of PRISM's own code (none is measured).
-
-#### E14a Windows PIR LP64 smoke (`_WIN32` subset)
-
-- Artefacts: `tests/cpp/test_pir_e2e.cpp` (table edited in-tree),
-  `include/prism/pir/frontend.hpp`,
-  `src/prism/pir/frontend.cpp`, `src/prism/pir/libc_models.cpp` (cache v3),
-  CI `windows-compile-smoke-z3` / `windows-compile-smoke-cl-z3` (LLVM 18 on
-  PATH for `prism_tests`).
-- Shows: with `clang-18`, `opt`, and Z3, the 17-file Windows C subset of
-  `testdata/pir/` matches the verdict table; missing front end or LP64 probe
-  yields `NOTRUN` (Law 1); glibc-only corpus files are skipped with an
-  explicit message; stale LLP64 model caches are rejected without manual
-  delete (`tests/cpp/test_pir_mem.cpp` stale-cache case).
-- Does not show: full `testdata/pir` on Windows without a Linux sysroot, C++
-  PIR units, or that native `clang-cl` LP64 matches the Linux-triple models.
 
 ### E15 Fuzzing PRISM's own input handling
 
 - Artefacts: `src/tools/fuzz_corpus.cpp` (`prism_fuzz_corpus`), the CMake
   target `fuzz-self-run`, `tools/fuzz_self/run_cpp.sh`, `tests/fuzz/fuzz_cparse.cpp`
   (CMake option `PRISM_FUZZ`), findings in `docs/FUZZ_SELF.md`.
-- Shows: short campaigns against the C parser, the IR parser and the
-  report/journal/manifest readers, with the findings (open, not fixed)
-  recorded with reproducers.
+- Shows: campaigns against the C parser, the IR parser and the
+  report/journal/manifest readers; findings F1–F4 recorded with
+  reproducers and fixes (2026-09-23, commit 30f0bb432).
 - Does not show: robustness beyond the campaigns run; it is not run in CI.
 
 ## Safety of operation and honesty of reports
 
 ### E16 Executing untrusted code only on opt-in (Law 9)
 
-- Artefacts: `docs/PLAN.md#running-on-untrusted-code-law-9`,
-  `src/prism/sandbox.cpp`,
+- Artefacts: `docs/ARCHITECTURE.md#running-on-untrusted-code-law-9`,
+  `src/prism/sandbox.cpp`, `include/prism/sandbox.hpp`,
+  `docs/TRUSTED_BASE.md#4-running-scanned-code`,
   `tests/cpp/test_main.cpp::pipeline: hostile tree runs nothing without --allow-exec`,
   `tests/cpp/test_main.cpp::sandbox: exec NOTRUN row, policy default deny, bwrap argv`.
 - Shows: without `--allow-exec` no step runs code from the scanned tree; with
-  it, binaries run under bubblewrap (when installed) and rlimits.
+  it, binaries run in a bubblewrap jail (read-only system directories and
+  toolchain, no home directory, no network) with resource limits. Where
+  bwrap cannot run, such steps are `NOTRUN` unless the user passes
+  `--allow-exec=unsandboxed`, which applies resource limits only.
 - Does not show: that the sandbox cannot be escaped.
 
 ### E17 What was not checked is reported (Laws 1 and 7)
@@ -289,14 +303,12 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   defect class no stage covered is `GAP`, and both reach SARIF as tool
   execution notifications.
 - Does not show: that every construct a stage silently misreads is caught
-  (the known cases are listed in `docs/CONFORMANCE.md#known-issues`).
+  (the known cases are listed in `docs/CONFORMANCE.md`, "Known issues").
 
 ### E18 AI output never decides a verdict (Law 4)
 
-- Artefacts: `docs/AI.md#the-rule`, `docs/AI.md#prompt-injection-safety-96`,
-  `docs/AI.md#audit-log-96`, `src/prism/ai/core.cpp`, `tests/cpp/test_main.cpp`
-  (AI BMC / audit doctests),
-  theorems `thm:admit_model_never_proof` and
+- Artefacts: `docs/AI.md`, `src/prism/ai/core.cpp`, `tests/cpp/test_main.cpp`
+  (AI audit doctests), theorems `thm:admit_model_never_proof` and
   `thm:no_path_fuzzer_or_model_to_proof` (E02).
 - Shows: model output is `HYPOTHESIS`/`READS` unless a checker re-proves
   it; model-drafted harnesses give `NEEDS-HARNESS`, not a proof.
@@ -306,18 +318,19 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ### E19 Pinned dependencies, licence firewall, SBOM
 
-- Artefacts: `third_party/MANIFEST.toml`, `src/tools/prism_deps/` (`prism-deps`),
-  `docs/SUPPLY_CHAIN.md`, `tests/cpp/test_deps.cpp`, the `supply-chain` job in
+- Artefacts: `third_party/MANIFEST.toml`, `third_party/llvm/PIN.toml`,
+  `src/tools/prism_deps/` (`prism-deps`), `docs/SUPPLY_CHAIN.md`,
+  `tests/cpp/test_deps.cpp`, the `supply-chain` job in
   `.github/workflows/ci.yml`.
 - Shows: every linked library is pinned by commit and tree digest and
-  checked, linked components are permissively licensed, and a CycloneDX
-  SBOM is generated.
+  checked, external tools and the LLVM toolchain are pinned by commit or
+  digest, linked components are permissively licensed, and a CycloneDX SBOM
+  is generated.
 - Does not show: that the pinned upstream code is free of defects.
 
 ### E20 Reproducible, signed releases
 
-- Artefacts: `.github/workflows/release.yml`,
-  `docs/SUPPLY_CHAIN.md#reproducible-signed-releases`.
+- Artefacts: `.github/workflows/release.yml`, `docs/SUPPLY_CHAIN.md`.
 - Shows: the release workflow builds twice from scratch, compares the
   outputs and signs every artefact with Sigstore.
 - Does not show: that a release has been published (none is referenced
@@ -329,9 +342,8 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 - Artefacts: `docs/USER_GUIDE.md`, `src/tools/qa/docs_check.cpp`
   (`prism-qa docs-check`: every `prism --help` and `prism prove --help` flag
-  of the C++ engine documented, every verdict anchor resolves) with doctests
-  in `tests/cpp/test_qa.cpp`,
-  `src/prism/sarif.cpp`, `docs/USER_GUIDE.md#8-ci-integration`.
+  documented, every verdict anchor resolves) with doctests in
+  `tests/cpp/test_qa.cpp`, `src/prism/sarif.cpp`.
 - Does not show: that users read it.
 
 ### E22 SV-COMP readiness
@@ -340,13 +352,12 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
   `src/prism/cli_svcomp.cpp` (`prism svcomp`, `prism svcomp score`,
   `prism svcomp pack`), `src/prism/svcomp/witness.cpp`,
   `tests/cpp/test_svcomp.cpp`, results in `docs/SVCOMP.md`.
-- Shows: a local, unvalidated score on the 45-task pinned no-overflow
-  subset.
+- Shows: a local, unvalidated score on a pinned task subset.
 - Does not show: an SV-COMP result. PRISM has not entered SV-COMP and its
   witnesses have not been validated.
 
 ### E23 Known issues
 
-- Artefact: `docs/CONFORMANCE.md#known-issues`, `docs/FUZZ_SELF.md`.
+- Artefacts: `docs/CONFORMANCE.md` ("Known issues"), `docs/FUZZ_SELF.md`.
 - Shows: every known wrong proof, false alarm and robustness defect found
   so far, with reproducers.

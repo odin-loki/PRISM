@@ -91,9 +91,8 @@ tests/cpp/test_cxx_vector_ne.cpp
 ```
 
 No existing line was removed. `tests/cpp/test_qa_conformance.cpp` was not
-edited. `src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` were not edited.
-`src/prism/pir/models/cxx/algorithm` was not edited. `std::equal` is the
-one already included from `<bits/stl_algobase.h>`.
+edited. `src/prism/pir/models/cxx/algorithm` was not edited. `std::equal` is
+the one already included from `<bits/stl_algobase.h>`.
 `testdata/conformance/libc-models/vector_contracts.cpp` and its yml were not
 edited.
 

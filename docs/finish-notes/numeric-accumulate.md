@@ -94,9 +94,7 @@ No test required `accumulate` to be absent. The header comment used to list
 it with the omitted algorithms. That sentence no longer names `accumulate`.
 The new assertions require the overload.
 
-`src/prism/bmc.cpp`, `src/prism/bmc_unenc.inc`, and
-`src/prism/bmc_encoder.inc` were not edited. They do not name
-`std::accumulate`. `docs/PIR.md` was not edited.
+`docs/PIR.md` was not edited.
 
 ## Tests
 

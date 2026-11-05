@@ -111,12 +111,3 @@ three calls on `from_address` of a non-null pointer print `CHECK 1
 FUNC-CONTRACT:` and then trap. They do not print those lines either.
 `prism_tests` was not run, so the doctest `TEST_CASE` bodies were not
 executed. Compiling that file did evaluate the `static_assert`s.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ coroutine_handle unencoded` (`is not a coroutine_handle model`) from
-the source text, before a header is inlined. A `co_await` / `co_yield` /
-`co_return` is still `C++ coroutine unencoded` (`is not a coroutine model`).
-Those files were not edited. Until that gate is gone, these tasks do not
-reach this header. `docs/PIR.md` was not edited.

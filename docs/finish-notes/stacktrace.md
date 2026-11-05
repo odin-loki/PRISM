@@ -92,11 +92,3 @@ empty trace with a `__prism_check` that returns still did not print a frame:
 the process died with SIGILL from `__builtin_trap`. With the trace's aborting
 stand-in, the same index printed `CHECK MEM-OOB-READ: stacktrace::operator[]
 index out of range` and did not print a frame.
-
-## Still in front of the model
-
-`src/prism/bmc.cpp` and `src/prism/bmc_unenc.inc` still report
-`C++ stacktrace unencoded` (`is not a stacktrace model`) from the source text,
-before the header is inlined. Those files were not edited. Until that gate is
-gone, `cxx_stacktrace_true` and `cxx_stacktrace_false` do not reach this
-header. `docs/PIR.md` was not edited.
