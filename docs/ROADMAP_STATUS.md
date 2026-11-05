@@ -165,4 +165,4 @@ at run time; the numbers below are for the deterministic halves.
 1. Approve and run `scripts/rewrite_history.sh` (rewrites history, force-push).
 2. Legal review of the third-party licence table and export-control questions.
 3. Push a `v*` tag to exercise `release.yml` (signing needs the GitHub OIDC token).
-4. Provide the RTX 3090 runner, the Qwen 3.5 9B `.fpk` and a prover `.fpk` to measure the AI features and the GPU stages.
+4. Provide the RTX 3090 runner, the Goedel-Prover-V2-32B `.fpk` (assistant and prover) to measure the AI features and the GPU stages.

@@ -583,7 +583,7 @@ std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* wh
     };
     if (!cfg.llm) return say("--no-llm");
     if (forge_llm::is_fpk(cfg.fpk)) return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model);
-    return say("no FORGE model: set PRISM_FPK to a .fpk (Qwen 3.5 9B converted with FORGE); tried " +
+    return say("no FORGE model: set PRISM_FPK to a .fpk (Goedel-Prover-V2-32B converted with FORGE); tried " +
                cfg.fpk.string());
 }
 

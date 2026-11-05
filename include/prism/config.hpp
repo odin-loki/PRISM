@@ -18,7 +18,7 @@ struct Config {
     std::filesystem::path out{"prism-out"};
     // ParanoidBSD tree (--pbsd PATH or PRISM_PBSD); empty = not configured.
     std::filesystem::path pbsd_root;
-    std::string model{"qwen3.5:9b"};
+    std::string model{"goedel-prover-v2-32b"};  // PRISM_MODEL; the .fpk is Goedel-Prover-V2-32B
     std::filesystem::path fpk;  // FORGE model (.fpk), PRISM_FPK
     int jobs = 2;
     double timeout = 30.0;

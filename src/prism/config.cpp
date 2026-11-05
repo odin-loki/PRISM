@@ -43,7 +43,9 @@ static fs::path default_pbsd() {
     return {};
 }
 
-// The FORGE model: PRISM_FPK, else ~/.prism/models/qwen3.5-9b.fpk.
+// The FORGE model: PRISM_FPK, else ~/.prism/models/goedel-prover-v2-32b.fpk
+// (%USERPROFILE%.prismmodels on Windows): Goedel-Prover-V2-32B, the one model
+// PRISM uses for the assistant and for Lean proof search.
 static fs::path default_fpk() {
     if (const char* env = std::getenv("PRISM_FPK"); env && *env) return env;
     fs::path home;
@@ -52,7 +54,7 @@ static fs::path default_fpk() {
 #else
     if (const char* u = std::getenv("HOME")) home = u;
 #endif
-    return home / ".prism" / "models" / "qwen3.5-9b.fpk";
+    return home / ".prism" / "models" / "goedel-prover-v2-32b.fpk";
 }
 
 static std::string env_or(const char* name, const char* def) {
@@ -64,7 +66,7 @@ Config default_config() {
     Config c;
     c.pbsd_root = default_pbsd();
     c.fpk = default_fpk();
-    c.model = env_or("PRISM_MODEL", "qwen3.5-9b");
+    c.model = env_or("PRISM_MODEL", "goedel-prover-v2-32b");
     unsigned n = std::max(2u, std::thread::hardware_concurrency());
     c.jobs = static_cast<int>(std::max(1u, n / 2));
     return c;
@@ -478,7 +480,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_CONF_KEEP", "qa conformance/soundness: keep per-task scratch dirs"},
     {"PRISM_DEVICE", "FORGE device for the models (cpu, cuda, vulkan, ...)"},
     {"PRISM_EMBED_FPK", "FORGE embedding model (.fpk) used by ai triage"},
-    {"PRISM_FPK", "FORGE assistant model (.fpk), default ~/.prism/models/qwen3.5-9b.fpk"},
+    {"PRISM_FPK", "FORGE assistant model (.fpk), default ~/.prism/models/goedel-prover-v2-32b.fpk (Goedel-Prover-V2-32B)"},
     {"PRISM_FUNCTION_BUDGET", "per-function time budget (seconds)"},
     {"PRISM_HOST_PYTHON3", "z3gen: host Python that non-Z3 build scripts are forwarded to (build time)"},
     {"PRISM_HOUDINI_FINAL_RESERVE", "pir: fraction of the function budget Houdini keeps for the final query (0..0.9, default 0.3)"},
@@ -506,8 +508,8 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (the units and functions to re-check)"},
     {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},
     {"PRISM_PROOF_CACHE", "directory of the proof cache"},
-    {"PRISM_PROVER_FPK", "path of the FORGE prover model (.fpk)"},
-    {"PRISM_PROVER_MODEL", "prover LLM model name"},
+    {"PRISM_PROVER_FPK", "FORGE Lean prover model (.fpk), default PRISM_FPK (the same Goedel-Prover-V2-32B)"},
+    {"PRISM_PROVER_MODEL", "prover model name in the audit, default PRISM_MODEL"},
     {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
     {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
     {"PRISM_TOOLS_DIR", "directory of vendored external tools"},

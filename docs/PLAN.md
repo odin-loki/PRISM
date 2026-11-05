@@ -2,7 +2,7 @@
 
 A single tool that runs **deterministic instruments first**, then **bounded
 proofs**, then **fuzzing**, then **LLM-guided generation and repair**. The
-model is Qwen 3.5 9B. Inference is **llama.cpp** (CUDA). The GUI is **Qt**.
+model is Goedel-Prover-V2-32B. Inference is **FORGE** (in process, `.fpk`). The GUI is **Qt**.
 Hot numeric paths use **xsimd**. Mutation and coverage hashing use **CUDA**.
 
 ParanoidBSD's verify tree is not a plugin we wrap and forget. It is the
@@ -45,7 +45,7 @@ source of the *laws* this pipeline is not allowed to break.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Model | Qwen 3.5 9B (`qwen3.5:9b`, Q4_K_M) already on Ollama | 9.7B, 256k context, thinking + tools, 24 GB 3090 |
+| Model | Goedel-Prover-V2-32B (Q4_K_M, FORGE `.fpk`) | 32B Lean 4 prover, ChatML, 40k context, fits a 24 GB 3090 |
 | Inference lib | llama.cpp with GGML CUDA | User requirement; Ollama is the *current GGUF host*, not the API we design around |
 | GUI | Qt 6 (C++ target + PySide6 so the GUI runs today without MSVC) | User requirement |
 | SIMD | xsimd | Portable AVX2/AVX-512 on the 3090's host CPU |

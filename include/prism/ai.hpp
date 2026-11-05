@@ -79,7 +79,7 @@ struct ModelReply {
 class PRISM_API ModelBackend {
 public:
     virtual ~ModelBackend();
-    virtual std::string name() const = 0;          // e.g. "forge:qwen3.5-9b"
+    virtual std::string name() const = 0;          // e.g. "forge:goedel-prover-v2-32b"
     virtual std::string model_sha256() const = 0;  // "unknown" for HTTP backends
     virtual ModelReply complete(const ModelRequest& req) = 0;
 };

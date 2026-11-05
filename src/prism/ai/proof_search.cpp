@@ -596,10 +596,17 @@ bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {
 }
 
 // ---------------------------------------------------------------- prover backends
-// The prover is a FORGE .fpk (e.g. Goedel-Prover converted with FORGE), run in process.
+// The prover is a FORGE .fpk run in process. By default it is the same model as the
+// assistant: Goedel-Prover-V2-32B (a Lean 4 prover), PRISM_FPK or
+// ~/.prism/models/goedel-prover-v2-32b.fpk. Order: --prover-fpk, PRISM_PROVER_FPK,
+// PRISM_FPK / the default .fpk, then the first *prover* / *goedel* .fpk in ~/.prism/models.
 std::vector<fs::path> default_prover_fpks() {
     std::vector<fs::path> out;
+#ifdef _WIN32
+    auto home = env_or("USERPROFILE");
+#else
     auto home = env_or("HOME");
+#endif
     if (home.empty()) return out;
     std::error_code ec;
     auto dir = fs::path(home) / ".prism" / "models";
@@ -620,13 +627,21 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::strin
     auto model = !opt.prover_model.empty() ? opt.prover_model : env_or("PRISM_PROVER_MODEL", "");
     fs::path fpk = !opt.prover_fpk.empty() ? opt.prover_fpk : fs::path(env_or("PRISM_PROVER_FPK"));
     if (fpk.empty()) {
+        // The assistant model is the prover (Goedel-Prover-V2-32B), named by PRISM_MODEL.
+        const auto cfg = prism::default_config();
+        if (forge_llm::is_fpk(cfg.fpk)) {
+            fpk = cfg.fpk;
+            if (model.empty()) model = cfg.model;
+        }
+    }
+    if (fpk.empty()) {
         auto found = default_prover_fpks();
         if (!found.empty()) fpk = found.front();
     }
     if (!forge_llm::is_fpk(fpk)) {
         if (why)
-            *why = "no prover model: set PRISM_PROVER_FPK to a FORGE .fpk (Goedel-Prover / DeepSeek-Prover / "
-                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models"
+            *why = "no prover model: set PRISM_PROVER_FPK (or PRISM_FPK) to a FORGE .fpk (Goedel-Prover-V2-32B "
+                   "converted with FORGE), or install it as ~/.prism/models/goedel-prover-v2-32b.fpk"
                    + (fpk.empty() ? std::string{} : " (not a .fpk: " + fpk.string() + ")");
         return nullptr;
     }

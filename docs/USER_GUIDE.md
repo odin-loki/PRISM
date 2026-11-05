@@ -64,7 +64,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | fuzzers | AFL++ (`PRISM_AFL=1`), libFuzzer (`PRISM_LIBFUZZER=1`) |
 | other languages | ruff or pyflakes, mypy, node, tsc, eslint, bash, shellcheck, gofmt, cargo clippy, ruby, php, perl, luac, yamllint |
 | sandbox | bubblewrap (`bwrap`) for `--allow-exec` |
-| LLM | a FORGE `.fpk` model (`PRISM_FPK`, default `~/.prism/models/qwen3.5-9b.fpk`; `PRISM_DEVICE` picks cpu/cuda/vulkan) |
+| LLM | a FORGE `.fpk` model (`PRISM_FPK`, default `~/.prism/models/goedel-prover-v2-32b.fpk`, Goedel-Prover-V2-32B; `PRISM_DEVICE` picks cpu/cuda/vulkan) |
 
 ## 2. Run
 

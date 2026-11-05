@@ -4,7 +4,7 @@
 
 One command that finds every error it can in a code base — and says, just as
 loudly, what it could **not** check. Deterministic instruments first, then
-bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
+bounded proofs, then fuzzing, then an LLM (Goedel-Prover-V2-32B) that may only
 *hypothesize*.
 
 > The name is **PRISM** (an earlier name is retired) — see [CLAUDE.md](CLAUDE.md).

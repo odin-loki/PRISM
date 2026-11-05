@@ -145,7 +145,7 @@ embedded copy cannot drift (doctest "ai-assist grammars: every
 grammars/*.gbnf is embedded verbatim").
 
 Backend: FORGE inference, in process (`src/prism/ai/forge_llm.cpp`). The model
-is a FORGE `.fpk` (`PRISM_FPK`, default `~/.prism/models/qwen3.5-9b.fpk`) on
+is a FORGE `.fpk` (`PRISM_FPK`, default `~/.prism/models/goedel-prover-v2-32b.fpk`, Goedel-Prover-V2-32B Q4_K_M) on
 the device `PRISM_DEVICE` (else `FORGE_DEVICE`, else `cpu`). A request with a
 grammar is decoded under `forge::inference::grammar_constraint`, which masks every
 token the grammar cannot accept; the stages' plain chats (hypotheses,

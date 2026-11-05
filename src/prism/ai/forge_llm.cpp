@@ -5,6 +5,7 @@
 
 #include <forge/inference/inference.hpp>
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -23,11 +24,123 @@ bool is_fpk(const fs::path& path) {
     return f.gcount() == 8 && std::string(magic, 8) == std::string(forge::modelfile::magic, 8);
 }
 
-std::string render_chat(const Messages& messages) {
+namespace {
+std::string render_turns(const Messages& messages) {
     std::string s;
     for (const auto& [role, content] : messages) s += "<|im_start|>" + role + "\n" + content + "<|im_end|>\n";
-    s += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
     return s;
+}
+constexpr const char* OPEN_THINK = "<|im_start|>assistant\n<think>\n";
+constexpr const char* OPEN_NO_THINK = "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+
+// The assistant opener as token ids. <think> and </think> are single vocabulary tokens
+// in the Goedel model, but a GGUF-imported FORGE tokenizer does not list them as special,
+// so encode() would split them into "<", "think", ">": look their ids up directly.
+std::vector<int> encode_opener(const forge::modelfile::bpe_tokenizer& tok, bool think) {
+    const int ts = tok.token_id("<think>"), te = tok.token_id("</think>");
+    if (ts < 0 || te < 0) return tok.encode(think ? OPEN_THINK : OPEN_NO_THINK);
+    auto ids = tok.encode("<|im_start|>assistant\n");
+    auto add = [&](const std::vector<int>& v) { ids.insert(ids.end(), v.begin(), v.end()); };
+    ids.push_back(ts);
+    if (think) {
+        add(tok.encode("\n"));
+    } else {
+        add(tok.encode("\n\n"));
+        ids.push_back(te);
+        add(tok.encode("\n\n"));
+    }
+    return ids;
+}
+
+// FORGE's GBNF has no bounded repetition. X{m}, X{m,} and X{m,n} are rewritten:
+// m copies of X, then n-m nested optionals when n-m <= 16, else X* (also for {m,}).
+// The decoded text is re-validated by PRISM (validate_*), which enforces the bounds.
+bool ident_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+}
+}  // namespace
+
+std::string render_chat(const Messages& messages, bool think) {
+    return render_turns(messages) + (think ? OPEN_THINK : OPEN_NO_THINK);
+}
+
+std::string lower_grammar(const std::string& g) {
+    std::string out;
+    std::vector<std::size_t> groups;      // output offsets of open '('
+    std::size_t prim = std::string::npos;  // output offset where the last primary starts
+    std::size_t i = 0;
+    while (i < g.size()) {
+        char c = g[i];
+        if (c == '#') {  // comment to end of line
+            while (i < g.size() && g[i] != '\n') out += g[i++];
+            continue;
+        }
+        if (c == '"' || c == '[') {
+            const char close = c == '"' ? '"' : ']';
+            prim = out.size();
+            out += g[i++];
+            while (i < g.size() && g[i] != close) {
+                if (g[i] == '\\' && i + 1 < g.size()) out += g[i++];
+                out += g[i++];
+            }
+            if (i < g.size()) out += g[i++];
+            continue;
+        }
+        if (c == '(') {
+            groups.push_back(out.size());
+            out += g[i++];
+            prim = std::string::npos;
+            continue;
+        }
+        if (c == ')') {
+            prim = groups.empty() ? std::string::npos : groups.back();
+            if (!groups.empty()) groups.pop_back();
+            out += g[i++];
+            continue;
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            prim = out.size();
+            while (i < g.size() && ident_char(g[i])) out += g[i++];
+            continue;
+        }
+        if (c == '{' && prim != std::string::npos) {
+            std::size_t j = i + 1;
+            auto num = [&](int& v) {
+                std::size_t b = j;
+                v = 0;
+                while (j < g.size() && std::isdigit(static_cast<unsigned char>(g[j]))) v = v * 10 + (g[j++] - '0');
+                return j > b;
+            };
+            int m = 0, n = -1;
+            bool ok = num(m);
+            if (ok && j < g.size() && g[j] == ',') {
+                ++j;
+                if (!num(n)) n = -1;  // {m,} = unbounded
+            } else {
+                n = m;
+            }
+            if (ok && j < g.size() && g[j] == '}' && (n < 0 || n >= m)) {
+                const std::string x = out.substr(prim);
+                out.resize(prim);
+                std::string e;
+                for (int k = 0; k < m; ++k) e += (e.empty() ? "" : " ") + x;
+                if (n < 0 || n - m > 16) {
+                    e += (e.empty() ? "" : " ") + x + "*";
+                } else if (n > m) {
+                    std::string tail;
+                    for (int k = 0; k < n - m; ++k) tail = "(" + x + (tail.empty() ? "" : " " + tail) + ")?";
+                    e += (e.empty() ? "" : " ") + tail;
+                }
+                out += "(" + (e.empty() ? std::string("\"\"") : e) + ")";
+                prim = std::string::npos;
+                i = j + 1;
+                continue;
+            }
+        }
+        if (c == ':' || c == '|') prim = std::string::npos;
+        out += g[i++];
+    }
+    return out;
 }
 
 std::string device() {
@@ -38,15 +151,21 @@ std::string device() {
 
 namespace {
 std::mutex g_mu;
-std::map<std::string, std::shared_ptr<forge::inference::model>> g_models;
+// Opened models live until the process ends and are never destroyed: tearing down a model
+// that holds GPU buffers during static destruction (after the device runtime is gone)
+// aborted with a double free at exit (measured with Goedel-Prover-V2-32B on cuda).
+std::map<std::string, std::shared_ptr<forge::inference::model>>& g_models =
+    *new std::map<std::string, std::shared_ptr<forge::inference::model>>;
 std::map<std::string, std::string> g_digests;
 
-std::shared_ptr<forge::inference::model> open_model(const fs::path& p) {
+std::shared_ptr<forge::inference::model> open_model(const fs::path& p, double* load_s = nullptr) {
     std::lock_guard lk(g_mu);
     auto key = p.string();
     if (auto it = g_models.find(key); it != g_models.end()) return it->second;
+    const auto t0 = std::chrono::steady_clock::now();
     auto m = forge::inference::model::open(key);
     m->set_device(device());
+    if (load_s) *load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     g_models.emplace(key, m);
     return m;
 }
@@ -64,11 +183,11 @@ std::string model_digest(const fs::path& fpk) {
 Reply complete(const fs::path& fpk, const Request& req) {
     Reply r;
     if (!is_fpk(fpk)) {
-        r.error = "missing FORGE model (set PRISM_FPK to a .fpk, e.g. qwen3.5-9b.fpk): " + fpk.string();
+        r.error = "missing FORGE model (set PRISM_FPK to a .fpk, e.g. goedel-prover-v2-32b.fpk): " + fpk.string();
         return r;
     }
     try {
-        auto model = open_model(fpk);
+        auto model = open_model(fpk, &r.load_s);
         const auto* tok = model->tokenizer();
         if (!tok) {
             r.error = fpk.string() + ": .fpk has no tokenizer section";
@@ -78,19 +197,30 @@ Reply complete(const fs::path& fpk, const Request& req) {
         so.context = std::min<forge::i64>(model->max_context(), 8192);
         forge::inference::session sess(model, so);
 
-        std::string text;
-        if (req.chat) text = render_chat(req.messages);
-        else
+        const bool think = req.chat && req.think;
+        std::vector<int> prompt;
+        if (req.chat) {
+            prompt = tok->encode(render_turns(req.messages));
+            auto op = encode_opener(*tok, think);
+            prompt.insert(prompt.end(), op.begin(), op.end());
+        } else {
+            std::string text;
             for (const auto& m : req.messages) text += m.second + "\n\n";
-        auto prompt = tok->encode(text);
+            prompt = tok->encode(text);
+        }
         r.prompt_tokens = prompt.size();
         if (forge::i64(prompt.size()) >= so.context) {
             r.error = "prompt longer than the context (" + std::to_string(prompt.size()) + " tokens)";
             return r;
         }
-        int im_end = -1;
+        int im_end = -1, think_end = -1;
         if (auto ids = tok->encode("<|im_end|>"); ids.size() == 1) im_end = ids[0];
+        think_end = tok->token_id("</think>");
         const int eos = tok->eos();
+        if (think && think_end < 0) {
+            r.error = fpk.string() + ": thinking requested but the tokenizer has no </think> token";
+            return r;
+        }
 
         forge::inference::sampler_config sc;
         sc.temperature = req.temperature;
@@ -100,13 +230,62 @@ Reply complete(const fs::path& fpk, const Request& req) {
         std::unique_ptr<forge::inference::grammar_constraint> gc;
         if (!req.grammar.empty())
             gc = std::make_unique<forge::inference::grammar_constraint>(
-                std::make_shared<const forge::inference::grammar>(req.grammar), *tok, int(model->vocab()), eos);
+                std::make_shared<const forge::inference::grammar>(lower_grammar(req.grammar)), *tok, int(model->vocab()), eos);
 
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(static_cast<long long>(req.timeout_s * 1000));
+        using clock = std::chrono::steady_clock;
+        auto secs = [](clock::time_point a) { return std::chrono::duration<double>(clock::now() - a).count(); };
         std::vector<int> hist(prompt.begin(), prompt.end()), out;
+        auto t0 = clock::now();
         auto logits = sess.forward(prompt);
-        const int budget = int(std::min<forge::i64>(req.max_new, so.context - forge::i64(prompt.size())));
+        r.prefill_s = secs(t0);
+        t0 = clock::now();
+        forge::i64 used = forge::i64(prompt.size());
+        if (think) {
+            // Free reasoning, no grammar, until the model closes </think> or think_max.
+            std::vector<int> th;
+            bool closed = false;
+            const int tbudget = int(std::min<forge::i64>(req.think_max, so.context - used - 1));
+            for (int i = 0; i < tbudget; ++i) {
+                int t = smp.sample(logits, hist);
+                hist.push_back(t);
+                int one[1] = {t};
+                logits = sess.forward(one);
+                ++used;
+                if (t == think_end) {
+                    closed = true;
+                    break;
+                }
+                if (t == eos || t == im_end) break;  // the turn ended inside the reasoning
+                th.push_back(t);
+                if (clock::now() > deadline) {
+                    r.error = "timeout";
+                    break;
+                }
+            }
+            r.thinking = tok->decode(th);
+            r.thinking_tokens = th.size();
+            if (!r.error.empty()) {
+                r.decode_s = secs(t0);
+                return r;
+            }
+            // Close the block ourselves at the cap (or after a stray end of turn).
+            std::vector<int> tail;
+            if (!closed) {
+                tail = tok->encode("\n");
+                tail.push_back(think_end);
+            }
+            auto nn = tok->encode("\n\n");
+            tail.insert(tail.end(), nn.begin(), nn.end());
+            r.thinking_capped = !closed;
+            if (!tail.empty()) {
+                logits = sess.forward(tail);
+                hist.insert(hist.end(), tail.begin(), tail.end());
+                used += forge::i64(tail.size());
+            }
+        }
+        const int budget = int(std::min<forge::i64>(req.max_new, so.context - used));
         for (int i = 0; i < budget; ++i) {
             if (gc) {
                 if (gc->finished()) break;
@@ -127,6 +306,7 @@ Reply complete(const fs::path& fpk, const Request& req) {
             int one[1] = {t};
             logits = sess.forward(one);
         }
+        r.decode_s = secs(t0);
         r.new_tokens = out.size();
         r.text = tok->decode(out);
     } catch (const std::exception& ex) {

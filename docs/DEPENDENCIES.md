@@ -26,8 +26,8 @@ A download whose SHA-256 differs from the pin is refused (exit 2).
 
 ## Models
 PRISM's AI runs on FORGE inference in process. Models are FORGE `.fpk` files, never committed:
-- `PRISM_FPK` — assistant model, default `~/.prism/models/qwen3.5-9b.fpk` (Qwen 3.5 9B converted with FORGE).
-- `PRISM_PROVER_FPK` — Lean prover (e.g. Goedel-Prover 8B `.fpk`); else the first `*prover*`/`*goedel*` `.fpk` in `~/.prism/models`.
+- `PRISM_FPK` — the model, default `~/.prism/models/goedel-prover-v2-32b.fpk` (Goedel-Prover-V2-32B Q4_K_M GGUF converted with FORGE; `%USERPROFILE%\.prism\models` on Windows).
+- `PRISM_PROVER_FPK` — Lean prover; default the same model as `PRISM_FPK` (Goedel-Prover-V2-32B), else the first `*prover*`/`*goedel*` `.fpk` in `~/.prism/models`.
 - `PRISM_EMBED_FPK` — optional one-shot embedding graph for triage; else TF-IDF.
 - `PRISM_DEVICE` / `FORGE_DEVICE` — `cpu`, `cuda`, `vulkan`, ...
 llama-server, Ollama and GGUF are no longer supported.

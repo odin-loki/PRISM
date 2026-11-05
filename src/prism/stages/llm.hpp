@@ -12,7 +12,9 @@
 namespace prism::stages_detail {
 
 inline const char* LLM_UNAVAILABLE_MSG = "no FORGE model (.fpk) configured";
-inline const char* LLM_INSTALL = "convert Qwen 3.5 9B with FORGE (forge convert) and set PRISM_FPK=/path/qwen3.5-9b.fpk";
+inline const char* LLM_INSTALL =
+    "convert Goedel-Prover-V2-32B (Q4_K_M GGUF) with FORGE (forge convert) to "
+    "~/.prism/models/goedel-prover-v2-32b.fpk, or set PRISM_FPK=/path/goedel-prover-v2-32b.fpk";
 
 // Python engine llm_complete_unavailable: HTTP/connection is a missing backend.
 bool llm_httpish(const std::string& err);

@@ -99,7 +99,7 @@ never compiles ESBMC during resolve.
 
 ## Fuzz4All — LLM as a universal generator
 
-1. Autoprompt: Qwen reads the source + a user intent (default: "find UB
+1. Autoprompt: the model reads the source + a user intent (default: "find UB
    and crashes") and distills a *fuzzing prompt* — the generator spec.
 2. Generate N candidate inputs in the language of the harness (raw
    bytes described as hex, or C literals, or grammar snippets).
@@ -112,7 +112,7 @@ never compiles ESBMC during resolve.
 
 1. Track coverage-new rate over a window.
 2. On stall: send the current interesting seed + the function source +
-   "this input no longer finds new edges" to Qwen.
+   "this input no longer finds new edges" to the model.
 3. Ask for semantically valid mutants (respect types, not just bit
    flips).
 4. Resume greybox on those mutants.
@@ -131,7 +131,7 @@ invariant I(state)
 decreases D(state)
 ```
 
-Qwen proposes these as HYPOTHESIS. Python engine then:
+The model proposes these as HYPOTHESIS. Python engine then:
 
 1. Encodes `requires` as BMC assumptions (the harness).
 2. Encodes `ensures` as BMC assertions after the call.
@@ -201,7 +201,7 @@ a monitor on an extracted FSM, not Strix.
 
 No training. The *loop*:
 
-1. Candidate = source, or a Qwen patch.
+1. Candidate = source, or a model patch.
 2. Reward = compile (0/1) + tests passed + sanitizer-clean + BMC
    status (`FAILED` is negative, `PROVED` is terminal success).
 3. Keep the highest-reward candidate.
@@ -211,7 +211,7 @@ No training. The *loop*:
 
 ## OpenCodeInterpreter — generate, run, refine
 
-1. Qwen writes a harness or a test, not a lecture.
+1. The model writes a harness or a test, not a lecture.
 2. Sandbox: tempdir, gcc, timeout, no network, CPU/RAM cap.
 3. stdout, stderr, exit, signal go back into the chat *append-only*
    (prefix cache).
