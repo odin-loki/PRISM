@@ -924,6 +924,8 @@ if(PRISM_TESTS)
     tests/cpp/test_agent.cpp
     # A sandboxed wall-clock timeout keeps the child's stdout and stderr tail.
     tests/cpp/test_sandbox.cpp
+    # --resume run key, the --allow-exec sandbox gate and jail, private temp dirs.
+    tests/cpp/test_resume_sandbox.cpp
     tests/cpp/test_scope_pods.cpp
     # Law 4: a model reply that says PROVED stays HYPOTHESIS / READS.
     tests/cpp/test_llm_hypothesis.cpp)

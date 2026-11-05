@@ -351,10 +351,12 @@ Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::strin
         unit += "#line " + std::to_string(end + 1) + "\n";
         for (std::size_t i = static_cast<std::size_t>(end); i < lines.size(); ++i) unit += lines[i] + "\n";
     }
-    static std::atomic<unsigned> seq{0};
-    const auto dir = fs::temp_directory_path() /
-                     ("prism_pir_one_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
-    fs::create_directories(dir);
+    // Private and unpredictable (was /tmp/prism_pir_one_<pid>_<seq>, which
+    // another user could create first and fill or symlink).
+    const auto dir = sandbox::private_temp_dir("prism_pir_one_");
+    if (dir.empty())
+        return make_find("pir", laws::ERROR, fn, "", "no private temporary directory for the pir run",
+                         laws::STRENGTH_READS);
     const auto ext = fs::path(fn.file).extension().string();
     const auto src = dir / (fs::path(fn.file).stem().string() + (ext.empty() ? std::string(".c") : ext));
     std::ofstream(src) << unit;

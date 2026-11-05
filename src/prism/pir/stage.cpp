@@ -83,7 +83,8 @@ struct TmpDir {
         for (int i = 0; i < 64; ++i) {
             auto cand = base / ("prism_pir_" + std::to_string(rd()) + "_" + std::to_string(n++));
             std::error_code ec;
-            if (fs::create_directory(cand, ec)) {
+            if (fs::create_directory(cand, ec)) {  // false when it exists: never shared
+                fs::permissions(cand, fs::perms::owner_all, ec);  // private, as mkdtemp
                 path = cand;
                 return;
             }
@@ -1130,7 +1131,16 @@ std::string reorder_designators(const std::string& t, const std::vector<std::vec
 // #line markers so diagnostics keep the source lines.
 struct PreUnit { std::string main, full; };
 std::optional<PreUnit> preprocess_unit(const fs::path& cc, const std::vector<std::string>& fl, const fs::path& src, double timeout_s, std::string* err = nullptr) {
-    const fs::path out = fs::temp_directory_path() / ("prism-pre-" + std::to_string(::getpid()) + "-" + src.stem().string() + ".i");
+    // A private directory per call: /tmp/prism-pre-<pid>-<stem>.i was
+    // predictable, and two units with one stem shared it under --jobs.
+    std::optional<TmpDir> td;
+    try {
+        td.emplace();
+    } catch (const std::exception& ex) {
+        if (err) *err = ex.what();
+        return std::nullopt;
+    }
+    const fs::path out = td->path / (src.stem().string() + ".i");
     std::vector<std::string> av{cc.string()};
     for (size_t k = 0; k < fl.size(); ++k) {
         const auto& t = fl[k];
@@ -2281,9 +2291,14 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     std::error_code ec;
     const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
     if (av.empty() || ec) return note("not possible here (no /proc/self): stays UNKNOWN");
-    static std::atomic<int> seq{0};
-    const fs::path out = fs::temp_directory_path() /
-                         ("prism_pir_rerun_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+    // A private, unpredictable --out for the child (was /tmp/prism_pir_rerun_<pid>_<seq>).
+    std::optional<TmpDir> td;
+    try {
+        td.emplace();
+    } catch (const std::exception&) {
+        return note("no private temporary directory: stays UNKNOWN");
+    }
+    const fs::path out = td->path;
     std::string only;
     for (auto* r : pend) only += u.rel + "\t" + r->f.function.value_or("") + "\n";
     std::vector<std::string> cmd{"/usr/bin/env", "PRISM_PIR_ONLY=" + only};

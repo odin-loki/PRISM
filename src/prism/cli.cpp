@@ -158,7 +158,15 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         if (a == "--no-llm") { ok = in.flag(); cfg.llm = false; }
         else if (a == "--gui") { ok = in.flag(); cfg.gui = true; }
         else if (a == "--resume") { ok = in.flag(); cfg.resume = true; }
-        else if (a == "--allow-exec") { ok = in.flag(); cfg.allow_exec = true; }
+        else if (a == "--allow-exec") {
+            // Bare: run in the isolating sandbox or not at all. =unsandboxed:
+            // the explicit opt-in to resource limits only (no bwrap here).
+            if (in.value && *in.value != "unsandboxed")
+                return CliError("argument --allow-exec: invalid choice: '" + *in.value +
+                                "' (--allow-exec or --allow-exec=unsandboxed)");
+            cfg.allow_exec = true;
+            if (in.value) cfg.allow_unsandboxed = true;
+        }
         else if (a == "--strict-aliasing") { ok = in.flag(); cfg.strict_aliasing = true; }
         else if (a == "--pir-drafts") { ok = in.flag(); cfg.pir_drafts = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
@@ -305,7 +313,8 @@ std::string cli_usage() {
         "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
         "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
         "           [--fuzz-budget S] [--fuzz-iters N] [--repair-rounds N]\n"
-        "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
+        "           [--list-stages] [--version] [--fail-on never|defect|gap]\n"
+        "           [--allow-exec[=unsandboxed]]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S]\n"
@@ -327,13 +336,18 @@ std::string cli_usage() {
         "  adds names and keeps earlier ones; repeating --skip adds names and\n"
         "  keeps earlier ones).\n"
         "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (prism-deps tool), then PATH.\n"
-        "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
+        "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback)\n"
+        "  when --out/run_key.json still matches: a changed file under PATH or a changed\n"
+        "  result-affecting option re-runs the stages it affects, and the report says so.\n"
         "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
         "  extra.severity warning/note/style) or gap (defect, or anything\n"
         "  NOTRUN/ERROR/TIMEOUT). A crashed stage is exit 2.\n"
         "--allow-exec: run code from the scanned tree (sanitizer/fuzz/diff harnesses,\n"
         "  perl -c, cargo clippy, eslint, LLM programs) in a sandbox; only on code you\n"
-        "  trust. Without it those steps are NOTRUN (Law 9).\n"
+        "  trust. Without it those steps are NOTRUN (Law 9). The sandbox is bubblewrap\n"
+        "  (read-only system dirs and toolchains, no home, no network); where it cannot\n"
+        "  run, those steps stay NOTRUN unless --allow-exec=unsandboxed accepts resource\n"
+        "  limits only (rlimits, or a Windows Job Object).\n"
         "--strict-aliasing: the pir stage also checks effective types (C11 6.5p7);\n"
         "  off by default because real code often breaks strict aliasing on purpose.\n"
         "--pir-drafts: pir takes pointer sizes from the template harness draft when no\n"

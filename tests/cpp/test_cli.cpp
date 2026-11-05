@@ -146,6 +146,29 @@ TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
     CHECK(hidden->z3_only);
 }
 
+TEST_CASE("cli: --allow-exec=unsandboxed is the only value --allow-exec takes") {
+    auto bare = parse({"--allow-exec"});
+    REQUIRE(bare);
+    CHECK(bare->cfg.allow_exec);
+    CHECK_FALSE(bare->cfg.allow_unsandboxed);  // the jail or nothing
+    auto weak = parse({"--allow-exec=unsandboxed"});
+    REQUIRE(weak);
+    CHECK(weak->cfg.allow_exec);
+    CHECK(weak->cfg.allow_unsandboxed);
+    auto none = parse({});
+    REQUIRE(none);
+    CHECK_FALSE(none->cfg.allow_unsandboxed);
+    auto bad = parse({"--allow-exec=yes"});
+    REQUIRE_FALSE(bad);
+    CHECK(bad.error().find("--allow-exec=unsandboxed") != std::string::npos);
+    // The next argument is the path, never a value of --allow-exec.
+    auto path = parse({"--allow-exec", "unsandboxed"});
+    REQUIRE(path);
+    CHECK(path->path == "unsandboxed");
+    CHECK_FALSE(path->cfg.allow_unsandboxed);
+    CHECK(prism::cli_usage().find("--allow-exec=unsandboxed") != std::string::npos);
+}
+
 TEST_CASE("cli: --help, --version and --list-stages") {
     for (auto* h : {"-h", "--help"}) {
         auto r = parse({h});
@@ -190,7 +213,9 @@ TEST_CASE("cli: an unknown option, a stray argument or a switch with a value is 
     CHECK(error_of({"--foo", "bar"}) == "unrecognized arguments: --foo");
     CHECK(error_of({"a", "b"}) == "unrecognized arguments: b");
     CHECK(error_of({"--no-llm=1"}) == "argument --no-llm: ignored explicit argument '1'");
-    CHECK(error_of({"--allow-exec=yes"}) == "argument --allow-exec: ignored explicit argument 'yes'");
+    // --allow-exec takes one value only: unsandboxed.
+    CHECK(error_of({"--allow-exec=yes"}) ==
+          "argument --allow-exec: invalid choice: 'yes' (--allow-exec or --allow-exec=unsandboxed)");
 }
 
 TEST_CASE("cli: a missing or malformed value is an error, never an empty or default value") {

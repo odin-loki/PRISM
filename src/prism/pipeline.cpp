@@ -52,7 +52,157 @@ std::string rel_of(const std::filesystem::path& p, const std::filesystem::path& 
     return p.filename().string();
 }
 
+// One "rel \0 size \0 sha256" line per file under p (p itself when a file),
+// skipping the scope's vendor/build dirs and `exclude`. Content hashes, not
+// mtimes: an edit that keeps the size and mtime (cp -p, rsync -a, a
+// checkout of another branch inside one second) must not replay old findings,
+// and the pipeline reads every byte of these files anyway.
+void digest_lines(const std::filesystem::path& p, const std::filesystem::path& exclude, const std::string& tag,
+                  std::vector<std::string>& lines) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto one = [&](const fs::path& f, const std::string& rel) {
+        std::error_code e2;
+        auto size = fs::file_size(f, e2);
+        auto h = ai::sha256_file(f);
+        lines.push_back(tag + rel + '\0' + (e2 ? std::string("?") : std::to_string(size)) + '\0' +
+                        (h.empty() ? std::string("unreadable") : h));
+    };
+    if (fs::is_regular_file(p, ec)) {
+        one(p, p.filename().generic_string());
+        return;
+    }
+    if (!fs::is_directory(p, ec)) {
+        lines.push_back(tag + "<missing>");
+        return;
+    }
+    for (auto it = fs::recursive_directory_iterator(p, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_directory(e2)) {
+            std::error_code e3;
+            if (scope::skip_dir(it->path().filename().string()) ||
+                (!exclude.empty() && fs::equivalent(it->path(), exclude, e3)))
+                it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(e2)) continue;
+        one(it->path(), it->path().lexically_relative(p).generic_string());
+    }
+}
+
+const std::set<std::string>& exec_key_fields() {
+    static const std::set<std::string> k{"allow_exec", "allow_unsandboxed", "sandbox"};
+    return k;
+}
+
 }  // namespace
+
+RunKey run_key(const Config& cfg) {
+    namespace fs = std::filesystem;
+    RunKey k;
+    std::error_code ec;
+    const auto root = fs::absolute(cfg.root, ec);
+    std::vector<std::string> lines;
+    digest_lines(cfg.root, cfg.out, "", lines);
+    std::string req;
+    for (const auto& r : cfg.requirements) {
+        digest_lines(r, {}, "req:" + r.generic_string() + ":", lines);
+        req += r.generic_string() + ";";
+    }
+    if (!cfg.contracts_approved.empty() && !path_within(cfg.contracts_approved, root))
+        digest_lines(cfg.contracts_approved, {}, "approved:", lines);
+    std::sort(lines.begin(), lines.end());
+    std::string all;
+    for (auto& l : lines) all += l + '\n';
+    k.tree = sha256_hex(all);
+    auto& f = k.fields;
+    auto b = [](bool v) { return std::string(v ? "1" : "0"); };
+    f["version"] = PRISM_VERSION;
+    f["root"] = root.generic_string();
+    f["pbsd"] = cfg.pbsd_root.generic_string();
+    f["model"] = cfg.model;
+    f["fpk"] = cfg.fpk.generic_string();
+    f["timeout"] = std::format("{}", cfg.timeout);
+    f["unwind"] = std::to_string(cfg.unwind);
+    std::string props;
+    for (auto& p : cfg.pir_only_props) props += p + ",";
+    f["pir_only_props"] = props;
+    f["memory_model"] = cfg.conc_tso ? "tso" : "sc";
+    f["store_buffer"] = std::to_string(cfg.conc_store_buffer);
+    f["fuzz_budget"] = std::format("{}", cfg.fuzz_budget);
+    f["fuzz_iters"] = std::to_string(cfg.fuzz_iters);
+    f["llm"] = b(cfg.llm);
+    f["repair_rounds"] = std::to_string(cfg.repair_rounds);
+    std::string tools;
+    for (auto& [n, p] : cfg.tools) tools += n + "=" + p.generic_string() + ";";
+    f["tools"] = tools;
+    f["requirements"] = req;
+    f["contracts_approved"] = cfg.contracts_approved.generic_string();
+    f["strict_aliasing"] = b(cfg.strict_aliasing);
+    f["pir_drafts"] = b(cfg.pir_drafts);
+    f["fp_checks"] = b(cfg.fp_checks);
+    f["certified"] = b(cfg.certified);
+    f["data_model"] = cfg.data_model;
+    f["llvm_bin"] = cfg.llvm_bin.generic_string();
+    f["allow_exec"] = b(cfg.allow_exec);
+    f["allow_unsandboxed"] = b(cfg.allow_unsandboxed);
+    // Which jail ran the exec steps (only probed when they may run).
+    f["sandbox"] = cfg.allow_exec ? sandbox::kind() : "";
+    return k;
+}
+
+std::optional<RunKey> load_run_key(const std::filesystem::path& out) {
+    std::ifstream in(out / RUN_KEY_JSON, std::ios::binary);
+    if (!in) return std::nullopt;
+    try {
+        auto j = nlohmann::json::parse(in);
+        if (!j.is_object() || j.value("version", 0) != 1 || !j.contains("tree") || !j["tree"].is_string() ||
+            !j.contains("fields") || !j["fields"].is_object())
+            return std::nullopt;
+        RunKey k;
+        k.tree = j["tree"].get<std::string>();
+        for (auto& [n, v] : j["fields"].items()) {
+            if (!v.is_string()) return std::nullopt;
+            k.fields[n] = v.get<std::string>();
+        }
+        return k;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+void save_run_key(const std::filesystem::path& out, const RunKey& key) {
+    std::filesystem::create_directories(out);
+    nlohmann::json j = {{"version", 1}, {"tree", key.tree}, {"fields", key.fields}};
+    std::ofstream(out / RUN_KEY_JSON, std::ios::binary) << j.dump(2);
+}
+
+RunKeyDiff diff_run_key(const RunKey& before, const RunKey& now) {
+    RunKeyDiff d;
+    bool all = false, exec = false;
+    if (before.tree != now.tree) {
+        all = true;
+        d.why.push_back("files under the scan root changed");
+    }
+    std::set<std::string> names;
+    for (auto& [n, v] : before.fields) names.insert(n);
+    for (auto& [n, v] : now.fields) names.insert(n);
+    for (auto& n : names) {
+        auto a = before.fields.find(n), b = now.fields.find(n);
+        if (a != before.fields.end() && b != now.fields.end() && a->second == b->second) continue;
+        auto shown = [](auto it, auto end) { return it == end ? std::string("unset") : "'" + it->second + "'"; };
+        d.why.push_back(n + " " + shown(a, before.fields.end()) + " -> " + shown(b, now.fields.end()));
+        if (exec_key_fields().contains(n)) exec = true;
+        else all = true;
+    }
+    if (all) {
+        for (auto* p = STAGE_ORDER; *p; ++p) d.rerun.insert(*p);
+    } else if (exec) {
+        for (auto& [s, how] : exec_stages()) d.rerun.insert(s);
+    }
+    return d;
+}
 
 // Law 9 (docs/PLAN.md "Running on untrusted code"): what each stage may
 // execute. Same table as prism/pipeline.py EXEC_STAGES.
@@ -233,18 +383,31 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
     write_shipped_docs(path.parent_path());
 }
 
-RunReport run_pipeline(const Config& cfg) {
-    // Law 9: the exec policy holds for this run only (stages without a
-    // Config read it through sandbox::allowed()).
-    sandbox::Policy exec_policy(cfg.allow_exec);
+RunReport run_pipeline(const Config& requested) {
+    // Law 9: --allow-exec runs scanned code only inside an isolating sandbox,
+    // or with resource limits only when the user said so
+    // (--allow-exec=unsandboxed). Otherwise the exec steps are NOTRUN with
+    // the hint; every stage below sees the effective cfg.allow_exec.
+    const auto gate = sandbox::exec_gate(requested.allow_exec, requested.allow_unsandboxed,
+                                         requested.allow_exec ? sandbox::kind() : std::string());
+    Config cfg = requested;
+    cfg.allow_exec = gate.run;
+    // The exec policy holds for this run only (stages without a Config read
+    // it through sandbox::allowed()).
+    sandbox::Policy exec_policy(gate.run, gate.held_no_sandbox);
     // Roadmap 4.2/9.6: model-assisted invariants, harnesses and explanations
     // see this run's config and log to <out>/ai_audit.jsonl.
     ai::Session ai_session(cfg);
     RunReport report;
     report.root = cfg.root.string();
     report.started = now_secs();
+    if (!gate.note.empty()) report.notes.push_back(gate.note);
     std::filesystem::create_directories(cfg.out);
-    if (!cfg.resume) journal_reset(cfg.out);
+    const RunKey key = run_key(cfg);
+    if (!cfg.resume) {
+        journal_reset(cfg.out);
+        save_run_key(cfg.out, key);
+    }
     std::map<std::string, StageResult> resume;
     if (cfg.resume) {
         // stages.jsonl is the live log. report.json is only a fallback when
@@ -267,6 +430,35 @@ RunReport run_pipeline(const Config& cfg) {
                 if (fns.empty() && !malformed) fns = old->functions;
             }
         }
+        // The journal holds results for the inputs in run_key.json only.
+        if (!resume.empty() || !fns.empty()) {
+            RunKeyDiff diff;
+            if (auto before = load_run_key(cfg.out)) {
+                diff = diff_run_key(*before, key);
+            } else {
+                for (auto* p = STAGE_ORDER; *p; ++p) diff.rerun.insert(*p);
+                diff.why.push_back(std::string("no readable ") + RUN_KEY_JSON +
+                                   " beside the journal (older PRISM or removed)");
+            }
+            if (!diff.rerun.empty()) {
+                const bool all = diff.rerun.size() >= std::size(STAGE_ORDER) - 1;
+                std::string why;
+                for (auto& w : diff.why) why += (why.empty() ? "" : "; ") + w;
+                std::string which;
+                if (!all)
+                    for (auto& s : diff.rerun) which += (which.empty() ? "" : ", ") + s;
+                report.notes.push_back("resume: " + (all ? std::string("every stage") : which) +
+                                       " re-run, not replayed (" + why + ")");
+                for (auto& s : diff.rerun) resume.erase(s);
+                // A changed tree makes the parsed functions stale too.
+                if (diff.rerun.contains("classify")) fns.clear();
+                // Start the journal again so a later --resume cannot pick
+                // up the stale rows; replayed stages are appended anew.
+                journal_reset(cfg.out);
+                if (!fns.empty()) journal_write_functions(cfg.out, fns);
+            }
+        }
+        save_run_key(cfg.out, key);
         if (!fns.empty()) report.functions = fns;
         if (!resume.empty()) {
             auto src = jsonl_present ? (cfg.out / "stages.jsonl") : (cfg.out / "report.json");
@@ -294,6 +486,11 @@ RunReport run_pipeline(const Config& cfg) {
         return rec;
     };
 
+    // Stages that read earlier stages' rows (report.stages, pir's findings):
+    // once any stage before them ran again, their journal row is stale too.
+    static const std::set<std::string> kConsumers{"review", "fuzz", "execute", "repair", "unify"};
+    std::vector<std::string> fresh;  // stages run (not replayed) in this run
+    std::vector<std::string> dependent_reruns;
     auto stage = [&](const char* name, auto fn) -> StageResult {
         if (!cfg.want(name)) {
             return emit(StageResult{name, "skipped", "excluded by --stage/--skip", 0, 0, {}, 0, {}});
@@ -301,8 +498,10 @@ RunReport run_pipeline(const Config& cfg) {
         if (auto it = resume.find(name); it != resume.end() &&
             (it->second.status == "ok" || it->second.status == "NOTRUN") &&
             !(std::string(name) == "classify" && functions.empty())) {
-            return emit(it->second);
+            if (!(kConsumers.contains(name) && !fresh.empty())) return emit(it->second);
+            dependent_reruns.push_back(name);
         }
+        if (cfg.resume) fresh.push_back(name);
         double t0 = now_secs();
         std::vector<Finding> findings;
         try {
@@ -562,6 +761,11 @@ RunReport run_pipeline(const Config& cfg) {
         return std::vector<Finding>{f};
     });
 
+    if (!dependent_reruns.empty()) {
+        std::string list;
+        for (auto& s : dependent_reruns) list += (list.empty() ? "" : ", ") + s;
+        report.notes.push_back("resume: " + list + " re-run, not replayed (they read rows of stages that ran again)");
+    }
     laws::audit_report(report);
     apply_confidence(report);
     report.save(cfg.out / "report.json");

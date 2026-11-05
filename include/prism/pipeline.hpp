@@ -7,6 +7,8 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +22,31 @@ inline constexpr const char* STAGE_ORDER[] = {
     "rapid", "muttest", "ltl", "llm", "execute", "repair", "unify", nullptr};
 
 PRISM_API RunReport run_pipeline(const Config& cfg);
+
+// --resume replays a journal only for the inputs that wrote it. RUN_KEY_JSON
+// under --out holds that run's key: a content digest of the scanned tree and
+// the config fields that change results. A mismatch re-runs the stages the
+// change affects and says so in report.notes.
+inline constexpr const char* RUN_KEY_JSON = "run_key.json";
+struct RunKey {
+    // sha256 over (relative path, size, sha256 of the bytes) of every file
+    // under the root (a file root: that file), the skipped vendor/build dirs
+    // and --out excluded; plus --requirements files and an approvals file
+    // outside the root.
+    std::string tree;
+    std::map<std::string, std::string> fields;  // option -> value as text
+};
+// cfg is the run's effective config (allow_exec after sandbox::exec_gate).
+PRISM_API RunKey run_key(const Config& cfg);
+PRISM_API std::optional<RunKey> load_run_key(const std::filesystem::path& out);
+PRISM_API void save_run_key(const std::filesystem::path& out, const RunKey& key);
+struct RunKeyDiff {
+    std::set<std::string> rerun;  // stage names whose journal rows are stale
+    std::vector<std::string> why;
+};
+// Changed tree or a general field: every stage. Only allow_exec /
+// allow_unsandboxed / sandbox: the exec_stages(). Equal keys: empty.
+PRISM_API RunKeyDiff diff_run_key(const RunKey& before, const RunKey& now);
 PRISM_API void write_report_md(const RunReport& report, const std::filesystem::path& path);
 // Law 5: (visibility, answer, resolution, confidence) of a report, without
 // changing it. No parsed functions scores 0 on every factor.

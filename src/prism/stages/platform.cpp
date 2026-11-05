@@ -92,6 +92,14 @@ ProcRun run_spec(const exec::Spec& in) {
     out.timeout = r.timed_out;
     out.crashed = r.crashed();
     out.failed = r.failed;
+    // In the bwrap jail a child killed by signal N shows as bwrap's exit
+    // 128+N: still a crash (CRASH, never CLEAN), with rc -N as outside.
+    if (!r.failed && !r.timed_out && !r.cancelled && !r.memory_killed && r.term_signal == 0 &&
+        sandbox::jailed(spec.argv))
+        if (int sig = sandbox::jail_exit_signal(r.exit_code)) {
+            out.rc = -sig;
+            out.crashed = true;
+        }
     return out;
 }
 

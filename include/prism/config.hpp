@@ -41,6 +41,10 @@ struct Config {
     // builds, perl -c, cargo clippy, eslint) or from the LLM is opt-in
     // (--allow-exec). Default: those steps are NOTRUN. prism/config.py allow_exec.
     bool allow_exec = false;
+    // --allow-exec=unsandboxed: also run it where no isolating sandbox
+    // (bwrap) works, with resource limits only. Without it, allow_exec on
+    // such a host is held back and those steps are NOTRUN (sandbox::exec_gate).
+    bool allow_unsandboxed = false;
     // Roadmap 9.3: requirement documents (markdown/text files or directories)
     // the model may draft contracts from (--requirements PATH, repeatable).
     std::vector<std::filesystem::path> requirements;

@@ -11,6 +11,7 @@
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
 #include "prism/exec.hpp"
+#include "prism/sandbox.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -62,11 +63,11 @@ std::optional<std::string> lower_unit(const pir::Frontend& fe, const fs::path& s
                                       std::string& err, bool fold_orders = false) {
     auto ir = pir::lower_to_ir(fe, src, timeout_s, err, nullptr, nullptr, nullptr, conc_flags(src));
     if (!ir || !is_cxx(src) || !fe.opt) return ir;
-    static std::atomic<unsigned> seq{0};
-    const auto dir = fs::temp_directory_path() /
-                     ("prism-conc-" + std::to_string(::getpid()) + "-" + std::to_string(seq++));
+    // Private and unpredictable (was /tmp/prism-conc-<pid>-<seq>). Without
+    // one, the unsplit IR is kept (the encoder then says UNENCODED).
+    const auto dir = sandbox::private_temp_dir("prism-conc-");
+    if (dir.empty()) return ir;
     std::error_code ec;
-    fs::create_directories(dir, ec);
     const auto in = dir / "in.ll", outp = dir / "out.ll";
     {
         std::ofstream o(in, std::ios::binary);
