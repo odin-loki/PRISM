@@ -27,18 +27,19 @@ function(_prism_forge_git out_var)
   set(${out_var}_ERR "${_err}" PARENT_SCOPE)
 endfunction()
 
-if(NOT FORGE_SOURCE_DIR)
+# FORGE's own project(FORGE) caches FORGE_SOURCE_DIR (STATIC) as the fetched
+# path, so that path also means "fetch the pin" on a reconfigure.
+set(_forge_src "${CMAKE_BINARY_DIR}/_deps/forge-src")
+if(NOT FORGE_SOURCE_DIR OR FORGE_SOURCE_DIR STREQUAL _forge_src)
   # Fetch exactly the pinned commit, shallow (git fetch --depth 1 <url> <sha>,
   # the same content-addressed fetch third_party/MANIFEST.toml pins use).
   # FetchContent's GIT_SHALLOW only works for branch or tag names, and a full
-  # clone of FORGE is ~120 MB, so this does the fetch itself. The fetched path
-  # is a normal variable, never written to the FORGE_SOURCE_DIR cache entry,
-  # so a pin bump is always honoured.
+  # clone of FORGE is ~120 MB, so this does the fetch itself. A pin bump
+  # re-fetches on the next configure.
   if(NOT GIT_FOUND)
     message(FATAL_ERROR "PRISM requires FORGE at ${FORGE_PIN}: git not found to fetch it. "
                         "Install git or set -DFORGE_SOURCE_DIR=/path/to/FORGE.")
   endif()
-  set(_forge_src "${CMAKE_BINARY_DIR}/_deps/forge-src")
   set(_forge_head "")
   if(EXISTS "${_forge_src}/.git")
     _prism_forge_git(_forge_head -C "${_forge_src}" rev-parse HEAD)
