@@ -423,8 +423,10 @@ jobs:
           path: gui-smoke/prism_gui.png
           retention-days: 7
 
+  # Informational: findings never fail this job (--fail-on never), but a
+  # crash (exit 2), any other non-zero exit or a missing report does.
   selfcheck:
-    name: PRISM on PRISM (SARIF artifact, not gating)
+    name: PRISM on PRISM (SARIF artifact, findings not gating)
     runs-on: ubuntu-24.04
     needs: cpp
     steps:
@@ -436,8 +438,12 @@ jobs:
       - name: Polyglot + lints over the repo
         run: |
           chmod +x build/prism
-          ./build/prism . --no-llm --stage inventory,lints,polyglot --out prism-out-self || true
+          ./build/prism . --no-llm --stage inventory,lints,polyglot --fail-on never --out prism-out-self
+          for f in report.md report.sarif; do
+            test -s "prism-out-self/$f" || { echo "::error::prism exited 0 but wrote no prism-out-self/$f"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: prism-self-report
           path: |
