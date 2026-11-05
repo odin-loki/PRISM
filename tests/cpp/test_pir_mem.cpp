@@ -789,6 +789,11 @@ TEST_CASE("pir mem: the initial-globals re-check reports its own violation, not 
     CHECK(bad.extra.at("prop") != "null-call");
     CHECK(bad.extra.at("globals").find("initial values") != std::string::npos);
     CHECK(bad.extra.at("arbitrary_globals_violation").find("null function pointer") != std::string::npos);
+    // the null call is re-checked alone with the initializers (malloc): it
+    // holds there, so only then is it called a precondition
+    CHECK(prism::laws::is_proof(bad.extra.at("arbitrary_globals_violation_initial")));
+    CHECK(bad.extra.at("globals").find("holds with the initial values") != std::string::npos);
+    CHECK(bad.extra.at("globals").find("(precondition)") != std::string::npos);
     const auto& good = by["global_hooks_true"];
     CHECK(good.status == prism::laws::NEEDS_HARNESS);  // the task's expect_status
     CHECK(good.extra.at("globals") == "arbitrary: FAILED; initial values: PROVED");

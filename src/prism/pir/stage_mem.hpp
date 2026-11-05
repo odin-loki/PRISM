@@ -59,6 +59,12 @@ std::vector<PtrContract> contracts_from_draft(const std::vector<std::string>& as
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
                          const TranslateOptions& topt, const Config& cfg, const CheckOptions& copt);
 
+// A copy of `fn` that checks only the property (prop, line, cls): every
+// other Check statement is dropped (a weaker program, so a FAILED of the
+// copy is a violation of that property and a proof of the copy proves it
+// alone). nullopt when `fn` has no such check.
+std::optional<Function> only_check(const Function& fn, const std::string& prop, int line, const std::string& cls);
+
 // Why translation validation cannot replay this function (empty: it can).
 std::string tv_exclusion(const Function& fn);
 

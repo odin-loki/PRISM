@@ -576,13 +576,19 @@ TEST_CASE("fuzz: pointer and unmodelled functions are NEEDS-HARNESS, never ERROR
 }
 
 TEST_CASE("fuzz: a function the interpreter cannot parse is not CLEAN (Law 7)") {
-    // `x.y` member access: the concrete oracle cannot run it
-    auto f = synth("int r = 0; r = x.y; return r;");
+    // a character that is no C token: the concrete oracle cannot run it
+    auto f = synth("int r = 0; r = x @ 1; return r;");
     auto r = sd::fuzz_function(f, td() / "no_such_file.c", 0.2, 8, nullptr);
     CHECK_FALSE(is(r, prism::laws::CLEAN));
     CHECK(is(r, prism::laws::ERROR));
     CHECK(r.message.find("concrete interpreter") != std::string::npos);
     CHECK_FALSE(extra(r, "concrete").empty());
+    // `x.y` member access is C the interpreter does not model: UNENCODED, so
+    // NEEDS-HARNESS with its reason (was ERROR "unexpected character '.'")
+    auto mem = synth("int r = 0; r = x.y; return r;");
+    auto rm = sd::fuzz_function(mem, td() / "no_such_file.c", 0.2, 8, nullptr);
+    CHECK(is(rm, prism::laws::NEEDS_HARNESS));
+    CHECK(rm.message.find("member access") != std::string::npos);
     // a mapped reason (2-D array) is NEEDS-HARNESS with the interpreter's reason
     auto g = synth("int m[2][2] = {{1, 2}, {3, 4}}; return m[0][x & 1];");
     auto rg = sd::fuzz_function(g, td() / "no_such_file.c", 0.2, 8, nullptr);

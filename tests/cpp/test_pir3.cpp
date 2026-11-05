@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
+#include <tuple>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -162,6 +164,66 @@ declare i1 @llvm.is.fpclass.f64(double, i32)
 }
 
 #ifdef PRISM_HAS_Z3
+TEST_CASE("pir mem policy: only_check re-checks one property alone (both violations hold, or one)") {
+    // apply_memory_policy re-checks the arbitrary-globals violation alone
+    // with the initial values before it calls it a precondition: a proof of
+    // that property alone is a precondition, a FAILED is a second defect.
+    auto checks_of = [](const pp::Function& fn) {
+        std::vector<std::tuple<std::string, int, std::string>> out;
+        for (auto& b : fn.blocks)
+            for (auto& s : b.stmts)
+                if (s.kind == pp::Stmt::Check) out.emplace_back(s.prop, s.line, s.cls);
+        return out;
+    };
+    // both violations hold: x == 0 divides by zero, a huge d overflows the conversion
+    auto both = tr(R"IR(define i32 @both(i32 %x, double %d) {
+entry:
+  %q = udiv i32 100, %x
+  %i = fptosi double %d to i32
+  %r = xor i32 %q, %i
+  ret i32 %r
+}
+)IR",
+                   "both");
+    REQUIRE(both.fn);
+    auto cs = checks_of(*both.fn);
+    std::set<std::string> props;
+    for (auto& [p, l, c] : cs) props.insert(p);
+    REQUIRE(props.size() >= 2);
+    CHECK(pp::check_function(*both.fn, 4, 30.0).status == prism::laws::FAILED);
+    for (auto& [p, l, c] : cs) {
+        CAPTURE(p);
+        auto alone = pp::pirmem::only_check(*both.fn, p, l, c);
+        REQUIRE(alone);
+        for (auto& [p2, l2, c2] : checks_of(*alone)) CHECK(p2 == p);
+        auto v = pp::check_function(*alone, 4, 30.0);
+        CHECK(v.status == prism::laws::FAILED);
+        CHECK(v.prop == p);
+    }
+    // one holds: the divisor is never 0, only the conversion fails
+    auto one = tr(R"IR(define i32 @one(i32 %x, double %d) {
+entry:
+  %y = or i32 %x, 1
+  %q = udiv i32 100, %y
+  %i = fptosi double %d to i32
+  %r = xor i32 %q, %i
+  ret i32 %r
+}
+)IR",
+                  "one");
+    REQUIRE(one.fn);
+    int proved = 0, failed = 0;
+    for (auto& [p, l, c] : checks_of(*one.fn)) {
+        CAPTURE(p);
+        auto v = pp::check_function(*pp::pirmem::only_check(*one.fn, p, l, c), 4, 30.0);
+        if (v.status == prism::laws::FAILED) ++failed;
+        if (prism::laws::is_proof(v.status)) ++proved;
+    }
+    CHECK(proved >= 1);
+    CHECK(failed >= 1);
+    CHECK_FALSE(pp::pirmem::only_check(*one.fn, "no-such-prop", 0, ""));
+}
+
 TEST_CASE("pir3 fp: encoder, fptosi range check and interpreter agree") {
     const char* ir = R"IR(define i32 @conv(double %x) {
 entry:

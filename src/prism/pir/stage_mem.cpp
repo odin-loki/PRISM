@@ -285,17 +285,36 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             // needs a hook other than its initializer, while a later
             // (int)NaN in the same function holds with the initial values
             // (cJSON_CreateNumber; testdata/conformance/prism/regress/
-            // global_hooks_*). Only the violation the initial state shows is
-            // reported; the other one is a missing precondition.
+            // global_hooks_*). The violation the initial state shows is
+            // reported. The other property is re-checked alone with the
+            // initial values: only a proof there makes it a precondition on
+            // global state; a FAILED there is a second defect, written down;
+            // anything else is not decided.
             if (v2.prop != v.prop || v2.line != v.line || v2.cls != v.cls) {
                 const std::string other = v.message;
                 f.extra["arbitrary_globals_violation"] = other;
+                std::string other_initial = "not checked with the initial values (the re-check stopped at " +
+                                            v2.prop + ")";
+                if (auto alone = only_check(*tr.fn, v.prop, v.line, v.cls)) {
+                    auto v3 = recheck(*alone, "initial globals, " + v.prop + " alone");
+                    f.extra["arbitrary_globals_violation_initial"] = status_of(v3);
+                    if (v3.status == laws::PROVED || v3.status == laws::PROVED_UNBOUNDED)
+                        other_initial = "holds with the initial values (" + v3.status +
+                                        "), so it needs other values of them (precondition)";
+                    else if (v3.status == laws::FAILED)
+                        other_initial = "also FAILED with the initial values (a second violation)";
+                    else if (v3.status == laws::BOUNDED)
+                        other_initial = "has no violation within the bound with the initial values (BOUNDED, "
+                                        "not a proof: not shown to be a precondition)";
+                    else
+                        other_initial = "not decided with the initial values (" + status_of(v3) + ")";
+                }
                 auto extra = std::move(v.extra);
                 for (auto& [k, val] : v2.extra) extra[k] = val;
                 v = std::move(v2);
                 v.extra = std::move(extra);
                 v.extra["globals"] = "FAILED with the globals' initial values; the arbitrary-globals violation (" +
-                                     other + ") needs other values of them (precondition)";
+                                     other + ") " + other_initial;
             } else {
                 v.extra["globals"] = "FAILED also with the globals' initial values";
             }
@@ -331,6 +350,21 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             v.message += " -- assuming: " + s;
         }
     }
+}
+
+std::optional<Function> only_check(const Function& fn, const std::string& prop, int line, const std::string& cls) {
+    Function g = fn;
+    bool kept = false;
+    for (auto& b : g.blocks) {
+        std::erase_if(b.stmts, [&](const Stmt& s) {
+            if (s.kind != Stmt::Check) return false;
+            const bool same = s.prop == prop && s.line == line && s.cls == cls;
+            kept = kept || same;
+            return !same;
+        });
+    }
+    if (!kept) return std::nullopt;
+    return g;
 }
 
 std::string tv_exclusion(const Function& fn) {
