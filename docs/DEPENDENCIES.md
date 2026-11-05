@@ -1,10 +1,10 @@
 # Dependencies (branch prism-forge)
 
-Every dependency is pinned to an exact version with a checksum. FORGE is the one deliberate exception.
+Every dependency is pinned to an exact version with a checksum. FORGE is pinned to a commit (content-addressed by git) and is not vendored.
 
 | Dependency | Kind | Pin | Where | Vendored? |
 |---|---|---|---|---|
-| FORGE (odin-loki/FORGE) | linked, **mandatory** | **unpinned**, tracks `main` | `FORGE_SOURCE_DIR` or FetchContent `main` (cmake/forge.cmake) | no (by design) |
+| FORGE (odin-loki/FORGE) | linked, **mandatory** | full commit SHA in `cmake/FORGE_PIN` (bump: `scripts/bump_forge_pin.sh`) | `FORGE_SOURCE_DIR`, or a shallow fetch of the pinned commit (cmake/forge.cmake); CI checks out the same SHA | no (by design) |
 | Z3 4.13.4 | linked | commit + archive/tree SHA-256 | third_party/MANIFEST.toml | yes, third_party/z3 |
 | PCRE2 | linked | commit + SHA-256 | MANIFEST.toml | yes |
 | ~~xsimd~~ | **retired** | removed | hash/havoc lanes were load/store only; plain C++ | deleted |

@@ -26,6 +26,29 @@ model engine); that size is not a roadmap target — only pins, hashes and
 licences are. The `.git` directory only shrinks after the optional history
 rewrite below.
 
+## FORGE
+
+FORGE (odin-loki/FORGE, the platform layer and model engine) is linked and
+mandatory but not vendored. It is pinned to one full commit SHA in
+`cmake/FORGE_PIN`, the single source of truth:
+
+- `cmake/forge.cmake` reads it and, when `FORGE_SOURCE_DIR` is empty, runs
+  `git fetch --depth 1 https://github.com/odin-loki/FORGE.git <sha>` into
+  `build/_deps/forge-src` and checks that `HEAD` is the pin. With
+  `-DFORGE_SOURCE_DIR=PATH` it builds that checkout and warns when its `HEAD`
+  is not the pin.
+- Every workflow that builds PRISM reads the file in a step and passes the SHA
+  as the `ref:` of its `odin-loki/FORGE` checkout.
+
+FORGE `main` moving no longer changes a PRISM build. Bumping is a reviewed
+one-line PR:
+
+```
+scripts/bump_forge_pin.sh          # writes the current FORGE main SHA
+scripts/bump_forge_pin.sh <sha>    # or an exact commit
+git commit cmake/FORGE_PIN         # one line; CI shows whether it builds
+```
+
 ## MANIFEST.toml
 
 One `[[component]]` per dependency:

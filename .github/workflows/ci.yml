@@ -68,11 +68,18 @@ jobs:
           bin=$(python3 scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools")
           echo "PRISM_LLVM_BIN=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
-      - name: Check out FORGE main (mandatory, unpinned)
+      - name: Read the FORGE pin (cmake/FORGE_PIN)
+        id: forge_pin
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < cmake/FORGE_PIN)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error file=cmake/FORGE_PIN::not a full 40-hex commit SHA: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Check out FORGE at the pin (mandatory)
         uses: actions/checkout@v4
         with:
           repository: odin-loki/FORGE
-          ref: main
+          ref: ${{ steps.forge_pin.outputs.sha }}
           path: _forge
       - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
         shell: bash
@@ -143,11 +150,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
+      - name: Read the FORGE pin (cmake/FORGE_PIN)
+        id: forge_pin
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < cmake/FORGE_PIN)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error file=cmake/FORGE_PIN::not a full 40-hex commit SHA: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Check out FORGE at the pin (mandatory)
         uses: actions/checkout@v4
         with:
           repository: odin-loki/FORGE
-          ref: main
+          ref: ${{ steps.forge_pin.outputs.sha }}
           path: _forge
       - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
         shell: pwsh
@@ -211,11 +225,18 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
+      - name: Read the FORGE pin (cmake/FORGE_PIN)
+        id: forge_pin
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < cmake/FORGE_PIN)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error file=cmake/FORGE_PIN::not a full 40-hex commit SHA: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Check out FORGE at the pin (mandatory)
         uses: actions/checkout@v4
         with:
           repository: odin-loki/FORGE
-          ref: main
+          ref: ${{ steps.forge_pin.outputs.sha }}
           path: _forge
       - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
         shell: pwsh
@@ -311,11 +332,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
+      - name: Read the FORGE pin (cmake/FORGE_PIN)
+        id: forge_pin
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < cmake/FORGE_PIN)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error file=cmake/FORGE_PIN::not a full 40-hex commit SHA: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Check out FORGE at the pin (mandatory)
         uses: actions/checkout@v4
         with:
           repository: odin-loki/FORGE
-          ref: main
+          ref: ${{ steps.forge_pin.outputs.sha }}
           path: _forge
       - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
         shell: pwsh

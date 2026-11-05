@@ -21,8 +21,8 @@ Requirements: CMake 3.20+, Ninja, clang (the pinned release is
 `third_party/llvm/PIN.toml`; GCC 13 also builds), Python 3.11 for the tooling.
 Z3, PCRE2, nlohmann/json and doctest are vendored under `third_party/` and
 built with PRISM. FORGE is the one dependency that is not vendored: pass
-`-DFORGE_SOURCE_DIR=PATH`, or leave it empty and CMake fetches odin-loki/FORGE
-`main`.
+`-DFORGE_SOURCE_DIR=PATH`, or leave it empty and CMake fetches the odin-loki/FORGE
+commit pinned in `cmake/FORGE_PIN`.
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
@@ -34,7 +34,7 @@ cmake --build build            # the first build compiles Z3 and is slow
 
 Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_CUDA=ON`
 builds the GPU mutator. FORGE is always linked (`-DFORGE_SOURCE_DIR=PATH` uses a
-local checkout; empty fetches odin-loki/FORGE `main`); it is also the LLM engine.
+local checkout; empty fetches the commit in `cmake/FORGE_PIN`); it is also the LLM engine.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
 to make rebuilds cheap.
 
