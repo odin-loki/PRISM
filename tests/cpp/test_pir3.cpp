@@ -107,6 +107,60 @@ entry:
     CHECK(in[2].pred == "olt");
 }
 
+TEST_CASE("pir3 fp: parser reads LLVM 23 inf / qnan / nan(payload) / snan(payload) literals") {
+    // cJSON_GetNumberValue was UNENCODED "unparsed IR (expected value, got
+    // '+')" on `phi double [ %i, %if.end ], [ +qnan, %if.then ]`. The bits
+    // are what `opt -O1` folds `bitcast <lit> to iN` to (clang 23.1.4).
+    auto m = pp::ir::parse_module(R"IR(define double @f(i1 %c, double %i) {
+entry:
+  br i1 %c, label %a, label %b
+a:
+  br label %b
+b:
+  %r = phi double [ %i, %entry ], [ +qnan, %a ]
+  %s = select i1 %c, double -inf, double +inf
+  %t = select i1 %c, double -nan(0x12), double +snan(0x4000000000000)
+  %u = select i1 %c, float +nan(0x12), float -qnan
+  %v = select i1 %c, half +qnan, half -inf
+  %w = call i1 @llvm.is.fpclass.f64(double %i, /* (nan) */ i32 3)
+  ret double %r
+}
+declare i1 @llvm.is.fpclass.f64(double, i32)
+)IR");
+    const auto* f = m.find("f");
+    REQUIRE(f);
+    auto& in = f->blocks[2].insts;
+    REQUIRE(in.size() >= 5);
+    auto lit = [&](std::size_t k, std::size_t op) {
+        CAPTURE(k);
+        CAPTURE(op);
+        CHECK(in[k].ops[op].v.kind == pp::ir::Value::Fp);
+        return in[k].ops[op].v.bits;
+    };
+    // phi: the constant is one of the incoming values
+    bool found = false;
+    for (auto& [o, from] : in[0].incoming)
+        if (o.v.kind == pp::ir::Value::Fp) {
+            CHECK((from == "a" || from == "%a"));
+            CHECK(o.v.bits == 0x7FF8000000000000ull);
+            found = true;
+        }
+    CHECK(found);
+    // `/* (nan) */` before an immediate is a comment (LLVM 23 is.fpclass;
+    // cJSON print_number was UNENCODED "expected type, got '/'")
+    REQUIRE(in.size() >= 6);
+    CHECK(in[5].ops.back().v.kind == pp::ir::Value::Int);
+    CHECK(in[5].ops.back().v.bits == 3);
+    CHECK(lit(1, 1) == 0xFFF0000000000000ull);
+    CHECK(lit(1, 2) == 0x7FF0000000000000ull);
+    CHECK(lit(2, 1) == 0xFFF8000000000012ull);
+    CHECK(lit(2, 2) == 0x7FF4000000000000ull);
+    CHECK(lit(3, 1) == 0x7FC00012ull);
+    CHECK(lit(3, 2) == 0xFFC00000ull);
+    CHECK(lit(4, 1) == 0x7E00ull);
+    CHECK(lit(4, 2) == 0xFC00ull);
+}
+
 #ifdef PRISM_HAS_Z3
 TEST_CASE("pir3 fp: encoder, fptosi range check and interpreter agree") {
     const char* ir = R"IR(define i32 @conv(double %x) {

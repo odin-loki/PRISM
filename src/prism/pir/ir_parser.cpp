@@ -55,6 +55,13 @@ std::vector<Tok> lex(std::string_view s) {
             ++i;
             continue;
         }
+        // LLVM 23 annotates some immediates with a C comment:
+        // `call i1 @llvm.is.fpclass.f64(double %i, /* (nan) */ i32 3)`
+        if (c == '/' && i + 1 < s.size() && s[i + 1] == '*') {
+            auto end = s.find("*/", i + 2);
+            i = end == std::string_view::npos ? s.size() : end + 2;
+            continue;
+        }
         if (c == ';') {
             while (i < s.size() && s[i] != '\n') ++i;
             continue;
@@ -100,6 +107,24 @@ std::vector<Tok> lex(std::string_view s) {
             t.text = quoted(i);
             out.push_back(std::move(t));
             continue;
+        }
+        // LLVM 23 special floating-point literals: a sign and inf, qnan,
+        // nan(0x<payload>), snan(0x<payload>) ("phi double [ %i, %a ],
+        // [ +qnan, %b ]" in cJSON_GetNumberValue). One Num token;
+        // fp_literal gives the bits.
+        if ((c == '+' || c == '-') && i + 1 < s.size() && std::isalpha(static_cast<unsigned char>(s[i + 1]))) {
+            std::size_t j = i + 1;
+            while (j < s.size() && std::isalpha(static_cast<unsigned char>(s[j]))) ++j;
+            const auto word = s.substr(i + 1, j - i - 1);
+            if (word == "inf" || word == "qnan" || word == "nan" || word == "snan") {
+                if ((word == "nan" || word == "snan") && j < s.size() && s[j] == '(') {
+                    auto close = s.find(')', j);
+                    if (close != std::string_view::npos) j = close + 1;
+                }
+                out.push_back({Tok::Num, std::string(s.substr(i, j - i))});
+                i = j;
+                continue;
+            }
         }
         // LLVM 23 floating-point literal: f0x<IEEE bits of the type>
         const bool fhex = c == 'f' && i + 3 < s.size() && s[i + 1] == '0' && s[i + 2] == 'x' &&
@@ -168,6 +193,39 @@ std::optional<uint64_t> fp_literal(std::string_view s, std::string_view ty) {
         if (r.ec != std::errc() || r.ptr != h.data() + h.size()) return std::nullopt;
         return v;
     };
+    // LLVM 23: +inf / -qnan / +nan(0x12) / -snan(0x4000000000000). A
+    // nan's payload is below the quiet bit, which nan and qnan set and snan
+    // does not (llvm opt folds `bitcast double -nan(0x12)` to
+    // 0xFFF8000000000012 and `+snan(0x4000000000000)` to 0x7FF4000000000000).
+    if (!s.empty() && (s[0] == '+' || s[0] == '-') && s.size() > 1 && std::isalpha(static_cast<unsigned char>(s[1]))) {
+        const unsigned mant = w == 16 ? 10u : w == 32 ? 23u : 52u;
+        const uint64_t sign = s[0] == '-' ? (uint64_t{1} << (w - 1)) : 0;
+        const uint64_t exp = ((uint64_t{1} << (w - 1 - mant)) - 1) << mant;
+        const uint64_t quiet = uint64_t{1} << (mant - 1);
+        const uint64_t mmask = (uint64_t{1} << mant) - 1;
+        auto body = s.substr(1);
+        if (body == "inf") return sign | exp;
+        if (body == "qnan") return sign | exp | quiet;
+        uint64_t payload = 0;
+        bool signaling = false;
+        if (body.starts_with("nan(") || body.starts_with("snan(")) {
+            signaling = body[0] == 's';
+            auto open = body.find('(');
+            if (body.back() != ')' || body.substr(open + 1, 2) != "0x") return std::nullopt;
+            auto h = hex(body.substr(open + 3, body.size() - open - 4));
+            if (!h || (*h & ~mmask)) return std::nullopt;
+            payload = *h;
+        } else if (body != "nan" && body != "snan") {
+            return std::nullopt;
+        } else {
+            signaling = body == "snan";
+        }
+        if (signaling) {
+            if ((payload & quiet) || payload == 0) return std::nullopt;  // not a signaling NaN
+            return sign | exp | payload;
+        }
+        return sign | exp | quiet | payload;
+    }
     if (s.starts_with("0xH")) {
         if (w != 16) return std::nullopt;
         return hex(s.substr(3));

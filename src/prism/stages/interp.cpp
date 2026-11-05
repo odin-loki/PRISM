@@ -237,16 +237,34 @@ std::vector<std::string> tok_uncached(const std::string& src) {
         R"(0[xX][0-9a-fA-F](?:'?[0-9a-fA-F])*[uUlL]*|0[bB][01](?:'?[01])*[uUlL]*|\d(?:'?\d)*[uUlL]*|'(?:\\.|[^\\'])'|"(?:\\.|[^\\"])*"|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|\+\+|--|[+\-*/%<>=!&|^~()[\],?:{}])");
     std::vector<std::string> out;
     std::size_t at = 0;
-    // Text between tokens must be blank: an unknown character (a float's
-    // '.', '->', '@') is a parse failure, not something to skip.
+    // Text between tokens must be blank: an unknown character ('@') is a
+    // parse failure, not something to skip. A '.' or '->' is C the
+    // interpreter does not model, not a typo: a struct or union member
+    // (`global_hooks.allocate(size)` in cJSON_malloc, `global_error.json` in
+    // cJSON_GetErrorPtr), a floating literal or `...`. Those are UNENCODED
+    // (harness_for_parsefail: NEEDS-HARNESS), never an ERROR of the
+    // instrument.
+    auto dot_reason = [&](std::size_t i) -> std::string {
+        const auto digit = [&](std::size_t k) {
+            return k < src.size() && std::isdigit(static_cast<unsigned char>(src[k]));
+        };
+        if (src.compare(i, 3, "...") == 0) return "UNENCODED: variadic '...'";
+        if (digit(i + 1) || (i > 0 && digit(i - 1))) return "UNENCODED: floating-point literal";
+        return "UNENCODED: struct/union member access '.'";
+    };
     auto gap = [&](std::size_t to) {
         for (; at < to; ++at)
-            if (!std::isspace(static_cast<unsigned char>(src[at])))
+            if (!std::isspace(static_cast<unsigned char>(src[at]))) {
+                if (src[at] == '.') throw ParseFail(dot_reason(at));
                 throw ParseFail(std::string("unexpected character '") + src.at(at) + "'");
+            }
     };
     for (auto& m : rx.finditer(src)) {
         if (m.spans.empty() || m.spans[0].first < 0) continue;
         gap(static_cast<std::size_t>(m.spans[0].first));
+        if (m.text == "-" && static_cast<std::size_t>(m.spans[0].second) < src.size() &&
+            src[static_cast<std::size_t>(m.spans[0].second)] == '>')
+            throw ParseFail("UNENCODED: struct/union member access '->'");
         at = static_cast<std::size_t>(m.spans[0].second);
         out.push_back(m.text);
         // Digit separators (`1'000`) are not part of the value.

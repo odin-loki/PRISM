@@ -769,6 +769,36 @@ TEST_CASE("concolic: ERROR rows carry args and tried") {
     CHECK_FALSE(r.extra.contains("generated"));
 }
 
+TEST_CASE("concolic: member access and float literals are UNENCODED (NEEDS-HARNESS), not ERROR") {
+    // cJSON_malloc and cJSON_GetErrorPtr were ERROR "unexpected character '.'"
+    struct Case {
+        const char* name;
+        const char* kind;
+        std::vector<std::pair<std::string, std::string>> params;
+        const char* body;
+        const char* why;
+    };
+    const std::vector<Case> cases = {
+        {"cjson_malloc", "SCALAR", {{"size_t", "size"}}, "return global_hooks.allocate(size);", "member access '.'"},
+        {"get_error_pos", "VOID", {}, "return (int) (global_error.position + 1);", "member access '.'"},
+        {"arrow", "SCALAR", {{"int", "x"}}, "return g_ptr->len + x;", ""},
+        {"half", "SCALAR", {{"int", "x"}}, "return x > .5;", "floating-point literal"},
+    };
+    for (const auto& c : cases) {
+        CAPTURE(c.name);
+        prism::FunctionInfo fn;
+        fn.kind = c.kind;
+        fn.name = c.name;
+        fn.return_type = "int";
+        fn.params = c.params;
+        fn.body = c.body;
+        auto r = concolic_one(fn, 4);
+        CHECK(r.status == std::string(laws::NEEDS_HARNESS));
+        CHECK(r.message.find("unexpected character") == std::string::npos);
+        if (*c.why) CHECK(r.message.find(c.why) != std::string::npos);
+    }
+}
+
 TEST_CASE("concolic: skip-pointer NEEDS-HARNESS rows carry args and tried") {
     auto planted = concolic_one(load_fn("null_branch"), 8);
     REQUIRE(planted.status == std::string(laws::NEEDS_HARNESS));
