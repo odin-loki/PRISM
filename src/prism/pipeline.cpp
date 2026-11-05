@@ -91,26 +91,64 @@ std::vector<Finding> exec_gate_note(const std::string& stage, std::vector<Findin
     return findings;
 }
 
+// Law 5: confidence = visibility x answer x resolution; no data scores 0.
+//
+//   visibility  (stages that ran / stages that were to run), over the parsed
+//               functions (every parsed function is classified, so the
+//               per-function part is n_fun / n_fun). A stage left out with
+//               --stage/--skip ("skipped") was not to run and is not counted.
+//               A stage did not run when its status is not "ok" (NOTRUN,
+//               ERROR, TIMEOUT, failed), or when every record it wrote is no
+//               answer (laws::is_no_answer) and at least one of them is
+//               NOTRUN, ERROR or TIMEOUT: the instrument was missing, held
+//               back (--allow-exec, --no-llm) or broke on everything it was
+//               given (fuzz and concolic without --allow-exec). A stage that
+//               ran and wrote nothing ran: silence is its answer.
+//   answer      functions with an answer (a formal verdict or FAILED) from the
+//               formal stage (pir) / every parsed function. NEEDS-HARNESS,
+//               UNKNOWN, TIMEOUT, NOTRUN and a function pir has no row for
+//               are unanswered and lower this factor: a code base whose
+//               functions are all NEEDS-HARNESS was not answered, so its
+//               confidence is 0, never 1.
+//   resolution  answered functions whose answer is resolved (a proof,
+//               BOUNDED, or FAILED with a counterexample or a non-empty
+//               oracle/read) / answered functions.
+//
+// All three are ratios of counts through verdict::score_counts (the Lean
+// model proofs/Prism/Verdict.lean `score`): the stage share enters as
+// n_fun x counted stages and n_fun x stages that ran, so visibility is
+// exactly ran / counted. Each ratio is 0 when its denominator is 0.
 verdict::Score confidence_score(const RunReport& report) {
-    auto n_fun = report.functions.size();
+    auto n_fun = static_cast<long>(report.functions.size());
     // Empty scope: the product is 0, never n/a or skipped.
     if (n_fun == 0) return {0, 0, 0, 0};
+    long counted = 0, ran = 0;
+    for (auto& s : report.stages) {
+        if (s.status == "skipped") continue;
+        ++counted;
+        if (s.status != "ok") continue;
+        const bool none_answered = std::all_of(s.findings.begin(), s.findings.end(),
+                                               [](const Finding& f) { return laws::is_no_answer(f.status); });
+        const bool held_back = std::any_of(s.findings.begin(), s.findings.end(), [](const Finding& f) {
+            return f.status == laws::NOTRUN || f.status == laws::ERROR || f.status == laws::TIMEOUT;
+        });
+        if (!(none_answered && held_back)) ++ran;
+    }
+    // No stage table (a report built by hand): the function share alone.
+    if (counted == 0) counted = ran = 1;
     // The instrument that answers per function: pir. One record per
     // function: the first one the stage wrote for it.
     static const std::set<std::string> kFormalStages{"pir"};
-    bool any_formal = false;
     std::map<std::string, std::vector<const Finding*>> by_fn;
     for (auto& s : report.stages) {
         if (!kFormalStages.contains(s.name)) continue;
-        any_formal = true;
         std::set<std::string> seen;
         for (auto& f : s.findings) {
             auto k = f.file + "::" + (f.function ? *f.function : "");
             if (seen.insert(k).second) by_fn[k].push_back(&f);
         }
     }
-    // Every parsed function is classified: visibility is n_fun / n_fun.
-    int answered = 0, resolved = 0, attempted = 0;
+    long answered = 0, resolved = 0;
     auto nonempty = [](const Finding* f, const char* key) {
         auto it = f->extra.find(key);
         return it != f->extra.end() && !it->second.empty();
@@ -122,34 +160,20 @@ verdict::Score confidence_score(const RunReport& report) {
         return f->status == laws::FAILED &&
                (!f->counterexample.empty() || nonempty(f, "oracle") || nonempty(f, "read"));
     };
-    if (any_formal) {
-        bool any_scalar = std::any_of(report.functions.begin(), report.functions.end(),
-                                      [](const FunctionInfo& fn) { return fn.kind == "SCALAR" || fn.kind == "VOID"; });
-        for (auto& fn : report.functions) {
-            if (any_scalar && fn.kind != "SCALAR" && fn.kind != "VOID") continue;
-            auto key = fn.file + "::" + fn.name;
-            auto it = by_fn.find(key);
-            // All NEEDS-HARNESS is the absence of a precondition, like POINTER,
-            // not a missing answer.
-            if (it != by_fn.end() && !it->second.empty() &&
-                std::all_of(it->second.begin(), it->second.end(),
-                            [](const Finding* f) { return f->status == laws::NEEDS_HARNESS; }))
-                continue;
-            ++attempted;
-            if (it == by_fn.end()) continue;
-            bool any_answer = false, any_resolved = false;
-            for (auto* f : it->second) {
-                if (!laws::is_answered(f->status)) continue;
-                any_answer = true;
-                if (resolves(f)) any_resolved = true;
-            }
-            if (any_answer) ++answered;
-            if (any_resolved) ++resolved;
+    for (auto& fn : report.functions) {
+        auto it = by_fn.find(fn.file + "::" + fn.name);
+        if (it == by_fn.end()) continue;
+        bool any_answer = false, any_resolved = false;
+        for (auto* f : it->second) {
+            if (!laws::is_answered(f->status)) continue;
+            any_answer = true;
+            if (resolves(f)) any_resolved = true;
         }
+        if (any_answer) ++answered;
+        if (any_resolved) ++resolved;
     }
     // Law 5 through the verdict module (proofs/Prism/Verdict.lean `score`).
-    auto n = static_cast<long>(n_fun);
-    return verdict::score_counts(n, n, attempted, answered, resolved);
+    return verdict::score_counts(n_fun * counted, n_fun * ran, n_fun, answered, resolved);
 }
 
 double round4(double x) {
@@ -207,8 +231,28 @@ void write_report_md(const RunReport& report, const std::filesystem::path& path)
           << std::fixed << std::setprecision(2) << s.elapsed << " | " << note << " |\n";
     }
     o << "\n## Findings\n\n";
+    // classify writes one row per function whose status is its kind
+    // (SCALAR, POINTER, VOID, OTHER): metadata, not a finding. report.json
+    // keeps the rows; report.md says how many there are, in one line. A
+    // classify row with a verdict (ERROR, NOTRUN ...) is still listed.
+    std::map<std::string, int> kinds;
+    for (auto& s : report.stages)
+        if (s.name == "classify")
+            for (auto& f : s.findings)
+                if (!laws::is_status(f.status)) ++kinds[f.status];
+    if (!kinds.empty()) {
+        int n = 0;
+        std::string parts;
+        for (auto& [k, c] : kinds) {
+            n += c;
+            parts += (parts.empty() ? "" : ", ") + std::to_string(c) + " " + k;
+        }
+        o << "Function classification: " << n << " functions (" << parts
+          << "); the rows are in report.json, not listed here.\n\n";
+    }
     for (auto& s : report.stages) {
         for (auto& f : s.findings) {
+            if (s.name == "classify" && !laws::is_status(f.status)) continue;
             // UNKNOWN/TIMEOUT stay in report.md (the Python engine pipeline.py). Only the
             // inventory/classify/unify noise lines are dropped.
             if ((f.status == laws::NOTRUN || f.status == laws::CLEAN) &&

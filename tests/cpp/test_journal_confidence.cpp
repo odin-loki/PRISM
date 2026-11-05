@@ -358,9 +358,53 @@ TEST_CASE("confidence: no pir stage scores 0") {
     CHECK(r.confidence == 0.0);
 }
 
-TEST_CASE("confidence: every function NEEDS-HARNESS is an empty answer scope, 0") {
+TEST_CASE("confidence: every function NEEDS-HARNESS is unanswered, 0") {
     auto r = report_of({cfn("walk", "POINTER")}, std::vector{pir_row(prism::laws::NEEDS_HARNESS, "walk")});
     check_score(prism::confidence_score(r), 1.0, 0.0, 0.0, 0.0);
+}
+
+TEST_CASE("confidence: NEEDS-HARNESS and pointer functions lower the answer factor") {
+    // cJSON: 145 of 151 functions NEEDS-HARNESS and 4 PROVED scored answer 1,
+    // because only SCALAR/VOID functions with a non-NEEDS-HARNESS row counted.
+    std::vector<prism::FunctionInfo> fns{cfn("add"), cfn("sub"), cfn("walk", "POINTER"), cfn("put", "POINTER")};
+    auto r = report_of(fns, std::vector{pir_row(prism::laws::PROVED, "add"),
+                                        pir_row(prism::laws::NEEDS_HARNESS, "sub"),
+                                        pir_row(prism::laws::NEEDS_HARNESS, "walk"),
+                                        pir_row(prism::laws::FAILED, "put", "p=0")});
+    // put (FAILED with a counterexample) and add (PROVED) answer; sub and walk do not
+    check_score(prism::confidence_score(r), 1.0, 0.5, 1.0, 0.5);
+}
+
+TEST_CASE("confidence: stages that did not run lower the visibility factor; --skip does not") {
+    auto r = report_of({cfn("add")}, std::vector{pir_row(prism::laws::PROVED, "add")});
+    auto notrun = [](const std::string& name) {
+        prism::StageResult s = stage(name, "NOTRUN", 1);
+        s.findings.push_back(pir_row(prism::laws::NOTRUN, std::nullopt));
+        s.findings.back().stage = name;
+        return s;
+    };
+    r.stages.push_back(stage("taint", "ok", 0));  // ran, found nothing: silence is an answer
+    r.stages.push_back(notrun("sanitize"));         // held back (--allow-exec)
+    // ok, but every record is no answer and one says why it did not run
+    prism::StageResult fuzz = stage("fuzz", "ok", 2);
+    fuzz.findings = {pir_row(prism::laws::NEEDS_HARNESS, "add"), pir_row(prism::laws::NOTRUN, std::nullopt)};
+    r.stages.push_back(fuzz);
+    // ok with only NEEDS-HARNESS rows: it ran (the answer factor counts those)
+    prism::StageResult harness = stage("harness", "ok", 1);
+    harness.findings = {pir_row(prism::laws::NEEDS_HARNESS, "add")};
+    r.stages.push_back(harness);
+    r.stages.push_back(stage("esbmc", "skipped", 0));  // left out by --stage/--skip: not counted
+    // counted: pir taint sanitize fuzz harness; ran: pir taint harness
+    auto s = prism::confidence_score(r);
+    CHECK(s.visibility == doctest::Approx(3.0 / 5.0));
+    CHECK(s.answer == 1.0);
+    CHECK(s.resolution == 1.0);
+    CHECK(s.confidence == doctest::Approx(3.0 / 5.0));
+    CHECK(s.confidence == doctest::Approx(s.visibility * s.answer * s.resolution));
+    // nothing ran: 0, whatever pir said before
+    for (auto& st : r.stages)
+        if (st.status != "skipped") st.status = "NOTRUN";
+    check_score(prism::confidence_score(r), 0.0, 1.0, 1.0, 0.0);
 }
 
 TEST_CASE("confidence: a row without a function name does not answer for add") {

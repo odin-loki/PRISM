@@ -1847,7 +1847,17 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
         if ((sev == "information" || sev == "style") && eid.starts_with("unused")) continue;
         Finding f;
         f.stage = "cppcheck";
-        f.status = std::string(laws::FAILED);
+        // cppcheck's own severity decides the verdict: "error" and "warning"
+        // report a defect (FAILED, and --fail-on defect blocks on them, as
+        // before); "style", "performance", "portability" and "information"
+        // are advice about the code ("can be declared const", "the scope can
+        // be reduced"), not a defect: READS, which is no verdict, no SARIF
+        // result and never covers a defect class. extra.severity keeps
+        // cppcheck's word either way (sarif.cpp blocks / level_of).
+        const bool defect = sev == "error" || sev == "warning";
+        f.status = std::string(defect ? laws::FAILED : laws::READS);
+        f.extra["severity"] = defect ? std::string("error") : sev;
+        f.extra["cppcheck_severity"] = sev;
         f.file = m.group(4);
         if (!m.group(5).empty()) {
             const auto& num = m.group(5);
@@ -1858,7 +1868,7 @@ static std::vector<Finding> run_cppcheck_unstamped(const std::vector<fs::path>& 
         }
         f.cls = eid;
         f.message = xml_unescape(m.group(3));
-        f.strength = std::string(laws::STRENGTH_FINDS);
+        f.strength = std::string(defect ? laws::STRENGTH_FINDS : laws::STRENGTH_READS);
         out.push_back(std::move(f));
     }
     if (out.empty() && (tool_unusable(r.text, r.rc) || r.failed)) {

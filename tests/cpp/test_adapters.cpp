@@ -15,6 +15,7 @@
 #include "prism/config.hpp"
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
+#include "prism/pipeline.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/solver.hpp"
 #include "prism/stages.hpp"
@@ -1851,6 +1852,58 @@ TEST_CASE("cppcheck: XML errors are FAILED; silence UNKNOWN; odd exit ERROR; can
     CHECK(out[0].message == "cppcheck at " + impostor.string() + " is not cppcheck (not a proof)");
     CHECK(xget(out[0], "install") == prism::adapter_install("cppcheck"));
 }
+
+#ifndef _WIN32
+TEST_CASE("cppcheck: error and warning are defects; style, performance, portability, information are READS") {
+    // cJSON: "Parameter 'item' can be declared as pointer to const" (style)
+    // and "The scope of the variable can be reduced" came out FAILED, the
+    // same as a null dereference.
+    NoTools nt;
+    auto paths = std::vector<fs::path>{testdata() / "abs_ok.c"};
+    auto cfg = nt.cfg;
+    std::string script;
+    for (const char* row : {"nullPointer error", "nullPointerRedundantCheck warning", "constParameterPointer style",
+                            "passedByValue performance", "AssignmentAddressToInteger portability",
+                            "missingIncludeSystem information"}) {
+        std::string s(row);
+        const auto sp = s.find(' ');
+        script += "echo '<error id=\"" + s.substr(0, sp) + "\" severity=\"" + s.substr(sp + 1) +
+                  "\" msg=\"m\"><location file=\"abs_ok.c\" line=\"3\"/>' >&2\n";
+    }
+    cfg.tools["cppcheck"] = fake(nt.t.dir / "t", "cppcheck", script);
+    auto out = prism::run_cppcheck(paths, cfg);
+    REQUIRE(out.size() == 6);
+    std::map<std::string, const prism::Finding*> by;
+    for (auto& f : out) by[f.cls] = &f;
+    for (const char* id : {"nullPointer", "nullPointerRedundantCheck"}) {
+        CAPTURE(id);
+        REQUIRE(by.count(id));
+        CHECK(by[id]->status == laws::FAILED);
+        CHECK(by[id]->strength == laws::STRENGTH_FINDS);
+        CHECK(xget(*by[id], "severity") == "error");  // --fail-on defect blocks (sarif.cpp blocks)
+    }
+    CHECK(xget(*by["nullPointerRedundantCheck"], "cppcheck_severity") == "warning");
+    for (const char* id :
+         {"constParameterPointer", "passedByValue", "AssignmentAddressToInteger", "missingIncludeSystem"}) {
+        CAPTURE(id);
+        REQUIRE(by.count(id));
+        CHECK(by[id]->status == laws::READS);
+        CHECK(by[id]->strength == laws::STRENGTH_READS);
+        CHECK_FALSE(prism::laws::is_answered(by[id]->status));
+    }
+    CHECK(xget(*by["constParameterPointer"], "severity") == "style");
+    CHECK(xget(*by["passedByValue"], "severity") == "performance");
+    // --fail-on defect: the style notes alone never fail the build
+    prism::RunReport rep;
+    rep.stages.push_back(prism::StageResult{});
+    rep.stages[0].name = "cppcheck";
+    for (auto& f : out)
+        if (f.status == laws::READS) rep.stages[0].findings.push_back(f);
+    CHECK(prism::exit_code(rep, "defect") == 0);
+    rep.stages[0].findings.push_back(*by["nullPointerRedundantCheck"]);
+    CHECK(prism::exit_code(rep, "defect") == 1);
+}
+#endif
 
 TEST_CASE("esbmc and cbmc: SUCCESSFUL is PROVED only for plain ESBMC; induction is not PROVED") {
     // Fake tool text only. CBMC's SUCCESSFUL is BOUNDED even when the log says

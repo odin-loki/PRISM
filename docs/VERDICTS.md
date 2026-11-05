@@ -44,7 +44,7 @@ its reports, and every finding in `report.md` links its verdict here
 | <a id="verdict-noseed"></a>`NOSEED` | 0 | fuzz | The fuzzer had no seed to start from. |
 | <a id="verdict-sanfail"></a>`SANFAIL` | 0 | defect | A sanitizer reported an error. |
 | <a id="verdict-hypothesis"></a>`HYPOTHESIS` | 0 | model | LLM output. It cannot cover a defect class (Law 4). |
-| <a id="verdict-reads"></a>`READS` | 0 | model | LLM reading of the code, weaker than a hypothesis. |
+| <a id="verdict-reads"></a>`READS` | 0 | model | A reading of the code, not a verdict: an LLM reading (weaker than a hypothesis), or lint advice that claims no defect (cppcheck style, performance, portability and information notes; `extra.severity` keeps the tool word). |
 
 Predicates (same in all three implementations and the model):
 
@@ -133,6 +133,12 @@ records the `ERROR`. The repair stage should report the patch verdict in
 
 `confidence = visibility × answer × resolution`, each factor a ratio of
 counts that is 0 when its denominator is 0 (no data scores 0, never n/a).
+In a run (`confidence_score`, src/prism/pipeline.cpp): visibility is the
+share of the stages that were to run (not left out by `--stage`/`--skip`)
+that ran (status ok, and not every record a no-answer with one NOTRUN,
+ERROR or TIMEOUT among them); answer is the share of all parsed functions
+that pir answered (a formal verdict or `FAILED`; `NEEDS-HARNESS` is no
+answer); resolution is the share of those answers that are resolved.
 `score_counts(n_fun, classified, attempted, answered, resolved)` computes
 `classified/n_fun`, `answered/attempted`, `resolved/answered` and their
 product; `confidence(v, a, r)` is exactly 0 whenever `v` is 0.
