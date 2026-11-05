@@ -18,7 +18,9 @@ the report to an SV-COMP answer and writes ``witness.yml`` (format 2.0: a
 violation witness for ``false``, a correctness witness for ``true``). See
 docs/SVCOMP.md for the mapping rules.
 
-Benchmark definitions should pass ``<option name="--allow-exec"/>``: a
+Benchmark definitions should pass ``<option name="--allow-exec=unsandboxed"/>``
+(BenchExec's container is the isolation; a bare ``--allow-exec`` needs a
+working bubblewrap inside it): a
 ``false`` answer needs the counterexample to replay, and replay compiles and
 runs the task (PRISM Law 9: never without an explicit opt-in). Without the
 option every refutation is reported as ``unknown``.

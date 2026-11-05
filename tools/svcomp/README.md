@@ -62,8 +62,10 @@ Copy `prism.py` into BenchExec's `benchexec/tools/` (or add this directory to
 Run BenchExec from a directory that has no `prism/` Python package in it, so
 that the module name `prism` means this file.
 
-The benchmark must pass `<option name="--allow-exec"/>`: every `false` answer
-replays the counterexample (Law 9).
+The benchmark must pass `<option name="--allow-exec=unsandboxed"/>`: every
+`false` answer replays the counterexample (Law 9), and BenchExec's container,
+not bubblewrap, is the isolation there. A bare `--allow-exec` replays only
+where bubblewrap works.
 
 ```bash
 PYTHONPATH=tools/svcomp python -m benchexec.test_tool_info .prism \

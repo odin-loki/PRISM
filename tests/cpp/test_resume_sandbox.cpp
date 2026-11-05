@@ -14,6 +14,7 @@
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/svcomp.hpp"
 
 #include "../../src/prism/astlint_internal.hpp"
 
@@ -148,6 +149,37 @@ TEST_CASE("run key: saved and loaded back; a broken file is no key") {
     CHECK_FALSE(prism::load_run_key(t.out));
 }
 
+TEST_CASE("run key: installing a tool re-runs the stages that use it, nothing else") {
+    Tree t("key_tool");
+    auto k = prism::run_key(t.cfg({"inventory"}));
+    REQUIRE(k.fields.contains("tool:cppcheck"));
+    REQUIRE(k.fields.contains("tool:afl-fuzz"));
+    auto before = k, after = k;
+    before.fields["tool:cppcheck"] = "missing";
+    after.fields["tool:cppcheck"] = "/opt/cppcheck/bin/cppcheck";
+    auto d = prism::diff_run_key(before, after);
+    CHECK(d.rerun == std::set<std::string>{"cppcheck"});
+    REQUIRE_FALSE(d.why.empty());
+    CHECK(d.why.front().find("tool:cppcheck 'missing'") != std::string::npos);
+    before = k;
+    before.fields["tool:afl-fuzz"] = "missing";
+    after = k;
+    after.fields["tool:afl-fuzz"] = "/x/afl-fuzz";
+    CHECK(prism::diff_run_key(before, after).rerun == std::set<std::string>{"fuzz", "optional"});
+    // A compiler appearing changes almost everything.
+    before = k;
+    before.fields["tool:cc"] = "missing";
+    after = k;
+    after.fields["tool:cc"] = "/usr/bin/gcc";
+    CHECK(prism::diff_run_key(before, after).rerun.size() == std::size(prism::STAGE_ORDER) - 1);
+    // --tool NAME=PATH resolves it: the key follows.
+    auto c = t.cfg({"inventory"});
+    auto fake = t.dir / "cppcheck";
+    std::ofstream(fake) << "#!/bin/sh\n";
+    c.tools["cppcheck"] = fake;
+    CHECK(prism::run_key(c).fields.at("tool:cppcheck") == fake.generic_string());
+}
+
 // ---- --resume
 
 TEST_CASE("resume: an unchanged tree replays, an edited one re-runs and says so") {
@@ -251,7 +283,60 @@ TEST_CASE("sandbox gate: a held --allow-exec is NOTRUN with the sandbox hint, in
     CHECK_FALSE(note_with(r, "held back").empty());
 }
 
+TEST_CASE("sandbox gate: subcommands parse --allow-exec and --allow-exec=unsandboxed alike") {
+    bool allow = false, weak = false;
+    CHECK_FALSE(prism::sandbox::parse_allow_exec("--allow-exec=yes", allow, weak));
+    CHECK_FALSE(prism::sandbox::parse_allow_exec("--allow", allow, weak));
+    CHECK_FALSE(allow);
+    CHECK(prism::sandbox::parse_allow_exec("--allow-exec", allow, weak));
+    CHECK(allow);
+    CHECK_FALSE(weak);
+    allow = false;
+    CHECK(prism::sandbox::parse_allow_exec("--allow-exec=unsandboxed", allow, weak));
+    CHECK(allow);
+    CHECK(weak);
+    CHECK_FALSE(prism::sandbox::exec_gate_here(false, true).run);
+}
+
+TEST_CASE("sandbox gate: svcomp replay held for want of a sandbox says so") {
+    auto dir = prism::sandbox::private_temp_dir("prism_rs_replay_");
+    REQUIRE_FALSE(dir.empty());
+    std::ofstream(dir / "t.c") << "int main(void) { return 0; }\n";
+    std::string plain, held;
+    {
+        prism::sandbox::Policy p(false, false);
+        plain = prism::svcomp::replay(dir / "t.c", "no-overflow", false, std::nullopt, dir / "a")["why"].get<std::string>();
+    }
+    {
+        prism::sandbox::Policy p(false, true);
+        held = prism::svcomp::replay(dir / "t.c", "no-overflow", false, std::nullopt, dir / "b")["why"].get<std::string>();
+    }
+    CHECK(plain.find("--allow-exec") != std::string::npos);
+    CHECK(held.find("bubblewrap") != std::string::npos);
+    CHECK(held.find("--allow-exec=unsandboxed") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 // ---- the jail
+
+TEST_CASE("sandbox jail: the inherited environment is scrubbed, HOME and TMPDIR are the scratch") {
+    auto a = prism::sandbox::jail_env({"PATH", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY",
+                                       "ASAN_OPTIONS", "UBSAN_OPTIONS", "AFL_SKIP_CPUFREQ", "LC_ALL", "HOME", "PRISM_FUZZ_SEED"},
+                                      "/s");
+    auto unset = [&](const std::string& n) {
+        for (std::size_t i = 0; i + 1 < a.size(); ++i)
+            if (a[i] == "--unsetenv" && a[i + 1] == n) return true;
+        return false;
+    };
+    for (auto* gone : {"GITHUB_TOKEN", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY"}) CHECK_MESSAGE(unset(gone), gone);
+    for (auto* kept : {"PATH", "ASAN_OPTIONS", "UBSAN_OPTIONS", "AFL_SKIP_CPUFREQ", "LC_ALL", "PRISM_FUZZ_SEED"})
+        CHECK_MESSAGE(!unset(kept), kept);
+    const std::vector<std::string> tail{"--setenv", "HOME", "/s", "--setenv", "TMPDIR", "/s"};
+    REQUIRE(a.size() >= tail.size());
+    CHECK(std::vector<std::string>(a.end() - 6, a.end()) == tail);
+    CHECK_FALSE(unset("HOME"));  // replaced, not removed
+}
 
 TEST_CASE("sandbox jail: no whole-root bind, no home, the scratch dir writable") {
     auto m = prism::sandbox::jail_mounts({"/usr/bin/true"});

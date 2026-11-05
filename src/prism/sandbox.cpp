@@ -19,6 +19,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>  // mkdtemp (glibc also declares it in <cstdlib>)
+extern char** environ;
 #endif
 
 namespace prism::sandbox {
@@ -207,6 +208,59 @@ Gate exec_gate(bool allow_exec, bool allow_unsandboxed, std::string_view k) {
     return g;
 }
 
+Gate exec_gate_here(bool allow_exec, bool allow_unsandboxed) {
+    return exec_gate(allow_exec, allow_unsandboxed, allow_exec ? kind() : std::string());
+}
+
+bool parse_allow_exec(std::string_view arg, bool& allow, bool& allow_unsandboxed) {
+    if (arg == EXEC_FLAG) {
+        allow = true;
+        return true;
+    }
+    if (arg == EXEC_UNSANDBOXED_FLAG) {
+        allow = allow_unsandboxed = true;
+        return true;
+    }
+    return false;
+}
+
+bool jail_env_kept(std::string_view name) {
+    static const char* const kExact[] = {"PATH", "LANG", "LANGUAGE", "TERM", "TZ", "LD_LIBRARY_PATH",
+                                         "LLVM_PROFILE_FILE", "SOURCE_DATE_EPOCH",
+                                         // the seed svcomp fuzz_replay hands its harness (replay.cpp)
+                                         "PRISM_FUZZ_SEED"};
+    for (auto* e : kExact)
+        if (name == e) return true;
+    if (name.starts_with("LC_") || name.starts_with("AFL_")) return true;
+    // ASAN_OPTIONS, UBSAN_OPTIONS, TSAN_OPTIONS, MSAN_OPTIONS, LSAN_OPTIONS ...
+    return name.ends_with("SAN_OPTIONS") || name.ends_with("SAN_SYMBOLIZER_PATH");
+}
+
+std::vector<std::string> jail_env(const std::vector<std::string>& names, const fs::path& scratch) {
+    // --unsetenv, not --clearenv: variables the caller sets on the run
+    // (exec::Spec::env_set, applied to bwrap after this argv is built) are the
+    // child's own and must reach it; everything PRISM inherited does not.
+    std::vector<std::string> out;
+    for (const auto& n : names)
+        if (!n.empty() && !jail_env_kept(n) && n != "HOME" && n != "TMPDIR") out.insert(out.end(), {"--unsetenv", n});
+    const std::string s = scratch.string();
+    out.insert(out.end(), {"--setenv", "HOME", s, "--setenv", "TMPDIR", s});
+    return out;
+}
+
+namespace {
+std::vector<std::string> inherited_env_names() {
+    std::vector<std::string> names;
+#ifndef _WIN32
+    for (char** e = environ; e && *e; ++e) {
+        std::string_view kv(*e);
+        if (auto eq = kv.find('='); eq != std::string_view::npos && eq > 0) names.emplace_back(kv.substr(0, eq));
+    }
+#endif
+    return names;
+}
+}  // namespace
+
 bool jailed(const std::vector<std::string>& argv) {
     const auto& bw = bwrap_path();
     return bw && argv.size() > 1 && argv[0] == *bw;
@@ -219,7 +273,11 @@ std::vector<std::string> wrap_argv(const std::vector<std::string>& argv, const f
     if (!bw) return argv;
     std::error_code ec;
     auto abs = fs::weakly_canonical(fs::absolute(scratch, ec), ec);
-    return bwrap_argv(*bw, argv, ec ? scratch : abs, jail_mounts(argv));
+    const fs::path s = ec ? scratch : abs;
+    auto jail = jail_mounts(argv);
+    auto env = jail_env(inherited_env_names(), s);
+    jail.insert(jail.end(), env.begin(), env.end());
+    return bwrap_argv(*bw, argv, s, jail);
 }
 
 fs::path private_temp_dir(std::string_view prefix) {

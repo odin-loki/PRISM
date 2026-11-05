@@ -136,6 +136,9 @@ struct RunOptions {
     bool llm = true;
     bool resume = false;
     bool allow_exec = false;  // Law 9: off unless the user opts in
+    // With allow_exec: --allow-exec=unsandboxed (run where no bwrap jail
+    // exists, e.g. Windows, with resource limits only). Off: held there.
+    bool allow_unsandboxed = false;
     bool skip_fuzz = false;
     bool skip_repair = false;
     bool skip_optional = false;
@@ -155,6 +158,7 @@ struct Launch {
     bool no_llm = false;
     bool resume = false;
     bool allow_exec = false;
+    bool allow_unsandboxed = false;  // --allow-exec=unsandboxed
     bool skip_fuzz = false;
     bool skip_repair = false;
     bool skip_optional = false;

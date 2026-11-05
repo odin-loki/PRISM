@@ -2643,7 +2643,7 @@ TEST_CASE("sandbox: exec NOTRUN row, policy default deny, bwrap argv") {
         "/tmp", "--bind", "/s", "/s", "--unshare-all", "--die-with-parent", "--", "/s/a.out", "x"};
     CHECK(argv == want);
     auto k = prism::sandbox::kind();
-    CHECK((k == "bwrap" || k == "rlimits-only" || k == "none"));
+    CHECK((k == "bwrap" || k == "rlimits-only" || k == "job-object"));
     auto l = prism::sandbox::limits_for(1.0, false);
     CHECK(l.enabled);
     CHECK_FALSE(l.limit_as);

@@ -968,7 +968,7 @@ std::pair<ProveResult, nlohmann::json> prove_one(ProveOptions opt, bool allow_ex
         r.status = std::string(laws::NOTRUN);
         r.reason = sandbox::exec_message("prove (Lean elaboration of the project and of model tactics)");
     } else {
-        sandbox::Policy policy(true);
+        sandbox::Policy policy(true, false);
         r = prove_theorem(opt);
     }
     nlohmann::json j{{"theorem", opt.theorem},
@@ -1043,13 +1043,13 @@ int prove_all(const std::vector<std::string>& roots_in, bool list, const ProveOp
 
 int prove_main(int argc, char** argv) {
     ProveOptions opt;
-    bool allow_exec = false, json_only = false, list = false, all = false;
+    bool allow_exec = false, allow_unsandboxed = false, json_only = false, list = false, all = false;
     std::vector<std::string> pos;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
         if (a == "--write") opt.write = true;
-        else if (a == "--allow-exec") allow_exec = true;
+        else if (sandbox::parse_allow_exec(a, allow_exec, allow_unsandboxed)) continue;
         else if (a == "--json") json_only = true;
         else if (a == "--list") list = true;
         else if (a == "--all") all = true;
@@ -1083,6 +1083,12 @@ int prove_main(int argc, char** argv) {
             return prism::code(prism::Exit::Usage);
         }
     }
+    // Law 9: the jail, or resource limits only when asked for; a held
+    // --allow-exec is NOTRUN with the sandbox hint.
+    const auto gate = sandbox::exec_gate_here(allow_exec, allow_unsandboxed);
+    sandbox::Policy policy(gate.run, gate.held_no_sandbox);
+    if (!gate.note.empty()) prism::log::warn("prove", gate.note);
+    allow_exec = gate.run;
     if (all) {
         opt.out = fs::absolute(opt.out);
         return prove_all(pos, list, opt, allow_exec);

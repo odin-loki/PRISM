@@ -716,6 +716,19 @@ TEST_CASE("run args: GUI budgets, prism-out-gui, LLM on, allow-exec off by defau
     CHECK(after(a, "--fuzz-budget") == "30");
     CHECK(after(a, "--fuzz-iters") == "256");
     CHECK(has(a, "--pir-drafts"));
+    CHECK_FALSE(has(a, "--allow-exec=unsandboxed"));  // the jail or nothing by default
+
+    // The explicit "without a sandbox" box: one flag, round-tripped by launch parsing.
+    o.allow_unsandboxed = true;
+    a = pg::gui_run_args(o);
+    CHECK(has(a, "--allow-exec=unsandboxed"));
+    CHECK_FALSE(has(a, "--allow-exec"));
+    auto back = pg::parse_launch({"--gui", "src", "--allow-exec=unsandboxed"});
+    CHECK(back.allow_exec);
+    CHECK(back.allow_unsandboxed);
+    CHECK(back.extra.empty());
+    o.allow_exec = false;  // the box means nothing without allow-exec
+    CHECK_FALSE(has(pg::gui_run_args(o), "--allow-exec=unsandboxed"));
 }
 
 TEST_CASE("launch parsing: boxes, --out, pass-through flags and ignored flags") {

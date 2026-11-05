@@ -75,6 +75,20 @@ struct Gate {
     std::string note;              // report note; empty when nothing to say
 };
 PRISM_API Gate exec_gate(bool allow_exec, bool allow_unsandboxed, std::string_view kind);
+// exec_gate with this host's kind() (probed only when allow_exec).
+PRISM_API Gate exec_gate_here(bool allow_exec, bool allow_unsandboxed);
+// Subcommand flag: "--allow-exec" sets allow; "--allow-exec=unsandboxed"
+// sets both. False (nothing set) for any other argument.
+PRISM_API bool parse_allow_exec(std::string_view arg, bool& allow, bool& allow_unsandboxed);
+
+// The jail's environment: every inherited variable in `names` is unset
+// except PATH, LANG/LC_*, TERM, TZ, LD_LIBRARY_PATH, *SAN_OPTIONS, AFL_*, PRISM_FUZZ_SEED
+// and a few build ones (no tokens, no SSH agent, no cloud keys), and HOME
+// and TMPDIR point at the scratch dir. Variables a run sets itself
+// (exec::Spec::env_set) still reach the child.
+PRISM_API bool jail_env_kept(std::string_view name);
+PRISM_API std::vector<std::string> jail_env(const std::vector<std::string>& names,
+                                            const std::filesystem::path& scratch);
 
 // The jail argv for one run (pure; bwrap is the resolved bwrap path).
 // ro_mounts are the bwrap mount arguments that make up the read-only view

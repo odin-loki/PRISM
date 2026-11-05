@@ -1107,6 +1107,7 @@ TEST_CASE("svcomp solve: a pinned false task (violation witness) and a true task
     TempDir d;
     SolveOptions opt;
     opt.allow_exec = true;
+    opt.allow_unsandboxed = true;  // any host: bwrap or not (Law 9 gate)
     SUBCASE("PostfixIncrement: false(no-overflow)") {
         if (!cc_with_ubsan()) {
             MESSAGE("NOTRUN: no C compiler with UBSan");
@@ -1312,6 +1313,7 @@ TEST_CASE("svcomp solve no-overflow: a reachable reach_error() does not block th
     TempDir d;
     SolveOptions opt;
     opt.allow_exec = true;
+    opt.allow_unsandboxed = true;  // any host: bwrap or not (Law 9 gate)
     const std::string head = "extern void abort(void);\nextern void __assert_fail(const char*, const char*, unsigned int, const char*);\n"
                              "void reach_error() { __assert_fail(\"0\", \"t.c\", 3, \"reach_error\"); }\n"
                              "void __VERIFIER_assert(int cond) { if (!(cond)) { ERROR: {reach_error();abort();} } }\n";

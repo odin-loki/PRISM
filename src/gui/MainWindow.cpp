@@ -111,6 +111,25 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
     allow_exec_->setToolTip(QStringLiteral(
         "--allow-exec: sanitizer/fuzz/diff harnesses, perl -c, cargo clippy, eslint, "
         "ParanoidBSD modules, LLM programs. Only on code you trust; off = NOTRUN."));
+    // Law 9: without bubblewrap (always on Windows) --allow-exec alone is held
+    // back; this box is the explicit opt-in to resource limits only.
+    unsandboxed_ = qt_own(new QCheckBox(QStringLiteral("…without a sandbox"), root));
+    unsandboxed_->setObjectName(QStringLiteral("allow_unsandboxed"));
+    unsandboxed_->setChecked(false);
+    unsandboxed_->setEnabled(false);
+    unsandboxed_->setToolTip(QStringLiteral(
+        "--allow-exec=unsandboxed: where no bubblewrap jail exists (Windows, or Linux without bwrap) "
+        "run anyway, with memory/CPU limits only. The code can read and write your files."));
+    unsandboxed_warn_ = qt_own(new QLabel(
+        QStringLiteral("Warning: scanned code runs with your file and network access"), root));
+    unsandboxed_warn_->setObjectName(QStringLiteral("allow_unsandboxed_warning"));
+    unsandboxed_warn_->setStyleSheet(QStringLiteral("color: #b00020; font-weight: bold;"));
+    unsandboxed_warn_->setVisible(false);
+    connect(allow_exec_, &QCheckBox::toggled, this, [this](bool on) {
+        unsandboxed_->setEnabled(on);
+        if (!on) unsandboxed_->setChecked(false);
+    });
+    connect(unsandboxed_, &QCheckBox::toggled, unsandboxed_warn_, &QLabel::setVisible);
     run_ = qt_own(new QPushButton(QStringLiteral("Run pipeline"), root));
     run_->setObjectName(QStringLiteral("run"));
     bar->addWidget(qt_own(new QLabel(QStringLiteral("Path"), root)));
@@ -119,6 +138,8 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
     bar->addWidget(llm_);
     bar->addWidget(resume_);
     bar->addWidget(allow_exec_);
+    bar->addWidget(unsandboxed_);
+    bar->addWidget(unsandboxed_warn_);
     bar->addWidget(run_);
     v->addLayout(bar);
     bar_hold.release();
@@ -226,6 +247,7 @@ MainWindow::MainWindow(const QStringList& launch, QWidget *parent) : QMainWindow
     if (launch_.no_llm) llm_->setChecked(false);
     resume_->setChecked(launch_.resume);
     allow_exec_->setChecked(launch_.allow_exec);
+    unsandboxed_->setChecked(launch_.allow_exec && launch_.allow_unsandboxed);
     skip_fuzz_->setChecked(launch_.skip_fuzz);
     skip_repair_->setChecked(launch_.skip_repair);
     skip_optional_->setChecked(launch_.skip_optional);
@@ -254,6 +276,7 @@ QStringList MainWindow::runArguments() const {
     o.llm = llm_->isChecked();
     o.resume = resume_->isChecked();
     o.allow_exec = allow_exec_->isChecked();
+    o.allow_unsandboxed = o.allow_exec && unsandboxed_->isChecked();
     o.skip_fuzz = skip_fuzz_->isChecked();
     o.skip_repair = skip_repair_->isChecked();
     o.skip_optional = skip_optional_->isChecked();

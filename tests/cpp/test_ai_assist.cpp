@@ -10,6 +10,7 @@
 
 #include "prism/ai.hpp"
 #include "prism/ai_assist.hpp"
+#include "prism/sandbox.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/solver_predict.hpp"
@@ -361,6 +362,29 @@ TEST_CASE("ai-assist regress: --run needs --allow-exec (Law 9)") {
     CHECK_FALSE(fs::exists(root / "out" / "bin"));
 }
 
+TEST_CASE("ai-assist regress: --run --allow-exec without bwrap needs =unsandboxed (Law 9)") {
+    if (prism::sandbox::isolates(prism::sandbox::kind())) {
+        MESSAGE("bwrap works here: the held path is not reachable on this host");
+        return;
+    }
+    auto root = assist_tmp("regress-held");
+    auto report = sample_report(root / "src");
+    prism::ai::RegressOptions opt;
+    opt.out_dir = root / "out";
+    opt.run = true;
+    opt.allow_exec = true;  // asked for, but no jail and no explicit opt-in
+    auto res = prism::ai::generate_regression_tests(report, opt);
+    int held = 0;
+    for (auto& t : res.tests)
+        if (!t.name.empty()) {
+            CHECK(t.status == "NOTRUN");
+            held += t.detail.find("--allow-exec=unsandboxed") != std::string::npos;
+        }
+    CHECK(held > 0);
+    CHECK_FALSE(fs::exists(root / "out" / "bin"));
+    CHECK_FALSE(prism::sandbox::held_no_sandbox());  // restored after the call
+}
+
 TEST_CASE("ai-assist regress: a missing compiler is not a pass") {
     auto root = assist_tmp("regress-nocc");
     auto report = sample_report(root / "src");
@@ -368,6 +392,7 @@ TEST_CASE("ai-assist regress: a missing compiler is not a pass") {
     opt.out_dir = root / "out";
     opt.run = true;
     opt.allow_exec = true;
+    opt.allow_unsandboxed = true;  // any host: bwrap or not (Law 9 gate)
     opt.cc = "prism-no-such-cc";
     opt.cxx = "prism-no-such-cxx";
     auto res = prism::ai::generate_regression_tests(report, opt);
@@ -397,6 +422,7 @@ TEST_CASE("ai-assist regress: generated tests fail on the bug and pass on the fi
     opt.out_dir = root / "out";
     opt.run = true;
     opt.allow_exec = true;
+    opt.allow_unsandboxed = true;  // any host: bwrap or not (Law 9 gate)
     auto res = prism::ai::generate_regression_tests(report, opt);
     int repro = 0;
     for (auto& t : res.tests)
@@ -1105,6 +1131,7 @@ TEST_CASE("ai-assist regress: uninitialised reads get a MemorySanitizer build an
     CHECK(slurp(opt.out_dir / "CMakeLists.txt").find("PRIVATE ${PRISM_MSAN_FLAGS}") != std::string::npos);
     opt.run = true;
     opt.allow_exec = true;
+    opt.allow_unsandboxed = true;  // any host: bwrap or not (Law 9 gate)
     auto ran = prism::ai::generate_regression_tests(r, opt);
     // Link, not just compile: the MSan runtime is a separate package.
     if (std::system("printf 'int main(void){return 0;}' | clang -fsanitize=memory -x c - -o /dev/null "

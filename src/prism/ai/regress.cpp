@@ -633,9 +633,12 @@ RegressResult generate_regression_tests(const RunReport& report, const RegressOp
 
     // --run: compile and run each case now (executes scanned code, Law 9).
     if (opt.run) {
+        // Law 9: the jail, or resource limits only when asked for.
+        const auto gate = sandbox::exec_gate_here(opt.allow_exec, opt.allow_unsandboxed);
+        sandbox::Policy policy(gate.run, gate.held_no_sandbox);
         for (auto& t : res.tests) {
             if (t.status != "written") continue;
-            if (!opt.allow_exec) {
+            if (!gate.run) {
                 t.status = "NOTRUN";
                 t.detail = sandbox::exec_message("regression test run");
                 continue;
@@ -748,13 +751,13 @@ int regress_main(int argc, char** argv) {
         } else if (a == "--write-tests") write_dir = next();
         else if (a == "--framework") opt.framework = next();
         else if (a == "--run") opt.run = true;
-        else if (a == "--allow-exec") opt.allow_exec = true;
+        else if (sandbox::parse_allow_exec(a, opt.allow_exec, opt.allow_unsandboxed)) continue;
         else if (a == "--cc") opt.cc = next();
         else if (a == "--cxx") opt.cxx = next();
         else if (a == "-h" || a == "--help") {
             std::cout << "prism regress [--report OUT/report.json] [--write-tests DIR] [--framework "
                          "auto|gtest|catch2|ctest|pytest|plain]\n"
-                         "              [--run --allow-exec] [--cc CC] [--cxx CXX]\n"
+                         "              [--run --allow-exec[=unsandboxed]] [--cc CC] [--cxx CXX]\n"
                          "Turns every FAILED/CRASH finding with a concrete counterexample into a unit test\n"
                          "that fails while the defect is present (UBSan+ASan build). Tests go to\n"
                          "<report dir>/regression_tests/ unless --write-tests DIR. --run compiles and runs\n"

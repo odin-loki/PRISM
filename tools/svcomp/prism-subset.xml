@@ -7,10 +7,12 @@
   tool directory holds the prism binary (BenchExec runs `prism svcomp`).
   The command line is in docs/SVCOMP.md ("BenchExec"). The option
   allow-exec is PRISM Law 9's opt-in: replaying a counterexample compiles
-  and runs the task.
+  and runs the task. "=unsandboxed" because BenchExec's container is the
+  isolation here (bwrap may not start inside it); a bare allow-exec without
+  a working bwrap leaves every refutation unknown.
 -->
 <benchmark tool=".prism" timelimit="15 min" memlimit="15 GB" cpuCores="4">
-  <option name="--allow-exec"/>
+  <option name="--allow-exec=unsandboxed"/>
   <!-- `prism svcomp` writes witness.yml into the run's working directory -->
   <resultfiles>witness.yml</resultfiles>
 

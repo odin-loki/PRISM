@@ -46,6 +46,9 @@ struct RegressOptions {
     bool relative_includes = false;     // #include the source relative to out_dir (--write-tests)
     bool run = false;                   // compile + run each test now (needs allow_exec, Law 9)
     bool allow_exec = false;
+    // --allow-exec=unsandboxed: also run where no isolating sandbox (bwrap)
+    // works; otherwise --run there is NOTRUN (sandbox::exec_gate).
+    bool allow_unsandboxed = false;
     std::string cc;                     // "" = clang, else gcc (probed)
     std::string cxx;
     double timeout_s = 30.0;

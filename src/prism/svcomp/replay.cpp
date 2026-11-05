@@ -206,7 +206,10 @@ json replay(const fs::path& src, const std::string& prop, bool allow_exec,
         return json{{"replay", "unsupported"},
                     {"why", "program reads __VERIFIER_nondet_* inputs and the engine reported no nondet values"}};
     if (!allow_exec)
-        return json{{"replay", "notrun"}, {"why", "replay executes task code: re-run with --allow-exec (Law 9)"}};
+        return json{{"replay", "notrun"},
+                    {"why", sandbox::held_no_sandbox()
+                                ? std::string("replay executes task code: ") + sandbox::NO_SANDBOX_INSTALL
+                                : std::string("replay executes task code: re-run with --allow-exec (Law 9)")}};
     auto cc = Config{}.which({"clang", "gcc", "cc"});
     if (!cc) return json{{"replay", "notrun"}, {"why", "no C compiler (clang/gcc) on PATH"}};
     // shift-base: `x << n` whose result is not representable, and a negative

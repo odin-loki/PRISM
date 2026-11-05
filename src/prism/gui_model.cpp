@@ -300,7 +300,7 @@ std::vector<std::string> gui_run_args(const RunOptions& o) {
     std::vector<std::string> args{o.path, "--out", o.out};
     if (!o.llm) args.emplace_back("--no-llm");
     if (o.resume) args.emplace_back("--resume");
-    if (o.allow_exec) args.emplace_back("--allow-exec");
+    if (o.allow_exec) args.emplace_back(o.allow_unsandboxed ? "--allow-exec=unsandboxed" : "--allow-exec");
     auto skip = skip_from_checks(o.skip_fuzz, o.skip_repair, o.skip_optional);
     for (const auto& s : o.extra_skip)
         if (std::ranges::find(skip, s) == skip.end()) skip.push_back(s);
@@ -370,6 +370,7 @@ Launch parse_launch(const std::vector<std::string>& args) {
         if (a == "--no-llm") c.no_llm = true;
         else if (a == "--resume") c.resume = true;
         else if (a == "--allow-exec") c.allow_exec = true;
+        else if (a == "--allow-exec=unsandboxed") c.allow_exec = c.allow_unsandboxed = true;
         else if (a == "--out") {
             if (auto v = value()) c.out = *v;
             else c.ignored.push_back(a + " (no value)");

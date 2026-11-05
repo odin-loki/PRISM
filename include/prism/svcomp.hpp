@@ -161,6 +161,9 @@ PRISM_API std::optional<std::vector<std::vector<std::string>>> pir_invariant_tex
 // ---------------------------------------------------------------- one task
 struct SolveOptions {
     bool allow_exec = false;
+    // --allow-exec=unsandboxed: replay/fuzz also where bwrap cannot run
+    // (resource limits only); otherwise they are NOTRUN there (Law 9).
+    bool allow_unsandboxed = false;
     std::string data_model = "LP64";
     std::filesystem::path out = "prism-svcomp-out";
     std::optional<std::filesystem::path> witness = std::filesystem::path("witness.yml");

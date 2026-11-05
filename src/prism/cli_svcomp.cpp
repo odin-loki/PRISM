@@ -140,8 +140,16 @@ std::optional<json> run_prism(const fs::path& task_c, const fs::path& out, const
 
 std::string version_string() { return PRISM_VERSION; }
 
-Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOptions& opt) {
+Outcome solve(const fs::path& task, const fs::path& prop_file, const SolveOptions& requested) {
     Outcome oc;
+    // Law 9: replay and fuzzing run the task in the jail, or with resource
+    // limits only when asked for (--allow-exec=unsandboxed); a held
+    // --allow-exec leaves both NOTRUN with the sandbox hint.
+    const auto gate = sandbox::exec_gate_here(requested.allow_exec, requested.allow_unsandboxed);
+    sandbox::Policy policy(gate.run, gate.held_no_sandbox);
+    if (!gate.note.empty()) log::warn("svcomp", gate.note);
+    SolveOptions opt = requested;
+    opt.allow_exec = gate.run;
     std::ifstream pin(prop_file, std::ios::binary);
     if (!pin) {
         oc.decision = Decision{"error", "cannot read property file " + prop_file.string(), std::nullopt, json::object()};
@@ -728,7 +736,17 @@ int svcomp_main(int argc, char** argv) {
             if (i + 1 < argc) return std::string(argv[++i]);
             return std::nullopt;
         };
-        if (a == "--allow-exec") opt.allow_exec = true;
+        if (a == "--allow-exec") {
+            // Under BenchExec its own container is the isolation: the
+            // benchmark definition passes --allow-exec=unsandboxed.
+            if (inline_val && *inline_val != "unsandboxed") {
+                usage();
+                log::error("svcomp", "--allow-exec takes no value but unsandboxed");
+                return prism::code(prism::Exit::Usage);
+            }
+            opt.allow_exec = true;
+            if (inline_val) opt.allow_unsandboxed = true;
+        }
         else if (a == "--version") version = true;
         else if (a == "--prop" || a == "--data-model" || a == "--out" || a == "--witness" || a == "--prism") {
             auto v = next();

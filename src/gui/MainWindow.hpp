@@ -65,6 +65,8 @@ private:
     QCheckBox *skip_optional_ = nullptr;
     // Law 9: --allow-exec, default off.
     QCheckBox *allow_exec_ = nullptr;
+    QCheckBox *unsandboxed_ = nullptr;  // --allow-exec=unsandboxed
+    QLabel *unsandboxed_warn_ = nullptr;
     QTableWidget *stages_ = nullptr;
     QTableWidget *tax_ = nullptr;
     QTableWidget *findings_ = nullptr;

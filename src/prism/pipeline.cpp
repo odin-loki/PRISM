@@ -13,6 +13,7 @@
 #include "prism/journal.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
+#include "prism/polyglot.hpp"
 #include "prism/conc.hpp"
 #include "prism/sandbox.hpp"
 #include "prism/scope.hpp"
@@ -96,6 +97,50 @@ const std::set<std::string>& exec_key_fields() {
     return k;
 }
 
+// External tools in the run key: "tool:<name>" -> the resolved path or
+// "missing", and the stages that use it. Installing (or removing, or
+// pointing --tool at) a tool re-runs exactly those stages, so a NOTRUN row
+// for a missing tool is not replayed once the tool is there. A tool upgraded
+// in place at the same path is not seen (the digest is of the resolution).
+struct ToolKey {
+    std::string field;
+    std::optional<std::filesystem::path> where;
+    std::set<std::string> stages;  // empty: every stage (compilers, LLVM)
+};
+
+std::vector<ToolKey> tool_keys(const Config& cfg) {
+    std::vector<ToolKey> out;
+    auto add = [&](std::string name, std::optional<std::filesystem::path> where, std::set<std::string> stages) {
+        out.push_back({"tool:" + std::move(name), std::move(where), std::move(stages)});
+    };
+    // The C/C++ toolchain feeds nearly every stage.
+    add("cc", cfg.which({"gcc", "clang", "cc"}), {});
+    add("llvm-clang", cfg.llvm_tool("clang"), {});
+    add("llvm-clang++", cfg.llvm_tool("clang++"), {});
+    add("llvm-opt", cfg.llvm_tool("opt"), {"pir", "conc", "fuzz", "execute"});
+    add("llvm-lli", cfg.llvm_tool("lli"), {"pir"});
+    add("bwrap", cfg.which({"bwrap"}), {});
+    for (auto& [s, how] : exec_stages()) out.back().stages.insert(s);
+    // Adapters (adapters.cpp, fuse.cpp, ltl.cpp, the optional stage table).
+    add("cppcheck", cfg.which_adapter("cppcheck", {"cppcheck", "cppcheck.exe"}), {"cppcheck"});
+    add("esbmc", cfg.which_adapter("esbmc", {"esbmc", "esbmc.exe"}), {"esbmc"});
+    add("dafny", cfg.which_adapter("dafny", {"dafny", "dafny.exe"}), {"dafny"});
+    add("afl-fuzz", cfg.which_adapter("afl-fuzz", {"afl-fuzz", "afl-fuzz.exe"}), {"fuzz", "optional"});
+    add("strix", cfg.which_adapter("strix", {"strix", "strix.exe"}), {"ltl", "optional"});
+    add("klee", cfg.which_adapter("klee", {"klee"}), {"optional"});
+    add("frama-c", cfg.which_adapter("frama-c", {"frama-c", "frama-c.exe"}), {"optional"});
+    add("infer", cfg.which_adapter("infer", {"infer"}), {"optional"});
+    add("clang-tidy", cfg.which_adapter("clang-tidy", {"clang-tidy", "clang-tidy.exe"}), {"optional"});
+    add("cbmc", cfg.which_adapter("cbmc", {"cbmc", "cbmc.exe"}), {"optional"});
+    add("semgrep", cfg.which_adapter("semgrep", {"semgrep", "semgrep.exe"}), {"optional"});
+    add("spatch", cfg.which_adapter("spatch", {"spatch", "spatch.exe"}), {"optional"});
+    // Every polyglot linter / syntax checker (native checkers need none).
+    for (const auto& c : polyglot::checks())
+        for (const auto& t : c.tools)
+            if (!t.native && !t.exes.empty()) add("polyglot/" + t.name, polyglot::resolve(t, cfg), {"polyglot"});
+    return out;
+}
+
 }  // namespace
 
 RunKey run_key(const Config& cfg) {
@@ -149,7 +194,20 @@ RunKey run_key(const Config& cfg) {
     f["allow_unsandboxed"] = b(cfg.allow_unsandboxed);
     // Which jail ran the exec steps (only probed when they may run).
     f["sandbox"] = cfg.allow_exec ? sandbox::kind() : "";
+    for (auto& t : tool_keys(cfg)) f[t.field] = t.where ? t.where->generic_string() : std::string("missing");
     return k;
+}
+
+std::set<std::string> tool_key_stages(const std::string& field) {
+    // Which tool lookups exist does not depend on the config; resolve them
+    // once with the defaults to read the stage sets.
+    static const auto table = [] {
+        std::map<std::string, std::set<std::string>> m;
+        for (auto& t : tool_keys(Config{})) m[t.field] = t.stages;
+        return m;
+    }();
+    if (auto it = table.find(field); it != table.end()) return it->second;
+    return {};
 }
 
 std::optional<RunKey> load_run_key(const std::filesystem::path& out) {
@@ -193,8 +251,15 @@ RunKeyDiff diff_run_key(const RunKey& before, const RunKey& now) {
         if (a != before.fields.end() && b != now.fields.end() && a->second == b->second) continue;
         auto shown = [](auto it, auto end) { return it == end ? std::string("unset") : "'" + it->second + "'"; };
         d.why.push_back(n + " " + shown(a, before.fields.end()) + " -> " + shown(b, now.fields.end()));
-        if (exec_key_fields().contains(n)) exec = true;
-        else all = true;
+        if (exec_key_fields().contains(n)) {
+            exec = true;
+        } else if (n.starts_with("tool:")) {
+            auto st = tool_key_stages(n);
+            if (st.empty()) all = true;
+            d.rerun.insert(st.begin(), st.end());
+        } else {
+            all = true;
+        }
     }
     if (all) {
         for (auto* p = STAGE_ORDER; *p; ++p) d.rerun.insert(*p);
@@ -577,6 +642,9 @@ RunReport run_pipeline(const Config& requested) {
         // Law 7: a skipped vendor/build directory holding sources is written
         // down, not skipped quietly (prism/scope.hpp).
         for (auto& sk : scope::skipped_dirs(cfg.root, is_known_source)) {
+            // PRISM's own --out (run_key.json, report.json) is not a skipped
+            // vendor directory of the scanned tree.
+            if (std::error_code eq; std::filesystem::equivalent(cfg.root / sk.dir, cfg.out, eq)) continue;
             Finding f{"inventory", std::string(laws::UNKNOWN), "", std::nullopt, std::nullopt, "",
                       scope::skipped_message(sk.dir, sk.files), std::string(laws::STRENGTH_FINDS),
                       "", "", {}};
