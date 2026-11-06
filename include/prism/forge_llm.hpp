@@ -4,6 +4,7 @@
 
 #include "prism/ai.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <memory>
@@ -69,6 +70,7 @@ public:
         fr.grammar = req.grammar_text;
         fr.temperature = temperature_;
         fr.max_new = max_new_;
+        fr.seed = ++seed_counter_;   // a new seed per call: the same prompt must not decode to the same text
         auto r = forge_llm::complete(fpk_, fr);
         return {r.text, r.error};
     }
@@ -78,6 +80,7 @@ private:
     std::string model_;
     float temperature_;
     int max_new_;
+    std::atomic<unsigned> seed_counter_{0};
 };
 
 }  // namespace prism::forge_llm
