@@ -332,6 +332,19 @@ static bool is_built_exe(const fs::path& p) {
 #endif
 }
 
+namespace {
+fs::path g_source_root;  // set once by the pipeline before any stage runs
+}  // namespace
+
+void set_source_root(const fs::path& root) { g_source_root = root; }
+
+fs::path source_path(const fs::path& file) {
+    if (file.empty() || file.is_absolute() || g_source_root.empty()) return file;
+    auto under = g_source_root / file;
+    std::error_code ec;
+    return fs::exists(under, ec) ? under : file;
+}
+
 // True when p is root or lies below it (both made canonical).
 bool path_within(const fs::path& p, const fs::path& root) {
     std::error_code ec;
