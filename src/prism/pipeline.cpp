@@ -273,6 +273,7 @@ RunReport run_pipeline(const Config& cfg) {
             report.notes.push_back("resumed from " + src.string());
         }
     }
+    set_source_root(std::filesystem::is_directory(cfg.root) ? cfg.root : cfg.root.parent_path());
     auto sources = iter_sources(cfg.root);
     std::vector<FunctionInfo> functions = report.functions;
     // inventory and classify read the same files: parse each once.

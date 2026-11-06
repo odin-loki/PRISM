@@ -21,6 +21,7 @@
 //     inline asm are not flow-checked.
 
 #include "astlint_internal.hpp"
+#include "prism/config.hpp"
 
 #include "prism/checkers.hpp"
 #include "prism/cparse.hpp"
@@ -6848,7 +6849,7 @@ std::string decl_init_text(const json& d) {
     thread_local std::map<std::string, std::string> cache;
     auto [it, fresh] = cache.try_emplace(*b.file);
     if (fresh) {
-        std::ifstream in(*b.file, std::ios::binary);
+        std::ifstream in(source_path(*b.file), std::ios::binary);
         it->second.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
     const auto& txt = it->second;

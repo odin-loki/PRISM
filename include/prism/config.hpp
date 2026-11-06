@@ -90,6 +90,13 @@ PRISM_API Config default_config();
 // True when p is root or lies below it. Law 9: pinned adapter binaries are
 // never taken from inside the scanned tree without --allow-exec.
 PRISM_API bool path_within(const std::filesystem::path& p, const std::filesystem::path& root);
+// Findings and FunctionInfo.file carry paths relative to the scan root. A stage that opens one must go through
+// source_path(), never against the process cwd: from any other directory the file is not found, the unit loses
+// its includes and types, and contracts/wp report ERROR ("unknown type name 'uint32_t'"). The pipeline sets the
+// root once before the first stage. source_path returns `file` unchanged when it is absolute, no root is set,
+// or nothing exists under the root.
+PRISM_API void set_source_root(const std::filesystem::path& root);
+PRISM_API std::filesystem::path source_path(const std::filesystem::path& file);
 // "prism-deps tool <component> ..." or a system-tool hint.
 PRISM_API std::string adapter_install(std::string_view stage);
 // A leading ~ or ~/ replaced by the home directory (Path.expanduser).

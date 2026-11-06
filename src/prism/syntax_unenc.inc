@@ -440,7 +440,7 @@ static std::optional<std::string> unencoded_syntax_reason(const FunctionInfo& fn
         std::string pack_src = body;
         if (!fn.file.empty()) {
             try {
-                std::ifstream in(fn.file, std::ios::binary);
+                std::ifstream in(source_path(fn.file), std::ios::binary);
                 if (in) {
                     in.seekg(0, std::ios::end);
                     auto sz = in.tellg();

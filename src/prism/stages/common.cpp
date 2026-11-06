@@ -331,7 +331,7 @@ Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::strin
                 const std::string& prelude) {
     namespace fs = std::filesystem;
     std::vector<std::string> lines;
-    if (std::ifstream in{fn.file}; in) for (std::string l; std::getline(in, l);) lines.push_back(l);
+    if (std::ifstream in{source_path(fn.file)}; in) for (std::string l; std::getline(in, l);) lines.push_back(l);
     const int start = fn.span.first, end = fn.span.second;
     const bool ctx = start >= 1 && end >= start && static_cast<std::size_t>(end) <= lines.size();
     std::string unit = "#include <assert.h>\n" + prelude + "#line 1\n";

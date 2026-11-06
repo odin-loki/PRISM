@@ -3,6 +3,7 @@
 // reason (unencoded_syntax_reason_cached), and the parse-failure mapping
 // (harness_for_parsefail).
 #include "prism/abi_model.hpp"
+#include "prism/config.hpp"
 #include "prism/stages.hpp"
 #include "prism/ai.hpp"
 #include "prism/astlint.hpp"
@@ -2782,7 +2783,7 @@ std::optional<std::string> unencoded_syntax_reason_cached(const FunctionInfo& fn
                     h = std::get<2>(it->second);
             }
             if (!h) {
-                std::ifstream in(fn.file, std::ios::binary);
+                std::ifstream in(source_path(fn.file), std::ios::binary);
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 h = std::hash<std::string>{}(ss.str());
