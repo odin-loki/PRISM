@@ -421,7 +421,7 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::smatch mm;
-        if (std::regex_search(line, mm, std::regex(R"('([^']+)' depends on axioms: \[(.*)\])"))) {
+        if (std::regex_search(line, mm, std::regex(R"('(.+)' depends on axioms: \[(.*)\])"))) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) {
                 c.axioms_seen = true;
@@ -434,7 +434,7 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
             }
             continue;
         }
-        if (std::regex_search(line, mm, std::regex(R"('([^']+)' does not depend on any axioms)"))) {
+        if (std::regex_search(line, mm, std::regex(R"('(.+)' does not depend on any axioms)"))) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) c.axioms_seen = true;
             continue;
