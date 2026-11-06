@@ -569,6 +569,19 @@ prism::exec::ProcOut run_lake(const fs::path& lake, const std::vector<std::strin
 bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {
     std::error_code ec;
     fs::create_directories(to, ec);
+    // Lake keeps a project's dependencies (Mathlib, Batteries, ...) in .lake/packages, each with its own lakefile.
+    // They are not copied (Mathlib is several GB) and not skipped either: the scratch copy links to them, so
+    // `lake build` there finds the sources and the built .olean files instead of fetching and rebuilding them.
+    // Without this, a project that depends on Mathlib never builds in the scratch directory. The link is only read.
+    const auto packages = from / ".lake" / "packages";
+    if (fs::is_directory(packages, ec)) {
+        fs::create_directories(to / ".lake", ec);
+        fs::create_directory_symlink(fs::absolute(packages, ec), to / ".lake" / "packages", ec);
+        if (ec) {
+            if (why) *why = "link " + packages.string() + ": " + ec.message();
+            return false;
+        }
+    }
     for (auto it = fs::recursive_directory_iterator(from, fs::directory_options::skip_permission_denied, ec);
          it != fs::recursive_directory_iterator(); it.increment(ec)) {
         if (ec) break;
@@ -578,7 +591,8 @@ bool copy_project(const fs::path& from, const fs::path& to, std::string* why) {
             // Nested lake projects and VCS data are not part of this package.
             bool nested = it->path() != from && (fs::exists(it->path() / "lakefile.toml", ec) ||
                                                  fs::exists(it->path() / "lakefile.lean", ec));
-            if (name == ".git" || nested) {
+            const bool is_packages = name == "packages" && it->path().parent_path().filename() == ".lake";
+            if (name == ".git" || nested || is_packages) {
                 it.disable_recursion_pending();
                 continue;
             }
