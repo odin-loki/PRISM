@@ -88,6 +88,31 @@ struct LeanCheck {
 // Parses `lean` output for the spliced candidate.
 PRISM_API LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, int rc);
 
+// Batched checking: candidate k becomes its own theorem `<name_k>` with the
+// target's statement, placed after the target declaration in a copy of the
+// file cut off there (later declarations cannot affect the target), each
+// followed by `#print axioms <name_k>`. One Lean run elaborates the prefix
+// once for every candidate. Only a filter: an accepted candidate still goes
+// through the spliced-file `lake build` gate.
+struct LeanBatch {
+    std::string text;                                // the file to elaborate
+    std::vector<std::string> names;                  // candidate theorem names
+    std::vector<std::pair<int, int>> lines;          // 1-based [first, last] line of each candidate
+};
+PRISM_API LeanBatch lean_batch_text(const std::string& original, const LeanTarget& t,
+                                    const std::vector<std::vector<std::string>>& candidates, int first_index = 0);
+// One LeanCheck per candidate from the output of one run. A candidate Lean
+// never reached (no #print axioms line and no message: a timeout or crash
+// earlier in the file) is ran = false.
+PRISM_API std::vector<LeanCheck> split_lean_batch(const std::string& out, const LeanBatch& b);
+// Core-Lean closers (and Mathlib's when `mathlib`), in the order tried.
+PRISM_API std::vector<std::string> lean_closers(bool mathlib);
+// Closers derived from the theorem itself: case splits on its explicit
+// binders of a plain type (`(v : Verdict)`), simp / simp_all / grind
+// unfolding the file's own definitions the statement names, and
+// `revert ...; decide` over finite domains. Deterministic; at most ~24.
+PRISM_API std::vector<std::string> lean_statement_closers(const std::string& original, const LeanTarget& t);
+
 struct LemmaEntry {
     std::string theorem, file, statement, proof, model, audit_id;
 };
@@ -102,7 +127,14 @@ struct ProveOptions {
     std::filesystem::path lemmas;           // "" = <project>/lemmas.jsonl if in proofs/, else proofs/lemmas.jsonl
     int budget = 24;                        // model calls
     int beam = 4;                           // partial proofs kept
-    double lean_timeout = 120.0;
+    double lean_timeout = 120.0;            // per Lean run (one run checks a batch of candidates)
+    // Before a node is shown to the model, a fixed set of core tactics
+    // (omega, simp, grind, decide, ...; Mathlib's closers when the file
+    // imports Mathlib) is tried on it in one batch: what they close costs no
+    // model call. Kernel-checked and accepted exactly like a model proof.
+    bool closers = true;
+    int samples = 1;                        // model replies per expansion, checked together in one batch
+    int lean_jobs = 0;                      // Lean processes a batch is split over (0: half the cores)
     std::filesystem::path out{"prism-out"};
     std::filesystem::path prover_fpk;       // FORGE prover model ($PRISM_PROVER_FPK)
     std::string prover_model;               // name recorded in the audit ($PRISM_PROVER_MODEL)
@@ -115,6 +147,7 @@ struct ProveNode {
     int goal_count = 0;
     std::string last_error;
     int depth = 0;
+    bool closers_tried = false;
 };
 
 struct ProveResult {
@@ -124,7 +157,10 @@ struct ProveResult {
     std::vector<std::string> axioms;
     bool written = false;
     int model_calls = 0;
-    int kernel_checks = 0;
+    int kernel_checks = 0;                  // candidates elaborated
+    int lean_runs = 0;                      // Lean processes started for them (batches)
+    int closer_checks = 0;                  // of kernel_checks: candidates from the closer set
+    std::string closed_by;                  // "model" or "closer" (the accepted proof's source)
     int rejected_invalid = 0;               // grammar/validator rejections
     int rejected_kernel = 0;                // Lean errors
     int rejected_axioms = 0;

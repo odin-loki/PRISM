@@ -277,6 +277,7 @@ TEST_CASE("ai9 lean: best-first search rejects a wrong proof with the real kerne
     o.lemmas = dir / "lemmas.jsonl";
     o.out = out;
     o.budget = 5;
+    o.closers = false;  // the model path (closers: the next test case)
     auto r = ai::prove_theorem(o);
     REQUIRE_MESSAGE(r.status == std::string(laws::PROVED), r.reason, " | ", nlohmann::json(r.attempts).dump());
     CHECK(r.proof == std::vector<std::string>{"omega"});
@@ -333,6 +334,107 @@ TEST_CASE("ai9 lean: best-first search rejects a wrong proof with the real kerne
     CHECK(lines[2]["verdict_effect"] == "PROVED");
     CHECK(lines[3]["checker_result"].get<std::string>().rfind("partial:", 0) == 0);
     CHECK(lines[5]["checker_result"].get<std::string>().find("bad") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("ai9 lean: batch text and output split are per candidate") {
+    const std::string src = "namespace N\ntheorem t (a : Nat) : a = a := by\n  sorry\n\ntheorem later : True := by\n  sorry\n";
+    std::string why;
+    auto dir = tmp("lean-batch");
+    write(dir / "B.lean", src);
+    auto tgt = ai::find_lean_target(dir / "B.lean", "t", &why);
+    REQUIRE_MESSAGE(tgt, why);
+    auto b = ai::lean_batch_text(src, *tgt, {{"rfl"}, {"skip"}, {"omega"}});
+    REQUIRE(b.names.size() == 3);
+    CHECK(b.names[0] == "prism_cand_0_t");
+    CHECK(b.text.find("theorem later") == std::string::npos);  // cut after the target
+    CHECK(b.text.find("theorem prism_cand_1_t (a : Nat) : a = a := by\n  skip\n#print axioms prism_cand_1_t\n") !=
+          std::string::npos);
+    // synthetic Lean output: cand 0 fine, cand 1 unsolved, cand 2 never reached
+    const auto l1 = std::to_string(b.lines[1].first);
+    const std::string out = "B.lean:2:8: warning: declaration uses `sorry`\n"
+                            "'N.prism_cand_0_t' depends on axioms: []\n"
+                            "B.lean:" + l1 + ":46: error: unsolved goals\na : Nat\n⊢ a = a\n"
+                            "'N.prism_cand_1_t' depends on axioms: [sorryAx]\n";
+    auto cs = ai::split_lean_batch(out, b);
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].complete);
+    CHECK(cs[0].axioms_ok);
+    CHECK_FALSE(cs[1].complete);
+    CHECK(cs[1].only_unsolved);
+    CHECK(cs[1].goal_count == 1);
+    CHECK_FALSE(cs[2].ran);
+    CHECK_FALSE(cs[2].complete);
+    CHECK(ai::lean_closers(false).size() < ai::lean_closers(true).size());
+    // statement closers: binders and the file's definitions the statement names
+    const std::string src2 = "inductive V | a | b\ndef V.ok : V → Bool | .a => true | .b => true\n"
+                             "theorem all_ok (v : V) (h : True) : v.ok = true := by\n  sorry\n";
+    write(dir / "C.lean", src2);
+    auto t2 = ai::find_lean_target(dir / "C.lean", "all_ok", &why);
+    REQUIRE_MESSAGE(t2, why);
+    auto sc = ai::lean_statement_closers(src2, *t2);
+    auto has = [&](const std::string& x) { return std::find(sc.begin(), sc.end(), x) != sc.end(); };
+    CHECK(has("cases v <;> simp_all [ok]"));
+    CHECK(has("revert v h; decide"));
+    CHECK(sc.size() <= 24);
+}
+
+TEST_CASE("ai9 lean: closers prove easy goals without a model call; the gate still applies") {
+    auto lake = ai::find_lake();
+    if (!lake) {
+        MESSAGE("SKIP: lake not installed");
+        return;
+    }
+    auto dir = tmp("lean-closers");
+    auto proj = dir / "proj";
+    auto repo_toolchain = fs::path(__FILE__).parent_path().parent_path().parent_path() / "proofs" / "lean-toolchain";
+    write(proj / "lean-toolchain", slurp(repo_toolchain));
+    write(proj / "lakefile.toml", "name = \"t\"\nversion = \"0.1.0\"\ndefaultTargets = [\"T\"]\n\n[[lean_lib]]\nname = \"T\"\n");
+    write(proj / "T.lean",
+          "namespace N\n"
+          "theorem lin (a b : Nat) (h : a < b) : a + 1 ≤ b ∧ b ≠ 0 := by\n  sorry\n\n"
+          "axiom bad : False\n"
+          "theorem w : (1 : Nat) = 2 := by\n  sorry\n"
+          "def dbl : Nat → Nat | 0 => 0 | n+1 => dbl n + 2\n"
+          "theorem hard (n : Nat) : dbl n = 2 * n := by\n  sorry\n"
+          "end N\n");
+    auto out = dir / "out";
+    prism::Config cfg = prism::default_config();
+    cfg.out = out;
+    ai::Session session(cfg);
+    auto fake = std::make_shared<Fake>();
+    ai::ProveOptions o;
+    o.file = proj / "T.lean";
+    o.theorem = "lin";
+    o.backend = fake;
+    o.lemmas = dir / "lemmas.jsonl";
+    o.out = out;
+    o.budget = 2;
+    auto r = ai::prove_theorem(o);
+    REQUIRE_MESSAGE(r.status == std::string(laws::PROVED), r.reason, " | ", nlohmann::json(r.attempts).dump());
+    CHECK(r.closed_by == "closer");
+    CHECK(r.model_calls == 0);
+    CHECK(fake->seen.empty());
+    CHECK(r.closer_checks > 0);
+    CHECK(r.lean_runs < r.kernel_checks);  // batched: fewer Lean runs than candidates
+    // a closer cannot reach a proof the axiom audit refuses
+    o.theorem = "w";
+    o.budget = 1;
+    auto rw = ai::prove_theorem(o);
+    CHECK(rw.status == std::string(laws::UNKNOWN));
+    CHECK(rw.proof.empty());
+    // closers fail on `hard`; the model's proof is checked and accepted
+    auto fake2 = std::make_shared<Fake>();
+    fake2->queue = {R"({"tactics": ["induction n with", "| zero => rfl", "| succ k ih => simp only [dbl]; omega"]})"};
+    o.theorem = "hard";
+    o.backend = fake2;
+    o.budget = 2;
+    auto rh = ai::prove_theorem(o);
+    REQUIRE_MESSAGE(rh.status == std::string(laws::PROVED), rh.reason, " | ", nlohmann::json(rh.attempts).dump());
+    CHECK(rh.closed_by == "model");
+    CHECK(rh.proof.size() == 3);
+    CHECK(rh.model_calls == 1);
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
