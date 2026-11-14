@@ -2832,10 +2832,16 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     //   check:   one task per encodable function (the solver work), any order
     //   close:   after the unit's last check, the cross-function rows, then
     //            translation validation, or a fresh re-run queued below
-    // Checks and closes run before new units are lowered (priority), so a
-    // unit's IR is freed soon after its checks and a unit with 100 functions
-    // uses every worker instead of one.
+    // At most --jobs units are open (lowered, translated, not yet closed) at
+    // once, as when each worker held one unit: a unit starts when another
+    // closes. Unbounded, idle workers lowered unit after unit while a long
+    // check held the open ones, and the IR held at once grew with the corpus
+    // (sv-comp: 476 of 574 functions UNKNOWN at the memory budget). The
+    // checks of the open units still spread over every worker, so a unit
+    // with 100 functions uses every core instead of one.
     prism::pool::TaskGraph graph(cfg.jobs);
+    std::atomic<std::size_t> next_unit{0};
+    std::function<void()> start_next;
     std::vector<std::chrono::steady_clock::time_point> unit_t0(batch.size());
     auto unit_error = [&](std::size_t i, const std::string& what) {
         auto f = base_finding(batch.at(i));
@@ -2862,6 +2868,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         if (needs_rerun) pending.at(i) = 1;
         else finish(i);
         prism::membudget::release_free_memory();
+        start_next();  // this unit's slot goes to the next one
     };
     auto unit_task = [&](std::size_t i) {
         const Unit& u = batch.at(i);
@@ -2962,7 +2969,40 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 prism::pool::Priority::High));
         graph.spawn_after(checks, [&, i] { close_unit(i); }, prism::pool::Priority::High);
     };
-    for (std::size_t i = 0; i < batch.size(); ++i) graph.spawn([&, i] { unit_task(i); });
+    if (graph.threads() == 1) {
+        // --jobs 1: tasks run inline; a loop, not a close -> next-unit chain
+        // that would nest one stack frame set per unit
+        start_next = [] {};
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            try {
+                unit_task(i);
+            } catch (const std::exception& ex) {
+                unit_error(i, ex.what());
+                finish(i);  // the ERROR row is the unit's result (Law 7)
+            }
+        }
+    } else {
+        start_next = [&] {
+            const std::size_t i = next_unit.fetch_add(1);
+            if (i >= batch.size()) return;
+            graph.spawn([&, i] {
+                try {
+                    unit_task(i);
+                } catch (const std::exception& ex) {
+                    // its close never ran: the ERROR row is the unit's result
+                    // (Law 7), and the slot passes on
+                    unit_error(i, ex.what());
+                    try {
+                        finish(i);
+                    } catch (...) {
+                    }
+                    start_next();
+                }
+            });
+        };
+        const std::size_t open_max = static_cast<std::size_t>(std::max(1, prism::clamp_jobs(cfg.jobs)));
+        for (std::size_t k = 0; k < open_max; ++k) start_next();
+    }
     graph.wait();
     for (std::size_t i = 0; i < batch.size(); ++i) {
         if (!pending.at(i)) continue;
