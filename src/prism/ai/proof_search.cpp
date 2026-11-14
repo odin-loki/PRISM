@@ -21,6 +21,7 @@
 
 #include "prism/exec.hpp"
 #include "prism/forge_llm.hpp"
+#include "prism/ai_providers.hpp"
 #include "prism/exit.hpp"
 #include "prism/clock.hpp"
 #include "ai_internal.hpp"
@@ -633,6 +634,17 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::strin
     if (opt.backend) return opt.backend;
     auto model = !opt.prover_model.empty() ? opt.prover_model : env_or("PRISM_PROVER_MODEL", "");
     fs::path fpk = !opt.prover_fpk.empty() ? opt.prover_fpk : fs::path(env_or("PRISM_PROVER_FPK"));
+    if (fpk.empty()) {
+        // no prover .fpk named: a provider named by PRISM_AI (any AI) proves, with PRISM_PROVER_MODEL if set
+        std::string pwhy;
+        if (auto pc = provider_from_env(&pwhy); pc && pc->kind != "forge") {
+            if (!model.empty()) pc->model = model;
+            pc->max_tokens = 1024;
+            auto b = provider_backend(*pc, &pwhy);
+            if (!b && why) *why = pwhy;
+            return b;
+        }
+    }
     if (fpk.empty()) {
         auto found = default_prover_fpks();
         if (!found.empty()) fpk = found.front();

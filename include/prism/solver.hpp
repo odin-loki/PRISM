@@ -246,6 +246,8 @@ struct Features {
 Features features(const z3::expr& f);
 // Empty when the formula is quantifier-free bitvector/Boolean only (certifiable).
 std::string not_certifiable_reason(const z3::expr& f);
+// The same from features already computed (a Boolean formula).
+std::string not_certifiable_reason(const Features& ft);
 // Normalised SMT-LIB2 text (simplified, constants renamed v0..vn by first
 // occurrence) and its sha256. canonical[i] is the original name of "v<i>".
 std::string normalized_query(z3::context& c, const z3::expr& f,
@@ -266,13 +268,45 @@ bool validate_model(z3::context& c, const z3::expr& f,
 SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt);
 #endif
 
-#ifdef PRISM_HAS_CUDA
-// src/cuda/probsat.cu: many independent ProbSAT walkers on the GPU.
-// Returns true and fills assignment (size num_vars+1) when one satisfies all
-// clauses. Mirrors probsat() above. Never a proof.
+// ---- GPU stochastic local search (docs/GPU_PLAN.md G7) ----
+// src/cuda/probsat.cu (PTX by clang, embedded) driven by src/prism/solver/gpu_sls.cpp
+// through the shared CUDA driver loader (prism/cuda_driver.hpp). Many
+// independent ProbSAT walkers, one per GPU thread, mirroring probsat() above.
+// A found assignment has been re-checked against every clause of `cnf` on the
+// host; it is still only a candidate model (validate_model() in Z3 decides).
+// Not found means nothing. No GPU / no PTX / does not fit: ran == false and
+// note says why (Law 1, 7).
+struct GpuSlsOptions {
+    std::uint64_t seed = 1;
+    std::uint64_t max_flips = 0;      // per walker; 0: until stop / timeout (both 0: 1,000,000)
+    unsigned walkers = 0;             // 0: as many as fill the device within the memory budget
+    double timeout_s = 0.0;           // 0: none
+    std::uint64_t max_device_bytes = 0;  // 0: a quarter of the free device memory
+    unsigned lanes_per_walker = 0;    // 1: one thread per walker; otherwise one warp (32 lanes) per walker
+    const std::atomic<bool>* stop = nullptr;
+};
+struct GpuSlsResult {
+    bool ran = false;    // the kernel ran on a GPU
+    bool found = false;  // a walker satisfied every clause (host re-checked)
+    std::vector<std::int8_t> assignment;  // size num_vars+1 when found
+    std::uint64_t flips = 0;              // summed over walkers
+    unsigned walkers = 0;
+    unsigned lanes_per_walker = 0;
+    std::uint64_t device_bytes = 0;  // leased from the FORGE pool cuda:0
+    double seconds = 0.0;            // walk time (excludes setup)
+    double setup_s = 0.0;            // module, upload, init
+    std::string device;
+    std::string note;  // why it did not run, or how it stopped
+};
+GpuSlsResult gpu_probsat(const Cnf& cnf, const GpuSlsOptions& opt);
+// Short form: the assignment when found, else nullopt with *why.
+std::optional<std::vector<std::int8_t>> gpu_probsat(const Cnf& cnf, std::uint64_t seed, std::uint64_t max_flips,
+                                                    unsigned walkers, std::string* why = nullptr);
+// True when a GPU and the embedded kernel are usable; else false with *why.
+bool gpu_sls_available(std::string* why = nullptr);
+// Compatibility with the first CUDA walker's signature (tests/cpp/test_main.cpp).
 bool cuda_probsat(const Cnf& cnf, std::uint64_t seed, std::uint64_t max_flips_per_walker,
                   unsigned walkers, std::vector<std::int8_t>& assignment);
-#endif
 
 // `prism z3-worker FILE MB` (portfolio.cpp): Z3 in a killable child.
 PRISM_API int z3_worker_main(int argc, char** argv);

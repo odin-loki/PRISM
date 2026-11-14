@@ -301,24 +301,96 @@ void set_stuck_hook(std::function<void()> hook) {
 }
 
 namespace {
+// Each thread's current phase lives in a thread-local slot (no lock on the
+// hot path: a Phase is entered per solver query, from many threads at once);
+// the registry of slots is locked only when a thread starts or ends and when
+// phases() reads them.
+struct PhaseSlot {
+    std::atomic<const char*> cur{nullptr};
+    PhaseSlot();
+    ~PhaseSlot();
+};
 std::mutex g_pmu;
-std::map<std::thread::id, const char*> g_phase;
+std::vector<PhaseSlot*>& slots() {
+    static auto* v = new std::vector<PhaseSlot*>;  // never destroyed: threads may end after exit starts
+    return *v;
+}
+PhaseSlot::PhaseSlot() {
+    std::lock_guard<std::mutex> lk(g_pmu);
+    slots().push_back(this);
+}
+PhaseSlot::~PhaseSlot() {
+    std::lock_guard<std::mutex> lk(g_pmu);
+    std::erase(slots(), this);
+}
+PhaseSlot& my_slot() {
+    thread_local PhaseSlot s;
+    return s;
+}
+
+// PRISM_PROFILE: inclusive wall time and calls per phase name, printed at exit
+// (1: to stderr; anything else: appended to that file).
+struct ProfAcc {
+    uint64_t ns = 0, calls = 0, max_ns = 0;
+};
+std::mutex g_profmu;
+std::map<std::string, ProfAcc>& prof_map() {
+    static auto* m = new std::map<std::string, ProfAcc>;
+    return *m;
+}
+void prof_dump() {
+    std::vector<std::pair<std::string, ProfAcc>> v;
+    {
+        std::lock_guard<std::mutex> lk(g_profmu);
+        v.assign(prof_map().begin(), prof_map().end());
+    }
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.ns > b.second.ns; });
+    const char* dest = std::getenv("PRISM_PROFILE");
+    std::FILE* f = (dest && std::string(dest) != "1") ? std::fopen(dest, "a") : stderr;
+    if (!f) f = stderr;
+    std::fprintf(f, "PRISM_PROFILE (inclusive wall time per phase, summed over threads)\n");
+    std::fprintf(f, "%12s %10s %10s %10s  %s\n", "total_s", "calls", "mean_ms", "max_ms", "phase");
+    for (auto& [n, a] : v)
+        std::fprintf(f, "%12.3f %10llu %10.3f %10.3f  %s\n", double(a.ns) / 1e9, static_cast<unsigned long long>(a.calls),
+                     a.calls ? double(a.ns) / 1e6 / double(a.calls) : 0.0, double(a.max_ns) / 1e6, n.c_str());
+    if (f != stderr) std::fclose(f);
+}
+bool prof_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("PRISM_PROFILE");
+        if (!e || !*e || std::string(e) == "0") return false;
+        std::atexit(prof_dump);
+        return true;
+    }();
+    return on;
+}
+uint64_t mono_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 }  // namespace
 Phase::Phase(const char* name) {
-    std::lock_guard<std::mutex> lk(g_pmu);
-    auto& slot = g_phase[std::this_thread::get_id()];
-    prev_ = slot;
-    slot = name;
+    auto& s = my_slot();
+    prev_ = s.cur.exchange(name, std::memory_order_relaxed);
+    t0_ = prof_on() ? mono_ns() : 0;
 }
 Phase::~Phase() {
-    std::lock_guard<std::mutex> lk(g_pmu);
-    if (prev_) g_phase[std::this_thread::get_id()] = prev_;
-    else g_phase.erase(std::this_thread::get_id());
+    auto& s = my_slot();
+    const char* name = s.cur.exchange(prev_, std::memory_order_relaxed);
+    if (t0_ && name) {
+        const uint64_t d = mono_ns() - t0_;
+        std::lock_guard<std::mutex> lk(g_profmu);
+        auto& a = prof_map()[name];
+        a.ns += d;
+        ++a.calls;
+        a.max_ns = std::max(a.max_ns, d);
+    }
 }
 std::string phases() {
     std::lock_guard<std::mutex> lk(g_pmu);
     std::string out;
-    for (auto& [id, n] : g_phase) out += (out.empty() ? "" : ",") + std::string(n ? n : "?");
+    for (auto* s : slots())
+        if (const char* n = s->cur.load(std::memory_order_relaxed)) out += (out.empty() ? "" : ",") + std::string(n);
     return out;
 }
 

@@ -14,7 +14,11 @@ code base and says honestly what it could not check.
   `PRISM_TOOLS_DIR`, `PRISM_LLVM_BIN`; AI (FORGE inference, `.fpk` models):
   `PRISM_FPK`, `PRISM_MODEL`, `PRISM_PROVER_FPK`, `PRISM_PROVER_MODEL`,
   `PRISM_EMBED_FPK`, `PRISM_DEVICE`, `PRISM_PROOF_CACHE`, `PRISM_TRIAGE`,
-  `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`; certified mode:
+  `PRISM_SOLVER_MODEL`, `PRISM_SOLVER_PREDICT`; any other AI instead of FORGE:
+  `PRISM_AI`, `PRISM_AI_URL`, `PRISM_AI_MODEL`, `PRISM_AI_KEY_ENV`, `PRISM_AI_CMD`,
+  `PRISM_AI_GRAMMAR`; GPU/CPU input sweep (`docs/GPU_PLAN.md`): `PRISM_GPU`,
+  `PRISM_GPU_EXHAUSTIVE_BITS`, `PRISM_GPU_SAMPLES`, `PRISM_GPU_BUDGET_MS`,
+  `PRISM_GPU_CROSSCHECK`; profiling: `PRISM_PROFILE`; certified mode:
   `PRISM_CERT_CACHE_MAX`, `PRISM_CHECKER_MEM`, `PRISM_CERTIFY_BUDGET`; pir:
   `PRISM_FUNCTION_BUDGET`, `PRISM_HOUDINI_BUDGET`, `PRISM_PIR_*`; memory:
   `PRISM_MEM_*`). The full list with one line each is `prism::env_vars()`

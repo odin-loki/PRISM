@@ -4,6 +4,7 @@
 // (src/prism/stages/llm.cpp). Used by hypothesize, fuse, execute and repair.
 
 #include "common.hpp"
+#include "prism/ai.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -34,7 +35,8 @@ void set_chat_backend_for_testing(ChatBackend backend);
 
 struct LlmEngine {
     Config cfg;
-    std::string backend = "none";
+    std::string backend = "none";               // forge | provider | test-double | none
+    std::shared_ptr<ai::ModelBackend> provider;  // PRISM_AI other than forge (ai_providers.hpp)
     explicit LlmEngine(Config c);
     void bind();
     bool available() const;

@@ -1446,6 +1446,39 @@ and drops the certificate. What a certificate still trusts is in
 as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
 print JSON and exist for `prism-qa solver-bench`.
 
+## Input sweep on the bytecode VM (GPU, else CPU)
+
+Before the solver, every function in the VM's fragment is run on many inputs
+at once (docs/GPU_PLAN.md G1). Code: `src/prism/pir/vm_core.inc` (the VM, one
+source for host and device), `src/prism/pir/vm.cpp` (compiler, CPU twin on
+FORGE's task pool, CUDA driver runtime through FORGE's `dl`, device memory on
+FORGE's governor pool `cuda:0`), `src/cuda/pir_vm.cu` (the kernel, compiled to
+PTX by clang's nvptx64 target at build time and embedded: no CUDA SDK at build
+or link time), hook `sweep_function` in `src/prism/pir/stage.cpp`; tests
+`tests/cpp/test_pir_vm.cpp`.
+
+- **Fragment:** integer operators up to 64 bits, phis, branches, checks,
+  assumes. Refused with a reason in `extra.sweep`: memory statements,
+  floating point, havoc and nondet sources, more than 65,535 registers (the GPU
+  kernels hold 64, 256 or 1,024; a larger program runs on the CPU twin).
+- **Inputs:** every input when the parameters total at most
+  `PRISM_GPU_EXHAUSTIVE_BITS` bits (GPU 32, CPU 20) and the first chunk's timing
+  says it fits `PRISM_GPU_BUDGET_MS` (default 5000); otherwise
+  `PRISM_GPU_SAMPLES` inputs (GPU 2^24, CPU 2^16): the cartesian product of eight
+  edge values per parameter (0, 1, 2, -1, -2, MIN, MAX, MIN+1) first, then
+  edge-biased random values, all generated on the device from the lane number.
+- **Verdict:** the smallest violating input is replayed in `pir::interpret` on
+  the function as the solver sees it (`--pir-props` applied); only a replayed
+  violation is FAILED (`extra.found_by = sweep`, `extra.cex_solver` names the
+  engine), and the solver is then not asked. Anything else is
+  `extra.sweep` coverage: never a proof, even when every input ran (Law 3).
+  `PRISM_GPU_CROSSCHECK=1` asks the solver anyway; a solver PROVED against a
+  replayed violation keeps the violation (the counterexample wins) with
+  `extra.engine_disagree`.
+- **Device:** `PRISM_GPU=auto` (default: GPU when the CUDA driver, a device and
+  the embedded PTX load, else the CPU twin with the reason in `extra.sweep`),
+  `gpu`, `cpu`, `off`.
+
 ## Translation validation (roadmap 2.4)
 
 For every function with a verdict: 64 input vectors (the counterexample,

@@ -828,6 +828,7 @@ void Houdini::generate(std::vector<InvCand>& out) {
 
 HoudiniOut Houdini::run() {
     HoudiniOut out;
+    membudget::Phase phase_houdini("pir: houdini");
     out.attempted = true;
     ptr_ = pointer_vars(fn_);
     def_.assign(fn_.vars.size(), nullptr);
@@ -1167,7 +1168,7 @@ HoudiniOut Houdini::run() {
     // guard = the header is reached with no property violated before it.
     // A query passes the selectors of the surviving candidates of the loops
     // it may assume, a literal for its context and one for its goals.
-    z3::solver s(c);
+    z3::solver s = incremental_solver(c, e.assumptions);
     add_all(s, e.assumptions);
     const std::size_t search_assumptions = e.assumptions.size();
     std::vector<std::optional<z3::expr>> sel(cands.size());
@@ -1354,7 +1355,7 @@ HoudiniOut Houdini::run() {
     std::vector<char> added_opt(cands.size(), 0), added_final(cands.size(), 0);
     auto opt_solver = [&]() -> z3::solver& {
         if (!sopt) {
-            sopt.emplace(c);
+            sopt.emplace(incremental_solver(c, e.assumptions));
             for (std::size_t k = 0; k < search_assumptions; ++k) sopt->add(e.assumptions[k]);
             for (auto& x : sel_impl) sopt->add(x);
         }

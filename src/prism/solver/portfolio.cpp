@@ -588,8 +588,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         return finish(res);
     }
 
-    prism::membudget::Phase phase_pre("portfolio: features + cache key");
-    const Features ft = features(formula);
+    prism::membudget::Phase phase_pre("portfolio: solve");
+    const Features ft = [&] {
+        prism::membudget::Phase p("portfolio: features");
+        return features(formula);
+    }();
     res.bucket = ft.bucket();
     // A query too big for the memory budget is an UNKNOWN up front. Neither
     // Z3's solver, its SMT-LIB printer nor the cache key's translate +
@@ -624,6 +627,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         notes.push_back("not cached: the process is over half its memory budget (" +
                         std::to_string(prism::membudget::rss_mb()) + " of " + std::to_string(budget) + " MB)");
     } else try {
+        prism::membudget::Phase p("portfolio: normalize (cache key)");
         norm = normalized_query(c, formula, &canonical);
     } catch (const z3::exception& e) {
         res.kind = Kind::Error;
@@ -631,7 +635,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         return finish(res);
     }
     res.query_hash = sha256_hex(norm);
-    const std::string cert_reason = not_certifiable_reason(formula);
+    const std::string cert_reason = not_certifiable_reason(ft);  // features walked once per query
     const bool blastable = cert_reason.empty();
     const bool want_cert = opt.certified && blastable;
     if (opt.certified && !blastable) notes.push_back("not certifiable: " + cert_reason);
@@ -692,7 +696,11 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::optional<std::string> cached_unsat_winner;
     if (want_cert && opt.known_unsat) cached_unsat_winner = "caller (plain unsat)";
     if (opt.use_cache) {
-        if (auto j = cache_load(root, res.query_hash)) {
+        auto jc = [&] {
+            prism::membudget::Phase p("portfolio: cache load");
+            return cache_load(root, res.query_hash);
+        }();
+        if (auto j = std::move(jc)) {
             const std::string kind = j->value("kind", "");
             if (kind == "sat") {
                 std::map<std::string, std::string> cached_model;
@@ -832,6 +840,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 }
             }
             if (opt.sls) add("sls", MemberKind::Sls, {}, "probsat-cpu");
+            // GPU local search (docs/GPU_PLAN.md G7): opt-in (PRISM_SLS_GPU=1)
+            // until it wins a VC class on real bit-blasted queries. Its models
+            // are re-checked and validated exactly like the CPU walker's.
+            if (const char* g = std::getenv("PRISM_SLS_GPU"); opt.sls && g && std::string(g) == "1") {
+                std::string gwhy;
+                if (gpu_sls_available(&gwhy)) add("sls-gpu", MemberKind::Sls, {"gpu"}, "probsat-gpu");
+                else notes.push_back("sls-gpu not run: " + gwhy);
+            }
         }
         for (const auto& x : opt.extra_solvers) {
             if (x.input == ExternalSolver::Input::Dimacs && !blastable) continue;
@@ -964,7 +980,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
     // ---------------------------------------------------------------- run
     const double t_setup = now_s();  // phase stamps: the overrun record below
-    const fs::path work = make_work_dir(opt, res.query_hash);
+    const fs::path work = [&] {
+        prism::membudget::Phase p("portfolio: work dir");
+        return make_work_dir(opt, res.query_hash);
+    }();
     const fs::path smt_path = work / "query.smt2";
     const fs::path cnf_path = work / "query.cnf";
     const fs::path lrat_path = work / "proof.lrat";
@@ -1045,6 +1064,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }};
 
     auto new_ctx = [&]() -> z3::context& {
+        prism::membudget::Phase p("portfolio: new z3 context");
         J->ctxs.push_back(std::make_unique<z3::context>());
         z3::context* zc = J->ctxs.back().get();
         J->watches.emplace_back([zc] { Z3_interrupt(*zc); });
@@ -1052,6 +1072,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     };
     // The formula in context zc, kept in Jobs (a job thread only refers to it).
     auto translated = [&](z3::context& zc) -> const z3::expr& {
+        prism::membudget::Phase p("portfolio: translate");
         J->exprs.emplace_back(zc, Z3_translate(c, formula, zc));
         return J->exprs.back();
     };
@@ -1195,15 +1216,28 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 // structured (Tseitin) CNF: cap it so it gives its core back.
                 const double budget = std::min(
                     left, opt.sls_budget_s > 0 ? opt.sls_budget_s : std::max(1.0, 0.1 * opt.timeout_s));
-                spawn(slot.name, [J = J.get(), i, budget, stop, cp, seed] {
+                const bool on_gpu = !slot.argv.empty() && slot.argv.front() == "gpu";
+                spawn(slot.name, [J = J.get(), i, budget, stop, cp, seed, on_gpu] {
                     Msg worker_msg;
                     worker_msg.member = i;
                     const double s0 = now_s();
-                    SlsOptions so;
-                    so.seed = seed;
-                    so.timeout_s = budget;
-                    so.stop = stop.get();
-                    auto r = probsat(*cp, so);
+                    SlsResult r;
+                    if (on_gpu) {
+                        GpuSlsOptions go;
+                        go.seed = seed;
+                        go.timeout_s = budget;
+                        go.stop = stop.get();
+                        auto g = gpu_probsat(*cp, go);
+                        r.found = g.found;
+                        r.assignment = std::move(g.assignment);
+                        r.flips = g.flips;
+                    } else {
+                        SlsOptions so;
+                        so.seed = seed;
+                        so.timeout_s = budget;
+                        so.stop = stop.get();
+                        r = probsat(*cp, so);
+                    }
                     worker_msg.secs = now_s() - s0;
                     if (r.found && assignment_satisfies(*cp, r.assignment)) {
                         worker_msg.kind = Kind::Sat;

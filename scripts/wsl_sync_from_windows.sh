@@ -28,6 +28,7 @@ else
     --exclude build-wsl \
     --exclude build \
     --exclude build-werror \
+    --exclude 'build-*' \
     --exclude prism-out \
     --exclude third_party \
     "$SRC/" "$DEST/"

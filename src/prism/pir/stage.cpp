@@ -15,6 +15,7 @@
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
+#include "prism/pir_vm.hpp"
 #include "prism/pir/folded_diag.hpp"
 #include "prism/pir/frontend.hpp"
 #include "prism/sandbox.hpp"
@@ -40,6 +41,8 @@
 #include <regex>
 #include <cstdlib>
 #include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -2409,6 +2412,121 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
     }
 }
 
+// One translated function waiting for its check (run_unit).
+struct PendingCheck {
+    std::size_t rec = 0;  // index into Analyzed::recs
+    Translation tr;
+    TranslateOptions fopt;
+    const ir::Function* irf = nullptr;
+    std::set<int> used_folded;  // folded-UB markers used by the functions translated up to this one
+};
+
+// Runs check(p) for every pending function: up to PRISM_PIR_FN_JOBS (default
+// 8) threads per unit, and never more than the hardware threads checking at
+// once across every unit in flight (a process-wide token count). 1 = in order
+// on the calling thread, as before.
+template <class F>
+void run_function_checks(std::vector<PendingCheck>& pending, F&& check) {
+    static const unsigned per_unit = [] {
+        const char* e = std::getenv("PRISM_PIR_FN_JOBS");
+        const long v = (e && *e) ? std::strtol(e, nullptr, 10) : 8;
+        return static_cast<unsigned>(std::clamp<long>(v, 1, 1024));
+    }();
+    const std::size_t want = std::min<std::size_t>(per_unit, pending.size());
+    if (want <= 1) {
+        for (auto& p : pending) check(p);
+        return;
+    }
+    static std::mutex tok_mu;
+    static std::condition_variable tok_cv;
+    static unsigned tokens = std::max(2u, std::thread::hardware_concurrency());
+    std::atomic<std::size_t> next{0};
+    std::mutex err_mu;
+    std::exception_ptr err;
+    auto worker = [&] {
+        for (;;) {
+            const std::size_t i = next.fetch_add(1);
+            if (i >= pending.size()) return;
+            {
+                std::unique_lock<std::mutex> lk(tok_mu);
+                tok_cv.wait(lk, [] { return tokens > 0; });
+                --tokens;
+            }
+            try {
+                check(pending[i]);
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(err_mu);
+                if (!err) err = std::current_exception();
+            }
+            {
+                std::lock_guard<std::mutex> lk(tok_mu);
+                ++tokens;
+            }
+            tok_cv.notify_one();
+        }
+    };
+    std::vector<std::thread> ts;
+    for (std::size_t k = 1; k < want; ++k) ts.emplace_back(worker);
+    worker();  // the unit's own thread checks too
+    for (auto& t : ts) t.join();
+    if (err) std::rethrow_exception(err);
+}
+
+// Input sweep on the PIR bytecode VM before the solver (docs/GPU_PLAN.md G1):
+// on the GPU when the CUDA driver and the embedded kernel are there, else on
+// the CPU twin (FORGE task pool). Only a violation that pir::interpret
+// reproduces becomes a FAILED verdict; anything else is coverage in
+// extra.sweep, never a proof (Law 3).
+struct SweepOutcome {
+    std::optional<Verdict> failed;
+    bool exhaustive_clean = false;
+    std::map<std::string, std::string> extra;
+};
+
+SweepOutcome sweep_function(const Function& fn, const CheckOptions& copt) {
+    SweepOutcome o;
+    const auto dev = vm::device_from_string(prism::settings::gpu().get());
+    if (dev == vm::Device::Off) return o;
+    std::string why;
+    auto prog = vm::compile(fn, copt.only_props, &why);
+    if (!prog) {
+        o.extra["sweep"] = "not run: " + why;
+        return o;
+    }
+    if (prog->props.empty()) {
+        o.extra["sweep"] = "not run: no property to check";
+        return o;
+    }
+    vm::SweepOptions so;
+    so.device = dev;
+    so.exhaustive_bits = static_cast<unsigned>(std::clamp<std::int64_t>(prism::settings::gpu_exhaustive_bits().get(), 0, 48));
+    so.samples = static_cast<uint64_t>(std::max<std::int64_t>(0, prism::settings::gpu_samples().get()));
+    so.budget_s = static_cast<double>(std::max<std::int64_t>(1, prism::settings::gpu_budget_ms().get())) / 1000.0;
+    const auto r = vm::sweep(*prog, so);
+    o.extra["sweep"] = r.summary();
+    if (!r.ran) return o;
+    o.exhaustive_clean = r.exhaustive && !r.first_violation && r.counts[4] == 0 && r.counts[5] == 0;
+    if (!r.first_violation) return o;
+    if (!vm::confirm(fn, copt.only_props, *prog, r)) {
+        o.extra["sweep_mismatch"] = "the VM's violation was not reproduced by pir::interpret; ignored (a VM defect)";
+        return o;
+    }
+    const auto& pr = prog->props.at(r.prop);
+    Verdict v;
+    v.status = std::string(laws::FAILED);
+    v.prop = pr.prop;
+    v.cls = pr.cls;
+    v.line = pr.line;
+    v.cex_args = r.args;
+    for (std::size_t i = 0; i < fn.params.size() && i < r.args.size(); ++i)
+        v.cex[fn.vars.at(static_cast<std::size_t>(fn.params[i])).name] = r.args[i];
+    v.message = pr.prop + ": " + pr.cls + " (" + pr.msg + ")";
+    v.extra["cex_solver"] = "sweep, " + r.engine + " (replayed in the interpreter)";
+    v.extra["found_by"] = "sweep";
+    o.failed = std::move(v);
+    return o;
+}
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -2468,6 +2586,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         std::sort(starts.begin(), starts.end());
     }
     const bool export_only = std::getenv("PRISM_PIR_EXPORT_ONLY") && std::getenv("PRISM_PIR_LEAN_EXPORT");
+    std::vector<PendingCheck> pending;
+    recs.reserve(mod.functions.size());  // tasks below hold indices; no reallocation while they run
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
@@ -2544,6 +2664,24 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
+        // Checked below, in parallel with the unit's other functions; the
+        // folded-UB rule sees what was translated up to this function, as
+        // when the functions were checked one after another.
+        recs.push_back(std::move(rec));
+        pending.push_back(PendingCheck{recs.size() - 1, std::move(tr), std::move(fopt), &irf, used_folded});
+    }
+    // Every translated function's check (sweep, solver, policy) is independent
+    // of the others: one task each, up to PRISM_PIR_FN_JOBS at a time per
+    // unit (default 8) and at most the hardware threads across all units
+    // (docs/PARALLEL_SOLVING_PLAN.md S1). Z3 contexts are per check.
+    auto check_one = [&](PendingCheck& pd) {
+        auto& rec = recs.at(pd.rec);
+        auto& f = rec.f;
+        auto& tr = pd.tr;
+        auto& fopt = pd.fopt;
+        const auto& irf = *pd.irf;
+        const auto& used_folded = pd.used_folded;
+        auto& fn = *tr.fn;
         // one function budget for the check and the policy's re-checks of this row
         auto copt = check_options(cfg, budget);
         // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
@@ -2560,7 +2698,24 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (capped) copt.function_budget_s = divert_s;
         if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
         const auto t_fn0 = std::chrono::steady_clock::now();
-        auto v = check_function(fn, copt);
+        auto sw = sweep_function(fn, copt);
+        Verdict v;
+        if (sw.failed && !prism::settings::gpu_crosscheck().get()) {
+            v = *sw.failed;  // a replayed concrete violation: no solver query needed
+        } else {
+            v = check_function(fn, copt);
+            if (sw.failed && v.status != laws::FAILED) {
+                // the counterexample wins (as in the portfolio); the disagreement is an incident
+                const std::string solver_said = v.status;
+                v = *sw.failed;
+                v.extra["engine_disagree"] = "the solver said " + solver_said + "; the sweep's input, replayed in the "
+                                             "interpreter, violates " + v.prop;
+            } else if (sw.exhaustive_clean && v.status == laws::FAILED) {
+                v.extra["engine_disagree"] = "the solver's counterexample is FAILED while every input ran clean in the "
+                                             "sweep (validate replays the counterexample)";
+            }
+        }
+        for (auto& [k, val] : sw.extra) v.extra.emplace(k, val);
         const double fn_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count();
         if (capped && v.status == laws::UNKNOWN && fn_s >= 0.9 * divert_s) {
             f.extra["pir_rerun"] = "pending";
@@ -2608,8 +2763,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             break;
         }
         rec.fn = std::move(tr.fn);
-        recs.push_back(std::move(rec));
-    }
+    };
+    run_function_checks(pending, check_one);
     // Folded UB that no instruction carries: the function cannot be proved.
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)

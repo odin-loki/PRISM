@@ -257,21 +257,43 @@ std::string Features::bucket() const {
     return b;
 }
 
+// One walk over the formula's DAG on the raw C API: the formula keeps every
+// subterm alive, so no reference counting per node or edge (the z3::expr
+// wrappers cost an inc_ref, a dec_ref and an error-code check each, and this
+// walk ran on every solver query; PRISM_PROFILE / perf put it at a quarter of
+// the pir stage's CPU time). Visited nodes: a bitmap over AST ids.
 Features features(const z3::expr& f) {
     Features ft;
-    std::unordered_set<unsigned> seen;
-    std::vector<z3::expr> stack{f};
+    Z3_context c = f.ctx();
+    std::vector<uint64_t> seen;
+    auto visit = [&](unsigned id) {
+        const std::size_t w = id >> 6;
+        if (w >= seen.size()) seen.resize(std::max<std::size_t>(w + 1, seen.size() * 2), 0);
+        const uint64_t bit = uint64_t{1} << (id & 63);
+        if (seen[w] & bit) return false;
+        seen[w] |= bit;
+        return true;
+    };
+    std::vector<Z3_ast> stack{f};
     while (!stack.empty()) {
-        z3::expr e = stack.back();
+        Z3_ast e = stack.back();
         stack.pop_back();
-        if (!seen.insert(e.id()).second) continue;
+        if (!visit(Z3_get_ast_id(c, e))) continue;
         ++ft.nodes;
-        if (e.is_quantifier()) { ft.quant = true; stack.push_back(e.body()); continue; }
-        if (!e.is_app()) { ft.other_sort = true; continue; }  // bound variable
-        z3::sort s = e.get_sort();
-        switch (s.sort_kind()) {
+        const Z3_ast_kind ak = Z3_get_ast_kind(c, e);
+        if (ak == Z3_QUANTIFIER_AST) {
+            ft.quant = true;
+            stack.push_back(Z3_get_quantifier_body(c, e));
+            continue;
+        }
+        if (ak != Z3_APP_AST && ak != Z3_NUMERAL_AST) {  // bound variable
+            ft.other_sort = true;
+            continue;
+        }
+        Z3_sort s = Z3_get_sort(c, e);
+        switch (Z3_get_sort_kind(c, s)) {
             case Z3_BOOL_SORT: break;
-            case Z3_BV_SORT: ft.max_bv_width = std::max(ft.max_bv_width, s.bv_size()); break;
+            case Z3_BV_SORT: ft.max_bv_width = std::max(ft.max_bv_width, Z3_get_bv_sort_size(c, s)); break;
             case Z3_ARRAY_SORT: ft.arrays = true; break;
             case Z3_FLOATING_POINT_SORT:
             case Z3_ROUNDING_MODE_SORT: ft.fp = true; break;
@@ -279,9 +301,11 @@ Features features(const z3::expr& f) {
             case Z3_REAL_SORT: ft.arith = true; break;
             default: ft.other_sort = true; break;
         }
-        auto k = e.decl().decl_kind();
+        Z3_app a = Z3_to_app(c, e);
+        const unsigned n = Z3_get_app_num_args(c, a);
+        const Z3_decl_kind k = Z3_get_decl_kind(c, Z3_get_app_decl(c, a));
         if (k == Z3_OP_UNINTERPRETED) {
-            if (e.num_args() == 0) ++ft.consts;
+            if (n == 0) ++ft.consts;
             else ft.uf = true;
         }
         switch (k) {
@@ -292,13 +316,20 @@ Features features(const z3::expr& f) {
                 break;
             default: break;
         }
-        for (unsigned i = 0; i < e.num_args(); ++i) {
-            z3::sort as = e.arg(i).get_sort();
-            if (as.sort_kind() == Z3_ARRAY_SORT) ft.arrays = true;
-            stack.push_back(e.arg(i));
-        }
+        // (an argument of array sort is visited and sets `arrays` itself)
+        for (unsigned i = 0; i < n; ++i) stack.push_back(Z3_get_app_arg(c, a, i));
     }
     return ft;
+}
+
+std::string not_certifiable_reason(const Features& ft) {
+    if (ft.quant) return "quantifiers";
+    if (ft.arrays) return "arrays (memory must be Ackermannised to bitvectors first)";
+    if (ft.fp) return "floating point";
+    if (ft.arith) return "integer/real arithmetic";
+    if (ft.uf) return "uninterpreted functions";
+    if (ft.other_sort) return "unsupported sort";
+    return {};
 }
 
 std::string not_certifiable_reason(const z3::expr& f) {

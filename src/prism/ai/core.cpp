@@ -3,6 +3,7 @@
 // Roadmap 4.1 and 9.6. The model proposes; a checker decides.
 
 #include "prism/forge_llm.hpp"
+#include "prism/ai_providers.hpp"
 #include "ai_internal.hpp"
 
 #include <nlohmann/json.hpp>
@@ -582,6 +583,14 @@ std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* wh
         return std::shared_ptr<ModelBackend>{};
     };
     if (!cfg.llm) return say("--no-llm");
+    // FORGE is the default; PRISM_AI names any other provider (ai_providers.hpp)
+    std::string pwhy;
+    auto pc = provider_from_env(&pwhy);
+    if (!pc) return say(pwhy);
+    if (pc->kind != "forge") {
+        auto b = provider_backend(*pc, &pwhy);
+        return b ? b : say(pwhy);
+    }
     if (forge_llm::is_fpk(cfg.fpk)) return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model);
     return say("no FORGE model: set PRISM_FPK to a .fpk (Qwen 3.5 9B converted with FORGE); tried " +
                cfg.fpk.string());

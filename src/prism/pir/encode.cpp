@@ -134,32 +134,72 @@ CfgInfo analyze(const Function& fn) {
     for (int b = 0; b < g.n; ++b)
         if (g.reachable.at(static_cast<std::size_t>(b)))
             for (int s : g.succ.at(static_cast<std::size_t>(b))) preds.at(static_cast<std::size_t>(s)).push_back(b);
-    g.dom.assign(static_cast<std::size_t>(g.n), std::vector<char>(static_cast<std::size_t>(g.n), 1));
+    // Immediate dominators by Cooper, Harvey and Kennedy ("A Simple, Fast
+    // Dominance Algorithm") over reverse postorder, then the dominator sets
+    // dom[b] = dom[idom[b]] + {b} row by row. The same matrix as the dense
+    // fixed point this replaced (intersecting full rows per predecessor per
+    // round), which perf put at 10% of the pir stage on large functions.
+    // Unreachable blocks keep all-ones rows, as before.
+    const auto N = static_cast<std::size_t>(g.n);
+    g.dom.assign(N, std::vector<char>(N, 1));
     if (g.n > 0) {
-        g.dom[0].assign(static_cast<std::size_t>(g.n), 0);
-        g.dom[0][0] = 1;
-    }
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (int b = 1; b < g.n; ++b) {
-            if (!g.reachable.at(static_cast<std::size_t>(b))) continue;
-            std::vector<char> nd(static_cast<std::size_t>(g.n), 1);
-            bool any = false;
-            for (int p : preds.at(static_cast<std::size_t>(b))) {
-                any = true;
-                for (int d = 0; d < g.n; ++d) {
-                    const auto di = static_cast<std::size_t>(d);
-                    const auto pi = static_cast<std::size_t>(p);
-                    nd.at(di) = static_cast<char>(nd.at(di) && g.dom.at(pi).at(di));
+        std::vector<int> post;  // postorder of the reachable blocks
+        post.reserve(N);
+        {
+            std::vector<char> seen(N, 0);
+            std::vector<std::pair<int, std::size_t>> st{{0, 0}};
+            seen[0] = 1;
+            while (!st.empty()) {
+                auto& [b, k] = st.back();
+                const auto& ss = g.succ[static_cast<std::size_t>(b)];
+                if (k < ss.size()) {
+                    const int s = ss[k++];
+                    if (!seen[static_cast<std::size_t>(s)]) {
+                        seen[static_cast<std::size_t>(s)] = 1;
+                        st.emplace_back(s, 0);
+                    }
+                } else {
+                    post.push_back(b);
+                    st.pop_back();
                 }
             }
-            if (!any) nd.assign(static_cast<std::size_t>(g.n), 0);
-            nd.at(static_cast<std::size_t>(b)) = 1;
-            if (nd != g.dom.at(static_cast<std::size_t>(b))) {
-                g.dom.at(static_cast<std::size_t>(b)) = std::move(nd);
-                changed = true;
+        }
+        std::vector<int> pnum(N, -1);
+        for (std::size_t i = 0; i < post.size(); ++i) pnum[static_cast<std::size_t>(post[i])] = static_cast<int>(i);
+        std::vector<int> idom(N, -1);
+        idom[0] = 0;
+        auto intersect = [&](int a, int b) {
+            while (a != b) {
+                while (pnum[static_cast<std::size_t>(a)] < pnum[static_cast<std::size_t>(b)]) a = idom[static_cast<std::size_t>(a)];
+                while (pnum[static_cast<std::size_t>(b)] < pnum[static_cast<std::size_t>(a)]) b = idom[static_cast<std::size_t>(b)];
             }
+            return a;
+        };
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto it = post.rbegin(); it != post.rend(); ++it) {
+                const int b = *it;
+                if (b == 0) continue;
+                int ni = -1;
+                for (int p : preds[static_cast<std::size_t>(b)]) {
+                    if (idom[static_cast<std::size_t>(p)] < 0) continue;
+                    ni = ni < 0 ? p : intersect(p, ni);
+                }
+                if (ni != idom[static_cast<std::size_t>(b)]) {
+                    idom[static_cast<std::size_t>(b)] = ni;
+                    changed = true;
+                }
+            }
+        }
+        g.dom[0].assign(N, 0);
+        g.dom[0][0] = 1;
+        for (auto it = post.rbegin(); it != post.rend(); ++it) {  // a block's idom comes before it in reverse postorder
+            const int b = *it;
+            if (b == 0) continue;
+            const int d = idom[static_cast<std::size_t>(b)];
+            if (d < 0) continue;  // (cannot happen for a reachable block other than the entry)
+            g.dom[static_cast<std::size_t>(b)] = g.dom[static_cast<std::size_t>(d)];
+            g.dom[static_cast<std::size_t>(b)][static_cast<std::size_t>(b)] = 1;
         }
     }
     // back edges; a retreating edge that is not a back edge = irreducible
@@ -1081,6 +1121,26 @@ struct Encoding {
 
 void add_all(z3::solver& s, const std::vector<z3::expr>& xs) {
     for (auto& x : xs) s.add(x);
+}
+
+// An incremental solver for many related queries (Houdini). Without a logic,
+// Z3's combined solver answers incremental queries with its SMT core
+// (congruence closure, relevancy, lazy bit-vector theory): perf on the
+// conformance corpus put smt::context and its hash tables at the top of the
+// pir stage. For pure QF_BV (the default Bv memory encoding, no floating
+// point) Z3 instead picks inc_sat_solver, which bit-blasts incrementally into
+// its CDCL SAT solver and keeps learned clauses across checks with
+// assumptions. PRISM_Z3_INCREMENTAL=smt keeps the old solver (A/B runs).
+z3::solver incremental_solver(z3::context& c, const std::vector<z3::expr>& base) {
+    static const bool smt = [] {
+        const char* e = std::getenv("PRISM_Z3_INCREMENTAL");
+        return e && std::string(e) == "smt";
+    }();
+    if (smt || base.empty()) return z3::solver(c);
+    z3::expr_vector v(c);
+    for (auto& x : base) v.push_back(x);
+    const auto ft = solver::features(z3::mk_and(v));
+    return ft.logic() == "QF_BV" ? z3::solver(c, "QF_BV") : z3::solver(c);
 }
 
 z3::expr any_of(z3::context& c, const std::vector<z3::expr>& xs) {

@@ -197,6 +197,7 @@ set(PRISM_SRC
   src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
   src/prism/ai/forge_llm.cpp
+  src/prism/ai/providers.cpp
   src/prism/ai/draft.cpp
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
@@ -221,6 +222,7 @@ set(PRISM_SRC
   src/prism/conc/stage.cpp
   src/prism/config.cpp
   src/prism/cparse.cpp
+  src/prism/cuda_driver.cpp
   src/prism/hash.cpp
   src/prism/havoc.cpp
   src/prism/interval.cpp
@@ -248,6 +250,7 @@ set(PRISM_SRC
   src/prism/pir/stage_mem.cpp
   src/prism/pir/translate.cpp
   src/prism/pir/translate_fp.cpp
+  src/prism/pir/vm.cpp
   src/prism/pir/translate_mem.cpp
   src/prism/cli.cpp
   src/prism/polyglot.cpp
@@ -290,6 +293,7 @@ set(PRISM_SRC
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/certstore.cpp
   src/prism/solver/cnf.cpp
+  src/prism/solver/gpu_sls.cpp
   src/prism/solver/gbdt.cpp
   src/prism/solver/leanbb.cpp
   src/prism/solver/portfolio.cpp
@@ -419,8 +423,71 @@ add_custom_command(OUTPUT "${_prism_discard_inc}"
   WORKING_DIRECTORY "${PRISM_ROOT}"
   COMMENT "Generating prism/astlint_discard.inc from the lint_discarded* rules"
   VERBATIM)
-add_custom_target(prism_generated DEPENDS "${_prism_discard_inc}")
+# --- src/cuda/pir_vm.cu -> PTX -> prism/pir_vm_ptx.inc (docs/GPU_PLAN.md G1) ---
+# The PIR VM's GPU kernel is built by clang's nvptx64 target alone (no CUDA
+# SDK, no nvcc) and embedded; at run time PRISM loads it through the CUDA
+# driver (FORGE dl). Without clang/nvptx64 the include is empty: the sweep
+# says the GPU is not used and why, and runs on the CPU twin.
+option(PRISM_GPU_PTX "Embed the PIR VM GPU kernel (PTX from clang's nvptx64 target)" ON)
+set(_prism_ptx_inc "${_pins_dir}/prism/pir_vm_ptx.inc")
+set(_prism_ptx_clang "")
+if(PRISM_GPU_PTX)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    set(_prism_ptx_clang "${CMAKE_CXX_COMPILER}")
+  else()
+    find_program(PRISM_PTX_CLANG NAMES clang++ clang clang++-18 clang-18 clang++-19 clang-19)
+    if(PRISM_PTX_CLANG)
+      set(_prism_ptx_clang "${PRISM_PTX_CLANG}")
+    endif()
+  endif()
+  if(_prism_ptx_clang)
+    execute_process(COMMAND "${_prism_ptx_clang}" -print-targets OUTPUT_VARIABLE _prism_targets ERROR_QUIET)
+    if(NOT _prism_targets MATCHES "nvptx64")
+      set(_prism_ptx_clang "")
+    endif()
+  endif()
+endif()
+if(_prism_ptx_clang)
+  set(_prism_ptx "${CMAKE_BINARY_DIR}/generated/pir_vm.ptx")
+  add_custom_command(OUTPUT "${_prism_ptx_inc}"
+    COMMAND "${_prism_ptx_clang}" -x cuda --cuda-device-only -nocudainc -nocudalib -Wno-unknown-cuda-version
+            --cuda-gpu-arch=sm_86 -O3 -S -o "${_prism_ptx}" "${PRISM_ROOT}/src/cuda/pir_vm.cu"
+    COMMAND "${CMAKE_COMMAND}" "-DIN=${_prism_ptx}" "-DOUT=${_prism_ptx_inc}" -P "${PRISM_ROOT}/cmake/embed_ptx.cmake"
+    DEPENDS "${PRISM_ROOT}/src/cuda/pir_vm.cu" "${PRISM_ROOT}/src/prism/pir/vm_core.inc" "${PRISM_ROOT}/cmake/embed_ptx.cmake"
+    COMMENT "Building the PIR VM GPU kernel (PTX, sm_86) and embedding it"
+    VERBATIM)
+  message(STATUS "PIR VM GPU kernel: PTX by ${_prism_ptx_clang}")
+else()
+  file(WRITE "${_prism_ptx_inc}" "// no GPU kernel (PRISM_GPU_PTX off, or no clang with nvptx64)\nconst char kPirVmPtx[] = {0};\nconst std::size_t kPirVmPtxSize = 0;\n")
+  message(WARNING "PIR VM GPU kernel not built (no clang with the nvptx64 target): sweeps run on the CPU twin")
+endif()
+add_custom_target(prism_generated DEPENDS "${_prism_discard_inc}" "${_prism_ptx_inc}")
 add_dependencies(prism_core prism_generated)
+# --- GPU ProbSAT: src/cuda/probsat.cu -> PTX -> prism/probsat_ptx.inc (docs/GPU_PLAN.md G7) ---
+# Same toolchain path as the PIR VM kernel above (clang nvptx64, no CUDA SDK);
+# src/prism/solver/gpu_sls.cpp loads it through src/prism/cuda_driver.cpp.
+# Without clang/nvptx64 the include is empty and gpu_probsat() says so (NOTRUN).
+set(_prism_probsat_inc "${_pins_dir}/prism/probsat_ptx.inc")
+if(_prism_ptx_clang)
+  set(_prism_probsat_ptx "${CMAKE_BINARY_DIR}/generated/probsat.ptx")
+  add_custom_command(OUTPUT "${_prism_probsat_inc}"
+    COMMAND "${_prism_ptx_clang}" -x cuda --cuda-device-only -nocudainc -nocudalib -Wno-unknown-cuda-version
+            --cuda-gpu-arch=sm_86 -O3 -S -o "${_prism_probsat_ptx}" "${PRISM_ROOT}/src/cuda/probsat.cu"
+    COMMAND "${CMAKE_COMMAND}" "-DIN=${_prism_probsat_ptx}" "-DOUT=${_prism_probsat_inc}" -DNAME=kProbsatPtx
+            -DSRC=src/cuda/probsat.cu -P "${PRISM_ROOT}/cmake/embed_ptx.cmake"
+    DEPENDS "${PRISM_ROOT}/src/cuda/probsat.cu" "${PRISM_ROOT}/src/cuda/probsat_launch.h"
+            "${PRISM_ROOT}/cmake/embed_ptx.cmake"
+    COMMENT "Building the GPU ProbSAT kernel (PTX, sm_86) and embedding it"
+    VERBATIM)
+else()
+  file(WRITE "${_prism_probsat_inc}" "// no GPU kernel (PRISM_GPU_PTX off, or no clang with nvptx64)
+const char kProbsatPtx[] = {0};
+const std::size_t kProbsatPtxSize = 0;
+")
+endif()
+add_custom_target(prism_probsat_ptx DEPENDS "${_prism_probsat_inc}")
+add_dependencies(prism_core prism_probsat_ptx)
+# --- end GPU ProbSAT ---
 
 target_include_directories(prism_core PUBLIC
   "${PRISM_ROOT}/include"
@@ -668,8 +735,8 @@ if(PRISM_CUDA)
         # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
         set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
       endif()
-      # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
-      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
+      # probsat.cu is built to PTX by clang and embedded (GPU ProbSAT block above), not by nvcc.
+      add_library(prism_cuda SHARED src/cuda/mutate.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
       set_target_properties(prism_cuda PROPERTIES
@@ -810,6 +877,9 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
+    tests/cpp/test_pir_vm.cpp
+    tests/cpp/test_gpu_sls.cpp
+    tests/cpp/test_ai_providers.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp

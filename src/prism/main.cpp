@@ -203,6 +203,18 @@ int main(int argc, char** argv) {
     prism::exec::install_interrupt_cleanup();
     // Roadmap 9.2: `prism prove FILE.lean THEOREM` (Lean proof search).
     if (argc > 1 && std::string_view(argv[1]) == "prove") return ai::prove_main(argc - 1, argv + 1);
+    // FORGE pool workers spin FORGE_SPIN_US (default 200 us) after each job
+    // before they sleep. A scan's jobs are long (units, sweep chunks), so the
+    // spin only burns cores the solvers need: perf put it at 12-17% of the pir
+    // stage's CPU. 20 us keeps wake-ups quick for the model features. A value
+    // the user set is kept. (Read when a pool is built: before any pool exists.)
+    if (!std::getenv("FORGE_SPIN_US")) {
+#ifdef _WIN32
+        _putenv_s("FORGE_SPIN_US", "20");
+#else
+        setenv("FORGE_SPIN_US", "20", 0);
+#endif
+    }
     // Report-level subcommands (roadmap 9.3 / 9.4): they read report.json and
     // never change a verdict.
     if (argc > 1) {

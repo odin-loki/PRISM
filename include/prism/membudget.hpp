@@ -62,6 +62,7 @@ public:
 
 private:
     const char* prev_;
+    uint64_t t0_ = 0;  // PRISM_PROFILE: start time (ns), 0 when not profiling
 };
 PRISM_API std::string phases();
 // Called by the watchdog once a streak of trips has lasted

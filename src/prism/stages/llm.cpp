@@ -6,6 +6,7 @@
 #include "prism/ai.hpp"
 
 #include "prism/forge_llm.hpp"
+#include "prism/ai_providers.hpp"
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -77,6 +78,14 @@ void LlmEngine::bind() {
         backend = "test-double";
         return;
     }
+    // FORGE is the default; PRISM_AI names any other provider
+    std::string why;
+    if (auto pc = ai::provider_from_env(&why); pc && pc->kind != "forge" && cfg.llm) {
+        if ((provider = ai::provider_backend(*pc, &why))) {
+            backend = "provider";
+            return;
+        }
+    }
     if (forge_llm::is_fpk(cfg.fpk)) {
         backend = "forge";
         return;
@@ -142,6 +151,16 @@ ChatResult LlmEngine::complete_raw(const std::vector<std::pair<std::string, std:
     if (backend == "test-double") {
         if (auto fn = chat_backend()) return fn(messages, timeout);
         return {"", "test-double", "test chat backend cleared"};
+    }
+    if (backend == "provider" && provider) {
+        ai::ModelRequest req;
+        req.feature = "chat";
+        for (auto& [role, content] : messages) {
+            if (role == "system") req.system = content;
+            else req.user += (req.user.empty() ? "" : "\n\n" + role + ":\n") + content;
+        }
+        auto reply = provider->complete(req);
+        return {reply.text, provider->name(), reply.error};
     }
     forge_llm::Request req;
     req.messages = messages;

@@ -24,6 +24,38 @@ template harnesses still run (they need no model), and every model half is a
 `NOTRUN` note (`extra.llm_invariants = "NOTRUN: ..."`, a `NOTRUN` row in the
 repair stage, `extra.llm_harness`).
 
+## Providers: FORGE by default, any AI by choice
+
+FORGE inference (in process, on the `.fpk` in `PRISM_FPK`) is the default
+engine and needs no network. `PRISM_AI` swaps in any other AI for every model
+feature (the stage LLM engine, `ai::connect_backend`, and the Lean prover when
+no `PRISM_PROVER_FPK` is set). Code: `include/prism/ai_providers.hpp`,
+`src/prism/ai/providers.cpp`; tests `tests/cpp/test_ai_providers.cpp`.
+
+| `PRISM_AI` | What it talks to | Defaults |
+|---|---|---|
+| `forge` (or unset) | FORGE inference in process | `PRISM_FPK` |
+| `openai` | any OpenAI-compatible `/chat/completions` server (OpenAI, vLLM, llama.cpp server, LM Studio, OpenRouter, FORGE's own `forge-serve`) | URL `https://api.openai.com/v1`, key in `OPENAI_API_KEY` |
+| `ollama`, `vllm`, `llamacpp`, `lmstudio` | the same API on the usual local port | `localhost:11434/v1`, `:8000/v1`, `:8080/v1`, `:1234/v1`, no key |
+| `anthropic` (or `claude`) | the Claude Messages API (`anthropic-version: 2026-10-21`; no sampling fields) | model `claude-opus-5-5`, key in `ANTHROPIC_API_KEY` |
+| `cmd` | any program: the prompt on stdin, the reply on stdout | `PRISM_AI_CMD` |
+
+`PRISM_AI_URL`, `PRISM_AI_MODEL` override the defaults. `PRISM_AI_KEY_ENV`
+names the variable that holds the key: the key itself is never a PRISM
+variable, never on a command line (curl reads it from stdin, `-K -`) and never
+in the audit log; request bodies go through a private (0600) temp file.
+`PRISM_AI_GRAMMAR=1` sends the GBNF grammar to servers that accept one
+(llama.cpp server, `forge-serve`); other servers get none, so their output is
+less constrained, and the parsers and the prover still decide (Law 4).
+
+A remote provider receives the prompts, and the prompts quote the code under
+analysis. That only happens when `PRISM_AI` names one. The audit log records
+the provider and model (`model_sha256 = remote` for HTTP providers).
+
+An OpenAI-compatible client layer inside FORGE itself is in progress in the
+FORGE repository; once it lands PRISM will call it and keep this file's
+behaviour.
+
 ## Loop invariant synthesis and Houdini (4.2, 8.2 "Houdini")
 
 `bmc.cpp:run_bmc` calls `k_induction_strengthened`, a thin hook around the

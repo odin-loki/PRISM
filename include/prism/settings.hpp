@@ -30,6 +30,13 @@ inline const auto& tools_dir() { static auto s = fs::define("PRISM_TOOLS_DIR", "
 inline const auto& embed_server() { static auto s = fs::define("PRISM_EMBED_SERVER", "", "embedding server URL for triage"); return s; }
 inline const auto& proof_cache() { static auto s = fs::define("PRISM_PROOF_CACHE", "", "persistent proof-repair cache directory"); return s; }
 
+// PIR bytecode VM sweep (docs/GPU_PLAN.md G1)
+inline const auto& gpu() { static auto s = fs::define("PRISM_GPU", "auto", "pir input sweep device: auto, gpu, cpu, off"); return s; }
+inline const auto& gpu_exhaustive_bits() { static auto s = fs::define("PRISM_GPU_EXHAUSTIVE_BITS", std::int64_t{0}, "pir sweep: run every input when the parameters have at most this many bits (0: GPU 32, CPU 20)"); return s; }
+inline const auto& gpu_samples() { static auto s = fs::define("PRISM_GPU_SAMPLES", std::int64_t{0}, "pir sweep: sampled inputs per function (0: GPU 2^24, CPU 2^16)"); return s; }
+inline const auto& gpu_budget_ms() { static auto s = fs::define("PRISM_GPU_BUDGET_MS", std::int64_t{5000}, "pir sweep: wall-time budget per function (ms)"); return s; }
+inline const auto& gpu_crosscheck() { static auto s = fs::define("PRISM_GPU_CROSSCHECK", false, "pir sweep: run the solver even after a sweep refutation and record disagreements"); return s; }
+
 inline const auto& pir_lean_export() { static auto s = fs::define("PRISM_PIR_LEAN_EXPORT", "", "export PIR to Lean (path)"); return s; }
 inline const auto& pir_progress() { static auto s = fs::define("PRISM_PIR_PROGRESS", "", "PIR progress-note file"); return s; }
 inline const auto& pir_only() { static auto s = fs::define("PRISM_PIR_ONLY", "", "PIR: restrict to these units / skip memory headroom"); return s; }
