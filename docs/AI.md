@@ -309,6 +309,17 @@ a` gets `rfl` (kernel error, fed back), `sorry` (validator), then `omega`
 node; `(1 : Nat) = 2` with `exact bad.elim` from a user `axiom bad : False`
 is accepted by the kernel and rejected by the axiom audit.
 
+Measured (4 cores, Lean 4.34.0, `proofs/Prism/Verdict.lean`, 568 lines):
+one full-file `lake env lean` per candidate took 3.6 s, so the old search
+paid that per candidate; a batch of 16 candidates took 2 Lean runs, about
+4 s. With each of the file's 51 uniquely named theorems blanked to `sorry`
+in turn and a model that never answers, the closers alone re-proved 33
+(fixed set only: 2), every one through the axiom audit and `lake build`;
+typical proofs found: `cases v <;> simp_all [isProof, isFormal]`,
+`grind [mayRewrite, isFormal]`, `revert o v c; decide`. About 10 s per
+theorem, 4 s of it the scratch copy's first `lake build`. The 18 left
+(arithmetic over `Frac`, reachability) need the model.
+
 The repository's own proofs have no `sorry` (`proofs/check.sh` forbids it),
 so the driver has nothing to search there today; the "proofs completed by
 the prover model" metric (9.7) is the summary line of `prism prove --all`.
