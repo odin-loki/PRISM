@@ -100,6 +100,15 @@ four libraries).
    or Q, note).
 - Gate: the owner's one million rows imported on this machine class in
   under an hour; `stats` matches a direct count over the reports.
+- Status: built (`src/prism/library.cpp`, `include/prism/library.hpp`,
+  `tests/cpp/test_library.cpp`): `prism library import RUN... [--tier]
+  [--vetting] [--stage]`, `prism library vet FILE.jsonl`, `prism library
+  stats` (by tier, level, status, stage, and the top NEEDS-HARNESS / NOTRUN
+  reasons: the U4 list), `prism library lookup --exact|--shape|--function`.
+  An entry's id is the BLAKE3 of what was observed (row and run, not the
+  tier), so vetting never changes ids and re-imports are no-ops. Reports
+  are parsed on `--jobs` threads. Not yet measured at one million rows;
+  `export --sample` (U5) is open.
 
 ### L2. Exact reuse with re-check (U1)
 

@@ -236,6 +236,7 @@ set(PRISM_SRC
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
   src/prism/pir/fp.cpp
+  src/prism/library.cpp
   src/prism/pir/fncache.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
@@ -732,6 +733,7 @@ if(PRISM_TESTS)
     tests/cpp/test_env_registry.cpp
     tests/cpp/test_log.cpp
     tests/cpp/test_backends.cpp
+    tests/cpp/test_library.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp

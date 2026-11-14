@@ -186,6 +186,59 @@ std::string fingerprint(const Function& fn) {
     return o.str();
 }
 
+std::string exact_key(const Function& fn) { return prism::cache::key_of(fingerprint(fn)); }
+
+std::string shape_key(const Function& fn) {
+    std::ostringstream o;
+    auto arg = [&](const Arg& a) {
+        if (a.is_const) o << 'c' << a.width << ' ';
+        else o << 'v' << a.width << ':' << a.var << ' ';  // dataflow kept, names dropped
+    };
+    o << "shape 1 ret " << fn.ret_width << " params " << fn.params.size() << " mem " << fn.uses_memory << " ptrw "
+      << fn.ptr.w << " ptrp " << fn.ptr_params.size() << " assum " << fn.assumptions.size() << '\n';
+    for (const auto& v : fn.vars) o << v.width << (v.fp ? "f" : "") << ' ';
+    o << '\n';
+    for (const auto& b : fn.blocks) {
+        o << "b\n";
+        for (const auto& p : b.phis) {
+            o << " phi " << p.dst;
+            for (const auto& [pred, a] : p.in) {
+                o << " " << pred << ':';
+                arg(a);
+            }
+            o << '\n';
+        }
+        for (const auto& s : b.stmts) {
+            o << " " << static_cast<int>(s.kind) << ' ' << s.dst << ' ' << static_cast<int>(s.op) << ' '
+              << static_cast<int>(s.mkind) << ' ' << s.init << ' ' << s.ptr_arith << ' ' << s.prop << ' ' << s.cls << " (";
+            for (const auto& a : s.args) arg(a);
+            o << ")\n";
+        }
+        o << " t " << static_cast<int>(b.term.kind) << ' ' << b.term.t << ' ' << b.term.f << '\n';
+    }
+    return prism::cache::key_of(o.str());
+}
+
+std::string features_json(const Function& fn) {
+    std::size_t stmts = 0, checks = 0, mem = 0, back_edges = 0;
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& b = fn.blocks[i];
+        stmts += b.stmts.size();
+        for (const auto& s : b.stmts) {
+            if (s.kind == Stmt::Check) ++checks;
+            else if (s.kind != Stmt::Assign && s.kind != Stmt::Assume) ++mem;
+        }
+        for (int t : {b.term.t, b.term.f})
+            if (t >= 0 && static_cast<std::size_t>(t) <= i) ++back_edges;
+    }
+    json j{{"blocks", fn.blocks.size()},  {"stmts", stmts},          {"checks", checks},
+           {"mem_stmts", mem},            {"vars", fn.vars.size()},  {"params", fn.params.size()},
+           {"ptr_params", fn.ptr_params.size()}, {"back_edges", back_edges}, {"loops", fn.loop_locs.size()},
+           {"inlined", fn.inlined.size()}, {"assumptions", fn.assumptions.size()}, {"uses_memory", fn.uses_memory},
+           {"ptr_width", fn.ptr.w}};
+    return j.dump();
+}
+
 std::string key(const Function& fn, const CheckOptions& opt) {
     if (!enabled() || !opt.use_cache || opt.certified || !opt.only_props.empty() || opt.debug_before_query) return {};
     const auto& eng = engine_digest();

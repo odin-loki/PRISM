@@ -2555,6 +2555,10 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         fn.line = sub.line;
         auto text = to_text(fn);
         f.extra["pir_hash"] = sha256_hex(text);
+        // proof library keys and features (docs/PROOF_LIBRARY.md L0)
+        f.extra["pir_fingerprint"] = fncache::exact_key(fn);
+        f.extra["pir_shape"] = fncache::shape_key(fn);
+        f.extra["features"] = fncache::features_json(fn);
         if (!fn.inlined.empty()) {
             std::string s;
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;

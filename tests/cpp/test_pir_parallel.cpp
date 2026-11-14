@@ -13,6 +13,8 @@
 #include "prism/pir.hpp"
 #include "prism/pir/frontend.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include "../../src/prism/pir/fncache.hpp"
 
 #include <cstdlib>
@@ -258,4 +260,27 @@ TEST_CASE("pir parallel: a unit's verdicts do not depend on --jobs; a re-run hit
     CHECK(checked >= 26);
     CHECK(hits_second == checked);
     fs::remove_all(dir);
+}
+
+TEST_CASE("pir library keys: shape ignores names and constants, exact does not") {
+    const auto a = tiny_function();
+    auto b = tiny_function();
+    b.name = b.ir_name = "g";
+    b.file = "other.c";
+    b.line = 99;
+    b.vars[0].name = "x";
+    b.blocks[0].name = "start";
+    b.blocks[0].stmts[0].args[1].bits = 7;  // another constant, same width
+    CHECK(pp::fncache::shape_key(a) == pp::fncache::shape_key(b));
+    CHECK(pp::fncache::exact_key(a) != pp::fncache::exact_key(b));
+    auto c = tiny_function();
+    c.blocks[0].stmts[0].op = pp::Op::Sub;  // another operation: another shape
+    CHECK(pp::fncache::shape_key(a) != pp::fncache::shape_key(c));
+    auto d = tiny_function();
+    d.vars[1].width = 64;  // another width: another shape
+    CHECK(pp::fncache::shape_key(a) != pp::fncache::shape_key(d));
+    const auto fj = nlohmann::json::parse(pp::fncache::features_json(a));
+    CHECK(fj.at("blocks") == 1);
+    CHECK(fj.at("params") == 1);
+    CHECK(fj.at("back_edges") == 0);
 }

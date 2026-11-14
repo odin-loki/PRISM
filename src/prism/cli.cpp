@@ -324,6 +324,7 @@ std::string cli_usage() {
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
+        "prism library import|vet|stats|lookup ... (proof library of earlier verdicts; library --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
         "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"

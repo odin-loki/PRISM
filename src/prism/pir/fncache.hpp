@@ -37,4 +37,15 @@ bool storable(const Verdict& v);
 // Complete serialisation used in the key (tests).
 std::string fingerprint(const Function& fn);
 
+// Proof library keys and features (docs/PROOF_LIBRARY.md L0), engine-independent:
+//   exact_key  BLAKE3 of fingerprint(fn)
+//   shape_key  BLAKE3 of the PIR with names, constant values, block names,
+//              source lines and messages abstracted (widths, operations,
+//              control flow, memory kinds and property kinds kept): the
+//              near-match key for kernel idioms
+//   features   JSON object of sizes and kinds for the scheduler (U3)
+std::string exact_key(const Function& fn);
+std::string shape_key(const Function& fn);
+std::string features_json(const Function& fn);
+
 }  // namespace prism::pir::fncache
