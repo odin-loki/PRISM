@@ -236,6 +236,7 @@ set(PRISM_SRC
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
   src/prism/pir/fp.cpp
+  src/prism/pir/fncache.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
   src/prism/pir/ir_parser.cpp
@@ -935,7 +936,7 @@ if(PRISM_TESTS)
   endif()
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-      tests/cpp/test_pir_budget.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
+      tests/cpp/test_pir_budget.cpp tests/cpp/test_pir_parallel.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
       tests/cpp/test_solver_cert.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the

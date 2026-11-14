@@ -1345,8 +1345,49 @@ the ProbSAT walker for counterexamples) and the query cache.
 each (`z3:3, cadical:1`, `(cache)` for a cache hit) and the cache hits.
 
 The stage uses `--solver-cache DIR` (default `$XDG_CACHE_HOME/prism/solver`)
-and gives each query `max(2, cores / --jobs)` solver members at once.
+and gives each query `max(2, cores / checks running now)` solver members at
+once (a run's last functions race every member on the cores that went idle).
 `--timeout S` (default 30) is the budget of **each** VC.
+
+#### Parallel checking (function-level tasks)
+
+The stage is one task graph on FORGE's work-stealing scheduler
+(`forge::task::scheduler`, through `prism::pool::TaskGraph`), with `--jobs`
+threads:
+
+| task | what it does | runs |
+|---|---|---|
+| unit | clang/opt, salvage, parse, link the library models, translate every function in source order (`prepare_unit`) | one per unit |
+| check | one function's `check_function`, the memory policy, its folded-UB demotion (`check_rec`) | one per encodable function, as soon as its unit is translated |
+| close | the rows that depend on several functions (folded UB without an instruction, caller-discharged error sinks, NOFUNC), then translation validation or a queued fresh re-run (`finalize_unit`) | after the unit's last check |
+
+Checks and closes have priority over lowering new units, so a unit's IR is
+freed soon after its checks and memory stays near what one unit per worker
+used. A unit with 100 functions now uses every worker instead of one, and a
+function in its heavy tail (Houdini, wide arithmetic) holds one worker while
+the others finish the rest. Verdicts and row order do not depend on
+`--jobs` (`tests/cpp/test_pir_parallel.cpp`): translation stays sequential
+per unit, each check sees the folded-UB markers its function's place in
+source order saw, and rows are written in source order. `--jobs 1` runs
+every task inline on the calling thread.
+
+#### Function verdict cache
+
+Before encoding, the stage looks the function up in
+`<solver cache>/pir-fn/` (`src/prism/pir/fncache.cpp`). The key is the
+BLAKE3 digest of: a complete serialisation of the PIR function (every field
+of the function, its variables, statements, phis and terminators; not the
+display text, which leaves out the pointer model and the assumptions), the
+check options that can change an answer (unwind, deepening, `--timeout`,
+function budget, portfolio, memory encoding), every `PRISM_*` environment
+variable with its value, the Z3 version, and the BLAKE3 digest of the file
+the engine was loaded from (any rebuild is a new cache). Only verdicts that
+ran to completion are stored (PROVED, PROVED-UNBOUNDED, PROVED-ASSUMING,
+BOUNDED, FAILED, NEEDS-HARNESS with no budget note); UNKNOWN, TIMEOUT and
+ERROR never are, and `--certified`, `only_props` and fault-injection runs
+bypass the cache. A hit carries `extra.verdict_cache = "hit <key prefix>"`.
+The memory policy, folded-UB checks and translation validation still run on
+a hit. `PRISM_PIR_FN_CACHE=0` turns it off.
 
 **Certified mode** (`--certified`, roadmap 3.2). Each VC is also bit-blasted
 to CNF, CaDiCaL writes an LRAT proof of its unsatisfiability, and cake_lpr

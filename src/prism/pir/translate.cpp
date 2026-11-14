@@ -124,6 +124,9 @@ struct Tr final : pirmem::TrApi {
     std::vector<std::string> stack;
     std::set<int> folded_used;
     int uniq = 0;
+    // format-call temporaries: per translation (not a process-wide static),
+    // so translations on other threads cannot race on it or change the names
+    unsigned fmt_seq = 0;
     std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
     std::vector<std::string> model_stack;  // library models being inlined (outermost first)
     std::string top_file;                  // source file of the analysed function
@@ -2199,7 +2202,6 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
                 cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
             }
             ir::Operand pos = zero(ti32);
-            static unsigned fmt_seq = 0;
             const std::string base = (in.result.empty() ? std::string("prism.fmtv") : in.result) + ".w" + std::to_string(fmt_seq++) + ".";
             for (std::size_t ab = 0;; ab += 6) {
                 const bool last = ab + 6 >= na;

@@ -6,6 +6,7 @@
 #include "prism/pipeline.hpp"
 #include "prism/threads.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <optional>
@@ -194,6 +195,19 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solve-smt2") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) o.solve_smt2 = *v;
+        } else if (a == "--preset") {
+            // --preset prove: the proving path only (docs/UPGRADE_PLAN.md P1.4):
+            // inventory, classify and pir, no language model. Adds to any
+            // --stage names already given, like a repeated --stage.
+            auto v = in.take();
+            ok = v.has_value() && *v == "prove";
+            if (!ok && v) in.error = "argument --preset: unknown preset '" + v.value_or("") + "' (presets: prove)";
+            if (ok) {
+                cfg.llm = false;
+                if (!cfg.stages) cfg.stages.emplace();
+                for (const char* st : {"inventory", "classify", "pir"})
+                    if (std::find(cfg.stages->begin(), cfg.stages->end(), st) == cfg.stages->end()) cfg.stages->push_back(st);
+            }
         } else if (a == "--stage" || a == "--skip") {
             auto v = in.take();
             if ((ok = v.has_value())) {
@@ -303,7 +317,7 @@ CliResult<TriageCli> parse_triage_cli(std::span<const char* const> args) {
 std::string cli_usage() {
     return
         "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
-        "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
+        "           [--stage a,b] [--skip a,b] [--preset prove] [--out DIR] [--resume] [--unwind N]\n"
         "           [--fuzz-budget S] [--fuzz-iters N] [--repair-rounds N]\n"
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
@@ -326,6 +340,8 @@ std::string cli_usage() {
         "  prints the names; an empty --stage runs every stage; repeating --stage\n"
         "  adds names and keeps earlier ones; repeating --skip adds names and\n"
         "  keeps earlier ones).\n"
+        "--preset prove runs only the proving stages (inventory, classify, pir) with\n"
+        "  --no-llm; pir checks every function of every unit as its own task.\n"
         "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (prism-deps tool), then PATH.\n"
         "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
         "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"

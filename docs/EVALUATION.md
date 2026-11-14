@@ -242,7 +242,9 @@ PRISM and pir proofs on those entry points.
   ~1365 s (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s).
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
-  time"); pir runs the functions of one unit one after another.
+  time"). (Measured when pir ran the functions of one unit one after
+  another; since the task-graph change each function is its own task, see
+  [PIR.md](PIR.md) "Parallel checking".)
 - The concrete interpreter still has front-end gaps that surface as `ERROR`
   (by design: an unmapped parse failure is an error, not a silent skip):
   `unsigned long long` locals, unsized array initialisers `int p[] = {..}`

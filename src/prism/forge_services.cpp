@@ -10,8 +10,12 @@
 #include <forge/cache/cache.hpp>
 #include <forge/os/process.hpp>
 #include <forge/task/pool.hpp>
+#include <forge/task/sched.hpp>
 
+#include <algorithm>
+#include <exception>
 #include <map>
+#include <span>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -20,6 +24,7 @@
 #include <cstdlib>
 #include <stop_token>
 #include <thread>
+#include <variant>
 
 namespace fs = std::filesystem;
 
@@ -226,7 +231,94 @@ forge::task::pool& pool_for(int jobs) {
 void parallel_for(int jobs, std::size_t n, std::size_t grain, const RangeFn& fn) {
     pool_for(jobs).parallel_for(n, grain, fn);
 }
+void parallel_for(int jobs, std::size_t n, std::size_t lo, std::size_t hi, const RangeFn& fn) {
+    pool_for(jobs).parallel_for(n, lo, hi, fn);
+}
 unsigned size() { return pool_for(0).size(); }
+
+// ---- TaskGraph on forge::task::scheduler ----
+// One scheduler per graph (jobs - 1 workers; the thread in wait() is the
+// last one), so wait_idle() waits for this graph's tasks only. --jobs 1: no
+// scheduler, every task runs inline when it is spawned (its dependencies
+// have all run by then, since everything before it ran in order).
+struct TaskGraph::Impl {
+    std::unique_ptr<forge::task::scheduler> s;
+    std::mutex em;
+    std::exception_ptr err;
+    void run_guarded(const std::function<void()>& fn) {
+        try {
+            fn();
+        } catch (...) {
+            std::lock_guard<std::mutex> lk(em);
+            if (!err) err = std::current_exception();
+        }
+    }
+};
+
+namespace {
+forge::task::spawn_options spawn_opts(Priority p) {
+    forge::task::spawn_options o;
+    o.prio = p == Priority::High ? forge::task::priority::high
+             : p == Priority::Low ? forge::task::priority::low
+                                  : forge::task::priority::normal;
+    return o;
+}
+// Inline mode's handle: the task has run.
+struct InlineDone {};
+}  // namespace
+
+bool TaskGraph::Task::done() const {
+    if (!h_) return false;
+    if (auto* r = std::get_if<forge::task::task_ref>(static_cast<const std::variant<InlineDone, forge::task::task_ref>*>(h_.get())))
+        return r->done();
+    return true;
+}
+
+TaskGraph::TaskGraph(int jobs) : p_(std::make_unique<Impl>()) {
+    const int n = clamp_jobs(jobs);
+    if (n > 1) p_->s = std::make_unique<forge::task::scheduler>(forge::task::scheduler::config{.threads = static_cast<unsigned>(n - 1)});
+}
+
+TaskGraph::~TaskGraph() {
+    try {
+        wait();
+    } catch (...) {
+    }
+}
+
+TaskGraph::Task TaskGraph::spawn(std::function<void()> fn, Priority p) { return spawn_after({}, std::move(fn), p); }
+
+TaskGraph::Task TaskGraph::spawn_after(const std::vector<Task>& deps, std::function<void()> fn, Priority p) {
+    using H = std::variant<InlineDone, forge::task::task_ref>;
+    Task t;
+    if (!p_->s) {
+        p_->run_guarded(fn);
+        t.h_ = std::make_shared<H>(InlineDone{});
+        return t;
+    }
+    std::vector<forge::task::task_ref> refs;
+    refs.reserve(deps.size());
+    for (const auto& d : deps)
+        if (d.h_)
+            if (auto* r = std::get_if<forge::task::task_ref>(static_cast<const H*>(d.h_.get()))) refs.push_back(*r);
+    Impl* impl = p_.get();
+    forge::task::task_ref r = p_->s->spawn_after(
+        std::span<const forge::task::task_ref>(refs), [impl, fn = std::move(fn)] { impl->run_guarded(fn); }, spawn_opts(p));
+    t.h_ = std::make_shared<H>(std::move(r));
+    return t;
+}
+
+void TaskGraph::wait() {
+    if (p_->s) p_->s->wait_idle();
+    std::exception_ptr e;
+    {
+        std::lock_guard<std::mutex> lk(p_->em);
+        std::swap(e, p_->err);
+    }
+    if (e) std::rethrow_exception(e);
+}
+
+unsigned TaskGraph::threads() const { return p_->s ? p_->s->size() + 1 : 1; }
 
 }  // namespace prism::pool
 

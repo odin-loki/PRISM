@@ -82,6 +82,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--out DIR` | report directory (default `prism-out/`) |
 | `--stage a,b` / `--skip a,b` | run only / leave out these stages. Left-out stages are listed as `skipped` in the report, never silently dropped |
 | `--no-llm` | do not run the LLM stage |
+| `--preset prove` | the proving path only: `--stage inventory,classify,pir --no-llm` (adds to other `--stage` names). pir checks every function as its own task on `--jobs` threads and answers unchanged functions from the verdict cache ([PIR.md](PIR.md) "Parallel checking", "Function verdict cache") |
 | `--unwind K` | loop unwinding bound for BMC (incremental: 1, 2, 4, … K) |
 | `--jobs N`, `-j N` | worker count for lints (0 = half the CPUs) |
 | `--fuzz-budget S`, `--fuzz-iters N` | fuzzing time / iteration budget |
