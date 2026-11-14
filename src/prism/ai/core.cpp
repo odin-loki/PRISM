@@ -3,6 +3,7 @@
 // Roadmap 4.1 and 9.6. The model proposes; a checker decides.
 
 #include "prism/forge_llm.hpp"
+#include "prism/remote_llm.hpp"
 #include "ai_internal.hpp"
 
 #include <nlohmann/json.hpp>
@@ -583,8 +584,12 @@ std::shared_ptr<ModelBackend> connect_backend(const Config& cfg, std::string* wh
     };
     if (!cfg.llm) return say("--no-llm");
     if (forge_llm::is_fpk(cfg.fpk)) return std::make_shared<forge_llm::Backend>(cfg.fpk, cfg.model);
-    return say("no FORGE model: set PRISM_FPK to a .fpk (Qwen 3.5 9B converted with FORGE); tried " +
-               cfg.fpk.string());
+    // No local model: FORGE's remote client when FORGE_AI_* is set (prism/remote_llm.hpp).
+    std::string rwhy;
+    if (auto remote = remote_llm::from_env(&rwhy)) return remote;
+    if (!rwhy.empty()) return say("remote model settings: " + rwhy);
+    return say("no FORGE model: set PRISM_FPK to a .fpk (Qwen 3.5 9B converted with FORGE), or FORGE_AI_PROVIDER "
+               "for a remote model; tried " + cfg.fpk.string());
 }
 
 // ------------------------------------------------------------------ session

@@ -21,6 +21,7 @@
 
 #include "prism/exec.hpp"
 #include "prism/forge_llm.hpp"
+#include "prism/remote_llm.hpp"
 #include "prism/exit.hpp"
 #include "prism/clock.hpp"
 #include "ai_internal.hpp"
@@ -863,10 +864,21 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::strin
         auto found = default_prover_fpks();
         if (!found.empty()) fpk = found.front();
     }
+    // No .fpk named or found: FORGE's remote client when FORGE_AI_* is set
+    // (prism/remote_llm.hpp). A named .fpk that is missing stays NOTRUN.
+    if (fpk.empty()) {
+        std::string rwhy;
+        if (auto remote = remote_llm::from_env(&rwhy)) return remote;
+        if (!rwhy.empty()) {
+            if (why) *why = "remote prover settings: " + rwhy;
+            return nullptr;
+        }
+    }
     if (!forge_llm::is_fpk(fpk)) {
         if (why)
             *why = "no prover model: set PRISM_PROVER_FPK to a FORGE .fpk (Goedel-Prover / DeepSeek-Prover / "
-                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models"
+                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models, or set FORGE_AI_PROVIDER "
+                   "for a remote model"
                    + (fpk.empty() ? std::string{} : " (not a .fpk: " + fpk.string() + ")");
         return nullptr;
     }

@@ -197,6 +197,7 @@ set(PRISM_SRC
   src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
   src/prism/ai/forge_llm.cpp
+  src/prism/ai/remote_llm.cpp
   src/prism/ai/draft.cpp
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp

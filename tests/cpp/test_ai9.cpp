@@ -14,6 +14,7 @@
 #include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/remote_llm.hpp"
 #include "prism/stages.hpp"
 #include "prism/verdict.hpp"
 
@@ -437,6 +438,68 @@ TEST_CASE("ai9 lean: closers prove easy goals without a model call; the gate sti
     CHECK(rh.model_calls == 1);
     std::error_code ec;
     fs::remove_all(dir, ec);
+}
+
+TEST_CASE("ai9 lean: a remote model through FORGE's client (command provider) proves; unset is no backend") {
+#ifdef _WIN32
+    MESSAGE("SKIP: the command provider stand-in is a POSIX shell script");
+    return;
+#else
+    {
+        EnvGuard p("FORGE_AI_PROVIDER"), u("FORGE_AI_URL"), e("FORGE_AI_ENDPOINT"), c("FORGE_AI_CMD");
+        p.unset();
+        u.unset();
+        e.unset();
+        c.unset();
+        std::string why = "x";
+        CHECK(prism::remote_llm::from_env(&why) == nullptr);
+        CHECK(why.empty());  // nothing configured: no backend, no error
+        p.set("no-such-provider");
+        CHECK(prism::remote_llm::from_env(&why) == nullptr);
+        CHECK_FALSE(why.empty());
+    }
+    auto lake = ai::find_lake();
+    if (!lake) {
+        MESSAGE("SKIP: lake not installed");
+        return;
+    }
+    auto dir = tmp("lean-remote");
+    auto proj = dir / "proj";
+    auto repo_toolchain = fs::path(__FILE__).parent_path().parent_path().parent_path() / "proofs" / "lean-toolchain";
+    write(proj / "lean-toolchain", slurp(repo_toolchain));
+    write(proj / "lakefile.toml", "name = \"t\"\nversion = \"0.1.0\"\ndefaultTargets = [\"T\"]\n\n[[lean_lib]]\nname = \"T\"\n");
+    write(proj / "T.lean", "def dbl : Nat → Nat | 0 => 0 | n+1 => dbl n + 2\n"
+                           "theorem hard (n : Nat) : dbl n = 2 * n := by\n  sorry\n");
+    // the "remote model": reads the conversation on stdin, answers with a proof
+    write(dir / "model.sh", "#!/bin/sh\ncat >/dev/null\n"
+                            "printf '%s' '{\"tactics\": [\"induction n with\", \"| zero => rfl\", "
+                            "\"| succ k ih => simp only [dbl]; omega\"]}'\n");
+    fs::permissions(dir / "model.sh", fs::perms::owner_all);
+    EnvGuard p("FORGE_AI_PROVIDER"), c("FORGE_AI_CMD"), f("PRISM_PROVER_FPK");
+    p.set("command");
+    c.set((dir / "model.sh").string().c_str());
+    f.unset();
+    if (!ai::ProveOptions{}.prover_fpk.empty()) return;
+    auto out = dir / "out";
+    prism::Config cfg = prism::default_config();
+    cfg.out = out;
+    ai::Session session(cfg);
+    ai::ProveOptions o;
+    o.file = proj / "T.lean";
+    o.theorem = "hard";
+    o.lemmas = dir / "lemmas.jsonl";
+    o.out = out;
+    o.budget = 2;
+    auto r = ai::prove_theorem(o);
+    REQUIRE_MESSAGE(r.status == std::string(laws::PROVED), r.reason, " | ", nlohmann::json(r.attempts).dump());
+    CHECK(r.closed_by == "model");
+    CHECK(r.model.rfind("remote:command:", 0) == 0);
+    auto lines = audit_lines(out);
+    REQUIRE_FALSE(lines.empty());
+    CHECK(lines.back()["checker_result"] == "accepted");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+#endif
 }
 
 TEST_CASE("ai9 lean: no prover model is NOTRUN, never a proof") {
