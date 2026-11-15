@@ -2212,11 +2212,32 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     RunCtl rch = own(&mh, RunCtl::Mode::RefineH, hs);
     rch.phase = cxl::Phase::Houdini;
     Verdict kv, hv;
-    // speculative (an idle worker starts them now): needed only if the
-    // requested unwind is BOUNDED; with an allocating loop they only write
-    // why they are not attempted (on join)
-    if (n_loops == 1) race.spawn(ks, [&] { kv = check_function_at(fn, opt, rck); }, !allocs);
-    race.spawn(hs, [&] { hv = check_function_at(fn, opt, rch); }, !allocs);
+    // Each strategy's wall-clock backstop starts when the strategy starts
+    // (with complexity limits on): at --jobs 1 they run one after the other,
+    // at --jobs N side by side, and a clock shared from the function's start
+    // would cut the later ones short at --jobs 1 only. Their units decide;
+    // the clock is the backstop (kWallBackstop x the units' time).
+    const bool own_clocks = rc.cx.on() && opt.function_budget != nullptr;
+    const auto own_clock = [&](double total_s) {
+        CheckOptions o = opt;
+        if (own_clocks) o.function_budget = std::make_shared<FunctionBudget>(std::max(0.0, total_s));
+        return o;
+    };
+    const double fn_wall_s = opt.function_budget ? opt.function_budget->total_s : 0;
+    auto spawn_refine = [&] {
+        // speculative (an idle worker starts them now): needed only if the
+        // requested unwind is BOUNDED; with an allocating loop they only
+        // write why they are not attempted (on join)
+        if (n_loops == 1)
+            race.spawn(ks, [&] {
+                const CheckOptions o = own_clock(fn_wall_s);
+                kv = check_function_at(fn, o, rck);
+            }, !allocs);
+        race.spawn(hs, [&] {
+            const CheckOptions o = own_clock(fn_wall_s);
+            hv = check_function_at(fn, o, rch);
+        }, !allocs);
+    };
     static const int deepen_env = [] {
         const char* e = std::getenv("PRISM_PIR_DEEPEN_MAX");
         return (e && *e) ? std::atoi(e) : 64;
@@ -2257,6 +2278,9 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
         v.message = membudget::over_message(("at unwind " + std::to_string(kFirstUnwind)).c_str());
         return done(v);
     }
+    // the first unwind is BOUNDED: the requested unwind, with k-induction
+    // and Houdini asked beside it (most functions end at the first unwind)
+    spawn_refine();
     rc.mode = RunCtl::Mode::NoRefine;
     Verdict full = check_function_at(fn, opt, rc);
     rc.mode = RunCtl::Mode::Full;
@@ -2296,14 +2320,18 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     rcd.phase = cxl::Phase::Deepen;
     rcd.stop = &ds.stop;
     const bool deepen = full.status == std::string(laws::BOUNDED) && n_loops == 1 && deepen_max > opt.unwind;
+    // the chain's clock as it stands now, restarted when the deepening starts
+    // (at --jobs 1 it starts after k-induction and Houdini)
+    const double chain_wall_left = opt.function_budget ? opt.function_budget->left() : 0;
     if (deepen)
         race.spawn(ds, [&] {
+            const CheckOptions dopt = own_clock(chain_wall_left);
             for (int u = opt.unwind * 2; u <= deepen_max; u *= 2) {
                 if (ds.stop.load()) break;
-                if (opt.function_budget && opt.function_budget->left() < opt.timeout_s) break;
+                if (dopt.function_budget && dopt.function_budget->left() < opt.timeout_s) break;
                 if (rcd.units_total > 0 && rcd.units_left() < rcd.cx.units(opt.timeout_s)) break;
                 if (z3_exhausted()) break;
-                CheckOptions d = opt;
+                CheckOptions d = dopt;
                 d.unwind = u;
                 Verdict dv = check_function_at(fn, d, rcd);
                 auto dc = dv.extra.find("unwind_closed");
@@ -2490,7 +2518,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
             if (h.limit_hit) rc.meter->note_limit("houdini", rc.cx.units(timeout_s));
         }
         const double hs = th.elapsed_s();
-        if (opt.houdini_budget) opt.houdini_budget->spend(hs);
+        // a search the race stopped (its answer not used) is not charged to
+        // the run's Houdini budget: what the run spends does not depend on --jobs
+        if (opt.houdini_budget && !(rc.stop && rc.stop->load())) opt.houdini_budget->spend(hs);
         {
             char buf[32];
             std::snprintf(buf, sizeof buf, "%.2f", hs);
