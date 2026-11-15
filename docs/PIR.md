@@ -1502,9 +1502,13 @@ take one away.
 checked by separate strategies: the unwinding chain (the first unwind, the
 requested unwind, deepening), k-induction and Houdini. With `--jobs` above 1
 (`CheckOptions::jobs`) k-induction and Houdini start on idle workers of the
-run's shared scheduler while the chain runs, and deepening starts next to them
-once the requested unwind is BOUNDED; with `--jobs 1` they run one after the
-other in the sequential order. The verdict is always the one the sequential
+run's shared scheduler once the first unwind is BOUNDED (most functions end
+there), next to the requested unwind, and deepening starts next to them once
+the requested unwind is BOUNDED; with `--jobs 1` they run one after the
+other in the sequential order. Each strategy's wall-clock backstop starts
+when the strategy starts (a clock shared from the function's start would cut
+the later strategies short at `--jobs 1` only), and a Houdini search that was
+stopped is not charged to the run's Houdini budget. The verdict is always the one the sequential
 order gives from their answers: k-induction and Houdini count only when the
 requested unwind is BOUNDED (k-induction's base case is that answer), Houdini
 only when k-induction did not close, deepening only when neither proved; a
