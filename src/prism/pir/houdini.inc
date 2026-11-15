@@ -63,8 +63,8 @@ struct InvTerm {
 };
 
 struct InvCand {
-    enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, PtrIn, PtrAt, MemNZ, MemEq, MemNeC, MemInit, MemConst, MemFrame, MemScopeAt, MemLast } kind =
-        Cmp;
+    enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, DiffCmp, ScaleVK, ModLin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC,
+                MemInit, MemConst, MemFrame, MemScopeAt, MemLast, MemRingInit } kind = Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -75,6 +75,10 @@ struct InvCand {
     //   Scale:  a - entry(a) rel mask * (b - entry(b))      (rel Eq/Sle/Sge)
     //   ScaleV: a - entry(a) == v * (b - entry(b))           (v a scope value)
     //   Tri:    2 * (a - entry(a)) == b*(b+d) - entry(b)*(entry(b)+d), d = mask - 1
+    //   ScaleVK: a - entry(a) rel mask * v * (b - entry(b))   (3w+4 bits; rel Eq/Sle/Sge)
+    // Idiom templates (src/prism/pir/idioms/), in the phis' width:
+    //   DiffCmp: (a - b) rel v           (wrapping, as the program computes it)
+    //   ModLin:  ((a - b - v) & mask) == ((entry(a) - entry(b) - entry(v)) & mask)   (a, b, v phis)
     // Like every template they are only admitted through Houdini's base and
     // step checks; none is assumed.
     uint64_t mask = 0;
@@ -86,6 +90,9 @@ struct InvCand {
     int off = -1;          // MemEq/MemInit/MemScopeAt: scope offset into p (i64); -1 = none
     int rp = -1;           // PtrIn/PtrAt/MemLast: a pointer phi r (the last match so far)
     unsigned eb = 1;       // element bytes
+    // MemRingInit: forall x < mask with (x - phi ip) mod mask < phi ip2: p[x] initialised
+    // (a ring's occupied slots; ip = tail, ip2 = count, zero-extended)
+    int ip2 = -1;
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
     bool alive = true;
     bool ghost() const { return kind >= MemNZ; }
@@ -107,6 +114,7 @@ struct HoudiniOut {
     bool undecided = false; // some answer came from the time limit or an unknown
     std::size_t concrete_dropped = 0;  // candidates a concrete run falsified (dropped before any query)
     int concrete_runs = 0;
+    std::string idiom;      // idioms matched and what their round did ("" : none matched)
 };
 
 // Where Houdini's outcome is cached (per function text, docs/PIR.md "Loop
@@ -186,6 +194,13 @@ public:
     HoudiniOut run();
 
 private:
+    // Loop idioms (src/prism/pir/idioms/): their instantiated templates are
+    // searched first and alone (idiom_round_); without a proof the generic
+    // family is searched with them added. Both rounds check everything.
+    HoudiniOut run_search();
+    bool idiom_round_ = false;
+    std::vector<InvCand> idiom_cands_;
+    std::map<std::string, std::string> idiom_by_text_;  // candidate text -> idiom
     void concrete_filter(HoudiniOut& out);
     const Function& fn_;
     const CfgInfo& g_;
@@ -265,6 +280,9 @@ private:
         }
     }
     void generate(std::vector<InvCand>& out);
+    void generate_generic(std::vector<InvCand>& out);
+    void prepare_idioms();
+    bool idiom_valid(const InvCand& c) const;
     // Write footprint of loop L in cut mode: known objects, else the object
     // of the pointer variable (defined before the loop) the target is
     // derived from, else every object.
@@ -423,6 +441,17 @@ std::string Houdini::text(const InvCand& c) const {
                    ") - entry(" + phi(c.b.idx) + ") * (entry(" + phi(c.b.idx) + ") + " + d + ")" +
                    (c.sext ? " [int]" : " [nat]");
         }
+        case InvCand::DiffCmp: return "(" + tt(c.a) + " - " + tt(c.b) + ") " + op_name(c.rel) + " " + tt(c.v);
+        case InvCand::ScaleVK:
+            return tt(c.a) + " - entry(" + phi(c.a.idx) + ") " + op_name(c.rel) + " " + std::to_string(c.mask) + " * " +
+                   tt(c.v) + " * (" + tt(c.b) + " - entry(" + phi(c.b.idx) + "))" + (c.sext ? " [int]" : " [nat]");
+        case InvCand::ModLin:
+            return "((" + tt(c.a) + " - " + tt(c.b) + " - " + tt(c.v) + ") & " + std::to_string(c.mask) + ") == ((entry(" +
+                   phi(c.a.idx) + ") - entry(" + phi(c.b.idx) + ") - entry(" + phi(c.v.idx) + ")) & " +
+                   std::to_string(c.mask) + ")";
+        case InvCand::MemRingInit:
+            return "forall x < " + std::to_string(c.mask) + " with (x - " + phi(c.ip) + ") mod " + std::to_string(c.mask) +
+                   " < " + phi(c.ip2) + ": initialised " + var(c.p) + "[x]" + (c.eb > 1 ? "/" + eb : "");
         case InvCand::MemNZ: return "forall " + range + ": " + at(c.p, -1) + " != 0";
         case InvCand::MemEq: return "forall " + range + ": " + at(c.p, c.off) + " == " + at(c.q, -1);
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
@@ -450,6 +479,19 @@ std::string Houdini::text(const InvCand& c) const {
 }
 
 void Houdini::generate(std::vector<InvCand>& out) {
+    if (idiom_round_) {  // the idioms' candidates alone
+        out = idiom_cands_;
+        return;
+    }
+    generate_generic(out);
+    // the generic family, then the idioms' candidates it does not have
+    std::set<std::string> have;
+    for (auto& c : out) have.insert(text(c));
+    for (auto& c : idiom_cands_)
+        if (have.insert(text(c)).second) out.push_back(c);
+}
+
+void Houdini::generate_generic(std::vector<InvCand>& out) {
     constexpr std::size_t kScopeFlat = 16, kConstsFlat = 8, kScopeNested = 6, kConstsNested = 3, kGhostPerLoop = 160, kSteps = 4, kArithPhis = 6, kArithScope = 4;
     static const Op kRel[] = {Op::Eq, Op::Ne, Op::Ule, Op::Ult, Op::Uge, Op::Ugt,
                               Op::Sle, Op::Slt, Op::Sge, Op::Sgt};
@@ -1082,9 +1124,122 @@ void Houdini::concrete_filter(HoudiniOut& out) {
     }
 }
 
+// Loop idioms (src/prism/pir/idioms/idioms.hpp): the library matches each
+// loop's shape and instantiates its templates; they become candidates like
+// any other (nothing about them is assumed).
+InvCand from_idiom(const idioms::TCand& t) {
+    auto tm = [](const idioms::TTerm& x) {
+        InvTerm r;
+        switch (x.kind) {
+            case idioms::TTerm::Phi: r.kind = InvTerm::Phi; break;
+            case idioms::TTerm::Scope: r.kind = InvTerm::Scope; break;
+            case idioms::TTerm::Const: r.kind = InvTerm::Const; break;
+            case idioms::TTerm::Entry: r.kind = InvTerm::Entry; break;
+            case idioms::TTerm::Size: r.kind = InvTerm::Size; break;
+        }
+        r.idx = x.idx;
+        r.c = x.c;
+        r.w = x.w;
+        return r;
+    };
+    InvCand c;
+    c.loop = t.loop;
+    c.rel = t.rel;
+    c.a = tm(t.a);
+    c.b = tm(t.b);
+    c.v = tm(t.v);
+    c.mask = t.mask;
+    c.sext = t.sext;
+    c.p = t.p;
+    c.ip = t.ip;
+    c.ip2 = t.ip2;
+    c.eb = t.eb;
+    switch (t.kind) {
+        case idioms::TCand::Cmp: c.kind = InvCand::Cmp; break;
+        case idioms::TCand::MaxLe: c.kind = InvCand::MaxLe; break;
+        case idioms::TCand::Scale: c.kind = InvCand::Scale; break;
+        case idioms::TCand::ScaleV: c.kind = InvCand::ScaleV; break;
+        case idioms::TCand::DiffCmp: c.kind = InvCand::DiffCmp; break;
+        case idioms::TCand::ScaleVK: c.kind = InvCand::ScaleVK; break;
+        case idioms::TCand::ModLin: c.kind = InvCand::ModLin; break;
+        case idioms::TCand::MemInit: c.kind = InvCand::MemInit; break;
+        case idioms::TCand::MemConst: c.kind = InvCand::MemConst; break;
+        case idioms::TCand::MemRingInit: c.kind = InvCand::MemRingInit; break;
+    }
+    return c;
+}
+
+// Widths and indices an idiom candidate must have to be encoded (a z3 sort
+// error would end the function's check, not drop the candidate).
+bool Houdini::idiom_valid(const InvCand& c) const {
+    if (c.loop < 0 || static_cast<std::size_t>(c.loop) >= g_.loops.size()) return false;
+    const auto& H = fn_.blocks[static_cast<std::size_t>(g_.loops[static_cast<std::size_t>(c.loop)].header)];
+    auto phi_w = [&](int i) -> unsigned {
+        if (i < 0 || static_cast<std::size_t>(i) >= H.phis.size()) return 0;
+        auto& v = fn_.vars[static_cast<std::size_t>(H.phis[static_cast<std::size_t>(i)].dst)];
+        return v.fp ? 0 : v.width;
+    };
+    auto tw = [&](const InvTerm& t) -> unsigned {
+        switch (t.kind) {
+            case InvTerm::Phi:
+            case InvTerm::Entry: return phi_w(t.idx) == t.w ? t.w : 0;
+            case InvTerm::Scope: {
+                if (t.idx < 0 || static_cast<std::size_t>(t.idx) >= fn_.vars.size()) return 0;
+                auto& v = fn_.vars[static_cast<std::size_t>(t.idx)];
+                return v.width == t.w && !v.fp && scope_var(c.loop, t.idx) ? t.w : 0;
+            }
+            case InvTerm::Const: return t.w;
+            case InvTerm::Size: return 0;
+        }
+        return 0;
+    };
+    auto ptr_scope = [&](int p) {
+        return p >= 0 && static_cast<std::size_t>(p) < fn_.vars.size() &&
+               fn_.vars[static_cast<std::size_t>(p)].width == ptr_w() && scope_var(c.loop, p);
+    };
+    auto eb_ok = [&] { return c.eb == 1 || c.eb == 2 || c.eb == 4 || c.eb == 8; };
+    auto idx_ok = [&](int i) { return phi_w(i) >= 8 && phi_w(i) <= ptr_w(); };
+    const unsigned wa = tw(c.a);
+    const bool a_phi = wa > 0 && wa <= 64 && c.a.kind == InvTerm::Phi;
+    switch (c.kind) {
+        case InvCand::Cmp:
+        case InvCand::MaxLe: return a_phi && tw(c.b) == wa;
+        case InvCand::Scale: return a_phi && c.b.kind == InvTerm::Phi && tw(c.b) > 0 && tw(c.b) <= 2 * wa + 4;
+        case InvCand::ScaleV:
+            return a_phi && c.b.kind == InvTerm::Phi && tw(c.b) > 0 && tw(c.b) <= 2 * wa + 4 && tw(c.v) > 0 &&
+                   tw(c.v) <= 2 * wa + 4;
+        case InvCand::ScaleVK:
+            return a_phi && c.b.kind == InvTerm::Phi && tw(c.b) > 0 && tw(c.b) <= wa && tw(c.v) > 0 && tw(c.v) <= wa &&
+                   (c.rel == Op::Eq || c.rel == Op::Sle || c.rel == Op::Sge);
+        case InvCand::DiffCmp: return a_phi && c.b.kind == InvTerm::Phi && tw(c.b) == wa && tw(c.v) == wa;
+        case InvCand::ModLin:
+            return a_phi && c.b.kind == InvTerm::Phi && c.v.kind == InvTerm::Phi && tw(c.b) == wa && tw(c.v) == wa;
+        case InvCand::MemInit: return eb_ok() && idx_ok(c.ip) && ptr_scope(c.p) && c.off < 0 && !c.lo_entry;
+        case InvCand::MemConst:
+            return eb_ok() && idx_ok(c.ip) && ptr_scope(c.p) && c.v.kind == InvTerm::Const && c.v.w == 8 * c.eb &&
+                   !c.lo_entry;
+        case InvCand::MemRingInit:
+            return eb_ok() && idx_ok(c.ip) && idx_ok(c.ip2) && ptr_scope(c.p) && c.mask > 0 && c.mask < (uint64_t{1} << 32);
+        default: return false;
+    }
+}
+
+void Houdini::prepare_idioms() {
+    std::vector<idioms::LoopView> lv;
+    for (auto& L : g_.loops) lv.push_back({L.header, L.body});
+    idioms::Context ctx;
+    ctx.scope = [this](int L, int v) { return scope_var(L, v); };
+    ctx.signed_use = [this](int v) {
+        return v >= 0 && static_cast<std::size_t>(v) < signed_use_.size() && signed_use_[static_cast<std::size_t>(v)] != 0;
+    };
+    for (auto& t : idioms::instantiate(fn_, lv, ctx)) {
+        auto c = from_idiom(t);
+        if (!idiom_valid(c)) continue;
+        if (idiom_by_text_.emplace(text(c), t.idiom).second) idiom_cands_.push_back(c);
+    }
+}
+
 HoudiniOut Houdini::run() {
-    HoudiniOut out;
-    out.attempted = true;
     ptr_ = pointer_vars(fn_);
     def_.assign(fn_.vars.size(), nullptr);
     for (auto& b : fn_.blocks)
@@ -1104,6 +1259,62 @@ HoudiniOut Houdini::run() {
                 default: break;
             }
         }
+    prepare_idioms();
+    // $PRISM_PIR_IDIOMS=0: the generic family alone (measurements)
+    static const bool idioms_on = [] {
+        const char* e = std::getenv("PRISM_PIR_IDIOMS");
+        return !(e && std::string(e) == "0");
+    }();
+    if (!idioms_on) {
+        idiom_cands_.clear();
+        idiom_by_text_.clear();
+    }
+    if (idiom_cands_.empty()) return run_search();
+    auto names_of = [&](const HoudiniOut& o) {
+        std::set<std::string> ns;
+        for (auto& k : o.cands)
+            if (k.alive)
+                if (auto it = idiom_by_text_.find(text(k)); it != idiom_by_text_.end()) ns.insert(it->second);
+        std::string r;
+        for (auto& n : ns) r += (r.empty() ? "" : ",") + n;
+        return r.empty() ? std::string("none") : r;
+    };
+    std::set<std::string> all;
+    for (auto& [tx, n] : idiom_by_text_) all.insert(n);
+    std::string matched;
+    for (auto& n : all) matched += (matched.empty() ? "" : ",") + n;
+    // the idiom round: its candidates alone, with a share of the search time
+    const double saved = deadline_;
+    const double share = std::max(per_query_, 0.3 * std::max(0.0, saved - t0_.elapsed_s()));
+    deadline_ = std::min(saved, t0_.elapsed_s() + share);
+    idiom_round_ = true;
+    const prism::clock::Stopwatch t1;
+    HoudiniOut first = run_search();
+    const double first_s = t1.elapsed_s();
+    idiom_round_ = false;
+    deadline_ = saved;
+    char secs[32];
+    std::snprintf(secs, sizeof secs, "%.2f", first_s);
+    if (first.proved) {
+        first.idiom = names_of(first) + ": closed by the idiom round (" + std::to_string(first.candidates) +
+                      " candidate(s), " + secs + " s; matched: " + matched + ")";
+        return first;
+    }
+    // the generic family with the idioms' candidates added
+    from_cache_ = false;
+    cache_file_.clear();
+    cands_for_key_.clear();
+    HoudiniOut second = run_search();
+    second.idiom = matched + ": the idiom round did not close (" + std::to_string(first.candidates) + " candidate(s), " +
+                   secs + " s: " + first.why + ")" +
+                   (second.proved ? "; closed by the generic search (idiom invariants kept: " + names_of(second) + ")"
+                                  : std::string());
+    return second;
+}
+
+HoudiniOut Houdini::run_search() {
+    HoudiniOut out;
+    out.attempted = true;
     generate(out.cands);
     out.candidates = out.cands.size();
     out.invariants.assign(g_.loops.size(), {});
@@ -1216,6 +1427,30 @@ HoudiniOut Houdini::run() {
         addT(ext64(pe, false));
         addT(ext64(pe, true));
     }
+    // With idiom candidates: the element indices the loops load and store
+    // (p[(tail & 31)] is read at an index no header phi holds). An instance
+    // of a proved universal at any term is one more true fact.
+    if (!idiom_cands_.empty())
+        for (std::size_t n = 0; n < e.nodes.size() && T.size() < 24; ++n) {
+            const int b = e.nodes[n].block;
+            bool in_some = false;
+            for (std::size_t L = 0; L < g_.loops.size() && !in_some; ++L) in_some = in_loop(static_cast<int>(L), b);
+            if (!in_some) continue;
+            for (auto& st : fn_.blocks[static_cast<std::size_t>(b)].stmts) {
+                if ((st.kind != Stmt::Load && st.kind != Stmt::Store) || st.args.empty() || st.args[0].is_const) continue;
+                auto* d = def_[static_cast<std::size_t>(st.args[0].var)];
+                if (!d || !d->ptr_arith || d->op != Op::Add || d->args.size() != 2 || d->args[1].is_const) continue;
+                Arg ix = d->args[1];
+                if (auto* m = def_[static_cast<std::size_t>(ix.var)];
+                    m && m->op == Op::Mul && m->args.size() == 2 && m->args[1].is_const && !m->args[0].is_const)
+                    ix = m->args[0];
+                if (ix.width != ptr_w()) continue;
+                try {
+                    addT(e.lookup(ix, static_cast<int>(n)));
+                } catch (const EncodeFail&) {
+                }
+            }
+        }
     // MemEq is p[off + x] == q[x] and MemFrame frames bytes below off. An
     // assertion that reads p[j] for a parameter j is the instance x = j - off
     // (strcat/strncat: d[k + (j - k)]). One more index of a proved universal
@@ -1308,6 +1543,42 @@ HoudiniOut Houdini::run() {
                 if (k.rel == Op::Sle) return lhs <= rhs;
                 if (k.rel == Op::Sge) return lhs >= rhs;
                 return lhs == rhs;
+            }
+            case InvCand::DiffCmp:
+                return rel(k.rel, term(k.a, st, node, k.loop) - term(k.b, st, node, k.loop), term(k.v, st, node, k.loop));
+            case InvCand::ScaleVK: {
+                const unsigned W = 3 * k.a.w + 4;
+                auto X = [&](const z3::expr& x) {
+                    const unsigned xw = x.get_sort().bv_size();
+                    return k.sext ? z3::sext(x, W - xw) : z3::zext(x, W - xw);
+                };
+                auto a = X(term(k.a, st, node, k.loop)), b = X(term(k.b, st, node, k.loop));
+                auto ea = X(CL.entry[static_cast<std::size_t>(k.a.idx)]);
+                auto eb = X(CL.entry[static_cast<std::size_t>(k.b.idx)]);
+                auto lhs = a - ea, rhs = c.bv_val(k.mask, W) * X(term(k.v, st, node, k.loop)) * (b - eb);
+                if (k.rel == Op::Sle) return lhs <= rhs;
+                if (k.rel == Op::Sge) return lhs >= rhs;
+                return lhs == rhs;
+            }
+            case InvCand::ModLin: {
+                auto m = e.bv(k.mask, k.a.w);
+                auto now = term(k.a, st, node, k.loop) - term(k.b, st, node, k.loop) - term(k.v, st, node, k.loop);
+                auto was = CL.entry[static_cast<std::size_t>(k.a.idx)] - CL.entry[static_cast<std::size_t>(k.b.idx)] -
+                           CL.entry[static_cast<std::size_t>(k.v.idx)];
+                return (now & m) == (was & m);
+            }
+            case InvCand::MemRingInit: {
+                const unsigned pw = ptr_w();
+                auto zx = [&](const z3::expr& v) {
+                    const unsigned w = v.get_sort().bv_size();
+                    return w == pw ? v : w > pw ? v.extract(pw - 1, 0) : z3::zext(v, pw - w);
+                };
+                auto t = zx((*st.phis)[static_cast<std::size_t>(k.ip)]), n = zx((*st.phis)[static_cast<std::size_t>(k.ip2)]);
+                auto cap = e.bv(k.mask, pw);
+                auto dist = z3::ite(z3::uge(x, t), x - t, x + cap - t);
+                auto at = e.lookup(Arg::v(k.p, pw), node) + (k.eb == 1 ? x : x * e.bv(k.eb, pw));
+                return z3::implies(z3::ult(x, cap) && z3::ult(dist, n),
+                                   e.M().load_exact(*st.mem, at, 8 * k.eb).uninit == e.bv(0, 1));
             }
             default: break;
         }
@@ -1657,6 +1928,15 @@ HoudiniOut Houdini::run() {
             if (r == z3::unsat) return 0;
             if (r == z3::sat) {
                 fail = "a property is not implied by the inductive invariants found";
+                if (houdini_trace()) {  // which property instance the model violates
+                    auto m = sf.get_model();
+                    for (std::size_t i = lo; i < hi; ++i)
+                        if (m.eval(e.props[i].viol, true).is_true()) {
+                            std::fprintf(stderr, "houdini   violated: %s line %d (%s)\n", e.props[i].stmt->prop.c_str(),
+                                         e.props[i].stmt->line, e.props[i].stmt->msg.c_str());
+                            break;
+                        }
+                }
                 return 1;
             }
             if (!split || hi - lo == 1) {
@@ -1766,8 +2046,10 @@ HoudiniOut Houdini::run() {
     // does not cut it), but never runs past the function budget
     // with a hard cap the final query gets all of what is left of it (the
     // search stopped at its deadline, short of the cap by the reserve)
-    const double final_budget =
+    double final_budget =
         hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, left()), hard_left());
+    // the idiom round keeps the rest for the generic search
+    if (idiom_round_) final_budget = std::min(std::max(2 * per_query_, left()), hard_left());
     out.final_s = final_budget;
     // the optimistic solver is not asked again: hand its memory back before
     // the final query (nested loops: both together crossed the budget)

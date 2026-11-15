@@ -239,6 +239,7 @@ set(PRISM_SRC
   src/prism/pir/fp.cpp
   src/prism/library.cpp
   src/prism/pir/fncache.cpp
+  src/prism/pir/idioms/idioms.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
   src/prism/pir/ir_parser.cpp
@@ -576,6 +577,7 @@ set(_prism_qa_sources
   src/tools/qa/llvm_sem_vs_lli.cpp
   src/tools/qa/libc_bounds.cpp
   src/tools/qa/solver_bench.cpp
+  src/tools/qa/idioms_mine.cpp
   src/tools/qa/support/yaml_subset.cpp
   src/tools/qa/support/task.cpp
   src/tools/qa/support/replay.cpp

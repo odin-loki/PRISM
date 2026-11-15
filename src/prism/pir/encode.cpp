@@ -29,6 +29,7 @@
 
 #include "fp.hpp"
 #include "memory.hpp"
+#include "idioms/idioms.hpp"
 
 #include <cstdlib>
 #include <algorithm>
@@ -1817,6 +1818,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         }
         r.extra["houdini_rounds"] = std::to_string(h.rounds);
         r.extra["houdini_candidates"] = std::to_string(h.candidates);
+        if (!h.idiom.empty()) r.extra["idiom"] = h.idiom;  // idioms/idioms.hpp (W3)
         if (h.final_s >= 0) {
             char fb[32];
             std::snprintf(fb, sizeof fb, "%.2f", h.final_s);

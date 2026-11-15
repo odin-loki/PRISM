@@ -517,6 +517,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_DEEPEN_MAX", "pir: largest unwind a BOUNDED single loop is re-checked at (default 64; 0 = off)"},
     {"PRISM_PIR_DIVERT_S", "pir: seconds a function gets in the main process before an UNKNOWN is re-checked in a child (default off)"},
     {"PRISM_PIR_FN_CACHE", "pir: 0 or off turns off the whole-function verdict cache (<solver cache>/pir-fn; default on)"},
+    {"PRISM_PIR_IDIOMS", "pir: 0 turns off the loop idiom library (Houdini searches its generic family alone; default on)"},
     {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
     {"PRISM_PIR_MEM_MB", "pir: memory budget (MB) when PRISM_MEM_BUDGET_MB is unset"},
     {"PRISM_PIR_NO_HEADERS", "pir: skip the system-header IR pass (diagnostics)"},
