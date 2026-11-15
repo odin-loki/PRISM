@@ -242,7 +242,13 @@ std::string format_cex(const Function& fn, const std::vector<uint64_t>& args) {
 
 bool z3_available() { return true; }
 
+// What Z3 has allocated, without the ballast (complexity.hpp)
+static uint64_t z3_alloc_bytes() {
+    const uint64_t a = Z3_get_estimated_alloc_size(), b = prism::complexity::z3_ballast_bytes();
+    return a > b ? a - b : 0;
+}
 static bool z3_over_soft_cap();  // below (memory cap): encode_node, houdini.inc
+static void z3_mem_guard();     // below: before every query
 
 namespace {
 
@@ -1605,6 +1611,230 @@ struct RunCtl {
 
 Verdict check_function_at(const Function& fn, const CheckOptions& opt, RunCtl& rc);
 
+// One task graph per --jobs for the process, on the scheduler every graph
+// with that --jobs shares; never waited on (see Strategies).
+prism::pool::TaskGraph& shared_graph(int jobs) {
+    static std::mutex m;
+    static std::map<int, prism::pool::TaskGraph*> gs;
+    std::lock_guard<std::mutex> g(m);
+    auto& p = gs[jobs];
+    if (!p) p = new prism::pool::TaskGraph(jobs);  // lives for the process
+    return *p;
+}
+
+// Property VCs asked ahead (W2): idle workers of the run's scheduler solve
+// the queries the sequential search is about to ask, each in a context of
+// its own (z3::context is not thread-safe: the function's base, properties
+// and loop cuts are translated into a worker context on the function's own
+// thread, at its next call here, and only once a worker was free to use it:
+// a busy run holds no copies). The search itself stays sequential and takes
+// each answer in its own order (solve_vc), so the verdict, the first violated
+// property and every budget decision are the ones the sequential search
+// makes; a query is answered the same way wherever it runs (its complexity
+// limit is in Z3 units, and the Z3 ballast keeps its strategy the same).
+// Answers the search does not take are dropped and their queries stopped
+// (SolveOptions::stop).
+class VcAhead {
+public:
+    VcAhead(int jobs, z3::context& c, const z3::expr& base, const std::vector<z3::expr>& viols,
+            const std::vector<z3::expr>& cuts, const solver::SolveOptions& so)
+        : jobs_(jobs), c_(c), src_(c), st_(std::make_shared<State>()) {
+        st_->so = so;
+        st_->n_viols = viols.size();
+        st_->max_ctx = static_cast<unsigned>(std::max(1, jobs - 1));
+        // the formulas the search asks, rebuilt in each worker context from
+        // the same pieces (the same structure, so the same query)
+        src_.push_back(base);
+        for (auto& x : viols) src_.push_back(x);
+        for (auto& x : cuts) src_.push_back(x);
+    }
+    ~VcAhead() { stop_all(); }
+    VcAhead(const VcAhead&) = delete;
+    VcAhead& operator=(const VcAhead&) = delete;
+
+    // key: "p<i>" property i alone, "g<i,j,...>" their disjunction, "u" the loop cuts
+    void ask(const std::string& key, std::vector<std::size_t> props, bool cuts, unsigned rlimit, double timeout_s) {
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (st_->items.count(key) || st_->stopped) return;
+            auto it = std::make_shared<Item>();
+            it->props = std::move(props);
+            it->cuts = cuts;
+            it->rlimit = rlimit;
+            it->timeout_s = timeout_s;
+            st_->items[key] = it;
+            st_->queue.push_back(it);
+        }
+        service();
+    }
+    // On the function's thread: a worker context for a puller that found
+    // none (the first one at once), and pullers for the free contexts.
+    void service() {
+        bool make = false;
+        int spawn = 0;
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (st_->stopped || !st_->has_queued()) return;
+            make = st_->created < st_->max_ctx && (st_->created == 0 || st_->need_ctx);
+        }
+        std::unique_ptr<Worker> w;
+        if (make) {
+            w = std::make_unique<Worker>();
+            Z3_ast_vector tv = Z3_ast_vector_translate(c_, src_, w->c);
+            w->xs = z3::expr_vector(w->c, tv);
+        }
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (w) {
+                st_->free.push_back(std::move(w));
+                ++st_->created;
+                st_->need_ctx = false;
+            }
+            // one puller per free context, and one more that asks for a
+            // context when it finds none (it runs only on an idle worker)
+            const int want = static_cast<int>(st_->free.size()) + (st_->created < st_->max_ctx ? 1 : 0);
+            spawn = std::max(0, std::min(want, static_cast<int>(st_->max_ctx)) - st_->pullers);
+            st_->pullers += spawn;
+        }
+        for (int i = 0; i < spawn; ++i) {
+            auto st = st_;
+            shared_graph(jobs_).spawn([st] { pull(*st); }, prism::pool::Priority::Normal);
+        }
+    }
+    // The answer asked ahead under key (waits while a worker has it), or
+    // none: not asked ahead, not started (the caller asks it now; it is not
+    // asked twice) or stopped.
+    std::optional<solver::SolveResult> take(const std::string& key) {
+        service();
+        std::unique_lock<std::mutex> lk(st_->mu);
+        auto f = st_->items.find(key);
+        if (f == st_->items.end()) return std::nullopt;
+        auto it = f->second;
+        if (it->state == Item::Queued) {
+            it->state = Item::Taken;
+            return std::nullopt;
+        }
+        st_->cv.wait(lk, [&] { return it->state == Item::Done || it->state == Item::Failed; });
+        if (it->state != Item::Done) return std::nullopt;
+        return it->r;
+    }
+    // The search will not take these any more: stop them.
+    void drop_all() {
+        std::lock_guard<std::mutex> lk(st_->mu);
+        for (auto& [k, it] : st_->items) {
+            it->stop.store(true);
+            if (it->state == Item::Queued) it->state = Item::Taken;
+        }
+    }
+    void stop_all() {
+        std::unique_lock<std::mutex> lk(st_->mu);
+        st_->stopped = true;
+        for (auto& [k, it] : st_->items) {
+            it->stop.store(true);
+            if (it->state == Item::Queued) it->state = Item::Taken;
+        }
+        // running queries see their stop within 50 ms; wait for them so no
+        // solver work of this function outlives it
+        st_->cv.wait(lk, [&] { return st_->running == 0; });
+        st_->free.clear();  // the worker contexts (a queued puller finds none)
+    }
+
+private:
+    struct Worker {
+        z3::context c;
+        z3::expr_vector xs{c};
+    };
+    struct Item {
+        enum State { Queued, Running, Done, Failed, Taken } state = Queued;
+        std::vector<std::size_t> props;
+        bool cuts = false;
+        unsigned rlimit = 0;
+        double timeout_s = 0;
+        std::atomic<bool> stop{false};
+        solver::SolveResult r;
+    };
+    struct State {
+        mutable std::mutex mu;
+        std::condition_variable cv;
+        solver::SolveOptions so;
+        std::size_t n_viols = 0;
+        unsigned max_ctx = 1;
+        unsigned created = 0;
+        bool need_ctx = false;  // a puller ran and found no context
+        std::vector<std::unique_ptr<Worker>> free;
+        std::map<std::string, std::shared_ptr<Item>> items;
+        std::deque<std::shared_ptr<Item>> queue;
+        int pullers = 0;
+        int running = 0;
+        bool stopped = false;
+        bool has_queued() const {
+            for (auto& it : queue)
+                if (it->state == Item::Queued) return true;
+            return false;
+        }
+    };
+    static void pull(State& st) {
+        for (;;) {
+            std::shared_ptr<Item> it;
+            std::unique_ptr<Worker> w;
+            {
+                std::lock_guard<std::mutex> lk(st.mu);
+                while (!st.queue.empty() && st.queue.front()->state != Item::Queued) st.queue.pop_front();
+                if (st.queue.empty() || st.free.empty() || st.stopped) {
+                    if (!st.stopped && !st.queue.empty() && st.free.empty()) st.need_ctx = true;
+                    --st.pullers;
+                    return;
+                }
+                it = st.queue.front();
+                st.queue.pop_front();
+                it->state = Item::Running;
+                w = std::move(st.free.back());
+                st.free.pop_back();
+                ++st.running;
+            }
+            bool ok = false;
+            try {
+                z3_mem_guard();
+                const z3::expr base = w->xs[0];
+                z3::expr f = base;
+                if (it->cuts) {
+                    std::vector<z3::expr> cs;
+                    for (unsigned i = static_cast<unsigned>(1 + st.n_viols); i < w->xs.size(); ++i) cs.push_back(w->xs[i]);
+                    f = base && any_of(w->c, cs);
+                } else if (it->props.size() == 1) {
+                    f = base && w->xs[static_cast<unsigned>(1 + it->props[0])];
+                } else {
+                    std::vector<z3::expr> vs;
+                    for (auto i : it->props) vs.push_back(w->xs[static_cast<unsigned>(1 + i)]);
+                    f = base && any_of(w->c, vs);
+                }
+                solver::SolveOptions o = st.so;
+                o.rlimit = it->rlimit;
+                o.timeout_s = it->timeout_s;
+                o.stop = &it->stop;
+                prism::membudget::Phase phase_vc("encode: vc solve (ahead)");
+                it->r = solver::solve(w->c, f, o);
+                ok = !it->stop.load();
+            } catch (...) {
+                ok = false;
+            }
+            {
+                std::lock_guard<std::mutex> lk(st.mu);
+                it->state = ok ? Item::Done : Item::Failed;
+                if (!st.stopped) st.free.push_back(std::move(w));
+                --st.running;
+            }
+            st.cv.notify_all();
+            // w (when stopped) is freed here, outside the lock
+        }
+    }
+
+    int jobs_;
+    z3::context& c_;
+    z3::expr_vector src_;  // in the function's context: touched on its thread only
+    std::shared_ptr<State> st_;
+};
+
 // A function's strategies as tasks on the run's shared scheduler (W2). Idle
 // workers start them; join() runs a task nobody has started on the calling
 // thread (so the order is the sequential one with --jobs 1), else waits for
@@ -1709,15 +1939,7 @@ private:
         }
         st.cv.notify_all();
     }
-    // One graph per --jobs for the process (never waited on: see above).
-    prism::pool::TaskGraph& graph() {
-        static std::mutex m;
-        static std::map<int, prism::pool::TaskGraph*> gs;
-        std::lock_guard<std::mutex> g(m);
-        auto& p = gs[jobs_];
-        if (!p) p = new prism::pool::TaskGraph(jobs_);  // lives for the process
-        return *p;
-    }
+    prism::pool::TaskGraph& graph() { return shared_graph(jobs_); }
     int jobs_;
     std::shared_ptr<State> st_;
     std::vector<std::shared_ptr<Slot>> slots_;
@@ -1800,7 +2022,7 @@ static bool z3_exhausted() {
     if (g_z3_oom.load()) return true;
     const uint64_t cap = g_z3_cap_mb.load();
     // over the soft cap now (not sticky: a finished function frees its context)
-    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100) return true;
+    if (cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap * 95 / 100) return true;
     membudget::release_free_memory();  // the last function's freed heap is not ours to count
     return membudget::over_budget();
 }
@@ -1816,17 +2038,17 @@ bool z3_hard_oom() { return g_z3_oom.load(); }
 
 static bool z3_over_soft_cap() {
     const uint64_t cap = g_z3_cap_mb.load();
-    return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) ||
+    return g_z3_oom.load() || (cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap) ||
            membudget::over_budget_sampled(4);  // per encoded node (unordered_map_contracts: 3.4 GB kill)
 }
 
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
-    if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
+    if ((cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap) || membudget::over_budget()) {
         if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] %lld guard rss=%llu z3=%llu\n",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                         static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(Z3_get_estimated_alloc_size() >> 20));
+                         static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(z3_alloc_bytes() >> 20));
         throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached before a query");
     }
 }
@@ -1840,8 +2062,12 @@ static void cap_z3_memory_once() {
         // its hard limit is 1.5x: at 1.0x Z3 segfaulted in its own out-of-memory path (cxx_priority_queue_true, rc 139 at 2.8 GB RSS); overshoot is bounded by the 20 ms RSS watchdog instead.
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
-        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
-        // No memory_high_watermark_mb: it is process-wide and sticky (on
+        // first, before any limit: Z3 counts the ballast (complexity.hpp)
+        cxl::install_z3_ballast();
+        if (mb > 0)
+            z3::set_param("memory_max_size",
+                          static_cast<int>(std::min<uint64_t>(mb + mb / 2 + (cxl::z3_ballast_bytes() >> 20), 1u << 30)));
+                // No memory_high_watermark_mb: it is process-wide and sticky (on
         // conformance/libc-models the live Z3 heap reached the mark and every
         // later check returned memout at once), so it stays off.
         // A Z3 call can ignore Z3_interrupt (a portfolio job's check on
@@ -1889,7 +2115,7 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     cap_z3_memory_once();
     if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "pir mem: %s start, z3 estimate %llu MB, cap %llu MB, rss %ld MB\n", fn.name.c_str(),
-                     static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
+                     static_cast<unsigned long long>(z3_alloc_bytes() / (1024 * 1024)),
                      static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
                          long pages = 0, rss = 0;
 #ifdef _WIN32
@@ -2331,8 +2557,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         // The shared options `so` are never changed: each query gets its own
         // copy, its timeout capped by what is left of the function budget
         // (certification copies `so`, so its timeouts do not depend on it).
-        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, const solver::SolveOptions& o0)
-            -> const solver::SolveResult* {
+        // W2: the property VCs asked ahead (null: --jobs 1, a test hook, or certified mode)
+        std::unique_ptr<VcAhead> ahead;
+        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, const solver::SolveOptions& o0,
+                                  const std::string& key = std::string()) -> const solver::SolveResult* {
             if (budget_out()) {
                 fn_budget_at = label;
                 fn_budget_during = false;
@@ -2362,7 +2590,20 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
             z3_mem_guard();
 prism::membudget::Phase phase_vc("encode: vc solve");
 const prism::clock::Stopwatch tq;
-const auto& r = bk.add(label, solver::solve(c, vc, o));
+            std::optional<solver::SolveResult> pre;
+            if (ahead && !key.empty()) pre = ahead->take(key);
+            else if (ahead) ahead->service();
+            if (pre && o.rlimit > 0 && pre->units > o.rlimit) {
+                // asked ahead with the full limit; this query's is smaller (what
+                // is left of the units budget) and it would have stopped there
+                solver::SolveResult cut;
+                cut.kind = solver::SolveResult::Unknown;
+                cut.limit_hit = true;
+                cut.units = o.rlimit;
+                cut.note = "complexity limit: z3 stopped at " + std::to_string(o.rlimit) + " rlimit units";
+                pre = std::move(cut);
+            }
+const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
             rc.units_spent += r.units;
             const cxl::Phase ph = rc.phase == cxl::Phase::Vcs && label == "unwind" ? cxl::Phase::Unwind : rc.phase;
             if (rc.meter) {
@@ -2528,6 +2769,31 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
         std::vector<const PropInst*> hard;
         for (auto& p : e.props)
             if (!soft(p)) hard.push_back(&p);
+        const auto pidx = [&](const PropInst* p) { return static_cast<std::size_t>(p - e.props.data()); };
+        const auto pkey = [&](const PropInst* p) { return "p" + std::to_string(pidx(p)); };
+        const auto gkey = [&](std::size_t lo, std::size_t hi) {
+            return "g" + std::to_string(pidx(hard.at(lo))) + "," + std::to_string(pidx(hard.at(hi - 1))) + "," +
+                   std::to_string(hi - lo);
+        };
+        if (opt.jobs > 1 && !opt.debug_before_query && !opt.certified && e.props.size() >= 2) {
+            std::vector<z3::expr> viols;
+            for (auto& p : e.props) viols.push_back(p.viol);
+            ahead = std::make_unique<VcAhead>(opt.jobs, c, base, viols, e.cuts, so);
+        }
+        // what a query asked ahead gets: what solve_vc gives it with the whole
+        // units budget left (the search caps it again when it takes the answer)
+        const unsigned ahead_rl = rc.cx.units(so.timeout_s);
+        const double ahead_s = rc.cx.wall(so.timeout_s);
+        const auto ask_prop = [&](const PropInst* p) {
+            if (ahead) ahead->ask(pkey(p), {pidx(p)}, false, ahead_rl, ahead_s);
+        };
+        const auto ask_group = [&](std::size_t lo, std::size_t hi) {
+            if (!ahead || hi <= lo) return;
+            if (hi - lo == 1) return ask_prop(hard.at(lo));
+            std::vector<std::size_t> idx;
+            for (std::size_t i = lo; i < hi; ++i) idx.push_back(pidx(hard.at(i)));
+            ahead->ask(gkey(lo, hi), std::move(idx), false, ahead_rl, ahead_s);
+        };
         // Every VC of the function: each property (soft ones included) and
         // the unwinding assertion. PROVED means every one is UNSAT, and
         // PROVED-CERTIFIED means every one is covered by a checked proof.
@@ -2734,7 +3000,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             auto group_impl = [&](auto& self, std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
                 if (hi - lo == 1) {
-                    const auto* rp = solve_vc(book, vc_label(*hard.at(lo)), base && hard.at(lo)->viol, so);
+                    const auto* rp = solve_vc(book, vc_label(*hard.at(lo)), base && hard.at(lo)->viol, so, pkey(hard.at(lo)));
                     if (!rp) return -1;
                     const auto& r = *rp;
                     if (r.kind == solver::SolveResult::Sat) {
@@ -2752,8 +3018,15 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                 }
                 std::vector<z3::expr> vs;
                 for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard.at(i)->viol);
+                // its halves are asked next unless it is UNSAT (or one SAT
+                // property pins it): ask them ahead
+                if (hi - lo > 16) {
+                    const std::size_t m2 = lo + (hi - lo) / 2;
+                    ask_group(lo, m2);
+                    ask_group(m2, hi);
+                }
                 const auto* rp = solve_vc(book, "properties[" + std::to_string(lo) + "," + std::to_string(hi) + "]",
-                                          base && any_of(c, vs), so);
+                                          base && any_of(c, vs), so, gkey(lo, hi));
                 if (!rp) return -1;
                 const auto& r = *rp;
                 if (r.kind == solver::SolveResult::Unsat) {
@@ -2770,7 +3043,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                     // before it are asked as one group first, so the verdict
                     // is the first violated property, as the halving finds.
                     if (auto k = pick_violated(r.model, lo, hi)) {
-                        const auto* r1p = solve_vc(book, vc_label(*hard.at(*k)), base && hard.at(*k)->viol, so);
+                        const auto* r1p = solve_vc(book, vc_label(*hard.at(*k)), base && hard.at(*k)->viol, so, pkey(hard.at(*k)));
                         if (!r1p) return -1;
                         const auto& r1 = *r1p;
                         if (r1.kind == solver::SolveResult::Sat) {
@@ -2829,9 +3102,18 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             }
             all_unsat = g == 0;
         }
+        if (ahead && !all_unsat && !(hit && hit_r.has_value())) {
+            // the properties this loop asks, then (if none is violated or
+            // unanswered) the soft ones and the unwinding assertion
+            for (auto& p : e.props)
+                if (!soft(p) && !answered.count(&p)) ask_prop(&p);
+            for (auto& p : e.props)
+                if (soft(p)) ask_prop(&p);
+            if (!e.cuts.empty()) ahead->ask("u", {}, true, ahead_rl, ahead_s);
+        }
         for (auto& p : e.props) {
             if (soft(p) || all_unsat || answered.count(&p) || (hit && hit_r.has_value())) continue;
-            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so, pkey(&p));
             if (!rp) {
                 fn_budget_timeout(v);
                 return finish(v);
@@ -2848,6 +3130,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                 if (cut_by_budget(vc_label(p))) no_answer_label = vc_label(p);
             }
         }
+        if (ahead && hit && hit_r.has_value()) ahead->drop_all();  // nothing after the violation is asked
         if (hit && hit_r.has_value()) {
             if (!hit->stmt) {
                 v.status = std::string(laws::ERROR);
@@ -2904,7 +3187,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         }
         for (auto& p : e.props) {
             if (!soft(p)) continue;
-            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so, pkey(&p));
             if (!rp) {
                 fn_budget_timeout(v);
                 return finish(v);
@@ -2931,7 +3214,8 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             if (opt.certified) certify_proved(v);
             return finish(v);
         }
-        const auto* urp = solve_vc(book, "unwind", base && any_of(c, e.cuts), so);
+        const auto* urp = solve_vc(book, "unwind", base && any_of(c, e.cuts), so, "u");
+        if (ahead) ahead->stop_all();  // the VCs are answered
         if (!urp) {
             fn_budget_timeout(v);
             return finish(v);

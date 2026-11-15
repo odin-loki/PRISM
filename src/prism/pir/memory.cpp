@@ -3,6 +3,7 @@
 // "Memory model"; the Lean counterpart is proofs/semantics/PrismSem/Memory.lean
 // (semantics) and MemEncode.lean (read-over-write encoding).
 
+#include "prism/complexity.hpp"
 #include "prism/membudget.hpp"
 #include "prism/settings.hpp"
 #include "memory.hpp"
@@ -124,7 +125,9 @@ static void mem_guard() {
     const uint64_t b = membudget::budget_mb();
     if (b == 0) return;
     if (++n >= 32 || rss == 0) { n = 0; rss = membudget::tree_rss_mb(); }
-    const uint64_t z3mb = static_cast<uint64_t>(Z3_get_estimated_alloc_size() >> 20);
+    const uint64_t z3mb = static_cast<uint64_t>(
+        (Z3_get_estimated_alloc_size() - std::min<uint64_t>(Z3_get_estimated_alloc_size(), prism::complexity::z3_ballast_bytes())) >>
+        20);  // without the ballast (complexity.hpp)
     // A full doubling must fit (two jobs may grow at once; rss is sampled).
     if (rss + z3mb > b)
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory: no room for Z3's next growth");

@@ -78,4 +78,15 @@ private:
 // $PRISM_PIR_RLIMIT_TRACE=1: one stderr line per metered query (units, seconds).
 PRISM_API bool trace();
 
+// Z3's QF_BV strategy runs its AIG simplification only while Z3's
+// process-wide allocation is under 300 MB, so the same query did different
+// work depending on what else the process held (src/prism/solver/z3_ballast.cpp).
+// The ballast (counted by Z3, never touched, so no resident memory) keeps
+// that count above the probe for the whole process: every query takes the
+// same path. Installed before the first query (solver::solve, the pir
+// encoder, `prism z3-worker`); PRISM's memory checks subtract it.
+inline constexpr std::uint64_t kZ3BallastBytes = std::uint64_t{320} << 20;
+PRISM_API void install_z3_ballast();
+PRISM_API std::uint64_t z3_ballast_bytes();  // 0 before install (or when Z3 refused it)
+
 }  // namespace prism::complexity

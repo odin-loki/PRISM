@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/complexity.hpp"
 #include "prism/settings.hpp"
 #include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
@@ -651,6 +652,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         notes.push_back(std::string("normalisation failed: ") + e.msg());
         return finish(res);
     }
+    // Under a complexity limit the cache is keyed by the formula as given
+    // too (Z3's structural hash, names included): two formulas that
+    // normalise alike but differ in their names make Z3 do different work,
+    // and a hit is charged the units its own formula cost, so the units a
+    // function spends do not depend on which of them was cached first.
+    if (rlimit > 0)
+        norm += "\nexact " + std::to_string(Z3_get_ast_hash(c, formula)) + " " + std::to_string(ft.nodes);
     res.query_hash = sha256_hex(norm);
     const std::string cert_reason = not_certifiable_reason(formula);
     const bool blastable = cert_reason.empty();
@@ -1558,6 +1566,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 }  // namespace
 
 SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
     try {
         return solve_impl(c, formula, opt);
     } catch (const z3::exception& e) {
@@ -1586,10 +1595,13 @@ int z3_worker_main(int argc, char** argv) {
     std::stringstream ss;
     // the caller's complexity limit (0: none), before the script's check-sat
     if (rl > 0) ss << "(set-option :rlimit " << rl << ")\n";
+    // the same Z3 strategy as in process (complexity.hpp: the ballast)
+    prism::complexity::install_z3_ballast();
     ss << in.rdbuf();
     if (!in) { std::fprintf(stderr, "z3-worker: cannot read %s\n", argv[1]); return 2; }
     if (mb > 0) {
-        Z3_global_param_set("memory_max_size", std::to_string(std::max<uint64_t>(64, mb * 4 / 5)).c_str());
+        Z3_global_param_set("memory_max_size",
+                            std::to_string(std::max<uint64_t>(64, mb * 4 / 5) + (prism::complexity::z3_ballast_bytes() >> 20)).c_str());
         std::thread([mb] {
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));

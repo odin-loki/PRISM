@@ -299,6 +299,7 @@ set(PRISM_SRC
   src/prism/solver/predict.cpp
   src/prism/solver/query.cpp
   src/prism/solver/util.cpp
+  src/prism/solver/z3_ballast.cpp
 )
 
 # PIR library operational models (docs/PIR.md "Library models"): C++ sources
@@ -457,6 +458,10 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+  # z3_ballast.cpp reads Z3's allocator (util/memory_manager.h, no C API);
+  # only that file sees Z3's internal headers.
+  set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${PRISM_ROOT}/third_party/z3/src")
 endif()
 
 # Roadmap 2.8: the Clang-AST lints parse in process through libclang's C API.
