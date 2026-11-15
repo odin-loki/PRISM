@@ -757,6 +757,37 @@ TEST_CASE("concolic: run_concolic returns one row per function") {
     CHECK(prism::run_concolic({}, 8).empty());
 }
 
+TEST_CASE("concolic: --jobs workers give the serial rows in the serial order") {
+    std::vector<prism::FunctionInfo> fns;
+    for (auto n : {"klee_fork_neg", "abs_ok", "klee_fork_unsat", "cat_bad"}) fns.push_back(load_fn(n));
+    auto serial = prism::run_concolic(fns, 16);
+    auto parallel = prism::run_concolic(fns, 16, 2);
+    REQUIRE(serial.size() == parallel.size());
+    for (std::size_t i = 0; i < serial.size(); ++i) {
+        CHECK(serial[i].function == parallel[i].function);
+        CHECK(serial[i].status == parallel[i].status);
+        CHECK(serial[i].message == parallel[i].message);
+        CHECK(serial[i].counterexample == parallel[i].counterexample);
+        CHECK(serial[i].extra == parallel[i].extra);
+    }
+}
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("concolic: a fork flip's model satisfies the flipped branch") {
+    // Context-free function (parameters and literals only): the flip is
+    // checked in a unit of its own first; the model must still be a model.
+    prism::FunctionInfo fn = load_fn("klee_fork_neg");
+    REQUIRE(!fn.params.empty());
+    const auto& x = fn.params.front().second;
+    auto r = prism::solve_fork_flip(fn, {{x, 0}}, x + " > 41", true);
+    REQUIRE(r.kind == prism::ForkFlipKind::Model);
+    CHECK(r.args.at(x) > 41);
+    // an infeasible flip is a proof that it is unreachable, never a model
+    auto u = prism::solve_fork_flip(fn, {{x, 0}}, x + " != " + x, true);
+    CHECK(u.kind == prism::ForkFlipKind::Unsat);
+}
+#endif
+
 TEST_CASE("concolic: ERROR rows carry args and tried") {
     auto r = concolic_one(load_fn("with_goto"), 8);
     REQUIRE(r.status == std::string(laws::ERROR));
