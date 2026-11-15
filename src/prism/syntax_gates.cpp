@@ -59,8 +59,10 @@ std::string to_lower_copy(std::string s) {
 struct RxCached {
     std::unique_ptr<Regex> re;
 };
+// Per thread: the gates run from parallel stages (interval runs one task
+// per function), and the map is not safe to share.
 std::unordered_map<std::string, RxCached>& rx_cache() {
-    static std::unordered_map<std::string, RxCached> c;
+    thread_local std::unordered_map<std::string, RxCached> c;
     return c;
 }
 Regex& cached_rx(std::string_view pattern, bool ml, bool ds) {

@@ -420,7 +420,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("lints", [&] { return astlint::run_lints_ast(sources, src_root, cfg); });
     stage("taint", [&] { return run_taint(functions); });
     stage("thread", [&] { return run_thread(functions); });
-    stage("interval", [&] { return run_interval(functions); });
+    stage("interval", [&] { return run_interval(functions, cfg.jobs); });
     stage("warnings", [&] { return run_compiler(sources, cfg); });
     stage("cppcheck", [&] { return run_cppcheck(sources, cfg); });
     stage("pbsd", [&] { return run_pbsd_lints(sources, cfg); });

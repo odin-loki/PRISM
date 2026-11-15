@@ -1,4 +1,5 @@
 #include "prism/stages.hpp"
+#include "prism/threads.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/cparse.hpp"
@@ -1273,11 +1274,16 @@ std::optional<Finding> interval_function(const FunctionInfo& fn) {
 
 }  // namespace
 
-std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions) {
+std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions) { return run_interval(functions, 1); }
+
+// Each function is analysed on its own (interval_function reads only `fn`):
+// one task per function, findings in function order as in the serial loop.
+std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions, int jobs) {
+    std::vector<std::optional<Finding>> per_fn(functions.size());
+    parallel_for(jobs, functions, [&](std::size_t i, const FunctionInfo& fn) { per_fn[i] = interval_function(fn); });
     std::vector<Finding> out;
-    for (auto& fn : functions) {
-        if (auto rec = interval_function(fn)) out.push_back(std::move(rec).value());
-    }
+    for (auto& rec : per_fn)
+        if (rec) out.push_back(std::move(rec).value());
     return out;
 }
 
