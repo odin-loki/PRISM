@@ -21,3 +21,10 @@ Tried and rejected (15 November 2026): Houdini's solvers created with Z3's
 `QF_BV` logic instead of the default solver. On `ring.c` + `proto.c` Houdini
 took 872 s instead of 496 s and `tcp_events_ok` fell from PROVED-ASSUMING to
 BOUNDED: slower and a lost verdict.
+
+Houdini concrete pre-filter (`PRISM_HOUDINI_CONCRETE=1`, 15 November 2026,
+`-j 2`, fresh caches): 499 s against 510 s off, the same 38 verdicts. It
+falsifies 50-90% of the candidates of every loop-heavy function (e.g.
+tcp_events_ok 419 of 763, ring_sim128_ok 412 of 480) but the time is in the
+step queries that reach the group timeout and in the final queries, not in
+the counterexamples it saves. Kept opt-in.
