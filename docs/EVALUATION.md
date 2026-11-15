@@ -260,6 +260,8 @@ load 7-9 (other agents' runs), so only large ratios mean anything:
 | corpus, stage | before | after | rows |
 |---|---|---|---|
 | testdata/pir concolic | 862 s | 38 s | 233 of 233 identical, extras (tried, generated, z3_seeds, args) included |
+| testdata/pir concolic (merge-gate run, load ~2) | 976 s | 15 s | 233 of 233 identical, extras included |
+| testdata/pir fuzz (merge-gate run, no `--allow-exec`) | 33 s | 16 s | statuses identical |
 | testdata concolic | killed past 25 min | 12.4 min ¹ | not compared (no baseline) |
 | testdata/pir fuzz (`--allow-exec`) | 113 s | 61 s | statuses identical; 4 budget-bound functions ran fewer interpreter iterations in the same budget |
 | testdata harness | 27.3 s | 24.6 s | identical (statuses, messages, extras but the temp path and a global verdict-cache note) |
