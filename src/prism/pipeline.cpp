@@ -19,6 +19,7 @@
 #include "prism/shipdocs.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
+#include "prism/threads.hpp"
 #include "prism/verdict.hpp"
 
 #include <nlohmann/json.hpp>
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
+#include <exception>
 #include <format>
 #include <fstream>
 #include <iomanip>
@@ -358,11 +360,35 @@ RunReport run_pipeline(const Config& cfg) {
                                   std::string(laws::STRENGTH_FINDS), "", "", {}});
             return out;
         }
-        for (auto& p : sources) {
-            auto rel = rel_of(p, cfg.root);
+        // One read and one parse per file, on cfg.jobs workers; the rows are
+        // then built in source order as before. classify reuses `parsed`.
+        std::vector<std::string> rels(sources.size());
+        std::vector<std::vector<Finding>> gaps_of(sources.size());
+        std::vector<std::optional<std::vector<FunctionInfo>>> fns_of(sources.size());
+        std::vector<std::exception_ptr> errors(sources.size());
+        parallel_for(cfg.jobs, sources, [&](std::size_t i, const std::filesystem::path& p) {
+            try {
+                rels[i] = rel_of(p, cfg.root);
+                if (parsed.contains(p)) {
+                    gaps_of[i] = parse_gap_findings(p, rels[i]);
+                } else {
+                    auto [fns, gaps] = parse_unit(p, rels[i]);
+                    fns_of[i] = std::move(fns);
+                    gaps_of[i] = std::move(gaps);
+                }
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
+        });
+        for (auto& e : errors)
+            if (e) std::rethrow_exception(e);
+        for (std::size_t i = 0; i < sources.size(); ++i)
+            if (fns_of[i] && !parsed.contains(sources[i])) parsed.emplace(sources[i], std::move(*fns_of[i]));
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto& p = sources[i];
+            const auto& rel = rels[i];
             auto fns = functions_of(p, rel);
-            auto gaps = parse_gap_findings(p, rel);
-            out.insert(out.end(), gaps.begin(), gaps.end());
+            out.insert(out.end(), gaps_of[i].begin(), gaps_of[i].end());
             if (fns.empty()) {
                 if (is_tu_ext(p.extension().string())) {
                     out.push_back(Finding{"inventory", std::string(laws::ERROR), rel, std::nullopt,
@@ -420,7 +446,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("lints", [&] { return astlint::run_lints_ast(sources, src_root, cfg); });
     stage("taint", [&] { return run_taint(functions); });
     stage("thread", [&] { return run_thread(functions); });
-    stage("interval", [&] { return run_interval(functions); });
+    stage("interval", [&] { return run_interval(functions, cfg.jobs); });
     stage("warnings", [&] { return run_compiler(sources, cfg); });
     stage("cppcheck", [&] { return run_cppcheck(sources, cfg); });
     stage("pbsd", [&] { return run_pbsd_lints(sources, cfg); });

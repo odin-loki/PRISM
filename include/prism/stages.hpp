@@ -18,6 +18,8 @@ namespace prism {
 std::vector<Finding> run_taint(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions);
+// The same, one task per function on `jobs` workers (prism::clamp_jobs).
+std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions, int jobs);
 std::vector<Finding> run_compiler(const std::vector<std::filesystem::path>& paths,
                                   const Config& cfg);
 std::vector<Finding> run_cppcheck(const std::vector<std::filesystem::path>& paths,
