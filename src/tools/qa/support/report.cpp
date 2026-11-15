@@ -96,6 +96,24 @@ std::string classify(const Task& task, const std::string& fn, const ojson& found
         failed_in_prop = keep;
     }
     if (st.empty()) return "missing";
+    // no-uncaught (docs/CONFORMANCE.md S9): pir's proof covers the paths it
+    // follows; an exception that leaves a non-main function ends its path and
+    // is listed in extra.throws_not_followed (docs/PIR.md). Such a proof says
+    // nothing about whether the exception is caught, so it is not an answer
+    // for this property either way: its own outcome, listed in the report,
+    // never "proved" and never hidden.
+    if (task.prop == "no-uncaught" && any_proof(st) && failed.empty()) {
+        bool every_proof_unfollowed = true;
+        for (const auto& f : found) {
+            if (!prism::laws::is_proof(status_of(f))) continue;
+            const ojson& ex = field(f, "extra");
+            const bool unfollowed = ex.is_object() && ex.contains("throws_not_followed") &&
+                                    ex["throws_not_followed"].is_string() &&
+                                    !ex["throws_not_followed"].get<std::string>().empty();
+            if (!unfollowed) every_proof_unfollowed = false;
+        }
+        if (every_proof_unfollowed) return "throw-not-followed";
+    }
     if (!expected && any_proof(st)) return "wrong-proof";
     if (auto it = task.expect_status.find(fn); it != task.expect_status.end()) {
         const std::string& want = it->second;
@@ -133,7 +151,8 @@ ojson compute_metrics(const std::vector<ojson>& rows, const std::vector<std::str
     origins.push_back("all");
     static const std::vector<std::string> kinds = {"wrong-proof",  "false-alarm", "proved",  "refuted",
                                                    "bounded",      "no-answer",   "missing", "failed-other-property",
-                                                   "law-ok",       "law6-violation", "unexpected-status"};
+                                                   "law-ok",       "law6-violation", "unexpected-status",
+                                                   "throw-not-followed"};
     for (const auto& stage : stages) {
         metrics[stage] = ojson::object();
         for (const auto& origin : origins) {
@@ -163,7 +182,8 @@ ojson compute_metrics(const std::vector<ojson>& rows, const std::vector<std::str
             m["refuted"] = c["refuted"];
             m["refuted_replayed"] = replayed;
             m["bounded"] = c["bounded"];
-            m["no_answer"] = c["no-answer"] + c["missing"];
+            m["no_answer"] = c["no-answer"] + c["missing"] + c["throw-not-followed"];
+            m["throw_not_followed"] = c["throw-not-followed"];
             m["failed_other_property"] = c["failed-other-property"];
             m["law_tasks"] = law_n;
             m["law_ok"] = c["law-ok"];
@@ -433,6 +453,8 @@ std::string markdown(const ojson& metrics, const std::vector<ojson>& rows, const
     auto oc = [](const ojson& r) { return r["outcome"].get<std::string>(); };
     listing("Wrong proofs (soundness bugs)", [&](const ojson& r) { return oc(r) == "wrong-proof"; });
     listing("False alarms", [&](const ojson& r) { return oc(r) == "false-alarm"; });
+    listing("no-uncaught: proved only on the followed paths (an exception leaves the function; not an answer, S9)",
+            [&](const ojson& r) { return oc(r) == "throw-not-followed"; });
     listing("Law 6 / expected-status violations",
             [&](const ojson& r) { return oc(r) == "law6-violation" || oc(r) == "unexpected-status"; });
     listing("Stage crashed on the task (every function of the file lost)", [&](const ojson& r) {

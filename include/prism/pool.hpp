@@ -66,7 +66,9 @@ public:
     Task spawn_after(const std::vector<Task>& deps, std::function<void()> fn, Priority p = Priority::Normal);
     // Blocks until every task spawned so far, and every task they spawn, has
     // finished, running tasks on this thread meanwhile. Rethrows the first
-    // exception a task threw. Not for use inside a task.
+    // exception a task threw. Graphs with the same --jobs share one
+    // scheduler, so a wait inside a task of another graph is fine (it helps);
+    // inside a task of this graph it would wait for itself.
     void wait();
     unsigned threads() const;  // threads that run tasks, the waiting one included
 

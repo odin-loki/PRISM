@@ -259,19 +259,34 @@ void parallel_for(int jobs, std::size_t n, std::size_t lo, std::size_t hi, const
 unsigned size() { return pool_for(0).size(); }
 
 // ---- TaskGraph on forge::task::scheduler ----
-// One scheduler per graph (jobs - 1 workers; the thread in wait() is the
-// last one), so wait_idle() waits for this graph's tasks only. --jobs 1: no
-// scheduler, every task runs inline when it is spawned (its dependencies
-// have all run by then, since everything before it ran in order).
+// Every graph with the same worker count shares one scheduler (jobs - 1
+// workers, created on first use and kept for the process): no threads are
+// started or joined per graph, and concurrent graphs (stages that run pir from
+// several workers) share the cores instead of each bringing its own threads.
+// A graph tracks the tasks it spawned; wait() helps (runs queued tasks of any
+// graph) until all of them, and the tasks they spawned, are done. --jobs 1: no
+// scheduler, every task runs inline when it is spawned.
+namespace {
+std::mutex g_sched_m;
+std::map<unsigned, std::unique_ptr<forge::task::scheduler>> g_scheds;
+forge::task::scheduler* shared_scheduler(unsigned workers) {
+    std::lock_guard<std::mutex> lk(g_sched_m);
+    auto& s = g_scheds[workers];
+    if (!s) s = std::make_unique<forge::task::scheduler>(forge::task::scheduler::config{.threads = workers});
+    return s.get();
+}
+}  // namespace
+
 struct TaskGraph::Impl {
-    std::unique_ptr<forge::task::scheduler> s;
-    std::mutex em;
+    forge::task::scheduler* s = nullptr;  // shared; null: inline
+    std::mutex mu;                        // guards spawned and err
+    std::vector<forge::task::task_ref> spawned;
     std::exception_ptr err;
     void run_guarded(const std::function<void()>& fn) {
         try {
             fn();
         } catch (...) {
-            std::lock_guard<std::mutex> lk(em);
+            std::lock_guard<std::mutex> lk(mu);
             if (!err) err = std::current_exception();
         }
     }
@@ -298,7 +313,7 @@ bool TaskGraph::Task::done() const {
 
 TaskGraph::TaskGraph(int jobs) : p_(std::make_unique<Impl>()) {
     const int n = clamp_jobs(jobs);
-    if (n > 1) p_->s = std::make_unique<forge::task::scheduler>(forge::task::scheduler::config{.threads = static_cast<unsigned>(n - 1)});
+    if (n > 1) p_->s = shared_scheduler(static_cast<unsigned>(n - 1));
 }
 
 TaskGraph::~TaskGraph() {
@@ -326,15 +341,34 @@ TaskGraph::Task TaskGraph::spawn_after(const std::vector<Task>& deps, std::funct
     Impl* impl = p_.get();
     forge::task::task_ref r = p_->s->spawn_after(
         std::span<const forge::task::task_ref>(refs), [impl, fn = std::move(fn)] { impl->run_guarded(fn); }, spawn_opts(p));
+    {
+        std::lock_guard<std::mutex> lk(p_->mu);
+        p_->spawned.push_back(r);
+    }
     t.h_ = std::make_shared<H>(std::move(r));
     return t;
 }
 
 void TaskGraph::wait() {
-    if (p_->s) p_->s->wait_idle();
+    if (p_->s) {
+        // a task appends what it spawns before it finishes, so walking the
+        // list until its end, waiting on each, covers everything
+        for (std::size_t i = 0;; ++i) {
+            forge::task::task_ref t;
+            {
+                std::lock_guard<std::mutex> lk(p_->mu);
+                if (i >= p_->spawned.size()) {
+                    p_->spawned.clear();
+                    break;
+                }
+                t = p_->spawned[i];
+            }
+            t.wait();
+        }
+    }
     std::exception_ptr e;
     {
-        std::lock_guard<std::mutex> lk(p_->em);
+        std::lock_guard<std::mutex> lk(p_->mu);
         std::swap(e, p_->err);
     }
     if (e) std::rethrow_exception(e);

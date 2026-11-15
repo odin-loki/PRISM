@@ -815,7 +815,7 @@ globals (the constructors' stores are not carried into `main`); otherwise
 `testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "pir soundness:
 dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
 
-*Open (found 15 November 2026 by the merge gate, `scripts/verify_gate.sh`).*
+*Fixed (scoring), 15 November 2026; found by the merge gate.*
 **S9. A `no-uncaught` task is proved while an exception leaves the
 function.** pir follows the paths of a function and, by design, ends a path
 where an exception leaves a function other than `main` (not UB there;
@@ -838,7 +838,15 @@ included; (b) such an exception is CXX-UNCAUGHT when the function is an
 analysed entry, which turns those into FAILED (false alarms on library code);
 (c) the scorer is made property-aware: for `no-uncaught`, a proof that lists
 `throws_not_followed` is not an answer (its own outcome, never "proved").
-Until then the release gate reports 1 wrong proof. Task:
+Chosen: (c), because (a) and (b) change correct verdicts on every C++
+function that may throw, while the PROVED itself is right for what pir
+checks (UB and assertions on the followed paths). For a `no-uncaught` task,
+a proof whose rows all list `throws_not_followed` is its own outcome,
+`throw-not-followed`, counted under "no answer" and listed in metrics.md
+("no-uncaught: proved only on the followed paths"); it is never "proved",
+for true and false tasks alike, and every other property scores as before
+(`src/tools/qa/support/report.cpp` `classify`; doctest "qa conformance:
+no-uncaught proofs that do not follow a throw are not answers (S9)"). Task:
 `prism/cxx/cxx_unordered_map_false`.
 
 ### Robustness (no verdict where one was possible)

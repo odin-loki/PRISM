@@ -647,6 +647,25 @@ TEST_CASE("qa conformance: expect_class requires the planted violation") {
 
 // ---------------------------------------------------------------- scorer rules
 
+TEST_CASE("qa conformance: no-uncaught proofs that do not follow a throw are not answers (S9)") {
+    auto t = mk_task("prism", "no-uncaught", {{"f", false}});
+    ojson unfollowed = finding("PROVED");
+    unfollowed["extra"] = ojson::object();
+    unfollowed["extra"]["throws_not_followed"] = "St12out_of_range";
+    CHECK(qa::classify(t, "f", one(unfollowed)) == "throw-not-followed");
+    t.expected[0].second = true;  // not credited as a proof either
+    CHECK(qa::classify(t, "f", one(unfollowed)) == "throw-not-followed");
+    // a proof with every throw followed stays a proof, and a wrong one stays wrong
+    CHECK(qa::classify(t, "f", one(finding("PROVED"))) == "proved");
+    t.expected[0].second = false;
+    CHECK(qa::classify(t, "f", one(finding("PROVED"))) == "wrong-proof");
+    // other properties are unaffected
+    auto o = mk_task("prism", "no-overflow", {{"f", false}});
+    CHECK(qa::classify(o, "f", one(unfollowed)) == "wrong-proof");
+    // a refutation is still a refutation
+    CHECK(qa::classify(t, "f", one(finding("FAILED", "CXX-UNCAUGHT"))) != "throw-not-followed");
+}
+
 TEST_CASE("qa conformance: classify") {
     auto task = [](bool expected, const std::string& origin = "prism", const std::string& prop = "no-overflow",
                    const std::string& status = "") {
