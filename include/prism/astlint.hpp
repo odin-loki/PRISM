@@ -106,6 +106,19 @@ FileResult analyze_dump(std::string_view dump, const std::string& main_file, std
 // no database or no entry for the file.
 std::vector<std::string> compile_db_flags(const std::filesystem::path& root, const std::filesystem::path& src);
 
+// One unit's whole command (argv[0] and every -W flag left out) from an
+// explicit compile_commands.json file, paths as written (relative ones are
+// relative to `directory`). For a preprocessed copy (x.i, x.ii) with no exact
+// entry, the single entry with the same stem; two or more: `ambiguous`.
+struct CompileDbCommand {
+    bool found = false;
+    bool ambiguous = false;
+    std::filesystem::path directory;
+    std::filesystem::path file;
+    std::vector<std::string> argv;
+};
+CompileDbCommand compile_db_command(const std::filesystem::path& db_file, const std::filesystem::path& src);
+
 // True when libclang can be loaded; `why` says why not, `where` which library.
 bool libclang_available(std::string* why = nullptr, std::string* where = nullptr);
 

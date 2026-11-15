@@ -45,6 +45,50 @@ check. Compiling scanned code does not execute it, so the stage needs no
 `--allow-exec`; clang/opt missing is `NOTRUN` with an install hint; a unit
 that does not compile is one `ERROR` row ("clang front end failed: …").
 
+### GNU C units and a unit's own flags
+
+The default language level for C is strict `-std=c17`, so `testdata/pir` and any
+ISO C unit keep ISO meanings (`typeof` and `asm` are ordinary identifiers there;
+`testdata/pir/strict_c17.c` pins it). Code written for GCC does not compile as
+strict C17: the Linux kernel's `READ_ONCE` (`include/asm-generic/rwonce.h`,
+`typeof(_Generic(...))`), statement expressions, `__auto_type` and the `asm`
+keyword all fail with `error: expected ')'` at the first `typeof`, also on a
+preprocessed copy (the `#line` markers still name `rwonce.h`). Two ways in, both
+changing only the language level and ABI flags, never a check:
+
+1. **Fallback.** A C unit that fails as C17 is tried as C23 (as before), then as
+   `-std=gnu17` unless the unit already has a `-std=` of its own. A unit that
+   compiles as C17 never gets this; `testdata/pir/gnu_c.c` (the `rwonce.h`
+   pattern, true and false variants) is lowered this way.
+2. **`--compile-commands FILE`.** The unit is compiled with its entry of a
+   `compile_commands.json` (`arguments` or `command`; the command text is split
+   by PRISM, no shell runs). Taken: `-I -isystem -iquote -idirafter -include`
+   (relative paths against the entry's `directory`), `-D`, `-U`, the C `-std=`
+   (the C++ year for C++ units), `--target=` (LP64 targets only: the memory
+   model assumes LP64), `-nostdinc`, `-ffreestanding`, `-fshort-wchar`,
+   `-funsigned-char`, `-fsigned-char`, `-fno-common`, `-fms-extensions`,
+   `-fplan9-extensions`, `-fno-builtin[-*]`, `-fstrict-flex-arrays=N`,
+   `-mno-sse/-mno-sse2/-mno-mmx/-mno-3dnow/-mno-avx/-mno-sse4a/-mno-80387`,
+   `-mgeneral-regs-only`, `-m64`. Everything else is dropped. **Never taken**:
+   `-w` and every `-W...` (the UB-folding warnings of the base flags stay on, so
+   a folded UB is still found), and the flags that would define what ISO C
+   leaves undefined: `-fno-strict-overflow`, `-fwrapv`,
+   `-ftrivial-auto-var-init=`, `-fno-delete-null-pointer-checks`. A unit built
+   with `-fno-strict-overflow` (the kernel) is still checked for signed overflow;
+   that is PRISM's polarity (Law 8), and the finding row says so in
+   `extra.front_end_flags` ("entry used; not taken: ..."). With the option set,
+   the entry replaces the scan-root database (`-I`/`-D` only) for that unit; a
+   unit with no entry gets the default flags and a note. A preprocessed copy
+   (`x.i`, `x.ii`) has no entry of its own: the single entry with the same stem
+   is used, and only the language and ABI flags are taken (`-I`, `-D`,
+   `-include` were applied by the preprocessor already; re-including a header
+   would redeclare its inline functions). Two entries with that stem: no entry
+   (note). `prism --pir-vcs FILE --compile-commands DB` takes the same flags.
+
+```
+prism path/to/unit.c --stage pir --compile-commands build/compile_commands.json
+```
+
 **Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits); the libc models and
 memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, every PIR (and SV-COMP debug
 IR) clang invocation uses `lp64_clang_driver_flags()`: `--target=x86_64-unknown-linux-gnu` and
@@ -1444,7 +1488,11 @@ and drops the certificate. What a certificate still trusts is in
 
 `prism --pir-vcs FILE --out DIR` writes the VCs of every function of one unit
 as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
-print JSON and exist for `prism-qa solver-bench`.
+print JSON and exist for `prism-qa solver-bench`. `--pir-vcs` takes
+`--compile-commands DB` like the stage (a kernel unit needs it), and
+`scripts/dump_qfbv_corpus.sh` runs it over many units, keeps the QF_BV queries
+and splits them train/validation/test by source file
+([FASTSMT_PORT_NOTES.md](FASTSMT_PORT_NOTES.md)).
 
 ## Translation validation (roadmap 2.4)
 

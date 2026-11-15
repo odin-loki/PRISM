@@ -85,6 +85,18 @@ TEST_CASE("cli: defaults match default_config and the documented values") {
         CHECK_MESSAGE(u.find(want) != std::string::npos, want);
 }
 
+TEST_CASE("cli: --compile-commands takes a file, both spellings, and is in the help") {
+    auto a = parse({"src", "--compile-commands", "db/compile_commands.json"});
+    auto b = parse({"src", "--compile-commands=db/compile_commands.json"});
+    REQUIRE(a);
+    REQUIRE(b);
+    CHECK(a->cfg.compile_commands == fs::absolute("db/compile_commands.json"));
+    CHECK(b->cfg.compile_commands == a->cfg.compile_commands);
+    CHECK(parse({"src"})->cfg.compile_commands.empty());  // default: unset
+    CHECK(prism::cli_usage().find("--compile-commands FILE") != std::string::npos);
+    CHECK(error_of({"src", "--compile-commands"}).find("--compile-commands") != std::string::npos);
+}
+
 TEST_CASE("cli: every flag in both spellings, -jN, and the path") {
     auto a = parse({"src", "--out", "o", "--no-llm", "--stage", "wp,pir", "--skip", "fuzz",
                     "--unwind", "3", "--jobs", "4", "--fuzz-budget", "1.5", "--fuzz-iters", "16",

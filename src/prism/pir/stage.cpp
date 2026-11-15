@@ -681,7 +681,118 @@ std::vector<std::string> base_flags(const fs::path& src) {
     return f;
 }
 
+// The flags of one unit from `--compile-commands` (docs/PIR.md "Units with
+// their own flags"). Only an allowlist is taken: the include path and macros
+// (not for a preprocessed unit, whose text already has them applied), the C
+// language level (`-std=gnu11` makes `typeof`, `asm` and statement
+// expressions keywords/extensions), and the flags that change the unit's
+// types or builtins (`--target`, `-fshort-wchar`, `-funsigned-char`, `-nostdinc`,
+// `-mno-sse`, ...). Warning flags (`-w`, `-Wno-*`) are never taken, so the
+// UB-folding warnings of base_flags stay on, and so are the flags that would
+// switch a check off by defining what ISO C leaves undefined
+// (`-fno-strict-overflow`, `-fwrapv`, `-ftrivial-auto-var-init=`,
+// `-fno-delete-null-pointer-checks`); `dropped_semantic` lists those that
+// were present. argv only; nothing is run through a shell.
+int cxx_std_number(const std::string& v);  // defined below
+
+struct UnitCc {
+    bool found = false;
+    bool ambiguous = false;
+    std::vector<std::string> flags;
+    int cxx_std = 0;           // C++ unit: the entry's -std=c++NN year, else 0
+    std::string note;          // what was taken and what was not (finding extra "front_end_flags")
+    fs::path main_file;        // a preprocessed unit: the source file its #line markers name
+};
+
+UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit) {
+    UnitCc out;
+    const auto e = astlint::compile_db_command(db, unit);
+    out.ambiguous = e.ambiguous;
+    if (!e.found) return out;
+    out.found = true;
+    const bool cxx = is_cxx(unit);
+    const bool pre = unit.extension() == ".i" || unit.extension() == ".ii";
+    auto abs = [&](const std::string& p) {
+        fs::path q(p);
+        return (q.is_relative() ? e.directory / q : q).lexically_normal().string();
+    };
+    auto lp64_target = [](std::string_view t) {
+        const auto arch = t.substr(0, t.find('-'));
+        for (std::string_view a : {"x86_64", "aarch64", "arm64", "riscv64", "powerpc64", "powerpc64le", "ppc64",
+                                   "ppc64le", "s390x", "loongarch64", "mips64"})
+            if (arch == a) return true;
+        return false;
+    };
+    static const std::set<std::string> kExact{
+        "-nostdinc", "-ffreestanding", "-fshort-wchar", "-funsigned-char", "-fsigned-char", "-fno-common",
+        "-fcommon", "-fms-extensions", "-fplan9-extensions", "-fno-builtin", "-m64", "-mno-sse", "-mno-sse2",
+        "-mno-mmx", "-mno-3dnow", "-mno-avx", "-mno-sse4a", "-mno-80387", "-mgeneral-regs-only"};
+    static const std::set<std::string> kSemantic{"-fno-strict-overflow", "-fwrapv", "-fwrapv-pointer"};
+    const auto& a = e.argv;
+    std::vector<std::string> dropped;
+    std::string std_taken;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const std::string& x = a[i];
+        const bool has_next = i + 1 < a.size();
+        // preprocessing flags (a preprocessed copy has had them applied already)
+        if (x == "-I" || x == "-isystem" || x == "-iquote" || x == "-idirafter" || x == "-include") {
+            if (!has_next) break;
+            ++i;
+            if (!pre) { out.flags.push_back(x); out.flags.push_back(abs(a[i])); }
+        } else if (x.starts_with("-I") && x.size() > 2) {
+            if (!pre) out.flags.push_back("-I" + abs(x.substr(2)));
+        } else if (x == "-D" || x == "-U") {
+            if (!has_next) break;
+            ++i;
+            if (!pre) { out.flags.push_back(x); out.flags.push_back(a[i]); }
+        } else if ((x.starts_with("-D") || x.starts_with("-U")) && x.size() > 2) {
+            if (!pre) out.flags.push_back(x);
+        } else if (x.starts_with("-std=")) {
+            const std::string v = x.substr(5);
+            const bool is_cxx_std = v.find("++") != std::string::npos;
+            if (cxx && is_cxx_std) {
+                out.cxx_std = cxx_std_number(v.substr(v.find("++") + 2));
+            } else if (!cxx && !is_cxx_std) {
+                out.flags.push_back(x);
+                std_taken = x;
+            }
+        } else if (x.starts_with("--target=")) {
+            if (lp64_target(std::string_view(x).substr(9))) out.flags.push_back(x);
+            else dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+        } else if (kExact.count(x) || x.starts_with("-fno-builtin-") || x.starts_with("-fstrict-flex-arrays=")) {
+            out.flags.push_back(x);
+        } else if (x == "-w" || x.starts_with("-W")) {
+            if (x == "-w") dropped.push_back("-w");
+        } else if (kSemantic.count(x) || x.starts_with("-ftrivial-auto-var-init=") ||
+                   x == "-fno-delete-null-pointer-checks") {
+            dropped.push_back(x);
+        }
+    }
+    if (pre) out.main_file = e.file;
+    out.note = "compile_commands.json entry " + e.file.string();
+    if (!std_taken.empty()) out.note += "; " + std_taken;
+    if (pre) out.note += "; preprocessed unit: only language and ABI flags taken";
+    if (!dropped.empty()) {
+        out.note += "; not taken (PIR keeps ISO C undefined behaviour and its warnings): ";
+        for (std::size_t k = 0; k < dropped.size(); ++k) out.note += (k ? ", " : "") + dropped[k];
+    }
+    return out;
+}
+
 }  // namespace
+
+std::vector<std::string> unit_compile_flags(const Config& cfg, const fs::path& unit, int* cxx_std, std::string* note) {
+    if (cfg.compile_commands.empty()) return {};
+    auto cc = unit_cc_flags(cfg.compile_commands, unit);
+    if (!cc.found) {
+        if (note) *note = cc.ambiguous ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"
+                                       : "--compile-commands: no entry for this unit; default flags used";
+        return {};
+    }
+    if (cxx_std && cc.cxx_std > 0) *cxx_std = cc.cxx_std;
+    if (note) *note = cc.note;
+    return std::move(cc.flags);
+}
 
 Frontend find_frontend(const Config& cfg) {
     Frontend fe;
@@ -1426,6 +1537,30 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
             fl = std::move(c23);
         }
     }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // GNU C: the Linux kernel and much C written for gcc use `typeof`,
+        // `asm`, statement expressions and `__auto_type`, which strict
+        // -std=c17 does not accept (an `expected ')'` at the first one), and
+        // C23 does not make `asm` a keyword either. Try once more as gnu17
+        // when no -std= of the unit's own was given. Only the language
+        // level changes; every check flag stays (and the warnings with it).
+        const bool unit_std = std::any_of(fl.begin(), fl.end(), [](const std::string& f) {
+            return f.starts_with("-std=") && f != "-std=c17" && f != "-std=c23";
+        });
+        if (!unit_std) {
+            auto gnu = fl;
+            std::replace(gnu.begin(), gnu.end(), std::string("-std=c17"), std::string("-std=gnu17"));
+            std::replace(gnu.begin(), gnu.end(), std::string("-std=c23"), std::string("-std=gnu17"));
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), gnu.begin(), gnu.end());
+            av.insert(av.end(), {"-o", o0.string(), src.string()});
+            auto r2 = prism::exec::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(gnu);
+            }
+        }
+    }
     if (cxx && !r.timed_out && (r.failed || r.rc != 0) &&
         r.text.find("ISO C++17 does not allow") != std::string::npos) {
         // Code from before C++17 (dynamic exception specifications,
@@ -2085,6 +2220,8 @@ struct Lowered {
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
+    std::string cc_note;     // --compile-commands: the entry used and the flags not taken
+    fs::path cc_main;        // a preprocessed unit (x.i): the entry's source file (x.c), whose name its #line markers carry
     // Functions the front end rejected, cut out so the rest of the unit could
     // be lowered (salvage_unit): name, line, the first clang error.
     std::vector<std::tuple<std::string, int, std::string>> dropped;
@@ -2458,8 +2595,12 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
     std::set<int> used_folded;
-    const auto unit_name = u.path.filename().string();
-    std::vector<std::string> src_lines = split_lines(read_file(u.path));
+    // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
+    // markers: the unit's own functions are those of x.c, and its lines are x.c's.
+    std::error_code src_ec;
+    const bool pre_main = !low.cc_main.empty() && fs::is_regular_file(low.cc_main, src_ec);
+    const auto unit_name = (pre_main ? low.cc_main : u.path).filename().string();
+    std::vector<std::string> src_lines = split_lines(read_file(pre_main ? low.cc_main : u.path));
     pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), src_lines, std::nullopt};
     std::vector<int> starts;  // DISubprogram lines of this unit, sorted
     if (is_cxx(u.path)) {
@@ -2749,6 +2890,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
         if (!low.at(i).cxx_models.empty())
             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+        if (!low.at(i).cc_note.empty())
+            for (auto& f : per.at(i)) f.extra["front_end_flags"] = low.at(i).cc_note;
         low.at(i).ir.reset();
         a = Analyzed{};
     };
@@ -2767,7 +2910,24 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 if (!f.starts_with("-std=")) inc.push_back(f);
                 else if (auto k = f.find("++"); k != std::string::npos) cxx_std = cxx_std_number(f.substr(k + 2));
             }
-            if (inc.empty() && !root.empty()) {
+            // --compile-commands: this unit's own flags (GNU C dialect, kernel
+            // defines and ABI flags) replace the scan-root database.
+            bool cc_found = false;
+            if (!cfg.compile_commands.empty()) {
+                auto cc = unit_cc_flags(cfg.compile_commands, u.path);
+                cc_found = cc.found;
+                if (cc.found) {
+                    inc = std::move(cc.flags);
+                    if (cc.cxx_std > 0) cxx_std = cc.cxx_std;
+                    l.cc_note = std::move(cc.note);
+                    l.cc_main = std::move(cc.main_file);
+                } else {
+                    l.cc_note = cc.ambiguous
+                                    ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"
+                                    : "--compile-commands: no entry for this unit; default flags used";
+                }
+            }
+            if (inc.empty() && !root.empty() && !cc_found) {
                 std::error_code ec;
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});

@@ -436,6 +436,85 @@ std::vector<std::string> compile_db_flags(const fs::path& root, const fs::path& 
     return {};
 }
 
+// The whole command of one unit from an explicit compile_commands.json
+// (`--compile-commands`). Parsed once per database (and mtime); -W flags are
+// dropped at index time (no caller forwards them, and a kernel database is
+// large). A unit with no exact entry (a preprocessed copy: x.i for x.c) falls
+// back to the one entry with the same stem; two or more is `ambiguous`.
+CompileDbCommand compile_db_command(const fs::path& db_file, const fs::path& src) {
+    struct Entry {
+        fs::path dir;
+        fs::path file;
+        std::vector<std::string> argv;
+    };
+    struct Index {
+        std::map<std::string, std::size_t> by_path;
+        std::multimap<std::string, std::size_t> by_stem;
+        std::vector<Entry> entries;
+    };
+    static std::mutex mu;
+    static std::map<std::string, std::pair<fs::file_time_type, std::shared_ptr<const Index>>> cache;
+    CompileDbCommand out;
+    std::shared_ptr<const Index> ix;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        std::error_code ec;
+        const auto key = detail::canon_path(db_file);
+        const auto mtime = fs::last_write_time(db_file, ec);
+        if (ec) return out;
+        if (auto it = cache.find(key); it != cache.end() && it->second.first == mtime) {
+            ix = it->second.second;
+        } else {
+            auto m = std::make_shared<Index>();
+            try {
+                auto j = nlohmann::json::parse(read_file(db_file));
+                for (auto& e : j) {
+                    if (!e.is_object() || !e.contains("file") || !e["file"].is_string()) continue;
+                    Entry en;
+                    en.dir = e.value("directory", std::string());
+                    en.file = e["file"].get<std::string>();
+                    if (en.file.is_relative()) en.file = en.dir / en.file;
+                    std::vector<std::string> argv;
+                    if (e.contains("arguments") && e["arguments"].is_array()) {
+                        for (auto& a : e["arguments"])
+                            if (a.is_string()) argv.push_back(a.get<std::string>());
+                    } else if (e.contains("command") && e["command"].is_string()) {
+                        argv = shell_split(e["command"].get<std::string>());  // a split of the stored text; no shell runs
+                    }
+                    for (std::size_t i = 1; i < argv.size(); ++i)
+                        if (!argv[i].starts_with("-W")) en.argv.push_back(std::move(argv[i]));
+                    const auto idx = m->entries.size();
+                    m->by_path[detail::canon_path(en.file)] = idx;
+                    m->by_stem.emplace(en.file.stem().string(), idx);
+                    m->entries.push_back(std::move(en));
+                }
+            } catch (...) {
+                m = std::make_shared<Index>();
+            }
+            cache[key] = {mtime, m};
+            ix = m;
+        }
+    }
+    auto take = [&](std::size_t i) {
+        out.found = true;
+        out.directory = ix->entries[i].dir;
+        out.file = ix->entries[i].file;
+        out.argv = ix->entries[i].argv;
+    };
+    if (auto it = ix->by_path.find(detail::canon_path(src)); it != ix->by_path.end()) {
+        take(it->second);
+        return out;
+    }
+    const auto ext = src.extension().string();
+    if (ext == ".i" || ext == ".ii") {
+        auto r = ix->by_stem.equal_range(src.stem().string());
+        const auto n = std::distance(r.first, r.second);
+        if (n == 1) take(r.first->second);
+        else if (n > 1) out.ambiguous = true;
+    }
+    return out;
+}
+
 bool libclang_available(std::string* why, std::string* where) {
     Config cfg;
     auto fe = pir::find_frontend(cfg);
