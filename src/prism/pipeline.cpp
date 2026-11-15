@@ -430,7 +430,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("esbmc", [&] { return run_esbmc(sources, cfg); });
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] {
-        auto out = prove_contracts(functions, cfg.unwind);
+        auto out = prove_contracts(functions, cfg.unwind, cfg.jobs);
         if (cfg.llm) {
             // Model-proposed Dafny-style specs: hypotheses beside the proofs.
             std::vector<FunctionInfo> fns;
@@ -441,26 +441,26 @@ RunReport run_pipeline(const Config& cfg) {
         }
         return out;
     });
-    stage("wp", [&] { return run_wp(functions, cfg.unwind); });
+    stage("wp", [&] { return run_wp(functions, cfg.unwind, cfg.jobs); });
     auto pir_rec = stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
-    stage("harness", [&] { return run_harness(functions, cfg.unwind); });
+    stage("harness", [&] { return run_harness(functions, cfg.unwind, cfg.jobs, cfg.llm); });
     // Roadmap 9.2/9.3/4.2: vacuity audit, approved/drafted contracts, model
     // assumption audit, proof store and PROOF-REGRESSION (src/prism/ai/review.cpp).
     stage("review", [&] { return ai::run_review(functions, report.stages, cfg); });
-    stage("concolic", [&] { return run_concolic(functions, 32); });
+    stage("concolic", [&] { return run_concolic(functions, 32, cfg.jobs); });
     stage("fuzz", [&] {
         return exec_gate_note(
             "fuzz",
             run_fuse(functions, pir_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, cfg),
             "fuzz (compiled harness, AFL++, libFuzzer)");
     });
-    stage("diff", [&] { return run_diff(functions, src_root); });
+    stage("diff", [&] { return run_diff(functions, src_root, cfg.jobs); });
     stage("rapid", [&] {
-        return exec_gate_note("rapid", run_rapid(functions, 64), "rapid (gcc fallback harness)");
+        return exec_gate_note("rapid", run_rapid(functions, 64, cfg.jobs), "rapid (gcc fallback harness)");
     });
     stage("muttest", [&] {
-        return exec_gate_note("muttest", run_muttest(functions, 32), "muttest (gcc fallback harness)");
+        return exec_gate_note("muttest", run_muttest(functions, 32, cfg.jobs), "muttest (gcc fallback harness)");
     });
     stage("ltl", [&] {
         // Unreadable directories are passed over, not a failed stage; the

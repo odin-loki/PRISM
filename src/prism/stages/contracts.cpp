@@ -297,82 +297,102 @@ Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optio
     return check_with_assume(fn, unwind, requires_, ensures, std::nullopt, std::nullopt);
 }
 
-std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind) {
-    std::vector<Finding> out;
+namespace {
+
+// The contracts row of one function (nullopt: no contract comment).
+std::optional<Finding> contracts_one(const FunctionInfo& fn, int unwind) {
     static Regex req_atom("^([A-Za-z_]\\w*)\\s*(<|>=|!=)\\s*(0|[1-9]\\d*)$");
     static Regex ens_atom("^result\\s*(==|>=)\\s*(.+)$");
-    for (auto& fn : functions) {
-        auto spec = parse_comments(fn);
-        if (spec.requires_.empty() && spec.ensures.empty() && spec.decreases.empty() && spec.invariant.empty())
-            continue;
-        std::optional<std::string> requires_, ensures, decreases, invariant;
-        if (!spec.requires_.empty()) requires_ = join_sv(spec.requires_, " && ");
-        if (!spec.ensures.empty()) ensures = join_sv(spec.ensures, " && ");
-        if (!spec.decreases.empty()) decreases = spec.decreases[0];
-        if (!spec.invariant.empty()) invariant = join_sv(spec.invariant, " && ");
-        bool ptr_body = body_needs_pointer_harness(fn.body);
-        if (fn.kind == "POINTER" || ptr_body || fn.kind != "SCALAR") {
-            std::string why = (fn.kind == "POINTER" || ptr_body) ? "POINTER" : fn.kind;
-            std::string msg = why == "POINTER"
-                                  ? "POINTER: the contract check would invent a buffer; not a proof"
-                                  : why + ": contract scalar subset only; not a proof";
-            auto f = make_find("contracts", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", std::move(msg),
-                               laws::STRENGTH_PROVES);
-            if (requires_) f.extra["requires"] = *requires_;
-            if (ensures) f.extra["ensures"] = *ensures;
-            if (decreases) f.extra["decreases"] = *decreases;
-            if (invariant) f.extra["invariant"] = *invariant;
-            out.push_back(std::move(f));
-            continue;
-        }
-        auto rec = check_with_assume(fn, unwind, requires_, ensures, decreases, invariant);
-        if (rec.status != laws::ERROR && invariant && has_loop(fn.body)) {
-            auto baseline = check_with_assume(fn, unwind, requires_, ensures, decreases, std::nullopt);
-            bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
-            auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
-            if (laws::is_proof(orig)) {
-                if (orig == laws::PROVED_UNBOUNDED) rec.extra["original_status"] = std::string(laws::PROVED_ASSUMING);
-                if (laws::is_proof(rec.status) && rec.status == laws::PROVED_UNBOUNDED) {
-                    rec.status = std::string(laws::PROVED_ASSUMING);
-                    rec.message = "ensures holds assuming invariant (" + *invariant + "); never PROVED-UNBOUNDED";
-                }
-            } else if (closed_without && laws::is_proof(rec.status)) {
+    auto spec = parse_comments(fn);
+    if (spec.requires_.empty() && spec.ensures.empty() && spec.decreases.empty() && spec.invariant.empty())
+        return std::nullopt;
+    std::optional<std::string> requires_, ensures, decreases, invariant;
+    if (!spec.requires_.empty()) requires_ = join_sv(spec.requires_, " && ");
+    if (!spec.ensures.empty()) ensures = join_sv(spec.ensures, " && ");
+    if (!spec.decreases.empty()) decreases = spec.decreases[0];
+    if (!spec.invariant.empty()) invariant = join_sv(spec.invariant, " && ");
+    bool ptr_body = body_needs_pointer_harness(fn.body);
+    if (fn.kind == "POINTER" || ptr_body || fn.kind != "SCALAR") {
+        std::string why = (fn.kind == "POINTER" || ptr_body) ? "POINTER" : fn.kind;
+        std::string msg = why == "POINTER"
+                              ? "POINTER: the contract check would invent a buffer; not a proof"
+                              : why + ": contract scalar subset only; not a proof";
+        auto f = make_find("contracts", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", std::move(msg),
+                           laws::STRENGTH_PROVES);
+        if (requires_) f.extra["requires"] = *requires_;
+        if (ensures) f.extra["ensures"] = *ensures;
+        if (decreases) f.extra["decreases"] = *decreases;
+        if (invariant) f.extra["invariant"] = *invariant;
+        return f;
+    }
+    auto rec = check_with_assume(fn, unwind, requires_, ensures, decreases, invariant);
+    if (rec.status != laws::ERROR && invariant && has_loop(fn.body)) {
+        auto baseline = check_with_assume(fn, unwind, requires_, ensures, decreases, std::nullopt);
+        bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
+        auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
+        if (laws::is_proof(orig)) {
+            if (orig == laws::PROVED_UNBOUNDED) rec.extra["original_status"] = std::string(laws::PROVED_ASSUMING);
+            if (laws::is_proof(rec.status) && rec.status == laws::PROVED_UNBOUNDED) {
                 rec.status = std::string(laws::PROVED_ASSUMING);
                 rec.message = "ensures holds assuming invariant (" + *invariant + "); never PROVED-UNBOUNDED";
             }
+        } else if (closed_without && laws::is_proof(rec.status)) {
+            rec.status = std::string(laws::PROVED_ASSUMING);
+            rec.message = "ensures holds assuming invariant (" + *invariant + "); never PROVED-UNBOUNDED";
         }
-        if (rec.status != laws::ERROR && decreases && has_loop(fn.body)) {
-            // Baseline = the same requires and ensures, minus only decreases.
-            // The invariant stays. Python's bmc_function_with_assume(...,
-            // decreases=None) leaves invariant at its default None, so that
-            // baseline drops the invariant too. Copying that default is not
-            // done: the main query still instruments decreases. When an
-            // invariant is present, check_with_assume rewrites a proof to
-            // PROVED-ASSUMING, so this baseline is not PROVED-UNBOUNDED.
-            // decreases_assumed can only lower a status. It does not skip the
-            // decreases check.
-            auto baseline = check_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
-            bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
-            auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
-            bool assumed = laws::is_proof(orig) && !closed_without;
-            rec.extra["decreases_assumed"] = assumed ? "true" : "false";
-            if (assumed) {
-                if (orig == laws::PROVED_UNBOUNDED) rec.extra["original_status"] = std::string(laws::PROVED_ASSUMING);
-                if (laws::is_proof(rec.status) && rec.status == laws::PROVED_UNBOUNDED) {
-                    rec.status = std::string(laws::PROVED_ASSUMING);
-                    rec.message = "ensures holds under decreases variant; never PROVED-UNBOUNDED";
-                }
+    }
+    if (rec.status != laws::ERROR && decreases && has_loop(fn.body)) {
+        // Baseline = the same requires and ensures, minus only decreases.
+        // The invariant stays. Python's bmc_function_with_assume(...,
+        // decreases=None) leaves invariant at its default None, so that
+        // baseline drops the invariant too. Copying that default is not
+        // done: the main query still instruments decreases. When an
+        // invariant is present, check_with_assume rewrites a proof to
+        // PROVED-ASSUMING, so this baseline is not PROVED-UNBOUNDED.
+        // decreases_assumed can only lower a status. It does not skip the
+        // decreases check.
+        auto baseline = check_with_assume(fn, unwind, requires_, ensures, std::nullopt, invariant);
+        bool closed_without = baseline.status == laws::PROVED_UNBOUNDED;
+        auto orig = rec.extra.contains("original_status") ? rec.extra["original_status"] : rec.status;
+        bool assumed = laws::is_proof(orig) && !closed_without;
+        rec.extra["decreases_assumed"] = assumed ? "true" : "false";
+        if (assumed) {
+            if (orig == laws::PROVED_UNBOUNDED) rec.extra["original_status"] = std::string(laws::PROVED_ASSUMING);
+            if (laws::is_proof(rec.status) && rec.status == laws::PROVED_UNBOUNDED) {
+                rec.status = std::string(laws::PROVED_ASSUMING);
+                rec.message = "ensures holds under decreases variant; never PROVED-UNBOUNDED";
             }
         }
-        bool subset = true;
-        for (auto& r : spec.requires_)
-            if (!fullmatch(req_atom, strip(r))) subset = false;
-        for (auto& e : spec.ensures)
-            if (!fullmatch(ens_atom, strip(e))) subset = false;
-        rec.extra["subset"] = subset ? "true" : "false";
-        out.push_back(std::move(rec));
     }
-    return out;
+    bool subset = true;
+    for (auto& r : spec.requires_)
+        if (!fullmatch(req_atom, strip(r))) subset = false;
+    for (auto& e : spec.ensures)
+        if (!fullmatch(ens_atom, strip(e))) subset = false;
+    rec.extra["subset"] = subset ? "true" : "false";
+    return rec;
+}
+
+}  // namespace
+
+std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind) {
+    return prove_contracts(functions, unwind, 1);
+}
+
+// Every pir check of the stage is collected by a dry run and made in batched
+// pir runs on `jobs` workers (prefetch_pir); the functions are then checked
+// `jobs` at a time with those rows. The baselines (contract minus invariant
+// or decreases) are asked by the dry run whatever the main check gives: one
+// the real pass does not need was checked for nothing, never used.
+std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind, int jobs) {
+    prefetch_pir(jobs, [&] {
+        for (auto& fn : functions) (void)contracts_one(fn, unwind);
+    });
+    return map_functions(jobs, functions.size(), [&](std::size_t i) {
+        std::vector<Finding> v;
+        if (auto f = contracts_one(functions[i], unwind)) v.push_back(std::move(*f));
+        return v;
+    });
 }
 
 }  // namespace prism

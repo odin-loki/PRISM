@@ -319,7 +319,16 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
             return f;
         }
         if (generated >= max_new) continue;
-        for (auto& cond : branch_conditions(fn)) {
+        const auto conds = branch_conditions(fn);
+        // The flips of this seed's branches, both pir passes of each, checked
+        // in one batched pir run before the loop below asks them one by one
+        // (it gets the checked rows; a flip the loop does not reach, past
+        // the budget, was checked for nothing, never used).
+        if (!conds.empty())
+            prefetch_pir(1, [&] {
+                for (auto& cond : conds) (void)neighbor_for_cond(fn, args, cond);
+            });
+        for (auto& cond : conds) {
             if (generated >= max_new) break;
             auto [nxt, via_z3, was_unsat] = neighbor_for_cond(fn, args, cond);
             if (was_unsat) {
@@ -347,9 +356,15 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
 }  // namespace
 
 std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget) {
-    std::vector<Finding> out;
-    for (auto& fn : functions) out.push_back(concolic_function(fn, budget));
-    return out;
+    return run_concolic(functions, budget, 1);
+}
+
+// Functions are explored `jobs` at a time: each exploration is its own
+// (seeds, flips, interpreter runs), so the rows are those of a serial loop.
+std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget, int jobs) {
+    return map_functions(jobs, functions.size(), [&](std::size_t i) {
+        return std::vector<Finding>{concolic_function(functions[i], budget)};
+    });
 }
 
 }  // namespace prism
