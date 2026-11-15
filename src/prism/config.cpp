@@ -498,6 +498,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_LEAN_PAD_DEBUG", "diagnostics: trace Lean export padding to stderr"},
     {"PRISM_PIR_DUMP_INVARIANTS", "diagnostics: 1 = report Houdini survivors of a search that did not prove (pir_invariants_surviving)"},
     {"PRISM_PIR_EXPORT_ONLY", "pir: with PRISM_PIR_LEAN_EXPORT, only export Lean, skip the checks"},
+    {"PRISM_ASTLINT_PCH", "lints: 0 turns off the shared precompiled header of units with the same leading #include <...> block and flags"},
     {"PRISM_HOUDINI_CONCRETE", "pir: 1 turns on Houdini's concrete pre-filter (candidates a concrete run falsifies are dropped before any query; off by default until measured)"},
     {"PRISM_HOUDINI_BUDGET", "pir: run-wide Houdini loop-invariant seconds (0 = none)"},
     {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},

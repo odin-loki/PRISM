@@ -281,6 +281,27 @@ property-free loops, to answer for one. A per-call function filter in
 `pir::run_pir` (pir is not changed here) would remove most of what is
 left.
 
+## Shared precompiled header for the Clang-AST lints (November 2026)
+
+Units parsed with the same flags that start with the same `#include <...>`
+lines share a precompiled header of exactly that prefix
+(`src/prism/astlint_libclang.cpp`, `PchCache`; `PRISM_ASTLINT_PCH=0` turns it
+off). Every prefix length is a key, so a unit uses the longest prefix any
+two units share. A PCH is never used for a unit that lints a file the PCH
+includes, and a parse with it that fails or reports an error is redone
+without it, so the result is the plain parse's. Measured on 4 cores:
+
+| | PCH off | PCH on |
+|---|---|---|
+| `testdata/conformance/prism/cxx`, `-j 1`: libclang parse time of 249 units | 39.7 s | 16.1 s (153 units used a PCH: 5.2 s) |
+| `testdata`, `-j 2`, inventory+classify+lints: user CPU | 122.6 s | 113.4 s |
+| lint findings on `testdata` (every field) | 2987 | 2987, 0 differences |
+
+Most `testdata` units are small C files with few or no includes, so the
+whole-tree gain is small; header-heavy C++ units parse 2.5x faster. On a
+kernel tree the headers of the scanned tree are lint targets themselves, so
+only the system-header part of a prefix can be shared.
+
 ## What is still open
 
 - **zlib pir is still slow.** On `main` (2026-09-26) the full scan finishes
