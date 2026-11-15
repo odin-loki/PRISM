@@ -18,7 +18,16 @@
 #include <string>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  ifdef ERROR
+#    undef ERROR
+#  endif
+#  include <stdlib.h>  // _environ (the CRT copy getenv and _putenv_s use)
+#elif defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
 extern char** environ;
 #endif
@@ -75,6 +84,17 @@ fs::path engine_file() {
     std::error_code ec;
     auto p = fs::absolute(info.dli_fname, ec);
     return ec ? fs::path() : p;
+#elif defined(_WIN32)
+    HMODULE mod = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&engine_file), &mod))
+        return {};
+    std::wstring buf(32768, L'\0');  // Win32 path cap
+    const auto cap = static_cast<DWORD>(buf.size());
+    const DWORD n = GetModuleFileNameW(mod, buf.data(), cap);
+    if (n == 0 || n >= cap) return {};
+    buf.resize(n);
+    return fs::path(buf);
 #else
     return {};
 #endif
@@ -99,7 +119,11 @@ const std::string& engine_digest() {
 // Every PRISM_* variable and value, sorted.
 std::string prism_environment() {
     std::vector<std::string> vars;
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(_WIN32)
+    // Windows variable names are case-insensitive: getenv("PRISM_X") reads prism_x too
+    for (char** e = _environ; e && *e; ++e)
+        if (_strnicmp(*e, "PRISM_", 6) == 0) vars.emplace_back(*e);
+#elif defined(__unix__) || defined(__APPLE__)
     for (char** e = environ; e && *e; ++e)
         if (std::strncmp(*e, "PRISM_", 6) == 0) vars.emplace_back(*e);
 #endif
