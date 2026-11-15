@@ -2,6 +2,7 @@
 // (tests/cpp/test_cli.cpp). main.cpp handles subcommands and --gui first.
 
 #include "prism/cli.hpp"
+#include "prism/complexity.hpp"
 
 #include "prism/pipeline.hpp"
 #include "prism/threads.hpp"
@@ -255,6 +256,19 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--timeout") {
             auto v = in.take_float();
             if ((ok = v.has_value())) cfg.timeout = *v;
+        } else if (a == "--complexity") {
+            // Z3 rlimit units per verification-condition query (0: off, the
+            // wall clock alone); process-wide (include/prism/complexity.hpp)
+            auto v = in.take();
+            unsigned long long n = 0;
+            if (v) {
+                auto [p, ec] = std::from_chars(v->data(), v->data() + v->size(), n);
+                ok = !v->empty() && ec == std::errc() && p == v->data() + v->size();
+                if (!ok) in.error = "argument --complexity: invalid int value: '" + *v + "'";
+            } else {
+                ok = false;
+            }
+            if (ok) complexity::set_scale(n);
         } else if (a == "--fail-on") {
             auto v = in.take();
             if ((ok = v.has_value())) {
@@ -322,7 +336,7 @@ std::string cli_usage() {
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
-        "           [--certified] [--solver-cache DIR] [--timeout S]\n"
+        "           [--certified] [--solver-cache DIR] [--timeout S] [--complexity N]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "prism library import|vet|stats|lookup ... (proof library of earlier verdicts; library --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
@@ -363,6 +377,10 @@ std::string cli_usage() {
         "  certified is PROVED-CERTIFIED, otherwise it stays PROVED with a certify_note.\n"
         "--solver-cache DIR: solver query cache (default $XDG_CACHE_HOME/prism/solver).\n"
         "--timeout S: solver seconds per query (default 30).\n"
+        "--complexity N: Z3 resource-limit (rlimit) units per pir query of a function of\n"
+        "  reference size (default: --timeout x 1000000, else PRISM_PIR_RLIMIT; 0 = off);\n"
+        "  the same limit on every machine, so \"not decided\" is reproducible; the\n"
+        "  --timeout clock stays as a backstop (3 x).\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

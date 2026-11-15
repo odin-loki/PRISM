@@ -14,6 +14,7 @@
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/complexity.hpp"
 #include "prism/pir.hpp"
 #include "prism/pir/folded_diag.hpp"
 #include "prism/pir/frontend.hpp"
@@ -2057,6 +2058,16 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     // other workers idle, for 10+ minutes; with 60 s the unit took 192 s.
     o.function_budget_s = default_function_budget_s(cfg);
     (void)env_seconds("PRISM_FUNCTION_BUDGET", o.function_budget_s);
+    // Complexity limits (include/prism/complexity.hpp, docs/TARGETED_PROVING.md
+    // W1): every query's limit, and the function budget, in Z3 rlimit units
+    // (--complexity, $PRISM_PIR_RLIMIT, else --timeout seconds of
+    // kUnitsPerSecond); the clocks are backstops kWallBackstop times longer.
+    o.complexity = static_cast<std::int64_t>(complexity::scale_for(cfg.timeout));
+    o.jobs = cfg.jobs;  // W2: a function's strategies share the run's scheduler
+    if (o.complexity > 0 && o.function_budget_s > 0) {
+        o.function_units_s = o.function_budget_s;
+        o.function_budget_s *= complexity::kWallBackstop;
+    }
     o.cache_dir = cfg.solver_cache.string();
     // Solver and checker binaries: --tool NAME=PATH first, then the pinned
     // build under tools_home() (not inside the scanned tree without

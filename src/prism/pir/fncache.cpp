@@ -2,6 +2,7 @@
 #include "fncache.hpp"
 
 #include "prism/cache.hpp"
+#include "prism/complexity.hpp"
 #include "prism/laws.hpp"
 #include "prism/solver.hpp"
 
@@ -250,7 +251,8 @@ std::string key(const Function& fn, const CheckOptions& opt) {
 #endif
     o << "\nunwind " << opt.unwind << " deepen " << opt.deepen_max << " timeout " << opt.timeout_s << " fnbudget "
       << opt.function_budget_s << " portfolio " << opt.portfolio << " mem " << static_cast<int>(opt.encode.memory)
-      << " houdini_budget " << (opt.houdini_budget != nullptr) << "\nenv " << prism_environment() << '\n'
+      << " houdini_budget " << (opt.houdini_budget != nullptr) << " complexity " << opt.complexity << " fnunits "
+      << opt.function_units_s << "\nenv " << prism_environment() << '\n'
       << fingerprint(fn);
     return prism::cache::key_of(o.str());
 }
