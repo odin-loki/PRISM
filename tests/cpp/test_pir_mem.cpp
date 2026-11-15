@@ -1067,7 +1067,7 @@ TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)")
 int loop_long_cubic(int n) {
     int s = 0;
     for (int i = 0; i < 100; i++)
-        s += i * i;
+        s += i * i * i * i;  /* the fold bound 99^4 * 100 does not fit: no proof */
     return s + (n & 1);
 }
 )";

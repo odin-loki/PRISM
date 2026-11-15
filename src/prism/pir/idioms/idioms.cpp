@@ -705,6 +705,7 @@ struct Builder {
     TTerm cst(uint64_t c, unsigned w) const { return {TTerm::Const, -1, c & wmask(w), w}; }
     TTerm scope(int v) const { return {TTerm::Scope, v, 0, A.width(v)}; }
     bool sgn(int i) const { return ctx.signed_use && ctx.signed_use(A.phi_var(L, i)); }
+    bool sgn_var(int v) const { return ctx.signed_use && ctx.signed_use(v); }
     Match& m(const std::string& name) {
         for (auto& x : out)
             if (x.idiom == name) return x;
@@ -910,7 +911,9 @@ struct Builder {
                 if (r) cmp("bit-scan", i, Op::Ule, entry(i));
             }
             // folds: acc += x with x in [lo, hi], once per iteration of a counter / position
-            if (only(i, {Upd::Same, Upd::AddV, Upd::AddC}) && has(i, Upd::AddV) &&
+            // (signed accumulators only: an unsigned one may wrap, and its bound is
+            // rarely what a property needs)
+            if (s && only(i, {Upd::Same, Upd::AddV, Upd::AddC}) && has(i, Upd::AddV) &&
                 std::find(positions.begin(), positions.end(), i) == positions.end()) {
                 std::optional<std::pair<i128, i128>> r;
                 std::optional<int> single_scope;
@@ -956,6 +959,8 @@ struct Builder {
                     auto& FM = A.facts(M);
                     auto& ipf = FM.phis[static_cast<std::size_t>(u.inner_phi)];
                     if (ipf.entry_var != A.phi_var(L, i)) continue;
+                    const bool s_in = s || sgn_var(A.fn.blocks[static_cast<std::size_t>(A.header(M))].phis[static_cast<std::size_t>(u.inner_phi)].dst);
+                    if (!s_in) continue;
                     // the inner phi's additions
                     std::optional<std::pair<i128, i128>> r;
                     std::optional<int> sv;
@@ -1001,7 +1006,7 @@ struct Builder {
                         for (int b : positions) {
                             if (std::find(counters.begin(), counters.end(), b) != counters.end()) continue;
                             const i128 hi = std::max<i128>(r->second, 0), lo = std::min<i128>(r->first, 0);
-                            const bool sx = s || lo < 0;
+                            const bool sx = true;
                             if (fits(hi, w)) scale("nested-fold", i, b, static_cast<int64_t>(hi), Op::Sle, sx);
                             if (fits(lo, w)) scale("nested-fold", i, b, static_cast<int64_t>(lo), Op::Sge, sx);
                         }
@@ -1009,7 +1014,7 @@ struct Builder {
                     for (int b : counters) {
                         if (r) {
                             const i128 hi = std::max<i128>(r->second, 0) * *trip, lo = std::min<i128>(r->first, 0) * *trip;
-                            const bool sx = s || lo < 0;
+                            const bool sx = true;
                             if (fits(hi, w)) scale("nested-fold", i, b, static_cast<int64_t>(hi), Op::Sle, sx);
                             if (fits(lo, w)) scale("nested-fold", i, b, static_cast<int64_t>(lo), Op::Sge, sx);
                         }

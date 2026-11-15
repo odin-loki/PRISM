@@ -1288,11 +1288,16 @@ HoudiniOut Houdini::run() {
     const double share = std::max(per_query_, 0.3 * std::max(0.0, saved - t0_.elapsed_s()));
     deadline_ = std::min(saved, t0_.elapsed_s() + share);
     idiom_round_ = true;
+    // a template that is not decided quickly is dropped (an idiom's
+    // invariants are simple when they hold): a quarter of the query time
+    const double saved_q = per_query_;
+    per_query_ = std::max(1.0, per_query_ / 4);
     const prism::clock::Stopwatch t1;
     HoudiniOut first = run_search();
     const double first_s = t1.elapsed_s();
     idiom_round_ = false;
     deadline_ = saved;
+    per_query_ = saved_q;
     char secs[32];
     std::snprintf(secs, sizeof secs, "%.2f", first_s);
     if (first.proved) {
@@ -2049,7 +2054,7 @@ HoudiniOut Houdini::run_search() {
     double final_budget =
         hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, left()), hard_left());
     // the idiom round keeps the rest for the generic search
-    if (idiom_round_) final_budget = std::min(std::max(2 * per_query_, left()), hard_left());
+    if (idiom_round_) final_budget = std::min(std::max(8 * per_query_, left()), hard_left());  // per_query_ is a quarter there
     out.final_s = final_budget;
     // the optimistic solver is not asked again: hand its memory back before
     // the final query (nested loops: both together crossed the budget)
