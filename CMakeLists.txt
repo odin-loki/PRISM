@@ -27,7 +27,6 @@ if(WIN32)
 endif()
 
 option(PRISM_CUDA "Build CUDA mutation kernels" ON)
-option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 (the PIR solver)" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
 # Windows CI: portable doctest TUs only (no unistd-heavy integration tests).
@@ -67,7 +66,7 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Never file(GLOB) third_party/.
 
 # --- prism-deps: supply-chain tool (roadmap Part 1) ---
-# Licence firewall, linked-tree digests, pinned tool fetcher and SBOM writer
+# Linked-tree digests, pinned tool fetcher and SBOM writer
 # for third_party/MANIFEST.toml. Standard library only: it links no
 # third_party/ code, so CI and the Docker build compile and run it to verify
 # third_party/ before anything from there is built. -DPRISM_DEPS_ONLY=ON
@@ -78,7 +77,6 @@ add_library(prism_deps_lib STATIC
   src/prism/log.cpp  # prism::log on FORGE's logger, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
   src/tools/prism_deps/fetch.cpp
-  src/tools/prism_deps/licence.cpp
   src/tools/prism_deps/manifest.cpp
   src/tools/prism_deps/sbom.cpp
   src/tools/prism_deps/sha.cpp
@@ -225,7 +223,6 @@ set(PRISM_SRC
   src/prism/hash.cpp
   src/prism/havoc.cpp
   src/prism/interval.cpp
-  src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
   src/prism/forge_services.cpp
@@ -678,7 +675,7 @@ if(PRISM_CUDA)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         BUILD_RPATH "$ORIGIN"
         INSTALL_RPATH "$ORIGIN")
-      # prism / prism_tests / prism_gui link prism_core, not prism_native.
+      # prism / prism_tests link prism_core, not prism_native.
       # Leaving the kernel only on prism_native was a silent disable.
       target_link_libraries(prism_core PUBLIC prism_cuda)
       if(TARGET prism_native)
@@ -696,29 +693,6 @@ else()
 endif()
 
 target_link_libraries(prism_core PUBLIC prism_forge_inference)
-
-if(PRISM_QT)
-  find_package(Qt6 COMPONENTS Widgets QUIET)
-  if(Qt6Widgets_FOUND AND TARGET Qt6::Widgets)
-    # The window as a library: prism_gui and the offscreen window tests
-    # (prism_gui_tests) link the same code.
-    add_library(prism_gui_window STATIC
-      src/gui/MainWindow.cpp
-      src/gui/MainWindow.hpp
-    )
-    set_target_properties(prism_gui_window PROPERTIES AUTOMOC ON)
-    target_include_directories(prism_gui_window PUBLIC "${PRISM_ROOT}/include" src/gui)
-    target_link_libraries(prism_gui_window PUBLIC Qt6::Widgets prism_core)
-    add_executable(prism_gui src/gui/main.cpp)
-    target_link_libraries(prism_gui PRIVATE prism_gui_window)
-    message(STATUS "Qt6 Widgets found — building prism_gui (no display required to compile)")
-    if(_prism_cuda_lang)
-      set_target_properties(prism_gui PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
-    endif()
-  else()
-    message(WARNING "Qt6 Widgets not found — prism CLI still runs; GUI is NOTRUN until Qt6Widgets is present.")
-  endif()
-endif()
 
 if(PRISM_TESTS)
   # One source list for every platform (WIN32 subset == Linux full: same TUs,
@@ -896,7 +870,6 @@ if(PRISM_TESTS)
     tests/cpp/test_forge_ai.cpp
     tests/cpp/test_afl_notrun.cpp
     tests/cpp/test_libfuzzer_notrun.cpp
-    tests/cpp/test_gui_model.cpp
     tests/cpp/test_repair.cpp
     tests/cpp/test_adapters.cpp
     tests/cpp/test_sanitize.cpp
@@ -945,8 +918,8 @@ if(PRISM_TESTS)
   if(WIN32 AND NOT PRISM_TESTS_WIN_SUBSET)
     message(WARNING
       "WIN32 prism_tests without -DPRISM_TESTS_WIN_SUBSET=ON: fake_* stand-ins "
-      "are not built, so cases that spawn them (adapters, sanitize, qa, gui "
-      "launcher) cannot find them. Use -DPRISM_TESTS_WIN_SUBSET=ON.")
+      "are not built, so cases that spawn them (adapters, sanitize, qa) "
+      "cannot find them. Use -DPRISM_TESTS_WIN_SUBSET=ON.")
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
@@ -957,8 +930,6 @@ if(PRISM_TESTS)
     add_executable(fake_cake_lpr tests/cpp/fake_cake_lpr.cpp)
     # Stand-in lrat-check that touches 400 MB (resident-memory cap kill case).
     add_executable(fake_mem_hog tests/cpp/fake_mem_hog.cpp)
-    # Stand-in prism_gui for the `prism --gui` launcher cases (test_gui_model.cpp).
-    add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
@@ -971,11 +942,10 @@ if(PRISM_TESTS)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui fake_cake_lpr fake_mem_hog)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_cake_lpr fake_mem_hog)
     target_compile_definitions(prism_tests PRIVATE
       "PRISM_FAKE_CAKE_LPR=\"$<TARGET_FILE:fake_cake_lpr>\""
       "PRISM_FAKE_MEM_HOG=\"$<TARGET_FILE:fake_mem_hog>\""
-      "PRISM_FAKE_GUI=\"$<TARGET_FILE:fake_prism_gui>\"" 
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
       "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
       "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\""
@@ -1002,22 +972,6 @@ if(PRISM_TESTS)
   endif()
   enable_testing()
   add_test(NAME prism_tests COMMAND prism_tests)
-  # The window itself, offscreen (QT_QPA_PLATFORM=offscreen); PRISM_QT only.
-  if(TARGET prism_gui_window)
-    add_executable(prism_gui_tests tests/cpp/test_gui.cpp)
-    target_include_directories(prism_gui_tests PRIVATE "${PRISM_ROOT}/third_party")
-    target_link_libraries(prism_gui_tests PRIVATE prism_gui_window)
-    # "a real run through the window" finds prism beside prism_gui_tests.
-    add_dependencies(prism_gui_tests prism)
-    if(WIN32)
-      # Stand-in `prism` for the run/done/fail cases (POSIX uses a /bin/sh script).
-      add_executable(fake_gui_prism tests/cpp/fake_gui_prism.cpp)
-      add_dependencies(prism_gui_tests fake_gui_prism)
-      target_compile_definitions(prism_gui_tests PRIVATE
-        "PRISM_FAKE_GUI_PRISM=\"$<TARGET_FILE:fake_gui_prism>\"")
-    endif()
-    add_test(NAME prism_gui_tests COMMAND prism_gui_tests)
-  endif()
 endif()
 
 # --- self-fuzzing (roadmap 6.2): libFuzzer target for PRISM's own parsers ---

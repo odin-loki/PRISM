@@ -34,7 +34,6 @@ struct Config {
     std::optional<std::vector<std::string>> stages;
     std::vector<std::string> skip;
     bool resume = false;
-    bool gui = false;
     // Explicit adapter binaries (--tool NAME=PATH). Searched before ~/.prism/tools and PATH.
     std::map<std::string, std::filesystem::path> tools;
     // Law 9: running code from the scanned tree (compiled harnesses, sanitizer

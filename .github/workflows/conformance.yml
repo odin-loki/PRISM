@@ -63,7 +63,7 @@ jobs:
           -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_CUDA=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build --target prism prism-qa
       - uses: actions/upload-artifact@v4

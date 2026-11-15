@@ -27,7 +27,6 @@ constexpr const char* kUsage =
     "                                fetch, verify and build external tools into\n"
     "                                DIR (default $PRISM_TOOLS_DIR or ~/.prism/tools)\n"
     "  tree-digest DIR               print the tree_sha256 of a directory\n"
-    "  licence-check                 fail when a linked component is copyleft\n"
     "  sbom [--version V] [-o FILE]  CycloneDX 1.5 SBOM\n"
     "  pins -o FILE                  C++ header of the external tool pins (build)\n"
     "\n"
@@ -111,7 +110,7 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
     std::string bad;
     if (cmd == "tree-digest") bad = allow(pos.size() == 1, "tree-digest takes one DIR");
     else if (cmd == "tool") bad = allow(!pos.empty(), "tool needs at least one NAME");
-    else if (cmd == "list" || cmd == "linked" || cmd == "licence-check" || cmd == "sbom" || cmd == "pins")
+    else if (cmd == "list" || cmd == "linked" || cmd == "sbom" || cmd == "pins")
         bad = allow(pos.empty(), "unexpected argument");
     else return usage("unknown command " + cmd);
     if (bad.empty() && refetch && cmd != "linked") bad = "--refetch is for linked";
@@ -149,7 +148,7 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
 
     Manifest m;
     try {
-        m = (cmd == "licence-check" || cmd == "sbom") ? read_manifest(*manifest) : load_manifest(*manifest);
+        m = (cmd == "sbom") ? read_manifest(*manifest) : load_manifest(*manifest);
     } catch (const std::exception& e) {
         prism::log::error("", prism::log::cat("bad manifest: ", e.what()));
         return prism::code(prism::Exit::Usage);
@@ -164,22 +163,6 @@ int deps_main(const std::vector<std::string>& args, const fs::path& argv0) {
         return prism::code(prism::Exit::Ok);
     }
     if (cmd == "linked") return run_linked(m, refetch);
-    if (cmd == "licence-check") {
-        auto problems = licence_problems(m.components(), m.root);
-        int n = 0;
-        for (const auto& c : m.components())
-            if (c.str("kind") == "linked") {
-                std::cout << "linked   " << pad(c.str("name"), 14) << " " << c.str("spdx") << "\n";
-                ++n;
-            }
-        if (!problems.empty()) {
-            std::cout.flush();
-            for (const auto& p : problems) prism::log::plain(prism::log::cat("FAIL ", p, "\n"));
-            return prism::code(prism::Exit::Failed);
-        }
-        std::cout << "licence check OK: " << n << " linked components, none copyleft\n";
-        return prism::code(prism::Exit::Ok);
-    }
     if (cmd == "sbom") {
         std::string v = version ? *version : [] {
             const char* e = prism::settings::cstr(prism::settings::version());

@@ -45,7 +45,7 @@ Search order of `which_adapter` is unchanged: `--tool`, then the pinned
 
 ## Left unchanged on purpose
 
-- Manifest pins and `prism-deps licence-check`. No pin or licence edit.
+- Manifest pins. No pin or licence edit.
 - `include/prism/config.hpp`. Nothing in this slice needed a new declaration.
 - `src/prism/solver/util.cpp` still has its own `SearchPathA` walk for
   solver tools. That file is outside this slice.

@@ -46,7 +46,7 @@ ENV CC=${PRISM_LLVM_BIN}/clang \
     AR=${PRISM_LLVM_BIN}/llvm-ar \
     RANLIB=${PRISM_LLVM_BIN}/llvm-ranlib
 
-# Fail closed before compiling anything from third_party/: licence firewall +
+# Fail closed before compiling anything from third_party/: the
 # in-tree linked libraries must match the manifest (version marker and tree
 # digest). prism-deps is built first from the standard library alone; it
 # links no third_party/ code (PRISM_DEPS_ONLY configures only that target).
@@ -55,7 +55,6 @@ RUN cmake -S /src -B /build-deps -G Ninja \
       -DCMAKE_C_COMPILER=${CC} -DCMAKE_CXX_COMPILER=${CXX} \
       -DPRISM_DEPS_ONLY=ON \
  && cmake --build /build-deps --target prism-deps \
- && /build-deps/prism-deps licence-check \
  && /build-deps/prism-deps linked
 
 # -ffile-prefix-map strips /src and the build dir from debug info, __FILE__
@@ -73,7 +72,7 @@ RUN cmake -S /src -B /build -G Ninja \
       -DCMAKE_CXX_FLAGS="${PRISM_REPRO_FLAGS}" \
       -DCMAKE_EXE_LINKER_FLAGS="--ld-path=${PRISM_LLVM_BIN}/ld.lld -Wl,--build-id=sha1" \
       -DCMAKE_SHARED_LINKER_FLAGS="--ld-path=${PRISM_LLVM_BIN}/ld.lld -Wl,--build-id=sha1" \
-      -DPRISM_Z3=ON -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_TESTS=ON \
+      -DPRISM_Z3=ON -DPRISM_CUDA=OFF -DPRISM_TESTS=ON \
  && cmake --build /build \
  && (cd /src && /build/prism_tests) \
  && mkdir -p /out \

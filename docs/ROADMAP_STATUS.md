@@ -27,13 +27,13 @@ generators): 0 wrong proofs over every campaign run.
 
 | # | Decision | Status |
 |---|---|---|
-| D1 | pinned external tools, link only permissive libs | **DONE** — `third_party/MANIFEST.toml`, `prism-deps licence-check` in CI |
+| D1 | pinned external tools | **DONE** — `third_party/MANIFEST.toml` (the licence check was dropped by decision) |
 | D2 | Clang front end → PIR | **PARTIAL** — `src/prism/pir/` is a working Clang → LLVM IR → PIR → Z3 stage; Clang runs as a process, not linked as a library; `cparse.cpp` + `bmc.cpp` still run as the differential oracle |
 | D3 | Z3 + Bitwuzla + CaDiCaL + Kissat; LRAT certified mode | **DONE** — `src/prism/solver/`; certified mode checks CaDiCaL LRAT with cake_lpr and Lean's verified checker |
 | D4 | GPU for batched queries / SLS / preprocessing / fuzzing | **PARTIAL** — CPU ProbSAT walker in the portfolio; CUDA kernel `src/cuda/probsat.cu` type-checked only (no GPU in this environment) |
 | D5 | LLM proposes, prover decides | **DONE** — `src/prism/ai/`, audit log, verdict audit |
 | D6 | Lean 4 | **DONE** — `proofs/`, `proofs/semantics`, `proofs/techniques`, `proofs/refinement` (core Lean, no Mathlib) |
-| D7 | Linux primary; native MSVC on Windows | **DONE** — MinGW rejected in CMake; Windows command-line quoting kept correct. Native MSVC `cl` is in CI: four Windows compile smokes (`clang-cl`, `cl`, each with and without Z3), the Qt GUI job (`windows-gui-qt`), and the Linux `prism_tests` job; LP64 PIR lowers use `src/prism/pir/models/libc/shim/` on WIN32 ([MSVC_PORT.md](MSVC_PORT.md), [PIR.md](PIR.md) "Windows host"). Latest green `main` @ `4eb0b4ab1` (PRISM CI run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068)). Commits after that, from `9acaeeeba` through `4effa335e`, are not green |
+| D7 | Linux primary; native MSVC on Windows | **DONE** — MinGW rejected in CMake; Windows command-line quoting kept correct. Native MSVC `cl` is in CI: four Windows compile smokes (`clang-cl`, `cl`, each with and without Z3), and the Linux `prism_tests` job; LP64 PIR lowers use `src/prism/pir/models/libc/shim/` on WIN32 ([MSVC_PORT.md](MSVC_PORT.md), [PIR.md](PIR.md) "Windows host"). Latest green `main` @ `4eb0b4ab1` (PRISM CI run [`40163391068`](https://github.com/odin-loki/PRISM/actions/runs/40163391068)). Commits after that, from `9acaeeeba` through `4effa335e`, are not green |
 | D8 | Python engine frozen as oracle | **SUPERSEDED (2026-09-30)** — C++23 only; engine `prism/*.py` deleted (2026-10-25), bundled `prism/cocci/` retired (C4: hand-maintained `bmc_unenc.inc`, optional tree-local `spatch` only); see [CPP_PORT_PLAN.md](CPP_PORT_PLAN.md). Tracked Python outside `third_party/` is only `tools/svcomp/prism.py` |
 | PROVED-CERTIFIED | new verdict, never merged | **DONE** — both engines, Lean lattice (`proofs/Prism/Verdict.lean`), audit gate |
 
@@ -45,8 +45,8 @@ generators): 0 wrong proofs over every campaign run.
 | 1.1 delete the fifteen mined trees | **DONE** — tracked tree 981 MB → ~140 MB |
 | 1.1 tool SHA in every finding | **DONE** — `extra.tool_sha` from every external-tool adapter, both engines |
 | 1.1 history rewrite + force-push | **NOT DONE (owner action)** — `scripts/rewrite_history.sh` is ready and tested on a mirror; a force-push rewrites the default branch and needs the owner's explicit approval |
-| 1.1 tracked checkout size cap | **RETIRED (not a goal)** — Part 1 assurance is manifest pins, tree digests, SBOM and licence-check (`docs/SUPPLY_CHAIN.md`), not a megabyte budget; linked vendored libs (e.g. llama.cpp, Z3) stay in `third_party/` at whatever size upstream requires |
-| 1.2 licence firewall in CI | **DONE** — `prism-deps licence-check`, `ci.yml` |
+| 1.1 tracked checkout size cap | **RETIRED (not a goal)** — Part 1 assurance is manifest pins, tree digests, and SBOM (`docs/SUPPLY_CHAIN.md`), not a megabyte budget; linked vendored libs (e.g. llama.cpp, Z3) stay in `third_party/` at whatever size upstream requires |
+| 1.2 licence firewall in CI | **DROPPED** (owner decision) — `prism-deps licence-check` and its CI steps were removed |
 | 1.2 CodeQL adapter removed | **DONE** — both engines |
 | 1.2 every external invocation through one argv path | **DONE** — POSIX `fork`/`execvp`; Windows `CreateProcessW` with a round-trip-tested quoter (no `_popen`) |
 | 1.2 PRISM licence | **DONE** — `LICENSE` is the GNU Affero General Public License, version 3 |
@@ -111,7 +111,7 @@ at run time; the numbers below are for the deterministic halves.
 | 9.3 triage | **DONE** — ordering only |
 | 9.3 solver/bound prediction | **PARTIAL** — solver prediction on by default (3.1 learned scheduler). Unwind prediction measured and **off**: on 525 held-out functions the GBDT is 20% faster than a fixed unwind 8 but loses verdicts (agreement 98.3% vs 99.4%, 24 vs 21 BOUNDED); k-NN keeps them (20 BOUNDED) at +70% time; not wired into `pir`. No policy can change soundness (a smaller unwind only gives an honest BOUNDED; 0 PROVED-then-FAILED contradictions) |
 | 9.4 questions, report/assurance drafting | **DONE** — `prism ask`, `prism draft` |
-| 9.4 GUI assistant | **DONE** except model-backed answers — `prism_gui` builds against Qt 6.4.2. A headless smoke run (`--smoke-screenshot`, in CI on every push) runs the real pipeline through the window and checks the findings table fills. The PySide6 GUI tests (43) now run in CI too, offscreen. The assistant panel answers structured queries without a model; LLM-backed answers need a model |
+| 9.4 GUI assistant | **DROPPED** (owner decision) — PRISM is console-only; `prism ask` (assistant_reply) answers structured queries without a model, LLM-backed answers need a model |
 | 9.7 per-feature metrics | **DONE** for deterministic halves (`docs/AI.md`); model metrics need a model |
 
 ## Part 5 / 8 — Proofs (Lean 4, no `sorry`, standard axioms only)

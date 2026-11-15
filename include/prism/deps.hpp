@@ -1,4 +1,4 @@
-// prism-deps: supply-chain fetcher, verifier, licence firewall and SBOM
+// prism-deps: supply-chain fetcher, verifier and SBOM
 // writer driven by third_party/MANIFEST.toml (roadmap Part 1).
 //
 // Standard library only (plus POSIX process calls and the git CLI at run
@@ -105,7 +105,7 @@ struct Manifest {
 
 // Reads and validates every [[component]]; throws TomlError / FetchError.
 Manifest load_manifest(const fs::path& path);
-// Reads the TOML without validating the components (licence-check, sbom).
+// Reads the TOML without validating the components (sbom).
 Manifest read_manifest(const fs::path& path);
 void validate_component(const Table& c);
 std::vector<const Table*> components(const Manifest& m, std::string_view kind = {});
@@ -169,13 +169,6 @@ void fetch_archive(const Table& comp, const fs::path& dest_tar);
 fs::path fetch_tool(const Table& comp, const fs::path& base, bool build = true);
 int run_linked(const Manifest& m, bool refetch);
 
-// ------------------------------------------------------------------ licence
-
-// "permissive" | "weak" | "strong" for one SPDX id (optionally "X WITH exc").
-std::string classify(std::string_view spdx_id);
-// Licence ids of an SPDX expression, WITH-exception kept attached.
-std::vector<std::string> spdx_ids(std::string_view expr);
-std::vector<std::string> licence_problems(const std::vector<Table>& comps, const fs::path& root);
 
 // --------------------------------------------------------------------- sbom
 
@@ -186,7 +179,7 @@ std::string build_sbom(const std::string& manifest_bytes, const std::string& pri
 
 // prism-deps list | linked [--refetch] | tool NAME... [--no-build]
 //   [--tools-dir D] | tree-digest DIR | sbom [--version V] [-o F]
-//   | licence-check | pins -o FILE ; every command takes --manifest P.
+//   | pins -o FILE ; every command takes --manifest P.
 // Exit codes: 0 ok, 1 check failed, 2 usage or bad manifest, 3 hash mismatch.
 int deps_main(const std::vector<std::string>& args, const fs::path& argv0 = {});
 

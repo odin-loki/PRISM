@@ -20,8 +20,8 @@ error, before `run_pipeline`.
    (`--fail-on never`, `--out prism-out`, `--unwind 8`, and the rest of
    `default_config`). Law 8 holds: a typo is an error.
 
-An empty `--stage ""` still means every stage. `--gui` is still handed to
-`prism_gui` before scan parsing. Subcommands (`prove`, `regress`, `ask`,
+An empty `--stage ""` still means every stage. The `--gui` flag was removed with the GUI.
+Subcommands (`prove`, `regress`, `ask`,
 `draft`, `svcomp`, `triage`) are unchanged.
 
 Parsing landed in `d8d7f278f` (`Parse the command line strictly in a

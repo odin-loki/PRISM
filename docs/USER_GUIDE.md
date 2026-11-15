@@ -26,30 +26,17 @@ built with PRISM. FORGE is the one dependency that is not vendored: pass
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_Z3=ON
 cmake --build build            # the first build compiles Z3 and is slow
 ./build/prism_tests            # unit tests
 ./build/prism --list-stages
 ```
 
-Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_CUDA=ON`
+Options: `-DPRISM_CUDA=ON`
 builds the GPU mutator. FORGE is always linked (`-DFORGE_SOURCE_DIR=PATH` uses a
 local checkout; empty fetches odin-loki/FORGE `main`); it is also the LLM engine.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
-to make rebuilds cheap.
 
-The GUI builds against Qt 6.4 or later (`apt install qt6-base-dev libgl-dev`).
-To check it without a display, run the pipeline through the window headless:
-
-```
-QT_QPA_PLATFORM=offscreen ./build/prism_gui SRC --no-llm --out OUT \
-  --smoke-screenshot gui.png
-```
-
-When the run finishes, the report loads into the window and the window is
-saved to `gui.png`. The exit code is 0 only when the findings table is
-non-empty and the screenshot was written. It is 3 for an empty table and 2
-when the `prism` binary is not found. CI runs this on every push.
 
 ### Optional external tools
 
@@ -94,7 +81,6 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--timeout S` | solver seconds per query (default 30) |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
-| `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |
 | `--pbsd PATH` | ParanoidBSD tree for the `pbsd` stage (else `PRISM_PBSD`; no default). Importing its modules also needs `--allow-exec` |
 | `--requirements PATH` | C++ engine only. Markdown/text requirement documents (a file or a directory; repeatable); the `review` stage drafts contracts traced to their sentences ([AI.md](AI.md)) |
 | `--strict-aliasing` | C++ engine only. The `pir` stage also checks effective types / strict aliasing (C11 6.5p6-7) per byte; opt-in because real code often breaks the rule on purpose ([PIR.md](PIR.md)) |
@@ -347,7 +333,7 @@ jobs:
           git clone --depth 1 <your PRISM mirror> prism-src
           cmake -S prism-src -B prism-build -G Ninja -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF \
-            -DPRISM_QT=OFF -DPRISM_Z3=ON
+            -DPRISM_Z3=ON
           cmake --build prism-build --target prism
       - name: Check
         run: prism-build/prism . --no-llm --fail-on defect --out prism-out
