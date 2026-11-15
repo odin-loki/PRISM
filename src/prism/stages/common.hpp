@@ -121,6 +121,40 @@ std::vector<std::vector<uint8_t>> interesting_seeds(const FunctionInfo& fn);
 // prelude: top-level declarations put before the file (after <assert.h>).
 Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::string>& only_props = {},
                 const std::string& prelude = "");
+// Many pir_one checks in few pir runs (common.cpp pir_many): result k is
+// what pir_one(qs[k].fn, qs[k].unwind, qs[k].only_props, qs[k].prelude)
+// gives. Chunks of queries run on `jobs` workers (prism::pool).
+struct PirQuery {
+    FunctionInfo fn;
+    int unwind = 8;
+    std::vector<std::string> only_props;
+    std::string prelude;
+    // The unit to check instead of fn's file with fn spliced in (nullopt).
+    std::optional<std::string> unit;
+};
+// pir_one of one query (q.unit, when set, is the unit checked).
+Finding pir_query(const PirQuery& q);
+// `#line <span start>`, fn's signature and fn's body: fn's definition as
+// pir_one's unit holds it.
+std::string pir_definition(const FunctionInfo& fn);
+// True inside collect_pir_queries' dry run on this thread.
+bool collecting_pir();
+std::vector<Finding> pir_many(const std::vector<PirQuery>& qs, int jobs = 1);
+// Runs dry_run on this thread with every pir_one call recorded instead of
+// checked (each returns an UNKNOWN stand-in). dry_run must have no effect
+// but its pir_one calls: its results are thrown away.
+std::vector<PirQuery> collect_pir_queries(const std::function<void()>& dry_run);
+// collect_pir_queries, then pir_many on `jobs` workers: the checks are made
+// and kept (pir_many's per-process memo), so the real pass that follows,
+// asking the same queries, gets the checked rows without a run of its own.
+// A query the real pass asks that the dry run did not is checked then.
+void prefetch_pir(int jobs, const std::function<void()>& dry_run);
+// rows(0) ++ rows(1) ++ ... ++ rows(n-1), the calls made `jobs` at a time
+// (prism::pool::for_each_index): the order of the output is the order of a
+// serial loop, whatever order the calls finish in. rows must not depend on
+// another index's call (each function is checked on its own).
+std::vector<Finding> map_functions(int jobs, std::size_t n,
+                                   const std::function<std::vector<Finding>(std::size_t)>& rows);
 // The C/C++ declarations of the hooks a rewritten body may call:
 // __VERIFIER_assume(int) and __prism_havoc_bytes(void*, size).
 extern const char* const kPirHookPrelude;
