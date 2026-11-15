@@ -240,3 +240,28 @@ holds. That is a missing contract, not a bug, and the triage must say so.
 - Lock identity by pointer value is exact in-function but not across
   functions without the module pass.
 - No claim about RCU grace periods or memory ordering before W3.
+
+## 11. Implementation finding (phase A attempt, 2026-11-16)
+
+The first attempt put the ghost lock set in C globals of the Linux lock spec
+(`static const void *__prism_held[8]`, `static int __prism_atomic`) and raised
+the checks with `__prism_check`. The gate (`*kernel*`, branch pir-w7-concurrency)
+failed:
+
+- `__prism_check` needs literal class and message strings. A check inside a
+  helper with a `const char *` parameter is UNENCODED (NEEDS-HARNESS).
+- The translator does not carry writes to a model's mutable globals from one
+  library-model call to the next. Reads of the held set then need values other
+  than the initialisers, so `lock_ok`, `trylock_ok` and `spin_irqsave_ok` came
+  back NEEDS-HARNESS (not PROVED-ASSUMING), with the note "the global state the
+  function is called in is an unstated precondition".
+
+Consequence: phase A cannot be done in the spec layer alone. The ghost state
+has to be frame-local state of the analysed function in `pir::translate` (a
+fixed slot array allocated with the frame, zero at entry, read and written by
+the `__prism_lock_*` intrinsics of section 2.1). The spec change and the test
+case were reverted so the existing kernel tests stay green. The toy file
+testdata/pir/kernel_lock_ctx.c is kept for that step.
+
+The pilot (e1000e, em) was not run: the checks are not live, so it would report
+nothing new.
