@@ -101,6 +101,9 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--requirements PATH` | C++ engine only. Markdown/text requirement documents (a file or a directory; repeatable); the `review` stage drafts contracts traced to their sentences ([AI.md](AI.md)) |
 | `--strict-aliasing` | C++ engine only. The `pir` stage also checks effective types / strict aliasing (C11 6.5p6-7) per byte; opt-in because real code often breaks the rule on purpose ([PIR.md](PIR.md)) |
 | `--pir-drafts` | C++ engine only. Let `pir` size pointer parameters from the template harness draft when no `// requires:` gives them; a violation found only under a drafted size stays `NEEDS-HARNESS` (Law 6) |
+| `--pir-harness` | C++ engine only. `pir` binds a pointer parameter that no `// requires:` clause covers to an object built from the IR types (struct layout, nested pointer fields to `--pir-harness-depth` levels); every choice is a named assumption, so the best verdict is `PROVED-ASSUMING` and a violation found only under it is `NEEDS-HARNESS` ([PIR.md](PIR.md) "Automatic pointer harness") |
+| `--pir-harness-depth N`, `--pir-harness-elems N`, `--pir-harness-bytes N` | bounds of `--pir-harness`: nested pointer levels (default 2), default element count of an array-like pointee (16), size of an object whose pointee type is never accessed (64 bytes) |
+| `--jsonl FILE` | C++ engine only. `pir` appends one JSON line per function: key (`unit:start-end`), engine, exact verdict, proof level L0-L3, the full assumption list, time, peak memory, Lean-fragment coverage; counts in `FILE.summary.json` ([PIR.md](PIR.md) "Machine-readable output") |
 | `--fp-checks` | C++ engine only. `pir` also reports IEEE floating-point division by zero, invalid operations (NaN from non-NaN operands) and overflow to infinity (FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW); off by default because Annex F defines these results. An out-of-range float-to-integer conversion (FLOAT-CAST-OVF) is always checked |
 | `--contracts-approved PATH` | C++ engine only. Approvals of drafted contracts (default `<root>/contracts.approved.json`); only approved clauses give `PROVED-ASSUMING` |
 | `--list-stages` | print the stage order and exit |
@@ -422,3 +425,15 @@ CNF: what it still trusts (Clang, the PIR encoder and memory model, and the
 bit-blaster when it is Z3's) is listed in the `TRUSTED_BASE.md` that every
 run writes next to the report. `build/prism-qa conformance --certified`
 measures how many loop-free functions of the suite become `PROVED-CERTIFIED`.
+
+### Batch runs over a compile database
+
+`scripts/pir_batch.sh --db compile_commands.json --out DIR` runs the `pir`
+stage on every unit of a compile database, one `prism` process per unit, with
+`--pir-harness --jsonl`. Results are append-only JSON-line shards
+(`DIR/shards/shard-NN.jsonl`), finished units are listed in `DIR/manifest.tsv`
+(a stopped run resumes by skipping them), and `--summary` prints counts. The
+memory budget per worker is `PRISM_MEM_BUDGET_MB`, derived by default from the
+peak RSS measured on the first units, and the worker count is
+`floor((MemAvailable - 10 GB) / budget)`; never use `ulimit -v` for PRISM.
+Details: [PIR.md](PIR.md) "Batch mode".

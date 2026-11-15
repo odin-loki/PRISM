@@ -55,6 +55,16 @@ struct Config {
     // harness draft (ai::draft_harness) when no requires clause gives them.
     // Opt-in: without it unguarded pointer parameters stay NEEDS-HARNESS (Law 6).
     bool pir_drafts = false;
+    // --pir-harness: pir binds a pointer parameter that no requires clause or
+    // draft covers to an object built from the IR types (docs/PIR.md
+    // "Automatic pointer harness"); every choice is a named assumption, so the
+    // best verdict is PROVED-ASSUMING. Opt-in (Law 6).
+    bool pir_harness = false;
+    int pir_harness_depth = 2;                 // --pir-harness-depth N: nested pointer levels
+    unsigned long long pir_harness_elems = 16;  // --pir-harness-elems N: default array-like pointee length
+    unsigned long long pir_harness_bytes = 64;  // --pir-harness-bytes N: size when the pointee type is unknown
+    // --jsonl FILE: the pir stage appends one JSON line per function (docs/PIR.md "Machine-readable output")
+    std::filesystem::path jsonl;
     // --fp-checks: pir also reports IEEE floating-point exceptions (division
     // by zero, invalid operation, overflow) that Annex F defines. Opt-in.
     bool fp_checks = false;

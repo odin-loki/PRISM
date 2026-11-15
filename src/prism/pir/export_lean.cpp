@@ -735,7 +735,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         for (auto& k : opt.contracts)
             if (k.param == p.name) c = &k;
         if (!own && !c) {
-            harness << "L ptrparam %" << name(p.name) << "\n";
+            if (opt.auto_harness.on)
+                throw Unsupported{"automatic pointer harness (struct object and nested pointer objects are not in the Lean model)"};
+            harness <<"L ptrparam %" << name(p.name) << "\n";
             continue;
         }
         if (bt || sret != std::string::npos) {
@@ -1267,13 +1269,10 @@ void pir_side(std::ostream& o, const Function& fn) {
     }
 }
 
-}  // namespace
-
-void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
-                      const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
-    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
-    if (!env || !*env) return;
-    std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
+// The text of one (LLVM fragment, PIR) pair; `unsupported` (when given) is set
+// to the reason when the function is outside the Lean-proved LLVM fragment.
+std::string pair_text(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt, const Translation& t,
+                      std::string* unsupported) {
     std::ostringstream o;
     o << "func " << (plain_name(f.name) ? f.name : std::string("?")) << "\n";
     try {
@@ -1354,6 +1353,7 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         std::string why = u.why;
         std::replace(why.begin(), why.end(), '\n', ' ');
         o << "L unsupported " << why << "\n";
+        if (unsupported) *unsupported = why;
     }
     if (t.fn) {
         o << "status ok\n";
@@ -1364,11 +1364,44 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         o << "status unencoded " << why << "\n";
     }
     o << "end\n";
+    return o.str();
+}
+
+}  // namespace
+
+void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
+                      const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
+    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
+    if (!env || !*env) return;
+    std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
+    const std::string text = pair_text(m, f, opt, t, nullptr);
     static std::mutex mu;
     std::lock_guard<std::mutex> lock(mu);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    std::ofstream(dir / (unit + ".pirl"), std::ios::app) << o.str();
+    std::ofstream(dir / (unit + ".pirl"), std::ios::app) << text;
+}
+
+LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+                           const Translation& t) {
+    LeanCoverage c;
+    if (!t.fn) {
+        c.reason = "not translated to PIR (" + t.reason + ")";
+        return c;
+    }
+    if (t.fn->ptr.w != 64) {
+        c.reason = "ILP32 task (the Lean model is LP64 only)";
+        return c;
+    }
+    std::string why;
+    try {
+        (void)pair_text(m, f, opt, t, &why);
+    } catch (const std::exception& e) {
+        why = std::string("export failed: ") + e.what();
+    }
+    c.supported = why.empty();
+    c.reason = why;
+    return c;
 }
 
 }  // namespace prism::pir

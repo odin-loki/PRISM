@@ -11,6 +11,7 @@
 #include "prism/settings.hpp"
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
+#include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
@@ -24,6 +25,7 @@
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
+#include "jsonl.hpp"
 
 #include <cctype>
 #include <cstring>
@@ -1467,6 +1469,14 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     std::vector<std::string> argv{cc->string()};
     auto fl = base_flags(src);
     fl.insert(fl.end(), include_flags.begin(), include_flags.end());
+    // A freestanding unit (-nostdinc: a kernel) has no libc to complete: the forced C23
+    // declarations (strndup(const char *, size_t)) would clash with its own libkern.h.
+    if (!is_cxx(src) && std::ranges::find(include_flags, std::string("-nostdinc")) != include_flags.end())
+        for (std::size_t k = 0; k + 1 < fl.size(); ++k)
+            if (fl[k] == "-include" && fl[k + 1].find("prism_c23_decls.h") != std::string::npos) {
+                fl.erase(fl.begin() + static_cast<std::ptrdiff_t>(k), fl.begin() + static_cast<std::ptrdiff_t>(k) + 2);
+                break;
+            }
     if (cxx_models) cxx_models->clear();
     // C++ library models (docs/PIR.md "C++ library models"): the model
     // headers come first on the include path. A unit that does not compile
@@ -2432,13 +2442,15 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     cmd.push_back(exe.string());
     for (std::size_t i = 1; i < av.size(); ++i) {
         const std::string& a = av[i];
-        if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
-        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
+        if (a == "--out" || a == "--stage" || a == "--skip" || a == "--jsonl") { ++i; continue; }
+        if (a.starts_with("--jsonl=") || a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
             a == "--gui")
             continue;
         cmd.push_back(a);
     }
     cmd.insert(cmd.end(), {std::string("--stage"), std::string("inventory,classify,pir"), std::string("--out"), out.string()});
+    // the child needs the per-function time/peak/Lean fields in its rows, but must not write the parent's file
+    if (!cfg.jsonl.empty()) cmd.insert(cmd.end(), {std::string("--jsonl"), (out / "child.jsonl").string()});
     const double t = 120 + 3.0 * std::max(60.0, cfg.timeout) * static_cast<double>(pend.size());
     auto r = prism::exec::run_process(cmd, t);
     std::map<std::string, nlohmann::json> got;
@@ -2546,6 +2558,25 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
     }
 }
 
+// --jsonl: wall time and peak resident memory of one function's translation
+// and check, written onto its row when the loop iteration ends (whatever path
+// it took). The peak is the process's since the iteration began (--jobs 1
+// in batch mode, so it is the function's own).
+struct FnStats {
+    std::vector<FnRec>& recs;
+    std::size_t before;
+    bool on;
+    prism::clock::Stopwatch t;
+    ~FnStats() {
+        if (!on || recs.size() != before + 1) return;
+        auto& x = recs.back().f.extra;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.3f", t.elapsed_s());
+        x["time_s"] = buf;
+        x["peak_mb"] = std::to_string(membudget::peak_rss_mb());
+    }
+};
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -2609,6 +2640,16 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         std::sort(starts.begin(), starts.end());
     }
     const bool export_only = std::getenv("PRISM_PIR_EXPORT_ONLY") && std::getenv("PRISM_PIR_LEAN_EXPORT");
+    // --jsonl: source line ranges (cparse's view of the unit) for the records
+    const bool want_jsonl = !cfg.jsonl.empty();
+    std::map<std::string, std::vector<std::pair<int, int>>> fn_spans;
+    if (want_jsonl) {
+        try {
+            for (auto& fi : extract_functions(pre_main ? low.cc_main : u.path, u.rel))
+                if (fi.span.second > 0) fn_spans[fi.name].push_back(fi.span);
+        } catch (...) {
+        }
+    }
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
@@ -2625,8 +2666,26 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
+        FnStats stats{recs, recs.size(), want_jsonl, prism::clock::Stopwatch{}};
+        if (want_jsonl) {
+            membudget::reset_peak();
+            if (auto it = fn_spans.find(*f.function); it != fn_spans.end()) {
+                const std::pair<int, int>* best = nullptr;
+                for (auto& sp : it->second)
+                    if (!best || std::abs(sp.first - sub.line) < std::abs(best->first - sub.line)) best = &sp;
+                if (best) {
+                    f.extra["start_line"] = std::to_string(best->first);
+                    f.extra["end_line"] = std::to_string(best->second);
+                }
+            }
+        }
         auto fopt = pirmem::function_options(topt, irf, uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
         auto tr = translate(mod, irf, fopt);
+        if (want_jsonl) {
+            const auto lc = lean_coverage(mod, irf, fopt, tr);
+            f.extra["lean_supported"] = lc.supported ? "yes" : "no";
+            if (!lc.supported) f.extra["lean_reason"] = lc.reason;
+        }
         if (!tr.fn || tr.fn->ptr.w == 64) export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 only
         for (int k : tr.folded_used) used_folded.insert(k);
         if (export_only) {
@@ -3039,7 +3098,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             }
             out.push_back(std::move(f));
         }
-    return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
+    auto gated = exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
+    write_jsonl(cfg, gated);
+    return gated;
 }
 
 }  // namespace prism::pir

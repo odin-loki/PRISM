@@ -456,6 +456,144 @@ assumption in `extra.assumptions` and the message; a violation is FAILED
 under the stated precondition. Translation validation does not replay such
 functions (`tv = PARTIAL`).
 
+## Automatic pointer harness (`--pir-harness`)
+
+Law 6 stays the default: a pointer parameter without a `requires` clause is
+`NEEDS-HARNESS`. That verdict means "no object was given for it";
+`--pir-harness` gives it one, generated from the IR, so a function such as
+`int f(struct e1000_hw *hw)` produces verification conditions and a verdict. It
+extends the `requires` mechanism (same contract objects, same PROVED-ASSUMING
+rule); a `requires` clause or a `--pir-drafts` draft still wins for the
+parameters it covers.
+
+The planner (`src/prism/pir/harness.cpp`) reads the function's own IR and
+the module functions it passes the pointer to (three calls deep):
+
+* **Pointee type** from the first `getelementptr` with the parameter as base
+  (`%struct.e1000_hw`), else from the scalar it loads or stores. The size is
+  the layout size of that type (datalayout, padding, packed structs).
+* **Array-like pointees** (a scalar type, or an index that is not constant):
+  `--pir-harness-elems` elements (default 16), at least what the constant
+  offsets reach. A type the function never accesses: `--pir-harness-bytes`
+  bytes (default 64). The defaults are stated in the assumption.
+* **Fields** are unconstrained: the object has arbitrary initialised bytes
+  and is 16-byte aligned. No field value is assumed.
+* **Nested pointers**: a pointer field the function loads and dereferences
+  (its pointee type found by the same rules) gets its own object and the
+  pointer is stored into the field, down to `--pir-harness-depth` levels
+  (default 2) and 32 objects per parameter. Deeper fields, and fields with
+  no type evidence (function pointers, fields only compared with NULL), stay
+  arbitrary values; dereferencing one is a violation of the harness. The
+  objects are distinct from each other.
+* Not harnessable: a negative offset from the parameter (`container_of`), an
+  object larger than the pointer model allows: `UNENCODED: automatic pointer
+  harness for parameter p: <why>` (`NEEDS-HARNESS`).
+
+Every choice is a line of `extra.assumptions`, ending `(auto harness)`: the
+object's size and how the type was found, one line per nested object, the
+depth bound, and the pointer fields left arbitrary. A proof is
+`PROVED-ASSUMING`, never `PROVED`; `BOUNDED` stays `BOUNDED` with the
+assumptions listed; a violation is reported `NEEDS-HARNESS` (the harness was
+invented, as for drafts; the original is in `extra.verdict_under_draft`).
+Translation validation does not replay these functions, and the Lean export
+marks them `L unsupported automatic pointer harness` (see "Lean coverage").
+
+## Machine-readable output (`--jsonl FILE`)
+
+`prism UNIT --stage pir --jsonl out.jsonl` appends one line per function (and
+one `"record": "unit"` line for a unit without function rows: clang failed,
+no definitions) when the stage ends, in one write, and rewrites
+`out.jsonl.summary.json` with this run's counts. Schema `prism-pir-jsonl/1`:
+
+| field | meaning |
+|---|---|
+| `schema`, `record` | `prism-pir-jsonl/1`; `function` or `unit` |
+| `unit` | the unit's path relative to the scan root |
+| `function`, `start_line`, `end_line`, `key` | source name; first and last source line (`null` when unknown); `unit:start-end` |
+| `engine` | `prism-pir` |
+| `verdict` | the exact PRISM verdict name ([VERDICTS.md](VERDICTS.md)) |
+| `level` | proof level, below; `null` when the function did not compile |
+| `outcome` | `complete`, `timeout`, or `memory-limit`; the batch driver adds `killed`, `crash` |
+| `message`, `class`, `counterexample` | as in report.json |
+| `assumptions` | the complete list: harness choices (`(auto harness)`, `requires`, drafts), the loop bound, strict-aliasing state, libm and exception notes, the global-state policy, inlined callees, the unknown-call policy (assume nothing: an unmodelled call makes the function `NEEDS-HARNESS`), front-end flags |
+| `conditional` | a proof that holds only under assumptions (`PROVED-ASSUMING`) |
+| `harness` | `{auto, pointer_parameters_bound}` |
+| `vcs` | number of properties (verification conditions) the encoding checked |
+| `unwind` | loop unwinding bound used |
+| `time_s`, `peak_mb` | wall time of translation plus check; peak resident set of the process while the function ran (exact with `--jobs 1`) |
+| `lean` | `{supported, reason}`: see "Lean coverage" |
+| `certificate` | `checked` for PROVED-CERTIFIED |
+
+**Levels** (docs/OS_PROVING_DRIVER_PLAN.md section 2), from the verdict:
+
+| verdict | level |
+|---|---|
+| `PROVED`, `PROVED-UNBOUNDED`, `PROVED-CERTIFIED`, `PROVED-ASSUMING` | L2: no UB or memory error on any input, unbounded; with assumptions (`conditional`) relative to them |
+| `BOUNDED` | L1: nothing found within the stated bound |
+| `FAILED`, `NEEDS-HARNESS`, `UNKNOWN`, `TIMEOUT`, `NOFUNC`, others | L0: the function compiled and was translated or tried; no claim |
+| unit-level rows, functions cut out by the front end | `null` |
+
+L3 (a contract) is never produced by `pir` today: a `requires` clause is an
+assumption, not a proved `ensures`. `PROVED-CERTIFIED` has the level of
+`PROVED`; the difference is trust (`certificate`).
+
+**memory-limit.** PRISM's own budget (`PRISM_MEM_BUDGET_MB`, `membudget.hpp`)
+ends a function's check as `UNKNOWN` ("memory budget reached", "machine memory
+low", "the encoder's memory"). Those rows get `outcome: "memory-limit"` and
+`memory_budget_mb`. Nothing retries them with a larger budget (the existing
+fresh-process re-run uses what is left of the same budget).
+
+## Lean coverage
+
+Per function, `lean.supported` says whether its translation is inside the
+Lean-proved LLVM fragment, i.e. whether `export_lean` would write the pair
+without `L unsupported <why>` (the test `PRISM_PIR_LEAN_EXPORT` applies; the
+JSONL field needs no environment variable and writes no file; the proofs are
+untouched). `lean.reason` is the `<why>`; a function with no translation says
+`not translated to PIR (UNENCODED: ...)`, an ILP32 task says LP64 only, an
+automatic pointer harness says `automatic pointer harness ...`. The summary
+file counts `lean.inside_proved_fragment`, `lean.outside` and
+`lean.outside_by_reason`; `scripts/pir_batch.sh --summary` does the same over
+all shards. `supported: false` means the result rests on the C++ translator
+alone; `true` means on the translator that the Lean correspondence checker
+compares with the proved one.
+
+## Batch mode (`scripts/pir_batch.sh`)
+
+```
+scripts/pir_batch.sh --db compile_commands.json --out /data/pir-run [--workers auto] [--mem-mb auto]
+scripts/pir_batch.sh --out /data/pir-run --summary
+```
+
+* **Units** are the `file` entries of the database (`.c .cc .cpp .cxx`), each
+  run as `prism UNIT --stage pir --jobs 1 --compile-commands DB --pir-harness
+  --jsonl TMP` in its own process, so its memory goes back to the system when
+  it ends.
+* **One record per function** in append-only shards
+  `OUT/shards/shard-NN.jsonl` (`--shards`, default 16; a unit always goes to
+  the same shard; each unit is appended with one locked write). A unit that
+  timed out or was killed gets one `record: unit` line with
+  `outcome: timeout|killed|crash`.
+* **Resumable**: `OUT/manifest.tsv` (`unit, status, records, seconds, time`) is
+  written after the unit's records, so it is the commit; a stopped run skips
+  the units it lists; `--retry-failed` runs again those whose status is not
+  `done` (`--summary` keeps the last record of a unit and function).
+  Resumption is per unit.
+* **Memory** is governed by PRISM's own budget, not by the kernel:
+  `PRISM_MEM_BUDGET_MB` per worker; a function that reaches it ends `UNKNOWN`,
+  `outcome: memory-limit`, and is not retried with more. Do not use
+  `ulimit -v` / `prlimit --as` for PRISM: its budget derives from RLIMIT_AS,
+  so it reports "memory budget reached" at a fraction of the address-space
+  limit (address space is not memory) and Z3 fails at tiny RSS. There is no
+  fixed per-process cap: `--mem-mb auto` (default) runs the first
+  `--calibrate` units (3) alone with a 4096 MB budget and sets the budget to
+  1.5 x their measured peak RSS + 256 MB (at least 1024 MB) (`OUT/calibration.env`); `--mem-mb N`
+  overrides. `--workers auto` = `floor((MemAvailable - 10 GB) / budget)`, at
+  most `--max-workers` (default 5, the current process limit; at most 32). A
+  worker starts only if MemAvailable stays above `--min-avail-mb` (10240) after
+  every running worker has grown to its full budget.
+* Scratch and results are under `--out` (use a data disk or RAM).
+
 ## Library models (roadmap 2.6)
 
 Operational models are C++ sources (`extern "C"` libc API) in
