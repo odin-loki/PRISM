@@ -1,4 +1,4 @@
-// Questions over findings and the GUI assistant (roadmap 9.4).
+// Questions over findings and the assistant (roadmap 9.4).
 //
 // A natural-language question becomes a structured Query (stage / status /
 // class / file / function / text filters). The translation is ALWAYS shown

@@ -304,13 +304,13 @@ each project's `lean-toolchain`): `proofs/check.sh` passed all four steps
 
 ## Configuration, supply chain and releases
 
-### E19 Pinned dependencies, licence firewall, SBOM
+### E19 Pinned dependencies, SBOM
 
 - Artefacts: `third_party/MANIFEST.toml`, `src/tools/prism_deps/` (`prism-deps`),
   `docs/SUPPLY_CHAIN.md`, `tests/cpp/test_deps.cpp`, the `supply-chain` job in
   `.github/workflows/ci.yml`.
 - Shows: every linked library is pinned by commit and tree digest and
-  checked, linked components are permissively licensed, and a CycloneDX
+  checked, and a CycloneDX
   SBOM is generated.
 - Does not show: that the pinned upstream code is free of defects.
 

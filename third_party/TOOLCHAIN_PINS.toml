@@ -17,14 +17,6 @@ source = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.
 "macos-universal" = { url = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-macos-universal.tar.gz", sha256 = "330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d" }
 "windows-x86_64" = { url = "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-windows-x86_64.zip", sha256 = "d163cd3ab4959b0a53fa8988f2ddbd2e6c501658201e6a154386bad9dbe4f836" }
 
-[[pin]]
-name = "qtbase"
-version = "6.8.3"
-source = "https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz.sha256"
-build = "source"   # configured with -DQT_BUILD_EXAMPLES=OFF -DQT_BUILD_TESTS=OFF, Widgets only
-[pin.artifacts]
-"source" = { url = "https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz", sha256 = "56001b905601bb9023d399f3ba780d7fa940f3e4861e496a7c490331f49e0b80" }
-
 # CUDA 12.6.3 redistributables (redistrib_12.6.3.json): only what the two kernels need.
 [[pin]]
 name = "cuda_nvcc"

@@ -48,7 +48,7 @@ struct CliOptions {
     bool z3_only = false;
 };
 
-// args: argv[1..argc) of the scan command (no subcommand, no --gui: main
+// args: argv[1..argc) of the scan command (no subcommand: main
 // hands those off first). The error text names the argument, e.g.
 // "argument --unwind: invalid int value: 'x'".
 PRISM_API CliResult<CliOptions> parse_cli(std::span<const char* const> args);

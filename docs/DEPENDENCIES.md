@@ -13,7 +13,6 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 | ~~llama.cpp b6875~~ | **retired** | removed | replaced by FORGE inference | deleted |
 | LLVM/clang 23.1.4 | toolchain | per-platform SHA-256 | third_party/llvm/PIN.toml (branch prism-llvm) | pinned fetch (too large) |
 | CMake 3.31.6 | toolchain | SHA-256 per platform | third_party/TOOLCHAIN_PINS.toml | pinned fetch |
-| Qt 6.8.3 (qtbase, Widgets) | GUI, optional | source tarball SHA-256 | TOOLCHAIN_PINS.toml | pinned fetch |
 | CUDA 12.6.3 (nvcc 12.6.85, cudart/cccl 12.6.77) | kernels, optional | SHA-256 per platform | TOOLCHAIN_PINS.toml | pinned fetch |
 | Lean 4 v4.34.0 + Mathlib | proofs | lean-toolchain + lake-manifest.json git revs | proofs/ | fetched by lake |
 | External analysers (esbmc, cbmc, klee, cppcheck, frama-c, infer, semgrep, coccinelle, AFL++, dafny, strix, cadical, kissat, bitwuzla, cake_lpr, lean4export, nanoda) | separate processes | commit + SHA-256 | MANIFEST.toml `kind = "external"` | fetched by `prism-deps tool NAME` |
@@ -21,7 +20,7 @@ Every dependency is pinned to an exact version with a checksum. FORGE is the one
 | Lint tools (clang-tidy, ruff, mypy, pyflakes, yamllint, eslint, typescript, shellcheck) | pinned, `kind = "lint"` | exact version + SHA-256; clang-tidy via the LLVM pin | TOOLCHAIN_PINS.toml (`scripts/fetch_toolchain.py NAME`) | no (fetched) |
 | Python | scripts only | none required beyond stdlib (3.11+, tomllib) | — | — |
 
-Fetch a pinned toolchain: `python3 scripts/fetch_toolchain.py cmake` (or `qtbase`, `cuda_nvcc`, ...).
+Fetch a pinned toolchain: `python3 scripts/fetch_toolchain.py cmake` (or `cuda_nvcc`, ...).
 A download whose SHA-256 differs from the pin is refused (exit 2).
 
 ## Models
