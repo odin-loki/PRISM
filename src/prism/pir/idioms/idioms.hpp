@@ -55,7 +55,9 @@ struct TCand {
     // MemConst:      forall x < ext(phi ip): p[x] == v
     // MemRingInit (new): forall x < mask with (x - tail) mod mask < count: p[x] initialised
     //                (tail = phi ip, count = phi ip2, zero-extended; mask = the ring's capacity)
-    enum Kind { Cmp, MaxLe, Scale, ScaleV, DiffCmp, ScaleVK, ModLin, MemInit, MemConst, MemRingInit } kind = Cmp;
+    // MemScale (new): forall x < mask: p[x] rel k * (c - entry(c))   (c = phi ip2, k = the signed
+    //                constant v; element and c extended to integers, signed when sext; rel Sle/Sge)
+    enum Kind { Cmp, MaxLe, Scale, ScaleV, DiffCmp, ScaleVK, ModLin, MemInit, MemConst, MemRingInit, MemScale } kind = Cmp;
     int loop = -1;  // index into the loops given to instantiate()
     Op rel = Op::Eq;
     TTerm a, b, v;

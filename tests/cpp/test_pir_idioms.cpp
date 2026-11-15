@@ -113,6 +113,26 @@ int nested_sum_ok(int a) {
             t += a;
     return t;
 }
+int slot_count_ok(int n, int v) {
+    int a[8] = {0};
+    int i = 0;
+    while (n > 0) {
+        a[i] += v & 1;
+        i = (i + 1) & 7;
+        n--;
+    }
+    return a[0];
+}
+int slot_count_bad(int n, int v) {
+    int a[2] = {0};
+    int i = 0;
+    while (n > 0) {
+        a[i] += v;
+        i = (i + 1) & 1;
+        n--;
+    }
+    return a[0];
+}
 )";
 
 }  // namespace
@@ -181,4 +201,8 @@ TEST_CASE("pir idioms: the idiom round proves, false twins are refuted (skips wi
     // nested fold: t == 40 * a * i (outer), t - entry(t) == a * j (inner)
     CHECK(got["nested_sum_ok"].status == prism::laws::PROVED_UNBOUNDED);
     CHECK(got["nested_sum_ok"].extra["idiom"].find("nested-fold") != std::string::npos);
+    // slot count: every a[x] <= entry(n) - n (one slot per iteration, += 0 or 1)
+    CHECK(got["slot_count_ok"].status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(got["slot_count_ok"].extra["idiom"].find("slot-count") != std::string::npos);
+    CHECK(got["slot_count_bad"].status == prism::laws::FAILED);
 }

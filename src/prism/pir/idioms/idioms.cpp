@@ -1157,6 +1157,86 @@ struct Builder {
                 m("counted-fill").cands.push_back(c);
             }
         }
+        // slot counts: p[k] += d (d in [lo, hi]) on a ring index k (masked or
+        // modular, capacity cap) in a loop moved by a unit counter c: one slot
+        // per iteration, so every slot stays within min(lo, 0) and max(hi, 0)
+        // times the iterations so far (zero-initialised slots; Houdini's base
+        // query decides). unbounded_index_ok: a[i] += v & 1, i = (i + 1) & 7, n--.
+        {
+            std::map<int, const Stmt*> loads;  // dst -> load in the loop
+            for (std::size_t b = 0; b < A.fn.blocks.size(); ++b)
+                if (A.in(L, static_cast<int>(b)))
+                    for (auto& s : A.fn.blocks[b].stmts)
+                        if (s.kind == Stmt::Load && s.dst >= 0 && !s.args.empty() && !s.args[0].is_const) loads[s.dst] = &s;
+            std::set<std::string> done;
+            for (std::size_t b = 0; b < A.fn.blocks.size(); ++b) {
+                if (!A.in(L, static_cast<int>(b))) continue;
+                for (auto& s : A.fn.blocks[b].stmts) {
+                    if (s.kind != Stmt::Store || s.args.size() < 2 || s.args[0].is_const || s.args[1].is_const) continue;
+                    auto* ad = A.def[static_cast<std::size_t>(s.args[1].var)];
+                    if (!ad || ad->op != Op::Add || ad->ptr_arith || ad->args.size() != 2) continue;
+                    int li = -1;
+                    for (int k = 0; k < 2; ++k)
+                        if (!ad->args[static_cast<std::size_t>(k)].is_const &&
+                            loads.count(ad->args[static_cast<std::size_t>(k)].var))
+                            li = k;
+                    if (li < 0) continue;
+                    const Stmt* ld = loads[ad->args[static_cast<std::size_t>(li)].var];
+                    Access as, al;
+                    as.store = true;
+                    A.address(L, s.args[0].var, as);
+                    A.address(L, ld->args[0].var, al);
+                    const unsigned eb = (s.args[1].width + 7) / 8;
+                    if (as.base < 0 || as.base != al.base || as.idx < 0 || as.idx != al.idx || as.eb != eb || al.eb != eb ||
+                        s.args[1].width != 8 * eb || !(eb == 1 || eb == 2 || eb == 4 || eb == 8))
+                        continue;
+                    uint64_t cap = as.masked ? as.m + 1 : 0;
+                    const int h = A.hphi(L, as.idx);
+                    if (!cap && h >= 0 && only(h, {Upd::Same, Upd::MaskAdd, Upd::ModAdd}))
+                        for (auto& u : F.phis[static_cast<std::size_t>(h)].upd) {
+                            if (u.k == Upd::Same) continue;
+                            const uint64_t k = u.k == Upd::MaskAdd ? u.m + 1 : u.m;
+                            if (u.c != 1 || (cap && cap != k)) {
+                                cap = 0;
+                                break;
+                            }
+                            cap = k;
+                        }
+                    if (cap == 0 || cap >= (uint64_t{1} << 32)) continue;
+                    auto d = A.interval(ad->args[static_cast<std::size_t>(1 - li)]);
+                    if (!d) continue;
+                    const bool sx = sgn_var(s.args[1].var) || sgn_var(ld->dst) || d->first < 0;
+                    for (int c = 0; c < np; ++c) {
+                        if (!scalar(c)) continue;
+                        int step = 0;
+                        if (unit_counter(c, 1)) step = 1;
+                        else if (unit_counter(c, -1)) step = -1;
+                        if (!step) continue;
+                        const i128 up = std::max<i128>(d->second, 0) * step, dn = std::min<i128>(d->first, 0) * step;
+                        // slot <= up * (c - entry(c)), slot >= dn * (c - entry(c))
+                        for (auto [r, k] : {std::make_pair(Op::Sle, up), std::make_pair(Op::Sge, dn)}) {
+                            if (k > INT64_MAX || k < INT64_MIN) continue;
+                            TCand t;
+                            t.loop = static_cast<int>(L);
+                            t.idiom = "slot-count";
+                            t.kind = TCand::MemScale;
+                            t.rel = r;
+                            t.p = as.base;
+                            t.ip = h >= 0 ? h : c;
+                            t.ip2 = c;
+                            t.mask = cap;
+                            t.eb = eb;
+                            t.sext = sx;
+                            t.v = cst(static_cast<uint64_t>(static_cast<int64_t>(k)), 64);
+                            const std::string key = std::to_string(t.p) + "/" + std::to_string(c) + "/" +
+                                                    std::to_string(static_cast<int>(t.rel)) + "/" + std::to_string(t.v.c);
+                            if (done.insert(key).second) m("slot-count").cands.push_back(t);
+                        }
+                    }
+                }
+            }
+        }
+
         // drop idioms whose templates all failed to instantiate
         out.erase(std::remove_if(out.begin(), out.end(), [](const Match& x) { return x.cands.empty(); }), out.end());
     }
@@ -1337,6 +1417,8 @@ const std::vector<std::pair<std::string, std::string>>& catalogue() {
         {"ring-occupancy", "head/tail masked ring with a count: count <= cap, head - tail - count == const (mod cap), "
                            "slots [tail, tail + count) initialised"},
         {"counted-fill", "p[i] written by a unit counter: forall x < i: p[x] initialised (== v for a constant v)"},
+        {"slot-count", "p[k] += d, d in [lo, hi], k a ring index (capacity cap), c a unit counter: "
+                       "forall x < cap: min(lo,0)*n <= p[x] <= max(hi,0)*n, n = iterations = +-(c - entry(c))"},
     };
     return k;
 }

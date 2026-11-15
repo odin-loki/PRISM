@@ -1269,6 +1269,7 @@ with the loop's own phis, scope values, guard constants and value ranges:
 | ring-counters | free-running `head`, `tail` compared by difference | `head - tail <= K` (DiffCmp, wrapping) |
 | ring-occupancy | masked `head`, `tail`, a `count` moved by +-1, `p[head]` stored and `p[tail]` loaded | `count <= cap`; `(head - tail - count) & (cap-1)` constant (ModLin); every slot `x` with `(x - tail) mod cap < count` initialised (MemRingInit) |
 | counted-fill | `p[i] = ...` with a unit counter | `forall x < i: p[x]` initialised (`== v` for a constant) |
+| slot-count | `p[k] += d` (`d` in `[lo, hi]`) on a ring index `k` (capacity `cap`), a unit counter `c` | `forall x < cap: min(lo,0)*n <= p[x] <= max(hi,0)*n`, `n = +-(c - entry(c))` the iterations so far (MemScale) |
 
 Houdini (houdini.inc) asks the matching idioms' candidates first and alone
 (a share of the search time, a quarter of the query time per goal: an

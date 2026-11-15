@@ -64,7 +64,7 @@ struct InvTerm {
 
 struct InvCand {
     enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, DiffCmp, ScaleVK, ModLin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC,
-                MemInit, MemConst, MemFrame, MemScopeAt, MemLast, MemRingInit } kind = Cmp;
+                MemInit, MemConst, MemFrame, MemScopeAt, MemLast, MemRingInit, MemScale } kind = Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -92,6 +92,9 @@ struct InvCand {
     unsigned eb = 1;       // element bytes
     // MemRingInit: forall x < mask with (x - phi ip) mod mask < phi ip2: p[x] initialised
     // (a ring's occupied slots; ip = tail, ip2 = count, zero-extended)
+    // MemScale: forall x < mask: p[x] rel v * (phi ip2 - entry(phi ip2)) over integers
+    // (element and phi extended to 64 + max(widths) + 4 bits, signed when sext; v a
+    // signed 64-bit constant; rel Sle/Sge). ip: the slot index phi (an index term only)
     int ip2 = -1;
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
     bool alive = true;
@@ -452,6 +455,10 @@ std::string Houdini::text(const InvCand& c) const {
         case InvCand::MemRingInit:
             return "forall x < " + std::to_string(c.mask) + " with (x - " + phi(c.ip) + ") mod " + std::to_string(c.mask) +
                    " < " + phi(c.ip2) + ": initialised " + var(c.p) + "[x]" + (c.eb > 1 ? "/" + eb : "");
+        case InvCand::MemScale:
+            return "forall x < " + std::to_string(c.mask) + ": " + var(c.p) + "[x]" + (c.eb > 1 ? "/" + eb : "") + " " +
+                   op_name(c.rel) + " " + std::to_string(static_cast<int64_t>(c.v.c)) + " * (" + phi(c.ip2) +
+                   " - entry(" + phi(c.ip2) + "))" + (c.sext ? " [int]" : " [nat]");
         case InvCand::MemNZ: return "forall " + range + ": " + at(c.p, -1) + " != 0";
         case InvCand::MemEq: return "forall " + range + ": " + at(c.p, c.off) + " == " + at(c.q, -1);
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
@@ -1165,6 +1172,7 @@ InvCand from_idiom(const idioms::TCand& t) {
         case idioms::TCand::MemInit: c.kind = InvCand::MemInit; break;
         case idioms::TCand::MemConst: c.kind = InvCand::MemConst; break;
         case idioms::TCand::MemRingInit: c.kind = InvCand::MemRingInit; break;
+        case idioms::TCand::MemScale: c.kind = InvCand::MemScale; break;
     }
     return c;
 }
@@ -1220,6 +1228,10 @@ bool Houdini::idiom_valid(const InvCand& c) const {
                    !c.lo_entry;
         case InvCand::MemRingInit:
             return eb_ok() && idx_ok(c.ip) && idx_ok(c.ip2) && ptr_scope(c.p) && c.mask > 0 && c.mask < (uint64_t{1} << 32);
+        case InvCand::MemScale:
+            return eb_ok() && idx_ok(c.ip) && phi_w(c.ip2) > 0 && phi_w(c.ip2) <= 64 && ptr_scope(c.p) && c.mask > 0 &&
+                   c.mask < (uint64_t{1} << 32) && c.v.kind == InvTerm::Const && c.v.w == 64 &&
+                   (c.rel == Op::Sle || c.rel == Op::Sge);
         default: return false;
     }
 }
@@ -1584,6 +1596,21 @@ HoudiniOut Houdini::run_search() {
                 auto at = e.lookup(Arg::v(k.p, pw), node) + (k.eb == 1 ? x : x * e.bv(k.eb, pw));
                 return z3::implies(z3::ult(x, cap) && z3::ult(dist, n),
                                    e.M().load_exact(*st.mem, at, 8 * k.eb).uninit == e.bv(0, 1));
+            }
+            case InvCand::MemScale: {
+                const unsigned pw = ptr_w(), ew = 8 * k.eb;
+                const unsigned cw = (*st.phis)[static_cast<std::size_t>(k.ip2)].get_sort().bv_size();
+                const unsigned W = 64 + std::max(ew, cw) + 4;
+                auto X = [&](const z3::expr& v) {
+                    const unsigned w = v.get_sort().bv_size();
+                    return k.sext ? z3::sext(v, W - w) : z3::zext(v, W - w);
+                };
+                auto at = e.lookup(Arg::v(k.p, pw), node) + (k.eb == 1 ? x : x * e.bv(k.eb, pw));
+                auto elt = X(e.M().load_exact(*st.mem, at, ew).val);
+                auto n = X((*st.phis)[static_cast<std::size_t>(k.ip2)]) - X(CL.entry[static_cast<std::size_t>(k.ip2)]);
+                auto kk = c.bv_val(static_cast<int64_t>(k.v.c), W);
+                auto body = k.rel == Op::Sle ? elt <= kk * n : elt >= kk * n;
+                return z3::implies(z3::ult(x, e.bv(k.mask, pw)), body);
             }
             default: break;
         }
