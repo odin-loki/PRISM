@@ -1625,6 +1625,18 @@ prism::pool::TaskGraph& shared_graph(int jobs) {
     return *p;
 }
 
+// Room for speculative solver work (W2: VCs asked ahead, strategies started
+// before they are needed): the process is under a third of its memory
+// budget and the box is not low. Speculation only changes which thread asks
+// a query and when, never the verdict (the search takes the answers in its
+// own order), so this time-dependent test only saves memory: a speculative
+// copy must not push the function, or a neighbour, over the budget.
+bool room_to_speculate() {
+    if (membudget::system_low()) return false;
+    const uint64_t b = membudget::budget_mb();
+    return b == 0 || membudget::rss_mb() * 3 < b;
+}
+
 // Property VCs asked ahead (W2): idle workers of the run's scheduler solve
 // the queries the sequential search is about to ask, each in a context of
 // its own (z3::context is not thread-safe: the function's base, properties
@@ -1680,6 +1692,7 @@ public:
             if (st_->stopped || !st_->has_queued()) return;
             make = st_->created < st_->max_ctx && (st_->created == 0 || st_->need_ctx);
         }
+        if (make && !room_to_speculate()) make = false;  // a worker context is a copy of the function
         std::unique_ptr<Worker> w;
         if (make) {
             w = std::make_unique<Worker>();
@@ -1883,7 +1896,8 @@ public:
     void spawn(Slot& s, std::function<void()> fn, bool speculate = true) {
         s.fn = std::move(fn);
         s.spawned = true;
-        if (jobs_ <= 1 || !speculate) return;  // run by join(), in the caller's order
+        // run by join(), in the caller's order (also when memory is short)
+        if (jobs_ <= 1 || !speculate || !room_to_speculate()) return;
         std::shared_ptr<Slot> sp;
         for (auto& x : slots_)
             if (x.get() == &s) sp = x;
