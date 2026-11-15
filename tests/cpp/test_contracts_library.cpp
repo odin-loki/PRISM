@@ -120,6 +120,11 @@ TEST_CASE("contracts library: pointer contracts with \\valid requires are checke
     // a pointer contract is a proof under the binding, never PROVED
     CHECK(m["inc_ok"].status == std::string(prism::laws::PROVED_ASSUMING));
     CHECK(m["inc_ok"].extra["assumptions"].find("p points to the start of a valid object") != std::string::npos);
+    // the frame is not checked, and the row says so (Law 7)
+    CHECK(m["inc_ok"].extra["assigns"] == "p->a");
+    CHECK(m["inc_ok"].extra["assigns_checked"] == "false");
+    CHECK(m["inc_ok"].message.find("assigns clause not checked") != std::string::npos);
+    CHECK_FALSE(m["imp_ok"].extra.contains("assigns"));
     CHECK(m["inc_bad"].status == std::string(prism::laws::FAILED));
     // 0 <= \result < 10 is a chain, not C's (0 <= r) < 10 (always true)
     CHECK(m["chain_bad"].status == std::string(prism::laws::FAILED));

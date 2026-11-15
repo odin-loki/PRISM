@@ -629,6 +629,36 @@ Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optio
 
 namespace {
 
+// The `assigns` clauses of the ACSL block that ends right above fn.
+// parse_comments drops them: the checker asserts the ensures, not the frame,
+// so a row whose contract has one says so (Law 7: nothing unchecked quietly).
+std::vector<std::string> acsl_assigns(const FunctionInfo& fn) {
+    std::vector<std::string> out;
+    auto text = read_fn_source(fn);
+    if (text.empty() || fn.line < 2) return out;
+    std::vector<std::string> lines;
+    {
+        std::istringstream ss(text);
+        std::string ln;
+        while (std::getline(ss, ln)) lines.push_back(ln);
+    }
+    const int hi = std::min(static_cast<int>(lines.size()), fn.line - 1);  // lines before the function's
+    std::string before;
+    for (int i = std::max(0, hi - 80); i < hi; ++i) before += lines.at(static_cast<std::size_t>(i)) + "\n";
+    auto end = before.rfind("*/");
+    if (end == std::string::npos || !strip(before.substr(end + 2)).empty()) return out;
+    auto open = before.rfind("/*", end);
+    if (open == std::string::npos || before.compare(open, 3, "/*@") != 0) return out;
+    std::istringstream cs(before.substr(open + 3, end - open - 3));
+    std::string part;
+    while (std::getline(cs, part, ';')) {
+        auto c = strip(part);
+        if (c.starts_with("assigns") && c.size() > 7 && std::isspace(static_cast<unsigned char>(c[7])))
+            out.push_back(std::string(strip(c.substr(7))));
+    }
+    return out;
+}
+
 // The contracts row of one function (nullopt: no contract comment).
 std::optional<Finding> contracts_one(const FunctionInfo& fn, int unwind) {
     static Regex req_atom("^([A-Za-z_]\\w*)\\s*(<|>=|!=)\\s*(0|[1-9]\\d*)$");
@@ -716,6 +746,11 @@ std::optional<Finding> contracts_one(const FunctionInfo& fn, int unwind) {
     for (auto& e : spec.ensures)
         if (!fullmatch(ens_atom, strip(e))) subset = false;
     rec.extra["subset"] = subset ? "true" : "false";
+    if (auto as = acsl_assigns(fn); !as.empty()) {
+        rec.extra["assigns"] = join_sv(as, "; ");
+        rec.extra["assigns_checked"] = "false";
+        if (laws::is_proof(rec.status)) rec.message += " (assigns clause not checked)";
+    }
     return rec;
 }
 
