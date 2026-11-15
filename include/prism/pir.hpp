@@ -444,6 +444,13 @@ PRISM_API uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a,
 
 PRISM_API InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args,
                                  uint64_t step_limit = 2'000'000);
+// The same run, with `on_block(block, prev, values)` called at the entry of
+// every block after its phis are assigned (prev: the predecessor, -1 at the
+// entry). Returning false stops the run (status Stopped). Used by Houdini's
+// concrete pre-filter (houdini.inc).
+using InterpHook = std::function<bool(int block, int prev, const std::vector<uint64_t>& values)>;
+PRISM_API InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit,
+                                 const InterpHook& on_block);
 
 // ---------------------------------------------------------------------------
 // Encoder (Z3 bitvectors)

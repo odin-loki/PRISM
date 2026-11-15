@@ -105,6 +105,8 @@ struct HoudiniOut {
     std::string cache;      // "", "hit (proof re-checked)", "hit (no proof)", "stored"
     double final_s = -1;    // seconds given to the final query at the fixpoint (-1: not asked)
     bool undecided = false; // some answer came from the time limit or an unknown
+    std::size_t concrete_dropped = 0;  // candidates a concrete run falsified (dropped before any query)
+    int concrete_runs = 0;
 };
 
 // Where Houdini's outcome is cached (per function text, docs/PIR.md "Loop
@@ -184,6 +186,7 @@ public:
     HoudiniOut run();
 
 private:
+    void concrete_filter(HoudiniOut& out);
     const Function& fn_;
     const CfgInfo& g_;
     EncodeOptions eo_;
@@ -318,6 +321,8 @@ std::optional<nlohmann::json> Houdini::load_cache() {
     std::string k = "houdini-cache-v1\n" + to_text(fn_) + "\nmemory=" +
                     (eo_.memory == MemEncoding::Array ? "array" : "bv") + "\ntimeout=" + std::to_string(per_query_) +
                     "\nloops=" + std::to_string(g_.loops.size()) + "\n";
+    // the concrete pre-filter changes what a time-limited search reaches
+    if (const char* ce = std::getenv("PRISM_HOUDINI_CONCRETE"); ce && std::string(ce) == "1") k += "concrete=v1\n";
     // generate() has run: the candidates are the ones this search starts from
     for (auto& c : cands_for_key_) k += c + "\n";
     const auto h = sha256_hex(k);
@@ -826,6 +831,257 @@ void Houdini::generate(std::vector<InvCand>& out) {
     }
 }
 
+// ---- concrete pre-filter ----
+// The function is run on the PIR interpreter (the semantics translation
+// validation compares with the encoder) on deterministic inputs: edge values
+// and seeded random ones. At each visit of a loop header, every scalar
+// candidate of that loop is evaluated on the real state; one that is false is
+// dropped before any query. Sound because it only drops: a candidate false at
+// a header state of a violation-free run is false at a state the base or step
+// query must admit (the run's states satisfy reach and noviol before the
+// header), so it is outside the greatest inductive subset Houdini computes and
+// the fixpoint is unchanged; only the SAT queries that would have found it go.
+// Only templates evaluated here exactly as `eval` builds them are filtered
+// (Cmp, Mask, Lin, MaxLe, and Scale/ScaleV/Tri up to 128 bits); memory
+// templates and object sizes are left to the solver. Opt-in: PRISM_HOUDINI_CONCRETE=1.
+namespace houdini_concrete {
+inline uint64_t mask_w(unsigned w) { return w >= 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1; }
+inline int64_t sgn(uint64_t v, unsigned w) {
+    v &= mask_w(w);
+    if (w == 0 || w >= 64) return static_cast<int64_t>(v);
+    return (v >> (w - 1)) & 1 ? static_cast<int64_t>(v | ~mask_w(w)) : static_cast<int64_t>(v);
+}
+using u128 = unsigned __int128;
+inline u128 mask128(unsigned W) { return W >= 128 ? ~u128{0} : (u128{1} << W) - 1; }
+// x (xw bits) extended to W bits, signed or unsigned, as a W-bit pattern
+inline u128 ext(uint64_t x, unsigned xw, unsigned W, bool sx) {
+    u128 v = x & mask_w(xw);
+    if (sx && xw > 0 && xw < 128 && ((v >> (xw - 1)) & 1)) v |= ~mask128(xw);
+    return v & mask128(W);
+}
+inline __int128 s128(u128 v, unsigned W) {
+    v &= mask128(W);
+    if (W < 128 && ((v >> (W - 1)) & 1)) v |= ~mask128(W);
+    return static_cast<__int128>(v);
+}
+inline uint64_t splitmix(uint64_t& st) {
+    uint64_t z = (st += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+}  // namespace houdini_concrete
+
+void Houdini::concrete_filter(HoudiniOut& out) {
+    namespace hc = houdini_concrete;
+    // opt-in until measured on the merge gate (docs/VERIFY_PRISM.md): =1 turns it on
+    if (const char* e = std::getenv("PRISM_HOUDINI_CONCRETE"); !(e && std::string(e) == "1")) return;
+    auto& cands = out.cands;
+    if (g_.loops.empty() || cands.empty()) return;
+    const auto nb = fn_.blocks.size();
+    // widths of a term as the encoder sees it (0: not evaluated here)
+    auto header_of = [&](int L) { return g_.loops[static_cast<std::size_t>(L)].header; };
+    auto phi_w = [&](int L, int idx) -> unsigned {
+        const int h = header_of(L);
+        if (h < 0 || static_cast<std::size_t>(h) >= nb) return 0;
+        auto& ph = fn_.blocks[static_cast<std::size_t>(h)].phis;
+        if (idx < 0 || static_cast<std::size_t>(idx) >= ph.size()) return 0;
+        return fn_.vars[static_cast<std::size_t>(ph[static_cast<std::size_t>(idx)].dst)].width;
+    };
+    auto term_w = [&](const InvTerm& t, int L) -> unsigned {
+        switch (t.kind) {
+            case InvTerm::Phi:
+            case InvTerm::Entry: return phi_w(L, t.idx);
+            case InvTerm::Scope:
+                if (t.idx < 0 || static_cast<std::size_t>(t.idx) >= fn_.vars.size()) return 0;
+                return fn_.vars[static_cast<std::size_t>(t.idx)].width == t.w ? t.w : 0;
+            case InvTerm::Const: return t.w;
+            case InvTerm::Size: return 0;
+        }
+        return 0;
+    };
+    auto known_rel = [](Op r) {
+        switch (r) {
+            case Op::Eq: case Op::Ne: case Op::Ule: case Op::Ult: case Op::Uge: case Op::Ugt:
+            case Op::Sle: case Op::Slt: case Op::Sge: case Op::Sgt: return true;
+            default: return false;
+        }
+    };
+    auto evaluable = [&](const InvCand& k) -> bool {
+        if (k.loop < 0 || static_cast<std::size_t>(k.loop) >= g_.loops.size()) return false;
+        const unsigned wa = term_w(k.a, k.loop), wb = term_w(k.b, k.loop);
+        if (wa == 0 || wa > 64) return false;
+        switch (k.kind) {
+            case InvCand::Cmp: return wb == wa && known_rel(k.rel);
+            case InvCand::Mask: return wb == wa;
+            case InvCand::Lin: return wb == wa && k.a.kind == InvTerm::Phi && k.b.kind == InvTerm::Phi;
+            case InvCand::MaxLe: return wb == wa && k.a.kind == InvTerm::Phi;
+            case InvCand::Scale:
+            case InvCand::Tri:
+                return 2 * wa + 4 <= 128 && wb > 0 && wb <= 64 && k.a.kind == InvTerm::Phi && k.b.kind == InvTerm::Phi &&
+                       (k.kind == InvCand::Tri || k.rel == Op::Eq || k.rel == Op::Sle || k.rel == Op::Sge);
+            case InvCand::ScaleV: {
+                const unsigned wv = term_w(k.v, k.loop);
+                return 2 * wa + 4 <= 128 && wb > 0 && wb <= 64 && wv > 0 && wv <= 64 && k.a.kind == InvTerm::Phi &&
+                       k.b.kind == InvTerm::Phi;
+            }
+            default: return false;
+        }
+    };
+    std::vector<std::vector<std::size_t>> by_loop(g_.loops.size());
+    std::size_t todo = 0;
+    for (std::size_t i = 0; i < cands.size(); ++i)
+        if (cands[i].alive && evaluable(cands[i])) {
+            by_loop[static_cast<std::size_t>(cands[i].loop)].push_back(i);
+            ++todo;
+        }
+    if (todo == 0) return;
+    std::map<int, std::vector<int>> loops_at;  // header block -> loops
+    for (std::size_t L = 0; L < g_.loops.size(); ++L) loops_at[g_.loops[L].header].push_back(static_cast<int>(L));
+    std::vector<std::vector<uint64_t>> entry(g_.loops.size());
+    std::vector<char> have_entry(g_.loops.size(), 0);
+    auto holds = [&](const InvCand& k, const std::vector<uint64_t>& ph, const std::vector<uint64_t>& en,
+                     const std::vector<uint64_t>& val) -> bool {
+        auto tv = [&](const InvTerm& t) -> uint64_t {
+            switch (t.kind) {
+                case InvTerm::Phi: return ph.at(static_cast<std::size_t>(t.idx));
+                case InvTerm::Entry: return en.at(static_cast<std::size_t>(t.idx));
+                case InvTerm::Scope: return val.at(static_cast<std::size_t>(t.idx)) & hc::mask_w(t.w);
+                case InvTerm::Const: return t.c & hc::mask_w(t.w);
+                default: return 0;
+            }
+        };
+        const unsigned w = term_w(k.a, k.loop);
+        const uint64_t M = hc::mask_w(w);
+        const uint64_t a = tv(k.a) & M;
+        switch (k.kind) {
+            case InvCand::Cmp: {
+                const uint64_t b = tv(k.b) & M;
+                const int64_t sa = hc::sgn(a, w), sb = hc::sgn(b, w);
+                switch (k.rel) {
+                    case Op::Eq: return a == b;
+                    case Op::Ne: return a != b;
+                    case Op::Ule: return a <= b;
+                    case Op::Ult: return a < b;
+                    case Op::Uge: return a >= b;
+                    case Op::Ugt: return a > b;
+                    case Op::Sle: return sa <= sb;
+                    case Op::Slt: return sa < sb;
+                    case Op::Sge: return sa >= sb;
+                    case Op::Sgt: return sa > sb;
+                    default: return true;
+                }
+            }
+            case InvCand::Mask: {
+                const uint64_t m = k.mask & M, b = tv(k.b) & M;
+                return (a & m) == (b & m);
+            }
+            case InvCand::Lin: {
+                const uint64_t b = tv(k.b) & M, ea = en.at(static_cast<std::size_t>(k.a.idx)) & M,
+                               eb = en.at(static_cast<std::size_t>(k.b.idx)) & M;
+                return k.sum ? ((a + b) & M) == ((ea + eb) & M) : ((a - b) & M) == ((ea - eb) & M);
+            }
+            case InvCand::MaxLe: {
+                const uint64_t b = tv(k.b) & M, ea = en.at(static_cast<std::size_t>(k.a.idx)) & M;
+                if (k.sext) {
+                    const int64_t sa = hc::sgn(a, w), sb = hc::sgn(b, w), sea = hc::sgn(ea, w);
+                    return sa <= (sea >= sb ? sea : sb);
+                }
+                return a <= (ea >= b ? ea : b);
+            }
+            case InvCand::Scale:
+            case InvCand::ScaleV:
+            case InvCand::Tri: {
+                const unsigned W = 2 * w + 4, wb = term_w(k.b, k.loop);
+                const hc::u128 WM = hc::mask128(W);
+                auto X = [&](uint64_t x, unsigned xw) { return hc::ext(x, xw, W, k.sext); };
+                const hc::u128 A = X(a, w), B = X(tv(k.b), wb);
+                const hc::u128 EA = X(en.at(static_cast<std::size_t>(k.a.idx)), w);
+                const hc::u128 EB = X(en.at(static_cast<std::size_t>(k.b.idx)), wb);
+                if (k.kind == InvCand::Tri) {
+                    const hc::u128 D = static_cast<hc::u128>(static_cast<__int128>(static_cast<int>(k.mask) - 1)) & WM;
+                    const hc::u128 lhs = (hc::u128{2} * (A - EA)) & WM;
+                    const hc::u128 rhs = (B * (B + D) - EB * (EB + D)) & WM;
+                    return lhs == rhs;
+                }
+                hc::u128 m;
+                if (k.kind == InvCand::Scale)
+                    m = k.sext ? static_cast<hc::u128>(static_cast<__int128>(hc::sgn(k.mask, w))) & WM
+                               : static_cast<hc::u128>(k.mask) & WM;
+                else
+                    m = X(tv(k.v), term_w(k.v, k.loop));
+                const hc::u128 lhs = (A - EA) & WM, rhs = (m * (B - EB)) & WM;
+                if (k.rel == Op::Sle) return hc::s128(lhs, W) <= hc::s128(rhs, W);
+                if (k.rel == Op::Sge) return hc::s128(lhs, W) >= hc::s128(rhs, W);
+                return lhs == rhs;
+            }
+            default: return true;
+        }
+    };
+    InterpHook hook = [&](int b, int prev, const std::vector<uint64_t>& val) -> bool {
+        auto it = loops_at.find(b);
+        if (it == loops_at.end()) return true;
+        auto& hb = fn_.blocks[static_cast<std::size_t>(b)];
+        std::vector<uint64_t> ph(hb.phis.size());
+        for (std::size_t j = 0; j < hb.phis.size(); ++j) ph[j] = val.at(static_cast<std::size_t>(hb.phis[j].dst));
+        for (int L : it->second) {
+            auto& lp = g_.loops[static_cast<std::size_t>(L)];
+            const bool from_inside = prev >= 0 && static_cast<std::size_t>(prev) < lp.body.size() &&
+                                     lp.body[static_cast<std::size_t>(prev)];
+            if (!from_inside) {
+                entry[static_cast<std::size_t>(L)] = ph;
+                have_entry[static_cast<std::size_t>(L)] = 1;
+            }
+            if (!have_entry[static_cast<std::size_t>(L)]) continue;
+            for (auto i : by_loop[static_cast<std::size_t>(L)]) {
+                if (!cands[i].alive) continue;
+                if (!holds(cands[i], ph, entry[static_cast<std::size_t>(L)], val)) {
+                    cands[i].alive = false;
+                    ++out.concrete_dropped;
+                    if (--todo == 0) return false;  // nothing left to falsify
+                }
+            }
+        }
+        return true;
+    };
+    // deterministic inputs: edge values, then seeded random ones
+    std::vector<unsigned> pw;
+    for (int p : fn_.params) pw.push_back(fn_.vars[static_cast<std::size_t>(p)].width);
+    uint64_t seed = 0x5eed0f1a7e5ull;
+    const prism::clock::Stopwatch t0;
+    constexpr int kRuns = 48;
+    constexpr double kWall = 1.5;  // seconds for the whole filter
+    for (int run = 0; run < kRuns && todo > 0 && t0.elapsed_s() < kWall; ++run) {
+        std::vector<uint64_t> args(pw.size());
+        for (std::size_t j = 0; j < pw.size(); ++j) {
+            const unsigned w = pw[j];
+            const uint64_t M = hc::mask_w(w);
+            uint64_t v = 0;
+            switch (run) {
+                case 0: v = 0; break;
+                case 1: v = 1; break;
+                case 2: v = M; break;  // -1
+                case 3: v = w ? (M >> 1) : 0; break;  // signed max
+                case 4: v = w ? (uint64_t{1} << (w - 1)) : 0; break;  // signed min
+                case 5: v = 2; break;
+                default: {
+                    const uint64_t r = hc::splitmix(seed);
+                    switch (r % 4) {
+                        case 0: v = r >> 60; break;           // small: 0..15
+                        case 1: v = (r >> 32) % 300; break;   // a few hundred
+                        case 2: v = ~((r >> 58)) ; break;     // small negative
+                        default: v = hc::splitmix(seed); break;
+                    }
+                }
+            }
+            args[j] = v & M;
+        }
+        for (auto& en : have_entry) en = 0;
+        (void)interpret(fn_, args, 200'000, hook);
+        ++out.concrete_runs;
+    }
+}
+
 HoudiniOut Houdini::run() {
     HoudiniOut out;
     out.attempted = true;
@@ -869,6 +1125,7 @@ HoudiniOut Houdini::run() {
         for (auto& k : out.cands) k.alive = keep.count(text(k)) != 0;
         from_cache_ = true;
     }
+    if (!from_cache_) concrete_filter(out);
 
     // footprints: learnt from a first cut encoding, then re-checked (the
     // havoc can change what provenance knows about a write target)

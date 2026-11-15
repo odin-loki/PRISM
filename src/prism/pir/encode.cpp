@@ -1824,6 +1824,9 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         }
         if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
         if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
+        if (h.concrete_runs > 0)
+            r.extra["houdini_concrete"] = std::to_string(h.concrete_dropped) + " of " + std::to_string(h.candidates) +
+                                          " candidate(s) falsified by " + std::to_string(h.concrete_runs) + " concrete run(s)";
         if (!h.proved) {
             r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
             if (fn_budget && fn_budget->exhausted())

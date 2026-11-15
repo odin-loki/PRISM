@@ -492,6 +492,11 @@ uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a, const std::v
 }
 
 InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit) {
+    return interpret(fn, args, step_limit, InterpHook{});
+}
+
+InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit,
+                       const InterpHook& on_block) {
     PtrModelScope pms(fn.ptr);
     InterpResult r;
     mem::ConcMem M;
@@ -531,6 +536,10 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
         for (auto& [d, vt] : upd) {
             val.at(d) = vt.first;
             taint.at(d) = vt.second;
+        }
+        if (on_block && !on_block(cur, prev, val)) {
+            r.status = InterpResult::Stopped;
+            return r;
         }
         for (auto& s : bl.stmts) {
             if (++steps > step_limit) {
