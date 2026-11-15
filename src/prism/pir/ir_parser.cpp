@@ -1441,6 +1441,10 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
                            pending.find(" unwind label ") == std::string::npos &&
                            pending.find(" unwind to caller") == std::string::npos;
         if (depth <= 0 && open_invoke) continue;
+        // `callbr ...` (asm goto) continues on the next line with "to label %ft [label %l1, ...]"
+        const bool open_callbr = (pending.starts_with("callbr ") || pending.find(" = callbr ") != std::string::npos) &&
+                                 pending.find(" to label ") == std::string::npos;
+        if (depth <= 0 && open_callbr) continue;
         if (depth <= 0) {
             depth = 0;
             if (pending.find(" = landingpad ") != std::string::npos || pending.starts_with("landingpad "))

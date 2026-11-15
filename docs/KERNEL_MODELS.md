@@ -148,5 +148,8 @@ before may also use constructs PRISM refuses (atomics, `ptrtoint` in `IS_ERR`): 
   `inttoptr` support in the translator and the Lean mirror; they stay UNENCODED.
 - No Lean mirror or proof for the kernel-mode constructs (the exporter marks them unsupported); R7 reports them.
 - A device model (R8): reads return arbitrary values; nothing constrains them.
-- No real kernel translation unit was run end to end (the generated headers of the OS-Proving build were lost when the
-  VM restarted); the tests use the kernel's declarations by hand.
+- One real kernel unit was run: Linux `drivers/net/ethernet/intel/e1000e/82571.c` with `--compile-commands` (regenerated
+  `modules_prepare` headers): it compiles and all 39 functions are `NEEDS-HARNESS` with and without `--kernel-api` /
+  `--assume-unknown-calls`, because every one takes a `struct e1000_hw *` (Law 6, requirement R4: harness generation).
+  No count on real kernel functions without pointer parameters yet; the tests use the kernel's declarations by hand. (The
+  census numbers above are from the OS-Proving IR census, not from PRISM runs.)
