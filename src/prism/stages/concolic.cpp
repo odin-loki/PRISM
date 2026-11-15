@@ -275,7 +275,8 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
     if (auto syn = scrubbed_byte_reason(fn.body, "concolic engine")) return base_nh(*syn);
     if (auto syn = unencoded_syntax_reason_cached(fn, "concolic engine")) return base_nh(*syn);
     auto queue = initial_seeds(fn);
-    std::set<ArgsKey> seen;
+    const auto conds = branch_conditions(fn);
+    std::set<ArgsKey> seen, prefetched;
     std::set<ArgsKey> z3_keys;
     int tried = 0, generated = 0, z3_seeds = 0, skipped_unsat = 0, max_new = std::max(0, budget);
     auto with_run_extra = [&](Finding& f, const Args& a) { put_args_tried(f, a, tried); };
@@ -319,15 +320,30 @@ Finding concolic_function(const FunctionInfo& fn, int budget) {
             return f;
         }
         if (generated >= max_new) continue;
-        const auto conds = branch_conditions(fn);
-        // The flips of this seed's branches, both pir passes of each, checked
-        // in one batched pir run before the loop below asks them one by one
-        // (it gets the checked rows; a flip the loop does not reach, past
-        // the budget, was checked for nothing, never used).
-        if (!conds.empty())
+        // The flips of this seed's branches, and of the next queued seeds
+        // the remaining budget is sure to reach (at most `conds` new inputs
+        // per seed), are checked in batched pir runs before the loop below
+        // asks them one by one: it gets the checked rows. The order of the
+        // exploration does not change. A flip it does not reach (budget
+        // spent, an input that crashes first) was checked for nothing.
+        if (!conds.empty() && !prefetched.contains(key)) {
+            const std::size_t want =
+                std::max<std::size_t>(1, (static_cast<std::size_t>(max_new - generated) + conds.size() - 1) /
+                                             conds.size());
+            std::vector<const Args*> window{&args};
+            std::set<ArgsKey> wkeys{key};
+            for (auto& a : queue) {
+                if (window.size() >= want) break;
+                auto k = args_key(a);
+                if (seen.contains(k) || !wkeys.insert(k).second) continue;
+                window.push_back(&a);
+            }
             prefetch_pir(1, [&] {
-                for (auto& cond : conds) (void)neighbor_for_cond(fn, args, cond);
+                for (auto* a : window)
+                    for (auto& cond : conds) (void)neighbor_for_cond(fn, *a, cond);
             });
+            prefetched.insert(wkeys.begin(), wkeys.end());
+        }
         for (auto& cond : conds) {
             if (generated >= max_new) break;
             auto [nxt, via_z3, was_unsat] = neighbor_for_cond(fn, args, cond);
