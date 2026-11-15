@@ -1265,7 +1265,7 @@ with the loop's own phis, scope values, guard constants and value ranges:
 | state | assigned constants only | `min <= s <= max` |
 | bit-scan | `x >>= c` | `x <= entry(x)` |
 | fold | signed `acc += x`, `x` in `[lo, hi]` (value ranges, incl. `if (a > K) return` guards) | `lo*(i - entry(i)) <= acc - entry(acc) <= hi*(i - entry(i))`; `acc += v`: `== v*(i - entry(i))` |
-| nested-fold | `acc` moved by an inner loop of `N` iterations | bounds `N*lo`, `N*hi` per outer step (per unit of a position when `N` is not constant); `== N*v*(i - entry(i))` (ScaleVK) |
+| nested-fold | `acc` moved by an inner loop of `N` iterations (or at most `N`: `j < n` with `n <= K` from an early return) | bounds `N*lo`, `N*hi` per outer step (per unit of a position when `N` is not constant); `== N*v*(i - entry(i))` (ScaleVK) |
 | ring-counters | free-running `head`, `tail` compared by difference | `head - tail <= K` (DiffCmp, wrapping) |
 | ring-occupancy | masked `head`, `tail`, a `count` moved by +-1, `p[head]` stored and `p[tail]` loaded | `count <= cap`; `(head - tail - count) & (cap-1)` constant (ModLin); every slot `x` with `(x - tail) mod cap < count` initialised (MemRingInit) |
 | counted-fill | `p[i] = ...` with a unit counter | `forall x < i: p[x]` initialised (`== v` for a constant) |

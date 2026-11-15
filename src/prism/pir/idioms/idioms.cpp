@@ -588,8 +588,10 @@ public:
     }
 
     // A unit up-counter from a constant with a constant exit bound: its range
-    // in the body [c0, K - 1] (heuristic, intervals only).
-    std::optional<std::pair<i128, i128>> counter_range(std::size_t L, int i) const {
+    // in the body [c0, K - 1] (heuristic, intervals only). Unless const_only,
+    // a bound n defined before the loop with a range [.., hi] from the
+    // function's early returns gives [c0, hi - 1] (n <= 50: i < n <= 50).
+    std::optional<std::pair<i128, i128>> counter_range(std::size_t L, int i, bool const_only = false) const {
         auto& F = facts(L);
         auto& pf = F.phis[static_cast<std::size_t>(i)];
         if (!pf.entry_const || pf.upd.empty()) return std::nullopt;
@@ -605,6 +607,27 @@ public:
                 if (K > c0) return std::make_pair(c0, K - 1);
             }
         }
+        if (const_only) return std::nullopt;
+        for (auto& g : F.guards) {
+            if (!g.exit || g.op != Op::Slt) continue;
+            if (g.l.leaves.size() == 1 && g.l.leaves[0] == std::make_pair(P, 1) && g.l.c == 0 && g.r.c == 0 &&
+                g.r.leaves.size() == 1 && g.r.leaves[0].second == 1) {
+                const int n = g.r.leaves[0].first;
+                if (n == P || hphi(L, n) >= 0 || (def_block[static_cast<std::size_t>(n)] >= 0 &&
+                                                   in(L, def_block[static_cast<std::size_t>(n)])))
+                    continue;
+                if (auto r = guard_range(n); r && r->second - 1 >= c0) return std::make_pair(c0, r->second - 1);
+            }
+        }
+        return std::nullopt;
+    }
+    // the most iterations of a unit counter loop with one exit (its guard;
+    // a bound from the function's early returns counts)
+    std::optional<int64_t> max_trips(std::size_t L) const {
+        auto& F = facts(L);
+        if (F.exits != 1) return std::nullopt;
+        for (std::size_t i = 0; i < F.phis.size(); ++i)
+            if (auto r = counter_range(L, static_cast<int>(i))) return static_cast<int64_t>(r->second - r->first + 1);
         return std::nullopt;
     }
     // exact trip count of a unit counter loop with one exit (its guard)
@@ -612,7 +635,7 @@ public:
         auto& F = facts(L);
         if (F.exits != 1) return std::nullopt;
         for (std::size_t i = 0; i < F.phis.size(); ++i)
-            if (auto r = counter_range(L, static_cast<int>(i))) {
+            if (auto r = counter_range(L, static_cast<int>(i), true)) {
                 if (counter) *counter = static_cast<int>(i);
                 return static_cast<int64_t>(r->second - r->first + 1);
             }
@@ -1000,6 +1023,15 @@ struct Builder {
                     }
                     if (!okk) continue;
                     auto trip = A.trip_count(M);
+                    // at most N iterations (a variable bound with a range): the
+                    // per-step bounds N*lo, N*hi hold too (lo <= 0 <= hi)
+                    const auto most = trip ? trip : A.max_trips(M);
+                    if (!trip && most && *most > 0 && r)
+                        for (int b : counters) {
+                            const i128 hi = std::max<i128>(r->second, 0) * *most, lo = std::min<i128>(r->first, 0) * *most;
+                            if (fits(hi, w)) scale("nested-fold", i, b, static_cast<int64_t>(hi), Op::Sle, true);
+                            if (fits(lo, w)) scale("nested-fold", i, b, static_cast<int64_t>(lo), Op::Sge, true);
+                        }
                     // no constant trip count: the inner loop is taken to run at
                     // most as far as a position of this loop moves (TLV walk:
                     // sum <= 255 * off); bounds per unit of the position
