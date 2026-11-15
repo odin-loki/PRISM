@@ -16,3 +16,8 @@ Run: `build/prism testdata/bench/hard --preset prove -j N --out OUT --solver-cac
 (fresh cache, and `PRISM_PIR_FN_CACHE=0`, to measure solving rather than the caches).
 Measured 15 November 2026, 4 cores shared, `-j 2`: 552 s wall; Houdini 513 s over
 28 runs and VC solving 489 s over 287 queries dominate; encoding 10 s.
+
+Tried and rejected (15 November 2026): Houdini's solvers created with Z3's
+`QF_BV` logic instead of the default solver. On `ring.c` + `proto.c` Houdini
+took 872 s instead of 496 s and `tcp_events_ok` fell from PROVED-ASSUMING to
+BOUNDED: slower and a lost verdict.

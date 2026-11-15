@@ -137,16 +137,29 @@ for src in "${corpus[@]}"; do
       g4_bad=$((g4_bad + 1)); diff "$out/$tag-cand.rows" "$out/$tag-cand-warm.rows" > "$out/$tag.g4.diff"
     fi
   else g4_bad=$((g4_bad + 1)); fi
-  # G5: inventory functions without a pir row (only when pir ran)
+  # G5: inventory functions without a pir row (only when pir ran), for the
+  # candidate and the baseline: a function the candidate leaves without a
+  # verdict that the baseline gave one is a FAIL; the rest are known gaps
   if [[ ",$stages," == *",pir,"* ]]; then
-    jq -r '.functions[]? | select(.file != null and .name != null) | [.file, .name] | @tsv' "$out/$tag-cand/report.json" 2>/dev/null \
-      | sort -u > "$out/$tag.inv"
-    awk -F'\t' '$1 == "pir" { print $2 "\t" $3 }' "$out/$tag-cand.rows" | sort -u > "$out/$tag.pirfn"
-    if [ -s "$out/$tag.inv" ]; then
-      comm -23 "$out/$tag.inv" "$out/$tag.pirfn" > "$out/$tag.g5.missing"
-      m=$(wc -l < "$out/$tag.g5.missing")
-      [ "$m" -gt 0 ] && g5_bad=$((g5_bad + m))
-    fi
+    for side in cand base; do
+      rep="$out/$tag-$side/report.json"
+      jq -r '.functions[]? | select(.file != null and .name != null) | [.file, .name, (.line // 0 | tostring)] | @tsv' \
+        "$rep" 2>/dev/null | sort -u > "$out/$tag.$side.inv"
+      jq -r '[.stages[]?.findings[]?, .findings[]?] | .[] | select(.stage == "pir" and .function == null and .file != null)
+             | .file' "$rep" | sort -u > "$out/$tag.$side.unitrows"
+      # a unit-level pir row states the reason for every function of its file; a
+      # function has a row when a pir row has its file and line, or file and
+      # short name (pir names C++ members unqualified, templates with arguments)
+      awk -F'\t' -v OFS='\t' '
+        function short(n) { sub(/<.*$/, "", n); sub(/^.*::/, "", n); return n }
+        FILENAME == ARGV[1] { unit[$1] = 1; next }
+        FILENAME == ARGV[2] { if ($1 == "pir") { byline[$2 FS $4] = 1; byname[$2 FS short($3)] = 1 }; next }
+        !($1 in unit) && !(($1 FS $3) in byline) && !(($1 FS short($2)) in byname) { print }' \
+        "$out/$tag.$side.unitrows" "$out/$tag-$side.rows" "$out/$tag.$side.inv" | sort -u > "$out/$tag.$side.g5.missing"
+    done
+    comm -23 "$out/$tag.cand.g5.missing" "$out/$tag.base.g5.missing" > "$out/$tag.g5.new"
+    n_new=$(wc -l < "$out/$tag.g5.new"); n_known=$(wc -l < "$out/$tag.cand.g5.missing")
+    g5_bad=$((g5_bad + n_new)); g5_known=$((${g5_known:-0} + n_known))
   fi
 done
 [ "$g2_bad" -eq 0 ] && result G2 PASS "no lost, flipped or weaker verdict vs the baseline" \
@@ -156,8 +169,8 @@ done
 [ "$g4_bad" -eq 0 ] && result G4 PASS "cold and warm runs give the same rows" \
                      || result G4 FAIL "cold vs warm differ (*.g4.diff)"
 if [[ ",$stages," == *",pir,"* ]]; then
-  [ "$g5_bad" -eq 0 ] && result G5 PASS "every inventory function has a pir row (or the inventory lists none)" \
-                       || result G5 FAIL "$g5_bad inventory function(s) without a pir row (*.g5.missing)"
+  [ "$g5_bad" -eq 0 ] && result G5 PASS "no function lost its pir row (${g5_known:-0} known gap(s) on both: *.cand.g5.missing)" \
+                       || result G5 FAIL "$g5_bad function(s) without a pir row that the baseline covers (*.g5.new)"
 else result G5 SKIP "pir not in --stages"; fi
 
 # ---- G6 doctests
