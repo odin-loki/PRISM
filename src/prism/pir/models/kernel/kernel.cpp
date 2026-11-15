@@ -424,4 +424,139 @@ unsigned int crc32_le(unsigned int crc, const unsigned char *p, size_t len) {
     return (unsigned int)__VERIFIER_nondet_int();
 }
 
+/* ---- kernel environment: the callees OS-Proving's core tier was blocked on
+ * most often (docs/CONTRACTS.md, priority table). Each is the weakest
+ * contract that is still true: a configuration or static-key test is any
+ * bool, MMIO reads are any value, delays and locks change no memory the
+ * caller can see (single-threaded: locks are not a concurrency model, and
+ * that is in each id). ---- */
+
+struct static_key;
+typedef struct spinlock spinlock_t;
+typedef struct raw_spinlock raw_spinlock_t;
+struct mutex;
+
+bool mem_alloc_profiling_enabled(void) {
+    __prism_contract("kernel:mem_alloc_profiling_enabled (configuration: any value)");
+    return __VERIFIER_nondet_int() != 0;
+}
+
+bool static_key_false(struct static_key *key) {
+    __prism_contract("kernel:static_key_false (static key: any value)");
+    (void)key;
+    return __VERIFIER_nondet_int() != 0;
+}
+
+bool static_key_true(struct static_key *key) {
+    __prism_contract("kernel:static_key_true (static key: any value)");
+    (void)key;
+    return __VERIFIER_nondet_int() != 0;
+}
+
+bool arch_static_branch(struct static_key *const key, const bool branch) {
+    __prism_contract("kernel:arch_static_branch (static key: any value)");
+    (void)key;
+    (void)branch;
+    return __VERIFIER_nondet_int() != 0;
+}
+
+bool arch_static_branch_jump(struct static_key *const key, const bool branch) {
+    __prism_contract("kernel:arch_static_branch_jump (static key: any value)");
+    (void)key;
+    (void)branch;
+    return __VERIFIER_nondet_int() != 0;
+}
+
+/* spinlock_t's first member is the raw lock (include/linux/spinlock.h) */
+raw_spinlock_t *spinlock_check(spinlock_t *lock) {
+    __prism_contract("kernel:spinlock_check (returns &lock->rlock, offset 0)");
+    return (raw_spinlock_t *)lock;
+}
+
+void spin_lock(spinlock_t *lock) {
+    __prism_contract("kernel:spin_lock (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void spin_unlock(spinlock_t *lock) {
+    __prism_contract("kernel:spin_unlock (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void spin_lock_bh(spinlock_t *lock) {
+    __prism_contract("kernel:spin_lock_bh (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void spin_unlock_bh(spinlock_t *lock) {
+    __prism_contract("kernel:spin_unlock_bh (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags) {
+    __prism_contract("kernel:spin_unlock_irqrestore (single-threaded: no memory effect)");
+    (void)lock;
+    (void)flags;
+}
+
+void mutex_lock(struct mutex *lock) {
+    __prism_contract("kernel:mutex_lock (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void mutex_unlock(struct mutex *lock) {
+    __prism_contract("kernel:mutex_unlock (single-threaded: no memory effect)");
+    (void)lock;
+}
+
+void rcu_read_lock(void) { __prism_contract("kernel:rcu_read_lock (single-threaded: no memory effect)"); }
+
+void rcu_read_unlock(void) { __prism_contract("kernel:rcu_read_unlock (single-threaded: no memory effect)"); }
+
+void cpu_relax(void) { __prism_contract("kernel:cpu_relax (no memory effect)"); }
+
+void might_resched(void) { __prism_contract("kernel:might_resched (no memory effect)"); }
+
+void udelay(unsigned long usecs) {
+    __prism_contract("kernel:udelay (no memory effect)");
+    (void)usecs;
+}
+
+void usleep_range(unsigned long min, unsigned long max) {
+    __prism_contract("kernel:usleep_range (no memory effect)");
+    (void)min;
+    (void)max;
+}
+
+void msleep(unsigned int msecs) {
+    __prism_contract("kernel:msleep (no memory effect)");
+    (void)msecs;
+}
+
+unsigned long msecs_to_jiffies(const unsigned int m) {
+    __prism_contract("kernel:msecs_to_jiffies (HZ is configuration: any value)");
+    (void)m;
+    return __VERIFIER_nondet_ulong();
+}
+
+/* MMIO: the address is device memory, not an object of the program; a read
+ * is any value, a write changes no program memory. */
+unsigned int readl(const volatile void *addr) {
+    __prism_contract("kernel:readl (MMIO: any value)");
+    (void)addr;
+    return (unsigned int)__VERIFIER_nondet_int();
+}
+
+unsigned int __readl(const volatile void *addr) {
+    __prism_contract("kernel:__readl (MMIO: any value)");
+    (void)addr;
+    return (unsigned int)__VERIFIER_nondet_int();
+}
+
+void writel(unsigned int value, volatile void *addr) {
+    __prism_contract("kernel:writel (MMIO: no program memory written)");
+    (void)value;
+    (void)addr;
+}
+
 }  // extern "C"
