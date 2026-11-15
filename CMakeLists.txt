@@ -238,6 +238,8 @@ set(PRISM_SRC
   src/prism/pir/fp.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
+  src/prism/pir/harness.cpp
+  src/prism/pir/jsonl.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
   src/prism/pir/libc_models.cpp
@@ -810,6 +812,7 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
+    tests/cpp/test_pir_harness.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp

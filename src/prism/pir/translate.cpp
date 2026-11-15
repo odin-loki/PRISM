@@ -28,6 +28,7 @@
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
+#include "harness.hpp"
 #include "translate_fp.hpp"
 #include "translate_mem.hpp"
 
@@ -2318,6 +2319,36 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
                                  c.source + ": " + c.text + ")");
 }
 
+// Allocates the objects of an automatic pointer harness (harness.cpp) and
+// stores the nested pointers: returns the pointer to `n`'s object.
+Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
+    const auto ptr_ty = ir::parse_type("ptr");
+    for (const auto& [off, child] : n.nested) {
+        Arg cp = alloc_harness_node(tr, *child);
+        int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, off)}, true, 0);
+        tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
+    return obj;
+}
+
+// Pointer parameter bound to an object built from the IR types (--pir-harness).
+// Returns false (and `why`) when no object can be built.
+bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame& top, std::string* why) {
+    pirmem::HarnessOptions ho;
+    ho.depth = tr.opt.auto_harness.depth;
+    ho.elems = tr.opt.auto_harness.elems;
+    ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
+    ho.max_objects = tr.opt.auto_harness.max_objects;
+    auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
+    if (!plan) return false;
+    top.env[p.name] = alloc_harness_node(tr, *plan->root);
+    tr.out.ptr_params.push_back(p.name);
+    for (auto& a : plan->assumptions) tr.out.assumptions.push_back(a);
+    return true;
+}
+
 }  // namespace
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
@@ -2338,7 +2369,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         return attrs.find("byval(") != std::string::npos || attrs.find("sret(") != std::string::npos;
     };
     for (auto& p : f.params) {
-        if (p.ty.kind == ir::Type::Ptr && !own_object(p.attrs) && !contract_of(p.name)) {
+        if (p.ty.kind == ir::Type::Ptr && !own_object(p.attrs) && !contract_of(p.name) && !opt.auto_harness.on) {
             t.reason = "pointer parameter: unguarded model checking reports missing preconditions, "
                        "not defects (Law 6)";
             return t;
@@ -2373,7 +2404,13 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, sz), MemKind::Stack, bt ? 2 : 0, p->name, 0);
                 continue;
             }
-            bind_contract(tr, f, *p, *contract_of(p->name), top);
+            if (const auto* pc = contract_of(p->name)) {
+                bind_contract(tr, f, *p, *pc, top);
+            } else {
+                std::string why;
+                if (!bind_auto_harness(tr, f, *p, top, &why))
+                    throw Unenc{"UNENCODED: automatic pointer harness for parameter " + p->name + ": " + why};
+            }
             ++contracts;
         }
         if (contracts > 1)

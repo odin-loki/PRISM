@@ -391,6 +391,17 @@ struct PtrContract {
     std::string source;        // "requires" | "harness"
 };
 
+// Automatic pointer harness (--pir-harness, src/prism/pir/harness.cpp): a
+// pointer parameter without a `requires` clause (or draft) is bound to an
+// object built from the IR types, every choice a named assumption.
+struct AutoHarness {
+    bool on = false;
+    int depth = 2;                 // nested pointer levels below the parameter's own object
+    uint64_t elems = 16;           // default element count of an array-like pointee
+    uint64_t unknown_bytes = 64;   // default size when the pointee type is not determined
+    int max_objects = 32;          // objects per pointer parameter
+};
+
 struct TranslateOptions {
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
@@ -400,6 +411,7 @@ struct TranslateOptions {
     int inline_depth = 4;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
+    AutoHarness auto_harness;
     // Mutable globals start at their initializer (program entry, `main`).
     // Otherwise their contents are arbitrary initialised bytes.
     bool globals_initial = false;
@@ -421,6 +433,16 @@ PRISM_API std::string to_text(const Function& fn);
 PRISM_API void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit,
                                 const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
                                 const Translation& t);
+// Whether the function's translation is inside the Lean-proved LLVM fragment
+// (the same test export_lean_pair applies: no `L unsupported <why>`), without
+// writing any file. `reason` is the unsupported text, or why there is no
+// translation at all. No change to the proofs: this only reports the export's verdict.
+struct LeanCoverage {
+    bool supported = false;
+    std::string reason;
+};
+PRISM_API LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+                                     const Translation& t);
 PRISM_API std::string sha256_hex(std::string_view data);
 
 // ---------------------------------------------------------------------------

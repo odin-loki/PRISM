@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <regex>
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 
 namespace prism::pir::pirmem {
@@ -118,6 +119,10 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.fp_checks = cfg.fp_checks;
     o.asm_contracts = asm_contracts(unit.src_lines);
     o.globals_initial = source_name == "main";
+    o.auto_harness.on = cfg.pir_harness;
+    o.auto_harness.depth = cfg.pir_harness_depth;
+    o.auto_harness.elems = cfg.pir_harness_elems;
+    o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
     std::vector<std::string> ptrs;
@@ -285,19 +290,26 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     // A violation under a drafted (not user-stated) precondition is not a
     // defect report: the precondition was invented (Law 6).
     bool drafted = false;
-    for (auto& a : fn.assumptions) drafted = drafted || a.find("harness (template draft)") != std::string::npos;
+    for (auto& a : fn.assumptions)
+        drafted = drafted || a.find("harness (template draft)") != std::string::npos || a.find("(auto harness)") != std::string::npos;
     if (drafted && v.status == laws::FAILED) {
         v.extra["verdict_under_draft"] = v.status + ": " + v.message;
         v.status = std::string(laws::NEEDS_HARNESS);
-        v.message = "pointer parameter: violation only under a drafted harness (" + v.message +
+        v.message = "pointer parameter: violation only under a drafted or automatic harness (" + v.message +
                     "); state the precondition with // requires: (Law 6)";
         v.cex.clear();
         v.cex_args.clear();
+    }
+    if (!fn.ptr_params.empty()) {
+        std::string pp;
+        for (auto& p : fn.ptr_params) pp += (pp.empty() ? "" : ",") + p;
+        v.extra["ptr_params"] = pp;
     }
     if (!fn.assumptions.empty()) {
         std::string s;
         for (auto& a : fn.assumptions) s += (s.empty() ? "" : "; ") + a;
         v.extra["assumptions"] = s;
+        v.extra["assumptions_json"] = nlohmann::json(fn.assumptions).dump();
         if (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED || v.status == laws::PROVED_CERTIFIED) {
             v.extra["verdict_before_assumptions"] = v.status;
             if (v.status == laws::PROVED_CERTIFIED) {

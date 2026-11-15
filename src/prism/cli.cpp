@@ -161,6 +161,7 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         else if (a == "--allow-exec") { ok = in.flag(); cfg.allow_exec = true; }
         else if (a == "--strict-aliasing") { ok = in.flag(); cfg.strict_aliasing = true; }
         else if (a == "--pir-drafts") { ok = in.flag(); cfg.pir_drafts = true; }
+        else if (a == "--pir-harness") { ok = in.flag(); cfg.pir_harness = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
         else if (a == "--certified") { ok = in.flag(); cfg.certified = true; }
         else if (a == "--z3-only") { ok = in.flag(); o.z3_only = true; }
@@ -182,6 +183,18 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solver-cache") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.solver_cache = fs::absolute(*v);
+        } else if (a == "--pir-harness-depth") {
+            auto v = in.take_int(0);
+            if ((ok = v.has_value())) cfg.pir_harness_depth = *v;
+        } else if (a == "--pir-harness-elems") {
+            auto v = in.take_int(1);
+            if ((ok = v.has_value())) cfg.pir_harness_elems = static_cast<unsigned long long>(*v);
+        } else if (a == "--pir-harness-bytes") {
+            auto v = in.take_int(1);
+            if ((ok = v.has_value())) cfg.pir_harness_bytes = static_cast<unsigned long long>(*v);
+        } else if (a == "--jsonl") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.jsonl = fs::absolute(*v);
         } else if (a == "--compile-commands") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.compile_commands = fs::absolute(*v);
