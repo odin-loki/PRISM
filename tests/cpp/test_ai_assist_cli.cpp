@@ -10,8 +10,7 @@
 //   * `prism regress` writes tests under <out>/regression_tests only, and
 //     --run without --allow-exec runs nothing (Law 9);
 //   * triage uses the embedding endpoint when PRISM_EMBED_SERVER is set;
-//   * the Qt GUI's assistant panel keeps its contract (Qt is not built here,
-//     so its source is checked) and assistant_reply answers it.
+//   * assistant_reply answers a question over a loaded report.
 
 #include <doctest/doctest.h>
 #ifdef ERROR
@@ -247,20 +246,8 @@ TEST_CASE("ai-assist cli: the assurance template draft links every claim to the 
     CHECK(slurp(run.out / "draft_assurance.md").find("[theorem:Prism.proved_bounded_never_merge]") != std::string::npos);
 }
 
-TEST_CASE("ai-assist gui: the Qt assistant panel keeps its contract; assistant_reply answers it") {
-    // Qt is not built in every configuration: the panel's source contract.
-    const auto cpp = slurp(repo_root() / "src" / "gui" / "MainWindow.cpp");
-    const auto hdr = slurp(repo_root() / "src" / "gui" / "MainWindow.hpp");
-    REQUIRE(!cpp.empty());
-    CHECK(hdr.find("void onAsk();") != std::string::npos);
-    CHECK(cpp.find("prism::ai::assistant_reply") != std::string::npos);
-    const auto on_ask = cpp.find("void MainWindow::onAsk");
-    REQUIRE(on_ask != std::string::npos);
-    CHECK(cpp.find("cfg.resume = true;", on_ask) != std::string::npos);
-    CHECK(cpp.find("NOTRUN assistant") != std::string::npos);
-    CHECK(cpp.find("cellDoubleClicked") != std::string::npos);
-    // What the panel shows for a question: the structured query and the findings.
-    const auto dir = fs::temp_directory_path() / "prism-assist-gui";
+TEST_CASE("ai-assist: assistant_reply answers a failed-division question over a report") {
+    const auto dir = fs::temp_directory_path() / "prism-assist-reply";
     fs::create_directories(dir);
     std::ofstream(dir / "report.json", std::ios::binary) << R"({"root": "x", "stages": [{"name": "pir", "status": "ok", "findings": [
         {"stage": "pir", "status": "FAILED", "file": "a.c", "function": "f", "line": 1, "cls": "INT-DIV-ZERO",

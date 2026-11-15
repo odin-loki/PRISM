@@ -171,7 +171,7 @@ TEST_CASE("cli: --help, --version and --list-stages") {
     // SARIF, the polyglot stage, resume, and every flag.
     for (auto* want : {"any language", "polyglot", "NOTRUN, never as clean", "--allow-exec",
                        "--fail-on", "warning/note/style", "report.sarif", "--pbsd", "--resume",
-                       "stages.jsonl", "--list-stages", "--gui", "--no-llm", "--jobs", "--tool NAME=PATH",
+                       "stages.jsonl", "--list-stages", "--no-llm", "--jobs", "--tool NAME=PATH",
                        "--stage a,b", "--skip a,b", "--out DIR", "--unwind", "--fuzz-budget",
                        "--fuzz-iters", "--repair-rounds", "--version", "--requirements",
                        "--contracts-approved", "--strict-aliasing", "--pir-drafts", "--fp-checks",

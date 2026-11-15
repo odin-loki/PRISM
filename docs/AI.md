@@ -495,15 +495,11 @@ theorems (`Prism.proved_bounded_never_merge`,
 `Prism.admit_model_never_proof`, ...); without the proofs directory those
 steps are rejected rather than shown unsupported.
 
-### GUI assistant (9.4)
+### Assistant (9.4)
 
-`prism_gui` (src/gui/MainWindow.cpp) has an Assistant row and chat pane
-calling `prism::ai::assistant_reply` on the loaded report (double-click a
-finding to explain it). Assistant features are C++ only (`prism ask`); without
-the binary or a loaded report the panel records `NOTRUN`. Qt is not built on
-this machine: the panel is compiled only where Qt 6 is present; tests lock the
-source contract.
-
+`prism ask` calls `prism::ai::assistant_reply` on a loaded report. Assistant
+features are C++ only and console-only (the Qt GUI was removed); without a
+loaded report the command records `NOTRUN`.
 ### Solver and bound prediction (9.1, 9.3)
 
 `src/prism/solver/gbdt.cpp` is a dependency-free gradient-boosted model

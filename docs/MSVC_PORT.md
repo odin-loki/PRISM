@@ -1,5 +1,7 @@
 # MSVC / `__int128` portability (native Windows `prism_core`)
 
+> **Note:** the Qt GUI (`src/gui/`, `prism_gui`, `windows-gui-qt`, `PRISM_QT`) was removed; PRISM is console only. The GUI rows below are history.
+
 **Epic:** build `prism_core` and `prism` with MSVC (`cl`) on Windows without relying on
 WSL. **Was:** GCC/Clang `__int128` in several `prism_core` TUs (no MSVC/`clang-cl` ABI type).
 Phases 2–4 route those paths through `prism::i128` (`wide_int.hpp`).

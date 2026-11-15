@@ -170,13 +170,13 @@ PRISM_API std::string ask_json(const AskResult& r);
 // `prism ask "<question>" --report out/report.json [--json] [--no-llm]`
 PRISM_API int ask_main(int argc, char** argv);
 
-// ---------------------------------------------------------------- explain (GUI assistant)
+// ---------------------------------------------------------------- explain (assistant)
 // Plain explanation of a finding's verdict from the verdict vocabulary and the
 // finding's recorded evidence (no model). Unknown id -> "".
 PRISM_API std::string explain_finding(const RunReport& report, const std::string& id);
 // Short description of the trusted base (docs/TRUSTED_BASE.md summary).
 PRISM_API std::string explain_trusted_base();
-// One assistant turn for the GUI chat panels: "explain <id>", "trusted base",
+// One assistant turn for chat front ends: "explain <id>", "trusted base",
 // or a question (ask_question). Returns the text to show.
 PRISM_API std::string assistant_reply(const RunReport& report, const std::string& input, bool use_model);
 

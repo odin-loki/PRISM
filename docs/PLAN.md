@@ -2,7 +2,7 @@
 
 A single tool that runs **deterministic instruments first**, then **bounded
 proofs**, then **fuzzing**, then **LLM-guided generation and repair**. The
-model is Qwen 3.5 9B. Inference is **llama.cpp** (CUDA). The GUI is **Qt**.
+model is Qwen 3.5 9B. Inference is **llama.cpp** (CUDA). PRISM is console only (the Qt GUI was dropped).
 Hot numeric paths use **xsimd**. Mutation and coverage hashing use **CUDA**.
 
 ParanoidBSD's verify tree is not a plugin we wrap and forget. It is the
@@ -47,7 +47,7 @@ source of the *laws* this pipeline is not allowed to break.
 |---|---|---|
 | Model | Qwen 3.5 9B (`qwen3.5:9b`, Q4_K_M) already on Ollama | 9.7B, 256k context, thinking + tools, 24 GB 3090 |
 | Inference lib | llama.cpp with GGML CUDA | User requirement; Ollama is the *current GGUF host*, not the API we design around |
-| GUI | Qt 6 (C++ target + PySide6 so the GUI runs today without MSVC) | User requirement |
+| GUI | dropped: PRISM is console only | Owner decision |
 | SIMD | xsimd | Portable AVX2/AVX-512 on the 3090's host CPU |
 | GPU | CUDA 13.2 | Mutation havoc + coverage hashing; llama.cpp CUDA for the model |
 | SMT | Z3 | Same backend family ESBMC/Dafny already speak |
@@ -142,7 +142,7 @@ loaders — the *finding* vocabulary does not care which loader answered.
                  (report.json, report.md, report.sarif; --fail-on never|defect|gap)
 ```
 
-Each stage writes `prism-out/stages.jsonl`. The GUI tails it. `--resume` skips stages already
+Each stage writes `prism-out/stages.jsonl`. `--resume` skips stages already
 `ok`. A killed run loses at most the stage it was in.
 
 ## Running on untrusted code (Law 9)
@@ -226,5 +226,4 @@ A command `./build/prism path/to/code` that:
 - names every stage that cannot (`NOTRUN` + install line),
 - proves at least one scalar function with Z3,
 - crashes at least one planted bug with the fuzzer,
-- emits a Qt window of the same report,
 - never reports a missing ESBMC as a proof.

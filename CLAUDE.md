@@ -21,7 +21,7 @@ code base and says honestly what it could not check.
   (`src/prism/config.cpp`); `tests/cpp/test_env_registry.cpp` fails on a
   `PRISM_*` getenv that is not in it.
   There are no `HELIX_*` fallbacks.
-- Output directory is `prism-out/` (GUI: `prism-out-gui/`).
+- Output directory is `prism-out/`.
 
 ## Engine
 
@@ -30,7 +30,6 @@ code base and says honestly what it could not check.
 | Source | `src/prism/*.cpp`, `include/prism/*.hpp` |
 | Run | `./build/prism PATH` |
 | Tests | `tests/cpp/` → `prism_tests` |
-| GUI | `src/gui/` (Qt 6, `prism_gui`) |
 
 PRISM runs on the **C++ engine** (`src/prism/`). Stage order is
 `include/prism/pipeline.hpp` (`STAGE_ORDER`); status vocabulary and report
@@ -76,7 +75,7 @@ Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_Z3=ON
 cmake --build build          # first build compiles vendored Z3 (slow)
 ./build/prism_tests
 ```
@@ -98,13 +97,13 @@ Never edit them (`prism-deps linked` checks their tree digest), never
 glob them from CMake. External tools are not vendored:
 `prism-deps tool NAME` builds the pinned commit into
 `~/.prism/tools/<name>/<commit>/`, which adapters search before PATH. Linked
-components must stay permissive (`prism-deps licence-check`, in CI). New tool:
+components are not licence-checked. New tool:
 add a manifest row, and a `VENDOR_DIR` entry in `prism/config.py` plus the same
 entry in `src/prism/config.cpp`. See `docs/SUPPLY_CHAIN.md`.
 
 ## Layout
 
-- `src/prism/` C++ engine; `src/gui/` Qt GUI; `src/cuda/` CUDA havoc
+- `src/prism/` C++ engine; `src/cuda/` CUDA havoc
 - `src/prism/stages/` one .cpp per analysis stage + shared `common`/`interp`/`llm`/`platform` (internal headers)
 - `include/prism/` C++ headers
 - `tests/` Python tests (+ `tests/cpp/` doctest suite)

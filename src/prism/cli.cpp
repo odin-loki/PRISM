@@ -1,5 +1,5 @@
 // `prism PATH [options]`: argument parsing, testable without a process
-// (tests/cpp/test_cli.cpp). main.cpp handles subcommands and --gui first.
+// (tests/cpp/test_cli.cpp). main.cpp handles subcommands first.
 
 #include "prism/cli.hpp"
 
@@ -156,7 +156,6 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         const std::string& a = in.name;
         bool ok = true;
         if (a == "--no-llm") { ok = in.flag(); cfg.llm = false; }
-        else if (a == "--gui") { ok = in.flag(); cfg.gui = true; }
         else if (a == "--resume") { ok = in.flag(); cfg.resume = true; }
         else if (a == "--allow-exec") { ok = in.flag(); cfg.allow_exec = true; }
         else if (a == "--strict-aliasing") { ok = in.flag(); cfg.strict_aliasing = true; }
@@ -302,7 +301,7 @@ CliResult<TriageCli> parse_triage_cli(std::span<const char* const> args) {
 
 std::string cli_usage() {
     return
-        "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
+        "prism PATH [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
         "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
         "           [--fuzz-budget S] [--fuzz-iters N] [--repair-rounds N]\n"
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"

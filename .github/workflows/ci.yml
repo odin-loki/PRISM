@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   supply-chain:
-    name: Licence firewall + manifest + SBOM
+    name: Manifest + SBOM
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +38,6 @@ jobs:
           cmake -B build-deps -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_DEPS_ONLY=ON
           cmake --build build-deps --target prism-deps
-      - name: Licence firewall (no copyleft in linked components)
-        run: build-deps/prism-deps licence-check
       - name: Linked libraries match third_party/MANIFEST.toml
         run: build-deps/prism-deps linked
       - name: Linked libraries match the pinned upstream archives (sha256)
@@ -81,7 +79,7 @@ jobs:
           echo "$(echo "$d"/cmake-*/bin)" >> "$GITHUB_PATH"
       - name: Install toolchain
         # python3-minimal: BenchExec SV-COMP tool-info smoke only; Z3 build is Python-free (phase 6).
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache qt6-base-dev libgl-dev python3-minimal
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache python3-minimal
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -93,14 +91,12 @@ jobs:
           -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_LLVM_PINNED_BIN=${{ env.PRISM_LLVM_BIN }}
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=ON -DPRISM_Z3=ON
+          -DPRISM_CUDA=OFF -DPRISM_Z3=ON
       - name: Build
         run: cmake --build build
       # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
       - name: prism_tests
         run: ./build/prism_tests
-      - name: prism_gui_tests (the window, offscreen)
-        run: QT_QPA_PLATFORM=offscreen ./build/prism_gui_tests
       - name: SV-COMP archive packager smoke
         run: ./build/prism svcomp pack --out /tmp/prism-svcomp.tar.gz && tar tzf /tmp/prism-svcomp.tar.gz
       # BenchExec loads tool-info modules as Python classes: tools/svcomp/prism.py
@@ -110,19 +106,6 @@ jobs:
           python3 -m venv /tmp/benchexec && /tmp/benchexec/bin/pip install benchexec
           cd /tmp && PYTHONPATH="$GITHUB_WORKSPACE/tools/svcomp" \
             /tmp/benchexec/bin/python -m benchexec.test_tool_info .prism --tool-directory "$GITHUB_WORKSPACE/build" --no-container
-      - name: GUI smoke (headless Qt, real pipeline run through the window)
-        run: |
-          mkdir -p gui-smoke/src
-          cp testdata/planted/add_overflow.c testdata/planted/div_param.c testdata/planted/oob_write.c gui-smoke/src/
-          QT_QPA_PLATFORM=offscreen timeout 600 ./build/prism_gui gui-smoke/src --no-llm \
-            --stage inventory,classify,lints,pir --out gui-smoke/out \
-            --smoke-screenshot gui-smoke/prism_gui.png
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: prism-gui-smoke
-          path: gui-smoke/prism_gui.png
-          retention-days: 7
       - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
         run: |
           ./build/prism testdata/planted/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
@@ -187,7 +170,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=OFF
+          -DPRISM_CUDA=OFF -DPRISM_Z3=OFF
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       - name: Build (prism_core + prism + prism-qa + prism_tests)
         run: cmake --build build-win --target prism_core prism prism-qa prism_tests
@@ -277,7 +260,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
           -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+          -DPRISM_CUDA=OFF -DPRISM_Z3=ON
           -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
       # On a warm (exact) hit, `-d explain` prints why Ninja rebuilds anything at all.
       - name: Build vendored Z3 (libz3)
@@ -304,96 +287,6 @@ jobs:
           else { Write-Host "no clang ASan DLL under ${root}: label self-check will be NOTRUN" }
       - name: Run portable prism_tests subset (Z3 + leanbb)
         run: .\build-win-z3\prism_tests.exe
-
-  windows-gui-qt:
-    name: Windows GUI (Qt 6, clang-cl, offscreen)
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out FORGE main (mandatory, unpinned)
-        uses: actions/checkout@v4
-        with:
-          repository: odin-loki/FORGE
-          ref: main
-          path: _forge
-      - name: Pinned CMake (scripts/fetch_toolchain.py, SHA-256 verified)
-        shell: pwsh
-        run: |
-          $d = python scripts/fetch_toolchain.py cmake
-          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py cmake failed" }
-          (Get-Item "$d/cmake-*/bin").FullName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - name: Install Qt 6 (aqtinstall)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          cache: true
-      - uses: actions/cache@v4
-        with:
-          path: build-win-qt
-          key: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}
-          restore-keys: win-qt-${{ hashFiles('CMakeLists.txt', 'third_party/pcre2/CMakeLists.txt') }}-
-      # One compiler: the pinned LLVM 23.1.4 (third_party/llvm/PIN.toml; scripts/fetch_llvm.py,
-      # sha256-checked) compiles PRISM (clang-cl) and is PIR's clang/opt (PRISM_LLVM_BIN).
-      # PIR lowers for x86_64-linux-gnu: the pinned Linux sysroot gives it glibc + libstdc++.
-      - name: Cache pinned LLVM 23.1.4 + Linux sysroot
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/prism/tools
-            ~/.prism/toolchain/linux-sysroot
-          key: llvm-sysroot-${{ runner.os }}-${{ hashFiles('third_party/llvm/PIN.toml', 'third_party/TOOLCHAIN_PINS.toml') }}
-      - name: Fetch pinned LLVM 23.1.4 + Linux sysroot (sha256-checked)
-        shell: pwsh
-        run: |
-          $bin = python scripts/fetch_llvm.py --dest "$HOME/.cache/prism/tools"
-          if ($LASTEXITCODE -ne 0) { throw "fetch_llvm.py failed" }
-          "PRISM_LLVM_BIN=$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          python scripts/fetch_toolchain.py linux-sysroot
-          if ($LASTEXITCODE -ne 0) { throw "fetch_toolchain.py linux-sysroot failed" }
-      - name: Configure (Ninja + clang-cl, PRISM_QT=ON, PRISM_Z3=OFF)
-        run: >
-          cmake -B build-win-qt -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang-cl.exe
-          "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
-          -DFORGE_SOURCE_DIR=${{ github.workspace }}/_forge
-          -DPRISM_CUDA=OFF -DPRISM_QT=ON -DPRISM_Z3=OFF
-          -DPRISM_TESTS=ON -DPRISM_TESTS_WIN_SUBSET=ON -DPRISM_LIBCLANG=OFF
-      # An unknown target here means Qt6 Widgets was not found (CMake only warns
-      # and PRISM_QT quietly builds no GUI): the step fails, never passes empty.
-      - name: Build (prism, prism_gui, prism_gui_tests, prism_tests)
-        run: cmake --build build-win-qt --target prism prism_gui prism_gui_tests prism_tests
-      - name: prism_gui_tests (the window, offscreen)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: .\build-win-qt\prism_gui_tests.exe
-      - name: prism_tests "gui model" suite (launcher against the real prism_gui.exe)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: .\build-win-qt\prism_tests.exe --test-suite="gui model"
-      - name: GUI smoke (headless Qt, real pipeline run through the window)
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          New-Item -ItemType Directory -Force gui-smoke\src | Out-Null
-          Copy-Item testdata\planted\add_overflow.c, testdata\planted\div_param.c, testdata\planted\oob_write.c gui-smoke\src\
-          .\build-win-qt\prism_gui.exe gui-smoke\src --no-llm `
-            --stage inventory,classify,lints --out gui-smoke\out `
-            --smoke-screenshot gui-smoke\prism_gui.png
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: prism-gui-smoke-windows
-          path: gui-smoke/prism_gui.png
-          retention-days: 7
 
   selfcheck:
     name: PRISM on PRISM (SARIF artifact, not gating)

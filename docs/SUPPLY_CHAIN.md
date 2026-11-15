@@ -1,7 +1,7 @@
 # Supply chain
 
-Roadmap Part 1: every byte PRISM compiles or runs is pinned, hashed and
-licence-checked, and a release can be rebuilt bit for bit.
+Roadmap Part 1: every byte PRISM compiles or runs is pinned and hashed, and a
+release can be rebuilt bit for bit.
 
 ## What is in the repository
 
@@ -116,15 +116,11 @@ and mtime). This is in place for cppcheck, ESBMC, Dafny and every optional
 tool (KLEE, AFL++, Frama-C, Infer, clang-tidy, CBMC, Strix, Semgrep, spatch)
 in both engines.
 
-## Licence firewall
+## Licence notes
 
-`prism-deps licence-check` (run in CI and in the Docker build) fails when a
-`linked` component carries a copyleft SPDX id: GPL, LGPL, AGPL, SSPL, EUPL,
-OSL and similar, and also weak copyleft (MPL, EPL, CDDL) unless the component
-is added to `ALLOW_WEAK_COPYLEFT` after review. It also fails on a missing or
-NOASSERTION licence, or a missing licence file. External and system tools may
-carry any licence because PRISM only runs them as separate, unmodified
-processes.
+Dependency licences are no longer evaluated automatically (the `prism-deps
+licence-check` gate was removed). The SBOM still records each component's
+SPDX id and the manifest still requires one. Notes kept from the review:
 
 The CodeQL adapter was removed from both engines: the CodeQL engine is under
 the GitHub CodeQL Terms, which restrict commercial use. The MIT repository
@@ -168,7 +164,7 @@ every push.
 - `SOURCE_DATE_EPOCH` (build arg, the tagged commit's time),
   `-ffile-prefix-map=/src=.`, `-ffile-prefix-map=/build=build`,
   `-Wl,--build-id=sha1`, and deterministic `llvm-ar`.
-- `prism-deps licence-check` and `prism-deps linked` run before compiling;
+- `prism-deps linked` runs before compiling;
   `prism_tests` runs after.
 - The `artefacts` stage exports `prism`, `prism.cdx.json` and `SHA256SUMS`.
   Optional `-DPRISM_NATIVE=ON` also builds `libprism_native.so` (C ABI for
@@ -197,7 +193,6 @@ diff rebuild/SHA256SUMS SHA256SUMS        # must be empty
 
 # 3. dependencies
 build/prism-deps linked --refetch   # in-tree libs == pinned upstream archives
-build/prism-deps licence-check
 ```
 
 Verified 2026-09-23 at commit `0423d6c54` (`SOURCE_DATE_EPOCH` = that

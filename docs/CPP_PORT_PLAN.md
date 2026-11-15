@@ -1,5 +1,7 @@
 # Plan: PRISM on C++23 only
 
+> **Note:** the Qt GUI (`src/gui/`, `prism_gui`, `windows-gui-qt`, `PRISM_QT`) was removed; PRISM is console only. The GUI rows below are history.
+
 **Goal (owner, 2026-09-30):** everything runs on C++23. No Python: the Python
 engine (`prism/*.py`) is deleted, and every tool, script, test and CI step
 that uses Python is ported to C++23 (CMake already builds with

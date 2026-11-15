@@ -2296,8 +2296,7 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     for (std::size_t i = 1; i < av.size(); ++i) {
         const std::string& a = av[i];
         if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
-        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
-            a == "--gui")
+        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume")
             continue;
         cmd.push_back(a);
     }
