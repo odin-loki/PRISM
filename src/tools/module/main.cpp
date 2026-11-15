@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
         if (cmd == "row") {   // one row of a module check, in this process: the child of `run` (docs/DEVICE_MODEL.md section 6)
             prism::Config rc = prism::default_config();
             rc.llm = false;
+            rc.jobs = 24;
             std::filesystem::path cdb;
             bool model_only = false;
             for (int i = 3; i < argc; ++i) {
@@ -69,6 +70,7 @@ int main(int argc, char** argv) {
                 else if (a == "--model-only") model_only = true;
                 else if (a == "--timeout") rc.timeout = std::stod(next());
                 else if (a == "--unwind") rc.unwind = std::stoi(next());
+                else if (a == "--jobs") rc.jobs = std::stoi(next());
                 else return usage();
             }
             std::cout << pm::run_row_json(argv[2], cdb, model_only, rc) << "\n";
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
         pm::RunOptions o;
         prism::Config cfg = prism::default_config();
         bool json = false;
+        bool jobs_given = false;
         o.spec = argv[2];
         {
             std::error_code ec;
@@ -105,12 +108,13 @@ int main(int argc, char** argv) {
             else if (a == "--define") o.defines.push_back(next());
             else if (a == "--timeout") cfg.timeout = std::stod(next());
             else if (a == "--unwind") cfg.unwind = std::stoi(next());
-            else if (a == "--jobs") cfg.jobs = std::stoi(next());
+            else if (a == "--jobs") { cfg.jobs = std::stoi(next()); jobs_given = true; }
             else if (a == "--generate-only") o.generate_only = true;
             else if (a == "--json") json = true;
             else return usage();
         }
         cfg.llm = false;
+        if (!jobs_given) cfg.jobs = 24;   // the solver gets max(2, cores / jobs) portfolio members per query: 24 keeps it at 2 or 3 (memory)
         if (cmd == "entries") {
             auto sp = pm::parse_module_spec(slurp(argv[2]), argv[2]);
             std::filesystem::path d = std::filesystem::path(sp.driver).is_absolute() ? std::filesystem::path(sp.driver) : o.kernel_root / sp.driver;

@@ -7,7 +7,7 @@ kernel linux;
 driver "drivers/char/hw_random/virtio-rng.c";
 stubs virtio;
 steps 2;
-irq_points api steps;
+irq_points none;   # the callback is an explicit operation below: interleaving it at every API call exceeded 8 GB
 irq_spurious yes;
 teardown_ops no;
 assume "one virtqueue, room for one buffer; the host may complete a posted buffer at any time after the kick, fill it with arbitrary bytes and report any used length (a hostile host), unless PRISM_VIRTIO_CONFORMANT bounds the length";
@@ -19,6 +19,8 @@ assume "the virtio core calls scan after a successful probe, freeze/restore on s
 define PRISM_HWRNG_CLEANUP(r) virtio_cleanup(r);
 # sizeof(struct virtrng_info.data) is SMP_CACHE_BYTES = 64 on x86_64: the buffer the driver posts
 define PRISM_VIRTIO_BUFLEN 64;
+# the virtqueue callback is called directly for the same reason (the candidate set of a void(ptr) call includes virtrng_remove)
+define PRISM_VQ_CALLBACK(vq) random_recv_done(vq);
 assume "the hwrng core calls read with a buffer of 64 bytes and at most that size, only while the hwrng is registered";
 
 env {
@@ -68,3 +70,17 @@ patch { .priv = (unsigned long)vi, } { .priv = 0, };
 patch { vdev->priv = vi; } { vdev->priv = vi; prism_vi = vi; };
 patch { (struct virtrng_info *)rng->priv } { prism_vi };
 patch { vdev->config->del_vqs(vdev); } { prism_del_vqs(vdev); };
+op callback {
+	/* the host completes a buffer: the virtqueue callback runs (also spuriously) */
+	PRISM_COVER_POINT(PRISM_OP_COVER);
+	prism_irq_budget = 1;
+	prism_irq_deliver();
+}
+op cb_read {
+	/* the host completes the posted buffer with its own length, then user space reads: the one order where the
+	 * device-reported length reaches copy_data (a single operation: smaller than choosing callback and read freely) */
+	PRISM_COVER_POINT(PRISM_OP_COVER);
+	prism_irq_budget = 1;
+	prism_irq_deliver();
+	prism_do_read(0, PRISM_OP_COVER);
+}

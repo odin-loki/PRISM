@@ -412,9 +412,9 @@ Report check_module(const RunOptions& opt, const Config& cfg_in) {
         cov("irq", 3, "the interrupt handler runs");
         cov("remove", 4, "remove runs");
         if (sp.teardown_ops) cov("teardown-op", 5, "an operation arrives after remove, before devres release");
-        for (std::size_t i = 0; i < sp.ops.size(); ++i)
+        for (std::size_t i = 0; i < (sp.steps > 0 ? sp.ops.size() : 0); ++i)   // no operation can run with steps 0
             cov("op-" + sp.ops[i].name, 10 + static_cast<int>(i), "operation " + sp.ops[i].name + " is invoked");
-        for (std::size_t i = 0; i < sp.ops.size(); ++i)
+        for (std::size_t i = 0; i < (sp.steps > 0 ? sp.ops.size() : 0); ++i)
             if (sp.ops[i].body.find("PRISM_OP_COVER") != std::string::npos)
                 cov("op-" + sp.ops[i].name + "-body", 30 + static_cast<int>(i),
                     "operation " + sp.ops[i].name + " gets past its framework guard to its body");
@@ -496,7 +496,7 @@ Report check_module(const RunOptions& opt, const Config& cfg_in) {
         } else {
             exec::Spec es;
             es.argv = {opt.self_exe.string(), "row", units[i].string(), "--root", outdir.string(), "--timeout", std::to_string(cfg.timeout),
-                       "--unwind", std::to_string(cfg.unwind)};
+                       "--unwind", std::to_string(cfg.unwind), "--jobs", std::to_string(cfg.jobs)};
             if (have_cdb) { es.argv.push_back("--cdb"); es.argv.push_back(rep.cdb_path); }
             if (!rows[i].native) es.argv.push_back("--model-only");
             es.env_set["PRISM_PIR_INLINE_DEPTH"] = "24";

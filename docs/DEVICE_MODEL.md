@@ -16,7 +16,7 @@ came out; section 11 says what does not work.
 | `src/tools/module/main.cpp` | The `prism-module` tool |
 | `src/prism/pir/models/device/` | The preamble, ghost state and kernel stubs (C), and built-in device models (`*.pdm`); embedded in the binary |
 | `testdata/module/` | Toy device and driver with true and false variants; the PL031 and virtio-rng module descriptions |
-| `tools/module-validate/` | The QEMU cross-check of the PL031 model (section 7) |
+| `tools/module-validate/` | The QEMU cross-check of the PL031 model and its mutants (`run.sh`, `mutants.sh`, section 7), candidate selection (`select_candidates.sh`), the one-entry compile database for a kernel unit (`mkcdb.sh`) |
 | `tests/cpp/test_module.cpp` | Doctests: format, harness, end-to-end on the toy |
 
 Nothing else in the engine changed: one environment variable (`PRISM_PIR_INLINE_DEPTH`, section 4) in
@@ -413,7 +413,7 @@ variant (ST v2) with decoding code that a hostile device can steer. The watchdog
 
 ```
 prism-module run testdata/module/linux/rtc-pl031.pmod --kernel-root /home/odin/pbsd-ref/linux \
-    --cc-like cdb.json --cc-like-file drivers/rtc/rtc-cmos.c --steps 2 --json
+    --cc-like cdb.json --cc-like-file drivers/rtc/rtc-cmos.c --steps 2 --row-jobs 3 --mem-mb 4000 --json
 ```
 
 * **Driver**: `drivers/rtc/rtc-pl031.c`, verbatim, ARM variant (`pl031_ids[0]`). Entry points (from the
@@ -441,22 +441,25 @@ Verdicts exactly as VERDICTS.md names them. The module verdict of a PIR PROVED i
 
 | Row | What it checks | `pir` verdict | Module verdict | Seconds |
 |---|---|---|---|---:|
-| `all` | all module properties and all native checks, events and interrupts | PROVED | BOUNDED | 285 |
-| `all-sequential` | the same without events and interrupts | PROVED | BOUNDED | 32 |
-| `memory` | UB and memory errors in every entry point | PROVED | BOUNDED | 43 |
-| `pairing` | resource acquire/release on every path | PROVED | BOUNDED | 33 |
-| `lock` | lock discipline | PROVED | BOUNDED | 46 |
-| `use_after_remove` | no access after unmap, handler gone after remove | PROVED | BOUNDED | 30 |
-| `protocol` | the device model's rules, window bounds, width | PROVED | BOUNDED | 32 |
-| `api` | contracts of the stubs (registered ops, rtc registration) | PROVED | BOUNDED | 29 |
-| coverage, 10 rows | probe ok, probe fails, handler runs, remove, teardown op, each op invoked | FAILED = reachable | all reachable | 22 each |
+| `all` | all module properties and all native checks, events and interrupts | PROVED | BOUNDED | 418 |
+| `all-sequential` | the same without events and interrupts | PROVED | BOUNDED | 57 |
+| `memory` | UB and memory errors in every entry point | PROVED | BOUNDED | 50 |
+| `pairing` | resource acquire/release on every path | PROVED | BOUNDED | 37 |
+| `lock` | lock discipline | PROVED | BOUNDED | 36 |
+| `use_after_remove` | no access after unmap, handler gone after remove | PROVED | BOUNDED | 36 |
+| `protocol` | the device model's rules, window bounds, width | PROVED | BOUNDED | 38 |
+| `api` | contracts of the stubs (registered ops, rtc registration) | PROVED | BOUNDED | 33 |
+| coverage, 15 rows | probe ok, probe fails, handler runs, remove, teardown op, each op invoked, each op past its guard to its body | FAILED = reachable | all 15 reachable | 19 to 37 each |
 
-Level: **L4 (bounded)**, device model `pl031` (validation: differential). Total about 9 minutes for the 8
-property rows on one core, peak resident set of `prism-module` 286 MB, plus the `z3-worker` child of the
-query being solved (130 MB to about 1.5 GB). The `all` row is 4 to 9 times slower than the single-property rows
-because the interrupt and event points multiply the unrolled code. Steps 3 and the first, larger
-harness (before the ghost layer was shrunk) ended `UNKNOWN: unrolling exceeds 6000 block instances` after 6
-to 11 minutes: the bound that matters is not the solver but the size of the unrolled unit (section 11).
+Level: **L4 (bounded)**, device model `pl031` (validation: differential). One invocation, 23 rows, 3 rows at a time
+(`--row-jobs 3`, each row in its own process): 7 minutes of wall time. Peak resident set of a row's process 417 MB
+(the `all` row; the others 130 to 280 MB), measured by the process runner, plus the `z3-worker` children of the query being
+solved (not in that figure; 130 MB to about 1.5 GB seen with `ps`). The `all` row is 7 to 14 times slower than the single-property rows
+because the interrupt and event points multiply the unrolled code. Before the ghost layer was shrunk (an
+interrupt point at every API call, 16 devm slots, the `malloc` models) even zero operations ended
+`UNKNOWN: unrolling exceeds 6000 block instances` and one run was stopped by hand after 11 minutes; three
+operations were not tried after the shrink. The bound that matters is the size of the unrolled unit more than
+the solver (section 11).
 
 **What this says**: for every sequence of at most two operations out of the five, with the device
 behaving as the model allows (any elapsed time, alarm firing late, shared-line-free interrupts), with each
@@ -522,7 +525,69 @@ MMIO access an interrupt point), which is larger.
 
 ## 10. Second pilot: a hostile device (virtio-rng)
 
-PILOT2_PLACEHOLDER
+**Status: attempted, incomplete.** The unit builds and the driver's probe, scan and remove paths against a hostile
+transport verify. Any operation on top of them (a read, a virtqueue callback, suspend/resume) ran `pir` out of
+memory (6 to 8 GB budgets) and gave `UNKNOWN`. So the claim this pilot exists to make, "no UB or memory error for
+any device behaviour", is **not established** for virtio-rng, and neither is the mutation check that was meant to
+show it has teeth. What was learned is below.
+
+### 10.1 The setup
+
+`drivers/char/hw_random/virtio-rng.c` (Linux 6.18.60, 278 lines; the version that already clamps the
+device-reported length in `copy_data`). `testdata/module/linux/virtio-rng.pmod`, `stubs virtio`
+(`linux_virtio.h`): one virtqueue whose device side is untrusted.
+
+The device may, within the ring protocol: complete a posted buffer at any time after the kick, fill it with
+arbitrary bytes (a constant-length `__prism_havoc_bytes`), and report an arbitrary 32-bit used length
+(`virtqueue_get_buf`; `define PRISM_VIRTIO_CONFORMANT` restricts it to the buffer size: a conforming host); run the
+virtqueue callback at any time, spuriously included (the driver says "we can get spurious callbacks"); fail
+`find_vqs`. The transport's config ops (`find_vqs`, `del_vqs`, `get/set_status`, `reset`) and the hwrng core
+(`hwrng_register`, `hwrng_unregister` calling the driver's `cleanup`) are stubs. Operations: `read_nowait`,
+`read_wait`, `suspend_resume` (freeze then restore), `callback`, and `cb_read` (callback then read: the one order
+in which the device-reported length reaches `copy_data`). Property of interest: the driver has no UB or memory error
+for any behaviour of this device; the module rows also check pairing (`kzalloc`/`kfree`, `ida`, `find_vqs`/`del_vqs`,
+`hwrng_register`/`unregister`) and use after `del_vqs`.
+
+The module description carries 5 source substitutions (`patch`, listed in the report as "DRIVER SOURCE PATCHED"):
+`hwrng.priv` holds a pointer in an `unsigned long` (`ptrtoint`/`inttoptr`: `UNENCODED`), so the round trip goes
+through a variable; and `config->del_vqs` is called directly (section 11, indirect-call recursion). The unhardened
+variant `virtio-rng-unhardened.pmod` adds the substitution that removes the length clamp (a mutant of the real code, not
+the shipped source), which a hostile host drives into an out-of-bounds read of `memcpy` in `copy_data`.
+
+### 10.2 What ran
+
+| Configuration | Rows | `pir` verdict | Notes |
+|---|---|---|---|
+| probe, scan, remove, all failure injections (steps 0), hostile transport | `all` | PROVED, module verdict **BOUNDED**, "L4 (bounded)" | 120 s; `find_vqs`, `kzalloc`, `ida_alloc`, `hwrng_register` may fail; probe ok, probe fail and remove reachable. The device model is "the virtqueue device is untrusted within the ring protocol", **unvalidated**. |
+| one operation (steps 1): `callback`; `read_nowait`; `suspend_resume`; `cb_read`; `cb_read` with a 32-byte buffer; the unhardened mutant with `cb_read` | `all` | UNKNOWN (memory budget of 6 to 8 GB reached after 1 to 5 minutes) | no answer. Never a proof. |
+
+### 10.3 What it says and does not say
+
+Probe, scan and remove, with every allocation, id, transport and registration step allowed to fail and without any
+virtqueue traffic, have no UB or memory error and release everything they take, in the bounded sense of section 6.
+Nothing is known about reading, the callback, or suspend and resume. In particular the "hostile hypervisor or
+device" result is **not** delivered.
+
+### 10.4 A lead from reading (not a PRISM result)
+
+`probe_common` sets `vdev->priv = vi` before `virtio_find_single_vq`; its failure path frees `vi` and leaves
+`vdev->priv` dangling. `virtrng_restore` returns that error to the virtio core, which leaves the device bound; when
+the driver is later unbound, `virtrng_remove` reads `vdev->priv` and `remove_common` writes `vi->hwrng_removed`:
+a use after free, reachable after a failed resume. The harness has the `suspend_resume` operation to find exactly this,
+but it did not complete (above). This is the author's reading of about twenty lines of the driver and of the virtio
+core's remove path, **not confirmed** by running it or by PRISM; it is listed for a person to check.
+
+### 10.5 What blocked it, and what would unblock it
+
+* The `pir` memory model cost, not the property: a copy of a symbolic length from a symbolic offset
+  (`memcpy(buf, vi->data + idx, size)`), the 360-byte `struct hwrng` copy and the zero-initialised
+  `struct virtrng_info` make the encoder's read-over-write chains large; the callback alone, with a direct
+  call, reached the budget too. The cheap steps 0 configuration shows the pipeline is not the obstacle. (Not
+  profiled: the three causes above are the likely ones, not measured ones.)
+* Smaller steps, a smaller object, or summaries of `copy_data` and `virtqueue_get_buf` (Stage 4: a contract for each
+  entry point and each stub) would cut it; so would a memory model with a per-object cell limit.
+* A `pir` translator that models `ptrtoint`/`inttoptr` round trips (R3 or a translator change, not this layer)
+  would remove four of the five substitutions.
 
 ## 11. What does not work, and what is assumed
 

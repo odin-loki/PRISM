@@ -87,8 +87,12 @@ static int prism_vq_irq(int irq, void *cookie)
 {
 	struct virtqueue *vq = cookie;
 	(void)irq;
+#ifdef PRISM_VQ_CALLBACK
+	PRISM_VQ_CALLBACK(vq);                             /* named by the module description: a direct call */
+#else
 	if (vq->callback)
-		vq->callback(vq);
+		vq->callback(vq);                               /* indirect: every void(ptr) function is a candidate */
+#endif
 	return 1;
 }
 
