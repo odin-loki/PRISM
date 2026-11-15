@@ -136,6 +136,69 @@ bool __list_del_entry_valid_or_report(void *entry) {
     ASSUME("linux-list-debug: CONFIG_DEBUG_LIST validation returns an arbitrary result and has no effect");
     return CHOICE();
 }
+/* asm-generic/delay.h, percpu-defs.h: link-time error sentinels (declared, never defined): a compile-time
+ * check that a constant delay or size is in range; reaching one means the check failed */
+void __bad_udelay(void) {
+    ASSUME("linux-bug: panic() and static-key misuse do not return: reaching them is reported as FUNC-CONTRACT");
+    __prism_check(0, "FUNC-CONTRACT", "__bad_udelay is reachable (a constant udelay is too long)");
+    __builtin_trap();
+}
+void __bad_ndelay(void) {
+    ASSUME("linux-bug: panic() and static-key misuse do not return: reaching them is reported as FUNC-CONTRACT");
+    __prism_check(0, "FUNC-CONTRACT", "__bad_ndelay is reachable (a constant ndelay is too long)");
+    __builtin_trap();
+}
+void __bad_size_call_parameter(void) {
+    ASSUME("linux-bug: panic() and static-key misuse do not return: reaching them is reported as FUNC-CONTRACT");
+    __prism_check(0, "FUNC-CONTRACT", "__bad_size_call_parameter is reachable (a per-cpu access of an unsupported size)");
+    __builtin_trap();
+}
+
+/* lockdep / RCU state queries (rcupdate.h, rcutree.h): arbitrary, no effect */
+#define LOCKDEP_NOTE "linux-lockdep: lockdep, RCU-state and capability queries return an arbitrary value and have no effect"
+bool rcu_is_watching(void) { ASSUME(LOCKDEP_NOTE); return CHOICE(); }
+int rcu_read_lock_held(void) { ASSUME(LOCKDEP_NOTE); return CHOICE() ? 1 : 0; }
+int rcu_read_lock_any_held(void) { ASSUME(LOCKDEP_NOTE); return CHOICE() ? 1 : 0; }
+int rcu_read_lock_bh_held(void) { ASSUME(LOCKDEP_NOTE); return CHOICE() ? 1 : 0; }
+/* capability.h: bool capable(int cap): the caller's privilege, arbitrary */
+bool capable(int cap) { (void)cap; ASSUME(LOCKDEP_NOTE); return CHOICE(); }
+/* jiffies.h: unsigned long __msecs_to_jiffies(const unsigned int m): arbitrary (not constrained to be monotonic) */
+unsigned long __msecs_to_jiffies(const unsigned int m) { (void)m; ASSUME(LOCKDEP_NOTE); return __VERIFIER_nondet_ulong(); }
+
+/* regmap.h, drivers/base/regmap/regmap.c: int regmap_read(struct regmap *map, unsigned int reg, unsigned int *val):
+ * 0 or a negative errno; on 0, *val is an arbitrary register value; on error *val is not written.
+ * int regmap_write(struct regmap *map, unsigned int reg, unsigned int val): 0 or a negative errno; no effect
+ * on program memory. requires (regmap_read): val is writable for 4 bytes */
+#define REGMAP_NOTE "linux-regmap: the register space behind a regmap is the environment: a read returns an arbitrary value, a write has no effect on program memory; either call returns 0 or a negative errno"
+int regmap_read(void *map, unsigned int reg, unsigned int *val) {
+    (void)map; (void)reg;
+    ASSUME(REGMAP_NOTE);
+    int r = __VERIFIER_nondet_int();
+    __prism_assume(r <= 0);
+    if (r == 0) *val = __VERIFIER_nondet_uint();
+    return r;
+}
+int regmap_write(void *map, unsigned int reg, unsigned int val) {
+    (void)map; (void)reg; (void)val;
+    ASSUME(REGMAP_NOTE);
+    int r = __VERIFIER_nondet_int();
+    __prism_assume(r <= 0);
+    return r;
+}
+
+/* lib/string.c: ssize_t sized_strscpy(char *dest, const char *src, size_t count): copies src to dest, truncated to
+ * count - 1 bytes plus the NUL; returns the copied length, or -E2BIG (-7) when count is 0 or the copy was truncated.
+ * requires: src is a NUL-terminated string, dest is writable for min(strlen(src) + 1, count) bytes */
+long sized_strscpy(char *dest, const char *src, size_t count) {
+    ASSUME("linux-string: sized_strscpy copies the string, truncated to count - 1 bytes plus the NUL (lib/string.c)");
+    size_t n = strlen(src);
+    if (count == 0) return -7;
+    size_t m = n < count ? n : count - 1;
+    __prism_memcpy(dest, src, m, 0);
+    dest[m] = 0;
+    return n < count ? static_cast<long>(n) : -7;
+}
+
 /* refcount.h: void refcount_warn_saturate(refcount_t *r, enum refcount_saturation_type t): reports, no effect */
 void refcount_warn_saturate(void *r, int t) {
     (void)r; (void)t;

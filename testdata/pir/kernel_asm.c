@@ -112,3 +112,25 @@ int volatile_bad(void) {
     *(volatile int *)&x = 4;
     return 100 / (*(volatile int *)&x - 4);
 }
+
+/* ---- asm goto (static keys, jump labels): continues at the next statement or at the label ---- */
+int asm_goto_ok(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes);
+    r = 1;
+    goto out;
+yes:
+    r = 2;
+out:
+    return 100 / r; /* both paths leave r != 0 */
+}
+int asm_goto_bad(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes);
+    r = 1;
+    goto out;
+yes:
+    r = 0; /* the jump is possible */
+out:
+    return 100 / r;
+}

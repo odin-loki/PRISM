@@ -1038,6 +1038,46 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         in.targets.push_back(p.label());
         return in;
     }
+    if (op == "callbr") {
+        // callbr <ty> asm [sideeffect ...] "text", "constraints"(args) to label %fallthrough [label %l1, ...]
+        // (asm goto): targets = fallthrough, then the indirect labels
+        while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text)) ++p.i;
+        p.skip_param_attrs();
+        in.ty = p.type();
+        if (in.ty.kind == Type::Other && !in.ty.elems.empty()) in.ty = in.ty.elems[0];
+        if (!p.is_word("asm")) {
+            in.parsed = false;
+            return in;
+        }
+        ++p.i;
+        while (p.peek().kind == Tok::Word) {
+            if (p.peek().text == "sideeffect") in.asm_sideeffect = true;
+            ++p.i;
+        }
+        auto t = p.next();
+        if (t.kind != Tok::Str) throw ParseError("expected asm string");
+        in.is_asm = true;
+        in.asm_text = t.text;
+        p.expect_punct(',');
+        in.asm_constraints = p.next().text;
+        p.expect_punct('(');
+        bool first = true;
+        while (!p.is_punct(')')) {
+            if (!first) p.expect_punct(',');
+            first = false;
+            in.ops.push_back(p.typed_operand(true));
+        }
+        p.expect_punct(')');
+        while (!p.at_end() && !p.is_word("to")) ++p.i;
+        if (!p.accept_word("to")) throw ParseError("callbr without a fallthrough destination");
+        in.targets.push_back(p.label());
+        p.expect_punct('[');
+        while (!p.is_punct(']')) {
+            in.targets.push_back(p.label());
+            p.accept_punct(',');
+        }
+        return in;
+    }
     if (op == "call") {
         while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text)) ++p.i;
         p.skip_param_attrs();

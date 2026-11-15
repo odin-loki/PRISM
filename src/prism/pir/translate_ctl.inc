@@ -698,7 +698,7 @@ void Tr::region(Frame& fr, const std::string& start) {
         if (it == by.end() || tail.count(fr.prefix + nme)) continue;
         translate_block(fr, *it->second);
         for (auto& in : it->second->insts) {
-            if (in.op == "br" || in.op == "switch")
+            if (in.op == "br" || in.op == "switch" || in.op == "callbr")
                 for (auto& t : in.targets) work.push_back(t);
             if (in.op == "switch")
                 for (auto& [c, t] : in.cases) work.push_back(t);

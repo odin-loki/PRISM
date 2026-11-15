@@ -625,7 +625,7 @@ struct Tr final : pirmem::TrApi {
             work.pop_back();
             if (!seen.insert(n).second || !by.count(n)) continue;
             for (auto& in : by[n]->insts) {
-                if (in.op == "br" || in.op == "switch")
+                if (in.op == "br" || in.op == "switch" || in.op == "callbr")
                     for (auto& t : in.targets) work.push_back(t);
                 if (in.op == "switch")
                     for (auto& [c, t] : in.cases) work.push_back(t);
@@ -716,6 +716,37 @@ struct Tr final : pirmem::TrApi {
                     pphis.push_back(std::move(p));
                     if (ps.dst >= 0) pphis.push_back(std::move(ps));
                     if (pu.dst >= 0) pphis.push_back(std::move(pu));
+                    continue;
+                }
+                if (in.op == "callbr") {
+                    // asm goto: the asm (havoc, translate_kernel.inc), then a nondeterministic jump to the
+                    // fallthrough block or to the one indirect label (docs/KERNEL_MODELS.md)
+                    if (opt.kernel_api.empty())
+                        throw Unenc{"UNENCODED: asm goto (--kernel-api models it as a nondeterministic jump)"};
+                    if (!in.parsed || in.targets.size() != 2)
+                        throw Unenc{"UNENCODED: asm goto with " +
+                                    std::to_string(in.targets.empty() ? 0 : in.targets.size() - 1) +
+                                    " indirect labels (exactly one is modelled)"};
+                    auto tgt = [&](const std::string& n) {
+                        auto it = head.find(fr.prefix + n);
+                        if (it == head.end()) throw Unenc{"UNENCODED: asm goto to unknown block " + n};
+                        return it->second;
+                    };
+                    ir::Inst call = in;
+                    call.op = "call";
+                    call.targets.clear();
+                    bool nr = false;
+                    inst(fr, call, cur, l, nr);
+                    Term t;
+                    t.kind = Term::Br;
+                    t.cond = havoc(cur, 1, false, false);
+                    t.t = tgt(in.targets[0]);
+                    t.f = tgt(in.targets[1]);
+                    note_assumption("asm-goto: \"" + in.asm_constraints + "\" (line " + std::to_string(line) +
+                                    "): the asm continues at the next statement or jumps to its label, either one");
+                    out.blocks[static_cast<std::size_t>(cur)].term = t;
+                    tail[q] = cur;
+                    terminated = true;
                     continue;
                 }
                 if (in.op == "invoke") {
