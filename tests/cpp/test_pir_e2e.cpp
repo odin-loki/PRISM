@@ -79,6 +79,15 @@ const std::vector<Row>& rows() {
         {"eh_catch.cpp", "eh_std_ok", "PROVED", ""},
         {"eh_catch.cpp", "eh_wrong_type_bad", "FAILED", "CXX-THROW-NOEXCEPT"},
         {"eh_uncaught.cpp", "main", "FAILED", "CXX-UNCAUGHT"},
+        {"gnu_c.c", "asm_barrier_ok", "NEEDS-HARNESS", ""},  // `asm` is unencoded: nothing is claimed
+        {"gnu_c.c", "auto_type_bad", "FAILED", "INT-SIGNED-OVF"},
+        {"gnu_c.c", "flag_div", "FAILED", "INT-DIV-ZERO"},
+        {"gnu_c.c", "overflow_bad", "FAILED", "INT-SIGNED-OVF"},
+        {"gnu_c.c", "read_once_bad", "FAILED", "INT-DIV-ZERO"},
+        {"gnu_c.c", "read_once_ok", "PROVED", ""},
+        {"gnu_c.c", "stmt_expr_ok", "PROVED", ""},
+        {"strict_c17.c", "typeof_name_bad", "FAILED", "INT-DIV-ZERO"},
+        {"strict_c17.c", "typeof_name_ok", "PROVED", ""},
         {"folded.c", "fold_div_bad", "FAILED", ""},
         {"folded.c", "fold_ok", "PROVED", ""},
         {"folded.c", "fold_shift_bad", "FAILED", ""},
@@ -254,6 +263,8 @@ const std::vector<const char*>& pir_files_all() {
         "eh_catch.cpp",
         "eh_uncaught.cpp",
         "folded.c",
+        "gnu_c.c",
+        "strict_c17.c",
         "fp_arith.c",
         "kind_mem.c",
         "kinduct.c",
@@ -536,4 +547,105 @@ TEST_CASE("pir: unused static inline function in a header gets a verdict") {
     fs::remove_all(dir);
     CHECK(m[{"h.h", "unused_h"}].starts_with("PROVED"));
     CHECK(m[{"u.c", "user"}].starts_with("PROVED"));
+}
+
+// Regression: the Linux kernel's include/asm-generic/rwonce.h pattern
+// (typeof(_Generic(...)), statement expressions, __auto_type, `asm`) failed
+// strict -std=c17 with `error: expected ')'`, also on a preprocessed copy.
+namespace {
+fs::path cc_scratch(const char* tag) {
+    auto d = fs::temp_directory_path() / (std::string("prism_cc_") + tag + "_" + std::to_string(::getpid()));
+    std::error_code ec;
+    fs::remove_all(d, ec);
+    fs::create_directories(d, ec);
+    return d;
+}
+void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std::ios::binary) << s; }
+}  // namespace
+
+TEST_CASE("pir e2e: GNU C unit (rwonce.h typeof/_Generic) compiles, and a unit that is valid C17 stays strict C17") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    auto out = pp::run_pir({dir / "gnu_c.c", dir / "strict_c17.c"}, cfg);
+    auto got = index(out);
+    for (auto& f : out)
+        CHECK_MESSAGE(f.message.find("clang front end failed") == std::string::npos, f.message);
+    REQUIRE(got.contains({"gnu_c.c", "read_once_ok"}));
+    CHECK(got.at({"gnu_c.c", "read_once_ok"})->status == prism::laws::PROVED);
+    REQUIRE(got.contains({"gnu_c.c", "read_once_bad"}));
+    CHECK(got.at({"gnu_c.c", "read_once_bad"})->status == prism::laws::FAILED);
+    // `asm` is not claimed to be encoded
+    REQUIRE(got.contains({"gnu_c.c", "asm_barrier_ok"}));
+    CHECK(got.at({"gnu_c.c", "asm_barrier_ok"})->status == prism::laws::NEEDS_HARNESS);
+    // typeof and asm are identifiers here: only strict C17 parses the unit, so it was not switched to gnu17
+    REQUIRE(got.contains({"strict_c17.c", "typeof_name_ok"}));
+    CHECK(got.at({"strict_c17.c", "typeof_name_ok"})->status == prism::laws::PROVED);
+    // no --compile-commands: no flags note
+    CHECK(got.at({"gnu_c.c", "read_once_ok"})->extra.count("front_end_flags") == 0);
+}
+
+TEST_CASE("pir e2e: --compile-commands gives a unit its own flags; warnings and UB-defining flags are not taken") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    const auto tmp = cc_scratch("db");
+    const auto unit = dir / "gnu_c.c";
+    write_text(tmp / "compile_commands.json",
+               "[{\"directory\":\"" + tmp.generic_string() + "\",\"file\":\"" + unit.generic_string() +
+                   "\",\"arguments\":[\"clang\",\"-std=gnu11\",\"-w\",\"-Wno-shift-overflow\",\"-fno-strict-overflow\","
+                   "\"-fwrapv\",\"-ftrivial-auto-var-init=pattern\",\"-DFIX_DIV=7\",\"-fshort-wchar\",\"-c\","
+                   "\"gnu_c.c\",\"-o\",\"x.o\"]}]");
+    cfg.root = dir;
+    cfg.compile_commands = tmp / "compile_commands.json";
+    auto out = pp::run_pir({unit}, cfg);
+    auto got = index(out);
+    // -DFIX_DIV=7 reached the front end: 100 / 7 is proved (without the flag it is 100 / n)
+    REQUIRE(got.contains({"gnu_c.c", "flag_div"}));
+    CHECK(got.at({"gnu_c.c", "flag_div"})->status == prism::laws::PROVED);
+    // -fno-strict-overflow / -fwrapv were NOT taken: signed overflow is still found
+    REQUIRE(got.contains({"gnu_c.c", "overflow_bad"}));
+    CHECK(got.at({"gnu_c.c", "overflow_bad"})->status == prism::laws::FAILED);
+    CHECK(got.at({"gnu_c.c", "overflow_bad"})->cls == "INT-SIGNED-OVF");
+    const auto& note = got.at({"gnu_c.c", "overflow_bad"})->extra.at("front_end_flags");
+    CHECK(note.find("-std=gnu11") != std::string::npos);
+    for (const char* dropped : {"-w", "-fno-strict-overflow", "-fwrapv", "-ftrivial-auto-var-init=pattern"})
+        CHECK_MESSAGE(note.find(dropped) != std::string::npos, dropped);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
+TEST_CASE("pir e2e: --compile-commands on a preprocessed copy takes only language flags and finds the functions of the .c") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const auto tmp = cc_scratch("pre");
+    // x.i as `clang -E` leaves it: GNU C, #line markers naming x.c. The entry's
+    // -include of a header that does not exist must not be applied again.
+    write_text(tmp / "pre.i",
+               "# 1 \"pre.c\"\n"
+               "int pre_ok(int n) {\n"
+               "    typeof(n) v = n | 1;\n"
+               "    return 100 / v;\n"
+               "}\n"
+               "int pre_bad(int n) {\n"
+               "    typeof(n) v = n;\n"
+               "    return 100 / v;\n"
+               "}\n");
+    write_text(tmp / "pre.c", "/* the unit's source */\n");
+    write_text(tmp / "compile_commands.json",
+               "[{\"directory\":\"" + tmp.generic_string() + "\",\"file\":\"" + (tmp / "pre.c").generic_string() +
+                   "\",\"arguments\":[\"clang\",\"-std=gnu11\",\"-include\",\"/nonexistent/kconfig.h\","
+                   "\"-I\",\"/nonexistent/inc\",\"-DKERNEL=1\",\"-nostdinc\",\"-c\",\"pre.c\"]}]");
+    cfg.root = tmp;
+    cfg.compile_commands = tmp / "compile_commands.json";
+    auto out = pp::run_pir({tmp / "pre.i"}, cfg);
+    auto got = index(out);
+    REQUIRE(got.contains({"pre.i", "pre_ok"}));
+    CHECK(got.at({"pre.i", "pre_ok"})->status == prism::laws::PROVED);
+    REQUIRE(got.contains({"pre.i", "pre_bad"}));
+    CHECK(got.at({"pre.i", "pre_bad"})->status == prism::laws::FAILED);
+    CHECK(got.at({"pre.i", "pre_ok"})->extra.at("front_end_flags").find("preprocessed unit") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
 }

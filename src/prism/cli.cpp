@@ -182,6 +182,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solver-cache") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.solver_cache = fs::absolute(*v);
+        } else if (a == "--compile-commands") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.compile_commands = fs::absolute(*v);
         } else if (a == "--requirements") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.requirements.push_back(fs::absolute(*v));
@@ -309,6 +312,7 @@ std::string cli_usage() {
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S]\n"
+        "           [--compile-commands FILE]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -346,6 +350,10 @@ std::string cli_usage() {
         "  certified is PROVED-CERTIFIED, otherwise it stays PROVED with a certify_note.\n"
         "--solver-cache DIR: solver query cache (default $XDG_CACHE_HOME/prism/solver).\n"
         "--timeout S: solver seconds per query (default 30).\n"
+        "--compile-commands FILE: the pir stage compiles each unit with its entry's flags\n"
+        "  from this compile_commands.json (language level such as gnu11, defines, include\n"
+        "  path, target, short-wchar, ...); warning flags are never taken, so the UB-folding\n"
+        "  warnings stay on. A Linux kernel unit needs it (docs/PIR.md).\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

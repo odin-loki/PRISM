@@ -89,6 +89,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--tool NAME=PATH` | use this binary for an adapter (searched before `~/.prism/tools/<name>/<commit>/bin` and `PATH`) |
 | `--allow-exec` | allow steps that run code from the scanned tree (section 6) |
 | `--certified` | the `pir` stage asks for a checked certificate of every verification condition; a function whose VCs are all certified is `PROVED-CERTIFIED` (section 9) |
+| `--compile-commands FILE` | the pir stage compiles each unit with its entry in this `compile_commands.json` (GNU C level, defines, include path, ABI flags; warning flags and flags that define UB are never taken). A Linux kernel unit needs it; see [PIR.md](PIR.md) "GNU C units and a unit's own flags" |
 | `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
 | `--timeout S` | solver seconds per query (default 30) |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
