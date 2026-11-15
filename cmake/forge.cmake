@@ -53,5 +53,10 @@ if(NOT PRISM_DEPS_ONLY)
   # prism_forge_inference: the AI engine (FORGE inference + verify + simd MV kernels).
   add_library(prism_forge_inference INTERFACE)
   target_link_libraries(prism_forge_inference INTERFACE prism_forge forge_inference forge_verify forge_simd_mv)
+  if(WIN32)
+    # FORGE inference headers (diffusion.hpp) use M_PI; the UCRT only defines it
+    # with _USE_MATH_DEFINES.
+    target_compile_definitions(prism_forge_inference INTERFACE _USE_MATH_DEFINES)
+  endif()
 endif()
 message(STATUS "PRISM: FORGE (mandatory) from ${FORGE_SOURCE_DIR}")

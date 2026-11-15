@@ -191,6 +191,9 @@ when every theorem is proved, 3 only when every one is `NOTRUN`).
 | `--lemmas PATH` | lemma library to read and extend (default `<project>/lemmas.jsonl` under `proofs/`, else `proofs/lemmas.jsonl`) |
 | `--budget N`, `--beam N` | model calls allowed (default 24) and partial proofs kept (default 4) |
 | `--timeout S` | Lean time limit per check in seconds (default 120, minimum 5) |
+| `--samples N` | model replies per expanded node, checked together in one batch (default 1) |
+| `--lean-jobs N` | Lean processes a batch of candidates is split over (default: half the cores) |
+| `--no-closers` | do not try the core closers (`omega`, `simp`, `grind`, `decide`, ...) before the model; model only |
 | `--out DIR` | output directory (default `prism-out`) |
 | `--prover-fpk PATH`, `--prover-model NAME` | the FORGE prover model (`.fpk`, else `PRISM_PROVER_FPK`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
 | `--json` | print only the JSON result |
