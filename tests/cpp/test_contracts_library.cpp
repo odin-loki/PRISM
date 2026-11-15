@@ -147,6 +147,10 @@ int list_empty(const struct list_head *head);
 void *kzalloc(size_t size, unsigned int flags);
 void kfree(const void *p);
 int __ilog2_u32(unsigned int n);
+typedef struct spinlock { int raw; } spinlock_t;
+void spin_lock(spinlock_t *lock);
+void spin_unlock(spinlock_t *lock);
+unsigned int readl(const volatile void *addr);
 
 int list_ok(void) {
     struct list_head q, a;
@@ -159,6 +163,23 @@ int log2_ok(unsigned v) {
     int t[32] = {0};
     if (v == 0) return 0;
     return t[__ilog2_u32(v)];
+}
+
+int lock_ok(int v) {
+    struct { spinlock_t l; int c; unsigned r; } d;
+    if (v < 0 || v > 9) return 0;
+    d.c = v;
+    spin_lock(&d.l);
+    d.c++;
+    spin_unlock(&d.l);
+    if (d.c != v + 1) d.r = 1 / (d.c - d.c);
+    return (int)(readl(&d.r) & 1u);
+}
+
+int readl_known_bad(void) {
+    unsigned r = 0;
+    int t[2] = {0, 0};
+    return t[readl(&r) & 3u];
 }
 
 int kzalloc_unchecked_bad(void) {
@@ -177,6 +198,10 @@ int kzalloc_unchecked_bad(void) {
     CHECK(m["list_ok"].extra["assumptions"].find("library contract kernel:list_add_tail") != std::string::npos);
     CHECK(m["log2_ok"].status == std::string(prism::laws::PROVED_ASSUMING));
     CHECK(m["log2_ok"].extra["assumptions"].find("kernel:__ilog2_u32") != std::string::npos);
+    // locks change no memory the caller sees; an MMIO read is any value
+    CHECK(m["lock_ok"].status == std::string(prism::laws::PROVED_ASSUMING));
+    CHECK(m["lock_ok"].extra["assumptions"].find("kernel:spin_lock") != std::string::npos);
+    CHECK(m["readl_known_bad"].status == std::string(prism::laws::FAILED));
     // the contract's requires are checked: kzalloc may fail
     CHECK(m["kzalloc_unchecked_bad"].status == std::string(prism::laws::FAILED));
     // another signature is another function: not answered by the contract
