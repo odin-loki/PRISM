@@ -306,6 +306,16 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/libc/stdlib.cpp
   src/prism/pir/models/libc/stdio.cpp
   src/prism/pir/models/libc/fmtdouble.cpp
+  # kernel API specs (docs/KERNEL_MODELS.md): linked only with --kernel-api linux|freebsd
+  src/prism/pir/models/kernel/kernel_model.h
+  src/prism/pir/models/kernel/linux_alloc.cpp
+  src/prism/pir/models/kernel/linux_lock.cpp
+  src/prism/pir/models/kernel/linux_uaccess.cpp
+  src/prism/pir/models/kernel/linux_mmio.cpp
+  src/prism/pir/models/kernel/linux_misc.cpp
+  src/prism/pir/models/kernel/freebsd_alloc.cpp
+  src/prism/pir/models/kernel/freebsd_lock.cpp
+  src/prism/pir/models/kernel/freebsd_misc.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map
@@ -912,6 +922,7 @@ if(PRISM_TESTS)
     # sanitizers_usable() probe otherwise reports NOTRUN.
     tests/cpp/test_qa_conformance.cpp
     tests/cpp/test_pir_e2e.cpp
+    tests/cpp/test_pir_kernel.cpp
     tests/cpp/test_pir_incomplete.cpp
     tests/cpp/test_c23_memset_explicit.cpp
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).

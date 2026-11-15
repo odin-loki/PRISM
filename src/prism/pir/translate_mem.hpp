@@ -140,6 +140,9 @@ public:
     // the base is the last field of a struct (flexible-array idiom: exempt).
     void gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector<Arg>& idx, bool inbounds, int line,
              int use = 3, bool base_last_field = false);
+    // Kernel mode: bytes from ptr to the end of its object become arbitrary (no violation:
+    // not for null, freed, read-only or FILE objects).
+    void havoc_object_tail(int b, Arg ptr, int line);
     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
     // Integer comparison of two ptrtoint values (std::less<T*>): exact within
     // one object (offset order) and for ==/!=; the order of addresses of two

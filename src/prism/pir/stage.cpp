@@ -2589,7 +2589,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
     auto& mod = *res.mod;
     // library operational models for what the unit declares (docs/PIR.md "Library models")
-    link_models(mod, models);
+    link_models(mod, models, cfg.pir_kernel_api);
     TranslateOptions topt;
     topt.signed_shl = sshl;
     topt.shl_cxx = is_cxx(u.path);

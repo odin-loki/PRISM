@@ -698,7 +698,7 @@ void Tr::region(Frame& fr, const std::string& start) {
         if (it == by.end() || tail.count(fr.prefix + nme)) continue;
         translate_block(fr, *it->second);
         for (auto& in : it->second->insts) {
-            if (in.op == "br" || in.op == "switch")
+            if (in.op == "br" || in.op == "switch" || in.op == "callbr")
                 for (auto& t : in.targets) work.push_back(t);
             if (in.op == "switch")
                 for (auto& [c, t] : in.cases) work.push_back(t);
@@ -902,8 +902,14 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
 void Tr::asm_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     (void)fr;
     auto it = opt.asm_contracts.find(line);
-    if (it == opt.asm_contracts.end())
-        throw Unenc{"UNENCODED: inline assembly (state its effect with `// prism: asm ensures <cond>` on the line above)"};
+    if (it == opt.asm_contracts.end()) {
+        // a stated contract wins; otherwise --kernel-api: conservative havoc (translate_kernel.inc)
+        if (!opt.kernel_api.empty()) {
+            asm_havoc(fr, in, cur, line);
+            return;
+        }
+        throw Unenc{"UNENCODED: inline assembly (state its effect with `// prism: asm ensures <cond>` on the line above, or use --kernel-api for a conservative havoc model)"};
+    }
     for (auto& o : in.ops)
         if (o.ty.kind == ir::Type::Ptr)
             throw Unenc{"UNENCODED: inline assembly with memory operands (contract at line " + std::to_string(line) + ")"};

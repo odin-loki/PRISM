@@ -70,6 +70,14 @@ struct Config {
     // defines, include path, ABI flags; docs/PIR.md "Units with their own
     // flags"). Empty = the scan root's database for -I/-D only, as before.
     std::filesystem::path compile_commands;
+    // --kernel-api linux|freebsd: the pir stage links the kernel API specs of
+    // that kernel (src/prism/pir/models/kernel, docs/KERNEL_MODELS.md) and
+    // models inline asm, asm goto, atomics and barriers as named assumptions.
+    // "" = off (default). --assume-unknown-calls: a call without a spec havocs
+    // its result and the objects its pointer arguments point to, recorded as an
+    // assumption (opt-in, never on by default).
+    std::string pir_kernel_api;
+    bool pir_assume_unknown_calls = false;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 

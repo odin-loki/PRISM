@@ -338,40 +338,63 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
     for (auto& [name, ll] : lowered) {
         auto tag = model_unit_tag(name);
         lib.units.push_back(ir::parse_module(rename_privates(ll, tag)));
+        lib.unit_names.push_back(name);
     }
     return lib;
 }
 
-std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib) {
+std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib, const std::string& kernel_api) {
     std::vector<std::string> linked;
     if (lib.units.empty()) return linked;
     std::set<std::string> defined;
     for (auto& f : m.functions) defined.insert(f.name);
-    std::deque<std::string> want(m.declarations.begin(), m.declarations.end());
+    // The unit's own declarations resolve in the kernel specs of the selected kernel first
+    // (models/kernel/linux_*.cpp, freebsd_*.cpp), then the libc models; a symbol a model
+    // itself calls resolves in that model's own file first, so a kernel spec never
+    // captures the libc models' internal calls (FreeBSD's three-argument malloc).
+    const auto is_kernel_unit = [&](std::size_t i) {
+        const auto& n = lib.unit_names.at(i);
+        return n.starts_with("linux_") || n.starts_with("freebsd_");
+    };
+    const auto wanted_unit = [&](std::size_t i) {
+        if (!is_kernel_unit(i)) return true;
+        return !kernel_api.empty() && lib.unit_names.at(i).starts_with(kernel_api + "_");
+    };
+    std::deque<std::pair<std::string, const ir::Module*>> want;
+    for (auto& d : m.declarations) want.emplace_back(d, nullptr);
     // the printf-family model checks %s arguments with the strlen model
     for (auto* f : {"printf", "fprintf", "dprintf", "sprintf", "snprintf"})
         if (std::find(m.declarations.begin(), m.declarations.end(), f) != m.declarations.end()) {
-            want.push_back("strlen");
-            want.push_back("__prism_fmtv");  // exact bytes for a symbolic double
+            want.emplace_back("strlen", nullptr);
+            want.emplace_back("__prism_fmtv", nullptr);  // exact bytes for a symbolic double
             break;
         }
     int uniq = 0;
     while (!want.empty()) {
-        auto name = want.front();
+        auto [name, pref] = want.front();
         want.pop_front();
         if (defined.count(name)) continue;
         const ir::Function* src = nullptr;
         const ir::Module* unit = nullptr;
-        for (auto& u : lib.units)
-            if (auto* f = u.find(name)) {
+        if (pref)
+            if (auto* f = pref->find(name)) {
                 src = f;
-                unit = &u;
-                break;
+                unit = pref;
+            }
+        // kernel specs first (when selected), then the libc models in file order
+        for (int pass = 0; pass < 2 && !src; ++pass)
+            for (std::size_t i = 0; i < lib.units.size() && !src; ++i) {
+                if ((pass == 0) != is_kernel_unit(i) || !wanted_unit(i)) continue;
+                if (auto* f = lib.units[i].find(name)) {
+                    src = f;
+                    unit = &lib.units[i];
+                }
             }
         if (!src) continue;
         defined.insert(name);
         ir::Function f = *src;
         f.is_model = true;
+        if (f.variadic && f.parse_error == "variadic function") f.parse_error.clear();  // models may take `...`
         // metadata references are per module: give them fresh keys
         const std::string pre = "!prism.model." + std::to_string(uniq++) + ".";
         auto remap = [&](std::string& ref) {
@@ -386,13 +409,13 @@ std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib) {
         for (auto& bl : f.blocks)
             for (auto& in : bl.insts) {
                 remap(in.dbg);
-                if (!in.callee.empty() && !defined.count(in.callee)) want.push_back(in.callee);
+                if (!in.callee.empty() && !defined.count(in.callee)) want.emplace_back(in.callee, unit);
                 for (auto& o : in.ops) refs_of(o.v, globals);
             }
         for (auto& g : globals) {
             if (m.find_global(g)) continue;
             if (auto* gg = unit->find_global(g)) m.globals.push_back(*gg);
-            else if (unit->find(g) && !defined.count(g)) want.push_back(g);
+            else if (unit->find(g) && !defined.count(g)) want.emplace_back(g, unit);
         }
         linked.push_back(name);
         m.functions.push_back(std::move(f));

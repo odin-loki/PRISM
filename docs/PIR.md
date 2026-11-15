@@ -488,6 +488,12 @@ checks inside a model report the call site's line and name the model
 
 Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
 
+**Kernel API specs.** `--kernel-api linux|freebsd` additionally links the specs in
+`src/prism/pir/models/kernel/` (allocation, locking, user access, MMIO, delays, logging, BUG/WARN; 150 functions), each
+a named assumption in the verdict; `--assume-unknown-calls` is the opt-in for calls without a spec (result and pointed-to
+objects havocked, listed as an assumption). Both are off by default. Table, sources, assumptions and the
+needs-review list: [KERNEL_MODELS.md](KERNEL_MODELS.md).
+
 **Building the models.** The lowered models are built once per run, before
 any unit, with their own time limit (`max(120 s, 4 × --timeout)` per clang
 and opt call, where a unit gets `--timeout`), and a call that times out is
@@ -1028,6 +1034,13 @@ its (integer) output and that `cond` holds afterwards; the contract is
 listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
 PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
+
+With `--kernel-api linux|freebsd` an asm without a contract is modelled conservatively instead: its outputs are
+arbitrary, and the objects its pointer operands point into are havocked when it writes through them or has a `memory`
+clobber (memory no operand points into is assumed unchanged); `asm goto` with one label jumps nondeterministically to
+the fallthrough or the label; atomics (`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
+instructions. Each use is a named assumption (`asm-havoc: "<constraints>"`, `asm-goto`, `atomics-sequential`,
+`volatile-access`) and a proof is PROVED-ASSUMING. See [KERNEL_MODELS.md](KERNEL_MODELS.md).
 
 ## k-induction with memory (roadmap 2.6)
 
