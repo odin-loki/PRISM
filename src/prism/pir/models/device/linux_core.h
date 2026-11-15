@@ -103,7 +103,7 @@ void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id)
  * completion that is not done is "killed" (-ERESTARTSYS); an interrupt may arrive first and complete it ---- */
 void complete(struct completion *x)
 {
-	PRISM_API_POINT();
+	/* no interrupt point here: complete() runs inside handlers, and a point in a handler inlines the handler again */
 	x->done++;
 }
 

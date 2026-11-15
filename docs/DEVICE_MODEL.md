@@ -421,7 +421,7 @@ prism-module run testdata/module/linux/rtc-pl031.pmod --kernel-root /home/odin/p
   `alarm_irq_enable`, and the handler `pl031_interrupt` (registered by `request_irq`). Not exercised: the ST
   variants' ops (`stv2`), which the ARM device model does not describe; the next section runs them.
 * **Flags**: the compile-database entry of `drivers/rtc/rtc-cmos.c` from the OS-Proving x86_64 allmodconfig
-  pass (`make -n` text, a minimal compile database made by `mkcdb`), cloned for the harness unit. The driver is
+  pass (`make -n` text, a one-entry compile database made by `tools/module-validate/mkcdb.sh`), cloned for the harness unit. The driver is
   ARM-only hardware code compiled with x86_64 kernel flags: it is architecture-neutral C and every `readl` is
   replaced, so no x86 asm enters. It compiles with the front end's GNU C fallback and the unit's own
   `-nostdinc -include kconfig.h` flags (PR #47).
@@ -484,7 +484,7 @@ have, for concurrent entry points, or about a real RTC core (the glue models it)
 
 ### 9.5 Validation of the PL031 model against QEMU
 
-`tools/module-validate/run.sh`: bare-metal AArch64 guest on `qemu-system-aarch64 -M virt` (QEMU 8.2 from the
+`tools/module-validate/run.sh` (and `mutants.sh` for the table below): bare-metal AArch64 guest on `qemu-system-aarch64 -M virt` (QEMU 8.2 from the
 Ubuntu archive of the VM), the PL031 at 0x09010000, output on the PL011.
 
 | Trace set | Shipped model | Mutants rejected |

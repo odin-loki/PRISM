@@ -3,12 +3,14 @@
 // pir stage's. This file adds no solver logic and no proof rule.
 #include "prism/module.hpp"
 
+#include "prism/exec.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +18,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <thread>
 
 #ifdef __linux__
 #  include <sys/resource.h>
@@ -246,6 +249,43 @@ nlohmann::json clone_entry(const nlohmann::json& tmpl, const fs::path& file, con
 
 }  // namespace
 
+std::string run_row_json(const fs::path& unit, const fs::path& cdb, bool model_only, const Config& cfg_in) {
+    // The unit's `main` only: PRISM_PIR_ONLY is the stage's own per-function filter ("<unit file>\t<function>").
+    // (It also makes the stage leave with exit 75 when its memory watchdog gives up: the parent reports that as UNKNOWN.)
+    const std::string only = unit.filename().string() + "\tmain\n";
+#ifdef _WIN32
+    _putenv_s("PRISM_PIR_ONLY", only.c_str());
+    _putenv_s("PRISM_PIR_INLINE_DEPTH", "24");
+#else
+    setenv("PRISM_PIR_ONLY", only.c_str(), 1);
+    setenv("PRISM_PIR_INLINE_DEPTH", "24", 0);
+#endif
+    Config cfg = cfg_in;
+    cfg.root = unit.parent_path();
+    if (!cdb.empty()) cfg.compile_commands = cdb;
+    if (model_only) cfg.pir_only_props = {"model"};
+    auto fs_ = pir::run_pir({unit}, cfg);
+    nlohmann::json j;
+    j["verdict"] = "NOTRUN";
+    j["message"] = "no finding for main";
+    for (auto& f : fs_) {
+        if (f.function && *f.function == "main") {
+            j["verdict"] = f.status;
+            j["cls"] = f.cls;
+            j["message"] = f.message;
+            j["cex"] = f.counterexample;
+            j["line"] = f.line ? std::to_string(*f.line) : "";
+            j["extra"] = f.extra;
+            break;
+        }
+        if (!f.function && (f.status == "NOTRUN" || f.status == "ERROR")) {
+            j["verdict"] = f.status;
+            j["message"] = f.message;
+        }
+    }
+    return j.dump();
+}
+
 std::string generate_harness_body(const Spec& sp, const DevModel* dev, bool no_device, std::uint64_t window,
                                   const std::string& driver_abs, const std::vector<std::string>& extra_abs,
                                   const std::string& driver_text);
@@ -436,50 +476,71 @@ Report check_module(const RunOptions& opt, const Config& cfg_in) {
         return rep;
     }
 
-    // run the pir stage on every row (the harness nests probe, stubs and handlers: more than the default depth 4)
-#ifndef _WIN32
-    setenv("PRISM_PIR_INLINE_DEPTH", "24", 0);
-#endif
+    // run every row: in a child process of prism-module (memory and time isolated, peak RSS measured), or in this
+    // process when no self_exe is given (tests). The harness nests probe, stubs and handlers: more than depth 4.
     Config cfg = cfg_in;
     cfg.root = outdir;
     if (have_cdb) cfg.compile_commands = rep.cdb_path;
-    std::vector<RowResult> results;
-    {
-        std::string only;
-        for (auto& u : units) only += u.filename().string() + "\tmain\n";
-#ifdef _WIN32
-        _putenv_s("PRISM_PIR_ONLY", only.c_str());
-#else
-        setenv("PRISM_PIR_ONLY", only.c_str(), 1);
-#endif
-    }
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-        Config c = cfg;
-        if (!rows[i].native) c.pir_only_props = {"model"};
-        auto t1 = std::chrono::steady_clock::now();
-        auto fs_ = pir::run_pir({units[i]}, c);
+    std::vector<RowResult> results(rows.size());
+    auto run_one = [&](std::size_t i) {
         RowResult rr;
         rr.row = rows[i];
-        rr.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
-        rr.verdict = "NOTRUN";
-        rr.message = "no finding for main";
-        for (auto& f : fs_) {
-            if (f.function && *f.function == "main") {
-                rr.verdict = f.status;
-                rr.cls = f.cls;
-                rr.message = f.message;
-                rr.cex = f.counterexample;
-                rr.line = f.line ? std::to_string(*f.line) : "";
-                rr.extra = f.extra;
-                break;
+        auto t1 = std::chrono::steady_clock::now();
+        nlohmann::json j;
+        if (opt.self_exe.empty()) {
+            try {
+                j = nlohmann::json::parse(run_row_json(units[i], have_cdb ? fs::path(rep.cdb_path) : fs::path{}, !rows[i].native, cfg));
+            } catch (const std::exception& e) {
+                j = {{"verdict", "ERROR"}, {"message", std::string("row failed: ") + e.what()}};
             }
-            if (!f.function && (f.status == "NOTRUN" || f.status == "ERROR")) {
-                rr.verdict = f.status;
-                rr.message = f.message;
+        } else {
+            exec::Spec es;
+            es.argv = {opt.self_exe.string(), "row", units[i].string(), "--root", outdir.string(), "--timeout", std::to_string(cfg.timeout),
+                       "--unwind", std::to_string(cfg.unwind)};
+            if (have_cdb) { es.argv.push_back("--cdb"); es.argv.push_back(rep.cdb_path); }
+            if (!rows[i].native) es.argv.push_back("--model-only");
+            es.env_set["PRISM_PIR_INLINE_DEPTH"] = "24";
+            if (opt.mem_mb) es.env_set["PRISM_MEM_BUDGET_MB"] = std::to_string(opt.mem_mb);
+            es.timeout_ms = static_cast<std::uint64_t>((std::max(300.0, 10.0 * cfg.timeout) + 300.0) * 1000.0);
+            auto r = exec::run(es);
+            rr.extra["peak_rss_mb"] = std::to_string(r.peak_rss_bytes >> 20);
+            std::string line, last;
+            std::istringstream in(r.out);
+            while (std::getline(in, line)) if (!line.empty() && line[0] == '{') last = line;
+            if (!last.empty()) {
+                j = nlohmann::json::parse(last, nullptr, false);
+                if (j.is_discarded()) j = {{"verdict", "ERROR"}, {"message", "unreadable row result"}};
+            } else if (r.timed_out) {
+                j = {{"verdict", "TIMEOUT"}, {"message", "the row's process ran past its wall-clock budget"}};
+            } else if (r.exit_code == 75) {
+                // pir's memory watchdog: the row's process left at once (docs/PIR.md, memory budget); no answer, never a proof
+                j = {{"verdict", "UNKNOWN"}, {"message", "memory budget reached in the row's process (exit 75, PRISM_MEM_BUDGET_MB=" +
+                                                              (opt.mem_mb ? std::to_string(opt.mem_mb) : std::string("default")) + "): no answer"}};
+            } else {
+                j = {{"verdict", "ERROR"}, {"message", "row process rc " + std::to_string(r.rc()) + ": " + r.err.substr(0, 200)}};
             }
         }
+        rr.verdict = j.value("verdict", "ERROR");
+        rr.cls = j.value("cls", "");
+        rr.message = j.value("message", "");
+        rr.line = j.value("line", "");
+        rr.cex = j.value("cex", "");
+        if (j.contains("extra") && j["extra"].is_object())
+            for (auto it = j["extra"].begin(); it != j["extra"].end(); ++it)
+                if (it.value().is_string()) rr.extra[it.key()] = it.value().get<std::string>();
         rr.pir_verdict = rr.verdict;
-        results.push_back(std::move(rr));
+        rr.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+        results[i] = std::move(rr);
+    };
+    {
+        const std::size_t nthreads = (opt.self_exe.empty() || opt.row_jobs < 2) ? 1 : static_cast<std::size_t>(std::min(opt.row_jobs, 6));
+        std::atomic<std::size_t> next{0};
+        std::vector<std::thread> pool;
+        for (std::size_t t = 0; t < nthreads; ++t)
+            pool.emplace_back([&] {
+                for (std::size_t i = next++; i < rows.size(); i = next++) run_one(i);
+            });
+        for (auto& t : pool) t.join();
     }
 
     // read the rows back as module properties
@@ -576,6 +637,15 @@ Report check_module(const RunOptions& opt, const Config& cfg_in) {
     rep.assumptions.push_back("the driver is compiled with the unit flags of " + (have_cdb ? opt.cc_like_file : std::string("the default flags")) +
                               " (front end drops flags that would define ISO C undefined behaviour, docs/PIR.md)");
     rep.assumptions.push_back("environment and bus setup (env/setup blocks of " + specpath.filename().string() + ") are hand-written C, reviewed by a person, not generated");
+    // peak resident set: the largest of the rows' processes when they ran as children, else this process
+    {
+        long mx = 0;
+        for (auto& r : results)
+            if (auto it = r.extra.find("peak_rss_mb"); it != r.extra.end() && r.row.name.rfind("cover-", 0) != 0) mx = std::max(mx, std::atol(it->second.c_str()));
+        if (mx > 0) rep.extra["peak_rss_mb_row_process"] = std::to_string(mx);
+        for (auto& r : results)
+            if (auto it = r.extra.find("peak_rss_mb"); it != r.extra.end()) rep.extra["row." + r.row.name + ".peak_rss_mb"] = it->second;
+    }
     rep.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 #ifdef __linux__
     struct rusage ru{};

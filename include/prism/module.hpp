@@ -171,6 +171,9 @@ struct RunOptions {
     std::vector<std::string> ops;           // keep only these operations of the module description (empty = all)
     std::string device_override;            // another model file ("none" = no device model, unconstrained reads)
     bool generate_only = false;             // write the unit and stop (no pir run)
+    std::filesystem::path self_exe;         // prism-module itself: each row runs in a child process of it (memory and time isolated); empty = in this process
+    std::uint64_t mem_mb = 0;               // PRISM_MEM_BUDGET_MB for each child row; 0 = the engine's default
+    int row_jobs = 1;                       // rows run at once (children only; 1..6)
     std::vector<std::string> rows;          // run only these rows (empty = all): all, all-sequential, memory, or a property
     std::vector<std::string> defines;       // extra `define`s on top of the spec's
 };
@@ -196,6 +199,11 @@ struct Report {
     std::string json() const;
     std::string text() const;
 };
+
+// One row in this process (what `prism-module row` runs): the pir stage on `unit`'s `main`, as JSON.
+// model_only: pir verifies only the module checks (Config::pir_only_props = {"model"}).
+PRISM_API std::string run_row_json(const std::filesystem::path& unit, const std::filesystem::path& cdb,
+                                   bool model_only, const Config& cfg);
 
 // Writes <out>/<module>/harness.c (+ headers, compile_commands.json) and,
 // unless generate_only, runs the pir stage on it.

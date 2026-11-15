@@ -66,7 +66,14 @@ void *virtqueue_get_buf(struct virtqueue *vq, unsigned int *len)
 	token = prism_vq_token;
 	prism_vq_posted = 0;
 	prism_vq_kicked = 0;
-	__prism_havoc_bytes(prism_vq_buf, prism_vq_buflen);   /* the device wrote arbitrary bytes */
+#ifdef PRISM_VIRTIO_BUFLEN
+	/* a havoc of symbolic length costs the encoder gigabytes: the module description states the buffer length,
+	 * and the stub checks the driver's buffer has it */
+	PRISM_MOD_CHECK(prism_vq_buflen == PRISM_VIRTIO_BUFLEN, api, "the posted buffer length differs from PRISM_VIRTIO_BUFLEN in the module description");
+	__prism_havoc_bytes(prism_vq_buf, PRISM_VIRTIO_BUFLEN);   /* the device wrote arbitrary bytes */
+#else
+	__prism_havoc_bytes(prism_vq_buf, prism_vq_buflen);   /* the device wrote arbitrary bytes (symbolic length: expensive) */
+#endif
 	l = (unsigned int)prism_nondet_u64();                  /* ... and reports an arbitrary used length */
 #ifdef PRISM_VIRTIO_CONFORMANT
 	__VERIFIER_assume(l <= prism_vq_buflen);

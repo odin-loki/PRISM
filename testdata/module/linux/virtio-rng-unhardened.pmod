@@ -18,6 +18,8 @@ assume "the virtio core calls scan after a successful probe, freeze/restore on s
 # virtrng_remove itself: remove_common -> del_vqs -> virtrng_remove -> remove_common ... grows without bound.
 # The transport's del_vqs and the hwrng cleanup are therefore called directly (adaptation below).
 define PRISM_HWRNG_CLEANUP(r) virtio_cleanup(r);
+# sizeof(struct virtrng_info.data) is SMP_CACHE_BYTES = 64 on x86_64: the buffer the driver posts
+define PRISM_VIRTIO_BUFLEN 64;
 assume "the hwrng core calls read with a buffer of 64 bytes and at most that size, only while the hwrng is registered";
 
 env {
