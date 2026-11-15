@@ -16,6 +16,7 @@
 
 #include "common.hpp"
 #include "prism/laws.hpp"
+#include "prism/regex.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -74,6 +75,7 @@ std::optional<std::string> context_free_unit(const FunctionInfo& g, const std::s
         ok.insert(n);
     }
     const std::string text = g.signature + "\n" + g.body;
+    std::set<std::string, std::less<>> used;  // the words the function holds
     for (std::size_t i = 0; i < text.size();) {
         const unsigned char c = static_cast<unsigned char>(text[i]);
         if (std::isalpha(c) || c == '_') {
@@ -81,6 +83,7 @@ std::optional<std::string> context_free_unit(const FunctionInfo& g, const std::s
             while (j < text.size() && (std::isalnum(static_cast<unsigned char>(text[j])) || text[j] == '_')) ++j;
             auto w = std::string_view(text).substr(i, j - i);
             if (!ok.contains(w) && !context_free_words().contains(w)) return std::nullopt;
+            used.emplace(w);
             i = j;
         } else if (std::isdigit(c)) {
             // a number and its suffix (0x1F, 10u, 3ull)
@@ -98,6 +101,16 @@ std::optional<std::string> context_free_unit(const FunctionInfo& g, const std::s
             ++i;
         }
     }
+    // The file must not change what those words mean: no macro of one of
+    // them (`#define int long`), no pragma, no header of the project (which
+    // could define such a macro). System headers define none of them but
+    // the ones the unit below includes itself.
+    const auto src = stages_detail::read_fn_source(g);
+    if (src.empty() || src.find("#include \"") != std::string::npos || src.find("pragma") != std::string::npos)
+        return std::nullopt;
+    static const Regex define_re(R"(^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*))", /*multiline=*/true);
+    for (auto& m : define_re.finditer(src))
+        if (used.contains(m.group(1))) return std::nullopt;
     // the integer type names (stdint.h, stddef.h) and bool (stdbool.h, C);
     // the definition keeps its #line, so its rows keep their lines
     const auto ext = std::filesystem::path(g.file).extension().string();
