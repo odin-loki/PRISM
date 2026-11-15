@@ -120,7 +120,7 @@ const std::string& engine_digest() {
 std::string prism_environment() {
     std::vector<std::string> vars;
 #if defined(_WIN32)
-    // Windows variable names are case-insensitive: getenv("PRISM_X") reads prism_x too
+    // Windows variable names are case-insensitive: getenv of an upper-case PRISM_ name also reads its lower-case spelling
     for (char** e = _environ; e && *e; ++e)
         if (_strnicmp(*e, "PRISM_", 6) == 0) vars.emplace_back(*e);
 #elif defined(__unix__) || defined(__APPLE__)
