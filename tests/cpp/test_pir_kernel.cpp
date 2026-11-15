@@ -145,6 +145,34 @@ TEST_CASE("pir kernel: FreeBSD API specs (malloc, mtx, copyin/copyout, bus_space
                  {"panic_bad", F, ""}});
 }
 
+TEST_CASE("pir kernel: lock balance, double lock, unlock of an unheld lock, sleeping in atomic context (ghost lock state)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_ctx.c", "linux", false,
+                {{"lock_relock_ok", PA, "linux-lock"},
+                 {"lock_double_bad", F, ""},
+                 {"spin_double_bad", F, ""},
+                 {"spin_nested_ok", PA, "linux-lock"},
+                 {"unlock_unheld_bad", F, ""},
+                 {"sleep_in_spin_bad", F, ""},
+                 {"sleep_after_spin_ok", PA, "linux-lock"},
+                 {"might_sleep_in_spin_bad", F, ""},
+                 {"might_sleep_ok", PA, "linux-might-sleep"}});
+    // each bad variant reports its own bug class, not another one
+    auto got = run("kernel_lock_ctx.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"lock_double_bad", "LOCK-DOUBLE"},       {"spin_double_bad", "LOCK-DOUBLE"},
+        {"unlock_unheld_bad", "LOCK-UNHELD-UNLOCK"}, {"sleep_in_spin_bad", "CTX-SLEEP-ATOMIC"},
+        {"might_sleep_in_spin_bad", "CTX-SLEEP-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
 TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assumptions") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
