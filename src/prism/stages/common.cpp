@@ -5,8 +5,12 @@
 #include "prism/config.hpp"
 #include "prism/pir.hpp"
 #include "prism/astlint.hpp"
+#include "prism/pipeline.hpp"
+#include "prism/pool.hpp"
 
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 #include <filesystem>
 #include <fstream>
 #ifdef _WIN32
@@ -327,16 +331,7 @@ const char* const kPirHookPrelude =
     "void __prism_havoc_bytes(void*, unsigned long);\n"
     "#ifdef __cplusplus\n}\n#endif\n";
 
-Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::string>& only_props,
-                const std::string& prelude) {
-    namespace fs = std::filesystem;
-    std::vector<std::string> lines;
-    if (std::ifstream in{source_path(fn.file)}; in) for (std::string l; std::getline(in, l);) lines.push_back(l);
-    const int start = fn.span.first, end = fn.span.second;
-    const bool ctx = start >= 1 && end >= start && static_cast<std::size_t>(end) <= lines.size();
-    std::string unit = "#include <assert.h>\n" + prelude + "#line 1\n";
-    if (ctx)
-        for (int i = 0; i < start - 1; ++i) unit += lines[static_cast<std::size_t>(i)] + "\n";
+std::string pir_definition(const FunctionInfo& fn) {
     // A signature with no named parameters ("int f(...)", or none at all) but
     // known params is rebuilt from them, so the body's names are declared.
     std::string sig = fn.signature;
@@ -346,43 +341,287 @@ Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::strin
             sig += (i ? ", " : "") + fn.params[i].first + " " + fn.params[i].second;
         sig += ")";
     }
-    unit += "#line " + std::to_string(std::max(1, start)) + "\n" + sig + " {\n" + fn.body + "\n}\n";
+    return "#line " + std::to_string(std::max(1, fn.span.first)) + "\n" + sig + " {\n" + fn.body + "\n}\n";
+}
+
+namespace {
+
+// The unit pir_one checks: fn's file with fn's signature and body spliced in
+// at its span (#line keeps the reported lines on the original source).
+std::string pir_unit_text(const FunctionInfo& fn, const std::string& prelude) {
+    std::vector<std::string> lines;
+    if (std::ifstream in{source_path(fn.file)}; in) for (std::string l; std::getline(in, l);) lines.push_back(l);
+    const int start = fn.span.first, end = fn.span.second;
+    const bool ctx = start >= 1 && end >= start && static_cast<std::size_t>(end) <= lines.size();
+    std::string unit = "#include <assert.h>\n" + prelude + "#line 1\n";
+    if (ctx)
+        for (int i = 0; i < start - 1; ++i) unit += lines[static_cast<std::size_t>(i)] + "\n";
+    unit += pir_definition(fn);
     if (ctx) {
         unit += "#line " + std::to_string(end + 1) + "\n";
         for (std::size_t i = static_cast<std::size_t>(end); i < lines.size(); ++i) unit += lines[i] + "\n";
     }
-    static std::atomic<unsigned> seq{0};
-    const auto dir = fs::temp_directory_path() /
-                     ("prism_pir_one_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
-    fs::create_directories(dir);
-    const auto ext = fs::path(fn.file).extension().string();
-    const auto src = dir / (fs::path(fn.file).stem().string() + (ext.empty() ? std::string(".c") : ext));
-    std::ofstream(src) << unit;
-    auto cfg = default_config();
-    cfg.root = dir;
-    cfg.jobs = 1;
-    cfg.unwind = unwind;
-    cfg.pir_only_props = only_props;
-    std::optional<Finding> out, stage_row;
-    for (auto& f : pir::run_pir({src}, cfg)) {
-        if (f.function && *f.function == fn.name) {
-            out = f;
-            break;
+    return unit;
+}
+
+// Results of pir checks already made in this process, keyed by everything
+// the check reads (the unit text, the function, the options, --allow-exec):
+// the same query is the same check, so it is not run twice (concolic asks
+// the seed-free flip of a branch once per seed).
+struct PirMemo {
+    std::mutex mu;
+    std::unordered_map<std::string, Finding> rows;
+};
+PirMemo& pir_memo() {
+    static PirMemo m;
+    return m;
+}
+
+// Functions the pir stage may check in a unit: the parser's count for C; for
+// C++ twice that plus two (lambdas and instantiated templates are functions
+// too); unknown counts as a chunk of its own.
+std::size_t unit_weight(const std::string& text, const std::string& name) {
+    std::size_t n = 0;
+    try {
+        n = extract_functions_from_text(text, name).size();
+    } catch (...) {
+        n = 0;
+    }
+    const auto ext = fs::path(name).extension().string();
+    const bool c = ext == ".c";
+    return n == 0 ? std::size_t{1000} : (c ? n : 2 * n + 2);
+}
+
+// collect_pir_queries: the list pir_one appends to on this thread instead of
+// checking (nullptr: pir_one checks).
+thread_local std::vector<PirQuery>* t_collect = nullptr;
+
+}  // namespace
+
+Finding pir_one(const FunctionInfo& fn, int unwind, const std::vector<std::string>& only_props,
+                const std::string& prelude) {
+    return pir_query(PirQuery{fn, unwind, only_props, prelude, std::nullopt});
+}
+
+Finding pir_query(const PirQuery& q) {
+    if (t_collect) {
+        t_collect->push_back(q);
+        // A stand-in for the dry run only: never reported (the real pass
+        // asks again and gets the checked row).
+        return make_find("pir", laws::UNKNOWN, q.fn, "", "pir query collected, not checked yet",
+                         laws::STRENGTH_READS);
+    }
+    return pir_many({q}, 1).at(0);
+}
+
+bool collecting_pir() { return t_collect != nullptr; }
+
+std::vector<PirQuery> collect_pir_queries(const std::function<void()>& dry_run) {
+    std::vector<PirQuery> qs;
+    auto* prev = t_collect;
+    t_collect = &qs;
+    try {
+        dry_run();
+    } catch (...) {
+        // a dry run that throws has still named the queries it reached
+    }
+    t_collect = prev;
+    return qs;
+}
+
+void prefetch_pir(int jobs, const std::function<void()>& dry_run) {
+    auto qs = collect_pir_queries(dry_run);
+    if (!qs.empty()) (void)pir_many(qs, jobs);
+}
+
+std::vector<Finding> map_functions(int jobs, std::size_t n,
+                                   const std::function<std::vector<Finding>(std::size_t)>& rows) {
+    std::vector<std::vector<Finding>> per(n);
+    if (n == 1 || jobs == 1) {
+        for (std::size_t i = 0; i < n; ++i) per[i] = rows(i);
+    } else {
+        // An exception is rethrown after the loop, the lowest index's first:
+        // the one a serial loop would have stopped at.
+        std::vector<std::exception_ptr> err(n);
+        prism::pool::for_each_index(jobs, n, [&](std::size_t i) {
+            try {
+                per[i] = rows(i);
+            } catch (...) {
+                err[i] = std::current_exception();
+            }
+        });
+        for (auto& e : err)
+            if (e) std::rethrow_exception(e);
+    }
+    std::vector<Finding> out;
+    for (auto& v : per)
+        for (auto& f : v) out.push_back(std::move(f));
+    return out;
+}
+
+// One pir run (pir::run_pir) checks many units: its fixed cost (library
+// models, C++ model headers, the run's set-up) is paid once per chunk, not
+// once per query. Each query is its own unit in its own subdirectory of the
+// run's root, checked exactly as pir_one checks it alone: pir lowers,
+// analyses and validates every unit on its own. The one thing a run shares
+// is its Houdini budget (max(3600 s, 120 x timeout)); a chunk holds at most
+// 12 functions, each of which spends at most its function budget
+// (max(300 s, 10 x timeout)) there, so no function of a chunk gets less of
+// that budget than it would alone. With PRISM_HOUDINI_BUDGET or
+// PRISM_FUNCTION_BUDGET set, every query is a run of its own.
+std::vector<Finding> pir_many(const std::vector<PirQuery>& qs, int jobs) {
+    std::vector<Finding> res(qs.size());
+    struct Item {
+        std::string key, unit, name;   // name: the unit's file name
+        std::vector<std::size_t> idx;  // the queries asking exactly this
+        std::size_t weight = 1;
+    };
+    const bool allowed = sandbox::allowed();
+    std::vector<Item> items;
+    {
+        std::unordered_map<std::string, std::size_t> pos;
+        for (std::size_t i = 0; i < qs.size(); ++i) {
+            const auto& q = qs[i];
+            const auto ext = fs::path(q.fn.file).extension().string();
+            Item it;
+            it.unit = q.unit ? *q.unit : pir_unit_text(q.fn, q.prelude);
+            it.name = fs::path(q.fn.file).stem().string() + (ext.empty() ? std::string(".c") : ext);
+            it.key = std::to_string(q.unwind) + '\0' + (allowed ? "x" : "-") + '\0' + q.fn.file + '\0' +
+                     q.fn.name + '\0' + std::to_string(q.fn.line) + '\0' + it.name + '\0';
+            for (auto& p : q.only_props) it.key += p + '\1';
+            it.key += '\0' + q.prelude + '\0' + it.unit;
+            {
+                std::lock_guard<std::mutex> lk(pir_memo().mu);
+                if (auto m = pir_memo().rows.find(it.key); m != pir_memo().rows.end()) {
+                    res[i] = m->second;
+                    continue;
+                }
+            }
+            if (auto p = pos.find(it.key); p != pos.end()) {
+                items[p->second].idx.push_back(i);
+                continue;
+            }
+            it.idx.push_back(i);
+            pos.emplace(it.key, items.size());
+            items.push_back(std::move(it));
         }
-        // A whole-stage row (z3 not built, no front end) applies to every
-        // function: keep its NOTRUN, never turn it into "no result" ERROR.
-        if (!f.function && !stage_row && !laws::is_proof(f.status)) stage_row = f;
     }
-    if (!out && stage_row) {
-        out = std::move(stage_row);
-        out->function = fn.name;
+    if (items.empty()) return res;
+    const bool solo = std::getenv("PRISM_HOUDINI_BUDGET") || std::getenv("PRISM_FUNCTION_BUDGET");
+    constexpr std::size_t kChunkFunctions = 12;
+    // Chunks of items with the same options (one run has one unwind and one
+    // property filter), in query order.
+    std::vector<std::vector<std::size_t>> chunks;
+    {
+        std::map<std::pair<int, std::vector<std::string>>, std::size_t> open;  // options -> open chunk
+        std::vector<std::size_t> load;
+        for (std::size_t k = 0; k < items.size(); ++k) {
+            const auto& q = qs[items[k].idx.front()];
+            items[k].weight = solo ? kChunkFunctions + 1 : unit_weight(items[k].unit, items[k].name);
+            auto opt = std::make_pair(q.unwind, q.only_props);
+            auto o = open.find(opt);
+            if (o == open.end() || load[o->second] + items[k].weight > kChunkFunctions) {
+                chunks.emplace_back();
+                load.push_back(0);
+                o = open.insert_or_assign(opt, chunks.size() - 1).first;
+            }
+            chunks[o->second].push_back(k);
+            load[o->second] += items[k].weight;
+        }
     }
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    if (!out) return make_find("pir", laws::ERROR, fn, "", "pir produced no result for the function", laws::STRENGTH_READS);
-    out->file = fn.file;
-    if (!out->line) out->line = fn.line;
-    return *out;
+    static std::atomic<unsigned> seq{0};
+    auto run_chunk = [&](std::size_t c) {
+        const auto& chunk = chunks[c];
+        const auto& q0 = qs[items[chunk.front()].idx.front()];
+        const auto dir = fs::temp_directory_path() /
+                         ("prism_pir_one_" + std::to_string(::getpid()) + "_" + std::to_string(seq++));
+        std::vector<fs::path> srcs;
+        std::vector<std::string> rels;
+        for (std::size_t j = 0; j < chunk.size(); ++j) {
+            const auto sub = dir / ("q" + std::to_string(j));
+            fs::create_directories(sub);
+            srcs.push_back(sub / items[chunk[j]].name);
+            std::error_code rec;
+            auto rel = fs::relative(srcs.back(), dir, rec);  // as pir names the unit
+            rels.push_back(rec ? srcs.back().filename().string() : rel.generic_string());
+            std::ofstream(srcs.back()) << items[chunk[j]].unit;
+        }
+        auto cfg = default_config();
+        cfg.root = dir;
+        cfg.jobs = 1;
+        cfg.unwind = q0.unwind;
+        cfg.pir_only_props = q0.only_props;
+        auto rows = pir::run_pir(srcs, cfg);
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        // Rows of no unit (models error, z3 not built, no front end) belong
+        // to every query. The --allow-exec note is made again per unit: a
+        // run of that unit alone writes it only when that unit needs it.
+        std::set<std::string> unit_rels(rels.begin(), rels.end());
+        std::vector<Finding> shared;
+        std::map<std::string, std::vector<Finding>> per;
+        for (auto& f : rows) {
+            if (unit_rels.contains(f.file)) {
+                per[f.file].push_back(std::move(f));
+                continue;
+            }
+            auto r = f.extra.find("reason");
+            if (f.status == laws::NOTRUN && r != f.extra.end() && r->second == sandbox::EXEC_REASON) continue;
+            shared.push_back(std::move(f));
+        }
+        for (std::size_t j = 0; j < chunk.size(); ++j) {
+            auto& item = items[chunk[j]];
+            const auto& fn = qs[item.idx.front()].fn;
+            auto mine = shared;
+            for (auto& f : per[rels[j]]) mine.push_back(f);
+            mine = exec_gate_note("pir", std::move(mine), "pir translation validation (lli)");
+            std::optional<Finding> out, stage_row;
+            for (auto& f : mine) {
+                if (f.function && *f.function == fn.name) {
+                    out = f;
+                    break;
+                }
+                // A whole-stage row (z3 not built, no front end) applies to every
+                // function: keep its NOTRUN, never turn it into "no result" ERROR.
+                if (!f.function && !stage_row && !laws::is_proof(f.status)) stage_row = f;
+            }
+            if (!out && stage_row) {
+                out = std::move(stage_row);
+                out->function = fn.name;
+            }
+            Finding got;
+            if (!out) {
+                got = make_find("pir", laws::ERROR, fn, "", "pir produced no result for the function",
+                                laws::STRENGTH_READS);
+            } else {
+                got = std::move(*out);
+                got.file = fn.file;
+                if (!got.line) got.line = fn.line;
+            }
+            {
+                std::lock_guard<std::mutex> lk(pir_memo().mu);
+                auto& memo = pir_memo().rows;
+                if (memo.size() >= 16384) memo.clear();
+                memo.insert_or_assign(item.key, got);
+            }
+            for (auto i : item.idx) res[i] = got;
+        }
+    };
+    if (chunks.size() == 1 || jobs == 1) {
+        for (std::size_t c = 0; c < chunks.size(); ++c) run_chunk(c);
+    } else {
+        std::vector<std::exception_ptr> err(chunks.size());
+        prism::pool::for_each_index(jobs, chunks.size(), [&](std::size_t c) {
+            try {
+                run_chunk(c);
+            } catch (...) {
+                err[c] = std::current_exception();
+            }
+        });
+        for (auto& e : err)
+            if (e) std::rethrow_exception(e);
+    }
+    return res;
 }
 
 }  // namespace stages_detail

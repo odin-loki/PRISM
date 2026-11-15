@@ -3,6 +3,7 @@
 #include "interp.hpp"
 
 #include <cstdlib>
+#include <span>
 
 #include "prism/config.hpp"
 #include "prism/sandbox.hpp"
@@ -652,8 +653,15 @@ std::optional<Finding> contract_kind_finding(const FunctionInfo& fn, const std::
 }
 
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials) {
+    return run_rapid(functions, trials, 1);
+}
+
+// `jobs` functions at once: each function's trials are its own, the rows
+// keep the serial order (map_functions).
+std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials, int jobs) {
+    return map_functions(jobs, functions.size(), [&](std::size_t fi) {
     std::vector<Finding> out;
-    for (auto& fn : functions) {
+    for (auto& fn : std::span(functions).subspan(fi, 1)) {
         if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
             out.push_back(make_find("rapid", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_SOME));
             continue;
@@ -667,14 +675,22 @@ std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int t
         out.push_back(finding_from_plan(fn, *plan, "rapid"));
     }
     return out;
+    });
 }
 
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials) {
+    return run_muttest(functions, trials, 1);
+}
+
+// `jobs` functions at once: each function's trials are its own, the rows
+// keep the serial order (map_functions).
+std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials, int jobs) {
     // Killing a mutant is CLEAN (not a proof). A mutant that failed to compile,
     // or that the interpreter cannot score, is not killed: ERROR, or NOTRUN
     // when the gcc fallback is held by --allow-exec. Never PROVED.
+    return map_functions(jobs, functions.size(), [&](std::size_t fi) {
     std::vector<Finding> out;
-    for (auto& fn : functions) {
+    for (auto& fn : std::span(functions).subspan(fi, 1)) {
         if (auto syn = scrubbed_byte_reason(fn.body, "the compiled harness")) {
             out.push_back(make_find("muttest", laws::NEEDS_HARNESS, fn, "", *syn, laws::STRENGTH_SOME));
             continue;
@@ -744,6 +760,7 @@ std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int
         }
     }
     return out;
+    });
 }
 
 std::pair<std::string, std::map<std::string, std::string>> rapid_plan_error_status(const std::string& err) {

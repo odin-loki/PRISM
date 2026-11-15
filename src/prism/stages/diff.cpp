@@ -253,11 +253,17 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
 }  // namespace
 
 std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions, const fs::path& root) {
+    return run_diff(functions, root, 1);
+}
+
+// `jobs` pairs at once: each pair is its own harness build and run, the rows
+// keep the serial order (map_functions).
+std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions, const fs::path& root, int jobs) {
     auto pairs = diff_pairs(functions);
     if (pairs.empty()) return {};
-    std::vector<Finding> out;
-    for (auto& [a, b] : pairs) out.push_back(diff_pair(a, b, root));
-    return out;
+    return map_functions(jobs, pairs.size(), [&](std::size_t i) {
+        return std::vector<Finding>{diff_pair(pairs[i].first, pairs[i].second, root)};
+    });
 }
 
 }  // namespace prism

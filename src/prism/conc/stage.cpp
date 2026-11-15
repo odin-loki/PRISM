@@ -11,9 +11,11 @@
 #include "prism/conc.hpp"
 #include "prism/laws.hpp"
 #include "prism/exec.hpp"
+#include "prism/pool.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -312,83 +314,96 @@ std::vector<Finding> run_conc(const std::vector<fs::path>& sources, const Config
         return {f};
     }
     auto opt = options_of(cfg);
-    // phase 1: lower (processes only)
-    std::vector<std::optional<std::string>> irs(units.size());
-    std::vector<std::string> errs(units.size());
-    for (std::size_t i = 0; i < units.size(); ++i) {
+    // One task per unit, cfg.jobs at a time (prism::pool): lower (clang and
+    // opt), then extract and solve (one Z3 context per harness). A unit's
+    // rows depend on that unit alone; they are joined in unit order, as the
+    // serial loop wrote them.
+    std::vector<std::vector<Finding>> per(units.size());
+    std::vector<std::exception_ptr> failed(units.size());
+    prism::pool::for_each_index(cfg.jobs, units.size(), [&](std::size_t i) {
         try {
-            irs.at(i) = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), errs.at(i),
-                                   weak_memory_order(read_text(units.at(i))).has_value());
-        } catch (const std::exception& ex) {
-            irs.at(i).reset();
-            errs.at(i) = std::string("internal error: ") + ex.what();
-        }
-    }
-    // phase 2: extract + solve (Z3 only)
-    std::vector<Finding> out;
-    for (std::size_t i = 0; i < units.size(); ++i) {
-        auto rel = rel_of(units.at(i), cfg.root);
-        if (!irs.at(i)) {
-            auto f = base(rel);
-            f.status = std::string(laws::ERROR);
-            f.strength = std::string(laws::STRENGTH_SOME);
-            f.message = "clang front end failed: " + errs.at(i);
-            f.extra["frontend"] = fe.version;
-            out.push_back(std::move(f));
-            continue;
-        }
-        std::vector<Harnessed> hs;
-        try {
-            hs = analyse_ir(*irs.at(i), opt);
-        } catch (const std::exception& ex) {
-            auto f = base(rel);
-            f.status = std::string(laws::ERROR);
-            f.strength = std::string(laws::STRENGTH_SOME);
-            f.message = std::string("conc internal error: ") + ex.what();
-            out.push_back(std::move(f));
-            continue;
-        }
-        if (const auto weak = weak_memory_order(read_text(units.at(i))); weak && !any_views(hs)) {
-            if (hs.empty()) {
-                auto f = base(rel);
-                f.status = std::string(laws::NEEDS_HARNESS);
-                f.strength = std::string(laws::STRENGTH_SOME);
-                f.message = weak_order_message(*weak);
-                f.extra["frontend"] = fe.version;
-                out.push_back(std::move(f));
-                continue;
+            std::optional<std::string> ir;
+            std::string err;
+            try {
+                ir = lower_unit(fe, units.at(i), std::max(10.0, cfg.timeout), err,
+                                weak_memory_order(read_text(units.at(i))).has_value());
+            } catch (const std::exception& ex) {
+                ir.reset();
+                err = std::string("internal error: ") + ex.what();
             }
-            for (auto& h : hs) refuse_weak_order(h.res, *weak);
-        }
-        for (auto& h : hs) {
-            auto f = base(rel);
-            f.function = h.name;
-            f.line = h.line;
-            f.extra["frontend"] = fe.version;
-            for (auto& [k, v] : h.res.extra) f.extra[k] = v;
-            if (h.res.status == laws::FAILED) {
-                for (auto& v : h.res.violations) {
-                    auto g = f;
-                    g.status = std::string(laws::FAILED);
-                    g.cls = v.cls;
-                    g.message = v.msg;
-                    if (v.line) g.line = v.line;
-                    g.counterexample = v.schedule;
-                    g.extra["prop"] = v.kind;
-                    g.extra["schedule"] = v.schedule;
-                    std::string tr;
-                    for (auto& e : v.trace) tr += (tr.empty() ? "" : "\n") + e.text;
-                    g.evidence = tr;
-                    out.push_back(std::move(g));
+            auto& out = per.at(i);
+            [&] {  // a `return` leaves the unit (the serial loop's `continue`)
+                auto rel = rel_of(units.at(i), cfg.root);
+                if (!ir) {
+                    auto f = base(rel);
+                    f.status = std::string(laws::ERROR);
+                    f.strength = std::string(laws::STRENGTH_SOME);
+                    f.message = "clang front end failed: " + err;
+                    f.extra["frontend"] = fe.version;
+                    out.push_back(std::move(f));
+                    return;
                 }
-                continue;
-            }
-            f.status = h.res.status;
-            f.message = h.res.message;
-            if (h.res.status != laws::BOUNDED) f.strength = std::string(laws::STRENGTH_SOME);
-            out.push_back(std::move(f));
+                std::vector<Harnessed> hs;
+                try {
+                    hs = analyse_ir(*ir, opt);
+                } catch (const std::exception& ex) {
+                    auto f = base(rel);
+                    f.status = std::string(laws::ERROR);
+                    f.strength = std::string(laws::STRENGTH_SOME);
+                    f.message = std::string("conc internal error: ") + ex.what();
+                    out.push_back(std::move(f));
+                    return;
+                }
+                if (const auto weak = weak_memory_order(read_text(units.at(i))); weak && !any_views(hs)) {
+                    if (hs.empty()) {
+                        auto f = base(rel);
+                        f.status = std::string(laws::NEEDS_HARNESS);
+                        f.strength = std::string(laws::STRENGTH_SOME);
+                        f.message = weak_order_message(*weak);
+                        f.extra["frontend"] = fe.version;
+                        out.push_back(std::move(f));
+                        return;
+                    }
+                    for (auto& h : hs) refuse_weak_order(h.res, *weak);
+                }
+                for (auto& h : hs) {
+                    auto f = base(rel);
+                    f.function = h.name;
+                    f.line = h.line;
+                    f.extra["frontend"] = fe.version;
+                    for (auto& [k, v] : h.res.extra) f.extra[k] = v;
+                    if (h.res.status == laws::FAILED) {
+                        for (auto& v : h.res.violations) {
+                            auto g = f;
+                            g.status = std::string(laws::FAILED);
+                            g.cls = v.cls;
+                            g.message = v.msg;
+                            if (v.line) g.line = v.line;
+                            g.counterexample = v.schedule;
+                            g.extra["prop"] = v.kind;
+                            g.extra["schedule"] = v.schedule;
+                            std::string tr;
+                            for (auto& e : v.trace) tr += (tr.empty() ? "" : "\n") + e.text;
+                            g.evidence = tr;
+                            out.push_back(std::move(g));
+                        }
+                        continue;
+                    }
+                    f.status = h.res.status;
+                    f.message = h.res.message;
+                    if (h.res.status != laws::BOUNDED) f.strength = std::string(laws::STRENGTH_SOME);
+                    out.push_back(std::move(f));
+                }
+            }();
+        } catch (...) {
+            failed.at(i) = std::current_exception();
         }
-    }
+    });
+    for (auto& e : failed)
+        if (e) std::rethrow_exception(e);
+    std::vector<Finding> out;
+    for (auto& v : per)
+        for (auto& f : v) out.push_back(std::move(f));
     return out;
 }
 

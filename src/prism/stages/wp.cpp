@@ -232,147 +232,159 @@ bool wp_is_tautology(const std::string& pred) {
 
 std::optional<std::string> encode_wp_predicate(const std::string& raw) { return wp_encode_predicate(raw); }
 
-std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind) {
-    std::vector<Finding> out;
+namespace {
+
+// The wp row of one function (nullopt: no ensures).
+std::optional<Finding> wp_one(const FunctionInfo& fn, int unwind) {
     // Every return, `return(x);` and `return;` included: a return the
     // regex missed would drop its path from the obligation.
     static Regex ret_re("\\breturn\\b\\s*([^;]*);");
-    for (auto& fn : functions) {
-        auto spec = parse_comments(fn);
-        if (spec.ensures.empty()) continue;
-        auto mark = [](Finding& f) {
-            f.extra["engine"] = "prism-wp";
-            f.extra["wp"] = "return-substitution";
-        };
-        if (fn.kind == "POINTER" || body_needs_pointer_harness(fn.body)) {
-            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
-                               "POINTER: WP would invent a buffer; Frama-C WP binary is not a proof either",
-                               laws::STRENGTH_READS);
-            mark(f);
-            out.push_back(std::move(f));
-            continue;
-        }
-        if (fn.kind != "SCALAR") {
-            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
-                               fn.kind + ": WP scalar subset only; not a proof", laws::STRENGTH_READS);
-            mark(f);
-            out.push_back(std::move(f));
-            continue;
-        }
-        if (auto syn = scrubbed_byte_reason(fn.body, "WP")) {
-            auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", *syn, laws::STRENGTH_READS);
-            mark(f);
-            out.push_back(std::move(f));
-            continue;
-        }
+    auto spec = parse_comments(fn);
+    if (spec.ensures.empty()) return std::nullopt;
+    auto mark = [](Finding& f) {
+        f.extra["engine"] = "prism-wp";
+        f.extra["wp"] = "return-substitution";
+    };
+    if (fn.kind == "POINTER" || body_needs_pointer_harness(fn.body)) {
+        auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
+                           "POINTER: WP would invent a buffer; Frama-C WP binary is not a proof either",
+                           laws::STRENGTH_READS);
+        mark(f);
+        return f;
+    }
+    if (fn.kind != "SCALAR") {
+        auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT",
+                           fn.kind + ": WP scalar subset only; not a proof", laws::STRENGTH_READS);
+        mark(f);
+        return f;
+    }
+    if (auto syn = scrubbed_byte_reason(fn.body, "WP")) {
+        auto f = make_find("wp", laws::NEEDS_HARNESS, fn, "FUNC-CONTRACT", *syn, laws::STRENGTH_READS);
+        mark(f);
+        return f;
+    }
 
-        std::vector<std::string> encoded_req;
-        std::optional<std::string> bad;
-        for (auto& r : spec.requires_) {
-            auto e = wp_encode_predicate(r);
+    std::vector<std::string> encoded_req;
+    std::optional<std::string> bad;
+    for (auto& r : spec.requires_) {
+        auto e = wp_encode_predicate(r);
+        if (!e) {
+            bad = r;
+            break;
+        }
+        encoded_req.push_back(*e);
+    }
+    std::vector<std::string> encoded_ens;
+    if (!bad) {
+        for (auto& e0 : spec.ensures) {
+            auto e = wp_encode_predicate(e0);
             if (!e) {
-                bad = r;
+                bad = e0;
                 break;
             }
-            encoded_req.push_back(*e);
+            encoded_ens.push_back(*e);
         }
-        std::vector<std::string> encoded_ens;
-        if (!bad) {
-            for (auto& e0 : spec.ensures) {
-                auto e = wp_encode_predicate(e0);
-                if (!e) {
-                    bad = e0;
-                    break;
-                }
-                encoded_ens.push_back(*e);
-            }
-        }
-        if (bad) {
-            auto f = make_find("wp", laws::ERROR, fn, "FUNC-CONTRACT",
-                               "cannot encode WP predicate (" + *bad + ")", laws::STRENGTH_READS);
-            mark(f);
-            f.extra["wp_unencoded"] = "true";
-            if (!spec.requires_.empty()) f.extra["requires"] = join_sv(spec.requires_, " && ");
-            f.extra["ensures"] = join_sv(spec.ensures, " && ");
-            out.push_back(std::move(f));
-            continue;
-        }
+    }
+    if (bad) {
+        auto f = make_find("wp", laws::ERROR, fn, "FUNC-CONTRACT",
+                           "cannot encode WP predicate (" + *bad + ")", laws::STRENGTH_READS);
+        mark(f);
+        f.extra["wp_unencoded"] = "true";
+        if (!spec.requires_.empty()) f.extra["requires"] = join_sv(spec.requires_, " && ");
+        f.extra["ensures"] = join_sv(spec.ensures, " && ");
+        return f;
+    }
 
-        std::optional<std::string> requires_;
-        if (!encoded_req.empty()) requires_ = join_sv(encoded_req, " && ");
-        std::string ensures = join_sv(encoded_ens, " && ");
-        std::vector<std::string> returns;
-        nlohmann::json rets = nlohmann::json::array();
-        for (auto& m : ret_re.finditer(fn.body)) {
-            // Keep every matched return. `return;` and `return   ;` strip to
-            // "" and stay in the obligation: skipping that empty string drops
-            // the path and lets a later return prove the ensures. `return ()`
-            // and `return ( )` are not empty after strip and stay as that
-            // text; peeling them away and then skipping would drop the same
-            // path. An empty `&&` conjunct is still omitted; that is not a return.
-            auto g = strip(m.group(1));
-            returns.push_back(g);
-            rets.push_back(g);
-            if (returns.size() >= 8) break;
-        }
-        std::vector<std::string> vcs;
-        if (returns.empty()) vcs.push_back(ensures);
-        else
-            for (auto& expr : returns) vcs.push_back(wp_subst_result(ensures, expr));
-        std::string wp_vc;
-        if (requires_) wp_vc += "(" + *requires_ + ") ==> ";
-        for (std::size_t i = 0; i < vcs.size(); ++i) {
-            if (i) wp_vc += " && ";
-            wp_vc += "(" + vcs.at(i) + ")";
-        }
-        auto fill_extra = [&](Finding& rec) {
-            mark(rec);
-            rec.extra["wp_returns"] = rets.dump();
-            rec.extra["wp_vc"] = wp_vc;
-            rec.extra["requires"] = requires_ ? *requires_ : "";
-            rec.extra["ensures"] = ensures;
-        };
+    std::optional<std::string> requires_;
+    if (!encoded_req.empty()) requires_ = join_sv(encoded_req, " && ");
+    std::string ensures = join_sv(encoded_ens, " && ");
+    std::vector<std::string> returns;
+    nlohmann::json rets = nlohmann::json::array();
+    for (auto& m : ret_re.finditer(fn.body)) {
+        // Keep every matched return. `return;` and `return   ;` strip to
+        // "" and stay in the obligation: skipping that empty string drops
+        // the path and lets a later return prove the ensures. `return ()`
+        // and `return ( )` are not empty after strip and stay as that
+        // text; peeling them away and then skipping would drop the same
+        // path. An empty `&&` conjunct is still omitted; that is not a return.
+        auto g = strip(m.group(1));
+        returns.push_back(g);
+        rets.push_back(g);
+        if (returns.size() >= 8) break;
+    }
+    std::vector<std::string> vcs;
+    if (returns.empty()) vcs.push_back(ensures);
+    else
+        for (auto& expr : returns) vcs.push_back(wp_subst_result(ensures, expr));
+    std::string wp_vc;
+    if (requires_) wp_vc += "(" + *requires_ + ") ==> ";
+    for (std::size_t i = 0; i < vcs.size(); ++i) {
+        if (i) wp_vc += " && ";
+        wp_vc += "(" + vcs.at(i) + ")";
+    }
+    auto fill_extra = [&](Finding& rec) {
+        mark(rec);
+        rec.extra["wp_returns"] = rets.dump();
+        rec.extra["wp_vc"] = wp_vc;
+        rec.extra["requires"] = requires_ ? *requires_ : "";
+        rec.extra["ensures"] = ensures;
+    };
 
-        bool qed = !vcs.empty();
-        for (auto& v : vcs)
-            if (!wp_is_tautology(v)) qed = false;
-        if (qed) {
-            auto f = make_find("wp", laws::PROVED_ASSUMING, fn, "FUNC-CONTRACT",
-                               "WP of ensures (" + ensures + ") holds" +
-                                   (requires_ ? " assuming (" + *requires_ + ")" : "") +
-                                   "; never an unconditional PROVED",
-                               laws::STRENGTH_PROVES);
-            fill_extra(f);
-            f.extra["wp_qed"] = "true";
-            out.push_back(std::move(f));
-            continue;
-        }
+    bool qed = !vcs.empty();
+    for (auto& v : vcs)
+        if (!wp_is_tautology(v)) qed = false;
+    if (qed) {
+        auto f = make_find("wp", laws::PROVED_ASSUMING, fn, "FUNC-CONTRACT",
+                           "WP of ensures (" + ensures + ") holds" +
+                               (requires_ ? " assuming (" + *requires_ + ")" : "") +
+                               "; never an unconditional PROVED",
+                           laws::STRENGTH_PROVES);
+        fill_extra(f);
+        f.extra["wp_qed"] = "true";
+        return f;
+    }
 
-        std::optional<std::string> ens_opt = ensures;
-        auto rec = check_with_assume(fn, unwind, requires_, ens_opt, std::nullopt, std::nullopt);
-        rec.stage = "wp";
-        fill_extra(rec);
-        if (rec.status == laws::PROVED) {
-            rec.status = std::string(laws::PROVED_ASSUMING);
+    std::optional<std::string> ens_opt = ensures;
+    auto rec = check_with_assume(fn, unwind, requires_, ens_opt, std::nullopt, std::nullopt);
+    rec.stage = "wp";
+    fill_extra(rec);
+    if (rec.status == laws::PROVED) {
+        rec.status = std::string(laws::PROVED_ASSUMING);
+        rec.message = "WP of ensures (" + ensures + ") holds" +
+                      (requires_ ? " assuming (" + *requires_ + ")" : "") +
+                      "; never an unconditional PROVED";
+    } else if (rec.status == laws::PROVED_UNBOUNDED) {
+        rec.status = std::string(laws::PROVED_ASSUMING);
+        rec.message = "WP of ensures (" + ensures + ") holds for all unrollings" +
+                      (requires_ ? " assuming (" + *requires_ + ")" : "") +
+                      "; never PROVED-UNBOUNDED from WP";
+    } else if (rec.status == laws::PROVED_ASSUMING) {
+        auto low = lower_copy(rec.message);
+        if (low.find("never") == std::string::npos) {
             rec.message = "WP of ensures (" + ensures + ") holds" +
                           (requires_ ? " assuming (" + *requires_ + ")" : "") +
                           "; never an unconditional PROVED";
-        } else if (rec.status == laws::PROVED_UNBOUNDED) {
-            rec.status = std::string(laws::PROVED_ASSUMING);
-            rec.message = "WP of ensures (" + ensures + ") holds for all unrollings" +
-                          (requires_ ? " assuming (" + *requires_ + ")" : "") +
-                          "; never PROVED-UNBOUNDED from WP";
-        } else if (rec.status == laws::PROVED_ASSUMING) {
-            auto low = lower_copy(rec.message);
-            if (low.find("never") == std::string::npos) {
-                rec.message = "WP of ensures (" + ensures + ") holds" +
-                              (requires_ ? " assuming (" + *requires_ + ")" : "") +
-                              "; never an unconditional PROVED";
-            }
         }
-        out.push_back(std::move(rec));
     }
-    return out;
+    return rec;
+}
+
+}  // namespace
+
+std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind) { return run_wp(functions, unwind, 1); }
+
+// As prove_contracts: a dry run collects the pir checks, batched pir runs
+// make them on `jobs` workers, then the functions are checked `jobs` at a
+// time with those rows (same rows, same order as a serial loop).
+std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind, int jobs) {
+    prefetch_pir(jobs, [&] {
+        for (auto& fn : functions) (void)wp_one(fn, unwind);
+    });
+    return map_functions(jobs, functions.size(), [&](std::size_t i) {
+        std::vector<Finding> v;
+        if (auto f = wp_one(functions[i], unwind)) v.push_back(std::move(*f));
+        return v;
+    });
 }
 
 }  // namespace prism
