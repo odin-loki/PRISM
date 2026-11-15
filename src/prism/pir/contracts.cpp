@@ -42,8 +42,22 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
     // line(s) up to '{', and the leading comment lines of the body
     std::vector<std::string> cand;
     int i = fn_line - 2;
-    while (i >= 0 && is_comment_or_blank(lines.at(static_cast<std::size_t>(i)))) {
-        cand.push_back(lines.at(static_cast<std::size_t>(i)));
+    // A multi-line ACSL block `/*@ requires A;\n    ensures B;\n*/` has
+    // continuation lines that start with neither `*` nor `//`: from its
+    // closing line up to the line that opens it, every line is comment.
+    bool in_block = false;
+    while (i >= 0) {
+        const auto& l = lines.at(static_cast<std::size_t>(i));
+        if (in_block) {
+            cand.push_back(l);
+            if (l.find("/*") != std::string::npos) in_block = false;
+            --i;
+            continue;
+        }
+        if (!is_comment_or_blank(l)) break;
+        cand.push_back(l);
+        auto t = trim(l);
+        if (t.ends_with("*/") && t.find("/*") == std::string::npos) in_block = true;
         --i;
     }
     std::size_t j = static_cast<std::size_t>(fn_line - 1);
