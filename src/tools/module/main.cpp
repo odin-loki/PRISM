@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
             else if (a == "--cc-like-file") o.cc_like_file = next();
             else if (a == "--out") o.out = next();
             else if (a == "--steps") o.steps = std::stoi(next());
+            else if (a == "--teardown-ops") o.teardown_ops = next() == "yes" ? 1 : 0;
+            else if (a == "--ops") o.ops = csv(next());
             else if (a == "--properties") o.properties = csv(next());
             else if (a == "--device") o.device_override = next();
             else if (a == "--rows") o.rows = csv(next());

@@ -98,4 +98,44 @@ void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id)
 	(void)prism_g_free_irq((int)irq, dev_id);
 }
 
+
+/* ---- completions: wait_for_completion_killable cannot block forever in a sequential harness, so a
+ * completion that is not done is "killed" (-ERESTARTSYS); an interrupt may arrive first and complete it ---- */
+void complete(struct completion *x)
+{
+	PRISM_API_POINT();
+	x->done++;
+}
+
+int wait_for_completion_killable(struct completion *x)
+{
+	PRISM_MOD_CHECK(!prism_in_irq, lock, "sleeping wait in interrupt context");
+	PRISM_API_POINT();
+	if (x->done) {
+		x->done--;
+		return 0;
+	}
+	return -512;                                         /* -ERESTARTSYS */
+}
+
+/* ---- ida: an allocated id is a resource ---- */
+int ida_alloc_range(struct ida *ida, unsigned int min, unsigned int max, gfp_t gfp)
+{
+	unsigned int id;
+	(void)ida; (void)gfp;
+	if (prism_nondet_bool())
+		return -12;                                     /* -ENOMEM */
+	id = (unsigned int)prism_nondet_int();
+	__VERIFIER_assume(id >= min && id <= max && id <= 0x7fffffff);
+	prism_ida++;
+	return (int)id;
+}
+
+void ida_free(struct ida *ida, unsigned int id)
+{
+	(void)ida; (void)id;
+	PRISM_MOD_CHECK(prism_ida > 0, pairing, "ida_free of an id that is not allocated (double free)");
+	if (prism_ida > 0)
+		prism_ida--;
+}
 #endif

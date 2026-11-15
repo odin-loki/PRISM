@@ -48,6 +48,15 @@ public:
         ++i_;
     }
     bool peek_quote() { skip(); return i_ < t_.size() && t_[i_] == '"'; }
+    // raw text up to the next ';' (not consumed), trimmed
+    std::string until_semicolon() {
+        std::size_t st = i_;
+        while (i_ < t_.size() && t_[i_] != ';') ++i_;
+        std::string r(t_.substr(st, i_ - st));
+        auto a = r.find_first_not_of(" \t\r\n");
+        auto b = r.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : r.substr(a, b - a + 1);
+    }
     // raw text of a {...} block; the braces are consumed
     std::string block() {
         expect('{');
@@ -136,9 +145,23 @@ Spec parse_module_spec(std::string_view text, const std::string& file) {
             s.expect(';');
         } else if (kw == "assume") { sp.assumptions.push_back(s.quoted()); s.expect(';'); }
         else if (kw == "include") { sp.includes_pre += "#include " + s.word() + "\n"; s.expect(';'); }
+        else if (kw == "patch") {
+            auto trim = [](std::string t) {
+                auto a = t.find_first_not_of(" \t\r\n");
+                auto b = t.find_last_not_of(" \t\r\n");
+                return a == std::string::npos ? std::string() : t.substr(a, b - a + 1);
+            };
+            std::string o = trim(s.block());
+            std::string n = trim(s.block());
+            sp.patches.emplace_back(o, n);
+            s.expect(';');
+        }
         else if (kw == "define") {
+            // `define NAME [VALUE];` or a function-like `define NAME(args) body;`: the rest up to the ';'
             std::string d = s.word();
-            if (!s.peek_char(';')) d += " " + s.word();
+            std::string rest = s.until_semicolon();
+            if (!rest.empty() && rest[0] == '(') d += rest;
+            else if (!rest.empty()) d += " " + rest;
             sp.defines.push_back(d);
             s.expect(';');
         }

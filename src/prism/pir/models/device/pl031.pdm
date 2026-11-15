@@ -22,7 +22,7 @@ model pl031 {
   doc "ARM PrimeCell PL031 RTC (ARM variant), after QEMU hw/rtc/pl031.c";
   source "QEMU hw/rtc/pl031.c (qemu/qemu master, 2026-11-16): register semantics, reset, interrupt";
   source "Linux drivers/rtc/rtc-pl031.c 6.18.60: register names and intended use";
-  validation unvalidated "not yet cross-checked (docs/DEVICE_MODEL.md section 7)";
+  validation differential "70 random register traces (about 2,600 reads) agree with QEMU virt PL031 on AArch64, 6 of 7 model mutants rejected (tools/module-validate, docs/DEVICE_MODEL.md section 7); the ARM manual DDI 0224B was not consulted; the alarm-timing boundary is not validated";
   window 0x1000;
 
   state now : u32 = 0;

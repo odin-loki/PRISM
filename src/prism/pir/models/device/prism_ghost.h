@@ -38,6 +38,7 @@ static int prism_heap;                  /* kmalloc'd, not freed (non-devm) */
 static int prism_maps;                  /* ioremap'd windows not unmapped */
 static int prism_mapped;                /* the window is mapped: the device may be accessed */
 static int prism_clk;                   /* clock enable count */
+static int prism_ida;                   /* ida ids allocated and not freed */
 
 static int prism_irq_on;
 static int prism_irq_no;
@@ -255,6 +256,7 @@ static int prism_locks_held(void)
 		PRISM_MOD_CHECK(prism_heap == 0, pairing, tag ": a plain allocation is still live (no free on this path)"); \
 		PRISM_MOD_CHECK(prism_maps == 0, pairing, tag ": an ioremap is still mapped (no unmap on this path)");       \
 		PRISM_MOD_CHECK(prism_clk == 0, pairing, tag ": a clock enable is still outstanding");                     \
+		PRISM_MOD_CHECK(prism_ida == 0, pairing, tag ": an ida id is still allocated (no ida_free on this path)");   \
 		PRISM_MOD_CHECK(prism_locks_held() == 0, lock, tag ": a lock is still held");                          \
 	} while (0)
 

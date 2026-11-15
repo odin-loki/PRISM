@@ -140,6 +140,7 @@ struct Spec {
     std::vector<Op> ops;
     std::string includes_pre;               // extra #include lines before the driver
     std::vector<std::string> defines;       // `define NAME [VALUE];` -> #define before the driver (variants of a fixture)
+    std::vector<std::pair<std::string, std::string>> patches;  // `patch { old } { new };` applied to the driver text in memory: a mutant of the driver
     std::vector<std::string> assumptions;   // free text, copied to the report
 };
 
@@ -166,6 +167,8 @@ struct RunOptions {
     std::filesystem::path out{"prism-out/module"};
     std::vector<std::string> properties;    // override the spec (empty = spec)
     int steps = -1;                         // override (-1 = spec)
+    int teardown_ops = -1;                  // override the spec: 0 no, 1 yes (-1 = spec)
+    std::vector<std::string> ops;           // keep only these operations of the module description (empty = all)
     std::string device_override;            // another model file ("none" = no device model, unconstrained reads)
     bool generate_only = false;             // write the unit and stop (no pir run)
     std::vector<std::string> rows;          // run only these rows (empty = all): all, all-sequential, memory, or a property

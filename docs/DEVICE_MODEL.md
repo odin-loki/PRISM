@@ -1,7 +1,7 @@
 # Hardware and device model, and the driver-module layer
 
-Requirement R8 of [feedback/DRIVER-REQUIREMENTS.md](feedback/DRIVER-REQUIREMENTS.md), Stages 5 and 6 of
-[OS_PROVING_DRIVER_PLAN.md](OS_PROVING_DRIVER_PLAN.md) and the "driver is a state machine, so check the
+Requirement R8 of `docs/feedback/DRIVER-REQUIREMENTS.md` (branch `os-proving-driver-plan`), Stages 5 and 6 of
+`docs/OS_PROVING_DRIVER_PLAN.md` (same branch) and the "driver is a state machine, so check the
 driver" direction of OS-Proving's `docs/DRIVER_CONTRACTS.md`. Status: **design plus a working prototype
 on one real device** (ARM PrimeCell PL031 RTC, Linux `drivers/rtc/rtc-pl031.c`), bounded, with every
 assumption listed. Nothing in this document is a proof of a driver. Section 9 says what was run and what
@@ -286,7 +286,8 @@ The module runs several **rows**, each one unit, so a result can be attributed:
 | `all` | every selected module property and the native checks, with events and interrupts | nothing (the headline) |
 | `all-sequential` | the same with no events or interrupts | separates failures that need interrupts |
 | `memory` | native checks only, module checks compiled out | |
-| `pairing`, `lock`, `use_after_remove`, `protocol`, `api` | one module property, and `pir` verifies only the module checks (`PRISM_PIR_ONLY`-style property filter, `--only-props model`); native checks are **not** verified in this row | native errors, so a counterexample to the property is not masked by an earlier memory error |
+| `pairing`, `lock`, `use_after_remove`, `protocol`, `api` | one module property, and `pir` verifies only the module checks (the stage's own check-property filter (`Config::pir_only_props = {"model"}`)); native checks are **not** verified in this row | native errors, so a counterexample to the property is not masked by an earlier memory error |
+| `cover-probe-ok`, `cover-probe-fail`, `cover-irq`, `cover-remove`, `cover-teardown-op`, `cover-op-<name>`, `cover-op-<name>-body` | **Coverage**: the row compiles a check that fails at one point of the harness (probe returned 0, the failing-probe path, the handler running, remove, an operation invoked, an operation past its framework guard to its body). `pir` FAILED means the point is reachable. A row that `pir` PROVES means the point is **unreachable under the model**, and the report prints a `VACUITY WARNING`: the other rows are then proofs about code that never runs. | nothing; this is what makes a clean result mean something |
 
 Verdict wording is exactly [VERDICTS.md](VERDICTS.md)'s. The mapping:
 
@@ -303,7 +304,7 @@ Verdict wording is exactly [VERDICTS.md](VERDICTS.md)'s. The mapping:
   support it anyway.
 * UNKNOWN, TIMEOUT, NEEDS-HARNESS (an `UNENCODED:` construct), NOTRUN pass through unchanged.
 
-Levels ([OS_PROVING_DRIVER_PLAN.md](OS_PROVING_DRIVER_PLAN.md) section 2): with a device model the result is
+Levels (`docs/OS_PROVING_DRIVER_PLAN.md` (same branch) section 2): with a device model the result is
 **"L4 (bounded)"** and the device model is the first line of the assumption list, with its validation
 status (`unvalidated`, `datasheet`, `differential`) and its sources. Without one the result is **"L1
 (bounded; no device model: every register read unconstrained)"**: it is a statement about a driver facing
@@ -338,7 +339,7 @@ order of strength, recorded in the model's `validation` line:
      nondeterminism is resolved from the trace (elapsed time from the DR values QEMU shows, whether a due
      alarm has fired yet from the next RIS read); a trace that needs the alarm to fire before the model can
      fire it is a mismatch;
-   * section 9.1 gives the numbers and the mutants the check rejects.
+   * section 9.5 gives the numbers and the mutants the check rejects.
    This validates *the model against QEMU's model*, i.e. against the source it was written from and one
    run-time implementation of it. It does not show QEMU matches the silicon. The `source` lines say what
    was taken from where.
@@ -394,7 +395,130 @@ strong as the translator and encoder theorems for those functions and no stronge
 
 ## 9. The prototype: ARM PrimeCell PL031 RTC
 
-RESULTS_PLACEHOLDER
+### 9.1 Why this device
+
+Selected by `tools/module-validate/select_candidates.sh` (grep over the Linux 6.18.60 tree and the
+OS-Proving clang pass's ops tables, `data/clang/linux/ops.tsv.gz`). Criteria: 80 to 420 non-blank lines;
+at least 3 MMIO accesses; a `request_irq` call; `.probe` and `.remove` in a registration table; an `ioremap`.
+33 files in `drivers/{rtc,watchdog,char,misc,mfd,input,leds,gpio,clk,mailbox,hwspinlock,dma}` pass. Among
+them, by hand: a QEMU model of the same hardware exists for `rtc-pl031.c` (QEMU `hw/rtc/pl031.c`, which I
+read), for `ambakmi.c` (PL050, from memory, not checked) and `rtc-zynqmp.c` (from memory, not checked);
+`rtc-pl031.c` is the smallest of those with an ops table (five `rtc_class_ops` members through three vendor
+tables), real error paths (`goto out` / `err_req` with a region release), a request/free pairing across probe
+and remove, an interrupt handler, a clean datasheet-free source for the register map (QEMU) and a second
+variant (ST v2) with decoding code that a hostile device can steer. The watchdog candidates the plan names
+(`sp805_wdt.c`) have no interrupt handler and no QEMU model. 392 lines.
+
+### 9.2 What was set up
+
+```
+prism-module run testdata/module/linux/rtc-pl031.pmod --kernel-root /home/odin/pbsd-ref/linux \
+    --cc-like cdb.json --cc-like-file drivers/rtc/rtc-cmos.c --steps 2 --json
+```
+
+* **Driver**: `drivers/rtc/rtc-pl031.c`, verbatim, ARM variant (`pl031_ids[0]`). Entry points (from the
+  registration tables): `pl031_probe`, `pl031_remove`, `read_time`, `set_time`, `read_alarm`, `set_alarm`,
+  `alarm_irq_enable`, and the handler `pl031_interrupt` (registered by `request_irq`). Not exercised: the ST
+  variants' ops (`stv2`), which the ARM device model does not describe; the next section runs them.
+* **Flags**: the compile-database entry of `drivers/rtc/rtc-cmos.c` from the OS-Proving x86_64 allmodconfig
+  pass (`make -n` text, a minimal compile database made by `mkcdb`), cloned for the harness unit. The driver is
+  ARM-only hardware code compiled with x86_64 kernel flags: it is architecture-neutral C and every `readl` is
+  replaced, so no x86 asm enters. It compiles with the front end's GNU C fallback and the unit's own
+  `-nostdinc -include kconfig.h` flags (PR #47).
+* **Device model**: `pl031.pdm`, taken from QEMU `hw/rtc/pl031.c`, validated against it (section 9.5).
+* **Bus and framework glue**: the `.pmod` file: an AMBA device with a 4 KiB resource and `irq[0]` either 0 or
+  nonzero; the RTC core's `rtc_valid_tm` guard modelled by filling `rtc_time` with calendar-valid values; the
+  registered `ops` pointer checked to be the function each operation exercises.
+* **Bounds**: probe, then at most 2 operations (5 kinds), then remove, then one more operation in the teardown
+  window; at most 2 interrupts and 2 device events; events and interrupts at step boundaries and at
+  `request_irq`, `free_irq`, unmap, region release.
+* **Machine**: WSL2, 64 cores, 48 GB; other agents were building (up to 6 PRISM processes at a time);
+  prism built Release with clang 23. `--timeout 300` per verification condition, no per-process memory cap.
+
+### 9.3 Results (ARM variant, device model `pl031`)
+
+Verdicts exactly as VERDICTS.md names them. The module verdict of a PIR PROVED is BOUNDED (section 6).
+
+| Row | What it checks | `pir` verdict | Module verdict | Seconds |
+|---|---|---|---|---:|
+| `all` | all module properties and all native checks, events and interrupts | PROVED | BOUNDED | 285 |
+| `all-sequential` | the same without events and interrupts | PROVED | BOUNDED | 32 |
+| `memory` | UB and memory errors in every entry point | PROVED | BOUNDED | 43 |
+| `pairing` | resource acquire/release on every path | PROVED | BOUNDED | 33 |
+| `lock` | lock discipline | PROVED | BOUNDED | 46 |
+| `use_after_remove` | no access after unmap, handler gone after remove | PROVED | BOUNDED | 30 |
+| `protocol` | the device model's rules, window bounds, width | PROVED | BOUNDED | 32 |
+| `api` | contracts of the stubs (registered ops, rtc registration) | PROVED | BOUNDED | 29 |
+| coverage, 10 rows | probe ok, probe fails, handler runs, remove, teardown op, each op invoked | FAILED = reachable | all reachable | 22 each |
+
+Level: **L4 (bounded)**, device model `pl031` (validation: differential). Total about 9 minutes for the 8
+property rows on one core, peak resident set of `prism-module` 286 MB, plus the `z3-worker` child of the
+query being solved (130 MB to about 1.5 GB). The `all` row is 4 to 9 times slower than the single-property rows
+because the interrupt and event points multiply the unrolled code. Steps 3 and the first, larger
+harness (before the ghost layer was shrunk) ended `UNKNOWN: unrolling exceeds 6000 block instances` after 6
+to 11 minutes: the bound that matters is not the solver but the size of the unrolled unit (section 11).
+
+**What this says**: for every sequence of at most two operations out of the five, with the device
+behaving as the model allows (any elapsed time, alarm firing late, shared-line-free interrupts), with each
+allocation, mapping, region request, irq request and RTC registration free to fail, and with the handler allowed to run
+at the points of section 4.2, the driver (ARM variant) has no undefined behaviour or memory error in any
+entry point, releases every region, mapping, irq and allocation on every probe-failure path and in remove,
+touches the device only while its window is mapped, leaves no handler registered after remove, takes no
+locks and respects the device's register rules. **What it does not say**: anything for three or more operations,
+for the ST variants, for a device that deviates from the model, for interrupts at points the harness does not
+have, for concurrent entry points, or about a real RTC core (the glue models it) or real hardware
+(the model matches QEMU).
+
+### 9.4 Assumptions each row used
+
+| Assumption | Rows that depend on it |
+|---|---|
+| A1 device model `pl031` (QEMU-derived, differential) | every row (the model is compiled in); `protocol` is about it |
+| A2 bounded sequences: 2 operations, 1 teardown operation, probe failures free to occur | every row |
+| A3 events and interrupts at the harness's points, at most 2 each, handler only while registered | `all`, `memory`-with-interrupts rows and all single-property rows; **not** `all-sequential` |
+| A4 kernel stubs: allocation, mapping, region, irq, registration may fail; `rtc_time64_to_tm` yields any calendar-valid time; `rtc_tm_to_time64` any value; bit operations, logging, BUG/WARN as in `linux_pre.h` | every row |
+| A5 at most 6 devm resources and 2 locks | every row |
+| A6 the glue of the `.pmod` (AMBA resource, valid `rtc_time`, ops only while registered) | every row |
+| A7 the driver compiled with x86_64 kernel flags; front end drops flags that would define UB | every row |
+| A8 the verdict of `pir` on the harness (translator, encoder, Z3: the trusted base of TRUSTED_BASE.md, not certified: no `--certified` run) | every row |
+
+### 9.5 Validation of the PL031 model against QEMU
+
+`tools/module-validate/run.sh`: bare-metal AArch64 guest on `qemu-system-aarch64 -M virt` (QEMU 8.2 from the
+Ubuntu archive of the VM), the PL031 at 0x09010000, output on the PL011.
+
+| Trace set | Shipped model | Mutants rejected |
+|---|---|---|
+| broad: 40 random traces of 24 operations (reads of every register, writes of MR, LR, IMSC, ICR, CR, up to three waits) | 40 of 40 agree (about 1,900 reads) | `icr_any` (ICR clears everything) 4/20, `mr_noimm` (no immediate alarm when MR equals the counter) 10/20, `cr_zero` 20/20, `imsc_wide` (IMSC keeps all bits) 11/20, `lr_nooff` (LR does not move the counter) 16/20, `never_fire` 3/20 |
+| alarm: 30 traces of three arm-wait-observe-clear rounds | 30 of 30 agree | `icr_any` 10/20, `mr_noimm` 12/20, `never_fire` 9/20 |
+
+One mutant survives: `late_fire` (the alarm may fire only when the elapsed time exceeds the remaining time,
+not when it equals it). QEMU's own timer lags the counter by up to a second, so the equality boundary is
+never observable from the guest: the check cannot tell the two apart, and that boundary of the model is
+**not validated**. Also not validated: behaviour at 32-bit wrap, accesses of widths other than 4 bytes (the
+model says `violation`, QEMU masks), and everything the traces did not touch. The replay's time
+synchronisation hides DR differences unless they exceed 8 seconds, so DR is validated for LR/MR/IMSC
+interplay, not for the clock itself.
+
+### 9.6 Counterexamples, triaged
+
+Every counterexample found while building this, and what it was. None is against the shipped ARM-variant
+configuration, which came out clean.
+
+| # | Configuration | Verdict, class | Triage |
+|---|---|---|---|
+| C1 | ST v2 variant, **no device model** (any register value) | FAILED, `MEM-OOB-READ` on `rtc_ydays[2][13]`, 30 s | **Missing precondition (device side), a robustness gap.** `pl031_stv2_time_to_tm` decodes the month field of DR/MR (4 bits) as `tm_mon = field - 1` and passes it to `rtc_year_days`, which indexes `rtc_ydays[leap][month]` with no check. A month field of 0 gives `(unsigned)-1`, 13 to 15 index past the row. For the real ST silicon it is unreachable if DR is always a valid date; it is reachable from a hostile or buggy device, and from MR if the register resets to 0 (the datasheet is not available to the author). It says the driver trusts the hardware's register encoding, a fact worth knowing, not a defect on conforming hardware. |
+| C2 | ST v2 variant, model `pl031_stv2` (DR/YDR calendar-valid, MR/YMR reset to 2000-01-01; **unvalidated**), `rtc_time` raw (any `int` fields) | FAILED, `INT-SIGNED-OVF` (signed addition overflows) in `pl031_stv2_tm_to_time`, 210 s | **Missing precondition.** `(tm->tm_mon + 1) << RTC_MON_SHIFT` overflows for a huge `tm_mon`. The RTC core calls `set_time` and `set_alarm` only after `rtc_valid_tm`; the ARM module's glue encodes that (the `valid` fill); here it is removed on purpose (`--define RAW_TM`) to show the check sees it. Not a driver bug. |
+| C3 | ST v2 variant, model `pl031_stv2`, valid `rtc_time` | BOUNDED, L4 (bounded) with an unvalidated model, steps 1 (steps 2 is `UNKNOWN: unrolling exceeds 6000 block instances`) | Not a counterexample: shows that the constraint of C1 is what the proof depends on. The model is a guess; the report says `validation: unvalidated`. |
+| C4 | Model validation: first `replay` version | 0 mismatches on a `lr_nooff` mutant | **Model-check artefact, fixed**: the time synchronisation absorbed any DR difference. Now a DR jump over 8 s is a mismatch (and `lr_nooff` is rejected 16/20). |
+| C5 | First run of virtio-rng (section 10) | memory 15 GB, no answer | **Harness artefact, fixed**: see section 10. |
+| C6 | Toy driver variants (`testdata/module/toy`, section 6 rows) | LEAK: `[module:pairing]`; UAF: `MEM-UAF`; LOCKLEAK: `[module:lock]`; NOCHECK: `[module:protocol]`; SHORT_TABLE: `MEM-OOB-READ`; no device model: `MEM-OOB-READ` | Planted; each is a **real bug of the planted variant**, found as the property it was planted against. |
+
+### 9.7 Not run, to be honest
+
+No `--certified` run (the harness VCs are large; the certified path was not tried). No Lean proof. The model
+for `pl031` was not checked against the ARM manual. The ARM variant was not run with `irq_points mmio` (every
+MMIO access an interrupt point), which is larger.
 
 ## 10. Second pilot: a hostile device (virtio-rng)
 
@@ -402,4 +526,45 @@ PILOT2_PLACEHOLDER
 
 ## 11. What does not work, and what is assumed
 
-LIMITS_PLACEHOLDER
+**Bounds.** Everything is bounded: two operations (one for the ST variant's model run), at most two
+interrupts and two device events, six devm resources, two locks, one device, one interrupt line, one
+virtqueue. A BOUNDED result is not "any sequence"; the unbounded claim needs the induction of section 8.
+Interrupts interleave at the harness's points, not between arbitrary instructions; a handler that races with a
+non-atomic update between two such points is not found. Concurrent entry points (two operations at once) are
+not modelled.
+
+**Scaling.** The cost is the size of the unrolled unit: `pir` inlines every call, and each interrupt point
+inlines the handler and a device event. The PL031 harness with two operations takes about five minutes for the
+headline row and was UNKNOWN (block instances over 6,000) with three, and the ST variant with its
+constrained model was UNKNOWN at two operations. Reaching real drivers of a few thousand lines needs
+function summaries (Stage 4 of the plan: each entry point replaced by its proved contract) and the
+invariant induction of section 8, not a faster solver.
+
+**Things in kernel C that `pir` could not encode, worked around in the stub layer** (all in
+`linux_pre.h`/`linux_early.h`, a local stand-in for R2; each is an assumption in every report):
+
+* inline asm in `BUG`/`WARN` (x86 `ud2` with a bug table), bit operations, barriers, `READ_ONCE` and
+  friends (volatile) and atomics: replaced by plain C with the architectural meaning;
+* `ptrtoint`/`inttoptr`: `ERR_PTR`/`IS_ERR`/`PTR_ERR` (a marker object; `PTR_ERR` yields any errno), and any driver
+  that keeps a pointer in an integer (virtio-rng's `hwrng.priv`, adapted by a patch listed in the report);
+  header inlines that use `ERR_PTR` (`virtio_find_single_vq`) are replaced;
+* static initialisers with `inttoptr` constant expressions (`DEFINE_IDA`): replaced by a plain object;
+* indirect calls are inlined once per address-taken function of the same IR signature; `void(ptr)` includes
+  the driver's own `remove`, so a driver that calls `config->del_vqs` from `remove_common` recursed without
+  bound (15 GB of memory before the first answer). The stubs and, for virtio-rng, three adaptations call
+  such functions directly. This is a `pir` limit (candidate sets by signature only), to be fixed in the
+  translator, not worked around per driver.
+
+**Memory.** One run (virtio-rng, before the direct-call adaptation) used 15 GB; `PRISM_MEM_BUDGET_MB` turns
+that into `UNKNOWN: memory budget reached`. Runs here were given a budget of 8 to 9 GB per process.
+
+**What is only designed.** DMA ownership (section 2.5), the FreeBSD flavour (`bus_space`), the Lean
+embedding (section 8), a replay of counterexamples as an executable trace (the counterexample is the list of
+nondeterministic values on the violating path, `extra.nondet`, in call order, hard to read), several
+devices per module, threaded irq handlers (the thread function is not run), power management beyond
+freeze/restore, and `irq_points mmio` at scale.
+
+**Who this does not help yet.** A driver whose module needs more than a dozen entry points, a real
+datasheet-validated model, or an unbounded claim. The prototype answers "is the design sound and does it find
+the planted and the hostile-device cases", which it does; it does not answer "can this scale to the 8,367
+driver modules of the OS-Proving data", which is the next gate.

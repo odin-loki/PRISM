@@ -35,6 +35,14 @@ int main(int argc, char **argv)
 			unsigned count = (unsigned)((dm_now + dm_tick_offset) & 0xffffffffu);
 			if (first) { dm_tick_offset = (val - dm_now) & 0xffffffffu; first = 0; count = val; }
 			unsigned dt = val - count;
+			/* The time sync absorbs any difference in DR, so bound it: in these traces QEMU's clock moves by at
+			 * most a few seconds between two DR reads. A bigger jump means the model's counter is wrong. */
+			if (dt > 8) {
+				printf("MISMATCH line %d: DR is %x in QEMU but the model's counter is %x (%u s apart)\n", i + 1, val, count, dt);
+				bad++;
+				dt = 0;
+				dm_tick_offset = (val - dm_now) & 0xffffffffu;
+			}
 			if (dt) {   /* time passed: run the tick event with dt; fire from the next RIS read */
 				unsigned fire = 0;
 				for (int j = i + 1; j < nl; j++) {

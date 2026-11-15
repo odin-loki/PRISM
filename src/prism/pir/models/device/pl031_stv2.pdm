@@ -1,0 +1,57 @@
+# Device model: ST Microelectronics "v2" PL031 (clockwatch, BCD year, weekday), as drivers/rtc/rtc-pl031.c
+# uses it (vendor data stv2_pl031, id 0x00280031).
+#
+# THIS MODEL IS UNVALIDATED AND PARTLY GUESSED. What it is taken from:
+#  - the register offsets and the layout of DR/MR (month bits 28..25, day 24..20, weekday 19..17,
+#    hour 16..12, minute 11..6, second 5..0) and of YDR/YMR/YLR (BCD year, low byte and hundreds byte):
+#    the driver's own conversion code pl031_stv2_time_to_tm / pl031_stv2_tm_to_time (Linux 6.18.60);
+#  - DR resets to 2000-01-01, a Sunday (0x02120000 in the month/day/weekday fields): the comment in
+#    pl031_probe about the ST weekday fix;
+#  - QEMU does not model the ST variants and the ST datasheet was not available to the author.
+# What is ASSUMED, and is exactly what the proof then depends on:
+#  - DR and YDR only ever show a calendar-valid encoding (month 1..12, day 1..31, weekday 1..7, hour <= 23,
+#    minute <= 59, second <= 59, BCD digits <= 9);
+#  - MR/YMR reset to a calendar-valid date (the same date as DR, 2000-01-01) and hold what the driver wrote.
+# If MR resets to 0 on the silicon, pl031_stv2_read_alarm decodes month 0 as tm_mon = -1 and rtc_year_days
+# indexes rtc_ydays[leap][-1]; the hostile-device run (no device model) shows that path.
+model pl031_stv2 {
+  doc "ST v2 PL031 RTC (guessed from the driver; unvalidated)";
+  source "Linux drivers/rtc/rtc-pl031.c 6.18.60: pl031_stv2_time_to_tm / pl031_stv2_tm_to_time, st_weekday comment";
+  source "ASSUMED, not from a datasheet: DR/YDR always calendar-valid; MR/YMR reset to 2000-01-01";
+  validation unvalidated "no datasheet and no QEMU model for the ST variants; constraints are assumptions";
+  window 0x1000;
+
+  register DR @0x00 : u32 RO {
+    read in ((((result >> 25) & 0xf) >= 1) && (((result >> 25) & 0xf) <= 12)) && ((((result >> 20) & 0x1f) >= 1) && (((result >> 20) & 0x1f) <= 31)) && ((((result >> 17) & 7) >= 1) && (((result >> 17) & 7) <= 7)) && (((result >> 12) & 0x1f) <= 23) && (((result >> 6) & 0x3f) <= 59) && ((result & 0x3f) <= 59) && ((result >> 29) == 0);
+  }
+  register MR @0x04 : u32 RW reset 0x02120000;
+  register LR @0x08 : u32 RW reset 0;
+  register CR @0x0c : u32 RW reset 0;
+  register IMSC @0x10 : u32 RW reset 0 mask 1;
+  register RIS @0x14 : u32 RO reset 0;
+  register MIS @0x18 : u32 RO {
+    read = RIS & IMSC;
+  }
+  register ICR @0x1c : u32 WO {
+    write {
+      RIS = RIS & ~value;
+    }
+  }
+  register YDR @0x30 : u32 RO {
+    read in (((result & 0xf) <= 9) && (((result >> 4) & 0xf) <= 9) && (((result >> 8) & 0xf) <= 9) && (((result >> 12) & 0xf) <= 9) && ((result >> 16) == 0));
+  }
+  register YMR @0x34 : u32 RW reset 0x2000;
+  register YLR @0x38 : u32 RW reset 0;
+
+  event alarm {
+    RIS = 1;
+  }
+
+  irq alarm = RIS & IMSC;
+
+  policy unmapped_read violation;
+  policy unmapped_write violation;
+  policy wo_read violation;
+  policy ro_write violation;
+  policy width strict;
+}

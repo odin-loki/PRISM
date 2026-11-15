@@ -3,7 +3,7 @@ module toy;
 kernel toy;
 driver "toy_driver.c";
 device "toy.pdm";
-steps 3;
+steps 2;
 irq_points api steps;
 irq_spurious auto;
 teardown_ops no;

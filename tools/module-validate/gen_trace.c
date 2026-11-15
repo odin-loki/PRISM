@@ -12,6 +12,15 @@ int main(int argc, char **argv)
 	int seed = argc > 1 ? atoi(argv[1]) : 1, n = argc > 2 ? atoi(argv[2]) : 20, waits = 0;
 	s = (unsigned long long)seed * 2654435761ULL + 12345;
 	printf("\tu32 dr = rd(0x00);\n");
+	if (seed >= 100) {   /* alarm-focused: arm, wait, observe, clear; three rounds, so three waits */
+		for (int b = 0; b < 3; b++) {
+			unsigned k = rnd() % 3, w = 1 + rnd() % 2;
+			printf("\tdr = rd(0x00);\n\twr(0x10, 1);\n\twr(0x04, dr + %u);\n\trd(0x14);\n\trd(0x18);\n", k);
+			printf("\twait_secs(%u);\n\tdr = rd(0x00);\n\trd(0x14);\n\trd(0x18);\n", w);
+			printf("\twr(0x1c, %u);\n\trd(0x14);\n\trd(0x18);\n", rnd() % 2);
+		}
+		return 0;
+	}
 	for (int i = 0; i < n; i++) {
 		switch (rnd() % 14) {
 		case 0: printf("\tdr = rd(0x00);\n"); break;

@@ -12,7 +12,8 @@ cc -O1 -DMODEL_C="\"$W/model.c\"" -o "$W/replay" "$HERE/replay.c" || exit 2
 CLANG=${CLANG:-clang}
 $CLANG --target=aarch64-none-elf -ffreestanding -c -o "$W/start.o" "$HERE/start.S" || exit 2
 pass=0; fail=0; reads=0
-for seed in $(seq 1 "$N"); do
+SEED0=${SEED0:-1}
+for seed in $(seq "$SEED0" $((SEED0 + N - 1))); do
   "$W/gen_trace" "$seed" "$OPS" > "$W/trace$seed.inc"
   sed "s#\"TRACE\"#\"$W/trace$seed.inc\"#" "$HERE/guest_template.c" > "$W/guest$seed.c"
   cat >> "$W/guest$seed.c" <<'XEOF'

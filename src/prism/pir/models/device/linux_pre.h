@@ -221,6 +221,70 @@ static void prism_g_unlock(const void *l, int irqon);
 #define devm_pm_set_wake_irq(dev, irq) ((void)(dev), (void)(irq), 0)
 
 
+
+/* ---- single-threaded accessors, memory operations, completions, scatterlists ----
+ * The harness interleaves entry points and the interrupt handler at the points of docs/DEVICE_MODEL.md
+ * section 4.2, not instruction by instruction: READ_ONCE/WRITE_ONCE and the acquire/release and barrier
+ * macros are plain accesses and no-ops (a volatile or atomic access is UNENCODED in pir). memcpy and
+ * friends are the compiler builtins (the kernel's are FORTIFY_SOURCE wrappers around them); the checks
+ * PIR makes on them (bounds, overlap) are the checks that matter. array_index_nospec has its
+ * architectural meaning (the mask only matters under speculation). */
+#include <linux/compiler.h>
+#include <asm/barrier.h>
+#include <linux/nospec.h>
+#include <linux/string.h>
+#include <linux/completion.h>
+#include <linux/scatterlist.h>
+#undef READ_ONCE
+#undef WRITE_ONCE
+#undef smp_load_acquire
+#undef smp_store_release
+#undef smp_mb
+#undef smp_rmb
+#undef smp_wmb
+#undef mb
+#undef rmb
+#undef wmb
+#undef barrier
+#undef array_index_nospec
+#undef memcpy
+#undef memset
+#undef memmove
+#undef init_completion
+#undef reinit_completion
+#undef sg_init_one
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x, v) do { (x) = (v); } while (0)
+#define smp_load_acquire(p) (*(p))
+#define smp_store_release(p, v) do { *(p) = (v); } while (0)
+#define smp_mb() ((void)0)
+#define smp_rmb() ((void)0)
+#define smp_wmb() ((void)0)
+#define mb() ((void)0)
+#define rmb() ((void)0)
+#define wmb() ((void)0)
+#define barrier() ((void)0)
+#define array_index_nospec(index, size) ((index) < (size) ? (index) : 0)
+#define memcpy(d, s, n) __builtin_memcpy((d), (s), (n))
+#define memset(d, c, n) __builtin_memset((d), (c), (n))
+#define memmove(d, s, n) __builtin_memmove((d), (s), (n))
+#define init_completion(x) ((x)->done = 0)
+#define reinit_completion(x) ((x)->done = 0)
+/* the real sg_init_one goes through virt_to_page (address arithmetic): keep the buffer and its length */
+static void *prism_sg_buf;
+static inline void prism_sg_init_one(struct scatterlist *sg, const void *buf, unsigned int buflen)
+{
+	sg->offset = 0;
+	sg->length = buflen;
+	prism_sg_buf = (void *)buf;
+}
+#define sg_init_one(sg, buf, buflen) prism_sg_init_one((sg), (buf), (buflen))
+
+/* ---- ida: the id allocator's xarray initialiser is an inttoptr constant expression (UNENCODED); the
+ * allocator is modelled by ida_alloc_range/ida_free in linux_core.h, so the object needs no initialiser ---- */
+#include <linux/idr.h>
+#undef DEFINE_IDA
+#define DEFINE_IDA(name) struct ida name
 /* ---- error pointers: ERR_PTR / IS_ERR / PTR_ERR ----
  * The kernel encodes -errno as a pointer value in the top page. PIR does not
  * model address values (UNENCODED: ptrtoint), so error pointers are one
@@ -242,4 +306,24 @@ static char prism_err_marker[1];
 #define PTR_ERR_OR_ZERO(p) (IS_ERR(p) ? PTR_ERR(p) : 0)
 #define ERR_CAST(p) ((void *)(p))
 
+
+/* ---- header inlines that use ERR_PTR (the real inline casts an integer to a pointer: UNENCODED) ---- */
+#ifdef _LINUX_VIRTIO_CONFIG_H
+#undef virtio_find_single_vq
+/* defined in linux_virtio.h; a driver adaptation calls it directly */
+static void prism_del_vqs(struct virtio_device *vdev);
+static inline struct virtqueue *prism_find_single_vq(struct virtio_device *vdev, vq_callback_t *c, const char *n)
+{
+	struct virtqueue_info vqs_info[] = {
+		{ n, c },
+	};
+	struct virtqueue *vq;
+	int err = virtio_find_vqs(vdev, 1, &vq, vqs_info, NULL);
+
+	if (err < 0)
+		return ERR_PTR(err);
+	return vq;
+}
+#define virtio_find_single_vq(vdev, c, n) prism_find_single_vq((vdev), (c), (n))
+#endif
 #endif

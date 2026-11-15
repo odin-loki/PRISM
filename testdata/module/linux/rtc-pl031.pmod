@@ -49,22 +49,26 @@ remove { pl031_remove(&adev); }
 
 op read_time {
 	if (!prism_rtc_registered) return;
+	PRISM_COVER_POINT(PRISM_OP_COVER);
 	PRISM_OP_REGISTERED(read_time, pl031_read_time);
 	(void)pl031_read_time(&adev.dev, &tm);
 }
 op set_time {
 	if (!prism_rtc_registered) return;
+	PRISM_COVER_POINT(PRISM_OP_COVER);
 	PRISM_OP_REGISTERED(set_time, pl031_set_time);
 	prism_fill_valid_tm(&tm);
 	(void)pl031_set_time(&adev.dev, &tm);
 }
 op read_alarm {
 	if (!prism_rtc_registered) return;
+	PRISM_COVER_POINT(PRISM_OP_COVER);
 	PRISM_OP_REGISTERED(read_alarm, pl031_read_alarm);
 	(void)pl031_read_alarm(&adev.dev, &alrm);
 }
 op set_alarm {
 	if (!prism_rtc_registered) return;
+	PRISM_COVER_POINT(PRISM_OP_COVER);
 	PRISM_OP_REGISTERED(set_alarm, pl031_set_alarm);
 	prism_fill_valid_tm(&alrm.time);
 	alrm.enabled = (unsigned char)prism_nondet_choice(2);
@@ -73,6 +77,7 @@ op set_alarm {
 }
 op alarm_irq_enable {
 	if (!prism_rtc_registered) return;
+	PRISM_COVER_POINT(PRISM_OP_COVER);
 	PRISM_OP_REGISTERED(alarm_irq_enable, pl031_alarm_irq_enable);
 	(void)pl031_alarm_irq_enable(&adev.dev, prism_nondet_choice(2));
 }

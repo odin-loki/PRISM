@@ -8,6 +8,7 @@
 #define PRISM_LINUX_RTC_H
 
 #include <linux/rtc.h>
+#include <linux/bcd.h>
 
 static struct rtc_device prism_rtc_dev;
 static int prism_rtc_allocated;
@@ -76,4 +77,15 @@ int rtc_year_days(unsigned int day, unsigned int month, unsigned int year)
 	return prism_rtc_ydays[leap][month] + day - 1;
 }
 
+
+/* lib/bcd.c, copied (Linux 6.18) */
+unsigned _bcd2bin(unsigned char val)
+{
+	return (val & 0x0f) + (val >> 4) * 10;
+}
+
+unsigned char _bin2bcd(unsigned val)
+{
+	return ((val / 10) << 4) + val % 10;
+}
 #endif

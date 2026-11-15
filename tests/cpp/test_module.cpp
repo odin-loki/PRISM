@@ -52,6 +52,8 @@ pm::Report run_toy(const std::vector<std::string>& defines, const std::string& d
     o.spec = toy_dir() / "toy.pmod";
     o.out = fs::temp_directory_path() / "prism-module-test";
     o.rows = {rows};
+    o.steps = 2;            // enough for start-then-data (the protocol rule) and for every planted bug
+    o.teardown_ops = 0;
     o.defines = defines;
     o.device_override = device;
     return pm::check_module(o, cfg);
@@ -119,21 +121,21 @@ TEST_CASE("module: device models that are wrong are refused with a line number")
     CHECK(bad("model m { register A @0 : u32 XX; }").find("access must be") != std::string::npos);
     CHECK(bad("model m { state a : u32; state a : u32; }").find("declared twice") != std::string::npos);
     CHECK(bad("model m { register A @0 : u32 RW { write { value = 1; } } }").find("read-only") != std::string::npos);
-    CHECK(bad("model m { state s : u32; init { s = 1 } }").find("expected") != std::string::npos);
+    CHECK(bad("model m { state s : u32; init { s = 1 } }").find("not allowed") != std::string::npos);
 }
 
 TEST_CASE("module: module description parses and entry points come from the registration table") {
     auto sp = pm::parse_module_spec(slurp(toy_dir() / "toy.pmod"), "toy.pmod");
     CHECK(sp.name == "toy");
     CHECK(sp.kernel == "toy");
-    CHECK(sp.steps == 3);
+    CHECK(sp.steps == 2);
     CHECK(sp.ops.size() == 3);
     CHECK(!sp.teardown_ops);
     // a registration-table style source: designated initialisers naming functions of the file
     const char* src =
-        "static int a_probe(void) { return 0; }\n"
-        "static void a_remove(void) {}\n"
-        "static int a_read(int x) { return x; }\n"
+        "static int a_probe(void)\n{\n\treturn 0;\n}\n"
+        "static void a_remove(void)\n{\n}\n"
+        "static int a_read(int x)\n{\n\treturn x;\n}\n"
         "static struct drv d = {\n"
         "\t.probe = a_probe,\n"
         "\t.remove = a_remove,\n"
