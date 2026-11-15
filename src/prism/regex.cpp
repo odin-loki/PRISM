@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -118,8 +119,37 @@ pcre2_match_data* match_data(std::uint32_t groups) {
 
 // pcre2_match on the JIT copy when there is one; an error there is re-run
 // on the interpreter. The match is left in `md`.
+// True when every byte is below 0x80. ASCII text is valid UTF-8, so the
+// match may skip PCRE2's own UTF-8 check (which reads the subject a byte at
+// a time on every call: the syntax gates run a few hundred patterns over
+// each function body). Any other subject keeps the check.
+bool all_ascii(std::string_view s) {
+    const char* p = s.data();
+    std::size_t n = s.size(), i = 0;
+    constexpr std::uint64_t hi = 0x8080808080808080ull;
+    for (; i + 32 <= n; i += 32) {
+        std::uint64_t a, b, c, d;
+        std::memcpy(&a, p + i, 8);
+        std::memcpy(&b, p + i + 8, 8);
+        std::memcpy(&c, p + i + 16, 8);
+        std::memcpy(&d, p + i + 24, 8);
+        if ((a | b | c | d) & hi) return false;
+    }
+    for (; i + 8 <= n; i += 8) {
+        std::uint64_t a;
+        std::memcpy(&a, p + i, 8);
+        if (a & hi) return false;
+    }
+    for (; i < n; ++i)
+        if (static_cast<unsigned char>(p[i]) & 0x80) return false;
+    return true;
+}
+
 int run_match(Compiled& c, std::string_view s, std::size_t offset, std::uint32_t options,
               pcre2_match_data* md) {
+    // From offset 0 only: past it PCRE2 checks just the part a match can
+    // reach (finditer's later calls), cheaper than a scan of the whole subject.
+    if (offset == 0 && all_ascii(s)) options |= PCRE2_NO_UTF_CHECK;
     auto* code = code_for(c);
     int rc = pcre2_match(code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(), offset, options, md, nullptr);
     if (rc < PCRE2_ERROR_NOMATCH && code != c.code)
