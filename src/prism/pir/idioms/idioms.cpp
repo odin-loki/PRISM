@@ -18,6 +18,7 @@ namespace prism::pir::idioms {
 namespace {
 
 using i128 = __int128;
+constexpr std::size_t kMaxBlocks = 2000;
 
 uint64_t wmask(unsigned w) { return w >= 64 ? ~uint64_t{0} : ((uint64_t{1} << w) - 1); }
 int64_t as_signed(uint64_t v, unsigned w) {
@@ -275,7 +276,7 @@ public:
     std::optional<std::pair<i128, i128>> guard_range(int v) const {
         if (auto it = grange_.find(v); it != grange_.end()) return it->second;
         auto& res = grange_[v];
-        if (loops.empty()) return res;
+        if (loops.empty() || fn.blocks.size() > kMaxBlocks) return res;
         if (!dom_) dom_ = dominators_of();
         const std::size_t n = fn.blocks.size();
         const unsigned w = width(v);
@@ -1194,6 +1195,8 @@ std::vector<std::vector<char>> Ana::dominators_of() const { return dominators(fn
 
 std::vector<LoopView> find_loops(const Function& fn) {
     const std::vector<LoopView> none;
+    // the dominator sets are quadratic: very large functions get no shapes
+    if (fn.blocks.size() > kMaxBlocks) return none;
     Ana A(fn, none);
     auto dom = dominators(fn, A.preds);
     std::map<int, LoopView> by_header;
@@ -1223,7 +1226,8 @@ std::vector<LoopView> find_loops(const Function& fn) {
 
 Context default_context(const Function& fn, const std::vector<LoopView>& loops) {
     auto A = std::make_shared<Ana>(fn, loops);
-    auto dom = std::make_shared<std::vector<std::vector<char>>>(dominators(fn, A->preds));
+    auto dom = std::make_shared<std::vector<std::vector<char>>>(
+        fn.blocks.size() > kMaxBlocks ? std::vector<std::vector<char>>() : dominators(fn, A->preds));
     auto sgn = std::make_shared<std::vector<char>>(fn.vars.size(), 0);
     for (auto& b : fn.blocks)
         for (auto& st : b.stmts) {
@@ -1240,7 +1244,7 @@ Context default_context(const Function& fn, const std::vector<LoopView>& loops) 
         }
     Context c;
     c.scope = [A, dom, &fn](int L, int v) {
-        if (v < 0) return false;
+        if (v < 0 || dom->empty()) return false;
         if (std::find(fn.params.begin(), fn.params.end(), v) != fn.params.end()) return true;
         const int d = A->def_block[static_cast<std::size_t>(v)];
         const auto Lz = static_cast<std::size_t>(L);
