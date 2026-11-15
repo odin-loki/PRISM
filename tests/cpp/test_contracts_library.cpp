@@ -14,6 +14,7 @@
 #include "prism/pir/frontend.hpp"
 #include "prism/stages.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -126,6 +127,12 @@ TEST_CASE("contracts library: pointer contracts with \\valid requires are checke
     CHECK(m["inc_ok"].message.find("assigns clause not checked") != std::string::npos);
     CHECK_FALSE(m["imp_ok"].extra.contains("assigns"));
     CHECK(m["inc_bad"].status == std::string(prism::laws::FAILED));
+    // reported at its own line, not shifted by the lines the stage inserts
+    {
+        std::string t = kPointerContracts;
+        int want = 1 + static_cast<int>(std::count(t.begin(), t.begin() + static_cast<long>(t.find("void inc_bad")), '\n'));
+        CHECK(m["inc_bad"].line.value_or(0) == want);
+    }
     // 0 <= \result < 10 is a chain, not C's (0 <= r) < 10 (always true)
     CHECK(m["chain_bad"].status == std::string(prism::laws::FAILED));
     CHECK(prism::laws::is_proof(m["imp_ok"].status));

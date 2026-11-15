@@ -512,8 +512,18 @@ std::string instrument_body(const std::string& body, const std::optional<std::st
         for (auto& p : st.pre_params) parts += "__typeof__(" + p + ") __prism_pre_" + p + " = " + p + ";\n";
         for (auto& [v, x] : st.olds) parts += "__typeof__(" + x + ") " + v + " = (" + x + ");\n";
     }
-    parts += "{\n" + core + "\n}";
-    if (ensures && (is_void || !re_search("\\breturn\\b", body))) parts += "\nassert(" + *ensures + ");";
+    // The body keeps its own lines (a violation in it is reported where it is
+    // in the source, not shifted by the lines added above): pir_definition
+    // puts the signature at its line, the inserted lines follow, and #line
+    // gives core's first character the line of the original body's.
+    parts += "{\n";
+    if (fn.body_line > 0) parts += "#line " + std::to_string(fn.body_line) + "\n";
+    // The closing brace and an ensures checked on falling off the end are
+    // on the function's last line.
+    parts += core + "\n";
+    if (fn.body_line > 0 && fn.span.second > 0) parts += "#line " + std::to_string(fn.span.second) + "\n";
+    parts += "}";
+    if (ensures && (is_void || !re_search("\\breturn\\b", body))) parts += " assert(" + *ensures + ");";
     return parts;
 }
 
