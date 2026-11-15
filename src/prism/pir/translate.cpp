@@ -189,6 +189,11 @@ struct Tr final : pirmem::TrApi {
     bool sjlj_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noreturn);
     void indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn);
     void asm_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // kernel mode (translate_kernel.inc, docs/KERNEL_MODELS.md)
+    void note_assumption(const std::string& text);
+    void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line);
+    void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    Arg opaque_ptr(int& cur, const std::string& what, int line);
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -1021,6 +1026,17 @@ struct Tr final : pirmem::TrApi {
             for (auto& fl : in.flags) what += " " + fl;
             throw Unenc{"UNENCODED: " + what};
         }
+        if (!in.kernel_note.empty()) {
+            // atomics and barriers: modelled only with --kernel-api, each use a named assumption
+            if (opt.kernel_api.empty())
+                throw Unenc{"UNENCODED: atomic or barrier instruction (" + in.kernel_note + "; --kernel-api models it)"};
+            note_assumption("atomics-sequential: " + in.kernel_note +
+                            " (no other thread, interrupt or device changes memory between this function's accesses)");
+        } else if (!opt.kernel_api.empty() && (op == "load" || op == "store") &&
+                   std::ranges::find(in.flags, std::string("volatile")) != in.flags.end()) {
+            note_assumption("volatile-access: volatile (READ_ONCE/WRITE_ONCE/MMIO) accesses are ordinary reads and writes "
+                            "of the object in program order (no concurrent or hardware change between accesses)");
+        }
         undef_def(fr, in, cur);
         if (mem_inst(fr, in, cur, line)) return;
         {
@@ -1199,7 +1215,8 @@ struct Tr final : pirmem::TrApi {
             // floating-point intrinsics and libm calls (translate_fp.cpp)
             pirfp::Ctx c{[&](std::size_t i) { return arg(i); },
                          [&] { return in.result.empty() ? -1 : result_var(fr, in); }, line};
-            if (fpt.call(cur, in, c)) return;
+            // kernel code has no libm: its `log`, `abs`, ... are the kernel's (docs/KERNEL_MODELS.md)
+            if ((opt.kernel_api.empty() || starts(n, "llvm.")) && fpt.call(cur, in, c)) return;
         }
         if (starts(n, "llvm.")) {
             if (is_overflow_intrinsic(n)) {
@@ -1342,7 +1359,8 @@ struct Tr final : pirmem::TrApi {
             model_intrinsic(fr, in, cur, line);
             return;
         }
-        if (format_call(fr, in, cur, line)) return;
+        // the kernel's printf/snprintf take extensions (%pX, %D, %b): the kernel specs answer them
+        if (opt.kernel_api.empty() && format_call(fr, in, cur, line)) return;
         if (n == "__prism.keep") return;  // keeps a setjmp function's local in memory (lower_ctl.cpp)
         if (starts(n, "__prism.uninit.")) {
             int dst = result_var(fr, in);
@@ -1487,6 +1505,10 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            if (opt.assume_unknown_calls) {  // opt-in: result and pointed-to objects havocked (translate_kernel.inc)
+                unknown_call(fr, in, cur, line);
+                return;
+            }
             throw Unenc{"UNENCODED: call @" + n};
         }
         inline_call(fr, in, cur, line);
@@ -1511,6 +1533,12 @@ struct Tr final : pirmem::TrApi {
                        fr.raw.count(fr.env[o.v.name].var);
             raw_arg.push_back(raw);
             args.push_back(operand(fr, o, cur, line, !raw));  // passing raw bytes is no use
+        }
+        // a variadic model (printk-like specs) ignores the arguments after its fixed ones; they were
+        // evaluated above (undef and poison uses are still checked)
+        if (args.size() > callee->params.size() && callee->variadic && callee->is_model) {
+            args.resize(callee->params.size());
+            raw_arg.resize(callee->params.size());
         }
         if (args.size() != callee->params.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
         Frame cf;
@@ -2025,6 +2053,13 @@ struct Tr final : pirmem::TrApi {
             cur = newblock("incomplete.after");  // unreachable
             return;
         }
+        if (n == "__prism_assumption") {
+            // a kernel API spec records the assumption it introduces (docs/KERNEL_MODELS.md)
+            auto txt = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!txt) throw Unenc{"UNENCODED: __prism_assumption without a literal text"};
+            note_assumption(*txt);
+            return;
+        }
         if (n == "__prism_assume") {
             Arg c = arg(0);
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
@@ -2130,6 +2165,7 @@ struct Tr final : pirmem::TrApi {
 };
 
 #include "translate_ctl.inc"
+#include "translate_kernel.inc"
 
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;

@@ -98,6 +98,12 @@ struct Inst {
     std::vector<std::pair<std::string, Operand>> clauses;  // landingpad: ("catch"|"filter", typeinfo)
     bool is_asm = false;       // call asm "..."
     std::string asm_text;
+    std::string asm_constraints;  // the asm's constraint string ("=r,r,~{memory}")
+    bool asm_sideeffect = false;  // `asm sideeffect` (volatile)
+    // Lowered by the parser into plain instructions (atomics, fences, asm
+    // goto): kernel_note names what was assumed; without --kernel-api the
+    // translator refuses the instruction as before.
+    std::string kernel_note;
 };
 
 struct Block {
@@ -121,6 +127,7 @@ struct Function {
     std::string parse_error;   // non-empty: body not parsed
     bool is_declaration = false;
     bool is_model = false;     // linked from the library models (link_models)
+    bool variadic = false;     // defined with `...` (models only: extra call arguments are evaluated and dropped)
 };
 
 struct DILoc {
@@ -409,6 +416,14 @@ struct TranslateOptions {
     bool fp_checks = false;
     // `// prism: asm ensures <cond>` contracts: source line of the asm -> cond
     std::map<int, std::string> asm_contracts;
+    // --kernel-api linux|freebsd (docs/KERNEL_MODELS.md): kernel API specs are
+    // linked, and inline asm, asm goto, atomics and barriers are modelled
+    // conservatively, each use a named assumption. "" = off (the default).
+    std::string kernel_api;
+    // --assume-unknown-calls: a call without a spec havocs its result and the
+    // objects its pointer arguments point to, recorded as an assumption.
+    // Opt-in, never on by default (docs/KERNEL_MODELS.md "Policy").
+    bool assume_unknown_calls = false;
 };
 
 // LP64 unless the module's datalayout has 32-bit pointers (ILP32).
@@ -661,13 +676,18 @@ PRISM_API bool build_cxx_std_module(const std::filesystem::path& clangxx, const 
 
 struct ModelLibrary {
     std::vector<ir::Module> units;  // lowered model files
+    std::vector<std::string> unit_names;  // file name of each unit (kernel specs: linux_*.cpp, freebsd_*.cpp)
     std::string error;              // non-empty: the models could not be built
 };
 // Lower the embedded models with the same clang/opt pipeline (once per run).
 PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s);
 // Link into m every model function m declares but does not define
 // (transitively, with the globals they use). Returns the linked names.
-PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib);
+// kernel_api "linux" / "freebsd" also links the kernel API specs of that kernel
+// (models/kernel/linux_*.cpp, freebsd_*.cpp, docs/KERNEL_MODELS.md); they take
+// precedence over the libc models of the same name. "" links the libc models only.
+PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib,
+                                               const std::string& kernel_api = "");
 
 // ---------------------------------------------------------------------------
 // Pointer-parameter contracts (Law 6, docs/PIR.md "Pointer parameters")

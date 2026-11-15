@@ -182,6 +182,18 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solver-cache") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.solver_cache = fs::absolute(*v);
+        } else if (a == "--kernel-api") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) {
+                if (*v == "linux" || *v == "freebsd") cfg.pir_kernel_api = *v;
+                else {
+                    ok = false;
+                    in.error = "argument --kernel-api: expected linux or freebsd, got '" + *v + "'";
+                }
+            }
+        } else if (a == "--assume-unknown-calls") {
+            ok = in.flag();
+            cfg.pir_assume_unknown_calls = true;
         } else if (a == "--compile-commands") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.compile_commands = fs::absolute(*v);
@@ -312,7 +324,8 @@ std::string cli_usage() {
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S]\n"
-        "           [--compile-commands FILE]\n"
+        "           [--compile-commands FILE] [--kernel-api linux|freebsd]\n"
+        "           [--assume-unknown-calls]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -354,6 +367,12 @@ std::string cli_usage() {
         "  from this compile_commands.json (language level such as gnu11, defines, include\n"
         "  path, target, short-wchar, ...); warning flags are never taken, so the UB-folding\n"
         "  warnings stay on. A Linux kernel unit needs it (docs/PIR.md).\n"
+        "--kernel-api linux|freebsd: the pir stage links the kernel API specs (allocation,\n"
+        "  locking, user access, MMIO, delays, logging, BUG/WARN, ...) and models inline asm,\n"
+        "  asm goto, atomics and barriers conservatively; every spec and model used is a\n"
+        "  named assumption in the verdict (PROVED-ASSUMING). Off by default (docs/KERNEL_MODELS.md).\n"
+        "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
+        "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

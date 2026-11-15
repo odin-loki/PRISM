@@ -116,6 +116,8 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     TranslateOptions o = base;
     o.strict_aliasing = cfg.strict_aliasing;
     o.fp_checks = cfg.fp_checks;
+    o.kernel_api = cfg.pir_kernel_api;
+    o.assume_unknown_calls = cfg.pir_assume_unknown_calls;
     o.asm_contracts = asm_contracts(unit.src_lines);
     o.globals_initial = source_name == "main";
     // C++ library code (constructors, accessors) nests deeper than C helpers

@@ -868,6 +868,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         bool xalloc = false;  // a user throw's __cxa_allocate_exception was written (L xalloc)
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
+            // kernel mode (docs/KERNEL_MODELS.md): atomics and barriers lowered by the parser are
+            // assumptions outside the Lean-proved fragment
+            if (!in.kernel_note.empty()) throw Unsupported{"kernel-mode model: " + in.kernel_note};
             const std::string& op = in.op;
             if (op == "getelementptr") {  // its flags are checked by gep_line
                 try {

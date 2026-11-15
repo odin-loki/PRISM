@@ -1186,4 +1186,23 @@ void MemTr::stack_restore(int b, Arg token) {
     t_.push(b, s);
 }
 
+// The object `ptr` points into, from `ptr` to its end, is written with arbitrary
+// bytes (an unspecified callee or an asm with a memory effect: kernel mode,
+// translate_kernel.inc). Never a violation: a pointer to no object, a freed
+// object, a read-only object (kind Const) or a FILE leaves memory unchanged
+// (length 0), so passing a string literal or NULL to an unspecified call is not
+// reported as a write.
+void MemTr::havoc_object_tail(int b, Arg ptr, int line) {
+    mark_memory();
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {ptr}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {ptr}, "live");
+    Arg rem = obj_size_remaining(b, ptr);
+    Arg writable = band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)),
+                        band(b, p2(b, Op::Ne, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))),
+                             p2(b, Op::Ne, kind, Arg::c(8, static_cast<uint64_t>(MemKind::File)))));
+    Arg guard = band(b, live, writable);
+    Arg n = t_.assign(b, Op::Select, ptr_w(), {guard, rem, c64(0)}, "tail");
+    write_havoc(b, ptr, n, line);
+}
+
 }  // namespace prism::pir::pirmem
