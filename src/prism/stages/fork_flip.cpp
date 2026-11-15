@@ -17,7 +17,10 @@
 #include "common.hpp"
 #include "prism/laws.hpp"
 
+#include <cctype>
 #include <cstdint>
+#include <filesystem>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -43,6 +46,66 @@ std::optional<int64_t> cex_int(std::string v) {
 
 int to_i32(int64_t x) { return static_cast<int>(static_cast<int32_t>(static_cast<uint32_t>(static_cast<uint64_t>(x)))); }
 
+// Words a flip query may hold besides the function's name and parameters:
+// C keywords, the hooks and the standard integer type names.
+const std::set<std::string, std::less<>>& context_free_words() {
+    static const std::set<std::string, std::less<>> w = {
+        "int", "unsigned", "signed", "long", "short", "char", "_Bool", "bool", "const", "volatile",
+        "void", "static", "inline", "true", "false", "sizeof", "if", "assert", "__VERIFIER_assume",
+        "noexcept", "constexpr",
+        "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+        "size_t", "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t"};
+    return w;
+}
+
+// The flip query of g without its file, when g's signature and body name
+// nothing but g, its parameters and the words above: the function is then
+// the same C text over the same types in either unit, so its check does not
+// depend on the rest of the file. nullopt otherwise (macros, typedefs,
+// globals, callees: the file is needed), or for a function without
+// parameters (a parameterless error sink's verdict depends on its callers in
+// the unit: pir's caller_discharged_asserts).
+std::optional<std::string> context_free_unit(const FunctionInfo& g, const std::string& prelude) {
+    if (g.params.empty() || g.name.empty()) return std::nullopt;
+    std::set<std::string, std::less<>> ok;
+    ok.insert(g.name);
+    for (auto& [t, n] : g.params) {
+        if (n.empty()) return std::nullopt;
+        ok.insert(n);
+    }
+    const std::string text = g.signature + "\n" + g.body;
+    for (std::size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (std::isalpha(c) || c == '_') {
+            std::size_t j = i;
+            while (j < text.size() && (std::isalnum(static_cast<unsigned char>(text[j])) || text[j] == '_')) ++j;
+            auto w = std::string_view(text).substr(i, j - i);
+            if (!ok.contains(w) && !context_free_words().contains(w)) return std::nullopt;
+            i = j;
+        } else if (std::isdigit(c)) {
+            // a number and its suffix (0x1F, 10u, 3ull)
+            while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '.')) ++i;
+        } else if (c == '"' || c == '\'' || c == '#' || c == '\\' || c == '.' || c == '[' || c == '{' ||
+                   c == '}' || c == ':') {
+            // strings, characters, directives, members, arrays, blocks, scopes:
+            // only the plain expression form is taken without its file
+            if (c == '{' || c == '}') {
+                ++i;
+                continue;
+            }
+            return std::nullopt;
+        } else {
+            ++i;
+        }
+    }
+    // the integer type names (stdint.h, stddef.h) and bool (stdbool.h, C);
+    // the definition keeps its #line, so its rows keep their lines
+    const auto ext = std::filesystem::path(g.file).extension().string();
+    const bool c = ext == ".c" || ext.empty();
+    return "#include <assert.h>\n" + prelude + "#include <stdint.h>\n#include <stddef.h>\n" +
+           (c ? std::string("#include <stdbool.h>\n") : std::string()) + stages_detail::pir_definition(g);
+}
+
 }  // namespace
 
 ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::string, int>& seed,
@@ -61,7 +124,24 @@ ForkFlipResult solve_fork_flip(const FunctionInfo& fn, const std::map<std::strin
         if (away_from_seed) g.body += "    if (" + differs + ") assert(0);\n";
         else g.body += "    assert(0);\n";
         g.body += "    __VERIFIER_assume(0);\n";
-        return stages_detail::pir_one(g, 1, {"assert"}, stages_detail::kPirHookPrelude);
+        stages_detail::PirQuery q{g, 1, {"assert"}, stages_detail::kPirHookPrelude, std::nullopt};
+        // Fast path: the query without its file (context_free_unit), whose
+        // answer is the file's own when it is one: a model of our assert, or
+        // a proof. Anything else (UNKNOWN, ERROR, NEEDS-HARNESS) is asked
+        // again in the file, the answer the stage always had.
+        if (auto unit = context_free_unit(g, q.prelude)) {
+            auto alone = q;
+            alone.unit = std::move(unit);
+            auto f = stages_detail::pir_query(alone);
+            auto prop = f.extra.find("prop");
+            const bool model = f.status == laws::FAILED && prop != f.extra.end() && prop->second == "assert" &&
+                               !f.counterexample.empty();
+            if (model || f.status == laws::PROVED || f.status == laws::PROVED_UNBOUNDED) return f;
+            // the dry run (prefetch) asks the fast query only: a fallback is
+            // asked when the real pass needs it
+            if (stages_detail::collecting_pir()) return f;
+        }
+        return stages_detail::pir_query(q);
     };
     auto model_of = [&](const Finding& f) -> std::optional<ForkFlipResult> {
         auto prop = f.extra.find("prop");
