@@ -1106,12 +1106,15 @@ namespace cxl = prism::complexity;
 
 // One function's conversion of the former time limits into Z3 rlimit units:
 // t seconds of a limit are t x u units (u = scale / timeout x the size
-// factor), and its wall clock is the backstop kWallBackstop x t.
+// factor), and its wall clock is the backstop: kWallBackstop x the time those
+// units take at kUnitsPerSecond (never less than kWallBackstop x t).
 struct Cx {
     double u = 0;  // units per second; 0: off (wall clock alone, as before)
     bool on() const { return u > 0; }
     unsigned units(double secs) const { return on() ? cxl::z3_limit(std::max(0.0, secs) * u) : 0; }
-    double wall(double secs) const { return on() ? secs * cxl::kWallBackstop : secs; }
+    double wall(double secs) const {
+        return on() ? cxl::kWallBackstop * std::max(secs, secs * u / static_cast<double>(cxl::kUnitsPerSecond)) : secs;
+    }
 };
 
 std::size_t stmt_count(const Function& fn) {

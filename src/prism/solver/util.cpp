@@ -509,7 +509,7 @@ std::uint64_t scale_for(double timeout_s) {
 }
 
 double size_factor(std::size_t stmts) {
-    return std::min(8.0, 1.0 + std::log2(1.0 + static_cast<double>(stmts) / 256.0));
+    return std::min(4.0, 1.0 + std::log2(1.0 + static_cast<double>(stmts) / 4096.0));
 }
 
 unsigned z3_limit(double units) {

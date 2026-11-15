@@ -626,3 +626,73 @@ TEST_CASE("pir budget: the final cut-program query keeps its reserve of the func
     }
     CHECK(std::stod(v.extra.at("houdini_seconds")) < 60.0 * 0.7 + 5.0);
 }
+
+#ifdef PRISM_HAS_Z3
+
+// Complexity limits (include/prism/complexity.hpp, docs/TARGETED_PROVING.md W1/W2/W5)
+
+TEST_CASE("pir complexity: a query past its rlimit is UNKNOWN, names the limit, and is the same in every run "
+          "(skips without clang/opt)") {
+    auto fn = fn_of("factor");  // factoring a 62-bit semiprime: far past a tiny limit
+    if (!fn) return;
+    auto o = opts(0);
+    o.complexity = 2000;  // rlimit units per VC query of reference size
+    auto v1 = pp::check_function(*fn, o);
+    auto v2 = pp::check_function(*fn, o);
+    CHECK(v1.status == prism::laws::UNKNOWN);
+    REQUIRE(v1.extra.contains("complexity_limit"));
+    CHECK(contains(v1.extra.at("complexity_limit"), "rlimit units at div0"));
+    CHECK(contains(v1.message, "max. resource limit exceeded"));
+    // deterministic: the same units, the same verdict
+    CHECK(v2.status == v1.status);
+    REQUIRE(v1.extra.contains("metrics"));
+    CHECK(v1.extra.at("metrics") == v2.extra.at("metrics"));
+    CHECK_FALSE(contains(v1.extra.at("metrics"), "\"complexity_limit_hits\":0"));
+}
+
+TEST_CASE("pir complexity: off (0) keeps the clock alone; metrics say so (skips without clang/opt)") {
+    auto fn = fn_of("sum_bounded");
+    if (!fn) return;
+    auto o = opts(0);
+    o.complexity = 0;
+    auto v = pp::check_function(*fn, o);
+    CHECK(v.status.rfind("PROVED", 0) == 0);
+    REQUIRE(v.extra.contains("metrics"));
+    CHECK(contains(v.extra.at("metrics"), "\"rlimit_units_per_s\":0"));
+    CHECK_FALSE(v.extra.contains("complexity_limit"));
+}
+
+TEST_CASE("pir complexity: strategies asked concurrently give the sequential verdict and the same metrics "
+          "(skips without clang/opt)") {
+    for (const char* name : {"loop_long_inv", "count_up", "two_loops", "many_props"}) {
+        auto fn = fn_of(name);
+        if (!fn) return;
+        auto o = opts(0, 8);  // unwind 8: first unwind 4, then the race of unwinding, k-induction, Houdini
+        o.jobs = 1;
+        auto seq = pp::check_function(*fn, o);
+        o.jobs = 4;
+        auto par = pp::check_function(*fn, o);
+        INFO(name);
+        CHECK(par.status == seq.status);
+        CHECK(par.message == seq.message);
+        REQUIRE(seq.extra.contains("metrics"));
+        CHECK(par.extra.at("metrics") == seq.extra.at("metrics"));
+        CHECK(par.extra["k_induction"] == seq.extra["k_induction"]);
+        if (seq.extra.contains("invariant_search"))
+            CHECK(seq.extra.at("invariant_search").rfind("exhausted: pir-templates[", 0) == 0);
+    }
+}
+
+TEST_CASE("pir complexity: the metrics name the strategy that answered (skips without clang/opt)") {
+    auto ki = fn_of("count_up");
+    if (!ki) return;
+    auto v = pp::check_function(*ki, opts(0, 8));
+    CHECK(v.status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(contains(v.extra.at("metrics"), "\"strategy\":\"k-induction\""));
+    auto h = fn_of("loop_long_inv");
+    auto w = pp::check_function(*h, opts(0, 8));
+    CHECK(w.status == prism::laws::PROVED_UNBOUNDED);
+    CHECK(contains(w.extra.at("metrics"), "\"strategy\":\"houdini\""));
+}
+
+#endif

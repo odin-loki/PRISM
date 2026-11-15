@@ -46,7 +46,8 @@ PRISM_API void set_scale(std::uint64_t units);
 PRISM_API std::int64_t explicit_scale();
 // The scale of a run with this --timeout: the explicit one, else timeout x kUnitsPerSecond.
 PRISM_API std::uint64_t scale_for(double timeout_s);
-// The size factor of a function of `stmts` PIR statements: 1 + log2(1 + stmts / 256), at most 8.
+// The size factor of a function of `stmts` PIR statements (phis included,
+// inlined callees counted): 1 + log2(1 + stmts / 4096), at most 4.
 PRISM_API double size_factor(std::size_t stmts);
 // Units -> the 32-bit rlimit Z3 takes (0 stays 0 = none; a positive input is at least 1).
 PRISM_API unsigned z3_limit(double units);
