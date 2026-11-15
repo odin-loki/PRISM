@@ -213,6 +213,15 @@ certify)"`). Memory-model VCs are QF_BV (the default `MemEncoding::Bv`), so
 they are certified like the rest. The k-induction step is still answered by
 Z3 alone.
 
+## Query corpus for training (learned scheduler, strategies)
+
+`scripts/dump_qfbv_corpus.sh` dumps the QF_BV queries of a set of units
+(`prism --pir-vcs`) and splits them train / validation / test **by source
+file**, with a manifest of sizes (`--help` in the script). It solves nothing and
+changes no default. Its first user is a port of FastSMT's learned Z3 strategies
+([FASTSMT_PORT_NOTES.md](FASTSMT_PORT_NOTES.md), which also says how to evaluate
+on the held-out split with an answers-agree check).
+
 ## ProbSAT (roadmap 3.3)
 
 `probsat()` in `cnf.cpp` is ProbSAT with the polynomial break-only

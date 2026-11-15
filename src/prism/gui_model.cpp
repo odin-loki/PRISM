@@ -291,7 +291,7 @@ bool display_available(const char* display, const char* wayland, const char* pla
 bool flag_takes_value(std::string_view a) {
     static constexpr std::string_view kValue[] = {
         "--out", "--stage", "--skip", "--unwind", "--fuzz-budget", "--fuzz-iters",
-        "--repair-rounds", "--jobs", "-j", "--tool", "--pbsd", "--timeout", "--solver-cache",
+        "--repair-rounds", "--jobs", "-j", "--tool", "--pbsd", "--timeout", "--solver-cache", "--compile-commands",
         "--requirements", "--contracts-approved", "--fail-on", "--pir-vcs", "--solve-smt2"};
     return std::find(std::begin(kValue), std::end(kValue), a) != std::end(kValue);
 }

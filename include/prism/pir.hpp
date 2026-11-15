@@ -619,6 +619,13 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  std::string* cxx_models = nullptr,
                                                  const std::vector<std::string>& include_flags = {},
                                                  int cxx_std = 17);
+// The flags of `unit` from cfg.compile_commands (--compile-commands), as the
+// pir stage takes them (docs/PIR.md "Units with their own flags"): empty when
+// the option is unset or the file has no entry (`note` then says so). `note`
+// names the entry and the flags deliberately not taken; `cxx_std` is raised
+// to the entry's -std=c++NN year when there is one.
+PRISM_API std::vector<std::string> unit_compile_flags(const Config& cfg, const std::filesystem::path& unit,
+                                                      int* cxx_std = nullptr, std::string* note = nullptr);
 // cxx_std: the C++ standard the unit is built with (its compile_commands.json
 // -std=, else 17, the default of the compilers PRISM runs). Below 20 a signed
 // left shift whose result does not fit is UB (C++11..17, CWG 1457), so the

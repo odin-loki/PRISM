@@ -65,6 +65,11 @@ struct Config {
     // Solver query cache (--solver-cache DIR); empty = the solver library's
     // default ($XDG_CACHE_HOME/prism/solver). prism/config.py solver_cache.
     std::filesystem::path solver_cache;
+    // --compile-commands FILE: the pir stage compiles each unit with the flags
+    // of its entry in this compile_commands.json (GNU C dialect, kernel
+    // defines, include path, ABI flags; docs/PIR.md "Units with their own
+    // flags"). Empty = the scan root's database for -I/-D only, as before.
+    std::filesystem::path compile_commands;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 

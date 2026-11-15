@@ -25,7 +25,11 @@ std::string unit_vcs_json(const fs::path& src, const Config& cfg, const fs::path
     std::string err;
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
-    auto ir = lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err, &folded, &sshl);
+    int cxx_std = 17;
+    std::string cc_note;
+    const auto inc = unit_compile_flags(cfg, src, &cxx_std, &cc_note);
+    if (!cc_note.empty()) j["front_end_flags"] = cc_note;
+    auto ir = lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err, &folded, &sshl, nullptr, inc, cxx_std);
     if (!ir) {
         j["error"] = err;
         return j.dump(1);
