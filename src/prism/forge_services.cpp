@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <future>
 #include <map>
 #include <span>
 #include <memory>
@@ -222,7 +223,28 @@ forge::task::pool& pool_for(int jobs) {
     const auto n = static_cast<unsigned>(clamp_jobs(jobs));
     std::lock_guard<std::mutex> lk(g_m);
     auto& p = g_pools[n];
-    if (!p) p = std::make_unique<forge::task::pool>(n);
+    if (!p) {
+        p = std::make_unique<forge::task::pool>(n);
+        // Warm-up barrier: a forge::task::pool worker reads the job ticket
+        // when its thread starts, so a parallel_for published before a new
+        // worker got that far is never joined by it and runs on the caller
+        // alone (found by tests/cpp/test_backends.cpp "one index per
+        // claim": the first loop on a fresh pool was serial). One task per
+        // worker, each waiting until all have started, puts every worker in
+        // its loop before the pool is handed out.
+        const unsigned workers = p->size() > 0 ? p->size() - 1 : 0;
+        if (workers > 0) {
+            auto started = std::make_shared<std::atomic<unsigned>>(0);
+            std::vector<std::future<void>> fs;
+            fs.reserve(workers);
+            for (unsigned i = 0; i < workers; ++i)
+                fs.push_back(p->submit([started, workers] {
+                    started->fetch_add(1);
+                    while (started->load() < workers) std::this_thread::yield();
+                }));
+            for (auto& f : fs) f.wait();
+        }
+    }
     return *p;
 }
 

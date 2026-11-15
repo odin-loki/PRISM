@@ -2670,6 +2670,11 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
         f.extra.erase("cex");
         break;
     }
+    // one line per function (check and memory policy), so the slow functions
+    // of a run can be named from the progress file
+    progress_note("check-done",
+                  fs::path(f.file + "::" + fn.name + " " + f.status),
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count());
 }
 
 // After every check of the unit: rows that depend on more than one function.

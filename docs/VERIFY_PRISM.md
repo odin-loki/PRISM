@@ -114,6 +114,28 @@ that the answer must not change.
 | H3 | Incident log | every wrong verdict found by any check above: a reproducer in testdata/conformance and a line in CONFORMANCE.md "Known issues" | have | — |
 | H4 | Independent review | someone outside the project runs B1, B2, B3 from the docs alone | new | S for them |
 
+## Merge gate (every engine change)
+
+`scripts/verify_gate.sh --candidate NEW --baseline OLD [--quick|--full]
+[--tests prism_tests]` must print `GATE PASSED` before an engine change
+merges. It runs, with the candidate against the binary it replaces:
+
+| gate | check | from this list |
+|---|---|---|
+| G1 | `prism-qa conformance`: 0 wrong proofs (`--quick`: testdata/conformance/prism; `--full`: every suite) | B1 |
+| G2 | no verdict lost, flipped (PROVED* ↔ FAILED), weakened, or changed in proof kind against the baseline on testdata/pir and testdata/planted (`--corpus DIR` adds more); stronger answers are allowed and listed | C-series |
+| G3 | `--jobs 1` and `--jobs N` give the same rows | C1 |
+| G4 | a cold run and a warm re-run on the same solver cache give the same rows | C2, C3 |
+| G5 | every function of the inventory has a pir row | D1 |
+| G6 | doctests: only the known pre-existing failures (`astlint: ported regex classes*`, `svcomp fuzz_replay*` in this container; `cxx expected model` is flaky under load) | E-series |
+
+Sub-agents run `--quick` on their private binaries before reporting; the
+merge itself runs `--full` on the merged build, plus a TSan build of
+`prism_tests -tc="pir*,pool*"` (E7) when the change touches threading. A
+PROOF-KIND change (for example PROVED → PROVED-ASSUMING) fails G2 on
+purpose: it may be right, but a person decides, with the row in front of
+them.
+
 ## The ten to do first (most confidence per hour)
 
 1. **B3** join the kernel runs with the Frama-C / CBMC verdicts and triage the PROVED-vs-FAILED disagreements.
