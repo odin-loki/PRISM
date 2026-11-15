@@ -7,6 +7,26 @@ section says so. The laws in CLAUDE.md stay: a stored verdict is never a
 verdict by itself, `PROVED` and `BOUNDED` are never merged, a model's output
 never covers a defect class.
 
+## 0. What the OS-Proving data is (read 14 November 2026)
+
+Checked against [odin-loki/OS-Proving](https://github.com/odin-loki/OS-Proving)
+(README, `data/proving/core/`). The million is **annotations**, not proofs:
+
+| set | count | what it is | use here |
+|---|---|---|---|
+| mined annotations | 1,135,593 functions (Linux, FreeBSD/HardenedBSD, KDE) | model-written summary, prose contract and, for scalar functions, an ACSL contract; mechanically checked, tested and model-reviewed; tag `verified` = reviewed, **not proved** (527,395), `unchecked` 547,342, `rejected` 60,479 | contracts as **input** to PRISM (`/*@ requires ... */` gives pointer extents and preconditions: Law 6 functions become checkable, PROVED-ASSUMING at best); prose contracts as retrieval data (U7) |
+| core proving tier | 24,806 functions | **Frama-C/WP** verdicts (Why3: Alt-Ergo, Z3, CVC5; CBMC for a bit-vector pass): PROVED 2,388, PROVED-ASSUMING 3,467, CONTRACT-ONLY 2,982, FALSE 2,148, FAILED 1,957, WPERROR 90, VACUOUS 44, UNBUILT 11,730; per function: kind, code base, reason, assumptions (`labels.tsv.gz`) | the **independent oracle** for PRISM ([VERIFY_PRISM.md](VERIFY_PRISM.md) B3), the P0 benchmark, U3 features, U4 reasons |
+| units | 25 tarballs (`units/`) | per function: contract, signature, callees, build mode, machdep, result, replay; **no source** (licensing: the slices stay on the owner's machine) | the benchmark definition; PRISM runs where the sources are |
+
+Consequences for this plan: entries from OS-Proving import as **external**
+verdicts (origin `framac-wp`, tier T0 unless replayed), never as PRISM
+verdicts; a Frama-C PROVED and a PRISM PROVED on the same function and
+contract are two independent results, and their disagreements are the most
+valuable rows (B3). The mined contracts are hypotheses (Law 4: model output)
+until a prover proves the function against them; FALSE (contract refuted)
+rows are themselves findings about the annotations. PRISM-produced entries
+start with the first PRISM run over the core tier.
+
 ## 1. Does a library help? Yes, in eight ways
 
 | # | Use | What it saves or adds | Law that bounds it |
