@@ -21,7 +21,13 @@
  * Single-threaded semantics: the atomic and refcount models are not a
  * concurrency model (listed in the id).
  */
-#include "prism_model.h"
+/* Embedded, the models are lowered from one flat directory; in the tree
+ * (testdata/contracts/kmodels/ #includes this file) the header is in libc/. */
+#if __has_include("prism_model.h")
+#  include "prism_model.h"
+#else
+#  include "../libc/prism_model.h"
+#endif
 
 extern "C" {
 
