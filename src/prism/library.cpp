@@ -274,7 +274,9 @@ ImportStats import_runs(const std::vector<fs::path>& runs, const ImportOptions& 
             bump(sum["by_tier"], e["tier"].get<std::string>());
             bump(sum["by_level"], e["level"].get<std::string>());
             bump(sum["by_stage"], e["stage"].get<std::string>());
-            if (e["status"] == laws::NEEDS_HARNESS || e["status"] == laws::NOTRUN)
+            // compare as std::string: json == string_view is ambiguous with MSVC's STL (C++20 reversed ==)
+            if (const auto status = e["status"].get<std::string>();
+                status == laws::NEEDS_HARNESS || status == laws::NOTRUN)
                 bump(sum["needs_harness"], reason_class(e["message"].get<std::string>()));
         }
     }
