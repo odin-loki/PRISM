@@ -808,6 +808,7 @@ if(PRISM_TESTS)
     tests/cpp/test_platform.cpp
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
+    tests/cpp/test_conc_litmus.cpp
     tests/cpp/test_cxx_models.cpp
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_iostream.cpp
