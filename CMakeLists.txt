@@ -309,6 +309,8 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/libc/stdlib.cpp
   src/prism/pir/models/libc/stdio.cpp
   src/prism/pir/models/libc/fmtdouble.cpp
+  # kernel / data-structure library contracts (docs/CONTRACTS.md), lowered and linked like libc
+  src/prism/pir/models/kernel/kernel.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map
@@ -768,6 +770,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ltl_notrun_strength.cpp
     tests/cpp/test_contracts.cpp
     tests/cpp/test_contracts_gap.cpp
+    tests/cpp/test_contracts_library.cpp
     tests/cpp/test_gap_strength.cpp
     tests/cpp/test_checkers_cxx.cpp
     tests/cpp/test_checkers_c.cpp
