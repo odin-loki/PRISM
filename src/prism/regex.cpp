@@ -3,25 +3,151 @@
 
 #include <pcre2.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
 namespace prism {
 
-static void free_code(void* p) {
-    if (p) pcre2_code_free(static_cast<pcre2_code*>(p));
+// What Regex::code_ points to (private to this file; the header only tests
+// it for null). `code` is the interpreted pattern every match can fall back
+// to. A pattern matched often gets a JIT-compiled copy (`jit`), made once
+// by the thread that crosses kJitAfter and published with release order;
+// the original is never modified, so matching threads never race with the
+// JIT compile. A JIT match that ends in an error (JIT stack, match limit) is
+// re-run on the interpreter, so an error result is the interpreter's.
+namespace {
+
+constexpr std::uint32_t kJitAfter = 64;
+
+struct Compiled {
+    std::atomic<std::uint32_t> refs{1};  // Regex objects + the compile cache holding it
+    pcre2_code* code = nullptr;
+    std::uint32_t groups = 1;  // capture count + 1: the ovector pairs a match fills
+    std::atomic<std::uint32_t> uses{0};
+    std::atomic<pcre2_code*> jit{nullptr};
+    std::once_flag jit_once;
+
+    ~Compiled() {
+        if (auto* j = jit.load(std::memory_order_acquire)) pcre2_code_free(j);
+        pcre2_code_free(code);
+    }
+};
+
+Compiled* compiled(void* p) { return static_cast<Compiled*>(p); }
+
+void release(Compiled* c) {
+    if (c && c->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) delete c;
 }
 
-Regex::Regex(std::string pattern, bool multiline, bool dotall) : pattern_(std::move(pattern)) {
-    int opts = PCRE2_UTF | PCRE2_UCP;
-    if (multiline) opts |= PCRE2_MULTILINE;
-    if (dotall) opts |= PCRE2_DOTALL;
+void free_code(void* p) { release(compiled(p)); }
+
+// Checkers build patterns per variable (`\b` + v + `\s*->`) on every call;
+// each thread keeps the compiled code of the patterns it built, shared by
+// reference with the Regex objects made from them (code is read-only once
+// compiled). A failed compile is cached too (nullptr). A thread that sees
+// many distinct patterns starts over.
+struct CompileCache {
+    std::unordered_map<std::string, Compiled*> map;
+    void clear() {
+        for (auto& [k, c] : map) release(c);
+        map.clear();
+    }
+    ~CompileCache() { clear(); }
+};
+
+constexpr std::size_t kCompileCacheMax = 1024;
+
+Compiled* compile_pattern(const std::string& pattern, std::uint32_t opts) {
     int err = 0;
     PCRE2_SIZE erroff = 0;
-    code_ = pcre2_compile(reinterpret_cast<PCRE2_SPTR>(pattern_.c_str()),
-                          pattern_.size(), opts, &err, &erroff, nullptr);
+    pcre2_code* code =
+        pcre2_compile(reinterpret_cast<PCRE2_SPTR>(pattern.c_str()), pattern.size(), opts, &err, &erroff, nullptr);
+    if (!code) return nullptr;
+    auto* c = new Compiled;
+    c->code = code;
+    std::uint32_t caps = 0;
+    pcre2_pattern_info(code, PCRE2_INFO_CAPTURECOUNT, &caps);
+    c->groups = caps + 1;
+    return c;
+}
+
+// The code to match with: the JIT copy once there is one.
+pcre2_code* code_for(Compiled& c) {
+    if (auto* j = c.jit.load(std::memory_order_acquire)) return j;
+    if (c.uses.fetch_add(1, std::memory_order_relaxed) + 1 < kJitAfter) return c.code;
+    std::call_once(c.jit_once, [&c] {
+        pcre2_code* copy = pcre2_code_copy(c.code);
+        if (!copy) return;
+        if (pcre2_jit_compile(copy, PCRE2_JIT_COMPLETE) != 0) {
+            pcre2_code_free(copy);  // no JIT here (unsupported, no exec memory): interpreter only
+            return;
+        }
+        c.jit.store(copy, std::memory_order_release);
+    });
+    if (auto* j = c.jit.load(std::memory_order_acquire)) return j;
+    return c.code;
+}
+
+// One match data per thread, grown to the largest pattern seen. A match
+// fills `groups` pairs and pcre2_match sets the later pairs of a larger
+// ovector to unset, so reading `groups` pairs gives what a match data
+// sized from the pattern gives. Reusing it also keeps the interpreter's
+// heap frames between calls.
+pcre2_match_data* match_data(std::uint32_t groups) {
+    struct Holder {
+        pcre2_match_data* md = nullptr;
+        std::uint32_t pairs = 0;
+        ~Holder() { pcre2_match_data_free(md); }
+    };
+    thread_local Holder h;
+    if (h.pairs < groups) {
+        auto pairs = std::max<std::uint32_t>(groups, 32);
+        auto* md = pcre2_match_data_create(pairs, nullptr);
+        if (!md) return nullptr;
+        pcre2_match_data_free(h.md);
+        h.md = md;
+        h.pairs = pairs;
+    }
+    return h.md;
+}
+
+// pcre2_match on the JIT copy when there is one; an error there is re-run
+// on the interpreter. The match is left in `md`.
+int run_match(Compiled& c, std::string_view s, std::size_t offset, std::uint32_t options,
+              pcre2_match_data* md) {
+    auto* code = code_for(c);
+    int rc = pcre2_match(code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(), offset, options, md, nullptr);
+    if (rc < PCRE2_ERROR_NOMATCH && code != c.code)
+        rc = pcre2_match(c.code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(), offset, options, md,
+                         nullptr);
+    return rc;
+}
+
+}  // namespace
+
+Regex::Regex(std::string pattern, bool multiline, bool dotall) : pattern_(std::move(pattern)) {
+    std::uint32_t opts = PCRE2_UTF | PCRE2_UCP;
+    if (multiline) opts |= PCRE2_MULTILINE;
+    if (dotall) opts |= PCRE2_DOTALL;
+    thread_local CompileCache cache;
+    std::string key = pattern_;
+    key.push_back(static_cast<char>('0' + (multiline ? 1 : 0) + (dotall ? 2 : 0)));
+    Compiled* c = nullptr;
+    if (auto it = cache.map.find(key); it != cache.map.end()) {
+        c = it->second;
+    } else {
+        if (cache.map.size() >= kCompileCacheMax) cache.clear();
+        c = compile_pattern(pattern_, opts);
+        cache.map.emplace(std::move(key), c);  // the cache's reference
+    }
+    if (!c) return;
+    c->refs.fetch_add(1, std::memory_order_relaxed);
+    code_ = c;
 }
 
 Regex::Regex(Regex&& o) noexcept : pattern_(std::move(o.pattern_)), code_(o.code_) {
@@ -61,10 +187,10 @@ static void fill_named(Match& m, pcre2_code* code, pcre2_match_data* md) {
     }
 }
 
-static Match from_ovector(std::string_view s, pcre2_match_data* md, pcre2_code* code) {
+// The first `n` ovector pairs of `md` (n = capture count + 1).
+static Match from_ovector(std::string_view s, pcre2_match_data* md, pcre2_code* code, uint32_t n) {
     Match m;
     auto* ovec = pcre2_get_ovector_pointer(md);
-    uint32_t n = pcre2_get_ovector_count(md);
     m.groups.resize(n);
     m.spans.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
@@ -94,29 +220,34 @@ std::string Match::group(std::size_t i) const {
     return *groups[i];
 }
 
-bool Regex::search(std::string_view s) const { return search_match(s).has_value(); }
+// search and match_line answer from the ovector without building a Match.
+bool Regex::search(std::string_view s) const {
+    if (!code_) return false;
+    auto& c = *compiled(code_);
+    auto* md = match_data(c.groups);
+    if (!md) return false;
+    return run_match(c, s, 0, 0, md) >= 0;
+}
 
 std::optional<Match> Regex::search_match(std::string_view s, std::size_t offset) const {
     if (!code_ || offset > s.size()) return std::nullopt;
-    auto* code = static_cast<pcre2_code*>(code_);
-    auto* md = pcre2_match_data_create_from_pattern(code, nullptr);
-    int rc = pcre2_match(code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(),
-                         offset, 0, md, nullptr);
+    auto& c = *compiled(code_);
+    auto* md = match_data(c.groups);
+    if (!md) return std::nullopt;
     std::optional<Match> out;
-    if (rc >= 0) out = from_ovector(s, md, code);
-    pcre2_match_data_free(md);
+    if (run_match(c, s, offset, 0, md) >= 0) out = from_ovector(s, md, c.code, c.groups);
     return out;
 }
 
 std::optional<Match> Regex::match_prefix(std::string_view s) const {
     if (!code_) return std::nullopt;
-    auto* code = static_cast<pcre2_code*>(code_);
-    auto* md = pcre2_match_data_create_from_pattern(code, nullptr);
-    int rc = pcre2_match(code, reinterpret_cast<PCRE2_SPTR>(s.data()), s.size(), 0,
-                         PCRE2_ANCHORED, md, nullptr);
+    auto& c = *compiled(code_);
+    auto* md = match_data(c.groups);
+    if (!md) return std::nullopt;
     std::optional<Match> out;
-    if (rc >= 0) out = from_ovector(s, md, code);
-    pcre2_match_data_free(md);
+    // PCRE2_ANCHORED at match time is not a JIT option: pcre2_match uses the
+    // interpreter for it either way.
+    if (run_match(c, s, 0, PCRE2_ANCHORED, md) >= 0) out = from_ovector(s, md, c.code, c.groups);
     return out;
 }
 
@@ -137,8 +268,13 @@ std::vector<Match> Regex::finditer(std::string_view s) const {
 }
 
 bool Regex::match_line(std::string_view s) const {
-    auto m = search_match(s, 0);
-    return m && !m->spans.empty() && m->spans[0].first == 0;
+    // The leftmost match starts at 0.
+    if (!code_) return false;
+    auto& c = *compiled(code_);
+    auto* md = match_data(c.groups);
+    if (!md) return false;
+    if (run_match(c, s, 0, 0, md) < 0) return false;
+    return pcre2_get_ovector_pointer(md)[0] == 0;
 }
 
 // The compiled pattern for re_search / re_search_match. Callers pass the
