@@ -503,7 +503,11 @@ std::string instrument_body(const std::string& body, const std::optional<std::st
     if (ensures) core = rewrite_returns(body, *ensures, fn);
     std::string parts;
     const bool is_void = returns_void(fn);
-    if (requires_) parts += "if (!(" + *requires_ + ")) return" + std::string(is_void ? "" : " 0") + ";\n";
+    // The marker tells the pir stage (pir/contracts.cpp) that the requires
+    // conditions are assumed here, so a violation is not one they exclude.
+    if (requires_)
+        parts += "// prism: requires assumed (contracts stage)\nif (!(" + *requires_ + ")) return" +
+                 std::string(is_void ? "" : " 0") + ";\n";
     if (ensures) {
         for (auto& p : st.pre_params) parts += "__typeof__(" + p + ") __prism_pre_" + p + " = " + p + ";\n";
         for (auto& [v, x] : st.olds) parts += "__typeof__(" + x + ") " + v + " = (" + x + ");\n";

@@ -294,6 +294,24 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         v.cex.clear();
         v.cex_args.clear();
     }
+    // A violation where a requires states what the pir stage does not assume
+    // (a condition such as r->count <= CAP, or \valid of an object reached
+    // through memory: only pointer parameters are bound) may come from a
+    // value that precondition excludes: not a defect report. The contracts
+    // stage checks such a function with its requires assumed.
+    std::string unbound;
+    for (auto& c : topt.contracts)
+        if (c.source == "unbound") unbound += (unbound.empty() ? "" : ", ") + c.text;
+    if (!unbound.empty() && v.status == laws::FAILED) {
+        v.extra["verdict_under_unbound_requires"] = v.status + ": " + v.message;
+        v.extra["unbound_requires"] = unbound;
+        v.status = std::string(laws::NEEDS_HARNESS);
+        v.message = "pointer parameter: violation (" + v.message + ") under a precondition the pir stage does not "
+                    "assume (" + unbound + "; it binds pointer parameters only, Law 6); the contracts stage "
+                    "checks the function with its requires";
+        v.cex.clear();
+        v.cex_args.clear();
+    }
     if (!fn.assumptions.empty()) {
         std::string s;
         for (auto& a : fn.assumptions) s += (s.empty() ? "" : "; ") + a;

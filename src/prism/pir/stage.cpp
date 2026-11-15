@@ -147,17 +147,30 @@ std::vector<std::string> presumed_lines(std::vector<std::string> raw) {
             break;
         }
     if (!any) return raw;
+    // Lines before the first directive (a prelude) give way to the numbered
+    // lines; after it the first line given a number keeps it (an
+    // instrumented function longer than the original is followed by the
+    // file's next lines renumbered from where the original ended).
     std::vector<std::string> out;
+    std::vector<char> set;  // 0: free, 1: prelude, 2: numbered
     std::size_t cur = 1;
+    bool numbered = false;
     std::smatch m;
     for (auto& l : raw) {
         if (l.find("line") != std::string::npos && std::regex_match(l, m, directive)) {
             cur = std::max<std::size_t>(1, std::stoul(m[1].str()));
+            numbered = true;
             continue;
         }
         if (cur > 1'000'000) break;
-        if (out.size() < cur) out.resize(cur);
-        out[cur - 1] = l;
+        if (out.size() < cur) {
+            out.resize(cur);
+            set.resize(cur, 0);
+        }
+        if (set[cur - 1] < 2) {
+            out[cur - 1] = l;
+            set[cur - 1] = numbered ? 2 : 1;
+        }
         ++cur;
     }
     return out;
