@@ -1274,7 +1274,7 @@ Houdini (houdini.inc) asks the matching idioms' candidates first and alone
 (a share of the search time, a quarter of the query time per goal: an
 idiom's invariant that holds is simple). Without a proof it searches the
 generic family with the idiom candidates added. Nothing is assumed: both
-rounds are the same base, step and final queries. With idiom candidates the
+rounds are the same base, step and final queries. In the idiom round the
 universal templates are also instantiated at the element indices the loops
 load and store (`p[tail & 31]`). The verdict says what happened in
 `extra.idiom`, e.g. `masked-index,ring-occupancy: closed by the idiom round

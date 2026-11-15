@@ -1432,10 +1432,10 @@ HoudiniOut Houdini::run_search() {
         addT(ext64(pe, false));
         addT(ext64(pe, true));
     }
-    // With idiom candidates: the element indices the loops load and store
+    // In the idiom round: the element indices the loops load and store
     // (p[(tail & 31)] is read at an index no header phi holds). An instance
     // of a proved universal at any term is one more true fact.
-    if (!idiom_cands_.empty())
+    if (idiom_round_)
         for (std::size_t n = 0; n < e.nodes.size() && T.size() < 24; ++n) {
             const int b = e.nodes[n].block;
             bool in_some = false;
