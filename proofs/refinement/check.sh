@@ -48,9 +48,10 @@ done
 for f in fixtures/*.pirl; do
   want="${f%.pirl}.expected"
   [ -f "$want" ] || { echo "FAIL: $f has no $want" >&2; exit 1; }
-  got="$(lake exe pir_lean_check "$f" | tail -1 || true)"
-  if [ "$got" != "$(cat "$want")" ]; then
-    echo "FAIL: $f: got '$got', expected '$(cat "$want")'" >&2
+  got="$(lake exe pir_lean_check "$f" | tail -1 | tr -d '\r' || true)"
+  exp="$(tr -d '\r' < "$want")"
+  if [ "$got" != "$exp" ]; then
+    echo "FAIL: $f: got '$got', expected '$exp'" >&2
     exit 1
   fi
   echo "ok: $f: $got"
