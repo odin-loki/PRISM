@@ -145,6 +145,46 @@ TEST_CASE("pir kernel: FreeBSD API specs (malloc, mtx, copyin/copyout, bus_space
                  {"panic_bad", F, ""}});
 }
 
+TEST_CASE("pir kernel: Linux W1 specs (driver data, socket lock, netlink payload, ceph room, Ethernet address)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_linux_w1.c", "linux", false,
+                {{"finish_wait_ok", PA, "linux-g2-finish_wait"},
+                 {"prepare_to_wait_event_ok", PA, "linux-g2-prepare_to_wait_event"},
+                 {"wait_for_completion_timeout_ok", PA, "linux-g3-wait_for_completion_timeout"},
+                 {"wait_for_completion_timeout_bad", F, ""},
+                 {"i2c_set_clientdata_ok", PA, "linux-g4-i2c_set_clientdata"},
+                 {"pci_set_drvdata_ok", PA, "linux-g4-pci_set_drvdata"},
+                 {"lock_sock_ok", PA, "linux-g4-lock_sock"},
+                 {"nla_get_u8_ok", PA, "linux-g6-nla_get_u8"},
+                 {"nla_get_u8_bad", F, ""},
+                 {"ceph_has_room_ok", PA, "linux-g6-ceph_has_room"},
+                 {"ceph_has_room_bad", F, ""},
+                 {"is_valid_ether_addr_ok", PA, "linux-g6-is_valid_ether_addr"},
+                 {"is_valid_ether_addr_bad", F, ""}});
+}
+
+TEST_CASE("pir kernel: FreeBSD W1 specs (fueword, suword, subyte: user word and byte access)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_freebsd_w1.c", "freebsd", false,
+                {{"fueword_ok", PA, "freebsd-f3-fueword"},
+                 {"suword_ok", PA, "freebsd-f2-suword"},
+                 {"suword_bad", F, ""},
+                 {"subyte_ok", PA, "freebsd-f2-subyte"},
+                 {"subyte_bad", F, ""},
+                 {"suword32_ok", PA, "freebsd-f1-suword32"},
+                 {"suword32_bad", F, ""},
+                 {"fueword32_ok", PA, "freebsd-f1-fueword32"},
+                 {"fueword32_bad", F, ""},
+                 {"critical_enter_ok", PA, "freebsd-f1-critical_enter"},
+                 {"critical_exit_ok", PA, "freebsd-f1-critical_exit"}});
+}
+
 TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assumptions") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;

@@ -65,6 +65,30 @@ headers; the arity of a call must match the spec's (a mismatch, for example `__k
 | bus_space, 8 | `bus_space_read_1/2/4/8`, `bus_space_write_1/2/4/8` | a read returns an arbitrary value of its width, a write has no effect on program memory | `freebsd-bus-space` | bus_space(9), `sys/x86/include/bus.h` |
 | delay, log, panic, 7 | `DELAY`, `pause_sbt`, `wakeup`, `printf`, `device_printf`, `if_printf`, `panic` | no effect on memory; `panic` does not return (`FUNC-CONTRACT`) | `freebsd-log`, `freebsd-panic` | `sys/sys/systm.h`, `sys/sys/bus.h`, printf(9), panic(9) |
 
+## W1 additions (kernel callees from the census top list, status UNVALIDATED)
+
+Drafted with Morph (GLM draft, DeepSeek review), then reviewed by hand against the review notes. Only the
+functions whose semantics were confirmed as extern (non-inline) kernel functions are specified; the rest are
+listed under "needs review". Every one is UNVALIDATED: no kernel-side check of the contract yet.
+
+| spec | source note | assumption name | status |
+|---|---|---|---|
+| `i2c_set_clientdata`, `pci_set_drvdata` (no memory effect) | `include/linux/i2c.h`, `pci.h` (static inline: see needs review) | `linux-g4-i2c_set_clientdata`, `linux-g4-pci_set_drvdata` | UNVALIDATED |
+| `lock_sock`, `release_sock` (no effect, pairing not checked) | `include/net/sock.h`, `net/core/sock.c` | `linux-g4-lock_sock`, `linux-g4-release_sock` | UNVALIDATED |
+| `nla_get_u8` (payload byte at +4), `ceph_has_room`, `is_valid_ether_addr` (reads addr[0] first) | `include/net/netlink.h`, `ceph/decode.h`, `etherdevice.h` (static inline) | `linux-g6-*` | UNVALIDATED |
+| `finish_wait`, `prepare_to_wait_event` (-ERESTARTSYS only for TASK_INTERRUPTIBLE / TASK_WAKEKILL) | `kernel/sched/wait.c` | `linux-g2-finish_wait`, `linux-g2-prepare_to_wait_event` | UNVALIDATED |
+| `wait_for_completion_timeout` (0 or an arbitrary value, a superset of the real results) | `kernel/sched/completion.c` | `linux-g3-wait_for_completion_timeout` | UNVALIDATED |
+| `fueword`, `suword`, `subyte` (-1 on fault, nothing stored on fault) | `sys/sys/systm.h`, store(9), fueword(9) | `freebsd-f3-fueword`, `freebsd-f2-suword`, `freebsd-f2-subyte` | UNVALIDATED |
+| `suword32`, `fueword32`, `critical_enter`, `critical_exit` | `sys/sys/systm.h`, `sys/sys/critical.h` | `freebsd-f1-suword32`, `freebsd-f1-fueword32`, `freebsd-f1-critical_enter`, `freebsd-f1-critical_exit` | UNVALIDATED |
+
+Tests: `testdata/pir/kernel_linux_w1.c`, `testdata/pir/kernel_freebsd_w1.c`, table cases in `tests/cpp/test_pir_kernel.cpp`.
+
+Needs review (not specified, with the reason):
+- Linux, static inline in the headers (a spec would be used only if a unit does not define them): `init_wait_entry`, `i2c_get_clientdata`, `netif_running`, `ether_addr_copy` (u16 alignment), `nla_put_u32`, `nla_total_size`, `nla_data`, `nla_get_u32`, `brelse`, `dma_map_single_attrs`, `dma_mapping_error`, `dma_unmap_single_attrs`, `skb_headlen`, `IEEE80211_SKB_CB` (macro), `u64_stats_update_begin/end` (config-dependent), `spi_controller_get_devdata` (returns the stored pointer; not representable yet), `usb_get_intfdata`, `skb_put_data`, `dma_set_mask_and_coherent`.
+- Linux, no prototype or semantics not certain: `EXT4_SB` (macro), `sg_next`, `pci_name`, `vb2_get_drv_priv`, `dma_alloc_coherent`, `dev_net`, `qdisc_dev`, `params_rate`, `dev_kfree_skb_any` (sk_buff comes from its own cache, not the kmalloc family), `i2c_adapter_id`, `phy_get_drvdata`.
+- Linux, drafts that failed on Morph timeouts (no output, not reviewed, not specified): group 1 (`netdev_priv`, `sock_net`, `pci_get_drvdata`, `__wake_up`, `kfree_skb`, `platform_set_drvdata`, `platform_get_drvdata`, `dma_free_coherent`, `complete`, `skb_end_pointer`) and group 5 (`nla_nest_end`, `v4l2_get_subdevdata`, `wait_for_completion`, `phy_get_drvdata`, `hid_map_usage_clear`, `netif_stop_queue`, `netdev_name`, `ether_addr_equal`, `i2c_adapter_id`, `skb_reserve`). Both are still open work.
+- FreeBSD: `vm_map_min`, `vm_map_max` (macros on `(map)->min_addr` in `sys/vm/vm_map.h`, not functions), `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu`, `casueword32`, `fubyte` (the `-1` return collides with a valid byte), `fillw`, `vm_map_modflags`, `__sx_xlock`, `__sx_xunlock`, `calculate_crc32c` (truncated prototype).
+
 ## Inline assembly, asm goto, atomics, barriers (R3)
 
 | construct | model | assumption name |
