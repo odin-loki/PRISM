@@ -13,6 +13,7 @@
 #include "prism/pir/frontend.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -36,8 +37,12 @@ std::string expected_of(const std::filesystem::path& p) {
     const std::string tag = "// EXPECT: ";
     if (line.compare(0, tag.size(), tag) != 0) return "";
     std::string v = line.substr(tag.size());
-    v = v.substr(0, v.find(' '));
-    return v;
+    std::string r;
+    for (char c : v) {
+        if (!std::isupper(static_cast<unsigned char>(c))) break;
+        r += c;
+    }
+    return r;
 }
 
 }  // namespace

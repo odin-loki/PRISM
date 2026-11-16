@@ -33,11 +33,11 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
 
 | Kernel primitive | C11 image | Note |
 |---|---|---|
-| `READ_ONCE(x)` / `WRITE_ONCE(x,v)` | relaxed atomic load / store | not yet recognised: arrives as a volatile access (translate.cpp line 1069, `volatile-access`) |
-| `smp_load_acquire` / `smp_store_release` | acquire load / release store | |
+| `READ_ONCE(x)` / `WRITE_ONCE(x,v)` | relaxed atomic load / store | recognised in the conc stage: a volatile scalar load/store (what the kernel macros expand to) is encoded as a relaxed atomic access (extract.cpp has_volatile); per-function pir keeps the `volatile-access` assumption |
+| `smp_load_acquire` / `smp_store_release` | acquire load / release store | recognised when spelled with `__atomic_load_n` / `__atomic_store_n` (or C11 explicit orders) |
 | `rcu_dereference` | acquire load (approx) | LKMM orders the dependent accesses by address dependency; acquire is stronger, so sound for BOUNDED-type claims only if the address dependency is also respected: approx |
 | `rcu_assign_pointer` | release store | |
-| `smp_mb()`, `mb()` | seq_cst fence | |
+| `smp_mb()`, `mb()` | seq_cst fence | recognised via `__atomic_thread_fence`; the IR parser lowers `fence` to a `llvm.donothing` call, so the conc extractor now recognises that form (its fence branch was unreachable before) |
 | `smp_rmb()` / `smp_wmb()` | acquire / release fence | a fence strength the kernel does not promise for all pairs: approx (over-strong for smp_rmb, so may drop behaviours; flagged) |
 | `cmpxchg`, `xchg`, `atomic_*_return` | RMW with the success/failure orders | the kernel default for value-returning RMWs is fully ordered (seq_cst) |
 | `atomic_read` / `atomic_set` | relaxed | |
@@ -58,9 +58,16 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
 
 ## 4. Gaps (what W3 does not yet close)
 
-1. READ_ONCE / WRITE_ONCE and the smp_* barriers are not recognised by the conc extractor.
-   A kernel harness that uses them gets volatile accesses (no ordering). Recognising them is the
-   next encoding step; until then such a harness is not checked against weak orders.
+1. READ_ONCE / WRITE_ONCE (volatile accesses) and the smp_* barriers (`__atomic_thread_fence`,
+   `__atomic_load_n` / `__atomic_store_n`) ARE now recognised by the conc extractor, provided the harness
+   defines the macros that way (tests/conc/litmus/*kernel*.c). Not modelled: kernel macros that
+   expand to inline asm, dependencies (address/data/control dependency ordering is not tracked:
+   `rcu_dereference` as acquire is the stand-in), `smp_mb__before_atomic` and friends, locks as
+   LKMM primitives, and load buffering (LB+poonceonces is Sometimes in the LKMM, the
+   promise-free model forbids it: it cannot report that outcome). A plain (non-volatile)
+   shared access is still race-checked, as before.
+   Pointers: address values are not modelled (ptrtoint is UNENCODED), so the RCU litmus tests
+   publish an index instead of a pointer.
 2. LL/SC pairs: no model. Reported UNENCODED.
 3. Per-function pir atomics stay sequential (assumption `atomics-sequential`). A proof of a
    single function does not see other threads' weak behaviour; only the conc stage does.
@@ -88,10 +95,16 @@ unreachable). Each header cites the source of the expected outcome.
 | cow_coww | BOUNDED | ISO C11 5.1.2.4, 7.17.3; herd7 CoWW |
 | rcu_publish | BOUNDED | Linux memory model (tools/memory-model, smp_store_release / smp_load_acquire); McKenney, "Is Parallel Programming Hard" sec. 9.5 |
 | rcu_publish_relaxed | FAILED | ISO C11 5.1.2.4; Linux memory model (rcu_assign_pointer is a release store) |
+| mp_kernel_relacq | BOUNDED | tools/memory-model/litmus-tests/MP+pooncerelease+poacquireonce.litmus (Never) |
+| mp_kernel_wmb_rmb | BOUNDED | .../MP+fencewmbonceonce+fencermbonceonce.litmus (Never) |
+| mp_kernel_once | FAILED | .../MP+poonceonces.litmus (Sometimes) |
+| sb_kernel_mb | BOUNDED | .../SB+fencembonceonces.litmus (Never) |
+| sb_kernel_once | FAILED | .../SB+poonceonces.litmus (Sometimes) |
+| lb_kernel_mb_ctrl | BOUNDED | .../LB+fencembonceonce+ctrlonceonce.litmus (Never) |
 
 Existing tests that already cover parts of this: c11_sb_ra, c11_mp_ra, c11_sc_fence_sb,
 tso_sb (tests/conc).
 
 ## 6. Results
 
-Filled in from the gate run; see the report at the end of the wave log.
+All 17 litmus files match their EXPECT line (gate `-tc='*litmus*'`: 2 test cases, 69 assertions, all passed). A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character.

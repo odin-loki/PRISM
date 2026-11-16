@@ -174,6 +174,24 @@ std::vector<int> scalar_orders(const std::vector<std::string>& ws) {
     return r;
 }
 
+// A volatile (non-atomic) scalar access is how the kernel's READ_ONCE / WRITE_ONCE
+// expand: the LKMM treats it as a relaxed marked access, so it is encoded as a
+// relaxed atomic (no data race, no ordering). docs/KERNEL_MEMORY_MODEL.md.
+bool has_volatile(const std::string& text) {
+    for (auto& w : words(text.substr(0, text.find(','))))
+        if (w == "volatile") return true;
+    return false;
+}
+
+int access_order(const std::string& text, const std::vector<std::string>& ws, bool atomic_kw) {
+    if (!atomic_kw) {
+        tl_views = true;
+        return 0;  // volatile only: relaxed
+    }
+    (void)text;
+    return scalar_orders(ws).at(0);
+}
+
 [[maybe_unused]] void require_sc(const std::vector<std::string>& ws) {
     for (auto& w : ws) {
         if (w.starts_with("syncscope(")) throw Unenc{"UNENCODED: atomic syncscope " + w};
@@ -729,8 +747,10 @@ struct Rewriter {
         vo.kind = store ? VisOp::Store : VisOp::Load;
         vo.mem = true;
         vo.obj = obj;
+        const bool atomic_kw = atomic;
+        if (!atomic && has_volatile(in.text)) atomic = true;
         vo.atomic = atomic;
-        vo.order = atomic ? scalar_orders(words(in.text)).at(0) : -1;
+        vo.order = atomic ? access_order(in.text, words(in.text), atomic_kw) : -1;
         vo.width = ty.bits;
         vo.line = line;
         vo.what = std::string(atomic ? "atomic " : "") + (store ? "store" : "load");
@@ -988,7 +1008,9 @@ struct Rewriter {
             out.push_back(in);
             return;
         }
-        if (op == "fence") {
+        // the IR parser lowers  to a llvm.donothing call; the conc stage reads the original text
+        if (op == "fence" ||
+            (op == "call" && in.callee == "llvm.donothing" && !words(in.text).empty() && words(in.text).front() == "fence")) {
             // a seq_cst fence orders nothing more under SC; the view model
             // (Program::views) reads every fence's order
             auto ords = scalar_orders(words(inst_parts(in.text)[0]));
@@ -1013,6 +1035,8 @@ struct Rewriter {
             auto w0 = words(parts[0]);  // load [atomic] [volatile] T
             auto w1 = words(parts[1]);  // ptr P [syncscope] [order]
             bool atomic = std::find(w0.begin(), w0.end(), "atomic") != w0.end();
+            const bool atomic_kw = atomic;
+            if (std::find(w0.begin(), w0.end(), "volatile") != w0.end()) atomic = true;
             std::string tys = w0.back();
             auto ty = ir::parse_type(tys);
             if (w1.size() < 2) throw Unenc{"UNENCODED: load form " + in.text};
@@ -1035,7 +1059,7 @@ struct Rewriter {
                 throw Unenc{"UNENCODED: load from " + w1[1].substr(0, 40) +
                             " (shared aggregates need the PIR memory model)"};
             }
-            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
+            const int ord = atomic ? access_order(in.text, w1, atomic_kw) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Load;
@@ -1059,6 +1083,8 @@ struct Rewriter {
             auto w0 = words(parts[0]);  // store [atomic] [volatile] T V
             auto w1 = words(parts[1]);
             bool atomic = std::find(w0.begin(), w0.end(), "atomic") != w0.end();
+            const bool atomic_kw = atomic;
+            if (std::find(w0.begin(), w0.end(), "volatile") != w0.end()) atomic = true;
             if (w0.size() < 3 || w1.size() < 2) throw Unenc{"UNENCODED: store form " + in.text};
             auto ty = ir::parse_type(w0[w0.size() - 2]);
             auto g = global_ref(w1[1]);
@@ -1074,7 +1100,7 @@ struct Rewriter {
                             " (shared aggregates / thread handles need the PIR memory model)"};
             if (ty.kind != ir::Type::Int)
                 throw Unenc{"UNENCODED: store of " + ty.text + " to @" + g + " (memory model)"};
-            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
+            const int ord = atomic ? access_order(in.text, w1, atomic_kw) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Store;
