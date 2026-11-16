@@ -170,7 +170,9 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
                  {"volatile_ok", PA, "volatile-access"},
                  {"volatile_bad", F, ""},
                  {"asm_goto_ok", PA, "asm-goto"},
-                 {"asm_goto_bad", F, ""}});
+                 {"asm_goto_bad", F, ""},
+                 {"asm_goto2_ok", PA, "asm-goto"},
+                 {"asm_goto2_bad", F, ""}});
 }
 
 TEST_CASE("pir kernel: a call without a spec is UNENCODED; --assume-unknown-calls is the opt-in and shows in the verdict") {
@@ -204,7 +206,7 @@ TEST_CASE("pir kernel: without --kernel-api asm, atomics and kernel calls stay U
     const char* NH = "NEEDS-HARNESS";
     check_table("kernel_asm.c", "", false,
                 {{"asm_out_ok", NH, ""}, {"asm_clobber_ok", NH, ""}, {"atomic_add_ok", NH, ""},
-                 {"cmpxchg_ok", NH, ""}, {"fence_ok", NH, ""}, {"asm_goto_ok", NH, ""}});
+                 {"cmpxchg_ok", NH, ""}, {"fence_ok", NH, ""}, {"asm_goto_ok", NH, ""}, {"asm_goto2_ok", NH, ""}});
     check_table("kernel_linux.c", "", false,
                 {{"alloc_ok", NH, ""}, {"lock_ok", NH, ""}, {"mmio_ok", NH, ""}, {"container_of_ok", "PROVED", ""}});
 }

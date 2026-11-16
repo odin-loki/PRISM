@@ -134,3 +134,29 @@ yes:
 out:
     return 100 / r;
 }
+int asm_goto2_ok(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes, no);
+    r = 1;
+    goto out;
+yes:
+    r = 2;
+    goto out;
+no:
+    r = 3;
+out:
+    return 100 / r; /* every path leaves r != 0 */
+}
+int asm_goto2_bad(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes, no);
+    r = 1;
+    goto out;
+yes:
+    r = 2;
+    goto out;
+no:
+    r = 0; /* the second label is possible */
+out:
+    return 100 / r;
+}
