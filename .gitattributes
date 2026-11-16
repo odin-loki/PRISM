@@ -4,3 +4,4 @@ third_party/** -text eol=lf
 # Proof fixtures are compared byte-for-byte by check.sh: keep LF.
 proofs/**/fixtures/** text eol=lf
 proofs/refinement/fixtures/** text eol=lf
+testdata/fixtures/** text eol=lf

@@ -154,3 +154,19 @@ listed), the correspondence checker is updated, fixtures added to `proofs/refine
 * W5: ops-table role format (3.2k).
 * W7: context rule form (3.2l).
 Phase 2 starts only from the constructs whose PRs are on odin-loki/PRISM.
+
+## 7. Phase 2 status (W6 first run)
+
+Baseline (Lean 4.34.0, run in RAM):  exits 0, "refinement: OK (104 theorems
+audited)", axioms only propext / Classical.choice / Quot.sound;  exits 0, "proofs: OK".
+Two CRLF checkout artefacts (the refinement fixtures and ) were
+the only failures; fixed by  (LF) and a CR-tolerant fixture comparison in check.sh.
+
+Volatile (3.1c) is NOT started and stays :  rejects every flag other than
+nsw/nuw/exact/disjoint/nneg (so / is "outside"), and the correct change
+adds a  bit to / in // and to every proof that case-splits on them
+(about 15 000 lines of Lean under PrismRefine), plus the exporter and checker line format and a C++ rebuild
+through the shared farm. Letting the exporter silently drop the flag would make the Lean verdict claim a
+volatile access is an ordinary one without that being a theorem hypothesis, which the trust rule forbids.
+No proof was attempted this run and no axiom was added. Next step: add the bit with the 
+hypothesis stated in the theorem as in 3.1c.
