@@ -2011,33 +2011,36 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "ptrtoint") {
-            // Only pointer differences are modelled: every use must be a sub
-            // of two ptrtoint values (checked to be in the same object).
+            // The pointer value is carried as its packed integer representation, so
+            // ptrtoint is a plain copy; an inttoptr of this value round-trips exactly,
+            // and pointer differences are still checked in the sub path.
             if (in.ty.kind != ir::Type::Int || in.ty.bits != ptr_w())
                 throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-            for (auto& bl : fr.f->blocks)
-                for (auto& u : bl.insts) {
-                    bool uses = false;
-                    for (auto& o : u.ops)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    for (auto& [o, _] : u.incoming)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    if (!uses) continue;
-                    if ((u.op != "sub" && u.op != "icmp") || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) ||
-                        !is_ptrtoint(fr, u.ops[1]))
-                        throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-                }
             Arg p = operand(fr, in.ops[0], cur, line);
             emit_assign(cur, result_var(fr, in), Op::Copy, {p});
             return true;
         }
         if (op == "inttoptr") {
             const auto& o = in.ops[0];
-            if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
+            if (o.ty.kind != ir::Type::Int || o.ty.bits != ptr_w())
+                throw Unenc{"UNENCODED: inttoptr (operand is not pointer width)"};
+            if (is_ptrtoint(fr, o)) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, o, cur, line)});
+                return true;
+            }
+            Arg iv = operand(fr, o, cur, line);
+            if (iv.is_const && iv.bits == 0) {
                 emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), 0)});
                 return true;
             }
-            throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
+            note_assumption("inttoptr-opaque: integer-to-pointer cast of a value that is not a ptrtoint result (line " +
+                            std::to_string(line) + ")");
+            if (iv.is_const) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), iv.bits)});
+                return true;
+            }
+            emit_assign(cur, result_var(fr, in), Op::Copy, {havoc(cur, ptr_w(), false, true)});
+            return true;
         }
         if (op == "bitcast" && in.ty.kind == ir::Type::Ptr && in.ops[0].ty.kind == ir::Type::Ptr) {
             emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, in.ops[0], cur, line)});

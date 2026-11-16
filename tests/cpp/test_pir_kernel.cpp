@@ -175,6 +175,29 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
                  {"asm_goto2_bad", F, ""}});
 }
 
+TEST_CASE("pir kernel: ptrtoint/inttoptr round-trip is exact; other integer-to-pointer casts are the named assumption inttoptr-opaque") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_ptrint.c", "linux", false,
+                {{"roundtrip_ok", "PROVED", ""},
+                 {"opaque_bad", F, ""},
+                 {"errptr_ok", PA, "inttoptr-opaque"},
+                 {"errptr_deref_ok", PA, "inttoptr-opaque"},
+                 {"errptr_bad", F, ""}});
+}
+
+TEST_CASE("pir kernel: struct bitfield loads and stores encode (unsigned, signed sign-extension, division by a bitfield)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* F = "FAILED";
+    check_table("bitfield.c", "", false,
+                {{"bf_ok", "PROVED", ""},
+                 {"bf_signed_ok", "PROVED", ""},
+                 {"bf_div_bad", F, ""}});
+}
+
 TEST_CASE("pir kernel: a call without a spec is UNENCODED; --assume-unknown-calls is the opt-in and shows in the verdict") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
