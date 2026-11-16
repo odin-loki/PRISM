@@ -168,6 +168,9 @@ struct Module {
 };
 
 PRISM_API Module parse_module(std::string_view text);
+// kernel mode (--kernel-api): also models the atomic and barrier forms; parse_module leaves
+// them unparsed, so the conc stage reads their raw text as before
+PRISM_API Module parse_module_kernel(std::string_view text);
 PRISM_API Type parse_type(std::string_view text);
 
 }  // namespace ir

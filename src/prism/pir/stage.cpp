@@ -2586,7 +2586,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.extra["frontend_salvage"] = "cut";
         out.push_back(std::move(f));
     }
-    res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
+    res.mod = std::make_unique<ir::Module>(cfg.pir_kernel_api.empty() ? ir::parse_module(*ir)
+                                                                       : ir::parse_module_kernel(*ir));
     auto& mod = *res.mod;
     // library operational models for what the unit declares (docs/PIR.md "Library models")
     link_models(mod, models, cfg.pir_kernel_api);

@@ -337,7 +337,10 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
     }
     for (auto& [name, ll] : lowered) {
         auto tag = model_unit_tag(name);
-        lib.units.push_back(ir::parse_module(rename_privates(ll, tag)));
+        // kernel units are linked only with --kernel-api, so only they model atomics
+        const bool kernel = name.starts_with("linux_") || name.starts_with("freebsd_");
+        lib.units.push_back(kernel ? ir::parse_module_kernel(rename_privates(ll, tag))
+                                   : ir::parse_module(rename_privates(ll, tag)));
         lib.unit_names.push_back(name);
     }
     return lib;
