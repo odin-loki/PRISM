@@ -162,7 +162,7 @@ audited)", axioms only propext / Classical.choice / Quot.sound; proofs/check.sh 
 Two CRLF checkout artefacts (the refinement fixtures and testdata/fixtures/verdict_tables.json) were the
 only failures; fixed by .gitattributes (LF) and a CR-tolerant fixture comparison in check.sh.
 
-Volatile (3.1c) is NOT started and stays : export_lean.cpp rejects every flag other than
+Volatile (3.1c) is NOT started and stays unsupported (L unsupported): export_lean.cpp rejects every flag other than
 nsw/nuw/exact/disjoint/nneg (so a volatile load or store is "outside"). The correct change adds a volatile
 bit to load/store in XLlvm, XMem and XPir and to every proof that case-splits on them (about 15 000 lines
 of Lean under PrismRefine), plus the exporter and checker line format and a C++ rebuild through the shared
