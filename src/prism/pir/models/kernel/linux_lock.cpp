@@ -1,71 +1,110 @@
-/* Linux locking, RCU and might_sleep specs (docs/KERNEL_MODELS.md).
+/* Linux locking, RCU and might_sleep specs (docs/KERNEL_MODELS.md, docs/KERNEL_CONCURRENCY.md).
  *
  * Reference semantics (include/linux/mutex.h, include/linux/spinlock_api_smp.h,
  * kernel/locking/mutex.c, kernel/locking/spinlock.c, include/linux/rcupdate.h; Linux 6.18):
  *   mutex_lock_nested / mutex_unlock / spin_lock family / rcu_read_lock: take or
  *   release a lock; the calls change no data memory the analysed function can see.
- *   The lock word is not tracked: the model does not check lock balance, double
- *   lock (self-deadlock) or lock ordering, and does not assume a lock is held or
- *   free on entry.
  *   mutex_trylock / spin_trylock: 1 (taken) or 0 (not taken), arbitrary.
  *   mutex_lock_interruptible / killable: 0 (taken) or -EINTR (-4, not taken).
  *   _raw_spin_lock_irqsave: the saved interrupt flags are an arbitrary word.
  * Preconditions checked: the lock pointer is a valid object (a one-byte read of
  * it must be in bounds: NULL, freed and wild lock pointers are reported).
+ *
+ * Ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md section 2.1): the
+ * intrinsics below keep the set of locks the analysed function holds and the
+ * atomic depth. They are translator intrinsics, not C code: no body is linked.
+ *   __prism_lock_acquire(p, spin)  LOCK-DOUBLE if p is already held;
+ *   __prism_lock_release(p, spin)  LOCK-UNHELD-UNLOCK if p is not held;
+ *   __prism_sleep_point()          CTX-SLEEP-ATOMIC if a spinlock is held.
+ * A helper that releases a lock its caller holds is reported as LOCK-UNHELD-UNLOCK:
+ * a missing module contract, not a bug. Not checked here: lock held on return, lock
+ * order, interrupt and softirq context, RCU read sections.
+ *
  * Assumptions introduced (named in the verdict):
- *   - lock state is not tracked: no deadlock, lock-balance or lock-order check
- *     (a result with this assumption says nothing about locking discipline)
- *   - lock calls have no effect on data memory (other threads and interrupts
- *     run only while the lock is not held is NOT modelled either: the function
- *     is analysed sequentially, as in all of PRISM's per-function checks)
- *   - might_sleep / lockdep reports have no effect (context checks not modelled)
+ *   - linux-lock: lock calls have no effect on data memory; the function is analysed
+ *     sequentially, so other threads and interrupts are not modelled
+ *   - linux-lock-overflow: more than 8 locks held at once: the set overflows and the
+ *     release check is then not reported (recorded by translate_lock.inc)
+ *   - linux-might-sleep: lockdep and might_sleep reports (splats) have no effect
+ *   - linux-rcu: RCU read-side sections and grace periods are not modelled
  */
 #include "kernel_model.h"
 
 extern "C" {
 
+/* translator intrinsics (translate.cpp, translate_lock.inc): not linked */
+void __prism_lock_acquire(const void *lock, int spin);
+void __prism_lock_release(const void *lock, int spin);
+void __prism_sleep_point(void);
+
 static void lock_ptr(const void *lock) {
-    ASSUME("linux-lock: lock state is not tracked (no deadlock, lock-balance or lock-order check); lock and unlock calls have no effect on data memory");
+    ASSUME("linux-lock: lock calls have no effect on data memory; the function is analysed sequentially");
     __prism_read_range(lock, 1);
 }
 
+static void lock_take(const void *lock, int spin) {
+    lock_ptr(lock);
+    __prism_lock_acquire(lock, spin);
+}
+
+static void lock_drop(const void *lock, int spin) {
+    lock_ptr(lock);
+    __prism_lock_release(lock, spin);
+}
+
 /* mutex.h: void mutex_lock_nested(struct mutex *lock, unsigned int subclass) */
-void mutex_lock_nested(void *lock, unsigned int subclass) { (void)subclass; lock_ptr(lock); }
+void mutex_lock_nested(void *lock, unsigned int subclass) {
+    (void)subclass;
+    __prism_sleep_point();
+    lock_take(lock, 0);
+}
 /* mutex.h: void mutex_unlock(struct mutex *lock) */
-void mutex_unlock(void *lock) { lock_ptr(lock); }
+void mutex_unlock(void *lock) { lock_drop(lock, 0); }
 /* mutex.h: void __mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key): the lock starts free */
 void __mutex_init(void *lock, const char *name, void *key) { (void)name; (void)key; lock_ptr(lock); }
-/* mutex.h: int mutex_trylock(struct mutex *lock): 1 = acquired, 0 = contended */
-int mutex_trylock(void *lock) { lock_ptr(lock); return CHOICE() ? 1 : 0; }
+/* mutex.h: int mutex_trylock(struct mutex *lock): 1 = acquired, 0 = contended (never sleeps) */
+int mutex_trylock(void *lock) {
+    lock_ptr(lock);
+    if (CHOICE()) { __prism_lock_acquire(lock, 0); return 1; }
+    return 0;
+}
 /* mutex.h: int mutex_lock_interruptible_nested(struct mutex *lock, unsigned int subclass): 0 or -EINTR */
 int mutex_lock_interruptible_nested(void *lock, unsigned int subclass) {
     (void)subclass;
+    __prism_sleep_point();
     lock_ptr(lock);
-    return CHOICE() ? 0 : -4;
+    if (CHOICE()) { __prism_lock_acquire(lock, 0); return 0; }
+    return -4;
 }
 /* mutex.h: int _mutex_lock_killable(struct mutex *lock, unsigned int subclass, struct lockdep_map *nest_lock): 0 or -EINTR */
 int _mutex_lock_killable(void *lock, unsigned int subclass, void *nest) {
     (void)subclass; (void)nest;
+    __prism_sleep_point();
     lock_ptr(lock);
-    return CHOICE() ? 0 : -4;
+    if (CHOICE()) { __prism_lock_acquire(lock, 0); return 0; }
+    return -4;
 }
 
 /* spinlock_api_smp.h */
-void _raw_spin_lock(void *lock) { lock_ptr(lock); }
-void _raw_spin_unlock(void *lock) { lock_ptr(lock); }
-void _raw_spin_lock_irq(void *lock) { lock_ptr(lock); }
-void _raw_spin_unlock_irq(void *lock) { lock_ptr(lock); }
-void _raw_spin_lock_bh(void *lock) { lock_ptr(lock); }
-void _raw_spin_unlock_bh(void *lock) { lock_ptr(lock); }
+void _raw_spin_lock(void *lock) { lock_take(lock, 1); }
+void _raw_spin_unlock(void *lock) { lock_drop(lock, 1); }
+void _raw_spin_lock_irq(void *lock) { lock_take(lock, 1); }
+void _raw_spin_unlock_irq(void *lock) { lock_drop(lock, 1); }
+void _raw_spin_lock_bh(void *lock) { lock_take(lock, 1); }
+void _raw_spin_unlock_bh(void *lock) { lock_drop(lock, 1); }
 /* unsigned long _raw_spin_lock_irqsave(raw_spinlock_t *lock): the previous interrupt flags */
-unsigned long _raw_spin_lock_irqsave(void *lock) { lock_ptr(lock); return __VERIFIER_nondet_ulong(); }
+unsigned long _raw_spin_lock_irqsave(void *lock) { lock_take(lock, 1); return __VERIFIER_nondet_ulong(); }
 unsigned long _raw_spin_lock_irqsave_nested(void *lock, int subclass) {
     (void)subclass;
-    lock_ptr(lock);
+    lock_take(lock, 1);
     return __VERIFIER_nondet_ulong();
 }
-void _raw_spin_unlock_irqrestore(void *lock, unsigned long flags) { (void)flags; lock_ptr(lock); }
-int _raw_spin_trylock(void *lock) { lock_ptr(lock); return CHOICE() ? 1 : 0; }
+void _raw_spin_unlock_irqrestore(void *lock, unsigned long flags) { (void)flags; lock_drop(lock, 1); }
+int _raw_spin_trylock(void *lock) {
+    lock_ptr(lock);
+    if (CHOICE()) { __prism_lock_acquire(lock, 1); return 1; }
+    return 0;
+}
 /* spinlock.h: void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name, struct lock_class_key *key, short inner) */
 void __raw_spin_lock_init(void *lock, const char *name, void *key, short inner) {
     (void)name; (void)key; (void)inner;
@@ -81,12 +120,13 @@ int debug_lockdep_rcu_enabled(void) { return CHOICE() ? 1 : 0; }
 /* rcupdate.h: void lockdep_rcu_suspicious(const char *file, const int line, const char *s): reports, no effect */
 void lockdep_rcu_suspicious(const char *file, const int line, const char *s) {
     (void)file; (void)line; (void)s;
-    ASSUME("linux-might-sleep: lockdep and might_sleep reports are splats only: no effect, context rules are not checked");
+    ASSUME("linux-might-sleep: lockdep and might_sleep reports are splats only: no effect");
 }
 /* kernel.h: void __might_sleep(const char *file, int line) */
 void __might_sleep(const char *file, int line) {
     (void)file; (void)line;
-    ASSUME("linux-might-sleep: lockdep and might_sleep reports are splats only: no effect, context rules are not checked");
+    ASSUME("linux-might-sleep: lockdep and might_sleep reports are splats only: no effect");
+    __prism_sleep_point();
 }
 
 }  // extern "C"

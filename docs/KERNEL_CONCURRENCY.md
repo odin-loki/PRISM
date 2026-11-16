@@ -265,3 +265,17 @@ testdata/pir/kernel_lock_ctx.c is kept for that step.
 
 The pilot (e1000e, em) was not run: the checks are not live, so it would report
 nothing new.
+
+## 12. Implementation (phase A, frame-local ghost state)
+
+The ghost state is frame-local state of the analysed function in pir::translate
+(src/prism/pir/translate_lock.inc, hooks in translate.cpp): one hidden static object
+(8 lock slots, atomic depth, overflow flag), zero at entry, allocated in the prologue when
+the call graph reaches a ghost intrinsic. The lock specs call __prism_lock_acquire(p, spin),
+__prism_lock_release(p, spin) and __prism_sleep_point(); the checks are ordinary PRISM
+failure checks: LOCK-DOUBLE, LOCK-UNHELD-UNLOCK, LOCK-HELD-ON-RETURN (at each return of the
+analysed function; entry set empty), CTX-SLEEP-ATOMIC (mutex_lock*, __might_sleep, msleep,
+usleep_range while a spinlock is held). Overflow past 8 locks is the named assumption
+linux-lock-overflow (the release check is then not reported). FreeBSD mtx and exclusive sx
+locks are tracked as sleep locks (no atomic depth). Not done: entry contracts,
+hardirq/softirq context, RCU, preempt_disable depth, lock order, LOCK-CTX-MISMATCH.

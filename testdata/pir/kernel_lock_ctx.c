@@ -97,3 +97,23 @@ int might_sleep_ok(void) {
     __might_sleep("kernel_lock_ctx.c", 1);
     return 0;
 }
+
+/* LOCK-HELD-ON-RETURN: the error path skips the unlock */
+int held_on_return_bad(int err) {
+    struct mutex m = {0, {0, 0, 0, 0}};
+    mutex_lock_nested(&m, 0);
+    if (err) return -1;
+    mutex_unlock(&m);
+    return 0;
+}
+
+/* the same function with the unwind releasing on every path */
+int held_on_return_ok(int err) {
+    struct mutex m = {0, {0, 0, 0, 0}};
+    int r = 0;
+    mutex_lock_nested(&m, 0);
+    if (err) { r = -1; goto out; }
+out:
+    mutex_unlock(&m);
+    return r;
+}
