@@ -655,7 +655,7 @@ TEST_CASE("pir e2e: --ops-table checks an indirect call against the targets of i
     if (skip_without_frontend(cfg)) return;
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
-    // without the option the calls through the table stay unknown (havoc fallback): no verdict on the divide
+    // without the option the unit's 19 address-taken functions exceed the 16-target limit: UNENCODED
     {
         auto got = index(pp::run_pir({dir / "ops_table.c"}, cfg));
         REQUIRE(got.contains({"ops_table.c", "ops_div_bad"}));

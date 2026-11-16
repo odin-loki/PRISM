@@ -1,3 +1,3 @@
 %struct.ops	safe	safe_target	safe
 %struct.ops	divide	div_target	divide
-%struct.wide	f	safe_target,div_target,t1,t2,t3,t4,t5,t6,t7	f
+%struct.wide	f	safe_target,div_target,decoy0,decoy1,decoy2,decoy3,decoy4,decoy5,decoy6	f	1

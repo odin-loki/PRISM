@@ -11,12 +11,16 @@ C/C++ unit ──clang -O0──▶ LLVM IR ──PRISM instrumentation──▶
 ```
 
 Sources: `include/prism/pir.hpp`, `src/prism/pir/{ir_parser,pir,translate,encode,stage}.cpp`;
-floating point `src/prism/pir/{fp,translate_fp}.cpp`; exceptions, setjmp/longjmp,
+floating point `src/prism/pir/{fp,translate_fp}.cpp` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); exceptions, setjmp/longjmp,
 indirect calls and inline assembly `src/prism/pir/translate_ctl.inc` (+ `lower_ctl.cpp`);
-memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp`; library
+memory model `src/prism/pir/{memory,translate_mem,stage_mem,contracts}.cpp` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); library
 models `src/prism/pir/{libc_models,libc_format}.cpp` + `src/prism/pir/models/libc/*.cpp`.
-Tests: `testdata/pir/*` (true and false variants; `mem_*.c` for the memory
-model; `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6),
+Tests: `testdata/pir/*` (true and false variants (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `mem_*.c` for the memory
+model (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `fp_*`, `eh_*`, `coro_*`, `sjlj_*`, `virt_*`, `asm_*` for roadmap 2.6),
 doctests in `tests/cpp/test_pir_e2e.cpp`, `test_main.cpp` (`pir: …`), `test_pir_mem.cpp`
 (`pir mem: …`) and `test_pir3.cpp` (`pir3 …`). Differential oracle: `prism-qa pir-vs-bmc`.
 
@@ -39,10 +43,13 @@ exception edges by the translator itself ("Exceptions"). No
 optimising pass runs (they may exploit the UB being checked) and no
 `-fsanitize` check is inserted (Law 8: PRISM owns the check polarity). For C
 units `-Wno-error=implicit-function-declaration` keeps a unit with an
-undeclared call compiling (C89 rule); the call itself is an unknown external
+undeclared call compiling (C89 rule) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the call itself is an unknown external
 and becomes `UNENCODED: call @f` — leniency of the front end, not a disabled
 check. Compiling scanned code does not execute it, so the stage needs no
-`--allow-exec`; clang/opt missing is `NOTRUN` with an install hint; a unit
+`--allow-exec` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); clang/opt missing is `NOTRUN` with an install hint (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a unit
 that does not compile is one `ERROR` row ("clang front end failed: …").
 
 ### GNU C units and a unit's own flags
@@ -58,10 +65,12 @@ changing only the language level and ABI flags, never a check:
 
 1. **Fallback.** A C unit that fails as C17 is tried as C23 (as before), then as
    `-std=gnu17` unless the unit already has a `-std=` of its own. A unit that
-   compiles as C17 never gets this; `testdata/pir/gnu_c.c` (the `rwonce.h`
+   compiles as C17 never gets this (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `testdata/pir/gnu_c.c` (the `rwonce.h`
    pattern, true and false variants) is lowered this way.
 2. **`--compile-commands FILE`.** The unit is compiled with its entry of a
-   `compile_commands.json` (`arguments` or `command`; the command text is split
+   `compile_commands.json` (`arguments` or `command` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the command text is split
    by PRISM, no shell runs). Taken: `-I -isystem -iquote -idirafter -include`
    (relative paths against the entry's `directory`), `-D`, `-U`, the C `-std=`
    (the C++ year for C++ units), `--target=` (LP64 targets only: the memory
@@ -76,12 +85,15 @@ changing only the language level and ABI flags, never a check:
    `-ftrivial-auto-var-init=`, `-fno-delete-null-pointer-checks`. A unit built
    with `-fno-strict-overflow` (the kernel) is still checked for signed overflow;
    that is PRISM's polarity (Law 8), and the finding row says so in
-   `extra.front_end_flags` ("entry used; not taken: ..."). With the option set,
-   the entry replaces the scan-root database (`-I`/`-D` only) for that unit; a
+   `extra.front_end_flags` ("entry used (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); not taken: ..."). With the option set,
+   the entry replaces the scan-root database (`-I`/`-D` only) for that unit (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a
    unit with no entry gets the default flags and a note. A preprocessed copy
    (`x.i`, `x.ii`) has no entry of its own: the single entry with the same stem
    is used, and only the language and ABI flags are taken (`-I`, `-D`,
-   `-include` were applied by the preprocessor already; re-including a header
+   `-include` were applied by the preprocessor already (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); re-including a header
    would redeclare its inline functions). Two entries with that stem: no entry
    (note). `prism --pir-vcs FILE --compile-commands DB` takes the same flags.
 
@@ -89,12 +101,15 @@ changing only the language level and ABI flags, never a check:
 prism path/to/unit.c --stage pir --compile-commands build/compile_commands.json
 ```
 
-**Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits); the libc models and
+**Windows host.** Native Windows clang targets LLP64 (`long` is 32 bits) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the libc models and
 memory encoding assume LP64 (`unsigned long size_t`). On `_WIN32`, every PIR (and SV-COMP debug
 IR) clang invocation uses `lp64_clang_driver_flags()`: `--target=x86_64-unknown-linux-gnu` and
 `-idirafter` `src/prism/pir/models/libc/shim/` (minimal `string.h` / `stdlib.h` / `assert.h` /
-`pthread.h` / `stdatomic.h` typedefs so scanned C compiles; no sysroot). The 17-file `testdata/pir`
-C subset runs in CI; glibc-heavy corpus files stay `NOTRUN` via
+`pthread.h` / `stdatomic.h` typedefs so scanned C compiles (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); no sysroot). The 17-file `testdata/pir`
+C subset runs in CI (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); glibc-heavy corpus files stay `NOTRUN` via
 `pir_test_c_file_supported(basename)`. The shim's `stdatomic.h` maps C11 atomics onto clang's
 `__c11_atomic_*` builtins, so the IR keeps the real memory order and the `conc` stage sees the same
 seq_cst / monotonic atomics as with glibc. `frontend_usable` verifies the LP64 triple with
@@ -117,15 +132,18 @@ PRISM rewrites the `-O0` IR before `opt`:
 **`undef` that remains** (hand-written or optimised IR, phi inputs) follows
 the LangRef: every use of `undef`, or of a value computed from it, may see a
 different value. A static may-undef analysis gives each such value a
-one-bit "undef" shadow (through phis, dynamically per path); each non-phi use
+one-bit "undef" shadow (through phis, dynamically per path) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); each non-phi use
 of a value whose shadow is set reads a fresh havoc (per use site and per
 execution), `freeze` picks one value, and a store writes indeterminate
 (uninitialised) bytes. Branching on it, returning it from a `noundef`
 function or passing it as a `noundef` argument is UB (`UB-POISON`, prop
-`undef`); passing it to an inlined callee without `noundef`, or returning it
+`undef`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); passing it to an inlined callee without `noundef`, or returning it
 from one, is refused (`UNENCODED`), since the callee would use it as one value.
 * **Folded UB to poison.** Clang folds e.g. `7 % 0`, `INT_MIN / -1`,
-  `1 << 40` to `poison`; each `iN poison` operand becomes
+  `1 << 40` to `poison` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); each `iN poison` operand becomes
   `call @__prism.poison.iN()` at that instruction, which PIR turns into a
   reachability check (`UB-POISON`).
 * **Folded UB to a value.** `1 << 31`, `INT_MAX + 1`, `-1 << 3` fold to plain
@@ -148,7 +166,8 @@ from one, is refused (`UNENCODED`), since the callee would use it as one value.
 **C signed left shift.** IR does not say whether `shl` came from a signed C
 `<<`. For C units that contain a `shl`, clang runs a second time with
 `-fsanitize=shift-base` only to *locate* signed shifts (the ubsan source
-locations); nothing from that build is used otherwise. Each `shl` whose
+locations) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); nothing from that build is used otherwise. Each `shl` whose
 `!dbg` line:column matches gets the C17 6.5.7p4 check (negative base, or
 `a·2^b` not representable). C++20 and later define signed `<<`, so C++ units
 get no base check (`testdata/pir/cxx.cpp:cxx_shl_ok` is PROVED).
@@ -160,7 +179,8 @@ get no base check (`testdata/pir/cxx.cpp:cxx_shl_ok` is PROVED).
 arrays, vectors, function types), values (locals, globals, integer literals,
 `true/false/undef/poison/null/zeroinitializer`, constant expressions kept
 opaque), metadata attachments (`!dbg`), `DILocation`, `DISubprogram`,
-`DIFile`. Every instruction line is parsed; opcodes outside the subset keep
+`DIFile`. Every instruction line is parsed (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); opcodes outside the subset keep
 their name (`parsed = false`) so the translator can report them.
 
 ## PIR
@@ -171,7 +191,8 @@ Typed SSA over bitvectors of width 1..64 (`include/prism/pir.hpp`):
   violation when the i1 argument is 1), `assume`;
 * terminators: `jmp`, `br`, `ret`, `stop` (path ends without returning,
   e.g. `exit`);
-* phis per block; loops are back edges.
+* phis per block (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); loops are back edges.
 
 Operators: `add sub mul udiv sdiv urem srem shl lshr ashr and or xor`,
 comparisons, `select zext sext trunc`, `smax smin umax umin abs ctlz cttz
@@ -182,7 +203,9 @@ of half/float/double values (`fadd fsub fmul fdiv frem fsqrt ffma fmuladd
 fminnum fmaxnum fminimum fmaximum ffloor fceil ftrunc fround froundeven`,
 `fcmp.oeq/olt/ole/uno`, `fptosi fptoui sitofp uitofp fpconv`, the range
 predicates `fptosi.ovf fptoui.ovf`, `fisnan fiszero fisinf`, and `libm`,
-an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its SHA-256 is
+an unconstrained libm result (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); "Floating point" below). `to_text` prints PIR (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); its SHA-256 is
 `extra.pir_hash`.
 
 ### Properties (inserted by PRISM, Law 8)
@@ -190,7 +213,8 @@ an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its
 | IR | check | class |
 |---|---|---|
 | `add/sub/mul nsw` (clang marks signed C arithmetic `nsw` exactly when overflow is UB) | signed overflow | INT-SIGNED-OVF |
-| `sdiv/srem` | divisor 0; `INT_MIN / -1` | INT-DIV-ZERO / INT-SIGNED-OVF |
+| `sdiv/srem` | divisor 0 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `INT_MIN / -1` | INT-DIV-ZERO / INT-SIGNED-OVF |
 | `udiv/urem` | divisor 0 | INT-DIV-ZERO |
 | `shl/lshr/ashr` | amount ≥ width (negative amounts included) | INT-SHIFT-UB |
 | C signed `<<` (located as above) | negative base or overflow | INT-SHIFT-UB |
@@ -203,7 +227,9 @@ an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its
 | uninitialised local read | reached with shadow set | UNINIT-READ |
 | clang-folded UB | reached | per warning / UB-POISON |
 | `fptosi`/`fptoui` | value (truncated) outside the integer type, NaN, ±inf (C11 6.3.1.4p1) | FLOAT-CAST-OVF |
-| `fdiv`/… under `--fp-checks` (opt-in) | division by ±0; NaN from non-NaN operands; infinite result from finite operands | FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW |
+| `fdiv`/… under `--fp-checks` (opt-in) | division by ±0 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); NaN from non-NaN operands (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); infinite result from finite operands | FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW |
 | exception reaching `__clang_call_terminate` | a `noexcept` function (or a destructor during unwinding) throws | CXX-THROW-NOEXCEPT |
 | exception leaving `main` | uncaught: `std::terminate` | CXX-UNCAUGHT |
 | `std::terminate()`, `throw;` with no handled exception | reached | CXX-TERMINATE |
@@ -213,10 +239,15 @@ an unconstrained libm result; "Floating point" below). `to_text` prints PIR; its
 
 Modelled calls: `llvm.{s,u}{add,sub,mul}.with.overflow` (+ `extractvalue`),
 `llvm.{s,u}{max,min}`, `abs`, `ctlz`, `cttz`, `ctpop`, `bswap`, `expect`,
-`assume`; `llvm.dbg.*` etc. ignored; `exit/_Exit/_exit/quick_exit` end the
-path; `__VERIFIER_nondet_*` / `nondet_*` are havocs; `__VERIFIER_assume` is
+`assume` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `llvm.dbg.*` etc. ignored (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `exit/_Exit/_exit/quick_exit` end the
+path (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `__VERIFIER_nondet_*` / `nondet_*` are havocs (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `__VERIFIER_assume` is
 an assume. Calls to functions defined in the same unit are **inlined**
-(depth 4; recursion is `UNENCODED: recursive call @f`).
+(depth 4 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); recursion is `UNENCODED: recursive call @f`).
 
 ### What is not encoded (named, never dropped — roadmap 2.1)
 
@@ -239,7 +270,8 @@ translated, a thrown type whose match against a catch clause PRISM cannot
 decide, an indirect call whose pointer is none of its candidate targets
 (the "havoc fallback"), or an exception type it cannot identify. Pointer parameters are
 `NEEDS-HARNESS` by Law 6 unless a precondition gives the object size
-("Pointer parameters" below; C++ member functions have `this`). In C++
+("Pointer parameters" below (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); C++ member functions have `this`). In C++
 units, a function whose source contains `const_cast` is
 `UNENCODED: const_cast`. Known gaps of the *property set* (a PROVED means
 these were not checked): reading an indeterminate value that is only copied
@@ -250,7 +282,8 @@ caller uses the value), sub-array bounds of the last struct field
 address computed separately, memory leaks (valid-memtrack), effective types unless `--strict-aliasing`, pointer
 arithmetic on an already freed object, reads of a non-volatile local
 modified between `setjmp` and `longjmp` (C11 7.13.2.1p3 makes its value
-indeterminate; PIR reads the stored value, as the -O0 build does), and
+indeterminate (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PIR reads the stored value, as the -O0 build does), and
 exceptions that leave a function other than `main` (not UB there: the
 path ends and `extra.throws_not_followed` names the types).
 
@@ -279,7 +312,8 @@ zero, or initialised with arbitrary bytes), `free` (end of lifetime),
 `load` (value + "some byte uninitialised" + "effective-type mismatch"),
 `store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
 `stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
-again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+again) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
 usable in any expression. The translator (`translate_mem.cpp`) turns every
 property into ordinary `check`s over these (Law 8):
 
@@ -297,20 +331,23 @@ property into ordinary `check`s over these (Law 8):
 | `getelementptr inbounds` on null with offset ≠ 0, or result outside `[0, size]` | invalid pointer arithmetic | MEM-PTR-ARITH |
 | `getelementptr` index into a nested array `[N x T]` (not the last struct field): `≥ N` when dereferenced, `> N` otherwise | sub-array bounds (`a[1][7]` in `int a[4][5]`, C17 J.2) | MEM-PTR-ARITH |
 | `icmp ult/ule/…` on pointers, `ptrtoint`-`sub` | pointers into different objects | PTR-COMPARE |
-| `llvm.memcpy` (not memmove) | overlapping ranges, other than an exact self-copy (`d = s`, defined by the LangRef: a struct self-assignment); a C `memcpy` call reaches its library model (`-fno-builtin-memcpy`), where `d = s` is an overlap too (C17 7.24.2.1) | MEM-OVERLAP |
+| `llvm.memcpy` (not memmove) | overlapping ranges, other than an exact self-copy (`d = s`, defined by the LangRef: a struct self-assignment) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a C `memcpy` call reaches its library model (`-fno-builtin-memcpy`), where `d = s` is an overlap too (C17 7.24.2.1) | MEM-OVERLAP |
 | `free`/`delete`/`delete[]`/`fclose` | not an object, not its start, not heap memory | MEM-INVALID-FREE |
 | same | allocated by another allocator (malloc/new/new[]) | MEM-MISMATCHED-FREE |
 | same | already released | MEM-DOUBLE-FREE |
 | `alloca T, iN n` (VLA) | `n <= 0` (C17 6.7.6.2p5), size overflow, size `>= 2^47` | MEM-VLA-SIZE |
 | `ret` of a pointer | into the function's own stack object | MEM-STACK-ESCAPE |
 
-Lifetimes: `alloca`s of an inlined callee end at its `ret`; VLAs end at
+Lifetimes: `alloca`s of an inlined callee end at its `ret` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); VLAs end at
 `llvm.stackrestore` (objects allocated after the matching `stacksave`);
 `llvm.lifetime.end` ends the object's lifetime and `llvm.lifetime.start`
 starts a stack object's lifetime again (LangRef), its bytes indeterminate.
 Struct layout, field offsets, sizes and alignments come from the module's
 `target datalayout` (`Layout`, x86-64 defaults). A `byval` parameter is a
-fresh copy for the callee; `sret` is a fresh uninitialised return slot.
+fresh copy for the callee (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `sret` is a fresh uninitialised return slot.
 
 **Uninitialised bytes.** A load checks that its bytes are initialised
 (UNINIT-READ), except an integer load of a whole aggregate location (the
@@ -321,14 +358,18 @@ back to memory, inlined calls and returns pass it on) and is checked only
 where the value is used.
 
 **Global state.** Globals referenced by the function are allocated in a
-prologue. `constant` globals hold their initializer; mutable globals hold
+prologue. `constant` globals hold their initializer (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); mutable globals hold
 arbitrary initialised bytes, except when the function is `main` (program
 entry: initializers). An initializer is a zero fill (one memory entry, any
-size) plus one store per non-zero scalar; a global larger than 4096 bytes
+size) plus one store per non-zero scalar (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a global larger than 4096 bytes
 whose initializer needs more than 256 such stores holds arbitrary
-initialised bytes instead (an over-approximation; CONFORMANCE.md F8). A `FAILED` that disappears when the mutable globals
+initialised bytes instead (an over-approximation (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); CONFORMANCE.md F8). A `FAILED` that disappears when the mutable globals
 hold their initializers is reported `NEEDS-HARNESS` ("the global state the
-function is called in is an unstated precondition"; `extra.globals`).
+function is called in is an unstated precondition" (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `extra.globals`).
 `stdin`/`stdout`/`stderr` point to valid `FILE` objects.
 
 ### Encodings
@@ -340,7 +381,8 @@ exact (no merge at joins). Each `alloc` instance of the DAG runs at most once
 per path and gets the next constant object id (the Lean `next` counter).
 
 * `MemEncoding::Array` (`EncodeOptions`, unbounded mode): one SMT array
-  from address to cell; ranged writes (`memcpy`, `memset`, arbitrary-byte
+  from address to cell (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); ranged writes (`memcpy`, `memset`, arbitrary-byte
   initialisation) are lambdas. Z3 handles the lambdas of symbolic-length
   `memcpy` poorly (a random pointer program: 53 s vs 0.24 s for Bv), so it
   is not the stage default.
@@ -348,7 +390,8 @@ per path and gets the next constant object id (the Lean `next` counter).
   QF_BV, what the certified back end accepts):
   arrays eliminated. A load is an ite chain over the guarded writes before
   it (read-over-write, as `PrismSem/MemEncode.lean` `menc`), writes to other
-  objects are skipped when both object ids are known; arbitrary initial bytes
+  objects are skipped when both object ids are known (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); arbitrary initial bytes
   are fresh variables with pairwise Ackermann constraints
   (`a = a' → h = h'`). The VCs are QF_BV.
 
@@ -359,23 +402,30 @@ at an input-dependent position followed by a traversal (the destructor,
 `clear()`) did not finish within 240–900 s. `SymMem` now computes, from a
 term's structure alone, a *value set*: at most 32 constants, each under a
 guard, the guards exhaustive and pairwise exclusive, so the term *equals*
-`ite(g1, k1, ite(g2, k2, … kn))` (numerals; `ite`; an extract pushed
-through an `ite` or into the `concat` operands it covers; any other
+`ite(g1, k1, ite(g2, k2, … kn))` (numerals (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `ite` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); an extract pushed
+through an `ite` or into the `concat` operands it covers (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); any other
 bit-vector operation whose operands have value sets, evaluated per
 combination, or position by position when the operands share one guard
-list, e.g. the eight bytes of one chain). Nothing is assumed; each fact is
+list, e.g. the eight bytes of one chain). Nothing is assumed (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); each fact is
 an equality of terms. Uses:
 
 * a load or byte read from an address with a value set reads each constant
-  address under its guard; at a constant address a write to a constant (or
+  address under its guard (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); at a constant address a write to a constant (or
   value-set) address is decided without the solver (equal: the write's
-  guard and the value's guard; different: skipped), a ranged write into
+  guard and the value's guard (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); different: skipped), a ranged write into
   another object is skipped, and `size`/`live`/`kind`/`free` of such a
   pointer are the few objects it can point to;
 * word-level loads: the n bytes at a constant address are built from whole
   writes (`SymMem::word_at`): a store at least as wide that contains them,
   a `memset`/`memcpy`/havoc of constant length that contains them, a
-  whole-object havoc; a narrower write splits the word into halves
+  whole-object havoc (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a narrower write splits the word into halves
   (`word_split`). The value is `ite(cond_j, value_j, …)` over those writes,
   byte for byte the chain `read_cell_log` builds, so a pointer stored and
   loaded again keeps its value set. The uninitialised and type-tag bits
@@ -385,7 +435,8 @@ an equality of terms. Uses:
 
 Measured (single `pir` runs, loaded shared machine, 2026-09-25):
 `map<int,int>` with two elements, `erase(k)` at an input-dependent key, then
-the destructor: did not finish in 900 s, now PROVED in 1.5 s; its MEM-UAF
+the destructor: did not finish in 900 s, now PROVED in 1.5 s (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); its MEM-UAF
 twin (an iterator to the erased element) and a wrong-sum twin are FAILED in
 seconds (doctest `pir: value sets: map erase at an input-dependent
 position`). `testdata/conformance/libc-models/map_contracts.cpp`: 11/11 in
@@ -398,7 +449,8 @@ byte-level chain stays, and so does the cost.
 and class on every property (true and false variants) and that the PIR
 interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
 counterexample. For functions with memory, the k-induction step havocs the
-loop's write footprint ("k-induction with memory" below); a loop that
+loop's write footprint ("k-induction with memory" below) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a loop that
 allocates or frees memory is not attempted (`extra.k_induction =
 "not-attempted (allocation or free in the loop)"`), so it is PROVED only
 when the unwinding assertion closes, else BOUNDED.
@@ -410,7 +462,9 @@ when the unwinding assertion closes, else BOUNDED.
 | `Ptr = (obj, off : BitVec 64)` | packed 16/48 bits (faithful on violation-free runs, above) |
 | `Obj.size/live/data` | `SymMem::Obj::size/alive` + byte cells (`ConcMem` concretely) |
 | `MState.next` (fresh ids from 1) | constant id per `alloc` instance, in encoding order |
-| `MCond.live` / `inBounds` / `atBase` | `obj.live`; `off + n <= obj.size`; `off == 0` in the free checks |
+| `MCond.live` / `inBounds` / `atBase` | `obj.live` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `off + n <= obj.size` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `off == 0` in the free checks |
 | `mrun` `.load`/`.store` UB (dead or out of bounds) | MEM-UAF / MEM-OOB-* / PTR-NULL-DEREF / PTR-INVALID-DEREF checks |
 | `mrun` `.free` UB (dead or not at base) | MEM-DOUBLE-FREE / MEM-INVALID-FREE checks |
 | `MemEncode.menc` select chains, `MSym.WF` congruence | `MemEncoding::Bv` read-over-write + Ackermann constraints |
@@ -433,12 +487,15 @@ leading comment lines of its body:
 // requires: \valid(p + (0..7))          8 elements
 // requires: \valid(p)                   one element
 // requires: \valid_read(p + (0..n-1))   read-only (writes are MEM-WRITE-CONST)
-/*@ requires \valid(p + (0..n-1)); */   ACSL block
+/*@ requires \valid(p + (0..n-1)) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); */   ACSL block
 ```
 
-With `--pir-drafts` (opt-in; the default keeps Law 6's NEEDS-HARNESS) and
+With `--pir-drafts` (opt-in (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the default keeps Law 6's NEEDS-HARNESS) and
 without such a clause (C units), the deterministic template harness draft
-(`ai::draft_harness`, the one the `harness` stage uses; never an LLM here,
+(`ai::draft_harness`, the one the `harness` stage uses (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); never an LLM here,
 Law 4) may supply the size: "`a` points to exactly `n` int elements"
 (a length parameter) with its drafted range "`1 <= n <= 4`", or "at least
 K elements" when an early return bounds the index. A size read off the
@@ -450,9 +507,11 @@ precondition was invented), never FAILED.
 
 The element size is that of the first access through `p` in the IR. `p` is
 bound to a fresh `extern` object of `max(n, 0) × size` bytes, initialised
-with arbitrary bytes, 16-byte aligned; several such parameters are distinct
+with arbitrary bytes, 16-byte aligned (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); several such parameters are distinct
 objects. A proof is then **PROVED-ASSUMING**, never PROVED, with every
-assumption in `extra.assumptions` and the message; a violation is FAILED
+assumption in `extra.assumptions` and the message (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a violation is FAILED
 under the stated precondition. Translation validation does not replay such
 functions (`tv = PARTIAL`).
 
@@ -463,7 +522,8 @@ Law 6 stays the default: a pointer parameter without a `requires` clause is
 `--pir-harness` gives it one, generated from the IR, so a function such as
 `int f(struct e1000_hw *hw)` produces verification conditions and a verdict. It
 extends the `requires` mechanism (same contract objects, same PROVED-ASSUMING
-rule); a `requires` clause or a `--pir-drafts` draft still wins for the
+rule) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a `requires` clause or a `--pir-drafts` draft still wins for the
 parameters it covers.
 
 The planner (`src/prism/pir/harness.cpp`) reads the function's own IR and
@@ -483,7 +543,8 @@ the module functions it passes the pointer to (three calls deep):
   pointer is stored into the field, down to `--pir-harness-depth` levels
   (default 2) and 32 objects per parameter. Deeper fields, and fields with
   no type evidence (function pointers, fields only compared with NULL), stay
-  arbitrary values; dereferencing one is a violation of the harness. The
+  arbitrary values (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); dereferencing one is a violation of the harness. The
   objects are distinct from each other.
 * Not harnessable: a negative offset from the parameter (`container_of`), an
   object larger than the pointer model allows: `UNENCODED: automatic pointer
@@ -492,9 +553,12 @@ the module functions it passes the pointer to (three calls deep):
 Every choice is a line of `extra.assumptions`, ending `(auto harness)`: the
 object's size and how the type was found, one line per nested object, the
 depth bound, and the pointer fields left arbitrary. A proof is
-`PROVED-ASSUMING`, never `PROVED`; `BOUNDED` stays `BOUNDED` with the
-assumptions listed; a violation is reported `NEEDS-HARNESS` (the harness was
-invented, as for drafts; the original is in `extra.verdict_under_draft`).
+`PROVED-ASSUMING`, never `PROVED` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `BOUNDED` stays `BOUNDED` with the
+assumptions listed (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a violation is reported `NEEDS-HARNESS` (the harness was
+invented, as for drafts (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the original is in `extra.verdict_under_draft`).
 Translation validation does not replay these functions, and the Lean export
 marks them `L unsupported automatic pointer harness` (see "Lean coverage").
 
@@ -507,20 +571,26 @@ no definitions) when the stage ends, in one write, and rewrites
 
 | field | meaning |
 |---|---|
-| `schema`, `record` | `prism-pir-jsonl/1`; `function` or `unit` |
+| `schema`, `record` | `prism-pir-jsonl/1` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `function` or `unit` |
 | `unit` | the unit's path relative to the scan root |
-| `function`, `start_line`, `end_line`, `key` | source name; first and last source line (`null` when unknown); `unit:start-end` |
+| `function`, `start_line`, `end_line`, `key` | source name (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); first and last source line (`null` when unknown) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `unit:start-end` |
 | `engine` | `prism-pir` |
 | `verdict` | the exact PRISM verdict name ([VERDICTS.md](VERDICTS.md)) |
-| `level` | proof level, below; `null` when the function did not compile |
-| `outcome` | `complete`, `timeout`, or `memory-limit`; the batch driver adds `killed`, `crash` |
+| `level` | proof level, below (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `null` when the function did not compile |
+| `outcome` | `complete`, `timeout`, or `memory-limit` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the batch driver adds `killed`, `crash` |
 | `message`, `class`, `counterexample` | as in report.json |
 | `assumptions` | the complete list: harness choices (`(auto harness)`, `requires`, drafts), the loop bound, strict-aliasing state, libm and exception notes, the global-state policy, inlined callees, the unknown-call policy (assume nothing: an unmodelled call makes the function `NEEDS-HARNESS`), front-end flags |
 | `conditional` | a proof that holds only under assumptions (`PROVED-ASSUMING`) |
 | `harness` | `{auto, pointer_parameters_bound}` |
 | `vcs` | number of properties (verification conditions) the encoding checked |
 | `unwind` | loop unwinding bound used |
-| `time_s`, `peak_mb` | wall time of translation plus check; peak resident set of the process while the function ran (exact with `--jobs 1`) |
+| `time_s`, `peak_mb` | wall time of translation plus check (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); peak resident set of the process while the function ran (exact with `--jobs 1`) |
 | `lean` | `{supported, reason}`: see "Lean coverage" |
 | `certificate` | `checked` for PROVED-CERTIFIED |
 
@@ -528,14 +598,17 @@ no definitions) when the stage ends, in one write, and rewrites
 
 | verdict | level |
 |---|---|
-| `PROVED`, `PROVED-UNBOUNDED`, `PROVED-CERTIFIED`, `PROVED-ASSUMING` | L2: no UB or memory error on any input, unbounded; with assumptions (`conditional`) relative to them |
+| `PROVED`, `PROVED-UNBOUNDED`, `PROVED-CERTIFIED`, `PROVED-ASSUMING` | L2: no UB or memory error on any input, unbounded (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); with assumptions (`conditional`) relative to them |
 | `BOUNDED` | L1: nothing found within the stated bound |
-| `FAILED`, `NEEDS-HARNESS`, `UNKNOWN`, `TIMEOUT`, `NOFUNC`, others | L0: the function compiled and was translated or tried; no claim |
+| `FAILED`, `NEEDS-HARNESS`, `UNKNOWN`, `TIMEOUT`, `NOFUNC`, others | L0: the function compiled and was translated or tried (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); no claim |
 | unit-level rows, functions cut out by the front end | `null` |
 
 L3 (a contract) is never produced by `pir` today: a `requires` clause is an
 assumption, not a proved `ensures`. `PROVED-CERTIFIED` has the level of
-`PROVED`; the difference is trust (`certificate`).
+`PROVED` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the difference is trust (`certificate`).
 
 **memory-limit.** PRISM's own budget (`PRISM_MEM_BUDGET_MB`, `membudget.hpp`)
 ends a function's check as `UNKNOWN` ("memory budget reached", "machine memory
@@ -547,15 +620,20 @@ fresh-process re-run uses what is left of the same budget).
 
 Per function, `lean.supported` says whether its translation is inside the
 Lean-proved LLVM fragment, i.e. whether `export_lean` would write the pair
-without `L unsupported <why>` (the test `PRISM_PIR_LEAN_EXPORT` applies; the
-JSONL field needs no environment variable and writes no file; the proofs are
-untouched). `lean.reason` is the `<why>`; a function with no translation says
+without `L unsupported <why>` (the test `PRISM_PIR_LEAN_EXPORT` applies (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the
+JSONL field needs no environment variable and writes no file (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the proofs are
+untouched). `lean.reason` is the `<why>` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a function with no translation says
 `not translated to PIR (UNENCODED: ...)`, an ILP32 task says LP64 only, an
 automatic pointer harness says `automatic pointer harness ...`. The summary
 file counts `lean.inside_proved_fragment`, `lean.outside` and
-`lean.outside_by_reason`; `scripts/pir_batch.sh --summary` does the same over
+`lean.outside_by_reason` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `scripts/pir_batch.sh --summary` does the same over
 all shards. `supported: false` means the result rests on the C++ translator
-alone; `true` means on the translator that the Lean correspondence checker
+alone (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `true` means on the translator that the Lean correspondence checker
 compares with the proved one.
 
 ## Batch mode (`scripts/pir_batch.sh`)
@@ -570,26 +648,33 @@ scripts/pir_batch.sh --out /data/pir-run --summary
   --jsonl TMP` in its own process, so its memory goes back to the system when
   it ends.
 * **One record per function** in append-only shards
-  `OUT/shards/shard-NN.jsonl` (`--shards`, default 16; a unit always goes to
-  the same shard; each unit is appended with one locked write). A unit that
+  `OUT/shards/shard-NN.jsonl` (`--shards`, default 16 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a unit always goes to
+  the same shard (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); each unit is appended with one locked write). A unit that
   timed out or was killed gets one `record: unit` line with
   `outcome: timeout|killed|crash`.
 * **Resumable**: `OUT/manifest.tsv` (`unit, status, records, seconds, time`) is
-  written after the unit's records, so it is the commit; a stopped run skips
-  the units it lists; `--retry-failed` runs again those whose status is not
+  written after the unit's records, so it is the commit (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a stopped run skips
+  the units it lists (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `--retry-failed` runs again those whose status is not
   `done` (`--summary` keeps the last record of a unit and function).
   Resumption is per unit.
 * **Memory** is governed by PRISM's own budget, not by the kernel:
-  `PRISM_MEM_BUDGET_MB` per worker; a function that reaches it ends `UNKNOWN`,
+  `PRISM_MEM_BUDGET_MB` per worker (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a function that reaches it ends `UNKNOWN`,
   `outcome: memory-limit`, and is not retried with more. Do not use
   `ulimit -v` / `prlimit --as` for PRISM: its budget derives from RLIMIT_AS,
   so it reports "memory budget reached" at a fraction of the address-space
   limit (address space is not memory) and Z3 fails at tiny RSS. There is no
   fixed per-process cap: `--mem-mb auto` (default) runs the first
   `--calibrate` units (3) alone with a 4096 MB budget and sets the budget to
-  1.5 x their measured peak RSS + 256 MB (at least 1024 MB) (`OUT/calibration.env`); `--mem-mb N`
+  1.5 x their measured peak RSS + 256 MB (at least 1024 MB) (`OUT/calibration.env`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `--mem-mb N`
   overrides. `--workers auto` = `floor((MemAvailable - 10 GB) / budget)`, at
-  most `--max-workers` (default 5, the current process limit; at most 32). A
+  most `--max-workers` (default 5, the current process limit (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); at most 32). A
   worker starts only if MemAvailable stays above `--min-avail-mb` (10240) after
   every running worker has grown to its full budget.
 * Scratch and results are under `--out` (use a data disk or RAM).
@@ -613,22 +698,33 @@ checks inside a model report the call site's line and name the model
 
 | models | behaviour |
 |---|---|
-| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL; the failure is recorded, `__prism_alloc_failed`, so a later `abort()` is not reported); calloc zero-fills and checks `n*size` overflow; `realloc(p, 0)` frees p and returns NULL (glibc) |
-| `operator new/new[]/delete/delete[]` (`_Znwm` … `_ZdaPvm`) | never NULL; kinds checked against the matching delete |
+| `malloc`, `calloc`, `realloc`, `free` | may fail (NULL (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the failure is recorded, `__prism_alloc_failed`, so a later `abort()` is not reported) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); calloc zero-fills and checks `n*size` overflow (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `realloc(p, 0)` frees p and returns NULL (glibc) |
+| `operator new/new[]/delete/delete[]` (`_Znwm` … `_ZdaPvm`) | never NULL (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); kinds checked against the matching delete |
 | `strlen`, `strnlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strdup` | C loops over the bytes (bounds and termination checked) |
-| `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` | ranges checked; memcpy overlap |
+| `memcpy`, `memmove`, `memset`, `memcmp`, `memchr` | ranges checked (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); memcpy overlap |
 | `abs`, `labs`, `llabs` | `-x` is a checked `sub nsw` (abs(INT_MIN)) |
-| `atoi`, `atol`, `strtol`, `strtoul` | argument must be a string; value unknown |
+| `atoi`, `atol`, `strtol`, `strtoul` | argument must be a string (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); value unknown |
 | `getenv` | NULL or a read-only string of unknown contents |
 | `rand`, `srand` | unknown non-negative value |
-| `fopen`, `fclose`, `fgets`, `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `fputc`, `putc`, `putchar`, `fputs`, `puts`, `fflush` | fopen may fail; FILE objects checked (double fclose); input bytes unknown |
-| `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` (translator, `libc_format.cpp`) | literal format: argument count and IR types per conversion (FMT-ARGS), `%n` (FMT-PERCENT-N), `%s` arguments must be strings, sprintf/snprintf write up to the maximal output length into the buffer; non-literal format, `v*printf`, `scanf` are UNENCODED |
+| `fopen`, `fclose`, `fgets`, `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `fputc`, `putc`, `putchar`, `fputs`, `puts`, `fflush` | fopen may fail (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); FILE objects checked (double fclose) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); input bytes unknown |
+| `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` (translator, `libc_format.cpp`) | literal format: argument count and IR types per conversion (FMT-ARGS), `%n` (FMT-PERCENT-N), `%s` arguments must be strings, sprintf/snprintf write up to the maximal output length into the buffer (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); non-literal format, `v*printf`, `scanf` are UNENCODED |
 
 Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
 
 **Kernel API specs.** `--kernel-api linux|freebsd` additionally links the specs in
-`src/prism/pir/models/kernel/` (allocation, locking, user access, MMIO, delays, logging, BUG/WARN; 150 functions), each
-a named assumption in the verdict; `--assume-unknown-calls` is the opt-in for calls without a spec (result and pointed-to
+`src/prism/pir/models/kernel/` (allocation, locking, user access, MMIO, delays, logging, BUG/WARN (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); 150 functions), each
+a named assumption in the verdict (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `--assume-unknown-calls` is the opt-in for calls without a spec (result and pointed-to
 objects havocked, listed as an assumption). Both are off by default. Table, sources, assumptions and the
 needs-review list: [KERNEL_MODELS.md](KERNEL_MODELS.md).
 
@@ -641,7 +737,8 @@ on them, and on a loaded machine the per-unit limit was not always enough
 because `operator new`'s model was missing from that run). The lowered IR is
 kept on disk (`$XDG_CACHE_HOME/prism/pir-models/<key>/` or
 `~/.cache/prism/pir-models/<key>/`, the key a hash of the model sources, the
-front end's version and paths; written to a temporary name and renamed, so
+front end's version and paths (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); written to a temporary name and renamed, so
 concurrent runs never read a partial file), so later runs reuse it without
 running clang. If the models still cannot be built, the stage records one
 ERROR row saying why (Law 7), and every function whose translation stopped
@@ -665,7 +762,8 @@ on load, any other subdirectory of `pir-models` that fails the same check is
 removed too, so older v1/v2 keys and partial trees need no manual delete.
 
 **C++ library.** C++ units are compiled with `-D_GLIBCXX_ASSERTIONS`, which
-turns on libstdc++'s own precondition checks; library code is ordinary IR
+turns on libstdc++'s own precondition checks (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); library code is ordinary IR
 and is inlined (depth 12 for C++). A reachable `std::__glibcxx_assert_fail`
 is a violation: bounds (`__n < this->size()`, `std::span`, `std::array`
 `operator[]`) are MEM-OOB-READ, `std::optional::operator*` on an empty
@@ -678,7 +776,8 @@ class or one of its bases catches them. With this, `std::vector`
 (`operator[]`), `std::span`, `std::array`, `std::optional` (`operator*`),
 `std::unique_ptr` (`operator*`) and `std::string_view` work
 (`testdata/pir/mem_stl.cpp`). The platform C++ library is
-libstdc++ (D7, Linux); libc++ would need the same treatment of
+libstdc++ (D7, Linux) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); libc++ would need the same treatment of
 `_LIBCPP_HARDENING_MODE`.
 
 ### C++ library models (roadmap 2.6)
@@ -698,16 +797,21 @@ behaviour the real library can:
 
 * **`<vector>`** (`std::vector<T, std::allocator<T>>`): a plain three-pointer
   implementation of the whole C++23 interface with libstdc++ 13's own
-  capacity policy (`reserve`/`assign`/copy allocate exactly; growth is
+  capacity policy (`reserve`/`assign`/copy allocate exactly (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); growth is
   `size + max(size, n)` clamped to `max_size()`), so the same insertions
-  reallocate and `capacity()`/`data()` read the same values; storage from
+  reallocate and `capacity()`/`data()` read the same values (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); storage from
   `std::allocator<T>` (the `operator new/delete` models), so a pointer,
   reference or iterator kept across a reallocation points into a freed
-  object and its use is **MEM-UAF** (iterator invalidation); the same
+  object and its use is **MEM-UAF** (iterator invalidation) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the same
   exceptions (`length_error`, `out_of_range` from `at`) with the strong
-  guarantee for throwing element copies; the same element construction and
+  guarantee for throwing element copies (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the same element construction and
   destruction order (relocation for nothrow-movable elements, move-if-noexcept
-  otherwise); the `_GLIBCXX_ASSERTIONS` preconditions with libstdc++'s
+  otherwise) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the `_GLIBCXX_ASSERTIONS` preconditions with libstdc++'s
   condition text (`operator[]`: `__n < this->size()` → MEM-OOB-READ;
   `front`/`back`/`pop_back`: `!this->empty()` → FUNC-CONTRACT) plus the
   standard's preconditions on `insert`/`erase` positions (an iterator into
@@ -720,28 +824,36 @@ behaviour the real library can:
   sizes, capacities, contents and constructor/destructor calls with both
   (`tests/cxx_models/vector_trace.cpp`, run by `tests/cpp/test_cxx_models.cpp`).
 * **`<map>`, `<set>`** (`std::map`, `std::multimap`, `std::set`,
-  `std::multiset` with `std::allocator`; `prism_tree.h` is their shared
+  `std::multiset` with `std::allocator` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `prism_tree.h` is their shared
   core). libstdc++'s red-black tree erases and copies recursively, which the
   translator does not inline (`UNENCODED: recursive call`), so every
   associative container was `NEEDS-HARNESS`. The model keeps the elements in
   a sorted, circular, doubly linked list of heap nodes around a sentinel
-  header inside the container object (the `end()` position); lookups are
+  header inside the container object (the `end()` position) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); lookups are
   linear. Everything the standard makes observable is libstdc++ 13's: the
   order (`key_compare`), uniqueness, where an equivalent key goes in a
-  multimap/multiset (after the equivalent keys; a hinted insert with
-  libstdc++'s exact `_M_get_insert_hint_equal_pos` rule); one heap node per
+  multimap/multiset (after the equivalent keys (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a hinted insert with
+  libstdc++'s exact `_M_get_insert_hint_equal_pos` rule) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); one heap node per
   element from `std::allocator` (the `operator new/delete` models), so
   insertion never invalidates and `erase` frees exactly the erased node — an
   iterator, pointer or reference to an erased element points into a freed
   object and its use is **MEM-UAF**, as it is undefined behaviour with
   libstdc++ (`clear()`, the destructor and assignment free every node of the
-  target); when elements are constructed (`emplace`/`emplace_hint`/
+  target) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); when elements are constructed (`emplace`/`emplace_hint`/
   `insert(P&&)` build the node first and drop it if the key exists;
   `insert(value_type)`, `try_emplace`, `operator[]`, `insert_or_assign` and
-  `emplace(key, mapped)` look up first); a throwing element copy leaves the
+  `emplace(key, mapped)` look up first) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a throwing element copy leaves the
   container unchanged, except copy assignment, which leaves the target empty
-  as libstdc++'s node-reusing assignment does; `max_size()` from the size of
-  libstdc++'s node; `map::at`'s `out_of_range`. Preconditions are checked as
+  as libstdc++'s node-reusing assignment does (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `max_size()` from the size of
+  libstdc++'s node (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `map::at`'s `out_of_range`. Preconditions are checked as
   `_GLIBCXX_ASSERTIONS` checks (FUNC-CONTRACT): dereferencing or incrementing
   `end()`, decrementing `begin()`, `erase(end())`, and an iterator or hint of
   another container (every node records its container). Not the same, and
@@ -755,7 +867,8 @@ behaviour the real library can:
   trace with libstdc++ and with the model under ASan/UBSan, and an iterator
   to an erased element is a heap-use-after-free with both.
 * **`std::string`** (`bits/basic_string.tcc`). `<string>` is reached from
-  every iostream/exception header, so the class cannot be swapped; but under
+  every iostream/exception header, so the class cannot be swapped (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); but under
   `_GLIBCXX_ASSERTIONS` libstdc++ disables its explicit-instantiation
   declarations for `basic_string` (and C++20 code instantiates it
   implicitly anyway), so its out-of-line members are compiled into the unit
@@ -764,7 +877,8 @@ behaviour the real library can:
   `memcpy`/`memmove` of a symbolic length (`traits_type::copy`), which PIR
   encodes as a ranged copy the solver handles slowly (`cxx_string_substr`
   timed out at 180 s). libstdc++'s `<string>` includes
-  `<bits/basic_string.tcc>` after the class definition; the model directory
+  `<bits/basic_string.tcc>` after the class definition (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the model directory
   has a file of that name, so the include reaches PRISM's definitions of
   those members (`_M_create`, the three `_M_construct`s, `_M_assign`,
   `_M_mutate`, `_M_erase`, `_M_append`, `_M_replace`, `_M_replace_aux`,
@@ -777,7 +891,8 @@ behaviour the real library can:
   with the same messages, the same results for arguments that alias the
   string itself. The class body, its inline members and its assertions stay
   libstdc++'s. Only the new ABI is modelled (the old copy-on-write string
-  includes libstdc++'s file); `operator>>`/`getline` stay libstdc++'s
+  includes libstdc++'s file) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `operator>>`/`getline` stay libstdc++'s
   explicit instantiations (they need iostreams). Differential test:
   `tests/cxx_models/string_trace.cpp` (constructors, the growth sequence,
   `reserve`/`shrink_to_fit`/`resize`, every modifier including
@@ -817,7 +932,8 @@ Encoder support added for the map/set models (and user code alike):
   `equal_range` — is kept as two variables: a call returning one, `load`
   and `store` of one (field by field, the padding is not read),
   `insertvalue`/`extractvalue`, and `ret` of one from an inlined callee
-  (continuation phis per field; a pointer field is stack-escape checked
+  (continuation phis per field (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a pointer field is stack-escape checked
   like a returned pointer). Before, any such call was `UNENCODED: call @f
   returning { ptr, i8 }`. Other aggregates stay `UNENCODED`.
 * **The unwind tried first.** The unrolled program grows with the unwind to
@@ -827,7 +943,8 @@ Encoder support added for the map/set models (and user code alike):
   the requested unwind is larger. Only answers that are exact at the
   requested unwind too are taken from it: PROVED with every loop closed (no
   path reaches the unwinding cut, so a larger unwind adds no path) and
-  FAILED (the violating path exists at any larger unwind); `extra.unwind`
+  FAILED (the violating path exists at any larger unwind) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `extra.unwind`
   then says 4 and `extra.unwind_requested` the requested bound. Anything
   else (BOUNDED — k-induction is not attempted in the first try —, unknown,
   a timeout) is decided at the requested unwind exactly as before
@@ -839,7 +956,8 @@ Encoder support added for the map/set models (and user code alike):
 
 The models are checked by PRISM itself: `testdata/conformance/libc-models/`
 holds contract harnesses that `#include` the model sources
-(`string.cpp`, `stdlib.cpp`, `stdio.cpp`; the C++ allocation models through the
+(`string.cpp`, `stdlib.cpp`, `stdio.cpp` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the C++ allocation models through the
 linked copy of `stdlib.cpp`, since their names are mangled) and state each
 function's contract from the C standard with `assert()`. Every harness
 builds its own objects with symbolic contents and symbolic sizes/positions
@@ -857,21 +975,26 @@ unterminated string) that must be refuted for the class they plant
 the conformance suite (`build/prism-qa conformance`).
 
 **Scope of the proofs.** The objects in the harnesses have `N` bytes
-(`harness.h`, default `N = 4`; `2N`/`2N + 1` for a `strcat`/`strncat`
+(`harness.h`, default `N = 4` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `2N`/`2N + 1` for a `strcat`/`strncat`
 destination), so the model loops run at most `2N + 1` times and close within
 the unwinding bound: the verdict is PROVED (the unwinding assertion is
 proved), but what is proved is the contract **for every content, position
 and length of objects up to N bytes**, not for strings of arbitrary length.
-That is a size-bounded result; it is not claimed as a proof for all sizes
+That is a size-bounded result (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); it is not claimed as a proof for all sizes
 (Law 2). k-induction alone (including the memory-writing loops) does not
-close the byte loops of the string models on a symbolic-length object; loop
+close the byte loops of the string models on a symbolic-length object (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); loop
 invariants do (next paragraph but one, "Size-unbounded string contracts").
 
 `prism-qa libc-bounds` re-runs every `_true` harness alone with
 `-DN=4, 8, 16, 32, 64` and `--unwind 2N + 2` and reports the largest N still
 PROVED within the conformance timeout (180 s per run). On 2026-09-23 every
 size-parametric harness was PROVED at N = 4, 8 and 16 (longest run 85 s:
-`calloc` and `realloc` at N = 8/16; the string models 1–8 s); 16 is the
+`calloc` and `realloc` at N = 8/16 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the string models 1–8 s) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); 16 is the
 bound reported below (larger sizes were not part of that sweep).
 
 **Size-unbounded contracts.** The ranged models — `memcpy`, `memmove`,
@@ -884,7 +1007,8 @@ only up to N.
 the byte-loop models on heap objects of a symbolic size below 2^40 with
 arbitrary contents: `NEW_STR(s, n, k)` havocs n bytes (`__prism_havoc_bytes`),
 assumes the first k non-NUL in a read-only loop and stores a NUL at k, so a
-string of any length and content; positions in the contract are the
+string of any length and content (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); positions in the contract are the
 harness's parameters (the assert states it for every position). Neither the
 harness's loops nor the model's close within any unwinding bound: a
 PROVED-UNBOUNDED there comes from loop invariants proved inductive by
@@ -892,7 +1016,8 @@ Houdini ("Loop invariants"), e.g. for `strcpy` `i ≤ k`, `∀x < i: d[x] ==
 s[x]`, `∀x < i: d[x]` initialised, and the harness loop's `∀x < i: s[x] !=
 0`, and it holds for every size in the range. The contracts are the ones of
 the size-bounded harnesses, stated for objects of any size (`strcmp`/`strncmp`
-on two strings equal except at one position j, and a proper prefix; `memcmp`
+on two strings equal except at one position j, and a proper prefix (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `memcmp`
 on a copy with one byte changed). Each has false twins refuted for the class
 they plant, including adversarial loops: a length loop that reads one past
 the terminator, an off-by-one copy loop writing one past the destination,
@@ -913,39 +1038,55 @@ Results (C++ engine, `pir` stage, 2026-09-24):
 | `strncmp` | n = 0 gives 0, equality up to n, antisymmetric | PROVED (≤ 16) | "ignores n" (FUNC-CONTRACT) |
 | `strchr` | first `(char)c`, NUL included | PROVED (≤ 16) | `strchr(s, 0) == NULL` (FUNC-CONTRACT) |
 | `strrchr` | last `(char)c` | PROVED (≤ 16) | "first occurrence" (FUNC-CONTRACT) |
-| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 16); **any size < 2^40** (`memcpy_any_size_true`) | overlap (MEM-OVERLAP), also at any size |
-| `memmove` | overlapping copy as through a temporary | PROVED (≤ 16); any size < 2^40 | source too short (MEM-OOB-READ/WRITE) |
-| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 16); any size < 2^40 | "stores the int" (FUNC-CONTRACT), one past a heap object of any size (MEM-OOB-WRITE) |
+| `memcpy` (`__prism_memcpy`) | n bytes copied, rest untouched, returns d | PROVED (≤ 16) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); **any size < 2^40** (`memcpy_any_size_true`) | overlap (MEM-OVERLAP), also at any size |
+| `memmove` | overlapping copy as through a temporary | PROVED (≤ 16) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); any size < 2^40 | source too short (MEM-OOB-READ/WRITE) |
+| `memset` (`__prism_memset`) | `(unsigned char)c` into n bytes | PROVED (≤ 16) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); any size < 2^40 | "stores the int" (FUNC-CONTRACT), one past a heap object of any size (MEM-OOB-WRITE) |
 | `memcmp` | sign of first difference as `unsigned char` | PROVED (≤ 16) | "stops at NUL" (FUNC-CONTRACT) |
 | `memchr` | first `(unsigned char)c` in n bytes | PROVED (≤ 16) | n past the object (MEM-OOB-READ) |
 | `strdup` | NULL or a distinct copy | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
-| `malloc` / `free` | NULL or n writable bytes; `free(NULL)` | PROVED (≤ 16) | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
-| `calloc` | zero-filled; `n*size` overflow gives NULL | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
-| `realloc` | keeps min(old, new) bytes; old object valid on failure | PROVED (≤ 16); prefix kept for any sizes < 2^40 | old pointer after success (MEM-UAF), grown tail read (UNINIT-READ, also at any size) |
+| `malloc` / `free` | NULL or n writable bytes (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `free(NULL)` | PROVED (≤ 16) | one past the end (MEM-OOB-WRITE), read before write (UNINIT-READ), double free, free of a stack array |
+| `calloc` | zero-filled (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `n*size` overflow gives NULL | PROVED (≤ 16) | unchecked NULL (PTR-NULL-DEREF) |
+| `realloc` | keeps min(old, new) bytes (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); old object valid on failure | PROVED (≤ 16) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); prefix kept for any sizes < 2^40 | old pointer after success (MEM-UAF), grown tail read (UNINIT-READ, also at any size) |
 | `realloc(NULL, n)` | behaves as malloc(n) | PROVED (≤ 16) | read before write (UNINIT-READ) |
-| `realloc(p, 0)` | frees p, returns NULL (glibc; the model's documented choice) | PROVED | p used after (MEM-UAF), p freed again (MEM-DOUBLE-FREE) |
-| `realloc` shrink / grow | shrink keeps the first m bytes, exactly m; grow keeps all old bytes, tail writable | PROVED (≤ 16) | old size written after a shrink (MEM-OOB-WRITE), grown tail read (UNINIT-READ), realloc of a stack array (MEM-INVALID-FREE), of a freed pointer (MEM-DOUBLE-FREE) |
+| `realloc(p, 0)` | frees p, returns NULL (glibc (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the model's documented choice) | PROVED | p used after (MEM-UAF), p freed again (MEM-DOUBLE-FREE) |
+| `realloc` shrink / grow | shrink keeps the first m bytes, exactly m (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); grow keeps all old bytes, tail writable | PROVED (≤ 16) | old size written after a shrink (MEM-OOB-WRITE), grown tail read (UNINIT-READ), realloc of a stack array (MEM-INVALID-FREE), of a freed pointer (MEM-DOUBLE-FREE) |
 | `abs`, `labs`, `llabs` | `|x|` for x ≠ MIN | PROVED | `abs(INT_MIN)`, `labs(LONG_MIN)`, `llabs(LLONG_MIN)` (INT-SIGNED-OVF) |
-| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]`; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ) |
+| `strtol`, `strtoul`, `atoi`, `atol` | `*end` within `[s, s + strlen(s)]` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ) |
 | `rand`, `srand` | 0 ≤ r | PROVED | "r < 100" (FUNC-CONTRACT) |
-| `getenv` | NULL or a string | **BOUNDED** (the returned string has unknown length; `strlen` over it does not close) | unchecked NULL (PTR-NULL-DEREF) |
-| `fopen`, `fclose`, `fflush` | NULL or an open stream; fflush(NULL/f) and fclose return 0 or EOF | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL, `fclose(NULL)` (PTR-NULL-DEREF), fflush of a closed stream (MEM-UAF) |
+| `getenv` | NULL or a string | **BOUNDED** (the returned string has unknown length (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `strlen` over it does not close) | unchecked NULL (PTR-NULL-DEREF) |
+| `fopen`, `fclose`, `fflush` | NULL or an open stream (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); fflush(NULL/f) and fclose return 0 or EOF | PROVED | double `fclose` (MEM-DOUBLE-FREE), unchecked NULL, `fclose(NULL)` (PTR-NULL-DEREF), fflush of a closed stream (MEM-UAF) |
 | `fgets` | returns buf, NUL within n | PROVED (≤ 16) | n larger than the buffer (MEM-OOB-WRITE) |
 | `fread`, `fwrite` | return ≤ nmemb | PROVED (≤ 16) | fread past the buffer (MEM-OOB-WRITE), fwrite past the buffer (MEM-OOB-READ) |
 | `fgetc`, `getc`, `getchar` | EOF or 0..255 | PROVED | "never EOF" (FUNC-CONTRACT) |
 | `fputc`, `putc` | `(unsigned char)c` or EOF | PROVED | "returns c" (FUNC-CONTRACT), write after fclose (MEM-UAF), NULL stream (PTR-NULL-DEREF) |
-| `fputs` | ≥ 0 or EOF; argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ), "returns the length" (FUNC-CONTRACT) |
-| `putchar`, `puts` | `(unsigned char)c` or EOF; puts ≥ 0 or EOF | PROVED | "never EOF" (FUNC-CONTRACT), unterminated `puts` argument (MEM-OOB-READ) |
+| `fputs` | ≥ 0 or EOF (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); argument a string | PROVED (≤ 16) | unterminated argument (MEM-OOB-READ), "returns the length" (FUNC-CONTRACT) |
+| `putchar`, `puts` | `(unsigned char)c` or EOF (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); puts ≥ 0 or EOF | PROVED | "never EOF" (FUNC-CONTRACT), unterminated `puts` argument (MEM-OOB-READ) |
 | `operator new[]/new/delete[]/delete` | n usable elements, never NULL | PROVED | `delete` of `new[]` (MEM-MISMATCHED-FREE), one past the end (MEM-OOB-WRITE) |
 | sized `operator delete(p, n)` / `delete[](p, n)` (`_ZdlPvm`, `_ZdaPvm`) | release the matching allocation | PROVED | twice (MEM-DOUBLE-FREE), array form of a single `new` (MEM-MISMATCHED-FREE) |
 
 Model change found by the new harnesses: the output functions (`fputc`,
 `putc`, `putchar`, `fputs`, `puts`, `fflush`, `fclose`) never returned EOF,
 so code ignoring a write error was unreachable in the model although the
-real library can fail on any write; they now return EOF on some path, and
+real library can fail on any write (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); they now return EOF on some path, and
 `fclose(NULL)` is a PTR-NULL-DEREF (glibc dereferences it). A model whose
 only memory statement is a range check (`putc(c, NULL)`) crashed the encoder
-("memory statement without memory model"); range checks now mark the
+("memory statement without memory model") (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); range checks now mark the
 function as using memory.
 
 Every function defined in a model file is called by a harness
@@ -969,23 +1110,32 @@ for the C++ library ("C++ library models" above): `vector_contracts.cpp`,
 (push_back across two reallocations, reserve keeps `data()` stable, `at`
 throws iff out of range, erase moves the tail down and returns the next
 position, resize value-initialises and keeps the prefix, copies are
-independent; false twins: `v[size()]`, a pointer kept across a reallocation
+independent (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); false twins: `v[size()]`, a pointer kept across a reallocation
 (MEM-UAF), pop_back/front on empty, `erase(end())`, wrong contracts). All
-PROVED/refuted (2026-09-24; the vector files take 60–460 s per file on a
+PROVED/refuted (2026-09-24 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the vector files take 60–460 s per file on a
 loaded machine, hence their `timeout:` in the task file). `insert` in the
 middle of a vector did not finish within 900 s in the first round (the
-element shift plus the symbolic position); `vector_insert.cpp` (insert at a
+element shift plus the symbolic position) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `vector_insert.cpp` (insert at a
 position 0..3 of a 3-element vector, with a reallocation, and its MEM-UAF
-twin) is in the suite now; measured 2026-09-25 per harness on a loaded
+twin) is in the suite now (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); measured 2026-09-25 per harness on a loaded
 machine: `vector_insert_uaf_false` FAILED MEM-UAF in 146 s,
-`vector_insert_true` did not finish within 1800 s then; on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default the smaller of 60% of RAM and a quarter of RLIMIT_AS), checked before every query (a soft cap; Z3's own `memory_max_size` is twice that, because past it Z3 is not reliably recoverable: `priority_queue_contracts.cpp` under the conformance runner's 4 GB RLIMIT_AS hit SIGSEGV in `Z3_simplify` about one run in two), and a function that starts while the process's Z3 memory is over the cap is UNKNOWN "not checked". Measured 2026-10-29 under 4 GB: `vector_insert` true PROVED / false refuted, `priority_queue_contracts` reports all 7 functions (1 PROVED, 6 UNKNOWN on memory) instead of crashing. `map_contracts.cpp` checks the map/set
-models (insert/operator[]/erase/at/order, multiset counts; false twins: an
+`vector_insert_true` did not finish within 1800 s then (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); on 2026-10-29 it is PROVED at unwind 8 in ~24 s (1.5 GB): the Bv value sets now peel an ite nested under its own condition and single-argument `or`/`and`, retry an operand product with the merged sets when the raw ones exceed `kVsCombos`, and keep up to 64 options (`kVsMax`). An encoder that runs out of memory reports UNKNOWN (Law 7) instead of dying: Z3 is capped at `$PRISM_PIR_MEM_MB` MB (default the smaller of 60% of RAM and a quarter of RLIMIT_AS), checked before every query (a soft cap (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); Z3's own `memory_max_size` is twice that, because past it Z3 is not reliably recoverable: `priority_queue_contracts.cpp` under the conformance runner's 4 GB RLIMIT_AS hit SIGSEGV in `Z3_simplify` about one run in two), and a function that starts while the process's Z3 memory is over the cap is UNKNOWN "not checked". Measured 2026-10-29 under 4 GB: `vector_insert` true PROVED / false refuted, `priority_queue_contracts` reports all 7 functions (1 PROVED, 6 UNKNOWN on memory) instead of crashing. `map_contracts.cpp` checks the map/set
+models (insert/operator[]/erase/at/order, multiset counts (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); false twins: an
 erased element's iterator (MEM-UAF), `*find(absent)`, `--begin()`, a wrong
 order contract). It did not finish within 1200 s before value sets
 (`map_insert_true` alone: no answer in 600 s, every one of its 1,295
-property VCs timing out); with value sets ("Memory model", "Encodings")
+property VCs timing out) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); with value sets ("Memory model", "Encodings")
 all 11 harnesses answer in 13–18 s as one file (7/7 PROVED, 4/4 refuted
-with the planted class; 0.4–2.4 s of solving per harness). On this branch
+with the planted class (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); 0.4–2.4 s of solving per harness). On this branch
 the file first failed to compile against the model headers at all
 (libstdc++ 14's `<stdexcept>` builds a `wstring` from a `const char*`
 range, which `basic_string.tcc`'s pointer fast path did not accept, so the
@@ -1000,18 +1150,22 @@ objects hold at most 4 elements (size-bounded proofs).
 ## C features
 
 * `_Generic`: resolved by clang (`testdata/pir/mem_libc.c:generic_ok` PROVED).
-* VLAs: `alloca T, iN n` with a symbolic size; the size must be positive
-  (checked on the value before its `zext`/`sext`) and below 2^47; the
+* VLAs: `alloca T, iN n` with a symbolic size (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the size must be positive
+  (checked on the value before its `zext`/`sext`) and below 2^47 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the
   object ends at `llvm.stackrestore`.
 * `setjmp`/`longjmp`: exception-like edges ("setjmp/longjmp" below).
 
 ## Floating point (roadmap 2.6)
 
 `half`, `float` and `double` values are PIR bitvectors of width 16/32/64
-holding their IEEE bits (`Var::fp` marks them); `long double` (x86_fp80),
+holding their IEEE bits (`Var::fp` marks them) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `long double` (x86_fp80),
 `__float128`, `bfloat` and vectors stay `UNENCODED`. The encoder uses Z3's
 floating-point theory with round to nearest even (the C default
-environment; PRISM does not model `fesetround`): every FP operator reads its
+environment (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PRISM does not model `fesetround`): every FP operator reads its
 arguments with `(_ to_fp e s)` and gives back the bits of the result through
 a fresh bitvector `b` with `to_fp(b) = result`, so a NaN result has an
 unspecified payload (LLVM's NaN semantics). `frem` is C `fmod` (derived from
@@ -1035,8 +1189,10 @@ calls `__errno_location`, which is `UNENCODED`).
 
 Properties: `fptosi`/`fptoui` whose truncated value is outside the target
 type, or NaN/±inf, is FLOAT-CAST-OVF (always on: C11 6.3.1.4p1 undefined
-behaviour; `-0.9 → unsigned` is fine, it truncates to 0). With
-`--fp-checks` (opt-in; Annex F defines these results) PRISM also reports
+behaviour (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `-0.9 → unsigned` is fine, it truncates to 0). With
+`--fp-checks` (opt-in (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); Annex F defines these results) PRISM also reports
 division by ±0 (FLOAT-DIV-ZERO), a NaN produced from non-NaN operands
 (FLOAT-INVALID) and an infinite result from finite operands
 (FLOAT-OVERFLOW), for `fdiv fadd fsub fmul frem sqrt fma fptrunc`.
@@ -1044,7 +1200,8 @@ division by ±0 (FLOAT-DIV-ZERO), a NaN produced from non-NaN operands
 The interpreter (`fp.cpp`) computes float/double with the host's SSE
 arithmetic (round to nearest even, no excess precision on x86-64) and half
 in double with one final rounding (exact for `+ - * / sqrt` since
-53 ≥ 2·11 + 2); results the encoder leaves open (`fmuladd`, `minnum(+0,-0)`)
+53 ≥ 2·11 + 2) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); results the encoder leaves open (`fmuladd`, `minnum(+0,-0)`)
 taint the value, so translation validation skips inputs that depend on them,
 and an FP return compares NaN with any NaN. Translation validation passes FP
 arguments as LLVM hex literals and draws ordinary values (0.5, -1000.25,
@@ -1061,7 +1218,8 @@ everything inside the call. A throw (`__cxa_throw`, a library
 innermost landing pad whose clauses catch the thrown type — exact typeinfo,
 public unambiguous bases read from the module's `__si_class_type_info` /
 `__vmi_class_type_info` typeinfo, the libstdc++ exception hierarchy,
-`catch (...)` — or that has cleanup code; the frames between the throw and
+`catch (...)` — or that has cleanup code (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the frames between the throw and
 that landing pad are unwound (their locals end). The landing pad's
 `{ ptr, i32 }` value is a phi over those edges (exception pointer and the
 `llvm.eh.typeid.for` selector of the matching clause). The exception object
@@ -1069,7 +1227,8 @@ gets a 32-byte PRISM header in front of the thrown object (type id, the
 Itanium runtime's handler count, negative while rethrown, and the pointer
 the current handler binds): entering a handler sets that pointer to the
 caught subobject (a base at a non-zero offset of multiple inheritance, read
-from the `__vmi_class_type_info` offset; a base behind a virtual base is not
+from the `__vmi_class_type_info` offset (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a base behind a virtual base is not
 modelled: soft stop) or, for a pointer caught by pointer, to the thrown
 pointer's value, and `__cxa_begin_catch` returns it. `__cxa_begin_catch` /
 `__cxa_end_catch` keep a stack of handled exceptions with the runtime's
@@ -1097,7 +1256,8 @@ exception specifications (`filter`, `__cxa_call_unexpected`),
 classes) is modelled as the Itanium ABI `std::type_info` layout
 `{ vptr, __name }` with `__name` the mangled type (`"i"`), as libstdc++'s
 `_ZTS` strings, so `typeid(T).name()`, `==`, `before()` and `std::any`'s
-type check read defined bytes; the vptr bytes are arbitrary.
+type check read defined bytes (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the vptr bytes are arbitrary.
 
 ## Coroutines (roadmap 2.3, 2.6)
 
@@ -1106,7 +1266,8 @@ C++ units run LLVM's coroutine passes (`coro-early`, `coro-split`,
 that allocates its frame with `operator new`, plus `.resume`, `.destroy`
 and `.cleanup` functions that switch on the suspend index stored in the
 frame. A loop around a `co_yield` is re-entered at the suspend point in the
-resume function (a second loop entry); `fix-irreducible` gives such loops a
+resume function (a second loop entry) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `fix-irreducible` gives such loops a
 single header with a dispatch phi, so the encoder's natural-loop unrolling
 applies. PRISM encodes the result like any other code: `coroutine_handle::
 resume()`/`destroy()` are indirect calls through the frame's function
@@ -1114,7 +1275,8 @@ pointers ("Indirect calls"), the frame is a `new` object of the memory
 model (use after `destroy()` and double destroy of the frame are
 memory-model properties), and `llvm.lifetime.end` of a frame temporary
 ends its lifetime (`llvm.lifetime.start` makes its bytes indeterminate
-again and starts a new lifetime of a stack object; a heap object, such as
+again and starts a new lifetime of a stack object (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a heap object, such as
 the frame, already ended stays dead, so a later access is reported, never
 assumed valid). `testdata/pir/coro_gen.cpp`.
 
@@ -1125,11 +1287,13 @@ id in the first 8 bytes of the `jmp_buf` and continues in a new block whose
 phi is the return value (0 on the direct path). `longjmp` reads the id back
 (an unset `jmp_buf` is UNINIT-READ, a bad pointer a memory violation) and
 jumps to the continuation of the site with that id whose frame is still
-active, unwinding the frames in between; the value is `v`, or 1 for
+active, unwinding the frames in between (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the value is `v`, or 1 for
 `v == 0`. A site whose function has returned is C11 7.13.2.1p2 undefined
 behaviour: CTRL-LONGJMP-INVALID. Locals of a function that calls `setjmp`
 stay in memory (pre-mem2reg `@__prism.keep`), so after the jump they hold
-their last stored value, as in the -O0 build; C11 7.13.2.1p3 calls a
+their last stored value, as in the -O0 build (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); C11 7.13.2.1p3 calls a
 non-volatile local modified in between indeterminate, which PRISM does not
 report (a gap listed above). A `longjmp` from code the `setjmp` does not
 dominate makes the control flow irreducible (`UNENCODED`).
@@ -1150,7 +1314,8 @@ pointer with each candidate target and inlines the matching one:
 * otherwise (or when no vtable function fits): every address-taken function
   of the module with the call's signature.
 
-A null pointer is PTR-NULL-DEREF; any other value — a function outside the
+A null pointer is PTR-NULL-DEREF (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); any other value — a function outside the
 candidate set — is the **havoc fallback**: a soft check reported as
 `NEEDS-HARNESS` ("indirect call to a target outside …") when reachable.
 Choosing candidates therefore only affects completeness, never soundness.
@@ -1180,9 +1345,11 @@ for that field, instead of every address-taken function:
 * a field with more than 8 targets is `UNENCODED: indirect call through
   T.field: too many indirect targets (N > 8)`. The limit is `ops_max_targets`
   in `TranslateOptions`, 8 by default.
-* a target defined in the unit is inlined as in the direct case; a target
+* a target defined in the unit is inlined as in the direct case (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a target
   declared but defined elsewhere is an unknown call (`UNENCODED: call @f`, a soft
-  stop of that branch unless `--assume-unknown-calls`); a target the unit does not
+  stop of that branch unless `--assume-unknown-calls`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a target the unit does not
   mention is dropped. The role is reported in the havoc-fallback message.
 * without the option nothing changes.
 
@@ -1190,7 +1357,8 @@ for that field, instead of every address-taken function:
 the clang pass's ops data (`data/clang/linux/ops.tsv.gz`) into this format: one
 row per (struct, field) with the distinct function names that initialise it, role
 = field name, `field_index` empty. Testdata: `testdata/pir/ops_table.c` with
-`ops_table.tsv`; `tests/cpp/test_pir_e2e.cpp` ("--ops-table ...").
+`ops_table.tsv` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `tests/cpp/test_pir_e2e.cpp` ("--ops-table ...").
 
 ## Inline assembly (roadmap 2.6)
 
@@ -1204,15 +1372,18 @@ __asm__("movl %1, %0\n\tandl $7, %0" : "=r"(r) : "r"(x));
 
 `cond` is `true` or comparisons (`== != < <= > >=`) of the output with
 integer constants joined by `&&`. PRISM then assumes the block writes only
-its (integer) output and that `cond` holds afterwards; the contract is
+its (integer) output and that `cond` holds afterwards (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the contract is
 listed in `extra.assumptions` and a proof is **PROVED-ASSUMING**, never
 PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
 
 With `--kernel-api linux|freebsd` an asm without a contract is modelled conservatively instead: its outputs are
 arbitrary, and the objects its pointer operands point into are havocked when it writes through them or has a `memory`
-clobber (memory no operand points into is assumed unchanged); `asm goto` with one label jumps nondeterministically to
-the fallthrough or the label; atomics (`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
+clobber (memory no operand points into is assumed unchanged) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `asm goto` with one label jumps nondeterministically to
+the fallthrough or the label (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); atomics (`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
 instructions. Each use is a named assumption (`asm-havoc: "<constraints>"`, `asm-goto`, `atomics-sequential`,
 `volatile-access`) and a proof is PROVED-ASSUMING. See [KERNEL_MODELS.md](KERNEL_MODELS.md).
 
@@ -1239,7 +1410,8 @@ loop). For a function with memory the header state is the header phis
    and sound: the loop allocates nothing, and a write that reports no
    violation goes to a live, non-`const` object that already exists.
 2. **Havoc.** At the header, every byte of every footprint object gets an
-   arbitrary value and tag (`SymMem::havoc_objects`, both encodings; Bv: one
+   arbitrary value and tag (`SymMem::havoc_objects`, both encodings (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); Bv: one
    fresh cell per read address with Ackermann constraints). Its
    *initialised* flag becomes `old | arbitrary` when every write in the loop
    initialises the bytes it writes (plain stores with a constant all-ones
@@ -1255,7 +1427,8 @@ loop). For a function with memory the header state is the header phis
 
 The base case is the concrete unrolling of `--unwind` iterations (k ≤ unwind).
 A closed step makes the function **PROVED-UNBOUNDED** exactly as for scalar
-loops; an open or unknown step leaves it **BOUNDED** (Law 2). Evidence in the
+loops (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); an open or unknown step leaves it **BOUNDED** (Law 2). Evidence in the
 verdict: `extra.k_induction_memory` (`read-only loop` for an empty footprint,
 else `write footprint havocked`) and `extra.k_induction_footprint` (objects
 havocked, whether the footprint was resolved, and the initialised-flag
@@ -1264,11 +1437,13 @@ mode).
 Soundness in short: on any run whose first violation is at iteration
 N ≥ unwind, the state at header visit N − k agrees with the prefix outside
 the footprint, has the prefix's objects, and has footprint bytes whose
-initialised flags only grew (when every write initialises); the havocked
+initialised flags only grew (when every write initialises) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the havocked
 header state covers it, and the step encoding then follows the run exactly
 for k + 1 iterations, so the step query is satisfiable. The abstract form of
 this argument is `PrismTechniques.KInduction.kinduction_frame_sound`
-(`proofs/techniques`, frame predicate `J`); what the Lean memory semantics
+(`proofs/techniques`, frame predicate `J`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); what the Lean memory semantics
 (`proofs/semantics/PrismSem/Memory.lean`) would still need to prove it for
 PIR is a frame lemma "a loop body with no `alloc`/`free` whose stores all
 target objects in F leaves every other object's bytes, every object's size
@@ -1286,13 +1461,16 @@ when the array was uninitialised before the loop, while one written by the
 last k iterations is seen by the step itself (`array/arr_loop_true` reads
 `a[9]`, written by the final iteration).
 
-Tasks: `testdata/pir/kind_mem.c`; `testdata/conformance/prism/kindmem/` (13
+Tasks: `testdata/pir/kind_mem.c` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `testdata/conformance/prism/kindmem/` (13
 true/false pairs: prefix writes then a read beyond the prefix, even-only
 writes, late out-of-bounds writes, writes through aliasing, selected and
 loaded pointers, `memcpy` of uninitialised bytes, pointer walks, struct
-buffers, globals, frees and allocations inside the loop); doctests `pir mem:
+buffers, globals, frees and allocations inside the loop) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); doctests `pir mem:
 k-induction havocs the write footprint …` (each footprint rule, both
-encodings; mutating the havoc to "no havoc", "assume initialised" or
+encodings (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); mutating the havoc to "no havoc", "assume initialised" or
 "memcpy initialises" makes them fail).
 
 Measured (unwind 8): of the 13 `kindmem` pairs, 8 true functions are
@@ -1301,7 +1479,8 @@ true ones stay BOUNDED: allocation or free in the loop, a `memcpy`, an
 object-granular overwrite, a havocked pointer walk). On the rest of the
 conformance suite two BOUNDED true tasks become PROVED-UNBOUNDED
 (`array/arr_loop_true`, `regress/uninit_elem_unbounded_true`), in
-`testdata/pir` one (`kind_mem.c`); the strict gate has 0 wrong proofs and
+`testdata/pir` one (`kind_mem.c`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the strict gate has 0 wrong proofs and
 `prism-qa soundness` (`--generator inhouse-ptr -n 80`, `--generator
 inhouse -n 60`) finds 0 wrong proofs. Those generators produce few
 single-loop functions that write memory, so a targeted run was added (an
@@ -1321,16 +1500,19 @@ changes the verdict: BOUNDED stays BOUNDED otherwise (Law 2).
 
 **Cut program.** The function is encoded with every loop cut once
 (`Encoding::cut_mode`, unwind 1). At each loop header the *entry* state is
-recorded (the header phis on the entry edges and the memory there); then the
+recorded (the header phis on the entry edges and the memory there) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); then the
 phis and the loop's write footprint are havocked (an arbitrary later header
-visit, the *havoc* state); every back edge is an unwinding cut and records
+visit, the *havoc* state) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); every back edge is an unwinding cut and records
 the *next* state (the phis' incoming values from that latch and the memory
 there). Nested and sequential loops are all cut in the same encoding. The
 write footprint follows "k-induction with memory": objects the provenance
 analysis resolves, else the object of the pointer variable (defined before
 the loop) the target is derived from by copies and checked pointer
 arithmetic (`SymMem::havoc_pointed`, a symbolic object id), else every
-object; it is learnt from the cut encoding and re-checked on it. Loops that
+object (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); it is learnt from the cut encoding and re-checked on it. Loops that
 allocate, free or restore the stack are not attempted
 (`extra.invariants_note`).
 
@@ -1357,7 +1539,8 @@ accesses):
 and in the next state of every back edge (*step*), with the surviving
 candidates of the loop itself assumed in its havocked state. Queries go to
 Z3 in-process (one incremental solver, a selector literal per candidate);
-each satisfiable query drops every candidate its model falsifies; a query
+each satisfiable query drops every candidate its model falsifies (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a query
 without an answer is split, and a single candidate without an answer is
 dropped. Only the fixpoint is used: the function is PROVED-UNBOUNDED when,
 with every survivor assumed at every havocked header (the universal ones
@@ -1367,14 +1550,16 @@ violated (`extra.k_induction = "closed-invariants"`, the survivors in
 `extra.pir_invariants`, `extra.houdini_rounds`, `extra.houdini_candidates`,
 `extra.invariant_footprint`). The whole search gets six times the solver
 timeout (`--timeout`, default 30 s → 180 s) plus at least three for the
-final query; out of time is no proof.
+final query (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); out of time is no proof.
 With a function budget (`PRISM_FUNCTION_BUDGET`) the search stops at 70% of
 what was left of it when Houdini started and the final query gets the rest
 (`PRISM_HOUDINI_FINAL_RESERVE`, a fraction in [0, 0.9], default 0.3;
 `extra.houdini_final_budget` is what it got). Each group of properties in
 the final (and optimistic) query assumes only the candidates of loops whose
 header is encoded before some property of the group (a property encoded
-earlier cannot use them); assuming fewer is only weaker, so UNSAT is still a
+earlier cannot use them) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); assuming fewer is only weaker, so UNSAT is still a
 proof. A group without an answer is split in halves down to single
 properties, each with at most `--timeout`. `PRISM_PIR_DUMP_INVARIANTS=1`
 writes the survivors of a search that did not prove to
@@ -1395,43 +1580,55 @@ cheap without changing what can be proved:
   when nothing is dropped afterwards it *is* the final query. A proof is
   only ever read off the final query at the fixpoint. These queries run in
   a solver of their own (the instances of candidates dropped later never
-  reach the search solver); after two without an answer no more are asked;
+  reach the search solver) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); after two without an answer no more are asked;
   the final query at the fixpoint is asked, as before, in the search solver
   with the survivors' instances only.
 * *Outcome cache* (`<solver cache>/houdini/<sha256>.json`, keyed by the
   function's PIR text, memory encoding, time limit and every candidate's
-  text; off with the solver cache). A proof stores its survivors; the next
+  text (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); off with the solver cache). A proof stores its survivors (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the next
   run starts Houdini from them and checks base, step and the final query
-  again (never taken on trust; `extra.houdini_cache = "hit (proof
+  again (never taken on trust (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `extra.houdini_cache = "hit (proof
   re-checked)"`). A "no proof" is stored only when no time limit or unknown
   answer decided it, and is then taken as it is (`"hit (no proof)"`).
 * *Run budget.* All functions of a run share `PRISM_HOUDINI_BUDGET` seconds
-  of Houdini (default max(3600 s, 120 × `--timeout`); 0: none). A function
+  of Houdini (default max(3600 s, 120 × `--timeout`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); 0: none). A function
   that finds it spent stays BOUNDED with `invariants_note: not attempted
-  (the run's Houdini budget of N s is spent; PRISM_HOUDINI_BUDGET)`; one
+  (the run's Houdini budget of N s is spent (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PRISM_HOUDINI_BUDGET)` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); one
   that starts with less left than its search limit gets what is left.
 * `extra.houdini_seconds` records the time each attempt took.
 
 Measured (C++ engine, loaded shared machine, 2026-09-25): `testdata/`
 (1,069 checked functions): 9 reach Houdini, 7 of them end with "no proof";
 before, each of those ran the full final query ("not implied"), now the
-optimistic query decides them; Houdini total 7.5 s, the same verdicts (971
+optimistic query decides them (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); Houdini total 7.5 s, the same verdicts (971
 PROVED, 14 PROVED-UNBOUNDED, 7 BOUNDED). The pir stage there is dominated
 by the Clang front end, not by Houdini. `strcat`/`strncat` of
 `unbounded_string_contracts.cpp` (4 loops each): BOUNDED before and after at
-the default 30 s (search out of time, 181 s each); with `--timeout 100`
+the default 30 s (search out of time, 181 s each) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); with `--timeout 100`
 the search reaches its fixpoint and the optimistic query is SAT for both
 (after 293 s / 489 s): the templates do not contain the invariant these
 two need, so more time would not prove them.
 
-**Why this is sound.** Positions are encoding (topological) order; on the
+**Why this is sound.** Positions are encoding (topological) order (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); on the
 one path a model makes reachable they are execution order. Take a run and
 its first violation V (if any). By induction over the header visits before
 V, every survivor holds at each of them: the abstract path from the entry to
 that visit follows the run, choosing every earlier loop's havocked state as
 the run's state at that loop's last header visit (true for its survivors by
-induction; memory outside the footprint is the prefix's, the loop allocates
-and frees nothing); a first visit is a base query, a later one a step query
+induction (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); memory outside the footprint is the prefix's, the loop allocates
+and frees nothing) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a first visit is a base query, a later one a step query
 from the previous visit. A base or step query assumes only the havoc
 assumptions of loops whose header comes earlier on the path and that no
 property before the checked point is violated (both true before V).
@@ -1450,14 +1647,16 @@ encoding (`proofs/techniques/PrismTechniques/LoopCut.lean`,
 `LoopCut.loopcut_sound`, docs/PROOFS_TECHNIQUES.md "2b"): nested,
 sequential and multi-exit loops, havoc assumptions guarded by "no
 violation before this header", each query assuming only the loops before
-its point; the premises are that the havoc covers every header state a
+its point (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the premises are that the havoc covers every header state a
 violation-free iteration reaches (the footprint) and that assignments are
 total. The same file proves that the per-statement `assume` guard (S9) is
 the sequential semantics (`LoopCut.encViol_iff`). The encoder facts the
 model relies on are locked to the C++ text by `tests/cpp/test_repolint.cpp`.
 
 **Exported invariants.** `extra.invariant_loops` (the loop's source start
-line and column, from clang's `llvm.loop` metadata; the function's own
+line and column, from clang's `llvm.loop` metadata (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the function's own
 loops only) and `extra.invariant_conjuncts` (per loop: the surviving
 comparisons, masks and differences whose terms are program values by their
 IR name, or constants) let the SV-COMP wrapper write the invariants into a
@@ -1467,44 +1666,73 @@ meaning of the text is the proved bit-vector relation.
 
 Tasks: `testdata/conformance/libc-models/unbounded_string_contracts.cpp` (below),
 doctest `pir: Houdini loop invariants prove symbolic-size byte loops, twins
-refuted` (strlen and copy loops over heap objects of any size; reading one
+refuted` (strlen and copy loops over heap objects of any size (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); reading one
 past the terminator, an off-by-one write, an unterminated string and a write
 through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
-(`loop_long_inv` closes; `loop_long_sum`, whose invariant
+(`loop_long_inv` closes (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `loop_long_sum`, whose invariant
 `2s == i(i-1)` is non-linear, closes through the bounded triangular
 template, admitted only by Houdini and the induction check).
 
 ## Roadmap 2.3 / 2.6 coverage
 
 Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
-(all units); coroutine lowering `coro-early`, `cgscc(coro-split)`,
-`coro-cleanup` and `fix-irreducible` (C++ units); `invoke`/`landingpad` →
+(all units) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); coroutine lowering `coro-early`, `cgscc(coro-split)`,
+`coro-cleanup` and `fix-irreducible` (C++ units) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `invoke`/`landingpad` →
 explicit exception edges (in the translator, "Exceptions"). No optimising
-pass; no `-fsanitize` check insertion (Law 8).
+pass (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); no `-fsanitize` check insertion (Law 8).
 
 | 2.6 row | how PIR handles it | status | evidence |
 |---|---|---|---|
 | Templates, concepts, overloading, `constexpr`/`consteval`, `if consteval`, deducing `this`, lambdas | resolved by Clang before IR | DONE (no encoder work) | `testdata/pir/cxx.cpp`, `testdata/conformance/prism/cxx` |
-| Classes, inheritance, virtual dispatch | vtable loads are memory reads; indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions; any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `testdata/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
-| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow; escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `testdata/pir/eh_*.cpp`, `conformance/prism/eh` |
+| Classes, inheritance, virtual dispatch | vtable loads are memory reads (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); indirect calls dispatch over the module's vtable functions (class hierarchy analysis) or address-taken functions (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); any other target is the havoc fallback (NEEDS-HARNESS) | DONE | `testdata/pir/virt_dispatch.cpp`, `conformance/prism/virt` |
+| Exceptions | explicit exception edges, catch matching (typeinfo hierarchy), cleanup, rethrow (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); escape from `noexcept` (CXX-THROW-NOEXCEPT) or `main` (CXX-UNCAUGHT) is a violation | DONE (dynamic exception specs, `exception_ptr`: UNENCODED) | `testdata/pir/eh_*.cpp`, `conformance/prism/eh` |
 | Coroutines | LLVM coroutine passes, then normal encoding (frame = `new` object, resume/destroy = indirect calls) | DONE | `testdata/pir/coro_gen.cpp`, `conformance/prism/coro` |
-| Standard library | libc operational models (contract-checked, "Library models verified by PRISM"); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS`; library throws are real exceptions; unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so`; `vector::insert` at a symbolic position does not finish within 1800 s; libc++ not modelled) | "Library models", "C++ library models" |
-| Floating point | Z3 floating-point theory (RNE) for half/float/double; FLOAT-CAST-OVF; `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `testdata/pir/fp_arith.c`, `conformance/prism/fp` |
+| Standard library | libc operational models (contract-checked, "Library models verified by PRISM") (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); C++ model headers `vector`, `map`, `set`, `bits/basic_string.tcc` (`models/cxx/`, differential-tested against libstdc++) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); other libstdc++ code inlined with `_GLIBCXX_ASSERTIONS` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); library throws are real exceptions (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); unmodelled calls NEEDS-HARNESS | PARTIAL (iostreams, unordered containers, `std::list`/`deque` NEEDS-HARNESS where they recurse or call into `libstdc++.so` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `vector::insert` at a symbolic position does not finish within 1800 s (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); libc++ not modelled) | "Library models", "C++ library models" |
+| Floating point | Z3 floating-point theory (RNE) for half/float/double (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); FLOAT-CAST-OVF (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `--fp-checks` | DONE (x86_fp80/fp128/bfloat, fast-math: UNENCODED) | `testdata/pir/fp_arith.c`, `conformance/prism/fp` |
 | Threads and atomics | separate `conc` stage (docs/CONCURRENCY.md) | other work (not in this slice) | docs/CONCURRENCY.md |
-| Modules (`import std;`) | handled by Clang; PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
-| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>`; then PROVED-ASSUMING listing the contract | DONE | `testdata/pir/asm_contract.c`, `conformance/prism/asm` |
-| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang; VLAs in the memory model; setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `testdata/pir/mem_libc.c`, `testdata/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
-| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object; initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`); object-granular | `testdata/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
-| Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3; universal memory templates checked pointwise; only the fixpoint is used | DONE for loops that do not allocate or free; templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.cpp`, `extra.pir_invariants` |
+| Modules (`import std;`) | handled by Clang (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PRISM consumes the IR | NOT TESTED (Clang 18 needs a prebuilt `std` module) | — |
+| Inline assembly | NEEDS-HARNESS unless `// prism: asm ensures <cond>` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); then PROVED-ASSUMING listing the contract | DONE | `testdata/pir/asm_contract.c`, `conformance/prism/asm` |
+| C (C11 to C23): `_Generic`, VLAs, `setjmp`/`longjmp` | `_Generic` by Clang (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); VLAs in the memory model (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); setjmp/longjmp as exception-like edges (CTRL-LONGJMP-INVALID) | DONE | `testdata/pir/mem_libc.c`, `testdata/pir/sjlj_basic.c`, `conformance/prism/sjlj` |
+| k-induction for functions using memory | step case havocs the loop's write footprint (provenance-resolved objects, else every pre-loop object (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); initialised flags `old \| arbitrary` or arbitrary) | DONE for loops that do not allocate or free (those stay BOUNDED, `not-attempted`) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); object-granular | `testdata/pir/kind_mem.c`, `conformance/prism/kindmem`, `extra.k_induction_footprint` |
+| Loop invariants | Houdini over templates on a loop-cut encoding (every loop, nested and sequential), base and step proved in Z3 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); universal memory templates checked pointwise (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); only the fixpoint is used | DONE for loops that do not allocate or free (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); templates, not synthesis (non-linear invariants stay BOUNDED) | "Loop invariants", `libc-models/unbounded_string_contracts.cpp`, `extra.pir_invariants` |
 
 ## Encoder and verdicts
 
 Bounded unrolling over the loop nest: each block is instantiated once per
-vector of iteration counts of its enclosing natural loops (outer → inner); a
-back edge increments its loop's count; count = `--unwind` is an *unwinding
+vector of iteration counts of its enclosing natural loops (outer → inner) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a
+back edge increments its loop's count (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); count = `--unwind` is an *unwinding
 cut*. Values follow SSA dominance (LCSSA makes every use see its definition in
 the same iteration of each shared loop). Phis are `ite` chains over incoming
-edge guards; each check contributes `reach ∧ violation`; assumes contribute
+edge guards (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); each check contributes `reach ∧ violation` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); assumes contribute
 `reach → cond`.
 
 * **FAILED** — some check is satisfiable. `counterexample` = `extra.cex` =
@@ -1517,7 +1745,8 @@ edge guards; each check contributes `reach ∧ violation`; assumes contribute
   its block instance reachable and it runs before the violated check (the
   reachable instances form one chain, and topological order is execution
   order along it). The values come from one Z3 model of the same VC with
-  the parameters and nondet values pinned to the winning solver's model; if
+  the parameters and nondet values pinned to the winning solver's model (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); if
   that re-query finds no model, `extra.nondet_note` says so and there is no
   `nondet` key. The SV-COMP wrapper replays these values and writes a
   `function_return` waypoint at each call ([SVCOMP.md](SVCOMP.md)).
@@ -1549,20 +1778,26 @@ in-process, CaDiCaL / Kissat on the bit-blasted CNF, Bitwuzla when present,
 the ProbSAT walker for counterexamples) and the query cache.
 
 1. One VC per property: `assumptions ∧ reach ∧ violation`. The properties are
-   asked in order; the first SAT answer is the `FAILED` verdict. With more
+   asked in order (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the first SAT answer is the `FAILED` verdict. With more
    than 16 properties, one query for "some property is violated" comes
-   first: UNSAT answers all of them; on SAT the group's model is evaluated
+   first: UNSAT answers all of them (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); on SAT the group's model is evaluated
    on each property and the first one it violates is asked alone (SAT
    there, and UNSAT for the group of properties before it, is the verdict:
    the same first violated property the halving finds, in two or three
-   queries instead of two per halving level); otherwise SAT is split in
+   queries instead of two per halving level) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); otherwise SAT is split in
    halves until one property is left. No answer is split in halves too,
    down to groups of 16 (a smaller query often answers where the whole did
-   not); the properties a group answered UNSAT are not asked again one by
+   not) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the properties a group answered UNSAT are not asked again one by
    one. Measured on a linked-list file (7 functions: remove at an
-   input-dependent position, traversal, free; loaded machine): 378–404 s
+   input-dependent position, traversal, free (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); loaded machine): 378–404 s
    before, 100–134 s after, the same verdicts. Its model
-   was already evaluated on the VC in Z3 by the solver library; the
+   was already evaluated on the VC in Z3 by the solver library (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the
    counterexample is the model's parameter values (`extra.cex_solver` names
    the member that found it). An answer that is neither SAT nor UNSAT makes
    the function `UNKNOWN` unless a later property is SAT.
@@ -1599,9 +1834,11 @@ for no certificate at all: none could make it `PROVED-CERTIFIED`. With two
 or more VCs the first plain query is **one combined query**,
 `assumptions ∧ reach ∧ (viol₁ ∨ … ∨ violₙ ∨ cut₁ ∨ …)`, built from the same
 VC terms. It is UNSAT exactly when every VC is UNSAT, so UNSAT makes the
-function `PROVED` at once; SAT (a validated model) means some VC is violated
+function `PROVED` at once (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); SAT (a validated model) means some VC is violated
 and the per-VC queries decide the verdict with no certificate attempted
-(`extra.certificate_combined` says so; before, a `BOUNDED` loop such as
+(`extra.certificate_combined` says so (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); before, a `BOUNDED` loop such as
 `nested6` paid for a certificate of every UNSAT VC).
 
 Certification of a `PROVED` function then asks the certified query of the
@@ -1621,33 +1858,40 @@ obtained or is rejected, it is discarded (its outcome is written to
 order, stopping at the first VC that is not (`certificate_scope =
 "per-vc"`). Every certificate query already knows its plain answer
 (`SolveOptions::known_unsat`), so only CaDiCaL-with-LRAT runs for it and it
-may use the whole certificate budget; if no certificate comes back, the plain
+may use the whole certificate budget (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); if no certificate comes back, the plain
 answer stands, uncertified. The certificate queries of one function share a
-**certification budget** (`CheckOptions::certify_budget_s`; the pir stage
+**certification budget** (`CheckOptions::certify_budget_s` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the pir stage
 uses `max(240 s, 8 × --timeout)`, or `$PRISM_CERTIFY_BUDGET` seconds, 0 for
 none): once it is spent the function stays `PROVED` with
 `certify_note = "not certified: the certification budget of this function
-(N s) was spent after k/n VCs were certified; verdict stays PROVED"`, and
+(N s) was spent after k/n VCs were certified (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); verdict stays PROVED"`, and
 each certificate query gets at most what is left. `extra.certificate_solver`
 summarises the certificate queries. `CheckOptions::certify_combined = false`
 switches the combined query off (plain answers and certificates per VC). Plain mode is unchanged.
 
 The plain property queries, the unwinding assertion, k-induction and Houdini
 of one function share a **function budget** (`CheckOptions::function_budget_s`;
-the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none; unset, max(300 s, 10 x `--timeout`)). One clock
+the pir stage reads `$PRISM_FUNCTION_BUDGET` seconds, 0 for none (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); unset, max(300 s, 10 x `--timeout`)). One clock
 covers both unwind attempts of `check_function` and the stage's memory-policy
 re-checks of the same function (static initialisation, arbitrary or initial
 globals), which also use the run's solver cache, Houdini budget and core share.
 Once it is spent before every VC is answered the function is `TIMEOUT` with
 `message = "pir function budget of N s spent before <label>
 (PRISM_FUNCTION_BUDGET)"` (or `during <label>` when that VC's query was cut
-short; `extra.function_budget_capped` lists such VCs) and
-`extra.function_budget_s = N` (N as given, e.g. `0.5`; Law 7: it says what was
+short (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); `extra.function_budget_capped` lists such VCs) and
+`extra.function_budget_s = N` (N as given, e.g. `0.5` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); Law 7: it says what was
 not tried). Once every VC is answered the verdict stands: a validated violation
 stays `FAILED` (`extra.earlier_properties` notes when the budget stopped the
 search for an earlier one), and a `BOUNDED` stays `BOUNDED` with
 `extra.k_induction` / `extra.invariants_note` = "not attempted (function budget
-of N s spent; PRISM_FUNCTION_BUDGET)" (a BOUNDED at the first unwind is kept
+of N s spent (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PRISM_FUNCTION_BUDGET)" (a BOUNDED at the first unwind is kept
 the same way, `extra.unwind_requested_note`). Each VC query, k-induction step
 and Houdini query (its final query and per-query minimums included) gets at
 most what is left of the function budget. Certification queries are not
@@ -1659,22 +1903,26 @@ so in `extra.env_rejected`.
 A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),
 `extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;
-cadical … lrat N steps, checked by cake_lpr …; cnf sha256 …`, or one entry
+cadical … lrat N steps, checked by cake_lpr … (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); cnf sha256 …`, or one entry
 `combined[<labels>]: …` for each combined or batch proof),
 `extra.certificate_bitblast` (`N/M lean-proved`) and `extra.cnf_sha256` (one
 hash per checked CNF, comma-separated). Otherwise the verdict is unchanged and
 `extra.certify_note` names the first VC that was not certified and why (for
 example `not certified: cake_lpr not found (NOTRUN)`). `BOUNDED` and
-`PROVED-UNBOUNDED` are never certified; a function with no VC at all stays
+`PROVED-UNBOUNDED` are never certified (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a function with no VC at all stays
 `PROVED` with `extra.certify_note = "no verification conditions (nothing to
-certify)"` (a certificate that checks nothing is not one); and a certified
+certify)"` (a certificate that checks nothing is not one) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); and a certified
 proof under assumptions is `PROVED-ASSUMING`.
 Translation validation that diverges turns a certified function into `ERROR`
 and drops the certificate. What a certificate still trusts is in
 [TRUSTED_BASE.md](TRUSTED_BASE.md).
 
 `prism --pir-vcs FILE --out DIR` writes the VCs of every function of one unit
-as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one; both
+as SMT-LIB2 files, and `prism --solve-smt2 VC [--z3-only]` answers one (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); both
 print JSON and exist for `prism-qa solver-bench`. `--pir-vcs` takes
 `--compile-commands DB` like the stage (a kernel unit needs it), and
 `scripts/dump_qfbv_corpus.sh` runs it over many units, keeps the QF_BV queries
@@ -1685,7 +1933,8 @@ and splits them train/validation/test by source file
 
 For every function with a verdict: 64 input vectors (the counterexample,
 `INT_MIN, -1, 0, 1, INT_MAX` per width, then seeded random mixes). The PIR
-interpreter runs each; inputs where PIR reports a violation, an assume
+interpreter runs each (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); inputs where PIR reports a violation, an assume
 failure, a stop, a step-limit or a return that depends on a havoc are
 excluded (no UB inputs are compared). A driver `@__prism_tv_main` calling the
 function on the remaining inputs is appended to the lowered module
@@ -1695,7 +1944,8 @@ function on the remaining inputs is appended to the lowered module
 (`sandbox::wrap_argv` = bwrap, plus `prlimit` with the sandbox rlimits).
 
 * without `--allow-exec`: `extra.tv = "NOTRUN (needs --allow-exec)"`,
-  `extra.exec = NOTRUN`, one stage-level NOTRUN row; the verdict stands and
+  `extra.exec = NOTRUN`, one stage-level NOTRUN row (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the verdict stands and
   the missing validation is recorded, not hidden;
 * agreement: `extra.tv = "PASS (n inputs agree with lli)"`;
 * any mismatch or missing lli result on a UB-free input: the verdict becomes
@@ -1733,7 +1983,8 @@ translation validation against `lli` (857 on all 64 inputs, the rest on the
 UB-free subset) and 16 had no UB-free terminating input (`tv = NONE`);
 **0 divergences**.
 
-Independent check (not in CI; a scratch script): 8×12 random loop-free /
+Independent check (not in CI (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); a scratch script): 8×12 random loop-free /
 small-loop C functions per seed over `int/unsigned/short/long/unsigned char`
 with `+ - * / % << >> & | ^ ?:` and casts, 5 seeds (≈480 functions):
 every PROVED function ran ~220 inputs under `-fsanitize=undefined` with no
@@ -1744,16 +1995,23 @@ e.g. `(-5) << 7`).
 ### Hard conflicts (PROVED* vs FAILED) — all investigated
 
 All three are **false alarms of the old bmc encoder** (a wrong FAILED, not a
-wrong PROVED); PIR is right. `bmc.cpp` is left unchanged (it is the oracle):
+wrong PROVED) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); PIR is right. `bmc.cpp` is left unchanged (it is the oracle):
 
 1. `testdata/interval_ops.c::wrap_u_local`, `wrap_u_branch` — bmc reports
-   `ovf+: INT-SIGNED-OVF` on `unsigned x = 2000000000; return x + 2000000000;`.
-   Unsigned arithmetic wraps by definition (C17 6.2.5p9); there is no UB.
+   `ovf+: INT-SIGNED-OVF` on `unsigned x = 2000000000 (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); return x + 2000000000;`.
+   Unsigned arithmetic wraps by definition (C17 6.2.5p9) (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); there is no UB.
    Repro: `prism testdata/interval_ops.c --no-llm --stage inventory,classify,bmc,pir`.
 2. `testdata/trunc.c::trunc_bad` — bmc reports `ovf+` with `n=0x40000000` on
-   `char c = n; short s = n; char d = (char)n; return c + s + d;`. After the
+   `char c = n (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); short s = n (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); char d = (char)n (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); return c + s + d;`. After the
    (implementation-defined, not UB) conversions `c,d ∈ [-128,127]`,
-   `s ∈ [-32768,32767]`; the sum cannot overflow `int`. The old encoder keeps
+   `s ∈ [-32768,32767]` (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the sum cannot overflow `int`. The old encoder keeps
    `c` and `s` as 32-bit values (it does not model the narrowing).
 
 No wrong PROVED was found in either engine on `testdata/`.
@@ -1771,7 +2029,8 @@ No wrong PROVED was found in either engine on `testdata/`.
 * bmc FAILED/PROVED → pir NEEDS-HARNESS: arrays and address-taken locals
   (`alloca`, memory model not in this slice) and C++ member functions (`this`).
 * Units that clang rejects (undeclared identifiers, missing headers in the
-  lint-oriented `_api`/`_lint` snippets) are one `ERROR` row per unit; the
+  lint-oriented `_api`/`_lint` snippets) are one `ERROR` row per unit (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); the
   old parser still extracts functions from them (the "absent" column).
 
 
@@ -1781,18 +2040,21 @@ Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill
 or a crash. `src/prism/membudget.cpp` fixes one budget per process at start:
 `$PRISM_MEM_BUDGET_MB` (or `$PRISM_PIR_MEM_MB`), else 75% of the smallest of
 the cgroup limit (v2 `memory.max` minus `memory.current`, or v1), MemAvailable
-and half of RLIMIT_AS (address space only bounds; it is not memory). The
+and half of RLIMIT_AS (address space only bounds (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); it is not memory). The
 process's resident set is compared with 80% of it (headroom for the stop
 latency), and the machine's MemAvailable with `$PRISM_MEM_RESERVE_MB`
 (default 800), in three places: the encoder (SymMem's read-over-write chain,
 value-set walks and havoc reads, sampled every 4096 steps, plus every encoded
 node), before every query, and a 100 ms watchdog that interrupts every live
 Z3 context (pir's and the portfolio's) mid-query. The function then ends as
-UNKNOWN with "memory budget reached ... (process RSS, budget, source)"; its
+UNKNOWN with "memory budget reached ... (process RSS, budget, source)" (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); its
 contexts are freed and the heap is trimmed, so the next function is checked
 normally. With `--jobs N` the threads share the one process budget.
 Past half the budget the portfolio solves without the query-cache key (that
 key copies, simplifies and prints the whole formula) and one in-process solver
-at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort; past
+at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort (19 address-taken functions, so the default path is UNENCODED "19 possible targets"; with the option
+the safe call is PROVED, the dividing call FAILED INT-DIV-ZERO, a 9-target field UNENCODED); past
 it Z3 is not reused in the process and the remaining functions are re-checked
 in a fresh process (`rerun_after_oom`). Tests: `tests/cpp/test_membudget.cpp`.
