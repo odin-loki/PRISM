@@ -843,6 +843,7 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
         if (const auto* ld = def(*in.callee_op); ld && ld->op == "load" && !ld->ops.empty()) {
             if (const auto* gep = def(ld->ops[0]);
                 gep && gep->op == "getelementptr" && gep->ops.size() == 3 &&
+                gep->ops[1].v.kind == ir::Value::Int && gep->ops[1].v.bits == 0 &&
                 gep->ops[2].v.kind == ir::Value::Int) {
                 const int idx = static_cast<int>(gep->ops[2].v.bits);
                 for (const auto& f : opt.ops_table) {
@@ -934,7 +935,7 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
                            " (havoc fallback)",
                   line);
     cur = join;
-    if (!any) noreturn = true;
+    if (!any && !ops_field) noreturn = true;
 }
 
 // ---- inline assembly ----------------------------------------------------------------

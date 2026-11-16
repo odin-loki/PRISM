@@ -2430,6 +2430,12 @@ std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::str
     // (struct_type, field) -> entry in out; position of a field = its first-seen order per struct
     std::map<std::pair<std::string, std::string>, std::size_t> at;
     std::map<std::string, int> nfields;
+    auto trim = [](const std::string& s) {
+        std::string::size_type b = 0, e = s.size();
+        while (b < e && s[b] == ' ') ++b;
+        while (e > b && s[e - 1] == ' ') --e;
+        return s.substr(b, e - b);
+    };
     std::string line;
     for (int line_no = 1; std::getline(in, line); ++line_no) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -2446,15 +2452,20 @@ std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::str
             return {};
         }
         OpsField f;
-        f.struct_type = cols[0];
-        f.field = cols[1];
+        f.struct_type = trim(cols[0]);
+        f.field = trim(cols[1]);
         f.role = cols[3];
         for (std::string::size_type s = 0; s <= cols[2].size();) {
             const auto p = cols[2].find(',', s);
             std::string t = cols[2].substr(s, p == std::string::npos ? std::string::npos : p - s);
+            t = trim(t);
             if (!t.empty()) f.targets.push_back(t);
             if (p == std::string::npos) break;
             s = p + 1;
+        }
+        if (f.targets.empty()) {
+            error = "line " + std::to_string(line_no) + ": no targets";
+            return {};
         }
         const auto key = std::make_pair(f.struct_type, f.field);
         if (auto it = at.find(key); it != at.end()) {  // a field listed twice: one entry
@@ -2468,6 +2479,12 @@ std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::str
                 std::size_t used = 0;
                 f.index = std::stoi(cols[4], &used);
                 if (used != cols[4].size() || f.index < 0) throw std::invalid_argument(cols[4]);
+                for (const auto& e : out) {
+                    if (e.struct_type == f.struct_type && e.index == f.index) {
+                        error = "line " + std::to_string(line_no) + ": duplicate field_index";
+                        return {};
+                    }
+                }
             } catch (const std::exception&) {
                 error = "line " + std::to_string(line_no) + ": bad field_index";
                 return {};
