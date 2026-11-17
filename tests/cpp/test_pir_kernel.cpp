@@ -508,9 +508,9 @@ TEST_CASE("pir kernel: RCU read-side nesting (RCU-UNBALANCED, RCU-HELD-ON-RETURN
     for (auto& [fn, cls] : want) {
         auto it = got.find(fn);
         REQUIRE(it != got.end());
-}
         CHECK(it->second.cls == cls);
     }
+}
 
 // --lock-contracts (docs/KERNEL_CONCURRENCY.md section 14): table-driven contracts for code with no markers
 namespace {
