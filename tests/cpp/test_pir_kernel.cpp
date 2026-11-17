@@ -166,9 +166,91 @@ TEST_CASE("pir kernel: lock balance, double lock, unlock of an unheld lock, slee
     auto got = run("kernel_lock_ctx.c", "linux", false);
     const std::map<std::string, std::string> want = {
         {"lock_double_bad", "LOCK-DOUBLE"},         {"spin_double_bad", "LOCK-DOUBLE"},
-        {"unlock_unheld_bad", "LOCK-UNHELD-UNLOCK"}, {"sleep_in_spin_bad", "CTX-SLEEP-ATOMIC"},
+        {"unlock_unheld_bad", "LOCK-UNHELD-UNLOCK"}, {"sleep_in_spin_bad", "SLEEP-IN-ATOMIC"},
         {"held_on_return_bad", "LOCK-HELD-ON-RETURN"},
-        {"might_sleep_in_spin_bad", "CTX-SLEEP-ATOMIC"}};
+        {"might_sleep_in_spin_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: lock contracts (__prism_lock_entry / __prism_lock_exit): a returned-held lock is not reported") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_contract.c", "linux", false,
+                {{"take_declared_ok", PA, "linux-lock-contract"},
+                 {"take_undeclared_bad", F, ""},
+                 {"take_exit_missing_bad", F, ""},
+                 {"release_entry_ok", PA, "linux-lock-contract"},
+                 {"entry_held_on_return_bad", F, ""},
+                 {"pass_through_ok", PA, "linux-lock-contract"},
+                 {"entry_spin_sleep_bad", F, ""},
+                 {"caller_ok", PA, "linux-lock-overflow"}});
+    auto got = run("kernel_lock_contract.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"take_undeclared_bad", "LOCK-HELD-ON-RETURN"},
+        {"take_exit_missing_bad", "LOCK-EXIT-MISSING"},
+        {"entry_held_on_return_bad", "LOCK-HELD-ON-RETURN"},
+        {"entry_spin_sleep_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: preempt and bh depth, sleeping in atomic context (SLEEP-IN-ATOMIC), GFP_KERNEL in a spinlock") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_preempt.c", "linux", false,
+                {{"preempt_sleep_bad", F, ""},
+                 {"preempt_sleep_ok", PA, "linux-preempt"},
+                 {"preempt_unbalanced_bad", F, ""},
+                 {"preempt_held_on_return_bad", F, ""},
+                 {"bh_sleep_bad", F, ""},
+                 {"bh_sleep_ok", PA, "linux-preempt"},
+                 {"kmalloc_in_spin_bad", F, ""},
+                 {"kmalloc_atomic_ok", PA, "linux-alloc"},
+                 {"kmalloc_kernel_ok", PA, "linux-alloc"}});
+    auto got = run("kernel_lock_preempt.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"preempt_sleep_bad", "SLEEP-IN-ATOMIC"},
+        {"preempt_unbalanced_bad", "PREEMPT-UNBALANCED"},
+        {"preempt_held_on_return_bad", "PREEMPT-UNBALANCED"},
+        {"bh_sleep_bad", "SLEEP-IN-ATOMIC"},
+        {"kmalloc_in_spin_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: RCU read-side nesting (RCU-UNBALANCED, RCU-HELD-ON-RETURN, RCU-SLEEP)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_rcu.c", "linux", false,
+                {{"rcu_balance_ok", PA, "linux-rcu"},
+                 {"rcu_unbalanced_bad", F, ""},
+                 {"rcu_held_on_return_bad", F, ""},
+                 {"rcu_sleep_bad", F, ""},
+                 {"rcu_sleep_ok", PA, "linux-rcu"},
+                 {"rcu_sync_bad", F, ""},
+                 {"rcu_sync_ok", PA, "linux-rcu"}});
+    auto got = run("kernel_lock_rcu.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"rcu_unbalanced_bad", "RCU-UNBALANCED"},
+        {"rcu_held_on_return_bad", "RCU-HELD-ON-RETURN"},
+        {"rcu_sleep_bad", "RCU-SLEEP"},
+        {"rcu_sync_bad", "RCU-SLEEP"}};
     for (auto& [fn, cls] : want) {
         auto it = got.find(fn);
         REQUIRE(it != got.end());

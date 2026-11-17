@@ -36,7 +36,7 @@
 
 extern "C" {
 
-/* translator intrinsic (translate_lock.inc): CTX-SLEEP-ATOMIC while a spinlock is held */
+/* translator intrinsic (translate_lock.inc): SLEEP-IN-ATOMIC while a spinlock is held */
 void __prism_sleep_point(void);
 
 #define DELAY_NOTE "linux-delay: delays have no effect on memory: no other thread, interrupt or device runs while the function sleeps"

@@ -60,7 +60,7 @@ New spec intrinsics (no-ops in real code, handled by `pir::translate`):
 | `__prism_lock_release(p, kind)` | Checks `p` in held set (LOCK-UNHELD-UNLOCK). Removes it. atomic-depth -= 1 for spinlock kinds. |
 | `__prism_lock_entry(p, cls, kind, state)` | Declares a lock held (`state=HELD`) or free (`FREE`) on entry, from the contract. |
 | `__prism_ctx_enter(c)` / `__prism_ctx_leave()` | Context change for a call (e.g. an interrupt handler body). |
-| `__prism_sleep_point()` | Emitted by the spec of every sleeping primitive. Checks ctx == PROC and atomic-depth == 0 (CTX-SLEEP-ATOMIC). |
+| `__prism_sleep_point()` | Emitted by the spec of every sleeping primitive. Checks ctx == PROC and atomic-depth == 0 (SLEEP-IN-ATOMIC). |
 
 The kernel lock specs then call these intrinsics instead of
 `ASSUME("lock state is not tracked")`. The named assumption stays for the
@@ -79,7 +79,7 @@ Each function is checked for:
   set. A lock taken and not released, or a lock released that the contract
   says the caller holds (`HELD` on entry, no `__prism_lock_entry`
   declaration), is a violation of the function's own contract.
-- **CTX-SLEEP-ATOMIC**: `might_sleep` / sleeping primitive while
+- **SLEEP-IN-ATOMIC**: `might_sleep` / sleeping primitive while
   atomic-depth > 0 or ctx != PROC.
 - **LOCK-CTX-MISMATCH**: a lock whose class was declared process-only
   (a mutex) acquired in ctx != PROC, or a spinlock whose class is also taken
@@ -199,7 +199,7 @@ verdict line. Names:
 | LOCK-DOUBLE | `double_lock_true.c` | `double_lock_false.c` (unlock then relock) |
 | LOCK-UNHELD-UNLOCK | `unheld_unlock_true.c` | `unheld_unlock_false.c` (unlock of an entry-HELD lock with declaration) |
 | LOCK-HELD-ON-RETURN | `held_on_return_true.c` (error path skips unlock) | `held_on_return_false.c` (goto-unwind releases) |
-| CTX-SLEEP-ATOMIC | `sleep_in_spin_true.c` | `sleep_after_unlock_false.c` |
+| SLEEP-IN-ATOMIC | `sleep_in_spin_true.c` | `sleep_after_unlock_false.c` |
 | LOCK-CTX-MISMATCH | `irq_deadlock_true.c` (module of two entries) | `irq_deadlock_false.c` (irqsave on the PROC side) |
 | RCU-SLEEP | `rcu_sleep_true.c` | `rcu_sleep_false.c` |
 | RCU-SYNC-IN-READ | `rcu_sync_true.c` | `rcu_sync_false.c` |
@@ -274,7 +274,7 @@ The ghost state is frame-local state of the analysed function in pir::translate
 the call graph reaches a ghost intrinsic. The lock specs call __prism_lock_acquire(p, spin),
 __prism_lock_release(p, spin) and __prism_sleep_point(); the checks are ordinary PRISM
 failure checks: LOCK-DOUBLE, LOCK-UNHELD-UNLOCK, LOCK-HELD-ON-RETURN (at each return of the
-analysed function; entry set empty), CTX-SLEEP-ATOMIC (mutex_lock*, __might_sleep, msleep,
+analysed function; entry set empty), SLEEP-IN-ATOMIC (mutex_lock*, __might_sleep, msleep,
 usleep_range while a spinlock is held). Overflow past 8 locks is the named assumption
 linux-lock-overflow (the release check is then not reported). FreeBSD mtx and exclusive sx
 locks are tracked as sleep locks (no atomic depth). Not done: entry contracts,

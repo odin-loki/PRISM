@@ -15,18 +15,23 @@
  * atomic depth. They are translator intrinsics, not C code: no body is linked.
  *   __prism_lock_acquire(p, spin)  LOCK-DOUBLE if p is already held;
  *   __prism_lock_release(p, spin)  LOCK-UNHELD-UNLOCK if p is not held;
- *   __prism_sleep_point()          CTX-SLEEP-ATOMIC if a spinlock is held.
- * A helper that releases a lock its caller holds is reported as LOCK-UNHELD-UNLOCK:
- * a missing module contract, not a bug. Not checked here: lock held on return, lock
- * order, interrupt and softirq context, RCU read sections.
+ *   __prism_sleep_point()          SLEEP-IN-ATOMIC if a spinlock or preempt count is held.
+ *   __prism_atomic_add(delta)      preempt / bh count += delta (PREEMPT-UNBALANCED below 0)
+ *   __prism_rcu_add(delta)         RCU nesting += delta (RCU-UNBALANCED below 0)
+ *   __prism_sleep_if(may)          SLEEP-IN-ATOMIC / RCU-SLEEP when may is set
+ * A helper that releases a lock its caller holds is reported as LOCK-UNHELD-UNLOCK
+ * unless its module contract says so (__prism_lock_entry, translate_lock.inc). Not
+ * checked here: lock order, interrupt and softirq context, RCU grace periods.
  *
  * Assumptions introduced (named in the verdict):
  *   - linux-lock: lock calls have no effect on data memory; the function is analysed
  *     sequentially, so other threads and interrupts are not modelled
  *   - linux-lock-overflow: more than 8 locks held at once: the set overflows and the
  *     release check is then not reported (recorded by translate_lock.inc)
+ *   - linux-lock-contract: the declared entry and exit locks are the caller's contract
+ *   - linux-preempt: preempt and bh counts are modelled; local_irq_save is not (inline asm)
  *   - linux-might-sleep: lockdep and might_sleep reports (splats) have no effect
- *   - linux-rcu: RCU read-side sections and grace periods are not modelled
+ *   - linux-rcu: RCU grace periods are not modelled; read-side nesting is counted
  */
 #include "kernel_model.h"
 
@@ -36,6 +41,9 @@ extern "C" {
 void __prism_lock_acquire(const void *lock, int spin);
 void __prism_lock_release(const void *lock, int spin);
 void __prism_sleep_point(void);
+void __prism_sleep_if(int may);
+void __prism_atomic_add(int delta);
+void __prism_rcu_add(int delta);
 
 static void lock_ptr(const void *lock) {
     ASSUME("linux-lock: lock calls have no effect on data memory; the function is analysed sequentially");
@@ -111,10 +119,17 @@ void __raw_spin_lock_init(void *lock, const char *name, void *key, short inner) 
     lock_ptr(lock);
 }
 
-/* rcupdate.h: no effect on the analysed function's memory (read-side critical sections are not tracked) */
-void __rcu_read_lock(void) { ASSUME("linux-rcu: RCU read-side sections and grace periods are not modelled (no effect on memory)"); }
-void __rcu_read_unlock(void) { ASSUME("linux-rcu: RCU read-side sections and grace periods are not modelled (no effect on memory)"); }
-void synchronize_rcu(void) { ASSUME("linux-rcu: RCU read-side sections and grace periods are not modelled (no effect on memory)"); }
+/* rcupdate.h: no effect on the analysed function's memory; the read-side nesting is counted (RCU-UNBALANCED, RCU-HELD-ON-RETURN) */
+void __rcu_read_lock(void) { ASSUME("linux-rcu: RCU grace periods are not modelled; read-side nesting is counted (no effect on memory)"); __prism_rcu_add(1); }
+void __rcu_read_unlock(void) { ASSUME("linux-rcu: RCU grace periods are not modelled; read-side nesting is counted (no effect on memory)"); __prism_rcu_add(-1); }
+void synchronize_rcu(void) { ASSUME("linux-rcu: RCU read-side sections and grace periods are not modelled (no effect on memory)"); __prism_sleep_point(); }
+
+/* preempt.h: the preempt count (preempt_disable is preempt_count_add(1) through the header macros) */
+void preempt_count_add(int val) { ASSUME("linux-preempt: preempt count is counted, not its per-CPU storage (no effect on memory)"); __prism_atomic_add(val); }
+void preempt_count_sub(int val) { ASSUME("linux-preempt: preempt count is counted, not its per-CPU storage (no effect on memory)"); __prism_atomic_add(-val); }
+/* bottom halves (softirq.c): local_bh_disable adds cnt to the preempt count; local_bh_enable removes it */
+void __local_bh_disable_ip(unsigned long ip, unsigned int cnt) { (void)ip; ASSUME("linux-preempt: bh disable is counted in the preempt count (no effect on memory)"); __prism_atomic_add((int)cnt); }
+void __local_bh_enable_ip(unsigned long ip, unsigned int cnt) { (void)ip; ASSUME("linux-preempt: bh disable is counted in the preempt count (no effect on memory)"); __prism_atomic_add(-(int)cnt); }
 /* rcupdate.h (CONFIG_PROVE_RCU): int debug_lockdep_rcu_enabled(void): lockdep's own state, arbitrary */
 int debug_lockdep_rcu_enabled(void) { return CHOICE() ? 1 : 0; }
 /* rcupdate.h: void lockdep_rcu_suspicious(const char *file, const int line, const char *s): reports, no effect */

@@ -1,7 +1,7 @@
 /* PIR tasks: lock balance, double lock, unlock of an unheld lock and sleeping in
  * atomic context (docs/KERNEL_CONCURRENCY.md, phase A). Run with `--kernel-api linux`.
  * Each *_ok function is PROVED-ASSUMING (linux-lock); each *_bad function is FAILED
- * with the class in its name (LOCK-DOUBLE, LOCK-UNHELD-UNLOCK, CTX-SLEEP-ATOMIC).
+ * with the class in its name (LOCK-DOUBLE, LOCK-UNHELD-UNLOCK, SLEEP-IN-ATOMIC).
  * The kernel declarations are the kernel's own, as in kernel_linux.c. */
 
 struct mutex { long owner; long wait[4]; };
@@ -61,7 +61,7 @@ int unlock_unheld_bad(void) {
     return 0;
 }
 
-/* CTX-SLEEP-ATOMIC: a sleeping lock taken while a spinlock is held */
+/* SLEEP-IN-ATOMIC: a sleeping lock taken while a spinlock is held */
 int sleep_in_spin_bad(void) {
     raw_spinlock_t l = {0};
     struct mutex m = {0, {0, 0, 0, 0}};
@@ -83,7 +83,7 @@ int sleep_after_spin_ok(void) {
     return 0;
 }
 
-/* CTX-SLEEP-ATOMIC through might_sleep() inside a spinlock */
+/* SLEEP-IN-ATOMIC through might_sleep() inside a spinlock */
 int might_sleep_in_spin_bad(void) {
     raw_spinlock_t l = {0};
     _raw_spin_lock(&l);

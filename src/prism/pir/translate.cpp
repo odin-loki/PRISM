@@ -206,6 +206,14 @@ struct Tr final : pirmem::TrApi {
     void lock_take(int b, Arg p, Arg spin, int line);
     void lock_drop(int b, Arg p, Arg spin, int line);
     void sleep_point(int b, int line);
+    void sleep_if(int b, Arg may, int line);
+    void lock_bump(int b, unsigned w, Arg delta, int line);
+    Arg lock_contains(int b, unsigned base, Arg p, int line);
+    void lock_insert(int b, unsigned base, Arg p, Arg fresh, int line);
+    void lock_declare(int b, bool entry, Arg p, Arg spin, int line);
+    void atomic_add(int b, Arg delta, int line);
+    void rcu_add(int b, Arg delta, int line);
+    bool lock_root(const Frame& fr) const { return !frames.empty() && &fr == frames.front(); }
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -2150,6 +2158,23 @@ struct Tr final : pirmem::TrApi {
         }
         if (n == "__prism_sleep_point") {
             sleep_point(cur, line);
+            return;
+        }
+        if (n == "__prism_sleep_if") {
+            sleep_if(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_atomic_add") {
+            atomic_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_rcu_add") {
+            rcu_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_lock_entry" || n == "__prism_lock_exit") {
+            // contract markers: read only in the analysed function (translate_lock.inc)
+            if (lock_root(fr)) lock_declare(cur, n == "__prism_lock_entry", arg(0), n == "__prism_lock_entry" ? arg(1) : Arg::c(1, 0), line);
             return;
         }
         if (n == "__prism_havoc_bytes") {
