@@ -31,6 +31,7 @@
 #include "harness.hpp"
 #include "translate_fp.hpp"
 #include "translate_mem.hpp"
+#include "models/asm/x86_64_asm.h"
 
 #include <algorithm>
 #include <array>
@@ -192,7 +193,8 @@ struct Tr final : pirmem::TrApi {
     void asm_call(Frame& fr, const ir::Inst& in, int& cur, int line);
     // kernel mode (translate_kernel.inc, docs/KERNEL_MODELS.md)
     void note_assumption(const std::string& text);
-    void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line);
+    void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag = "asm-havoc", const std::string& extra = "");
+    bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
     Arg opaque_ptr(int& cur, const std::string& what, int line);
 
@@ -2198,6 +2200,7 @@ struct Tr final : pirmem::TrApi {
 
 #include "translate_ctl.inc"
 #include "translate_kernel.inc"
+#include "translate_asm.inc"
 
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;

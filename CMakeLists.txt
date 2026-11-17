@@ -248,6 +248,8 @@ set(PRISM_SRC
   src/prism/pir/translate.cpp
   src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
+  src/prism/pir/models/asm/x86_64_asm.cpp
+  src/prism/pir/models/asm/x86_64_parse.cpp
   src/prism/cli.cpp
   src/prism/polyglot.cpp
   src/prism/toml_syntax.cpp
@@ -899,6 +901,8 @@ if(PRISM_TESTS)
     tests/cpp/test_qa_conformance.cpp
     tests/cpp/test_pir_e2e.cpp
     tests/cpp/test_pir_kernel.cpp
+    tests/cpp/test_pir_asm.cpp
+    tests/cpp/test_pir_asm_exact.cpp
     tests/cpp/test_pir_incomplete.cpp
     tests/cpp/test_c23_memset_explicit.cpp
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).
