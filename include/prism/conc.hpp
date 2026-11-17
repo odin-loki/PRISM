@@ -139,6 +139,11 @@ struct Program {
     std::vector<std::string> conds;   // condition variables (IR global names)
     std::string weak_order;           // first non-seq_cst order the view model does not cover, "" if none
     bool views = false;               // a weaker order on a scalar global: the C11 view model (lazy.cpp)
+    bool kernel = false;              // kernel-style primitives in scope (volatile accesses, spin locks, smp_mb__*_atomic)
+    // Named assumptions a BOUNDED verdict on this program would depend on, where the model
+    // differs from the LKMM or does not cover a call (docs/KERNEL_MEMORY_MODEL.md section 4).
+    // Non-empty: the stage withholds BOUNDED (stage.cpp refuse_assumptions).
+    std::vector<std::string> assumptions;
     std::vector<VisOp> ops;
     std::vector<Thread> threads;      // [0] is the harness
     int atomic_mutex = -1;            // pseudo-mutex of SV-COMP atomic sections (-1: none)

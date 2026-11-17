@@ -149,6 +149,21 @@ std::string c_order_name(const std::string& w) {
 // weak_order, refuse_weak_order in stage.cpp).
 thread_local std::string tl_weak_order;
 thread_local bool tl_views = false;
+// Unrecognised external calls of the scope (Program::assumptions "conc-extern-noeffect"):
+// the model gives them no effect, which is not the LKMM for a call that may
+// synchronise or write shared memory (docs/KERNEL_MEMORY_MODEL.md section 4).
+thread_local std::set<std::string> tl_externs;
+
+// Calls with no effect on shared memory or on ordering in the model: verifier
+// and debug intrinsics, assertion and abort, and the stdio output calls.
+bool extern_call_benign(const std::string& n) {
+    if (n.starts_with("llvm.dbg.") || n.starts_with("llvm.lifetime.") || n.starts_with("llvm.assume") ||
+        n.starts_with("llvm.expect") || n.starts_with("__VERIFIER_"))
+        return true;
+    static const std::set<std::string> ok{"printf", "puts", "putchar", "fprintf", "fputs", "fflush",
+                                          "__assert_fail", "abort", "exit"};
+    return ok.count(n) > 0;
+}
 
 // C11 order code (VisOp::order) of an IR order word
 int order_code(const std::string& w) {
@@ -1480,6 +1495,8 @@ struct Rewriter {
             cut = true;  // rest of the block is dead
             return;
         }
+        if (n.empty() || (!src.find(n) && !extern_call_benign(n)))
+            tl_externs.insert(n.empty() ? std::string("(indirect)") : n);
         (void)f;
         out.push_back(in);
     }
@@ -1520,6 +1537,84 @@ struct Rewriter {
                 }
     }
 };
+
+// Load buffering (docs/KERNEL_MEMORY_MODEL.md section 4): the model forbids LB, the
+// LKMM allows it. A relaxed load of one location followed, with no full ordering in
+// between, by a relaxed store to another location is one half of an LB cycle; the
+// cycle needs such a pattern in two threads. Dependencies are not modelled, so they
+// do not count as ordering. Acquire loads and release stores are not treated as
+// resets (conservative: a reset can only remove a downgrade).
+struct KernelScan {
+    bool kernel = false;     // kernel-style primitives seen in scope
+    bool acq_fence = false;  // a fence with order acquire (the smp_rmb spelling)
+    bool rel_fence = false;  // a fence with order release (the smp_wmb spelling)
+    std::set<std::string> lb_functions;  // functions with an LB-shaped access pattern
+};
+
+bool word_in(const std::vector<std::string>& ws, const char* w) {
+    return std::find(ws.begin(), ws.end(), w) != ws.end();
+}
+
+KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) {
+    KernelScan ks;
+    // a pointer to a global is its name; any other pointer may alias anything
+    auto loc = [](const ir::Operand& o) { return o.v.kind == ir::Value::Global ? o.v.name : std::string("?"); };
+    auto differs = [](const std::string& a, const std::string& b) { return a != b || a == "?" || b == "?"; };
+    for (auto& f : m.functions) {
+        if (!scope.count(f.name)) continue;
+        std::set<std::string> loads;  // relaxed-load locations since the last full ordering
+        bool hit = false;
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                const auto ws = words(in.text);
+                const bool call = in.op == "call";
+                const bool fence = in.op == "fence" ||
+                                   (call && in.callee == "llvm.donothing" && !ws.empty() && ws.front() == "fence");
+                if (fence) {
+                    if (word_in(ws, "acquire")) ks.acq_fence = true;
+                    if (word_in(ws, "release")) ks.rel_fence = true;
+                    if (word_in(ws, "seq_cst") || word_in(ws, "acq_rel")) loads.clear();
+                    continue;
+                }
+                if (call) {
+                    if (in.callee == "spin_lock" || in.callee == "raw_spin_lock" || in.callee == "spin_unlock" ||
+                        in.callee == "raw_spin_unlock")
+                        ks.kernel = true;
+                    if (in.callee == "smp_mb__before_atomic" || in.callee == "smp_mb__after_atomic") {
+                        ks.kernel = true;
+                        loads.clear();  // LKMM: a full barrier at the call site
+                    }
+                    continue;
+                }
+                const bool load = in.op == "load", store = in.op == "store";
+                const bool rmw = in.op == "atomicrmw" || in.op == "cmpxchg";
+                if (!load && !store && !rmw) continue;
+                if (word_in(ws, "volatile")) ks.kernel = true;  // READ_ONCE / WRITE_ONCE
+                const bool full = word_in(ws, "seq_cst") || word_in(ws, "acq_rel");
+                const bool acq = word_in(ws, "acquire"), rel = word_in(ws, "release");
+                if (full) loads.clear();  // a full-order access orders everything around it
+                auto check = [&](const std::string& y) {
+                    for (const auto& x : loads)
+                        if (differs(x, y)) hit = true;
+                };
+                if (load) {
+                    const std::string x = in.ops.empty() ? std::string("?") : loc(in.ops[0]);
+                    if (!full && !acq) loads.insert(x);  // a relaxed load (plain or volatile)
+                } else if (store) {
+                    const std::string y = in.ops.size() < 2 ? std::string("?") : loc(in.ops.back());
+                    if (!full && !acq && !rel) check(y);  // relaxed store: release/seq_cst are ordered after the loads
+                } else {  // atomicrmw / cmpxchg
+                    const std::string y = in.ops.empty() ? std::string("?") : loc(in.ops[0]);
+                    if (!full && !rel) {
+                        check(y);
+                        if (!acq) loads.insert(y);  // relaxed RMW also reads y
+                    }
+                }
+            }
+        if (hit) ks.lb_functions.insert(f.name);
+    }
+    return ks;
+}
 
 // Call graph over defined functions (direct calls only).
 std::map<std::string, std::set<std::string>> callees(const ir::Module& m) {
@@ -1659,6 +1754,7 @@ Build build_impl(const ir::Module& m, std::string_view ir_text, const std::strin
     }
     tl_weak_order.clear();
     tl_views = false;
+    tl_externs.clear();
     try {
         Rewriter rw(m, ir_text);
         rw.loop_copies = std::max(1, opt.unwind);
@@ -1840,6 +1936,24 @@ Build build_impl(const ir::Module& m, std::string_view ir_text, const std::strin
         }
         rw.prog.weak_order = tl_weak_order;
         rw.prog.views = tl_views;
+        // named assumptions (docs/KERNEL_MEMORY_MODEL.md section 4)
+        {
+            const auto ks = kernel_scan(rw.src, scope);
+            rw.prog.kernel = ks.kernel;
+            if (ks.kernel) {
+                if (ks.acq_fence) rw.prog.assumptions.push_back("lkmm-rmb-strong");
+                if (ks.rel_fence) rw.prog.assumptions.push_back("lkmm-wmb-strong");
+                int lb = 0;  // threads whose reachable code has an LB-shaped pattern
+                for (auto& th : rw.prog.threads) {
+                    const auto reach = closure(th.entry);
+                    if (std::any_of(reach.begin(), reach.end(),
+                                    [&](const std::string& f) { return ks.lb_functions.count(f) > 0; }))
+                        ++lb;
+                }
+                if (lb >= 2) rw.prog.assumptions.push_back("lkmm-no-lb");
+            }
+        }
+        if (!tl_externs.empty()) rw.prog.assumptions.push_back("conc-extern-noeffect");
         b.prog = std::move(rw.prog);
         b.status.clear();
     } catch (const Unenc& u) {

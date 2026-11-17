@@ -2,6 +2,8 @@
 // Every tests/conc/litmus/*.c names its expected verdict on its first line:
 //   // EXPECT: FAILED   the forbidden-outcome assertion is reachable (outcome allowed)
 //   // EXPECT: BOUNDED  no violation within the bound (outcome forbidden)
+//   // EXPECT: NEEDS-HARNESS <assumption>  the BOUNDED claim would depend on a named
+//   //                     assumption the model does not discharge (docs/KERNEL_MEMORY_MODEL.md section 4)
 // The expected outcomes and their sources are cited in each file's header.
 
 #include <doctest/doctest.h>
@@ -39,7 +41,23 @@ std::string expected_of(const std::filesystem::path& p) {
     std::string v = line.substr(tag.size());
     std::string r;
     for (char c : v) {
-        if (!std::isupper(static_cast<unsigned char>(c))) break;
+        if (!std::isupper(static_cast<unsigned char>(c)) && c != '-') break;
+        r += c;
+    }
+    return r;
+}
+
+// The assumption named after NEEDS-HARNESS on the EXPECT line ("" if none).
+std::string assumption_of(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::string line;
+    std::getline(in, line);
+    const auto at = line.find("NEEDS-HARNESS ");
+    if (at == std::string::npos) return "";
+    std::string r;
+    for (std::size_t i = at + std::string("NEEDS-HARNESS ").size(); i < line.size(); ++i) {
+        const char c = line[i];
+        if (!(std::islower(static_cast<unsigned char>(c)) || c == '-')) break;
         r += c;
     }
     return r;
@@ -56,7 +74,7 @@ TEST_CASE("conc litmus: every test names a verdict and a source") {
     for (auto& f : files) {
         const auto v = expected_of(f);
         CAPTURE(f.string());
-        CHECK((v == "FAILED" || v == "BOUNDED"));
+        CHECK((v == "FAILED" || v == "BOUNDED" || (v == "NEEDS-HARNESS" && !assumption_of(f).empty())));
     }
 }
 
@@ -78,6 +96,12 @@ TEST_CASE("conc litmus: each result matches the published expected outcome") {
         CAPTURE(r.message);
         if (want == "FAILED") CHECK(r.status == prism::laws::FAILED);
         if (want == "BOUNDED") CHECK(r.status == prism::laws::BOUNDED);
+        if (want == "NEEDS-HARNESS") {
+            // the verdict is withheld, and it names the assumption it would have depended on
+            const auto a = assumption_of(f);
+            CHECK(r.status == prism::laws::NEEDS_HARNESS);
+            CHECK(r.message.find("assumption " + a) != std::string::npos);
+        }
         CHECK(r.status != prism::laws::PROVED);
     }
 }

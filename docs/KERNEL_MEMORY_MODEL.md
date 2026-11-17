@@ -75,19 +75,43 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
    Pointers: address values are not modelled (ptrtoint is UNENCODED), so the RCU litmus tests
    publish an index instead of a pointer.
 
-   Soundness consequences (what a verdict on kernel code may claim):
-   - An unrecognised external call is passed through unchanged (extract.cpp, end of rewrite_call):
-     any barrier or lock it stands for has NO effect in the conc model. That adds behaviours, so a
-     FAILED may be spurious for code relying on it; a BOUNDED is not weakened by it.
-   - Dependency ordering is missing: the model allows more than the LKMM there. Same direction: a
-     FAILED may be spurious for dependency-protected code; a BOUNDED is not weakened by it.
-   - Load buffering is forbidden in the model and allowed by the LKMM. This is the one place the
-     model is STRONGER than the LKMM. A BOUNDED verdict on an LB-shaped outcome is therefore NOT
-     sound for kernel code, and must not be reported as a kernel result.
-   - `smp_rmb()` as an acquire fence is stronger than the LKMM (section 2). A BOUNDED verdict that
-     depends on an smp_rmb is not sound for the kernel.
-   So BOUNDED verdicts on kernel code are sound only for the modelled orderings and no LB-shaped or
-   smp_rmb-dependent outcome; any other claim about kernel code must carry these limits.
+   Soundness consequences and how the verdict now carries them. A BOUNDED that would rest on one of
+   the named assumptions below is withheld: the stage reports NEEDS-HARNESS with an
+   `UNENCODED: assumption <names>` reason and `extra.assumptions` (stage.cpp `refuse_assumptions`,
+   Program::assumptions set in extract.cpp `build_impl`). FAILED is never changed: a run the model finds
+   is a run of the model, and the model's extra or missing orderings only change what it can find.
+   - Unrecognised external calls (`conc-extern-noeffect`): a call in scope to a function that is not
+     defined in the module, other than the benign set in `extern_call_benign` (verifier and debug
+     intrinsics, assert, abort, exit, the stdio output calls), and any indirect call, gets no effect
+     in the model (extract.cpp, end of rewrite_call). It may synchronise or write shared memory, so
+     any BOUNDED in that scope is withheld. This applies to every conc unit, not only kernel mode: the
+     same no-effect rule is unsound in C. Havoc of the shared state was not done: it would add
+     nondeterministic writes to every shared global, which creates spurious data races (a FAILED the
+     LKMM does not have); the assumption is the narrower step.
+   - Load buffering (`lkmm-no-lb`): kernel mode only (below). The LB shape is a relaxed load of one
+     location followed, with no full ordering in between, by a relaxed store to another location, in
+     at least two threads. Full orderings are seq_cst fences, smp_mb__before/after_atomic, and
+     seq_cst or acq_rel accesses. Dependencies do not count as ordering. Acquire loads and release
+     stores do not reset the pattern, which is conservative (more withheld, never fewer).
+     LB+poonceonces (lb_kernel_once) is withheld; LB+fencembonceonce+ctrlonceonce (lb_kernel_mb_ctrl)
+     keeps its BOUNDED, because its second thread has a full barrier between its load and store.
+     The C11 test lb_relaxed keeps its RC11 BOUNDED: it is not kernel code, and the RC11 choice is
+     documented in section 3.
+   - `smp_rmb()` as an acquire fence (`lkmm-rmb-strong`) and `smp_wmb()` as a release fence
+     (`lkmm-wmb-strong`) are stronger than the LKMM's read-read and write-write fences. Kernel mode
+     only. Every BOUNDED with such a fence present is withheld, since a verdict cannot tell whether it
+     depends on the stronger order.
+   - Dependency ordering is missing: the model allows more than the LKMM there. A FAILED may be
+     spurious for dependency-protected code; a BOUNDED is not weakened by it (the model has more
+     behaviours, so no violation in it means none in the LKMM either). Not withheld.
+   - NOT covered by this change (open): `rcu_dereference` as an acquire load is STRONGER than the
+     LKMM's address dependency (table in section 2). A BOUNDED that depends on that ordering is not
+     sound for the kernel. It needs its own named assumption (for example `lkmm-rcu-deref-acquire`)
+     or a dependency model; neither exists yet.
+   Kernel mode means: a volatile (READ_ONCE / WRITE_ONCE) access, a spin_lock / spin_unlock (raw too),
+   or smp_mb__before/after_atomic in scope (KernelScan::kernel in extract.cpp).
+   So a BOUNDED on kernel code is claimed only for the modelled orderings, and only when none of the
+   named assumptions applies to it; any other claim about kernel code must carry these limits.
 2. LL/SC pairs: no model. Reported UNENCODED, so a verdict on code using them is never produced
    silently; no soundness claim is made for it.
 3. Per-function pir atomics stay sequential (assumption `atomics-sequential`). A proof of a
@@ -117,7 +141,9 @@ unreachable). Each header cites the source of the expected outcome.
 | rcu_publish | BOUNDED | Linux memory model (tools/memory-model, smp_store_release / smp_load_acquire); McKenney, "Is Parallel Programming Hard" sec. 9.5 |
 | rcu_publish_relaxed | FAILED | ISO C11 5.1.2.4; Linux memory model (rcu_assign_pointer is a release store) |
 | mp_kernel_relacq | BOUNDED | tools/memory-model/litmus-tests/MP+pooncerelease+poacquireonce.litmus (Never) |
-| mp_kernel_wmb_rmb | BOUNDED | .../MP+fencewmbonceonce+fencermbonceonce.litmus (Never) |
+| mp_kernel_wmb_rmb | NEEDS-HARNESS (lkmm-rmb-strong, lkmm-wmb-strong) | .../MP+fencewmbonceonce+fencermbonceonce.litmus (Never); withheld because the fences are stronger than smp_rmb / smp_wmb |
+| lb_kernel_once | NEEDS-HARNESS (lkmm-no-lb) | .../LB+poonceonces.litmus (Sometimes): the LKMM allows the outcome, the model forbids it, so no BOUNDED claim |
+| mp_kernel_extern | NEEDS-HARNESS (conc-extern-noeffect) | MP with an undefined external call between the producer's stores (the call's effect is not modelled); shape of MP+poonceonces.litmus |
 | mp_kernel_once | FAILED | .../MP+poonceonces.litmus (Sometimes) |
 | sb_kernel_mb | BOUNDED | .../SB+fencembonceonces.litmus (Never) |
 | sb_kernel_once | FAILED | .../SB+poonceonces.litmus (Sometimes) |
@@ -126,8 +152,11 @@ unreachable). Each header cites the source of the expected outcome.
 | sb_kernel_atomic_mb | BOUNDED | linux-kernel.def (smp_mb__before_atomic, smp_mb__after_atomic as fences); Documentation/explanation.txt ("oddball fences"); Documentation/atomic_t.txt. Expected = SB with a full barrier on each side |
 | sb_kernel_atomic_nofence | FAILED | .../SB+poonceonces.litmus (Sometimes), with the stores and loads as relaxed and an unordered atomic_inc between them (Documentation/atomic_t.txt: no implied barrier) |
 
-Not in the table, by design: LB with dependencies and smp_rmb (the model's load-buffering and
-smp_rmb strength are outside the LKMM, section 4).
+The downgrade rule is tested on both sides: mp_kernel_relacq (release/acquire MP, no LB shape, no
+smp_rmb) keeps its plain BOUNDED, and lb_relaxed (C11, not kernel mode) keeps its RC11 BOUNDED.
+lb_kernel_mb_ctrl keeps its BOUNDED because a full barrier breaks its LB shape in one thread.
+
+Not in the table, by design: LB with dependencies (dependencies are not ordering here, section 4).
 
 Existing tests that already cover parts of this: c11_sb_ra, c11_mp_ra, c11_sc_fence_sb,
 tso_sb (tests/conc).
