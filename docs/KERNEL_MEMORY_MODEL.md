@@ -39,8 +39,11 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
 | `rcu_assign_pointer` | release store | |
 | `smp_mb()`, `mb()` | seq_cst fence | recognised via `__atomic_thread_fence`; the IR parser lowers `fence` to a `llvm.donothing` call, so the conc extractor now recognises that form (its fence branch was unreachable before) |
 | `smp_rmb()` / `smp_wmb()` | acquire / release fence | a fence strength the kernel does not promise for all pairs: approx (over-strong for smp_rmb, so may drop behaviours; flagged) |
+| `smp_mb__before_atomic()`, `smp_mb__after_atomic()` | seq_cst fence at the call (extract.cpp, recognised by callee name) | LKMM linux-kernel.def: `fence{before-atomic}` / `fence{after-atomic}`. Bracketing a relaxed RMW (atomic_inc and friends) gives the full ordering the LKMM gives (explanation.txt, "oddball fences"); a standalone seq_cst fence orders at least what they order, so this is exact for the adjacent-RMW idiom and an over-approximation of their ordering elsewhere |
+| `spin_lock` / `spin_unlock` (and `raw_spin_*`) | mutex Lock / Unlock in the view model: acquire / release on the lock | recognised by callee name, lock operand must be a global (else UNENCODED). Same synchronisation as `pthread_mutex_*`. Mutual exclusion and deadlock are modelled by the mutex semantics |
 | `cmpxchg`, `xchg`, `atomic_*_return` | RMW with the success/failure orders | the kernel default for value-returning RMWs is fully ordered (seq_cst) |
 | `atomic_read` / `atomic_set` | relaxed | |
+| `smp_mb__after_spinlock()`, `spin_lock_irqsave`, rwlocks, RCU grace periods | not modelled: the callee is not recognised and is passed through with no effect | see section 4 (unrecognised calls) |
 | LL/SC pairs (`ldxr`/`stxr`, arm64) | not an IR atomic: outside the model | UNENCODED until an LL/SC model exists |
 
 ## 3. The encoding that exists
@@ -58,17 +61,35 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
 
 ## 4. Gaps (what W3 does not yet close)
 
-1. READ_ONCE / WRITE_ONCE (volatile accesses) and the smp_* barriers (`__atomic_thread_fence`,
-   `__atomic_load_n` / `__atomic_store_n`) ARE now recognised by the conc extractor, provided the harness
-   defines the macros that way (tests/conc/litmus/*kernel*.c). Not modelled: kernel macros that
-   expand to inline asm, dependencies (address/data/control dependency ordering is not tracked:
-   `rcu_dereference` as acquire is the stand-in), `smp_mb__before_atomic` and friends, locks as
-   LKMM primitives, and load buffering (LB+poonceonces is Sometimes in the LKMM, the
-   promise-free model forbids it: it cannot report that outcome). A plain (non-volatile)
-   shared access is still race-checked, as before.
+1. READ_ONCE / WRITE_ONCE (volatile accesses), the smp_* barriers (`__atomic_thread_fence`,
+   `__atomic_load_n` / `__atomic_store_n`), `smp_mb__before_atomic` / `smp_mb__after_atomic` and
+   `spin_lock` / `spin_unlock` ARE recognised by the conc extractor (section 2). The kernel macros
+   must reach the IR as those spellings; kernel macros that expand to inline asm are not recognised.
+   Not modelled:
+   - Dependency ordering. Address, data and control dependencies are not tracked. `rcu_dereference`
+     as an acquire load is the stand-in for address dependencies, and it is stronger than the LKMM.
+   - `smp_mb__after_spinlock()`, `spin_lock_irqsave`, rwlocks, RCU grace periods, `smp_mb()` /
+     `smp_rmb()` spelled as calls rather than fences (the litmus harness spells them as fences).
+   - Load buffering: LB+poonceonces is Sometimes in the LKMM; the promise-free model forbids it.
+   A plain (non-volatile) shared access is still race-checked, as before.
    Pointers: address values are not modelled (ptrtoint is UNENCODED), so the RCU litmus tests
    publish an index instead of a pointer.
-2. LL/SC pairs: no model. Reported UNENCODED.
+
+   Soundness consequences (what a verdict on kernel code may claim):
+   - An unrecognised external call is passed through unchanged (extract.cpp, end of rewrite_call):
+     any barrier or lock it stands for has NO effect in the conc model. That adds behaviours, so a
+     FAILED may be spurious for code relying on it; a BOUNDED is not weakened by it.
+   - Dependency ordering is missing: the model allows more than the LKMM there. Same direction: a
+     FAILED may be spurious for dependency-protected code; a BOUNDED is not weakened by it.
+   - Load buffering is forbidden in the model and allowed by the LKMM. This is the one place the
+     model is STRONGER than the LKMM. A BOUNDED verdict on an LB-shaped outcome is therefore NOT
+     sound for kernel code, and must not be reported as a kernel result.
+   - `smp_rmb()` as an acquire fence is stronger than the LKMM (section 2). A BOUNDED verdict that
+     depends on an smp_rmb is not sound for the kernel.
+   So BOUNDED verdicts on kernel code are sound only for the modelled orderings and no LB-shaped or
+   smp_rmb-dependent outcome; any other claim about kernel code must carry these limits.
+2. LL/SC pairs: no model. Reported UNENCODED, so a verdict on code using them is never produced
+   silently; no soundness claim is made for it.
 3. Per-function pir atomics stay sequential (assumption `atomics-sequential`). A proof of a
    single function does not see other threads' weak behaviour; only the conc stage does.
 4. An atomic location in the bounded memory is identified by its start address; overlapping
@@ -101,10 +122,19 @@ unreachable). Each header cites the source of the expected outcome.
 | sb_kernel_mb | BOUNDED | .../SB+fencembonceonces.litmus (Never) |
 | sb_kernel_once | FAILED | .../SB+poonceonces.litmus (Sometimes) |
 | lb_kernel_mb_ctrl | BOUNDED | .../LB+fencembonceonce+ctrlonceonce.litmus (Never) |
+| mp_kernel_spinlock | BOUNDED | .../MP+polocks.litmus (Never): spin_lock / spin_unlock as acquire / release |
+| sb_kernel_atomic_mb | BOUNDED | linux-kernel.def (smp_mb__before_atomic, smp_mb__after_atomic as fences); Documentation/explanation.txt ("oddball fences"); Documentation/atomic_t.txt. Expected = SB with a full barrier on each side |
+| sb_kernel_atomic_nofence | FAILED | .../SB+poonceonces.litmus (Sometimes), with the stores and loads as relaxed and an unordered atomic_inc between them (Documentation/atomic_t.txt: no implied barrier) |
+
+Not in the table, by design: LB with dependencies and smp_rmb (the model's load-buffering and
+smp_rmb strength are outside the LKMM, section 4).
 
 Existing tests that already cover parts of this: c11_sb_ra, c11_mp_ra, c11_sc_fence_sb,
 tso_sb (tests/conc).
 
 ## 6. Results
 
-All 17 litmus files match their EXPECT line (gate `-tc='*litmus*'`: 2 test cases, 69 assertions, all passed). A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character.
+PENDING: the gate result for this section is filled in after the W3r run. An earlier note here
+claimed "all 17 files match"; no gate run backed it, so it has been removed.
+
+A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character.
