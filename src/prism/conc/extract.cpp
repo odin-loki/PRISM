@@ -1336,7 +1336,10 @@ struct Rewriter {
             zero_result(in, out);
             return;
         }
-        if (n == "pthread_mutex_lock" || n == "mtx_lock" || n == "pthread_mutex_unlock" || n == "mtx_unlock") {
+        // LKMM spin_lock / spin_unlock (linux-kernel.def): an acquire / release on the
+        // lock, the same synchronisation as a mutex (views_sync at Lock / Unlock)
+        if (n == "pthread_mutex_lock" || n == "mtx_lock" || n == "pthread_mutex_unlock" || n == "mtx_unlock" ||
+            n == "spin_lock" || n == "raw_spin_lock" || n == "spin_unlock" || n == "raw_spin_unlock") {
             bool lock = n.ends_with("_lock");
             auto vo = mk(lock ? VisOp::Lock : VisOp::Unlock, n);
             auto da = sync_addr(fn, arg(0), n);
@@ -1344,6 +1347,18 @@ struct Rewriter {
             vo.mutex = da ? -1 : mutex(arg(0), n);
             int k = add_op(vo);
             out.push_back(copy(in, marker(k), da ? *da : cint(0, i64)));
+            zero_result(in, out);
+            return;
+        }
+        // LKMM smp_mb__before_atomic / smp_mb__after_atomic (linux-kernel.def): a full
+        // barrier at the call site, modelled as a seq_cst fence. The RMW they bracket is
+        // relaxed in the model, so the fences carry the ordering.
+        if (n == "smp_mb__before_atomic" || n == "smp_mb__after_atomic") {
+            auto vo = mk(VisOp::Fence, n);
+            vo.order = 4;  // seq_cst
+            vo.atomic = true;
+            int k = add_op(vo);
+            out.push_back(nondet(in, marker(k), int_type(1)));
             zero_result(in, out);
             return;
         }
