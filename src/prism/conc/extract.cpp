@@ -149,6 +149,21 @@ std::string c_order_name(const std::string& w) {
 // weak_order, refuse_weak_order in stage.cpp).
 thread_local std::string tl_weak_order;
 thread_local bool tl_views = false;
+// Unrecognised external calls of the scope (Program::assumptions "conc-extern-noeffect"):
+// the model gives them no effect, which is not the LKMM for a call that may
+// synchronise or write shared memory (docs/KERNEL_MEMORY_MODEL.md section 4).
+thread_local std::set<std::string> tl_externs;
+
+// Calls with no effect on shared memory or on ordering in the model: verifier
+// and debug intrinsics, assertion and abort, and the stdio output calls.
+bool extern_call_benign(const std::string& n) {
+    if (n.starts_with("llvm.dbg.") || n.starts_with("llvm.lifetime.") || n.starts_with("llvm.assume") ||
+        n.starts_with("llvm.expect") || n.starts_with("__VERIFIER_") || n.starts_with("__prism.uninit"))
+        return true;  // __prism.uninit.*: the value of an uninitialised local (PIR), no memory effect
+    static const std::set<std::string> ok{"printf", "puts", "putchar", "fprintf", "fputs", "fflush",
+                                          "__assert_fail", "abort", "exit"};
+    return ok.count(n) > 0;
+}
 
 // C11 order code (VisOp::order) of an IR order word
 int order_code(const std::string& w) {
@@ -172,6 +187,24 @@ std::vector<int> scalar_orders(const std::vector<std::string>& ws) {
     }
     if (r.empty()) r.push_back(4);
     return r;
+}
+
+// A volatile (non-atomic) scalar access is how the kernel's READ_ONCE / WRITE_ONCE
+// expand: the LKMM treats it as a relaxed marked access, so it is encoded as a
+// relaxed atomic (no data race, no ordering). docs/KERNEL_MEMORY_MODEL.md.
+bool has_volatile(const std::string& text) {
+    for (auto& w : words(text.substr(0, text.find(','))))
+        if (w == "volatile") return true;
+    return false;
+}
+
+int access_order(const std::string& text, const std::vector<std::string>& ws, bool atomic_kw) {
+    if (!atomic_kw) {
+        tl_views = true;
+        return 0;  // volatile only: relaxed
+    }
+    (void)text;
+    return scalar_orders(ws).at(0);
 }
 
 [[maybe_unused]] void require_sc(const std::vector<std::string>& ws) {
@@ -729,8 +762,10 @@ struct Rewriter {
         vo.kind = store ? VisOp::Store : VisOp::Load;
         vo.mem = true;
         vo.obj = obj;
+        const bool atomic_kw = atomic;
+        if (!atomic && has_volatile(in.text)) atomic = true;
         vo.atomic = atomic;
-        vo.order = atomic ? scalar_orders(words(in.text)).at(0) : -1;
+        vo.order = atomic ? access_order(in.text, words(in.text), atomic_kw) : -1;
         vo.width = ty.bits;
         vo.line = line;
         vo.what = std::string(atomic ? "atomic " : "") + (store ? "store" : "load");
@@ -988,7 +1023,9 @@ struct Rewriter {
             out.push_back(in);
             return;
         }
-        if (op == "fence") {
+        // the IR parser lowers  to a llvm.donothing call; the conc stage reads the original text
+        if (op == "fence" ||
+            (op == "call" && in.callee == "llvm.donothing" && !words(in.text).empty() && words(in.text).front() == "fence")) {
             // a seq_cst fence orders nothing more under SC; the view model
             // (Program::views) reads every fence's order
             auto ords = scalar_orders(words(inst_parts(in.text)[0]));
@@ -1013,6 +1050,8 @@ struct Rewriter {
             auto w0 = words(parts[0]);  // load [atomic] [volatile] T
             auto w1 = words(parts[1]);  // ptr P [syncscope] [order]
             bool atomic = std::find(w0.begin(), w0.end(), "atomic") != w0.end();
+            const bool atomic_kw = atomic;
+            if (std::find(w0.begin(), w0.end(), "volatile") != w0.end()) atomic = true;
             std::string tys = w0.back();
             auto ty = ir::parse_type(tys);
             if (w1.size() < 2) throw Unenc{"UNENCODED: load form " + in.text};
@@ -1035,7 +1074,7 @@ struct Rewriter {
                 throw Unenc{"UNENCODED: load from " + w1[1].substr(0, 40) +
                             " (shared aggregates need the PIR memory model)"};
             }
-            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
+            const int ord = atomic ? access_order(in.text, w1, atomic_kw) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Load;
@@ -1059,6 +1098,8 @@ struct Rewriter {
             auto w0 = words(parts[0]);  // store [atomic] [volatile] T V
             auto w1 = words(parts[1]);
             bool atomic = std::find(w0.begin(), w0.end(), "atomic") != w0.end();
+            const bool atomic_kw = atomic;
+            if (std::find(w0.begin(), w0.end(), "volatile") != w0.end()) atomic = true;
             if (w0.size() < 3 || w1.size() < 2) throw Unenc{"UNENCODED: store form " + in.text};
             auto ty = ir::parse_type(w0[w0.size() - 2]);
             auto g = global_ref(w1[1]);
@@ -1074,7 +1115,7 @@ struct Rewriter {
                             " (shared aggregates / thread handles need the PIR memory model)"};
             if (ty.kind != ir::Type::Int)
                 throw Unenc{"UNENCODED: store of " + ty.text + " to @" + g + " (memory model)"};
-            const int ord = atomic ? scalar_orders(w1).at(0) : -1;
+            const int ord = atomic ? access_order(in.text, w1, atomic_kw) : -1;
             int v = shared_var(g, ty);
             VisOp vo;
             vo.kind = VisOp::Store;
@@ -1310,7 +1351,10 @@ struct Rewriter {
             zero_result(in, out);
             return;
         }
-        if (n == "pthread_mutex_lock" || n == "mtx_lock" || n == "pthread_mutex_unlock" || n == "mtx_unlock") {
+        // LKMM spin_lock / spin_unlock (linux-kernel.def): an acquire / release on the
+        // lock, the same synchronisation as a mutex (views_sync at Lock / Unlock)
+        if (n == "pthread_mutex_lock" || n == "mtx_lock" || n == "pthread_mutex_unlock" || n == "mtx_unlock" ||
+            n == "spin_lock" || n == "raw_spin_lock" || n == "spin_unlock" || n == "raw_spin_unlock") {
             bool lock = n.ends_with("_lock");
             auto vo = mk(lock ? VisOp::Lock : VisOp::Unlock, n);
             auto da = sync_addr(fn, arg(0), n);
@@ -1318,6 +1362,18 @@ struct Rewriter {
             vo.mutex = da ? -1 : mutex(arg(0), n);
             int k = add_op(vo);
             out.push_back(copy(in, marker(k), da ? *da : cint(0, i64)));
+            zero_result(in, out);
+            return;
+        }
+        // LKMM smp_mb__before_atomic / smp_mb__after_atomic (linux-kernel.def): a full
+        // barrier at the call site, modelled as a seq_cst fence. The RMW they bracket is
+        // relaxed in the model, so the fences carry the ordering.
+        if (n == "smp_mb__before_atomic" || n == "smp_mb__after_atomic") {
+            auto vo = mk(VisOp::Fence, n);
+            vo.order = 4;  // seq_cst
+            vo.atomic = true;
+            int k = add_op(vo);
+            out.push_back(nondet(in, marker(k), int_type(1)));
             zero_result(in, out);
             return;
         }
@@ -1439,6 +1495,8 @@ struct Rewriter {
             cut = true;  // rest of the block is dead
             return;
         }
+        if (n.empty() || (!src.find(n) && !extern_call_benign(n)))
+            tl_externs.insert(n.empty() ? std::string("(indirect)") : n);
         (void)f;
         out.push_back(in);
     }
@@ -1479,6 +1537,101 @@ struct Rewriter {
                 }
     }
 };
+
+// Load buffering (docs/KERNEL_MEMORY_MODEL.md section 4): the model forbids LB, the
+// LKMM allows it. A relaxed load of one location followed, with no full ordering in
+// between, by a relaxed store to another location is one edge of an LB cycle. The
+// caller (build_impl) joins the edges of the threads. Dependencies are not modelled,
+// so they do not count as ordering. Acquire loads and release stores are not treated
+// as resets (conservative: a reset can only remove a downgrade).
+struct KernelScan {
+    bool kernel = false;     // kernel-style primitives seen in scope
+    bool acq_fence = false;  // a fence with order acquire (the smp_rmb spelling)
+    bool rel_fence = false;  // a fence with order release (the smp_wmb spelling)
+    // function -> (load location, later store location) of each LB-shaped pattern in it
+    std::map<std::string, std::set<std::pair<std::string, std::string>>> lb_pairs;
+};
+
+bool word_in(const std::vector<std::string>& ws, const char* w) {
+    return std::find(ws.begin(), ws.end(), w) != ws.end();
+}
+
+// The words of an instruction with the separating commas removed ("acquire," is "acquire").
+std::vector<std::string> clean_words(const std::string& text) {
+    auto ws = words(text);
+    for (auto& w : ws)
+        while (!w.empty() && w.back() == ',') w.pop_back();
+    return ws;
+}
+
+KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) {
+    KernelScan ks;
+    // a pointer to a global is its name; any other pointer may alias anything
+    auto loc = [](const ir::Operand& o) { return o.v.kind == ir::Value::Global ? o.v.name : std::string("?"); };
+    auto differs = [](const std::string& a, const std::string& b) { return a != b || a == "?" || b == "?"; };
+    for (auto& f : m.functions) {
+        if (!scope.count(f.name)) continue;
+        std::set<std::string> loads;  // relaxed-load locations since the last full ordering
+        std::set<std::string> allocas;  // stack slots of this function: not shared memory
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts)
+                if (in.op == "alloca" && !in.result.empty()) allocas.insert(in.result);
+        std::set<std::pair<std::string, std::string>> pairs;
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts) {
+                const auto ws = clean_words(in.text);
+                const bool call = in.op == "call";
+                const bool fence = in.op == "fence" ||
+                                   (call && in.callee == "llvm.donothing" && !ws.empty() && ws.front() == "fence");
+                if (fence) {
+                    if (word_in(ws, "acquire")) ks.acq_fence = true;
+                    if (word_in(ws, "release")) ks.rel_fence = true;
+                    if (word_in(ws, "seq_cst") || word_in(ws, "acq_rel")) loads.clear();
+                    continue;
+                }
+                if (call) {
+                    if (in.callee == "spin_lock" || in.callee == "raw_spin_lock" || in.callee == "spin_unlock" ||
+                        in.callee == "raw_spin_unlock")
+                        ks.kernel = true;
+                    if (in.callee == "smp_mb__before_atomic" || in.callee == "smp_mb__after_atomic") {
+                        ks.kernel = true;
+                        loads.clear();  // LKMM: a full barrier at the call site
+                    }
+                    continue;
+                }
+                const bool load = in.op == "load", store = in.op == "store";
+                const bool rmw = in.op == "atomicrmw" || in.op == "cmpxchg";
+                if (!load && !store && !rmw) continue;
+                if (word_in(ws, "volatile")) ks.kernel = true;  // READ_ONCE / WRITE_ONCE
+                // the accessed pointer: a stack slot of this function is not shared
+                const ir::Operand* ptr = store ? (in.ops.size() < 2 ? nullptr : &in.ops.back())
+                                               : (in.ops.empty() ? nullptr : &in.ops[0]);
+                if (ptr && ptr->v.kind == ir::Value::Local && allocas.count(ptr->v.name)) continue;
+                const bool full = word_in(ws, "seq_cst") || word_in(ws, "acq_rel");
+                const bool acq = word_in(ws, "acquire"), rel = word_in(ws, "release");
+                if (full) loads.clear();  // a full-order access orders everything around it
+                auto check = [&](const std::string& y) {
+                    for (const auto& x : loads)
+                        if (differs(x, y)) pairs.insert({x, y});
+                };
+                if (load) {
+                    const std::string x = in.ops.empty() ? std::string("?") : loc(in.ops[0]);
+                    if (!full && !acq) loads.insert(x);  // a relaxed load (plain or volatile)
+                } else if (store) {
+                    const std::string y = in.ops.size() < 2 ? std::string("?") : loc(in.ops.back());
+                    if (!full && !acq && !rel) check(y);  // relaxed store: release/seq_cst are ordered after the loads
+                } else {  // atomicrmw / cmpxchg
+                    const std::string y = in.ops.empty() ? std::string("?") : loc(in.ops[0]);
+                    if (!full && !rel) {
+                        check(y);
+                        if (!acq) loads.insert(y);  // relaxed RMW also reads y
+                    }
+                }
+            }
+        if (!pairs.empty()) ks.lb_pairs[f.name] = std::move(pairs);
+    }
+    return ks;
+}
 
 // Call graph over defined functions (direct calls only).
 std::map<std::string, std::set<std::string>> callees(const ir::Module& m) {
@@ -1618,6 +1771,7 @@ Build build_impl(const ir::Module& m, std::string_view ir_text, const std::strin
     }
     tl_weak_order.clear();
     tl_views = false;
+    tl_externs.clear();
     try {
         Rewriter rw(m, ir_text);
         rw.loop_copies = std::max(1, opt.unwind);
@@ -1799,6 +1953,41 @@ Build build_impl(const ir::Module& m, std::string_view ir_text, const std::strin
         }
         rw.prog.weak_order = tl_weak_order;
         rw.prog.views = tl_views;
+        // named assumptions (docs/KERNEL_MEMORY_MODEL.md section 4)
+        {
+            const auto ks = kernel_scan(rw.src, scope);
+            rw.prog.kernel = ks.kernel;
+            if (ks.kernel) {
+                if (ks.acq_fence) rw.prog.assumptions.push_back("lkmm-rmb-strong");
+                if (ks.rel_fence) rw.prog.assumptions.push_back("lkmm-wmb-strong");
+                // An LB cycle needs two threads whose patterns cross (A loads x and stores y,
+                // B loads y and stores x), or at least three threads with patterns (a longer
+                // cycle). A location "?" may alias any other.
+                using Pairs = std::set<std::pair<std::string, std::string>>;
+                std::vector<Pairs> pats;
+                for (auto& th : rw.prog.threads) {
+                    Pairs mine;
+                    for (auto& f : closure(th.entry))
+                        if (auto it = ks.lb_pairs.find(f); it != ks.lb_pairs.end())
+                            mine.insert(it->second.begin(), it->second.end());
+                    if (!mine.empty()) pats.push_back(std::move(mine));
+                }
+                auto may_alias = [](const std::string& a, const std::string& b) {
+                    return a == b || a == "?" || b == "?";
+                };
+                bool lb = pats.size() >= 3;
+                for (std::size_t i = 0; i < pats.size() && !lb; ++i)
+                    for (std::size_t j = i + 1; j < pats.size() && !lb; ++j)
+                        for (const auto& p1 : pats[i])
+                            for (const auto& p2 : pats[j])
+                                if (may_alias(p1.second, p2.first) && may_alias(p2.second, p1.first)) lb = true;
+                if (lb) rw.prog.assumptions.push_back("lkmm-no-lb");
+            }
+        }
+        if (!tl_externs.empty()) {
+            rw.prog.assumptions.push_back("conc-extern-noeffect");
+            rw.prog.extern_calls.assign(tl_externs.begin(), tl_externs.end());
+        }
         b.prog = std::move(rw.prog);
         b.status.clear();
     } catch (const Unenc& u) {
