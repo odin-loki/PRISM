@@ -498,6 +498,15 @@ invented, as for drafts; the original is in `extra.verdict_under_draft`).
 Translation validation does not replay these functions, and the Lean export
 marks them `L unsupported automatic pointer harness` (see "Lean coverage").
 
+**Making the harness sound (docs/HARNESS_GENERATOR.md).** Three opt-in flags, each off by default:
+`--pir-discharge` turns the harness of a static, non-address-taken function into checks at every call site of
+the unit (class `HARNESS-OBLIGATION`) and, when they all hold, replaces the invented `(auto harness)` assumption
+by "discharged at N call sites" (still `PROVED-ASSUMING`: it rests on the entry functions' assumptions;
+`extra.harness_discharge`, `extra.discharge_entry`); `--pir-container-of` gives a parameter used at a negative
+constant offset its containing object; `--pir-vacuity` turns a harnessed result whose assumptions leave no
+returning execution into `NEEDS-HARNESS` (`extra.non_vacuity`). The composition is proved in
+`proofs/Prism/Discharge.lean`.
+
 ## Machine-readable output (`--jsonl FILE`)
 
 `prism UNIT --stage pir --jsonl out.jsonl` appends one line per function (and

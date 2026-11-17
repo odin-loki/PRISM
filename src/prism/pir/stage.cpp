@@ -2758,6 +2758,10 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
         }
         return false;
     };
+    // wall seconds for the whole pass ($PRISM_DISCHARGE_BUDGET, default 900): a pair not reached is not discharged
+    double pass_budget = 900;
+    (void)env_seconds("PRISM_DISCHARGE_BUDGET", pass_budget);
+    const auto t_pass = std::chrono::steady_clock::now();
     const PtrModel pm = ptr_model_of(mod);
     PtrModelScope pms(pm);
     pirmem::Layout lay(mod);
@@ -2812,6 +2816,10 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
         for (const auto& fname : callers[g]) {
             const auto* cf = mod.find(fname);
             if (!cf) continue;
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count() > pass_budget) {
+                failure = "the discharge budget of " + std::to_string(static_cast<int>(pass_budget)) + " s (PRISM_DISCHARGE_BUDGET) was spent before the call site in " + display(fname);
+                break;
+            }
             ir::DISub sub;
             if (auto it = mod.subprograms.find(cf->dbg); it != mod.subprograms.end()) sub = it->second;
             auto fopt = function_options(topt, *cf, uinfo, sub.line, cfg, sub.name.empty() ? cf->name : sub.name);
