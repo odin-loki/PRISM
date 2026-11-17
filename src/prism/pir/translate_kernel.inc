@@ -62,7 +62,7 @@ std::vector<std::string> split_commas(const std::string& s) {
 }
 }  // namespace
 
-void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line) {
+void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag, const std::string& extra) {
     // operands: evaluated once (undef / poison uses are checked)
     std::vector<Arg> args;
     for (auto& o : in.ops) args.push_back(operand(fr, o, cur, line));
@@ -102,7 +102,7 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line) {
             throw Unenc{"UNENCODED: inline assembly with outputs of type " + in.ty.text};
         }
     }
-    std::string what = "asm-havoc: \"" + in.asm_constraints + "\" (line " + std::to_string(line) + "): ";
+    std::string what = tag + ": " + extra + "\"" + in.asm_constraints + "\" (line " + std::to_string(line) + "): ";
     what += n_direct ? std::to_string(n_direct) + " output(s) havocked" : "no register output";
     if (!written.empty()) what += "; " + std::to_string(written.size()) + " indirect output(s) written through the pointer operand(s)";
     if (mem_clobber)
