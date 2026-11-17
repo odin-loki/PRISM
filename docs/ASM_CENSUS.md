@@ -114,5 +114,19 @@ Not modelled (stay havoc, listed): `in`/`out` port I/O, `cli`/`sti`/`hlt`, `invl
 state, the `.S` routines (entry, context switch, boot). `QEMU` user-mode is not installed in
 WSL; the native host run replaces it for the non-privileged set.
 
-Next: arm64 and riscv templates; the translator hook (asm_havoc in
-`src/prism/pir/translate_kernel.inc`) is not wired in this change.
+### Agreement counts (real runs, W4r)
+
+- Reference model vs native (`tests/asm/x86_64_asm_validate.cpp`, built with clang++ in WSL):
+  10 validated entries, 4,096 vectors each, 0 mismatches; `cpuid`, `rdmsr`, `wrmsr` UNVALIDATED.
+- Translator (`translate_asm.inc`, `--kernel-api linux`, PIR interpreter) vs native
+  (`tests/cpp/test_pir_asm_exact.cpp`): 61 templates, 1,200 vectors each, 73,200 of 73,200 agree.
+  Every template is checked as `asm-exact` (no fallback to havoc).
+
+Fixed in this run: the `lock;` prefix written as its own `;` piece was rejected by the template
+parser (`x86_64_parse.cpp`), so every locked form silently fell back to havoc. The `sarl` oracle
+sign-extended a 32-bit result (harness bug, now zero-extended like the IR).
+
+Hook: `Tr::asm_exact` is called from `asm_call` (`translate_ctl.inc`) before `asm_havoc`, for
+`--kernel-api` runs; a stated asm contract still wins.
+
+Next: arm64 and riscv templates.

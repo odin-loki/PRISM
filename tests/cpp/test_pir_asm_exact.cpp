@@ -417,6 +417,7 @@ TEST_CASE("asm exact: C templates, a true and a false variant of each (kernel_as
     auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
     cfg.root = dir;
     cfg.jobs = 2;
+    cfg.timeout = 300.0;  // divl's q == x / s && r == x % s needs more than the default 30 s of solver time
     cfg.pir_kernel_api = "linux";
     auto out = pp::run_pir({dir / "kernel_asm_exact.c"}, cfg);
     std::map<std::string, prism::Finding> got;
