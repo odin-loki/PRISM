@@ -711,7 +711,9 @@ bool is_cast(std::string_view op) {
 }
 
 // Parse the tokens of one instruction (metadata attachments already removed).
-Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
+// kernel: the atomic and barrier forms are modelled (--kernel-api); otherwise
+// they stay unparsed, exactly as before those forms were added.
+Inst parse_inst(const std::vector<Tok>& toks, std::string line_text, bool kernel) {
     Inst in;
     in.text = std::move(line_text);
     P p{toks};
@@ -925,8 +927,13 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         // volatile: the program's own object, read and written in program
         // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
         // like any other. The flag is kept. An atomic access is a plain access
-        // with a kernel_note (--kernel-api: sequential model; otherwise the
-        // translator refuses it as before).
+        // with a kernel_note (kernel mode: sequential model; otherwise it stays
+        // unencoded, as on main, and the conc stage reads its raw text).
+        if (!kernel && p.is_word("atomic")) {
+            in.flags.push_back(p.next().text);
+            in.parsed = false;
+            return in;
+        }
         const bool atomic = p.accept_word("atomic");
         if (atomic) in.flags.push_back("atomic");
         if (p.is_word("volatile")) in.flags.push_back(p.next().text);
@@ -941,6 +948,11 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         // volatile: the program's own object, read and written in program
         // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
         // like any other. The flag is kept. atomic: as for load.
+        if (!kernel && p.is_word("atomic")) {
+            in.flags.push_back(p.next().text);
+            in.parsed = false;
+            return in;
+        }
         const bool atomic = p.accept_word("atomic");
         if (atomic) in.flags.push_back("atomic");
         if (p.is_word("volatile")) in.flags.push_back(p.next().text);
@@ -953,7 +965,7 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         in.align = p.trailing_align();
         return in;
     }
-    if (op == "fence") {
+    if (op == "fence" && kernel) {
         // a barrier: no effect on the sequential memory model (--kernel-api, kernel_note)
         in.op = "call";
         in.callee = "llvm.donothing";
@@ -961,7 +973,7 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         in.kernel_note = "fence (" + p.orderings() + ") modelled as no effect: no other thread or interrupt runs between this function's accesses";
         return in;
     }
-    if (op == "atomicrmw") {
+    if (op == "atomicrmw" && kernel) {
         // atomicrmw [volatile] <op> ptr %p, <ty> %v [syncscope] <ordering> [, align N]
         // (lowered to load, op, store by expand_atomic)
         if (p.is_word("volatile")) in.flags.push_back(p.next().text);
@@ -981,7 +993,7 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         in.align = p.trailing_align();
         return in;
     }
-    if (op == "cmpxchg") {
+    if (op == "cmpxchg" && kernel) {
         // cmpxchg [weak] [volatile] ptr %p, <ty> %cmp, <ty> %new [syncscope] <success> <failure> [, align N]
         const bool weak = p.accept_word("weak");
         if (weak) in.flags.push_back("weak");
@@ -1311,7 +1323,8 @@ int to_int(const std::string& s) {
     return v;
 }
 
-void parse_define(std::string_view header, const std::vector<std::string_view>& body, Function& fn) {
+void parse_define(std::string_view header, const std::vector<std::string_view>& body, Function& fn,
+                  bool kernel_atomics) {
     auto toks = lex(header);
     // header: define [linkage...] [ret attrs] <type> @name(params) [...] [!dbg !N] {
     for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
@@ -1379,7 +1392,7 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         }
         Inst in;
         try {
-            in = parse_inst(toks2, trim(line));
+            in = parse_inst(toks2, trim(line), kernel_atomics);
         } catch (const ParseError& e) {
             if (fn.parse_error.empty()) fn.parse_error = std::string(e.what()) + ": " + trim(line);
             in.parsed = false;
@@ -1391,7 +1404,7 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         }
         in.dbg = dbg;
         in.loop_md = loop_md;
-        if (in.parsed && (in.op == "atomicrmw" || in.op == "cmpxchg")) {
+        if (kernel_atomics && in.parsed && (in.op == "atomicrmw" || in.op == "cmpxchg")) {
             for (auto& x : expand_atomic(in, atomic_serial++)) {
                 x.dbg = dbg;
                 cur->insts.push_back(std::move(x));
@@ -1528,7 +1541,7 @@ Type parse_type(std::string_view text) {
     return p.type();
 }
 
-Module parse_module(std::string_view text) {
+static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
     Module m;
     std::vector<std::string_view> lines;
     std::size_t pos = 0;
@@ -1553,7 +1566,7 @@ Module parse_module(std::string_view text) {
             if (auto brace = header.rfind('{'); brace != std::string_view::npos)
                 header = header.substr(0, brace);
             try {
-                parse_define(header, body, fn);
+                parse_define(header, body, fn, kernel_atomics);
             } catch (const ParseError& e) {
                 fn.parse_error = std::string("header: ") + e.what();
             }
@@ -1645,5 +1658,9 @@ Module parse_module(std::string_view text) {
     }
     return m;
 }
+
+Module parse_module(std::string_view text) { return parse_module_impl(text, false); }
+
+Module parse_module_kernel(std::string_view text) { return parse_module_impl(text, true); }
 
 }  // namespace prism::pir::ir
