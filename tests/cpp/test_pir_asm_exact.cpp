@@ -137,7 +137,15 @@ SHIFT_NATIVE(n_roll, "roll", u32)
 SHIFT_NATIVE(n_rorl, "rorl", u32)
 SHIFT_NATIVE(n_shll, "shll", u32)
 SHIFT_NATIVE(n_shrl, "shrl", u32)
-SHIFT_NATIVE(n_sarl, "sarl", std::int32_t)
+// 32-bit forms write a zero-extended 32-bit result (the IR zexts it), so the oracle must too.
+Nat n_sarl() {
+    return [](u64 a, u64, u64 c) -> u64 {
+        std::int32_t x = static_cast<std::int32_t>(static_cast<u32>(a));
+        unsigned cl = static_cast<unsigned>(c);
+        asm("sarl %%cl, %0" : "+r"(x) : "c"(cl) : "cc");
+        return static_cast<u64>(static_cast<u32>(x));
+    };
+}
 
 #define BITOP_NATIVE(NAME, INSN, T, FLAG)                                          \
     Nat NAME() {                                                                   \

@@ -40,6 +40,7 @@ std::optional<std::vector<X86Ins>> parse_x86_template(std::string_view tmpl) {
     if (t.find_first_of("(){}|:#\"\\") != std::string::npos) return std::nullopt;
     std::vector<X86Ins> r;
     std::size_t i = 0;
+    bool pending_lock = false;  // "lock; addq ..." : the lock prefix is its own ';' piece
     while (i <= t.size()) {
         std::size_t j = t.find(';', i);
         if (j == std::string::npos) j = t.size();
@@ -53,6 +54,8 @@ std::optional<std::vector<X86Ins>> parse_x86_template(std::string_view tmpl) {
         std::string rest = piece.substr(a);
         while (!rest.empty() && rest.back() == ' ') rest.pop_back();
         X86Ins ins;
+        ins.lock = pending_lock;
+        pending_lock = false;
         auto take_word = [&]() {
             std::size_t e = rest.find(' ');
             std::string w = rest.substr(0, e);
@@ -62,7 +65,11 @@ std::optional<std::vector<X86Ins>> parse_x86_template(std::string_view tmpl) {
         std::string w = take_word();
         if (w == "lock") {
             ins.lock = true;
-            if (rest.empty()) return std::nullopt;
+            if (rest.empty()) {  // bare prefix piece: applies to the next instruction
+                if (j >= t.size()) return std::nullopt;
+                pending_lock = true;
+                continue;
+            }
             w = take_word();
         }
         for (auto& ch : w) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));

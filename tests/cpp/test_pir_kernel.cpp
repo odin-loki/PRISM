@@ -155,10 +155,10 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
                  {"asm_out_bad", F, ""},
                  {"asm_clobber_ok", PA, "memory clobber"},
                  {"asm_clobber_bad", F, ""},
-                 {"asm_nomem_ok", PA, "asm-havoc"},
+                 {"asm_nomem_ok", PA, "asm-exact"},  // nop: modelled exactly (translate_asm.inc)
                  {"asm_indirect_out_bad", F, ""},
                  {"asm_ud2_bad", F, ""},
-                 {"asm_ud2_ok", PA, "asm-havoc"},
+                 {"asm_ud2_ok", PA, "asm-privileged"},  // ud2 is privileged: outputs and memory havocked
                  {"atomic_add_ok", PA, "atomics-sequential: atomicrmw add"},
                  {"atomic_sub_bad", F, ""},
                  {"atomic_load_store_bad", F, ""},
