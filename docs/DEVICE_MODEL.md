@@ -525,11 +525,13 @@ MMIO access an interrupt point), which is larger.
 
 ## 10. Second pilot: a hostile device (virtio-rng)
 
-**Status: attempted, incomplete.** The unit builds and the driver's probe, scan and remove paths against a hostile
-transport verify. Any operation on top of them (a read, a virtqueue callback, suspend/resume) ran `pir` out of
-memory (6 to 8 GB budgets) and gave `UNKNOWN`. So the claim this pilot exists to make, "no UB or memory error for
-any device behaviour", is **not established** for virtio-rng, and neither is the mutation check that was meant to
-show it has teeth. What was learned is below.
+**Status: partial.** The probe, scan and remove paths against a hostile transport are BOUNDED (no violation, below).
+Each single operation with one step was re-run on the current sources (section 10.2a): three operations (`read_nowait`,
+`read_wait`, `cb_read`) and `callback` ran out of the 8000 MB budget (`UNKNOWN`, no answer). `suspend_resume` gave a
+**FAILED** verdict, a use after free reachable through the driver's restore path (section 10.4), which is a
+counterexample to triage, not a proof and not a bound. So the claim this pilot exists to make, "no UB or memory error
+for any device behaviour", is **not established** for virtio-rng, and neither is the mutation check. The memory cause
+is measured in section 10.5.
 
 ### 10.1 The setup
 
@@ -559,31 +561,90 @@ the shipped source), which a hostile host drives into an out-of-bounds read of `
 | Configuration | Rows | `pir` verdict | Notes |
 |---|---|---|---|
 | probe, scan, remove, all failure injections (steps 0), hostile transport | `all` | PROVED, module verdict **BOUNDED**, "L4 (bounded)" | 120 s; `find_vqs`, `kzalloc`, `ida_alloc`, `hwrng_register` may fail; probe ok, probe fail and remove reachable. The device model is "the virtqueue device is untrusted within the ring protocol", **unvalidated**. |
-| one operation (steps 1): `callback`; `read_nowait`; `suspend_resume`; `cb_read`; `cb_read` with a 32-byte buffer; the unhardened mutant with `cb_read` | `all` | UNKNOWN (memory budget of 6 to 8 GB reached after 1 to 5 minutes) | no answer. Never a proof. |
+| one operation (steps 1): `callback`; `read_nowait`; `suspend_resume`; `cb_read`; `cb_read` with a 32-byte buffer; the unhardened mutant with `cb_read` | `all` | UNKNOWN (memory budget of 6 to 8 GB reached after 1 to 5 minutes) | no answer. Never a proof. (Superseded for `suspend_resume` by 10.2a.) |
+
+### 10.2a Per-operation verdicts, current sources (commit of this section, DMr)
+
+Row `all`, `--steps 1 --ops <op>`, `--teardown-ops no`, hostile transport, `PRISM_MEM_BUDGET_MB=8000`,
+`PRISM_PIR_INLINE_DEPTH=24` (the value `prism-module` sets for its row children; the ablations of 10.5 that were run
+before this was set are marked there). Steps 0 (probe, scan, remove, failure injections, no operation) was re-run for this table as well.
+
+| Configuration | `pir` / module verdict | Evidence |
+|---|---|---|
+| steps 0, no operation | PROVED, module **BOUNDED** (L4 bounded) | 14 s, no budget hit |
+| steps 1, `read_nowait` | **UNKNOWN**: memory budget reached | exit 75, no answer |
+| steps 1, `read_wait` | **UNKNOWN**: memory budget reached | exit 75, no answer |
+| steps 1, `callback` | **UNKNOWN**: memory budget reached | exit 75, no answer |
+| steps 1, `cb_read` | **UNKNOWN**: memory budget reached | exit 75, no answer |
+| steps 1, `suspend_resume` | **FAILED**: `MEM-UAF` (`uaf=sat`, z3, 3 VCs), in `virtrng_remove` (line 62 of the unit's row file) | counterexample, triaged in 10.4; not a bound |
+
+The rows other than `all` were not run for the operations (the property rows OOM as well, see 10.5).
 
 ### 10.3 What it says and does not say
 
 Probe, scan and remove, with every allocation, id, transport and registration step allowed to fail and without any
 virtqueue traffic, have no UB or memory error and release everything they take, in the bounded sense of section 6.
-Nothing is known about reading, the callback, or suspend and resume. In particular the "hostile hypervisor or
-device" result is **not** delivered.
+Reading, the callback, and suspend and resume with one step are **not** delivered: three of the four operations
+exhaust the budget, and the fourth gives a FAILED. In particular the "hostile hypervisor or device" result is
+**not** delivered, and a `BOUNDED` verdict for any operation of virtio-rng does not exist yet.
 
-### 10.4 A lead from reading (not a PRISM result)
+### 10.4 The suspend/resume use after free (PRISM FAILED, triaged)
 
 `probe_common` sets `vdev->priv = vi` before `virtio_find_single_vq`; its failure path frees `vi` and leaves
 `vdev->priv` dangling. `virtrng_restore` returns that error to the virtio core, which leaves the device bound; when
 the driver is later unbound, `virtrng_remove` reads `vdev->priv` and `remove_common` writes `vi->hwrng_removed`:
-a use after free, reachable after a failed resume. The harness has the `suspend_resume` operation to find exactly this,
-but it did not complete (above). This is the author's reading of about twenty lines of the driver and of the virtio
-core's remove path, **not confirmed** by running it or by PRISM; it is listed for a person to check.
+The `suspend_resume` operation of the harness found it (section 10.2a): `MEM-UAF` at `virtrng_remove`, the
+counterexample of one freeze, one restore and one remove. The chain is: `virtrng_freeze` runs `remove_common`
+(`vi` freed); `virtrng_restore` runs `probe_common`, whose `find_vqs` fails, so its `err_find` path frees the new `vi`
+and returns the error, with `vdev->priv` still pointing at it; the virtio core keeps the device bound
+(`drivers/virtio/virtio.c`, `virtio_device_restore_priv`: on a failed `drv->restore` it sets `VIRTIO_CONFIG_S_FAILED`
+and returns the error, without unbinding); the later unbind calls `virtio_dev_remove`, which calls `drv->remove`,
+i.e. `remove_common`, which reads `vdev->priv` and writes `vi->hwrng_removed` and `complete(&vi->have_data)`.
 
-### 10.5 What blocked it, and what would unblock it
+**Triage.** Real-source status: the restore path and the unbind path both exist in the kernel tree the module
+targets (6.18.60), so the sequence is reachable in the real kernel whenever `find_vqs` fails during resume. It
+is a driver defect of the error path (the fix is to clear `vdev->priv` on the failure path, or to not free `vi` in
+`probe_common` when called from restore, and to make `remove_common` tolerate a failed restore). Not yet confirmed
+on a running guest: a targeted QEMU run with a failing restore would confirm it, and was not done. Which failure
+of the restore the solver chose was not reconstructed from the trace (the trace also contains the stub's `find_vqs`
+failure choice, and its order is the inline order, not the execution order); the mechanism above is the only
+use-after-free the restore path allows, so the verdict is read as this one.
+
+### 10.5 What blocked the rest, measured
+
+Measured on the `all` row, one operation, budget 8000 MB (`PRISM_PIR_INLINE_DEPTH=24`):
+
+(The first three ablations below were run without `PRISM_PIR_INLINE_DEPTH`; the callback baseline with it is still over
+budget, so they are comparable to it.)
+
+* Replacing the operation's body with nothing (the switch, the merge and the teardown call stay): PROVED, fast. So the
+  unit's shape is not the cause; the operation's own work is.
+* A direct call of `random_recv_done` (no `prism_irq_deliver`): still over budget. Removing the device's
+  `__prism_havoc_bytes` from `virtqueue_get_buf` (a diagnostic change, not a fix): still over budget. So neither the
+  havoc of 64 bytes nor the interrupt path alone is the cost.
+* `pairing` (module checks only, no native checks) over budget too: the cost is the encoding of the path, not the
+  number of properties.
+* The SMT query that the solver receives for one callback VC is 17 to 22 MB (19,000 lines or more). It is QF_BV with one
+  8-bit variable per heap byte, and dominated by `ite` (about 26,000) and `bvadd` (about 37,000) terms: the pointer
+  selection of the memory model, for a loaded pointer (`vdev->priv`, `vq->vdev`, `prism_vq_buf`) with a symbolic object.
+  A single operation's VCs carry the whole path before them (probe, scan, the operation), so the cost multiplies with
+  the number of checks on that path. Steps 0 has the same path without the operation and stays at about 1.2 GB.
+* A `get_buf`-only operation did not finish in 15 minutes (not reported).
+
+So the obstacle is the memory model (every access through a symbolic pointer selects among objects by `ite`, every heap
+byte is a variable, every VC is the whole path), not the harness properties. The harness-level changes that would
+help, each of which changes what is checked and so is not done here: a smaller heap object (the driver's
+`struct virtrng_info` is fixed by the driver), summaries of `copy_data` and `virtqueue_get_buf` (Stage 4), and
+slicing each VC to its cone of influence. The translator fix is the one that lowers the cost without changing the
+claim: a memory model with a per-object cell limit or object-indexed arrays instead of `ite` chains.
+
+### 10.6 What blocked it, and what would unblock it (earlier notes)
 
 * The `pir` memory model cost, not the property: a copy of a symbolic length from a symbolic offset
   (`memcpy(buf, vi->data + idx, size)`), the 360-byte `struct hwrng` copy and the zero-initialised
   `struct virtrng_info` make the encoder's read-over-write chains large; the callback alone, with a direct
-  call, reached the budget too. The cheap steps 0 configuration shows the pipeline is not the obstacle. (Not
-  profiled: the three causes above are the likely ones, not measured ones.)
+  call, reached the budget too. The cheap steps 0 configuration shows the pipeline is not the obstacle. (Section 10.5
+  measured the cost; this note's causes are the ones section 10.5 narrows to the pointer model.)
 * Smaller steps, a smaller object, or summaries of `copy_data` and `virtqueue_get_buf` (Stage 4: a contract for each
   entry point and each stub) would cut it; so would a memory model with a per-object cell limit.
 * A `pir` translator that models `ptrtoint`/`inttoptr` round trips (R3 or a translator change, not this layer)
