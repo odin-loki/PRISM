@@ -751,6 +751,33 @@ struct LockOrderInversion {
     std::string other;          // the function whose path takes `first` before `second`
     std::string first, second;  // lock classes (module global names), first < second
 };
+// A cycle of three or more lock classes: classes[i] is taken before classes[i+1] (cyclically), in functions[i].
+struct LockOrderCycle {
+    std::vector<std::string> classes;    // rotated so that the smallest class comes first
+    std::vector<std::string> functions;  // witness of each edge; functions.back() closes the cycle
+};
+// LOCK-CTX-MISMATCH (lockdep inconsistent {IN-HARDIRQ-W} -> {HARDIRQ-ON-W}): a spinlock class taken in an
+// interrupt handler's context (hardirq: the handler and its callees to depth 3) and also taken without
+// interrupt disabling in another function.
+struct LockCtxMismatch {
+    std::string function;    // the process-context function that takes the class without irq disabling
+    std::string handler;     // the interrupt handler whose context takes the same class
+    std::string lock_class;  // module global name
+};
+// A sleeping primitive reached in hardirq context (SLEEP-IN-ATOMIC, interrupt handler).
+struct HardirqSleep {
+    std::string function;  // the function whose body (or a callee's) calls the sleeping primitive
+    std::string handler;   // the interrupt handler it is reached from
+    std::string callee;    // the sleeping primitive
+};
+struct LockOrderReport {
+    std::vector<LockOrderInversion> inversions;
+    std::vector<LockOrderCycle> cycles;
+    std::vector<LockCtxMismatch> ctx_mismatches;
+    std::vector<HardirqSleep> hardirq_sleeps;
+};
+// The lock-order and interrupt-context pass over the unit (docs/KERNEL_CONCURRENCY.md sections 14 and 15).
+PRISM_API LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts);
 PRISM_API std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m,
                                                                 const std::vector<LockContract>& contracts);
 

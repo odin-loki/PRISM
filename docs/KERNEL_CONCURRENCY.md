@@ -326,3 +326,26 @@ contexts) is modelled. A clean run is therefore not a proof of lock order. Toy: 
 one through a callee) and `kernel_lock_order_false.c` (consistent order).
 
 Left: hardirq and softirq contexts (LOCK-CTX-MISMATCH), cycles longer than two, cross-unit order, the FreeBSD `em` pilot.
+
+## 15. Implementation (W7c: interrupt context, lock-order cycles)
+
+Same pass as section 14 (`lock_order_report`, `src/prism/pir/lock_order.cpp`). Two additions.
+
+**Lock-order cycles.** The recorded (held, acquired) pairs form a class graph. Every simple cycle of three to six
+classes is one LOCK-ORDER-INVERSION on the function that closes it (`extra.cycle`, `extra.cycle_functions`). Length-two
+cycles remain the pair findings. Bounds: 100 cycles, 100000 expansions, then the search stops silently.
+
+**Interrupt context.** The handler of `request_irq`, `request_threaded_irq`, `devm_request_irq`,
+`devm_request_threaded_irq` (operand 1 or 2) and the filter of `bus_setup_intr` (operand 3) runs in hardirq. The
+handler and its defined callees (depth 3) are walked:
+- a sleeping primitive reached there is SLEEP-IN-ATOMIC with `extra.context = hardirq` (kmalloc-family calls only when
+  the GFP operand is a constant with `__GFP_DIRECT_RECLAIM`);
+- a spinlock class taken there (spin acquires, contract table entries of kind spin) that a function outside every
+  hardirq context takes without interrupt disabling (`spin_lock`, `_raw_spin_lock`, `spin_lock_bh`) is
+  LOCK-CTX-MISMATCH: lockdep's inconsistent {IN-HARDIRQ-W} -> {HARDIRQ-ON-W}.
+
+Not done (left): softirq context (tasklets, bh handlers), the threaded handler (runs in process context, so it is not
+hardirq), local_irq_disable regions (inline asm, not seen), classes passed as parameters on the process side (only
+module globals are matched there), a function reached from both contexts (treated as hardirq only), cross-unit order.
+Toy: `testdata/pir/kernel_lock_irq_true.c` and `kernel_lock_irq_false.c`; cycles: `kernel_lock_cycle_true.c` and
+`kernel_lock_cycle_false.c`.
