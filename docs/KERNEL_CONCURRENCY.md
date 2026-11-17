@@ -279,3 +279,27 @@ usleep_range while a spinlock is held). Overflow past 8 locks is the named assum
 linux-lock-overflow (the release check is then not reported). FreeBSD mtx and exclusive sx
 locks are tracked as sleep locks (no atomic depth). Not done: entry contracts,
 hardirq/softirq context, RCU, preempt_disable depth, lock order, LOCK-CTX-MISMATCH.
+
+## 13. Implementation (W7r: contracts, preempt/bh, RCU)
+
+Same ghost object as section 12, now with: the exit contract (words K..2K-1),
+the preempt/bh count (word 2K+1), the RCU nesting (word 2K+2). Intrinsics:
+
+| intrinsic | where it is called | checks |
+|---|---|---|
+| `__prism_lock_entry(p, spin)` | analysed code (contract marker), root frame only | p held on entry (caller's lock); spin: atomic depth +1 |
+| `__prism_lock_exit(p)` | analysed code (contract marker), root frame only | p must be held at every return: LOCK-EXIT-MISSING if not |
+| `__prism_atomic_add(delta)` | `preempt_count_add/sub`, `__local_bh_disable_ip/enable_ip` | PREEMPT-UNBALANCED below zero; not zero at a return |
+| `__prism_rcu_add(delta)` | `__rcu_read_lock/unlock` | RCU-UNBALANCED below zero; RCU-HELD-ON-RETURN |
+| `__prism_sleep_if(may)` | `lx_alloc` (kmalloc with __GFP_DIRECT_RECLAIM) | SLEEP-IN-ATOMIC; RCU-SLEEP (`synchronize_rcu` is a sleep point too) |
+
+LOCK-HELD-ON-RETURN now means: a held lock that the function's exit contract does not
+declare. An inlined callee's markers are no-ops (its lock operations act on the caller's
+state); the contract is checked only where the function is the analysed root. Assumption
+`linux-lock-contract` names the contract as trusted by the callers.
+
+Not done (left): local_irq_save / arch_local_irq_* (inline asm in kernel headers: not
+seen by the depth), hardirq and softirq contexts and LOCK-CTX-MISMATCH, lock order
+(LOCK-ORDER, phase B), RCU grace periods, a contract table for unmodified driver code
+(the markers must be in the analysed function, so helpers in a real driver stay
+LOCK-HELD-ON-RETURN until a contract source exists).
