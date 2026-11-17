@@ -65,6 +65,205 @@ headers; the arity of a call must match the spec's (a mismatch, for example `__k
 | bus_space, 8 | `bus_space_read_1/2/4/8`, `bus_space_write_1/2/4/8` | a read returns an arbitrary value of its width, a write has no effect on program memory | `freebsd-bus-space` | bus_space(9), `sys/x86/include/bus.h` |
 | delay, log, panic, 7 | `DELAY`, `pause_sbt`, `wakeup`, `printf`, `device_printf`, `if_printf`, `panic` | no effect on memory; `panic` does not return (`FUNC-CONTRACT`) | `freebsd-log`, `freebsd-panic` | `sys/sys/systm.h`, `sys/sys/bus.h`, printf(9), panic(9) |
 
+## W1 additions (kernel callees from the census top list, status UNVALIDATED)
+
+Drafted with Morph (GLM draft, DeepSeek review), then reviewed by hand against the review notes. A function is
+specified only where its contract is certain from the real headers (static inline accessors included, with the
+header's body as the reference); the rest are listed under "needs review". Each name appears in exactly one of
+the tables or the "needs review" lists. Every one is UNVALIDATED: no kernel-side check of the contract yet.
+
+| spec | source note | assumption name | status |
+|---|---|---|---|
+| `i2c_set_clientdata`, `pci_set_drvdata` (no memory effect) | `include/linux/i2c.h`, `pci.h` (static inline: see needs review) | `linux-g4-i2c_set_clientdata`, `linux-g4-pci_set_drvdata` | UNVALIDATED |
+| `lock_sock`, `release_sock` (no effect, pairing not checked) | `include/net/sock.h`, `net/core/sock.c` | `linux-g4-lock_sock`, `linux-g4-release_sock` | UNVALIDATED |
+| `nla_get_u8` (payload byte at +4), `ceph_has_room`, `is_valid_ether_addr` (reads addr[0] first) | `include/net/netlink.h`, `ceph/decode.h`, `etherdevice.h` (static inline) | `linux-g6-*` | UNVALIDATED |
+| `finish_wait`, `prepare_to_wait_event` (-ERESTARTSYS only for TASK_INTERRUPTIBLE / TASK_WAKEKILL) | `kernel/sched/wait.c` | `linux-g2-finish_wait`, `linux-g2-prepare_to_wait_event` | UNVALIDATED |
+| `wait_for_completion_timeout` (0 or an arbitrary value, a superset of the real results) | `kernel/sched/completion.c` | `linux-g3-wait_for_completion_timeout` | UNVALIDATED |
+| `fueword`, `suword`, `subyte` (-1 on fault, nothing stored on fault) | `sys/sys/systm.h`, store(9), fueword(9) | `freebsd-f3-fueword`, `freebsd-f2-suword`, `freebsd-f2-subyte` | UNVALIDATED |
+| `suword32`, `fueword32`, `critical_enter`, `critical_exit` | `sys/sys/systm.h`, `sys/sys/critical.h` | `freebsd-f1-suword32`, `freebsd-f1-fueword32`, `freebsd-f1-critical_enter`, `freebsd-f1-critical_exit` | UNVALIDATED |
+
+Tests: `testdata/pir/kernel_linux_w1.c`, `testdata/pir/kernel_freebsd_w1.c`, table cases in `tests/cpp/test_pir_kernel.cpp`.
+
+### W1 more (second batch, status UNVALIDATED)
+
+Written from the real headers (Linux 6.18 `include/`, `kernel/sched/`; FreeBSD 15 `sys/sys`, `sys/x86`, `share/man/man9`).
+A spec exists only where the contract is certain; each has a true and a false test. No kernel-side validation yet.
+
+| spec | source note | assumption name | status |
+|---|---|---|---|
+| `complete`, `wait_for_completion` (read the `done` word, no other effect) | `include/linux/completion.h`, `kernel/sched/completion.c` | `linux-w1-complete`, `linux-w1-wait_for_completion` | UNVALIDATED |
+| `__wake_up` (reads 1 byte of the queue head, arbitrary int result) | `include/linux/wait.h`, `kernel/sched/wait.c` | `linux-w1-__wake_up` | UNVALIDATED |
+| `nla_len` (`(u16)(nla_len - 4)`), `nla_data` (`nla + 4`), `nla_get_u32` (u32 at +4), `nla_total_size` (`(n + 7) & ~3`, unsigned wrap) | `include/net/netlink.h`, `include/uapi/linux/netlink.h` (static inline) | `linux-w1-nla_len`, `linux-w1-nla_data`, `linux-w1-nla_get_u32`, `linux-w1-nla_total_size` | UNVALIDATED |
+| `ether_addr_equal` (6 bytes each), `ether_addr_copy` (6 bytes) | `include/linux/etherdevice.h` (static inline; alignment not checked) | `linux-w1-ether_addr_equal`, `linux-w1-ether_addr_copy` | UNVALIDATED |
+| `dma_mapping_error` (-ENOMEM iff `~0`, else 0; assumes CONFIG_HAS_DMA=y and a 64-bit `dma_addr_t`) | `include/linux/dma-mapping.h` (static inline) | `linux-w1-dma_mapping_error` | UNVALIDATED |
+| `fubyte` (-1 or 0..255), `casueword32` (0 stored / -1 fault / 1 failed, `*oldvalp` arbitrary) | `sys/sys/systm.h`, fetch(9), casuword(9) | `freebsd-w1-fubyte`, `freebsd-w1-casueword32` | UNVALIDATED |
+| `__sx_xlock` (arbitrary int), `__sx_xunlock` (both read the 8-byte lock word) | `sys/sys/sx.h` (static inline) | `freebsd-w1-sx_xlock_inline`, `freebsd-w1-sx_xunlock_inline` | UNVALIDATED |
+| `fillw` (writes 2*cnt arbitrary bytes), `calculate_crc32c` (reads `length` bytes, arbitrary result) | `sys/x86/include/x86_var.h`, `amd64/amd64/support.S`; `sys/sys/gsb_crc32.h` | `freebsd-w1-fillw`, `freebsd-w1-calculate_crc32c` | UNVALIDATED |
+
+Files: `linux_w1_sync.cpp`, `linux_w1_net.cpp`, `freebsd_w1_more.cpp`; tests in `testdata/pir/kernel_linux_w1.c`, `kernel_freebsd_w1.c`.
+
+Needs review, second batch (checked against the headers, still not specified): FreeBSD `sched_prio`, `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu` (scheduler state, no checkable memory contract), `vm_map_min`, `vm_map_max`, `vm_map_modflags` (struct layout), `stats_v1_voi_update`. Linux accessors that return a stored pointer or depend on struct layout or config: `netdev_priv`, `sock_net`, `dev_net`, `pci_get_drvdata`, `platform_get_drvdata`, `platform_set_drvdata`, `i2c_get_clientdata`, `usb_get_intfdata`, `netdev_name`, `netif_running`, `netif_stop_queue`, `skb_reserve`, `skb_put_data`, `skb_headlen`, `skb_end_pointer`, `kfree_skb`, `dev_kfree_skb_any`, `nla_put_u8`, `nla_put_u32`, `nla_nest_end`, `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single_attrs`, `dma_unmap_single_attrs`, `dma_set_mask_and_coherent` (depends on the arch DMA ops), `sg_next`, `pci_name`, `hid_map_usage_clear`, `u64_stats_update_begin`, `u64_stats_update_end`, `i2c_adapter_id`, `qdisc_dev`, `params_rate`, `vb2_get_drv_priv`, `v4l2_get_subdevdata`, `phy_get_drvdata`, `spi_controller_get_devdata`, `init_wait_entry`, `brelse`; macros `EXT4_SB`, `IEEE80211_SKB_CB`. (The older list below stays valid for the first batch.)
+
+Needs review (not specified, with the reason):
+- Linux, static inline in the headers (a spec would be used only if a unit does not define them): `init_wait_entry`, `i2c_get_clientdata`, `netif_running`, `nla_put_u32`, `brelse`, `dma_map_single_attrs`, `dma_unmap_single_attrs`, `skb_headlen`, `IEEE80211_SKB_CB` (macro), `u64_stats_update_begin/end` (config-dependent), `spi_controller_get_devdata` (returns the stored pointer; not representable yet), `usb_get_intfdata`, `skb_put_data`, `dma_set_mask_and_coherent`.
+- Linux, no prototype or semantics not certain: `EXT4_SB` (macro), `sg_next`, `pci_name`, `vb2_get_drv_priv`, `dma_alloc_coherent`, `dev_net`, `qdisc_dev`, `params_rate`, `dev_kfree_skb_any` (sk_buff comes from its own cache, not the kmalloc family), `i2c_adapter_id`, `phy_get_drvdata`.
+- Linux, drafts that failed on Morph timeouts (no output, not reviewed, not specified): group 1 (`netdev_priv`, `sock_net`, `pci_get_drvdata`, `kfree_skb`, `platform_set_drvdata`, `platform_get_drvdata`, `dma_free_coherent`, `skb_end_pointer`) and group 5 (`nla_nest_end`, `v4l2_get_subdevdata`, `phy_get_drvdata`, `hid_map_usage_clear`, `netif_stop_queue`, `netdev_name`, `i2c_adapter_id`, `skb_reserve`). Both are still open work.
+- FreeBSD: `vm_map_min`, `vm_map_max` (macros on `(map)->min_addr` in `sys/vm/vm_map.h`, not functions), `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu`, `vm_map_modflags`.
+
+## W2 additions (batch 2: top unspecified callees, status UNVALIDATED)
+
+Selection (script): `tools/pir/kernel_callee_top.sh` over `data/clang/{linux,freebsd}/calls.tsv.gz` (the OS-Proving
+callee counts), keeping the callees with no spec whose non-`static` prototype is in the real header tree (Linux
+`pbsd-ref/linux/include`, FreeBSD `hbsd/src/sys`). Excluded: driver-private and subsystem-driver names (`drm_*`, `snd_soc_*`,
+`v4l2_*`, `i2c_*`, `amdgpu_*`, `ath*`, `iwl*`, `ixgbe*`, `ocs*`, `ossa*`, `usbd*`, `ng_*`, `zfs`/`spl`), debug, log, trace,
+fortify and kunit helpers, and static inline accessors. Top 60 Linux and top 20 FreeBSD by census call count.
+Result: 26 specified (23 Linux, 3 FreeBSD), 54 under needs review or not specified (37 Linux, 17 FreeBSD). Each specified spec has a true
+(`_ok`) and a false (`_bad`) test in `testdata/pir/kernel_linux_w2_{a,b,c,d}.c` and `kernel_freebsd_w2_{a,b}.c`, with rows in
+`tests/cpp/test_pir_kernel.cpp`. Drafted by Sonnet (tag W1b) and checked by hand against the quoted reference code. All UNVALIDATED.
+
+### Linux: top 60 (census calls) and status
+
+| # | callee | calls | status | assumption or reason |
+|---|---|---|---|---|
+| 1 | `seq_printf` | 12445 | needs review | doc needs-review list |
+| 2 | `strcmp` | 4942 | specified, UNVALIDATED | `linux-w2-strcmp` (lib/string.c:278-291) |
+| 3 | `sysfs_emit` | 4118 | needs review | doc needs-review list |
+| 4 | `memcmp` | 3073 | specified, UNVALIDATED | `linux-w2-memcmp` (lib/string.c:673-697) |
+| 5 | `of_node_put` | 2321 | needs review | doc needs-review list |
+| 6 | `net_ratelimit` | 2146 | specified, UNVALIDATED | `linux-w2-net_ratelimit` (net/core/utils.c:38-41) |
+| 7 | `timer_init_key` | 2007 | needs review | needs review: semantics not certain from the reference |
+| 8 | `strncmp` | 1817 | specified, UNVALIDATED | `linux-w2-strncmp` (lib/string.c:302-316) |
+| 9 | `free_irq` | 1670 | needs review | doc needs-review list |
+| 10 | `devm_clk_get` | 1615 | needs review | doc needs-review list |
+| 11 | `init_wait_entry` | 1599 | needs review | doc needs-review list |
+| 12 | `kmem_cache_alloc_noprof` | 1591 | needs review | doc needs-review list |
+| 13 | `put_device` | 1540 | needs review | doc needs-review list |
+| 14 | `skb_put` | 1529 | needs review | needs review: semantics not certain from the reference |
+| 15 | `consume_skb` | 1497 | needs review | needs review: semantics not certain from the reference |
+| 16 | `up_write` | 1420 | specified, UNVALIDATED | `linux-w2-up_write` (kernel/locking/rwsem.c:1640-1644) |
+| 17 | `clk_get_rate` | 1408 | needs review | doc needs-review list |
+| 18 | `cancel_delayed_work_sync` | 1393 | needs review | doc needs-review list |
+| 19 | `schedule` | 1373 | needs review | needs review: semantics not certain from the reference |
+| 20 | `up_read` | 1373 | specified, UNVALIDATED | `linux-w2-up_read` (kernel/locking/rwsem.c:1630-1634) |
+| 21 | `mod_timer` | 1292 | specified, UNVALIDATED | `linux-w2-mod_timer` (kernel/time/timer.c:1193-1196) |
+| 22 | `cancel_work_sync` | 1265 | needs review | doc needs-review list |
+| 23 | `pci_read_config_dword` | 1252 | specified, UNVALIDATED | `linux-w2-pci_read_config_dword` (drivers/pci/access.c:580-588) |
+| 24 | `mutex_destroy` | 1236 | specified, UNVALIDATED | `linux-w2-mutex_destroy` (kernel/locking/mutex-debug.c:113-117) |
+| 25 | `platform_get_irq` | 1223 | specified, UNVALIDATED | `linux-w2-platform_get_irq` (drivers/base/platform.c:260-270) |
+| 26 | `destroy_workqueue` | 1219 | needs review | doc needs-review list |
+| 27 | `of_property_read_bool` | 1169 | needs review | needs review: semantics not certain from the reference |
+| 28 | `down_write` | 1124 | specified, UNVALIDATED | `linux-w2-down_write` (kernel/locking/rwsem.c:1587-1592) |
+| 29 | `alloc_pages_noprof` | 1093 | needs review | doc needs-review list |
+| 30 | `rtnl_unlock` | 1071 | needs review | needs review: semantics not certain from the reference |
+| 31 | `sysfs_emit_at` | 1030 | needs review | doc needs-review list |
+| 32 | `single_open` | 1024 | needs review | needs review: semantics not certain from the reference |
+| 33 | `skb_push` | 964 | needs review | needs review: semantics not certain from the reference |
+| 34 | `schedule_timeout` | 951 | specified, UNVALIDATED | `linux-w2-schedule_timeout` (kernel/time/sleep_timeout.c:61-109) |
+| 35 | `down_read` | 941 | specified, UNVALIDATED | `linux-w2-down_read` (kernel/locking/rwsem.c:1534-1540) |
+| 36 | `pci_write_config_dword` | 937 | specified, UNVALIDATED | `linux-w2-pci_write_config_dword` (drivers/pci/access.c:607-613) |
+| 37 | `pm_runtime_enable` | 926 | specified, UNVALIDATED | `linux-w2-pm_runtime_enable` (drivers/base/power/runtime.c:1566-1594) |
+| 38 | `skb_pull` | 915 | needs review | needs review: semantics not certain from the reference |
+| 39 | `timer_delete_sync` | 909 | specified, UNVALIDATED | `linux-w2-timer_delete_sync` (kernel/time/timer.c:1674-1677) |
+| 40 | `of_device_get_match_data` | 879 | needs review | needs review: semantics not certain from the reference |
+| 41 | `pci_disable_device` | 877 | specified, UNVALIDATED | `linux-w2-pci_disable_device` (drivers/pci/pci.c:2227-2240) |
+| 42 | `kmem_cache_free` | 865 | needs review | doc needs-review list |
+| 43 | `simple_read_from_buffer` | 850 | needs review | needs review: semantics not certain from the reference |
+| 44 | `input_set_abs_params` | 843 | needs review | needs review: semantics not certain from the reference |
+| 45 | `release_firmware` | 820 | needs review | needs review: semantics not certain from the reference |
+| 46 | `mempool_alloc_noprof` | 816 | needs review | doc needs-review list |
+| 47 | `rtnl_lock` | 812 | specified, UNVALIDATED | `linux-w2-rtnl_lock` (net/core/rtnetlink.c:78-81) |
+| 48 | `reset_control_assert` | 759 | specified, UNVALIDATED | `linux-w2-reset_control_assert` (include/linux/reset.h:75 (stub quoted)) |
+| 49 | `seq_putc` | 729 | needs review | doc needs-review list |
+| 50 | `xa_find` | 713 | needs review | needs review: semantics not certain from the reference |
+| 51 | `iput` | 710 | needs review | needs review: semantics not certain from the reference |
+| 52 | `kmem_cache_destroy` | 709 | needs review | doc needs-review list |
+| 53 | `jiffies_to_msecs` | 708 | specified, UNVALIDATED | `linux-w2-jiffies_to_msecs` (kernel/time/time.c:377-391) |
+| 54 | `devm_gpiod_get_optional` | 698 | needs review | doc needs-review list |
+| 55 | `pci_read_config_word` | 692 | specified, UNVALIDATED | `linux-w2-pci_read_config_word` (drivers/pci/access.c:570-577) |
+| 56 | `get_free_pages_noprof` | 686 | needs review | doc needs-review list |
+| 57 | `xa_find_after` | 671 | needs review | needs review: semantics not certain from the reference |
+| 58 | `is_acpi_device_node` | 657 | specified, UNVALIDATED | `linux-w2-is_acpi_device_node` (include/acpi/acpi_bus.h:515 (stub quoted)) |
+| 59 | `netif_carrier_off` | 647 | specified, UNVALIDATED | `linux-w2-netif_carrier_off` (net/sched/sch_generic.c:623-631) |
+| 60 | `enable_irq` | 643 | needs review | doc needs-review list |
+
+### FreeBSD: top 20 (census calls) and status
+
+| # | callee | calls | status | assumption or reason |
+|---|---|---|---|---|
+| 1 | `sysctl_add_oid` | 6708 | needs review | doc needs-review list |
+| 2 | `device_get_softc` | 4446 | needs review | doc needs-review list |
+| 3 | `m_freem` | 3378 | needs review | doc needs-review list |
+| 4 | `device_get_nameunit` | 1587 | needs review | doc needs-review list |
+| 5 | `local_bh_enable` | 1449 | needs review | needs review: no reference body or semantics not certain |
+| 6 | `local_bh_disable` | 1203 | needs review | needs review: no reference body or semantics not certain |
+| 7 | `strlcpy` | 1103 | specified, UNVALIDATED | `freebsd-w2-strlcpy` (sys/libkern/strlcpy.c:27-50) |
+| 8 | `device_get_ivars` | 995 | needs review | doc needs-review list |
+| 9 | `strncmp` | 843 | not specified | the libc model of the same name is selected in kernel mode (the spec was shadowed; removed) |
+| 10 | `sysctl_handle_int` | 817 | needs review | doc needs-review list |
+| 11 | `bus_dma_tag_destroy` | 758 | needs review | doc needs-review list |
+| 12 | `if_getdrvflags` | 721 | needs review | needs review: no reference body or semantics not certain |
+| 13 | `strlcat` | 663 | specified, UNVALIDATED | `freebsd-w2-strlcat` (sys/libkern/strlcat.c:42-68) |
+| 14 | `if_getflags` | 651 | needs review | needs review: no reference body or semantics not certain |
+| 15 | `sbuf_cat` | 631 | needs review | needs review: no reference body or semantics not certain |
+| 16 | `strncpy` | 630 | specified, UNVALIDATED | `freebsd-w2-strncpy` (sys/libkern/strncpy.c:42-59) |
+| 17 | `if_getcapenable` | 616 | needs review | needs review: no reference body or semantics not certain |
+| 18 | `bus_dma_tag_create` | 589 | needs review | doc needs-review list |
+| 19 | `device_get_sysctl_ctx` | 584 | needs review | doc needs-review list |
+| 20 | `m_pullup` | 570 | needs review | needs review: no reference body or semantics not certain |
+
+Notes:
+
+- `reset_control_assert` and `is_acpi_device_node`: the quoted definitions are the configuration stubs; the specs return an
+  arbitrary result and do not touch the argument (weaker than the real function), with the assumption text naming the stub.
+
+Coverage (`tools/pir/kernel_census_coverage.sh`, Linux census of 2,500 functions), before and after this batch:
+
+| measure | before | after |
+|---|---|---|
+| Linux spec names (`kernel_spec_names.sh`) | 135 | 158 |
+| FreeBSD spec names | 48 | 51 |
+| unknown-external-call functions fully resolved by specs | 220 of 1,076 (20.4%) | 230 of 1,076 (21.4%) |
+| distinct unknown callee names covered | 863 of 2,478 (34.8%) | 897 of 2,478 (36.2%) |
+| encodable candidates after specs and asm model (upper bound) | 1,228 (49.1%) | 1,239 (49.6%) |
+
+The data has a census for Linux only (`data/clang/census`), so no FreeBSD coverage figure is given here.
+
+| spec | source note | assumption name | status |
+|---|---|---|---|
+| `strcmp` | lib/string.c:278-291 | `linux-w2-strcmp` | UNVALIDATED |
+| `memcmp` | lib/string.c:673-697 | `linux-w2-memcmp` | UNVALIDATED |
+| `net_ratelimit` | net/core/utils.c:38-41 | `linux-w2-net_ratelimit` | UNVALIDATED |
+| `strncmp` | lib/string.c:302-316 | `linux-w2-strncmp` | UNVALIDATED |
+| `up_write` | kernel/locking/rwsem.c:1640-1644 | `linux-w2-up_write` | UNVALIDATED |
+| `up_read` | kernel/locking/rwsem.c:1630-1634 | `linux-w2-up_read` | UNVALIDATED |
+| `mod_timer` | kernel/time/timer.c:1193-1196 | `linux-w2-mod_timer` | UNVALIDATED |
+| `pci_read_config_dword` | drivers/pci/access.c:580-588 | `linux-w2-pci_read_config_dword` | UNVALIDATED |
+| `mutex_destroy` | kernel/locking/mutex-debug.c:113-117 | `linux-w2-mutex_destroy` | UNVALIDATED |
+| `platform_get_irq` | drivers/base/platform.c:260-270 | `linux-w2-platform_get_irq` | UNVALIDATED |
+| `down_write` | kernel/locking/rwsem.c:1587-1592 | `linux-w2-down_write` | UNVALIDATED |
+| `schedule_timeout` | kernel/time/sleep_timeout.c:61-109 | `linux-w2-schedule_timeout` | UNVALIDATED |
+| `down_read` | kernel/locking/rwsem.c:1534-1540 | `linux-w2-down_read` | UNVALIDATED |
+| `pci_write_config_dword` | drivers/pci/access.c:607-613 | `linux-w2-pci_write_config_dword` | UNVALIDATED |
+| `pm_runtime_enable` | drivers/base/power/runtime.c:1566-1594 | `linux-w2-pm_runtime_enable` | UNVALIDATED |
+| `timer_delete_sync` | kernel/time/timer.c:1674-1677 | `linux-w2-timer_delete_sync` | UNVALIDATED |
+| `pci_disable_device` | drivers/pci/pci.c:2227-2240 | `linux-w2-pci_disable_device` | UNVALIDATED |
+| `rtnl_lock` | net/core/rtnetlink.c:78-81 | `linux-w2-rtnl_lock` | UNVALIDATED |
+| `reset_control_assert` | include/linux/reset.h:75 (stub quoted) | `linux-w2-reset_control_assert` | UNVALIDATED |
+| `jiffies_to_msecs` | kernel/time/time.c:377-391 | `linux-w2-jiffies_to_msecs` | UNVALIDATED |
+| `pci_read_config_word` | drivers/pci/access.c:570-577 | `linux-w2-pci_read_config_word` | UNVALIDATED |
+| `is_acpi_device_node` | include/acpi/acpi_bus.h:515 (stub quoted) | `linux-w2-is_acpi_device_node` | UNVALIDATED |
+| `netif_carrier_off` | net/sched/sch_generic.c:623-631 | `linux-w2-netif_carrier_off` | UNVALIDATED |
+| `strlcpy` | sys/libkern/strlcpy.c:27-50 | `freebsd-w2-strlcpy` | UNVALIDATED |
+| `strlcat` | sys/libkern/strlcat.c:42-68 | `freebsd-w2-strlcat` | UNVALIDATED |
+| `strncpy` | sys/libkern/strncpy.c:42-59 | `freebsd-w2-strncpy` | UNVALIDATED |
+
+### Needs review (batch 2, left unspecified)
+
+Linux: `seq_printf`, `seq_putc`, `sysfs_emit`, `sysfs_emit_at`, `of_node_put`, `put_device`, `kmem_cache_alloc_noprof`, `kmem_cache_free`, `kmem_cache_destroy`, `alloc_pages_noprof`, `get_free_pages_noprof`, `mempool_alloc_noprof`, `free_irq`, `enable_irq`, `destroy_workqueue`, `cancel_work_sync`, `cancel_delayed_work_sync`, `clk_get_rate`, `devm_clk_get`, `devm_gpiod_get_optional`, `init_wait_entry`, `timer_init_key`, `skb_put`, `consume_skb`, `schedule`, `of_property_read_bool`, `rtnl_unlock`, `single_open`, `skb_push`, `skb_pull`, `of_device_get_match_data`, `simple_read_from_buffer`, `input_set_abs_params`, `release_firmware`, `xa_find`, `xa_find_after`, `iput`.
+
+FreeBSD: `sysctl_add_oid`, `sysctl_handle_int`, `device_get_softc`, `device_get_nameunit`, `device_get_ivars`, `device_get_sysctl_ctx`, `m_freem`, `bus_dma_tag_create`, `bus_dma_tag_destroy`, `local_bh_enable`, `local_bh_disable`, `if_getdrvflags`, `if_getflags`, `sbuf_cat`, `if_getcapenable`, `m_pullup`, `strncmp` (libc model in kernel mode).
+
+
 ## Inline assembly, asm goto, atomics, barriers (R3)
 
 | construct | model | assumption name |

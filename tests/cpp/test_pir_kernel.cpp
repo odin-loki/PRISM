@@ -145,6 +145,78 @@ TEST_CASE("pir kernel: FreeBSD API specs (malloc, mtx, copyin/copyout, bus_space
                  {"panic_bad", F, ""}});
 }
 
+TEST_CASE("pir kernel: Linux W1 specs (driver data, socket lock, netlink payload, ceph room, Ethernet address)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_linux_w1.c", "linux", false,
+                {{"finish_wait_ok", PA, "linux-g2-finish_wait"},
+                 {"prepare_to_wait_event_ok", PA, "linux-g2-prepare_to_wait_event"},
+                 {"wait_for_completion_timeout_ok", PA, "linux-g3-wait_for_completion_timeout"},
+                 {"wait_for_completion_timeout_bad", F, ""},
+                 {"i2c_set_clientdata_ok", PA, "linux-g4-i2c_set_clientdata"},
+                 {"pci_set_drvdata_ok", PA, "linux-g4-pci_set_drvdata"},
+                 {"lock_sock_ok", PA, "linux-g4-lock_sock"},
+                 {"nla_get_u8_ok", PA, "linux-g6-nla_get_u8"},
+                 {"nla_get_u8_bad", F, ""},
+                 {"ceph_has_room_ok", PA, "linux-g6-ceph_has_room"},
+                 {"ceph_has_room_bad", F, ""},
+                 {"is_valid_ether_addr_ok", PA, "linux-g6-is_valid_ether_addr"},
+                 {"is_valid_ether_addr_bad", F, ""},
+                 {"complete_ok", PA, "linux-w1-complete"},
+                 {"complete_bad", F, ""},
+                 {"wait_for_completion_ok", PA, "linux-w1-wait_for_completion"},
+                 {"wait_for_completion_bad", F, ""},
+                 {"__wake_up_ok", PA, "linux-w1-__wake_up"},
+                 {"__wake_up_bad", F, ""},
+                 {"nla_len_ok", PA, "linux-w1-nla_len"},
+                 {"nla_len_bad", F, ""},
+                 {"nla_data_ok", PA, "linux-w1-nla_data"},
+                 {"nla_data_bad", F, ""},
+                 {"nla_get_u32_ok", PA, "linux-w1-nla_get_u32"},
+                 {"nla_get_u32_bad", F, ""},
+                 {"nla_total_size_ok", PA, "linux-w1-nla_total_size"},
+                 {"nla_total_size_bad", F, ""},
+                 {"ether_addr_equal_ok", PA, "linux-w1-ether_addr_equal"},
+                 {"ether_addr_equal_bad", F, ""},
+                 {"ether_addr_copy_ok", PA, "linux-w1-ether_addr_copy"},
+                 {"ether_addr_copy_bad", F, ""},
+                 {"dma_mapping_error_ok", PA, "linux-w1-dma_mapping_error"},
+                 {"dma_mapping_error_bad", F, ""}});
+}
+
+TEST_CASE("pir kernel: FreeBSD W1 specs (fueword, suword, subyte: user word and byte access)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_freebsd_w1.c", "freebsd", false,
+                {{"fueword_ok", PA, "freebsd-f3-fueword"},
+                 {"suword_ok", PA, "freebsd-f2-suword"},
+                 {"suword_bad", F, ""},
+                 {"subyte_ok", PA, "freebsd-f2-subyte"},
+                 {"subyte_bad", F, ""},
+                 {"suword32_ok", PA, "freebsd-f1-suword32"},
+                 {"suword32_bad", F, ""},
+                 {"fueword32_ok", PA, "freebsd-f1-fueword32"},
+                 {"fueword32_bad", F, ""},
+                 {"critical_enter_ok", PA, "freebsd-f1-critical_enter"},
+                 {"critical_exit_ok", PA, "freebsd-f1-critical_exit"},
+                 {"fubyte_ok", PA, "freebsd-w1-fubyte"},
+                 {"fubyte_bad", F, ""},
+                 {"casueword32_ok", PA, "freebsd-w1-casueword32"},
+                 {"casueword32_bad", F, ""},
+                 {"__sx_xlock_ok", PA, "freebsd-w1-sx_xlock_inline"},
+                 {"__sx_xlock_bad", F, ""},
+                 {"__sx_xunlock_ok", PA, "freebsd-w1-sx_xunlock_inline"},
+                 {"__sx_xunlock_bad", F, ""},
+                 {"fillw_ok", PA, "freebsd-w1-fillw"},
+                 {"fillw_bad", F, ""},
+                 {"calculate_crc32c_ok", PA, "freebsd-w1-calculate_crc32c"},
+                 {"calculate_crc32c_bad", F, ""}});
+}
+
 TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assumptions") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;
@@ -237,4 +309,92 @@ TEST_CASE("pir kernel: without --kernel-api asm, atomics and kernel calls stay U
                  {"cmpxchg_ok", NH, ""}, {"fence_ok", NH, ""}, {"asm_goto_ok", NH, ""}, {"asm_goto2_ok", NH, ""}});
     check_table("kernel_linux.c", "", false,
                 {{"alloc_ok", NH, ""}, {"lock_ok", NH, ""}, {"mmio_ok", NH, ""}, {"container_of_ok", "PROVED", ""}});
+}
+
+TEST_CASE("pir kernel: Linux W2 group a: string compare, rwsem, net_ratelimit") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_linux_w2_a.c", "linux", false,
+                {{"strcmp_ok", "PROVED-ASSUMING", "linux-w2-strcmp"},
+                 {"strcmp_bad", "FAILED", ""},
+                 {"strncmp_ok", "PROVED-ASSUMING", "linux-w2-strncmp"},
+                 {"strncmp_bad", "FAILED", ""},
+                 {"memcmp_ok", "PROVED-ASSUMING", "linux-w2-memcmp"},
+                 {"memcmp_bad", "FAILED", ""},
+                 {"net_ratelimit_ok", "PROVED-ASSUMING", "linux-w2-net_ratelimit"},
+                 {"net_ratelimit_bad", "FAILED", ""},
+                 {"up_write_ok", "PROVED-ASSUMING", "linux-w2-up_write"},
+                 {"up_write_bad", "FAILED", ""},
+                 {"up_read_ok", "PROVED-ASSUMING", "linux-w2-up_read"},
+                 {"up_read_bad", "FAILED", ""}});
+}
+
+TEST_CASE("pir kernel: Linux W2 group b: timers, PCI config, mutex, platform IRQ, schedule_timeout") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_linux_w2_b.c", "linux", false,
+                {{"mod_timer_ok", "PROVED-ASSUMING", "linux-w2-mod_timer"},
+                 {"mod_timer_bad", "FAILED", ""},
+                 {"pci_read_config_dword_ok", "PROVED-ASSUMING", "linux-w2-pci_read_config_dword"},
+                 {"pci_read_config_dword_bad", "FAILED", ""},
+                 {"mutex_destroy_ok", "PROVED-ASSUMING", "linux-w2-mutex_destroy"},
+                 {"mutex_destroy_bad", "FAILED", ""},
+                 {"platform_get_irq_ok", "PROVED-ASSUMING", "linux-w2-platform_get_irq"},
+                 {"platform_get_irq_bad", "FAILED", ""},
+                 {"down_write_ok", "PROVED-ASSUMING", "linux-w2-down_write"},
+                 {"down_write_bad", "FAILED", ""},
+                 {"schedule_timeout_ok", "PROVED-ASSUMING", "linux-w2-schedule_timeout"},
+                 {"schedule_timeout_bad", "FAILED", ""}});
+}
+
+TEST_CASE("pir kernel: Linux W2 group c: rwsem read, PCI config write, runtime PM, timer delete") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_linux_w2_c.c", "linux", false,
+                {{"down_read_ok", "PROVED-ASSUMING", "linux-w2-down_read"},
+                 {"down_read_bad", "FAILED", ""},
+                 {"pci_write_config_dword_ok", "PROVED-ASSUMING", "linux-w2-pci_write_config_dword"},
+                 {"pci_write_config_dword_bad", "FAILED", ""},
+                 {"pm_runtime_enable_ok", "PROVED-ASSUMING", "linux-w2-pm_runtime_enable"},
+                 {"pm_runtime_enable_bad", "FAILED", ""},
+                 {"pci_disable_device_ok", "PROVED-ASSUMING", "linux-w2-pci_disable_device"},
+                 {"pci_disable_device_bad", "FAILED", ""},
+                 {"timer_delete_sync_ok", "PROVED-ASSUMING", "linux-w2-timer_delete_sync"},
+                 {"timer_delete_sync_bad", "FAILED", ""}});
+}
+
+TEST_CASE("pir kernel: Linux W2 group d: rtnl lock, reset, jiffies, PCI config word, ACPI node, carrier") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_linux_w2_d.c", "linux", false,
+                {{"rtnl_lock_ok", "PROVED-ASSUMING", "linux-w2-rtnl_lock"},
+                 {"rtnl_lock_bad", "FAILED", ""},
+                 {"reset_control_assert_ok", "PROVED-ASSUMING", "linux-w2-reset_control_assert"},
+                 {"reset_control_assert_bad", "FAILED", ""},
+                 {"jiffies_to_msecs_ok", "PROVED-ASSUMING", "linux-w2-jiffies_to_msecs"},
+                 {"jiffies_to_msecs_bad", "FAILED", ""},
+                 {"pci_read_config_word_ok", "PROVED-ASSUMING", "linux-w2-pci_read_config_word"},
+                 {"pci_read_config_word_bad", "FAILED", ""},
+                 {"is_acpi_device_node_ok", "PROVED-ASSUMING", "linux-w2-is_acpi_device_node"},
+                 {"is_acpi_device_node_bad", "FAILED", ""},
+                 {"netif_carrier_off_ok", "PROVED-ASSUMING", "linux-w2-netif_carrier_off"},
+                 {"netif_carrier_off_bad", "FAILED", ""}});
+}
+
+TEST_CASE("pir kernel: FreeBSD W2 group a: libkern string functions") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_freebsd_w2_a.c", "freebsd", false,
+                {{"strlcpy_ok", "PROVED-ASSUMING", "freebsd-w2-strlcpy"},
+                 {"strlcpy_bad", "FAILED", ""},
+                 {"strlcat_ok", "PROVED-ASSUMING", "freebsd-w2-strlcat"},
+                 {"strlcat_bad", "FAILED", ""}});
+}
+
+TEST_CASE("pir kernel: FreeBSD W2 group b: strncpy") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    check_table("kernel_freebsd_w2_b.c", "freebsd", false,
+                {{"strncpy_ok", "PROVED-ASSUMING", "freebsd-w2-strncpy"},
+                 {"strncpy_bad", "FAILED", ""}});
 }

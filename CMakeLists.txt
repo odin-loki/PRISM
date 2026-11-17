@@ -312,9 +312,24 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/kernel/linux_uaccess.cpp
   src/prism/pir/models/kernel/linux_mmio.cpp
   src/prism/pir/models/kernel/linux_misc.cpp
+  src/prism/pir/models/kernel/linux_driverdata.cpp
+  src/prism/pir/models/kernel/linux_netlink.cpp
+  src/prism/pir/models/kernel/linux_waitqueue.cpp
+  src/prism/pir/models/kernel/linux_completion.cpp
+  src/prism/pir/models/kernel/freebsd_w1_user.cpp
+  src/prism/pir/models/kernel/freebsd_w1_word.cpp
+  src/prism/pir/models/kernel/freebsd_w1_more.cpp
+  src/prism/pir/models/kernel/linux_w1_sync.cpp
+  src/prism/pir/models/kernel/linux_w1_net.cpp
   src/prism/pir/models/kernel/freebsd_alloc.cpp
   src/prism/pir/models/kernel/freebsd_lock.cpp
   src/prism/pir/models/kernel/freebsd_misc.cpp
+  src/prism/pir/models/kernel/linux_w2_a.cpp
+  src/prism/pir/models/kernel/linux_w2_b.cpp
+  src/prism/pir/models/kernel/linux_w2_c.cpp
+  src/prism/pir/models/kernel/linux_w2_d.cpp
+  src/prism/pir/models/kernel/freebsd_w2_a.cpp
+  src/prism/pir/models/kernel/freebsd_w2_b.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map
