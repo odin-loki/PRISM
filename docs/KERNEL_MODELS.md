@@ -83,6 +83,26 @@ listed under "needs review". Every one is UNVALIDATED: no kernel-side check of t
 
 Tests: `testdata/pir/kernel_linux_w1.c`, `testdata/pir/kernel_freebsd_w1.c`, table cases in `tests/cpp/test_pir_kernel.cpp`.
 
+### W1 more (second batch, status UNVALIDATED)
+
+Written from the real headers (Linux 6.18 `include/`, `kernel/sched/`; FreeBSD 15 `sys/sys`, `sys/x86`, `share/man/man9`).
+A spec exists only where the contract is certain; each has a true and a false test. No kernel-side validation yet.
+
+| spec | source note | assumption name | status |
+|---|---|---|---|
+| `complete`, `wait_for_completion` (read the `done` word, no other effect) | `include/linux/completion.h`, `kernel/sched/completion.c` | `linux-w1-complete`, `linux-w1-wait_for_completion` | UNVALIDATED |
+| `__wake_up` (reads 1 byte of the queue head, arbitrary int result) | `include/linux/wait.h`, `kernel/sched/wait.c` | `linux-w1-__wake_up` | UNVALIDATED |
+| `nla_len` (`(u16)(nla_len - 4)`), `nla_data` (`nla + 4`), `nla_get_u32` (u32 at +4), `nla_total_size` (`(n + 7) & ~3`, unsigned wrap) | `include/net/netlink.h`, `include/uapi/linux/netlink.h` (static inline) | `linux-w1-nla_len`, `linux-w1-nla_data`, `linux-w1-nla_get_u32`, `linux-w1-nla_total_size` | UNVALIDATED |
+| `ether_addr_equal` (6 bytes each), `ether_addr_copy` (6 bytes) | `include/linux/etherdevice.h` (static inline; alignment not checked) | `linux-w1-ether_addr_equal`, `linux-w1-ether_addr_copy` | UNVALIDATED |
+| `dma_mapping_error` (-ENOMEM iff `~0`, else 0; assumes CONFIG_HAS_DMA=y and a 64-bit `dma_addr_t`) | `include/linux/dma-mapping.h` (static inline) | `linux-w1-dma_mapping_error` | UNVALIDATED |
+| `fubyte` (-1 or 0..255), `casueword32` (0 stored / -1 fault / 1 failed, `*oldvalp` arbitrary) | `sys/sys/systm.h`, fetch(9), casuword(9) | `freebsd-w1-fubyte`, `freebsd-w1-casueword32` | UNVALIDATED |
+| `__sx_xlock` (arbitrary int), `__sx_xunlock` (both read the 8-byte lock word) | `sys/sys/sx.h` (static inline) | `freebsd-w1-sx_xlock_inline`, `freebsd-w1-sx_xunlock_inline` | UNVALIDATED |
+| `fillw` (writes 2*cnt arbitrary bytes), `calculate_crc32c` (reads `length` bytes, arbitrary result) | `sys/x86/include/x86_var.h`, `amd64/amd64/support.S`; `sys/sys/gsb_crc32.h` | `freebsd-w1-fillw`, `freebsd-w1-calculate_crc32c` | UNVALIDATED |
+
+Files: `linux_w1_sync.cpp`, `linux_w1_net.cpp`, `freebsd_w1_more.cpp`; tests in `testdata/pir/kernel_linux_w1.c`, `kernel_freebsd_w1.c`.
+
+Needs review, second batch (checked against the headers, still not specified): FreeBSD `sched_prio`, `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu` (scheduler state, no checkable memory contract), `vm_map_min`, `vm_map_max`, `vm_map_modflags` (struct layout), `stats_v1_voi_update`. Linux accessors that return a stored pointer or depend on struct layout or config: `netdev_priv`, `sock_net`, `dev_net`, `pci_get_drvdata`, `platform_get_drvdata`, `platform_set_drvdata`, `i2c_get_clientdata`, `usb_get_intfdata`, `netdev_name`, `netif_running`, `netif_stop_queue`, `skb_reserve`, `skb_put_data`, `skb_headlen`, `skb_end_pointer`, `kfree_skb`, `dev_kfree_skb_any`, `nla_put_u8`, `nla_put_u32`, `nla_nest_end`, `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single_attrs`, `dma_unmap_single_attrs`, `dma_set_mask_and_coherent` (depends on the arch DMA ops), `sg_next`, `pci_name`, `hid_map_usage_clear`, `u64_stats_update_begin`, `u64_stats_update_end`, `i2c_adapter_id`, `qdisc_dev`, `params_rate`, `vb2_get_drv_priv`, `v4l2_get_subdevdata`, `phy_get_drvdata`, `spi_controller_get_devdata`, `init_wait_entry`, `brelse`; macros `EXT4_SB`, `IEEE80211_SKB_CB`. (The older list below stays valid for the first batch.)
+
 Needs review (not specified, with the reason):
 - Linux, static inline in the headers (a spec would be used only if a unit does not define them): `init_wait_entry`, `i2c_get_clientdata`, `netif_running`, `ether_addr_copy` (u16 alignment), `nla_put_u32`, `nla_total_size`, `nla_data`, `nla_get_u32`, `brelse`, `dma_map_single_attrs`, `dma_mapping_error`, `dma_unmap_single_attrs`, `skb_headlen`, `IEEE80211_SKB_CB` (macro), `u64_stats_update_begin/end` (config-dependent), `spi_controller_get_devdata` (returns the stored pointer; not representable yet), `usb_get_intfdata`, `skb_put_data`, `dma_set_mask_and_coherent`.
 - Linux, no prototype or semantics not certain: `EXT4_SB` (macro), `sg_next`, `pci_name`, `vb2_get_drv_priv`, `dma_alloc_coherent`, `dev_net`, `qdisc_dev`, `params_rate`, `dev_kfree_skb_any` (sk_buff comes from its own cache, not the kmalloc family), `i2c_adapter_id`, `phy_get_drvdata`.

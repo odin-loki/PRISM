@@ -47,8 +47,9 @@ int critical_exit_ok(void) {
 }
 
 int fueword_ok(void) { /* result checked before *val is used */
+    volatile long ubuf[1] = {7}; /* stands for a user word: a constant address is not encodable */
     long v = 0;
-    if (fueword((volatile const void *)0x1000, &v)) return -1; /* EFAULT */
+    if (fueword((volatile const void *)ubuf, &v)) return -1; /* EFAULT */
     return (int)(v & 1); /* v is arbitrary on success: any use is allowed */
 }
 
@@ -74,4 +75,77 @@ int subyte_bad(void) {
     char buf[1] = {0};
     subyte(buf, 7);            /* __nodiscard: failure not checked */
     return 100 / buf[0];       /* failure path: buf[0] is still 0 */
+}
+
+/* ---- W1 more: fubyte, casueword32, __sx_xlock / __sx_xunlock, fillw, calculate_crc32c ---- */
+int fubyte(volatile const void *base);
+int casueword32(volatile unsigned int *base, unsigned int oldval, unsigned int *oldvalp, unsigned int newval);
+int __sx_xlock(void *sx, void *td, int opts, const char *file, int line);
+void __sx_xunlock(void *sx, void *td, const char *file, int line);
+void fillw(int pat, void *base, unsigned long cnt);
+unsigned int calculate_crc32c(unsigned int crc32c, const unsigned char *buffer, unsigned int length);
+
+int fubyte_ok(void) { /* the byte is 0..255 or -1: never above 255 */
+    volatile unsigned char u[1] = {7};
+    int r = fubyte((volatile const void *)u);
+    return r > 255 ? -1 : 0;
+}
+int fubyte_bad(void) { /* r + 1 is 0 on a fault */
+    volatile unsigned char u[1] = {7};
+    return 100 / (fubyte((volatile const void *)u) + 1);
+}
+int casueword32_ok(void) {
+    volatile unsigned int u[1] = {5};
+    unsigned int old = 0;
+    int r = casueword32(u, 5, &old, 9);
+    if (r == 0) return u[0] == 9 ? 0 : -1; /* stored on success only */
+    return r == 1 || r == -1 ? 0 : -1;
+}
+int casueword32_bad(void) { /* unchecked result: on the failure paths the word is unchanged */
+    volatile unsigned int u[1] = {5};
+    unsigned int old = 0;
+    (void)casueword32(u, 5, &old, 9);
+    return 100 / ((int)u[0] - 5);
+}
+int __sx_xlock_ok(void) {
+    long sx[4] = {0, 0, 0, 0}; /* stands for a struct sx */
+    char td;
+    int e = __sx_xlock(sx, &td, 0, "f.c", 1);
+    (void)e; /* 0, or an error with SX_INTERRUPTIBLE */
+    return 0;
+}
+int __sx_xlock_bad(void) { /* lock word smaller than 8 bytes */
+    int sx[1] = {0};
+    char td;
+    return __sx_xlock(sx, &td, 0, "f.c", 1);
+}
+int __sx_xunlock_ok(void) {
+    long sx[4] = {0, 0, 0, 0};
+    char td;
+    __sx_xunlock(sx, &td, "f.c", 1);
+    return 0;
+}
+int __sx_xunlock_bad(void) {
+    __sx_xunlock((void *)0, (void *)0, "f.c", 1);
+    return 0;
+}
+int fillw_ok(void) {
+    unsigned short b[4] = {0, 0, 0, 0};
+    fillw(0x1234, b, 4); /* 8 bytes */
+    return 0;
+}
+int fillw_bad(void) { /* 5 words into an 8-byte object */
+    unsigned short b[4] = {0, 0, 0, 0};
+    fillw(0x1234, b, 5);
+    return 0;
+}
+int calculate_crc32c_ok(void) {
+    unsigned char b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    unsigned int c = calculate_crc32c(0xffffffffu, b, 8);
+    (void)c;
+    return 0;
+}
+int calculate_crc32c_bad(void) { /* length 9 on an 8-byte buffer */
+    unsigned char b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    return (int)calculate_crc32c(0xffffffffu, b, 9);
 }

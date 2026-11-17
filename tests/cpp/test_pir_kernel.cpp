@@ -163,7 +163,27 @@ TEST_CASE("pir kernel: Linux W1 specs (driver data, socket lock, netlink payload
                  {"ceph_has_room_ok", PA, "linux-g6-ceph_has_room"},
                  {"ceph_has_room_bad", F, ""},
                  {"is_valid_ether_addr_ok", PA, "linux-g6-is_valid_ether_addr"},
-                 {"is_valid_ether_addr_bad", F, ""}});
+                 {"is_valid_ether_addr_bad", F, ""},
+                 {"complete_ok", PA, "linux-w1-complete"},
+                 {"complete_bad", F, ""},
+                 {"wait_for_completion_ok", PA, "linux-w1-wait_for_completion"},
+                 {"wait_for_completion_bad", F, ""},
+                 {"__wake_up_ok", PA, "linux-w1-__wake_up"},
+                 {"__wake_up_bad", F, ""},
+                 {"nla_len_ok", PA, "linux-w1-nla_len"},
+                 {"nla_len_bad", F, ""},
+                 {"nla_data_ok", PA, "linux-w1-nla_data"},
+                 {"nla_data_bad", F, ""},
+                 {"nla_get_u32_ok", PA, "linux-w1-nla_get_u32"},
+                 {"nla_get_u32_bad", F, ""},
+                 {"nla_total_size_ok", PA, "linux-w1-nla_total_size"},
+                 {"nla_total_size_bad", F, ""},
+                 {"ether_addr_equal_ok", PA, "linux-w1-ether_addr_equal"},
+                 {"ether_addr_equal_bad", F, ""},
+                 {"ether_addr_copy_ok", PA, "linux-w1-ether_addr_copy"},
+                 {"ether_addr_copy_bad", F, ""},
+                 {"dma_mapping_error_ok", PA, "linux-w1-dma_mapping_error"},
+                 {"dma_mapping_error_bad", F, ""}});
 }
 
 TEST_CASE("pir kernel: FreeBSD W1 specs (fueword, suword, subyte: user word and byte access)") {
@@ -182,7 +202,19 @@ TEST_CASE("pir kernel: FreeBSD W1 specs (fueword, suword, subyte: user word and 
                  {"fueword32_ok", PA, "freebsd-f1-fueword32"},
                  {"fueword32_bad", F, ""},
                  {"critical_enter_ok", PA, "freebsd-f1-critical_enter"},
-                 {"critical_exit_ok", PA, "freebsd-f1-critical_exit"}});
+                 {"critical_exit_ok", PA, "freebsd-f1-critical_exit"},
+                 {"fubyte_ok", PA, "freebsd-w1-fubyte"},
+                 {"fubyte_bad", F, ""},
+                 {"casueword32_ok", PA, "freebsd-w1-casueword32"},
+                 {"casueword32_bad", F, ""},
+                 {"__sx_xlock_ok", PA, "freebsd-w1-sx_xlock_inline"},
+                 {"__sx_xlock_bad", F, ""},
+                 {"__sx_xunlock_ok", PA, "freebsd-w1-sx_xunlock_inline"},
+                 {"__sx_xunlock_bad", F, ""},
+                 {"fillw_ok", PA, "freebsd-w1-fillw"},
+                 {"fillw_bad", F, ""},
+                 {"calculate_crc32c_ok", PA, "freebsd-w1-calculate_crc32c"},
+                 {"calculate_crc32c_bad", F, ""}});
 }
 
 TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assumptions") {

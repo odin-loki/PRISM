@@ -92,3 +92,102 @@ int is_valid_ether_addr_bad(void) { /* unicast: six bytes are read, a 3-byte obj
     unsigned char addr[3] = { 0x00, 0x11, 0x22 };
     return is_valid_ether_addr(addr) ? 0 : -1;
 }
+
+/* ---- W1 more: completion, wake-up, netlink attributes, Ethernet addresses, DMA error ---- */
+void complete(struct completion *x);
+void wait_for_completion(struct completion *x);
+int __wake_up(void *wq_head, unsigned int mode, int nr, void *key);
+unsigned short nla_len(const void *nla);
+void *nla_data(const void *nla);
+unsigned int nla_get_u32(const void *nla);
+int nla_total_size(int payload);
+_Bool ether_addr_equal(const unsigned char *a, const unsigned char *b);
+void ether_addr_copy(unsigned char *dst, const unsigned char *src);
+int dma_mapping_error(void *dev, unsigned long long dma_addr);
+
+int complete_ok(void) {
+    struct completion c = {0};
+    complete(&c);
+    return 0;
+}
+int complete_bad(void) { /* x is NULL: the done counter is read */
+    complete((struct completion *)0);
+    return 0;
+}
+int wait_for_completion_ok(void) {
+    struct completion c = {1};
+    wait_for_completion(&c);
+    return 0;
+}
+int wait_for_completion_bad(void) {
+    wait_for_completion((struct completion *)0);
+    return 0;
+}
+int __wake_up_ok(void) {
+    char wq; /* stands for a struct wait_queue_head */
+    int n = __wake_up(&wq, 3 /* TASK_NORMAL */, 1, (void *)0);
+    (void)n; /* any result is a normal return */
+    return 0;
+}
+int __wake_up_bad(void) { /* the queue head is NULL */
+    return __wake_up((void *)0, 3, 1, (void *)0);
+}
+int nla_len_ok(void) {
+    unsigned short attr[4] = { 8, 1, 0, 0 }; /* nla_len = 8: payload 4 (u16-aligned, as a real attribute) */
+    return nla_len(attr) == 4 ? 0 : -1;
+}
+int nla_len_bad(void) { /* header of 4 bytes with nla_len 4: payload length 0 */
+    unsigned short attr[2] = { 4, 1 };
+    return 100 / nla_len(attr);
+}
+int nla_data_ok(void) {
+    unsigned char attr[8] = { 5, 0, 1, 0, 0x2a, 0, 0, 0 };
+    return *(unsigned char *)nla_data(attr) == 0x2a ? 0 : -1;
+}
+int nla_data_bad(void) { /* header only: the payload pointer is one past the object */
+    unsigned char attr[4] = { 4, 0, 1, 0 };
+    return *(unsigned char *)nla_data(attr);
+}
+int nla_get_u32_ok(void) {
+    unsigned int attr[2] = { 8, 0x2a }; /* header word, then the payload word */
+    return nla_get_u32(attr) == 0x2a ? 0 : -1;
+}
+int nla_get_u32_bad(void) { /* header only, no payload word */
+    unsigned int attr[1] = { 4 };
+    return (int)nla_get_u32(attr);
+}
+int nla_total_size_ok(void) {
+    return (nla_total_size(1) == 8 && nla_total_size(4) == 8 && nla_total_size(5) == 12) ? 0 : -1;
+}
+int nla_total_size_bad(void) { /* nla_total_size(0) is 4: a division by zero */
+    return 100 / (nla_total_size(0) - 4);
+}
+int ether_addr_equal_ok(void) {
+    unsigned char a[6] = { 0, 1, 2, 3, 4, 5 }, b[6] = { 0, 1, 2, 3, 4, 5 };
+    if (!ether_addr_equal(a, b)) return -1;
+    b[5] = 9;
+    return ether_addr_equal(a, b) ? -1 : 0;
+}
+int ether_addr_equal_bad(void) { /* a 3-byte object: out-of-bounds read */
+    unsigned char a[3] = { 0, 1, 2 }, b[6] = { 0, 1, 2, 0, 0, 0 };
+    return ether_addr_equal(a, b) ? 0 : -1;
+}
+int ether_addr_copy_ok(void) {
+    unsigned char s[6] = { 1, 2, 3, 4, 5, 6 }, d[6] = { 0 };
+    ether_addr_copy(d, s);
+    return d[0] == 1 && d[5] == 6 ? 0 : -1;
+}
+int ether_addr_copy_bad(void) { /* destination of 4 bytes: out-of-bounds write */
+    unsigned char s[6] = { 1, 2, 3, 4, 5, 6 }, d[4] = { 0 };
+    ether_addr_copy(d, s);
+    return d[0];
+}
+int dma_mapping_error_ok(void) {
+    char dev;
+    if (dma_mapping_error(&dev, 0x1000ULL) != 0) return -1;
+    return dma_mapping_error(&dev, ~0ULL) == -12 ? 0 : -1;
+}
+int dma_mapping_error_bad(void) { /* a valid address gives 0: a division by zero */
+    char dev;
+    return 100 / dma_mapping_error(&dev, 0x1000ULL);
+}

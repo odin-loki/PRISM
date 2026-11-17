@@ -318,6 +318,9 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/kernel/linux_completion.cpp
   src/prism/pir/models/kernel/freebsd_w1_user.cpp
   src/prism/pir/models/kernel/freebsd_w1_word.cpp
+  src/prism/pir/models/kernel/freebsd_w1_more.cpp
+  src/prism/pir/models/kernel/linux_w1_sync.cpp
+  src/prism/pir/models/kernel/linux_w1_net.cpp
   src/prism/pir/models/kernel/freebsd_alloc.cpp
   src/prism/pir/models/kernel/freebsd_lock.cpp
   src/prism/pir/models/kernel/freebsd_misc.cpp
