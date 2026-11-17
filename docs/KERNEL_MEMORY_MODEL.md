@@ -134,7 +134,9 @@ tso_sb (tests/conc).
 
 ## 6. Results
 
-PENDING: the gate result for this section is filled in after the W3r run. An earlier note here
-claimed "all 17 files match"; no gate run backed it, so it has been removed.
+Gate `-tc='*litmus*'` on pir-w3-memory-model (tag W3r): `[doctest] test cases: 2 | 2 passed | 0 failed | 1398 skipped`,
+`[doctest] assertions: 81 | 81 passed | 0 failed |`, `[doctest] Status: SUCCESS!`. The 20 files in tests/conc/litmus
+(the 17 earlier ones plus mp_kernel_spinlock, sb_kernel_atomic_mb, sb_kernel_atomic_nofence) each match their EXPECT line.
+An earlier note here claimed "all 17 files match" before any gate ran on this branch; that claim is replaced by this run.
 
 A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character.
