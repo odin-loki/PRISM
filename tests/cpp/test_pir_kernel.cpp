@@ -383,3 +383,30 @@ TEST_CASE("pir kernel: --lock-contracts TSV parse: header and comments skipped, 
     CHECK(bad.empty());
     CHECK(err.find("kind") != std::string::npos);
 }
+
+// LOCK-ORDER-INVERSION (docs/KERNEL_CONCURRENCY.md section 14): a lock-class pair taken in both orders
+TEST_CASE("pir kernel: lock order: a pair taken A-then-B and B-then-A is LOCK-ORDER-INVERSION, a consistent order is not") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    auto count_inversions = [&](const std::string& file, std::vector<prism::Finding>& keep) {
+        cfg.root = dir;
+        cfg.jobs = 2;
+        cfg.pir_kernel_api = "linux";
+        keep = pp::run_pir({dir / file}, cfg);
+        int n = 0;
+        for (auto& f : keep)
+            if (f.cls == "LOCK-ORDER-INVERSION") ++n;
+        return n;
+    };
+    std::vector<prism::Finding> t, f;
+    CHECK(count_inversions("kernel_lock_order_true.c", t) == 1);
+    for (auto& x : t)
+        if (x.cls == "LOCK-ORDER-INVERSION") {
+            CHECK(x.status == prism::laws::FAILED);
+            CHECK(x.extra.count("lock_classes"));
+            if (x.extra.count("lock_classes")) CHECK(x.extra.at("lock_classes") == "lock_a,lock_b");
+            CHECK(x.function.has_value());
+        }
+    CHECK(count_inversions("kernel_lock_order_false.c", f) == 0);
+}

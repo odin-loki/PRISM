@@ -2829,6 +2829,26 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         owner->fn.reset();
     }
     caller_discharged_asserts(recs, mod);
+    // LOCK-ORDER-INVERSION (lock_order.cpp, docs/KERNEL_CONCURRENCY.md section 14): one record per
+    // lock-class pair taken in both orders, on the function that takes the second order
+    if (!cfg.pir_kernel_api.empty()) {
+        const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
+                                                              : read_lock_contracts(cfg.pir_lock_contracts);
+        for (auto& inv : lock_order_inversions(mod, contracts)) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = inv.function;
+            r.f.cls = "LOCK-ORDER-INVERSION";
+            r.f.message = "locks " + inv.first + " and " + inv.second + " are taken in both orders: " + inv.first +
+                          " then " + inv.second + " in " + inv.other + ", " + inv.second + " then " + inv.first +
+                          " in " + inv.function + " (ABBA deadlock)";
+            r.f.extra["other_function"] = inv.other;
+            r.f.extra["lock_classes"] = inv.first + "," + inv.second;
+            recs.push_back(std::move(r));
+        }
+    }
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);

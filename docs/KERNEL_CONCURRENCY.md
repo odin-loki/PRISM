@@ -303,3 +303,26 @@ seen by the depth), hardirq and softirq contexts and LOCK-CTX-MISMATCH, lock ord
 (LOCK-ORDER, phase B), RCU grace periods, a contract table for unmodified driver code
 (the markers must be in the analysed function, so helpers in a real driver stay
 LOCK-HELD-ON-RETURN until a contract source exists).
+
+## 14. Implementation (W7b: lock-contract table, lock order)
+
+**Lock-contract table (`--lock-contracts FILE`).** A TSV for unmodified code: `function TAB lock TAB action [TAB kind]`,
+with `lock` = `global:NAME` (a module global's address) or `arg:N` (0-based parameter), `action` = `acquires` (the
+function returns with the lock held), `releases` (the caller holds it on entry) or `requires-held` (both), and the
+optional `kind` = `mutex` (default) or `spin`. The table is applied to the analysed (root) function only, at its entry
+block (translate_lock.inc `lock_table`), so the same declarations the markers make (`__prism_lock_entry`,
+`__prism_lock_exit`) are made without editing the source. Assumption `lock-contract-table` names the trust. Needs
+`--kernel-api`. Toy: `testdata/pir/kernel_lock_table.c` with `.tsv`. The e1000e table is `tools/pir/lock_contracts/e1000e.tsv`
+(the NVM mutex acquire and release halves of ich8lan.c).
+
+**Lock order (LOCK-ORDER-INVERSION).** A module pass over the unit's IR (`src/prism/pir/lock_order.cpp`, run by the pir
+stage with `--kernel-api`). Lock classes are module global names (the built-in lock calls and the table's acquires and
+releases give the events; table `arg:N` takes the caller's operand class). Each defined function is explored from its
+entry with an ordered held set, calls to defined functions are inlined (depth 3, memoised), and each acquire of C with H
+held records the pairs (h, C). A pair recorded in both orders is one LOCK-ORDER-INVERSION finding on the function that
+takes the second order, with the other function in `extra.other_function`. Bounds: 200000 (block, state) steps per
+unit, then exploration stops silently; cycles of length three or more are not reported; no interleaving (across
+contexts) is modelled. A clean run is therefore not a proof of lock order. Toy: `kernel_lock_order_true.c` (AB and BA,
+one through a callee) and `kernel_lock_order_false.c` (consistent order).
+
+Left: hardirq and softirq contexts (LOCK-CTX-MISMATCH), cycles longer than two, cross-unit order, the FreeBSD `em` pilot.

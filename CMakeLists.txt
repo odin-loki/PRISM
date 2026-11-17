@@ -241,6 +241,7 @@ set(PRISM_SRC
   src/prism/pir/libc_format.cpp
   src/prism/pir/libc_models.cpp
   src/prism/pir/lower_ctl.cpp
+  src/prism/pir/lock_order.cpp
   src/prism/pir/memory.cpp
   src/prism/pir/pir.cpp
   src/prism/pir/stage.cpp

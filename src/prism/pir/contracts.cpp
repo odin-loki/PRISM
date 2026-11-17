@@ -15,7 +15,10 @@
 
 #include "prism/pir.hpp"
 
+#include <fstream>
 #include <regex>
+#include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 namespace prism::pir {
@@ -183,6 +186,21 @@ std::vector<LockContract> parse_lock_contracts(std::string_view tsv, std::string
         }
         out.push_back(std::move(c));
     }
+    return out;
+}
+
+}  // namespace prism::pir
+
+namespace prism::pir {
+
+std::vector<LockContract> read_lock_contracts(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("--lock-contracts: cannot read " + path);
+    std::stringstream text;
+    text << in.rdbuf();
+    std::string err;
+    auto out = parse_lock_contracts(text.str(), &err);
+    if (!err.empty()) throw std::runtime_error("--lock-contracts " + path + ": " + err);
     return out;
 }
 

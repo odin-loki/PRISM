@@ -741,6 +741,19 @@ PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string
                                                    const ir::Function& f,
                                                    std::vector<std::string>* unparsed = nullptr);
 
+// --lock-contracts FILE: read and parse (throws std::runtime_error on a missing file or a bad line)
+PRISM_API std::vector<LockContract> read_lock_contracts(const std::string& path);
+
+// Lock-order inversions (LOCK-ORDER-INVERSION, docs/KERNEL_CONCURRENCY.md section 14): a module pass
+// over the unit's IR (src/prism/pir/lock_order.cpp). A class pair taken in both orders is one entry.
+struct LockOrderInversion {
+    std::string function;       // the function whose path takes `second` before `first`
+    std::string other;          // the function whose path takes `first` before `second`
+    std::string first, second;  // lock classes (module global names), first < second
+};
+PRISM_API std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m,
+                                                                const std::vector<LockContract>& contracts);
+
 // The pir stage: one finding per defined function of every C/C++ unit.
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,
                                        const Config& cfg);
