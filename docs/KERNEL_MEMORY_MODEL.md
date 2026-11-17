@@ -90,11 +90,14 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
      known today, and no litmus test reaches that path, so it is a guard, not a tested fix. Havoc of
      the shared state was not done: it would add nondeterministic writes to every shared global, which
      creates spurious data races (FAILED the LKMM does not have).
-   - Load buffering (`lkmm-no-lb`): kernel mode only (below). The LB shape is a relaxed load of one
-     location followed, with no full ordering in between, by a relaxed store to another location, in
-     at least two threads. Full orderings are seq_cst fences, smp_mb__before/after_atomic, and
-     seq_cst or acq_rel accesses. Dependencies do not count as ordering. Acquire loads and release
-     stores do not reset the pattern, which is conservative (more withheld, never fewer).
+   - Load buffering (`lkmm-no-lb`): kernel mode only (below). An edge is a relaxed load of location X
+     followed, with no full ordering in between, by a relaxed store to location Y (X and Y differ, or
+     either is unknown). Full orderings are seq_cst fences, smp_mb__before/after_atomic, and seq_cst
+     or acq_rel accesses. Dependencies do not count as ordering. Acquire loads and release stores do
+     not reset an edge, which is conservative. An LB cycle is withheld when two threads have crossing
+     edges (A: X to Y, B: Y to X), or when three or more threads have edges (a longer cycle). Stack
+     slots are not shared. Consequence: a register store after a load (`r0 = READ_ONCE(y)` with r0 a
+     global) is an edge, but SB+smp_mb keeps its BOUNDED, because its edges do not cross.
      LB+poonceonces (lb_kernel_once) is withheld; LB+fencembonceonce+ctrlonceonce (lb_kernel_mb_ctrl)
      keeps its BOUNDED, because its second thread has a full barrier between its load and store.
      The C11 test lb_relaxed keeps its RC11 BOUNDED: it is not kernel code, and the RC11 choice is
@@ -170,4 +173,12 @@ Gate `-tc='*litmus*'` on pir-w3-memory-model (tag W3r): `[doctest] test cases: 2
 (the 17 earlier ones plus mp_kernel_spinlock, sb_kernel_atomic_mb, sb_kernel_atomic_nofence) each match their EXPECT line.
 An earlier note here claimed "all 17 files match" before any gate ran on this branch; that claim is replaced by this run.
 
-A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character.
+A BOUNDED result is never PROVED: bounded rounds/unwinding. Harness note: the EXPECT value is read up to the first non-capital character (`-` included, so `NEEDS-HARNESS` parses); the named assumption follows it on the same line.
+
+Withheld verdicts (tag W3b, 18 Nov): `-tc="*litmus*"`: `[doctest] test cases:  2 | 2 passed | 0 failed | 1398 skipped`,
+`[doctest] assertions: 92 | 92 passed | 0 failed |`, `[doctest] Status: SUCCESS!`. The same run covers the 22 files in
+tests/conc/litmus: lb_kernel_once and mp_kernel_wmb_rmb are NEEDS-HARNESS with the assumption named; mp_kernel_extern is
+NEEDS-HARNESS by the PIR refusal of an undefined call; the others keep their EXPECT. `-tc="*conc*"`: `[doctest] test cases: 66 | 66 passed | 0 failed | 1334 skipped`,
+`[doctest] assertions: 7116 | 7116 passed | 0 failed |`. `GATE_TEST_TIMEOUT=2400 -tc="*pir*"`: `[doctest] test cases: 136 | 136 passed | 0 failed | 1264 skipped`,
+`[doctest] assertions: 1945 | 1945 passed | 0 failed |`, `[doctest] Status: SUCCESS!`.
+Verdict laws (`bash proofs/check.sh`): FAILS with `testdata/fixtures/verdict_tables.json differs from the Lean model`. No verdict input was changed on this branch (`git diff 3bbdd46..HEAD -- proofs testdata src/prism/verdict include/prism/laws.hpp` is empty), so this predates this work; it is not fixed here.
