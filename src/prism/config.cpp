@@ -514,6 +514,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_BATCH", "pir: functions per fresh-process batch"},
     {"PRISM_PIR_DEEPEN_MAX", "pir: largest unwind a BOUNDED single loop is re-checked at (default 64; 0 = off)"},
     {"PRISM_PIR_DIVERT_S", "pir: seconds a function gets in the main process before an UNKNOWN is re-checked in a child (default off)"},
+    {"PRISM_PIR_INLINE_DEPTH", "pir: call-inlining depth (default 4; 12 for C++ units; 1..64). The module harness (prism-module) sets 24: probe, stubs and handlers nest deeper than a helper"},
     {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
     {"PRISM_PIR_MEM_MB", "pir: memory budget (MB) when PRISM_MEM_BUDGET_MB is unset"},
     {"PRISM_PIR_NO_HEADERS", "pir: skip the system-header IR pass (diagnostics)"},

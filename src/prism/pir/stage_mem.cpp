@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <cstdlib>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -132,6 +133,12 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
+    // PRISM_PIR_INLINE_DEPTH: raise (or lower) the call-inlining depth; the module harness needs more (docs/DEVICE_MODEL.md)
+    if (const char* e = std::getenv("PRISM_PIR_INLINE_DEPTH")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 1 && d <= 64) o.inline_depth = static_cast<int>(d);
+    }
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
         if (p.ty.kind == ir::Type::Ptr && p.attrs.find("byval(") == std::string::npos &&

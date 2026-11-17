@@ -1806,6 +1806,24 @@ No wrong PROVED was found in either engine on `testdata/`.
   old parser still extracts functions from them (the "absent" column).
 
 
+## Device and module layer (requirement R8)
+
+The `pir` stage checks functions. A driver is checked as a module by `prism-module`
+([DEVICE_MODEL.md](DEVICE_MODEL.md)): it writes one C unit per *row* (a property or a configuration) that
+contains the driver's own source, a device model translated to C, ghost state with stub kernel calls and a
+harness `main` (probe, any sequence of at most `steps` operations with device events and interrupts allowed
+between steps and at kernel API calls, remove, the failing-probe paths), and runs this stage on it with the
+driver's compile-database flags. The stage is unchanged except for one knob: `PRISM_PIR_INLINE_DEPTH`
+(default 4, 12 for C++ units, 1 to 64) sets how deep defined callees are inlined, because a probe that calls a
+stub that runs a handler nests deeper than 4. `prism-module` sets 24.
+
+What the stage's verdicts mean on such a unit is stated in DEVICE_MODEL.md section 6, and the rule is short:
+a module result is **never PROVED**; a PROVED on a harness is reported as BOUNDED (the harness holds only
+sequences up to its bound), a FAILED is a counterexample under the stated device model and needs triage, and a
+result that rests on a device model is L4 only with the model, its source and its validation status in the
+assumption list. MMIO accessors resolve to `prism_mmio_read/write`, one resolver interface; without a device
+model the default is an unconstrained read of the right width.
+
 ## Memory budget
 
 Law 7: running out of memory is a reported UNKNOWN, never a kernel OOM kill
