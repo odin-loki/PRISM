@@ -650,6 +650,35 @@ claim: a memory model with a per-object cell limit or object-indexed arrays inst
 * A `pir` translator that models `ptrtoint`/`inttoptr` round trips (R3 or a translator change, not this layer)
   would remove four of the five substitutions.
 
+### 10.7 Memory-encoding scaling attempts (branch `pir-memory-scaling`, no change kept)
+
+Measured on the `callback` row (row `all`, steps 1, `PRISM_MEM_BUDGET_MB=8000`, `PRISM_PIR_INLINE_DEPTH=24`, base 35d7618).
+Size is the query as dumped by `s.to_smt2()` (let-shared text) and the number of distinct AST nodes reachable from it.
+
+| | value |
+|---|---|
+| verdict | UNKNOWN, exit 75 (budget), 86 to 105 s wall, peak RSS 6.9 to 7.2 GB |
+| VCs | 1 property VC (`properties[0,2411]`) |
+| query text | 22,966,248 bytes (already let-shared: about 191k `let`s) |
+| distinct AST nodes (DAG) | 525,453 |
+| reads of the memory model | 1,520 distinct (address, log position) misses, 356 memo hits (about 19% of calls) |
+| reads with no value set and no known object | 53 of 1,520; these walk the log prefix once per byte and come from recursion through `Copy` entries with a symbolic source (no symbolic-address pointer loads were seen) |
+
+Attempts:
+
+* **Memoising the read function.** `read_cell_log` already memoises on (address term id, log position, provenance flag),
+  and Z3 hash-conses terms, so the 356 hits are the repeats that exist. The remaining 1,520 reads are distinct terms;
+  caching cannot remove a node that the DAG count already shares. No change to the query.
+* **Let-sharing.** The text is already let-shared; the DAG (525k nodes) is the real size. Reducing it needs different
+  terms (a word-level or per-object read, or a summary of the copy), which is a change of encoding, not of caching.
+* Not attempted: word-level reads for symbolic addresses (needs alignment assumptions to stay sound), per-object
+  arrays (a symbolic read still has one term per log entry), points-to pruning (the model gives no provenance for
+  nondet or copy-source pointers; pruning would be unsound without a model change).
+
+Conclusion: the blow-up is the number of distinct log-dependent terms of the symbolic copy reads. Same-term caching does
+not shrink it; a sound reduction must change the encoding of copies from symbolic sources (for example, a summary of
+`copy_data` as in Stage 4) and is a model change.
+
 ## 11. What does not work, and what is assumed
 
 **Bounds.** Everything is bounded: two operations (one for the ST variant's model run), at most two
