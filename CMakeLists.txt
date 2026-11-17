@@ -22,7 +22,8 @@ if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 23.1.4)
   message(WARNING "PRISM pins clang 23.1.4 (scripts/fetch_llvm.py); building with ${CMAKE_CXX_COMPILER_VERSION}")
 endif()
 if(WIN32)
-  add_compile_definitions(NOMINMAX)
+  # _USE_MATH_DEFINES: FORGE headers (inference/diffusion.hpp) use M_PI, which MSVC UCRT only declares with it.
+  add_compile_definitions(NOMINMAX _USE_MATH_DEFINES)
 endif()
 
 option(PRISM_CUDA "Build CUDA mutation kernels" ON)
