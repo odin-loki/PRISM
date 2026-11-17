@@ -1,0 +1,12 @@
+func vol_load
+L unsupported load volatile
+status unencoded volatile-access: MMIO read, named assumption VolatileIsOracle (outside the fragment)
+end
+func atomic_load
+L unsupported kernel-mode model: atomic load (seq_cst) modelled as a plain load
+status unencoded atomics-sequential: named assumption AtomicsSequential (outside the fragment)
+end
+func harness_param
+L unsupported automatic pointer harness (struct object and nested pointer objects are not in the Lean model)
+status unencoded automatic-harness: named assumption HarnessOK (outside the fragment)
+end

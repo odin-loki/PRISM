@@ -170,3 +170,23 @@ farm. Letting the exporter silently drop the flag would make the Lean verdict cl
 ordinary one without that being a theorem hypothesis, which the trust rule forbids. No proof was attempted
 this run and no axiom was added. Next step: add the bit with the VolatileIsOracle hypothesis stated in the
 theorem, as in 3.1c.
+
+### 7.1 Run W6r (phase 2 continuation)
+
+No Lean construct was added to the fragment in this run. What changed is the trust bookkeeping, so each
+out-of-fragment construct has a checked named assumption instead of a silent gap:
+
+* `proofs/refinement/outside_fragment.txt` lists each construct the exporter writes as `L unsupported`, with
+  its named hypothesis (`VolatileIsOracle`, `AtomicsSequential`, `HarnessOK`). `check.sh` fails if the exporter
+  text it quotes is no longer in `src/prism/pir`, and prints one `outside:` line per entry in the audit.
+* `proofs/refinement/fixtures/kernel_outside.pirl` (+ `.expected`, `outside=3`) pins the three `L unsupported`
+  forms through the correspondence checker.
+* Volatile (3.1c) stays outside: the exporter rejects any `load`/`store` flag other than the arithmetic
+  ones, so a volatile access yields `L unsupported load volatile`, never an ordinary access. Phase 2 item 1
+  (the volatile bit in XMem/XPir and the `VolatileIsOracle` hypothesis) still needs the 15 000-line proof
+  change and a C++ rebuild, so it is left for a larger budget.
+* Atomics (3.2i) is outside by the same rule (`kernel-mode model:` rejection); its hypothesis line is in the
+  register, the theorem change is not made.
+* Not started: ptrtoint/inttoptr, asm havoc, callbr, harness plan mirror, unknown calls, kernel specs. Their
+  W2-W7 dependencies are not on the branch.
+* No `sorry`, no new axiom; `#print axioms` remains within propext, Classical.choice, Quot.sound.

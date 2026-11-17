@@ -1,0 +1,7 @@
+# Constructs the exporter writes as `L unsupported` (outside the Lean-proved fragment).
+# Columns: construct | exporter text (must occur in src/prism/pir) | named assumption | status
+# check.sh fails if an exporter text is missing, so this list cannot drift from the exporter.
+# A named assumption is a hypothesis of a future theorem, never a top-level axiom.
+volatile-access | throw Unsupported{in.op + " " + fl} | VolatileIsOracle | outside, phase 2 item 1 (not proved)
+atomics-sequential | "kernel-mode model: " + in.kernel_note | AtomicsSequential | outside, phase 2 item 3 (not proved)
+automatic-harness | automatic pointer harness | HarnessOK | outside, phase 2 item 5 (not proved)

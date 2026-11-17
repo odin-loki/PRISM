@@ -41,6 +41,21 @@ seen=$(grep -Ec "depends on axioms|does not depend on any axioms" axioms.txt || 
 [ "$seen" = "$expected" ] || { echo "FAIL: expected $expected axiom reports, saw $seen" >&2; exit 1; }
 lean_audit axioms axioms.txt || { echo "FAIL: non-standard axiom (listed above)" >&2; exit 1; }
 
+echo "== outside-fragment register (named assumptions, see outside_fragment.txt)"
+n=0
+while IFS='|' read -r c pat hyp st; do
+  case "$c" in ''|'#'*) continue ;; esac
+  c=$(printf '%s' "$c" | sed 's/^ *//;s/ *$//')
+  pat=$(printf '%s' "$pat" | sed 's/^ *//;s/ *$//')
+  hyp=$(printf '%s' "$hyp" | sed 's/^ *//;s/ *$//')
+  st=$(printf '%s' "$st" | sed 's/^ *//;s/ *$//')
+  grep -rqF -- "$pat" "$repo/src/prism/pir" \
+    || { echo "FAIL: outside construct '$c': exporter text '$pat' not found in src/prism/pir" >&2; exit 1; }
+  echo "outside: $c -> hypothesis $hyp ($st)"
+  n=$((n + 1))
+done < outside_fragment.txt
+[ "$n" -gt 0 ] || { echo "FAIL: outside_fragment.txt lists no construct" >&2; exit 1; }
+
 echo "== correspondence checker fixtures"
 for e in fixtures/*.expected; do
   [ -f "${e%.expected}.pirl" ] || { echo "FAIL: $e has no fixtures/*.pirl" >&2; exit 1; }
