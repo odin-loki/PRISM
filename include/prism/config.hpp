@@ -87,6 +87,9 @@ struct Config {
     // assumption (opt-in, never on by default).
     std::string pir_kernel_api;
     bool pir_assume_unknown_calls = false;
+    // --ops-table FILE: indirect calls through a field of a known ops table are checked
+    // against that field's targets (docs/PIR.md). Empty = off (default).
+    std::filesystem::path ops_table;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 

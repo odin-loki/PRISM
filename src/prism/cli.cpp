@@ -194,6 +194,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--assume-unknown-calls") {
             ok = in.flag();
             cfg.pir_assume_unknown_calls = true;
+        } else if (a == "--ops-table") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.ops_table = fs::absolute(*v);
         } else if (a == "--pir-harness-depth") {
             auto v = in.take_int(0);
             if ((ok = v.has_value())) cfg.pir_harness_depth = *v;
@@ -337,7 +340,7 @@ std::string cli_usage() {
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S]\n"
         "           [--compile-commands FILE] [--kernel-api linux|freebsd]\n"
-        "           [--assume-unknown-calls]\n"
+        "           [--assume-unknown-calls] [--ops-table FILE]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
@@ -385,6 +388,9 @@ std::string cli_usage() {
         "  named assumption in the verdict (PROVED-ASSUMING). Off by default (docs/KERNEL_MODELS.md).\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
+        "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"
+        "  type, field, targets, role, optional field index) is checked against each target,\n"
+        "  at most 8 (more stays UNENCODED). Off by default (docs/PIR.md).\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

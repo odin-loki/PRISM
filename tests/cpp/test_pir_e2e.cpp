@@ -649,3 +649,30 @@ TEST_CASE("pir e2e: --compile-commands on a preprocessed copy takes only languag
     std::error_code ec;
     fs::remove_all(tmp, ec);
 }
+
+TEST_CASE("pir e2e: --ops-table checks an indirect call against the targets of its table field; default unchanged") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    // without the option the unit's 19 address-taken functions exceed the 16-target limit: UNENCODED
+    {
+        auto got = index(pp::run_pir({dir / "ops_table.c"}, cfg));
+        REQUIRE(got.contains({"ops_table.c", "ops_div_bad"}));
+        CHECK(got.at({"ops_table.c", "ops_div_bad"})->status != prism::laws::FAILED);
+        CHECK(got.at({"ops_table.c", "ops_safe_ok"})->status != prism::laws::PROVED);
+    }
+    cfg.ops_table = dir / "ops_table.tsv";
+    auto got = index(pp::run_pir({dir / "ops_table.c"}, cfg));
+    REQUIRE(got.contains({"ops_table.c", "ops_safe_ok"}));
+    CHECK(got.at({"ops_table.c", "ops_safe_ok"})->status == prism::laws::PROVED);
+    REQUIRE(got.contains({"ops_table.c", "ops_div_bad"}));
+    CHECK(got.at({"ops_table.c", "ops_div_bad"})->status == prism::laws::FAILED);
+    CHECK(got.at({"ops_table.c", "ops_div_bad"})->cls == "INT-DIV-ZERO");
+    REQUIRE(got.contains({"ops_table.c", "ops_div_ok"}));
+    CHECK(got.at({"ops_table.c", "ops_div_ok"})->status == prism::laws::PROVED);
+    // nine targets for one field: beyond the default maximum of 8, stays UNENCODED with the reason
+    REQUIRE(got.contains({"ops_table.c", "ops_wide_many"}));
+    CHECK(got.at({"ops_table.c", "ops_wide_many"})->status != prism::laws::PROVED);
+    CHECK(got.at({"ops_table.c", "ops_wide_many"})->message.find("too many indirect targets") != std::string::npos);
+}

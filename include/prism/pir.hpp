@@ -418,6 +418,18 @@ struct AutoHarness {
     int max_objects = 32;          // objects per pointer parameter
 };
 
+// --ops-table FILE (docs/PIR.md "Indirect calls through ops tables"): one field of a
+// known ops table. struct_type is the IR spelling of the struct ("%struct.NAME"); index
+// is the field's position: the 5th column of the file, else its 0-based position among
+// the distinct fields the file lists for that struct.
+struct OpsField {
+    std::string struct_type;
+    std::string field;
+    int index = 0;
+    std::vector<std::string> targets;
+    std::string role;
+};
+
 struct TranslateOptions {
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
@@ -445,7 +457,15 @@ struct TranslateOptions {
     // objects its pointer arguments point to, recorded as an assumption.
     // Opt-in, never on by default (docs/KERNEL_MODELS.md "Policy").
     bool assume_unknown_calls = false;
+    // --ops-table FILE: the fields of known ops tables (empty = off). An indirect call
+    // through one of them is checked against each of its targets; a field with more
+    // than ops_max_targets targets stays UNENCODED ("too many indirect targets").
+    std::vector<OpsField> ops_table;
+    std::size_t ops_max_targets = 8;
 };
+
+// Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
+PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);
 
 // LP64 unless the module's datalayout has 32-bit pointers (ILP32).
 PRISM_API PtrModel ptr_model_of(const ir::Module& m);

@@ -2625,6 +2625,11 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.signed_shl = sshl;
     topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
+    if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
+        std::string ops_err;
+        topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
+        if (!ops_err.empty()) throw std::runtime_error("--ops-table " + ops_err);
+    }
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.

@@ -1157,6 +1157,45 @@ candidate set — is the **havoc fallback**: a soft check reported as
 Choosing candidates therefore only affects completeness, never soundness.
 More than 16 candidates is `UNENCODED`. `testdata/pir/virt_dispatch.cpp`.
 
+### Indirect calls through ops tables (`--ops-table FILE`)
+
+A driver's operations table (`struct e1000_mac_operations`, `struct file_operations`)
+is a `const` global of function pointers, and its calls are `hw->mac.ops.f(hw)`:
+the pointer is `load (getelementptr %struct.T, base, 0, K)`, field K of struct T.
+With `--ops-table FILE` such a call is checked against the targets the file lists
+for that field, instead of every address-taken function:
+
+* file format, TSV, one line per field:
+  `struct_type<TAB>field_name<TAB>target1,target2,...<TAB>role[<TAB>field_index]`.
+  `struct_type` is the IR spelling, `%struct.NAME` (`struct NAME` in the clang
+  data). The fifth column is optional.
+* the field is matched on the struct type of the getelementptr feeding the load
+  and its constant field index K. The index is the fifth column when given;
+  otherwise it is the field's 0-based position among the distinct fields the file
+  lists for that struct type, in file order. A table that does not list every
+  field, or lists them out of declaration order, numbers the fields differently
+  from the IR and then no call matches (the call stays on the normal path). The
+  error is in precision only: a wrong index can never prove a function, because
+  each target is a branch on `fp == target` and the havoc fallback remains.
+  Giving `field_index` for every row removes the guess.
+* a field with more than 8 targets is `UNENCODED: indirect call through
+  T.field: too many indirect targets (N > 8)`. The limit is `ops_max_targets`
+  in `TranslateOptions`, 8 by default.
+* a target defined in the unit is inlined as in the direct case; a target
+  declared but defined elsewhere is an unknown call (`UNENCODED: call @f`, a soft
+  stop of that branch unless `--assume-unknown-calls`); a target the unit does not
+  mention is dropped. The role is reported in the havoc-fallback message.
+* without the option nothing changes.
+
+`tools/pir/ops_table_from_clang.sh OPS.tsv.gz [FILE_REGEX] > ops.tsv` converts
+the clang pass's ops data (`data/clang/linux/ops.tsv.gz`) into this format: one
+row per (struct, field) with the distinct function names that initialise it, role
+= field name, `field_index` empty. Testdata: `testdata/pir/ops_table.c` with
+`ops_table.tsv`: the unit takes the address of 19 functions of one type, so without the
+option a call is `UNENCODED: indirect call with 19 possible targets (> 16)`; with it the
+safe call is PROVED, the dividing call FAILED (INT-DIV-ZERO) and a 9-target field is
+UNENCODED (too many indirect targets). Tests: `tests/cpp/test_pir_e2e.cpp` ("--ops-table ...").
+
 ## Inline assembly (roadmap 2.6)
 
 An `asm` call is `UNENCODED: inline assembly` unless the source states its

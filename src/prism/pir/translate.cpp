@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <fstream>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -2439,6 +2440,87 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
 }
 
 }  // namespace
+
+std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error) {
+    error.clear();
+    std::ifstream in(file);
+    if (!in) {
+        error = "cannot read " + file.string();
+        return {};
+    }
+    std::vector<OpsField> out;
+    // (struct_type, field) -> entry in out; position of a field = its first-seen order per struct
+    std::map<std::pair<std::string, std::string>, std::size_t> at;
+    std::map<std::string, int> nfields;
+    auto trim = [](const std::string& s) {
+        std::string::size_type b = 0, e = s.size();
+        while (b < e && s[b] == ' ') ++b;
+        while (e > b && s[e - 1] == ' ') --e;
+        return s.substr(b, e - b);
+    };
+    std::string line;
+    for (int line_no = 1; std::getline(in, line); ++line_no) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        std::vector<std::string> cols;
+        for (std::string::size_type start = 0;;) {
+            const auto p = line.find('\t', start);
+            cols.push_back(line.substr(start, p == std::string::npos ? std::string::npos : p - start));
+            if (p == std::string::npos) break;
+            start = p + 1;
+        }
+        if (cols.size() < 4 || cols.size() > 5) {
+            error = "line " + std::to_string(line_no) + ": expected 4 or 5 tab-separated columns";
+            return {};
+        }
+        OpsField f;
+        f.struct_type = trim(cols[0]);
+        f.field = trim(cols[1]);
+        f.role = cols[3];
+        for (std::string::size_type s = 0; s <= cols[2].size();) {
+            const auto p = cols[2].find(',', s);
+            std::string t = cols[2].substr(s, p == std::string::npos ? std::string::npos : p - s);
+            t = trim(t);
+            if (!t.empty()) f.targets.push_back(t);
+            if (p == std::string::npos) break;
+            s = p + 1;
+        }
+        if (f.targets.empty()) {
+            error = "line " + std::to_string(line_no) + ": no targets";
+            return {};
+        }
+        const auto key = std::make_pair(f.struct_type, f.field);
+        if (auto it = at.find(key); it != at.end()) {  // a field listed twice: one entry
+            auto& e = out[it->second];
+            e.targets.insert(e.targets.end(), f.targets.begin(), f.targets.end());
+            continue;
+        }
+        f.index = nfields[f.struct_type]++;
+        if (cols.size() == 5 && !cols[4].empty()) {
+            try {
+                std::size_t used = 0;
+                f.index = std::stoi(cols[4], &used);
+                if (used != cols[4].size() || f.index < 0) throw std::invalid_argument(cols[4]);
+                for (const auto& e : out) {
+                    if (e.struct_type == f.struct_type && e.index == f.index) {
+                        error = "line " + std::to_string(line_no) + ": duplicate field_index";
+                        return {};
+                    }
+                }
+            } catch (const std::exception&) {
+                error = "line " + std::to_string(line_no) + ": bad field_index";
+                return {};
+            }
+        }
+        at.emplace(key, out.size());
+        out.push_back(std::move(f));
+    }
+    if (in.bad()) {
+        error = "cannot read " + file.string();
+        return {};
+    }
+    return out;
+}
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
     const PtrModel pm = ptr_model_of(m);

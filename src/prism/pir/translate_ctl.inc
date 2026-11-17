@@ -835,16 +835,51 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
         }
         return cands;
     };
-    auto cands = collect(vcall);
-    bool real = std::any_of(cands.begin(), cands.end(), [&](const std::string& n) { return m.find(n) != nullptr; });
-    if (vcall && !real) {
-        vcall = false;
-        cands = collect(false);
+    // --ops-table (docs/PIR.md "Indirect calls through ops tables"): the pointer is
+    // load (getelementptr %struct.T, base, 0, K), i.e. field K of struct T; a table
+    // field of that struct type and index names its targets.
+    const OpsField* ops_field = nullptr;
+    if (!opt.ops_table.empty()) {
+        if (const auto* ld = def(*in.callee_op); ld && ld->op == "load" && !ld->ops.empty()) {
+            if (const auto* gep = def(ld->ops[0]);
+                gep && gep->op == "getelementptr" && gep->ops.size() == 3 &&
+                gep->ops[1].v.kind == ir::Value::Int && gep->ops[1].v.bits == 0 &&
+                gep->ops[2].v.kind == ir::Value::Int) {
+                const int idx = static_cast<int>(gep->ops[2].v.bits);
+                for (const auto& f : opt.ops_table) {
+                    if (f.struct_type == gep->ety.text && f.index == idx) {
+                        ops_field = &f;
+                        break;
+                    }
+                }
+            }
+        }
     }
-    constexpr std::size_t kMaxTargets = 16;
-    if (cands.size() > kMaxTargets)
-        throw Unenc{"UNENCODED: indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
-                    std::to_string(kMaxTargets) + ")"};
+    std::vector<std::string> cands;
+    if (ops_field) {
+        if (ops_field->targets.size() > opt.ops_max_targets)
+            throw Unenc{"UNENCODED: indirect call through " + ops_field->struct_type + "." + ops_field->field +
+                        ": too many indirect targets (" + std::to_string(ops_field->targets.size()) + " > " +
+                        std::to_string(opt.ops_max_targets) + ")"};
+        for (const auto& t : ops_field->targets) {
+            if (m.find(t) != nullptr ||
+                std::find(m.declarations.begin(), m.declarations.end(), t) != m.declarations.end())
+                cands.push_back(t);
+        }
+        vcall = false;
+    } else {
+        cands = collect(vcall);
+        bool real = std::any_of(cands.begin(), cands.end(),
+                                [&](const std::string& n) { return m.find(n) != nullptr; });
+        if (vcall && !real) {
+            vcall = false;
+            cands = collect(false);
+        }
+        constexpr std::size_t kMaxTargets = 16;
+        if (cands.size() > kMaxTargets)
+            throw Unenc{"UNENCODED: indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
+                        std::to_string(kMaxTargets) + ")"};
+    }
     out.uses_memory = true;  // function addresses are pointers of the memory model
     int dst = in.result.empty() ? -1 : result_var(fr, in);
     unsigned w = dst >= 0 ? out.vars[static_cast<std::size_t>(dst)].width : 0;
@@ -889,12 +924,18 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
         }
         cur = no;
     }
-    soft_stop(cur, "indirect call to a target outside the " + std::to_string(cands.size()) +
-                       (vcall ? " virtual functions of the module's vtables" : " address-taken functions") +
-                       " (havoc fallback)",
-              line);
+    if (ops_field)
+        soft_stop(cur, "indirect call through ops-table field " + ops_field->struct_type + "." + ops_field->field +
+                           " (role " + ops_field->role + ") to a target outside its " +
+                           std::to_string(cands.size()) + " in-unit targets (havoc fallback)",
+                  line);
+    else
+        soft_stop(cur, "indirect call to a target outside the " + std::to_string(cands.size()) +
+                           (vcall ? " virtual functions of the module's vtables" : " address-taken functions") +
+                           " (havoc fallback)",
+                  line);
     cur = join;
-    if (!any) noreturn = true;
+    if (!any && !ops_field) noreturn = true;
 }
 
 // ---- inline assembly ----------------------------------------------------------------
