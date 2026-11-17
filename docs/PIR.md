@@ -278,7 +278,9 @@ zero, or initialised with arbitrary bytes), `free` (end of lifetime),
 `load` (value + "some byte uninitialised" + "effective-type mismatch"),
 `store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
 `stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
-again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+again), `havocmem` (every object's bytes become arbitrary, for an asm with a
+`memory` clobber: values and tags arbitrary, an initialised byte stays
+initialised; sizes, liveness and kinds unchanged); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
 usable in any expression. The translator (`translate_mem.cpp`) turns every
 property into ordinary `check`s over these (Law 8):
 
@@ -1173,13 +1175,17 @@ PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
 
 With `--kernel-api linux|freebsd` an asm without a contract is modelled conservatively instead: its outputs are
-arbitrary, and the objects its pointer operands point into are havocked when it writes through them or has a `memory`
-clobber (memory no operand points into is assumed unchanged); `asm goto` with several labels (`callbr`) jumps
+arbitrary, the objects its pointer operands point into are havocked when it writes through them, and a `memory`
+clobber havocs **every object** (`havocmem`: all bytes arbitrary, the initialised flags "initialised before or
+arbitrary", object sizes, liveness and kinds unchanged; const and dead objects included). Without a memory clobber
+memory that no indirect output writes is assumed unchanged. `asm goto` (callbr) goes through the same asm model; `asm goto` with several labels (`callbr`) jumps
 nondeterministically to the fallthrough or any one of the labels, as a chain of nondeterministic branches; atomics
 (`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
 instructions. Each use is a named assumption (`asm-havoc: "<constraints>"`, `asm-goto`, `atomics-sequential`,
 `volatile-access`) and a proof is PROVED-ASSUMING. See [KERNEL_MODELS.md](KERNEL_MODELS.md).
-`testdata/pir/kernel_asm.c` (`asm_goto_ok`, `asm_goto2_ok`/`asm_goto2_bad`).
+`testdata/pir/kernel_asm.c` (`asm_goto_ok`, `asm_goto2_ok`/`asm_goto2_bad`; memory clobber:
+`asm_memclobber_ok` (a memory-independent property, PROVED-ASSUMING), `asm_memclobber_bad` and
+`asm_memclobber_global_bad` (a non-operand local and a global may change: FAILED), `asm_goto_memclobber_bad`).
 
 ### Pointer/integer casts and bitfields
 

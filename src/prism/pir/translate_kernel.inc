@@ -12,15 +12,15 @@
 //   * writes every direct output: the result of the call is an arbitrary value
 //     of its type (a pointer result: null or a pointer to a fresh object of
 //     kUnknownPtrBytes arbitrary initialised bytes, see opaque_ptr),
-//   * writes through every indirect output operand (`=*m`, `+*m`), and, for a
-//     `~{memory}` clobber, through every pointer operand: the bytes of the
-//     object the pointer points into, from the pointer to the end of the
+//   * writes through every indirect output operand (`=*m`, `+*m`): the bytes of
+//     the object the pointer points into, from the pointer to the end of the
 //     object, become arbitrary (havoc_object_tail),
+//   * for a `~{memory}` clobber, may write any memory: every object's contents
+//     become arbitrary (Stmt::MemHavoc, havoc_all); object sizes, liveness and
+//     kinds are unchanged,
 //   * changes nothing else the memory model can see: registers and flags are
-//     not modelled, and memory that no pointer operand points into is assumed
-//     unchanged. (A `memory` clobber really means all memory; PRISM's memory
-//     model has no "havoc everything" statement, so this is the part of the
-//     claim that is assumed, and the assumption text says so.)
+//     not modelled. Without a memory clobber, memory that no indirect output
+//     writes is assumed unchanged (the assumption text says so).
 // An asm that is `volatile` is never removed or merged: it is translated where
 // it stands, once per execution. asm goto is a call that may continue at any of
 // its labels (callbr, translate.cpp).
@@ -83,12 +83,10 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line) {
         if (is_out) written.insert(argi);
         ++argi;
     }
-    std::size_t havocked_ptrs = 0;
+    // a memory clobber: the asm may write any memory, so every object's contents are havocked
+    if (mem_clobber) mt.havoc_all(cur);
     for (std::size_t i = 0; i < args.size() && i < in.ops.size(); ++i)
-        if (in.ops[i].ty.kind == ir::Type::Ptr && (mem_clobber || written.count(i))) {
-            mt.havoc_object_tail(cur, args[i], line);
-            ++havocked_ptrs;
-        }
+        if (in.ops[i].ty.kind == ir::Type::Ptr && written.count(i)) mt.havoc_object_tail(cur, args[i], line);
     // direct outputs: the call's result
     if (!in.result.empty()) {
         if (auto pit = fr.pairs.find(in.result); pit != fr.pairs.end()) {
@@ -108,10 +106,9 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line) {
     what += n_direct ? std::to_string(n_direct) + " output(s) havocked" : "no register output";
     if (!written.empty()) what += "; " + std::to_string(written.size()) + " indirect output(s) written through the pointer operand(s)";
     if (mem_clobber)
-        what += "; memory clobber: the objects its " + std::to_string(havocked_ptrs) +
-                " pointer operand(s) point into are havocked, all other memory is assumed unchanged";
+        what += "; memory clobber: every object's contents are havocked (the asm may write any memory)";
     else
-        what += "; no memory effect besides the outputs";
+        what += "; no memory effect besides the outputs (memory no indirect output writes is assumed unchanged)";
     if (in.asm_sideeffect) what += "; volatile: translated once where it stands";
     note_assumption(what);
 }

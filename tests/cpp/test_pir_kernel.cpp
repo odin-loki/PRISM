@@ -153,8 +153,13 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
     check_table("kernel_asm.c", "linux", false,
                 {{"asm_out_ok", PA, "asm-havoc: \"=r,"},
                  {"asm_out_bad", F, ""},
-                 {"asm_clobber_ok", PA, "memory clobber"},
+                 {"asm_clobber_ok", PA, "memory clobber"},  // y never escapes: the asm cannot write it
                  {"asm_clobber_bad", F, ""},
+                 {"asm_memclobber_ok", PA, "memory clobber: every object"},  // true variant: a memory-independent property
+                 {"asm_memclobber_bad", F, ""},  // false variant: x escapes to a global, is no operand, is havocked
+                 {"asm_memclobber_global_bad", F, ""},
+                 {"asm_goto_memclobber_bad", F, ""},
+                 {"asm_nomem_escaped_ok", PA, "asm-havoc"},  // no memory clobber: the escaped x is unchanged
                  {"asm_nomem_ok", PA, "asm-havoc"},
                  {"asm_indirect_out_bad", F, ""},
                  {"asm_ud2_bad", F, ""},

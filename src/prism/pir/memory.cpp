@@ -735,11 +735,11 @@ z3::expr SymMem::align(const z3::expr& ptr) {
 }
 
 std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all,
-                                  bool keep_init) {
+                                  bool keep_init, bool consts) {
     std::vector<uint64_t> todo;
     if (all) {
         for (auto& o : objs_)
-            if (o.kind != MemKind::Const) todo.push_back(o.id);
+            if (consts || o.kind != MemKind::Const) todo.push_back(o.id);
     } else {
         todo = ids;
     }
@@ -750,6 +750,11 @@ std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint6
         add_entry(std::move(e));
     }
     return todo.size();
+}
+
+void SymMem::havoc_all(const z3::expr& guard) {
+    // addr/len/src are dummies: a HavocAll entry covers every address
+    add_entry(Entry{Entry::HavocAll, guard, bv(0, ptr_w()), bv(0, ptr_w()), bv(0, ptr_w()), bv(0, cw_)});
 }
 
 std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init) {
@@ -764,7 +769,7 @@ std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::e
 
 void SymMem::add_entry(Entry e) {
     if (enc_ == MemEncoding::Bv) {
-        if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj) {
+        if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj || e.kind == Entry::HavocAll) {
             e.havoc = static_cast<int>(havoc_reads_.size());
             havoc_reads_.emplace_back();
         }
@@ -778,6 +783,16 @@ void SymMem::add_entry(Entry e) {
         return;
     }
     auto x = c_.bv_const(("mem!x" + std::to_string(fresh_++)).c_str(), ptr_w());
+    if (live.kind == Entry::HavocAll) {
+        // every byte: arbitrary value and tag, initialised before or arbitrary
+        // (the object metadata is kept apart from the byte array, in objs_)
+        auto h = c_.constant(("mem!havocall" + std::to_string(fresh_++)).c_str(),
+                             c_.array_sort(c_.bv_sort(ptr_w()), c_.bv_sort(cw_)));
+        z3::expr old = z3::select(A, x);
+        z3::expr val = z3::select(h, x) | (old & bv(uint64_t{1} << kCellInit, cw_));
+        A = z3::lambda(x, z3::ite(live.guard, val, old));
+        return;
+    }
     if (live.kind == Entry::HavocObj) {
         auto h = c_.constant(("mem!havocobj" + std::to_string(fresh_++)).c_str(),
                              c_.array_sort(c_.bv_sort(ptr_w()), c_.bv_sort(cw_)));
@@ -875,6 +890,12 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto && i < log_.size(); ++i) {
         auto& e = log_.at(i);
+        if (e.kind == Entry::HavocAll) {  // every address (no object or provenance test)
+            // arbitrary value and tag; the initialised flag is old | arbitrary, as in HavocObj with keep_init
+            z3::expr cell = havoc_read(e, addr, cw_, "mem!ha") | (v & bv(uint64_t{1} << kCellInit, cw_));
+            v = z3::ite(e.guard, cell, v);
+            continue;
+        }
         if (ko) {
             auto kb = known(e.addr);
             if (kb && *kb != *ko) continue;
@@ -933,6 +954,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
                 v = z3::ite(e.guard && objid(addr) == objid(e.addr), cell, v);
                 break;
             }
+            case Entry::HavocAll: break;  // handled above
         }
     }
     memo_.emplace(key, v);
@@ -973,6 +995,7 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
     z3::expr v = bv(0, 8 * n);
     for (std::size_t i = 0; i < upto; ++i) {
         auto& e = log_[i];
+        if (e.kind == Entry::HavocAll) return std::nullopt;  // byte-level reads handle it
         if (auto kb = known(e.addr); kb && *kb != ko) continue;
         const Vs* ev = vs_of(e.addr);
         if (e.kind == Entry::Byte) {

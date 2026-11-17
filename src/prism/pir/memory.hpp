@@ -105,7 +105,15 @@ public:
     // arbitrary" (old | fresh): a byte that may be uninitialised before stays
     // maybe-uninitialised, never assumed initialised. Liveness, size and
     // kind are unchanged. Returns the number of objects havocked.
-    std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init);
+    // consts: with all, const objects are havocked too (Stmt::MemHavoc).
+    std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init,
+                              bool consts = false);
+    // Stmt::MemHavoc (inline asm with a "memory" clobber): every byte of every
+    // object (const and dead ones included) gets an arbitrary value and tag, and
+    // its initialised flag becomes "initialised before or arbitrary" (an asm
+    // stores initialised bytes; it does not make one uninitialised). Object
+    // sizes, liveness, kinds and alignment are unchanged.
+    void havoc_all(const z3::expr& guard);
     // The same for the objects the given pointer values point to (symbolic
     // object ids; loop-cut footprints). Returns the number of pointers.
     std::size_t havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init);
@@ -155,7 +163,7 @@ private:
         z3::expr alive;  // bool
     };
     struct Entry {
-        enum Kind { Byte, Set, Copy, Havoc, HavocObj } kind;
+        enum Kind { Byte, Set, Copy, Havoc, HavocObj, HavocAll } kind;
         z3::expr guard, addr, len, src, cell;
         int havoc = -1;
         bool keep = false;  // HavocObj: initialised flag = old | fresh

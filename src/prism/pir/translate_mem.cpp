@@ -1186,6 +1186,16 @@ void MemTr::stack_restore(int b, Arg token) {
     t_.push(b, s);
 }
 
+// Every object's contents become arbitrary (an asm with a "memory" clobber: it may
+// write any memory; translate_kernel.inc). Stmt::MemHavoc: no violation, and the
+// object metadata (sizes, liveness, kinds) is unchanged.
+void MemTr::havoc_all(int b) {
+    mark_memory();
+    Stmt s;
+    s.kind = Stmt::MemHavoc;
+    t_.push(b, s);
+}
+
 // The object `ptr` points into, from `ptr` to its end, is written with arbitrary
 // bytes (an unspecified callee or an asm with a memory effect: kernel mode,
 // translate_kernel.inc). Never a violation: a pointer to no object, a freed

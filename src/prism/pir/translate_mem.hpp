@@ -143,6 +143,9 @@ public:
     // Kernel mode: bytes from ptr to the end of its object become arbitrary (no violation:
     // not for null, freed, read-only or FILE objects).
     void havoc_object_tail(int b, Arg ptr, int line);
+    // Kernel mode: every object's contents become arbitrary (Stmt::MemHavoc; inline
+    // asm with a "memory" clobber). Sizes, liveness and kinds are unchanged.
+    void havoc_all(int b);
     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
     // Integer comparison of two ptrtoint values (std::less<T*>): exact within
     // one object (offset order) and for ==/!=; the order of addresses of two
