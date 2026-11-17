@@ -1134,8 +1134,8 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
              "returns a pointer to its own stack object (dangling after the return)", line);
 }
 
-void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, bool check_init, const std::string& what,
-                              int line) {
+void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, unsigned align, bool check_init,
+                              const std::string& what, int line) {
     mark_memory();
     const char* C = "HARNESS-OBLIGATION";
     Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
@@ -1152,7 +1152,8 @@ void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off,
              line);
     t_.check(b, p2(b, Op::Ult, size, c64(bytes)), "ob-size", C,
              what + " points to an object smaller than " + std::to_string(bytes) + " bytes", line);
-    t_.check(b, p2(b, Op::Ult, oal, c64(16)), "ob-align", C, what + " points to an object not 16-byte aligned", line);
+    t_.check(b, p2(b, Op::Ult, oal, c64(align)), "ob-align", C,
+             what + " points to an object aligned to less than " + std::to_string(align) + " bytes", line);
     t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))), "ob-const", C,
              what + " points to a read-only object", line);
     if (!check_init) return;

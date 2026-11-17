@@ -17,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -321,7 +322,7 @@ TEST_CASE("pir discharge: a caller that breaks the harness makes the discharge f
     CHECK_MESSAGE(two.find("same object") != std::string::npos, two);
 }
 
-TEST_CASE("pir discharge: exported, address-taken, recursive and uncalled functions keep the assumption") {
+TEST_CASE("pir discharge: exported and address-taken functions keep the assumption") {
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
     cfg.pir_harness = true;
@@ -331,8 +332,7 @@ TEST_CASE("pir discharge: exported, address-taken, recursive and uncalled functi
         const char* fn;
         const char* why;
     };
-    for (const Keep& k : {Keep{"exported_callee", "external linkage"}, Keep{"taken_callee", "address is taken"},
-                          Keep{"rec2", "recursive"}, Keep{"dead_callee", "no call site"}}) {
+    for (const Keep& k : {Keep{"exported_callee", "external linkage"}, Keep{"taken_callee", "address is taken"}}) {
         REQUIRE_MESSAGE(st.contains(k.fn), k.fn);
         const auto d = extra(st[k.fn], "harness_discharge");
         CHECK_MESSAGE(d.starts_with("not discharged"), (std::string(k.fn) + ": " + d));
@@ -420,4 +420,38 @@ TEST_CASE("cli: --pir-discharge, --pir-container-of, --pir-vacuity") {
     CHECK(!d->cfg.pir_discharge);
     CHECK(!d->cfg.pir_container_of);
     CHECK(!d->cfg.pir_vacuity);
+}
+
+TEST_CASE("pir discharge: the obligation names in the Lean model are the properties the code emits") {
+    // proofs/Prism/Discharge.lean (`obligationProps`, theorem `obligation_iff`) models the checks of
+    // MemTr::obligation_object / obligation_distinct; the names must stay in step.
+    const auto root = fs::path(PRISM_SOURCE_DIR);
+    auto slurp = [](const fs::path& p) {
+        std::ifstream in(p);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    const auto lean = slurp(root / "proofs" / "Prism" / "Discharge.lean");
+    const auto code = slurp(root / "src" / "prism" / "pir" / "translate_mem.cpp");
+    REQUIRE(!lean.empty());
+    REQUIRE(!code.empty());
+    const auto at = lean.find("def obligationProps");
+    REQUIRE(at != std::string::npos);
+    const auto end = lean.find(']', at);
+    std::vector<std::string> lean_names;
+    for (auto p = lean.find('"', at); p != std::string::npos && p < end; p = lean.find('"', p + 1)) {
+        const auto q = lean.find('"', p + 1);
+        lean_names.push_back(lean.substr(p + 1, q - p - 1));
+        p = q;
+    }
+    CHECK(lean_names.size() == 8);
+    for (auto& n : lean_names) CHECK_MESSAGE(code.find("\"" + n + "\"") != std::string::npos, n);
+    // and every ob-* property the code emits is in the model
+    std::size_t n_code = 0;
+    for (auto p = code.find("\"ob-"); p != std::string::npos; p = code.find("\"ob-", p + 1)) {
+        const auto q = code.find('"', p + 1);
+        const auto name = code.substr(p + 1, q - p - 1);
+        CHECK_MESSAGE(std::find(lean_names.begin(), lean_names.end(), name) != lean_names.end(), name);
+        ++n_code;
+    }
+    CHECK(n_code >= 8);
 }

@@ -1551,12 +1551,12 @@ struct Tr final : pirmem::TrApi {
 
     // --pir-discharge: the callee's automatic harness as properties of this call site (docs/HARNESS_GENERATOR.md).
     // The pointer arguments must be what the harness assumed: a live, writable, 16-aligned object of the stated
-    // size, initialised, the pointer at the stated offset into it, the nested pointer fields likewise, and every
+    // size and alignment, initialised, the pointer at the stated offset into it, the nested pointer fields likewise, and every
     // object of the call distinct from every other.
     void oblige_node(Arg p, const ObligationNode& nd, const std::string& callee, std::vector<Arg>& objs, int cur,
                      int line) {
         const std::string what = "call of @" + callee + ": argument " + nd.name;
-        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.check_init, what, line);
+        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.align, nd.check_init, what, line);
         objs.push_back(p);
         for (const auto& [off, child] : nd.nested) {
             int slot = newvar(tmpname("obslot"), ptr_w());

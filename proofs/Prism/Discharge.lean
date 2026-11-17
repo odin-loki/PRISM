@@ -20,8 +20,8 @@ and both are proved here:
 
 2. `obligation_iff`: the check the C++ emits at a call site (`MemTr::obligation_object`, the
    `ob-*` properties of class HARNESS-OBLIGATION) holds exactly when the
-   harness's object exists in the caller's memory: a live, writable, 16-aligned object
-   of at least the harnessed size, the pointer at the harnessed offset into it, its
+   harness's object exists in the caller's memory: a live, writable object aligned as
+   the callee's accesses need (the proof used the alignment only in its access checks), of at least the harnessed size, the pointer at the harnessed offset into it, its
    bytes initialised (up to the cap). `obligation_props` is the list of property names;
    tests/cpp/test_pir_harness.cpp compares it with the names the code emits.
 
@@ -103,10 +103,10 @@ structure Obj where
 abbrev Mem := Nat → Option Obj
 
 /-- The harness precondition of one pointer argument: it points `memberOff` bytes into a live,
-writable, 16-byte aligned object of at least `bytes` bytes, whose first `bytes` bytes are
+writable object aligned to `align` of at least `bytes` bytes, whose first `bytes` bytes are
 initialised (when `checkInit`; objects over the cap keep that as a stated assumption). -/
-def Pre (m : Mem) (p : Nat × Nat) (bytes memberOff : Nat) (checkInit : Bool) : Prop :=
-  ∃ o, m p.1 = some o ∧ o.live = true ∧ p.2 = memberOff ∧ bytes ≤ o.size ∧ 16 ≤ o.align ∧
+def Pre (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) (checkInit : Bool) : Prop :=
+  ∃ o, m p.1 = some o ∧ o.live = true ∧ p.2 = memberOff ∧ bytes ≤ o.size ∧ align ≤ o.align ∧
     o.readOnly = false ∧ (checkInit = true → ∀ i, i < bytes → o.init i = true)
 
 /-- The names of the properties the code checks (`MemTr::obligation_object`,
@@ -116,22 +116,22 @@ def obligationProps : List String :=
 
 /-- The properties the code reports violated for one pointer argument, in the order it
 checks them. -/
-def violations (m : Mem) (p : Nat × Nat) (bytes memberOff : Nat) (checkInit : Bool) : List String :=
+def violations (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) (checkInit : Bool) : List String :=
   match m p.1 with
   | none => ["ob-null"]
   | some o =>
     (if o.live = false then ["ob-dead"] else []) ++
     (if p.2 ≠ memberOff then ["ob-offset"] else []) ++
     (if o.size < bytes then ["ob-size"] else []) ++
-    (if o.align < 16 then ["ob-align"] else []) ++
+    (if o.align < align then ["ob-align"] else []) ++
     (if o.readOnly = true then ["ob-const"] else []) ++
     (if checkInit = true ∧ ∃ i, i < bytes ∧ o.init i = false then ["ob-init"] else [])
 
 /-- The check is the precondition: no property is reported violated exactly when the harness's
 object exists. Together with `assume_guarantee` this is what lets the call sites replace the
 harness assumption. -/
-theorem obligation_iff (m : Mem) (p : Nat × Nat) (bytes memberOff : Nat) (checkInit : Bool) :
-    violations m p bytes memberOff checkInit = [] ↔ Pre m p bytes memberOff checkInit := by
+theorem obligation_iff (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) (checkInit : Bool) :
+    violations m p bytes memberOff align checkInit = [] ↔ Pre m p bytes memberOff align checkInit := by
   classical
   have key : ∀ (c : Prop) [Decidable c] (s : String), (if c then [s] else ([] : List String)) = [] ↔ ¬ c := by
     intro c _ s

@@ -420,6 +420,7 @@ struct ObligationNode {
     std::string name;
     uint64_t bytes = 0;
     uint64_t member_off = 0;  // container_of: the pointer points this far into the object
+    unsigned align = 16;      // the object's alignment the callee's accesses need (the harness gives 16)
     bool check_init = true;   // the bytes are checked initialised (objects over the cap keep that as an assumption)
     std::vector<std::pair<uint64_t, std::shared_ptr<ObligationNode>>> nested;
 };

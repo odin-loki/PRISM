@@ -2587,14 +2587,14 @@ bool has_auto_harness(const Function& fn) {
     return false;
 }
 
-// The function with every check removed and one check "the end is reachable" at each return or stop: FAILED (a
+// The function with every check removed and one check "a return is reachable" at each return: FAILED (a
 // witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
-// reaches the end; PROVED means none does, so every proof of the function was vacuous.
+// returns; PROVED means none does, so every proof of the function was vacuous.
 Function vacuity_variant(const Function& fn) {
     Function v = fn;
     for (auto& b : v.blocks) {
         std::erase_if(b.stmts, [](const Stmt& s) { return s.kind == Stmt::Check; });
-        if (b.term.kind == Term::Ret || b.term.kind == Term::Stop) {
+        if (b.term.kind == Term::Ret) {  // Stop is also where an assumption (abort inside assume_abort_if_not) ends a path
             Stmt s;
             s.kind = Stmt::Check;
             s.args = {Arg::c(1, 1)};
@@ -2654,13 +2654,47 @@ std::string ir_symbol_at(const std::string& t, std::size_t at, std::size_t* end)
     return name;
 }
 
-std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n) {
+// Alignment beyond the accessed type's own (an explicit `align N` on a load or store, N above the type's ABI
+// alignment) of any load or store of the function or of a module function it calls, at most the harness's 16.
+// The proof used the object's alignment only in the access checks (MemTr::access_checks), so the call sites must
+// give each object its type's ABI alignment, or this excess if it is larger.
+unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, const ir::Function& g) {
+    unsigned a = 1;
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> work{&g};
+    while (!work.empty()) {
+        const auto* f = work.back();
+        work.pop_back();
+        if (!seen.insert(f).second) continue;
+        for (const auto& b : f->blocks)
+            for (const auto& in : b.insts) {
+                const ir::Type* ty = in.op == "load" ? &in.ty : in.op == "store" && !in.ops.empty() ? &in.ops[0].ty : nullptr;
+                if (ty && in.align) {
+                    try {
+                        if (in.align > lay.align(*ty)) a = std::max(a, in.align);
+                    } catch (const pirmem::Unenc&) {
+                        a = 16;
+                    }
+                }
+                if (!in.callee.empty())
+                    if (const auto* c = mod.find(in.callee); c && !c->is_declaration) work.push_back(c);
+            }
+    }
+    return std::min(a, 16u);
+}
+
+std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, const pirmem::Layout& lay, unsigned excess) {
     auto o = std::make_shared<ObligationNode>();
     o->name = n.name;
     o->bytes = n.bytes;
     o->member_off = n.member_off;
     o->check_init = n.bytes <= 1024;
-    for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c));
+    try {
+        o->align = std::min(16u, std::max(lay.align(n.type), excess));
+    } catch (const pirmem::Unenc&) {
+        o->align = 16;
+    }
+    for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c, lay, excess));
     return o;
 }
 
@@ -2769,7 +2803,7 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
             std::string why;
             auto plan = pirmem::plan_pointer_harness(mod, lay, *r.irf, p, ho, &why);
             if (!plan) { no("no harness plan for " + p.name + ": " + why); ok = false; break; }
-            ob[i] = obligation_of(*plan->root);
+            ob[i] = obligation_of(*plan->root, lay, excess_access_align(mod, lay, *r.irf));
         }
         if (!ok) continue;
         obligations[g] = ob;
@@ -2835,12 +2869,12 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
         // the harness lines go; the rest of the assumptions (kernel models, global state, ...) stay
         std::vector<std::string> kept;
         for (const auto& a : r.fn->assumptions)
-            if (a.find("(auto harness)") == std::string::npos &&
+            if (a.find("(auto harness)") == std::string::npos && !a.starts_with("auto harness for ") &&
                 a.find("pointer parameters point to distinct objects") == std::string::npos)
                 kept.push_back(a);
         kept.push_back("the automatic harness is discharged: every call site (" + std::to_string(di.sites) + " in " + callers_s +
                        "; the function is static, its address is not taken, it is not recursive) is checked to pass what the harness "
-                       "assumed (a live, writable, 16-byte aligned object of the harnessed size with initialised bytes at the stated "
+                       "assumed (a live, writable object of the harnessed size, aligned as its accesses need, with initialised bytes at the stated "
                        "offset, nested pointer fields likewise, distinct objects); this rests on the assumptions of " +
                        (roots_s.empty() ? std::string("no other function") : "the entry functions " + roots_s) + " (see their results)");
         std::vector<std::string> res;

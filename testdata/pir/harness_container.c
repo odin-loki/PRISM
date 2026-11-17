@@ -10,7 +10,7 @@ struct outer { long pad; int tag; int regs[4]; struct inner in; };
 
 int outer_tag(struct inner *i) {
     struct outer *o = container_of(i, struct outer, in);
-    return o->tag + i->a;
+    return o->tag ^ i->a;
 }
 
 /* an unchecked index of the container's array: a violation only under the harness (NEEDS-HARNESS) */
