@@ -627,7 +627,7 @@ checks inside a model report the call site's line and name the model
 Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
 
 **Kernel API specs.** `--kernel-api linux|freebsd` additionally links the specs in
-`src/prism/pir/models/kernel/` (allocation, locking, user access, MMIO, delays, logging, BUG/WARN; 166 functions), each
+`src/prism/pir/models/kernel/` (allocation, locking, user access, MMIO, delays, logging, BUG/WARN; 183 functions), each
 a named assumption in the verdict; `--assume-unknown-calls` is the opt-in for calls without a spec (result and pointed-to
 objects havocked, listed as an assumption). Both are off by default. Table, sources, assumptions and the
 needs-review list: [KERNEL_MODELS.md](KERNEL_MODELS.md).

@@ -67,9 +67,10 @@ headers; the arity of a call must match the spec's (a mismatch, for example `__k
 
 ## W1 additions (kernel callees from the census top list, status UNVALIDATED)
 
-Drafted with Morph (GLM draft, DeepSeek review), then reviewed by hand against the review notes. Only the
-functions whose semantics were confirmed as extern (non-inline) kernel functions are specified; the rest are
-listed under "needs review". Every one is UNVALIDATED: no kernel-side check of the contract yet.
+Drafted with Morph (GLM draft, DeepSeek review), then reviewed by hand against the review notes. A function is
+specified only where its contract is certain from the real headers (static inline accessors included, with the
+header's body as the reference); the rest are listed under "needs review". Each name appears in exactly one of
+the tables or the "needs review" lists. Every one is UNVALIDATED: no kernel-side check of the contract yet.
 
 | spec | source note | assumption name | status |
 |---|---|---|---|
@@ -104,10 +105,10 @@ Files: `linux_w1_sync.cpp`, `linux_w1_net.cpp`, `freebsd_w1_more.cpp`; tests in 
 Needs review, second batch (checked against the headers, still not specified): FreeBSD `sched_prio`, `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu` (scheduler state, no checkable memory contract), `vm_map_min`, `vm_map_max`, `vm_map_modflags` (struct layout), `stats_v1_voi_update`. Linux accessors that return a stored pointer or depend on struct layout or config: `netdev_priv`, `sock_net`, `dev_net`, `pci_get_drvdata`, `platform_get_drvdata`, `platform_set_drvdata`, `i2c_get_clientdata`, `usb_get_intfdata`, `netdev_name`, `netif_running`, `netif_stop_queue`, `skb_reserve`, `skb_put_data`, `skb_headlen`, `skb_end_pointer`, `kfree_skb`, `dev_kfree_skb_any`, `nla_put_u8`, `nla_put_u32`, `nla_nest_end`, `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single_attrs`, `dma_unmap_single_attrs`, `dma_set_mask_and_coherent` (depends on the arch DMA ops), `sg_next`, `pci_name`, `hid_map_usage_clear`, `u64_stats_update_begin`, `u64_stats_update_end`, `i2c_adapter_id`, `qdisc_dev`, `params_rate`, `vb2_get_drv_priv`, `v4l2_get_subdevdata`, `phy_get_drvdata`, `spi_controller_get_devdata`, `init_wait_entry`, `brelse`; macros `EXT4_SB`, `IEEE80211_SKB_CB`. (The older list below stays valid for the first batch.)
 
 Needs review (not specified, with the reason):
-- Linux, static inline in the headers (a spec would be used only if a unit does not define them): `init_wait_entry`, `i2c_get_clientdata`, `netif_running`, `ether_addr_copy` (u16 alignment), `nla_put_u32`, `nla_total_size`, `nla_data`, `nla_get_u32`, `brelse`, `dma_map_single_attrs`, `dma_mapping_error`, `dma_unmap_single_attrs`, `skb_headlen`, `IEEE80211_SKB_CB` (macro), `u64_stats_update_begin/end` (config-dependent), `spi_controller_get_devdata` (returns the stored pointer; not representable yet), `usb_get_intfdata`, `skb_put_data`, `dma_set_mask_and_coherent`.
+- Linux, static inline in the headers (a spec would be used only if a unit does not define them): `init_wait_entry`, `i2c_get_clientdata`, `netif_running`, `nla_put_u32`, `brelse`, `dma_map_single_attrs`, `dma_unmap_single_attrs`, `skb_headlen`, `IEEE80211_SKB_CB` (macro), `u64_stats_update_begin/end` (config-dependent), `spi_controller_get_devdata` (returns the stored pointer; not representable yet), `usb_get_intfdata`, `skb_put_data`, `dma_set_mask_and_coherent`.
 - Linux, no prototype or semantics not certain: `EXT4_SB` (macro), `sg_next`, `pci_name`, `vb2_get_drv_priv`, `dma_alloc_coherent`, `dev_net`, `qdisc_dev`, `params_rate`, `dev_kfree_skb_any` (sk_buff comes from its own cache, not the kmalloc family), `i2c_adapter_id`, `phy_get_drvdata`.
-- Linux, drafts that failed on Morph timeouts (no output, not reviewed, not specified): group 1 (`netdev_priv`, `sock_net`, `pci_get_drvdata`, `__wake_up`, `kfree_skb`, `platform_set_drvdata`, `platform_get_drvdata`, `dma_free_coherent`, `complete`, `skb_end_pointer`) and group 5 (`nla_nest_end`, `v4l2_get_subdevdata`, `wait_for_completion`, `phy_get_drvdata`, `hid_map_usage_clear`, `netif_stop_queue`, `netdev_name`, `ether_addr_equal`, `i2c_adapter_id`, `skb_reserve`). Both are still open work.
-- FreeBSD: `vm_map_min`, `vm_map_max` (macros on `(map)->min_addr` in `sys/vm/vm_map.h`, not functions), `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu`, `casueword32`, `fubyte` (the `-1` return collides with a valid byte), `fillw`, `vm_map_modflags`, `__sx_xlock`, `__sx_xunlock`, `calculate_crc32c` (truncated prototype).
+- Linux, drafts that failed on Morph timeouts (no output, not reviewed, not specified): group 1 (`netdev_priv`, `sock_net`, `pci_get_drvdata`, `kfree_skb`, `platform_set_drvdata`, `platform_get_drvdata`, `dma_free_coherent`, `skb_end_pointer`) and group 5 (`nla_nest_end`, `v4l2_get_subdevdata`, `phy_get_drvdata`, `hid_map_usage_clear`, `netif_stop_queue`, `netdev_name`, `i2c_adapter_id`, `skb_reserve`). Both are still open work.
+- FreeBSD: `vm_map_min`, `vm_map_max` (macros on `(map)->min_addr` in `sys/vm/vm_map.h`, not functions), `sched_bind`, `sched_unbind`, `sched_add`, `sched_lend_user_prio`, `sched_prio`, `sched_relinquish`, `sched_is_bound`, `sched_pctcpu`, `vm_map_modflags`.
 
 ## Inline assembly, asm goto, atomics, barriers (R3)
 
