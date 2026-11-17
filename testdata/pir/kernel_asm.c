@@ -22,12 +22,44 @@ int asm_out_bad(void) {
 int asm_clobber_ok(void) {
     int x = 5, y = 6;
     __asm__ volatile("" : : "r"(&x) : "memory");
-    return 100 / (y - 5); /* y is not an operand: assumed unchanged (named in the assumption) */
+    return 100 / (y - 5); /* y is a local whose address never escapes: the asm cannot write it */
 }
 int asm_clobber_bad(void) {
     int x = 5;
     __asm__ volatile("" : : "r"(&x) : "memory");
     return 100 / (x - 5); /* x may have changed: can be 0 */
+}
+/* a memory clobber havocs every object's contents, not only the objects its pointer operands point into */
+int asm_memclobber_ok(void) { /* true variant: the property does not depend on the contents of t */
+    int t[4] = {1, 2, 3, 4};
+    __asm__ volatile("" : : : "memory");
+    return 100 / (t[3] - t[3] + 1); /* both reads see the same unknown value: the difference is 0 */
+}
+int *g_asm_ptr; /* escape route: the asm may read it and write through it */
+int asm_memclobber_bad(void) { /* false variant: x escapes to a global, is not an operand, and the asm may write it */
+    int x = 1;
+    g_asm_ptr = &x;
+    __asm__ volatile("" : : : "memory");
+    return 100 / x; /* x may be 0 after the asm */
+}
+int g_asm_mem = 1;
+int asm_memclobber_global_bad(void) { /* a global, not an operand: the memory clobber may change it */
+    __asm__ volatile("" : : : "memory");
+    return 100 / g_asm_mem;
+}
+int asm_nomem_escaped_ok(void) { /* no memory clobber: x escapes to a global but the asm writes no memory */
+    int x = 1;
+    g_asm_ptr = &x;
+    __asm__ volatile("nop" : : : "cc");
+    return 100 / x;
+}
+int asm_goto_memclobber_bad(void) { /* asm goto with a memory clobber: x may be 0 on the fallthrough path */
+    int x = 1;
+    g_asm_ptr = &x;
+    __asm__ goto("nop" : : : "memory" : yes);
+    return 100 / x;
+yes:
+    return 0;
 }
 int asm_nomem_ok(void) { /* no memory clobber, no pointer operand: x keeps its value */
     int x = 5;
@@ -131,6 +163,32 @@ int asm_goto_bad(void) {
     goto out;
 yes:
     r = 0; /* the jump is possible */
+out:
+    return 100 / r;
+}
+int asm_goto2_ok(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes, no);
+    r = 1;
+    goto out;
+yes:
+    r = 2;
+    goto out;
+no:
+    r = 3;
+out:
+    return 100 / r; /* every path leaves r != 0 */
+}
+int asm_goto2_bad(void) {
+    int r;
+    __asm__ goto("nop" : : : : yes, no);
+    r = 1;
+    goto out;
+yes:
+    r = 2;
+    goto out;
+no:
+    r = 0; /* the second label is possible */
 out:
     return 100 / r;
 }

@@ -272,6 +272,9 @@ struct WriteInst {
     // copies and checked pointer arithmetic (each stays in the object of the
     // next; loop-cut footprints, houdini.inc)
     std::vector<int> chain;
+    // a whole-memory write (Stmt::MemHavoc): obj is nullopt and const objects
+    // may change too
+    bool all_mem = false;
 };
 
 // Write footprint of the k-induction loop (docs/PIR.md "k-induction with
@@ -282,6 +285,7 @@ struct WriteInst {
 // "initialised before or arbitrary"; otherwise it is arbitrary.
 struct Footprint {
     bool all = false;
+    bool all_mem = false;  // all, and const objects too (a loop with Stmt::MemHavoc)
     std::set<uint64_t> objs;
     bool keep_init = true;
     // loop-cut mode only: the objects these pointer variables (defined
@@ -410,6 +414,10 @@ struct Encoding {
                 M().set(r, p, arg(1), arg(2));
                 break;
             }
+            case Stmt::MemHavoc:
+                writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, std::nullopt, false, {}, true});
+                M().havoc_all(r);
+                break;
             case Stmt::StackSave: m.insert_or_assign(s.dst, M().stack_save()); break;
             case Stmt::StackRestore: M().stack_restore(r, arg(0)); break;
             default: break;
@@ -948,7 +956,7 @@ struct Encoding {
             // the memory the loop may have written since the prefix: arbitrary
             std::vector<uint64_t> ids(step_fp.objs.begin(), step_fp.objs.end());
             step_havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, step_fp.all,
-                                               step_fp.keep_init);
+                                               step_fp.keep_init, step_fp.all_mem);
         }
         std::vector<std::pair<int, z3::expr>> phi_vals;
         for (auto& p : bl.phis) {
@@ -994,7 +1002,8 @@ struct Encoding {
             const auto& fpL = loop_fp.at(static_cast<std::size_t>(cut_L));
             if (mem && !fpL.empty()) {
                 std::vector<uint64_t> ids(fpL.objs.begin(), fpL.objs.end());
-                CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init);
+                CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init,
+                                                 fpL.all_mem);
                 if (!fpL.all) {
                     std::vector<z3::expr> ptrs;
                     for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, ptr_w()), id));
@@ -1123,6 +1132,7 @@ bool footprint_covers(const Footprint& fp, const std::vector<WriteInst>& writes,
     for (auto& w : writes) {
         if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (fp.keep_init && !w.inits) return false;
+        if (w.all_mem && !fp.all_mem) return false;
         if (fp.all) continue;
         if (!w.obj || !fp.objs.count(*w.obj)) return false;
     }
@@ -1135,6 +1145,7 @@ Footprint footprint_of(const std::vector<WriteInst>& writes, const std::vector<c
     for (auto& w : writes) {
         if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (!w.inits) fp.keep_init = false;
+        if (w.all_mem) fp.all_mem = true;
         if (w.obj) fp.objs.insert(*w.obj);
         else fp.all = true;
     }

@@ -227,8 +227,7 @@ fast-math flags, fused multiply-add on half, integers wider than 64 bits,
 external calls without a library model (`UNENCODED: call @f`), `switch` if
 lower-switch did not run, irreducible control flow (e.g. a `longjmp` from
 code the `setjmp` does not dominate), vectors and first-class aggregates
-other than the `{ ptr, i32 }` exception pair, `ptrtoint` other than pointer
-differences, `inttoptr` other than of 0, volatile/atomic loads and stores,
+other than the `{ ptr, i32 }` exception pair, volatile/atomic loads and stores,
 `thread_local` globals, extern arrays of unknown size, dynamic exception
 specifications (`__cxa_call_unexpected`, `filter` clauses), indirect calls
 with more than 16 candidate targets, and inline assembly without a
@@ -279,7 +278,9 @@ zero, or initialised with arbitrary bytes), `free` (end of lifetime),
 `load` (value + "some byte uninitialised" + "effective-type mismatch"),
 `store`, `memcpy` (memmove semantics), `memset`, `stacksave`,
 `stackrestore`, `revive` (`llvm.lifetime.start`: a stack object is live
-again); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
+again), `havocmem` (every object's bytes become arbitrary, for an asm with a
+`memory` clobber: values and tags arbitrary, an initialised byte stays
+initialised; sizes, liveness and kinds unchanged); queries `obj.size`, `obj.live`, `obj.kind`, `obj.align`
 usable in any expression. The translator (`translate_mem.cpp`) turns every
 property into ordinary `check`s over these (Law 8):
 
@@ -1174,11 +1175,38 @@ PROVED. Asm with memory operands, several outputs or non-integer outputs
 stays `UNENCODED` even with a contract. `testdata/pir/asm_contract.c`.
 
 With `--kernel-api linux|freebsd` an asm without a contract is modelled conservatively instead: its outputs are
-arbitrary, and the objects its pointer operands point into are havocked when it writes through them or has a `memory`
-clobber (memory no operand points into is assumed unchanged); `asm goto` with one label jumps nondeterministically to
-the fallthrough or the label; atomics (`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
+arbitrary, the objects its pointer operands point into are havocked when it writes through them, and a `memory`
+clobber havocs **every object** (`havocmem`: all bytes arbitrary, the initialised flags "initialised before or
+arbitrary", object sizes, liveness and kinds unchanged; const and dead objects included). Without a memory clobber
+memory that no indirect output writes is assumed unchanged. `asm goto` (callbr) goes through the same asm model; `asm goto` with several labels (`callbr`) jumps
+nondeterministically to the fallthrough or any one of the labels, as a chain of nondeterministic branches; atomics
+(`atomicrmw`, `cmpxchg`, `load/store atomic`) and `fence` are plain sequential
 instructions. Each use is a named assumption (`asm-havoc: "<constraints>"`, `asm-goto`, `atomics-sequential`,
 `volatile-access`) and a proof is PROVED-ASSUMING. See [KERNEL_MODELS.md](KERNEL_MODELS.md).
+`testdata/pir/kernel_asm.c` (`asm_goto_ok`, `asm_goto2_ok`/`asm_goto2_bad`; memory clobber:
+`asm_memclobber_ok` (a memory-independent property, PROVED-ASSUMING), `asm_memclobber_bad` and
+`asm_memclobber_global_bad` (a non-operand local and a global may change: FAILED), `asm_goto_memclobber_bad`).
+
+### Pointer/integer casts and bitfields
+
+A PIR pointer is a packed `(object, offset)` value of width `ptr_w()`, and the packed value is what an integer holds.
+
+- `ptrtoint` yields the packed value of the pointer, as a plain copy. Pointer differences keep their same-object check
+  (`PTR-COMPARE`). Any other use of the integer (comparison with a constant, arithmetic, storage) is an ordinary integer
+  use. The model treats the packing, not the machine address, as the integer value.
+- `inttoptr` of a value that came directly from `ptrtoint` is an exact round trip: the same pointer, dereferenceable as
+  the original.
+- `inttoptr` of the constant 0 is the null pointer.
+- `inttoptr` of a non-zero constant `c` (for example the kernel's `ERR_PTR(-12)`) gives the packed value `c`: object 0,
+  which is no object, so a dereference fails. `ptrtoint` of it returns `c`, so the `IS_ERR` / `PTR_ERR` idiom works.
+- `inttoptr` of any other integer gives an unconstrained pointer that is not assumed to be a valid object. A dereference
+  of it is an invalid-pointer failure (`FAILED`), never silently accepted. Each such cast is the named assumption
+  `inttoptr-opaque`, and a proof that uses it is PROVED-ASSUMING. `testdata/pir/kernel_ptrint.c`.
+
+Bitfields are loads and stores of the containing integer with shifts and masks; they encode as ordinary integer
+operations. `testdata/pir/bitfield.c` covers unsigned and signed (sign-extending) fields and division by a field.
+Known limitation: a bitfield store into a struct that was never initialised reads the other fields' uninitialised bytes
+in the read-modify-write, and that is reported as `UNINIT-READ` (conservative; the test initialises the struct).
 
 ## k-induction with memory (roadmap 2.6)
 

@@ -724,10 +724,8 @@ struct Tr final : pirmem::TrApi {
                     // fallthrough block or to the one indirect label (docs/KERNEL_MODELS.md)
                     if (opt.kernel_api.empty())
                         throw Unenc{"UNENCODED: asm goto (--kernel-api models it as a nondeterministic jump)"};
-                    if (!in.parsed || in.targets.size() != 2)
-                        throw Unenc{"UNENCODED: asm goto with " +
-                                    std::to_string(in.targets.empty() ? 0 : in.targets.size() - 1) +
-                                    " indirect labels (exactly one is modelled)"};
+                    if (!in.parsed || in.targets.empty())
+                        throw Unenc{"UNENCODED: asm goto without a parsed label list"};
                     auto tgt = [&](const std::string& n) {
                         auto it = head.find(fr.prefix + n);
                         if (it == head.end()) throw Unenc{"UNENCODED: asm goto to unknown block " + n};
@@ -738,13 +736,34 @@ struct Tr final : pirmem::TrApi {
                     call.targets.clear();
                     bool nr = false;
                     inst(fr, call, cur, l, nr);
+                    const std::size_t nind = in.targets.size() - 1;  // indirect labels
                     Term t;
                     t.kind = Term::Br;
                     t.cond = havoc(cur, 1, false, false);
-                    t.t = tgt(in.targets[0]);
-                    t.f = tgt(in.targets[1]);
+                    if (nind == 1) {
+                        t.t = tgt(in.targets[0]);
+                        t.f = tgt(in.targets[1]);
+                    } else {
+                        // chain: cur picks label 1 or goes on; block k picks label k+1 or goes on; the last picks
+                        // the fallthrough. Every label is reachable; the order is nondeterministic, not a guess.
+                        std::vector<int> chain{cur};
+                        for (std::size_t k = 1; k < nind; ++k)
+                            chain.push_back(newblock(fr.prefix + "asmgoto." + std::to_string(line) + "." +
+                                                     std::to_string(k)));
+                        for (std::size_t k = 0; k < nind; ++k) {
+                            const int b = chain[k];
+                            Term tk;
+                            tk.kind = Term::Br;
+                            tk.cond = (b == cur) ? t.cond : havoc(b, 1, false, false);
+                            tk.t = tgt(in.targets[k + 1]);
+                            tk.f = (k + 1 < nind) ? chain[k + 1] : tgt(in.targets[0]);
+                            out.blocks[static_cast<std::size_t>(b)].term = tk;
+                        }
+                        t = out.blocks[static_cast<std::size_t>(cur)].term;
+                    }
                     note_assumption("asm-goto: \"" + in.asm_constraints + "\" (line " + std::to_string(line) +
-                                    "): the asm continues at the next statement or jumps to its label, either one");
+                                    "): the asm continues at the next statement or jumps to one of its " +
+                                    std::to_string(nind) + " label(s), any of them");
                     out.blocks[static_cast<std::size_t>(cur)].term = t;
                     tail[q] = cur;
                     terminated = true;
@@ -1992,33 +2011,36 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "ptrtoint") {
-            // Only pointer differences are modelled: every use must be a sub
-            // of two ptrtoint values (checked to be in the same object).
+            // The pointer value is carried as its packed integer representation, so
+            // ptrtoint is a plain copy; an inttoptr of this value round-trips exactly,
+            // and pointer differences are still checked in the sub path.
             if (in.ty.kind != ir::Type::Int || in.ty.bits != ptr_w())
                 throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-            for (auto& bl : fr.f->blocks)
-                for (auto& u : bl.insts) {
-                    bool uses = false;
-                    for (auto& o : u.ops)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    for (auto& [o, _] : u.incoming)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    if (!uses) continue;
-                    if ((u.op != "sub" && u.op != "icmp") || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) ||
-                        !is_ptrtoint(fr, u.ops[1]))
-                        throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-                }
             Arg p = operand(fr, in.ops[0], cur, line);
             emit_assign(cur, result_var(fr, in), Op::Copy, {p});
             return true;
         }
         if (op == "inttoptr") {
             const auto& o = in.ops[0];
-            if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
+            if (o.ty.kind != ir::Type::Int || o.ty.bits != ptr_w())
+                throw Unenc{"UNENCODED: inttoptr (operand is not pointer width)"};
+            if (is_ptrtoint(fr, o)) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, o, cur, line)});
+                return true;
+            }
+            Arg iv = operand(fr, o, cur, line);
+            if (iv.is_const && iv.bits == 0) {
                 emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), 0)});
                 return true;
             }
-            throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
+            note_assumption("inttoptr-opaque: integer-to-pointer cast of a value that is not a ptrtoint result (line " +
+                            std::to_string(line) + ")");
+            if (iv.is_const) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), iv.bits)});
+                return true;
+            }
+            emit_assign(cur, result_var(fr, in), Op::Copy, {havoc(cur, ptr_w(), false, true)});
+            return true;
         }
         if (op == "bitcast" && in.ty.kind == ir::Type::Ptr && in.ops[0].ty.kind == ir::Type::Ptr) {
             emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, in.ops[0], cur, line)});

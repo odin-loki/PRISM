@@ -153,8 +153,13 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
     check_table("kernel_asm.c", "linux", false,
                 {{"asm_out_ok", PA, "asm-havoc: \"=r,"},
                  {"asm_out_bad", F, ""},
-                 {"asm_clobber_ok", PA, "memory clobber"},
+                 {"asm_clobber_ok", PA, "memory clobber"},  // y never escapes: the asm cannot write it
                  {"asm_clobber_bad", F, ""},
+                 {"asm_memclobber_ok", PA, "memory clobber: every object"},  // true variant: a memory-independent property
+                 {"asm_memclobber_bad", F, ""},  // false variant: x escapes to a global, is no operand, is havocked
+                 {"asm_memclobber_global_bad", F, ""},
+                 {"asm_goto_memclobber_bad", F, ""},
+                 {"asm_nomem_escaped_ok", PA, "asm-havoc"},  // no memory clobber: the escaped x is unchanged
                  {"asm_nomem_ok", PA, "asm-havoc"},
                  {"asm_indirect_out_bad", F, ""},
                  {"asm_ud2_bad", F, ""},
@@ -170,7 +175,32 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
                  {"volatile_ok", PA, "volatile-access"},
                  {"volatile_bad", F, ""},
                  {"asm_goto_ok", PA, "asm-goto"},
-                 {"asm_goto_bad", F, ""}});
+                 {"asm_goto_bad", F, ""},
+                 {"asm_goto2_ok", PA, "asm-goto"},
+                 {"asm_goto2_bad", F, ""}});
+}
+
+TEST_CASE("pir kernel: ptrtoint/inttoptr round-trip is exact; other integer-to-pointer casts are the named assumption inttoptr-opaque") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_ptrint.c", "linux", false,
+                {{"roundtrip_ok", "PROVED", ""},
+                 {"opaque_bad", F, ""},
+                 {"errptr_ok", PA, "inttoptr-opaque"},
+                 {"errptr_deref_ok", PA, "inttoptr-opaque"},
+                 {"errptr_bad", F, ""}});
+}
+
+TEST_CASE("pir kernel: struct bitfield loads and stores encode (unsigned, signed sign-extension, division by a bitfield)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* F = "FAILED";
+    check_table("bitfield.c", "", false,
+                {{"bf_ok", "PROVED", ""},
+                 {"bf_signed_ok", "PROVED", ""},
+                 {"bf_div_bad", F, ""}});
 }
 
 TEST_CASE("pir kernel: a call without a spec is UNENCODED; --assume-unknown-calls is the opt-in and shows in the verdict") {
@@ -204,7 +234,7 @@ TEST_CASE("pir kernel: without --kernel-api asm, atomics and kernel calls stay U
     const char* NH = "NEEDS-HARNESS";
     check_table("kernel_asm.c", "", false,
                 {{"asm_out_ok", NH, ""}, {"asm_clobber_ok", NH, ""}, {"atomic_add_ok", NH, ""},
-                 {"cmpxchg_ok", NH, ""}, {"fence_ok", NH, ""}, {"asm_goto_ok", NH, ""}});
+                 {"cmpxchg_ok", NH, ""}, {"fence_ok", NH, ""}, {"asm_goto_ok", NH, ""}, {"asm_goto2_ok", NH, ""}});
     check_table("kernel_linux.c", "", false,
                 {{"alloc_ok", NH, ""}, {"lock_ok", NH, ""}, {"mmio_ok", NH, ""}, {"container_of_ok", "PROVED", ""}});
 }

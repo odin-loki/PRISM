@@ -298,7 +298,13 @@ struct Stmt {
     //   Revive       args [ptr]            a stack object's lifetime starts again
     //                (llvm.lifetime.start; other objects: no effect; its bytes
     //                are set separately, checks are separate)
-    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive };
+    //   MemHavoc     no args: every object's bytes get arbitrary values and
+    //                tags, and an initialised byte stays initialised (initialised
+    //                before or arbitrary); sizes, liveness, kinds and alignment
+    //                are unchanged (inline asm with a "memory" clobber)
+    enum Kind {
+        Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive, MemHavoc
+    };
     Kind kind = Assign;
     int dst = -1;              // Assign
     Op op = Op::Copy;

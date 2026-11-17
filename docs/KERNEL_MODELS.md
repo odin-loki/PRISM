@@ -69,7 +69,7 @@ headers; the arity of a call must match the spec's (a mismatch, for example `__k
 
 | construct | model | assumption name |
 |---|---|---|
-| `call asm` without a `// prism: asm ensures` contract | each direct output is arbitrary (int, pointer, or a two-field pair); indirect outputs (`=*m`, `+*m`) and, for `~{memory}`, every pointer operand: the bytes of the object the pointer points into, from the pointer to the end of the object, become arbitrary (never a violation: NULL, freed, read-only and FILE objects are skipped); registers and flags are not modelled; `volatile` asm is translated where it stands, once. **A memory clobber really means all memory, and PIR's memory model has no "havoc everything" statement: memory that no pointer operand points into is assumed unchanged, and the assumption says so.** A `// prism: asm ensures` contract (existing) still wins. | `asm-havoc: "<constraint string>" (line N): ...` |
+| `call asm` without a `// prism: asm ensures` contract | each direct output is arbitrary (int, pointer, or a two-field pair); indirect outputs (`=*m`, `+*m`) and, for `~{memory}` (a memory clobber), **every object's contents** become arbitrary (`Stmt::MemHavoc`, the PIR `havocmem` statement: values and tags arbitrary, an initialised byte stays initialised, object sizes, liveness and kinds unchanged; const and dead objects included); indirect outputs: the bytes of the object the pointer points into, from the pointer to the end of the object, become arbitrary (never a violation: NULL, freed, read-only and FILE objects are skipped); registers and flags are not modelled; without a memory clobber, memory no indirect output writes is assumed unchanged, and the assumption says so; `volatile` asm is translated where it stands, once. A `// prism: asm ensures` contract (existing) still wins. | `asm-havoc: "<constraint string>" (line N): ...` |
 | asm goto (`callbr`) with one label | the asm havoc, then a nondeterministic jump to the fallthrough or to the label (static keys, jump labels). More than one label: `UNENCODED` | `asm-goto: "<constraints>" (line N)` |
 | `ud2` (x86 `BUG()`) | an ordinary asm with no output; the `unreachable` that follows is the reported failure (`CXX-UNREACHABLE`) | `asm-havoc` |
 | `atomicrmw` (xchg, add, sub, and, nand, or, xor, max, min, umax, umin), `cmpxchg`, `load atomic`, `store atomic` | lowered by the IR parser into the plain load / operation / store they are in a sequential execution; `cmpxchg weak` may also fail when the values are equal; the memory order is recorded in the assumption text (seq_cst and monotonic as before) | `atomics-sequential: <instruction> (<orders>)` |
@@ -103,8 +103,9 @@ user-access specs (a `memory` clobber on pointer operands havocs the buffer a co
 - The sequential model of atomics, volatile accesses and MMIO is the assumption all of PRISM's per-function checks
   already make: nothing else runs between two accesses of the function. A result that depends on another thread, an
   interrupt or the device between two accesses is outside what these specs can say.
-- The asm memory-clobber model is weaker than the real clobber (see above); a proof with `asm-havoc` says "assuming
-  the asm touches only what its operands name".
+- An asm without a memory clobber is assumed to touch only what its operands name (a proof with `asm-havoc` says so).
+  A memory clobber havocs every object (`havocmem`). A `// prism: asm ensures` contract, when given, replaces the asm
+  model entirely (the contract is the user's claim).
 
 ## What was checked
 
