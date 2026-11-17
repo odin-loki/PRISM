@@ -227,16 +227,12 @@ TEST_CASE("pir kernel: inline asm, atomics, barriers and volatile are named assu
                  {"asm_out_bad", F, ""},
                  {"asm_clobber_ok", PA, "memory clobber"},  // y never escapes: the asm cannot write it
                  {"asm_clobber_bad", F, ""},
-<<<<<<< HEAD
                  {"asm_memclobber_ok", PA, "memory clobber: every object"},  // true variant: a memory-independent property
                  {"asm_memclobber_bad", F, ""},  // false variant: x escapes to a global, is no operand, is havocked
                  {"asm_memclobber_global_bad", F, ""},
                  {"asm_goto_memclobber_bad", F, ""},
                  {"asm_nomem_escaped_ok", PA, "asm-exact"},  // no memory clobber: escaped x unchanged (nop modelled exactly)
                  {"asm_nomem_ok", PA, "asm-exact"},  // nop: modelled exactly (translate_asm.inc)
-=======
-                 {"asm_nomem_ok", PA, "asm-exact"},  // nop: modelled exactly (translate_asm.inc)
->>>>>>> origin/pir-w4-asm-semantics
                  {"asm_indirect_out_bad", F, ""},
                  {"asm_ud2_bad", F, ""},
                  {"asm_ud2_ok", PA, "asm-privileged"},  // ud2 is privileged: outputs and memory havocked
