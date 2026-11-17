@@ -194,6 +194,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--assume-unknown-calls") {
             ok = in.flag();
             cfg.pir_assume_unknown_calls = true;
+        } else if (a == "--lock-contracts") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_lock_contracts = *v;
         } else if (a == "--pir-harness-depth") {
             auto v = in.take_int(0);
             if ((ok = v.has_value())) cfg.pir_harness_depth = *v;
@@ -385,6 +388,8 @@ std::string cli_usage() {
         "  named assumption in the verdict (PROVED-ASSUMING). Off by default (docs/KERNEL_MODELS.md).\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
+        "--lock-contracts FILE: TSV of lock contracts for unmodified kernel code (function, lock\n"
+        "  global:NAME|arg:N, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

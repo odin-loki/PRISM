@@ -321,3 +321,65 @@ TEST_CASE("pir kernel: without --kernel-api asm, atomics and kernel calls stay U
     check_table("kernel_linux.c", "", false,
                 {{"alloc_ok", NH, ""}, {"lock_ok", NH, ""}, {"mmio_ok", NH, ""}, {"container_of_ok", "PROVED", ""}});
 }
+
+// --lock-contracts (docs/KERNEL_CONCURRENCY.md section 14): table-driven contracts for code with no markers
+namespace {
+std::map<std::string, prism::Finding> run_with_table(const std::string& file, const std::string& tsv) {
+    auto cfg = prism::default_config();
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    if (!tsv.empty()) cfg.pir_lock_contracts = (dir / tsv).string();
+    std::map<std::string, prism::Finding> m;
+    for (auto& f : pp::run_pir({dir / file}, cfg))
+        if (f.function) m[*f.function] = f;
+    return m;
+}
+}  // namespace
+
+TEST_CASE("pir kernel: --lock-contracts table: acquire and release halves are contracts, a wrong contract is reported") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    // without the table: the model artefacts (true variant)
+    auto none = run_with_table("kernel_lock_table.c", "");
+    REQUIRE(none.count("nvm_acquire_ok"));
+    REQUIRE(none.count("nvm_release_ok"));
+    CHECK(none["nvm_acquire_ok"].cls == "LOCK-HELD-ON-RETURN");
+    CHECK(none["nvm_release_ok"].cls == "LOCK-UNHELD-UNLOCK");
+    // with the table (false variant): no finding for the two halves, the contracts are assumed
+    auto got = run_with_table("kernel_lock_table.c", "kernel_lock_table.tsv");
+    REQUIRE(got.count("nvm_acquire_ok"));
+    REQUIRE(got.count("nvm_release_ok"));
+    CHECK(got["nvm_acquire_ok"].status == prism::laws::PROVED_ASSUMING);
+    CHECK(assumptions_of(got["nvm_acquire_ok"]).find("lock-contract-table") != std::string::npos);
+    CHECK(got["nvm_release_ok"].status == prism::laws::PROVED_ASSUMING);
+    CHECK(assumptions_of(got["nvm_release_ok"]).find("lock-contract-table") != std::string::npos);
+    // a wrong table row (acquires, but the function releases first): LOCK-EXIT-MISSING
+    REQUIRE(got.count("wrong_contract_bad"));
+    CHECK(got["wrong_contract_bad"].status == prism::laws::FAILED);
+    CHECK(got["wrong_contract_bad"].cls == "LOCK-EXIT-MISSING");
+    // a spin contract (kind spin): the mutex call while the caller's spinlock is held sleeps
+    REQUIRE(got.count("spin_entry_sleep_bad"));
+    CHECK(got["spin_entry_sleep_bad"].status == prism::laws::FAILED);
+    CHECK(got["spin_entry_sleep_bad"].cls == "SLEEP-IN-ATOMIC");
+}
+
+TEST_CASE("pir kernel: --lock-contracts TSV parse: header and comments skipped, bad lines are errors") {
+    std::string err;
+    auto ok = pp::parse_lock_contracts("function\tlock\taction\n# c\nf\tglobal:m\tacquires\tspin\n", &err);
+    CHECK(err.empty());
+    REQUIRE(ok.size() == 1);
+    CHECK(ok[0].function == "f");
+    CHECK(ok[0].lock == "global:m");
+    CHECK(ok[0].spin);
+    auto bad = pp::parse_lock_contracts("f\tm\tacquires\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("line 1") != std::string::npos);
+    bad = pp::parse_lock_contracts("f\tglobal:m\ttakes\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("action") != std::string::npos);
+    bad = pp::parse_lock_contracts("f\targ:0\trequires-held\tfast\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("kind") != std::string::npos);
+}

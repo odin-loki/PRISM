@@ -211,6 +211,8 @@ struct Tr final : pirmem::TrApi {
     Arg lock_contains(int b, unsigned base, Arg p, int line);
     void lock_insert(int b, unsigned base, Arg p, Arg fresh, int line);
     void lock_declare(int b, bool entry, Arg p, Arg spin, int line);
+    void lock_table(Frame& fr);
+    bool lock_contracted(const std::string& fn) const;
     void atomic_add(int b, Arg delta, int line);
     void rcu_add(int b, Arg delta, int line);
     bool lock_root(const Frame& fr) const { return !frames.empty() && &fr == frames.front(); }
@@ -550,7 +552,7 @@ struct Tr final : pirmem::TrApi {
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
             // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
-            if (reaches_lock_state(m, f)) {
+            if (reaches_lock_state(m, f) || lock_contracted(f.name)) {
                 lk_var_ = newvar("_lock", ptr_w());
                 lk_pending_ = true;
             }
@@ -671,6 +673,7 @@ struct Tr final : pirmem::TrApi {
             if (caught_var_ >= 0 && !caught_)
                 caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
             if (lk_pending_) emit_lock_state();  // translate_lock.inc
+            if (lk_) lock_table(fr);            // --lock-contracts of this root (translate_lock.inc)
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)

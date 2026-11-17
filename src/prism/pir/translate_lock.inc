@@ -262,3 +262,35 @@ void Tr::sleep_if(int b, Arg may, int line) {
 }
 
 void Tr::sleep_point(int b, int line) { sleep_if(b, Arg::c(1, 1), line); }
+
+// --lock-contracts table (TSV): contracts for unmodified code, no markers in the source
+bool Tr::lock_contracted(const std::string& fn) const {
+    for (auto& c : opt.lock_contracts)
+        if (c.function == fn) return true;
+    return false;
+}
+
+// root frame only, after lk_ exists: declares the table's entry and exit locks in the entry block
+void Tr::lock_table(Frame& fr) {
+    bool any = false;
+    for (auto& c : opt.lock_contracts) {
+        if (c.function != fr.f->name) continue;
+        Arg p;
+        if (c.lock.starts_with("global:")) {
+            p = mt.global(c.lock.substr(7));
+        } else {
+            const auto n = static_cast<std::size_t>(std::stoul(c.lock.substr(4)));
+            if (n >= fr.f->params.size() || !fr.env.count(fr.f->params[n].name))
+                throw Unenc{"UNENCODED: lock contract argument " + c.lock + " of " + fr.f->name};
+            p = fr.env.at(fr.f->params[n].name);
+        }
+        const int b = head.at(fr.prefix + fr.f->blocks.front().name);
+        const Arg spin = Arg::c(1, c.spin ? 1 : 0);
+        if (c.action == "releases" || c.action == "requires-held") lock_declare(b, true, p, spin, 0);
+        if (c.action == "acquires" || c.action == "requires-held") lock_declare(b, false, p, spin, 0);
+        any = true;
+    }
+    if (any)
+        note_assumption("lock-contract-table: the lock contract of --lock-contracts (TSV) for " + fr.f->name +
+                        " is trusted (its call sites are not checked)");
+}

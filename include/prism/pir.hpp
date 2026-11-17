@@ -412,6 +412,18 @@ struct AutoHarness {
     int max_objects = 32;          // objects per pointer parameter
 };
 
+// One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
+// unmodified code: the analysed (root) function acquires, releases or requires a lock.
+struct LockContract {
+    std::string function;  // IR name of the analysed function
+    std::string lock;      // "global:NAME" (a module global's address) or "arg:N" (0-based parameter)
+    std::string action;    // "acquires" (returns with it held) | "releases" (held on entry) | "requires-held" (both)
+    bool spin = false;     // kind "spin": a spinlock (atomic depth), otherwise a mutex
+};
+// Parses the TSV: function TAB lock TAB action [TAB kind]; '#' lines, blanks and a "function" header are skipped.
+// On a bad line *error gets "line N: reason" and the result is empty.
+PRISM_API std::vector<LockContract> parse_lock_contracts(std::string_view tsv, std::string* error = nullptr);
+
 struct TranslateOptions {
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
@@ -421,6 +433,8 @@ struct TranslateOptions {
     int inline_depth = 4;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
+    // --lock-contracts: lock contracts of the root function (translate_lock.inc lock_table)
+    std::vector<LockContract> lock_contracts;
     AutoHarness auto_harness;
     // Mutable globals start at their initializer (program entry, `main`).
     // Otherwise their contents are arbitrary initialised bytes.

@@ -87,6 +87,9 @@ struct Config {
     // assumption (opt-in, never on by default).
     std::string pir_kernel_api;
     bool pir_assume_unknown_calls = false;
+    // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
+    // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
+    std::string pir_lock_contracts;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 
