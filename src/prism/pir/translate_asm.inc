@@ -537,6 +537,20 @@ bool Tr::asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line) {
         } else if (b == "div" || b == "idiv") {
             const bool sg = b == "idiv";
             Arg s = rd(n[0], 32);
+            const Arg& hi0 = val.at(dxn);
+            if (!sg && hi0.is_const && hi0.bits == 0) {
+                // edx == 0: the 64/32 unsigned divide is exactly a 32-bit udiv/urem (the quotient always fits, so #DE
+                // happens only for a zero divisor). Same semantics as the general case below, in a form the solver
+                // can match against C's own 32-bit division instead of bit-blasting a 64-bit divider.
+                check(cur, cmpb(Op::Eq, s, C(32, 0)), "asm-div", "INT-DIV-ZERO",
+                      "divide error (#DE): divisor 0 or quotient does not fit the 32-bit register", line);
+                const Arg lo0 = val.at(axn);
+                val[axn] = A(Op::UDiv, 32, {lo0, s});
+                val[dxn] = A(Op::URem, 32, {lo0, s});
+                written.insert(axn);
+                written.insert(dxn);
+                unknown_flags();
+            } else {
             Arg nn = A(Op::Or, 64, {A(Op::Shl, 64, {A(Op::ZExt, 64, {val.at(dxn)}), C(64, 32)}), A(Op::ZExt, 64, {val.at(axn)})});
             Arg dv = A(sg ? Op::SExt : Op::ZExt, 64, {s});
             Arg q = A(sg ? Op::SDiv : Op::UDiv, 64, {nn, dv});
@@ -551,6 +565,7 @@ bool Tr::asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line) {
             written.insert(axn);
             written.insert(dxn);
             unknown_flags();
+            }
         }
     }
 
