@@ -1134,6 +1134,55 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
              "returns a pointer to its own stack object (dangling after the return)", line);
 }
 
+void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, bool check_init, const std::string& what,
+                              int line) {
+    mark_memory();
+    const char* C = "HARNESS-OBLIGATION";
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {p}, "live");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {p}, "size");
+    Arg oal = t_.assign(b, Op::ObjAlign, ptr_w(), {p}, "oal");
+    Arg f = off(b, p);
+    t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, 0)), "ob-null", C, what + " is null or does not point to an object", line);
+    t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, live, Arg::c(1, 0))), "ob-dead", C,
+             what + " points to a freed object or one whose lifetime ended", line);
+    t_.check(b, p2(b, Op::Ne, f, c64(member_off)), "ob-offset", C,
+             what + (member_off ? " is not at byte " + std::to_string(member_off) + " of its object (container_of)"
+                                : std::string(" does not point to the start of its object")),
+             line);
+    t_.check(b, p2(b, Op::Ult, size, c64(bytes)), "ob-size", C,
+             what + " points to an object smaller than " + std::to_string(bytes) + " bytes", line);
+    t_.check(b, p2(b, Op::Ult, oal, c64(16)), "ob-align", C, what + " points to an object not 16-byte aligned", line);
+    t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))), "ob-const", C,
+             what + " points to a read-only object", line);
+    if (!check_init) return;
+    // every byte of the object initialised: loads of the object's own words, only their shadow masks are looked at
+    uint64_t pos = 0;
+    while (pos < bytes) {
+        const uint64_t left = bytes - pos;
+        const unsigned n = left >= 8 ? 8 : left >= 4 ? 4 : left >= 2 ? 2 : 1;
+        const int64_t delta = static_cast<int64_t>(pos) - static_cast<int64_t>(member_off);
+        Arg at = p;
+        if (delta != 0) {
+            int dst = t_.newvar("_obat" + std::to_string(t_.fn().vars.size()), ptr_w());
+            gep(b, dst, p, ir::parse_type("i8"), {Arg::c(64, static_cast<uint64_t>(delta))}, true, line);
+            at = Arg::v(dst, ptr_w());
+        }
+        const auto ty = ir::parse_type("i" + std::to_string(n * 8));
+        int v = t_.newvar("_obv" + std::to_string(t_.fn().vars.size()), n * 8);
+        int mask = load(b, v, ty, at, 1, line, false);
+        t_.check(b, p2(b, Op::Ne, Arg::v(mask, n), Arg::c(n, 0)), "ob-init", C,
+                 what + " points to an object with uninitialised bytes (at byte " + std::to_string(pos) + ")", line);
+        pos += n;
+    }
+}
+
+void MemTr::obligation_distinct(int b, Arg p, Arg q, const std::string& what, int line) {
+    t_.check(b, p2(b, Op::Eq, obj(b, p), obj(b, q)), "ob-distinct", "HARNESS-OBLIGATION",
+             what + ": two pointer arguments (or nested objects) point into the same object; the harness assumes distinct objects",
+             line);
+}
+
 Arg MemTr::obj_size_remaining(int b, Arg ptr) {
     mark_memory();
     Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {ptr}, "size");

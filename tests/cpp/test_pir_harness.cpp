@@ -241,3 +241,183 @@ TEST_CASE("cli: --pir-harness, --pir-harness-depth/-elems/-bytes and --jsonl") {
     CHECK(!d->cfg.pir_harness);
     CHECK(d->cfg.jsonl.empty());
 }
+
+namespace {
+
+std::map<std::string, prism::Finding> run_file(prism::Config cfg, const char* file) {
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    std::map<std::string, prism::Finding> st;
+    for (auto& f : pp::run_pir({dir / file}, cfg))
+        if (f.function) st[*f.function] = f;
+    return st;
+}
+
+bool carries_auto_harness(const prism::Finding& f) {
+    return extra(f, "assumptions").find("(auto harness)") != std::string::npos;
+}
+
+}  // namespace
+
+TEST_CASE("pir discharge: off by default, the callee keeps its automatic harness assumption") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    auto st = run_file(cfg, "harness_discharge.c");
+    REQUIRE(st.contains("get_id"));
+    CHECK(st["get_id"].status == prism::laws::PROVED_ASSUMING);
+    CHECK(carries_auto_harness(st["get_id"]));
+    CHECK(!st["get_id"].extra.contains("harness_discharge"));
+}
+
+TEST_CASE("pir discharge: callers that establish the harness remove the invented assumption (--pir-discharge)") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_discharge = true;
+    auto st = run_file(cfg, "harness_discharge.c");
+    namespace L = prism::laws;
+    for (auto* ok : {"get_id", "get_in"}) {
+        REQUIRE_MESSAGE(st.contains(ok), ok);
+        // still PROVED-ASSUMING (the entry functions' assumptions remain), never PROVED
+        CHECK_MESSAGE(st[ok].status == L::PROVED_ASSUMING, (std::string(ok) + ": " + st[ok].status + " " + st[ok].message));
+        CHECK_MESSAGE(extra(st[ok], "harness_discharge").starts_with("discharged at"),
+                      (std::string(ok) + ": " + extra(st[ok], "harness_discharge")));
+        CHECK_MESSAGE(!carries_auto_harness(st[ok]), ok);
+        CHECK_MESSAGE(extra(st[ok], "assumptions").find("the automatic harness is discharged") != std::string::npos, ok);
+        CHECK_MESSAGE(extra(st[ok], "assumptions").find("the function is static, its address is not taken, it is not recursive") !=
+                          std::string::npos,
+                      ok);
+    }
+    // the callers have no pointer parameters: nothing is assumed for them
+    CHECK(st["user_ok"].status == L::PROVED);
+}
+
+TEST_CASE("pir discharge: a caller that breaks the harness makes the discharge fail, and says why") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_discharge = true;
+    auto st = run_file(cfg, "harness_discharge.c");
+    struct Bad {
+        const char* fn;
+        const char* caller;
+        const char* what;
+    };
+    for (const Bad& b : {Bad{"null_callee", "null_bad", "null"}, Bad{"small_callee", "small_bad", "smaller than"},
+                         Bad{"uninit_callee", "uninit_bad", "uninitialised"}, Bad{"get_in_null", "nested_bad", "null"}}) {
+        REQUIRE_MESSAGE(st.contains(b.fn), b.fn);
+        const auto d = extra(st[b.fn], "harness_discharge");
+        CHECK_MESSAGE(d.starts_with("not discharged"), (std::string(b.fn) + ": " + d));
+        CHECK_MESSAGE(d.find(b.caller) != std::string::npos, (std::string(b.fn) + ": " + d));
+        CHECK_MESSAGE(d.find(b.what) != std::string::npos, (std::string(b.fn) + ": " + d));
+        CHECK_MESSAGE(carries_auto_harness(st[b.fn]), b.fn);  // the assumption stays
+    }
+    // one caller passes the same object twice: the harness assumes distinct objects
+    const auto two = extra(st["two_callee"], "harness_discharge");
+    CHECK_MESSAGE(two.starts_with("not discharged"), two);
+    CHECK_MESSAGE(two.find("two_alias_bad") != std::string::npos, two);
+    CHECK_MESSAGE(two.find("same object") != std::string::npos, two);
+}
+
+TEST_CASE("pir discharge: exported, address-taken, recursive and uncalled functions keep the assumption") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_discharge = true;
+    auto st = run_file(cfg, "harness_discharge.c");
+    struct Keep {
+        const char* fn;
+        const char* why;
+    };
+    for (const Keep& k : {Keep{"exported_callee", "external linkage"}, Keep{"taken_callee", "address is taken"},
+                          Keep{"rec2", "recursive"}, Keep{"dead_callee", "no call site"}}) {
+        REQUIRE_MESSAGE(st.contains(k.fn), k.fn);
+        const auto d = extra(st[k.fn], "harness_discharge");
+        CHECK_MESSAGE(d.starts_with("not discharged"), (std::string(k.fn) + ": " + d));
+        CHECK_MESSAGE(d.find(k.why) != std::string::npos, (std::string(k.fn) + ": " + d));
+        CHECK_MESSAGE(carries_auto_harness(st[k.fn]), k.fn);
+    }
+}
+
+TEST_CASE("pir harness: container_of gets its containing object (--pir-container-of)") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    // without the option a negative offset is not harnessable
+    auto off = run_file(cfg, "harness_container.c");
+    REQUIRE(off.contains("outer_tag"));
+    CHECK(off["outer_tag"].status == L::NEEDS_HARNESS);
+    CHECK(off["outer_tag"].message.find("container_of") != std::string::npos);
+    cfg.pir_container_of = true;
+    auto st = run_file(cfg, "harness_container.c");
+    for (auto* ok : {"outer_tag", "outer_reg_ok"}) {
+        REQUIRE_MESSAGE(st.contains(ok), ok);
+        CHECK_MESSAGE(st[ok].status == L::PROVED_ASSUMING, (std::string(ok) + ": " + st[ok].status + " " + st[ok].message));
+        const auto a = extra(st[ok], "assumptions");
+        CHECK_MESSAGE(a.find("%struct.outer") != std::string::npos, ok);
+        CHECK_MESSAGE(a.find("container_of") != std::string::npos, ok);
+        CHECK_MESSAGE(a.find("(auto harness)") != std::string::npos, ok);
+    }
+    // an index the code does not check is a missing precondition, not a defect
+    REQUIRE(st.contains("outer_reg_unchecked"));
+    CHECK(st["outer_reg_unchecked"].status == L::NEEDS_HARNESS);
+    CHECK(st["outer_reg_unchecked"].extra.contains("verdict_under_draft"));
+}
+
+TEST_CASE("pir discharge: container_of obligations, the member of a real outer, not a lone struct") {
+    if (skip_without_frontend()) return;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_container_of = true;
+    cfg.pir_discharge = true;
+    auto st = run_file(cfg, "harness_container.c");
+    REQUIRE(st.contains("tag_of"));
+    CHECK_MESSAGE(extra(st["tag_of"], "harness_discharge").starts_with("discharged at"),
+                  extra(st["tag_of"], "harness_discharge"));
+    CHECK(!carries_auto_harness(st["tag_of"]));
+    REQUIRE(st.contains("tag_of_bad"));
+    const auto d = extra(st["tag_of_bad"], "harness_discharge");
+    CHECK_MESSAGE(d.starts_with("not discharged"), d);
+    CHECK_MESSAGE(d.find("container_user_bad") != std::string::npos, d);
+    CHECK(carries_auto_harness(st["tag_of_bad"]));
+}
+
+TEST_CASE("pir harness: a vacuous harness is never a proof (--pir-vacuity)") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    // the problem: without the check the contradictory precondition "proves" the function
+    auto off = run_file(cfg, "harness_vacuity.c");
+    REQUIRE(off.contains("vac_contradiction"));
+    CHECK(off["vac_contradiction"].status == L::PROVED_ASSUMING);
+    cfg.pir_vacuity = true;
+    auto st = run_file(cfg, "harness_vacuity.c");
+    for (auto* ok : {"vac_ok", "vac_plain"}) {
+        REQUIRE_MESSAGE(st.contains(ok), ok);
+        CHECK_MESSAGE(st[ok].status == L::PROVED_ASSUMING, (std::string(ok) + ": " + st[ok].status + " " + st[ok].message));
+        CHECK_MESSAGE(extra(st[ok], "non_vacuity").starts_with("checked"),
+                      (std::string(ok) + ": " + extra(st[ok], "non_vacuity")));
+    }
+    REQUIRE(st.contains("vac_contradiction"));
+    CHECK(st["vac_contradiction"].status == L::NEEDS_HARNESS);
+    CHECK(st["vac_contradiction"].message.find("vacuous") != std::string::npos);
+    CHECK(extra(st["vac_contradiction"], "non_vacuity").starts_with("VACUOUS"));
+    CHECK(st["vac_contradiction"].extra.contains("verdict_before_vacuity"));
+}
+
+TEST_CASE("cli: --pir-discharge, --pir-container-of, --pir-vacuity") {
+    auto r = parse_args({"fixture.c", "--pir-harness", "--pir-discharge", "--pir-container-of", "--pir-vacuity"});
+    REQUIRE(r);
+    CHECK(r->cfg.pir_discharge);
+    CHECK(r->cfg.pir_container_of);
+    CHECK(r->cfg.pir_vacuity);
+    auto d = parse_args({"fixture.c", "--pir-harness"});
+    REQUIRE(d);
+    CHECK(!d->cfg.pir_discharge);
+    CHECK(!d->cfg.pir_container_of);
+    CHECK(!d->cfg.pir_vacuity);
+}

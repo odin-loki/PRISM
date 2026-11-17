@@ -249,6 +249,8 @@ struct Tr final : pirmem::TrApi {
     }
     void check(int b, Arg viol, std::string prop, std::string cls, std::string msg, int line) override {
         if (viol.is_const && viol.bits == 0) return;  // statically safe
+        // --pir-discharge: only the call-site obligations are properties of this translation
+        if (!opt.obligations.empty() && cls != "HARNESS-OBLIGATION") return;
         Stmt s;
         s.kind = Stmt::Check;
         s.args = {viol};
@@ -1543,7 +1545,35 @@ struct Tr final : pirmem::TrApi {
             }
             throw Unenc{"UNENCODED: call @" + n};
         }
+        if (auto ob = opt.obligations.find(n); ob != opt.obligations.end()) call_obligations(fr, in, ob->second, cur, line);
         inline_call(fr, in, cur, line);
+    }
+
+    // --pir-discharge: the callee's automatic harness as properties of this call site (docs/HARNESS_GENERATOR.md).
+    // The pointer arguments must be what the harness assumed: a live, writable, 16-aligned object of the stated
+    // size, initialised, the pointer at the stated offset into it, the nested pointer fields likewise, and every
+    // object of the call distinct from every other.
+    void oblige_node(Arg p, const ObligationNode& nd, const std::string& callee, std::vector<Arg>& objs, int cur,
+                     int line) {
+        const std::string what = "call of @" + callee + ": argument " + nd.name;
+        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.check_init, what, line);
+        objs.push_back(p);
+        for (const auto& [off, child] : nd.nested) {
+            int slot = newvar(tmpname("obslot"), ptr_w());
+            mt.gep(cur, slot, p, ir::parse_type("i8"), {Arg::c(64, off)}, true, line);
+            int val = newvar(tmpname("obptr"), ptr_w());
+            mt.load(cur, val, ir::parse_type("ptr"), Arg::v(slot, ptr_w()), 1, line, false);
+            oblige_node(Arg::v(val, ptr_w()), *child, callee, objs, cur, line);
+        }
+    }
+    void call_obligations(Frame& fr, const ir::Inst& in, const std::vector<std::shared_ptr<ObligationNode>>& ob,
+                          int& cur, int line) {
+        std::vector<Arg> objs;
+        for (std::size_t i = 0; i < in.ops.size() && i < ob.size(); ++i)
+            if (ob[i]) oblige_node(operand(fr, in.ops[i], cur, line), *ob[i], in.callee, objs, cur, line);
+        for (std::size_t i = 0; i < objs.size(); ++i)
+            for (std::size_t j = i + 1; j < objs.size(); ++j)
+                mt.obligation_distinct(cur, objs[i], objs[j], "call of @" + in.callee, line);
     }
 
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
@@ -2394,8 +2424,13 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
     for (const auto& [off, child] : n.nested) {
         Arg cp = alloc_harness_node(tr, *child);
         int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
-        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, off)}, true, 0);
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
+    if (n.member_off) {  // container_of: the parameter points into the containing object
+        int mp = tr.newvar(tr.tmpname("hmember"), ptr_w());
+        tr.mt.gep(-1, mp, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off)}, true, 0);
+        return Arg::v(mp, ptr_w());
     }
     return obj;
 }
@@ -2408,6 +2443,7 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     ho.elems = tr.opt.auto_harness.elems;
     ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
     ho.max_objects = tr.opt.auto_harness.max_objects;
+    ho.container_of = tr.opt.container_of;
     auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
     if (!plan) return false;
     top.env[p.name] = alloc_harness_node(tr, *plan->root);

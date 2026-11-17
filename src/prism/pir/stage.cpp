@@ -25,6 +25,7 @@
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
+#include "harness.hpp"
 #include "jsonl.hpp"
 
 #include <cctype>
@@ -2576,6 +2577,288 @@ struct FnStats {
     }
 };
 
+// ---------------------------------------------------------------------------
+// --pir-vacuity and --pir-discharge (docs/HARNESS_GENERATOR.md)
+// ---------------------------------------------------------------------------
+
+bool has_auto_harness(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.find("(auto harness)") != std::string::npos) return true;
+    return false;
+}
+
+// The function with every check removed and one check "the end is reachable" at each return or stop: FAILED (a
+// witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
+// reaches the end; PROVED means none does, so every proof of the function was vacuous.
+Function vacuity_variant(const Function& fn) {
+    Function v = fn;
+    for (auto& b : v.blocks) {
+        std::erase_if(b.stmts, [](const Stmt& s) { return s.kind == Stmt::Check; });
+        if (b.term.kind == Term::Ret || b.term.kind == Term::Stop) {
+            Stmt s;
+            s.kind = Stmt::Check;
+            s.args = {Arg::c(1, 1)};
+            s.prop = "reach";
+            s.cls = "HARNESS-VACUITY";
+            s.msg = "the end of the function is reachable under the assumptions";
+            b.stmts.push_back(std::move(s));
+        }
+    }
+    return v;
+}
+
+void apply_vacuity(Verdict& v, const Function& fn, const CheckOptions& copt) {
+    if (v.status != laws::PROVED_ASSUMING && v.status != laws::BOUNDED) return;
+    if (fn.ptr_params.empty() && !has_auto_harness(fn)) return;
+    CheckOptions ro = copt;
+    ro.certified = false;
+    auto r = check_function(vacuity_variant(fn), ro);
+    if (r.status == laws::FAILED) {
+        v.extra["non_vacuity"] = "checked: an execution satisfying every assumption reaches the end of the function";
+        return;
+    }
+    if (r.status == laws::PROVED || r.status == laws::PROVED_UNBOUNDED || r.status == laws::PROVED_CERTIFIED) {
+        v.extra["verdict_before_vacuity"] = v.status + ": " + v.message;
+        v.extra["non_vacuity"] = "VACUOUS: no execution satisfying the assumptions reaches the end of the function";
+        v.status = std::string(laws::NEEDS_HARNESS);
+        v.message = "vacuous harness: no execution of the function reaches its end under the assumptions, so the "
+                    "verdict above says nothing; the harness (or a stated precondition) is contradictory";
+        v.cex.clear();
+        v.cex_args.clear();
+        return;
+    }
+    v.extra["non_vacuity"] = "NOT ESTABLISHED (" + r.status + "): the check that the assumptions leave an execution did not conclude";
+    v.extra["warning"] = "harness non-vacuity not established; the verdict may rest on assumptions that exclude every execution";
+}
+
+struct DischargeInfo {
+    std::string status;  // "" = discharged
+    std::string reason;
+    std::size_t sites = 0;
+    std::vector<std::string> callers;  // IR names
+};
+
+std::string ir_symbol_at(const std::string& t, std::size_t at, std::size_t* end) {  // `@name` at t[at] == '@'
+    std::size_t i = at + 1;
+    std::string name;
+    if (i < t.size() && t[i] == '"') {
+        std::size_t q = t.find('"', i + 1);
+        if (q == std::string::npos) q = t.size();
+        name = t.substr(i + 1, q - i - 1);
+        i = std::min(q + 1, t.size());
+    } else {
+        while (i < t.size() && (std::isalnum(static_cast<unsigned char>(t[i])) || t[i] == '_' || t[i] == '.' || t[i] == '$' || t[i] == '-'))
+            name += t[i++];
+    }
+    *end = i;
+    return name;
+}
+
+std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n) {
+    auto o = std::make_shared<ObligationNode>();
+    o->name = n.name;
+    o->bytes = n.bytes;
+    o->member_off = n.member_off;
+    o->check_init = n.bytes <= 1024;
+    for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c));
+    return o;
+}
+
+void residual_lines(const ObligationNode& o, std::vector<std::string>& out) {
+    if (!o.check_init)
+        out.push_back("the bytes of " + o.name + " (" + std::to_string(o.bytes) +
+                      " bytes, over the 1024-byte initialisation check) are assumed initialised, not checked at the call sites (auto harness)");
+    for (const auto& [off, c] : o.nested) residual_lines(*c, out);
+}
+
+// Assume-guarantee over the call sites of one unit. A candidate is a function whose result is PROVED-ASSUMING under
+// an automatic harness. Its harness is the precondition P of the proof; P becomes a set of checks at every call
+// site (translate.cpp call_obligations), one translation of each caller keeping only those checks. The proof of the
+// callee holds for any state satisfying P (it never looked at anything else), so when every call site establishes P
+// and no call can come from elsewhere (static, not address-taken, not recursive), the harness is discharged: the
+// callee's result then rests only on the entry assumptions of the functions that call it from outside.
+void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::string& ir_text, pirmem::UnitInfo& uinfo,
+                    const TranslateOptions& topt, const Config& cfg, const std::shared_ptr<HoudiniBudget>& budget) {
+    std::set<std::string> internal, taken;
+    {
+        for (const auto& line : split_lines(ir_text)) {
+            if (!line.starts_with("define ")) continue;
+            auto at = line.find('@');
+            if (at == std::string::npos) continue;
+            std::size_t e = 0;
+            const auto name = ir_symbol_at(line, at, &e);
+            const auto pre = " " + line.substr(0, at);
+            if (pre.find(" internal ") != std::string::npos || pre.find(" private ") != std::string::npos) internal.insert(name);
+        }
+        for (std::size_t at = ir_text.find('@'); at != std::string::npos; at = ir_text.find('@', at + 1)) {
+            std::size_t e = 0;
+            const auto name = ir_symbol_at(ir_text, at, &e);
+            if (e >= ir_text.size() || ir_text[e] != '(') taken.insert(name);  // not a call, define or declare: its address is used
+        }
+    }
+    std::map<std::string, std::set<std::string>> callers, calls;
+    std::map<std::string, std::size_t> sites;
+    for (const auto& fn : mod.functions) {
+        if (fn.is_declaration || fn.is_model) continue;
+        for (const auto& b : fn.blocks)
+            for (const auto& in : b.insts) {
+                if (in.callee.empty()) continue;
+                const auto* c = mod.find(in.callee);
+                if (!c || c->is_declaration || c->is_model) continue;
+                callers[in.callee].insert(fn.name);
+                calls[fn.name].insert(in.callee);
+                ++sites[in.callee];
+            }
+    }
+    auto reaches = [&](const std::string& from, const std::string& target) {
+        std::set<std::string> seen;
+        std::vector<std::string> work{from};
+        while (!work.empty()) {
+            auto x = work.back();
+            work.pop_back();
+            if (!seen.insert(x).second) continue;
+            for (const auto& y : calls[x]) {
+                if (y == target) return true;
+                work.push_back(y);
+            }
+        }
+        return false;
+    };
+    const PtrModel pm = ptr_model_of(mod);
+    PtrModelScope pms(pm);
+    pirmem::Layout lay(mod);
+    pirmem::HarnessOptions ho;
+    ho.depth = cfg.pir_harness_depth;
+    ho.elems = cfg.pir_harness_elems;
+    ho.unknown_bytes = cfg.pir_harness_bytes;
+    ho.container_of = cfg.pir_container_of;
+    std::map<std::string, FnRec*> by_ir;
+    for (auto& r : recs)
+        if (r.irf) by_ir[r.irf->name] = &r;
+    auto display = [&](const std::string& ir_name) {
+        if (auto it = by_ir.find(ir_name); it != by_ir.end() && it->second->f.function) return *it->second->f.function;
+        return ir_name;
+    };
+    std::map<std::string, DischargeInfo> info;
+    std::map<std::string, std::vector<std::shared_ptr<ObligationNode>>> obligations;
+    for (auto& r : recs) {
+        if (!r.irf || !r.fn || r.f.status != laws::PROVED_ASSUMING || !has_auto_harness(*r.fn)) continue;
+        const std::string g = r.irf->name;
+        DischargeInfo& di = info[g];
+        auto no = [&](const std::string& why) {
+            di.status = "not discharged";
+            di.reason = why;
+        };
+        if (!internal.count(g)) { no("the function has external linkage (an exported symbol: callers outside this unit are not known)"); continue; }
+        if (taken.count(g)) { no("its address is taken (it may be called through a pointer)"); continue; }
+        if (reaches(g, g)) { no("it is recursive (a cycle in the call graph: the entry assumption stays)"); continue; }
+        if (!callers.count(g) || callers[g].empty()) { no("no call site in this unit"); continue; }
+        // the obligation of each pointer parameter
+        auto fopt0 = function_options(topt, *r.irf, uinfo, r.f.line.value_or(0), cfg, r.f.function.value_or(g));
+        std::vector<std::shared_ptr<ObligationNode>> ob(r.irf->params.size());
+        bool ok = true;
+        for (std::size_t i = 0; i < r.irf->params.size() && ok; ++i) {
+            const auto& p = r.irf->params[i];
+            if (p.ty.kind != ir::Type::Ptr || p.attrs.find("byval(") != std::string::npos || p.attrs.find("sret(") != std::string::npos)
+                continue;
+            if (std::any_of(fopt0.contracts.begin(), fopt0.contracts.end(), [&](const PtrContract& c) { return c.param == p.name; })) {
+                no("parameter " + p.name + " has a requires clause or draft, not an automatic harness");
+                ok = false;
+                break;
+            }
+            std::string why;
+            auto plan = pirmem::plan_pointer_harness(mod, lay, *r.irf, p, ho, &why);
+            if (!plan) { no("no harness plan for " + p.name + ": " + why); ok = false; break; }
+            ob[i] = obligation_of(*plan->root);
+        }
+        if (!ok) continue;
+        obligations[g] = ob;
+        // every call site: one translation of each caller keeping only the obligations
+        std::string failure;
+        for (const auto& fname : callers[g]) {
+            const auto* cf = mod.find(fname);
+            if (!cf) continue;
+            ir::DISub sub;
+            if (auto it = mod.subprograms.find(cf->dbg); it != mod.subprograms.end()) sub = it->second;
+            auto fopt = function_options(topt, *cf, uinfo, sub.line, cfg, sub.name.empty() ? cf->name : sub.name);
+            fopt.obligations[g] = ob;
+            auto tr = translate(mod, *cf, fopt);
+            const std::string cname = display(fname);
+            if (!tr.fn) {
+                failure = "the call site in " + cname + " could not be analysed (" + tr.reason + ")";
+                break;
+            }
+            auto copt = check_options(cfg, budget);
+            if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+            auto v = check_function(*tr.fn, copt);
+            if (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED || v.status == laws::PROVED_CERTIFIED) continue;
+            if (v.status == laws::FAILED)
+                failure = "the call site in " + cname + (v.line ? " (line " + std::to_string(v.line) + ")" : std::string()) +
+                          " does not establish the harness: " + v.message;
+            else
+                failure = "the obligations at the call site in " + cname + " were not decided (" + v.status + ")";
+            break;
+        }
+        if (!failure.empty()) { no(failure); continue; }
+        di.status = "";
+        di.sites = sites[g];
+        di.callers.assign(callers[g].begin(), callers[g].end());
+    }
+    // entry assumptions: the callers that stay assumptions (not discharged themselves)
+    auto discharged = [&](const std::string& g) { auto it = info.find(g); return it != info.end() && it->second.status.empty(); };
+    std::map<std::string, std::set<std::string>> roots_memo;
+    std::function<std::set<std::string>(const std::string&)> roots_of = [&](const std::string& g) -> std::set<std::string> {
+        if (auto it = roots_memo.find(g); it != roots_memo.end()) return it->second;
+        std::set<std::string> out;
+        for (const auto& f : callers[g]) {
+            if (discharged(f)) {
+                auto s = roots_of(f);
+                out.insert(s.begin(), s.end());
+            } else {
+                out.insert(f);
+            }
+        }
+        return roots_memo[g] = out;
+    };
+    for (auto& r : recs) {
+        auto it = r.irf ? info.find(r.irf->name) : info.end();
+        if (it == info.end()) continue;
+        auto& di = it->second;
+        auto& f = r.f;
+        if (!di.status.empty()) {
+            f.extra["harness_discharge"] = di.status + ": " + di.reason;
+            continue;
+        }
+        std::string callers_s, roots_s;
+        for (const auto& c : di.callers) callers_s += (callers_s.empty() ? "" : ", ") + display(c);
+        for (const auto& c : roots_of(r.irf->name)) roots_s += (roots_s.empty() ? "" : ", ") + display(c);
+        // the harness lines go; the rest of the assumptions (kernel models, global state, ...) stay
+        std::vector<std::string> kept;
+        for (const auto& a : r.fn->assumptions)
+            if (a.find("(auto harness)") == std::string::npos &&
+                a.find("pointer parameters point to distinct objects") == std::string::npos)
+                kept.push_back(a);
+        kept.push_back("the automatic harness is discharged: every call site (" + std::to_string(di.sites) + " in " + callers_s +
+                       "; the function is static, its address is not taken, it is not recursive) is checked to pass what the harness "
+                       "assumed (a live, writable, 16-byte aligned object of the harnessed size with initialised bytes at the stated "
+                       "offset, nested pointer fields likewise, distinct objects); this rests on the assumptions of " +
+                       (roots_s.empty() ? std::string("no other function") : "the entry functions " + roots_s) + " (see their results)");
+        std::vector<std::string> res;
+        if (auto o = obligations.find(r.irf->name); o != obligations.end())
+            for (const auto& p : o->second)
+                if (p) residual_lines(*p, res);
+        for (auto& l : res) kept.push_back(l);
+        r.fn->assumptions = kept;
+        std::string s;
+        for (auto& a : kept) s += (s.empty() ? "" : "; ") + a;
+        f.extra["assumptions"] = s;
+        f.extra["assumptions_json"] = nlohmann::json(kept).dump();
+        f.extra["harness_discharge"] = "discharged at " + std::to_string(di.sites) + " call sites in " + callers_s;
+        f.extra["discharge_entry"] = roots_s;
+        if (auto m = f.message.find(" -- assuming: "); m != std::string::npos) f.message = f.message.substr(0, m) + " -- assuming: " + s;
+    }
+}
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -2774,6 +3057,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
             f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
+        if (cfg.pir_vacuity) apply_vacuity(v, fn, copt);
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
         f.message = v.message;
@@ -2829,6 +3113,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         owner->fn.reset();
     }
     caller_discharged_asserts(recs, mod);
+    if (cfg.pir_discharge && cfg.pir_harness && !export_only) discharge_pass(recs, mod, *ir, uinfo, topt, cfg, budget);
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);

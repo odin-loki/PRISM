@@ -412,7 +412,25 @@ struct AutoHarness {
     int max_objects = 32;          // objects per pointer parameter
 };
 
+// One object of an automatic harness as a call-site obligation (--pir-discharge):
+// the caller must pass a pointer to byte `member_off` of a live object of at least
+// `bytes` bytes aligned to 16 whose bytes are initialised, and the listed pointer
+// fields must hold pointers that satisfy the child obligation.
+struct ObligationNode {
+    std::string name;
+    uint64_t bytes = 0;
+    uint64_t member_off = 0;  // container_of: the pointer points this far into the object
+    bool check_init = true;   // the bytes are checked initialised (objects over the cap keep that as an assumption)
+    std::vector<std::pair<uint64_t, std::shared_ptr<ObligationNode>>> nested;
+};
+// callee (IR name) -> per parameter index the obligation (nullptr: none)
+using CallObligations = std::map<std::string, std::vector<std::shared_ptr<ObligationNode>>>;
+
 struct TranslateOptions {
+    // --pir-discharge: a translation that keeps only the obligations of these
+    // callees at their direct call sites (every other check is dropped).
+    CallObligations obligations;
+    bool container_of = false;     // --pir-container-of
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
     bool shl_cxx = false;
