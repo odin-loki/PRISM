@@ -42,10 +42,22 @@ def reason(j):
     if re.search(r"indirect call|function pointer|call through", m, re.I):
         return "function-pointer call / field dereference"
     if m.startswith("pointer parameter: violation only under"):
-        cls = j.get("class") or ""
-        if "unconstrained arbitrary values" in asm and re.search(r"PTR|INVALID|NULL|WILD", cls + m):
-            return "depth bound / unbound pointer field dereferenced"
-        return "harness violation (field values, indices, sizes)"
+        # "(prop: CLASS (text))": the violated property under the harness
+        mm = re.search(r"\(([\w+-]+): ([A-Z0-9-]+) \(([^)]*)", m)
+        cls = mm.group(2) if mm else (j.get("class") or "")
+        text = mm.group(3) if mm else ""
+        if "function pointer" in text:
+            return "function-pointer field: call through a null/arbitrary pointer"
+        if cls in ("MEM-PTR-ARITH", "PTR-NULL-DEREF", "PTR-INVALID-DEREF", "MEM-UAF"):
+            # an arbitrary pointer field (depth bound, no pointee type, MMIO base, ...) used without a check
+            return "arbitrary pointer field: null/invalid deref or arithmetic (depth bound, no pointee type)"
+        if cls.startswith("MEM-OOB"):
+            return "arbitrary field used as an index or size: out of bounds"
+        if cls.startswith("INT-") or cls.startswith("DIV") or "SHIFT" in cls or "OVF" in cls:
+            return "arbitrary field value: integer undefined behaviour (overflow, shift, division)"
+        if cls.startswith("UNINIT"):
+            return "uninitialised read (the harness gives initialised fields; a local)"
+        return "harness violation: " + cls
     if "automatic pointer harness for parameter" in m:
         return "no harness object (" + m.split(": ")[-1][:60] + ")"
     if "recursive call" in m or "call depth" in m:

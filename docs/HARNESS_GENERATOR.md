@@ -134,6 +134,25 @@ else (BOUNDED loop, timeout): the verdict stays, `extra.non_vacuity = NOT ESTABL
 `assume_abort_if_not` is an assumption that ends the path there. A function that always ends in
 `exit()`/`BUG()` is therefore reported vacuous: conservative, never unsound.
 
+### 2.6 What the counts say is next (not built here)
+
+The largest blocker in the measurement is not an object shape: it is a **function-pointer field** that the
+harness leaves arbitrary (`hw->mac.ops.read_reg(hw, ...)`: the call through a null pointer is the "violation"
+under the harness). The second is an **arbitrary pointer field** with no pointee type evidence (the MMIO base
+`hw->hw_addr`, `hw->flash_address`, used only through `readl`/`writel`). Both are "the framework's
+initialisation is not in the function": `e1000e_probe` fills the ops table, `ioremap` the base. Design:
+
+* ops-table fields (PR #56 `--ops-table`, roles in its TSV): a field the module itself assigns in an
+  initialiser (`e1000_init_function_pointers`) is bound to the set of functions assigned to it; a call through
+  it is a call of each of them (inlined, or an unknown-call havoc under `--assume-unknown-calls`), with the
+  assumption "the field was initialised by `<function>`" (a named entry assumption, not `(auto harness)`).
+* MMIO bases: an `__iomem` pointer field with no pointee type gets a device-model object (PR #52,
+  `docs/DEVICE_MODEL.md`): the kernel specs already model `readl`/`writel` on it, so the object only has to
+  be a valid mapping of the device's BAR size.
+
+Neither is in this branch: each is an assumption about the framework that nothing here can check, and it needs
+#56/#52 to land first. The discharge (2.2) then applies to the helpers below them unchanged.
+
 ## 3. Implementation summary
 
 | flag | effect | tests |
