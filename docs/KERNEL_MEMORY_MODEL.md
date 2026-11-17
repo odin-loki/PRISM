@@ -80,14 +80,16 @@ The mapping is applied where the kernel primitive becomes an IR atomic or fence.
    `UNENCODED: assumption <names>` reason and `extra.assumptions` (stage.cpp `refuse_assumptions`,
    Program::assumptions set in extract.cpp `build_impl`). FAILED is never changed: a run the model finds
    is a run of the model, and the model's extra or missing orderings only change what it can find.
-   - Unrecognised external calls (`conc-extern-noeffect`): a call in scope to a function that is not
-     defined in the module, other than the benign set in `extern_call_benign` (verifier and debug
-     intrinsics, assert, abort, exit, the stdio output calls), and any indirect call, gets no effect
-     in the model (extract.cpp, end of rewrite_call). It may synchronise or write shared memory, so
-     any BOUNDED in that scope is withheld. This applies to every conc unit, not only kernel mode: the
-     same no-effect rule is unsound in C. Havoc of the shared state was not done: it would add
-     nondeterministic writes to every shared global, which creates spurious data races (a FAILED the
-     LKMM does not have); the assumption is the narrower step.
+   - Unrecognised external calls. The earlier note that these "pass through with no effect" is out of
+     date for calls inside a thread: the PIR translation refuses an undefined callee there
+     (`UNENCODED: call @f (in thread p)`, checked with ext_sync, strlen, memcmp, puts, usleep), so the
+     verdict is already NEEDS-HARNESS. The guard `conc-extern-noeffect` (extract.cpp, end of
+     rewrite_call; `extern_call_benign` lists the calls that have no effect: verifier and debug
+     intrinsics, `__prism.uninit`, assert, abort, exit, stdio output) withholds a BOUNDED if a call
+     the translation does accept reaches the conc stage without a visible operation. No such call is
+     known today, and no litmus test reaches that path, so it is a guard, not a tested fix. Havoc of
+     the shared state was not done: it would add nondeterministic writes to every shared global, which
+     creates spurious data races (FAILED the LKMM does not have).
    - Load buffering (`lkmm-no-lb`): kernel mode only (below). The LB shape is a relaxed load of one
      location followed, with no full ordering in between, by a relaxed store to another location, in
      at least two threads. Full orderings are seq_cst fences, smp_mb__before/after_atomic, and
@@ -143,7 +145,7 @@ unreachable). Each header cites the source of the expected outcome.
 | mp_kernel_relacq | BOUNDED | tools/memory-model/litmus-tests/MP+pooncerelease+poacquireonce.litmus (Never) |
 | mp_kernel_wmb_rmb | NEEDS-HARNESS (lkmm-rmb-strong, lkmm-wmb-strong) | .../MP+fencewmbonceonce+fencermbonceonce.litmus (Never); withheld because the fences are stronger than smp_rmb / smp_wmb |
 | lb_kernel_once | NEEDS-HARNESS (lkmm-no-lb) | .../LB+poonceonces.litmus (Sometimes): the LKMM allows the outcome, the model forbids it, so no BOUNDED claim |
-| mp_kernel_extern | NEEDS-HARNESS (conc-extern-noeffect) | MP with an undefined external call between the producer's stores (the call's effect is not modelled); shape of MP+poonceonces.litmus |
+| mp_kernel_extern | NEEDS-HARNESS (UNENCODED: call @ext_sync) | MP with an undefined external call between the producer's stores: refused by the PIR translation; shape of MP+poonceonces.litmus |
 | mp_kernel_once | FAILED | .../MP+poonceonces.litmus (Sometimes) |
 | sb_kernel_mb | BOUNDED | .../SB+fencembonceonces.litmus (Never) |
 | sb_kernel_once | FAILED | .../SB+poonceonces.litmus (Sometimes) |

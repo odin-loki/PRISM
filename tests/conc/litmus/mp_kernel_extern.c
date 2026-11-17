@@ -1,6 +1,6 @@
-// EXPECT: NEEDS-HARNESS conc-extern-noeffect. Kernel MP with an external call between the producer's
-// accesses. ext_sync() is not defined in the module: the conc model gives it no effect, but it may
-// synchronise or write buf, so a BOUNDED verdict would rest on an unmodelled call.
+// EXPECT: NEEDS-HARNESS. Kernel MP with an external call between the producer's accesses.
+// ext_sync() is not defined in the module, so it may synchronise or write buf. The PIR translation
+// refuses an undefined call in a thread ("UNENCODED: call @ext_sync"), so no BOUNDED can rest on it.
 // Source: the MP shape of linux tools/memory-model/litmus-tests/MP+poonceonces.litmus (Result: Sometimes),
 // with an opaque call in the middle. docs/KERNEL_MEMORY_MODEL.md section 4 (unrecognised calls).
 #include <pthread.h>

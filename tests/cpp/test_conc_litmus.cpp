@@ -74,7 +74,7 @@ TEST_CASE("conc litmus: every test names a verdict and a source") {
     for (auto& f : files) {
         const auto v = expected_of(f);
         CAPTURE(f.string());
-        CHECK((v == "FAILED" || v == "BOUNDED" || (v == "NEEDS-HARNESS" && !assumption_of(f).empty())));
+        CHECK((v == "FAILED" || v == "BOUNDED" || v == "NEEDS-HARNESS"));
     }
 }
 
@@ -98,9 +98,13 @@ TEST_CASE("conc litmus: each result matches the published expected outcome") {
         if (want == "BOUNDED") CHECK(r.status == prism::laws::BOUNDED);
         if (want == "NEEDS-HARNESS") {
             // the verdict is withheld, and it names the assumption it would have depended on
+            // (no named assumption: the call is refused by the PIR translation, an UNENCODED reason)
             const auto a = assumption_of(f);
             CHECK(r.status == prism::laws::NEEDS_HARNESS);
-            CHECK(r.message.find("assumption " + a) != std::string::npos);
+            if (a.empty())
+                CHECK(r.message.starts_with("UNENCODED:"));
+            else
+                CHECK(r.message.find("assumption " + a) != std::string::npos);
         }
         CHECK(r.status != prism::laws::PROVED);
     }

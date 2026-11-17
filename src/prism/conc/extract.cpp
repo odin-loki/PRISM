@@ -158,8 +158,8 @@ thread_local std::set<std::string> tl_externs;
 // and debug intrinsics, assertion and abort, and the stdio output calls.
 bool extern_call_benign(const std::string& n) {
     if (n.starts_with("llvm.dbg.") || n.starts_with("llvm.lifetime.") || n.starts_with("llvm.assume") ||
-        n.starts_with("llvm.expect") || n.starts_with("__VERIFIER_"))
-        return true;
+        n.starts_with("llvm.expect") || n.starts_with("__VERIFIER_") || n.starts_with("__prism.uninit"))
+        return true;  // __prism.uninit.*: the value of an uninitialised local (PIR), no memory effect
     static const std::set<std::string> ok{"printf", "puts", "putchar", "fprintf", "fputs", "fflush",
                                           "__assert_fail", "abort", "exit"};
     return ok.count(n) > 0;
@@ -1540,19 +1540,28 @@ struct Rewriter {
 
 // Load buffering (docs/KERNEL_MEMORY_MODEL.md section 4): the model forbids LB, the
 // LKMM allows it. A relaxed load of one location followed, with no full ordering in
-// between, by a relaxed store to another location is one half of an LB cycle; the
-// cycle needs such a pattern in two threads. Dependencies are not modelled, so they
-// do not count as ordering. Acquire loads and release stores are not treated as
-// resets (conservative: a reset can only remove a downgrade).
+// between, by a relaxed store to another location is one edge of an LB cycle. The
+// caller (build_impl) joins the edges of the threads. Dependencies are not modelled,
+// so they do not count as ordering. Acquire loads and release stores are not treated
+// as resets (conservative: a reset can only remove a downgrade).
 struct KernelScan {
     bool kernel = false;     // kernel-style primitives seen in scope
     bool acq_fence = false;  // a fence with order acquire (the smp_rmb spelling)
     bool rel_fence = false;  // a fence with order release (the smp_wmb spelling)
-    std::set<std::string> lb_functions;  // functions with an LB-shaped access pattern
+    // function -> (load location, later store location) of each LB-shaped pattern in it
+    std::map<std::string, std::set<std::pair<std::string, std::string>>> lb_pairs;
 };
 
 bool word_in(const std::vector<std::string>& ws, const char* w) {
     return std::find(ws.begin(), ws.end(), w) != ws.end();
+}
+
+// The words of an instruction with the separating commas removed ("acquire," is "acquire").
+std::vector<std::string> clean_words(const std::string& text) {
+    auto ws = words(text);
+    for (auto& w : ws)
+        while (!w.empty() && w.back() == ',') w.pop_back();
+    return ws;
 }
 
 KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) {
@@ -1563,10 +1572,14 @@ KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) 
     for (auto& f : m.functions) {
         if (!scope.count(f.name)) continue;
         std::set<std::string> loads;  // relaxed-load locations since the last full ordering
-        bool hit = false;
+        std::set<std::string> allocas;  // stack slots of this function: not shared memory
+        for (auto& bl : f.blocks)
+            for (auto& in : bl.insts)
+                if (in.op == "alloca" && !in.result.empty()) allocas.insert(in.result);
+        std::set<std::pair<std::string, std::string>> pairs;
         for (auto& bl : f.blocks)
             for (auto& in : bl.insts) {
-                const auto ws = words(in.text);
+                const auto ws = clean_words(in.text);
                 const bool call = in.op == "call";
                 const bool fence = in.op == "fence" ||
                                    (call && in.callee == "llvm.donothing" && !ws.empty() && ws.front() == "fence");
@@ -1590,12 +1603,16 @@ KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) 
                 const bool rmw = in.op == "atomicrmw" || in.op == "cmpxchg";
                 if (!load && !store && !rmw) continue;
                 if (word_in(ws, "volatile")) ks.kernel = true;  // READ_ONCE / WRITE_ONCE
+                // the accessed pointer: a stack slot of this function is not shared
+                const ir::Operand* ptr = store ? (in.ops.size() < 2 ? nullptr : &in.ops.back())
+                                               : (in.ops.empty() ? nullptr : &in.ops[0]);
+                if (ptr && ptr->v.kind == ir::Value::Local && allocas.count(ptr->v.name)) continue;
                 const bool full = word_in(ws, "seq_cst") || word_in(ws, "acq_rel");
                 const bool acq = word_in(ws, "acquire"), rel = word_in(ws, "release");
                 if (full) loads.clear();  // a full-order access orders everything around it
                 auto check = [&](const std::string& y) {
                     for (const auto& x : loads)
-                        if (differs(x, y)) hit = true;
+                        if (differs(x, y)) pairs.insert({x, y});
                 };
                 if (load) {
                     const std::string x = in.ops.empty() ? std::string("?") : loc(in.ops[0]);
@@ -1611,7 +1628,7 @@ KernelScan kernel_scan(const ir::Module& m, const std::set<std::string>& scope) 
                     }
                 }
             }
-        if (hit) ks.lb_functions.insert(f.name);
+        if (!pairs.empty()) ks.lb_pairs[f.name] = std::move(pairs);
     }
     return ks;
 }
@@ -1943,17 +1960,34 @@ Build build_impl(const ir::Module& m, std::string_view ir_text, const std::strin
             if (ks.kernel) {
                 if (ks.acq_fence) rw.prog.assumptions.push_back("lkmm-rmb-strong");
                 if (ks.rel_fence) rw.prog.assumptions.push_back("lkmm-wmb-strong");
-                int lb = 0;  // threads whose reachable code has an LB-shaped pattern
+                // An LB cycle needs two threads whose patterns cross (A loads x and stores y,
+                // B loads y and stores x), or at least three threads with patterns (a longer
+                // cycle). A location "?" may alias any other.
+                using Pairs = std::set<std::pair<std::string, std::string>>;
+                std::vector<Pairs> pats;
                 for (auto& th : rw.prog.threads) {
-                    const auto reach = closure(th.entry);
-                    if (std::any_of(reach.begin(), reach.end(),
-                                    [&](const std::string& f) { return ks.lb_functions.count(f) > 0; }))
-                        ++lb;
+                    Pairs mine;
+                    for (auto& f : closure(th.entry))
+                        if (auto it = ks.lb_pairs.find(f); it != ks.lb_pairs.end())
+                            mine.insert(it->second.begin(), it->second.end());
+                    if (!mine.empty()) pats.push_back(std::move(mine));
                 }
-                if (lb >= 2) rw.prog.assumptions.push_back("lkmm-no-lb");
+                auto may_alias = [](const std::string& a, const std::string& b) {
+                    return a == b || a == "?" || b == "?";
+                };
+                bool lb = pats.size() >= 3;
+                for (std::size_t i = 0; i < pats.size() && !lb; ++i)
+                    for (std::size_t j = i + 1; j < pats.size() && !lb; ++j)
+                        for (const auto& p1 : pats[i])
+                            for (const auto& p2 : pats[j])
+                                if (may_alias(p1.second, p2.first) && may_alias(p2.second, p1.first)) lb = true;
+                if (lb) rw.prog.assumptions.push_back("lkmm-no-lb");
             }
         }
-        if (!tl_externs.empty()) rw.prog.assumptions.push_back("conc-extern-noeffect");
+        if (!tl_externs.empty()) {
+            rw.prog.assumptions.push_back("conc-extern-noeffect");
+            rw.prog.extern_calls.assign(tl_externs.begin(), tl_externs.end());
+        }
         b.prog = std::move(rw.prog);
         b.status.clear();
     } catch (const Unenc& u) {

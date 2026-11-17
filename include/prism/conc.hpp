@@ -144,6 +144,7 @@ struct Program {
     // differs from the LKMM or does not cover a call (docs/KERNEL_MEMORY_MODEL.md section 4).
     // Non-empty: the stage withholds BOUNDED (stage.cpp refuse_assumptions).
     std::vector<std::string> assumptions;
+    std::vector<std::string> extern_calls;  // the unrecognised external callees behind conc-extern-noeffect
     std::vector<VisOp> ops;
     std::vector<Thread> threads;      // [0] is the harness
     int atomic_mutex = -1;            // pseudo-mutex of SV-COMP atomic sections (-1: none)
