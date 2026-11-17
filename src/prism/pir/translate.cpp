@@ -198,6 +198,27 @@ struct Tr final : pirmem::TrApi {
     bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
     Arg opaque_ptr(int& cur, const std::string& what, int line);
+    // ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md)
+    std::optional<Arg> lk_;                           // hidden object: held locks, atomic depth
+    int lk_var_ = -1;                                 // lk_'s preassigned variable (object emitted in run_frame)
+    bool lk_pending_ = false;
+    static bool reaches_lock_state(const ir::Module& m, const ir::Function& f);
+    void lock_return_check(int b, int line);
+    void emit_lock_state();
+    Arg lock_word(int b, unsigned i, int line);
+    void lock_take(int b, Arg p, Arg spin, int line);
+    void lock_drop(int b, Arg p, Arg spin, int line);
+    void sleep_point(int b, int line);
+    void sleep_if(int b, Arg may, int line);
+    void lock_bump(int b, unsigned w, Arg delta, int line);
+    Arg lock_contains(int b, unsigned base, Arg p, int line);
+    void lock_insert(int b, unsigned base, Arg p, Arg fresh, int line);
+    void lock_declare(int b, bool entry, Arg p, Arg spin, int line);
+    void lock_table(Frame& fr);
+    bool lock_contracted(const std::string& fn) const;
+    void atomic_add(int b, Arg delta, int line);
+    void rcu_add(int b, Arg delta, int line);
+    bool lock_root(const Frame& fr) const { return !frames.empty() && &fr == frames.front(); }
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -533,6 +554,11 @@ struct Tr final : pirmem::TrApi {
             // the hidden caught-exceptions stack, when a handler can be entered:
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
+            // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            if (reaches_lock_state(m, f) || lock_contracted(f.name)) {
+                lk_var_ = newvar("_lock", ptr_w());
+                lk_pending_ = true;
+            }
         }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
@@ -649,6 +675,8 @@ struct Tr final : pirmem::TrApi {
             }
             if (caught_var_ >= 0 && !caught_)
                 caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
+            if (lk_pending_) emit_lock_state();  // translate_lock.inc
+            if (lk_) lock_table(fr);            // --lock-contracts of this root (translate_lock.inc)
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
@@ -917,6 +945,7 @@ struct Tr final : pirmem::TrApi {
                     mt.stack_escape_check(cur, Arg::v(src, out.vars[static_cast<std::size_t>(src)].width),
                                           fr.allocas, line);
             }
+            lock_return_check(cur, line);
             Term t;
             t.kind = Term::Ret;
             out.blocks[static_cast<std::size_t>(cur)].term = t;
@@ -982,6 +1011,7 @@ struct Tr final : pirmem::TrApi {
             }
             return;
         }
+        lock_return_check(cur, line);  // LOCK-HELD-ON-RETURN (translate_lock.inc)
         Term t;
         t.kind = Term::Ret;
         t.val = v;
@@ -2145,6 +2175,36 @@ struct Tr final : pirmem::TrApi {
             mt.read_range(cur, arg(0), arg(1), line);
             return;
         }
+        // ghost lock state of the kernel lock specs (translate_lock.inc)
+        if (n == "__prism_lock_acquire") {
+            lock_take(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_lock_release") {
+            lock_drop(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_sleep_point") {
+            sleep_point(cur, line);
+            return;
+        }
+        if (n == "__prism_sleep_if") {
+            sleep_if(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_atomic_add") {
+            atomic_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_rcu_add") {
+            rcu_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_lock_entry" || n == "__prism_lock_exit") {
+            // contract markers: read only in the analysed function (translate_lock.inc)
+            if (lock_root(fr)) lock_declare(cur, n == "__prism_lock_entry", arg(0), n == "__prism_lock_entry" ? arg(1) : Arg::c(1, 0), line);
+            return;
+        }
         if (n == "__prism_havoc_bytes") {
             mt.write_havoc(cur, arg(0), arg(1), line);
             return;
@@ -2224,6 +2284,7 @@ struct Tr final : pirmem::TrApi {
 #include "translate_ctl.inc"
 #include "translate_kernel.inc"
 #include "translate_asm.inc"
+#include "translate_lock.inc"
 
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;

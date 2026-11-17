@@ -90,6 +90,9 @@ struct Config {
     // --ops-table FILE: indirect calls through a field of a known ops table are checked
     // against that field's targets (docs/PIR.md). Empty = off (default).
     std::filesystem::path ops_table;
+    // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
+    // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
+    std::string pir_lock_contracts;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 

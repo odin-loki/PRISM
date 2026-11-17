@@ -36,11 +36,15 @@
 
 extern "C" {
 
+/* translator intrinsic (translate_lock.inc): SLEEP-IN-ATOMIC while a spinlock is held */
+void __prism_sleep_point(void);
+
 #define DELAY_NOTE "linux-delay: delays have no effect on memory: no other thread, interrupt or device runs while the function sleeps"
 #define LOG_NOTE "linux-log: logging has no effect on memory the function can see; its format arguments are not checked"
 
-void msleep(unsigned int msecs) { (void)msecs; ASSUME(DELAY_NOTE); }
+void msleep(unsigned int msecs) { (void)msecs; __prism_sleep_point(); ASSUME(DELAY_NOTE); }
 unsigned long msleep_interruptible(unsigned int msecs) {
+    __prism_sleep_point();
     ASSUME(DELAY_NOTE);
     unsigned long left = __VERIFIER_nondet_ulong();
     __prism_assume(left <= msecs);
@@ -48,6 +52,7 @@ unsigned long msleep_interruptible(unsigned int msecs) {
 }
 void usleep_range_state(unsigned long min, unsigned long max, unsigned int state) {
     (void)min; (void)max; (void)state;
+    __prism_sleep_point();
     ASSUME(DELAY_NOTE);
 }
 void __udelay(unsigned long usecs) { (void)usecs; ASSUME(DELAY_NOTE); }

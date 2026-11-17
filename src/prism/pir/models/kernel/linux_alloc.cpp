@@ -26,9 +26,13 @@
 extern "C" {
 
 #define GFP_ZERO 0x100u
+#define GFP_DIRECT_RECLAIM 0x400u  /* __GFP_DIRECT_RECLAIM (include/linux/gfp_types.h): GFP_KERNEL has it, GFP_ATOMIC does not */
+
+void __prism_sleep_if(int may);  /* translate_lock.inc: SLEEP-IN-ATOMIC when may is set and a lock is held */
 
 static void *lx_alloc(size_t n, unsigned int gfp) {
-    ASSUME("linux-alloc: allocation may fail (NULL) for any size and gfp flags; __GFP_ZERO is bit 0x100 (include/linux/gfp_types.h, Linux 6.18); size 0 gives a size-0 object (ZERO_SIZE_PTR); sleeping-context rules and __GFP_NOFAIL are not modelled");
+    ASSUME("linux-alloc: allocation may fail (NULL) for any size and gfp flags; __GFP_ZERO is bit 0x100 (include/linux/gfp_types.h, Linux 6.18); size 0 gives a size-0 object (ZERO_SIZE_PTR); __GFP_NOFAIL is not modelled; a reclaiming allocation (__GFP_DIRECT_RECLAIM) is a sleep point");
+    __prism_sleep_if((gfp & GFP_DIRECT_RECLAIM) != 0);
     if (n >= PRISM_MAX_OBJ || CHOICE()) return 0;
     if (gfp & GFP_ZERO) return __prism_alloc(n, PRISM_HEAP, PRISM_ZERO);
     return __prism_alloc(n, PRISM_HEAP, PRISM_UNINIT);

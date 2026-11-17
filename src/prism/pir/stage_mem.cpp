@@ -8,7 +8,10 @@
 #include "prism/laws.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <regex>
+#include <sstream>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 
@@ -119,6 +122,8 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.fp_checks = cfg.fp_checks;
     o.kernel_api = cfg.pir_kernel_api;
     o.assume_unknown_calls = cfg.pir_assume_unknown_calls;
+    // --lock-contracts (translate_lock.inc lock_table)
+    if (!cfg.pir_lock_contracts.empty()) o.lock_contracts = read_lock_contracts(cfg.pir_lock_contracts);
     o.asm_contracts = asm_contracts(unit.src_lines);
     o.globals_initial = source_name == "main";
     o.auto_harness.on = cfg.pir_harness;

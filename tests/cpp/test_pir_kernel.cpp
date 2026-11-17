@@ -402,3 +402,204 @@ TEST_CASE("pir kernel: FreeBSD W2 group b: strncpy") {
                 {{"strncpy_ok", "PROVED-ASSUMING", "freebsd-w2-strncpy"},
                  {"strncpy_bad", "FAILED", ""}});
 }
+
+TEST_CASE("pir kernel: lock balance, double lock, unlock of an unheld lock, sleeping in atomic context (ghost lock state)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_ctx.c", "linux", false,
+                {{"lock_relock_ok", PA, "linux-lock"},
+                 {"lock_double_bad", F, ""},
+                 {"spin_double_bad", F, ""},
+                 {"spin_nested_ok", PA, "linux-lock"},
+                 {"unlock_unheld_bad", F, ""},
+                 {"sleep_in_spin_bad", F, ""},
+                 {"sleep_after_spin_ok", PA, "linux-lock"},
+                 {"might_sleep_in_spin_bad", F, ""},
+                 {"might_sleep_ok", PA, "linux-might-sleep"},
+                 {"held_on_return_bad", F, ""},
+                 {"held_on_return_ok", PA, "linux-lock"}});
+    // each bad variant reports its own bug class, not another one
+    auto got = run("kernel_lock_ctx.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"lock_double_bad", "LOCK-DOUBLE"},         {"spin_double_bad", "LOCK-DOUBLE"},
+        {"unlock_unheld_bad", "LOCK-UNHELD-UNLOCK"}, {"sleep_in_spin_bad", "SLEEP-IN-ATOMIC"},
+        {"held_on_return_bad", "LOCK-HELD-ON-RETURN"},
+        {"might_sleep_in_spin_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: lock contracts (__prism_lock_entry / __prism_lock_exit): a returned-held lock is not reported") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_contract.c", "linux", false,
+                {{"take_declared_ok", PA, "linux-lock-contract"},
+                 {"take_undeclared_bad", F, ""},
+                 {"take_exit_missing_bad", F, ""},
+                 {"release_entry_ok", PA, "linux-lock-contract"},
+                 {"entry_held_on_return_bad", F, ""},
+                 {"pass_through_ok", PA, "linux-lock-contract"},
+                 {"entry_spin_sleep_bad", F, ""},
+                 {"caller_ok", PA, "linux-lock-overflow"}});
+    auto got = run("kernel_lock_contract.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"take_undeclared_bad", "LOCK-HELD-ON-RETURN"},
+        {"take_exit_missing_bad", "LOCK-EXIT-MISSING"},
+        {"entry_held_on_return_bad", "LOCK-HELD-ON-RETURN"},
+        {"entry_spin_sleep_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: preempt and bh depth, sleeping in atomic context (SLEEP-IN-ATOMIC), GFP_KERNEL in a spinlock") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_preempt.c", "linux", false,
+                {{"preempt_sleep_bad", F, ""},
+                 {"preempt_sleep_ok", PA, "linux-preempt"},
+                 {"preempt_unbalanced_bad", F, ""},
+                 {"preempt_held_on_return_bad", F, ""},
+                 {"bh_sleep_bad", F, ""},
+                 {"bh_sleep_ok", PA, "linux-preempt"},
+                 {"kmalloc_in_spin_bad", F, ""},
+                 {"kmalloc_atomic_ok", PA, "linux-alloc"},
+                 {"kmalloc_kernel_ok", PA, "linux-alloc"}});
+    auto got = run("kernel_lock_preempt.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"preempt_sleep_bad", "SLEEP-IN-ATOMIC"},
+        {"preempt_unbalanced_bad", "PREEMPT-UNBALANCED"},
+        {"preempt_held_on_return_bad", "PREEMPT-UNBALANCED"},
+        {"bh_sleep_bad", "SLEEP-IN-ATOMIC"},
+        {"kmalloc_in_spin_bad", "SLEEP-IN-ATOMIC"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+}
+
+TEST_CASE("pir kernel: RCU read-side nesting (RCU-UNBALANCED, RCU-HELD-ON-RETURN, RCU-SLEEP)") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    const char* PA = "PROVED-ASSUMING";
+    const char* F = "FAILED";
+    check_table("kernel_lock_rcu.c", "linux", false,
+                {{"rcu_balance_ok", PA, "linux-rcu"},
+                 {"rcu_unbalanced_bad", F, ""},
+                 {"rcu_held_on_return_bad", F, ""},
+                 {"rcu_sleep_bad", F, ""},
+                 {"rcu_sleep_ok", PA, "linux-rcu"},
+                 {"rcu_sync_bad", F, ""},
+                 {"rcu_sync_ok", PA, "linux-rcu"}});
+    auto got = run("kernel_lock_rcu.c", "linux", false);
+    const std::map<std::string, std::string> want = {
+        {"rcu_unbalanced_bad", "RCU-UNBALANCED"},
+        {"rcu_held_on_return_bad", "RCU-HELD-ON-RETURN"},
+        {"rcu_sleep_bad", "RCU-SLEEP"},
+        {"rcu_sync_bad", "RCU-SLEEP"}};
+    for (auto& [fn, cls] : want) {
+        auto it = got.find(fn);
+        REQUIRE(it != got.end());
+        CHECK(it->second.cls == cls);
+    }
+
+// --lock-contracts (docs/KERNEL_CONCURRENCY.md section 14): table-driven contracts for code with no markers
+namespace {
+std::map<std::string, prism::Finding> run_with_table(const std::string& file, const std::string& tsv) {
+    auto cfg = prism::default_config();
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    if (!tsv.empty()) cfg.pir_lock_contracts = (dir / tsv).string();
+    std::map<std::string, prism::Finding> m;
+    for (auto& f : pp::run_pir({dir / file}, cfg))
+        if (f.function) m[*f.function] = f;
+    return m;
+}
+}  // namespace
+
+TEST_CASE("pir kernel: --lock-contracts table: acquire and release halves are contracts, a wrong contract is reported") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    // without the table: the model artefacts (true variant)
+    auto none = run_with_table("kernel_lock_table.c", "");
+    REQUIRE(none.count("nvm_acquire_ok"));
+    REQUIRE(none.count("nvm_release_ok"));
+    CHECK(none["nvm_acquire_ok"].cls == "LOCK-HELD-ON-RETURN");
+    CHECK(none["nvm_release_ok"].cls == "LOCK-UNHELD-UNLOCK");
+    // with the table (false variant): no finding for the two halves, the contracts are assumed
+    auto got = run_with_table("kernel_lock_table.c", "kernel_lock_table.tsv");
+    REQUIRE(got.count("nvm_acquire_ok"));
+    REQUIRE(got.count("nvm_release_ok"));
+    CHECK(got["nvm_acquire_ok"].status == prism::laws::PROVED_ASSUMING);
+    CHECK(assumptions_of(got["nvm_acquire_ok"]).find("lock-contract-table") != std::string::npos);
+    CHECK(got["nvm_release_ok"].status == prism::laws::PROVED_ASSUMING);
+    CHECK(assumptions_of(got["nvm_release_ok"]).find("lock-contract-table") != std::string::npos);
+    // a wrong table row (acquires, but the function releases first): LOCK-EXIT-MISSING
+    REQUIRE(got.count("wrong_contract_bad"));
+    CHECK(got["wrong_contract_bad"].status == prism::laws::FAILED);
+    CHECK(got["wrong_contract_bad"].cls == "LOCK-EXIT-MISSING");
+    // a spin contract (kind spin): the mutex call while the caller's spinlock is held sleeps
+    REQUIRE(got.count("spin_entry_sleep_bad"));
+    CHECK(got["spin_entry_sleep_bad"].status == prism::laws::FAILED);
+    CHECK(got["spin_entry_sleep_bad"].cls == "SLEEP-IN-ATOMIC");
+}
+
+TEST_CASE("pir kernel: --lock-contracts TSV parse: header and comments skipped, bad lines are errors") {
+    std::string err;
+    auto ok = pp::parse_lock_contracts("function\tlock\taction\n# c\nf\tglobal:m\tacquires\tspin\n", &err);
+    CHECK(err.empty());
+    REQUIRE(ok.size() == 1);
+    CHECK(ok[0].function == "f");
+    CHECK(ok[0].lock == "global:m");
+    CHECK(ok[0].spin);
+    auto bad = pp::parse_lock_contracts("f\tm\tacquires\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("line 1") != std::string::npos);
+    bad = pp::parse_lock_contracts("f\tglobal:m\ttakes\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("action") != std::string::npos);
+    bad = pp::parse_lock_contracts("f\targ:0\trequires-held\tfast\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("kind") != std::string::npos);
+}
+
+// LOCK-ORDER-INVERSION (docs/KERNEL_CONCURRENCY.md section 14): a lock-class pair taken in both orders
+TEST_CASE("pir kernel: lock order: a pair taken A-then-B and B-then-A is LOCK-ORDER-INVERSION, a consistent order is not") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    auto count_inversions = [&](const std::string& file, std::vector<prism::Finding>& keep) {
+        cfg.root = dir;
+        cfg.jobs = 2;
+        cfg.pir_kernel_api = "linux";
+        keep = pp::run_pir({dir / file}, cfg);
+        int n = 0;
+        for (auto& f : keep)
+            if (f.cls == "LOCK-ORDER-INVERSION") ++n;
+        return n;
+    };
+    std::vector<prism::Finding> t, f;
+    CHECK(count_inversions("kernel_lock_order_true.c", t) == 1);
+    for (auto& x : t)
+        if (x.cls == "LOCK-ORDER-INVERSION") {
+            CHECK(x.status == prism::laws::FAILED);
+            CHECK(x.extra.count("lock_classes"));
+            if (x.extra.count("lock_classes")) CHECK(x.extra.at("lock_classes") == "lock_a,lock_b");
+            CHECK(x.function.has_value());
+        }
+    CHECK(count_inversions("kernel_lock_order_false.c", f) == 0);
+}
