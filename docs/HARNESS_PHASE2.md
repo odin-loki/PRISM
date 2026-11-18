@@ -22,10 +22,10 @@ Linux functions and 482 of 733 FreeBSD functions NEEDS-HARNESS. By message (`dat
 | `UNENCODED: extern object of unknown size` | 34 | 0 |
 | `UNENCODED: initializer ... (inttoptr constant expression)` / `constant getelementptr on inttoptr` | 32 | 0 |
 
-(The first row of this document's brief, "body-less callee reached", does not appear in this data: with
-`--assume-unknown-calls` every body-less call is already a havoc. It was the top blocker of the OS-Proving brute-force
-pass, a different tool. What phase 2 adds for those callees is precision and checking: the call site is checked against
-the contract, only what the contract allows to change is havocked, and the result is constrained.)
+(The "body-less callee reached" blocker of the OS-Proving brute-force pass, a different tool, does not appear in this data as
+such: with `--assume-unknown-calls` every body-less call is already a havoc, except the intrinsics in row 2. What phase 2 adds for
+callees that have a contract is precision and checking: the call site is checked against the contract, only what the contract allows
+to change is havocked, and the result is constrained.)
 
 ## 1. Contract stubs (`--callee-contracts FILE`)
 
@@ -225,5 +225,8 @@ on these units they do not reduce NEEDS-HARNESS by much; the table says where to
 * The MMIO base object (`hw->hw_addr`, an `__iomem` field with no pointee type) is still an arbitrary pointer.
 * **Variadic callees** (`sysfs_emit` 75 functions, `seq_printf`): a contract signature cannot say `...`; they stay unknown calls.
 * Absolute addresses are not modelled; per-cpu offset arithmetic on a `ptrtoint` base is NEEDS-HARNESS, never a result.
-* `cacheinfo.c` times out with the new flags (1500 s; W8 277 s, same-binary run finished it): the cause (more inlined targets, the deeper harness
-  or the load) is not isolated.
+* `cacheinfo.c` times out with the new flags (1500 s; W8 277 s; the same binary without the flags: 276 s). Isolated by flag on that unit
+  (900 s limit): `--pir-harness-deep` alone 283 s, `--pir-ops-auto` alone 307 s, `--callee-contracts` with `--pir-builtin-contracts` 306 s,
+  `--pir-addr-values` alone over 900 s (twice). The 21 functions of that unit that stopped at `UNENCODED: constant expression ptrtoint`
+  now run the checks, and the pass that follows them (the call-site discharge, budget `PRISM_DISCHARGE_BUDGET` 900 s, plus the vacuity
+  check) is the likely cost; the function-level cause was not located (the machine was at load 80 to 100).
