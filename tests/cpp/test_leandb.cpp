@@ -40,15 +40,15 @@ struct fixture {
         auto c = db::connection::open(input.string());
         c.exec(
             "CREATE TABLE sources(name TEXT PRIMARY KEY, kind TEXT, use TEXT, license TEXT, provenance TEXT);"
-            "CREATE TABLE decls(id INTEGER PRIMARY KEY, source TEXT, module TEXT, file TEXT, kind TEXT, name TEXT, full_name TEXT, namespace TEXT,"
+            "CREATE TABLE decls(id INTEGER PRIMARY KEY, source TEXT, module TEXT, file TEXT, line INTEGER, kind TEXT, name TEXT, full_name TEXT, namespace TEXT,"
             " signature TEXT, body TEXT, docstring TEXT, norm_hash TEXT, eval_overlap INTEGER DEFAULT 0, searchable INTEGER DEFAULT 1);"
             "CREATE TABLE problems(id INTEGER PRIMARY KEY, source TEXT, use TEXT, orig_id TEXT, split TEXT, formal_statement TEXT, formal_proof TEXT,"
             " proof_form TEXT, norm_hash TEXT, eval_overlap INTEGER DEFAULT 0);"
-            "CREATE TABLE trace_theorems(id INTEGER PRIMARY KEY, source TEXT, file TEXT, full_name TEXT, statement TEXT, norm_hash TEXT, eval_overlap INTEGER DEFAULT 0);");
+            "CREATE TABLE trace_theorems(id INTEGER PRIMARY KEY, source TEXT, file TEXT, full_name TEXT, start_line INTEGER, statement TEXT, norm_hash TEXT, eval_overlap INTEGER DEFAULT 0);");
         c.exec("INSERT INTO sources VALUES('libA','git','library','Apache-2.0','confirmed'),('dataB','hf','data','MIT',NULL),"
                "('dataC','hf','data','see dataset card',NULL),('evalD','hf','eval','MIT',NULL)");
         db::transaction tx(c);
-        auto d = c.prepare("INSERT INTO decls(source,module,file,kind,name,full_name,namespace,signature,body,docstring) VALUES('libA',?,?,?,?,?,?,?,?,?)");
+        auto d = c.prepare("INSERT INTO decls(source,module,file,line,kind,name,full_name,namespace,signature,body,docstring) VALUES('libA',?,?,?,?,?,?,?,?,?,?)");
         for (int i = 0; i < 150; ++i) {
             const std::string mod = "Lib.Mod" + std::to_string(i % 7);
             const std::string nm = "Lib.thm_" + std::to_string(i);
@@ -56,7 +56,7 @@ struct fixture {
             if (i == 3) sig = "theorem bv_add_comm_special (x y : BitVec 8) : x + y = y + x";
             if (i == 4) sig = "theorem nat_mul_two (n : Nat) : n * 2 = n + n";
             if (i == 5) sig = "theorem wolfhound_lemma (a b : Int) (h : a < b) : a + 1 <= b";
-            d.run(mod, "f.lean", "theorem", nm, nm, "Lib", sig, "by simp", "");
+            d.run(mod, "f.lean", i + 1, "theorem", nm, nm, "Lib", sig, "by simp", "");
         }
         auto p = c.prepare("INSERT INTO problems(source,use,orig_id,split,formal_statement,formal_proof,proof_form) VALUES(?,?,?,?,?,?,?)");
         for (int i = 0; i < 60; ++i)
@@ -356,3 +356,38 @@ TEST_CASE("leandb: fetch script downloads a pinned fake source, checks hashes, i
     CHECK(ldb::verify(root / "local", root / "PIN.json", true).ok);
 }
 #endif
+
+TEST_CASE("leandb: shards depend on the rows, not on the input row ids, so one source rebuilds to the same shards") {
+    fixture f("rowids");
+    ldb::import_db(f.input, f.opts());
+    const auto m1 = manifest(f.committed);
+    // the same rows with different input row ids (as when a different set of sources was normalised before them)
+    fs::copy_file(f.input, f.root / "renumbered.sqlite");
+    {
+        auto c = db::connection::open((f.root / "renumbered.sqlite").string());
+        c.exec("UPDATE problems SET id = id + 5000; UPDATE decls SET id = id + 100000; UPDATE decls SET id = (id - 100000) * 3 + 1;");
+    }
+    auto o = f.opts();
+    o.out_committed = f.root / "shards2";
+    o.out_local = f.root / "local2";
+    o.out_all = f.root / "all2";
+    ldb::import_db(f.root / "renumbered.sqlite", o);
+    const auto m2 = manifest(f.root / "shards2");
+    REQUIRE(m1["shards"].size() == m2["shards"].size());
+    for (std::size_t i = 0; i < m1["shards"].size(); ++i) CHECK(m1["shards"][i]["sha256"] == m2["shards"][i]["sha256"]);
+    // a rebuild of only one source reproduces exactly that source's shards (shards never span two sources)
+    auto one = f.opts();
+    one.only_sources = {"dataB"};
+    one.out_committed = f.root / "shards3";
+    one.out_local.clear();
+    one.out_all.clear();
+    ldb::import_db(f.input, one);
+    std::map<std::string, std::string> full;
+    for (const auto& s : m1["shards"]) full[s["first_key"].get<std::string>()] = s["sha256"].get<std::string>();
+    const auto m3 = manifest(f.root / "shards3");
+    REQUIRE(m3["shards"].size() >= 1);
+    for (const auto& s : m3["shards"]) {
+        REQUIRE(full.count(s["first_key"].get<std::string>()) == 1);
+        CHECK(full[s["first_key"].get<std::string>()] == s["sha256"].get<std::string>());
+    }
+}

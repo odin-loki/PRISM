@@ -34,8 +34,11 @@ std::string slurp(const fs::path& p) {
 }
 std::string dump(const json& j) { return j.dump(1, ' ', false, json::error_handler_t::replace) + "\n"; }
 
-std::int64_t stable_id(const std::string& source, int tbl, std::int64_t orig) {
-    const auto h = solver::sha256_hex(source + std::string(1, '\0') + std::to_string(tbl) + std::string(1, '\0') + std::to_string(orig));
+// The id comes from the row's natural key (file, line, kind, name; or the dataset id and statement hash), never from the
+// input database's row id, which depends on which sources were normalised before it: a rebuild of one source from upstream
+// then reproduces exactly that source's shards.
+std::int64_t stable_id(const std::string& source, int tbl, const std::string& natural) {
+    const auto h = solver::sha256_hex(source + std::string(1, '\0') + std::to_string(tbl) + std::string(1, '\0') + natural);
     return static_cast<std::int64_t>(std::stoull(h.substr(0, 15), nullptr, 16));  // 60 bits
 }
 
@@ -132,11 +135,13 @@ void fetch_rows(db::connection& in, int tbl, const std::vector<std::int64_t>& id
     (void)src_of;
     const char* sql[] = {
         "SELECT d.id, d.source, d.kind, COALESCE(NULLIF(d.module,''),d.namespace,''), COALESCE(NULLIF(d.full_name,''),d.name,''), d.signature, d.body, d.docstring, "
-        "d.norm_hash, d.eval_overlap, d.searchable FROM decls d WHERE d.id IN ",
+        "d.norm_hash, d.eval_overlap, d.searchable, "
+        "d.file || ':' || COALESCE(d.line,0) || ':' || d.kind || ':' || COALESCE(NULLIF(d.full_name,''),d.name,'') FROM decls d WHERE d.id IN ",
         "SELECT p.id, p.source, COALESCE(p.proof_form,''), COALESCE(p.split,''), COALESCE(p.orig_id,''), p.formal_statement, p.formal_proof, p.use, p.norm_hash, "
-        "p.eval_overlap, 1 FROM problems p WHERE p.id IN ",
-        "SELECT t.id, t.source, 'trace', COALESCE(t.file,''), COALESCE(t.full_name,''), t.statement, NULL, NULL, t.norm_hash, t.eval_overlap, 1 "
-        "FROM trace_theorems t WHERE t.id IN "};
+        "p.eval_overlap, 1, "
+        "COALESCE(p.orig_id,'') || ':' || COALESCE(p.norm_hash,'') FROM problems p WHERE p.id IN ",
+        "SELECT t.id, t.source, 'trace', COALESCE(t.file,''), COALESCE(t.full_name,''), t.statement, NULL, NULL, t.norm_hash, t.eval_overlap, 1, "
+        "COALESCE(t.file,'') || ':' || COALESCE(t.full_name,'') || ':' || COALESCE(t.start_line,0) FROM trace_theorems t WHERE t.id IN "};
     for (std::size_t b = 0; b < ids.size(); b += 400) {
         const std::size_t e = std::min(ids.size(), b + 400);
         std::string q = sql[tbl];
@@ -148,7 +153,7 @@ void fetch_rows(db::connection& in, int tbl, const std::vector<std::int64_t>& id
             row_item ri;
             item& it = ri.it;
             it.tbl = detail::tbl_name(tbl);
-            it.orig_id = r.get<std::int64_t>(0);
+            it.orig_id = 0;  // the input row id is not stored (see stable_id)
             it.source = r.get<std::string>(1);
             ri.src = src_index.at(it.source);
             it.use = srcs[ri.src].use;
@@ -176,7 +181,7 @@ void fetch_rows(db::connection& in, int tbl, const std::vector<std::int64_t>& id
             }
             it.norm_hash = r.is_null(8) ? "" : r.get<std::string>(8);
             it.eval_overlap = r.get<std::int64_t>(9) != 0;
-            it.id = stable_id(it.source, tbl, it.orig_id);
+            it.id = stable_id(it.source, tbl, r.get<std::string>(11));
             if (it.use == "eval" || it.eval_overlap || srcs[ri.src].unverified) it.searchable = false;
             out.push_back(std::move(ri));
         }
@@ -316,11 +321,12 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
     std::vector<key_rec> keys;
     const char* ksql[] = {
         "SELECT d.id, d.source, COALESCE(NULLIF(d.module,''),d.namespace,''), COALESCE(NULLIF(d.full_name,''),d.name,''), COALESCE(length(d.signature),0)+COALESCE(length(d.body),0)+"
-        "COALESCE(length(d.docstring),0), s.use, 0, d.eval_overlap FROM decls d JOIN sources s ON s.name=d.source",
-        "SELECT p.id, p.source, COALESCE(p.split,''), COALESCE(p.orig_id,''), COALESCE(length(p.formal_statement),0)+COALESCE(length(p.formal_proof),0), p.use, 1, p.eval_overlap "
-        "FROM problems p",
-        "SELECT t.id, t.source, COALESCE(t.file,''), COALESCE(t.full_name,''), COALESCE(length(t.statement),0), s.use, 2, t.eval_overlap FROM trace_theorems t "
-        "JOIN sources s ON s.name=t.source"};
+        "COALESCE(length(d.docstring),0), s.use, 0, d.eval_overlap, "
+        "d.file || ':' || COALESCE(d.line,0) || ':' || d.kind || ':' || COALESCE(NULLIF(d.full_name,''),d.name,'') FROM decls d JOIN sources s ON s.name=d.source",
+        "SELECT p.id, p.source, COALESCE(p.split,''), COALESCE(p.orig_id,''), COALESCE(length(p.formal_statement),0)+COALESCE(length(p.formal_proof),0), p.use, 1, p.eval_overlap, "
+        "COALESCE(p.orig_id,'') || ':' || COALESCE(p.norm_hash,'') FROM problems p",
+        "SELECT t.id, t.source, COALESCE(t.file,''), COALESCE(t.full_name,''), COALESCE(length(t.statement),0), s.use, 2, t.eval_overlap, "
+        "COALESCE(t.file,'') || ':' || COALESCE(t.full_name,'') || ':' || COALESCE(t.start_line,0) FROM trace_theorems t JOIN sources s ON s.name=t.source"};
     set_result res;
     std::vector<std::uint8_t> is_eval;  // parallel to keys
     for (int tbl = 0; tbl < 3; ++tbl) {
@@ -332,7 +338,7 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
             if (si == src_index.end() || !take(srcs[si->second])) continue;
             if (!opt.only_sources.empty() && std::find(opt.only_sources.begin(), opt.only_sources.end(), source) == opt.only_sources.end()) continue;
             item it;
-            it.id = stable_id(source, tbl, r.get<std::int64_t>(0));
+            it.id = stable_id(source, tbl, r.get<std::string>(8));
             it.source = source;
             it.use = r.get<std::string>(5);
             it.tbl = detail::tbl_name(tbl);
@@ -357,14 +363,17 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return keys[a].key < keys[b].key; });
     // ---- partition by estimated size (search and eval streams separately; sorted order keeps eval last) ----
-    struct part { bool eval; std::vector<std::size_t> idx; };
+    // A shard never spans two (use class, table, source) groups: a source's shards depend on that source's rows only, so an
+    // update of one source rewrites only its shards, and rebuilding one source from upstream reproduces exactly its shards.
+    struct part { bool eval; std::uint64_t group; std::vector<std::size_t> idx; };
     std::vector<part> parts;
     std::uint64_t acc = 0;
     for (auto i : order) {
         const bool ev = is_eval[i] != 0;
+        const std::uint64_t group = (static_cast<std::uint64_t>(keys[i].src) << 8) | static_cast<std::uint64_t>(keys[i].tbl);
         const std::uint64_t est = keys[i].bytes * 2 + 220;
-        if (parts.empty() || parts.back().eval != ev || acc + est > opt.shard_bytes) {
-            parts.push_back({ev, {}});
+        if (parts.empty() || parts.back().eval != ev || parts.back().group != group || acc + est > opt.shard_bytes) {
+            parts.push_back({ev, group, {}});
             acc = 0;
         }
         parts.back().idx.push_back(i);
@@ -384,6 +393,14 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
             for (int t = 0; t < 3; ++t)
                 if (!ids[static_cast<std::size_t>(t)].empty()) fetch_rows(conn, t, ids[static_cast<std::size_t>(t)], {}, srcs, src_index, rows);
             std::sort(rows.begin(), rows.end(), [](const row_item& a, const row_item& b) { return sort_key(a.it) < sort_key(b.it); });
+            {  // identical natural keys are the same declaration: keep the first (ids are primary keys)
+                std::set<std::int64_t> seen;
+                std::vector<row_item> uniq;
+                uniq.reserve(rows.size());
+                for (auto& r : rows)
+                    if (seen.insert(r.it.id).second) uniq.push_back(std::move(r));
+                rows = std::move(uniq);
+            }
             write_fitting(dir, "part" + std::to_string(bi), rows, srcs, parts[bi].eval, done[bi], translatable, tried);
         } catch (const std::exception& e) {
             std::lock_guard l(err_m);

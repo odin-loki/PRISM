@@ -296,11 +296,16 @@ def main():
         for d in (sh, lo):
             subprocess.run([a.prism, "leandb", "verify", "--db", d, "--pin", a.pin], check=True)
         if a.compare:
-            theirs = json.load(open(os.path.join(a.compare, "manifest.json")))
-            mine = json.load(open(os.path.join(sh, "manifest.json")))
-            same = [x["sha256"] for x in theirs["shards"]] == [x["sha256"] for x in mine["shards"]]
-            print("reproducibility check:", "BYTE-IDENTICAL to " + a.compare if same else "DIFFERENT from " + a.compare)
-            sys.exit(0 if same else 1)
+            theirs = {x["first_key"]: x["sha256"] for x in json.load(open(os.path.join(a.compare, "manifest.json")))["shards"]}
+            mine = json.load(open(os.path.join(sh, "manifest.json")))["shards"]
+            # shards never span two (use, table, source) groups, so a rebuild of some sources is compared shard by shard
+            # (matched by first key); with --all every committed shard is expected to be found
+            same = [x for x in mine if theirs.get(x["first_key"]) == x["sha256"]]
+            missing = [x for x in mine if x["first_key"] not in theirs]
+            differ = [x for x in mine if x["first_key"] in theirs and theirs[x["first_key"]] != x["sha256"]]
+            print(f"reproducibility check against {a.compare}: {len(same)} shards byte-identical, {len(differ)} different, "
+                  f"{len(missing)} not in the committed set")
+            sys.exit(0 if not differ and not missing and same else 1)
     else:
         subprocess.run([a.prism, "leandb", "build-local", db, "--pin", a.pin, "--out", out], check=True)
         subprocess.run([a.prism, "leandb", "verify", "--db", out, "--pin", a.pin], check=True)
