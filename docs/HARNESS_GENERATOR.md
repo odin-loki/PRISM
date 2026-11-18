@@ -11,7 +11,7 @@ Linux `drivers/net/ethernet/intel/e1000e`, the 11 units of
 `clang-work/subsets/compile_commands-linux-e1000e.json`, run with
 `scripts/pir_batch.sh ... --prism-arg --kernel-api --prism-arg linux --prism-arg --assume-unknown-calls`
 (`--pir-harness` is the batch default), then classified by script:
-`scripts/pir_harness_classify.py OUT_DIR`. The classification reads the verdict message and the
+`prism-qa harness-classify OUT_DIR`. The classification reads the verdict message and the
 assumptions of each JSONL record; nothing in it decides a verdict.
 
 Run of 18 Nov 2026 on `integration-wave1` (binary identical in `pir` to `e2251b7`), 4 workers, 6000 MB per
@@ -29,7 +29,7 @@ and without the new flags, so 521 functions are counted.
 | FAILED | 1 |
 
 354 of the results carry an `(auto harness)` assumption. Why the 389 NEEDS-HARNESS are not verdicts
-(`scripts/pir_harness_classify.py`):
+(`prism-qa harness-classify`):
 
 | why | functions | share of the 389 |
 |---|---|---|
@@ -233,7 +233,7 @@ not replay pointer functions); the second is the memory-model correspondence (`p
 ## 5. Measurement after the three flags
 
 Same command plus `--pir-discharge --pir-container-of --pir-vacuity`, same 521 functions
-(`scripts/pir_harness_classify.py`, `diff` of the two runs by function):
+(`prism-qa harness-classify`, `diff` of the two runs by function):
 
 | | before | after |
 |---|---|---|

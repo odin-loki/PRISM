@@ -14,6 +14,8 @@
 //   solver-bench              portfolio vs Z3 alone on the pir VCs
 //   assurance-check           cited artefacts of docs/assurance exist
 //   docs-check                --help flags documented, anchors resolve, stage order
+//   asm-census DIR...         inline-asm template census (docs/ASM_CENSUS.md)
+//   harness-classify OUT      NEEDS-HARNESS reasons of a pir_batch run
 //
 // PRISM runs as a child process in a session of its own
 // (prism::exec::run_session): a timeout or Ctrl-C kills it and every solver,
@@ -116,5 +118,9 @@ int solver_bench_main(const Args& args);
 // Flags of `help` missing from the guide (sorted).
 std::vector<std::string> undocumented_flags(const std::string& help, const std::string& guide);
 int docs_check_main(const Args& args);
+
+// ---- measurement helpers (ports of tools/pir/asm_census.py, scripts/pir_harness_classify.py)
+int asm_census_main(const Args& args);
+int harness_classify_main(const Args& args);
 
 }  // namespace prism::qa

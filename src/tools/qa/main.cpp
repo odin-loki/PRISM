@@ -45,11 +45,13 @@ constexpr Command COMMANDS[] = {
     {"solver-bench", prism::qa::solver_bench_main, "portfolio vs Z3 alone on the conformance suite's pir VCs"},
     {"assurance-check", assurance, "every artefact docs/assurance cites exists"},
     {"docs-check", prism::qa::docs_check_main, "--help flags documented, anchors resolve, stage order listed"},
+    {"asm-census", prism::qa::asm_census_main, "inline-asm template census of C trees"},
+    {"harness-classify", prism::qa::harness_classify_main, "why functions of a pir_batch run are still NEEDS-HARNESS"},
 };
 
 int usage(std::ostream& o, int rc) {
     o << "usage: prism-qa COMMAND [ARGS...]   (COMMAND --help for its options)\n";
-    for (const auto& c : COMMANDS) o << "  " << c.name << std::string(18 - c.name.size(), ' ') << c.what << "\n";
+    for (const auto& c : COMMANDS) o << "  " << c.name << std::string(c.name.size() < 18 ? 18 - c.name.size() : 1, ' ') << c.what << "\n";
     return rc;
 }
 }  // namespace
