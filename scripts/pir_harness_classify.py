@@ -80,6 +80,16 @@ def main(argv):
     verdicts = collections.Counter(j.get("verdict") for j in recs)
     auto = sum(1 for j in recs if (j.get("harness") or {}).get("auto"))
     discharged = sum(1 for j in recs if any("the automatic harness is discharged" in a for a in (j.get("assumptions") or [])))
+    disch = collections.Counter()
+    for j in recs:
+        d = j.get("harness_discharge")
+        if d:
+            if d.startswith("discharged"):
+                key = "discharged"
+            else:
+                mm = re.search(r"does not establish the harness: (ob-[a-z]+)", d)
+                key = "not discharged: a call site fails " + mm.group(1) if mm else re.sub(r"\(.*", "", d)[:90].strip()
+            disch[key] += 1
     why = collections.Counter(reason(j) for j in recs if j.get("verdict") == "NEEDS-HARNESS")
     callee = collections.Counter()
     for j in recs:
@@ -91,6 +101,7 @@ def main(argv):
         "verdicts": dict(verdicts.most_common()),
         "results_with_auto_harness_assumption": auto,
         "harness_discharged_results": discharged,
+        "discharge_outcomes": dict(disch.most_common()),
         "needs_harness_by_reason": dict(why.most_common()),
         "top_unknown_callees": dict(callee.most_common(top)),
     }
@@ -103,6 +114,10 @@ def main(argv):
         print("  %-16s %6d" % (k, v))
     print("results carrying an (auto harness) assumption: %d" % auto)
     print("results whose harness was discharged at the call sites: %d" % discharged)
+    if disch:
+        print("discharge outcomes (PROVED-ASSUMING under an automatic harness):")
+        for k, v in disch.most_common():
+            print("  %6d  %s" % (v, k))
     print("NEEDS-HARNESS by reason:")
     for k, v in why.most_common():
         print("  %6d  %s" % (v, k))

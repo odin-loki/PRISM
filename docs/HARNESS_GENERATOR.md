@@ -14,7 +14,40 @@ Linux `drivers/net/ethernet/intel/e1000e`, the 11 units of
 `scripts/pir_harness_classify.py OUT_DIR`. The classification reads the verdict message and the
 assumptions of each JSONL record; nothing in it decides a verdict.
 
-@@COUNTS@@
+Run of 18 Nov 2026 on `integration-wave1` (binary identical in `pir` to `e2251b7`), 4 workers, 6000 MB per
+worker, unit timeout 3300 s, a machine at load 50. 10 of the 11 units finished; `param.c` timed out (3300 s) with
+and without the new flags, so 521 functions are counted.
+
+| verdict | functions |
+|---|---|
+| NEEDS-HARNESS | 389 |
+| UNKNOWN | 66 |
+| PROVED-ASSUMING | 55 |
+| BOUNDED | 5 |
+| PROVED | 3 |
+| TIMEOUT | 2 |
+| FAILED | 1 |
+
+354 of the results carry an `(auto harness)` assumption. Why the 389 NEEDS-HARNESS are not verdicts
+(`scripts/pir_harness_classify.py`):
+
+| why | functions | share of the 389 |
+|---|---|---|
+| function-pointer field called while it is arbitrary (`hw->mac.ops.x()`: "call through a null function pointer") | 121 | 31 % |
+| arbitrary pointer field dereferenced or offset (depth bound 2, or no pointee type: MMIO bases such as `hw->hw_addr`) | 104 | 27 % |
+| inline depth: `UNENCODED: call depth > 4` (no recursion in this driver) | 54 | 14 % |
+| `UNENCODED: ptrtoint` (address values not modelled: `readl` and friends on integer handles, `IS_ERR`) | 48 | 12 % |
+| integer UB on an arbitrary field value (overflow, shift, division) | 20 | 5 % |
+| container_of (negative offset from a parameter) | 15 | 4 % |
+| misaligned access under the harness (`MEM-MISALIGNED`) | 11 | 3 % |
+| `inttoptr`, array index or size from a field, unknown call (`llvm.prefetch`), invalid free, one initializer, one extern object of unknown size | 16 | 4 % |
+
+Reading: a third of the blockers are a function pointer that the framework fills in, another quarter a pointer
+field with no object behind it. Both are framework facts (section 2.6), not object shapes. container_of, the case
+the brief named, is 4 %. Of the 55 PROVED-ASSUMING results, 14 of 18 examined for the discharge (units
+`manage`, `nvm`, `ptp`, `mac`) are exported functions, 3 are address-taken (ops-table targets): entry points.
+
+
 
 ## 2. Design
 
@@ -197,4 +230,35 @@ right. The first is the same trusted translation as every PIR result (and the tr
 not replay pointer functions); the second is the memory-model correspondence (`proofs/semantics`).
 `obligation_iff` is about the shape of the check, matched to the code by name and by the tests.
 
-@@MEASURE@@
+## 5. Measurement after the three flags
+
+Same command plus `--pir-discharge --pir-container-of --pir-vacuity`, same 521 functions
+(`scripts/pir_harness_classify.py`, `diff` of the two runs by function):
+
+| | before | after |
+|---|---|---|
+| NEEDS-HARNESS | 389 | 386 |
+| UNKNOWN | 66 | 69 |
+| PROVED-ASSUMING | 55 | 56 |
+| BOUNDED / PROVED / FAILED | 5 / 3 / 1 | 5 / 3 / 1 |
+| TIMEOUT | 2 | 1 |
+| results carrying `(auto harness)` | 354 | 358 |
+| harness discharged at the call sites (no `(auto harness)` left) | 0 | 1 |
+| NEEDS-HARNESS for container_of | 15 | 0 |
+
+* **container_of:** all 15 now get their container. 2 became PROVED-ASSUMING; 8 moved to `UNENCODED: ptrtoint`
+  (the next blocker in the same functions), 2 to integer UB on a field value, the others to global state,
+  inline depth, an arbitrary pointer field.
+* **Discharge:** 1 result (`__e1000e_disable_aspm`, netdev.c) lost its invented assumption. Of the 18
+  PROVED-ASSUMING results in `manage`, `nvm`, `ptp`, `mac` (run with the reasons recorded):
+  14 exported, 3 address-taken, 1 call site undecided. e1000e's proved functions are its entry points; its static
+  helpers are blocked earlier (function-pointer calls, pointer fields). The mechanism is exercised on the
+  testdata (`harness_discharge.c`: discharged, NULL, too small, uninitialised, aliased, exported, address-taken).
+* **Vacuity:** no e1000e result was vacuous (no PROVED-ASSUMING became NEEDS-HARNESS for it).
+* UNKNOWN +3, TIMEOUT -1 and one PROVED-ASSUMING to UNKNOWN are solver time under the load of the machine (the
+  vacuity re-check also costs one more check per harnessed result), not verdict changes by the new code.
+
+What this does not show: that the generator "covers far more functions". On e1000e it does not: the 15
+container_of functions are now analysed but the 389 are dominated by what 2.6 describes. It shows that the
+harness can be made sound where the callers are in the unit, and what is needed to go further.
+
