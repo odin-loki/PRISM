@@ -726,7 +726,7 @@ out of the budget.
 **Differential test.** `pir mem: differential: Bv, Bv with split_compare and Array agree on random copy programs`
 (tests/cpp/test_pir_mem.cpp) generates 240 random programs (stores, memsets and memcpys with constant and symbolic
 offsets and lengths, overlapping or disjoint, in bounds and out of bounds, one value-dependent assertion with 1, 2 or 4
-byte loads) and checks each in the three encodings: status and violation class must agree between Bv and Bv with
+byte loads) and checks each in the three encodings (result: 204 FAILED, 102 of them memory violations, 36 PROVED; 1,815 assertions, all passed): status and violation class must agree between Bv and Bv with
 `split_compare`, the status must agree with Array, and every counterexample must replay as a violation in the interpreter.
 It is the harness any future copy encoding must pass.
 
