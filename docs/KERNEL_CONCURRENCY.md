@@ -375,3 +375,40 @@ Anonymous (literal) structs give no class.
 Toy: `testdata/pir/kernel_lock_field_order_{true,false}.c` (AB/BA through two fields, and consistent),
 `kernel_lock_field_irq_{true,false}.c` (hardirq handler and a plain spin_lock in process context, and irqsave),
 `kernel_lock_field_nest.c` (same-class nesting), `kernel_lock_field_table.c` with `.tsv` (field contract rows).
+
+### 16.1 Coverage of the lock-order pass (what "0 findings" covers)
+
+`PRISM_LOCK_COVERAGE=1` makes the pir stage print one line per unit on stderr (`LOCK-COVERAGE unit=... acquire_sites=... `, and
+`LOCK-COVERAGE-UNMODELLED` lines); it is a diagnostic only and adds no finding. `LockOrderReport::coverage` (`LockCoverage`,
+include/prism/pir.hpp) carries the same numbers. Terms: an *acquire site* is a call to a lock primitive of the pass
+(`mutex_lock`, `spin_lock`, `mtx_lock`, ... or a `--lock-contracts` row) in a defined function; *resolved* means the
+exploration gave it a class (a global, a struct-field class, or the class a caller passed); *field_geps* are getelementptrs
+that `field_class` could name; *unmodelled* are calls to undefined functions whose name contains lock, mutex, sem_, down or
+up_ and which the pass does not treat as acquire or release.
+
+Measured on the 11 e1000e units and the 20 em units that finished (19 Nov, 2 s query timeout, `--kernel-api`, the e1000e unit
+set with `tools/pir/lock_contracts/e1000e.tsv`; one em unit, `em_txrx.c`, hit the 900 s unit timeout in the stage and has no line):
+
+| | e1000e (Linux, 11 units) | em (FreeBSD, 20 of 21 units) |
+|---|---|---|
+| defined functions analysed | 828 | 971 |
+| acquire sites / resolved | 13 / 13 (2 global, 11 struct-field) | 0 / 0 |
+| release sites / resolved | 14 / 14 | 0 / 0 |
+| distinct struct-field classes | 3 (`e1000_adapter.#67`, `e1000_adapter.#98`, `net_device.#195`) | 0 |
+| distinct global classes | 2 | 0 |
+| class pairs recorded (lock held while another is taken) | 0 | 0 |
+| contract-table call sites (`e1000e.tsv`) | 0 | n/a |
+| getelementptrs / named as a struct field | 7,356 / 6,652 | 12,838 / 12,407 |
+| exploration steps (limit 200,000 per unit) | 20,517, limit not hit | 28,959, limit not hit |
+
+Reading: both results are zero findings because the pass found no lock taken while another is held (0 class pairs), not
+because it checked many orders. On e1000e the 13 lock sites are all resolved (netdev.c 6, ptp.c 5, one global mutex each in
+82571.c and ich8lan.c); no site is unresolved. The two table rows never fire: the functions they name are called only through
+the `.acquire` and `.release` members of the NVM ops tables (ich8lan.c lines 5984-5996), which the pass does not follow (indirect calls). Lock-like calls the pass does not model:
+`rtnl_lock` 3 and `rtnl_unlock` 4 (a global mutex, not modelled), the `*_locked` helpers (callee holds or needs a lock, defined in another unit),
+`lockdep_init_map_type` 2 and `__raw_spin_lock_init` 2 (init, not an acquire). On em the pass sees no site at all:
+the one lock use in the unit set is `sx_xlock(iflib_ctx_lock)` in `em_print_nvm_info`, which FreeBSD expands to an inline atomic
+fast path plus the call `_sx_xlock_hard` (unmodelled, with `_sx_xunlock_hard`); the `mtx_lock` family expands to
+`__mtx_lock_flags` or an inline fast path with `__mtx_lock_sleep(&m->mtx_lock, v)`, whose operand is the lock word of the
+struct, not the lock object, so naming them would put every mutex in one class (`mtx.#1`) and invent inversions. Not done (FreeBSD mtx_lock macro read in sys/sys/mutex.h line 176 and 181).
+em's lock order is therefore not checked by this pass at all.

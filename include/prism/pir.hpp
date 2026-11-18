@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <string>
@@ -770,7 +771,21 @@ struct HardirqSleep {
     std::string handler;   // the interrupt handler it is reached from
     std::string callee;    // the sleeping primitive
 };
+// What the lock-order pass saw of one unit (not findings): lock call sites and how many resolved to a class.
+// acquire_sites/release_sites: calls to a lock primitive (or a contract row) in defined functions. *_reached: seen by
+// the exploration; *_resolved: given a class (global, struct field, or a parameter class from a caller) in at least one
+// exploration. static_kind: acquire sites by what the lock operand is ("global", "field", "param", "unresolved:...").
+struct LockCoverage {
+    long functions = 0, acquire_sites = 0, release_sites = 0, table_sites = 0;
+    long acquire_reached = 0, acquire_resolved = 0, release_reached = 0, release_resolved = 0;
+    long geps = 0, field_geps = 0, pairs = 0, steps = 0;
+    bool step_limit_hit = false;
+    std::map<std::string, long> static_kind;
+    std::map<std::string, long> unmodelled_lock_calls;  // calls to undefined lock-like functions the pass does not model
+    std::set<std::string> global_classes, field_classes;
+};
 struct LockOrderReport {
+    LockCoverage coverage;
     std::vector<LockOrderInversion> inversions;
     std::vector<LockOrderCycle> cycles;
     std::vector<LockCtxMismatch> ctx_mismatches;
