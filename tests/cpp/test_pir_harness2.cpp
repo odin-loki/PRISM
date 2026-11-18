@@ -329,8 +329,10 @@ TEST_CASE("pir harness2: addr-values: constant ptrtoint / inttoptr are modelled 
     CHECK_MESSAGE(on["addr_value"].status == L::PROVED_ASSUMING, (on["addr_value"].status + ": " + on["addr_value"].message));
     CHECK(has(extra(on["addr_value"], "assumptions"), "addr-values: a constant ptrtoint"));
     CHECK_MESSAGE(on["addr_diff_ok"].status == L::PROVED_ASSUMING, (on["addr_diff_ok"].status + ": " + on["addr_diff_ok"].message));
-    CHECK_MESSAGE(on["addr_diff_bad"].status == L::FAILED, (on["addr_diff_bad"].status + ": " + on["addr_diff_bad"].message));
-    CHECK(on["addr_diff_bad"].cls == "INT-DIV-ZERO");
+    // the finding is real in the model, but the model does not know absolute addresses: NEEDS-HARNESS, the finding kept in the record
+    CHECK_MESSAGE(on["addr_diff_bad"].status == L::NEEDS_HARNESS, (on["addr_diff_bad"].status + ": " + on["addr_diff_bad"].message));
+    CHECK(has(on["addr_diff_bad"].message, "INT-DIV-ZERO"));
+    CHECK(has(extra(on["addr_diff_bad"], "verdict_under_addr_model"), "FAILED"));
     // a pointer value with no object: its dereference is a finding, the marker is named
     // (a violation that rests on the address model is NEEDS-HARNESS, never a defect report)
     for (auto* f : {"err_deref_bad", "marker_deref_bad"}) {

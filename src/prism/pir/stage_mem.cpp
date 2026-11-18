@@ -316,17 +316,18 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         v.cex.clear();
         v.cex_args.clear();
     }
-    // --pir-addr-values: an integer constant used as a pointer is modelled as pointing to no object, so a dereference of it is
-    // reported. Kernel code does dereference fixed addresses (MMIO, per-cpu bases): a violation that rests on this model is
-    // not a defect report (docs/HARNESS_PHASE2.md "Address values").
+    // --pir-addr-values: an integer constant used as a pointer points to no object, and the absolute address of an object is not
+    // modelled (a pointer is its packed object/offset value). Kernel code dereferences fixed addresses (MMIO) and adds per-cpu
+    // offsets to bases: a violation in a function that used either model is not a defect report (docs/HARNESS_PHASE2.md
+    // "Address values").
     if (v.status == laws::FAILED) {
         bool addr_model = false;
-        for (auto& a : fn.assumptions) addr_model = addr_model || a.starts_with("addr-values: the integer constant");
+        for (auto& a : fn.assumptions) addr_model = addr_model || a.starts_with("addr-values:");
         if (addr_model) {
             v.extra["verdict_under_addr_model"] = v.status + ": " + v.message;
             v.status = std::string(laws::NEEDS_HARNESS);
-            v.message = "violation only under the address-value model (an integer constant used as a pointer points to no object here: " +
-                        v.message + ")";
+            v.message = "violation only under the address-value model (a constant address is its packed object/offset value, an integer "
+                        "constant used as a pointer points to no object; absolute addresses are not modelled): " + v.message;
             v.cex.clear();
             v.cex_args.clear();
         }

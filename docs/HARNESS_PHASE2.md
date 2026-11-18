@@ -116,8 +116,12 @@ is `x`, a non-ptrtoint `inttoptr` is an opaque value with the assumption `inttop
   Assumption `addr-values: a constant ptrtoint is the packed (object, offset) representation ...; the absolute address of an
   object is not modelled`;
 * `inttoptr (C)` with `C != 0` is the constant `C`: a pointer to no object. Assumption `addr-values: the integer constant C
-  used as a pointer ...`. A dereference of it is reported, and since kernel code does dereference fixed addresses, a violation
-  in a function that used this model is **NEEDS-HARNESS** (`verdict_under_addr_model`), never FAILED.
+  used as a pointer ...`. A dereference of it is reported.
+
+Because the model does not know absolute addresses (kernel code dereferences fixed addresses, and adds per-cpu offsets to a
+base, which mixes two objects' packed values), a violation in a function that used **either** assumption is
+**NEEDS-HARNESS** (`verdict_under_addr_model` keeps the finding), never FAILED. A proof under them is PROVED-ASSUMING with the
+`addr-values:` lines.
 
 ## 4. Deeper pointer fields (`--pir-harness-deep`)
 
