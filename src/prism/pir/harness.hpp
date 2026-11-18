@@ -26,6 +26,20 @@ struct HarnessOptions {
     uint64_t unknown_bytes = 64;   // object size when the function never accesses the pointee's type
     int max_objects = 32;          // objects per parameter (the planner stops nesting past it)
     bool container_of = false;     // a negative constant offset from the parameter: allocate the containing object
+    // --pir-ops-auto: the ops tables (explicit and unit-derived). A pointer field the function loads and calls
+    // through whose (struct, index) has targets in it is bound to one of them instead of staying arbitrary.
+    const std::vector<OpsField>* ops = nullptr;
+    // the callee names must be defined or declared in the module
+    const ir::Module* ops_module = nullptr;
+};
+
+// A function-pointer field of a harness object bound to the targets of its ops-table entry.
+struct HarnessFpField {
+    uint64_t offset = 0;                // byte offset in the object (member_off not included)
+    std::string struct_type;            // "%struct.T"
+    int index = 0;                      // field index in it
+    std::vector<std::string> targets;   // the field holds one of these functions
+    std::string role;                   // OpsField::role
 };
 
 struct HarnessNode {
@@ -41,12 +55,18 @@ struct HarnessNode {
     // pointer fields the function loads and dereferences that stay arbitrary
     // (past the depth bound, over the object cap, or no pointee type evidence)
     std::vector<uint64_t> unbound_fields;
+    std::vector<HarnessFpField> fp_fields;
+    // why a pointer field the function loads has no object of its own (recorded, see unbound_lines)
+    int cut_depth = 0;     // past the depth bound
+    int cut_cap = 0;       // over the object cap
+    int cut_notype = 0;    // no pointee type evidence
 };
 
 struct HarnessPlan {
     std::shared_ptr<HarnessNode> root;
     std::vector<std::string> assumptions;  // one named line per choice
     int objects = 0;
+    int depth_reached = 0;  // deepest nesting level of an object (0 = the parameter's own object)
 };
 
 // nullopt (and `why`): the parameter cannot be given an object (negative

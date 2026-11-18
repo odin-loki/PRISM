@@ -129,7 +129,8 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.globals_initial = source_name == "main";
     o.auto_harness.on = cfg.pir_harness;
     o.container_of = cfg.pir_container_of;
-    o.auto_harness.depth = cfg.pir_harness_depth;
+    o.auto_harness.depth = cfg.pir_harness_deep ? std::max(cfg.pir_harness_depth, 4) : cfg.pir_harness_depth;
+    if (cfg.pir_harness_deep) o.auto_harness.max_objects = 64;
     o.auto_harness.elems = cfg.pir_harness_elems;
     o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
     // C++ library code (constructors, accessors) nests deeper than C helpers

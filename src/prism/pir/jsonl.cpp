@@ -11,6 +11,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <regex>
 
 namespace prism::pir {
 
@@ -145,6 +146,41 @@ json jsonl_record(const Finding& f, const Config& cfg) {
             }
         }
         h["pointer_parameters_bound"] = pp;
+    }
+    // phase 2 (docs/HARNESS_PHASE2.md): the depth bound that was applied and what it cut, function-pointer
+    // fields bound through ops tables, and the callee contracts a verdict rests on (each with its status)
+    if (auto s = get(f, "assumptions_json"); !s.empty()) {
+        auto j = json::parse(s, nullptr, false);
+        if (j.is_array()) {
+            static const std::regex depth_re(R"(nested pointer depth bound (\d+).*deepest object at level (\d+) of (\d+); pointer fields left arbitrary: (\d+) past the depth bound, (\d+) over the object cap of (\d+), (\d+) without)");
+            static const std::regex stub_re(R"(^callee-contract: @(\S+) is replaced by its contract \(--callee-contracts; source: ([^;]*); status: ([^;]*);)");
+            json stubs = json::array();
+            int fp_bound = 0, ops_asm = 0;
+            for (auto& x : j) {
+                if (!x.is_string()) continue;
+                const std::string t = x.get<std::string>();
+                std::smatch m;
+                if (std::regex_search(t, m, depth_re)) {
+                    h["depth_bound"] = std::stoi(m[1].str());
+                    h["depth_reached"] = std::max(h.value("depth_reached", 0), std::stoi(m[2].str()));
+                    h["cut_past_depth"] = h.value("cut_past_depth", 0) + std::stoi(m[4].str());
+                    h["cut_over_cap"] = h.value("cut_over_cap", 0) + std::stoi(m[5].str());
+                    h["cut_no_type"] = h.value("cut_no_type", 0) + std::stoi(m[7].str());
+                }
+                if (t.find("(function-pointer field ") != std::string::npos) ++fp_bound;
+                if (t.starts_with("addr-values:")) ++ops_asm;
+                if (std::regex_search(t, m, stub_re)) {
+                    json s1;
+                    s1["callee"] = m[1].str();
+                    s1["source"] = m[2].str();
+                    s1["status"] = m[3].str();
+                    stubs.push_back(s1);
+                }
+            }
+            if (fp_bound) h["function_pointer_fields_bound"] = fp_bound;
+            if (ops_asm) h["address_value_assumptions"] = ops_asm;
+            if (!stubs.empty()) r["callee_stubs"] = stubs;
+        }
     }
     r["harness"] = h;
     // --pir-discharge / --pir-vacuity (docs/HARNESS_GENERATOR.md)

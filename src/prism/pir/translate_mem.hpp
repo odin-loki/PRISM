@@ -122,6 +122,10 @@ public:
     void preassign_globals(const ir::Function& f);
     void emit_entry_globals();
     Arg const_gep(int b, const ir::Value& ce, int line);  // constant getelementptr expression
+    // --pir-addr-values: constant ptrtoint / inttoptr / bitcast expressions. A pointer is carried as its packed
+    // representation, so ptrtoint is that value and `inttoptr (ptrtoint x)` is x; `inttoptr (C)` with C != 0 is the
+    // constant C (no object: a dereference is reported) and is a named assumption.
+    Arg const_addr(int b, const ir::Value& ce, int line);
 
     // alloca: dst gets a fresh stack object. count: element count (dynamic
     // allocas / VLAs), count_src: the value before its zext/sext (VLA size
@@ -171,6 +175,9 @@ public:
     void obligation_distinct(int b, Arg p, Arg q, const std::string& what, int line);
     Arg obj_size_remaining(int b, Arg ptr);  // size - offset (0 when out of range)
     void read_range(int b, Arg ptr, Arg len, int line);  // range access checks (read)
+    // --callee-contracts requires: `p` points into a live object with at least `n` bytes from p (n = 0: nothing is
+    // required); writable when `write`. Class FUNC-CONTRACT, the message starts with `what` (docs/HARNESS_PHASE2.md).
+    void contract_valid(int b, Arg p, Arg n, bool write, const std::string& what, int line);
     void write_havoc(int b, Arg ptr, Arg len, int line);  // range written with arbitrary bytes
     Arg fresh_cstr(int b, MemKind k, int line);
     Arg stack_save(int b);

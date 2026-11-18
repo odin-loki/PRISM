@@ -28,6 +28,7 @@
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
+#include "callee_contract.hpp"
 #include "harness.hpp"
 #include "translate_fp.hpp"
 #include "translate_mem.hpp"
@@ -389,6 +390,8 @@ struct Tr final : pirmem::TrApi {
                 break;
             case ir::Value::ConstExpr:
                 if (o.v.ce_op == "getelementptr") return mt.const_gep(b, o.v, line);
+                if (opt.addr_values && (o.v.ce_op == "ptrtoint" || o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast"))
+                    return mt.const_addr(b, o.v, line);  // --pir-addr-values
                 if ((o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast") && o.ty.kind == ir::Type::Ptr &&
                     !o.v.elems.empty() && o.v.elems[0].v.kind == ir::Value::Int && o.v.elems[0].v.bits == 0)
                     return Arg::c(ptr_w(), 0);
@@ -1591,6 +1594,30 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            if (auto cc = opt.callee_contracts.find(n); cc != opt.callee_contracts.end()) {
+                // --callee-contracts (docs/HARNESS_PHASE2.md): requires checked here, assigns havocked, ensures assumed
+                std::vector<Arg> sargs;
+                std::vector<ir::Type> stys;
+                for (auto& o : in.ops) {
+                    sargs.push_back(operand(fr, o, cur, line));
+                    stys.push_back(o.ty);
+                }
+                pirmem::StubCall sc;
+                sc.callee = n;
+                sc.args = std::move(sargs);
+                sc.arg_types = std::move(stys);
+                sc.ret = in.ty;
+                sc.line = line;
+                auto so = pirmem::apply_callee_contract(*this, mt, cc->second, sc, cur);
+                if (so.applied) {
+                    note_assumption(so.assumption);
+                    if (!in.result.empty()) {
+                        if (int dst = result_var(fr, in); dst >= 0 && so.result) emit_assign(cur, dst, Op::Copy, {*so.result});
+                    }
+                    return;
+                }
+                // not applied (reason in so.why): the call is handled exactly as if there were no contract
+            }
             if (opt.assume_unknown_calls) {  // opt-in: result and pointed-to objects havocked (translate_kernel.inc)
                 unknown_call(fr, in, cur, line);
                 return;
@@ -1740,6 +1767,7 @@ struct Tr final : pirmem::TrApi {
     }
 
     bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
+        if (opt.addr_values && o.v.kind == ir::Value::ConstExpr && o.v.ce_op == "ptrtoint") return true;
         if (o.v.kind != ir::Value::Local) return false;
         auto it = fr.defs.find(o.v.name);
         return it != fr.defs.end() && it->second != nullptr && it->second->op == "ptrtoint";
@@ -2514,6 +2542,17 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
         tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
     }
+    // function-pointer fields known to the ops tables (--pir-ops-auto): one of the targets, chosen freely
+    for (const auto& fp : n.fp_fields) {
+        Arg val = tr.fn_addr(fp.targets.front());
+        for (std::size_t i = 1; i < fp.targets.size(); ++i) {
+            Arg pick = tr.havoc(-1, 1, false, false);
+            val = tr.assign(-1, Op::Select, ptr_w(), {pick, tr.fn_addr(fp.targets[i]), val});
+        }
+        int slot = tr.newvar(tr.tmpname("hfp"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + fp.offset)}, true, 0);
+        tr.mt.store(-1, Arg::v(slot, ptr_w()), val, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
     if (n.member_off) {  // container_of: the parameter points into the containing object
         int mp = tr.newvar(tr.tmpname("hmember"), ptr_w());
         tr.mt.gep(-1, mp, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off)}, true, 0);
@@ -2531,6 +2570,10 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
     ho.max_objects = tr.opt.auto_harness.max_objects;
     ho.container_of = tr.opt.container_of;
+    if (tr.opt.ops_auto) {
+        ho.ops = &tr.opt.ops_table;
+        ho.ops_module = &tr.m;
+    }
     auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
     if (!plan) return false;
     top.env[p.name] = alloc_harness_node(tr, *plan->root);

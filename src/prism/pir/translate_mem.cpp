@@ -655,6 +655,10 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
             if ((v.ce_op == "inttoptr" || v.ce_op == "bitcast") && !v.elems.empty() &&
                 v.elems[0].v.kind == ir::Value::Int && v.elems[0].v.bits == 0)
                 return;
+            if (t_.options().addr_values && (v.ce_op == "inttoptr" || v.ce_op == "ptrtoint" || v.ce_op == "bitcast")) {
+                put(offs, const_addr(-1, v, 0));
+                return;
+            }
             throw Unenc{"UNENCODED: initializer of @" + gname + " (" + v.ce_op + " constant expression)"};
         case ir::Value::Str:
             for (std::size_t k = 0; k < v.bytes.size(); ++k)
@@ -680,6 +684,47 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
     }
 }
 
+Arg MemTr::const_addr(int b, const ir::Value& ce, int line) {
+    if (ce.elems.empty()) throw Unenc{"UNENCODED: constant " + ce.ce_op};
+    const auto& e = ce.elems[0];
+    auto note = [&](const std::string& s) {
+        auto& as = t_.fn().assumptions;
+        if (std::find(as.begin(), as.end(), s) == as.end()) as.push_back(s);
+    };
+    // the pointer a ptrtoint / bitcast operand denotes
+    auto pointer_of = [&](const ir::Operand& o) -> Arg {
+        switch (o.v.kind) {
+            case ir::Value::Global: return global(o.v.name);
+            case ir::Value::Null: return c64(0);
+            case ir::Value::ConstExpr:
+                if (o.v.ce_op == "getelementptr") return const_gep(b, o.v, line);
+                if (o.v.ce_op == "inttoptr" || o.v.ce_op == "ptrtoint" || o.v.ce_op == "bitcast") return const_addr(b, o.v, line);
+                break;
+            default: break;
+        }
+        throw Unenc{"UNENCODED: constant " + ce.ce_op + " of " + o.v.text};
+    };
+    if (ce.ce_op == "inttoptr") {
+        if (e.v.kind == ir::Value::Int) {
+            if (e.v.bits == 0) return c64(0);
+            note("addr-values: the integer constant " + std::to_string(e.v.bits) +
+                 " used as a pointer (inttoptr) is a value that points to no object (its dereference is reported; an ERR_PTR-style marker "
+                 "compares only by value)");
+            return c64(e.v.bits);
+        }
+        if (e.v.kind == ir::Value::ConstExpr && e.v.ce_op == "ptrtoint") return const_addr(b, e.v, line);  // round trip
+        throw Unenc{"UNENCODED: constant inttoptr of " + e.v.text};
+    }
+    if (ce.ce_op == "ptrtoint") {
+        if (ce.ce_ty.kind != ir::Type::Int || ce.ce_ty.bits != ptr_w()) throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
+        note("addr-values: a constant ptrtoint is the packed (object, offset) representation of the pointer; the absolute address of an "
+             "object is not modelled (pointer differences are checked, alignment of an address is not known)");
+        return pointer_of(e);
+    }
+    if (ce.ce_op == "bitcast" && ce.ce_ty.kind == ir::Type::Ptr && e.ty.kind == ir::Type::Ptr) return pointer_of(e);
+    throw Unenc{"UNENCODED: constant expression " + ce.ce_op};
+}
+
 Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     (void)line;
     if (ce.elems.empty()) throw Unenc{"UNENCODED: constant getelementptr"};
@@ -688,6 +733,9 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     if (bo.v.kind == ir::Value::Global) base = global(bo.v.name);
     else if (bo.v.kind == ir::Value::Null) base = c64(0);
     else if (bo.v.kind == ir::Value::ConstExpr && bo.v.ce_op == "getelementptr") base = const_gep(b, bo.v, line);
+    else if (t_.options().addr_values && bo.v.kind == ir::Value::ConstExpr &&
+             (bo.v.ce_op == "inttoptr" || bo.v.ce_op == "bitcast"))
+        base = const_addr(b, bo.v, line);
     else throw Unenc{"UNENCODED: constant getelementptr on " + bo.v.text};
     i128 total(0);
     const ir::Type* t = &ce.ce_ty;
@@ -1195,6 +1243,29 @@ Arg MemTr::obj_size_remaining(int b, Arg ptr) {
 void MemTr::read_range(int b, Arg ptr, Arg len, int line) {
     Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     access_checks(b, ptr, n, false, 1, line, p2(b, Op::Ne, n, c64(0)));
+}
+
+void MemTr::contract_valid(int b, Arg p, Arg n, bool write, const std::string& what, int line) {
+    mark_memory();
+    Arg guard = p2(b, Op::Ne, n, c64(0));
+    auto G = [&](Arg c) { return band(b, guard, c); };
+    Arg o = obj(b, p);
+    Arg f = off(b, p);
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {p}, "live");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {p}, "size");
+    const char* C = "FUNC-CONTRACT";
+    t_.check(b, G(p2(b, Op::Eq, o, c64(0))), "callee-null", C, what + ": the pointer is null", line);
+    t_.check(b, G(band(b, p2(b, Op::Ne, o, c64(0)), p2(b, Op::Eq, kind, Arg::c(8, 0)))), "callee-wild", C,
+             what + ": the pointer does not point to any object", line);
+    t_.check(b, G(band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, live, Arg::c(1, 0)))), "callee-uaf", C,
+             what + ": the object is freed or out of its lifetime", line);
+    Arg end = t_.assign(b, Op::Add, ptr_w(), {f, n}, "end");
+    Arg oob = bor(b, p2(b, Op::Ugt, end, size), p2(b, Op::UAddOvf, f, n));
+    t_.check(b, G(band(b, live, oob)), "callee-oob", C, what + ": the object is smaller than the required range", line);
+    if (write)
+        t_.check(b, G(band(b, live, p2(b, Op::Eq, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))))), "callee-const",
+                 C, what + ": the object is read-only but the contract requires it writable", line);
 }
 
 void MemTr::write_havoc(int b, Arg ptr, Arg len, int line) {

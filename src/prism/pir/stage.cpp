@@ -2854,10 +2854,15 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     PtrModelScope pms(pm);
     pirmem::Layout lay(mod);
     pirmem::HarnessOptions ho;
-    ho.depth = cfg.pir_harness_depth;
+    ho.depth = cfg.pir_harness_deep ? std::max(cfg.pir_harness_depth, 4) : cfg.pir_harness_depth;
+    if (cfg.pir_harness_deep) ho.max_objects = 64;
     ho.elems = cfg.pir_harness_elems;
     ho.unknown_bytes = cfg.pir_harness_bytes;
     ho.container_of = cfg.pir_container_of;
+    if (topt.ops_auto) {
+        ho.ops = &topt.ops_table;
+        ho.ops_module = &mod;
+    }
     std::map<std::string, FnRec*> by_ir;
     for (auto& r : recs)
         if (r.irf) by_ir[r.irf->name] = &r;
@@ -3043,6 +3048,16 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
         if (!ops_err.empty()) throw std::runtime_error("--ops-table " + ops_err);
     }
+    if (!cfg.callee_contracts.empty()) {  // --callee-contracts (docs/HARNESS_PHASE2.md)
+        std::string cc_err;
+        topt.callee_contracts = load_callee_contracts(cfg.callee_contracts, cc_err);
+        if (!cc_err.empty()) throw std::runtime_error("--callee-contracts " + cc_err);
+    }
+    if (cfg.pir_ops_auto) {  // --pir-ops-auto: the unit's own function-pointer stores and initialisers
+        topt.ops_auto = true;
+        merge_ops_tables(topt.ops_table, derive_ops_table(mod, topt.ops_max_targets));
+    }
+    topt.addr_values = cfg.pir_addr_values;
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.

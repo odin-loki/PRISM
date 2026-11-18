@@ -233,6 +233,7 @@ set(PRISM_SRC
   src/prism/module/spec.cpp
   src/prism/pipeline.cpp
   src/prism/pir/bench.cpp
+  src/prism/pir/callee_contract.cpp
   src/prism/pir/contracts.cpp
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
@@ -247,6 +248,7 @@ set(PRISM_SRC
   src/prism/pir/lower_ctl.cpp
   src/prism/pir/lock_order.cpp
   src/prism/pir/memory.cpp
+  src/prism/pir/ops_auto.cpp
   src/prism/pir/pir.cpp
   src/prism/pir/stage.cpp
   src/prism/pir/stage_mem.cpp
@@ -844,6 +846,7 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_pir_harness.cpp
+    tests/cpp/test_pir_harness2.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp

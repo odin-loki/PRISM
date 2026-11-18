@@ -26,6 +26,8 @@ struct Use {
     std::optional<ir::Type> neg_struct; // struct type of a getelementptr based at a negative offset (the container)
     int64_t neg_base = 0;               // that base's offset from the parameter
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
+    // byte offset -> (struct spelling, field index) of a loaded pointer that is the callee of an indirect call
+    std::map<uint64_t, std::pair<std::string, int>> fp_fields;
 };
 
 int64_t signed_of(const ir::Operand& o) {
@@ -93,6 +95,14 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                 }
             }
     }
+    // defining instruction of each register, and the registers called through (function-pointer loads)
+    std::map<std::string, const ir::Inst*> defs;
+    std::set<std::string> called;
+    for (auto& bl : g.blocks)
+        for (auto& in : bl.insts) {
+            if (!in.result.empty()) defs[in.result] = &in;
+            if (in.callee_op && in.callee_op->v.kind == ir::Value::Local) called.insert(in.callee_op->v.name);
+        }
     for (auto& bl : g.blocks)
         for (auto& in : bl.insts) {
             int64_t a = 0;
@@ -128,8 +138,17 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     if (base == 0 && addr->v.name == rootname && acc->kind != ir::Type::Ptr && !u.scalar_ty &&
                         (acc->kind == ir::Type::Int || acc->kind == ir::Type::Float))
                         u.scalar_ty = *acc;
-                    if (in.op == "load" && acc->kind == ir::Type::Ptr && !in.result.empty())
+                    if (in.op == "load" && acc->kind == ir::Type::Ptr && !in.result.empty()) {
                         u.ptr_fields[static_cast<uint64_t>(a)].push_back({&g, in.result});
+                        if (called.count(in.result) && addr->v.kind == ir::Value::Local) {
+                            // load (gep %struct.T, base, 0, K) used as a callee: field K of T
+                            if (auto d = defs.find(addr->v.name); d != defs.end() && d->second->op == "getelementptr" &&
+                                d->second->ops.size() == 3 && d->second->ops[1].v.kind == ir::Value::Int &&
+                                d->second->ops[1].v.bits == 0 && d->second->ops[2].v.kind == ir::Value::Int)
+                                u.fp_fields[static_cast<uint64_t>(a)] = {d->second->ety.text,
+                                                                         static_cast<int>(d->second->ops[2].v.bits)};
+                        }
+                    }
                     continue;
                 }
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0) {
@@ -227,6 +246,7 @@ struct Builder {
             return nullptr;
         }
         ++plan.objects;
+        plan.depth_reached = std::max(plan.depth_reached, depth);
         plan.assumptions.push_back(name + (container ? " points to byte " + std::to_string(member_off) + " of a valid object of "
                                                      : std::string(" points to the start of a valid object of ")) +
                                    std::to_string(n->bytes) +
@@ -236,12 +256,45 @@ struct Builder {
         for (auto& [off, rs] : u.ptr_fields) {
             if (n->member_off + off + psz > n->bytes) continue;
             const std::string fname = name + "->@" + std::to_string(off);
+            // a function-pointer field the ops tables know (--pir-ops-auto): bound to one of its targets
+            if (auto fp = u.fp_fields.find(off); fp != u.fp_fields.end() && opt.ops && opt.ops_module) {
+                const OpsField* of = nullptr;
+                for (const auto& f : *opt.ops)
+                    if (f.struct_type == fp->second.first && f.index == fp->second.second) {
+                        of = &f;
+                        break;
+                    }
+                bool all_known = of != nullptr && !of->targets.empty();
+                if (of)
+                    for (const auto& t : of->targets)
+                        all_known = all_known && (opt.ops_module->find(t) != nullptr ||
+                                                  std::find(opt.ops_module->declarations.begin(), opt.ops_module->declarations.end(), t) !=
+                                                      opt.ops_module->declarations.end());
+                if (all_known) {
+                    HarnessFpField hf;
+                    hf.offset = off;
+                    hf.struct_type = of->struct_type;
+                    hf.index = of->index;
+                    hf.targets = of->targets;
+                    hf.role = of->role;
+                    std::string tl;
+                    for (const auto& t : of->targets) tl += (tl.empty() ? "" : ", ") + t;
+                    plan.assumptions.push_back(fname + " (function-pointer field " + of->struct_type + "." + std::to_string(of->index) +
+                                               ") holds one of {" + tl + "} (ops table, " + of->role +
+                                               ": the framework is assumed to have initialised it to a target the table names; "
+                                               "a field set outside this unit may hold another function)");
+                    n->fp_fields.push_back(std::move(hf));
+                    continue;
+                }
+            }
             if (depth >= opt.depth) {
                 n->unbound_fields.push_back(off);
+                ++n->cut_depth;
                 continue;
             }
             if (plan.objects >= opt.max_objects) {
                 n->unbound_fields.push_back(off);
+                ++n->cut_cap;
                 continue;
             }
             auto child = build(rs, depth + 1, fname);
@@ -251,6 +304,7 @@ struct Builder {
                     plan.assumptions.pop_back();
                 }
                 n->unbound_fields.push_back(off);
+                ++n->cut_notype;
                 continue;
             }
             n->nested.emplace_back(off, std::move(child));
@@ -258,6 +312,13 @@ struct Builder {
         return n;
     }
 };
+
+void count_cuts(const HarnessNode& n, int& d, int& c, int& t) {
+    d += n.cut_depth;
+    c += n.cut_cap;
+    t += n.cut_notype;
+    for (auto& [o, ch] : n.nested) count_cuts(*ch, d, c, t);
+}
 
 void unbound_lines(const HarnessNode& n, const HarnessOptions& opt, std::vector<std::string>& out) {
     if (!n.unbound_fields.empty()) {
@@ -286,6 +347,14 @@ std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layou
     b.plan.assumptions.push_back("auto harness for " + p.name + ": nested pointer depth bound " +
                                  std::to_string(opt.depth) + " (pointer fields past it are unconstrained)");
     unbound_lines(*root, opt, b.plan.assumptions);
+    // the bound that was applied and what it cut, for the record (--jsonl harness.depth_*)
+    int cd = 0, cc = 0, cn = 0;
+    count_cuts(*root, cd, cc, cn);
+    for (auto& a : b.plan.assumptions)
+        if (a.starts_with("auto harness for " + p.name + ": nested pointer depth bound"))
+            a += "; deepest object at level " + std::to_string(b.plan.depth_reached) + " of " + std::to_string(opt.depth) +
+                 "; pointer fields left arbitrary: " + std::to_string(cd) + " past the depth bound, " + std::to_string(cc) +
+                 " over the object cap of " + std::to_string(opt.max_objects) + ", " + std::to_string(cn) + " without pointee type evidence";
     return std::move(b.plan);
 }
 
