@@ -349,3 +349,29 @@ hardirq), local_irq_disable regions (inline asm, not seen), classes passed as pa
 module globals are matched there), a function reached from both contexts (treated as hardirq only), cross-unit order.
 Toy: `testdata/pir/kernel_lock_irq_true.c` and `kernel_lock_irq_false.c`; cycles: `kernel_lock_cycle_true.c` and
 `kernel_lock_cycle_false.c`.
+
+## 16. Implementation (W7d: struct-field lock classes)
+
+Lock classes are no longer module globals only (`src/prism/pir/lock_order.cpp`, `field_class`). A lock whose
+address is a struct field (a getelementptr with constant field indices, e.g. `&adapter->stats64_lock`) gets the
+lockdep-style class `STRUCT.#INDEX`: the struct type that directly contains the member and the member's index
+(the last struct descended into, so a nested member is keyed by its innermost struct). Every instance of the struct
+shares the class. The class is the same for lock order (pairs and cycles), LOCK-CTX-MISMATCH and the contract
+table. A parameter keeps the class its caller passed (`arg:N` as before); the pointee type of a parameter is not
+inferred (opaque pointers), so a lock reached only through a parameter has no class of its own.
+
+**Contract rows.** `field:TYPE.INDEX` in the lock column names a fixed field class (`field:dev.0` is `dev.#0`).
+It feeds the lock-order pass only: the translator's ghost lock state (translate_lock.inc) skips these rows.
+
+**Same-class nesting** (two adapters, both `adapter.#0`) is not an inversion (lockdep nesting rule). `acquire()`
+ignores a class that is already held, so no pair is recorded and an opposite nesting across functions is not
+reported. There is no explicit nested annotation yet (left).
+
+**Limits (left).** No field names: the IR of this pipeline carries no debug information for struct members, so
+`field:` takes the index, and a name in the table is a parse error. Byte-offset getelementptrs (container_of's
+`i8` arithmetic) give no class; the class comes from the later struct getelementptr that selects the member.
+Anonymous (literal) structs give no class.
+
+Toy: `testdata/pir/kernel_lock_field_order_{true,false}.c` (AB/BA through two fields, and consistent),
+`kernel_lock_field_irq_{true,false}.c` (hardirq handler and a plain spin_lock in process context, and irqsave),
+`kernel_lock_field_nest.c` (same-class nesting), `kernel_lock_field_table.c` with `.tsv` (field contract rows).

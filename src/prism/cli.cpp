@@ -389,7 +389,7 @@ std::string cli_usage() {
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--lock-contracts FILE: TSV of lock contracts for unmodified kernel code (function, lock\n"
-        "  global:NAME|arg:N, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
+        "  global:NAME|arg:N|field:TYPE.INDEX, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

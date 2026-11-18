@@ -1,0 +1,4 @@
+function	lock	action
+# take_a and release_a: the lock is struct field 0 of struct dev (class dev.#0)
+take_a	field:dev.0	acquires
+release_a	field:dev.0	releases

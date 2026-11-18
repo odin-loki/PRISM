@@ -473,3 +473,127 @@ TEST_CASE("pir kernel: interrupt context: hardirq sleeps and LOCK-CTX-MISMATCH, 
         CHECK(!(x.cls == "SLEEP-IN-ATOMIC" && x.extra.count("context")));
     }
 }
+
+// Struct-field lock classes (docs/KERNEL_CONCURRENCY.md section 16)
+TEST_CASE("pir kernel: field lock classes: an inversion between two fields of one struct is LOCK-ORDER-INVERSION") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto out = pp::run_pir({dir / "kernel_lock_field_order_true.c"}, cfg);
+    std::vector<prism::Finding> hits;
+    for (auto& x : out)
+        if (x.cls == "LOCK-ORDER-INVERSION") hits.push_back(x);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].extra.count("cycle") == 0);
+    CHECK(hits[0].status == prism::laws::FAILED);
+    REQUIRE(hits[0].extra.count("lock_classes"));
+    CHECK(hits[0].extra.at("lock_classes") == "dev.#0,dev.#1");
+}
+
+TEST_CASE("pir kernel: field lock classes: a consistent field order is not an inversion") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto out = pp::run_pir({dir / "kernel_lock_field_order_false.c"}, cfg);
+    int n = 0;
+    for (auto& x : out)
+        if (x.cls == "LOCK-ORDER-INVERSION") ++n;
+    CHECK(n == 0);
+}
+
+TEST_CASE("pir kernel: field lock classes: a field lock taken in an irq handler and plainly in process context is LOCK-CTX-MISMATCH") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto out = pp::run_pir({dir / "kernel_lock_field_irq_true.c"}, cfg);
+    std::vector<prism::Finding> hits;
+    for (auto& x : out)
+        if (x.cls == "LOCK-CTX-MISMATCH") hits.push_back(x);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].status == prism::laws::FAILED);
+    REQUIRE(hits[0].function.has_value());
+    CHECK(*hits[0].function == "proc_plain");
+    REQUIRE(hits[0].extra.count("other_function"));
+    CHECK(hits[0].extra.at("other_function") == "irq_handler");
+    REQUIRE(hits[0].extra.count("lock_classes"));
+    CHECK(hits[0].extra.at("lock_classes") == "dev.#0");
+}
+
+TEST_CASE("pir kernel: field lock classes: a consistent irq discipline on a field lock is clean") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto out = pp::run_pir({dir / "kernel_lock_field_irq_false.c"}, cfg);
+    int n = 0;
+    for (auto& x : out)
+        if (x.cls == "LOCK-CTX-MISMATCH") ++n;
+    CHECK(n == 0);
+}
+
+TEST_CASE("pir kernel: field lock classes: nesting two locks of the same field class is not an inversion") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto out = pp::run_pir({dir / "kernel_lock_field_nest.c"}, cfg);
+    int n = 0;
+    for (auto& x : out)
+        if (x.cls == "LOCK-ORDER-INVERSION") ++n;
+    CHECK(n == 0);
+}
+
+TEST_CASE("pir kernel: field lock classes: the lock-contract table gives field classes to acquire and release halves") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    cfg.jobs = 2;
+    cfg.pir_kernel_api = "linux";
+    auto count_inversions = [&](std::vector<prism::Finding>& keep) {
+        keep = pp::run_pir({dir / "kernel_lock_field_table.c"}, cfg);
+        int n = 0;
+        for (auto& x : keep)
+            if (x.cls == "LOCK-ORDER-INVERSION") ++n;
+        return n;
+    };
+    std::vector<prism::Finding> without, with;
+    cfg.pir_lock_contracts = "";
+    CHECK(count_inversions(without) == 0);
+    cfg.pir_lock_contracts = (dir / "kernel_lock_field_table.tsv").string();
+    CHECK(count_inversions(with) == 1);
+    for (auto& x : with)
+        if (x.cls == "LOCK-ORDER-INVERSION") {
+            REQUIRE(x.extra.count("lock_classes"));
+            CHECK(x.extra.at("lock_classes") == "dev.#0,dev.#1");
+        }
+}
+
+TEST_CASE("pir kernel: field lock classes: TSV parse of field:<struct>.<index> lock names") {
+    std::string err;
+    auto ok = pp::parse_lock_contracts("f\tfield:dev.0\tacquires\n", &err);
+    CHECK(err.empty());
+    REQUIRE(ok.size() == 1);
+    CHECK(ok[0].lock == "field:dev.#0");
+    err.clear();
+    auto bad = pp::parse_lock_contracts("f\tfield:dev\tacquires\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("field") != std::string::npos);
+    err.clear();
+    bad = pp::parse_lock_contracts("f\tfield:dev.name\tacquires\n", &err);
+    CHECK(bad.empty());
+    CHECK(err.find("index") != std::string::npos);
+}

@@ -275,6 +275,8 @@ void Tr::lock_table(Frame& fr) {
     bool any = false;
     for (auto& c : opt.lock_contracts) {
         if (c.function != fr.f->name) continue;
+        // field:TYPE.N rows feed the lock-order pass only (lock_order.cpp); the ghost lock state is per address
+        if (c.lock.starts_with("field:")) continue;
         Arg p;
         if (c.lock.starts_with("global:")) {
             p = mt.global(c.lock.substr(7));
