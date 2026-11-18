@@ -8,6 +8,7 @@
 #  undef ERROR
 #endif
 
+#include "prism/cli.hpp"
 #include "prism/config.hpp"
 #include "prism/laws.hpp"
 #include "prism/pir.hpp"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -578,4 +580,26 @@ entry:
     bool named = false;
     for (auto& a : t3.fn->assumptions) named = named || has(a, "addr-values: the integer constant 18446744073709551594");
     CHECK(named);
+}
+
+// ---- command line --------------------------------------------------------------------------------------------
+
+TEST_CASE("pir harness2: cli flags, all off by default") {
+    auto parse = [](std::initializer_list<const char*> args) {
+        std::vector<const char*> v(args);
+        return prism::parse_cli(std::span<const char* const>(v.data(), v.size()));
+    };
+    auto r = parse({"fixture.c", "--callee-contracts", "c.tsv", "--pir-ops-auto", "--pir-addr-values", "--pir-harness-deep"});
+    REQUIRE(r);
+    CHECK(r->cfg.callee_contracts.filename() == "c.tsv");
+    CHECK(r->cfg.pir_ops_auto);
+    CHECK(r->cfg.pir_addr_values);
+    CHECK(r->cfg.pir_harness_deep);
+    auto d = parse({"fixture.c"});
+    REQUIRE(d);
+    CHECK(d->cfg.callee_contracts.empty());
+    CHECK_FALSE(d->cfg.pir_ops_auto);
+    CHECK_FALSE(d->cfg.pir_addr_values);
+    CHECK_FALSE(d->cfg.pir_harness_deep);
+    CHECK_FALSE(parse({"fixture.c", "--callee-contracts"}));  // the file name is required
 }
