@@ -2839,7 +2839,10 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     if (!cfg.pir_kernel_api.empty()) {
         const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
                                                               : read_lock_contracts(cfg.pir_lock_contracts);
-        for (auto& inv : lock_order_inversions(mod, contracts)) {
+        // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
+        // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
+        const auto rep = lock_order_report(mod, contracts);
+        for (auto& inv : rep.inversions) {
             FnRec r;
             r.f = base_finding(u);
             r.f.status = std::string(laws::FAILED);
@@ -2851,6 +2854,56 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                           " in " + inv.function + " (ABBA deadlock)";
             r.f.extra["other_function"] = inv.other;
             r.f.extra["lock_classes"] = inv.first + "," + inv.second;
+            recs.push_back(std::move(r));
+        }
+        for (auto& cyc : rep.cycles) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = cyc.functions.back();
+            r.f.cls = "LOCK-ORDER-INVERSION";
+            std::string chain, witnesses, classes;
+            for (std::size_t i = 0; i < cyc.classes.size(); ++i) {
+                const auto& next = cyc.classes[(i + 1) % cyc.classes.size()];
+                if (i) { chain += ", "; witnesses += ","; classes += ","; }
+                chain += cyc.classes[i] + " then " + next + " in " + cyc.functions[i];
+                witnesses += cyc.functions[i];
+                classes += cyc.classes[i];
+            }
+            r.f.message = std::to_string(cyc.classes.size()) + "-lock cycle (ABBA generalised, deadlock): " + chain;
+            r.f.extra["lock_classes"] = classes;
+            r.f.extra["cycle"] = classes;
+            r.f.extra["cycle_functions"] = witnesses;
+            recs.push_back(std::move(r));
+        }
+        for (auto& cm : rep.ctx_mismatches) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = cm.function;
+            r.f.cls = "LOCK-CTX-MISMATCH";
+            r.f.message = "spinlock " + cm.lock_class + " is taken in hardirq context (interrupt handler " +
+                          cm.handler + ") and with interrupts enabled in " + cm.function +
+                          " (spin_lock without irqsave): an interrupt on the same CPU spins on it forever "
+                          "(lockdep {IN-HARDIRQ-W} -> {HARDIRQ-ON-W})";
+            r.f.extra["other_function"] = cm.handler;
+            r.f.extra["lock_classes"] = cm.lock_class;
+            recs.push_back(std::move(r));
+        }
+        for (auto& hs : rep.hardirq_sleeps) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = hs.function;
+            r.f.cls = "SLEEP-IN-ATOMIC";
+            r.f.message = "sleeping primitive " + hs.callee + " reached in hardirq context from interrupt handler " +
+                          hs.handler + " (an interrupt handler cannot sleep)";
+            r.f.extra["context"] = "hardirq";
+            r.f.extra["other_function"] = hs.handler;
+            r.f.extra["callee"] = hs.callee;
             recs.push_back(std::move(r));
         }
     }

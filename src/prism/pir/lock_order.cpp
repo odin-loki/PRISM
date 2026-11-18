@@ -1,17 +1,29 @@
-// src/prism/pir/lock_order.cpp (docs/KERNEL_CONCURRENCY.md section 14)
+// src/prism/pir/lock_order.cpp (docs/KERNEL_CONCURRENCY.md sections 14 and 15)
 //
-// Lock-order inversion pass (lockdep-style ABBA). Explores every path of each
-// defined function with an ordered held-lock state, inlining defined callees
-// (depth <= 3, memoised) and recording, per acquire, the pair (held, acquired)
-// with the first function that performed it. A class pair seen in both orders
-// is reported once. Lock classes are module global names; parameters map to
-// the caller's operand class. Bounds: 200000 (block, state) steps per call to
-// lock_order_inversions, then exploration stops silently. Cycles of length 3
-// or more are NOT reported (out of scope).
+// Lock-order and interrupt-context passes.
+//
+// 1. Lock-order inversions (lockdep-style ABBA). Explores every path of each
+//    defined function with an ordered held-lock state, inlining defined callees
+//    (depth <= 3, memoised) and recording, per acquire, the pair (held, acquired)
+//    with the first function that performed it. A class pair seen in both orders
+//    is reported once. Lock classes are module global names; parameters map to
+//    the caller's operand class. Bounds: 200000 (block, state) steps per call to
+//    lock_order_report, then exploration stops silently.
+// 2. Lock-order cycles of length 3 to 6: the recorded pairs form a class graph
+//    (edge held -> acquired); simple cycles of length >= 3 are enumerated, each
+//    once, starting at its smallest class. Bounds: 100 cycles, 100000 DFS
+//    expansions, then the search stops silently.
+// 3. Interrupt context: handlers registered through request_irq and friends
+//    (the hardirq part only: primary handler / filter) are explored with their
+//    callees to depth 3. Sleeping primitives reached there are reported
+//    (HardirqSleep); spinlock classes taken there and taken without irq
+//    disabling in a function outside every hardirq context are reported
+//    (LockCtxMismatch).
 
 #include "prism/pir.hpp"
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -147,11 +159,174 @@ struct Analyzer {
         auto ex = analyse(*fi->second, h0, pc, depth + 1);
         for (auto& e : ex) next.insert(e);
     }
+
+    // ---- interrupt context helpers ----
+
+    static std::string contract_class(const LockContract& c, const ir::Inst& in,
+                                      const std::map<std::string, std::string>& pm) {
+        std::string cl;
+        if (c.lock.starts_with("global:")) cl = c.lock.substr(7);
+        else if (c.lock.starts_with("arg:")) {
+            std::size_t n = std::stoul(c.lock.substr(4));
+            if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
+        }
+        return cl;
+    }
+
+    // Spin acquires of one call. process == false: every spin acquire (hardirq side);
+    // process == true: only those that leave interrupts enabled.
+    std::vector<std::string> spin_classes(const ir::Inst& in, const std::map<std::string, std::string>& pm,
+                                          bool process) const {
+        std::vector<std::string> out;
+        const std::string& cal = in.callee;
+        auto tb = table.find(cal);
+        if (tb != table.end()) {
+            for (auto* c : tb->second) {
+                if (!c->spin || c->action != "acquires") continue;
+                if (process && cal.find("irq") != std::string::npos) continue;
+                std::string cl = contract_class(*c, in, pm);
+                if (!cl.empty()) out.push_back(std::move(cl));
+            }
+            return out;
+        }
+        bool ok;
+        if (process) {
+            static const std::set<std::string> unsafe{"spin_lock", "_raw_spin_lock", "spin_lock_bh",
+                                                      "_raw_spin_lock_bh"};
+            ok = unsafe.count(cal) != 0;
+        } else {
+            ok = acquires.count(cal) && (cal.find("spin") != std::string::npos || cal == "mtx_lock_spin");
+        }
+        if (ok && !in.ops.empty()) {
+            std::string cl = cls_of(in.ops[0], pm);
+            if (!cl.empty()) out.push_back(std::move(cl));
+        }
+        return out;
+    }
+
+    bool is_event(const std::string& cal) const {
+        auto tb = table.find(cal);
+        if (tb != table.end()) {
+            for (auto* c : tb->second)
+                if (c->action == "acquires" || c->action == "releases") return true;
+            return false;
+        }
+        return acquires.count(cal) || releases.count(cal);
+    }
 };
+
+bool sleeps_in_hardirq(const ir::Inst& in) {
+    static const std::set<std::string> always{"mutex_lock", "mutex_lock_nested", "mutex_lock_interruptible",
+                                              "mutex_lock_killable", "msleep", "msleep_interruptible",
+                                              "usleep_range", "schedule", "wait_for_completion",
+                                              "synchronize_rcu", "__might_sleep", "might_sleep"};
+    const std::string& c = in.callee;
+    if (always.count(c)) return true;
+    std::size_t gi;
+    if (c == "kmalloc" || c == "kzalloc") gi = 1;
+    else if (c == "krealloc" || c == "kcalloc" || c == "kmalloc_array") gi = 2;
+    else return false;
+    if (gi >= in.ops.size()) return false;
+    const auto& v = in.ops[gi].v;
+    return v.kind == ir::Value::Int && (v.bits & 0x400) != 0;
+}
+
+struct Hardirq {
+    Analyzer& a;
+    std::set<std::string> reached;
+    std::map<std::string, std::string> classes;  // class -> first handler
+    std::vector<HardirqSleep> sleeps;
+    std::set<std::tuple<std::string, std::string, std::string>> sleep_seen;
+    std::map<std::string, int> visited;
+    std::string handler;
+    long steps = 0;
+    static constexpr long kMax = 200000;
+
+    explicit Hardirq(Analyzer& an) : a(an) {}
+
+    void run(const ir::Function& h) {
+        visited.clear();
+        handler = h.name;
+        walk(h, std::vector<std::string>(h.params.size()), 0);
+    }
+
+    void walk(const ir::Function& f, const std::vector<std::string>& pcls, int depth) {
+        if (steps >= kMax) return;
+        ++steps;
+        auto vi = visited.find(f.name);
+        if (vi != visited.end() && vi->second <= depth) return;
+        visited[f.name] = depth;
+        reached.insert(f.name);
+        std::map<std::string, std::string> pm;
+        for (std::size_t i = 0; i < f.params.size(); ++i)
+            pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        for (const auto& b : f.blocks) {
+            for (const auto& in : b.insts) {
+                if (in.op != "call" && in.op != "invoke") continue;
+                if (in.callee.empty()) continue;
+                if (sleeps_in_hardirq(in)) {
+                    if (sleep_seen.emplace(f.name, in.callee, handler).second)
+                        sleeps.push_back(HardirqSleep{f.name, handler, in.callee});
+                    continue;
+                }
+                for (auto& cl : a.spin_classes(in, pm, false)) classes.emplace(cl, handler);
+                if (a.is_event(in.callee)) continue;
+                auto fi = a.fns.find(in.callee);
+                if (fi == a.fns.end() || fi->second->is_declaration || fi->second->is_model || depth >= 3) continue;
+                std::vector<std::string> pc;
+                for (auto& o : in.ops) pc.push_back(Analyzer::cls_of(o, pm));
+                walk(*fi->second, pc, depth + 1);
+            }
+        }
+    }
+};
+
+void find_cycles(const std::map<std::string, std::set<std::string>>& adj,
+                 const std::map<std::pair<std::string, std::string>, std::string>& pairs,
+                 std::vector<LockOrderCycle>& out) {
+    constexpr std::size_t kMaxLen = 6, kMaxCycles = 100;
+    constexpr long kMaxExp = 100000;
+    long expansions = 0;
+    std::vector<std::string> path;
+    bool stop = false;
+    std::string start;
+    auto dfs = [&](auto&& self, const std::string& v) -> void {
+        if (stop) return;
+        if (++expansions > kMaxExp) { stop = true; return; }
+        auto it = adj.find(v);
+        if (it == adj.end()) return;
+        for (const auto& w : it->second) {
+            if (stop) return;
+            if (w == start) {
+                if (path.size() >= 3) {
+                    LockOrderCycle c;
+                    c.classes = path;
+                    for (std::size_t i = 0; i < path.size(); ++i) {
+                        auto p = pairs.find({path[i], path[(i + 1) % path.size()]});
+                        c.functions.push_back(p == pairs.end() ? std::string() : p->second);
+                    }
+                    out.push_back(std::move(c));
+                    if (out.size() >= kMaxCycles) { stop = true; return; }
+                }
+            } else if (w > start && path.size() < kMaxLen &&
+                       std::find(path.begin(), path.end(), w) == path.end()) {
+                path.push_back(w);
+                self(self, w);
+                path.pop_back();
+            }
+        }
+    };
+    for (const auto& [s, _] : adj) {
+        if (stop) break;
+        start = s;
+        path.assign(1, s);
+        dfs(dfs, s);
+    }
+}
 
 }  // namespace
 
-std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m, const std::vector<LockContract>& contracts) {
+LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts) {
     Analyzer a;
     for (auto& f : m.functions) a.fns.emplace(f.name, &f);
     for (auto& c : contracts) a.table[c.function].push_back(&c);
@@ -167,7 +342,7 @@ std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m, const
         if (f.is_declaration || f.is_model) continue;
         a.analyse(f, Held{}, std::vector<std::string>(f.params.size()), 0);
     }
-    std::vector<LockOrderInversion> out;
+    LockOrderReport rep;
     for (auto& [k, w] : a.pairs) {
         if (!(k.first < k.second)) continue;
         auto r = a.pairs.find({k.second, k.first});
@@ -177,9 +352,65 @@ std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m, const
         i.second = k.second;
         i.function = r->second;
         i.other = w;
-        out.push_back(std::move(i));
+        rep.inversions.push_back(std::move(i));
     }
-    return out;
+
+    // (A) cycles of length >= 3
+    {
+        std::map<std::string, std::set<std::string>> adj;
+        for (auto& [k, w] : a.pairs)
+            if (k.first != k.second) adj[k.first].insert(k.second);
+        find_cycles(adj, a.pairs, rep.cycles);
+    }
+
+    // (B) interrupt context
+    static const std::map<std::string, std::size_t> reg{{"request_irq", 1},
+                                                        {"request_threaded_irq", 1},
+                                                        {"devm_request_irq", 2},
+                                                        {"devm_request_threaded_irq", 2},
+                                                        {"bus_setup_intr", 3}};
+    std::vector<const ir::Function*> handlers;
+    std::set<std::string> hseen;
+    for (auto& f : m.functions) {
+        if (f.is_declaration || f.is_model) continue;
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts) {
+                if (in.op != "call" && in.op != "invoke") continue;
+                auto ri = reg.find(in.callee);
+                if (ri == reg.end() || ri->second >= in.ops.size()) continue;
+                const auto& v = in.ops[ri->second].v;
+                if (v.kind != ir::Value::Global) continue;
+                auto fi = a.fns.find(v.name);
+                if (fi == a.fns.end() || fi->second->is_declaration || fi->second->is_model) continue;
+                if (hseen.insert(v.name).second) handlers.push_back(fi->second);
+            }
+    }
+    if (handlers.empty()) return rep;
+    Hardirq hi(a);
+    for (auto* h : handlers) hi.run(*h);
+    rep.hardirq_sleeps = hi.sleeps;
+    if (hi.classes.empty()) return rep;
+    std::set<std::string> emitted;
+    const std::map<std::string, std::string> nopm;
+    for (auto& f : m.functions) {
+        if (f.is_declaration || f.is_model) continue;
+        if (hi.reached.count(f.name)) continue;
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts) {
+                if (in.op != "call" && in.op != "invoke") continue;
+                if (in.callee.empty()) continue;
+                for (auto& cl : a.spin_classes(in, nopm, true)) {
+                    auto hc = hi.classes.find(cl);
+                    if (hc == hi.classes.end() || !emitted.insert(cl).second) continue;
+                    rep.ctx_mismatches.push_back(LockCtxMismatch{f.name, hc->second, cl});
+                }
+            }
+    }
+    return rep;
+}
+
+std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m, const std::vector<LockContract>& contracts) {
+    return lock_order_report(m, contracts).inversions;
 }
 
 }  // namespace prism::pir

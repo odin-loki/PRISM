@@ -600,3 +600,66 @@ TEST_CASE("pir kernel: lock order: a pair taken A-then-B and B-then-A is LOCK-OR
         }
     CHECK(count_inversions("kernel_lock_order_false.c", f) == 0);
 }
+
+// LOCK-ORDER-INVERSION over three classes (docs/KERNEL_CONCURRENCY.md section 14, W7c item 2): a cycle of length
+// three is one finding on the function that closes it; a DAG is none
+TEST_CASE("pir kernel: lock order: a cycle of three lock classes is one LOCK-ORDER-INVERSION, a DAG is none") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    auto cycles_in = [&](const std::string& file, std::vector<prism::Finding>& keep) {
+        cfg.root = dir;
+        cfg.jobs = 2;
+        cfg.pir_kernel_api = "linux";
+        keep = pp::run_pir({dir / file}, cfg);
+        std::vector<prism::Finding> hits;
+        for (auto& f : keep)
+            if (f.cls == "LOCK-ORDER-INVERSION" && f.extra.count("cycle")) hits.push_back(f);
+        return hits;
+    };
+    std::vector<prism::Finding> t, f;
+    auto cyc = cycles_in("kernel_lock_cycle_true.c", t);
+    REQUIRE(cyc.size() == 1);
+    CHECK(cyc[0].status == prism::laws::FAILED);
+    CHECK(cyc[0].extra.at("cycle") == "lock_a,lock_b,lock_c");
+    CHECK(cyc[0].function.has_value());
+    if (cyc[0].function) CHECK(*cyc[0].function == "f3");
+    CHECK(cycles_in("kernel_lock_cycle_false.c", f).empty());
+}
+
+// Interrupt context (docs/KERNEL_CONCURRENCY.md section 15, W7c item 1): a function passed to request_irq runs in
+// hardirq; a sleeping primitive there is SLEEP-IN-ATOMIC; a spinlock it takes that a process-context function
+// takes without irq disabling is LOCK-CTX-MISMATCH. The thread function of request_threaded_irq is not hardirq.
+TEST_CASE("pir kernel: interrupt context: hardirq sleeps and LOCK-CTX-MISMATCH, consistent handlers are clean") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    auto run_irq = [&](const std::string& file) {
+        cfg.root = dir;
+        cfg.jobs = 2;
+        cfg.pir_kernel_api = "linux";
+        return pp::run_pir({dir / file}, cfg);
+    };
+    auto t = run_irq("kernel_lock_irq_true.c");
+    std::map<std::string, std::string> sleeps;  // function -> handler
+    int mismatches = 0;
+    for (auto& x : t) {
+        if (x.cls == "SLEEP-IN-ATOMIC" && x.extra.count("context") && x.extra.at("context") == "hardirq" && x.function)
+            sleeps[*x.function] = x.extra.count("other_function") ? x.extra.at("other_function") : "";
+        if (x.cls == "LOCK-CTX-MISMATCH") {
+            ++mismatches;
+            CHECK(x.status == prism::laws::FAILED);
+            if (x.function) CHECK(*x.function == "proc_dev_plain");
+            if (x.extra.count("other_function")) CHECK(x.extra.at("other_function") == "irq_spin_handler");
+        }
+    }
+    CHECK(mismatches == 1);
+    CHECK(sleeps.size() == 2);
+    CHECK(sleeps.count("irq_sleep_handler") == 1);
+    CHECK(sleeps.count("irq_gfp_handler") == 1);
+    auto f = run_irq("kernel_lock_irq_false.c");
+    for (auto& x : f) {
+        CHECK(x.cls != "LOCK-CTX-MISMATCH");
+        CHECK(!(x.cls == "SLEEP-IN-ATOMIC" && x.extra.count("context")));
+    }
+}
