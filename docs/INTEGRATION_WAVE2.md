@@ -25,3 +25,9 @@ original PR stays open and reviewable on its own.
 ## Integration fixes
 
 (see the commits after the merges)
+
+## Added after the first record
+- pir-w7-concurrency cd3db91 (W7c: interrupt context, lock-order cycles of length 3+; gated). The ungated W7d commit is NOT included.
+- pir-harness-generator da4548d (#60: --pir-discharge, --pir-container-of, --pir-vacuity, Lean Prism.Discharge).
+  Conflicts: include/prism/pir.hpp (OpsField/LockContract kept next to ObligationNode) and src/prism/pir/stage.cpp
+  (lock-order pass and discharge_pass both kept, in that order).
