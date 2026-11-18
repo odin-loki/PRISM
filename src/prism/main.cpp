@@ -1,3 +1,5 @@
+#include "prism/leandb.hpp"
+#include "prism/sim/cli.hpp"
 #include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
@@ -217,6 +219,9 @@ int main(int argc, char** argv) {
         if (sub == "triage") return ai::triage_main(argc - 2, argv + 2);
         // docs/PROOF_LIBRARY.md: earlier verdicts as data (import, vet, stats, lookup)
         if (sub == "library") return library::library_main(argc - 2, argv + 2);
+        // Opt-in symbolic similarity search (docs/SIM_SEARCH.md); never changes a verdict.
+        if (sub == "sim") return sim::sim_main(argc - 2, argv + 2);
+        if (sub == "leandb") return leandb::leandb_main(argc - 2, argv + 2);
     }
     // --gui: prism_gui parses its own flags (e.g. --smoke-screenshot); hand
     // every argument over before the scan parser rejects the ones it does not know.

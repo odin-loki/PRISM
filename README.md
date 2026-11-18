@@ -138,6 +138,16 @@ is skipped quietly. Reports are emitted at the end (`report.json`, `report.md`,
 `prism-qa` (`src/tools/qa/`) runs conformance scoring, docs drift checks, and
 the release gate (0 wrong proofs) described in [docs/ENGINEERING_BACKLOG.md](docs/ENGINEERING_BACKLOG.md).
 
+## Similarity search and the Lean database (opt-in)
+
+* `prism sim index DIR` / `prism sim query FILE.smt2 -k N` / `prism sim hint FILE.smt2`: nearest-neighbour search over
+  SMT-LIB formulas with a symbolic metric (shape plus what the formula computes on fixed inputs), on `forge::ann`. It
+  never changes a verdict. See [docs/SIM_SEARCH.md](docs/SIM_SEARCH.md).
+* `prism leandb import|search|verify|build-local`: the Lean proof database as sorted SQLite shards of at most 10 MiB
+  (committed in `data/leandb/shards`), BM25 + text ANN + symbolic ANN + fusion. Sources whose licence is unclear are
+  fetched from their original hosts by `scripts/leandb_fetch_local.py` and stay on your machine. See
+  [docs/LEANDB.md](docs/LEANDB.md).
+
 ## Stack
 
 GUI is Qt. The platform layer (log, exec, pool, settings, OS) and the only

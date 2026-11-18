@@ -495,6 +495,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_FUNCTION_BUDGET", "per-function time budget (seconds)"},
     {"PRISM_HOST_PYTHON3", "z3gen: host Python that non-Z3 build scripts are forwarded to (build time)"},
     {"PRISM_HOUDINI_FINAL_RESERVE", "pir: fraction of the function budget Houdini keeps for the final query (0..0.9, default 0.3)"},
+    {"PRISM_LEANDB_DIR", "leandb: directory with PIN.json, shards/ (committed) and local/ (local-only shards); default ./data/leandb"},
     {"PRISM_LEAN_PAD_DEBUG", "diagnostics: trace Lean export padding to stderr"},
     {"PRISM_PIR_DUMP_INVARIANTS", "diagnostics: 1 = report Houdini survivors of a search that did not prove (pir_invariants_surviving)"},
     {"PRISM_PIR_EXPORT_ONLY", "pir: with PRISM_PIR_LEAN_EXPORT, only export Lean, skip the checks"},

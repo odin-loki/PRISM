@@ -301,6 +301,20 @@ set(PRISM_SRC
   src/prism/solver/query.cpp
   src/prism/solver/util.cpp
   src/prism/solver/z3_ballast.cpp
+  # Symbolic similarity search (docs/SIM_SEARCH.md): opt-in, no verdict path.
+  src/sim/canon.cpp
+  src/sim/cli.cpp
+  src/sim/eval.cpp
+  src/sim/features.cpp
+  src/sim/index.cpp
+  src/sim/lean_goal.cpp
+  src/sim/term.cpp
+  # Lean database: sorted shards over forge::db / forge::ann (docs/LEANDB.md).
+  src/leandb/cli.cpp
+  src/leandb/core.cpp
+  src/leandb/search.cpp
+  src/leandb/text.cpp
+  src/sim/ted.cpp
 )
 
 # PIR library operational models (docs/PIR.md "Library models"): C++ sources
@@ -825,6 +839,8 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_ai_assist.cpp
+    tests/cpp/test_sim.cpp
+    tests/cpp/test_leandb.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp
     tests/cpp/test_pir3.cpp
