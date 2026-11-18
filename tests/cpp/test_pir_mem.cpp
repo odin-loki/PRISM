@@ -1643,15 +1643,15 @@ struct DiffGen {
             o += std::string("  ") + ob.name + " = alloca [" + std::to_string(ob.size) + " x i8], align 1\n";
         // objects are zero-filled, byte-filled or left uninitialised
         for (auto& ob : objs) {
-            unsigned k = pick(4);
-            if (k == 0) continue;
+            unsigned k = pick(10);
+            if (k == 0) continue;  // left uninitialised (a read of it is a violation)
             o += std::string("  call void @llvm.memset.p0.i64(ptr ") + ob.name + ", i8 " +
-                 std::to_string(k == 1 ? 0 : pick(250) + 1) + ", i64 " + std::to_string(ob.size) + ", i1 false)\n";
+                 std::to_string(k <= 4 ? 0 : pick(250) + 1) + ", i64 " + std::to_string(ob.size) + ", i1 false)\n";
         }
         o += "  %xi = zext i32 %i to i64\n  %xj = zext i32 %j to i64\n  %xn = zext i32 %n to i64\n";
         // bounds of the symbolic values (above the object size: out of bounds is possible)
-        const unsigned bound_choice[6] = {2, 4, 8, 12, 16, 40};
-        unsigned bi = bound_choice[pick(6)], bj = bound_choice[pick(6)], bn = bound_choice[pick(5)];
+        const unsigned bound_choice[8] = {2, 4, 6, 8, 8, 4, 6, 40};  // 40: out of bounds is possible
+        unsigned bi = bound_choice[pick(8)], bj = bound_choice[pick(8)], bn = bound_choice[pick(7)];
         o += "  %ci = icmp ult i64 %xi, " + std::to_string(bi) + "\n  %cj = icmp ult i64 %xj, " +
              std::to_string(bj) + "\n  %cn = icmp ult i64 %xn, " + std::to_string(bn) + "\n";
         o += "  %c1 = and i1 %ci, %cj\n  %c2 = and i1 %c1, %cn\n  br i1 %c2, label %body, label %out\nbody:\n";
@@ -1684,7 +1684,7 @@ struct DiffGen {
                     break;
                 }
                 default: {  // memcpy
-                    const Obj& sObj = objs[pick(3)];
+                    const Obj& sObj = pick(4) == 0 ? d : objs[(&d - objs + 1 + pick(2)) % 3];  // mostly another object
                     auto pd = gep(d, off(d.size));
                     auto ps = gep(sObj, off(sObj.size));
                     std::string len = pick(3) == 0 ? "%xn" : std::to_string(1 + pick(6));
@@ -1699,8 +1699,15 @@ struct DiffGen {
         unsigned wide = pick(3);  // 1, 2 or 4 byte load
         std::string ty = wide == 0 ? "i8" : wide == 1 ? "i16" : "i32";
         o += "  %v = load " + ty + ", ptr " + pr + ", align 1\n";
-        std::string cmp = pick(2) ? "eq" : "ult";
-        o += "  %e = icmp " + cmp + " " + ty + " %v, " + std::to_string(pick(wide == 0 ? 256 : 70000) % (wide == 0 ? 256 : 65536)) + "\n";
+        const unsigned full = wide == 0 ? 256 : wide == 1 ? 65536 : 0;
+        const char* cmp = "eq";
+        std::string k = std::to_string(pick(full ? full : 70000));
+        switch (pick(4)) {
+            case 0: cmp = "ult"; k = "0"; break;  // never true: PROVED unless a memory violation
+            case 1: cmp = "ult"; k = full ? std::to_string(full - 1) : "4294967295"; break;  // true for almost every value
+            default: break;
+        }
+        o += std::string("  %e = icmp ") + cmp + " " + ty + " %v, " + k + "\n";
         o += "  br i1 %e, label %bad, label %out\nbad:\n  call void @reach_error()\n  unreachable\nout:\n  ret i32 0\n}\n";
         return o;
     }
