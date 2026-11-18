@@ -147,6 +147,9 @@ json jsonl_record(const Finding& f, const Config& cfg) {
         h["pointer_parameters_bound"] = pp;
     }
     r["harness"] = h;
+    // --pir-discharge / --pir-vacuity (docs/HARNESS_GENERATOR.md)
+    for (const char* k : {"harness_discharge", "discharge_entry", "non_vacuity"})
+        if (auto v = get(f, k); !v.empty()) r[k] = v;
     if (auto v = num(get(f, "properties"))) r["vcs"] = static_cast<long long>(*v);
     else r["vcs"] = nullptr;
     if (auto v = num(get(f, "unwind"))) r["unwind"] = static_cast<int>(*v);

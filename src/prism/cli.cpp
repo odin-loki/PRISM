@@ -161,6 +161,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         else if (a == "--strict-aliasing") { ok = in.flag(); cfg.strict_aliasing = true; }
         else if (a == "--pir-drafts") { ok = in.flag(); cfg.pir_drafts = true; }
         else if (a == "--pir-harness") { ok = in.flag(); cfg.pir_harness = true; }
+        else if (a == "--pir-discharge") { ok = in.flag(); cfg.pir_discharge = true; }
+        else if (a == "--pir-container-of") { ok = in.flag(); cfg.pir_container_of = true; }
+        else if (a == "--pir-vacuity") { ok = in.flag(); cfg.pir_vacuity = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
         else if (a == "--certified") { ok = in.flag(); cfg.certified = true; }
         else if (a == "--z3-only") { ok = in.flag(); o.z3_only = true; }
@@ -389,6 +392,12 @@ std::string cli_usage() {
         "  locking, user access, MMIO, delays, logging, BUG/WARN, ...) and models inline asm,\n"
         "  asm goto, atomics and barriers conservatively; every spec and model used is a\n"
         "  named assumption in the verdict (PROVED-ASSUMING). Off by default (docs/KERNEL_MODELS.md).\n"
+        "--pir-discharge: with --pir-harness, the harness of a static, non-address-taken, non-recursive\n"
+        "  function is a proof obligation checked at every call site of the unit; discharged, the\n"
+        "  invented assumption is replaced by the call sites (docs/HARNESS_GENERATOR.md).\n"
+        "--pir-container-of: with --pir-harness, a parameter used at a negative constant offset gets its\n"
+        "  containing object (container_of). --pir-vacuity: a harnessed function whose exit is\n"
+        "  unreachable under its assumptions is NEEDS-HARNESS (vacuous), never a proof.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

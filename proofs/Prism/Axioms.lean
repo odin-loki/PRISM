@@ -1,4 +1,5 @@
 import Prism.Verdict
+import Prism.Discharge
 
 /-!
 Axiom audit of the main theorems. `proofs/check.sh` runs this file and
@@ -46,3 +47,8 @@ open Prism
 #print axioms confidence_le_visibility
 #print axioms confidence_mono_visibility
 #print axioms confidence_mono_resolution
+-- Assume-guarantee over call sites (docs/HARNESS_GENERATOR.md)
+#print axioms Prism.Discharge.assume_guarantee
+#print axioms Prism.Discharge.internal_pre_holds
+#print axioms Prism.Discharge.site_check_needed
+#print axioms Prism.Discharge.obligation_iff

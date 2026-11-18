@@ -25,6 +25,7 @@ struct HarnessOptions {
     uint64_t elems = 16;           // element count of an array-like pointee (indexed or scalar) without annotation
     uint64_t unknown_bytes = 64;   // object size when the function never accesses the pointee's type
     int max_objects = 32;          // objects per parameter (the planner stops nesting past it)
+    bool container_of = false;     // a negative constant offset from the parameter: allocate the containing object
 };
 
 struct HarnessNode {
@@ -34,6 +35,7 @@ struct HarnessNode {
     uint64_t elems = 1;
     uint64_t bytes = 0;              // object size
     std::string basis;               // why this type/size
+    uint64_t member_off = 0;         // container_of: the parameter points this many bytes into the object
     // pointer fields (byte offset) that get their own object
     std::vector<std::pair<uint64_t, std::shared_ptr<HarnessNode>>> nested;
     // pointer fields the function loads and dereferences that stay arbitrary

@@ -22,6 +22,9 @@ struct Use {
     bool indexed = false;               // a non-constant first index (array of the type)
     uint64_t max_end = 0;               // highest byte (offset + size) accessed at a constant offset
     bool negative = false;              // an access before the start of the object (container_of)
+    int64_t min_neg = 0;                // lowest constant offset accessed or derived (negative: container_of)
+    std::optional<ir::Type> neg_struct; // struct type of a getelementptr based at a negative offset (the container)
+    int64_t neg_base = 0;               // that base's offset from the parameter
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
 };
 
@@ -69,7 +72,8 @@ bool is_local(const ir::Operand& o, const std::map<std::string, int64_t>& alias,
 }
 
 void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, const std::string& rootname,
-              int64_t base, int depth, Use& u, std::set<std::pair<const ir::Function*, std::string>>& visited) {
+              int64_t base, int depth, bool container, Use& u,
+              std::set<std::pair<const ir::Function*, std::string>>& visited) {
     if (!visited.insert({&g, rootname + "@" + std::to_string(base)}).second) return;
     std::map<std::string, int64_t> alias{{rootname, base}};
     // pointers derived from the root at constant offsets (fixpoint: blocks are not in dominance order)
@@ -116,6 +120,7 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                 if (acc && addr && is_local(*addr, alias, &a)) {
                     if (a < 0) {
                         u.negative = true;
+                        u.min_neg = std::min(u.min_neg, a);
                         continue;
                     }
                     const uint64_t sz = lay.store_size(*acc);
@@ -127,15 +132,21 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                         u.ptr_fields[static_cast<uint64_t>(a)].push_back({&g, in.result});
                     continue;
                 }
-                if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0)
+                if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0) {
                     u.negative = true;
+                    u.min_neg = std::min(u.min_neg, a);
+                    if (!u.neg_struct && lay.resolve(in.ety).kind == ir::Type::Struct) {
+                        u.neg_struct = in.ety;
+                        u.neg_base = a;
+                    }
+                }
                 if (in.op == "call" && !in.callee.empty() && depth < 3) {
                     const auto* callee = m.find(in.callee);
                     if (!callee || callee->blocks.empty() || callee == &g) continue;
                     // call operands: the arguments (the callee is not among `ops`)
                     for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i)
-                        if (is_local(in.ops[i], alias, &a) && a >= 0 && callee->params[i].ty.kind == ir::Type::Ptr)
-                            scan_one(m, lay, *callee, callee->params[i].name, a, depth + 1, u, visited);
+                        if (is_local(in.ops[i], alias, &a) && (a >= 0 || container) && callee->params[i].ty.kind == ir::Type::Ptr)
+                            scan_one(m, lay, *callee, callee->params[i].name, a, depth + 1, container, u, visited);
                 }
             } catch (const Unenc&) {
             }
@@ -153,15 +164,40 @@ struct Builder {
     std::shared_ptr<HarnessNode> build(const std::vector<Root>& roots, int depth, const std::string& name) {
         Use u;
         std::set<std::pair<const ir::Function*, std::string>> visited;
-        for (auto& r : roots) scan_one(m, lay, *r.fn, r.name, 0, 0, u, visited);
+        for (auto& r : roots) scan_one(m, lay, *r.fn, r.name, 0, 0, opt.container_of, u, visited);
         auto n = std::make_shared<HarnessNode>();
         n->name = name;
+        uint64_t member_off = 0;
+        std::optional<ir::Type> container;
         if (u.negative) {
-            if (depth == 0) fail = "access before the start of the pointed-to object (container_of style negative offset)";
-            return nullptr;
+            // container_of: the parameter points to a member of a larger object. The container's type is the
+            // struct a getelementptr is based on at the negative offset; the object must cover every offset used.
+            if (opt.container_of && u.neg_struct && u.min_neg >= u.neg_base) {
+                try {
+                    const uint64_t csz = lay.alloc_size(*u.neg_struct);
+                    member_off = static_cast<uint64_t>(-u.neg_base);
+                    if (member_off + u.max_end <= csz && csz <= max_obj_size()) container = u.neg_struct;
+                } catch (const Unenc&) {
+                }
+            }
+            if (!container) {
+                if (depth == 0)
+                    fail = opt.container_of
+                               ? "access before the start of the pointed-to object (container_of style negative offset) "
+                                 "without a containing struct type that covers every offset used"
+                               : "access before the start of the pointed-to object (container_of style negative offset)";
+                return nullptr;
+            }
         }
         try {
-            if (u.struct_ty) {
+            if (container) {
+                n->type = *container;
+                n->type_known = true;
+                n->elems = 1;
+                n->member_off = member_off;
+                n->basis = "container_of: the pointer points to byte " + std::to_string(member_off) + " of a " +
+                           container->text + " (containing object; type from the getelementptr at the negative offset)";
+            } else if (u.struct_ty) {
                 n->type = *u.struct_ty;
                 n->type_known = true;
                 n->elems = u.indexed ? opt.elems : 1;
@@ -184,19 +220,21 @@ struct Builder {
                 if (depth == 0) fail = "pointee object larger than the pointer model allows";
                 return nullptr;
             }
-            n->elems = std::max<uint64_t>(n->elems, (u.max_end + esz - 1) / esz);
+            if (!container) n->elems = std::max<uint64_t>(n->elems, (u.max_end + esz - 1) / esz);
             n->bytes = n->elems * esz;
         } catch (const Unenc& e) {
             if (depth == 0) fail = e.reason;
             return nullptr;
         }
         ++plan.objects;
-        plan.assumptions.push_back(name + " points to the start of a valid object of " + std::to_string(n->bytes) +
+        plan.assumptions.push_back(name + (container ? " points to byte " + std::to_string(member_off) + " of a valid object of "
+                                                     : std::string(" points to the start of a valid object of ")) +
+                                   std::to_string(n->bytes) +
                                    " bytes (" + std::to_string(n->elems) + " x " + n->type.text + "; " + n->basis +
                                    "), 16-byte aligned, fields initialised with arbitrary values (auto harness)");
         const uint64_t psz = lay.store_size(ir::parse_type("ptr"));
         for (auto& [off, rs] : u.ptr_fields) {
-            if (off + psz > n->bytes) continue;
+            if (n->member_off + off + psz > n->bytes) continue;
             const std::string fname = name + "->@" + std::to_string(off);
             if (depth >= opt.depth) {
                 n->unbound_fields.push_back(off);
