@@ -381,6 +381,11 @@ std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& 
     const std::string& n = in.callee;
     if (n == "llvm.trap" || n == "llvm.debugtrap" || n == "llvm.ubsantrap")
         return std::pair<std::string, std::string>{"trap", "CXX-UNREACHABLE"};
+    // translate.cpp Tr::call: a call of an SV-COMP error sink (no operands) is the violation at the
+    // call site whatever the unit's definition of the sink does (it is not inlined, a defined
+    // reach_error included): the same noreturn check an undefined sink gets below.
+    if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty())
+        return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
     if (m.find(n)) return std::nullopt;
     if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" || n == "__assert2" ||
         n == "_wassert")
@@ -1097,6 +1102,11 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 // Tr::call: check(1, prop, cls), then the rest of the block is dead (noreturn);
                 // an unconditional br still makes its target reachable (normal_blocks)
                 auto [prop, cls] = *afail_kind(m, in);
+                // translate.cpp Tr::call: abort() inside SV-COMP's assume_abort_if_not ends the path as an
+                // assumption (assume(false)), not as a crash check. The proved fragment has no
+                // assume-and-stop, so it is outside the fragment, never compared as a check.
+                if (prop == "abort" && f.name == "assume_abort_if_not")
+                    throw Unsupported{"abort() in assume_abort_if_not is an assumption (assume-and-stop)"};
                 auto& t = bl.insts.back();
                 b << "L afail " << prop << " " << cls;
                 if (t.op == "br") b << " br " << name(t.targets[0]);
