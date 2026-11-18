@@ -343,6 +343,48 @@ std::vector<std::pair<int, int>> parse_ubsan_locs(const std::string& ir) {
     return out;
 }
 
+// Shifts whose undefined behaviour clang's IR builder folded away. A shift
+// whose operands are constants after clang's own constant propagation
+// (`1 >> (x = 0xBEA1)`, `(-1) << (x = 1)`: the assignment's value is the
+// constant) is folded to a constant or poison before any `shl`/`ashr`
+// instruction exists, and Sema warns only for shifts it can evaluate without
+// side effects, so neither the instruction-level checks nor a diagnostic see
+// it. With -fsanitize=shift clang still emits the check for that shift, with a
+// condition built from constants. `opt -passes=simplifycfg,instsimplify,simplifycfg`
+// folds that condition: a check that can fail is a branch to a block named
+// `handler.shift_out_of_bounds`, and a check that always fails loses its
+// branch, so its handler call ends up in a block that is not a handler block
+// (the handler block is merged into its predecessor). Each such call is a
+// folded-UB diagnostic at the shift's line:col (placed, or reported as not
+// attributable, like the Sema ones).
+std::vector<FoldedUb> parse_ubsan_folded_shifts(const std::string& ir) {
+    std::vector<FoldedUb> out;
+    const auto lines = split_lines(ir);
+    const auto locs = scan_locs(lines);
+    std::string label;
+    for (const auto& l : lines) {
+        if (!l.empty() && l[0] != ' ' && l[0] != '!' && l[0] != ';') {
+            auto c = l.find(':');
+            if (c != std::string::npos && l.find(' ') > c) {
+                label = l.substr(0, c);
+                continue;
+            }
+        }
+        if (l.starts_with("define ")) label = "entry";
+        if (l.find("call void @__ubsan_handle_shift_out_of_bounds(") == std::string::npos) continue;
+        if (label.starts_with("handler.")) continue;
+        auto it = locs.find(dbg_ref(l));
+        if (it == locs.end() || it->second.first <= 0) continue;
+        FoldedUb f;
+        f.line = it->second.first;
+        f.col = it->second.second;
+        f.cls = "INT-SHIFT-UB";
+        f.msg = "shift amount out of range or signed base negative, on operands clang constant-folded [-fsanitize=shift]";
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
 // C23 (N3038) storage-class specifiers in compound literals:
 // (static T){...}, (constexpr T){...}, (static constexpr T){...},
 // (thread_local static T){...}, (register T){...}. clang (checked through
@@ -1586,7 +1628,9 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     // Nothing defined: the unit's functions are all inline, constexpr or
     // static and unused, so clang emitted none. Emit them anyway to check them
     // (only then: in other units it would pull in every unused library inline).
+    bool emit_all = false;
     if (read_file(o0).find("\ndefine ") == std::string::npos) {
+        emit_all = true;
         // clang writes -o through a temporary file, so a failed run leaves
         // o0 as it was.
         std::vector<std::string> av{cc->string()};
@@ -1595,6 +1639,43 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         (void)prism::exec::run_process(av, timeout_s);
     }
     auto diags = parse_folded_clang_diagnostics(r.text, src);
+    {
+        // Folded shift UB that has no instruction and no Sema diagnostic (see
+        // parse_ubsan_folded_shifts). The sanitizer build is compiled exactly
+        // as the unit is lowered (same flags, same -femit-all-decls fallback).
+        // Only units that contain a shift are compiled again.
+        const auto ir0 = read_file(o0);
+        const auto text0 = read_file(src);
+        const bool has_shift = text0.find("<<") != std::string::npos || text0.find(">>") != std::string::npos ||
+                               ir0.find(" = shl ") != std::string::npos || ir0.find(" = ashr ") != std::string::npos ||
+                               ir0.find(" = lshr ") != std::string::npos;
+        if (has_shift) {
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), fl.begin(), fl.end());
+            if (cxx)
+                for (auto& a : av)
+                    if (a.starts_with("-std=")) a = "-std=c++" + std::to_string(cxx_std < 11 ? 98 : cxx_std);
+            auto os = td.path / "shift-fold.ll";
+            if (emit_all) av.push_back("-femit-all-decls");
+            av.insert(av.end(), {"-fsanitize=shift", "-o", os.string(), src.string()});
+            auto rs = prism::exec::run_process(av, timeout_s);
+            if (!cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
+                err = "clang (folded-shift locator): " + first_error(rs.text);
+                return std::nullopt;
+            }
+            if (rs.rc == 0 && !rs.failed && !rs.timed_out) {
+                auto oc = td.path / "shift-fold.opt.ll";
+                auto ro = prism::exec::run_process({fe.opt->string(), "-passes=simplifycfg,instsimplify,simplifycfg", "-S",
+                                                    "-o", oc.string(), os.string()},
+                                                   timeout_s);
+                if (ro.failed || ro.timed_out || ro.rc != 0) {
+                    err = "opt (folded-shift locator): " + first_error(ro.text);
+                    return std::nullopt;
+                }
+                for (auto& d : parse_ubsan_folded_shifts(read_file(oc))) diags.push_back(std::move(d));
+            }
+        }
+    }
     std::vector<int> placed;
     auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed)));
     if (folded) {
@@ -1645,6 +1726,13 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
                 for (auto& a : av)
                     if (a.starts_with("-std=")) a = "-std=c++" + std::to_string(cxx_std < 11 ? 98 : cxx_std);
             auto os = td.path / "shift.ll";
+            // The locator must emit exactly the functions the unit was lowered
+            // with: when nothing was defined (every function static or inline
+            // and unused, as csmith's --nomain output is) the lowering used
+            // -femit-all-decls, and without it the locator would emit no
+            // functions, find no signed shift and drop every INT-SHIFT-UB
+            // base check (PROVED on `static int f(signed char p) { return p << 1; }`).
+            if (emit_all) av.push_back("-femit-all-decls");
             av.insert(av.end(), {"-fsanitize=shift-base", "-o", os.string(), src.string()});
             auto rs = prism::exec::run_process(av, timeout_s);
             if (cxx && (rs.failed || rs.timed_out || rs.rc != 0)) {
