@@ -131,6 +131,99 @@ arbitrary: X past the depth bound, Y over the object cap of M, Z without pointee
 `--jsonl` harness object gets `depth_bound`, `depth_reached`, `cut_past_depth`, `cut_over_cap`, `cut_no_type`,
 `function_pointer_fields_bound` and `address_value_assumptions`.
 
-## What is not done
+## 5. Built-in contracts for body-less intrinsics (`--pir-builtin-contracts`)
 
-See the end of the pull request description (`docs/HARNESS_PHASE2.md` is updated with the measurement).
+With `--kernel-api`, three intrinsics the kernel headers emit have no body and no spec: `llvm.read_register` (the stack pointer of
+`ASM_CALL_CONSTRAINT`, 155 Linux functions in the W8 data), `llvm.prefetch` and `llvm.objectsize`. Each gets a contract of its own:
+`read_register`: an arbitrary value (a pointer result is an arbitrary value that points to no object), no memory effect; `prefetch`:
+no effect (the address is not accessed); `objectsize`: an arbitrary value (so a fortify-style check that depends on it is decided
+neither way). Named `builtin-contract: @...`. Never active in user mode.
+
+## 6. Measurement
+
+Method. The W8 Stage 1 units that had run (36 Linux, 15 FreeBSD units of `data/pir-scale`, snapshot of the committed
+`stage1-*.jsonl.gz`) were run again with the W8 flags and budgets (`tools/pir_scale_run.sh`: `--kernel-api`, `--pir-harness`,
+`--pir-discharge --pir-container-of --pir-vacuity --assume-unknown-calls`, 6 s per function, 5 s per VC, Houdini 20 s, unit wall limit
+1500 s, 4 workers, 6000 MB each) plus `--callee-contracts scripts/pir_callee_contracts_phase2.tsv --pir-ops-auto --pir-addr-values
+--pir-harness-deep` (Linux also `--pir-builtin-contracts`; the FreeBSD run was made before that flag existed and has no
+`llvm.read_register`). Functions are matched by (unit, function, start line). Driver: `scripts/pir_phase2_rerun.sh`; the comparison
+script is `tools/pir_phase2_compare.py` in OS-Proving and the raw records are in `data/pir-scale/phase2/` there.
+
+Caveats that decide how to read the table:
+
+* The machine ran at load 55 to 80 (W8: 35 to 50), so the 6 s function budget produces more TIMEOUT. A run of the **same binary
+  without the new flags** on 14 Linux units and all FreeBSD units ("same binary" below) separates the effect of the flags from the
+  drift between the W8 binary and this one, and from the load: against W8 that run alone moved UNKNOWN 41 to 12 and PROVED-ASSUMING
+  +18 (Linux, 14 units). Those changes are not the flags.
+* Linux: 34 of the 36 units are in the comparison. `drivers/base/cacheinfo.c` hit the 1500 s unit limit in both after-runs (W8: 277 s;
+  the same-binary run without the flags finished it) and `drivers/cxl/core/mbox.c` failed in the clang front end (the environment: it
+  failed again on retry). Four other units failed in the front end during the first run and were rerun.
+* The contract file holds 11 hand-written contracts (UNVALIDATED, the source named in each row), the only contract data these units
+  have: no mined ACSL contract exists for them, and the clang ops data (W5) carries field names but not field indices (section 2),
+  so it could not be used.
+
+Linux (34 units, 1,684 functions), W8 to after:
+
+| label | W8 | after | change |
+|---|---:|---:|---:|
+| PROVED | 40 | 42 | +2 |
+| PROVED-UNBOUNDED | 1 | 1 | 0 |
+| PROVED-ASSUMING | 502 | 527 | +25 |
+| BOUNDED | 20 | 21 | +1 |
+| FAILED | 37 | 38 | +1 |
+| NEEDS-HARNESS | 897 | 870 | -27 |
+| UNKNOWN | 68 | 46 | -22 |
+| TIMEOUT | 119 | 139 | +20 |
+
+FreeBSD (15 units, 790 functions), W8 to after: PROVED 18 to 19, PROVED-ASSUMING 189 to 189, BOUNDED 19 to 18, FAILED 5 to 5,
+NEEDS-HARNESS 482 to 490, UNKNOWN 36 to 36, TIMEOUT 39 to 31. The functions that moved to NEEDS-HARNESS were TIMEOUT or BOUNDED under the
+load. No function-pointer field was bound (the 130 `null-call` ones stay: their tables are assigned by other units).
+
+Same binary, no new flags, to after (this is the effect of the flags):
+
+| | NEEDS-HARNESS | PROVED-ASSUMING | label changes |
+|---|---:|---:|---|
+| Linux, 803 functions matched | 480 to 466 (-14) | 200 to 201 | 9 NEEDS-HARNESS to TIMEOUT, 5 to UNKNOWN, 1 to PROVED-ASSUMING |
+| FreeBSD, 749 functions | 469 to 465 (-4) | 185 to 185 | 3 NEEDS-HARNESS to BOUNDED, 1 to TIMEOUT |
+
+What the new mechanisms did (Linux, after): a contract stub is in the result of 139 functions, the address model in 31, a deeper harness
+object in 13, a bound function-pointer field in 4 (FreeBSD: 11, 0, 7, 0). NEEDS-HARNESS by message, Linux:
+
+| blocker | W8 | after |
+|---|---:|---:|
+| `UNENCODED: call @...` (`llvm.read_register`, `objectsize`, `prefetch`, others) | 172 | 64 |
+| `UNENCODED: constant expression ptrtoint` | 60 | 0 |
+| `UNENCODED: initializer ... / constant getelementptr on inttoptr` | 29 | 0 |
+| new: `UNENCODED: inline assembly with outputs of type { iN x 5 or 6 }` and similar | 0 | 114 |
+| new: `UNENCODED: constant pointer offset out of range` | 0 | 15 |
+| new: violation only under the address-value model | 0 | 5 |
+| `UNENCODED: extern object of unknown size` | 34 | 49 |
+| `UNENCODED: call depth > 4` | 202 | 222 |
+
+Reading: the blockers the items target are gone (about 200 functions), and nearly all of those functions stopped at the **next**
+blocker: the inline asm with a 5 or 6 field struct result that the stack-pointer functions run into, call depth > 4, constant offsets
+from an integer base, extern objects of unknown size. Some of the unblocked ones now run the solver and hit the 6 s budget
+(NEEDS-HARNESS to TIMEOUT: 18 against W8, 9 against the same binary). The net change in NEEDS-HARNESS is -27 of 897 (3 %) on Linux against
+W8, +8 on FreeBSD (load), and -14 and -4 against the same binary. Faithful summary: the mechanisms work and their uses are named, but
+on these units they do not reduce NEEDS-HARNESS by much; the table says where to go next.
+
+## 7. What is left
+
+* **Inline asm with a struct result of more than two fields** (`{ i64 x 5 }`, `{ i64 x 6 }`): 114 Linux functions now stop here, mostly
+  the `ASM_CALL_CONSTRAINT` paths that `--pir-builtin-contracts` opened. `Frame::pairs` carries only two-field aggregates; an n-field
+  tuple for `asm_havoc` and `extractvalue` is the next change (W4 asm model).
+* **Function-pointer fields for FreeBSD and for fields assigned in another unit**: the ops data of the clang pass
+  (`data/clang/*/ops.tsv.gz`: struct, field name, function) has no field index, and the unit's IR has line tables only
+  (`-gline-tables-only`), so a name cannot be mapped to the LLVM struct index. With the index (DWARF members, or the struct layouts of
+  the headers) `--ops-table` binds them through the same code path as `--pir-ops-auto`. The in-unit derivation bound 4 Linux functions
+  and no FreeBSD function.
+* **Contract data**: only 11 hand-written rows exist. Mined ACSL for the callees of these units, or a status-carrying export of the
+  W1 specs, would make the stubs matter; the loader and the status rule are ready. A contract is never validated against its callee by
+  this change: a callee that does not satisfy it makes the proofs that used it wrong, which is exactly the named assumption.
+* **Call depth > 4** (222 Linux, 203 FreeBSD functions) is the largest blocker left and is not a body-less callee: a contract stub for a
+  callee *with* a body would need the contract proved against the body (an assume-guarantee proof of the callee), not built.
+* The MMIO base object (`hw->hw_addr`, an `__iomem` field with no pointee type) is still an arbitrary pointer.
+* **Variadic callees** (`sysfs_emit` 75 functions, `seq_printf`): a contract signature cannot say `...`; they stay unknown calls.
+* Absolute addresses are not modelled; per-cpu offset arithmetic on a `ptrtoint` base is NEEDS-HARNESS, never a result.
+* `cacheinfo.c` times out with the new flags (1500 s; W8 277 s, same-binary run finished it): the cause (more inlined targets, the deeper harness
+  or the load) is not isolated.
