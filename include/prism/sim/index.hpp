@@ -35,7 +35,7 @@ struct neighbour {
 };
 
 struct hnsw_config {
-    std::size_t M = 16, ef_construction = 200, ef_search = 64;
+    std::size_t M = 16, ef_construction = 200, ef_search = 128;  // FORGE: recall@10 is only 0.86 at ef 64 on hard data
     std::uint64_t seed = 0x5eed;
 };
 

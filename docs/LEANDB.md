@@ -175,3 +175,25 @@ its own shard writer and manifest (`manifest.json`, class `committed`/`local`/`a
 and eval) with three tables and a BM25 over several shard directories at once (committed plus local). Moving the writer and
 the single-directory search onto `shard_writer` / `shard_set` is mechanical and is the follow-up; the on-disk shard schema
 above would not change.
+
+## Measured
+
+**Not yet measured on the real database.** When this was written OS-Proving's `lean_db.sqlite` was still being built
+(`lean_db.sqlite.new` was 6.5 GB and growing), so `prism leandb import` was not run on it, no real shards are committed
+(`data/leandb/shards` does not exist yet and the repository test skips), and the premise-retrieval recall of bm25, sym and
+hybrid on the LeanDojo test split (`tools/leandb/eval_premises.py`) was not run. What was run is the fixture suite
+(`tests/cpp/test_leandb.cpp`, 9 cases, all passing): import, sorted shards, byte-identical rebuild, identical shards for the
+same rows under different input row ids, a one-source rebuild reproducing exactly that source's shards, every search mode,
+local shards joining by default, no eval leakage, sharded BM25 equal to the unsharded FTS5 bm25, tamper detection, and the
+fetch script end to end against a local fake source.
+
+To produce the real numbers once the database is complete:
+
+```
+prism leandb import /mnt/d/ParanoidBSD/lean-db/lean_db.sqlite --pin data/leandb/PIN.json \
+    --committed data/leandb/shards --local data/leandb/local
+prism leandb verify
+tools/leandb/eval_premises.py /mnt/d/ParanoidBSD/lean-db/lean_db.sqlite --prism build/prism \
+    --db data/leandb/shards --db data/leandb/local --out premise_recall.json
+du -sh data/leandb/shards; ls data/leandb/shards | wc -l      # stop before committing if the total is over about 1.5 GB
+```
