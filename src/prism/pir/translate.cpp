@@ -1442,6 +1442,32 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            if (opt.builtin_contracts && !opt.kernel_api.empty()) {
+                // --pir-builtin-contracts (docs/HARNESS_PHASE2.md): contracts of the body-less intrinsics the kernel headers emit
+                const int dst = in.result.empty() ? -1 : result_var(fr, in);
+                if (starts(n, "llvm.read_register.")) {
+                    // __builtin_read_register / current_stack_pointer: the value of a hardware register
+                    if (dst >= 0) {
+                        if (in.ty.kind == ir::Type::Ptr || in.ty.kind == ir::Type::Int) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+                        else throw Unenc{"UNENCODED: call @" + n + " (result of type " + in.ty.text + ")"};
+                    }
+                    note_assumption("builtin-contract: @llvm.read_register reads a hardware register: its value is arbitrary (a pointer result is an "
+                                    "arbitrary value that points to no object); it changes no memory");
+                    return;
+                }
+                if (starts(n, "llvm.prefetch.")) {
+                    note_assumption("builtin-contract: @llvm.prefetch has no effect on the program state (a hint: the address is not accessed, "
+                                    "so it need not be valid)");
+                    return;
+                }
+                if (starts(n, "llvm.objectsize.")) {
+                    // __builtin_object_size / __builtin_dynamic_object_size: the size of the object, or the "unknown" constant
+                    if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+                    note_assumption("builtin-contract: @llvm.objectsize returns an arbitrary value (the object size or the unknown marker): "
+                                    "fortify-style checks that depend on it are not decided");
+                    return;
+                }
+            }
             throw Unenc{"UNENCODED: call @" + n};
         }
         if (starts(n, "__prism_")) {

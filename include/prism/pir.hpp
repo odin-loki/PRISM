@@ -520,6 +520,8 @@ struct TranslateOptions {
     bool ops_auto = false;
     // --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers are modelled
     bool addr_values = false;
+    // --pir-builtin-contracts (kernel mode): contracts for @llvm.read_register / @llvm.prefetch / @llvm.objectsize
+    bool builtin_contracts = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`

@@ -589,8 +589,10 @@ TEST_CASE("pir harness2: cli flags, all off by default") {
         std::vector<const char*> v(args);
         return prism::parse_cli(std::span<const char* const>(v.data(), v.size()));
     };
-    auto r = parse({"fixture.c", "--callee-contracts", "c.tsv", "--pir-ops-auto", "--pir-addr-values", "--pir-harness-deep"});
+    auto r = parse({"fixture.c", "--callee-contracts", "c.tsv", "--pir-ops-auto", "--pir-addr-values", "--pir-harness-deep",
+                    "--pir-builtin-contracts"});
     REQUIRE(r);
+    CHECK(r->cfg.pir_builtin_contracts);
     CHECK(r->cfg.callee_contracts.filename() == "c.tsv");
     CHECK(r->cfg.pir_ops_auto);
     CHECK(r->cfg.pir_addr_values);
@@ -601,5 +603,67 @@ TEST_CASE("pir harness2: cli flags, all off by default") {
     CHECK_FALSE(d->cfg.pir_ops_auto);
     CHECK_FALSE(d->cfg.pir_addr_values);
     CHECK_FALSE(d->cfg.pir_harness_deep);
+    CHECK_FALSE(d->cfg.pir_builtin_contracts);
     CHECK_FALSE(parse({"fixture.c", "--callee-contracts"}));  // the file name is required
+}
+
+// ---- built-in contracts of body-less intrinsics ---------------------------------------------------------------
+
+TEST_CASE("pir harness2: builtin contracts: llvm.read_register / prefetch / objectsize only with the option in kernel mode, named") {
+    if (!pp::z3_available()) return;
+    const std::string ir = R"IR(
+declare i64 @llvm.read_register.i64(metadata)
+declare void @llvm.prefetch.p0(ptr, i32 immarg, i32 immarg, i32 immarg)
+declare i64 @llvm.objectsize.i64.p0(ptr, i1 immarg, i1 immarg, i1 immarg)
+define i64 @reg_bad() {
+entry:
+  %r = call i64 @llvm.read_register.i64(metadata !0)
+  %q = udiv i64 100, %r
+  ret i64 %q
+}
+define i64 @reg_ok() {
+entry:
+  %r = call i64 @llvm.read_register.i64(metadata !0)
+  %o = or i64 %r, 1
+  %q = udiv i64 100, %o
+  ret i64 %q
+}
+define i32 @pre_ok() {
+entry:
+  call void @llvm.prefetch.p0(ptr null, i32 0, i32 3, i32 1)
+  ret i32 7
+}
+define i64 @size_bad() {
+entry:
+  %s = call i64 @llvm.objectsize.i64.p0(ptr null, i1 false, i1 true, i1 false)
+  %q = udiv i64 100, %s
+  ret i64 %q
+}
+!0 = !{!"rsp"}
+)IR";
+    pp::TranslateOptions kernel;
+    kernel.kernel_api = "linux";
+    CHECK_FALSE(tr_of(ir, "reg_ok", kernel).fn.has_value());  // not without the option
+    CHECK(tr_of(ir, "reg_ok", kernel).reason.find("UNENCODED: call @llvm.read_register") != std::string::npos);
+    pp::TranslateOptions o = kernel;
+    o.builtin_contracts = true;
+    auto ok = tr_of(ir, "reg_ok", o);
+    REQUIRE_MESSAGE(ok.fn.has_value(), ok.reason);
+    CHECK(pp::check_function(*ok.fn, 8, 30).status == L::PROVED);  // engine verdict; the stage makes it PROVED-ASSUMING
+    REQUIRE(ok.fn->assumptions.size() == 1);
+    CHECK(has(ok.fn->assumptions[0], "builtin-contract: @llvm.read_register"));
+    auto bad = tr_of(ir, "reg_bad", o);
+    REQUIRE(bad.fn.has_value());
+    CHECK(pp::check_function(*bad.fn, 8, 30).status == L::FAILED);  // the register can be 0: not assumed away
+    auto pre = tr_of(ir, "pre_ok", o);
+    REQUIRE_MESSAGE(pre.fn.has_value(), pre.reason);
+    CHECK(pp::check_function(*pre.fn, 8, 30).status == L::PROVED);
+    CHECK(has(pre.fn->assumptions.at(0), "builtin-contract: @llvm.prefetch"));
+    auto sz = tr_of(ir, "size_bad", o);
+    REQUIRE(sz.fn.has_value());
+    CHECK(pp::check_function(*sz.fn, 8, 30).status == L::FAILED);  // the unknown marker is not assumed to be non-zero
+    // user mode (no --kernel-api): never
+    pp::TranslateOptions user;
+    user.builtin_contracts = true;
+    CHECK_FALSE(tr_of(ir, "reg_ok", user).fn.has_value());
 }
