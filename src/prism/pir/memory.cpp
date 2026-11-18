@@ -655,6 +655,29 @@ z3::expr SymMem::in_range(const z3::expr& a, const z3::expr& base, const z3::exp
     return objid(a) == objid(base) && z3::ult(off(a) - off(base), len);
 }
 
+z3::expr SymMem::eq_addr(const z3::expr& a, const z3::expr& b) const {
+    if (!split_eq_) return a == b;
+    const z3::expr* sym = &a;
+    uint64_t k = 0;
+    auto cval = [&](const z3::expr& e, uint64_t& out) {
+        if (e.is_numeral() && e.is_numeral_u64(out)) return true;
+        if (const Vs* v = vs_of(e); v && v->size() == 1) {
+            out = v->front().val;
+            return true;
+        }
+        return false;
+    };
+    if (!cval(b, k)) {
+        if (!cval(a, k)) return a == b;
+        sym = &b;
+    }
+    const unsigned w = ptr_w();
+    if (sym->is_numeral() || w <= 16) return a == b;
+    z3::expr hi = sym->extract(w - 1, 8) == c_.bv_val(k >> 8, w - 8);
+    z3::expr lo = sym->extract(7, 0) == c_.bv_val(k & 0xff, 8);
+    return hi && lo;
+}
+
 z3::expr SymMem::cell_of(const z3::expr& byte, const z3::expr& init, unsigned tag) {
     auto low = z3::concat(init, byte);
     if (!tags_) return low;
@@ -856,9 +879,9 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     }
     // the condition "entry address == addr", decided when both are known
     auto same = [&](const z3::expr& ea) -> std::optional<z3::expr> {
-        if (!caddr) return addr == ea;
+        if (!caddr) return eq_addr(addr, ea);
         const Vs* ev = vs_of(ea);
-        if (!ev) return addr == ea;
+        if (!ev) return eq_addr(addr, ea);
         std::optional<z3::expr> hit;
         for (auto& o : *ev)
             if (o.val == *caddr)

@@ -85,6 +85,7 @@ public:
     void set(const z3::expr& guard, const z3::expr& dst, const z3::expr& byte, const z3::expr& len);
 
     std::size_t objects() const { return objs_.size(); }
+    void set_split_eq(bool on) { split_eq_ = on; }
 
     // Invariant evaluation (encode.cpp, Houdini over loop cuts): a snapshot
     // of the memory state at one point of the encoding, and an *exact* load
@@ -211,6 +212,11 @@ private:
     z3::expr off(const z3::expr& p) { return z3::zext(p.extract(obj_shift() - 1, 0), ptr_w() - obj_shift()); }
     std::optional<uint64_t> const_obj(const z3::expr& p);
     z3::expr in_range(const z3::expr& a, const z3::expr& base, const z3::expr& len);
+    // a == b, written as (high bits == high bits) && (low byte == low byte) when one side
+    // has a single constant value: the high-part comparison is one shared term for all
+    // addresses of a cluster, so the solver builds it once (exact: same truth value).
+    z3::expr eq_addr(const z3::expr& a, const z3::expr& b) const;
+    bool split_eq_ = false;
     z3::expr cell_of(const z3::expr& byte, const z3::expr& init, unsigned tag);
     z3::expr read_cell(const z3::expr& addr);
     z3::expr read_cell_log(const z3::expr& addr, std::size_t upto, bool use_prov = true);

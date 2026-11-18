@@ -483,6 +483,9 @@ enum class MemEncoding { Array, Bv };
 
 struct EncodeOptions {
     MemEncoding memory = MemEncoding::Bv;  // QF_BV; Array is the unbounded alternative (slower on ranged copies)
+    // Bv only: compare a symbolic address with a constant one as (high bits == high bits) && (low byte == low
+    // byte), so the solver shares the high-part comparison. Exact (same truth value); smaller bit-blasted query.
+    bool split_compare = false;
 };
 
 PRISM_API bool z3_available();

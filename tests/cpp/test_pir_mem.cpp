@@ -1613,3 +1613,146 @@ int null_bad(int *p) { return *p; }
     for (auto& [n, f] : i32) CHECK(f.status != prism::laws::PROVED_CERTIFIED);
     std::filesystem::remove_all(dir);
 }
+
+#ifdef PRISM_HAS_Z3
+// Differential test for the memory encodings (docs/DEVICE_MODEL.md 10.8). Random small programs with
+// stores, memsets and memcpys (constant and symbolic offsets and lengths, overlapping and disjoint,
+// in-bounds and out-of-bounds) and one value-dependent assertion are checked in three encodings:
+// the plain Bv encoding (the reference), Bv with split_compare, and the Array encoding. Verdicts,
+// violation classes and counterexamples must agree, and a counterexample must replay in the interpreter.
+namespace {
+
+struct DiffGen {
+    uint32_t s;
+    explicit DiffGen(uint32_t seed) : s(seed * 2654435761u + 12345u) {}
+    uint32_t next() {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        return s;
+    }
+    unsigned pick(unsigned n) { return next() % n; }
+    std::string make() {
+        struct Obj {
+            const char* name;
+            unsigned size;
+        };
+        const Obj objs[3] = {{"%a", 16}, {"%b", 16}, {"%c", 24}};
+        std::string o = "define i32 @f(i32 %i, i32 %j, i32 %n) {\nentry:\n";
+        for (auto& ob : objs)
+            o += std::string("  ") + ob.name + " = alloca [" + std::to_string(ob.size) + " x i8], align 1\n";
+        // objects are zero-filled, byte-filled or left uninitialised
+        for (auto& ob : objs) {
+            unsigned k = pick(4);
+            if (k == 0) continue;
+            o += std::string("  call void @llvm.memset.p0.i64(ptr ") + ob.name + ", i8 " +
+                 std::to_string(k == 1 ? 0 : pick(250) + 1) + ", i64 " + std::to_string(ob.size) + ", i1 false)\n";
+        }
+        o += "  %xi = zext i32 %i to i64\n  %xj = zext i32 %j to i64\n  %xn = zext i32 %n to i64\n";
+        // bounds of the symbolic values (above the object size: out of bounds is possible)
+        const unsigned bound_choice[6] = {2, 4, 8, 12, 16, 40};
+        unsigned bi = bound_choice[pick(6)], bj = bound_choice[pick(6)], bn = bound_choice[pick(5)];
+        o += "  %ci = icmp ult i64 %xi, " + std::to_string(bi) + "\n  %cj = icmp ult i64 %xj, " +
+             std::to_string(bj) + "\n  %cn = icmp ult i64 %xn, " + std::to_string(bn) + "\n";
+        o += "  %c1 = and i1 %ci, %cj\n  %c2 = and i1 %c1, %cn\n  br i1 %c2, label %body, label %out\nbody:\n";
+        int ctr = 0;
+        auto off = [&](unsigned lim) -> std::string {
+            switch (pick(4)) {
+                case 0: return "%xi";
+                case 1: return "%xj";
+                default: return std::to_string(pick(lim));
+            }
+        };
+        auto gep = [&](const Obj& ob, const std::string& offs) {
+            std::string r = "%p" + std::to_string(ctr++);
+            o += "  " + r + " = getelementptr inbounds i8, ptr " + ob.name + ", i64 " + offs + "\n";
+            return r;
+        };
+        unsigned steps = 2 + pick(4);
+        for (unsigned st = 0; st < steps; ++st) {
+            const Obj& d = objs[pick(3)];
+            switch (pick(4)) {
+                case 0: {  // byte store
+                    auto p = gep(d, off(d.size));
+                    o += "  store i8 " + std::to_string(pick(256)) + ", ptr " + p + ", align 1\n";
+                    break;
+                }
+                case 1: {  // memset
+                    auto p = gep(d, off(d.size));
+                    o += "  call void @llvm.memset.p0.i64(ptr " + p + ", i8 " + std::to_string(pick(256)) +
+                         ", i64 " + std::to_string(1 + pick(4)) + ", i1 false)\n";
+                    break;
+                }
+                default: {  // memcpy
+                    const Obj& sObj = objs[pick(3)];
+                    auto pd = gep(d, off(d.size));
+                    auto ps = gep(sObj, off(sObj.size));
+                    std::string len = pick(3) == 0 ? "%xn" : std::to_string(1 + pick(6));
+                    o += "  call void @llvm.memcpy.p0.p0.i64(ptr " + pd + ", ptr " + ps + ", i64 " + len +
+                         ", i1 false)\n";
+                    break;
+                }
+            }
+        }
+        const Obj& r = objs[pick(3)];
+        auto pr = gep(r, off(r.size));
+        unsigned wide = pick(3);  // 1, 2 or 4 byte load
+        std::string ty = wide == 0 ? "i8" : wide == 1 ? "i16" : "i32";
+        o += "  %v = load " + ty + ", ptr " + pr + ", align 1\n";
+        std::string cmp = pick(2) ? "eq" : "ult";
+        o += "  %e = icmp " + cmp + " " + ty + " %v, " + std::to_string(pick(wide == 0 ? 256 : 70000) % (wide == 0 ? 256 : 65536)) + "\n";
+        o += "  br i1 %e, label %bad, label %out\nbad:\n  call void @reach_error()\n  unreachable\nout:\n  ret i32 0\n}\n";
+        return o;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("pir mem: differential: Bv, Bv with split_compare and Array agree on random copy programs") {
+    if (skip_without_frontend()) return;
+    constexpr unsigned kCases = 240;
+    unsigned failed = 0, proved = 0, other = 0, oob = 0;
+    for (unsigned n = 0; n < kCases; ++n) {
+        DiffGen g(n + 1);
+        const std::string ir = g.make();
+        CAPTURE(n);
+        CAPTURE(ir);
+        auto t = mem_tr(with_decls(ir), "f");
+        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+        std::vector<pp::Verdict> v;
+        const struct {
+            pp::MemEncoding m;
+            bool split;
+        } variants[3] = {{pp::MemEncoding::Bv, false}, {pp::MemEncoding::Bv, true}, {pp::MemEncoding::Array, false}};
+        for (auto& var : variants) {
+            pp::CheckOptions o;
+            o.unwind = 4;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.deepen_max = 0;
+            o.encode.memory = var.m;
+            o.encode.split_compare = var.split;
+            v.push_back(pp::check_function(*t.fn, o));
+        }
+        CAPTURE(v[0].message);
+        CHECK(v[1].status == v[0].status);
+        CHECK(v[1].cls == v[0].cls);
+        CHECK(v[2].status == v[0].status);
+        for (auto& x : v)
+            if (x.status == prism::laws::FAILED && !x.cex_args.empty()) {
+                auto r = pp::interpret(*t.fn, x.cex_args);
+                CHECK(r.status == pp::InterpResult::Violation);
+            }
+        if (v[0].status == prism::laws::FAILED) ++failed;
+        else if (v[0].status == prism::laws::PROVED) ++proved;
+        else ++other;
+        if (v[0].cls.rfind("MEM-OOB", 0) == 0 || v[0].cls == "MEM-PTR-ARITH") ++oob;
+    }
+    MESSAGE("differential: " << kCases << " cases, FAILED " << failed << " (memory violations " << oob << "), PROVED "
+                             << proved << ", other " << other);
+    // the generator must exercise both outcomes and the out-of-bounds detection
+    CHECK(failed > 20);
+    CHECK(proved > 20);
+    CHECK(oob > 5);
+}
+#endif

@@ -365,6 +365,7 @@ struct Encoding {
                 for (auto& s : b.stmts)
                     if ((s.kind == Stmt::Load || s.kind == Stmt::Store) && s.tag) tags = true;
             mem.emplace(c, eo.memory, tags, assumptions);
+            mem->set_split_eq(eo.split_compare);
         }
     }
 

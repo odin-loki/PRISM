@@ -679,6 +679,61 @@ Conclusion: the blow-up is the number of distinct log-dependent terms of the sym
 not shrink it; a sound reduction must change the encoding of copies from symbolic sources (for example, a summary of
 `copy_data` as in Stage 4) and is a model change.
 
+### 10.8 Where the callback query size comes from, and what a copy summary can and cannot do (branch `pir-memory-scaling`)
+
+Same row as 10.7 (callback, row `all`, steps 1, `PRISM_MEM_BUDGET_MB=8000`, `PRISM_PIR_INLINE_DEPTH=24`), base 5228ee2.
+The task was a summary of `Copy` entries with a symbolic source (one array-level operation instead of a per-byte walk of
+the log). Before building it, the walk was attributed by entry kind (measurement-only counters, not committed):
+
+| log entries visited by `read_cell_log` | symbolic top-level reads (53 reads, 10 loads) | all other reads (1,467) | total |
+|---|---|---|---|
+| `Byte` (one byte of a store) | 133,283 | 47,418 | 180,701 (96.9%) |
+| `Set` (memset) | 3,763 | 894 | 4,657 |
+| `Copy` (memcpy) | 155 | 568 | 723 (0.39%) |
+| `Havoc` | 102 | 294 | 396 |
+
+* A `Copy` entry is visited 723 times in 186,477 entry visits. Even a free copy summary could remove only the nested
+  reads that the copies cause (at most the 47k `Byte` visits of the non-symbolic reads, about a quarter), and the
+  symbolic top-level reads would be unchanged. So a copy summary cannot bring this query under the budget; it was not
+  built.
+* The cost is the 10 loads through a pointer with no value set and no known object (8-byte, 4-byte and 1-byte loads of
+  `vdev`-style fields, 53 byte reads). Each byte read compares its address with every store in the log: 2,378 to
+  2,604 `Byte` entries, of which 2,304 to 2,312 are distinct constant addresses in 65 to 67 objects. So deduplicating
+  constant addresses saves at most 8%, and a decision tree over the constants is the only structure left (about 4 times
+  fewer bit-blasted gates, about 30% fewer nodes), not an order of magnitude.
+* Z3's memory is not where the budget is spent while encoding: the memory model finishes with the process at about
+  0.5 GB (`memstat` rss 143 MB at the last read, 359 MB to 538 MB sampled). The process then grows to 5.4 GB in about 50 s
+  and peaks at 7.1 to 7.3 GB with no solver child process alive in any sample (RSS sampled every 4 s). That is parent-process work on the 525k-node
+  DAG after the memory reads and before a solver child exists (VC assembly and the solver wrapper preparing the query; not
+  separated further), so what matters is the DAG size, which the
+  per-read chain over every store fixes.
+
+Measured, same unit (the machine was loaded, 60 to 90 load average, so the wall times are only comparable in order):
+
+| encoding | verdict | DAG nodes | query text | peak RSS | wall |
+|---|---|---|---|---|---|
+| Bv (default) | UNKNOWN, exit 75 (budget) | 525,453 | 22,966,248 B | 7.05 to 7.30 GB | 86 to 146 s |
+| Bv, `split_compare` | UNKNOWN, exit 75 (budget) | 537,695 | 23,051,185 B | 6.66 GB | 188 s |
+| Array (`MemEncoding::Array`) | no verdict in 1,500 s (killed, exit 124) | not measured | not measured | 1.71 GB | 1,501 s |
+
+`EncodeOptions::split_compare` (kept, default off) writes `addr == constant` as `(high bits == high bits) && (low byte ==
+low byte)`, which lets the solver share the high-part comparison between stores of one cluster. It is exact (same truth
+value). On this row it saves 6% of the peak memory and adds 2% to the DAG, so it does not change the outcome and is not
+turned on. The remaining three rows (`read_nowait`, `read_wait`, `cb_read`) were not re-measured: they have the same
+shape (the same 10 loads through an unknown pointer), and the callback row shows no encoding change of this kind moves them
+out of the budget.
+
+**Differential test.** `pir mem: differential: Bv, Bv with split_compare and Array agree on random copy programs`
+(tests/cpp/test_pir_mem.cpp) generates 240 random programs (stores, memsets and memcpys with constant and symbolic
+offsets and lengths, overlapping or disjoint, in bounds and out of bounds, one value-dependent assertion with 1, 2 or 4
+byte loads) and checks each in the three encodings: status and violation class must agree between Bv and Bv with
+`split_compare`, the status must agree with Array, and every counterexample must replay as a violation in the interpreter.
+It is the harness any future copy encoding must pass.
+
+**What a sound reduction needs.** Provenance for the loaded pointer (the pointer comes out of the device model's havoc, so
+the model has none), or a contract for `virtqueue_get_buf` and `copy_data` that gives the callback its argument as a
+pointer into one known object (Stage 4 summaries). Both change what is checked or assumed, so neither was done here.
+
 ## 11. What does not work, and what is assumed
 
 **Bounds.** Everything is bounded: two operations (one for the ST variant's model run), at most two
