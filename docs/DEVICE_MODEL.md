@@ -734,6 +734,44 @@ It is the harness any future copy encoding must pass.
 the model has none), or a contract for `virtqueue_get_buf` and `copy_data` that gives the callback its argument as a
 pointer into one known object (Stage 4 summaries). Both change what is checked or assumed, so neither was done here.
 
+### 10.9 Before/after on the four virtio-rng rows (branch `pir-memory-scaling`, 18 Nov, no encoding change kept)
+
+The copy summary asked for in the 18 Nov brief (copies from symbolic sources) was not built as a sound change: the
+only copy encoding that reaches the array level is `MemEncoding::Array`, which had no verdict in 1,500 s on the callback
+row (10.8), and a summary that is not a provenance argument is an assumption. So the "after" column below is the same
+encoding as "before" (the default `Bv`, `split_compare` off, `eq_addr` falls back to `==`), and the rows measure the
+baseline of this branch, not an improvement.
+
+Setup: row runs with `work/MEMr/rowrun.sh` (steps 1, row `all`, `PRISM_MEM_BUDGET_MB=8000`,
+`PRISM_PIR_INLINE_DEPTH=24`, one run at a time, memory guard 14 GB free), base HEAD 15dc5f5 (build ~/pbuild/pwmem).
+The machine was shared with other agents' runs (load 35 to 37), so wall times are only comparable in order.
+
+| row | verdict | peak RSS | wall |
+|---|---|---|---|
+| callback | UNKNOWN, exit 75 (budget) | 6.78 GB | 121 s |
+| read_nowait | UNKNOWN, exit 75 (budget) | 5.31 GB | 152 s |
+| read_wait | UNKNOWN, exit 75 (budget) | 5.87 GB | 302 s |
+| cb_read | UNKNOWN, exit 75 (budget) | 7.13 GB | 71 s |
+
+Query size for the callback row, from a dump of the property VC (`properties[0,2411]`, measurement-only hook from the
+`instrument.diff` patch, reverted afterwards; same build): 22,966,248 bytes of SMT-LIB2 and 191,008 `let` bindings (the
+let-shared DAG; 525,453 distinct nodes, as measured in 10.7 with Z3). The same run gave UNKNOWN, exit 75, 6.91 GB, 142 s.
+The three other rows were not dumped (the `--pir-vcs` dump of their setup VCs is 2.6 KB and does not contain the
+property query), so their DAG sizes are not measured here.
+
+Gates on this commit (build ~/pbuild/pwmem): `-tc="*pir*" -tce="*differential*"`: `[doctest] test cases:  124 |  124 passed | 0 failed | 1312 skipped`,
+`[doctest] assertions: 1806 | 1806 passed | 0 failed |`, `Status: SUCCESS!`. `-tc="*differential*"`:
+`[doctest] test cases:    1 |    1 passed | 0 failed | 1435 skipped`, `[doctest] assertions: 1815 | 1815 passed | 0 failed |`,
+`Status: SUCCESS!`. `-tc="*module*"`: `17 | 17 passed`, 7400 assertions. `-tc="*conc*"`: `64 | 64 passed`, 7024 assertions.
+One earlier `-tc="*pir*"` run with the differential case inside it was killed at the 2400 s gate timeout while that case
+was running (`108 | 107 passed | 1 failed`, the failure is the SIGTERM); the differential case passes on its own (above).
+The `pir shift rules follow the C++ standard of the unit (F7)` case prints a WARN for the known C++03 gap (ODIN_TODO), not
+a failure.
+
+**Decision.** Not measurably better, so nothing is pushed and no PR is opened; the branch stays local. What would change
+the numbers is provenance for the loaded pointer or a contract for `virtqueue_get_buf` and `copy_data` (10.8), not a
+copy summary alone.
+
 ## 11. What does not work, and what is assumed
 
 **Bounds.** Everything is bounded: two operations (one for the ST variant's model run), at most two
