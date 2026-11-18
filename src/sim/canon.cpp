@@ -189,6 +189,7 @@ term canonicalise(const term& in) {
         v.o = op::var;
         v.s = n.s;
         v.aux = it->second;
+        v.tag = n.tag;
         return b2.mk(std::move(v));
     };
     std::uint32_t result = 0;

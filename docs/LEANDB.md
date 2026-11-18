@@ -10,7 +10,10 @@ Everything here is opt-in tooling: no verdict path, solver default or certified 
 ```
 data/leandb/PIN.json            the 21 sources: revision / commit / record, licence as recorded, use, SHA-256 of every file
 data/leandb/ATTRIBUTION.md      attributions required by the licences of committed sources
-data/leandb/shards/             committed: sorted SQLite shards <= 10 MiB each + manifest.json   (redistributable sources only)
+data/leandb/shards/             committed (redistributable sources only):
+    leandb.json                   class, pin and input hashes, the sources with their licences, totals
+    search/manifest.json + shard-NNNNNN.fdb   forge::db shard set: sorted SQLite shards <= 10 MiB (FTS5, per-shard HNSW)
+    eval/manifest.json + shard-NNNNNN.fdb     forge::db shard set of the eval sources: rows only, no index of any kind
 data/leandb/local/              gitignored: the same layout for sources that are not redistributable (built on your machine)
 scripts/leandb_make_pin.py      regenerates PIN.json from OS-Proving's manifest.tsv and sources.json
 scripts/leandb_fetch_local.py   downloads pinned sources from the original hosts, checks SHA-256, normalises, imports
@@ -18,7 +21,8 @@ tools/leandb/                   OS-Proving's normaliser (build_lean_db.py, leanp
 src/leandb/, include/prism/leandb.hpp   the tool
 ```
 
-`prism leandb search` reads `data/leandb/shards` **and** `data/leandb/local` together whenever the local shards exist, with
+The shard machinery is FORGE's (`forge::db::shard_writer`, `shard_set`, `shard_bm25_topk`, `forge::ann::shard_ann`;
+docs/db.md and docs/ann.md in FORGE). `prism leandb search` reads `data/leandb/shards` **and** `data/leandb/local` together whenever the local shards exist, with
 no flag. BM25 statistics are taken over all present shards, so adding local data changes rankings exactly as if it had been
 in one database. `PRISM_LEANDB_DIR` moves the root; `--db DIR` (repeatable) names shard directories explicitly, for example
 the private complete copy.
@@ -41,64 +45,72 @@ prism leandb verify [--db DIR]... [--pin PIN.json]
   words, Hamming distance), `sym` (the goal is translated to a term and compared with `prism::sim::symbolic_metric` against
   the stored vectors of goals that translated; a query that does not translate returns nothing), `hybrid` (reciprocal-rank
   fusion, k = 60, of bm25, ann and, when the query translates, sym).
-* `verify` checks, per shard directory: every file is at most 10 MiB; sizes and SHA-256 equal `manifest.json`; the
-  manifest's `pin_sha256` equals the pin file's; every source's licence text equals the pin's; a committed set contains only
+* `verify` checks, per shard directory: every file is at most 10 MiB; sizes and SHA-256 equal the `manifest.json` of its
+  set (`shard_set::verify_all`); `leandb.json`'s `pin_sha256` equals the pin file's; every source's licence text equals the pin's; a committed set contains only
   sources the pin marks redistributable; eval shards have no index; search shards have no eval row and no
-  eval-overlapping row in the `indexed` table; the `indexed` table equals the searchable flags and the FTS token total
-  equals the manifest's. It exits 1 on any failure.
+  eval-overlapping row in the `indexed` table and no vector for an excluded row; the `indexed` table equals the rows of
+  `items`, and the FTS row and token counts equal the manifest's. It exits 1 on any failure.
 
 ## Shards
 
-Each shard is a SQLite file with a fixed schema (`kSchemaVersion` 1):
+Each shard is a SQLite file written by `forge::db::shard_writer` (presorted waves, byte-reproducible, `VACUUM`ed, budget
+10 MiB checked on the final file; a file that comes out over is split and rewritten):
 
-* `meta(key,value)`, `srcs(id,name,use,license)`.
-* `items(id, src, tbl, orig_id, kind, module, name, statement, proof, norm_hash, eval_overlap, searchable, simhash, symvec)`.
-  `id` is the first 60 bits of sha256(source, table, input row id): stable across rebuilds and independent of other shards.
+* `meta(key,value)`, `srcs(id,name,use,license)` (the one source of the shard's group).
+* `items(key, id, src, tbl, kind, module, name, statement, proof, norm_hash, eval_overlap, searchable, simhash, symvec)`.
+  `key` is the sort key (BLOB, memcmp order). `id` is the first 60 bits of sha256(source, table, natural key), where the
+  natural key is file:line:kind:name for declarations, the dataset id and statement hash for problems, file:name:line for
+  traced theorems: never the input database's row id, which depends on which sources were normalised before it.
   `tbl` is 0 decls, 1 problems, 2 trace theorems. `statement` is the declaration signature (decls: plus the docstring as
-  `/-- ... -/`) or the formal statement; `proof` is the declaration body or formal proof; traces keep the statement only.
-  `symvec` is a `prism::sim::sym_vec` blob for statements the Lean adapter translates (BitVec, Nat/Int linear, Bool, Fin).
-* Search shards also have `fts` (FTS5 over `name, statement`, external content = `items`, filled only for searchable rows)
-  and `indexed(id)`, the list of ids that went into any index.
-* Eval shards (`eval-NNNN.sqlite`) have `items` only: no FTS table, no vectors, `searchable = 0`.
+  `/-- ... -/`) or the formal statement; `proof` is the body or formal proof; traces keep the statement only. `simhash` is
+  the codec bytes of a 256-bit SimHash (`vector<uint64_t>`), `symvec` a `prism::sim::sym_vec` for statements the Lean
+  adapter translates.
+* Search shards also have `fts` (FTS5 over `name, statement`, external content = `items`), `indexed(id)`, `excluded`
+  (rows stored but never indexed, see below), and the per-shard HNSW tables `ann_text` (Hamming over the SimHash) and
+  `ann_sym` (`symbolic_metric` over the sym_vecs), written by the writer's finalize hook with `forge::ann::ann_finalize`.
+  FORGE also stores per-term document counts (`forge_df`) there.
+* Eval shards have `items`, `srcs`, `meta` only: no FTS table, no vectors, `searchable = 0`.
 
-**Eval isolation.** A row is searchable only if its source is not `eval`, it is not flagged `eval_overlap` by the
-normaliser (exact or near duplicate of an eval problem), and its source is not of unverified provenance. Everything else
-is stored but in no index. Eval sources go to their own `eval-*` shards.
+**Eval isolation.** A row is indexed only if its source is not `eval`, it is not flagged `eval_overlap` by the normaliser
+(exact or near duplicate of an eval problem), and its source is not of unverified provenance. Every other row is kept in
+the `excluded` table of its shard (so `items` holds exactly the indexed rows, which is also what an external-content FTS5
+table counts) and in no index. Eval sources go to their own `eval/` shard set.
 
-**Determinism.** Rows are written in sort-key order, SQLite page size and journal settings are fixed, the FTS index is
-optimised before close, nothing carries a timestamp. A rebuild from the same input is byte-identical (tested), so unchanged
-shards cause no git churn, and `scripts/leandb_fetch_local.py --all --compare data/leandb/shards` is a reproducibility
-check against upstream.
+**Determinism.** A rebuild from the same input is byte-identical (tested), so unchanged shards cause no git churn.
+Each (use class, table, source) group is written by its own `shard_writer` and the groups' shards are then renumbered into
+one set, so a rebuild of a single source from upstream reproduces exactly that source's shards (tested; shards are matched
+by their first key). `scripts/leandb_fetch_local.py --all --compare data/leandb/shards` is that check against upstream.
 
-**Sort key and shard boundaries.** Rows are sorted by `(use class, table, source, module, name, id)` and cut into files at
-about 9.5 MiB (estimated before writing; a file that comes out over 10 MiB is split in half and rewritten, so the limit is
-never exceeded). Why this key:
+**Sort key and shard boundaries.** Rows are sorted by `(use class, table, source, module, name, id)`; the writer cuts
+files at 90% of the budget by a measured size ratio, and a shard never spans two groups. Why this key:
 
 * `use class` first: library, data and eval never share a file, so eval shards can be dropped or audited whole.
 * `table` next: declarations, problems and traces have different shapes and sizes.
 * `source` next: a source update touches only its own shards (local git churn), and the licence class is a function of the
   source, so the committed and local sets partition cleanly with no mixed file.
-* `module` then `name`: a namespace or module prefix (`Mathlib.Algebra.Group.`) is one contiguous run of rows, so a prefix
-  lookup touches few shards, and declarations that import each other sit together, which is what premise retrieval wants.
-  `manifest.json` lists each shard's first and last key, so a lookup by key is a binary search over the manifest followed by
-  one shard.
+* `module` then `name`: a namespace or module prefix (`Mathlib.Algebra.Group.`) is one contiguous run of rows, so
+  `shard_set::shards_for_prefix` touches few shards, and declarations that import each other sit together, which is what
+  premise retrieval wants. The manifest lists each shard's first and last key, so a lookup by key is a binary search.
 * `id` last: a total order, so the layout is deterministic.
 
 Alternatives rejected: sorting by `norm_hash` (good for dedup, destroys module locality and spreads every source over every
 shard), sorting by id (random, no locality). A separate name-to-shard index and a `norm_hash` index were considered and
 not built: dedup uses the stored `norm_hash` column inside the shards, and no command needs a second key yet.
 
-**Parallel search.** Each query runs one task per shard on a `forge::task::pool`: each task opens its shard read-only
-(`immutable=1`, no locks) and returns a top-k run; `forge::task::merge_runs` merges the runs with ties broken by id, so the
-result does not depend on the thread count. Vector search is an exact scan of each shard's blobs: a shard holds at most
-about 20 000 vectors, so a per-shard HNSW graph would cost more than it saves; the global top-k is the merge of the
-per-shard exact top-k (equal to a flat search over everything).
+**Search** (`src/leandb/search.cpp`). Every present directory's `search/` shard set (committed, local, a private complete
+copy) is merged into one `shard_set` by a small manifest written to a temporary directory whose shard files are absolute
+paths, sorted by first key (the sets hold disjoint sources, so the ranges do not overlap). That makes BM25 and the vector
+search see all of them:
 
-**BM25 equals the unsharded database.** `prism_bm25` is FTS5's `bm25()` reimplemented as an FTS5 auxiliary function with
-the same formula (k1 = 1.2, b = 0.75, `idf = max(log((N - n + 0.5)/(n + 0.5)), 1e-6)`) but with N, the average document
-length and each query term's document frequency summed over all present shards (document counts and token totals are in the
-manifest; frequencies are counted per query). The test `leandb: sharded BM25 equals the unsharded FTS5 bm25` builds the
-same rows into one FTS5 table and compares the ten best ids and scores for several queries.
+* `bm25`: `db::shard_bm25_topk(set, pool, "fts", terms, k)`, FORGE's exact global BM25 (N, average length and each term's
+  document frequency summed over every shard; column weights name 2, statement 1), with early stop. The test
+  `leandb: sharded BM25 equals the unsharded FTS5 bm25` compares the ten best ids and scores with FTS5's own `bm25()` over
+  one table holding the same rows.
+* `ann` / `sym`: `ann::shard_ann` over the per-shard HNSW graphs (`ef = 128`; FORGE measured recall@10 0.86 at ef 64 on hard
+  data), the per-shard top-k merged deterministically.
+* `hybrid`: `ann::reciprocal_rank_fusion` of the three id lists.
+
+`prism leandb search --batch` and `leandb::searcher` keep the merged set and the loaded graphs between queries.
 
 ## Licences
 
@@ -169,12 +181,13 @@ eval source, none flagged `eval_overlap`) and exits 1 if a result leaks. See "Me
 
 ## Relation to forge::db shards
 
-FORGE gained a generic `forge::db::shard_writer` / `shard_set` (support/include/forge/db/shards.hpp) while this tool was being
-written. `prism leandb` uses `forge::db` (connection, statements, transactions, FTS5 helpers) and `forge::task` directly, and
-its own shard writer and manifest (`manifest.json`, class `committed`/`local`/`all`), because it needs two shard kinds (search
-and eval) with three tables and a BM25 over several shard directories at once (committed plus local). Moving the writer and
-the single-directory search onto `shard_writer` / `shard_set` is mechanical and is the follow-up; the on-disk shard schema
-above would not change.
+`prism leandb` is built on FORGE's `shard_writer`, `shard_set`, `shard_bm25_topk` and `shard_ann` as they are in FORGE PR #74
+(head 86a08bd); PRISM builds against that. FORGE lacked nothing the tool needed, with two workarounds on the PRISM side:
+(1) a `shard_writer` cuts shards by bytes only, so each source group gets its own writer and the groups' manifests are merged
+by renumbering the files (this is what makes a one-source rebuild reproduce that source's shards); (2) a `shard_set` is one
+directory, so committed plus local shards are searched through an in-memory merged manifest with absolute shard paths. If FORGE
+later adds a sidecar to the set (a term filter file is in progress there), the merged manifest must carry or ignore it; that is
+a follow-up, not something this PR depends on.
 
 ## Measured
 

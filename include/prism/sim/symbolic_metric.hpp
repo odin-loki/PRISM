@@ -68,10 +68,21 @@ struct sym_vec {
     std::vector<std::uint64_t> sem;                      // 2 bits per probe
     std::uint32_t nodes = 0;                             // distinct nodes of the canonical term
     std::uint32_t vars = 0;
-    bool sem_constant = false;                           // same output on every probe
+    bool sem_constant = false;                           // same root output on every probe
+    bool root_bool = false;                              // the root is a Boolean (a formula, not a term)
+    std::vector<std::uint64_t> sub;                      // sorted fingerprints of the largest non-Boolean sub-terms
+    std::vector<std::uint64_t> named;                    // root signature keyed by variable names (position-sensitive)
     bool operator==(const sym_vec&) const = default;
 };
 
+struct sem_profile {
+    std::vector<std::uint64_t> root;   // root output, 2 bits per probe, minimum over same-sort permutations
+    std::vector<std::uint64_t> named;  // the same with variables slotted by name instead of canonical order
+    std::vector<std::uint64_t> sub;    // sub-term fingerprints
+    bool constant = true;
+    bool root_is_bool = false;
+};
+sem_profile semantic_profile(const term& canonical, const sim_options& = {});
 // The semantic signature of a canonical term (variable slots as described above).
 std::vector<std::uint64_t> semantic_signature(const term& canonical, const sim_options& = {}, bool* constant = nullptr);
 // The structural sparse vector of a canonical term.
@@ -83,14 +94,22 @@ std::optional<sym_vec> embed_smt2_file(const std::string& path, std::string* why
 
 // 1 - sum(min) / sum(max) over the sparse vectors; 0 when both are empty.
 double structural_distance(const sym_vec& a, const sym_vec& b);
-// Hamming(a.sem, b.sem) / bits; vectors of different length are zero-padded.
+// Semantic distance. When the root output of either formula varies over the probes, or the roots are not Boolean
+// (terms: x ^ x and 0 are the same function): Hamming(a.sem, b.sem) / bits (zero-padded). When both are Boolean
+// formulas constant on every probe (typical of a verification condition, which is almost never true): 1 - Jaccard of the sub-term fingerprints (0 when both sets are empty), so formulas that share computed
+// sub-functions are close. The switch means the triangle inequality can fail; d(x,x) = 0 and symmetry hold.
 double semantic_distance(const sym_vec& a, const sym_vec& b);
+// Hamming of the name-keyed root signatures: separates x - y from y - x, which are alpha-equivalent.
+double named_distance(const sym_vec& a, const sym_vec& b);
 
 struct symbolic_metric {
-    float alpha = 0.5f;  // weight of the structural part
+    float alpha = 0.5f;         // weight of the structural part
+    float named_weight = 0.0f;  // share of the name-keyed signature (0: alpha-invariant, the default)
     float distance(const sym_vec& a, const sym_vec& b) const {
         const double ds = structural_distance(a, b), dm = semantic_distance(a, b);
-        return static_cast<float>(static_cast<double>(alpha) * ds + (1.0 - static_cast<double>(alpha)) * dm);
+        double d = static_cast<double>(alpha) * ds + (1.0 - static_cast<double>(alpha)) * dm;
+        if (named_weight > 0.0f) d = (1.0 - static_cast<double>(named_weight)) * d + static_cast<double>(named_weight) * named_distance(a, b);
+        return static_cast<float>(d);
     }
 };
 

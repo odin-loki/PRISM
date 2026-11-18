@@ -180,13 +180,36 @@ TEST_CASE("sim: the evaluator agrees with Z3's simplifier on the supported opera
 }
 
 
-TEST_CASE("sim: the signature is invariant under permuting variables (x - y and y - x are alpha-equivalent)") {
+TEST_CASE("sim: x - y and y - x are alpha-equivalent; the name-keyed component tells them apart") {
     pair_terms p("(bvsub x y)", "(bvsub y x)");
-    CHECK_FALSE(p.z3_equiv());  // different functions of (x, y), the same function up to renaming
+    CHECK_FALSE(p.z3_equiv());  // different functions of the named (x, y), the same function up to renaming
     CHECK(p.sem_distance() == 0.0f);
+    auto ta = sim::from_z3(p.a), tb = sim::from_z3(p.b);
+    REQUIRE(ta.has_value());
+    REQUIRE(tb.has_value());
+    const auto va = sim::embed(*ta), vb = sim::embed(*tb);
+    CHECK(kMetric.distance(va, vb) == 0.0f);  // the default metric keeps the alpha law
+    CHECK(sim::named_distance(va, vb) > 0.0);
+    sim::symbolic_metric named{0.5f, 1.0f};
+    CHECK(named.distance(va, vb) > 0.0f);
+    CHECK(named.distance(va, va) == 0.0f);
+    // a renaming of both variables consistently keeps the name-keyed signature equal only when the name order is kept
     pair_terms q("(bvsub x (bvshl y #x00000001))", "(bvsub y (bvshl x #x00000001))");
     CHECK(q.sem_distance() == 0.0f);
 }
+
+TEST_CASE("sim: formulas that are false on every probe are separated by their sub-terms") {
+    // verification-condition shaped: almost never true, so the root signature is constant
+    const auto a = embed_text(bvdecl("a b") + "(assert (and (= (bvadd (bvmul a b) (_ bv5 32)) (_ bv123456789 32)) (= b (_ bv7 32))))");
+    const auto b = embed_text(bvdecl("a b") + "(assert (and (= (bvadd (bvmul a b) (_ bv5 32)) (_ bv987654321 32)) (= b (_ bv7 32))))");
+    const auto c = embed_text(bvdecl("a b") + "(assert (and (= (bvsub (bvxor a b) (_ bv9 32)) (_ bv123456789 32)) (= b (_ bv7 32))))");
+    CHECK(a.sem_constant);
+    CHECK(b.sem_constant);
+    CHECK(sim::semantic_distance(a, a) == 0.0);
+    CHECK(sim::semantic_distance(a, b) == 0.0);  // same sub-function (a*b + 5), different constant compared against
+    CHECK(sim::semantic_distance(a, c) > 0.0);    // a different computed sub-function
+}
+
 TEST_CASE("sim: Z3-non-equivalent terms are told apart (probe-set miss rate recorded)") {
     const std::vector<std::pair<std::string, std::string>> pairs = {
         {"(bvadd x y)", "(bvsub x y)"}, {"(bvand x y)", "(bvor x y)"}, {"(bvshl x #x00000001)", "(bvlshr x #x00000001)"},
@@ -294,9 +317,7 @@ TEST_CASE("sim: codec and index file round trip") {
     std::filesystem::remove(path);
 }
 
-TEST_CASE("sim: strategy hints rank the neighbours' strategies by a similarity-weighted vote") {
-    // Two families: shift-and-add formulas (strategy "bitblast") and comparison chains (strategy "smt").
-    std::mt19937_64 g(7);
+TEST_CASE("sim: strategy hints: kNN regression of per-strategy time is the default, the vote is an option") {
     sim::sym_index ix(kMetric);
     auto fam_a = [&](unsigned k) {
         return bvdecl("a b") + "(assert (= (bvadd (bvshl a (_ bv" + std::to_string(1 + k % 3) + " 32)) b) (bvmul a (_ bv" + std::to_string(3 + k % 2) + " 32))))";
@@ -304,9 +325,15 @@ TEST_CASE("sim: strategy hints rank the neighbours' strategies by a similarity-w
     auto fam_b = [&](unsigned k) {
         return bvdecl("a b c") + "(assert (and (bvult a b) (bvult b c) (not (= a (_ bv" + std::to_string(k % 5) + " 32)))))";
     };
+    // family C: "risky" is a hair faster on 8 of 12 formulas and 5 s slower on 4; "default" never loses big
+    auto fam_c = [&](unsigned k) { return bvdecl("a b") + "(assert (bvult (bvxor a (_ bv" + std::to_string(k % 4) + " 32)) (bvadd b (_ bv1 32))))"; };
+    using times = std::vector<std::pair<std::string, double>>;
     for (unsigned k = 0; k < 12; ++k) {
-        ix.add("a" + std::to_string(k), embed_text(fam_a(k)), "bitblast", 0.5 + 0.01 * k);
-        ix.add("b" + std::to_string(k), embed_text(fam_b(k)), "smt", 0.2);
+        ix.add("a" + std::to_string(k), embed_text(fam_a(k)), "bitblast", 0.5 + 0.01 * k, times{{"bitblast", 0.5 + 0.01 * k}, {"default", 2.0}, {"smt", 3.0}});
+        ix.add("b" + std::to_string(k), embed_text(fam_b(k)), "smt", 0.2, times{{"smt", 0.2}, {"default", 0.5}, {"bitblast", 5.0}});
+        const bool bad = k % 3 == 2;
+        ix.add("c" + std::to_string(k), embed_text(fam_c(k)), bad ? "default" : "risky", 0.001,
+               times{{"risky", bad ? 5.0 : 0.001}, {"default", bad ? 0.001 : 0.0011}});
     }
     ix.build();
     sim::hint_params hp;
@@ -314,16 +341,35 @@ TEST_CASE("sim: strategy hints rank the neighbours' strategies by a similarity-w
     auto ha = sim::strategy_hint(ix, embed_text(fam_a(100)), hp);
     REQUIRE(!ha.empty());
     CHECK(ha[0].strategy == "bitblast");
+    CHECK(ha[0].predicted_seconds == doctest::Approx(0.5).epsilon(0.1));
     auto hb = sim::strategy_hint(ix, embed_text(fam_b(101)), hp);
     REQUIRE(!hb.empty());
     CHECK(hb[0].strategy == "smt");
-    CHECK(hb[0].votes <= hp.k);
-    CHECK(hb[0].mean_seconds == doctest::Approx(0.2));
-    // an index without labels gives no hint
+    // vote option: the family-C neighbours' winners are mostly "risky", which costs 5 s on a third of them
+    hp.k = 12;
+    sim::hint_params vote = hp;
+    vote.how = sim::hint_params::method::vote;
+    auto vc = sim::strategy_hint(ix, embed_text(fam_c(100)), vote);
+    REQUIRE(!vc.empty());
+    CHECK(vc[0].strategy == "risky");
+    auto rc = sim::strategy_hint(ix, embed_text(fam_c(100)), hp);
+    REQUIRE(!rc.empty());
+    CHECK(rc[0].strategy == "default");  // the regression sees the 5 s losses
+    // the guard keeps the default unless the best prediction is at least 20% faster
+    sim::hint_params g = hp;
+    auto near_tie = sim::strategy_hint(ix, embed_text(fam_a(100)), g);  // family A: default is 4x slower, so no guard effect
+    CHECK(near_tie[0].strategy == "bitblast");
+    // an index without labels gives no hint; one with only a best label falls back to the vote
     sim::sym_index plain(kMetric);
     plain.add("x", embed_text(fam_a(0)));
     plain.build();
     CHECK(sim::strategy_hint(plain, embed_text(fam_a(1))).empty());
+    sim::sym_index only_labels(kMetric);
+    only_labels.add("x", embed_text(fam_a(0)), "bitblast", 0.5);
+    only_labels.build();
+    auto fl = sim::strategy_hint(only_labels, embed_text(fam_a(1)));
+    REQUIRE(!fl.empty());
+    CHECK(fl[0].strategy == "bitblast");
 }
 
 TEST_CASE("sim: tree edit distance ranks a one-operator change below a different formula") {
@@ -521,6 +567,13 @@ TEST_CASE("sim eval measure: index, recall, near-duplicates, kNN strategy select
     double nodes = 0;
     for (const auto& v : vecs) { sem_const += v.sem_constant; nodes += v.nodes; }
     out["sem_constant_fraction"] = static_cast<double>(sem_const) / static_cast<double>(vecs.size());
+    std::size_t sub_nonempty = 0, informative = 0;
+    for (const auto& v : vecs) {
+        sub_nonempty += !v.sub.empty();
+        informative += (!v.sem_constant || !v.sub.empty());
+    }
+    out["sub_nonempty_fraction"] = static_cast<double>(sub_nonempty) / static_cast<double>(vecs.size());
+    out["informative_semantic_fraction"] = static_cast<double>(informative) / static_cast<double>(vecs.size());
     out["mean_nodes"] = nodes / static_cast<double>(vecs.size());
     // ---- index and ANN recall ----
     sim::sym_index ix(kMetric);
@@ -584,12 +637,46 @@ TEST_CASE("sim eval measure: index, recall, near-duplicates, kNN strategy select
                 if (answered(r, s) && time_of(r, s) < bt) { bt = time_of(r, s); b = s; }
             return b;
         };
-        sim::sym_index tix(kMetric);
+        // alpha (weight of the structural part) is chosen on a validation split of the train files, never on the test set
+        auto api_total = [&](float alpha, const std::vector<std::size_t>& fit, const std::vector<std::size_t>& evl) {
+            sim::sym_index ix(sim::symbolic_metric{alpha});
+            for (auto i : fit) {
+                const auto& r = recs[kept[i]];
+                std::vector<std::pair<std::string, double>> tt;
+                for (const auto& s : S) tt.emplace_back(s, time_of(r, s));
+                ix.add(r["smt2"].get<std::string>(), vecs[i], best_of(r), 0.0, tt);
+            }
+            ix.build();
+            double t = 0;
+            for (auto i : evl) {
+                sim::hint_params hp;
+                hp.k = 15;
+                const auto h = sim::strategy_hint(ix, vecs[i], hp);
+                t += time_of(recs[kept[i]], h.empty() ? "default" : h[0].strategy);
+            }
+            return t;
+        };
+        std::vector<std::size_t> fit, val;
+        for (auto i : train) (held_out_file(recs[kept[i]]["file"].get<std::string>() + "#val", 0.25) ? val : fit).push_back(i);
+        float best_alpha = 0.5f;
+        double best_val = 1e18;
+        json sweep = json::array();
+        for (float a : {1.0f, 0.75f, 0.5f, 0.25f, 0.0f}) {
+            const double tv = api_total(a, fit, val), tt = api_total(a, train, test);
+            sweep.push_back({{"alpha", a}, {"validation_seconds", tv}, {"test_seconds", tt}});
+            if (tv < best_val) { best_val = tv; best_alpha = a; }
+        }
+        out["alpha_sweep"] = sweep;
+        out["alpha_chosen_on_validation"] = best_alpha;
+        out["validation_default_z3_seconds"] = [&] { double t = 0; for (auto i : val) t += time_of(recs[kept[i]], "default"); return t; }();
+        sim::sym_index tix(sim::symbolic_metric{best_alpha});
         std::map<std::string, double> train_total;
         for (auto i : train) {
             const auto& r = recs[kept[i]];
             const auto b = best_of(r);
-            tix.add(r["smt2"].get<std::string>(), vecs[i], b, b.empty() ? std::nan("") : time_of(r, b));
+            std::vector<std::pair<std::string, double>> tt;
+            for (const auto& s : S) tt.emplace_back(s, time_of(r, s));
+            tix.add(r["smt2"].get<std::string>(), vecs[i], b, b.empty() ? std::nan("") : time_of(r, b), tt);
             for (const auto& s : S) train_total[s] += time_of(r, s);
         }
         tix.build();
@@ -597,50 +684,59 @@ TEST_CASE("sim eval measure: index, recall, near-duplicates, kNN strategy select
         double bs = 1e18;
         for (const auto& s : S)
             if (train_total[s] < bs) { bs = train_total[s]; best_static = s; }
-        double t_default = 0, t_static = 0, t_knn = 0, t_oracle = 0, t_reg = 0, t_guard = 0;
-        std::size_t knn_wins_default = 0, knn_correct = 0, guard_deviations = 0;
-        std::map<std::string, std::size_t> by_name;  // smt2 path -> record index, for the neighbours' per-strategy times
-        for (auto i : train) by_name[recs[kept[i]]["smt2"].get<std::string>()] = kept[i];
+        double t_default = 0, t_static = 0, t_vote = 0, t_oracle = 0, t_api = 0, t_noguard = 0;
+        double lg_api = 0, lg_vote = 0, lg_oracle = 0;  // sum of log((t + 1 ms) / (t_default + 1 ms)): the typical formula, not the tail
+        std::size_t api_slower = 0, api_faster = 0, vote_slower = 0, vote_faster = 0;
+        std::vector<std::pair<double, std::string>> api_losses;  // (seconds lost vs default, description)
+        std::size_t api_correct = 0, api_deviations = 0;
         std::map<std::string, double> t_each;
         for (auto i : test) {
             const auto& r = recs[kept[i]];
-            sim::hint_params hp;
+            sim::hint_params hp;  // the API default: regression with the 20% guard
             hp.k = 15;
             const auto h = sim::strategy_hint(tix, vecs[i], hp);
             const std::string pick = h.empty() ? "default" : h[0].strategy;
+            sim::hint_params ng = hp;
+            ng.default_strategy.clear();
+            const auto hn = sim::strategy_hint(tix, vecs[i], ng);
+            sim::hint_params vp = hp;
+            vp.how = sim::hint_params::method::vote;
+            const auto hv = sim::strategy_hint(tix, vecs[i], vp);
             t_default += time_of(r, "default");
             t_static += time_of(r, best_static);
-            t_knn += time_of(r, pick);
+            t_api += time_of(r, pick);
+            t_noguard += time_of(r, hn.empty() ? "default" : hn[0].strategy);
+            t_vote += time_of(r, hv.empty() ? "default" : hv[0].strategy);
             t_oracle += time_of(r, best_of(r));
-            // evaluation-only variant: kNN regression of each strategy's log time over the neighbours (the prism_ai
-            // "knn" scheduler's idea), pick the smallest; and a guarded form that leaves the default unless the
-            // predicted time is at least 20% lower
             {
-                std::map<std::string, double> pred;
-                double wsum = 0;
-                for (const auto& n : tix.search_exact(vecs[i], 15)) {
-                    const double w = std::pow(std::max(0.0, 1.0 - static_cast<double>(n.dist)), 2.0) + 1e-9;
-                    const auto& nr = recs[by_name.at(n.e->name)];
-                    for (const auto& s : S) pred[s] += w * std::log(time_of(nr, s) + 1e-3);
-                    wsum += w;
-                }
-                std::string reg = "default", guard = "default";
-                double bp = 1e18;
-                for (const auto& s : S)
-                    if (pred[s] < bp) { bp = pred[s]; reg = s; }
-                if (wsum > 0 && bp < pred["default"] - wsum * std::log(1.0 / 0.8)) { guard = reg; ++guard_deviations; }
-                t_reg += time_of(r, reg);
-                t_guard += time_of(r, guard);
+                const double td = time_of(r, "default") + 1e-3;
+                const std::string vpick = hv.empty() ? "default" : hv[0].strategy;
+                const double ta = time_of(r, pick) + 1e-3, tv = time_of(r, vpick) + 1e-3, to = time_of(r, best_of(r)) + 1e-3;
+                lg_api += std::log(ta / td);
+                lg_vote += std::log(tv / td);
+                lg_oracle += std::log(to / td);
+                api_slower += ta > 1.25 * td;
+                api_faster += ta < td / 1.25;
+                vote_slower += tv > 1.25 * td;
+                vote_faster += tv < td / 1.25;
+                if (ta - td > 0.05) api_losses.emplace_back(ta - td, r["smt2"].get<std::string>() + " picked " + pick);
             }
             for (const auto& s : S) t_each[s] += time_of(r, s);
-            knn_wins_default += time_of(r, pick) < time_of(r, "default");
-            knn_correct += pick == best_of(r);
+            api_deviations += pick != "default";
+            api_correct += pick == best_of(r);
         }
         out["strategy_selection"] = {{"strategies", S}, {"best_static_on_train", best_static}, {"test_seconds_default_z3", t_default},
-                                     {"test_seconds_best_static", t_static}, {"test_seconds_knn", t_knn}, {"test_seconds_knn_time_regression", t_reg},
-                                     {"test_seconds_knn_time_regression_guarded", t_guard}, {"guarded_deviations_from_default", guard_deviations}, {"test_seconds_oracle", t_oracle},
-                                     {"test_seconds_per_strategy", t_each}, {"knn_pick_is_oracle", static_cast<double>(knn_correct) / static_cast<double>(test.size())},
-                                     {"knn_faster_than_default", static_cast<double>(knn_wins_default) / static_cast<double>(test.size())}};
+                                     {"test_seconds_best_static", t_static}, {"test_seconds_vote", t_vote},
+                                     {"test_seconds_regression_unguarded", t_noguard}, {"test_seconds_api_default_regression_guarded", t_api},
+                                     {"api_deviations_from_default", api_deviations}, {"test_seconds_oracle", t_oracle},
+                                     {"geomean_time_ratio_vs_default", {{"api", std::exp(lg_api / static_cast<double>(test.size()))},
+                                                                        {"vote", std::exp(lg_vote / static_cast<double>(test.size()))},
+                                                                        {"oracle", std::exp(lg_oracle / static_cast<double>(test.size()))}}},
+                                     {"formulas_over_25pct_slower_than_default", {{"api", api_slower}, {"vote", vote_slower}}},
+                                     {"formulas_over_25pct_faster_than_default", {{"api", api_faster}, {"vote", vote_faster}}},
+                                     {"api_losses_over_50ms", api_losses},
+                                     {"test_seconds_per_strategy", t_each},
+                                     {"api_pick_is_oracle", static_cast<double>(api_correct) / static_cast<double>(test.size())}};
     }
     std::ofstream(dir / "sim_eval.json") << out.dump(2) << "\n";
     MESSAGE(out.dump(2));

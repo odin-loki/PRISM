@@ -72,7 +72,12 @@ sym_vec embed(const term& t, const sim_options& opt) {
     v.nodes = static_cast<std::uint32_t>(c.nodes.size());
     v.vars = c.n_vars;
     v.feat = structural_features(c, opt);
-    v.sem = semantic_signature(c, opt, &v.sem_constant);
+    auto pr = semantic_profile(c, opt);
+    v.sem = std::move(pr.root);
+    v.sem_constant = pr.constant;
+    v.root_bool = pr.root_is_bool;
+    v.sub = std::move(pr.sub);
+    v.named = std::move(pr.named);
     return v;
 }
 
@@ -104,16 +109,33 @@ double structural_distance(const sym_vec& a, const sym_vec& b) {
     return mx <= 0 ? 0.0 : std::clamp(1.0 - mn / mx, 0.0, 1.0);
 }
 
-double semantic_distance(const sym_vec& a, const sym_vec& b) {
-    const std::size_t n = std::max(a.sem.size(), b.sem.size());
+namespace {
+double hamming_bits(const std::vector<std::uint64_t>& a, const std::vector<std::uint64_t>& b) {
+    const std::size_t n = std::max(a.size(), b.size());
     if (n == 0) return 0.0;
     std::size_t diff = 0;
     for (std::size_t i = 0; i < n; ++i) {
-        const std::uint64_t x = i < a.sem.size() ? a.sem[i] : 0, y = i < b.sem.size() ? b.sem[i] : 0;
+        const std::uint64_t x = i < a.size() ? a[i] : 0, y = i < b.size() ? b[i] : 0;
         diff += static_cast<std::size_t>(std::popcount(x ^ y));
     }
     return std::min(1.0, static_cast<double>(diff) / static_cast<double>(64 * n));
 }
+}  // namespace
+
+double semantic_distance(const sym_vec& a, const sym_vec& b) {
+    if (!a.sem_constant || !b.sem_constant || !a.root_bool || !b.root_bool) return hamming_bits(a.sem, b.sem);
+    if (a.sub.empty() && b.sub.empty()) return 0.0;
+    std::size_t i = 0, j = 0, common = 0;
+    while (i < a.sub.size() && j < b.sub.size()) {
+        if (a.sub[i] == b.sub[j]) { ++common; ++i; ++j; }
+        else if (a.sub[i] < b.sub[j]) ++i;
+        else ++j;
+    }
+    const std::size_t uni = a.sub.size() + b.sub.size() - common;
+    return uni == 0 ? 0.0 : 1.0 - static_cast<double>(common) / static_cast<double>(uni);
+}
+
+double named_distance(const sym_vec& a, const sym_vec& b) { return hamming_bits(a.named, b.named); }
 
 namespace {
 template <class T> void put(std::vector<std::byte>& out, const T& v) {
@@ -129,14 +151,18 @@ template <class T> bool get(const std::byte*& p, const std::byte* end, T& v) {
 }  // namespace
 
 void encode_sym_vec(const sym_vec& v, std::vector<std::byte>& out) {
-    put<std::uint32_t>(out, 0x31564d53u);  // "SMV1"
+    put<std::uint32_t>(out, 0x32564d53u);  // "SMV2"
     put(out, v.nodes);
     put(out, v.vars);
-    put<std::uint8_t>(out, v.sem_constant ? 1 : 0);
+    put<std::uint8_t>(out, (v.sem_constant ? 1 : 0) | (v.root_bool ? 2 : 0));
     put<std::uint32_t>(out, static_cast<std::uint32_t>(v.feat.size()));
     for (const auto& [id, w] : v.feat) { put(out, id); put(out, w); }
     put<std::uint32_t>(out, static_cast<std::uint32_t>(v.sem.size()));
     for (auto w : v.sem) put(out, w);
+    put<std::uint32_t>(out, static_cast<std::uint32_t>(v.sub.size()));
+    for (auto w : v.sub) put(out, w);
+    put<std::uint32_t>(out, static_cast<std::uint32_t>(v.named.size()));
+    for (auto w : v.named) put(out, w);
 }
 
 sym_vec decode_sym_vec(const std::byte* data, std::size_t size) {
@@ -145,15 +171,22 @@ sym_vec decode_sym_vec(const std::byte* data, std::size_t size) {
     const std::byte* end = data + size;
     std::uint32_t magic = 0, nf = 0, ns = 0;
     std::uint8_t c = 0;
-    if (!get(p, end, magic) || magic != 0x31564d53u) return {};
+    if (!get(p, end, magic) || magic != 0x32564d53u) return {};
     if (!get(p, end, v.nodes) || !get(p, end, v.vars) || !get(p, end, c) || !get(p, end, nf)) return {};
-    v.sem_constant = c != 0;
+    v.sem_constant = (c & 1) != 0;
+    v.root_bool = (c & 2) != 0;
     if (static_cast<std::size_t>(end - p) < static_cast<std::size_t>(nf) * 8) return {};
     v.feat.resize(nf);
     for (auto& [id, w] : v.feat) { get(p, end, id); get(p, end, w); }
     if (!get(p, end, ns) || static_cast<std::size_t>(end - p) < static_cast<std::size_t>(ns) * 8) return {};
     v.sem.resize(ns);
     for (auto& w : v.sem) get(p, end, w);
+    for (auto* vec : {&v.sub, &v.named}) {
+        std::uint32_t n = 0;
+        if (!get(p, end, n) || static_cast<std::size_t>(end - p) < static_cast<std::size_t>(n) * 8) return {};
+        vec->resize(n);
+        for (auto& w : *vec) get(p, end, w);
+    }
     return v;
 }
 

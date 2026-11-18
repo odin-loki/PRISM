@@ -24,23 +24,34 @@ Symbolic regression ranks expressions by shape and by the values they produce on
 2. **Structural vector.** For every node and every depth 1..3, the hash of the subtree cut at that depth (variables hash by
    sort only, AC children sorted), weight 1/depth; an operator histogram (log2(1 + count)); bit widths; array nesting
    depth; size and variable-count buckets. Sparse, sorted by feature id. Distance: 1 - weighted Jaccard.
-3. **Semantic signature.** The term is evaluated on K = 128 fixed seeded assignments: 24 diagonal probes (every variable
-   the same corner value: 0, 1, -1, MIN, MAX, 2, 4, 16, 0x55.., 0xAA.., 3, 255), 64 probes with an independent corner per
-   variable, 40 uniformly random. The output of each probe is hashed into 2 bits (a Bool is replicated); the signature is
-   256 bits. Distance: Hamming / 256.
-   * Variables are matched by canonical order, and because structure can order the variables of two equivalent formulas
-     differently (`x - y` against `(-y) + x`), the signature is the lexicographic minimum over all permutations of the
-     variable slots inside each sort group when the total number of permutations is at most 24 (up to 4 variables of one
-     sort). With more variables the canonical order alone is used.
+3. **Semantic signature** (`src/sim/eval.cpp`). The term is evaluated on K = 128 fixed seeded assignments: 24 diagonal
+   probes (every variable the same corner value: 0, 1, -1, MIN, MAX, 2, 4, 16, 0x55.., 0xAA.., 3, 255), 64 probes with an
+   independent corner per variable, 40 uniformly random. Three parts, all in `sym_vec`:
+   * **Root signature** `sem`: the root's output on every probe, 2 bits each (a Bool is replicated, anything else hashed),
+     256 bits. Variables are matched by canonical order, and because structure can order the variables of two equivalent
+     formulas differently, the signature is the lexicographic minimum over all permutations of the variable slots inside
+     each sort group when there are at most 24 of them in total (up to 4 variables of one sort); with more, the canonical
+     order alone is used. This invariance is exactly alpha-equivalence: a consistent renaming of all variables, which is what
+     the canonical form already identifies. So `x - y` and `y - x` are alpha-equivalent and have distance 0 under the default
+     metric (the law "alpha-equivalent formulas have d = 0" requires it).
+   * **Sub-term fingerprints** `sub`: a verification condition is a Boolean that is almost never true, so its root signature
+     is constant (92.8% of the PRISM VCs measured below). The evaluator therefore also hashes, for every non-Boolean,
+     non-trivial sub-term (not a variable or literal), its values on every 4th probe into one 64-bit fingerprint, keeps the 64
+     largest sub-terms, and stores the sorted set (again the lexicographic minimum over the slot permutations). Equal computed
+     sub-functions (`a*b + 5`) get equal fingerprints whatever the formula around them and whatever literal they are compared
+     with.
+   * **Name-keyed root signature** `named`: the root signature with variables slotted by the rank of their name hash instead
+     of canonical order, so it is position- and name-sensitive: `x - y` and `y - x` differ. It is not alpha-invariant, so it
+     is off by default (`symbolic_metric::named_weight = 0`); with a weight it mixes in `named_distance` for corpora where
+     names are shared and meaningful.
+   * **Distance** (`semantic_distance`): Hamming over the root signature when the root varies over the probes or is not a
+     Boolean (terms such as `x ^ x` and `0` are the same function); when both roots are Boolean and constant, 1 - Jaccard of
+     the sub-term fingerprint sets. The switch means the triangle inequality can fail; d(x,x) = 0, symmetry and [0,1] hold.
    * Formulas with different variable counts or sorts are compared on the same probe set: an unused variable changes
-     nothing; a variable of another sort gets a value from that sort's own generator, so the formulas then differ wherever
-     they depend on it. Sorts are never coerced.
+     nothing; a variable of another sort gets a value from that sort's own generator. Sorts are never coerced.
    * Semantics: Bool, QF_BV with SMT-LIB division by zero and shifts of at least the width, Int as wrapping signed 128 bits
      (probed with small values), arrays as a base hash plus store overrides. Everything else (UF, FP, Real, bit-vectors wider
-     than the 128-bit evaluation word; 64 bits in the MSVC build) is an opaque function of its arguments' values: equal
-     applications agree, nothing more is claimed.
-   * A signature that is the same on every probe (`sym_vec::sem_constant`) carries little information. Verification
-     conditions that are almost never true have this property; their structure then decides.
+     than the 128-bit evaluation word; 64 bits in the MSVC build) is an opaque function of its arguments' values.
 4. **Combined.** `d = alpha * d_struct + (1 - alpha) * d_sem`, `alpha = 0.5` by default (`symbolic_metric{alpha}`). It is a
    pseudo-metric in [0, 1]: d(x, x) = 0 and d is symmetric (tested); alpha- and AC-equivalent formulas have the same
    sym_vec, so d = 0. The triangle inequality holds for each part (Jaccard distance, Hamming) but the semantic part is a
@@ -62,9 +73,15 @@ prism sim hint  FILE.smt2 [-i prism-sim.idx] [-k 15]
 Lean adapter). `--labels` is a TSV `name <TAB> strategy <TAB> seconds`; the strategy and time become the entry's label.
 The index file is `SIM1` + entries; the HNSW graph is rebuilt on load (deterministic for a fixed seed).
 
-* **Strategy hints (for the FastSMT port).** `sim::strategy_hint(index, sym_vec, {k, power, min_sim})`: the k nearest
-  labelled formulas vote on their strategies with weight `(1 - d)^power`; the result is ranked by score, then mean
-  recorded seconds (ascending), then name; it is empty when no neighbour is labelled. API and test only.
+* **Strategy hints (for the FastSMT port).** `sim::strategy_hint(index, sym_vec, hint_params)`. Entries carry the table of
+  seconds of every strategy tried on them (`sym_index::add(name, vec, best, seconds, times)`; the TSV for `--labels` takes a
+  4th column `strategy=seconds,...`). The default method is **kNN regression of expected time**: each strategy's predicted
+  seconds is the similarity-weighted (`(1 - d)^power`) arithmetic mean of its recorded seconds over the k nearest labelled
+  formulas, the result is ranked by predicted seconds, and a **guard** keeps `default_strategy` first unless the best
+  prediction is at least `min_gain` (20%) faster. The arithmetic mean is deliberate: a geometric mean ignores a strategy that
+  takes seconds on one neighbour in fifteen. The **vote** (`how = vote`, `prism sim hint --vote`) ranks the neighbours' best
+  strategies by similarity-weighted votes and stays as an option; without time tables the regression falls back to it. API
+  and test only, not wired into the solver.
 * **Lean goals.** `sim::lean_goal_to_term` (include/prism/sim/lean_goal.hpp) translates `theorem`/`lemma`/`example`
   statements over BitVec n, Nat/Int (+ - * / %), Bool and Fin with `∀` binders and hypotheses, into the same term type; the
   Lean database stores the resulting sym_vec for every statement that translates, and `prism leandb search --mode sym|hybrid`
@@ -80,68 +97,69 @@ renamings at d = 0; literal abstraction; 20 term pairs that Z3 proves equivalent
 evaluator checked against Z3's own `simplify` on 19 operators (signed division, remainders, shifts, concat, extend, rotate,
 repeat, ...); 18 pairs Z3 proves non-equivalent, of which the signature misses only the single-point differences (the miss
 rate is printed); HNSW recall@10 against the exact index on 600 random bit-vector formulas; codec and index round trip;
-strategy vote on a synthetic labelled set; tree edit distance; Lean goals equal to the SMT formula they translate.
+strategy hints on a synthetic labelled set (regression default, a case where the vote picks a strategy that loses 5 s on a third of the neighbours and the regression does not, the vote option, the fall back to the vote); name-keyed `x - y` against `y - x`; sub-term separation of constant formulas; tree edit distance; Lean goals equal to the SMT formula they translate.
 
-## Measured (18 Nov 2026)
+## Measured (18 Nov 2026, second round)
 
 Corpus: PRISM's own verification conditions. `PRISM_SIM_EVAL=DIR prism_tests -tc="sim eval collect*"` lowers the C and C++
 sources under `testdata/` through the pir front end and writes the first 6 VCs per function (unwind 8); then
 `-tc="sim eval measure*"` embeds, indexes and measures. **The collection was stopped by hand after 994 distinct VCs from 164
-files** (in path order, so it is `testdata/conformance/prism/{c,cxx,...}` up to `cxx_auto_false.cpp`; `testdata/pir`,
-`planted`, `tp`, `fp` were not reached). Exact duplicate SMT-LIB text was kept once. The machine had a load average of about
-50 on 64 cores, so all times are inflated and noisy. Raw output: `sim_eval.json` from that run (numbers below are copied from it).
+files** (in path order: `testdata/conformance/prism/...` up to `cxx_auto_false.cpp`; `testdata/pir`, `planted`, `tp`, `fp`
+were not reached). Exact duplicate SMT-LIB text was kept once. The machine had a load average of about 50 on 64 cores, so all
+times are inflated and noisy (the embed time varied from 13 to 39 ms between runs).
 
-| measurement | value |
-|---|---|
-| VCs / mean DAG nodes | 994 / 47 |
-| embed (canonicalise, features, 128-probe signature) | 24 ms per formula, one thread (the CLI uses all cores: 1009 files in 7.1 s with 4 threads) |
-| HNSW build (M 16, efConstruction 200) | 1.9 s for 994 vectors |
-| query, exact scan / HNSW | 1.1 ms / 0.25 ms (ef 32), 0.36 ms (ef 64), 0.57 ms (ef 128) |
-| HNSW recall@10 against the exact index (300 queries) | 0.9994 (ef 32), 0.9997 (ef 64, 128, 256) |
+| measurement | first round (root signature only) | now (root + sub-term fingerprints) |
+|---|---|---|
+| VCs whose root signature is constant | 92.8% | 92.8% (unchanged: the root is the same) |
+| VCs with an informative semantic part (varying root, or a non-empty fingerprint set) | 7.2% | **99.9%** |
+| nearest other VC at d = 0 | 56% | 48% |
+| nearest other VC at d < 0.05 / d < 0.10 | 71% / 87% | 61% / 76% |
+| nearest VC structurally identical / same semantics, different structure | 58% / 39% | 50% / 36% |
+| embed, one thread | 24 ms per formula | 13 to 39 ms |
+| HNSW build, 994 vectors (M 16, efConstruction 200) | 1.9 s | 1.7 s |
+| HNSW recall@10, ef 32 / 64 / 128 / 256 | 0.9994 / 0.9997 / 0.9997 / 0.9997 | 0.984 / 0.996 / 0.998 / 1.000 |
+| query, exact / HNSW (ef 64) | 1.1 ms / 0.36 ms | 0.86 ms / 0.36 ms |
 
-**Near duplicates** (nearest other formula, after exact-text deduplication): **56%** of the VCs have a neighbour at d = 0
-(same canonical form and same signature), **71%** within d < 0.05, **87%** within d < 0.10. For 58% the nearest neighbour is
-structurally identical (it differs by literals, variable names or operand order), and for 39% it has the same signature but a
-different structure. So most of this corpus is made of a few hundred shapes; exact-hash deduplication (plan step 3.4) leaves
-more than half of it as near duplicates, and clustering (step 3.7) has real redundancy to remove.
-
-**The semantic part is nearly constant on this corpus.** 92.8% of the VCs evaluate to the same output on all 128 probes
-(`sem_constant`): a VC is satisfiable only when the property is violated, which random and corner inputs almost never hit.
-So on pir VCs the metric is in practice the structural one; the semantic distance earns its keep on formulas that are
-frequently true (the equivalence tests, Lean goals). A probe set that targets the formula's own constants (for example
-values taken from its equalities) would help; it is not built.
+The sub-term fingerprints make the semantic part informative on nearly every VC, and they separate formulas the structure
+alone treats as one (the near-duplicate rate at d = 0 drops from 56% to 48%). FORGE measured recall@10 of 0.86 at ef 64 on
+hard random data; this corpus is redundant, and the default `ef_search` of `sym_index` is 128.
 
 **Strategy selection (FastSMT setting), held out by source file.** Labels: each VC solved alone by Z3 under six strategies
 (default solver, `qfbv`, `simplify;bit-blast;sat`, `smt`, `simplify;solve-eqs;bit-blast;sat`, `simplify;propagate-values;
 ctx-simplify;smt`), 5 s timeout, best of 3 runs, answers identical wherever two strategies answered (0 disagreements).
-Split by `sha256(file)`: 697 train VCs, 297 test VCs (30% of files). Total seconds on the 297 test VCs:
+Split by `sha256(file)`: 697 train VCs, 297 test VCs. `alpha` (the weight of the structural part) is chosen on a validation
+split of the train files (never on the test set). Total seconds on the 297 test VCs, API default (expected-time regression with
+the 20% guard) at the validated `alpha = 1.0`:
 
 | policy | seconds |
 |---|---:|
 | plain Z3 (default solver) | 0.546 |
 | best single strategy chosen on train (`propagate-smt`) | 7.094 |
-| kNN vote (`strategy_hint`, k = 15; the neighbours' best strategies vote) | 5.217 |
-| kNN regression of each strategy's log time over the 15 neighbours, take the smallest (evaluation only) | 0.417 |
-| the same, deviating from the default only when predicted at least 20% faster | 0.460 (19 deviations) |
+| **API default: kNN expected-time regression, guarded** | **0.404** |
+| the same, unguarded | 0.402 |
+| vote (option) | 0.434 |
 | oracle (fastest strategy per VC) | 0.377 |
 
-What this says, without dressing it up. (1) The vote that the strategy-hint API implements is much worse than plain Z3 here:
-the neighbours' best strategy is usually a tie of microseconds, and where it is wrong it is wrong by seconds (the tail:
-`qfbv` totals 2.4 s and `propagate-smt` 7.1 s on the test set against 0.55 s for the default). A vote of winners ignores how
-badly a strategy loses. (2) Predicting each strategy's time from the neighbours and taking the minimum recovers most of the
-oracle gap (0.417 s against 0.546 s default and 0.377 s oracle, 24% under the default), but the totals are about 1.4 ms per VC,
-the difference is 0.13 s over 297 VCs, there is no confidence interval, and the run was on a loaded machine: treat it as
-"headroom exists, the time-regression form finds some of it", not as a measured speed-up. (3) These VCs are easy (the median
-Z3 time is about 1 ms), as docs/SOLVERS.md found for the portfolio; the stop rule of the FastSMT plan (no gain on kernel VCs:
-stop) cannot be decided from this corpus. (4) The portfolio replay data of docs/SOLVERS.md (the 599 held-out VCs and the learned
-Bitwuzla-first scheduler) records only sha256 and features, not the SMT-LIB text, so it cannot be joined to formulas and the
-comparison with the plain **portfolio** was not made; the baseline here is plain Z3.
+Typical formula (geometric mean of time / default time, 1 ms offset): API 0.910, vote 0.923, oracle 0.879. Formulas more than
+25% faster / slower than the default: API 17 / 5, vote 13 / 5. No API pick lost more than 50 ms against the default.
+
+**What this does and does not show.** (1) The API default is 26% under plain Z3 in total (0.404 s against 0.546 s) and within
+7% of the oracle, with no large loss. The difference is 0.14 s over 297 VCs, there is no confidence interval, and the run was
+on a loaded machine. (2) **The comparison is fragile.** One test formula (`vcs/863.smt2`) costs 5 s under every strategy but
+the default; whichever method picks it dominates the total. In the first round the vote lost (5.2 s) and a log-time regression
+won (0.42 s); with the new signature the vote wins (0.43 s) and the same log-time regression loses (5.4 s); with the
+expected-time regression the totals are 0.40 s at `alpha = 1.0` and 5.4 s at every `alpha < 1`, because the semantic part pulls
+that one formula's neighbours towards a dangerous strategy. The geometric-mean ratios are stable across all of these (0.91 to
+0.98). So "regression beats vote" is **not** established by this data, and neither is the value of the semantic component for
+strategy selection: validation picked `alpha = 1.0` (structure only). (3) These VCs are easy (the median Z3 time is about 1
+ms), as docs/SOLVERS.md found for the portfolio; the stop rule of the FastSMT plan (no gain on kernel VCs: stop) cannot be
+decided from this corpus. (4) The portfolio replay data of docs/SOLVERS.md records only sha256 and features, not the SMT-LIB
+text, so it cannot be joined to formulas; the baseline here is plain Z3, not the portfolio.
 
 **Plan for a proper labelled set.** Re-run the collection (`prism_tests -tc="ai-assist predict collect*"`) with the SMT-LIB
 text written next to each record (one line in `test_ai_assist.cpp`, `vc.smt2`), over the clang-pass kernel VCs, label every
-formula with time per strategy at a fixed timeout (docs/PLAN_FASTSMT_TRAINING_AND_DATA.md step 5), split by file, and run
-`sim eval measure` on it. The API should then also take the per-strategy time table of each labelled formula (the regression
-form), not only its single best strategy; this run shows why.
+formula with time per strategy at a fixed timeout (docs/PLAN_FASTSMT_TRAINING_AND_DATA.md step 5), split by file, and report
+the geometric-mean ratio and a bootstrap interval over files next to the totals.
 
 **Lean goals.** `lean_goal_to_term` is tested against hand-written goals and on the fixture database; the translation rate on
 the real database is in `docs/LEANDB.md` ("Measured").

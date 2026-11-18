@@ -296,13 +296,20 @@ def main():
         for d in (sh, lo):
             subprocess.run([a.prism, "leandb", "verify", "--db", d, "--pin", a.pin], check=True)
         if a.compare:
-            theirs = {x["first_key"]: x["sha256"] for x in json.load(open(os.path.join(a.compare, "manifest.json")))["shards"]}
-            mine = json.load(open(os.path.join(sh, "manifest.json")))["shards"]
+            def shards_of(d):  # forge::db shard manifests of the search and eval sets
+                out = []
+                for kind in ("search", "eval"):
+                    m = os.path.join(d, kind, "manifest.json")
+                    if os.path.exists(m):
+                        out += json.load(open(m))["shards"]
+                return out
+            theirs = {x["min"]: x["sha256"] for x in shards_of(a.compare)}
+            mine = shards_of(sh)
             # shards never span two (use, table, source) groups, so a rebuild of some sources is compared shard by shard
             # (matched by first key); with --all every committed shard is expected to be found
-            same = [x for x in mine if theirs.get(x["first_key"]) == x["sha256"]]
-            missing = [x for x in mine if x["first_key"] not in theirs]
-            differ = [x for x in mine if x["first_key"] in theirs and theirs[x["first_key"]] != x["sha256"]]
+            same = [x for x in mine if theirs.get(x["min"]) == x["sha256"]]
+            missing = [x for x in mine if x["min"] not in theirs]
+            differ = [x for x in mine if x["min"] in theirs and theirs[x["min"]] != x["sha256"]]
             print(f"reproducibility check against {a.compare}: {len(same)} shards byte-identical, {len(differ)} different, "
                   f"{len(missing)} not in the committed set")
             sys.exit(0 if not differ and not missing and same else 1)

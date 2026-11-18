@@ -49,7 +49,7 @@ double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock:
 int usage() {
     return fail_usage("sim",
                       "usage: prism sim index PATH... [-o FILE] [--labels TSV] [--threads N] [--alpha A] | prism sim query FILE.smt2 "
-                      "[-i FILE] [-k N] [--exact] [--ted] | prism sim hint FILE.smt2 [-i FILE] [-k N]",
+                      "[-i FILE] [-k N] [--exact] [--ted] | prism sim hint FILE.smt2 [-i FILE] [-k N] [--vote]",
                       "(docs/SIM_SEARCH.md)");
 }
 
@@ -62,7 +62,7 @@ int sim_main(int argc, char** argv) {
     std::string out = "prism-sim.idx", labels;
     std::size_t k = 10, threads = std::max(1u, std::thread::hardware_concurrency());
     float alpha = 0.5f;
-    bool exact = false, ted = false;
+    bool exact = false, ted = false, vote = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
@@ -73,6 +73,7 @@ int sim_main(int argc, char** argv) {
         else if (a == "--alpha") { const char* v = val(); if (!v) return usage(); alpha = static_cast<float>(std::atof(v)); }
         else if (a == "--exact") exact = true;
         else if (a == "--ted") ted = true;
+        else if (a == "--vote") vote = true;
         else if (!a.empty() && a[0] == '-') return usage();
         else pos.push_back(a);
     }
@@ -81,7 +82,8 @@ int sim_main(int argc, char** argv) {
         if (pos.empty()) return usage();
         std::vector<item> items;
         for (const auto& p : pos) collect(p, items);
-        std::map<std::string, std::pair<std::string, double>> lab;  // name or basename -> strategy, seconds
+        struct lab_t { std::string strategy; double seconds; std::vector<std::pair<std::string, double>> times; };
+        std::map<std::string, lab_t> lab;  // name or basename -> best strategy, its seconds, every strategy's seconds
         if (!labels.empty()) {
             std::ifstream in(labels);
             std::string line;
@@ -91,7 +93,15 @@ int sim_main(int argc, char** argv) {
                 std::getline(ls, n, '\t');
                 std::getline(ls, s, '\t');
                 std::getline(ls, t, '\t');
-                if (!n.empty() && !s.empty()) lab[n] = {s, t.empty() ? std::nan("") : std::atof(t.c_str())};
+                std::string tab;  // optional 4th column: strategy=seconds,strategy=seconds,...
+                std::getline(ls, tab, '\t');
+                lab_t l{s, t.empty() ? std::nan("") : std::atof(t.c_str()), {}};
+                std::istringstream ts(tab);
+                for (std::string kv; std::getline(ts, kv, ',');) {
+                    const auto eq = kv.find('=');
+                    if (eq != std::string::npos) l.times.emplace_back(kv.substr(0, eq), std::atof(kv.c_str() + eq + 1));
+                }
+                if (!n.empty() && !s.empty()) lab[n] = std::move(l);
             }
         }
         const double t0 = now_s();
@@ -114,10 +124,11 @@ int sim_main(int argc, char** argv) {
             if (!vecs[i]) { ++skipped; continue; }
             std::string label;
             double sec = std::nan("");
+            std::vector<std::pair<std::string, double>> times;
             auto it = lab.find(items[i].name);
             if (it == lab.end()) it = lab.find(fs::path(items[i].name).filename().string());
-            if (it != lab.end()) { label = it->second.first; sec = it->second.second; }
-            ix.add(items[i].name, std::move(*vecs[i]), label, sec);
+            if (it != lab.end()) { label = it->second.strategy; sec = it->second.seconds; times = it->second.times; }
+            ix.add(items[i].name, std::move(*vecs[i]), label, sec, std::move(times));
         }
         ix.build();
         const double t2 = now_s();
@@ -140,9 +151,11 @@ int sim_main(int argc, char** argv) {
         if (sub == "hint") {
             hint_params hp;
             hp.k = k;
+            if (vote) hp.how = hint_params::method::vote;
             const auto hs = strategy_hint(*ix, qv, hp);
             if (hs.empty()) std::printf("no labelled neighbours\n");
-            for (const auto& h : hs) std::printf("%-24s score %.4f votes %zu mean_s %.4f\n", h.strategy.c_str(), h.score, h.votes, h.mean_seconds);
+            for (const auto& h : hs)
+                std::printf("%-24s score %.4f n %zu predicted_s %.4f vote_mean_s %.4f\n", h.strategy.c_str(), h.score, h.votes, h.predicted_seconds, h.mean_seconds);
             return code(Exit::Ok);
         }
         const double t0 = now_s();

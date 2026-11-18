@@ -74,7 +74,7 @@ struct fixture {
  {"name":"dataC","kind":"hf","repo":"x/dataC","revision":"r3","use":"data","license":"see dataset card","redistributable":false,"evidence":"unclear"},
  {"name":"evalD","kind":"hf","repo":"x/evalD","revision":"r4","use":"eval","license":"MIT","redistributable":true,"evidence":"card"}]})";
     }
-    ldb::import_options opts(std::uint64_t shard_bytes = 20 * 1024) const {
+    ldb::import_options opts(std::uint64_t shard_bytes = 96 * 1024) const {
         ldb::import_options o;
         o.pin_file = pin;
         o.out_committed = committed;
@@ -95,8 +95,13 @@ struct fixture {
     }
 };
 
-nlohmann::json manifest(const fs::path& dir) {
-    std::ifstream in(dir / "manifest.json");
+// The forge::db shard manifest of one kind ("search" or "eval") of a leandb directory.
+nlohmann::json manifest(const fs::path& dir, const char* kind = "search") {
+    std::ifstream in(dir / kind / "manifest.json");
+    return nlohmann::json::parse(in);
+}
+nlohmann::json info(const fs::path& dir) {
+    std::ifstream in(dir / "leandb.json");
     return nlohmann::json::parse(in);
 }
 
@@ -107,26 +112,24 @@ TEST_CASE("leandb: import splits into sorted shards within 10 MiB and verify pas
     const auto rep = ldb::import_db(f.input, f.opts());
     CHECK(rep.items == 221 + 41 + 262);  // committed + local + the complete set
     CHECK(rep.eval_items == 10 + 10);
-    const auto mc = manifest(f.committed), ml = manifest(f.local);
-    CHECK(mc["shards"].size() > 3);  // 20 KB budget forces several shards
+    const auto mc = manifest(f.committed);
+    CHECK(mc["shards"].size() >= 2);  // a small budget forces several shards
     std::string prev_last;
     std::size_t search_shards = 0;
     for (const auto& s : mc["shards"]) {
         CHECK(s["bytes"].get<std::uint64_t>() <= ldb::kShardMaxBytes);
-        if (s["kind"] == "search") {
-            ++search_shards;
-            CHECK(s["first_key"].get<std::string>() > prev_last);  // sorted, non-overlapping key ranges
-            prev_last = s["last_key"].get<std::string>();
-        }
+        ++search_shards;
+        CHECK(s["min"].get<std::string>() > prev_last);  // sorted, non-overlapping key ranges (hex of the key bytes)
+        prev_last = s["max"].get<std::string>();
     }
     CHECK(search_shards >= 2);
     // committed: only redistributable sources; local: only the unclear one; licence text intact
     std::set<std::string> cs, ls;
-    for (const auto& s : mc["sources"]) cs.insert(s["name"]);
-    for (const auto& s : ml["sources"]) { ls.insert(s["name"]); CHECK(s["license"] == "see dataset card"); }
+    for (const auto& s : info(f.committed)["sources"]) cs.insert(s["name"]);
+    for (const auto& s : info(f.local)["sources"]) { ls.insert(s["name"]); CHECK(s["license"] == "see dataset card"); }
     CHECK(cs == std::set<std::string>{"dataB", "evalD", "libA"});
     CHECK(ls == std::set<std::string>{"dataC"});
-    CHECK(manifest(f.all)["sources"].size() == 4);
+    CHECK(info(f.all)["sources"].size() == 4);
     for (const auto& d : {f.committed, f.local, f.all}) {
         const auto v = ldb::verify(d, f.pin, d == f.local);
         INFO(d.string());
@@ -134,10 +137,8 @@ TEST_CASE("leandb: import splits into sorted shards within 10 MiB and verify pas
         CHECK(v.ok);
     }
     // eval rows live in eval shards only
-    bool eval_seen = false;
-    for (const auto& s : mc["shards"])
-        if (s["kind"] == "eval") eval_seen = true;
-    CHECK(eval_seen);
+    CHECK(fs::exists(f.committed / "eval" / "manifest.json"));
+    CHECK(manifest(f.committed, "eval")["shards"].size() >= 1);
 }
 
 TEST_CASE("leandb: a rebuild is byte-identical") {
@@ -202,18 +203,17 @@ TEST_CASE("leandb: eval and eval-overlapping rows are in no index and never retu
 
 TEST_CASE("leandb: sharded BM25 equals the unsharded FTS5 bm25") {
     fixture f("bm25");
-    ldb::import_db(f.input, f.opts(8 * 1024));  // many shards
+    ldb::import_db(f.input, f.opts(56 * 1024));  // several shards
     const auto mc = manifest(f.committed);
-    REQUIRE(mc["shards"].size() > 6);
+    REQUIRE(mc["shards"].size() >= 2);
     // The same rows in one unsharded FTS5 table.
     auto one = db::connection::open((f.root / "one.sqlite").string());
     one.exec("CREATE VIRTUAL TABLE fts USING fts5(name, statement, tokenize='unicode61 remove_diacritics 0')");
     for (const auto& s : mc["shards"]) {
-        if (s["kind"] != "search") continue;
         db::open_options ro;
         ro.read_only = true;
         ro.create = false;
-        auto c = db::connection::open((f.committed / s["file"].get<std::string>()).string(), ro);
+        auto c = db::connection::open((f.committed / "search" / s["file"].get<std::string>()).string(), ro);
         auto q = c.prepare("SELECT id, name, statement FROM items WHERE searchable<>0");
         auto ins = one.prepare("INSERT INTO fts(rowid,name,statement) VALUES(?,?,?)");
         for (auto& row : q.rows()) ins.run(row.get<std::int64_t>(0), row.get<std::string>(1), row.get<std::string>(2));
@@ -254,7 +254,7 @@ TEST_CASE("leandb: verify catches a tampered shard, an oversize shard and a pin 
     ldb::import_db(f.input, f.opts());
     REQUIRE(ldb::verify(f.committed, f.pin, false).ok);
     const auto mc = manifest(f.committed);
-    const auto victim = f.committed / mc["shards"][0]["file"].get<std::string>();
+    const auto victim = f.committed / "search" / mc["shards"][0]["file"].get<std::string>();
     {
         std::fstream io(victim, std::ios::in | std::ios::out | std::ios::binary);
         io.seekp(-1, std::ios::end);
@@ -271,7 +271,7 @@ TEST_CASE("leandb: verify catches a tampered shard, an oversize shard and a pin 
 
 TEST_CASE("leandb: the committed shards in the repository verify") {
     const fs::path root = fs::path(PRISM_SOURCE_DIR) / "data" / "leandb";
-    if (!fs::exists(root / "shards" / "manifest.json")) {
+    if (!fs::exists(root / "shards" / "leandb.json")) {
         MESSAGE("no committed shards yet");
         return;
     }
@@ -279,7 +279,8 @@ TEST_CASE("leandb: the committed shards in the repository verify") {
     for (const auto& p : v.problems) MESSAGE(p);
     CHECK(v.ok);
     // git compliance: no file in data/leandb/shards is over 10 MiB
-    for (const auto& e : fs::directory_iterator(root / "shards")) CHECK(fs::file_size(e.path()) <= ldb::kShardMaxBytes);
+    for (const auto& e : fs::recursive_directory_iterator(root / "shards"))
+        if (e.is_regular_file()) CHECK(fs::file_size(e.path()) <= ldb::kShardMaxBytes);
 }
 
 #ifndef _WIN32
@@ -327,7 +328,7 @@ TEST_CASE("leandb: fetch script downloads a pinned fake source, checks hashes, i
     // a wrong pinned hash fails loudly and imports nothing
     write_pin(std::string(64, '0'));
     CHECK(run("") == 2);
-    CHECK_FALSE(fs::exists(root / "local" / "manifest.json"));
+    CHECK_FALSE(fs::exists(root / "local" / "leandb.json"));
     {
         std::ifstream l(root / "log.txt");
         std::stringstream ss;
@@ -383,11 +384,11 @@ TEST_CASE("leandb: shards depend on the rows, not on the input row ids, so one s
     one.out_all.clear();
     ldb::import_db(f.input, one);
     std::map<std::string, std::string> full;
-    for (const auto& s : m1["shards"]) full[s["first_key"].get<std::string>()] = s["sha256"].get<std::string>();
+    for (const auto& s : m1["shards"]) full[s["min"].get<std::string>()] = s["sha256"].get<std::string>();
     const auto m3 = manifest(f.root / "shards3");
     REQUIRE(m3["shards"].size() >= 1);
     for (const auto& s : m3["shards"]) {
-        REQUIRE(full.count(s["first_key"].get<std::string>()) == 1);
-        CHECK(full[s["first_key"].get<std::string>()] == s["sha256"].get<std::string>());
+        REQUIRE(full.count(s["min"].get<std::string>()) == 1);
+        CHECK(full[s["min"].get<std::string>()] == s["sha256"].get<std::string>());
     }
 }

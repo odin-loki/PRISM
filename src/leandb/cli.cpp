@@ -109,11 +109,12 @@ int leandb_main(int argc, char** argv) {
             o.k = k;
             o.threads = threads;
             o.m = mode_s == "bm25" ? mode::bm25 : mode_s == "ann" ? mode::ann : mode_s == "sym" ? mode::sym : mode::hybrid;
+            searcher sr(o);
             for (std::string line; std::getline(in, line);) {
                 const auto t = line.find('\t');
                 if (t == std::string::npos) continue;
                 std::printf("%s", line.substr(0, t).c_str());
-                for (const auto& r : search(line.substr(t + 1), o)) std::printf("\t%s:%s", r.source.c_str(), r.name.c_str());
+                for (const auto& r : sr.search(line.substr(t + 1))) std::printf("\t%s:%s", r.source.c_str(), r.name.c_str());
                 std::printf("\n");
             }
             return code(Exit::Ok);
@@ -141,7 +142,7 @@ int leandb_main(int argc, char** argv) {
             bool ok = true;
             for (const auto& d : dbs) {
                 std::error_code ec;
-                if (!fs::exists(d / "manifest.json", ec)) continue;
+                if (!fs::exists(d / "leandb.json", ec)) continue;
                 const auto r = verify(d, pin, d.filename() == "local");
                 std::printf("%s: %llu shards, %llu bytes: %s\n", d.string().c_str(), static_cast<unsigned long long>(r.shards),
                             static_cast<unsigned long long>(r.bytes), r.ok ? "OK" : "FAILED");

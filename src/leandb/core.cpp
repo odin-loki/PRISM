@@ -10,12 +10,15 @@
 #include <set>
 #include <sstream>
 
+#include <forge/ann/shard_ann.hpp>
 #include <forge/db/parallel.hpp>
+#include <forge/db/shards.hpp>
 #include <forge/db/sqlite.hpp>
 #include <forge/task/pool.hpp>
 #include <nlohmann/json.hpp>
 
 #include "internal.hpp"
+#include "prism/sim/ann.hpp"
 #include "prism/sim/lean_goal.hpp"
 #include "prism/sim/symbolic_metric.hpp"
 #include "prism/solver.hpp"
@@ -188,130 +191,53 @@ void fetch_rows(db::connection& in, int tbl, const std::vector<std::int64_t>& id
     }
 }
 
-struct writer_ctx {
-    const std::vector<src_info>* srcs;
-    bool eval;
-};
-
-// Write one shard file from rows already sorted by sort_key. Returns its description.
-shard_out write_shard(const fs::path& path, std::vector<row_item>& rows, const std::vector<src_info>& srcs, bool eval, std::atomic<std::uint64_t>& translatable,
-                      std::atomic<std::uint64_t>& tried) {
-    std::error_code ec;
-    fs::remove(path, ec);
-    db::open_options o;
-    o.foreign_keys = true;
-    o.pragmas = {"page_size=4096", "journal_mode=OFF", "synchronous=OFF", "locking_mode=EXCLUSIVE", "temp_store=MEMORY"};
-    shard_out so;
-    so.tmp = path;
-    so.eval = eval;
-    {
-        auto c = db::connection::open(path.string(), o);
-        c.exec(detail::kItemsSql);
-        if (!eval) c.exec(detail::kIndexSql);
-        db::transaction tx(c);
-        std::map<std::uint32_t, bool> used;
-        for (const auto& r : rows) used[r.src] = true;
-        {
-            auto ins = c.prepare("INSERT INTO srcs(id,name,use,license) VALUES(?,?,?,?)");
-            for (auto& [s, _] : used) ins.run(static_cast<std::int64_t>(s), srcs[s].name, srcs[s].use, srcs[s].license);
-        }
-        auto ins = c.prepare("INSERT INTO items(id,src,tbl,orig_id,kind,module,name,statement,proof,norm_hash,eval_overlap,searchable,simhash,symvec) "
-                             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-        db::statement fins, iins;
-        if (!eval) {
-            fins = c.prepare("INSERT INTO fts(rowid,name,statement) VALUES(?,?,?)");
-            iins = c.prepare("INSERT INTO indexed(id) VALUES(?)");
-        }
-        for (auto& r : rows) {
-            item& it = r.it;
-            std::optional<std::vector<std::byte>> sym;
-            std::string sh;
-            if (!eval && it.searchable) {
-                const auto h = detail::simhash(it.name + " " + it.statement);
-                sh.assign(reinterpret_cast<const char*>(h.data()), sizeof h);
-                if (it.tbl != "trace_theorems") {
-                    ++tried;
-                    if (auto t = sim::lean_goal_to_term(it.statement)) {
-                        std::vector<std::byte> b;
-                        sim::encode_sym_vec(sim::embed(*t), b);
-                        sym = std::move(b);
-                        ++translatable;
-                    }
-                }
-            }
-            const std::string nh = hex_to_blob(it.norm_hash);
-            ins.reset();
-            ins.clear_bindings();
-            ins.bind(1, it.id).bind(2, static_cast<std::int64_t>(r.src)).bind(3, detail::tbl_code(it.tbl)).bind(4, it.orig_id).bind(5, it.kind)
-                .bind(6, it.module).bind(7, it.name).bind(8, it.statement).bind(9, it.proof);
-            if (nh.empty()) ins.bind(10, nullptr); else ins.bind(10, std::span<const std::byte>(reinterpret_cast<const std::byte*>(nh.data()), nh.size()));
-            ins.bind(11, it.eval_overlap ? 1 : 0).bind(12, it.searchable && !eval ? 1 : 0);
-            if (sh.empty()) ins.bind(13, nullptr); else ins.bind(13, std::span<const std::byte>(reinterpret_cast<const std::byte*>(sh.data()), sh.size()));
-            if (sym) ins.bind(14, std::span<const std::byte>(*sym)); else ins.bind(14, nullptr);
-            ins.step();
-            if (!eval && it.searchable) {
-                fins.reset();
-                fins.bind(1, it.id).bind(2, it.name).bind(3, it.statement);
-                fins.step();
-                iins.reset();
-                iins.bind(1, it.id);
-                iins.step();
-                ++so.indexed;
-            }
-            so.sources.insert(it.source);
-        }
-        so.rows = rows.size();
-        if (!rows.empty()) {
-            so.first_key = sort_key(rows.front().it);
-            so.last_key = sort_key(rows.back().it);
-        }
-        if (!eval) {
-            c.exec("INSERT INTO fts(fts) VALUES('optimize')");
-            c.exec("CREATE VIRTUAL TABLE temp.fv USING fts5vocab(main, fts, 'row')");
-            so.tokens = static_cast<std::uint64_t>(c.scalar_or<std::int64_t>(0, "SELECT COALESCE(sum(cnt),0) FROM temp.fv"));
-            c.exec("DROP TABLE temp.fv");
-        }
-        auto m = c.prepare("INSERT INTO meta(key,value) VALUES(?,?)");
-        m.run("schema", std::to_string(kSchemaVersion));
-        m.run("kind", eval ? "eval" : "search");
-        m.run("rows", std::to_string(so.rows));
-        m.run("n_indexed", std::to_string(so.indexed));
-        m.run("n_tokens", std::to_string(so.tokens));
-        tx.commit();
-    }
-    so.bytes = fs::file_size(path);
-    return so;
-}
-
-// Write rows as one shard, splitting in halves until each file is within the limit.
-void write_fitting(const fs::path& dir, const std::string& stem, std::vector<row_item>& rows, const std::vector<src_info>& srcs, bool eval,
-                   std::vector<shard_out>& out, std::atomic<std::uint64_t>& translatable, std::atomic<std::uint64_t>& tried, int depth = 0) {
-    const fs::path tmp = dir / (stem + "." + std::to_string(depth) + "." + std::to_string(out.size()) + ".tmp");
-    auto so = write_shard(tmp, rows, srcs, eval, translatable, tried);
-    if (so.bytes <= kShardMaxBytes || rows.size() <= 1) {
-        out.push_back(std::move(so));
-        return;
-    }
-    std::error_code ec;
-    fs::remove(tmp, ec);
-    const std::size_t half = rows.size() / 2;
-    std::vector<row_item> a(std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.begin() + static_cast<std::ptrdiff_t>(half)));
-    std::vector<row_item> b(std::make_move_iterator(rows.begin() + static_cast<std::ptrdiff_t>(half)), std::make_move_iterator(rows.end()));
-    write_fitting(dir, stem, a, srcs, eval, out, translatable, tried, depth + 1);
-    write_fitting(dir, stem, b, srcs, eval, out, translatable, tried, depth + 1);
-}
-
 struct set_result {
     std::uint64_t items = 0, searchable = 0, eval_items = 0, eval_overlap = 0, shards = 0, bytes = 0;
 };
+
+db::shard_schema make_schema(bool eval, const src_info& src, std::uint32_t src_id) {
+    db::shard_schema sc;
+    sc.ddl = std::string(detail::kItemsSql) + (eval ? "" : detail::kIndexSql);
+    sc.table = "items";
+    sc.columns = {"key", "id", "src", "tbl", "kind", "module", "name", "statement", "proof", "norm_hash", "eval_overlap", "searchable", "simhash", "symvec"};
+    sc.key_index = 0;
+    sc.schema_version = kSchemaVersion;
+    if (!eval) sc.fts_table = "fts";
+    const forge::ann::hnsw_params hp{16, 100, detail::kEfSearch, 0x5eed};
+    auto ann_text = forge::ann::ann_finalize<std::vector<std::uint64_t>, forge::ann::hamming>(
+        "SELECT id, simhash FROM items WHERE searchable<>0 AND simhash IS NOT NULL ORDER BY id", hp, forge::ann::hamming{}, "ann_text");
+    auto ann_sym = forge::ann::ann_finalize<sim::sym_vec, sim::symbolic_metric>(
+        "SELECT id, symvec FROM items WHERE searchable<>0 AND symvec IS NOT NULL ORDER BY id", hp, sim::symbolic_metric{}, "ann_sym");
+    sc.finalize = [=](db::connection& c) {
+        c.execute("INSERT INTO srcs(id,name,use,license) VALUES(?,?,?,?)", static_cast<std::int64_t>(src_id), src.name, src.use, src.license);
+        auto m = c.prepare("INSERT INTO meta(key,value) VALUES(?,?)");
+        m.run("schema", std::to_string(kSchemaVersion));
+        m.run("kind", eval ? "eval" : "search");
+        if (eval) return;
+        c.exec("INSERT INTO excluded SELECT * FROM items WHERE searchable=0");
+        c.exec("DELETE FROM items WHERE searchable=0");
+        c.exec("INSERT INTO fts(rowid,name,statement) SELECT id,name,statement FROM items WHERE searchable<>0 ORDER BY id");
+        c.exec("INSERT INTO indexed(id) SELECT id FROM items WHERE searchable<>0 ORDER BY id");
+        c.exec("INSERT INTO fts(fts) VALUES('optimize')");
+        if (c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0 AND simhash IS NOT NULL") > 0) ann_text(c);
+        if (c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0 AND symvec IS NOT NULL") > 0) ann_sym(c);
+    };
+    return sc;
+}
+
+std::vector<std::byte> bytes_of(const std::vector<std::uint64_t>& v) {
+    std::vector<std::byte> out;
+    forge::ann::codec<std::vector<std::uint64_t>>::encode(v, out);
+    return out;
+}
 
 set_result build_set(const fs::path& input, const fs::path& dir, const std::string& klass, const std::vector<src_info>& srcs,
                      const std::map<std::string, std::uint32_t>& src_index, const std::function<bool(const src_info&)>& take, const import_options& opt,
                      const pin& pn, const std::string& input_sha, std::atomic<std::uint64_t>& translatable, std::atomic<std::uint64_t>& tried) {
     fs::create_directories(dir);
-    for (auto& e : fs::directory_iterator(dir)) {
-        const auto n = e.path().filename().string();
-        if ((n.rfind("search-", 0) == 0 || n.rfind("eval-", 0) == 0) && (e.path().extension() == ".sqlite" || e.path().extension() == ".tmp")) fs::remove(e.path());
+    for (const char* sub : {"search", "eval"}) {
+        std::error_code ec;
+        fs::remove_all(dir / sub, ec);
     }
     db::open_options ro;
     ro.read_only = true;
@@ -358,92 +284,104 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
             if (opt.max_items && res.items >= opt.max_items) break;
         }
     }
-    // sorted order over (key); keep is_eval alongside
     std::vector<std::size_t> order(keys.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return keys[a].key < keys[b].key; });
-    // ---- partition by estimated size (search and eval streams separately; sorted order keeps eval last) ----
-    // A shard never spans two (use class, table, source) groups: a source's shards depend on that source's rows only, so an
-    // update of one source rewrites only its shards, and rebuilding one source from upstream reproduces exactly its shards.
-    struct part { bool eval; std::uint64_t group; std::vector<std::size_t> idx; };
-    std::vector<part> parts;
-    std::uint64_t acc = 0;
+    // ---- groups: contiguous runs of the sorted order with one (use class, table, source) ----
+    // A shard never spans two groups: a source's shards depend on that source's rows only, so an update of one source
+    // rewrites only its shards, and rebuilding one source from upstream reproduces exactly its shards.
+    struct group { bool eval; std::uint32_t src; int tbl; std::vector<std::size_t> idx; };
+    std::vector<group> groups;
     for (auto i : order) {
         const bool ev = is_eval[i] != 0;
-        const std::uint64_t group = (static_cast<std::uint64_t>(keys[i].src) << 8) | static_cast<std::uint64_t>(keys[i].tbl);
-        const std::uint64_t est = keys[i].bytes * 2 + 220;
-        if (parts.empty() || parts.back().eval != ev || parts.back().group != group || acc + est > opt.shard_bytes) {
-            parts.push_back({ev, group, {}});
-            acc = 0;
-        }
-        parts.back().idx.push_back(i);
-        acc += est;
+        if (groups.empty() || groups.back().eval != ev || groups.back().src != keys[i].src || groups.back().tbl != keys[i].tbl)
+            groups.push_back({ev, keys[i].src, keys[i].tbl, {}});
+        groups.back().idx.push_back(i);
     }
-    // ---- pass 2: fetch + write each partition in parallel ----
-    std::vector<std::vector<shard_out>> done(parts.size());
-    std::mutex err_m;
-    std::string err;
+    // ---- write each group through forge::db::shard_writer, then merge the group directories into one set per kind ----
     forge::task::pool pool(opt.threads);
-    forge::task::parallel_blocks(&pool, parts.size(), 1, [&](std::size_t bi, std::size_t, std::size_t) {
-        try {
-            auto conn = db::connection::open(input.string(), ro);
-            std::vector<std::vector<std::int64_t>> ids(3);
-            for (auto i : parts[bi].idx) ids[static_cast<std::size_t>(keys[i].tbl)].push_back(keys[i].row);
+    struct built { db::shard_manifest m; fs::path dir; bool eval; };
+    std::vector<built> done;
+    db::shard_options so;
+    so.presorted = true;
+    so.budget = std::min<std::uint64_t>(opt.shard_bytes, kShardMaxBytes);
+    so.wave_bytes = 128ull << 20;
+    const fs::path scratch = dir / ".scratch";
+    fs::remove_all(scratch);
+    std::size_t gi = 0;
+    for (auto& g : groups) {
+        const fs::path gdir = scratch / ("g" + std::to_string(gi++));
+        db::shard_writer w(gdir, make_schema(g.eval, srcs[g.src], g.src), so, &pool);
+        std::set<std::int64_t> seen;  // identical natural keys are the same declaration: keep the first (ids are primary keys)
+        for (std::size_t b = 0; b < g.idx.size(); b += 20000) {
+            const std::size_t e = std::min(g.idx.size(), b + 20000);
+            std::vector<std::int64_t> ids;
+            for (std::size_t j = b; j < e; ++j) ids.push_back(keys[g.idx[j]].row);
             std::vector<row_item> rows;
-            for (int t = 0; t < 3; ++t)
-                if (!ids[static_cast<std::size_t>(t)].empty()) fetch_rows(conn, t, ids[static_cast<std::size_t>(t)], {}, srcs, src_index, rows);
-            std::sort(rows.begin(), rows.end(), [](const row_item& a, const row_item& b) { return sort_key(a.it) < sort_key(b.it); });
-            {  // identical natural keys are the same declaration: keep the first (ids are primary keys)
-                std::set<std::int64_t> seen;
-                std::vector<row_item> uniq;
-                uniq.reserve(rows.size());
-                for (auto& r : rows)
-                    if (seen.insert(r.it.id).second) uniq.push_back(std::move(r));
-                rows = std::move(uniq);
-            }
-            write_fitting(dir, "part" + std::to_string(bi), rows, srcs, parts[bi].eval, done[bi], translatable, tried);
-        } catch (const std::exception& e) {
-            std::lock_guard l(err_m);
-            if (err.empty()) err = e.what();
+            auto conn = db::connection::open(input.string(), ro);
+            fetch_rows(conn, g.tbl, ids, {}, srcs, src_index, rows);
+            std::sort(rows.begin(), rows.end(), [](const row_item& a, const row_item& c) { return sort_key(a.it) < sort_key(c.it); });
+            std::vector<row_item> uniq;
+            for (auto& r : rows)
+                if (seen.insert(r.it.id).second) uniq.push_back(std::move(r));
+            std::vector<std::vector<db::value>> out(uniq.size());
+            forge::task::parallel_blocks(&pool, uniq.size(), 64, [&](std::size_t, std::size_t lo, std::size_t hi) {
+                for (std::size_t j = lo; j < hi; ++j) {
+                    item& it = uniq[j].it;
+                    db::value sh = std::monostate{}, sy = std::monostate{}, nh = std::monostate{};
+                    if (!g.eval && it.searchable) {
+                        sh = bytes_of(detail::simhash(it.name + " " + it.statement));
+                        if (it.tbl != "trace_theorems") {
+                            ++tried;
+                            if (auto t = sim::lean_goal_to_term(it.statement)) {
+                                std::vector<std::byte> bb;
+                                sim::encode_sym_vec(sim::embed(*t), bb);
+                                sy = std::move(bb);
+                                ++translatable;
+                            }
+                        }
+                    }
+                    const std::string h = hex_to_blob(it.norm_hash);
+                    if (!h.empty()) nh = std::vector<std::byte>(reinterpret_cast<const std::byte*>(h.data()), reinterpret_cast<const std::byte*>(h.data()) + h.size());
+                    out[j] = {sort_key(it), it.id, static_cast<std::int64_t>(uniq[j].src), static_cast<std::int64_t>(detail::tbl_code(it.tbl)), it.kind, it.module,
+                              it.name, it.statement, it.proof, std::move(nh), static_cast<std::int64_t>(it.eval_overlap ? 1 : 0),
+                              static_cast<std::int64_t>(it.searchable && !g.eval ? 1 : 0), std::move(sh), std::move(sy)};
+                }
+            });
+            for (auto& row : out) w.add(std::move(row));
         }
-    });
-    if (!err.empty()) throw std::runtime_error("leandb import: " + err);
-    // ---- final names, hashes, manifest ----
-    json man;
-    man["schema"] = kSchemaVersion;
-    man["class"] = klass;
-    man["shard_max_bytes"] = kShardMaxBytes;
-    man["sort_key"] = "use class | table | source | module | name | id (docs/LEANDB.md)";
-    man["input_sha256"] = input_sha;
-    man["pin_sha256"] = pn.sha256;
-    json js = json::array(), srcj = json::array();
-    std::set<std::string> used;
-    std::map<bool, unsigned> counter{{false, 0}, {true, 0}};
-    char nm[64];
-    for (auto& group : done) {
-        for (auto& so : group) {
-            std::snprintf(nm, sizeof nm, "%s-%04u.sqlite", so.eval ? "eval" : "search", counter[so.eval]++);
-            const fs::path fin = dir / nm;
-            fs::rename(so.tmp, fin);
-            so.sha256 = solver::sha256_file(fin);
-            so.tmp = fin;
-            json s;
-            s["file"] = nm;
-            s["kind"] = so.eval ? "eval" : "search";
-            s["bytes"] = so.bytes;
-            s["sha256"] = so.sha256;
-            s["rows"] = so.rows;
-            s["n_indexed"] = so.indexed;
-            s["n_tokens"] = so.tokens;
-            s["first_key"] = so.first_key;
-            s["last_key"] = so.last_key;
-            js.push_back(std::move(s));
-            res.bytes += so.bytes;
-            ++res.shards;
-            used.insert(so.sources.begin(), so.sources.end());
-            if (!so.eval) res.searchable += so.indexed;
-        }
+        done.push_back({w.finish(), gdir, g.eval});
     }
+    // ---- merge: one directory per kind, shards renumbered in key order, one manifest ----
+    json man;
+    std::set<std::string> used;
+    for (bool eval : {false, true}) {
+        db::shard_manifest fin;
+        bool first = true;
+        std::size_t n = 0;
+        const fs::path sdir = dir / (eval ? "eval" : "search");
+        for (auto& d : done) {
+            if (d.eval != eval) continue;
+            if (first) { fin = d.m; fin.shards.clear(); fin.rows = 0; fin.bytes = 0; first = false; fs::create_directories(sdir); }
+            for (auto info : d.m.shards) {
+                char nm[32];
+                std::snprintf(nm, sizeof nm, "shard-%06zu.fdb", n++);
+                fs::rename(d.dir / info.file, sdir / nm);
+                info.file = nm;
+                fin.rows += info.rows;
+                fin.bytes += info.bytes;
+                if (!eval && info.fts_rows > 0) res.searchable += static_cast<std::uint64_t>(info.fts_rows);
+                fin.shards.push_back(std::move(info));
+            }
+        }
+        if (first) continue;
+        std::ofstream(sdir / "manifest.json", std::ios::binary) << fin.to_text();
+        res.shards += fin.shards.size();
+        res.bytes += fin.bytes;
+    }
+    fs::remove_all(scratch);
+    for (auto i : order) used.insert(srcs[keys[i].src].name);
+    json srcj = json::array();
     for (const auto& n : used) {
         const auto* ps = pn.find(n);
         json s;
@@ -456,10 +394,15 @@ set_result build_set(const fs::path& input, const fs::path& dir, const std::stri
         }
         srcj.push_back(std::move(s));
     }
+    man["schema"] = kSchemaVersion;
+    man["class"] = klass;
+    man["shard_max_bytes"] = kShardMaxBytes;
+    man["layout"] = "search/ and eval/ are forge::db shard sets (manifest.json each); sort key: use class | table | source | module | name | id";
+    man["input_sha256"] = input_sha;
+    man["pin_sha256"] = pn.sha256;
     man["sources"] = std::move(srcj);
-    man["shards"] = std::move(js);
     man["totals"] = {{"items", res.items}, {"searchable", res.searchable}, {"eval_items", res.eval_items}, {"shards", res.shards}, {"bytes", res.bytes}};
-    std::ofstream(dir / "manifest.json", std::ios::binary) << dump(man);
+    std::ofstream(dir / "leandb.json", std::ios::binary) << dump(man);
     return res;
 }
 
@@ -529,17 +472,18 @@ import_report import_db(const fs::path& input, const import_options& opt) {
     return rep;
 }
 
+
 verify_report verify(const fs::path& dir, const fs::path& pin_file, bool is_local) {
     verify_report vr;
     auto bad = [&](const std::string& m) { vr.ok = false; vr.problems.push_back(m); };
     std::error_code ec;
-    if (!fs::exists(dir / "manifest.json", ec)) { bad("no manifest.json in " + dir.string()); return vr; }
+    if (!fs::exists(dir / "leandb.json", ec)) { bad("no leandb.json in " + dir.string()); return vr; }
     json man;
-    try { man = json::parse(slurp(dir / "manifest.json")); } catch (const std::exception& e) { bad(std::string("bad manifest: ") + e.what()); return vr; }
+    try { man = json::parse(slurp(dir / "leandb.json")); } catch (const std::exception& e) { bad(std::string("bad leandb.json: ") + e.what()); return vr; }
     std::string why;
     auto pn = load_pin(pin_file, &why);
     if (!pn) bad(why);
-    else if (man.value("pin_sha256", "") != pn->sha256) bad("manifest pin_sha256 does not match " + pin_file.string());
+    else if (man.value("pin_sha256", "") != pn->sha256) bad("leandb.json pin_sha256 does not match " + pin_file.string());
     const std::string klass = man.value("class", "");
     if (pn)
         for (const auto& s : man.value("sources", json::array())) {
@@ -550,47 +494,60 @@ verify_report verify(const fs::path& dir, const fs::path& pin_file, bool is_loca
             if (klass == "committed" && !ps->redistributable) bad("committed set contains non-redistributable source " + name);
         }
     (void)is_local;
-    std::set<std::string> seen;
-    for (const auto& s : man.value("shards", json::array())) {
-        const std::string file = s.value("file", "");
-        const fs::path p = dir / file;
-        ++vr.shards;
-        if (!fs::exists(p, ec)) { bad("missing shard " + file); continue; }
-        const auto sz = fs::file_size(p);
-        vr.bytes += sz;
-        if (sz > kShardMaxBytes) bad(file + " is " + std::to_string(sz) + " bytes, over the 10 MiB limit");
-        if (sz != s.value("bytes", std::uint64_t{0})) bad(file + " size differs from the manifest");
-        if (solver::sha256_file(p) != s.value("sha256", "")) { bad(file + " sha256 differs from the manifest"); continue; }
+    forge::task::pool pool(0);
+    for (const char* sub : {"search", "eval"}) {
+        const fs::path sd = dir / sub;
+        if (!fs::exists(sd / "manifest.json", ec)) continue;
+        const bool eval = std::string(sub) == "eval";
         try {
-            db::open_options ro;
-            ro.read_only = true;
-            ro.create = false;
-            auto c = db::connection::open(p.string(), ro);
-            const bool eval = s.value("kind", "") == "eval";
-            if (eval) {
-                if (c.table_exists("fts") || c.table_exists("indexed")) bad(file + ": an eval shard has an index");
-                if (c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0") != 0) bad(file + ": eval row marked searchable");
-                continue;
+            db::shard_open_options oo;
+            oo.verify = db::verify_mode::sha256;
+            auto set = db::open(sd, oo);
+            // sizes, then the manifest hashes of every shard (a mismatch throws)
+            for (std::size_t i = 0; i < set.size(); ++i) {
+                ++vr.shards;
+                const auto sz = fs::file_size(set.path_of(i), ec);
+                vr.bytes += sz;
+                if (sz > kShardMaxBytes) bad(set.info(i).file + " is " + std::to_string(sz) + " bytes, over the 10 MiB limit");
             }
-            const auto leak = c.scalar<std::int64_t>("SELECT count(*) FROM items i JOIN srcs s ON s.id=i.src WHERE s.use='eval'");
-            if (leak) bad(file + ": " + std::to_string(leak) + " eval rows in a search shard");
-            const auto idx_bad = c.scalar<std::int64_t>(
-                "SELECT count(*) FROM indexed x JOIN items i ON i.id=x.id JOIN srcs s ON s.id=i.src WHERE s.use='eval' OR i.eval_overlap<>0 OR i.searchable=0");
-            if (idx_bad) bad(file + ": " + std::to_string(idx_bad) + " eval or overlapping rows in the index");
-            const auto n_idx = c.scalar<std::int64_t>("SELECT count(*) FROM indexed");
-            const auto n_flag = c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0");
-            if (n_idx != n_flag) bad(file + ": indexed table and searchable flags disagree");
-            if (static_cast<std::uint64_t>(n_idx) != s.value("n_indexed", std::uint64_t{0})) bad(file + ": n_indexed differs from the manifest");
-            c.exec("CREATE VIRTUAL TABLE temp.fv USING fts5vocab(main, fts, 'row')");
-            if (static_cast<std::uint64_t>(c.scalar_or<std::int64_t>(0, "SELECT COALESCE(sum(cnt),0) FROM temp.fv")) != s.value("n_tokens", std::uint64_t{0}))
-                bad(file + ": FTS token total differs from the manifest (index and table disagree)");
-            // every id the FTS index answers for must be in `indexed`: probe by the shard's own vocabulary
-            const auto stray = c.scalar_or<std::int64_t>(
-                0, "SELECT count(*) FROM (SELECT term FROM temp.fv LIMIT 200) t WHERE EXISTS (SELECT 1 FROM fts WHERE fts MATCH '\"' || t.term || '\"' AND rowid NOT IN "
-                   "(SELECT id FROM indexed))");
-            if (stray) bad(file + ": FTS answers for rows that are not in `indexed`");
+            try { set.verify_all(&pool, db::verify_mode::sha256); } catch (const std::exception& e) { bad(std::string(sub) + ": " + e.what()); continue; }
+            for (std::size_t i = 0; i < set.size(); ++i) {
+                const std::string file = std::string(sub) + "/" + set.info(i).file;
+                auto lease = set.acquire(i);
+                db::connection& c = *lease;
+                if (eval) {
+                    if (c.table_exists("fts") || c.table_exists("indexed")) bad(file + ": an eval shard has an index");
+                    if (c.table_exists("ann_text") || c.table_exists("ann_sym")) bad(file + ": an eval shard has a vector index");
+                    if (c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0") != 0) bad(file + ": eval row marked searchable");
+                    continue;
+                }
+                const auto leak = c.scalar<std::int64_t>("SELECT count(*) FROM items i JOIN srcs s ON s.id=i.src WHERE s.use='eval'");
+                if (leak) bad(file + ": " + std::to_string(leak) + " eval rows in a search shard");
+                const auto idx_bad = c.scalar<std::int64_t>(
+                    "SELECT count(*) FROM indexed x JOIN items i ON i.id=x.id JOIN srcs s ON s.id=i.src WHERE s.use='eval' OR i.eval_overlap<>0 OR i.searchable=0");
+                if (idx_bad) bad(file + ": " + std::to_string(idx_bad) + " eval or overlapping rows in the index");
+                const auto n_idx = c.scalar<std::int64_t>("SELECT count(*) FROM indexed");
+                if (n_idx != c.scalar<std::int64_t>("SELECT count(*) FROM items WHERE searchable<>0")) bad(file + ": indexed table and searchable flags disagree");
+                if (set.info(i).fts_rows >= 0 && set.info(i).fts_rows != n_idx) bad(file + ": FTS row count differs from the manifest");
+                // vector tables hold searchable rows only
+                for (const char* t : {"ann_text", "ann_sym"}) {
+                    if (!c.table_exists(t)) continue;
+                }
+                if (c.scalar<std::int64_t>("SELECT count(*) FROM excluded WHERE symvec IS NOT NULL OR simhash IS NOT NULL") != 0)
+                    bad(file + ": vectors stored for excluded rows");
+                if (c.scalar<std::int64_t>("SELECT count(*) FROM excluded x JOIN indexed i ON i.id=x.id") != 0) bad(file + ": an excluded row is in the index");
+                // every id the FTS index answers for must be in `indexed`: probe by the shard's own vocabulary
+                c.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.fv USING fts5vocab(main, fts, 'row')");
+                if (set.info(i).fts_tokens >= 0 && c.scalar_or<std::int64_t>(0, "SELECT COALESCE(sum(cnt),0) FROM temp.fv") != set.info(i).fts_tokens)
+                    bad(file + ": FTS token total differs from the manifest (index and table disagree)");
+                const auto stray = c.scalar_or<std::int64_t>(
+                    0, "SELECT count(*) FROM (SELECT term FROM temp.fv LIMIT 200) t WHERE EXISTS (SELECT 1 FROM fts WHERE fts MATCH '\"' || t.term || '\"' AND rowid NOT IN "
+                       "(SELECT id FROM indexed))");
+                if (stray) bad(file + ": FTS answers for rows that are not in `indexed`");
+                c.exec("DROP TABLE IF EXISTS temp.fv");
+            }
         } catch (const std::exception& e) {
-            bad(file + ": " + e.what());
+            bad(std::string(sub) + ": " + e.what());
         }
     }
     return vr;

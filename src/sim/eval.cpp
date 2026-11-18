@@ -323,12 +323,21 @@ unsigned sort_id(const sort_t& s) {
 }  // namespace
 
 std::vector<std::uint64_t> semantic_signature(const term& t, const sim_options& opt, bool* constant) {
+    auto p = semantic_profile(t, opt);
+    if (constant) *constant = p.constant;
+    return std::move(p.root);
+}
+
+sem_profile semantic_profile(const term& t, const sim_options& opt) {
     const unsigned K = opt.probes;
-    std::vector<std::uint64_t> best;
-    if (constant) *constant = true;
+    sem_profile prof;
+    std::vector<std::uint64_t>& best = prof.root;
+    bool* constant = &prof.constant;
+    *constant = true;
     if (t.nodes.empty()) {
         best.assign((2 * K + 63) / 64, 0);
-        return best;
+        prof.named = best;
+        return prof;
     }
     // variable sorts by ordinal
     std::vector<sort_t> vsort(t.n_vars);
@@ -353,6 +362,45 @@ std::vector<std::uint64_t> semantic_signature(const term& t, const sim_options& 
     evaluator ev(t);
     std::vector<unsigned> slot(t.n_vars);
     const sort_t root_sort = t.nodes[t.root].s;
+    prof.root_is_bool = root_sort.kind == sk::boolean;
+    // Sub-term fingerprints: the values of the non-Boolean, non-trivial sub-terms on every 4th probe, hashed per node,
+    // for the 64 largest. Computed under every slot permutation and the lexicographically smallest set kept, like the
+    // root signature, so renamings and tied operands cannot change it.
+    const std::size_t NN = std::min<std::size_t>(t.nodes.size(), static_cast<std::size_t>(t.root) + 1);
+    std::vector<std::uint32_t> sz(NN, 1);
+    for (std::size_t i = 0; i < NN; ++i)
+        for (auto c : t.nodes[i].kids) sz[i] = static_cast<std::uint32_t>(std::min<std::uint64_t>(1000000, std::uint64_t{sz[i]} + sz[c]));
+    auto eligible = [&](std::size_t i) {
+        const node& n = t.nodes[i];
+        if (n.o == op::var || n.o == op::lit || n.o == op::ilit || n.o == op::tru || n.o == op::fls) return false;
+        return n.s.kind == sk::bv || n.s.kind == sk::integer;
+    };
+    std::vector<std::size_t> el;
+    for (std::size_t i = 0; i < NN; ++i)
+        if (eligible(i)) el.push_back(i);
+    bool have_sub = false;
+    auto sub_for = [&](const std::vector<unsigned>& sl) {
+        std::vector<std::uint64_t> acc(NN, 0x9e3779b97f4a7c15ULL);
+        for (unsigned k = 0; k < K; k += 4) {
+            ev.run(probe_gen{opt.seed, k}, sl, sids);
+            for (auto i : el) {
+                const val& v = ev.vals[i];
+                std::uint64_t h = static_cast<std::uint64_t>(v.v);
+#if PRISM_HAS_INT128
+                h = hash_combine(h, static_cast<std::uint64_t>(v.v >> 64));
+#endif
+                acc[i] = hash_combine(acc[i], h);
+            }
+        }
+        std::vector<std::size_t> order = el;
+        std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return sz[a] != sz[b] ? sz[a] > sz[b] : acc[a] < acc[b]; });
+        if (order.size() > 64) order.resize(64);
+        std::vector<std::uint64_t> out;
+        for (auto i : order) out.push_back(acc[i]);
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    };
     for (;;) {
         std::size_t gi = 0;
         for (auto& [id, g] : groups) {
@@ -373,6 +421,10 @@ std::vector<std::uint64_t> semantic_signature(const term& t, const sim_options& 
             best = std::move(sig);
             if (constant) *constant = all_same;
         }
+        {
+            auto sb = sub_for(slot);
+            if (!have_sub || sb < prof.sub) { prof.sub = std::move(sb); have_sub = true; }
+        }
         if (!permute) break;
         // odometer over the group permutations
         std::size_t g = 0;
@@ -381,7 +433,25 @@ std::vector<std::uint64_t> semantic_signature(const term& t, const sim_options& 
         }
         if (g == perm.size()) break;
     }
-    return best;
+    // ---- name-keyed root signature (position-sensitive: variables are slotted by the rank of their name hash, so
+    // x - y and y - x differ). Not alpha-invariant; used only when symbolic_metric::named_weight > 0.
+    {
+        std::vector<unsigned> nslot(t.n_vars);
+        std::vector<std::uint64_t> tagof(t.n_vars, 0);
+        for (const auto& n : t.nodes)
+            if (n.o == op::var && n.aux < t.n_vars) tagof[n.aux] = n.tag;
+        for (auto& [id, g] : groups) {
+            std::vector<unsigned> order = g;
+            std::stable_sort(order.begin(), order.end(), [&](unsigned a, unsigned b) { return tagof[a] < tagof[b]; });
+            for (std::size_t i = 0; i < order.size(); ++i) nslot[order[i]] = static_cast<unsigned>(i);
+        }
+        prof.named.assign((2 * K + 63) / 64, 0);
+        for (unsigned k = 0; k < K; ++k) {
+            ev.run(probe_gen{opt.seed, k}, nslot, sids);
+            prof.named[(2 * k) / 64] |= out_bits(ev.vals[t.root], root_sort, ev.vals) << ((2 * k) % 64);
+        }
+    }
+    return prof;
 }
 
 }  // namespace prism::sim

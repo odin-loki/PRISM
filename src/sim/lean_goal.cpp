@@ -231,6 +231,7 @@ struct elab_t {
     std::uint32_t declare(const std::string& name, const sort_t& s) {
         node n;
         n.o = op::var; n.s = s; n.aux = nvars++;
+        for (unsigned char ch : name) n.tag = (n.tag ^ ch) * 0x100000001b3ULL + 0xcbf29ce484222325ULL;
         const auto id = add(std::move(n));
         sc.vars[name] = {id, s};
         return id;

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -61,7 +62,7 @@ struct import_options {
     fs::path out_local;      // every other source: local-only, gitignored  (data/leandb/local)
     fs::path out_all;        // every source in one set (the private complete copy)
     std::vector<std::string> only_sources;  // empty: all sources
-    std::uint64_t shard_bytes = 9ull * 1024 * 1024 + 512 * 1024;  // target; each file is checked against kShardMaxBytes
+    std::uint64_t shard_bytes = kShardMaxBytes;  // shard_writer budget (it cuts at 90% and splits any file that comes out over)
     unsigned threads = 0;
     std::uint64_t max_items = 0;  // 0: all (tests)
 };
@@ -91,12 +92,27 @@ struct result {
 };
 PRISM_API std::vector<result> search(const std::string& query, const search_options& opt);
 
+// A reusable searcher: opens the merged shard set once and keeps the per-shard HNSW graphs loaded between queries
+// (the batch evaluation and any long-running caller use this; search() builds a throw-away one).
+class PRISM_API searcher {
+public:
+    explicit searcher(const search_options& opt);
+    ~searcher();
+    searcher(const searcher&) = delete;
+    searcher& operator=(const searcher&) = delete;
+    std::vector<result> search(const std::string& query);
+
+private:
+    struct impl;
+    std::unique_ptr<impl> p_;
+};
+
 struct verify_report {
     bool ok = true;
     std::vector<std::string> problems;
     std::uint64_t shards = 0, bytes = 0;
 };
-// Every shard <= 10 MiB, sha256 equal to the manifest, no eval row in any index, pin hash equals the manifest's.
+// Every shard <= 10 MiB, sha256 equal to the manifest, no eval row in any index or vector table, pin hash equals leandb.json's.
 PRISM_API verify_report verify(const fs::path& dir, const fs::path& pin_file, bool is_local);
 
 // `prism leandb import|search|verify|build-local|pin ...`; argv[0] is the subcommand.

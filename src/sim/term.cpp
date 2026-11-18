@@ -151,6 +151,7 @@ struct converter {
                     auto it = var_ids.find(e.id());
                     if (it == var_ids.end()) it = var_ids.emplace(e.id(), static_cast<unsigned>(var_ids.size())).first;
                     n.aux = it->second;
+                    n.tag = str_hash(d.name().str());  // the variable's name (position-sensitive signature only)
                 } else if (auto o = map_op(k)) {
                     n.o = *o;
                     if (*o == op::extract) { n.aux = static_cast<std::uint32_t>(Z3_get_decl_int_parameter(c, d, 0)); n.aux2 = static_cast<std::uint32_t>(Z3_get_decl_int_parameter(c, d, 1)); }

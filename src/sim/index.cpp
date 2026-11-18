@@ -28,11 +28,11 @@ sym_index::~sym_index() = default;
 sym_index::sym_index(sym_index&&) noexcept = default;
 sym_index& sym_index::operator=(sym_index&&) noexcept = default;
 
-std::uint64_t sym_index::add(std::string name, sym_vec v, std::string label, double seconds) {
+std::uint64_t sym_index::add(std::string name, sym_vec v, std::string label, double seconds, std::vector<std::pair<std::string, double>> times) {
     const std::uint64_t id = p_->entries.size();
     p_->flat.add(id, v);
     p_->graph.add(id, v);
-    p_->entries.push_back({id, std::move(name), std::move(label), seconds, std::move(v)});
+    p_->entries.push_back({id, std::move(name), std::move(label), seconds, std::move(v), std::move(times)});
     p_->built = false;
     return id;
 }
@@ -73,13 +73,18 @@ bool sym_index::save(const std::string& path, std::string* why) const {
     }
     auto w32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
     auto wstr = [&](const std::string& s) { w32(static_cast<std::uint32_t>(s.size())); out.write(s.data(), static_cast<std::streamsize>(s.size())); };
-    out.write("SIM1", 4);
+    out.write("SIM2", 4);
     w32(static_cast<std::uint32_t>(p_->entries.size()));
     out.write(reinterpret_cast<const char*>(&p_->m.alpha), sizeof p_->m.alpha);
     for (const auto& e : p_->entries) {
         wstr(e.name);
         wstr(e.label);
         out.write(reinterpret_cast<const char*>(&e.seconds), sizeof e.seconds);
+        w32(static_cast<std::uint32_t>(e.times.size()));
+        for (const auto& [sn, st] : e.times) {
+            wstr(sn);
+            out.write(reinterpret_cast<const char*>(&st), sizeof st);
+        }
         std::vector<std::byte> b;
         encode_sym_vec(e.vec, b);
         w32(static_cast<std::uint32_t>(b.size()));
@@ -101,7 +106,7 @@ std::optional<sym_index> sym_index::load(const std::string& path, std::string* w
     if (!in) return fail("cannot read");
     char magic[4];
     in.read(magic, 4);
-    if (!in || std::memcmp(magic, "SIM1", 4) != 0) return fail("not a sim index");
+    if (!in || std::memcmp(magic, "SIM2", 4) != 0) return fail("not a sim index");
     std::uint32_t n = 0;
     in.read(reinterpret_cast<char*>(&n), 4);
     float alpha = m.alpha;
@@ -122,12 +127,20 @@ std::optional<sym_index> sym_index::load(const std::string& path, std::string* w
         std::uint32_t blen = 0;
         if (!rstr(name) || !rstr(label)) return fail("truncated");
         in.read(reinterpret_cast<char*>(&sec), sizeof sec);
+        std::uint32_t nt = 0;
+        in.read(reinterpret_cast<char*>(&nt), 4);
+        if (!in || nt > (1u << 16)) return fail("truncated");
+        std::vector<std::pair<std::string, double>> times(nt);
+        for (auto& [sn, st] : times) {
+            if (!rstr(sn)) return fail("truncated");
+            in.read(reinterpret_cast<char*>(&st), sizeof st);
+        }
         in.read(reinterpret_cast<char*>(&blen), 4);
         if (!in || blen > (1u << 28)) return fail("truncated");
         std::vector<std::byte> b(blen);
         in.read(reinterpret_cast<char*>(b.data()), blen);
         if (!in) return fail("truncated");
-        ix.add(std::move(name), decode_sym_vec(b.data(), b.size()), std::move(label), sec);
+        ix.add(std::move(name), decode_sym_vec(b.data(), b.size()), std::move(label), sec, std::move(times));
     }
     ix.build();
     return ix;
@@ -150,11 +163,10 @@ std::vector<neighbour> rerank_ted(std::vector<neighbour> cand, const term& q,
     return cand;
 }
 
-std::vector<strategy_score> strategy_hint(const sym_index& idx, const sym_vec& query, const hint_params& hp) {
+namespace {
+std::vector<strategy_score> vote_hint(const std::vector<neighbour>& nn, const hint_params& hp) {
     std::map<std::string, strategy_score> acc;
     std::map<std::string, std::size_t> timed;
-    // exact search when the index is small enough that ANN buys nothing and exact is deterministic
-    const auto nn = idx.size() <= 2000 ? idx.search_exact(query, hp.k) : idx.search(query, hp.k);
     for (const auto& n : nn) {
         if (n.e->label.empty()) continue;
         const double sim = 1.0 - static_cast<double>(n.dist);
@@ -177,6 +189,47 @@ std::vector<strategy_score> strategy_hint(const sym_index& idx, const sym_vec& q
         if (!an && a.mean_seconds != b.mean_seconds) return a.mean_seconds < b.mean_seconds;
         return a.strategy < b.strategy;
     });
+    return out;
+}
+}  // namespace
+
+std::vector<strategy_score> strategy_hint(const sym_index& idx, const sym_vec& query, const hint_params& hp) {
+    // exact search when the index is small enough that ANN buys nothing and exact is deterministic
+    const auto nn = idx.size() <= 2000 ? idx.search_exact(query, hp.k) : idx.search(query, hp.k);
+    if (hp.how == hint_params::method::vote) return vote_hint(nn, hp);
+    // regression: weighted mean of seconds per strategy over the neighbours that have its time. The arithmetic mean (the
+    // expected time) is deliberate: a geometric mean ignores a strategy that takes seconds on one neighbour in fifteen.
+    std::map<std::string, double> num, den;
+    std::map<std::string, std::size_t> cnt;
+    for (const auto& n : nn) {
+        const double sim = 1.0 - static_cast<double>(n.dist);
+        if (sim < hp.min_sim) continue;
+        const double w = std::pow(std::max(0.0, sim), hp.power) + 1e-9;
+        for (const auto& [sn, st] : n.e->times) {
+            num[sn] += w * st;
+            den[sn] += w;
+            ++cnt[sn];
+        }
+    }
+    if (num.empty()) return vote_hint(nn, hp);
+    std::vector<strategy_score> out;
+    for (const auto& [sn, v] : num) {
+        strategy_score s;
+        s.strategy = sn;
+        const double mean = v / den[sn];
+        s.score = -mean;
+        s.votes = cnt[sn];
+        s.predicted_seconds = mean;
+        out.push_back(std::move(s));
+    }
+    std::sort(out.begin(), out.end(), [](const strategy_score& a, const strategy_score& b) {
+        return a.score != b.score ? a.score > b.score : a.strategy < b.strategy;
+    });
+    if (!hp.default_strategy.empty() && out.size() > 1 && out[0].strategy != hp.default_strategy) {
+        auto it = std::find_if(out.begin(), out.end(), [&](const strategy_score& s) { return s.strategy == hp.default_strategy; });
+        // stay on the default unless the best prediction is at least min_gain faster
+        if (it != out.end() && !(-out[0].score <= (1.0 - hp.min_gain) * -it->score)) std::rotate(out.begin(), it, it + 1);
+    }
     return out;
 }
 
