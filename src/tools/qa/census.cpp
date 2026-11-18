@@ -90,23 +90,26 @@ void census_templates(const std::string& text, Counter& cnt) {
     for (auto it = std::sregex_iterator(text.begin(), text.end(), call); it != std::sregex_iterator(); ++it) {
         auto i = static_cast<std::size_t>(it->position() + it->length());
         std::string out;
+        bool any = false;  // a lone "" literal still counts (Python: the piece list is non-empty)
         for (;;) {
             while (i < text.size() && (text[i] == ' ' || text[i] == '\t' || text[i] == '\r' || text[i] == '\n')) ++i;
             std::smatch sm;
             auto b = text.begin() + static_cast<std::ptrdiff_t>(i);
             if (std::regex_search(b, text.end(), sm, str, std::regex_constants::match_continuous)) {
                 out += sm[1].str();
+                any = true;
                 i += static_cast<std::size_t>(sm.length(0));
                 continue;
             }
             if (std::regex_search(b, text.end(), sm, macro, std::regex_constants::match_continuous)) {
+                any = true;
                 out += " <" + sm[0].str() + "> ";  // a leading macro (LOCK_PREFIX, _ASM_ADD ...) is kept by name
                 i += static_cast<std::size_t>(sm.length(0));
                 continue;
             }
             break;
         }
-        if (!out.empty()) cnt.add(census_norm(out));
+        if (any) cnt.add(census_norm(out));
     }
 }
 
@@ -191,8 +194,8 @@ std::string reason(const nlohmann::json& j) {
     return "other: " + squeeze(m).substr(0, 60);
 }
 
-nlohmann::json counts_json(const Counter& c, long limit = -1) {
-    nlohmann::json o = nlohmann::json::object();
+nlohmann::ordered_json counts_json(const Counter& c, long limit = -1) {
+    nlohmann::ordered_json o = nlohmann::ordered_json::object();
     long n = 0;
     for (auto& [k, v] : c.most_common()) {
         if (limit >= 0 && n++ >= limit) break;
@@ -278,14 +281,14 @@ int harness_classify_main(const Args& args) {
         }
     }
     if (as_json) {
-        nlohmann::json r = {{"functions", order.size()},
+        nlohmann::ordered_json r = {{"functions", order.size()},
                             {"verdicts", counts_json(verdicts)},
                             {"results_with_auto_harness_assumption", autoh},
                             {"harness_discharged_results", discharged},
                             {"discharge_outcomes", counts_json(disch)},
                             {"needs_harness_by_reason", counts_json(why)},
                             {"top_unknown_callees", counts_json(callee, top)}};
-        std::cout << r.dump(1) << "\n";
+        std::cout << r.dump(1, ' ', true) << "\n";
         return 0;
     }
     auto row = [](long n, const std::string& k) {
