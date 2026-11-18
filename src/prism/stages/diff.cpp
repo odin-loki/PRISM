@@ -212,7 +212,7 @@ Finding diff_pair(const FunctionInfo& a, const FunctionInfo& b, const fs::path&)
             base.extra["sandbox"] = sandbox::kind();
             return base;
         }
-        if (rr.crashed || rr.rc < 0) {
+        if (rr.crashed || rr.rc < 0 || sandbox::jail_crash_rc(rr.rc)) {
             fs::remove_all(td);
             base.status = std::string(laws::CRASH);
             base.cls = "FUZZ-CRASH";
