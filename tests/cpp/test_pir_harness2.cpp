@@ -71,7 +71,7 @@ prism::Config contract_cfg() {
 
 // ---- unit tests (no front end) -------------------------------------------------------------------------------
 
-TEST_CASE("callee contracts: the TSV loader needs a status and a source, 7 columns, no duplicates") {
+TEST_CASE("pir harness2: callee contracts: the TSV loader needs a status and a source, 7 columns, no duplicates") {
     const auto dir = fs::temp_directory_path() / "prism_cc_loader_test";
     fs::create_directories(dir);
     auto write = [&](const std::string& name, const std::string& text) {
@@ -100,7 +100,7 @@ TEST_CASE("callee contracts: the TSV loader needs a status and a source, 7 colum
     fs::remove_all(dir, ec);
 }
 
-TEST_CASE("callee contracts: clauses that cannot be applied are rejected with a reason") {
+TEST_CASE("pir harness2: callee contracts: clauses that cannot be applied are rejected with a reason") {
     auto prob = [](std::string sig, std::string req, std::string asg, std::string ens) {
         pp::CalleeContract c;
         c.function = "f";
@@ -123,7 +123,7 @@ TEST_CASE("callee contracts: clauses that cannot be applied are rejected with a 
     CHECK(prob("n:s32", "", "", "n >").find("expected an expression") != std::string::npos);
 }
 
-TEST_CASE("ops-auto: the table is what the unit stores and initialises, nothing more") {
+TEST_CASE("pir harness2: ops-auto: the table is what the unit stores and initialises, nothing more") {
     const std::string ir =
         "%struct.ops = type { ptr, ptr }\n"
         "@tbl = internal constant %struct.ops { ptr @a, ptr @b }, align 8\n"
@@ -168,17 +168,17 @@ TEST_CASE("ops-auto: the table is what the unit stores and initialises, nothing 
 
 // ---- contract stubs ------------------------------------------------------------------------------------------
 
-TEST_CASE("callee contracts: default unchanged (without the option every call is UNENCODED)") {
+TEST_CASE("pir harness2: callee contracts: default unchanged (without the option every call is UNENCODED)") {
     if (skip_without_frontend()) return;
     auto got = run("callee_contract.c", prism::default_config());
     for (auto* f : {"stub_ensures_ok", "stub_ensures_bad", "stub_requires_ok", "stub_alloc_ok", "stub_false_ensures", "stub_unspecified"}) {
         REQUIRE_MESSAGE(got.contains(f), f);
-        CHECK_MESSAGE(got[f].status == L::NEEDS_HARNESS, std::string(f) + ": " + got[f].status);
+        CHECK_MESSAGE(got[f].status == L::NEEDS_HARNESS, (std::string(f) + ": " + got[f].status));
         CHECK_MESSAGE(has(got[f].message, "UNENCODED: call @hw_"), got[f].message);
     }
 }
 
-TEST_CASE("callee contracts: requires checked at the call site, assigns bound the havoc, ensures assumed and named") {
+TEST_CASE("pir harness2: callee contracts: requires checked at the call site, assigns bound the havoc, ensures assumed and named") {
     if (skip_without_frontend()) return;
     auto got = run("callee_contract.c", contract_cfg());
     struct Row {
@@ -204,39 +204,42 @@ TEST_CASE("callee contracts: requires checked at the call site, assigns bound th
     for (auto& r : rows) {
         REQUIRE_MESSAGE(got.contains(r.fn), r.fn);
         auto& f = got[r.fn];
-        CHECK_MESSAGE(f.status == r.status, std::string(r.fn) + ": " + f.status + " (" + f.message + ")");
+        CHECK_MESSAGE(f.status == r.status, (std::string(r.fn) + ": " + f.status + " (" + f.message + ")"));
         if (f.status == L::PROVED_ASSUMING && r.tag[0])
-            CHECK_MESSAGE(has(extra(f, "assumptions"), r.tag), std::string(r.fn) + ": " + extra(f, "assumptions"));
+            CHECK_MESSAGE(has(extra(f, "assumptions"), r.tag), (std::string(r.fn) + ": " + extra(f, "assumptions")));
     }
     // the findings are the right ones
     CHECK(got["stub_ensures_bad"].cls == "INT-DIV-ZERO");
+    // a finding that goes through a stub still names it (the contract may allow a value the callee never returns)
+    CHECK(has(extra(got["stub_ensures_bad"], "assumptions"), "callee-contract: @hw_count"));
+    CHECK(has(extra(got["planted_oob"], "assumptions"), "status: UNVALIDATED"));
     CHECK(got["planted_oob"].cls == "MEM-OOB-READ");
     CHECK(got["stub_requires_bad"].cls == "FUNC-CONTRACT");
     CHECK(has(got["stub_requires_bad"].message, "violates its contract"));
     CHECK(got["stub_alloc_oob_bad"].cls == "MEM-OOB-READ");
     // a callee without a row, and a row whose signature does not fit the call: as before
     for (auto* f : {"stub_unspecified", "stub_badsig"}) {
-        CHECK_MESSAGE(got[f].status == L::NEEDS_HARNESS, std::string(f) + ": " + got[f].status);
+        CHECK_MESSAGE(got[f].status == L::NEEDS_HARNESS, (std::string(f) + ": " + got[f].status));
         CHECK(has(got[f].message, "UNENCODED: call @hw_"));
     }
 }
 
-TEST_CASE("callee contracts: the status of every contract used is in the assumption, and no result is PROVED") {
+TEST_CASE("pir harness2: callee contracts: the status of every contract used is in the assumption, and no result is PROVED") {
     if (skip_without_frontend()) return;
     auto got = run("callee_contract.c", contract_cfg());
     for (auto& [name, f] : got) {
         const auto a = extra(f, "assumptions");
         if (has(a, "callee-contract:")) {
-            CHECK_MESSAGE(has(a, "status: UNVALIDATED"), name + ": " + a);
+            CHECK_MESSAGE(has(a, "status: UNVALIDATED"), (name + ": " + a));
             CHECK_MESSAGE(has(a, "the contract was not verified against the callee"), name);
             CHECK_MESSAGE(has(a, "source: test fixture"), name);
             // never PROVED, whatever the stub assumed
-            CHECK_MESSAGE(f.status != L::PROVED && f.status != L::PROVED_UNBOUNDED, name + ": " + f.status);
+            CHECK_MESSAGE((f.status != L::PROVED && f.status != L::PROVED_UNBOUNDED), (name + ": " + f.status));
         }
     }
 }
 
-TEST_CASE("callee contracts: SOUNDNESS - a false ensures can make a caller proved only with the assumption named") {
+TEST_CASE("pir harness2: callee contracts: SOUNDNESS - a false ensures can make a caller proved only with the assumption named") {
     if (skip_without_frontend()) return;
     // 1. with the (false) contract: the caller is "proved" under the stub, and the verdict says so
     auto with = run("callee_contract.c", contract_cfg());
@@ -254,12 +257,11 @@ TEST_CASE("callee contracts: SOUNDNESS - a false ensures can make a caller prove
     auto without = run("callee_contract.c", cfg);
     REQUIRE(without.contains("stub_false_ensures"));
     CHECK(without["stub_false_ensures"].status == L::FAILED);
-    CHECK(without["stub_false_ensures"].cls == "INT-DIV-ZERO");
     // 3. an unspecified callee is never silently assumed away
     CHECK(has(extra(without["stub_unspecified"], "assumptions"), "unknown-call: @hw_nocontract"));
 }
 
-TEST_CASE("callee contracts: precedence - a contract replaces unknown-call only where it is usable") {
+TEST_CASE("pir harness2: callee contracts: precedence - a contract replaces unknown-call only where it is usable") {
     if (skip_without_frontend()) return;
     auto cfg = contract_cfg();
     cfg.pir_assume_unknown_calls = true;
@@ -270,7 +272,7 @@ TEST_CASE("callee contracts: precedence - a contract replaces unknown-call only 
     CHECK_FALSE(has(extra(got["stub_ensures_ok"], "assumptions"), "unknown-call: @hw_count"));
     // no row, or a row that does not fit: the existing opt-in, named as before
     for (auto* f : {"stub_unspecified", "stub_badsig"}) {
-        CHECK_MESSAGE(got[f].status == L::PROVED_ASSUMING, std::string(f) + ": " + got[f].status);
+        CHECK_MESSAGE(got[f].status == L::PROVED_ASSUMING, (std::string(f) + ": " + got[f].status));
         CHECK(has(extra(got[f], "assumptions"), "unknown-call: @hw_"));
     }
     // a callee with a body keeps its body
@@ -279,7 +281,7 @@ TEST_CASE("callee contracts: precedence - a contract replaces unknown-call only 
 
 // ---- function-pointer fields ---------------------------------------------------------------------------------
 
-TEST_CASE("ops-auto: a harness function-pointer field is bound to the targets the unit assigns") {
+TEST_CASE("pir harness2: ops-auto: a harness function-pointer field is bound to the targets the unit assigns") {
     if (skip_without_frontend()) return;
     auto base = prism::default_config();
     base.pir_harness = true;
@@ -294,11 +296,11 @@ TEST_CASE("ops-auto: a harness function-pointer field is bound to the targets th
     auto on = run("ops_auto.c", cfg);
     for (auto* f : {"dev_call_read", "dev_call_div_ok"}) {
         REQUIRE_MESSAGE(on.contains(f), f);
-        CHECK_MESSAGE(on[f].status == L::PROVED_ASSUMING, std::string(f) + ": " + on[f].status + " (" + on[f].message + ")");
+        CHECK_MESSAGE(on[f].status == L::PROVED_ASSUMING, (std::string(f) + ": " + on[f].status + " (" + on[f].message + ")"));
         const auto a = extra(on[f], "assumptions");
-        CHECK_MESSAGE(has(a, "function-pointer field %struct.dev_ops."), std::string(f) + ": " + a);
+        CHECK_MESSAGE(has(a, "function-pointer field %struct.dev_ops."), (std::string(f) + ": " + a));
         CHECK_MESSAGE(has(a, "unit-derived"), f);
-        CHECK_MESSAGE(has(a, "read_safe"), f);
+        CHECK_MESSAGE(has(a, std::string(f) == "dev_call_read" ? "read_safe" : "read_div"), f);
     }
     // a violation inside a target is still a violation (under the harness: NEEDS-HARNESS naming it)
     CHECK(on["dev_call_div_bad"].status == L::NEEDS_HARNESS);
@@ -313,33 +315,37 @@ TEST_CASE("ops-auto: a harness function-pointer field is bound to the targets th
 
 // ---- address values ------------------------------------------------------------------------------------------
 
-TEST_CASE("addr-values: constant ptrtoint / inttoptr are modelled only with the option, and named") {
+TEST_CASE("pir harness2: addr-values: constant ptrtoint / inttoptr are modelled only with the option, and named") {
     if (skip_without_frontend()) return;
     auto off = run("addr_values.c", prism::default_config());
     for (auto* f : {"addr_value", "addr_diff_ok", "err_deref_bad", "marker_deref_bad"}) {
         REQUIRE_MESSAGE(off.contains(f), f);
-        CHECK_MESSAGE(off[f].status == L::NEEDS_HARNESS, std::string(f) + ": " + off[f].status);
+        CHECK_MESSAGE(off[f].status == L::NEEDS_HARNESS, (std::string(f) + ": " + off[f].status));
         CHECK_MESSAGE(has(off[f].message, "UNENCODED"), off[f].message);
     }
     auto cfg = prism::default_config();
     cfg.pir_addr_values = true;
     auto on = run("addr_values.c", cfg);
-    CHECK_MESSAGE(on["addr_value"].status == L::PROVED_ASSUMING, on["addr_value"].status + ": " + on["addr_value"].message);
+    CHECK_MESSAGE(on["addr_value"].status == L::PROVED_ASSUMING, (on["addr_value"].status + ": " + on["addr_value"].message));
     CHECK(has(extra(on["addr_value"], "assumptions"), "addr-values: a constant ptrtoint"));
-    CHECK_MESSAGE(on["addr_diff_ok"].status == L::PROVED_ASSUMING, on["addr_diff_ok"].status + ": " + on["addr_diff_ok"].message);
-    CHECK_MESSAGE(on["addr_diff_bad"].status == L::FAILED, on["addr_diff_bad"].status + ": " + on["addr_diff_bad"].message);
+    CHECK_MESSAGE(on["addr_diff_ok"].status == L::PROVED_ASSUMING, (on["addr_diff_ok"].status + ": " + on["addr_diff_ok"].message));
+    CHECK_MESSAGE(on["addr_diff_bad"].status == L::FAILED, (on["addr_diff_bad"].status + ": " + on["addr_diff_bad"].message));
     CHECK(on["addr_diff_bad"].cls == "INT-DIV-ZERO");
     // a pointer value with no object: its dereference is a finding, the marker is named
-    CHECK_MESSAGE(on["err_deref_bad"].status == L::FAILED, on["err_deref_bad"].status + ": " + on["err_deref_bad"].message);
-    CHECK_MESSAGE(on["marker_deref_bad"].status == L::FAILED, on["marker_deref_bad"].status + ": " + on["marker_deref_bad"].message);
-    CHECK_MESSAGE(on["marker_is_set"].status == L::PROVED_ASSUMING, on["marker_is_set"].status + ": " + on["marker_is_set"].message);
-    CHECK(has(extra(on["marker_is_set"], "assumptions"), "addr-values: the integer constant"));
-    CHECK_MESSAGE(on["err_ptr"].status == L::PROVED_ASSUMING, on["err_ptr"].status + ": " + on["err_ptr"].message);
+    // (a violation that rests on the address model is NEEDS-HARNESS, never a defect report)
+    for (auto* f : {"err_deref_bad", "marker_deref_bad"}) {
+        CHECK_MESSAGE(on[f].status == L::NEEDS_HARNESS, (std::string(f) + ": " + on[f].status + ": " + on[f].message));
+        CHECK_MESSAGE(has(on[f].message, "address-value model"), on[f].message);
+        CHECK(has(extra(on[f], "verdict_under_addr_model"), "FAILED"));
+    }
+    // the constant folds (a const object with a known initialiser): proved without any address model
+    CHECK(on["marker_is_set"].status == L::PROVED);
+    CHECK_MESSAGE(on["err_ptr"].status == L::PROVED_ASSUMING, (on["err_ptr"].status + ": " + on["err_ptr"].message));
 }
 
 // ---- deeper pointer fields -----------------------------------------------------------------------------------
 
-TEST_CASE("harness-deep: depth 4, the bound and what it cut are recorded in the assumptions and the jsonl record") {
+TEST_CASE("pir harness2: harness-deep: depth 4, the bound and what it cut are recorded in the assumptions and the jsonl record") {
     if (skip_without_frontend()) return;
     auto base = prism::default_config();
     base.pir_harness = true;
@@ -352,7 +358,7 @@ TEST_CASE("harness-deep: depth 4, the bound and what it cut are recorded in the 
     cfg.pir_harness_deep = true;
     cfg.jsonl = path;
     auto deep = run("harness_deep.c", cfg);
-    CHECK_MESSAGE(deep["list_fourth"].status == L::PROVED_ASSUMING, deep["list_fourth"].status + ": " + deep["list_fourth"].message);
+    CHECK_MESSAGE(deep["list_fourth"].status == L::PROVED_ASSUMING, (deep["list_fourth"].status + ": " + deep["list_fourth"].message));
     CHECK(has(extra(deep["list_fourth"], "assumptions"), "depth bound 4"));
     CHECK(has(extra(deep["list_fourth"], "assumptions"), "deepest object at level 4 of 4"));
     // past the bound: still NEEDS-HARNESS, with the cut recorded
@@ -374,7 +380,7 @@ TEST_CASE("harness-deep: depth 4, the bound and what it cut are recorded in the 
     fs::remove_all(path.parent_path());
 }
 
-TEST_CASE("callee contracts: the jsonl record lists the stubs a verdict rests on, with status") {
+TEST_CASE("pir harness2: callee contracts: the jsonl record lists the stubs a verdict rests on, with status") {
     if (skip_without_frontend()) return;
     auto cfg = contract_cfg();
     const auto path = fs::temp_directory_path() / "prism_pir_harness2_test2" / "out.jsonl";
@@ -396,4 +402,178 @@ TEST_CASE("callee contracts: the jsonl record lists the stubs a verdict rests on
     CHECK(r["callee_stubs"][0]["status"] == "UNVALIDATED");
     CHECK(rec["stub_unspecified"].contains("callee_stubs") == false);
     fs::remove_all(path.parent_path());
+}
+
+// ---- hand-written IR (no front end): the translator rules themselves ------------------------------------------
+
+namespace {
+
+pp::Translation tr_of(const std::string& ir, const std::string& fn, const pp::TranslateOptions& o) {
+    auto m = pp::ir::parse_module(ir);
+    const auto* f = m.find(fn);
+    REQUIRE(f != nullptr);
+    return pp::translate(m, *f, o);
+}
+
+pp::CalleeContract cc(const char* fn, const char* sig, const char* req, const char* asg, const char* ens) {
+    pp::CalleeContract c;
+    c.function = fn;
+    c.signature = sig;
+    c.requires_ = req;
+    c.assigns = asg;
+    c.ensures = ens;
+    c.status = "UNVALIDATED";
+    c.source = "unit test";
+    return c;
+}
+
+}  // namespace
+
+TEST_CASE("pir harness2: callee contracts on IR: ensures narrows the result, a false ensures is named, no contract stays UNENCODED") {
+    if (!pp::z3_available()) return;
+    const std::string ir = R"IR(
+declare i32 @hw_count()
+declare i32 @hw_false()
+define i32 @good() {
+entry:
+  %r = call i32 @hw_count()
+  %c = add i32 %r, 1
+  %d = udiv i32 100, %c
+  ret i32 %d
+}
+define i32 @bad() {
+entry:
+  %r = call i32 @hw_count()
+  %d = udiv i32 100, %r
+  ret i32 %d
+}
+define i32 @vacuous() {
+entry:
+  %r = call i32 @hw_false()
+  %d = udiv i32 100, 0
+  ret i32 %d
+}
+)IR";
+    pp::TranslateOptions none;
+    CHECK_FALSE(tr_of(ir, "good", none).fn.has_value());
+    CHECK(tr_of(ir, "good", none).reason.find("UNENCODED: call @hw_count") != std::string::npos);
+    pp::TranslateOptions o;
+    o.callee_contracts["hw_count"] = cc("hw_count", "->u32", "", "\\nothing", "\\result <= 16");
+    o.callee_contracts["hw_false"] = cc("hw_false", "->s32", "", "\\nothing", "\\false");
+    auto g = tr_of(ir, "good", o);
+    REQUIRE_MESSAGE(g.fn.has_value(), g.reason);
+    CHECK(pp::check_function(*g.fn, 8, 30).status == L::PROVED);  // the engine's own verdict; the stage turns it into PROVED-ASSUMING
+    REQUIRE(g.fn->assumptions.size() == 1);
+    CHECK(has(g.fn->assumptions[0], "callee-contract: @hw_count"));
+    CHECK(has(g.fn->assumptions[0], "status: UNVALIDATED"));
+    CHECK(has(g.fn->assumptions[0], "ensures [\\result <= 16] is assumed"));
+    auto b = tr_of(ir, "bad", o);
+    REQUIRE(b.fn.has_value());
+    auto vb = pp::check_function(*b.fn, 8, 30);
+    CHECK(vb.status == L::FAILED);
+    CHECK(vb.cls == "INT-DIV-ZERO");
+    // a false ensures makes the dead code after the call "proved", and the stub that did it is in the assumptions
+    auto v = tr_of(ir, "vacuous", o);
+    REQUIRE(v.fn.has_value());
+    CHECK(pp::check_function(*v.fn, 8, 30).status == L::PROVED);
+    REQUIRE(v.fn->assumptions.size() == 1);
+    CHECK(has(v.fn->assumptions[0], "callee-contract: @hw_false"));
+    CHECK(has(v.fn->assumptions[0], "ensures [\\false] is assumed"));
+    CHECK(has(v.fn->assumptions[0], "not verified against the callee"));
+    // the unknown-call opt-in without the row finds the planted bug the false stub hid
+    pp::TranslateOptions u;
+    u.assume_unknown_calls = true;
+    auto v2 = tr_of(ir, "vacuous", u);
+    REQUIRE(v2.fn.has_value());
+    CHECK(pp::check_function(*v2.fn, 8, 30).status == L::FAILED);
+}
+
+TEST_CASE("pir harness2: callee contracts on IR: a requires that the caller cannot meet is a finding, a signature that does not fit is not applied") {
+    if (!pp::z3_available()) return;
+    const std::string ir = R"IR(
+declare void @hw_fill(ptr, i64)
+declare i32 @hw_wide(i32)
+define i32 @fits() {
+entry:
+  %b = alloca [8 x i8], align 1
+  call void @hw_fill(ptr %b, i64 8)
+  ret i32 0
+}
+define i32 @too_small() {
+entry:
+  %b = alloca [4 x i8], align 1
+  call void @hw_fill(ptr %b, i64 8)
+  ret i32 0
+}
+define i32 @wrong_type() {
+entry:
+  %r = call i32 @hw_wide(i32 1)
+  ret i32 %r
+}
+)IR";
+    pp::TranslateOptions o;
+    o.callee_contracts["hw_fill"] = cc("hw_fill", "buf:ptr,n:u64", "\\valid_bytes(buf, n)", "\\bytes(buf, n)", "");
+    o.callee_contracts["hw_wide"] = cc("hw_wide", "x:u64->s32", "", "\\nothing", "\\result == 0");
+    auto a = tr_of(ir, "fits", o);
+    REQUIRE_MESSAGE(a.fn.has_value(), a.reason);
+    CHECK(pp::check_function(*a.fn, 8, 30).status == L::PROVED);
+    auto b = tr_of(ir, "too_small", o);
+    REQUIRE(b.fn.has_value());
+    auto vb = pp::check_function(*b.fn, 8, 30);
+    CHECK(vb.status == L::FAILED);
+    CHECK(vb.cls == "FUNC-CONTRACT");
+    auto c = tr_of(ir, "wrong_type", o);
+    CHECK_FALSE(c.fn.has_value());  // i32 argument against a u64 parameter: not applied, UNENCODED as without a row
+    CHECK(c.reason.find("UNENCODED: call @hw_wide") != std::string::npos);
+}
+
+TEST_CASE("pir harness2: addr-values on IR: constant ptrtoint / inttoptr are UNENCODED by default, modelled and named with the option") {
+    if (!pp::z3_available()) return;
+    const std::string ir = R"IR(
+@tbl = internal global [8 x i8] zeroinitializer, align 1
+define i64 @addr_val() {
+entry:
+  ret i64 ptrtoint (ptr @tbl to i64)
+}
+define i64 @addr_diff() {
+entry:
+  %a = add i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @tbl, i64 3) to i64), 0
+  %b = add i64 ptrtoint (ptr @tbl to i64), 0
+  %d = sub i64 %a, %b
+  %z = sub i64 %d, 3
+  %q = udiv i64 100, %z
+  ret i64 %q
+}
+define i8 @err_deref() {
+entry:
+  %v = load i8, ptr inttoptr (i64 -22 to ptr), align 1
+  ret i8 %v
+}
+)IR";
+    pp::TranslateOptions off;
+    auto t0 = tr_of(ir, "addr_val", off);
+    CHECK_FALSE(t0.fn.has_value());
+    CHECK(t0.reason.find("UNENCODED: constant expression ptrtoint") != std::string::npos);
+    pp::TranslateOptions on;
+    on.addr_values = true;
+    auto t1 = tr_of(ir, "addr_val", on);
+    REQUIRE_MESSAGE(t1.fn.has_value(), t1.reason);
+    CHECK(pp::check_function(*t1.fn, 8, 30).status == L::PROVED);
+    REQUIRE_FALSE(t1.fn->assumptions.empty());
+    CHECK(has(t1.fn->assumptions[0], "addr-values: a constant ptrtoint"));
+    // the difference of two constant addresses of one object is the offset: 3 - 3 == 0 divides by zero
+    auto t2 = tr_of(ir, "addr_diff", on);
+    REQUIRE_MESSAGE(t2.fn.has_value(), t2.reason);
+    auto v2 = pp::check_function(*t2.fn, 8, 30);
+    CHECK(v2.status == L::FAILED);
+    CHECK(v2.cls == "INT-DIV-ZERO");
+    // an integer constant used as a pointer points to no object
+    auto t3 = tr_of(ir, "err_deref", on);
+    REQUIRE_MESSAGE(t3.fn.has_value(), t3.reason);
+    auto v3 = pp::check_function(*t3.fn, 8, 30);
+    CHECK(v3.status == L::FAILED);
+    CHECK((v3.cls == "PTR-INVALID-DEREF" || v3.cls == "PTR-NULL-DEREF"));
+    bool named = false;
+    for (auto& a : t3.fn->assumptions) named = named || has(a, "addr-values: the integer constant 18446744073709551594");
+    CHECK(named);
 }

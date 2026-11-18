@@ -316,6 +316,21 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         v.cex.clear();
         v.cex_args.clear();
     }
+    // --pir-addr-values: an integer constant used as a pointer is modelled as pointing to no object, so a dereference of it is
+    // reported. Kernel code does dereference fixed addresses (MMIO, per-cpu bases): a violation that rests on this model is
+    // not a defect report (docs/HARNESS_PHASE2.md "Address values").
+    if (v.status == laws::FAILED) {
+        bool addr_model = false;
+        for (auto& a : fn.assumptions) addr_model = addr_model || a.starts_with("addr-values: the integer constant");
+        if (addr_model) {
+            v.extra["verdict_under_addr_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation only under the address-value model (an integer constant used as a pointer points to no object here: " +
+                        v.message + ")";
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
     if (!fn.ptr_params.empty()) {
         std::string pp;
         for (auto& p : fn.ptr_params) pp += (pp.empty() ? "" : ",") + p;
