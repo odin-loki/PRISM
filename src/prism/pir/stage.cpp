@@ -2689,6 +2689,13 @@ bool has_auto_harness(const Function& fn) {
     return false;
 }
 
+// --pir-length-pairing: an object sized by an inferred (pointer, count) pair
+bool has_length_pairing(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.starts_with("length pairing: ")) return true;
+    return false;
+}
+
 // The function with every check removed and one check "a return is reachable" at each return: FAILED (a
 // witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
 // returns; PROVED means none does, so every proof of the function was vacuous.
@@ -2894,6 +2901,9 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
             di.status = "not discharged";
             di.reason = why;
         };
+        // the obligations below are the fixed-size harness plan; a proof under a symbolic length pairing assumed another
+        // precondition, so checking these at the call sites would not discharge it
+        if (has_length_pairing(*r.fn)) { no("a length pairing (an object sized by a count) is not discharged at call sites"); continue; }
         if (!internal.count(g)) { no("the function has external linkage (an exported symbol: callers outside this unit are not known)"); continue; }
         if (taken.count(g)) { no("its address is taken (it may be called through a pointer)"); continue; }
         if (reaches(g, g)) { no("it is recursive (a cycle in the call graph: the entry assumption stays)"); continue; }
@@ -3237,7 +3247,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
             f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
         pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
-        if (cfg.pir_vacuity) apply_vacuity(v, fn, copt);
+        // a length pairing is always checked for satisfiability (it is never a proof of anything by itself)
+        if (cfg.pir_vacuity || has_length_pairing(fn)) apply_vacuity(v, fn, copt);
         if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
         f.status = v.status;
         f.message = v.message;

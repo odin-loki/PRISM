@@ -227,6 +227,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-lock-wrappers") {
             ok = in.flag();
             cfg.pir_lock_wrappers = true;
+        } else if (a == "--pir-length-pairing") {
+            ok = in.flag();
+            cfg.pir_length_pairing = true;
         } else if (a == "--pir-icall-havoc") {
             ok = in.flag();
             cfg.pir_icall_havoc = true;
@@ -451,6 +454,9 @@ std::string cli_usage() {
         "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
         "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
         "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
+        "  --pir-length-pairing: with --pir-harness, a pointer indexed under a bound by an integer parameter\n"
+        "  (or a pointer field by an integer field of the same object) points to that many elements (named;\n"
+        "  a proof is PROVED-ASSUMING, its non-vacuity is checked).\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"

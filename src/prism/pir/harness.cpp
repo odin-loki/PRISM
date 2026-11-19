@@ -4,6 +4,7 @@
 #include "harness.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -28,7 +29,337 @@ struct Use {
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
     // byte offset -> (struct spelling, field index) of a loaded pointer that is the callee of an indirect call
     std::map<uint64_t, std::pair<std::string, int>> fp_fields;
+    // integer values loaded from the object at a constant offset: (function, register) -> (byte offset, bits)
+    // (--pir-length-pairing: a count field bounding the index of a pointer field)
+    std::map<std::pair<const ir::Function*, std::string>, std::pair<uint64_t, unsigned>> int_loads;
 };
+
+// ---------------------------------------------------------------------------
+// --pir-length-pairing: (pointer, count) evidence in the IR (harness.hpp LengthPair)
+// ---------------------------------------------------------------------------
+
+struct PairEvidence {
+    std::string count;
+    ir::Type elem;
+    uint64_t esz = 0;
+    bool is_signed = false;
+    std::string how;
+};
+
+// count key of a register of the function being searched ("" = not a count)
+using CountOf = std::function<std::string(const std::string&)>;
+
+struct FnFacts {
+    std::map<std::string, const ir::Inst*> defs;
+    std::map<std::string, int> block_of_label;
+    std::map<std::string, int> block_of_value;
+    std::vector<std::vector<int>> preds;
+    std::vector<std::vector<char>> dom;  // dom[b][a]: block a dominates block b
+    bool ok = false;
+};
+
+FnFacts facts_of(const ir::Function& g) {
+    FnFacts f;
+    const int n = static_cast<int>(g.blocks.size());
+    if (n == 0 || n > 3000) return f;  // a very large function: no evidence (the analysis is quadratic)
+    for (int i = 0; i < n; ++i) {
+        f.block_of_label[g.blocks[static_cast<std::size_t>(i)].name] = i;
+        for (auto& in : g.blocks[static_cast<std::size_t>(i)].insts)
+            if (!in.result.empty()) {
+                f.defs[in.result] = &in;
+                f.block_of_value[in.result] = i;
+            }
+    }
+    f.preds.assign(static_cast<std::size_t>(n), {});
+    for (int i = 0; i < n; ++i) {
+        const auto& insts = g.blocks[static_cast<std::size_t>(i)].insts;
+        if (insts.empty()) continue;
+        const auto& t = insts.back();
+        std::vector<std::string> succ = t.targets;
+        for (auto& c : t.cases) succ.push_back(c.second);
+        std::set<int> seen;
+        for (auto& s : succ)
+            if (auto it = f.block_of_label.find(s); it != f.block_of_label.end() && seen.insert(it->second).second)
+                f.preds[static_cast<std::size_t>(it->second)].push_back(i);
+    }
+    // iterative dominators (blocks are in layout order; the entry is block 0)
+    f.dom.assign(static_cast<std::size_t>(n), std::vector<char>(static_cast<std::size_t>(n), 1));
+    f.dom[0].assign(static_cast<std::size_t>(n), 0);
+    f.dom[0][0] = 1;
+    for (int i = 1; i < n; ++i)
+        if (f.preds[static_cast<std::size_t>(i)].empty()) {  // unreachable: dominated by nothing but itself
+            f.dom[static_cast<std::size_t>(i)].assign(static_cast<std::size_t>(n), 0);
+            f.dom[static_cast<std::size_t>(i)][static_cast<std::size_t>(i)] = 1;
+        }
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int b = 1; b < n; ++b) {
+            auto& pr = f.preds[static_cast<std::size_t>(b)];
+            if (pr.empty()) continue;
+            std::vector<char> d(static_cast<std::size_t>(n), 1);
+            for (int p : pr)
+                for (int a = 0; a < n; ++a) d[static_cast<std::size_t>(a)] &= f.dom[static_cast<std::size_t>(p)][static_cast<std::size_t>(a)];
+            d[static_cast<std::size_t>(b)] = 1;
+            if (d != f.dom[static_cast<std::size_t>(b)]) {
+                f.dom[static_cast<std::size_t>(b)] = std::move(d);
+                changed = true;
+            }
+        }
+    }
+    f.ok = true;
+    return f;
+}
+
+// the register under integer casts (sext / zext / trunc / freeze)
+std::string strip_casts(const FnFacts& f, const ir::Operand& o) {
+    if (o.v.kind != ir::Value::Local) return {};
+    std::string n = o.v.name;
+    for (int k = 0; k < 8; ++k) {
+        auto it = f.defs.find(n);
+        if (it == f.defs.end()) break;
+        const auto& d = *it->second;
+        if ((d.op == "sext" || d.op == "zext" || d.op == "trunc" || d.op == "freeze") && !d.ops.empty() &&
+            d.ops[0].v.kind == ir::Value::Local)
+            n = d.ops[0].v.name;
+        else
+            break;
+    }
+    return n;
+}
+
+bool is_const(const ir::Operand& o, int64_t v) {
+    if (o.v.kind == ir::Value::Zero) return v == 0;
+    if (o.v.kind != ir::Value::Int) return false;
+    unsigned w = o.ty.bits ? o.ty.bits : 64;
+    uint64_t b = o.v.bits, want = static_cast<uint64_t>(v);
+    if (w < 64) {
+        const uint64_t m = (uint64_t{1} << w) - 1;
+        b &= m;
+        want &= m;
+    }
+    return b == want;
+}
+
+// `x pred y` with operands swapped: the same relation
+std::string swap_pred(const std::string& p) {
+    static const std::map<std::string, std::string> s{{"ult", "ugt"}, {"ugt", "ult"}, {"ule", "uge"}, {"uge", "ule"},
+                                                      {"slt", "sgt"}, {"sgt", "slt"}, {"sle", "sge"}, {"sge", "sle"},
+                                                      {"eq", "eq"},   {"ne", "ne"}};
+    auto it = s.find(p);
+    return it == s.end() ? std::string() : it->second;
+}
+
+// The block reached only by the edge on which `a pred b` keeps a below b (a < b, a <= b, a != b true; a >= b, a > b,
+// a == b false), when that successor has the branch block as its only predecessor; -1 otherwise.
+int inbound_successor(const FnFacts& f, int branch_block, const ir::Inst& br, const std::string& pred_a_b) {
+    if (br.op != "br" || br.targets.size() != 2) return -1;
+    int which = -1;
+    if (pred_a_b == "ult" || pred_a_b == "slt" || pred_a_b == "ule" || pred_a_b == "sle" || pred_a_b == "ne") which = 0;
+    else if (pred_a_b == "uge" || pred_a_b == "sge" || pred_a_b == "ugt" || pred_a_b == "sgt" || pred_a_b == "eq") which = 1;
+    if (which < 0) return -1;
+    auto it = f.block_of_label.find(br.targets[static_cast<std::size_t>(which)]);
+    if (it == f.block_of_label.end()) return -1;
+    const auto& pr = f.preds[static_cast<std::size_t>(it->second)];
+    if (pr.size() != 1 || pr[0] != branch_block) return -1;
+    return it->second;
+}
+
+bool dominates(const FnFacts& f, int a, int b) { return f.dom[static_cast<std::size_t>(b)][static_cast<std::size_t>(a)] != 0; }
+
+// Evidence that the pointer (registers `ptrs` of g) is accessed only within `count` elements in some place.
+void pair_evidence(const ir::Module& m, const Layout& lay, const ir::Function& g, const std::set<std::string>& ptrs,
+                   const CountOf& count_of, int depth, std::vector<PairEvidence>& out) {
+    FnFacts f = facts_of(g);
+    if (!f.ok) return;
+    const int nb = static_cast<int>(g.blocks.size());
+    auto term = [&](int b) -> const ir::Inst* {
+        const auto& is = g.blocks[static_cast<std::size_t>(b)].insts;
+        return is.empty() ? nullptr : &is.back();
+    };
+    // (1) indexed access: getelementptr T, P, idx, ... under `idx < count`
+    for (int bi = 0; bi < nb; ++bi)
+        for (const auto& in : g.blocks[static_cast<std::size_t>(bi)].insts) {
+            if (in.op != "getelementptr" || in.ops.size() < 2 || in.ops[0].v.kind != ir::Value::Local ||
+                !ptrs.count(in.ops[0].v.name) || in.ops[1].v.kind != ir::Value::Local)
+                continue;
+            const std::string idx = strip_casts(f, in.ops[1]);
+            for (int bj = 0; bj < nb; ++bj) {
+                const ir::Inst* br = term(bj);
+                if (!br || br->op != "br" || br->ops.empty() || br->ops[0].v.kind != ir::Value::Local) continue;
+                auto c = f.defs.find(br->ops[0].v.name);
+                if (c == f.defs.end() || c->second->op != "icmp" || c->second->ops.size() != 2) continue;
+                const auto& cmp = *c->second;
+                std::string pred, count;
+                if (strip_casts(f, cmp.ops[0]) == idx && !(count = count_of(strip_casts(f, cmp.ops[1]))).empty())
+                    pred = cmp.pred;
+                else if (strip_casts(f, cmp.ops[1]) == idx && !(count = count_of(strip_casts(f, cmp.ops[0]))).empty())
+                    pred = swap_pred(cmp.pred);
+                else
+                    continue;
+                const int s = inbound_successor(f, bj, *br, pred);
+                if (s < 0 || !dominates(f, s, bi)) continue;
+                PairEvidence e;
+                e.count = count;
+                e.elem = in.ety;
+                try {
+                    e.esz = lay.alloc_size(in.ety);
+                } catch (const Unenc&) {
+                    continue;
+                }
+                e.is_signed = pred[0] == 's';
+                e.how = "index %" + idx + " " + pred + " the count, block " + g.blocks[static_cast<std::size_t>(s)].name +
+                        " (" + g.name + ")";
+                out.push_back(std::move(e));
+                break;
+            }
+        }
+    // (2) advanced pointer: phi P' = [P, ...], [gep T, P', 1] in a loop header whose exit test counts `count` down to 0
+    // (`while (n--)`) or an index up from 0 to `count`
+    for (int h = 0; h < nb; ++h) {
+        const ir::Inst* br = term(h);
+        if (!br || br->op != "br" || br->ops.empty() || br->ops[0].v.kind != ir::Value::Local) continue;
+        auto c = f.defs.find(br->ops[0].v.name);
+        if (c == f.defs.end() || c->second->op != "icmp" || c->second->ops.size() != 2) continue;
+        const auto& hb = g.blocks[static_cast<std::size_t>(h)];
+        // the counter phi of this header and its relation to the count
+        auto counter = [&](const ir::Operand& o, std::string& count, bool& down) -> bool {
+            if (o.v.kind != ir::Value::Local) return false;
+            auto d = f.defs.find(o.v.name);
+            if (d == f.defs.end() || d->second->op != "phi" || f.block_of_value[o.v.name] != h ||
+                d->second->incoming.size() != 2)
+                return false;
+            const auto& ph = *d->second;
+            for (int k = 0; k < 2; ++k) {
+                const auto& init = ph.incoming[static_cast<std::size_t>(k)].first;
+                const auto& step = ph.incoming[static_cast<std::size_t>(1 - k)].first;
+                if (step.v.kind != ir::Value::Local) continue;
+                auto sd = f.defs.find(step.v.name);
+                if (sd == f.defs.end() || sd->second->ops.size() != 2 || sd->second->ops[0].v.kind != ir::Value::Local ||
+                    sd->second->ops[0].v.name != o.v.name)
+                    continue;
+                const bool dec = (sd->second->op == "add" && is_const(sd->second->ops[1], -1)) ||
+                                 (sd->second->op == "sub" && is_const(sd->second->ops[1], 1));
+                const bool inc = sd->second->op == "add" && is_const(sd->second->ops[1], 1);
+                if (dec && init.v.kind == ir::Value::Local && !(count = count_of(strip_casts(f, init))).empty()) {
+                    down = true;
+                    return true;
+                }
+                if (inc && is_const(init, 0)) {
+                    down = false;
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto& cmp = *c->second;
+        std::string count, pred;
+        bool down = false;
+        for (int side = 0; side < 2 && pred.empty(); ++side) {
+            const auto& a = cmp.ops[static_cast<std::size_t>(side)];
+            const auto& b = cmp.ops[static_cast<std::size_t>(1 - side)];
+            const std::string p = side == 0 ? cmp.pred : swap_pred(cmp.pred);
+            std::string k;
+            bool dn = false;
+            if (!counter(a, k, dn)) continue;
+            if (dn && is_const(b, 0) && (p == "ne" || p == "ugt" || p == "sgt")) {
+                // n > 0 / n != 0: the in-bound edge is the one where n is still positive
+                count = k;
+                pred = p == "ne" ? "ne" : p;
+                down = true;
+            } else if (!dn && b.v.kind == ir::Value::Local && !(k = count_of(strip_casts(f, b))).empty() &&
+                       (p == "ult" || p == "slt" || p == "ne")) {
+                count = k;
+                pred = p;
+            }
+        }
+        if (pred.empty()) continue;
+        // for the in-bound edge of `n > 0` take the `<` successor rule on (0 < n): the true edge
+        const int s = inbound_successor(f, h, *br, down ? "ult" : pred);
+        if (s < 0) continue;
+        for (const auto& ph : hb.insts) {
+            if (ph.op != "phi" || ph.result.empty() || ph.incoming.size() != 2) continue;
+            const ir::Type* ety = nullptr;
+            bool from_p = false;
+            for (int k = 0; k < 2; ++k) {
+                const auto& init = ph.incoming[static_cast<std::size_t>(k)].first;
+                const auto& step = ph.incoming[static_cast<std::size_t>(1 - k)].first;
+                if (init.v.kind != ir::Value::Local || !ptrs.count(init.v.name) || step.v.kind != ir::Value::Local) continue;
+                auto sd = f.defs.find(step.v.name);
+                if (sd == f.defs.end() || sd->second->op != "getelementptr" || sd->second->ops.size() != 2 ||
+                    sd->second->ops[0].v.kind != ir::Value::Local || sd->second->ops[0].v.name != ph.result ||
+                    !is_const(sd->second->ops[1], 1))
+                    continue;
+                ety = &sd->second->ety;
+                from_p = true;
+            }
+            if (!from_p) continue;
+            // an access through the advanced pointer in the loop body
+            bool used = false;
+            for (int bi = 0; bi < nb && !used; ++bi) {
+                if (!dominates(f, s, bi)) continue;
+                for (const auto& in : g.blocks[static_cast<std::size_t>(bi)].insts) {
+                    const ir::Operand* addr = in.op == "load" && !in.ops.empty() ? &in.ops[0]
+                                              : in.op == "store" && in.ops.size() >= 2 ? &in.ops[1]
+                                                                                       : nullptr;
+                    if (addr && addr->v.kind == ir::Value::Local && addr->v.name == ph.result) used = true;
+                }
+            }
+            if (!used) continue;
+            PairEvidence e;
+            e.count = count;
+            e.elem = *ety;
+            try {
+                e.esz = lay.alloc_size(*ety);
+            } catch (const Unenc&) {
+                continue;
+            }
+            e.is_signed = pred[0] == 's';
+            e.how = "pointer %" + ph.result + " advanced one element per iteration of the loop at " + hb.name + " (" +
+                    (down ? "the count runs down to 0" : "an index runs up to the count") + ", " + g.name + ")";
+            out.push_back(std::move(e));
+        }
+    }
+    // (3) the pointer and its count passed together to a module function
+    if (depth >= 3) return;
+    for (const auto& bl : g.blocks)
+        for (const auto& in : bl.insts) {
+            if (in.op != "call" || in.callee.empty() || in.callee_op) continue;
+            const auto* callee = m.find(in.callee);
+            if (!callee || callee->blocks.empty() || callee == &g || callee->is_model) continue;
+            std::set<std::string> cp;
+            std::map<std::string, std::string> cc;
+            for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i) {
+                const auto& a = in.ops[i];
+                if (a.v.kind != ir::Value::Local) continue;
+                if (callee->params[i].ty.kind == ir::Type::Ptr && ptrs.count(a.v.name)) cp.insert(callee->params[i].name);
+                if (callee->params[i].ty.kind == ir::Type::Int)
+                    if (auto k = count_of(strip_casts(f, a)); !k.empty()) cc[callee->params[i].name] = k;
+            }
+            if (cp.empty() || cc.empty()) continue;
+            CountOf sub = [cc](const std::string& r) {
+                auto it = cc.find(r);
+                return it == cc.end() ? std::string() : it->second;
+            };
+            pair_evidence(m, lay, *callee, cp, sub, depth + 1, out);
+        }
+}
+
+// One count and one element size across all the evidence, else nothing.
+std::optional<LengthPair> agree(const std::vector<PairEvidence>& ev) {
+    if (ev.empty()) return std::nullopt;
+    LengthPair lp;
+    lp.count = ev.front().count;
+    lp.elem = ev.front().elem;
+    lp.elem_bytes = ev.front().esz;
+    lp.is_signed = true;
+    lp.evidence = ev.front().how;
+    for (const auto& e : ev) {
+        if (e.count != lp.count || e.esz != lp.elem_bytes || e.esz == 0) return std::nullopt;
+        lp.is_signed = lp.is_signed && e.is_signed;
+    }
+    if (ev.size() > 1) lp.evidence += " and " + std::to_string(ev.size() - 1) + " more";
+    return lp;
+}
 
 int64_t signed_of(const ir::Operand& o) {
     uint64_t b = o.v.bits;
@@ -222,6 +553,8 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     if (base == 0 && addr->v.name == rootname && acc->kind != ir::Type::Ptr && !u.scalar_ty &&
                         (acc->kind == ir::Type::Int || acc->kind == ir::Type::Float))
                         u.scalar_ty = *acc;
+                    if (in.op == "load" && acc->kind == ir::Type::Int && !in.result.empty() && acc->bits && acc->bits <= 64)
+                        u.int_loads[{&g, in.result}] = {static_cast<uint64_t>(a), acc->bits};
                     if (in.op == "load" && acc->kind == ir::Type::Ptr && !in.result.empty()) {
                         u.ptr_fields[static_cast<uint64_t>(a)].push_back({&g, in.result});
                         if (called.count(in.result) && addr->v.kind == ir::Value::Local) {
@@ -273,6 +606,47 @@ struct Builder {
     const HarnessOptions& opt;
     HarnessPlan plan;
     std::string fail;
+
+    // --pir-length-pairing: the pointer field loaded into `rs` is indexed under a bound by an integer field of the same
+    // object `n` (the int loads `u` saw): a flat object of that many elements, the count read at entry
+    std::shared_ptr<HarnessNode> paired_field(const Use& u, const HarnessNode& n, const std::vector<Root>& rs,
+                                              const std::string& fname) {
+        std::vector<PairEvidence> ev;
+        for (const auto& r : rs) {
+            const ir::Function* fn = r.fn;
+            CountOf count_of = [&u, fn](const std::string& reg) {
+                auto it = u.int_loads.find({fn, reg});
+                return it == u.int_loads.end() ? std::string() : "@" + std::to_string(it->second.first);
+            };
+            pair_evidence(m, lay, *fn, {r.name}, count_of, 0, ev);
+        }
+        auto lp = agree(ev);
+        if (!lp) return nullptr;
+        // the count field: same offset in every load, inside the first element of the containing object
+        lp->count_off = std::stoull(lp->count.substr(1));
+        std::set<unsigned> widths;
+        for (const auto& [k, v] : u.int_loads)
+            if (v.first == lp->count_off) widths.insert(v.second);
+        if (widths.size() != 1) return nullptr;  // the field read at two widths: not one count
+        lp->count_bits = *widths.begin();
+        if ( n.member_off + lp->count_off + (lp->count_bits + 7) / 8 > n.bytes) return nullptr;
+        auto c = std::make_shared<HarnessNode>();
+        c->name = fname;
+        c->type = lp->elem;
+        c->type_known = true;
+        c->elems = 0;
+        c->bytes = 0;
+        c->basis = "length pairing";
+        const std::string cnt = n.name + "->@" + std::to_string(lp->count_off);
+        plan.assumptions.push_back(
+            "length pairing: " + fname + " points to at least " + cnt + " elements (inferred from usage): an object of " +
+            (lp->is_signed ? "max(" + cnt + ", 0)" : cnt + " (unsigned)") + " x " + std::to_string(lp->elem_bytes) + " bytes (" +
+            lp->elem.text + "), the count being the i" + std::to_string(lp->count_bits) + " field at byte " +
+            std::to_string(lp->count_off) + " of " + n.name + " as it is at entry; size below 2^47 bytes; evidence: " +
+            lp->evidence + "; 16-byte aligned, arbitrary contents, pointer fields of its elements arbitrary (auto harness)");
+        c->pair = std::move(lp);
+        return c;
+    }
 
     // `roots`: the SSA values (of any function) that hold the pointer to this object
     std::shared_ptr<HarnessNode> build(const std::vector<Root>& roots, int depth, const std::string& name) {
@@ -392,6 +766,13 @@ struct Builder {
                 ++n->cut_cap;
                 continue;
             }
+            if (opt.length_pairing)
+                if (auto child = paired_field(u, *n, rs, fname)) {
+                    ++plan.objects;
+                    plan.depth_reached = std::max(plan.depth_reached, depth + 1);
+                    n->nested.emplace_back(off, std::move(child));
+                    continue;
+                }
             auto child = build(rs, depth + 1, fname);
             if (!child || !child->type_known) {
                 if (child) {  // no type evidence: its object was counted and listed, take it back
@@ -451,6 +832,18 @@ std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layou
                  "; pointer fields left arbitrary: " + std::to_string(cd) + " past the depth bound, " + std::to_string(cc) +
                  " over the object cap of " + std::to_string(opt.max_objects) + ", " + std::to_string(cn) + " without pointee type evidence";
     return std::move(b.plan);
+}
+
+std::optional<LengthPair> infer_param_length(const ir::Module& m, const Layout& lay, const ir::Function& f, const ir::Param& p) {
+    if (p.ty.kind != ir::Type::Ptr || p.name.empty()) return std::nullopt;
+    std::set<std::string> ints;
+    for (const auto& q : f.params)
+        if (q.ty.kind == ir::Type::Int && !q.name.empty()) ints.insert(q.name);
+    if (ints.empty()) return std::nullopt;
+    CountOf count_of = [&ints](const std::string& reg) { return ints.count(reg) ? reg : std::string(); };
+    std::vector<PairEvidence> ev;
+    pair_evidence(m, lay, f, {p.name}, count_of, 0, ev);
+    return agree(ev);
 }
 
 }  // namespace prism::pir::pirmem
