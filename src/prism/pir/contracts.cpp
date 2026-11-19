@@ -175,8 +175,18 @@ std::vector<LockContract> parse_lock_contracts(std::string_view tsv, std::string
             if (d.empty() || d.size() > 9) return fail("bad argument index");
             for (char ch : d)
                 if (ch < '0' || ch > '9') return fail("bad argument index");
+        } else if (f[1].starts_with("field:")) {
+            // field:TYPE.INDEX -> the lock-order class "TYPE.#INDEX" (lock_order.cpp field_class); field names
+            // are not parsed (no debug info in the IR), so the index is required
+            auto body = f[1].substr(6);
+            auto dot = body.rfind('.');
+            if (dot == std::string_view::npos || dot == 0 || dot + 1 == body.size())
+                return fail("field must be field:TYPE.INDEX");
+            for (char ch : body.substr(dot + 1))
+                if (ch < '0' || ch > '9') return fail("field index must be a number (field names are not parsed)");
+            c.lock = "field:" + std::string(body.substr(0, dot)) + ".#" + std::string(body.substr(dot + 1));
         } else {
-            return fail("lock must be global:NAME or arg:N");
+            return fail("lock must be global:NAME, arg:N or field:TYPE.INDEX");
         }
         if (f[2] != "acquires" && f[2] != "releases" && f[2] != "requires-held")
             return fail("action must be acquires, releases or requires-held");

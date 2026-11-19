@@ -404,7 +404,7 @@ std::string cli_usage() {
         "  type, field, targets, role, optional field index) is checked against each target,\n"
         "  at most 8 (more stays UNENCODED). Off by default (docs/PIR.md).\n"
         "--lock-contracts FILE: TSV of lock contracts for unmodified kernel code (function, lock\n"
-        "  global:NAME|arg:N, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
+        "  global:NAME|arg:N|field:TYPE.INDEX, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

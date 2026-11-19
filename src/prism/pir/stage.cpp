@@ -42,6 +42,7 @@
 #include <functional>
 #include <regex>
 #include <cstdlib>
+#include <cstdio>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -3256,6 +3257,22 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
         // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
         const auto rep = lock_order_report(mod, contracts);
+        if (std::getenv("PRISM_LOCK_COVERAGE")) {  // diagnostic only: one line per unit on stderr, no finding
+            const auto& cv = rep.coverage;
+            std::string kinds, fl;
+            for (auto& [k, n] : cv.static_kind) kinds += (kinds.empty() ? "" : ",") + k + "=" + std::to_string(n);
+            for (auto& c : cv.field_classes) fl += (fl.empty() ? "" : ";") + c;
+            std::fprintf(stderr,
+                         "LOCK-COVERAGE unit=%s functions=%ld acquire_sites=%ld acquire_reached=%ld acquire_resolved=%ld "
+                         "release_sites=%ld release_reached=%ld release_resolved=%ld table_sites=%ld geps=%ld field_geps=%ld "
+                         "field_classes=%zu global_classes=%zu pairs=%ld steps=%ld step_limit=%d kinds=%s field_class_list=%s\n",
+                         u.rel.c_str(), cv.functions, cv.acquire_sites, cv.acquire_reached, cv.acquire_resolved,
+                         cv.release_sites, cv.release_reached, cv.release_resolved, cv.table_sites, cv.geps, cv.field_geps,
+                         cv.field_classes.size(), cv.global_classes.size(), cv.pairs, cv.steps, cv.step_limit_hit ? 1 : 0,
+                         kinds.empty() ? "-" : kinds.c_str(), fl.empty() ? "-" : fl.c_str());
+            for (auto& [n, c] : cv.unmodelled_lock_calls)
+                std::fprintf(stderr, "LOCK-COVERAGE-UNMODELLED unit=%s callee=%s calls=%ld\n", u.rel.c_str(), n.c_str(), c);
+        }
         for (auto& inv : rep.inversions) {
             FnRec r;
             r.f = base_finding(u);

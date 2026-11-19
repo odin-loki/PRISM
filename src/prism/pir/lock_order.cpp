@@ -6,9 +6,10 @@
 //    defined function with an ordered held-lock state, inlining defined callees
 //    (depth <= 3, memoised) and recording, per acquire, the pair (held, acquired)
 //    with the first function that performed it. A class pair seen in both orders
-//    is reported once. Lock classes are module global names; parameters map to
-//    the caller's operand class. Bounds: 200000 (block, state) steps per call to
-//    lock_order_report, then exploration stops silently.
+//    is reported once. Lock classes are module global names or struct-field
+//    classes (see below); parameters map to the caller's operand class. Bounds:
+//    200000 (block, state) steps per call to lock_order_report, then exploration
+//    stops silently.
 // 2. Lock-order cycles of length 3 to 6: the recorded pairs form a class graph
 //    (edge held -> acquired); simple cycles of length >= 3 are enumerated, each
 //    once, starting at its smallest class. Bounds: 100 cycles, 100000 DFS
@@ -19,6 +20,19 @@
 //    (HardirqSleep); spinlock classes taken there and taken without irq
 //    disabling in a function outside every hardirq context are reported
 //    (LockCtxMismatch).
+//
+// Struct-field classes: a lock that lives in a struct field (the address is a
+// getelementptr result, e.g. &adapter->stats64_lock) gets the lockdep-style
+// class "STRUCT.#INDEX": the struct type that directly contains the lock member
+// and the member's index. All instances of that struct share the class. A
+// contract can name such a class directly with "field:CLASS".
+//
+// Same-class nesting is not an inversion (lockdep nesting rule); it is ignored,
+// there is no explicit nested annotation yet.
+//
+// Limits: there are no field names (the index is used; no debug info is
+// parsed). Parameters' pointee types are not inferred (opaque pointers), so a
+// lock reached only through a parameter keeps the caller's class.
 
 #include "prism/pir.hpp"
 
@@ -35,14 +49,76 @@ namespace {
 
 using Held = std::vector<std::string>;
 
+// Lockdep-style class of a getelementptr that addresses a struct field:
+// "<containing struct>.#<field index>" for the last struct descended into.
+// The IR carries no field names in this pipeline, so the index is used.
+std::string field_class(const ir::Module& m, const ir::Inst& g) {
+    ir::Type cur = g.ety;
+    std::string containing;
+    long field = -1;
+    for (std::size_t k = 2; k < g.ops.size(); ++k) {
+        const ir::Type* body = nullptr;
+        std::string name;
+        // a named struct (%struct.S) is a Struct with that text and no elements: its body is in
+        // m.types under the name without '%'
+        if (!cur.text.empty() && cur.text[0] == '%') {
+            auto it = m.types.find(cur.text.substr(1));
+            if (it == m.types.end()) it = m.types.find(cur.text);
+            if (it != m.types.end() && it->second.kind == ir::Type::Struct) {
+                body = &it->second;
+                name = cur.text;
+            }
+        } else if (cur.kind == ir::Type::Struct) {
+            body = &cur;  // literal struct: no name, so no class (checked below)
+            name = cur.text;
+        }
+        if (body) {
+            const auto& v = g.ops[k].v;
+            if (v.kind != ir::Value::Int) return "";
+            if (v.bits >= body->elems.size()) return "";
+            containing = name;
+            field = static_cast<long>(v.bits);
+            ir::Type next = body->elems[static_cast<std::size_t>(v.bits)];
+            cur = std::move(next);
+        } else if (cur.kind == ir::Type::Array) {
+            if (cur.elems.empty()) return "";
+            ir::Type next = cur.elems[0];
+            cur = std::move(next);
+        } else {
+            return "";
+        }
+    }
+    if (field < 0) return "";
+    if (containing.starts_with("%")) containing.erase(0, 1);
+    if (containing.starts_with("struct.")) containing.erase(0, 7);
+    else if (containing.starts_with("union.")) containing.erase(0, 6);
+    if (containing.empty() || containing[0] == '{') return "";  // anonymous (literal) struct: no name
+    return containing + ".#" + std::to_string(field);
+}
+
 struct Analyzer {
     std::map<std::string, const ir::Function*> fns;
     std::map<std::string, std::vector<const LockContract*>> table;
     std::set<std::string> acquires, releases;
     std::map<std::pair<std::string, std::string>, std::string> pairs;
     std::map<std::tuple<std::string, Held, std::vector<std::string>, int>, std::set<Held>> memo;
+    std::map<const ir::Function*, std::map<std::string, std::string>> gcls;
+    const ir::Module* mod = nullptr;
     long steps = 0;
     static constexpr long kMaxSteps = 200000;
+    // coverage: every acquire / release call site the exploration reached; value = resolved to a class in at least
+    // one exploration (a parameter-derived lock resolves only under a caller that passes a class)
+    std::map<const ir::Inst*, bool> acq_sites, rel_sites;
+    std::map<const ir::Inst*, std::string> site_class;  // first class a site resolved to
+
+    void note_site(const ir::Inst& in, bool is_acquire, const std::string& cl) {
+        auto& m = is_acquire ? acq_sites : rel_sites;
+        bool& r = m[&in];
+        if (!cl.empty()) {
+            r = true;
+            site_class.emplace(&in, cl);
+        }
+    }
 
     static std::string cls_of(const ir::Operand& o, const std::map<std::string, std::string>& pm) {
         if (o.v.kind == ir::Value::Global) return o.v.name;
@@ -51,6 +127,39 @@ struct Analyzer {
             if (it != pm.end()) return it->second;
         }
         return "";
+    }
+
+    static std::string table_class(const LockContract& c, const ir::Inst& in,
+                                   const std::map<std::string, std::string>& pm) {
+        std::string cl;
+        if (c.lock.starts_with("global:")) cl = c.lock.substr(7);
+        else if (c.lock.starts_with("arg:")) {
+            std::size_t n = std::stoul(c.lock.substr(4));
+            if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
+        } else if (c.lock.starts_with("field:")) cl = c.lock.substr(6);
+        return cl;
+    }
+
+    const std::map<std::string, std::string>& gep_map(const ir::Function& f) {
+        auto it = gcls.find(&f);
+        if (it != gcls.end()) return it->second;
+        std::map<std::string, std::string> g;
+        if (mod) {
+            for (const auto& b : f.blocks)
+                for (const auto& in : b.insts) {
+                    if (in.op != "getelementptr" || in.result.empty()) continue;
+                    std::string c = field_class(*mod, in);
+                    if (!c.empty()) g[in.result] = std::move(c);
+                }
+        }
+        return gcls.emplace(&f, std::move(g)).first->second;
+    }
+
+    std::map<std::string, std::string> pm_for(const ir::Function& f, const std::vector<std::string>& pcls) {
+        std::map<std::string, std::string> pm = gep_map(f);
+        for (std::size_t i = 0; i < f.params.size(); ++i)
+            pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        return pm;
     }
 
     void acquire(const std::string& c, Held& h, const std::string& witness) {
@@ -70,9 +179,7 @@ struct Analyzer {
         if (mi != memo.end()) return mi->second;
         std::set<Held> exits;
         if (f.blocks.empty()) return exits;
-        std::map<std::string, std::string> pm;
-        for (std::size_t i = 0; i < f.params.size(); ++i)
-            pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        std::map<std::string, std::string> pm = pm_for(f, pcls);
         std::map<std::string, std::size_t> bidx;
         for (std::size_t i = 0; i < f.blocks.size(); ++i) bidx.emplace(f.blocks[i].name, i);
         std::set<std::pair<std::size_t, Held>> seen;
@@ -132,19 +239,16 @@ struct Analyzer {
         if (tb != table.end()) {
             for (auto* c : tb->second) {
                 if (c->action != "acquires" && c->action != "releases") continue;
-                std::string cl;
-                if (c->lock.starts_with("global:")) cl = c->lock.substr(7);
-                else if (c->lock.starts_with("arg:")) {
-                    std::size_t n = std::stoul(c->lock.substr(4));
-                    if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
-                }
+                std::string cl = table_class(*c, in, pm);
                 event = true;
+                note_site(in, c->action == "acquires", cl);
                 if (c->action == "acquires") acquire(cl, h, f.name);
                 else release(cl, h);
             }
         } else if (acquires.count(cal) || releases.count(cal)) {
             event = true;
             std::string cl = in.ops.empty() ? std::string() : cls_of(in.ops[0], pm);
+            note_site(in, acquires.count(cal) != 0, cl);
             if (acquires.count(cal)) acquire(cl, h, f.name);
             else release(cl, h);
         }
@@ -164,13 +268,7 @@ struct Analyzer {
 
     static std::string contract_class(const LockContract& c, const ir::Inst& in,
                                       const std::map<std::string, std::string>& pm) {
-        std::string cl;
-        if (c.lock.starts_with("global:")) cl = c.lock.substr(7);
-        else if (c.lock.starts_with("arg:")) {
-            std::size_t n = std::stoul(c.lock.substr(4));
-            if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
-        }
-        return cl;
+        return table_class(c, in, pm);
     }
 
     // Spin acquires of one call. process == false: every spin acquire (hardirq side);
@@ -257,9 +355,7 @@ struct Hardirq {
         if (vi != visited.end() && vi->second <= depth) return;
         visited[f.name] = depth;
         reached.insert(f.name);
-        std::map<std::string, std::string> pm;
-        for (std::size_t i = 0; i < f.params.size(); ++i)
-            pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        std::map<std::string, std::string> pm = a.pm_for(f, pcls);
         for (const auto& b : f.blocks) {
             for (const auto& in : b.insts) {
                 if (in.op != "call" && in.op != "invoke") continue;
@@ -326,8 +422,109 @@ void find_cycles(const std::map<std::string, std::set<std::string>>& adj,
 
 }  // namespace
 
+// Static classification of the lock operand of every acquire / release call in the unit (what the class could
+// come from), next to what the exploration actually resolved (Analyzer::acq_sites).
+void collect_coverage(const ir::Module& m, Analyzer& a, LockCoverage& cv) {
+    for (auto& f : m.functions) {
+        if (f.is_declaration || f.is_model) continue;
+        ++cv.functions;
+        std::map<std::string, const ir::Inst*> def;
+        std::set<std::string> params;
+        for (auto& p : f.params) params.insert(p.name);
+        const auto& gm = a.gep_map(f);
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts) {
+                if (!in.result.empty()) def[in.result] = &in;
+                if (in.op == "getelementptr") {
+                    ++cv.geps;
+                    if (gm.count(in.result)) ++cv.field_geps;
+                }
+            }
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts) {
+                if (in.op != "call" && in.op != "invoke") continue;
+                if (in.callee.empty()) continue;
+                if (!a.is_event(in.callee)) {
+                    // a lock-like call that the pass does not model (rwlock, semaphore, rtnl_lock, ...): not analysed
+                    auto fi = a.fns.find(in.callee);
+                    bool defined = fi != a.fns.end() && !fi->second->is_declaration && !fi->second->is_model;
+                    const std::string& n = in.callee;
+                    if (!defined && (n.find("lock") != std::string::npos || n.find("mutex") != std::string::npos ||
+                                     n.starts_with("down") || n.starts_with("up_") || n.find("sem_") != std::string::npos))
+                        ++cv.unmodelled_lock_calls[n];
+                    continue;
+                }
+                bool is_acq;
+                const ir::Operand* lock = nullptr;
+                std::string kind;
+                auto tb = a.table.find(in.callee);
+                if (tb != a.table.end()) {
+                    const LockContract* c = nullptr;
+                    for (auto* x : tb->second)
+                        if (x->action == "acquires" || x->action == "releases") { c = x; break; }
+                    if (!c) continue;
+                    is_acq = c->action == "acquires";
+                    if (c->lock.starts_with("global:")) kind = "global";
+                    else if (c->lock.starts_with("field:")) kind = "field";
+                    else if (c->lock.starts_with("arg:")) {
+                        std::size_t n = std::stoul(c->lock.substr(4));
+                        if (n < in.ops.size()) lock = &in.ops[n];
+                        else kind = "unresolved:no-operand";
+                    }
+                    ++cv.table_sites;
+                } else {
+                    is_acq = a.acquires.count(in.callee) != 0;
+                    if (in.ops.empty()) kind = "unresolved:no-operand";
+                    else lock = &in.ops[0];
+                }
+                if (lock) {
+                    const auto& v = lock->v;
+                    if (v.kind == ir::Value::Global) kind = "global";
+                    else if (v.kind == ir::Value::Local) {
+                        if (gm.count(v.name)) kind = "field";
+                        else if (params.count(v.name)) kind = "param";
+                        else {
+                            auto d = def.find(v.name);
+                            if (d == def.end()) kind = "unresolved:undefined";
+                            else if (d->second->op == "getelementptr") kind = "unresolved:gep-no-class";
+                            else if (d->second->op == "load") kind = "unresolved:loaded-pointer";
+                            else if (d->second->op == "phi" || d->second->op == "select") kind = "unresolved:phi-select";
+                            else if (d->second->op == "alloca") kind = "unresolved:stack-object";
+                            else kind = "unresolved:" + d->second->op;
+                        }
+                    } else kind = "unresolved:constant";
+                }
+                auto& sites = is_acq ? a.acq_sites : a.rel_sites;
+                auto sit = sites.find(&in);
+                bool reached = sit != sites.end();
+                bool resolved = reached && sit->second;
+                if (is_acq) {
+                    ++cv.acquire_sites;
+                    ++cv.static_kind[kind];
+                    if (reached) ++cv.acquire_reached;
+                    if (resolved) ++cv.acquire_resolved;
+                } else {
+                    ++cv.release_sites;
+                    if (reached) ++cv.release_reached;
+                    if (resolved) ++cv.release_resolved;
+                }
+                if (resolved) {
+                    auto cit = a.site_class.find(&in);
+                    if (cit != a.site_class.end()) {
+                        bool fld = cit->second.find(".#") != std::string::npos;
+                        (fld ? cv.field_classes : cv.global_classes).insert(cit->second);
+                    }
+                }
+            }
+    }
+    cv.pairs = static_cast<long>(a.pairs.size());
+    cv.steps = a.steps;
+    cv.step_limit_hit = a.steps >= Analyzer::kMaxSteps;
+}
+
 LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts) {
     Analyzer a;
+    a.mod = &m;
     for (auto& f : m.functions) a.fns.emplace(f.name, &f);
     for (auto& c : contracts) a.table[c.function].push_back(&c);
     for (auto n : {"mutex_lock", "mutex_lock_nested", "mutex_lock_interruptible", "mutex_lock_killable",
@@ -343,6 +540,7 @@ LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockCon
         a.analyse(f, Held{}, std::vector<std::string>(f.params.size()), 0);
     }
     LockOrderReport rep;
+    collect_coverage(m, a, rep.coverage);
     for (auto& [k, w] : a.pairs) {
         if (!(k.first < k.second)) continue;
         auto r = a.pairs.find({k.second, k.first});
@@ -391,15 +589,15 @@ LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockCon
     rep.hardirq_sleeps = hi.sleeps;
     if (hi.classes.empty()) return rep;
     std::set<std::string> emitted;
-    const std::map<std::string, std::string> nopm;
     for (auto& f : m.functions) {
         if (f.is_declaration || f.is_model) continue;
         if (hi.reached.count(f.name)) continue;
+        const std::map<std::string, std::string> fn_pm = a.pm_for(f, {});
         for (auto& b : f.blocks)
             for (auto& in : b.insts) {
                 if (in.op != "call" && in.op != "invoke") continue;
                 if (in.callee.empty()) continue;
-                for (auto& cl : a.spin_classes(in, nopm, true)) {
+                for (auto& cl : a.spin_classes(in, fn_pm, true)) {
                     auto hc = hi.classes.find(cl);
                     if (hc == hi.classes.end() || !emitted.insert(cl).second) continue;
                     rep.ctx_mismatches.push_back(LockCtxMismatch{f.name, hc->second, cl});
