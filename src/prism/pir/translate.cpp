@@ -867,9 +867,30 @@ struct Tr final : pirmem::TrApi {
                     // --pir-kernel-stops: Linux BUG() is `asm volatile(ASM_UD2 (.byte 0x0f, 0x0b) + a __bug_table entry);
                     // __builtin_unreachable()`. Only that shape: the asm followed (after other asm statements only, such
                     // as annotations) by unreachable. WARN() uses the same asm and continues, so it never matches.
+                    // At -O0 the unreachable is often in the next block (`br label %n` then `n: unreachable`): follow
+                    // unconditional branches, a few hops, over result-less asm only.
+                    const ir::Block* cb = &bl;
                     auto k = static_cast<std::size_t>(&in - bl.insts.data()) + 1;
-                    while (k < bl.insts.size() && bl.insts[k].op == "call" && bl.insts[k].is_asm && bl.insts[k].result.empty()) ++k;
-                    if (k < bl.insts.size() && bl.insts[k].op == "unreachable") {
+                    bool reaches = false;
+                    for (int hops = 0; hops < 4; ++hops) {
+                        while (k < cb->insts.size() && cb->insts[k].op == "call" && cb->insts[k].is_asm &&
+                               cb->insts[k].result.empty())
+                            ++k;
+                        if (k >= cb->insts.size()) break;
+                        const auto& nx = cb->insts[k];
+                        if (nx.op == "unreachable") {
+                            reaches = true;
+                            break;
+                        }
+                        if (nx.op != "br" || nx.targets.size() != 1) break;
+                        const ir::Block* to = nullptr;
+                        for (auto& b2 : fr.f->blocks)
+                            if (b2.name == nx.targets[0]) to = &b2;
+                        if (!to) break;
+                        cb = to;
+                        k = 0;
+                    }
+                    if (reaches) {
                         note_assumption("kernel-stop: BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel thread: "
                                         "the paths that reach it end there, and the verdict is for the paths that do not");
                         out.blocks[static_cast<std::size_t>(cur)].term = Term{};

@@ -232,6 +232,19 @@ ok:
   %q = sdiv i32 100, %d
   ret i32 %q
 }
+define i32 @bug_on_div_o0(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %bug, label %ok
+bug:
+  call void asm sideeffect "1: .byte 0x0f, 0x0b; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  br label %dead
+dead:
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
 define i32 @warn_on_div(i32 %d) {
 entry:
   %z = icmp eq i32 %d, 0
@@ -270,6 +283,9 @@ TEST_CASE("pir cluster answers: --pir-kernel-stops ends the path at BUG() and pa
     auto bug = stops_run(kBugOn, "bug_on_div", true);
     CHECK_MESSAGE(bug.status == prism::laws::PROVED, (bug.status + " " + bug.msg));
     CHECK(has(bug.assumptions, "kernel-stop: BUG()"));
+    // the -O0 shape: the asm, a branch, then unreachable in the next block
+    auto bug2 = stops_run(kBugOn, "bug_on_div_o0", true);
+    CHECK_MESSAGE(bug2.status == prism::laws::PROVED, (bug2.status + " " + bug2.msg));
     auto pan = stops_run(kBugOn, "panic_div", true);
     CHECK_MESSAGE(pan.status == prism::laws::PROVED, (pan.status + " " + pan.msg));
     CHECK(has(pan.assumptions, "kernel-stop: @panic does not return"));
