@@ -53,6 +53,15 @@ jobs:
   cpp:
     name: C++ engine (build + prism_tests)
     runs-on: ubuntu-24.04
+    # prism_tests is sharded by test index (doctest --first/--last): the whole suite on one runner
+    # exceeded the 6 h job limit once the pir cases of the kernel, module and harness work were in.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, first: 1, last: 400 }
+          - { shard: 2, first: 401, last: 800 }
+          - { shard: 3, first: 801, last: 100000 }
     steps:
       - uses: actions/checkout@v4
       - name: Cache pinned LLVM 23.1.4
@@ -95,22 +104,26 @@ jobs:
       - name: Build
         run: cmake --build build
       # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
-      - name: prism_tests
-        run: ./build/prism_tests
+      - name: prism_tests (shard ${{ matrix.shard }}: cases ${{ matrix.first }}-${{ matrix.last }})
+        run: ./build/prism_tests --first=${{ matrix.first }} --last=${{ matrix.last }}
       - name: SV-COMP archive packager smoke
+        if: matrix.shard == 1
         run: ./build/prism svcomp pack --out /tmp/prism-svcomp.tar.gz && tar tzf /tmp/prism-svcomp.tar.gz
       # BenchExec loads tool-info modules as Python classes: tools/svcomp/prism.py
       # is BenchExec's plugin interface (moving upstream), not PRISM code.
       - name: SV-COMP BenchExec tool-info smoke
+        if: matrix.shard == 1
         run: |
           python3 -m venv /tmp/benchexec && /tmp/benchexec/bin/pip install benchexec
           cd /tmp && PYTHONPATH="$GITHUB_WORKSPACE/tools/svcomp" \
             /tmp/benchexec/bin/python -m benchexec.test_tool_info .prism --tool-directory "$GITHUB_WORKSPACE/build" --no-container
       - name: PRISM_BIN smoke (e2e lives in prism_tests / ctest)
+        if: matrix.shard == 1
         run: |
           ./build/prism testdata/planted/abs_ok.c --no-llm --stage inventory --out /tmp/prism-smoke-out
           test -f /tmp/prism-smoke-out/report.json
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: prism-linux
           path: build/prism
