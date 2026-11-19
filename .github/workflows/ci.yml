@@ -104,7 +104,7 @@ jobs:
       - name: Build
         run: cmake --build build
       # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
-      - name: prism_tests (shard ${{ matrix.shard }}: cases ${{ matrix.first }}-${{ matrix.last }})
+      - name: "prism_tests (shard ${{ matrix.shard }}, cases ${{ matrix.first }}-${{ matrix.last }})"
         run: ./build/prism_tests --first=${{ matrix.first }} --last=${{ matrix.last }}
       - name: SV-COMP archive packager smoke
         if: matrix.shard == 1
