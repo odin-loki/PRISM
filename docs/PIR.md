@@ -553,6 +553,58 @@ low", "the encoder's memory"). Those rows get `outcome: "memory-limit"` and
 `memory_budget_mb`. Nothing retries them with a larger budget (the existing
 fresh-process re-run uses what is left of the same budget).
 
+## Input key (`--pir-input-hash`)
+
+A batch over a large tree checks many identical functions: copies of one
+helper in several files, other-architecture copies, the same function listed
+twice. `--pir-input-hash` makes the pir stage translate every function as
+usual and check nothing: each translated function's row is `NOTRUN` and
+carries two keys (also in the `--jsonl` record):
+
+- `input_key`: SHA-256 of everything the function's verdict is computed from.
+- `input_key_loc_free`: the same without source coordinates (the function's
+  file and line, each statement's line and column, the loop locations' line
+  and column). Coordinates reach only messages, labels and the exported
+  invariants, never a VC, so copies of one function at other lines or in
+  another file share this key.
+
+What the key covers (`stage.cpp`, namespace `inkey`):
+
+| part | why |
+|---|---|
+| the translated `Function`, every field (variables, blocks, phis, statements with all their fields, terminators, pointer model, assumptions, inlined callees, harness bindings, libm and throw lists) | `check_function` reads only the `Function` and the `CheckOptions`; inlined callees, globals, types, models, harness and ops tables are already in the translation |
+| the `CheckOptions` (unwind, deepening, timeouts, budgets, portfolio, certified, cache use, encoding, Houdini budget) | they decide which queries are asked and when one stops |
+| the alternate translation the memory policy checks (other globals mode), for a function with mutable globals | a FAILED with arbitrary globals is re-checked with the initial values (`stage_mem.cpp`) |
+| linkage: internal, address taken, called in the unit | read by the harness discharge |
+| clang, Z3 and PRISM versions; `--pir-vacuity`, `--pir-discharge`, `--pir-harness`, `--strict-aliasing`, `--kernel-api`, `--certified`, `--data-model`, `--allow-exec`; every `PRISM_*` variable except the function filter, output and cache places | the post-check passes and budgets |
+
+Scope. Where a row can depend on the rest of the unit, the key also covers
+the unit's whole IR text and source (`input_scope: "unit:<reasons>"`):
+`discharge` (with `--pir-discharge`, a static, not address-taken function
+called in the unit under an automatic harness: its callers decide the
+discharge), `lock-order` (a lock-order record names it), `folded-ub`
+(clang-folded UB the function's row can be charged with: an entry with a line
+from the function's first line to the next function's, or one without an IR
+marker at or after its first line), `globals-initial` (`main`), `c++`,
+`translation-validation` (`--allow-exec` replays the unit). Otherwise
+`input_scope` is `function`.
+
+A key is a hash of what is checked, not of the source text: equal keys mean
+the same check, a near match means nothing. One rule is outside every key:
+the error-sink rule (`caller_discharged_asserts`) reads which callers were
+checked in the same process (`PRISM_PIR_ONLY`). It acts only on a FAILED
+`assert:` row of a function without parameters, so a row it could have
+decided (FAILED `assert:`, or `error sink: ...`) must not be transferred;
+every other row of equal keys is.
+Timing-dependent outcomes (TIMEOUT, budgets) can differ between two runs of
+the same key, as between two runs of the same job. The sizes of the PIR
+structs are pinned by `static_assert` on x86-64 libstdc++: a field added to
+one of them fails the build until the key writes it.
+`tests/cpp/test_pir_input_key.cpp` changes one callee byte, one global
+initialiser, one struct field, one flag and one budget, and requires the key
+to change; and requires a copy at other lines in another file to share only
+the location-free key.
+
 ## Lean coverage
 
 Per function, `lean.supported` says whether its translation is inside the

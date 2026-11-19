@@ -52,7 +52,19 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <limits>
 #include <thread>
+
+#ifdef PRISM_HAS_Z3
+#include <z3.h>
+#endif
+
+#ifdef _WIN32
+#define PRISM_ENVIRON _environ
+#else
+extern char** environ;
+#define PRISM_ENVIRON environ
+#endif
 
 namespace prism::pir {
 namespace fs = std::filesystem;
@@ -2813,25 +2825,33 @@ void residual_lines(const ObligationNode& o, std::vector<std::string>& out) {
 // callee holds for any state satisfying P (it never looked at anything else), so when every call site establishes P
 // and no call can come from elsewhere (static, not address-taken, not recursive), the harness is discharged: the
 // callee's result then rests only on the entry assumptions of the functions that call it from outside.
+// The unit's internal (static) definitions and the symbols whose address is used, from the IR text. Shared by
+// discharge_pass and the input key (--pir-input-hash), so both read linkage the same way.
+struct LinkInfo {
+    std::set<std::string> internal, taken;
+};
+LinkInfo link_info(const std::string& ir_text) {
+    LinkInfo li;
+    for (const auto& line : split_lines(ir_text)) {
+        if (!line.starts_with("define ")) continue;
+        auto at = line.find('@');
+        if (at == std::string::npos) continue;
+        std::size_t e = 0;
+        const auto name = ir_symbol_at(line, at, &e);
+        const auto pre = " " + line.substr(0, at);
+        if (pre.find(" internal ") != std::string::npos || pre.find(" private ") != std::string::npos) li.internal.insert(name);
+    }
+    for (std::size_t at = ir_text.find('@'); at != std::string::npos; at = ir_text.find('@', at + 1)) {
+        std::size_t e = 0;
+        const auto name = ir_symbol_at(ir_text, at, &e);
+        if (e >= ir_text.size() || ir_text[e] != '(') li.taken.insert(name);  // not a call, define or declare: its address is used
+    }
+    return li;
+}
+
 void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::string& ir_text, pirmem::UnitInfo& uinfo,
                     const TranslateOptions& topt, const Config& cfg, const std::shared_ptr<HoudiniBudget>& budget) {
-    std::set<std::string> internal, taken;
-    {
-        for (const auto& line : split_lines(ir_text)) {
-            if (!line.starts_with("define ")) continue;
-            auto at = line.find('@');
-            if (at == std::string::npos) continue;
-            std::size_t e = 0;
-            const auto name = ir_symbol_at(line, at, &e);
-            const auto pre = " " + line.substr(0, at);
-            if (pre.find(" internal ") != std::string::npos || pre.find(" private ") != std::string::npos) internal.insert(name);
-        }
-        for (std::size_t at = ir_text.find('@'); at != std::string::npos; at = ir_text.find('@', at + 1)) {
-            std::size_t e = 0;
-            const auto name = ir_symbol_at(ir_text, at, &e);
-            if (e >= ir_text.size() || ir_text[e] != '(') taken.insert(name);  // not a call, define or declare: its address is used
-        }
-    }
+    auto [internal, taken] = link_info(ir_text);
     std::map<std::string, std::set<std::string>> callers, calls;
     std::map<std::string, std::size_t> sites;
     for (const auto& fn : mod.functions) {
@@ -3008,6 +3028,235 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     }
 }
 
+// ---------------------------------------------------------------------------
+// --pir-input-hash: the input key of each function (docs/PIR.md "Input key")
+// ---------------------------------------------------------------------------
+// Two pir jobs with equal input keys check the same thing: the key covers the
+// translated function (every field check_function reads: the encoder and the
+// solver see only the Function and the CheckOptions), the check options, the
+// flags of the post-check passes, the alternate translation the memory policy
+// may check (mutable globals), the linkage facts the harness discharge reads,
+// and the clang, Z3 and PRISM versions. Where a function's row can depend on
+// the rest of the unit (harness discharge or the error-sink rule over its
+// callers, a lock-order record naming it, clang-folded UB in the unit, the
+// globals' initial state of main, C++), the key also covers the whole unit
+// (its IR text and source): scope "unit". Two keys are written:
+//   input_key           every field, source coordinates included
+//   input_key_loc_free  the same without source coordinates (file, lines,
+//                       columns, loop locations), which reach only messages
+//                       and labels, never a VC (copies of one function at
+//                       other lines or in other files share it)
+// Nothing is solved in this mode: each translated function's row is NOTRUN.
+namespace inkey {
+
+struct W {
+    std::string o;
+    void s(std::string_view x) {
+        o += std::to_string(x.size());
+        o += ':';
+        o += x;
+    }
+    void i(long long x) {
+        o += std::to_string(x);
+        o += ';';
+    }
+    void u(unsigned long long x) {
+        o += std::to_string(x);
+        o += ';';
+    }
+    void d(double x) {
+        char b[64];
+        std::snprintf(b, sizeof b, "%.17g;", x);
+        o += b;
+    }
+    void tag(const char* t) { o += t; }
+};
+
+// Every field of the PIR structs is written below. A field added to one of
+// them must be added here too: these sizes catch it on the build platform.
+#if defined(__x86_64__) && defined(__GLIBCXX__) && !defined(_GLIBCXX_DEBUG)
+static_assert(sizeof(Arg) == 24, "pir::Arg changed: update inkey::arg");
+static_assert(sizeof(Var) == 40, "pir::Var changed: update inkey::function");
+static_assert(sizeof(Stmt) == 216, "pir::Stmt changed: update inkey::stmt");
+static_assert(sizeof(Phi) == 32, "pir::Phi changed: update inkey::function");
+static_assert(sizeof(Term) == 72, "pir::Term changed: update inkey::function");
+static_assert(sizeof(Block) == 152, "pir::Block changed: update inkey::function");
+static_assert(sizeof(Function) == 408, "pir::Function changed: update inkey::function");
+static_assert(sizeof(PtrModel) == 32, "pir::PtrModel changed: update inkey::function");
+static_assert(sizeof(CheckOptions) == 304, "pir::CheckOptions changed: update inkey::check_options");
+static_assert(sizeof(EncodeOptions) == 4, "pir::EncodeOptions changed: update inkey::check_options");
+#endif
+
+void arg(W& w, const Arg& a) {
+    w.tag("A");
+    w.i(a.is_const);
+    w.u(a.width);
+    w.u(a.bits);
+    w.i(a.var);
+}
+
+void strs(W& w, const std::vector<std::string>& v) {
+    w.u(v.size());
+    for (auto& x : v) w.s(x);
+}
+
+void stmt(W& w, const Stmt& s, bool loc) {
+    w.tag("S");
+    w.i(static_cast<int>(s.kind));
+    w.i(s.dst);
+    w.i(static_cast<int>(s.op));
+    w.u(s.args.size());
+    for (auto& a : s.args) arg(w, a);
+    w.i(s.uninit);
+    w.i(s.nondet);
+    w.s(s.nondet_fn);
+    w.i(s.nondet_unsigned);
+    w.i(loc ? s.col : 0);
+    w.s(s.prop);
+    w.s(s.cls);
+    w.s(s.msg);
+    w.i(loc ? s.line : 0);
+    w.i(static_cast<int>(s.mkind));
+    w.i(s.init);
+    w.u(s.align);
+    w.u(s.tag);
+    w.i(s.dst2);
+    w.i(s.dst3);
+    w.i(s.ptr_arith);
+}
+
+void function(W& w, const Function& fn, bool loc) {
+    w.tag("F");
+    w.s(fn.name);
+    w.s(fn.ir_name);
+    w.s(loc ? fn.file : std::string());
+    w.i(loc ? fn.line : 0);
+    w.u(fn.vars.size());
+    for (auto& v : fn.vars) {
+        w.s(v.name);
+        w.u(v.width);
+        w.i(v.fp);
+    }
+    w.u(fn.params.size());
+    for (int p : fn.params) w.i(p);
+    w.u(fn.ret_width);
+    w.u(fn.blocks.size());
+    for (auto& b : fn.blocks) {
+        w.tag("B");
+        w.s(b.name);
+        w.u(b.phis.size());
+        for (auto& p : b.phis) {
+            w.i(p.dst);
+            w.u(p.in.size());
+            for (auto& [pred, a] : p.in) {
+                w.i(pred);
+                arg(w, a);
+            }
+        }
+        w.u(b.stmts.size());
+        for (auto& s : b.stmts) stmt(w, s, loc);
+        w.tag("T");
+        w.i(static_cast<int>(b.term.kind));
+        arg(w, b.term.cond);
+        w.i(b.term.t);
+        w.i(b.term.f);
+        w.i(b.term.val.has_value());
+        if (b.term.val) arg(w, *b.term.val);
+    }
+    w.i(fn.nondet);
+    strs(w, fn.inlined);
+    w.i(fn.uses_memory);
+    w.u(fn.ptr.w);
+    w.u(fn.ptr.obj_shift);
+    w.u(fn.ptr.max_obj_size);
+    w.u(fn.ptr.max_objects);
+    w.u(fn.ptr.fn_obj_base);
+    w.i(fn.mutable_globals);
+    w.i(fn.returns_ptr);
+    strs(w, fn.ptr_params);
+    strs(w, fn.assumptions);
+    strs(w, fn.throws);
+    strs(w, fn.libm);
+    // loop locations reach only the exported invariants (a location > 0 is exported); without coordinates the key
+    // keeps which headers have one
+    w.u(fn.loop_locs.size());
+    for (auto& [h, lc] : fn.loop_locs) {
+        w.i(h);
+        w.i(loc ? lc.first : lc.first > 0);
+        w.i(loc ? lc.second : 0);
+    }
+}
+
+void check_options(W& w, const CheckOptions& c) {
+    w.tag("C");
+    w.i(c.unwind);
+    w.i(c.deepen_max);
+    w.d(c.timeout_s);
+    w.i(c.portfolio);
+    w.i(c.certified);
+    w.i(c.certify_combined);
+    w.d(c.check_timeout_s);
+    w.d(c.certify_budget_s);
+    w.d(c.function_budget_s);
+    w.i(c.function_budget != nullptr);
+    w.i(static_cast<bool>(c.debug_before_query));
+    w.i(c.use_cache);
+    // cache_dir, max_parallel (hardware threads), tool_dirs/tool_paths (where the solvers are) and refuse_tools_under
+    // change where and how fast an answer is found, not which formula is asked; the solvers' versions are in the key
+    w.i(c.search_default_tools);
+    w.u(c.tool_paths.size());
+    for (auto& [k, v] : c.tool_paths) w.s(k);
+    w.i(static_cast<int>(c.encode.memory));
+    w.i(c.houdini_budget != nullptr);
+    if (c.houdini_budget) w.d(c.houdini_budget->total_s);
+    strs(w, c.only_props);
+}
+
+// PRISM_* settings that reach the check (budgets, deepening, the divert cap); per-run paths and the function filter
+// are left out (they select functions or name output places).
+void env(W& w) {
+    std::vector<std::string> kv;
+    for (char** e = PRISM_ENVIRON; e && *e; ++e) {
+        std::string_view x(*e);
+        if (!x.starts_with("PRISM_")) continue;
+        const auto eq = x.find('=');
+        const auto k = x.substr(0, eq);
+        if (k == "PRISM_PIR_ONLY" || k == "PRISM_PIR_LEAN_EXPORT" || k == "PRISM_PIR_MINE_FIELDS" || k == "PRISM_CERT_CACHE_MAX" ||
+            k.find("CACHE_DIR") != std::string_view::npos || k.find("_HOME") != std::string_view::npos)
+            continue;
+        kv.emplace_back(x);
+    }
+    std::sort(kv.begin(), kv.end());
+    w.tag("E");
+    strs(w, kv);
+}
+
+// The unit's IR text without the names of this process's scratch files (TmpDir "prism_pir_<n>_<n>", the
+// preprocessed copy "prism-pre-<pid>-"), which the ModuleID and file records carry: the same unit lowered twice
+// gives the same text. Nothing else is rewritten.
+std::string stable_ir(const std::string& ir) {
+    std::string o;
+    o.reserve(ir.size());
+    auto skip = [&](std::size_t i, bool underscore) {
+        while (i < ir.size() && (std::isdigit(static_cast<unsigned char>(ir[i])) || (underscore && ir[i] == '_'))) ++i;
+        return i;
+    };
+    for (std::size_t i = 0; i < ir.size();) {
+        if (ir.compare(i, 10, "prism_pir_") == 0) {
+            o += "prism_pir_T";
+            i = skip(i + 10, true);
+        } else if (ir.compare(i, 10, "prism-pre-") == 0) {
+            o += "prism-pre-P";
+            i = skip(i + 10, false);
+        } else {
+            o += ir[i++];
+        }
+    }
+    return o;
+}
+
+}  // namespace inkey
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
                   const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
@@ -3113,6 +3362,82 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         } catch (...) {
         }
     }
+    // --pir-input-hash: the unit's context of the input keys (inkey above)
+    struct KeyCtx {
+        std::string base;                  // versions, flags, environment
+        std::string unit_sha;              // the unit's IR text and source (scope "unit")
+        LinkInfo link;
+        std::set<std::string> called;      // IR names with a caller in the unit
+        std::set<std::string> lock_named;  // functions a lock-order record names
+        std::vector<int> starts;           // DISubprogram lines of the unit's own functions, sorted
+        // Folded UB not carried by an instruction of the function can still decide its row (the end of this
+        // function): an entry with line > 0 by equality with the row's line (the function's first line or its
+        // violation's, both before the next function's first line); an entry with line <= 0 by the owner rule (the
+        // row with the largest line at or before it, which can be any earlier function). A function is clear of
+        // both when no entry with line > 0 lies in [its line, the next function's line) and no entry with line <= 0
+        // lies at or after its line.
+        bool folded_reaches(const std::vector<FoldedUb>& folded, int line) const {
+            if (folded.empty()) return false;
+            if (line <= 0) return true;
+            auto nx = std::upper_bound(starts.begin(), starts.end(), line);
+            const int next = nx == starts.end() ? std::numeric_limits<int>::max() : *nx;
+            for (const auto& x : folded) {
+                if (x.line > 0 && x.line >= line && x.line < next) return true;
+                if (x.line <= 0 && -x.line >= line) return true;
+            }
+            return false;
+        }
+    };
+    std::optional<KeyCtx> kctx;
+    if (cfg.pir_input_hash) {
+        kctx.emplace();
+        inkey::W w;
+        w.tag("prism-pir-input-key/1\n");
+#ifdef PRISM_VERSION_STRING
+        w.s(PRISM_VERSION_STRING);
+#else
+        w.s("");
+#endif
+        w.s(fe.version);
+#ifdef PRISM_HAS_Z3
+        w.s(Z3_get_full_version());
+#endif
+        w.i(cfg.pir_vacuity);
+        w.i(cfg.pir_discharge);
+        w.i(cfg.pir_harness);
+        w.i(cfg.strict_aliasing);
+        w.s(cfg.pir_kernel_api);
+        w.i(cfg.certified);
+        w.s(cfg.data_model);
+        w.i(cfg.allow_exec);
+        inkey::env(w);
+        kctx->base = std::move(w.o);
+        kctx->unit_sha = sha256_hex(inkey::stable_ir(*ir) + "\n\x01source\n" + read_file(pre_main ? low.cc_main : u.path));
+        kctx->link = link_info(*ir);
+        for (const auto& fn : mod.functions) {
+            if (fn.is_declaration || fn.is_model) continue;
+            for (const auto& b : fn.blocks)
+                for (const auto& in : b.insts)
+                    if (!in.callee.empty()) kctx->called.insert(in.callee);
+        }
+        if (!cfg.pir_kernel_api.empty()) {
+            const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
+                                                                  : read_lock_contracts(cfg.pir_lock_contracts);
+            const auto rep = lock_order_report(mod, contracts);
+            for (auto& x : rep.inversions) kctx->lock_named.insert(x.function);
+            for (auto& x : rep.cycles)
+                if (!x.functions.empty()) kctx->lock_named.insert(x.functions.back());
+            for (auto& x : rep.ctx_mismatches) kctx->lock_named.insert(x.function);
+            for (auto& x : rep.hardirq_sleeps) kctx->lock_named.insert(x.function);
+        }
+        for (const auto& fn : mod.functions) {
+            auto it = mod.subprograms.find(fn.dbg);
+            if (it == mod.subprograms.end() || it->second.line <= 0) continue;
+            if (!it->second.file.empty() && fs::path(it->second.file).filename().string() != unit_name) continue;
+            kctx->starts.push_back(it->second.line);
+        }
+        std::sort(kctx->starts.begin(), kctx->starts.end());
+    }
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
@@ -3207,6 +3532,69 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
+        if (kctx) {  // --pir-input-hash: the key, no check
+            auto ko = check_options(cfg, budget);
+            if (ko.function_budget_s > 0) ko.function_budget = std::make_shared<FunctionBudget>(ko.function_budget_s);
+            const bool has_callers = kctx->called.count(irf.name) > 0;
+            const bool internal = kctx->link.internal.count(irf.name) > 0, taken = kctx->link.taken.count(irf.name) > 0;
+            std::vector<std::string> unit_why;
+            // the harness discharge (discharge_pass) changes only a PROVED-ASSUMING row under an automatic harness of
+            // a static, not address-taken function called in the unit: its callers decide it
+            if (cfg.pir_discharge && cfg.pir_harness && internal && !taken && has_callers && has_auto_harness(fn))
+                unit_why.push_back("discharge");
+            // Not scoped: the error-sink rule (caller_discharged_asserts) reads which callers were checked in the
+            // same process, which no key can cover. It acts only on a FAILED "assert:" row (and makes it "error
+            // sink: ..."); the row before it is the check's own, so equal keys agree on whether it can act. Such
+            // rows must not be transferred (docs/PIR.md "Input key").
+            if (kctx->lock_named.count(*f.function) || kctx->lock_named.count(irf.name)) unit_why.push_back("lock-order");
+            if (kctx->folded_reaches(folded, sub.line)) unit_why.push_back("folded-ub");
+            if (fopt.globals_initial) unit_why.push_back("globals-initial");
+            if (is_cxx(u.path)) unit_why.push_back("c++");
+            if (cfg.allow_exec) unit_why.push_back("translation-validation");  // replays the unit's own IR (lli)
+            // the memory policy re-translates a function with mutable globals with the other globals mode
+            std::optional<Translation> alt;
+            if (fn.mutable_globals) {
+                auto o = fopt;
+                o.globals_initial = !fopt.globals_initial;
+                alt = translate(mod, irf, o);
+            }
+            auto key = [&](bool loc) {
+                inkey::W w;
+                w.o = kctx->base;
+                inkey::function(w, fn, loc);
+                inkey::check_options(w, ko);
+                w.i(internal);
+                w.i(taken);
+                w.i(has_callers);
+                w.tag("G");
+                w.i(alt.has_value());
+                if (alt) {
+                    w.s(alt->status);
+                    w.s(alt->reason);
+                    w.i(alt->fn.has_value());
+                    if (alt->fn) {
+                        auto g = *alt->fn;
+                        g.name = fn.name;
+                        g.file = fn.file;
+                        g.line = fn.line;
+                        inkey::function(w, g, loc);
+                    }
+                }
+                inkey::strs(w, unit_why);
+                if (!unit_why.empty()) w.s(kctx->unit_sha);
+                return sha256_hex(w.o);
+            };
+            f.extra["input_key"] = key(true);
+            f.extra["input_key_loc_free"] = key(false);
+            std::string sc;
+            for (auto& x : unit_why) sc += (sc.empty() ? "" : ",") + x;
+            f.extra["input_scope"] = unit_why.empty() ? std::string("function") : "unit:" + sc;
+            f.status = std::string(laws::NOTRUN);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "input key only (--pir-input-hash): not checked";
+            recs.push_back(std::move(rec));
+            continue;
+        }
         // one function budget for the check and the policy's re-checks of this row
         auto copt = check_options(cfg, budget);
         // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
@@ -3274,6 +3662,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         rec.fn = std::move(tr.fn);
         recs.push_back(std::move(rec));
     }
+    // --pir-input-hash: nothing was checked, so the passes over checked rows below have nothing to do (what they
+    // read is in the keys' scope)
+    if (kctx && !recs.empty()) return res;
     // Folded UB that no instruction carries: the function cannot be proved.
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)
