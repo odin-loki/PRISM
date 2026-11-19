@@ -162,6 +162,7 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         else if (a == "--pir-drafts") { ok = in.flag(); cfg.pir_drafts = true; }
         else if (a == "--pir-harness") { ok = in.flag(); cfg.pir_harness = true; }
         else if (a == "--pir-discharge") { ok = in.flag(); cfg.pir_discharge = true; }
+        else if (a == "--pir-discharge-closure") { ok = in.flag(); cfg.pir_discharge_closure = true; }
         else if (a == "--pir-container-of") { ok = in.flag(); cfg.pir_container_of = true; }
         else if (a == "--pir-vacuity") { ok = in.flag(); cfg.pir_vacuity = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
@@ -203,6 +204,12 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-field-invariants") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.pir_field_invariants = fs::absolute(*v);
+        } else if (a == "--pir-discharge-out") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_discharge_out = fs::absolute(*v);
+        } else if (a == "--pir-obligations") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_obligations = fs::absolute(*v);
         } else if (a == "--pir-ops-auto") {
             ok = in.flag();
             cfg.pir_ops_auto = true;
@@ -431,6 +438,11 @@ std::string cli_usage() {
         "--pir-discharge: with --pir-harness, the harness of a static, non-address-taken, non-recursive\n"
         "  function is a proof obligation checked at every call site of the unit; discharged, the\n"
         "  invented assumption is replaced by the call sites (docs/HARNESS_GENERATOR.md).\n"
+        "  --pir-discharge-closure: also discharge the callers' harnesses up the unit's call graph; a callee\n"
+        "  whose call sites all rest on unconditional contexts and that assumes nothing else is PROVED.\n"
+        "  --pir-discharge-out FILE: append the unit's call graph, harness plans and call-site checks\n"
+        "  (JSONL) for prism-qa callsite-discharge (whole build); --pir-obligations FILE: check other\n"
+        "  units' harness plans (records \"plan\") at this unit's call sites.\n"
         "--pir-container-of: with --pir-harness, a parameter used at a negative constant offset gets its\n"
         "  containing object (container_of). --pir-vacuity: a harnessed function whose exit is\n"
         "  unreachable under its assumptions is NEEDS-HARNESS (vacuous), never a proof.\n"

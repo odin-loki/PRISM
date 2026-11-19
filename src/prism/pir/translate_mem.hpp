@@ -172,8 +172,12 @@ public:
     void stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line);
     // --pir-discharge (class HARNESS-OBLIGATION): `p` points `member_off` bytes into a live, writable, 16-aligned object
     // of at least `bytes` bytes, whose bytes are initialised when `check_init`; `distinct`: two pointers are to different objects.
+    // `own`: the caller's own automatic-harness objects (its parameters' roots and nested objects). The object must be
+    // one of them, a local or a heap allocation (ob-origin): never a global or an object PRISM assumed (global harness,
+    // `current`, a field invariant's object, an unknown call's result), which the callee's proof took to be distinct
+    // from its harness objects.
     void obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, unsigned align, bool check_init,
-                           const std::string& what, int line);
+                           const std::vector<Arg>& own, const std::string& what, int line);
     void obligation_distinct(int b, Arg p, Arg q, const std::string& what, int line);
     Arg obj_size_remaining(int b, Arg ptr);  // size - offset (0 when out of range)
     void read_range(int b, Arg ptr, Arg len, int line);  // range access checks (read)

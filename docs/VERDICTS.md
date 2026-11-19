@@ -82,6 +82,15 @@ to `BOUNDED`) or withdrawn to `UNKNOWN`/`ERROR`. Nothing becomes a formal
 verdict by rewriting. A status without an answer only becomes another status
 without an answer. Everything else may change freely.
 
+A composed proof is not a rewrite. The call-site discharge
+(docs/HARNESS_GENERATOR.md section 6) gives `PROVED` for a function whose
+automatic harness is discharged at every call site in unconditional contexts:
+inside the `pir` stage (`--pir-discharge-closure`) that verdict is computed from
+the stage's own solver results before anything is recorded; over a whole build
+(`prism-qa callsite-discharge`) it is a new record (`callsite-discharge`) next to
+the unit's row, which stays `PROVED-ASSUMING`. Both rest on
+`Prism.Discharge.grounded_safe`.
+
 ## Admission and origins
 
 Every result has an *origin*. Only two origins may prove.

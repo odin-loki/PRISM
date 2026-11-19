@@ -52,3 +52,5 @@ open Prism
 #print axioms Prism.Discharge.internal_pre_holds
 #print axioms Prism.Discharge.site_check_needed
 #print axioms Prism.Discharge.obligation_iff
+#print axioms Prism.Discharge.grounded_safe
+#print axioms Prism.Discharge.entry_pre_needed
