@@ -710,7 +710,10 @@ if(PRISM_CUDA)
       set(_prism_cuda_lang ON)
       if(NOT CMAKE_CUDA_ARCHITECTURES)
         # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
-        set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
+        # 86-real: SASS only. With PTX in the image ("86") a driver older than
+        # the toolkit (WSL2: driver CUDA 13.3, nvcc 13.4) fails every launch
+        # with "the provided PTX was compiled with an unsupported toolchain".
+        set(CMAKE_CUDA_ARCHITECTURES "86-real" CACHE STRING "nvcc -arch" FORCE)
       endif()
       # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
       add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
