@@ -484,7 +484,7 @@ entry:
 namespace {
 
 std::string icall_ir() {
-    return std::string(R"IR(@tbl = internal global [17 x ptr] [ptr @f0, ptr @f1, ptr @f2, ptr @f3, ptr @f4, ptr @f5, ptr @f6, ptr @f7, ptr @f8, ptr @f9, ptr @f10, ptr @f11, ptr @f12, ptr @f13, ptr @f14, ptr @f15, ptr @f16]
+    return std::string(R"IR(@tbl = internal constant [17 x ptr] [ptr @f0, ptr @f1, ptr @f2, ptr @f3, ptr @f4, ptr @f5, ptr @f6, ptr @f7, ptr @f8, ptr @f9, ptr @f10, ptr @f11, ptr @f12, ptr @f13, ptr @f14, ptr @f15, ptr @f16]
 define internal i32 @f0(i32 %x) {
 entry:
   ret i32 0
