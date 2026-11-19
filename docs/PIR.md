@@ -1466,6 +1466,77 @@ counted (they use the certification budget above). A value of
 that is not a number of seconds >= 0 is ignored, and every checked pir row says
 so in `extra.env_rejected`.
 
+**Complexity limits** (docs/TARGETED_PROVING.md W1; `include/prism/complexity.hpp`).
+Every pir query runs under Z3's deterministic resource limit (`rlimit`), the
+count Z3 keeps of its own work, which does not depend on the machine, its
+load or `--jobs`. The scale is `--complexity N` (rlimit units of one VC query
+of a function of reference size), else `$PRISM_PIR_RLIMIT`, else `--timeout`
+seconds of 1 000 000 units (`kUnitsPerSecond`, measured on the reference
+machine); 0 turns the limits off. Every former time limit t of a function
+(a VC's `--timeout`, a Houdini group's share, the Houdini search, a
+k-induction step, the final cut query) becomes t x N / timeout x the
+function's size factor (1 + log2(1 + statements / 4096), at most 4) units;
+the pir stage gives the function budget the same treatment
+(`CheckOptions::function_units_s`: its units are the budget, its clock is 3 x
+the budget, `kWallBackstop`). The clocks stay as backstops, three times the
+time the units stand for. A query that reaches its limit is UNKNOWN (never a
+proof, never TIMEOUT), and `extra.complexity_limit = "<C> rlimit units at
+<label>"` names the first one: "not decided within complexity C", the same on
+every machine and in every run. Two things made one query's work depend on
+the process and are fixed: Z3's QF_BV strategy runs its AIG step only while
+Z3's process-wide allocation is under 300 MB (so a query did different work
+next to another function's contexts at `--jobs 4`), so a 320 MB allocation
+Z3 counts but nothing touches keeps that choice the same for every query
+(`src/prism/solver/z3_ballast.cpp`; PRISM's memory checks subtract it); and
+under a limit the query cache is keyed by the formula as given as well (two
+formulas that normalise alike but differ in their names do different work),
+and a hit is charged the units its formula cost when it was solved (an entry
+that took more than the query's limit is UNKNOWN at the limit, as solving it
+again would be). So a function's units, and every budget decision made from
+them, do not depend on which function was cached first. Answers of the other
+portfolio members (bitwuzla, CaDiCaL, kissat, the SLS walker) still race on
+the clock: they can only add an answer (a validated model, or UNSAT), never
+take one away.
+
+**Strategies and properties in parallel** (W2). A function with loops is
+checked by separate strategies: the unwinding chain (the first unwind, the
+requested unwind, deepening), k-induction and Houdini. With `--jobs` above 1
+(`CheckOptions::jobs`) k-induction and Houdini start on idle workers of the
+run's shared scheduler once the first unwind is BOUNDED (most functions end
+there), next to the requested unwind, and deepening starts next to them once
+the requested unwind is BOUNDED; with `--jobs 1` they run one after the
+other in the sequential order. Each strategy's wall-clock backstop starts
+when the strategy starts (a clock shared from the function's start would cut
+the later strategies short at `--jobs 1` only), and a Houdini search that was
+stopped is not charged to the run's Houdini budget. The verdict is always the one the sequential
+order gives from their answers: k-induction and Houdini count only when the
+requested unwind is BOUNDED (k-induction's base case is that answer), Houdini
+only when k-induction did not close, deepening only when neither proved; a
+strategy whose answer is no longer needed is stopped (`Z3_interrupt` and a
+stop flag). Each strategy has its own units budget, so its answer does not
+depend on how far another got (a strategy that the sequential order would have
+starved can now answer: a stronger verdict, never a weaker one). A deepening
+attempt asks its VCs only: k-induction and Houdini do not depend on the
+unwind, and a PROVED-UNBOUNDED there ended the deepening with the BOUNDED
+answer anyway. Within one attempt, idle workers ask the property VCs ahead of
+the search (each in a Z3 context of its own, the formulas translated from the
+function's context on its own thread); the search stays sequential and takes
+each answer in its order, so the first violated property, the group halving
+of more than 16 properties and every budget decision are the sequential ones.
+
+**Metrics** (W5): every function row has `extra.metrics`, a JSON object:
+`rlimit_units` and `queries` per phase (`encode`, `vcs`, `unwinding`,
+`k_induction`, `houdini`, `deepening`), their totals, `complexity_limit_hits`,
+`strategy` (`unwinding@<k>`, `k-induction`, `houdini`, `deepening@<k>` or
+`none`), `rlimit_units_per_s` (0: limits off) and `function_rlimit_units`.
+Only the strategies whose answers the verdict used are counted, so the
+metrics are the same at every `--jobs`. Houdini adds
+`extra.invariant_search = "exhausted: pir-templates[<kinds>] (<n> candidates,
+fixpoint without proof)"` when its fixpoint was reached with every query
+answered (no unknown, no limit, no clock): no conjunction of those candidates
+is an inductive invariant that proves the properties. That is a statement
+about the template family only; the verdict stays BOUNDED.
+
 A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),
 `extra.certificate_info` (one entry per VC, `<prop>@<line>: bitblast: … ;

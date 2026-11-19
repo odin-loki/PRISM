@@ -522,6 +522,8 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_NO_HEADERS", "pir: skip the system-header IR pass (diagnostics)"},
     {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (the units and functions to re-check)"},
     {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},
+    {"PRISM_PIR_RLIMIT", "pir: Z3 rlimit units per query of reference size (--complexity; 0 = off; default --timeout x 1e6)"},
+    {"PRISM_PIR_RLIMIT_TRACE", "diagnostics: 1 = one stderr line per pir query (rlimit units spent, seconds)"},
     {"PRISM_PROOF_CACHE", "directory of the proof cache"},
     {"PRISM_PROVER_FPK", "path of the FORGE prover model (.fpk)"},
     {"PRISM_PROVER_MODEL", "prover LLM model name"},

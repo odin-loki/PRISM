@@ -2,13 +2,16 @@
 
 #include "prism/solver.hpp"
 #include "prism/clock.hpp"
+#include "prism/complexity.hpp"
 #include "prism/config.hpp"
 #include "internal.hpp"
 #include "prism/exec.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -469,3 +472,111 @@ CheckOutcome check_lrat(const ToolInfo& checker, const fs::path& cnf, const fs::
 }
 
 }  // namespace prism::solver
+
+// ---------------------------------------------------------------------------
+// Complexity limits (include/prism/complexity.hpp)
+// ---------------------------------------------------------------------------
+
+namespace prism::complexity {
+
+namespace {
+std::atomic<std::int64_t> g_scale{-2};  // -2: not read yet; -1: unset; >= 0: explicit
+}  // namespace
+
+void set_scale(std::uint64_t units) {
+    g_scale.store(static_cast<std::int64_t>(std::min<std::uint64_t>(units, std::uint64_t{1} << 40)));
+}
+
+std::int64_t explicit_scale() {
+    std::int64_t s = g_scale.load();
+    if (s != -2) return s;
+    s = -1;
+    if (const char* e = std::getenv("PRISM_PIR_RLIMIT"); e && *e) {
+        char* end = nullptr;
+        const unsigned long long v = std::strtoull(e, &end, 10);
+        if (end && *end == 0 && e[0] != '-')
+            s = static_cast<std::int64_t>(std::min<unsigned long long>(v, 1ull << 40));
+    }
+    std::int64_t expect = -2;
+    g_scale.compare_exchange_strong(expect, s);
+    return g_scale.load();
+}
+
+std::uint64_t scale_for(double timeout_s) {
+    const std::int64_t s = explicit_scale();
+    if (s >= 0) return static_cast<std::uint64_t>(s);
+    return static_cast<std::uint64_t>(std::max(1.0, timeout_s) * static_cast<double>(kUnitsPerSecond));
+}
+
+double size_factor(std::size_t stmts) {
+    return std::min(4.0, 1.0 + std::log2(1.0 + static_cast<double>(stmts) / 4096.0));
+}
+
+unsigned z3_limit(double units) {
+    if (!(units > 0)) return 0;
+    return static_cast<unsigned>(std::clamp(units, 1.0, 4.0e9));
+}
+
+const char* phase_name(Phase p) {
+    switch (p) {
+        case Phase::Encode: return "encode";
+        case Phase::Vcs: return "vcs";
+        case Phase::Unwind: return "unwinding";
+        case Phase::KInduction: return "k_induction";
+        case Phase::Houdini: return "houdini";
+        case Phase::Deepen: return "deepening";
+        case Phase::Count: break;
+    }
+    return "?";
+}
+
+void Meter::add(Phase p, std::uint64_t u, bool query) {
+    const auto i = static_cast<std::size_t>(p);
+    if (i >= units.size()) return;
+    units[i].fetch_add(u, std::memory_order_relaxed);
+    if (query) queries[i].fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t Meter::total() const {
+    std::uint64_t t = 0;
+    for (const auto& u : units) t += u.load(std::memory_order_relaxed);
+    return t;
+}
+
+std::uint64_t Meter::total_queries() const {
+    std::uint64_t t = 0;
+    for (const auto& q : queries) t += q.load(std::memory_order_relaxed);
+    return t;
+}
+
+void Meter::note_limit(const std::string& label, std::uint64_t limit) {
+    limit_hits.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> g(mu_);
+    if (first_limit_.empty()) first_limit_ = std::to_string(limit) + " rlimit units at " + label;
+}
+
+std::string Meter::first_limit() const {
+    std::lock_guard<std::mutex> g(mu_);
+    return first_limit_;
+}
+
+void Meter::merge(const Meter& o) {
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        units[i].fetch_add(o.units[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+        queries[i].fetch_add(o.queries[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+    limit_hits.fetch_add(o.limit_hits.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    const std::string fl = o.first_limit();
+    std::lock_guard<std::mutex> g(mu_);
+    if (first_limit_.empty()) first_limit_ = fl;
+}
+
+bool trace() {
+    static const bool on = [] {
+        const char* e = std::getenv("PRISM_PIR_RLIMIT_TRACE");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+}  // namespace prism::complexity

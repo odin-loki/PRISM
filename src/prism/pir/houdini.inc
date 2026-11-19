@@ -105,6 +105,13 @@ struct HoudiniOut {
     std::string cache;      // "", "hit (proof re-checked)", "hit (no proof)", "stored"
     double final_s = -1;    // seconds given to the final query at the fixpoint (-1: not asked)
     bool undecided = false; // some answer came from the time limit or an unknown
+    bool limit_hit = false; // ... and some of those from the complexity limit (rlimit)
+    std::uint64_t units = 0;  // rlimit units the search's checks spent
+    int queries = 0;          // checks asked
+    // the fixpoint was reached with every query answered and no proof:
+    // extra.invariant_search ("exhausted: <family> ..."; a statement about
+    // the template family only, never about the program)
+    std::string exhausted;
     std::size_t concrete_dropped = 0;  // candidates a concrete run falsified (dropped before any query)
     int concrete_runs = 0;
 };
@@ -113,6 +120,17 @@ struct HoudiniOut {
 // invariants"): dir empty = no cache.
 struct HoudiniEnv {
     std::string cache_dir;
+};
+
+// The complexity limits of one search (W1) and the race's hooks (W2).
+struct HoudiniLimits {
+    Cx cx;                        // off: the wall clock alone, as before
+    double hard_wall_s = -1;      // with cx on: the wall-clock backstop of the function budget (-1: none)
+    cxl::Meter* meter = nullptr;  // unused: the caller charges HoudiniOut::units
+    // called with the search's context once it exists, and with null when it
+    // is gone (the strategy race interrupts a search it no longer needs)
+    std::function<void(z3::context*)> on_ctx;
+    const std::atomic<bool>* stop = nullptr;  // the race no longer needs the answer: stop at the next query
 };
 
 // Pointer-valued variables (allocation results, checked pointer arithmetic,
@@ -160,11 +178,28 @@ public:
     // query passes, the final query and the per-query minimums included; the
     // run's Houdini budget (search_s alone) leaves the final query its own
     // minimum.
+    //
+    // Complexity limits (lim.cx on): every limit above is counted in Z3
+    // rlimit units (seconds x lim.cx.u: the "virtual" seconds vnow() counts),
+    // the same on every machine; hard_s is then what is left of the
+    // function's units budget (in seconds of units), and the wall clock is a
+    // backstop only: kWallBackstop x the search limit, the run's Houdini
+    // budget (search_s, a wall-clock budget shared by the run) and
+    // lim.hard_wall_s (the function budget's clock).
     Houdini(const Function& fn, const CfgInfo& g, const EncodeOptions& eo, double timeout_s, double search_s = -1,
-            HoudiniEnv env = {}, double hard_s = -1)
+            HoudiniEnv env = {}, double hard_s = -1, HoudiniLimits lim = {})
         : fn_(fn), g_(g), eo_(eo), per_query_(timeout_s),
           deadline_(search_s >= 0 ? std::min(search_s, 6 * timeout_s) : 6 * timeout_s), hard_s_(hard_s),
-          env_(std::move(env)) {
+          env_(std::move(env)), lim_(std::move(lim)) {
+        if (lim_.cx.on()) {
+            // virtual (units) limits; the run's wall-clock Houdini budget is a backstop
+            deadline_ = 6 * timeout_s;
+            if (hard_s_ >= 0) deadline_ = std::min(hard_s_, (1.0 - final_reserve()) * hard_s_);
+            wall_deadline_ = lim_.cx.wall(deadline_);
+            if (search_s >= 0) wall_deadline_ = std::min(wall_deadline_, search_s);
+            if (lim_.hard_wall_s >= 0) wall_deadline_ = std::min(wall_deadline_, (1.0 - final_reserve()) * lim_.hard_wall_s);
+            return;
+        }
         if (hard_s_ >= 0) {
             deadline_ = search_s >= 0 ? std::min(search_s, hard_s_) : hard_s_;
             // a share of the hard cap is kept for the final query so the
@@ -195,6 +230,13 @@ private:
     double hard_s_;
     mutable bool mem_out_ = false;  // left() saw the soft memory cap
     HoudiniEnv env_;
+    HoudiniLimits lim_;
+    double wall_deadline_ = 1e18;   // cx on: the wall-clock backstop of the search
+    mutable bool wall_out_ = false; // left() saw the wall-clock backstop
+    std::uint64_t spent_ = 0;       // units spent by this search's checks
+    bool limit_hit_ = false;        // some check stopped at its rlimit
+    std::uint64_t cached_units_ = 0;  // a cache hit: what the search that stored it spent
+    int cached_queries_ = 0;
     std::string cache_file_;   // "" : no cache
     bool from_cache_ = false;  // candidates restricted to a cached proof's survivors
     std::vector<std::string> cands_for_key_;
@@ -208,20 +250,53 @@ private:
     // search ends as if out of time: every unanswered goal is dropped, and no
     // query can push Z3 past its hard limit, after which Z3 is unusable for
     // every later function of the process (Law 7: one UNKNOWN, not many).
+    // Seconds since the search started: wall clock, or with complexity
+    // limits the units spent (deterministic) in seconds of units.
+    double vnow() const { return lim_.cx.on() ? static_cast<double>(spent_) / lim_.cx.u : t0_.elapsed_s(); }
     double left() const {
         if (z3_over_soft_cap()) {
             mem_out_ = true;
             return 0;
         }
-        return deadline_ - t0_.elapsed_s();
+        if (lim_.stop && lim_.stop->load()) {
+            wall_out_ = true;  // not "exhausted": the answer is not used
+            return 0;
+        }
+        if (lim_.cx.on() && t0_.elapsed_s() >= wall_deadline_) {
+            wall_out_ = true;
+            return 0;
+        }
+        return deadline_ - vnow();
     }
     // what is left of the hard cap (no cap: effectively unbounded)
     double hard_left() const {
-        if (hard_s_ < 0) return 1e18;
-        return hard_s_ - t0_.elapsed_s();
+        double h = hard_s_ < 0 ? 1e18 : hard_s_ - vnow();
+        if (lim_.cx.on() && lim_.hard_wall_s >= 0 && lim_.hard_wall_s - t0_.elapsed_s() <= 0) h = std::min(h, 0.0);
+        return h;
+    }
+    double hard_wall_left() const {
+        if (!lim_.cx.on()) return hard_left();
+        return lim_.hard_wall_s < 0 ? 1e18 : lim_.hard_wall_s - t0_.elapsed_s();
     }
     // a query's Z3 timeout in ms: t seconds, never past the hard cap (1 ms at least)
     unsigned query_ms(double t) const { return static_cast<unsigned>(std::max(0.001, std::min(t, hard_left())) * 1000); }
+    // One check of t seconds (units with complexity limits on, and the wall
+    // clock their backstop), never past the hard cap; charged to the search.
+    z3::check_result hcheck(z3::solver& sv, const z3::expr_vector& as, double t, const char* what) {
+        const double tt = std::max(0.001, std::min(t, hard_left()));
+        unsigned rl = 0, ms = static_cast<unsigned>(tt * 1000);
+        if (lim_.cx.on()) {
+            rl = lim_.cx.units(tt);
+            ms = static_cast<unsigned>(std::max(0.001, std::min(lim_.cx.wall(tt), hard_wall_left())) * 1000);
+        }
+        auto ck = metered_check(sv, &as, rl, ms, nullptr, cxl::Phase::Houdini, std::string("houdini ") + what);
+        spent_ += ck.units;
+        limit_hit_ = limit_hit_ || ck.limit_hit;
+        ++queries_;
+        return ck.r;
+    }
+    int queries_ = 0;
+    std::string family_;  // the template family of the candidates (extra.invariant_search)
     bool in_loop(int L, int b) const {
         return b >= 0 && g_.loops[static_cast<std::size_t>(L)].body[static_cast<std::size_t>(b)];
     }
@@ -351,6 +426,8 @@ void Houdini::store_cache(HoudiniOut& out) {
     if (!out.proved && out.undecided) return;
     nlohmann::json j;
     j["proved"] = out.proved;
+    j["units"] = out.units;
+    j["queries"] = out.queries;
     if (out.proved) {
         nlohmann::json sv = nlohmann::json::array();
         for (auto& k : out.cands)
@@ -1106,6 +1183,17 @@ HoudiniOut Houdini::run() {
         }
     generate(out.cands);
     out.candidates = out.cands.size();
+    {
+        static const char* const kKind[] = {"cmp",    "mask",    "lin",      "max-le",    "scale",  "scale-v",
+                                            "tri",    "ptr-in",  "ptr-at",   "mem-nz",    "mem-eq", "mem-ne-c",
+                                            "mem-init", "mem-const", "mem-frame", "mem-scope-at", "mem-last"};
+        std::set<int> ks;
+        for (auto& k : out.cands) ks.insert(static_cast<int>(k.kind));
+        std::vector<std::string> names;
+        for (int k : ks)
+            names.push_back(k >= 0 && k < static_cast<int>(std::size(kKind)) ? kKind[k] : std::to_string(k));
+        family_ = template_family_name(names);
+    }
     out.invariants.assign(g_.loops.size(), {});
     out.kept.assign(g_.loops.size(), {});
     // An earlier run's outcome for the same function text, encoding, time
@@ -1118,12 +1206,19 @@ HoudiniOut Houdini::run() {
         if (!hit->value("proved", false)) {
             out.why = "no proof (outcome of an earlier run, cached: " + hit->value("why", std::string("?")) + ")";
             out.cache = "hit (no proof)";
+            // charged what the stored search spent (not what this run's cache state saved)
+            out.units = hit->value("units", std::uint64_t{0});
+            out.queries = hit->value("queries", 0);
+            // only a decided "no proof" is cached (store_cache)
+            out.exhausted = family_ + " (" + std::to_string(out.candidates) + " candidates, fixpoint without proof; cached)";
             return out;
         }
         std::set<std::string> keep;
         for (auto& x : (*hit)["survivors"]) keep.insert(x.get<std::string>());
         for (auto& k : out.cands) k.alive = keep.count(text(k)) != 0;
         from_cache_ = true;
+        cached_units_ = hit->value("units", std::uint64_t{0});
+        cached_queries_ = hit->value("queries", 0);
     }
     if (!from_cache_) concrete_filter(out);
 
@@ -1180,6 +1275,13 @@ HoudiniOut Houdini::run() {
 
     z3::context c;
     membudget::Watch mem_watch([&c] { Z3_interrupt(c); });  // see the footprint loop above
+    if (lim_.on_ctx) lim_.on_ctx(&c);
+    struct Unreg {
+        const std::function<void(z3::context*)>& f;
+        ~Unreg() {
+            if (f) f(nullptr);
+        }
+    } unreg{lim_.on_ctx};
     Encoding e(c, fn_, g_, 1, eo_);
     e.cut_mode = true;
     e.loop_fp = fps;
@@ -1505,11 +1607,8 @@ HoudiniOut Houdini::run() {
                 as.push_back(act);
                 // a group gets a share of the time; a single goal the full query time
                 double t = live.size() > 1 ? std::min(per_query_, std::max(2.0, per_query_ / 3)) : per_query_;
-                z3::params p(c);
-                p.set("timeout", query_ms(std::max(1.0, std::min(t, left()))));
-                s.set(p);
                 const prism::clock::Stopwatch tq0;
-                auto r = s.check(as);
+                auto r = hcheck(s, as, std::max(1.0, std::min(t, left())), "step");
                 std::optional<z3::model> qm;
                 if (r == z3::sat) qm = s.get_model();
                 // the activation literal is never assumed again: retire its clause
@@ -1623,9 +1722,9 @@ HoudiniOut Houdini::run() {
         // split: the final query (search solver); else an optimistic one
         z3::solver& sf = split ? s : opt_solver();
         if (split) add_instances(s, added_final);
-        const prism::clock::Stopwatch tf;
+        const double tf0 = vnow();
         auto fleft = [&] {
-            return budget - tf.elapsed_s();
+            return budget - (vnow() - tf0);
         };
         std::function<int(std::size_t, std::size_t)> prop_group = [&](std::size_t lo, std::size_t hi) -> int {
             if (lo >= hi) return 0;
@@ -1633,34 +1732,32 @@ HoudiniOut Houdini::run() {
                 fail = "cut program: encoder memory over the soft cap (PRISM_PIR_MEM_MB)";
                 return -1;
             }
-            if (fleft() <= 0) {
-                fail = "cut program: out of time";
+            if (fleft() <= 0 || (lim_.cx.on() && hard_wall_left() <= 0)) {
+                fail = lim_.cx.on() && hard_wall_left() > 0 ? "cut program: complexity limit reached"
+                                                            : "cut program: out of time";
                 return -1;
             }
             z3::expr_vector vs(c);
             for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
             z3::expr act = c.bool_const(("houdini!f" + std::to_string(query_++)).c_str());
             sf.add(z3::implies(act, z3::mk_or(vs)));
-            z3::params p(c);
             double t = !split ? fleft()
                        : hi - lo == e.props.size() ? std::max(per_query_, fleft() / 2)
                                                    : std::min(per_query_, fleft());
-            p.set("timeout", query_ms(std::max(1.0, t)));
-            sf.set(p);
             // only the invariants of loops whose header is encoded before
             // some property of the group (a property encoded earlier cannot
             // use them); assuming fewer candidates is only weaker
             z3::expr_vector as(c);
             selectors([&](std::size_t L) { return e.cut_loops[L].props_before < hi; }, as);
             as.push_back(act);
-            auto r = sf.check(as);
+            auto r = hcheck(sf, as, std::max(1.0, t), split ? "final" : "precheck");
             if (r == z3::unsat) return 0;
             if (r == z3::sat) {
                 fail = "a property is not implied by the inductive invariants found";
                 return 1;
             }
             if (!split || hi - lo == 1) {
-                fail = "cut program: solver unknown";
+                fail = limit_hit_ ? "cut program: solver unknown (complexity limit)" : "cut program: solver unknown";
                 return -1;
             }
             std::size_t mid = lo + (hi - lo) / 2;
@@ -1723,6 +1820,18 @@ HoudiniOut Houdini::run() {
             }
         out.proved = proved;
         if (!proved) out.why = fail;
+        // a re-checked cached proof is charged what the search that found it
+        // spent (when that was recorded): the same on a cold and a warm cache
+        out.units = from_cache_ && cached_units_ > 0 ? cached_units_ : spent_;
+        out.queries = from_cache_ && cached_units_ > 0 ? cached_queries_ : queries_;
+        out.limit_hit = limit_hit_;
+        if (limit_hit_) out.undecided = true;
+        // Every query answered (no unknown, no limit, no clock) and no proof:
+        // no conjunction of these candidates is an inductive invariant that
+        // proves the properties (every drop was by a model, and the last
+        // query with all survivors assumed, or a superset, was SAT).
+        if (!proved && !out.undecided && !mem_out_ && !wall_out_ && !from_cache_)
+            out.exhausted = family_ + " (" + std::to_string(out.candidates) + " candidates, fixpoint without proof)";
         store_cache(out);
         return out;
     };
@@ -1736,7 +1845,11 @@ HoudiniOut Houdini::run() {
     while (changed) {
         if (left() <= 0) {
             out.undecided = true;
-            fail = mem_out_ ? "Houdini stopped: encoder memory over the soft cap (PRISM_PIR_MEM_MB)" : "Houdini ran out of time";
+            fail = mem_out_ ? "Houdini stopped: encoder memory over the soft cap (PRISM_PIR_MEM_MB)"
+                   : lim_.cx.on() && !wall_out_
+                       ? "Houdini reached its complexity limit (" + std::to_string(lim_.cx.units(deadline_)) +
+                             " rlimit units)"
+                       : std::string("Houdini ran out of time");
             return finish_out(false);
         }
         ++out.rounds;
@@ -1767,7 +1880,7 @@ HoudiniOut Houdini::run() {
     // with a hard cap the final query gets all of what is left of it (the
     // search stopped at its deadline, short of the cap by the reserve)
     const double final_budget =
-        hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, left()), hard_left());
+        hard_s_ >= 0 ? hard_left() : std::min(std::max(3 * per_query_, deadline_ - vnow()), hard_left());
     out.final_s = final_budget;
     // the optimistic solver is not asked again: hand its memory back before
     // the final query (nested loops: both together crossed the budget)
