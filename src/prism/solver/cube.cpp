@@ -357,9 +357,18 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
         s.set("quiet", 1);
         {
             const double l0 = now_s();
+            std::size_t k = 0;
             for (const auto& cl : cnf.clauses) {
                 for (int l : cl) s.add(l);
                 s.add(0);
+                // a 1M-clause CNF takes seconds per solver: stop on time
+                if ((++k & 0xffff) == 0 && term.terminate()) {
+                    std::lock_guard<std::mutex> lk(t.mu);
+                    t.finished = true;
+                    halt.store(true);
+                    t.cv.notify_all();
+                    return;
+                }
             }
             const double d = now_s() - l0;
             double cur = load_max.load();
