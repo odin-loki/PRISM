@@ -2692,22 +2692,26 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
             // the context is interrupted (the "canceled" exception is mapped
             // to the budget TIMEOUT below).
             struct EncTimer {
-                std::atomic<bool> done{false};
+                std::mutex mu;
+                std::condition_variable cv;
+                bool done = false;
                 std::thread t;
                 ~EncTimer() {
-                    done.store(true);
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        done = true;
+                    }
+                    cv.notify_all();
                     if (t.joinable()) t.join();
                 }
             } enc_timer;
             if (fn_budget && enc_guard)
                 enc_timer.t = std::thread([&c, &enc_timer, &enc_fired, b = fn_budget] {
-                    while (!enc_timer.done.load()) {
-                        if (b->exhausted()) {
-                            enc_fired.store(true);
-                            Z3_interrupt(c);
-                            return;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::unique_lock<std::mutex> lk(enc_timer.mu);
+                    const auto left = std::chrono::duration<double>(std::max(0.0, b->left()));
+                    if (!enc_timer.cv.wait_for(lk, left, [&] { return enc_timer.done; })) {
+                        enc_fired.store(true);
+                        Z3_interrupt(c);
                     }
                 });
             e.build();
