@@ -3062,6 +3062,9 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.kernel_current = cfg.pir_kernel_current;
     topt.global_harness = cfg.pir_global_harness;
     topt.lock_wrappers = cfg.pir_lock_wrappers;
+    topt.lock_scopes = cfg.pir_lock_scopes;
+    topt.bpf_helpers = cfg.pir_bpf_helpers && cfg.pir_kernel_api == "linux";
+    topt.global_harness_deep = cfg.pir_global_harness_deep;
     if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
         std::string ops_err;
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
@@ -3301,7 +3304,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                                                               : read_lock_contracts(cfg.pir_lock_contracts);
         // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
         // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
-        const auto rep = lock_order_report(mod, contracts);
+        const auto rep = lock_order_report(mod, contracts, cfg.pir_lock_scopes);
         for (auto& inv : rep.inversions) {
             FnRec r;
             r.f = base_finding(u);

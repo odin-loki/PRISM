@@ -618,7 +618,12 @@ Arg MemTr::global(const std::string& name) {
 // kGlobalHarnessBytes arbitrary initialised bytes. One named assumption per global.
 void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) {
     const auto& o = t_.options();
-    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const || g.ty.kind != ir::Type::Ptr) return;
+    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const) return;
+    if (g.ty.kind == ir::Type::Struct && g.ty.text == "%struct.list_head" && o.global_harness_deep) {
+        t_.list_head_harness(p, name);  // --pir-global-harness-deep: a static LIST_HEAD (translate.cpp)
+        return;
+    }
+    if (g.ty.kind != ir::Type::Ptr) return;
     constexpr uint64_t kGlobalHarnessBytes = uint64_t{1} << 20;
     auto obj = alloc(-1, c64(kGlobalHarnessBytes), MemKind::Extern, 2, "@" + name + " (global harness)", 0);
     Stmt st;
@@ -630,6 +635,7 @@ void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) 
                           " arbitrary bytes (the unit's init / probe code set it; not checked here)";
     auto& as = t_.fn().assumptions;
     if (std::ranges::find(as, a) == as.end()) as.push_back(a);
+    if (o.global_harness_deep) t_.global_harness_nest(obj, name);  // pointer fields of the object (translate.cpp)
 }
 
 uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {

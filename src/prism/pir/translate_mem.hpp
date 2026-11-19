@@ -35,6 +35,10 @@ public:
     // address of function @name: a constant pointer to a non-dereferenceable
     // object with id in [fn_obj_base(), max_objects()) (translate_ctl.inc)
     virtual Arg fn_addr(const std::string& name) = 0;
+    // --pir-global-harness-deep (translate.cpp): nested objects of a harnessed pointer global's object `obj`, and the
+    // entry state of a list_head global at `p`. Both run in the prologue; the default does nothing.
+    virtual void global_harness_nest(Arg obj, const std::string& name) { (void)obj; (void)name; }
+    virtual void list_head_harness(Arg p, const std::string& name) { (void)p; (void)name; }
 };
 
 // Target data layout (x86-64 defaults, overridden by the module's

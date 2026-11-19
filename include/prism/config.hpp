@@ -110,6 +110,9 @@ struct Config {
     bool pir_global_harness = false;    // --pir-global-harness: mutable pointer globals point to a valid object at entry (named)
     bool pir_lock_wrappers = false;     // --pir-lock-wrappers: acquire-only / release-only roots are lock wrappers (named)
     bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
+    bool pir_lock_scopes = false;       // --pir-lock-scopes: guard() scopes, per-lock caller-held releases, constant branches in the lock passes
+    bool pir_bpf_helpers = false;       // --pir-bpf-helpers: BPF helper arguments typed ARG_PTR_TO_* are valid objects (named)
+    bool pir_global_harness_deep = false;  // --pir-global-harness-deep: nested pointer fields and list heads of harnessed globals (named)
     bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.

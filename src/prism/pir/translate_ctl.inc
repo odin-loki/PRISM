@@ -972,6 +972,7 @@ void Tr::asm_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     if (it == opt.asm_contracts.end()) {
         // a stated contract wins; otherwise --kernel-api: conservative havoc (translate_kernel.inc)
         if (!opt.kernel_api.empty()) {
+            if (asm_mmio(fr, in, cur, line)) return;   // --pir-global-harness-deep: readl / writel (translate_kernel.inc)
             if (asm_exact(fr, in, cur, line)) return;  // exact instruction semantics (translate_asm.inc)
             asm_havoc(fr, in, cur, line);
             return;

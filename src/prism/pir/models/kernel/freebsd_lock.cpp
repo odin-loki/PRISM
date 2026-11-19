@@ -6,7 +6,8 @@
  * change no data memory the analysed function can see. The lock word is not
  * tracked across functions: no check of lock order or sleep-with-mutex (WITNESS);
  * mutex and exclusive sx balance in the analysed function is tracked (ghost lock state). mtx_trylock: nonzero (acquired) or 0, arbitrary. _sx_xlock/_sx_slock:
- * 0, or an error when the lock is interruptible (SX_INTERRUPTIBLE): arbitrary int.
+ * 0, or (_sx_slock always, _sx_xlock only with SX_INTERRUPTIBLE in opts) an arbitrary error int.
+ * sx_try_xlock: nonzero (taken) or 0, arbitrary.
  * Preconditions checked: the lock word is valid memory (8 bytes in bounds).
  * Assumptions introduced (named in the verdict):
  *   - lock state is not tracked (no deadlock, balance or order check)
@@ -50,12 +51,29 @@ int _mtx_trylock_flags_(void *c, int opts, const char *file, int line) {
 /* sx.h */
 void sx_init_flags(void *sx, const char *description, int opts) { (void)description; (void)opts; fb_lock(sx); }
 void sx_destroy(void *sx) { fb_lock(sx); }
+/* kern_sx.c: _sx_xlock returns 0 (taken) unless opts has SX_INTERRUPTIBLE (0x40, sys/sx.h): only then can the
+ * sleep be interrupted (_sx_xlock_hard: sleepq_wait_sig) and an error come back. sx_xlock() and OpenZFS
+ * mutex_enter() (= sx_xlock, spl/sys/mutex.h) pass opts 0, so they always take the lock. */
 int _sx_xlock(void *sx, int opts, const char *file, int line) {
-    (void)opts; (void)file; (void)line;
+    (void)file; (void)line;
     fb_lock(sx);
-    int r = __VERIFIER_nondet_int();
+    int r = (opts & 0x40) ? __VERIFIER_nondet_int() : 0;
     if (r == 0) __prism_lock_acquire(sx, 0);
     return r;
+}
+/* kern_sx.c: int sx_try_xlock_(struct sx *sx, const char *file, int line) (LOCK_DEBUG > 0) and
+ * int sx_try_xlock_int(struct sx *sx) (LOCK_DEBUG == 0): nonzero (taken) or 0, never sleeps.
+ * OpenZFS mutex_tryenter() is sx_try_xlock(). */
+int sx_try_xlock_(void *sx, const char *file, int line) {
+    (void)file; (void)line;
+    fb_lock(sx);
+    if (CHOICE()) { __prism_lock_acquire(sx, 0); return 1; }
+    return 0;
+}
+int sx_try_xlock_int(void *sx) {
+    fb_lock(sx);
+    if (CHOICE()) { __prism_lock_acquire(sx, 0); return 1; }
+    return 0;
 }
 int _sx_slock(void *sx, int opts, const char *file, int line) { (void)opts; (void)file; (void)line; fb_lock(sx); return __VERIFIER_nondet_int(); }
 void _sx_xunlock(void *sx, const char *file, int line) { (void)file; (void)line; fb_lock(sx); __prism_lock_release(sx, 0); }

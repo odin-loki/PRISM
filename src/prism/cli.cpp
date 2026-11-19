@@ -227,6 +227,15 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-lock-wrappers") {
             ok = in.flag();
             cfg.pir_lock_wrappers = true;
+        } else if (a == "--pir-lock-scopes") {
+            ok = in.flag();
+            cfg.pir_lock_scopes = true;
+        } else if (a == "--pir-bpf-helpers") {
+            ok = in.flag();
+            cfg.pir_bpf_helpers = true;
+        } else if (a == "--pir-global-harness-deep") {
+            ok = in.flag();
+            cfg.pir_global_harness_deep = true;
         } else if (a == "--pir-icall-havoc") {
             ok = in.flag();
             cfg.pir_icall_havoc = true;
@@ -449,6 +458,13 @@ std::string cli_usage() {
         "  --pir-kernel-current: with --kernel-api, current (Linux) and curthread (FreeBSD) point to a valid object.\n"
         "  --pir-global-harness: with --kernel-api, mutable pointer globals (MMIO bases, bus handles) point to a valid object.\n"
         "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
+        "  --pir-lock-scopes: with --kernel-api, guard()/scoped_guard cleanup and irqsave lock classes are followed in the\n"
+        "      lock-order pass, branches on constants (readl_poll_timeout sleep_us 0) are dead there, and a lock the function\n"
+        "      releases but never acquires (acquires but never releases) is its caller's (named, per lock).\n"
+        "  --pir-bpf-helpers: with --kernel-api linux, a BPF helper argument its bpf_func_proto types ARG_PTR_TO_* (not\n"
+        "      _OR_NULL) is a valid object, as the BPF verifier guarantees (named).\n"
+        "  --pir-global-harness-deep: with --pir-global-harness, pointer fields of a harnessed global and list_head\n"
+        "      globals get valid objects (named).\n"
         "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
         "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"

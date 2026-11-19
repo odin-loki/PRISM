@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -44,13 +45,201 @@ struct Analyzer {
     long steps = 0;
     static constexpr long kMaxSteps = 200000;
 
+    // The class of an operand: a global's name (also through a getelementptr constant expression whose indices are
+    // all zero: the same address), or what `pm` says for a local. A class "&C" is not a lock: it is the address of a
+    // stack slot that holds the lock pointer C (a guard() variable, see local_classes).
     static std::string cls_of(const ir::Operand& o, const std::map<std::string, std::string>& pm) {
         if (o.v.kind == ir::Value::Global) return o.v.name;
+        if (o.v.kind == ir::Value::ConstExpr && o.v.ce_op == "getelementptr" && !o.v.elems.empty() &&
+            o.v.elems[0].v.kind == ir::Value::Global) {
+            for (std::size_t k = 1; k < o.v.elems.size(); ++k) {
+                const auto& v = o.v.elems[k].v;
+                if (!(v.kind == ir::Value::Zero || (v.kind == ir::Value::Int && v.bits == 0))) return "";
+            }
+            return o.v.elems[0].v.name;
+        }
         if (o.v.kind == ir::Value::Local) {
             auto it = pm.find(o.v.name);
             if (it != pm.end()) return it->second;
         }
         return "";
+    }
+    // a lock class (never a slot address "&C" or a parameter placeholder "#k")
+    static std::string lock_cls(const ir::Operand& o, const std::map<std::string, std::string>& pm) {
+        auto c = cls_of(o, pm);
+        return c.starts_with("&") || c.starts_with("#") ? std::string() : c;
+    }
+
+    static bool zero_gep(const ir::Inst& in) {
+        if (in.op != "getelementptr" || in.ops.size() < 2) return false;
+        for (std::size_t k = 1; k < in.ops.size(); ++k) {
+            const auto& v = in.ops[k].v;
+            if (!(v.kind == ir::Value::Zero || (v.kind == ir::Value::Int && v.bits == 0))) return false;
+        }
+        return true;
+    }
+
+    // Classes of the locals of f, flow-insensitively, from its parameters' classes (in pm). With --pir-lock-scopes
+    // (`scopes`):
+    //   - a getelementptr with all-zero indices has its base's class (&lock->rlock is the lock);
+    //   - a call of a unit function that returns one of its parameters (spinlock_check, class_mutex_constructor,
+    //     see returned_param) has that argument's class;
+    //   - an alloca to which only values of one class C are stored is the slot "&C", and a load from it is C
+    //     (the guard() / scoped_guard variable whose address the cleanup, class_mutex_destructor, gets);
+    //   - a load through a parameter of class "&C" (the destructor's argument) is C.
+    // Exact: each rule only names the address a value already has; a slot with two classes gets none.
+    bool scopes = false;
+    void local_classes(const ir::Function& f, std::map<std::string, std::string>& pm, int depth, bool params_only = false) {
+        if (!scopes) return;
+        std::set<std::string> allocas;
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts)
+                if (in.op == "alloca" && !in.result.empty()) allocas.insert(in.result);
+        std::map<std::string, std::string> slot;  // alloca -> class stored ("" = conflicting or none)
+        auto keep = [&](const std::string& c) { return params_only ? c : (c.starts_with("#") ? std::string() : c); };
+        for (bool changed = true; changed;) {
+            changed = false;
+            auto set = [&](const std::string& r, const std::string& c) {
+                if (r.empty() || c.empty() || c.starts_with("&") || pm.count(r)) return;
+                pm[r] = c;
+                changed = true;
+            };
+            for (auto& b : f.blocks)
+                for (auto& in : b.insts) {
+                    if (in.op == "store" && in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Local &&
+                        allocas.count(in.ops[1].v.name)) {
+                        auto c = keep(cls_of(in.ops[0], pm));
+                        if (c.starts_with("&")) c.clear();
+                        auto [it, fresh] = slot.emplace(in.ops[1].v.name, c);
+                        if (fresh) {
+                            changed = true;
+                        } else if (it->second != c && !it->second.empty()) {
+                            it->second.clear();
+                            changed = true;
+                        }
+                    } else if (in.op == "load" && !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local) {
+                        if (auto s = slot.find(in.ops[0].v.name); s != slot.end()) {
+                            set(in.result, s->second);
+                        } else if (auto c = cls_of(in.ops[0], pm); c.starts_with("&")) {
+                            set(in.result, c.substr(1));
+                        }
+                    } else if (zero_gep(in)) {
+                        auto c = cls_of(in.ops[0], pm);
+                        if (!c.starts_with("&")) set(in.result, c);
+                    } else if (in.op == "call" && !in.result.empty() && !in.callee.empty()) {
+                        auto k = returned_param(in.callee, depth);
+                        if (k && *k < in.ops.size()) {
+                            auto c = cls_of(in.ops[*k], pm);
+                            if (!c.starts_with("&")) set(in.result, c);
+                        }
+                    }
+                }
+        }
+        // a slot that holds one lock class, as an operand (its address passed to the cleanup function): "&C"
+        for (auto& [a, c] : slot)
+            if (!c.empty() && !c.starts_with("#") && !pm.count(a)) pm[a] = "&" + c;
+    }
+
+    // k when every `ret` of the unit function g returns its parameter k (or that parameter at offset zero)
+    std::map<std::string, std::optional<std::size_t>> ret_memo;
+    std::optional<std::size_t> returned_param(const std::string& g, int depth) {
+        if (auto it = ret_memo.find(g); it != ret_memo.end()) return it->second;
+        ret_memo[g] = std::nullopt;  // while it is computed (recursion): no answer
+        auto fi = fns.find(g);
+        if (fi == fns.end() || fi->second->is_declaration || fi->second->is_model || depth >= 3) return std::nullopt;
+        const auto& h = *fi->second;
+        if (h.ret.kind != ir::Type::Ptr) return std::nullopt;
+        std::map<std::string, std::string> pm;
+        for (std::size_t i = 0; i < h.params.size(); ++i) pm[h.params[i].name] = "#" + std::to_string(i);
+        local_classes(h, pm, depth + 1, true);
+        std::optional<std::string> r;
+        for (auto& b : h.blocks)
+            for (auto& in : b.insts) {
+                if (in.op != "ret") continue;
+                if (in.ops.size() != 1) return std::nullopt;
+                const auto c = cls_of(in.ops[0], pm);
+                if (!c.starts_with("#") || (r && *r != c)) return std::nullopt;
+                r = c;
+            }
+        if (!r) return std::nullopt;
+        ret_memo[g] = static_cast<std::size_t>(std::stoul(r->substr(1)));
+        return ret_memo[g];
+    }
+
+    // --pir-lock-scopes: an i1 branch condition that is a constant, or an icmp of two integer constants (after
+    // mem2reg, `if (__sleep_us)` of readl_poll_timeout(..., 0, ...) is `icmp ne i64 0, 0`): its value. Exact.
+    static std::optional<bool> const_cond(const ir::Operand& o, const std::map<std::string, const ir::Inst*>& defs) {
+        if (o.v.kind == ir::Value::Int) return (o.v.bits & 1) != 0;
+        if (o.v.kind == ir::Value::Zero) return false;
+        if (o.v.kind != ir::Value::Local) return std::nullopt;
+        auto d = defs.find(o.v.name);
+        if (d == defs.end()) return std::nullopt;
+        const ir::Inst& in = *d->second;
+        if (in.op == "icmp" && in.ops.size() == 2) {
+            auto val = [](const ir::Operand& x) -> std::optional<uint64_t> {
+                if (x.v.kind == ir::Value::Int) return x.v.bits;
+                if (x.v.kind == ir::Value::Zero || x.v.kind == ir::Value::Null) return uint64_t{0};
+                return std::nullopt;
+            };
+            auto a = val(in.ops[0]), b = val(in.ops[1]);
+            if (!a || !b) return std::nullopt;
+            const unsigned w = in.ops[0].ty.kind == ir::Type::Int && in.ops[0].ty.bits ? in.ops[0].ty.bits : 64;
+            const uint64_t m = w >= 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1;
+            const uint64_t x = *a & m, y = *b & m;
+            auto sx = [&](uint64_t v) {
+                if (w < 64 && (v >> (w - 1)) & 1) v |= ~m;
+                return static_cast<int64_t>(v);
+            };
+            const auto& p = in.pred;
+            if (p == "eq") return x == y;
+            if (p == "ne") return x != y;
+            if (p == "ult") return x < y;
+            if (p == "ule") return x <= y;
+            if (p == "ugt") return x > y;
+            if (p == "uge") return x >= y;
+            if (p == "slt") return sx(x) < sx(y);
+            if (p == "sle") return sx(x) <= sx(y);
+            if (p == "sgt") return sx(x) > sx(y);
+            if (p == "sge") return sx(x) >= sx(y);
+        }
+        return std::nullopt;
+    }
+
+    // the blocks of f reachable from its entry, a branch on a constant condition taking only its live edge
+    std::set<std::string> live_blocks(const ir::Function& f) const {
+        std::set<std::string> live;
+        if (f.blocks.empty()) return live;
+        std::map<std::string, const ir::Inst*> defs;
+        std::map<std::string, const ir::Block*> by;
+        for (auto& b : f.blocks) {
+            by[b.name] = &b;
+            for (auto& in : b.insts)
+                if (!in.result.empty()) defs[in.result] = &in;
+        }
+        std::vector<std::string> work{f.blocks.front().name};
+        while (!work.empty()) {
+            auto n = work.back();
+            work.pop_back();
+            if (!live.insert(n).second) continue;
+            auto bi = by.find(n);
+            if (bi == by.end()) continue;
+            for (auto& in : bi->second->insts) {
+                if (in.op == "br") {
+                    if (scopes && in.targets.size() == 2 && !in.ops.empty())
+                        if (auto c = const_cond(in.ops[0], defs)) {
+                            work.push_back(in.targets[*c ? 0 : 1]);
+                            continue;
+                        }
+                    for (auto& t : in.targets) work.push_back(t);
+                } else if (in.op == "switch") {
+                    for (auto& t : in.targets) work.push_back(t);
+                    for (auto& c : in.cases) work.push_back(c.second);
+                } else if (in.op == "invoke") {
+                    for (auto& t : in.targets) work.push_back(t);
+                }
+            }
+        }
+        return live;
     }
 
     void acquire(const std::string& c, Held& h, const std::string& witness) {
@@ -73,6 +262,12 @@ struct Analyzer {
         std::map<std::string, std::string> pm;
         for (std::size_t i = 0; i < f.params.size(); ++i)
             pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        local_classes(f, pm, depth);
+        std::map<std::string, const ir::Inst*> defs;
+        if (scopes)
+            for (auto& b : f.blocks)
+                for (auto& in : b.insts)
+                    if (!in.result.empty()) defs[in.result] = &in;
         std::map<std::string, std::size_t> bidx;
         for (std::size_t i = 0; i < f.blocks.size(); ++i) bidx.emplace(f.blocks[i].name, i);
         std::set<std::pair<std::size_t, Held>> seen;
@@ -102,8 +297,11 @@ struct Analyzer {
                         cur.clear();
                     }
                 } else if (in.op == "br") {
-                    for (auto& t : in.targets)
-                        for (auto& h : cur) push(t, h);
+                    std::optional<bool> k;
+                    if (scopes && in.targets.size() == 2 && !in.ops.empty()) k = const_cond(in.ops[0], defs);
+                    for (std::size_t ti = 0; ti < in.targets.size(); ++ti)
+                        if (!k || ti == (*k ? 0u : 1u))
+                            for (auto& h : cur) push(in.targets[ti], h);
                     cur.clear();
                 } else if (in.op == "switch") {
                     for (auto& h : cur) {
@@ -136,7 +334,7 @@ struct Analyzer {
                 if (c->lock.starts_with("global:")) cl = c->lock.substr(7);
                 else if (c->lock.starts_with("arg:")) {
                     std::size_t n = std::stoul(c->lock.substr(4));
-                    if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
+                    if (n < in.ops.size()) cl = lock_cls(in.ops[n], pm);
                 }
                 event = true;
                 if (c->action == "acquires") acquire(cl, h, f.name);
@@ -144,7 +342,7 @@ struct Analyzer {
             }
         } else if (acquires.count(cal) || releases.count(cal)) {
             event = true;
-            std::string cl = in.ops.empty() ? std::string() : cls_of(in.ops[0], pm);
+            std::string cl = in.ops.empty() ? std::string() : lock_cls(in.ops[0], pm);
             if (acquires.count(cal)) acquire(cl, h, f.name);
             else release(cl, h);
         }
@@ -168,7 +366,7 @@ struct Analyzer {
         if (c.lock.starts_with("global:")) cl = c.lock.substr(7);
         else if (c.lock.starts_with("arg:")) {
             std::size_t n = std::stoul(c.lock.substr(4));
-            if (n < in.ops.size()) cl = cls_of(in.ops[n], pm);
+            if (n < in.ops.size()) cl = lock_cls(in.ops[n], pm);
         }
         return cl;
     }
@@ -198,7 +396,7 @@ struct Analyzer {
             ok = acquires.count(cal) && (cal.find("spin") != std::string::npos || cal == "mtx_lock_spin");
         }
         if (ok && !in.ops.empty()) {
-            std::string cl = cls_of(in.ops[0], pm);
+            std::string cl = lock_cls(in.ops[0], pm);
             if (!cl.empty()) out.push_back(std::move(cl));
         }
         return out;
@@ -260,7 +458,12 @@ struct Hardirq {
         std::map<std::string, std::string> pm;
         for (std::size_t i = 0; i < f.params.size(); ++i)
             pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        a.local_classes(f, pm, depth);
+        // --pir-lock-scopes: a block behind a branch on a constant (readl_poll_timeout's `if (__sleep_us)` with
+        // sleep_us 0) is dead code, not reached from the handler
+        const auto live = a.scopes ? a.live_blocks(f) : std::set<std::string>{};
         for (const auto& b : f.blocks) {
+            if (a.scopes && !live.count(b.name)) continue;
             for (const auto& in : b.insts) {
                 if (in.op != "call" && in.op != "invoke") continue;
                 if (in.callee.empty()) continue;
@@ -326,10 +529,11 @@ void find_cycles(const std::map<std::string, std::set<std::string>>& adj,
 
 }  // namespace
 
-LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts) {
+LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts, bool scopes) {
     Analyzer a;
     for (auto& f : m.functions) a.fns.emplace(f.name, &f);
     for (auto& c : contracts) a.table[c.function].push_back(&c);
+    a.scopes = scopes;
     for (auto n : {"mutex_lock", "mutex_lock_nested", "mutex_lock_interruptible", "mutex_lock_killable",
                    "_raw_spin_lock", "_raw_spin_lock_irqsave", "_raw_spin_lock_bh", "spin_lock",
                    "spin_lock_irqsave", "spin_lock_bh", "mtx_lock", "mtx_lock_spin", "sx_xlock"})
@@ -411,6 +615,154 @@ LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockCon
 
 std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m, const std::vector<LockContract>& contracts) {
     return lock_order_report(m, contracts).inversions;
+}
+
+namespace {
+
+// Lock effects of a library-model function (is_model) called with constant arguments `cargs` (nullopt: not a
+// constant): bit 0 acquire, bit 1 release (the ghost intrinsics __prism_lock_acquire / __prism_lock_release),
+// bit 2 a spin acquire, bit 3 a spin release, bit 4 a lock intrinsic whose lock is not the model's parameter 0 or
+// whose spin flag is not a constant; bits 5-7: __prism_rcu_add with a positive, negative, non-constant delta; bits
+// 8-10: the same for __prism_atomic_add (preempt / bh count).
+int model_lock_fx(const ir::Module& m, const ir::Function& g, const std::vector<std::optional<uint64_t>>& cargs,
+                  const std::set<std::string>& p0, int depth) {
+    if (depth > 8) return 16;
+    std::map<std::string, std::optional<uint64_t>> cv;
+    for (std::size_t i = 0; i < g.params.size(); ++i) cv[g.params[i].name] = i < cargs.size() ? cargs[i] : std::nullopt;
+    auto cval = [&](const ir::Operand& o) -> std::optional<uint64_t> {
+        if (o.v.kind == ir::Value::Int) return o.v.bits;
+        if (o.v.kind == ir::Value::Zero) return uint64_t{0};
+        if (o.v.kind == ir::Value::Local)
+            if (auto it = cv.find(o.v.name); it != cv.end()) return it->second;
+        return std::nullopt;
+    };
+    std::map<std::string, const ir::Inst*> defs;
+    for (auto& b : g.blocks)
+        for (auto& in : b.insts)
+            if (!in.result.empty()) defs[in.result] = &in;
+    auto sval = [&](const ir::Operand& o) -> std::optional<int64_t> {  // a signed 32-bit delta: constant, or 0 - constant
+        auto as32 = [](uint64_t v) { return static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(v))); };
+        if (auto c = cval(o)) return as32(*c);
+        if (o.v.kind != ir::Value::Local) return std::nullopt;
+        auto d = defs.find(o.v.name);
+        if (d == defs.end() || d->second->op != "sub" || d->second->ops.size() != 2) return std::nullopt;
+        auto z = cval(d->second->ops[0]), x = cval(d->second->ops[1]);
+        if (!z || *z != 0 || !x) return std::nullopt;
+        return -as32(*x);
+    };
+    int fx = 0;
+    for (auto& b : g.blocks)
+        for (auto& in : b.insts) {
+            if ((in.op != "call" && in.op != "invoke") || in.callee.empty()) continue;
+            if (in.callee == "__prism_rcu_add" || in.callee == "__prism_atomic_add") {
+                const int sh = in.callee == "__prism_rcu_add" ? 5 : 8;
+                auto d = in.ops.empty() ? std::nullopt : sval(in.ops[0]);
+                fx |= (!d ? 4 : *d > 0 ? 1 : *d < 0 ? 2 : 0) << sh;
+                continue;
+            }
+            const bool acq = in.callee == "__prism_lock_acquire", rel = in.callee == "__prism_lock_release";
+            if (acq || rel) {
+                fx |= acq ? 1 : 2;
+                const bool from_p0 = !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local && p0.count(in.ops[0].v.name);
+                auto sp = in.ops.size() >= 2 ? cval(in.ops[1]) : std::nullopt;
+                if (!from_p0 || !sp) fx |= 16;
+                else if (*sp != 0) fx |= acq ? 4 : 8;
+                continue;
+            }
+            const auto* h = m.find(in.callee);
+            if (!h || h->blocks.empty() || h == &g) continue;
+            std::vector<std::optional<uint64_t>> ca;
+            std::set<std::string> hp0;
+            for (std::size_t i = 0; i < in.ops.size(); ++i) {
+                ca.push_back(cval(in.ops[i]));
+                if (i < h->params.size() && in.ops[i].v.kind == ir::Value::Local && p0.count(in.ops[i].v.name))
+                    hp0.insert(h->params[i].name);
+            }
+            fx |= model_lock_fx(m, *h, ca, hp0, depth + 1);
+        }
+    return fx;
+}
+
+struct SiteWalk {
+    const ir::Module& m;
+    Analyzer a;
+    LockSites out;
+    std::set<std::pair<std::string, std::vector<std::string>>> seen;
+    explicit SiteWalk(const ir::Module& mm) : m(mm) {
+        for (auto& f : m.functions) a.fns.emplace(f.name, &f);
+        a.scopes = true;
+    }
+    void walk(const ir::Function& f, const std::vector<std::string>& pcls, int depth) {
+        if (!seen.insert({f.name, pcls}).second) return;
+        if (depth > 24) {
+            out.unknown_acquire = out.unknown_release = true;
+            out.rcu |= 4;
+            out.preempt |= 4;
+            return;
+        }
+        std::map<std::string, std::string> pm;
+        for (std::size_t i = 0; i < f.params.size(); ++i)
+            pm[f.params[i].name] = i < pcls.size() ? pcls[i] : std::string();
+        a.local_classes(f, pm, 0);
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts) {
+                if (in.op != "call" && in.op != "invoke") continue;
+                if (in.callee.empty()) {  // an indirect call: its targets are not walked, so nothing is release- or acquire-only
+                    if (in.callee_op) {
+                    out.unknown_acquire = out.unknown_release = true;
+                    out.rcu |= 4;
+                    out.preempt |= 4;
+                }
+                    continue;
+                }
+                if (in.callee == "__prism_lock_acquire" || in.callee == "__prism_lock_release" ||
+                    in.callee == "__prism_lock_entry" || in.callee == "__prism_lock_exit" ||
+                    in.callee == "__prism_rcu_add" || in.callee == "__prism_atomic_add") {
+                    // an intrinsic in analysed code: its lock is not classified here
+                    out.unknown_acquire = out.unknown_release = true;
+                    out.rcu |= 4;
+                    out.preempt |= 4;
+                    continue;
+                }
+                const auto* g = m.find(in.callee);
+                if (!g || g->blocks.empty()) continue;
+                if (g->is_model) {
+                    std::vector<std::optional<uint64_t>> ca;
+                    for (auto& o : in.ops)
+                        ca.push_back(o.v.kind == ir::Value::Int ? std::optional<uint64_t>(o.v.bits)
+                                     : o.v.kind == ir::Value::Zero ? std::optional<uint64_t>(0)
+                                                                    : std::nullopt);
+                    std::set<std::string> p0;
+                    if (!g->params.empty()) p0.insert(g->params[0].name);
+                    const int fx = model_lock_fx(m, *g, ca, p0, 0);
+                    out.rcu |= (fx >> 5) & 7;
+                    out.preempt |= (fx >> 8) & 7;
+                    if (!(fx & 3)) continue;
+                    const std::string cl = in.ops.empty() ? std::string() : Analyzer::lock_cls(in.ops[0], pm);
+                    const bool known = !cl.empty() && !(fx & 16);
+                    if (fx & 1) {
+                        if (known) out.by_class[cl] |= 1 | ((fx & 4) ? 4 : 0);
+                        else out.unknown_acquire = true;
+                    }
+                    if (fx & 2) {
+                        if (known) out.by_class[cl] |= 2 | ((fx & 8) ? 8 : 0);
+                        else out.unknown_release = true;
+                    }
+                    continue;
+                }
+                std::vector<std::string> pc;
+                for (auto& o : in.ops) pc.push_back(Analyzer::cls_of(o, pm));
+                walk(*g, pc, depth + 1);
+            }
+    }
+};
+
+}  // namespace
+
+LockSites lock_sites(const ir::Module& m, const ir::Function& root) {
+    SiteWalk w(m);
+    w.walk(root, std::vector<std::string>(root.params.size()), 0);
+    return w.out;
 }
 
 }  // namespace prism::pir
