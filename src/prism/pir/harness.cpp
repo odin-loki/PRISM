@@ -254,8 +254,10 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     // here are uses of that nested object, as for a load of the field in this function
                     if (container && !in.result.empty() && !in.callee_op)
                         for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i)
-                            if (is_local(in.ops[i], alias, &a) && a >= 0)
-                                if (auto k = returned_field(m, lay, *callee, i, depth + 1)) {
+                            // a may be negative (the container of a container_of parameter: to_platform_device(dev)
+                            // then platform_get_drvdata(pdev)); the field itself must be at or after the parameter
+                            if (is_local(in.ops[i], alias, &a))
+                                if (auto k = returned_field(m, lay, *callee, i, depth + 1); k && a + *k >= 0) {
                                     const auto fo = static_cast<uint64_t>(a + *k);
                                     u.ptr_fields[fo].push_back({&g, in.result});
                                     u.max_end = std::max<uint64_t>(u.max_end, fo + lay.store_size(ir::parse_type("ptr")));
