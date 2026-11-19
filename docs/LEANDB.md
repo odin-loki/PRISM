@@ -189,24 +189,58 @@ directory, so committed plus local shards are searched through an in-memory merg
 later adds a sidecar to the set (a term filter file is in progress there), the merged manifest must carry or ignore it; that is
 a follow-up, not something this PR depends on.
 
-## Measured
+## Measured (19 Nov 2026, on the real database)
 
-**Not yet measured on the real database.** When this was written OS-Proving's `lean_db.sqlite` was still being built
-(`lean_db.sqlite.new` was 6.5 GB and growing), so `prism leandb import` was not run on it, no real shards are committed
-(`data/leandb/shards` does not exist yet and the repository test skips), and the premise-retrieval recall of bm25, sym and
-hybrid on the LeanDojo test split (`tools/leandb/eval_premises.py`) was not run. What was run is the fixture suite
-(`tests/cpp/test_leandb.cpp`, 9 cases, all passing): import, sorted shards, byte-identical rebuild, identical shards for the
-same rows under different input row ids, a one-source rebuild reproducing exactly that source's shards, every search mode,
-local shards joining by default, no eval leakage, sharded BM25 equal to the unsharded FTS5 bm25, tamper detection, and the
-fetch script end to end against a local fake source.
+Input: OS-Proving `lean_db.sqlite` (8.97 GB, schema 1.0, verified there: 50 raw-file hashes match, no dropped rows). The
+file is read from a copy on the WSL ext4 disk; reading it through the `/mnt/d` mount ran at 1 to 5 MB/s under load.
 
-To produce the real numbers once the database is complete:
+**Size of the committed set: over the 1.5 GB limit, so nothing was committed.** `data/leandb/shards` does not exist.
+Measured on the library sources (lean4, batteries, mathlib4, lean-smt): 450,144 items became 52 shards, 457,445,376 bytes
+(437 MiB), in 2 min 41 s with 4 threads and 477 MB peak memory; that is about 3.9 bytes of shard per byte of statement and
+proof text. The redistributable sources hold 2,862,413 rows and 1,014 MB of text, so the committed set would be about
+3.5 to 4 GB. I stopped a full import of it when this ratio was clear (it had written 270 MB in 25 minutes) and did not
+measure the exact total. The bulk, by statement and proof text:
+
+| source | rows | text |
+|---|---:|---:|
+| Goedel-Pset-v1 | 1,732,594 | 698 MB (69% of the text) |
+| NuminaMath-LEAN | 104,155 | 84 MB |
+| mathlib4 | 273,587 | 76 MB |
+| Goedel-Lean-workbook-proofs | 29,750 | 38 MB |
+| lean4 | 172,666 | 36 MB |
+| Lean-Workbook | 165,428 | 30 MB |
+| leandojo-benchmark-4-v10 | 303,490 | 29 MB |
+| Herald_proofs | 44,553 | 19 MB |
+| the 10 smaller sources (eval and libraries) | 11,800 | about 4 MB |
+
+Without Goedel-Pset-v1 the estimate is about 1.2 GB; with it about 3.8 GB. The choices (Odin's): drop the per-shard vector
+tables for the large problem sources, keep Goedel-Pset-v1 pin-only/local, or raise the limit.
+
+**Premise retrieval, LeanDojo benchmark test split** (`tools/leandb/eval_premises.py`, 706 of the 2,000 test theorems that
+have a statement in mathlib4 and at least one resolved premise; the index is the library shards above, 450,144 declarations;
+query = the theorem's statement; gold = premises its tactic steps use that resolve to a library declaration; the theorem
+itself removed):
+
+| mode | R@1 | R@5 | R@10 | R@50 |
+|---|---:|---:|---:|---:|
+| bm25 | 0.053 | 0.141 | **0.192** | 0.328 |
+| ann (SimHash) | 0.039 | 0.090 | 0.112 | 0.169 |
+| hybrid (RRF) | 0.049 | 0.135 | 0.180 | 0.299 |
+| sym | n/a | n/a | n/a | n/a |
+
+BM25 R@10 of 0.19 is above the 0.13 to 0.15 in OS-Proving's SEARCH_TEST.md, but the protocol differs (gold set, query
+construction), so it is not a like-for-like comparison. Hybrid is slightly below BM25 here (the text-ANN list adds noise).
+**sym answered no query**: the 706 queries are Mathlib signatures with type-class binders (`{α : Type*} [Group α]`), none of
+which translates to the decidable fragment; over the whole library 4,656 of 450,144 statements translate (1.0%), so the
+symbolic vectors exist for a small slice and matter for BitVec/Nat/Int goals, not for these queries.
+
+**Leakage test passed**: no result from an eval source and none flagged `eval_overlap` (the check treats a name as flagged
+only if every declaration of that name is flagged; the first run counted 20 name collisions and was corrected). `prism leandb
+verify` on the library shards: 52 shards, OK.
+
+To reproduce:
 
 ```
-prism leandb import /mnt/d/ParanoidBSD/lean-db/lean_db.sqlite --pin data/leandb/PIN.json \
-    --committed data/leandb/shards --local data/leandb/local
-prism leandb verify
-tools/leandb/eval_premises.py /mnt/d/ParanoidBSD/lean-db/lean_db.sqlite --prism build/prism \
-    --db data/leandb/shards --db data/leandb/local --out premise_recall.json
-du -sh data/leandb/shards; ls data/leandb/shards | wc -l      # stop before committing if the total is over about 1.5 GB
+prism leandb import /path/to/lean_db.sqlite --pin data/leandb/PIN.json --committed OUT --sources lean4,batteries,mathlib4,lean-smt
+tools/leandb/eval_premises.py /path/to/lean_db.sqlite --prism build/prism --db OUT --n 2000
 ```

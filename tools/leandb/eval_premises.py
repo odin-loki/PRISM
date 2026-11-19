@@ -71,7 +71,7 @@ def main():
             for src, nm in lst:
                 if src in ev_sources:
                     leaks += 1
-                r = con.execute("SELECT eval_overlap FROM decls WHERE source=? AND full_name=? LIMIT 1", (src, nm)).fetchone()
+                r = con.execute("SELECT min(eval_overlap) FROM decls WHERE source=? AND full_name=?", (src, nm)).fetchone()
                 if r and r[0]:
                     flagged += 1
     def recall(mode, subset=None):
