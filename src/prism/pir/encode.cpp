@@ -2682,6 +2682,28 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
             prism::membudget::Phase phase_b("encode: Encoding::build");
             // the function budget holds while encoding too (memory.hpp)
             mem::EncodeBudgetScope enc_budget(fn_budget.get(), fn_budget_n);
+            // One Z3 simplify of a long read-over-write chain can itself run
+            // for minutes between two guard checks: once the budget is spent
+            // the context is interrupted (the "canceled" exception is mapped
+            // to the budget TIMEOUT below).
+            struct EncTimer {
+                std::atomic<bool> done{false};
+                std::thread t;
+                ~EncTimer() {
+                    done.store(true);
+                    if (t.joinable()) t.join();
+                }
+            } enc_timer;
+            if (fn_budget)
+                enc_timer.t = std::thread([&c, &enc_timer, b = fn_budget] {
+                    while (!enc_timer.done.load()) {
+                        if (b->exhausted()) {
+                            Z3_interrupt(c);
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                });
             e.build();
         }
         if (rc.meter) {
@@ -3333,6 +3355,14 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         return v;
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
+        // the encoder's budget timer interrupted Z3 (EncTimer above)
+        if (fn_budget && fn_budget->exhausted() && m.find("cancel") != std::string::npos) {
+            v.status = std::string(laws::TIMEOUT);
+            v.message = "pir function budget of " + fn_budget_n +
+                        " s spent while encoding (Z3 interrupted) (PRISM_FUNCTION_BUDGET)";
+            v.extra["function_budget_s"] = fn_budget_n;
+            return v;
+        }
         // memory_max_size (cap_z3_memory_once): no proof, and not a crash
         const bool soft = m.find("soft memory cap") != std::string::npos;
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
