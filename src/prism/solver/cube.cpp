@@ -344,9 +344,11 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
             s.reset_assumptions();
             if (x != 0 && std::abs(x) <= cnf.num_vars && !in.count(std::abs(x))) return x;
         }
+        // a variable that occurs in no clause would split nothing
+        const int known = std::min(cnf.num_vars, s.vars());
         for (int v : split_order)
-            if (!in.count(v)) return v;
-        for (int v = 1; v <= cnf.num_vars; ++v)
+            if (v <= known && !in.count(v)) return v;
+        for (int v = 1; v <= known; ++v)
             if (!in.count(v)) return v;
         return 0;
     };
@@ -475,7 +477,8 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
             }
             if (r == 10) {
                 std::vector<std::int8_t> a(std::size_t(cnf.num_vars) + 1, 0);
-                for (int v = 1; v <= cnf.num_vars; ++v) a[std::size_t(v)] = s.val(v) > 0 ? 1 : 0;
+                const int known = s.vars();  // variables CaDiCaL has seen (others occur in no clause)
+                for (int v = 1; v <= cnf.num_vars && v <= known; ++v) a[std::size_t(v)] = s.val(v) > 0 ? 1 : 0;
                 const bool ok = assignment_satisfies(cnf, a);
                 std::lock_guard<std::mutex> lk(t.mu);
                 ++stats.solver_calls;
