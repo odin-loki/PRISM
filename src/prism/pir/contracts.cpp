@@ -15,6 +15,7 @@
 
 #include "prism/pir.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -46,8 +47,22 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
     // line(s) up to '{', and the leading comment lines of the body
     std::vector<std::string> cand;
     int i = fn_line - 2;
-    while (i >= 0 && is_comment_or_blank(lines.at(static_cast<std::size_t>(i)))) {
-        cand.push_back(lines.at(static_cast<std::size_t>(i)));
+    // A multi-line ACSL block `/*@ requires A;\n    ensures B;\n*/` has
+    // continuation lines that start with neither `*` nor `//`: from its
+    // closing line up to the line that opens it, every line is comment.
+    bool in_block = false;
+    while (i >= 0) {
+        const auto& l = lines.at(static_cast<std::size_t>(i));
+        if (in_block) {
+            cand.push_back(l);
+            if (l.find("/*") != std::string::npos) in_block = false;
+            --i;
+            continue;
+        }
+        if (!is_comment_or_blank(l)) break;
+        cand.push_back(l);
+        auto t = trim(l);
+        if (t.ends_with("*/") && t.find("/*") == std::string::npos) in_block = true;
         --i;
     }
     std::size_t j = static_cast<std::size_t>(fn_line - 1);
@@ -70,7 +85,11 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
         }
     }
     std::string text;
+    // The contracts stage checks the function with its requires assumed (an
+    // early return, stages/contracts.cpp): conditions are not unbound there.
+    bool conditions_assumed = false;
     for (auto& l : cand) {
+        if (l.find("prism: requires assumed") != std::string::npos) conditions_assumed = true;
         if (l.find("requires") == std::string::npos) continue;
         text += l + "\n";
     }
@@ -121,6 +140,65 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
         for (auto& o : out)
             if (o.param == c.param) dup = true;
         if (!dup) out.push_back(std::move(c));
+    }
+    // A requires atom the binding above does not state -- a \valid of
+    // something other than a pointer parameter (\valid(*pp),
+    // \valid(head->next)) or any other condition (r->count <= CAP, n < 8;
+    // pir binds objects, it does not assume conditions) -- is recorded with
+    // an empty param (source "unbound"): a violation under such a
+    // precondition is not reported as FAILED (stage_mem.cpp
+    // apply_memory_policy; the contracts stage checks the function with its
+    // requires assumed).
+    std::istringstream ls(text);
+    for (std::string l; std::getline(ls, l);) {
+        for (std::size_t at = l.find("requires"); at != std::string::npos; at = l.find("requires", at + 8)) {
+            if (at > 0 && (std::isalnum(static_cast<unsigned char>(l[at - 1])) || l[at - 1] == '_')) continue;
+            auto b = at + 8;
+            while (b < l.size() && (l[b] == ':' || l[b] == ' ' || l[b] == '\t')) ++b;
+            auto e = std::min({l.find(';', b), l.find("*/", b), l.size()});
+            auto clause = l.substr(b, e - b);
+            // atoms: the clause split at top-level &&
+            std::vector<std::string> atoms;
+            std::string cur;
+            int depth = 0;
+            for (std::size_t i = 0; i < clause.size(); ++i) {
+                char ch = clause[i];
+                if (ch == '(') ++depth;
+                if (ch == ')') --depth;
+                if (depth == 0 && ch == '&' && i + 1 < clause.size() && clause[i + 1] == '&') {
+                    atoms.push_back(cur);
+                    cur.clear();
+                    ++i;
+                    continue;
+                }
+                cur.push_back(ch);
+            }
+            atoms.push_back(cur);
+            for (auto& a0 : atoms) {
+                auto a = trim(a0);
+                if (a.empty() || a.starts_with("\\separated")) continue;  // separation is pir's own assumption
+                // a \valid anywhere but as a whole atom (p == \null || \valid(p))
+                // is never bound
+                bool bound = conditions_assumed && a.find("\\valid") == std::string::npos;
+                if (a.starts_with("\\valid")) {
+                    auto open = a.find('(');
+                    auto inner = open == std::string::npos ? std::string() : trim(a.substr(open + 1));
+                    if (!inner.empty() && inner.back() == ')') inner = trim(inner.substr(0, inner.size() - 1));
+                    std::size_t k = 0;
+                    while (k < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[k])) || inner[k] == '_'))
+                        ++k;
+                    auto rest = trim(inner.substr(k));
+                    bound = a.ends_with(")") && k > 0 && is_param(inner.substr(0, k), true) &&
+                            (rest.empty() || rest.front() == '+');
+                }
+                if (!bound) {
+                    PtrContract u;
+                    u.source = "unbound";
+                    u.text = a;
+                    out.push_back(std::move(u));
+                }
+            }
+        }
     }
     return out;
 }

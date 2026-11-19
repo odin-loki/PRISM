@@ -18,6 +18,8 @@ namespace prism {
 std::vector<Finding> run_taint(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_thread(const std::vector<FunctionInfo>& functions);
 std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions);
+// The same, one task per function on `jobs` workers (prism::clamp_jobs).
+std::vector<Finding> run_interval(const std::vector<FunctionInfo>& functions, int jobs);
 std::vector<Finding> run_compiler(const std::vector<std::filesystem::path>& paths,
                                   const Config& cfg);
 std::vector<Finding> run_cppcheck(const std::vector<std::filesystem::path>& paths,
@@ -47,12 +49,16 @@ std::vector<Finding> run_esbmc(const std::vector<std::filesystem::path>& paths,
 std::vector<Finding> run_dafny(const std::vector<std::filesystem::path>& paths,
                                const Config& cfg);
 std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind);
+// The same, `jobs` functions at once, its pir checks batched (same rows, same order).
+std::vector<Finding> prove_contracts(const std::vector<FunctionInfo>& functions, int unwind, int jobs);
 // The contracts engine (PIR with requires assumed, ensures asserted at every
 // return) for a contract given here instead of in fn's comments. SCALAR only;
 // anything else is NEEDS-HARNESS. Stage "contracts" on the result.
 PRISM_API Finding prove_with_contract(const FunctionInfo& fn, int unwind, const std::optional<std::string>& requires_,
                                       const std::optional<std::string>& ensures);
 std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind);
+// The same, `jobs` functions at once, its pir checks batched (same rows, same order).
+std::vector<Finding> run_wp(const std::vector<FunctionInfo>& functions, int unwind, int jobs);
 // The wp stage's predicate encoder: the scalar C form of an ACSL/comment
 // predicate, or nullopt when it is not encodable (\valid, \old, quantifiers,
 // ->, calls, ...), which makes the wp record ERROR.
@@ -70,12 +76,17 @@ std::vector<FunctionInfo> with_cxx_std(std::vector<FunctionInfo> functions, cons
 // Stage "harness": POINTER functions materialized from an honest requires
 // and checked by PIR; PROVED-ASSUMING at best.
 std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind);
+// The same, `jobs` functions at once; without a model (llm false) the pir
+// checks are batched (stages/common.hpp prefetch_pir). Same rows, same order.
+std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind, int jobs, bool llm);
 // The harness stage's materialization of a POINTER function: each pointer
 // parameter becomes a local buffer of its pointee type, sized by an honest
 // `requires`, and the requires guard the body. nullopt when the function is
 // not POINTER or has no requires that sizes every buffer (NEEDS-HARNESS).
 std::optional<FunctionInfo> materialize_harness(const FunctionInfo& fn);
 std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget = 32);
+// The same, `jobs` functions at once (same rows, same order).
+std::vector<Finding> run_concolic(const std::vector<FunctionInfo>& functions, int budget, int jobs);
 
 // Python engine prism/bmc.py harness_for_parsefail. Unmapped parsefail is ERROR (nullopt),
 // not a generic NEEDS-HARNESS. An unstructured goto is NEEDS-HARNESS.
@@ -138,6 +149,10 @@ std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions,
                               const std::filesystem::path& root);
 std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials = 64);
 std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials = 32);
+// The same three, `jobs` functions (diff: pairs) at once; same rows, same order.
+std::vector<Finding> run_diff(const std::vector<FunctionInfo>& functions, const std::filesystem::path& root, int jobs);
+std::vector<Finding> run_rapid(const std::vector<FunctionInfo>& functions, int trials, int jobs);
+std::vector<Finding> run_muttest(const std::vector<FunctionInfo>& functions, int trials, int jobs);
 // Status + extra for a rapid/muttest evaluation error (twin of prism/rapid.py _eval_status).
 std::pair<std::string, std::map<std::string, std::string>> rapid_plan_error_status(const std::string& err);
 // cfg only locates a strix binary (tools[], pinned build, PATH) to record it;

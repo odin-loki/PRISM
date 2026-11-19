@@ -1298,9 +1298,11 @@ std::optional<std::string> scrubbed_byte_reason(std::string_view body, std::stri
            std::string(engine) + "): not a proof";
 }
 
-std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const std::string& rel) {
+namespace {
+
+std::vector<Finding> gap_findings(const std::vector<std::pair<int, std::string>>& gaps, const std::string& rel) {
     std::vector<Finding> out;
-    for (auto& [line, head] : parse_gaps(path)) {
+    for (auto& [line, head] : gaps) {
         Finding f;
         f.stage = "inventory";
         f.status = std::string(laws::NOTRUN);
@@ -1313,6 +1315,22 @@ std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const
         out.push_back(std::move(f));
     }
     return out;
+}
+
+}  // namespace
+
+std::vector<Finding> parse_gap_findings(const std::filesystem::path& path, const std::string& rel) {
+    return gap_findings(parse_gaps(path), rel);
+}
+
+// The gaps do not depend on the name a parse gives its functions (rel
+// only sets FunctionInfo::file), so one parse under extract_functions'
+// name serves both.
+std::pair<std::vector<FunctionInfo>, std::vector<Finding>> parse_unit(const std::filesystem::path& path,
+                                                                      const std::string& rel) {
+    auto text = read_file(path);
+    auto parsed = parse_text(text, rel.empty() ? path.string() : rel);
+    return {std::move(parsed.first), gap_findings(parsed.second, rel)};
 }
 
 std::vector<std::filesystem::path> iter_sources(const std::filesystem::path& root) {

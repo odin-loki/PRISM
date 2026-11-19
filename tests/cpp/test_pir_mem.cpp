@@ -1067,7 +1067,7 @@ TEST_CASE("pir: Houdini outcome cache and run budget (skips without clang/opt)")
 int loop_long_cubic(int n) {
     int s = 0;
     for (int i = 0; i < 100; i++)
-        s += i * i;
+        s += i * i * i * i;  /* the fold bound 99^4 * 100 does not fit: no proof */
     return s + (n & 1);
 }
 )";
@@ -1081,6 +1081,9 @@ int loop_long_cubic(int n) {
             if (f.function) got[*f.function] = f;
         return got;
     };
+    // the Houdini layer itself: the whole-function verdict cache above it
+    // would answer the second run before Houdini is reached
+    test_setenv("PRISM_PIR_FN_CACHE", "0");
     // first run: both outcomes are stored (the no-proof one was decided, not timed out)
     auto a = run("cache");
     CHECK(a["loop_long_inv"].status == prism::laws::PROVED_UNBOUNDED);
@@ -1104,6 +1107,7 @@ int loop_long_cubic(int n) {
     for (auto* f : {&c["loop_long_inv"], &c["loop_long_cubic"]})
         if (f->extra["invariants_note"].find("Houdini budget") != std::string::npos) ++spent;
     CHECK(spent >= 1);
+    test_unsetenv("PRISM_PIR_FN_CACHE");
 }
 
 TEST_CASE("pir: value sets: map erase at an input-dependent position, then a traversal (skips without clang++/opt)") {

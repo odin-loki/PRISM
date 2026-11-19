@@ -114,6 +114,10 @@ std::vector<BenchTask> discover_tasks(const std::vector<std::filesystem::path>& 
                                       const std::filesystem::path& suite);
 int solver_bench_main(const Args& args);
 
+// prism-qa idioms REPORT.json...: loop shapes of the pir rows ranked by count,
+// with how their functions ended (src/tools/qa/idioms_mine.cpp)
+int idioms_main(const Args& args);
+
 // ---- docs-check
 // Flags of `help` missing from the guide (sorted).
 std::vector<std::string> undocumented_flags(const std::string& help, const std::string& guide);

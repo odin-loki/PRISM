@@ -123,3 +123,22 @@ TEST_CASE("cli stages: --no-bmc, --skip-stage and --disable are CliError") {
     CHECK(error_of({"--skip-stage"}) == "unrecognized arguments: --skip-stage");
     CHECK(error_of({"--disable"}) == "unrecognized arguments: --disable");
 }
+
+TEST_CASE("cli stages: --preset prove selects the proving stages without a model") {
+    auto r = parse({"--preset", "prove"});
+    REQUIRE(r);
+    CHECK_FALSE(r->cfg.llm);
+    REQUIRE(r->cfg.stages);
+    CHECK(r->cfg.want("pir"));
+    CHECK(r->cfg.want("inventory"));
+    CHECK(r->cfg.want("classify"));
+    CHECK_FALSE(r->cfg.want("fuzz"));
+    CHECK_FALSE(r->cfg.want("llm"));
+    // adds to --stage names, never drops them
+    auto both = parse({"--stage", "conc", "--preset=prove"});
+    REQUIRE(both);
+    CHECK(both->cfg.want("conc"));
+    CHECK(both->cfg.want("pir"));
+    CHECK(error_of({"--preset", "fast"}) == "argument --preset: unknown preset 'fast' (presets: prove)");
+    CHECK(error_of({"--preset"}).starts_with("argument --preset: expected one argument"));
+}

@@ -71,6 +71,14 @@ Status vocabulary lives in `prism/laws.py` and `include/prism/laws.hpp`.
  `src/prism/sarif.cpp`). `tests/cpp/test_sarif.cpp` locks SARIF export and
  `--fail-on`; `tests/cpp/test_cli.cpp` runs the binary with `--fail-on defect`.
 
+## Merge gate
+
+An engine change (anything under `src/prism/`, `include/prism/`) merges only
+after `scripts/verify_gate.sh --candidate build/prism --baseline <previous
+prism> --full` prints `GATE PASSED` (0 wrong proofs, no lost or flipped
+verdict, `--jobs` and cache determinism, every function has a row, doctests).
+Details: `docs/VERIFY_PRISM.md` "Merge gate".
+
 ## Build and test
 
 ```

@@ -69,6 +69,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--out DIR` | report directory (default `prism-out/`) |
 | `--stage a,b` / `--skip a,b` | run only / leave out these stages. Left-out stages are listed as `skipped` in the report, never silently dropped |
 | `--no-llm` | do not run the LLM stage |
+| `--preset prove` | the proving path only: `--stage inventory,classify,pir --no-llm` (adds to other `--stage` names). pir checks every function as its own task on `--jobs` threads and answers unchanged functions from the verdict cache ([PIR.md](PIR.md) "Parallel checking", "Function verdict cache") |
 | `--unwind K` | loop unwinding bound for BMC (incremental: 1, 2, 4, … K) |
 | `--jobs N`, `-j N` | worker count for lints (0 = half the CPUs) |
 | `--fuzz-budget S`, `--fuzz-iters N` | fuzzing time / iteration budget |
@@ -81,6 +82,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--assume-unknown-calls` | a call without a spec havocs its result and the objects its pointer arguments point to (assumption listed). Opt-in; the default is `UNENCODED: call @f` |
 | `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
 | `--timeout S` | solver seconds per query (default 30) |
+| `--complexity N` | Z3 resource-limit (rlimit) units per pir query, so "not decided" is the same on every machine and core count; the wall clock stays as a larger backstop; 0 turns the limit off ([PIR.md](PIR.md) "Complexity limits") |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
 | `--pbsd PATH` | ParanoidBSD tree for the `pbsd` stage (else `PRISM_PBSD`; no default). Importing its modules also needs `--allow-exec` |
@@ -187,6 +189,9 @@ when every theorem is proved, 3 only when every one is `NOTRUN`).
 | `--lemmas PATH` | lemma library to read and extend (default `<project>/lemmas.jsonl` under `proofs/`, else `proofs/lemmas.jsonl`) |
 | `--budget N`, `--beam N` | model calls allowed (default 24) and partial proofs kept (default 4) |
 | `--timeout S` | Lean time limit per check in seconds (default 120, minimum 5) |
+| `--samples N` | model replies per expanded node, checked together in one batch (default 1) |
+| `--lean-jobs N` | Lean processes a batch of candidates is split over (default: half the cores) |
+| `--no-closers` | do not try the core closers (`omega`, `simp`, `grind`, `decide`, ...) before the model; model only |
 | `--out DIR` | output directory (default `prism-out`) |
 | `--prover-fpk PATH`, `--prover-model NAME` | the FORGE prover model (`.fpk`, else `PRISM_PROVER_FPK`) and the model name recorded in the audit (else `PRISM_PROVER_MODEL`) |
 | `--json` | print only the JSON result |

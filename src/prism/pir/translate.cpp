@@ -127,6 +127,9 @@ struct Tr final : pirmem::TrApi {
     std::vector<std::string> stack;
     std::set<int> folded_used;
     int uniq = 0;
+    // format-call temporaries: per translation (not a process-wide static),
+    // so translations on other threads cannot race on it or change the names
+    unsigned fmt_seq = 0;
     std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
     std::vector<std::string> model_stack;  // library models being inlined (outermost first)
     std::string top_file;                  // source file of the analysed function
@@ -1655,6 +1658,27 @@ struct Tr final : pirmem::TrApi {
             raw_arg.resize(callee->params.size());
         }
         if (args.size() != callee->params.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
+        if (callee->is_model && !callee->blocks.empty()) {
+            // A library contract (its body starts with __prism_contract) is
+            // bound by name: a declaration of another signature is another
+            // function, never answered by the contract.
+            bool contract = false;
+            for (auto& ci : callee->blocks.front().insts)
+                if (ci.op == "call" && !ci.callee.starts_with("llvm.dbg")) {
+                    contract = ci.callee == "__prism_contract";
+                    break;
+                }
+            for (std::size_t i = 0; contract && i < in.ops.size(); ++i) {
+                const auto& a = in.ops[i].ty;
+                const auto& pt = callee->params[i].ty;
+                if (a.kind != pt.kind || (a.kind == ir::Type::Int && a.bits != pt.bits))
+                    throw Unenc{"UNENCODED: call @" + n + " (its declaration does not match the library contract's "
+                                "signature)"};
+            }
+            if (contract && (in.ty.kind != callee->ret.kind ||
+                             (in.ty.kind == ir::Type::Int && in.ty.bits != callee->ret.bits)))
+                throw Unenc{"UNENCODED: call @" + n + " (its return type does not match the library contract's)"};
+        }
         Frame cf;
         for (std::size_t i = 0; i < args.size(); ++i)
             if (raw_arg.at(i) && !args.at(i).is_const) {
@@ -2182,6 +2206,21 @@ struct Tr final : pirmem::TrApi {
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
             return;
         }
+        // __prism_contract(id): this call of an external function is
+        // answered by a library contract (models/kernel/, docs/CONTRACTS.md):
+        // its requires are checked, its ensures assumed. The contract is an
+        // assumption of the caller's proof (PROVED-ASSUMING, never PROVED).
+        if (n == "__prism_contract") {
+            auto id = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!id) throw Unenc{"UNENCODED: __prism_contract without a literal id"};
+            // A model #included into the unit (its verification harness,
+            // testdata/contracts/kmodels/) is the code under check: nothing
+            // is assumed about it.
+            if (model_stack.empty()) return;
+            auto text = "callee behaves as the library contract " + *id;
+            if (std::ranges::find(out.assumptions, text) == out.assumptions.end()) out.assumptions.push_back(text);
+            return;
+        }
         if (n == "__prism_alloc_failed") {
             // hidden flag object, zero at entry: set when a library allocation fails
             if (!oom_) oom_ = mt.alloc(-1, Arg::c(64, 1), MemKind::Static, 1, "allocation failed (PRISM)", 0);
@@ -2384,7 +2423,6 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
                 cap.v.bits = (~0ull) >> 2;  // sprintf: unbounded (the memory model checks each byte)
             }
             ir::Operand pos = zero(ti32);
-            static unsigned fmt_seq = 0;
             const std::string base = (in.result.empty() ? std::string("prism.fmtv") : in.result) + ".w" + std::to_string(fmt_seq++) + ".";
             for (std::size_t ab = 0;; ab += 6) {
                 const bool last = ab + 6 >= na;
@@ -2461,7 +2499,7 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
 
 // Pointer parameter bound to a contract object (Law 6 relaxation, docs/PIR.md).
 void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrContract& c, Frame& top) {
-    uint64_t esz = pirmem::contract_elem_bytes(tr.mt.layout(), f, p, c);
+    uint64_t esz = pirmem::contract_elem_bytes_deep(tr.mt.layout(), tr.m, f, p, c);
     if (!esz)
         throw Unenc{"UNENCODED: element size of pointer parameter " + p.name + " unknown (contract " + c.text + ")"};
     Arg size;

@@ -542,6 +542,13 @@ PRISM_API uint64_t eval_op(Op op, unsigned w, const std::vector<uint64_t>& a,
 
 PRISM_API InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args,
                                  uint64_t step_limit = 2'000'000);
+// The same run, with `on_block(block, prev, values)` called at the entry of
+// every block after its phis are assigned (prev: the predecessor, -1 at the
+// entry). Returning false stops the run (status Stopped). Used by Houdini's
+// concrete pre-filter (houdini.inc).
+using InterpHook = std::function<bool(int block, int prev, const std::vector<uint64_t>& values)>;
+PRISM_API InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, uint64_t step_limit,
+                                 const InterpHook& on_block);
 
 // ---------------------------------------------------------------------------
 // Encoder (Z3 bitvectors)
@@ -659,6 +666,27 @@ struct CheckOptions {
     // its two unwind attempts). The pir stage sets it to share one budget
     // with its re-checks of the same function.
     std::shared_ptr<FunctionBudget> function_budget;
+    // Complexity limits (include/prism/complexity.hpp; docs/TARGETED_PROVING.md
+    // W1): rlimit units of one VC query of a function of reference size.
+    // -1: complexity::scale_for(timeout_s) (--complexity, $PRISM_PIR_RLIMIT,
+    // else timeout_s x kUnitsPerSecond); 0: off (the wall-clock limits alone,
+    // as before). On, every per-query time limit t (a VC's timeout_s, a
+    // Houdini query's share, the Houdini search, a k-induction step) becomes
+    // t x complexity / timeout_s x complexity::size_factor(function) Z3
+    // rlimit units, and its wall clock a backstop at kWallBackstop x t.
+    std::int64_t complexity = -1;
+    // The deterministic part of the function budget, in seconds of the
+    // units above (0: none, function_budget_s alone). Spent, it ends the
+    // function exactly as a spent function_budget_s does (same messages,
+    // "rlimit units" named), but at the same point on every machine. The pir
+    // stage sets it to the function budget and function_budget_s to
+    // kWallBackstop x that (the backstop).
+    double function_units_s = 0;
+    // --jobs of the run (W2): a function's property VCs and its strategies
+    // (unwinding, k-induction, Houdini) are asked concurrently on the run's
+    // shared scheduler (prism::pool) when this is above 1; the verdict is the
+    // one the sequential order gives (docs/TARGETED_PROVING.md W2).
+    int jobs = 1;
     // Fault injection (tests): called before each plain solver query of the
     // function (the VC label, "k-induction@k" or "houdini"), after the budget
     // check and the query's timeout are set, so a delay here stands for a

@@ -21,6 +21,7 @@
 
 #include "prism/exec.hpp"
 #include "prism/forge_llm.hpp"
+#include "prism/remote_llm.hpp"
 #include "prism/exit.hpp"
 #include "prism/clock.hpp"
 #include "ai_internal.hpp"
@@ -32,6 +33,8 @@
 
 #include "prism/exec.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/pool.hpp"
+#include "prism/threads.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -421,7 +424,10 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::smatch mm;
-        if (std::regex_search(line, mm, std::regex(R"('(.+)' depends on axioms: \[(.*)\])"))) {
+        static const std::regex re_axioms(R"('(.+)' depends on axioms: \[(.*)\])");
+        static const std::regex re_no_axioms(R"('(.+)' does not depend on any axioms)");
+        static const std::regex re_msg(R"(^(?:(?:error|warning|info): )?(.*?):(\d+):(\d+): (error|warning|info): ?(.*)$)");
+        if (std::regex_search(line, mm, re_axioms)) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) {
                 c.axioms_seen = true;
@@ -434,14 +440,12 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
             }
             continue;
         }
-        if (std::regex_search(line, mm, std::regex(R"('(.+)' does not depend on any axioms)"))) {
+        if (std::regex_search(line, mm, re_no_axioms)) {
             auto name = mm[1].str();
             if (name == theorem || name.ends_with("." + theorem)) c.axioms_seen = true;
             continue;
         }
-        if (std::regex_match(
-                line, mm,
-                std::regex(R"(^(?:(?:error|warning|info): )?(.*?):(\d+):(\d+): (error|warning|info): ?(.*)$)"))) {
+        if (std::regex_match(line, mm, re_msg)) {
             msgs.push_back({mm[4].str(), mm[5].str()});
             continue;
         }
@@ -485,6 +489,229 @@ LeanCheck parse_lean_output(const std::string& out, const std::string& theorem, 
         if (!ok) c.axioms_ok = false;
     }
     return c;
+}
+
+// ------------------------------------------------------------------ batched checks
+namespace {
+// The statement with its declaration name replaced (modifiers and attributes
+// before the keyword dropped: a candidate is a plain theorem).
+std::string candidate_statement(const LeanTarget& t, const std::string& name) {
+    auto m = mask_lean(t.statement);
+    for (auto* kw : {"theorem", "lemma"}) {
+        for (auto kp : word_hits(m, kw, 0, m.size())) {
+            auto p = kp + std::strlen(kw);
+            while (p < m.size() && (m[p] == ' ' || m[p] == '\t' || m[p] == '\n')) ++p;
+            if (m.compare(p, t.theorem.size(), t.theorem) != 0) continue;
+            return "theorem " + name + t.statement.substr(p + t.theorem.size());
+        }
+    }
+    return {};
+}
+int count_lines(const std::string& s) { return static_cast<int>(std::count(s.begin(), s.end(), '\n')); }
+}  // namespace
+
+LeanBatch lean_batch_text(const std::string& original, const LeanTarget& t,
+                          const std::vector<std::vector<std::string>>& candidates, int first_index) {
+    LeanBatch b;
+    auto m = mask_lean(original);
+    std::string text = original.substr(0, decl_end(m, t.proof_end));
+    if (!text.empty() && text.back() != '\n') text += "\n";
+    text += "\n";
+    const auto dot = t.theorem.rfind('.');
+    const std::string last = dot == std::string::npos ? t.theorem : t.theorem.substr(dot + 1);
+    for (std::size_t k = 0; k < candidates.size(); ++k) {
+        const std::string name = "prism_cand_" + std::to_string(first_index + static_cast<int>(k)) + "_" + last;
+        const auto stmt = candidate_statement(t, name);
+        const int first = count_lines(text) + 1;
+        if (stmt.empty()) {  // cannot be renamed: never checked, never accepted
+            b.names.push_back(name);
+            b.lines.emplace_back(first, first - 1);
+            continue;
+        }
+        text += stmt + " := by\n";
+        for (auto line : candidates[k]) {
+            while (!line.empty() && (line.back() == ' ' || line.back() == '\r')) line.pop_back();
+            text += t.indent + line + "\n";
+        }
+        text += "#print axioms " + name + "\n";
+        b.names.push_back(name);
+        b.lines.emplace_back(first, count_lines(text));
+        text += "\n";
+    }
+    b.text = std::move(text);
+    return b;
+}
+
+std::vector<LeanCheck> split_lean_batch(const std::string& out, const LeanBatch& b) {
+    static const std::regex re_head(R"(^(?:(?:error|warning|info): )?(?:.*?):(\d+):(\d+): (?:error|warning|info):)");
+    static const std::regex re_ax(R"('(.+)' (?:depends on axioms|does not depend on any axioms))");
+    const std::size_t n = b.names.size();
+    std::vector<std::string> chunk(n);
+    std::vector<char> reached(n, 0);
+    auto owner_of_line = [&](int line) -> int {
+        for (std::size_t k = 0; k < n; ++k)
+            if (line >= b.lines[k].first && line <= b.lines[k].second) return static_cast<int>(k);
+        return -1;
+    };
+    auto owner_of_name = [&](const std::string& nm) -> int {
+        for (std::size_t k = 0; k < n; ++k)
+            if (nm == b.names[k] || nm.ends_with("." + b.names[k])) return static_cast<int>(k);
+        return -1;
+    };
+    int cur = -1;
+    std::istringstream in(out);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::smatch mm;
+        if (std::regex_search(line, mm, re_ax)) {
+            const int k = owner_of_name(mm[1].str());
+            if (k >= 0) {
+                chunk[static_cast<std::size_t>(k)] += line + "\n";
+                reached[static_cast<std::size_t>(k)] = 1;
+            }
+            cur = -1;
+            continue;
+        }
+        if (std::regex_search(line, mm, re_head)) cur = owner_of_line(std::atoi(mm[1].str().c_str()));
+        if (cur >= 0) {
+            chunk[static_cast<std::size_t>(cur)] += line + "\n";
+            reached[static_cast<std::size_t>(cur)] = 1;
+        }
+    }
+    std::vector<LeanCheck> res;
+    res.reserve(n);
+    for (std::size_t k = 0; k < n; ++k) {
+        if (b.lines[k].second < b.lines[k].first) {
+            LeanCheck c;
+            c.ran = false;
+            c.errors = "candidate not checked: the theorem statement could not be renamed for a batch";
+            res.push_back(std::move(c));
+            continue;
+        }
+        if (!reached[k]) {
+            LeanCheck c;
+            c.ran = false;
+            c.errors = "lean stopped before this candidate (no message and no #print axioms line)";
+            res.push_back(std::move(c));
+            continue;
+        }
+        res.push_back(parse_lean_output(chunk[k], b.names[k], 0));
+    }
+    return res;
+}
+
+std::vector<std::string> lean_closers(bool mathlib) {
+    std::vector<std::string> c{"rfl", "trivial", "decide", "omega", "simp", "simp_all", "assumption",
+                               "contradiction", "grind", "intros; omega", "intros; simp_all", "constructor",
+                               "constructor <;> simp_all", "constructor <;> omega", "simp +arith"};
+    if (mathlib)
+        for (auto* x : {"norm_num", "linarith", "nlinarith", "positivity", "ring", "tauto", "aesop", "simp_all; linarith"})
+            c.emplace_back(x);
+    return c;
+}
+
+std::vector<std::string> lean_statement_closers(const std::string& original, const LeanTarget& t) {
+    auto m = mask_lean(t.statement);
+    // explicit binders "(a b : T)" with T one identifier; all binder names for revert
+    std::vector<std::string> vars, all_names;
+    {
+        auto after = m.find(t.theorem);
+        std::size_t i = after == std::string::npos ? 0 : after + t.theorem.size();
+        int depth = 0;
+        std::size_t open = 0;
+        char opener = 0;
+        for (; i < m.size(); ++i) {
+            char c = m[i];
+            if (depth == 0 && (c == '(' || c == '{' || c == '[')) {
+                depth = 1;
+                open = i;
+                opener = c;
+                continue;
+            }
+            if (depth > 0) {
+                if (c == '(' || c == '{' || c == '[') ++depth;
+                else if (c == ')' || c == '}' || c == ']') {
+                    if (--depth == 0 && opener != '[') {
+                        auto inner = t.statement.substr(open + 1, i - open - 1);
+                        auto colon = inner.find(':');
+                        if (colon == std::string::npos) continue;
+                        auto names = trim(inner.substr(0, colon));
+                        auto type = trim(inner.substr(colon + 1));
+                        bool plain = !type.empty();
+                        for (char ch : type)
+                            if (!(ident_char(ch))) plain = false;
+                        std::istringstream ns(names);
+                        std::string nm;
+                        while (ns >> nm) {
+                            all_names.push_back(nm);
+                            if (opener == '(' && plain) vars.push_back(nm);
+                        }
+                    }
+                }
+                continue;
+            }
+            if (c == ':') break;  // the statement's type starts
+        }
+    }
+    // the file's own definitions named in the statement (before the target)
+    std::set<std::string> defs;
+    {
+        auto fm = mask_lean(original.substr(0, t.decl_begin));
+        for (auto* kw : {"def", "abbrev"})
+            for (auto kp : word_hits(fm, kw, 0, fm.size())) {
+                auto p = kp + std::strlen(kw);
+                while (p < fm.size() && (fm[p] == ' ' || fm[p] == '\t')) ++p;
+                auto q = p;
+                while (q < fm.size() && ident_char(fm[q])) ++q;
+                auto name = fm.substr(p, q - p);
+                if (auto d = name.rfind('.'); d != std::string::npos) name = name.substr(d + 1);
+                if (!name.empty()) defs.insert(name);
+            }
+    }
+    std::vector<std::string> unfold;
+    {
+        std::string tok;
+        for (std::size_t k = 0; k <= m.size(); ++k) {
+            char c = k < m.size() ? m[k] : ' ';
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '\'') {
+                tok += c;
+                continue;
+            }
+            if (!tok.empty() && defs.count(tok) && std::find(unfold.begin(), unfold.end(), tok) == unfold.end() &&
+                unfold.size() < 6)
+                unfold.push_back(tok);
+            tok.clear();
+        }
+    }
+    std::string u;
+    for (auto& d : unfold) u += (u.empty() ? "" : ", ") + d;
+    const std::string su = u.empty() ? "" : " [" + u + "]";
+    std::vector<std::string> out;
+    auto add = [&](std::string s) {
+        if (std::find(out.begin(), out.end(), s) == out.end() && out.size() < 24) out.push_back(std::move(s));
+    };
+    if (!u.empty()) {
+        add("simp" + su);
+        add("simp_all" + su);
+        add("grind" + su);
+    }
+    for (std::size_t a = 0; a < vars.size() && a < 2; ++a) {
+        const auto& x = vars[a];
+        add("cases " + x + " <;> simp_all" + su);
+        add("cases " + x + " <;> simp" + su);
+        add("cases " + x + " <;> decide");
+        add("cases " + x + " <;> rfl");
+    }
+    if (vars.size() >= 2) {
+        add("cases " + vars[0] + " <;> cases " + vars[1] + " <;> simp_all" + su);
+        add("cases " + vars[0] + " <;> cases " + vars[1] + " <;> first | rfl | decide | simp_all" + su);
+    }
+    if (!all_names.empty()) {
+        std::string rv;
+        for (auto& n : all_names) rv += " " + n;
+        add("revert" + rv + "; decide");
+    }
+    return out;
 }
 
 // ------------------------------------------------------------------ lemma library
@@ -637,10 +864,21 @@ std::shared_ptr<ModelBackend> resolve_prover(const ProveOptions& opt, std::strin
         auto found = default_prover_fpks();
         if (!found.empty()) fpk = found.front();
     }
+    // No .fpk named or found: FORGE's remote client when FORGE_AI_* is set
+    // (prism/remote_llm.hpp). A named .fpk that is missing stays NOTRUN.
+    if (fpk.empty()) {
+        std::string rwhy;
+        if (auto remote = remote_llm::from_env(&rwhy)) return remote;
+        if (!rwhy.empty()) {
+            if (why) *why = "remote prover settings: " + rwhy;
+            return nullptr;
+        }
+    }
     if (!forge_llm::is_fpk(fpk)) {
         if (why)
             *why = "no prover model: set PRISM_PROVER_FPK to a FORGE .fpk (Goedel-Prover / DeepSeek-Prover / "
-                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models"
+                   "Kimina-Prover converted with FORGE), or put one in ~/.prism/models, or set FORGE_AI_PROVIDER "
+                   "for a remote model"
                    + (fpk.empty() ? std::string{} : " (not a .fpk: " + fpk.string() + ")");
         return nullptr;
     }
@@ -772,49 +1010,227 @@ ProveResult prove_theorem(const ProveOptions& opt) {
         return res;
     }
 
-    auto check = [&](const std::vector<std::string>& tactics) {
-        write_text(work_file, splice_proof(original, t, tactics, true));
-        auto r = run_lake(*lake, {"env", "lean", rel_file.string()}, scratch, opt.lean_timeout, scratch);
-        ++res.kernel_checks;
-        if (r.failed || r.timed_out) {
-            LeanCheck c;
-            c.ran = !r.failed;
-            c.errors = r.timed_out ? "lean timed out" : "lean could not be started";
-            return c;
-        }
-        return parse_lean_output(r.text, t.theorem, r.rc);
+    // Batched kernel checks (lean_batch_text): one Lean run elaborates the
+    // file's prefix once for many candidates; a batch is split over up to
+    // lean_jobs processes on FORGE's task graph, each with its own file.
+    const int lean_jobs = opt.lean_jobs > 0 ? opt.lean_jobs : prism::clamp_jobs(0);
+    int batch_seq = 0;
+    auto check_batch = [&](const std::vector<std::vector<std::string>>& cands) {
+        std::vector<LeanCheck> out(cands.size());
+        if (cands.empty()) return out;
+        const std::size_t groups =
+            std::min<std::size_t>(static_cast<std::size_t>(std::max(1, lean_jobs)), (cands.size() + 2) / 3);
+        std::vector<std::vector<std::size_t>> idx(groups);
+        for (std::size_t i = 0; i < cands.size(); ++i) idx[i % groups].push_back(i);
+        const int seq = batch_seq++;
+        std::vector<int> runs(groups, 0);
+        prism::pool::TaskGraph g(static_cast<int>(groups));
+        for (std::size_t gi = 0; gi < groups; ++gi)
+            g.spawn([&, gi] {
+                std::vector<std::vector<std::string>> mine;
+                for (auto i : idx[gi]) mine.push_back(cands[i]);
+                auto batch = lean_batch_text(original, t, mine, static_cast<int>(idx[gi].front()));
+                const auto rel = rel_file.parent_path() /
+                                 ("PrismBatch" + std::to_string(seq) + "_" + std::to_string(gi) + ".lean");
+                write_text(scratch / rel, batch.text);
+                auto r = run_lake(*lake, {"env", "lean", rel.string()}, scratch, opt.lean_timeout, scratch);
+                runs[gi] = 1;
+                std::vector<LeanCheck> cs;
+                if (r.failed || r.timed_out) {
+                    LeanCheck c;
+                    c.ran = !r.failed;
+                    c.errors = r.timed_out ? "lean timed out" : "lean could not be started";
+                    cs.assign(mine.size(), c);
+                } else {
+                    cs = split_lean_batch(r.text, batch);
+                }
+                for (std::size_t j = 0; j < idx[gi].size(); ++j) out[idx[gi][j]] = std::move(cs[j]);
+            });
+        g.wait();
+        for (int x : runs) res.lean_runs += x;
+        res.kernel_checks += static_cast<int>(cands.size());
+        return out;
     };
-
-    // Root: the goal of the theorem (tactic `skip` leaves it unsolved).
-    auto root_check = check({"skip"});
-    ProveNode root;
-    root.goals = root_check.goals;
-    root.goal_count = root_check.goal_count;
-    if (!root_check.only_unsolved) root.last_error = root_check.errors;
 
     auto lemma_path = !opt.lemmas.empty() ? opt.lemmas : default_lemma_path(t.project);
     auto lemmas = relevant_lemmas(read_lemmas(lemma_path), t.statement, 8);
+    const bool mathlib = original.substr(0, t.decl_begin).find("import Mathlib") != std::string::npos;
+    auto closers = opt.closers ? lean_closers(mathlib) : std::vector<std::string>{};
+    if (opt.closers)
+        for (auto& c : lean_statement_closers(original, t)) closers.push_back(std::move(c));
+    // the same validator as model output (statement closers carry the file's identifiers)
+    std::erase_if(closers, [](const std::string& c) {
+        return !validate_lean_tactics(nlohmann::json{{"tactics", {c}}}.dump()).ok;
+    });
 
+    // Acceptance gate (unchanged): the axiom audit, then `lake build` of the
+    // module with the proof spliced in place. "" when accepted, else why not.
+    auto gate = [&](const std::vector<std::string>& cand, const LeanCheck& c) -> std::string {
+        if (!c.axioms_ok) {
+            ++res.rejected_axioms;
+            std::string ax = c.axioms_seen ? join(c.axioms, ", ") : "no #print axioms report";
+            res.attempts.push_back("rejected (axioms): " + ax);
+            return "Lean accepted the proof but it depends on axioms outside propext, Classical.choice, Quot.sound: " + ax;
+        }
+        write_text(work_file, splice_proof(original, t, cand, false));
+        auto bld = run_lake(*lake, {"build", t.module}, scratch, opt.lean_timeout * 4, scratch);
+        ++res.lean_runs;
+        if (bld.rc != 0 || bld.failed || bld.timed_out) {
+            res.attempts.push_back("rejected (lake build): " + trim(bld.text).substr(0, 200));
+            return "lake build failed: " + trim(bld.text).substr(0, 1500);
+        }
+        return {};
+    };
+    // After the gate: the result, and --write (in place, re-built, reverted on failure).
+    auto finish = [&](const std::vector<std::string>& cand, const LeanCheck& c, const std::string& audit_id,
+                      const std::string& source) {
+        res.attempts.push_back("accepted");
+        res.audit_id = audit_id;
+        res.proof = cand;
+        res.axioms = c.axioms;
+        res.closed_by = source;
+        res.status = std::string(laws::PROVED);
+        res.reason = "Lean kernel accepted the proof; axioms within {propext, Classical.choice, Quot.sound}; "
+                     "lake build " + t.module + " succeeded" + (source == "closer" ? " (closed by a core tactic, no model call)" : "");
+        if (!opt.write) return;
+        if (sha256_hex(read_text(t.file)) != original_sha) {
+            res.reason += "; NOT written: " + t.file.string() + " changed during the search";
+            return;
+        }
+        write_text(t.file, splice_proof(original, t, cand, false));
+        auto inplace = run_lake(*lake, {"build", t.module}, t.project, opt.lean_timeout * 4, t.project);
+        if (inplace.rc != 0) {
+            write_text(t.file, original);
+            res.status = std::string(laws::ERROR);
+            res.reason = "proof checked in the scratch copy but lake build in place failed; file "
+                         "restored: " + trim(inplace.text).substr(0, 500);
+            return;
+        }
+        res.written = true;
+        LemmaEntry e;
+        e.theorem = t.theorem;
+        std::error_code ec;
+        e.file = fs::relative(t.file, lemma_path.parent_path(), ec).generic_string();
+        e.statement = t.statement;
+        std::string pr;
+        for (std::size_t i = 0; i < cand.size(); ++i) pr += (i ? "\n  " : "") + cand[i];
+        e.proof = pr;
+        e.model = source == "closer" ? std::string("prism-closer") : backend->name();
+        e.audit_id = audit_id;
+        append_lemma(lemma_path, e);
+    };
+
+    // ---- metric-guided best-first search ----
+    // A node is a tactic prefix Lean accepts with only "unsolved goals" left.
+    // Its metric (lower is better): goals left, then the size of the goal
+    // state, a bonus for depth (accepted steps are progress) and a penalty
+    // per expansion (a node that keeps failing falls behind). Two prefixes
+    // with the same goal state are the same search state: only the first is
+    // kept (transposition table on the whitespace-normalised goals).
     struct Entry {
         ProveNode node;
         int expansions = 0;
     };
-    std::vector<Entry> frontier{{root, 0}};
+    auto goal_metric = [](const ProveNode& n) {
+        return n.goal_count * 1000 + static_cast<int>(std::min<std::size_t>(n.goals.size(), 8000) / 8);
+    };
+    auto score = [&](const Entry& e) { return goal_metric(e.node) + e.expansions * 1500 - e.node.depth * 250; };
+    auto norm_goals = [](const std::string& g) {
+        std::string o;
+        bool sp = false;
+        for (char ch : g) {
+            if (ch == ' ' || ch == '\n' || ch == '\t') sp = true;
+            else {
+                if (sp && !o.empty()) o += ' ';
+                sp = false;
+                o += ch;
+            }
+        }
+        return o;
+    };
+    std::vector<Entry> frontier;
     std::set<std::string> seen{join_lines({})};
-    // Lower is better: deeper accepted prefixes first (they made progress),
-    // fewer / shorter goals, and nodes already expanded fall behind.
-    auto score = [](const Entry& e) {
-        return e.node.goal_count * 200 + static_cast<int>(e.node.goals.size() / 20) + e.expansions * 1500 -
-               e.node.depth * 300;
+    std::set<std::string> seen_goals;
+    auto add_child = [&](const ProveNode& parent, const std::vector<std::string>& cand, const LeanCheck& c,
+                         bool need_progress) {
+        ProveNode child;
+        child.tactics = cand;
+        child.goals = c.goals;
+        child.goal_count = c.goal_count;
+        child.depth = parent.depth + 1;
+        if (need_progress && goal_metric(child) >= goal_metric(parent)) return false;
+        if (!seen_goals.insert(norm_goals(c.goals)).second) return false;
+        frontier.push_back({child, 0});
+        return true;
+    };
+    // Closers on a node: accepted proof, or children that made progress.
+    // true when the theorem is proved (res is final).
+    auto try_closers = [&](Entry& e, std::vector<LeanCheck>* pre = nullptr) {
+        e.node.closers_tried = true;
+        if (closers.empty()) return false;
+        std::vector<std::vector<std::string>> cands;
+        for (auto& cl : closers) {
+            auto cand = e.node.tactics;
+            cand.push_back(cl);
+            if (seen.insert(join_lines(cand)).second) cands.push_back(std::move(cand));
+        }
+        auto cs = pre ? *pre : check_batch(cands);
+        res.closer_checks += static_cast<int>(cands.size());
+        for (std::size_t i = 0; i < cands.size(); ++i) {
+            const auto& c = cs[i];
+            if (c.complete) {
+                if (gate(cands[i], c).empty()) {
+                    finish(cands[i], c, "", "closer");
+                    return true;
+                }
+                continue;
+            }
+            if (c.only_unsolved) add_child(e.node, cands[i], c, true);
+        }
+        res.attempts.push_back("closers: " + std::to_string(cands.size()) + " tried at depth " +
+                               std::to_string(e.node.depth));
+        return false;
     };
 
-    for (int call = 0; call < opt.budget && !frontier.empty(); ++call) {
+    // Root: the theorem's goal (tactic `skip` leaves it unsolved), checked in
+    // the same Lean run as the closers on it.
+    {
+        std::vector<std::vector<std::string>> first{{"skip"}};
+        for (auto& cl : closers) first.push_back({cl});
+        for (auto& cand : first) seen.insert(join_lines(cand));
+        auto cs = check_batch(first);
+        ProveNode root;
+        root.goals = cs[0].goals;
+        root.goal_count = cs[0].goal_count;
+        if (!cs[0].only_unsolved) root.last_error = cs[0].errors;
+        seen_goals.insert(norm_goals(root.goals));
+        frontier.push_back({root, 0});
+        if (!closers.empty()) {
+            std::vector<LeanCheck> rest(cs.begin() + 1, cs.end());
+            // try_closers re-derives the candidate list; mark them unseen for it
+            for (std::size_t i = 1; i < first.size(); ++i) seen.erase(join_lines(first[i]));
+            if (try_closers(frontier.front(), &rest)) return res;
+        }
+    }
+
+    int closer_passes = 0;
+    while (res.model_calls < opt.budget && !frontier.empty()) {
         std::sort(frontier.begin(), frontier.end(),
                   [&](const Entry& a, const Entry& b) { return score(a) < score(b); });
         if (static_cast<int>(frontier.size()) > opt.beam) frontier.resize(static_cast<std::size_t>(opt.beam));
-        auto& cur = frontier.front();
-        cur.expansions++;
-        auto node = cur.node;
+        // closers before any model call on a node
+        // (bounded: a closer child must lower the goal metric, and at most
+        // 4 x budget closer passes run in one search)
+        {
+            auto it = std::find_if(frontier.begin(), frontier.end(), [](const Entry& e) { return !e.node.closers_tried; });
+            if (it != frontier.end() && !closers.empty() && closer_passes++ < 4 * opt.budget) {
+                if (try_closers(*it)) return res;
+                continue;
+            }
+        }
+        const std::size_t cur_i = 0;
+        frontier[cur_i].expansions++;
+        auto node = frontier[cur_i].node;
 
         std::string user = "Prove this Lean 4 theorem (core Lean 4, no Mathlib unless the file imports it).\n";
         user += fence_untrusted(t.statement + " := by\n  sorry", "LEAN THEOREM");
@@ -850,120 +1266,95 @@ ProveResult prove_theorem(const ProveOptions& opt) {
         req.user = user;
         req.grammar = "lean_proof";
         req.grammar_text = grammar_text("lean_proof");
-        AuditRecord rec;
-        rec.function = t.theorem;
-        rec.file = t.file.string();
-        rec.checker = "lean-kernel(lake env lean)+#print axioms+lake build";
-        auto reply = ask(*backend, req, rec);
-        ++res.model_calls;
-        if (!reply.error.empty()) {
-            rec.checker_result = "no output: " + reply.error;
-            audit_append(rec);
-            res.attempts.push_back("model error: " + reply.error);
-            continue;
-        }
-        auto v = validate_lean_tactics(reply.text);
-        rec.output_valid = v.ok;
-        if (!v.ok) {
-            ++res.rejected_invalid;
-            rec.rejected_reason = v.reason;
-            rec.checker = "grammar-validator";
-            rec.checker_result = "rejected";
-            audit_append(rec);
-            res.attempts.push_back("rejected (validator): " + v.reason);
-            cur.node.last_error = "Your output was rejected before reaching Lean: " + v.reason;
-            continue;
-        }
-        auto cand = node.tactics;
-        cand.insert(cand.end(), v.items.begin(), v.items.end());
-        auto key = join_lines(cand);
-        if (seen.count(key)) {
-            rec.checker_result = "duplicate candidate (already checked)";
-            audit_append(rec);
-            res.attempts.push_back("duplicate");
-            continue;
-        }
-        seen.insert(key);
-        auto c = check(cand);
-        if (c.complete) {
-            if (!c.axioms_ok) {
-                ++res.rejected_axioms;
-                std::string ax = c.axioms_seen ? join(c.axioms, ", ") : "no #print axioms report";
-                rec.checker_result = "rejected: axioms [" + ax + "]";
+
+        // `samples` replies from this node, then one batch check of the valid, new ones.
+        struct Pending {
+            AuditRecord rec;
+            std::vector<std::string> cand, items;
+        };
+        std::vector<Pending> pend;
+        std::string node_error;
+        const int k = std::max(1, std::min(opt.samples, opt.budget - res.model_calls));
+        for (int si = 0; si < k; ++si) {
+            AuditRecord rec;
+            rec.function = t.theorem;
+            rec.file = t.file.string();
+            rec.checker = "lean-kernel(lake env lean)+#print axioms+lake build";
+            auto reply = ask(*backend, req, rec);
+            ++res.model_calls;
+            if (!reply.error.empty()) {
+                rec.checker_result = "no output: " + reply.error;
                 audit_append(rec);
-                res.attempts.push_back("rejected (axioms): " + ax);
-                cur.node.last_error = "Lean accepted the proof but it depends on axioms outside propext, "
-                                      "Classical.choice, Quot.sound: " + ax;
+                res.attempts.push_back("model error: " + reply.error);
                 continue;
             }
-            // Acceptance gate: lake build of the module with the proof in place.
-            write_text(work_file, splice_proof(original, t, cand, false));
-            auto b = run_lake(*lake, {"build", t.module}, scratch, opt.lean_timeout * 4, scratch);
-            if (b.rc != 0 || b.failed || b.timed_out) {
-                rec.checker_result = "rejected: lake build failed";
+            auto v = validate_lean_tactics(reply.text);
+            rec.output_valid = v.ok;
+            if (!v.ok) {
+                ++res.rejected_invalid;
+                rec.rejected_reason = v.reason;
+                rec.checker = "grammar-validator";
+                rec.checker_result = "rejected";
                 audit_append(rec);
-                res.attempts.push_back("rejected (lake build): " + trim(b.text).substr(0, 200));
-                cur.node.last_error = "lake build failed: " + trim(b.text).substr(0, 1500);
+                res.attempts.push_back("rejected (validator): " + v.reason);
+                node_error = "Your output was rejected before reaching Lean: " + v.reason;
                 continue;
             }
-            rec.checker_result = "accepted";
-            rec.verdict_effect = std::string(laws::PROVED);
-            audit_append(rec);
-            res.audit_id = rec.id;
-            res.attempts.push_back("accepted");
-            res.proof = cand;
-            res.axioms = c.axioms;
-            res.status = std::string(laws::PROVED);
-            res.reason = "Lean kernel accepted the proof; axioms within {propext, Classical.choice, Quot.sound}; "
-                         "lake build " + t.module + " succeeded";
-            if (opt.write) {
-                if (sha256_hex(read_text(t.file)) != original_sha) {
-                    res.reason += "; NOT written: " + t.file.string() + " changed during the search";
-                } else {
-                    auto final_text = splice_proof(original, t, cand, false);
-                    write_text(t.file, final_text);
-                    auto inplace = run_lake(*lake, {"build", t.module}, t.project, opt.lean_timeout * 4, t.project);
-                    if (inplace.rc != 0) {
-                        write_text(t.file, original);
-                        res.status = std::string(laws::ERROR);
-                        res.reason = "proof checked in the scratch copy but lake build in place failed; file "
-                                     "restored: " + trim(inplace.text).substr(0, 500);
-                        return res;
-                    }
-                    res.written = true;
-                    LemmaEntry e;
-                    e.theorem = t.theorem;
-                    std::error_code ec;
-                    e.file = fs::relative(t.file, lemma_path.parent_path(), ec).generic_string();
-                    e.statement = t.statement;
-                    std::string pr;
-                    for (std::size_t i = 0; i < cand.size(); ++i) pr += (i ? "\n  " : "") + cand[i];
-                    e.proof = pr;
-                    e.model = backend->name();
-                    e.audit_id = rec.id;
-                    append_lemma(lemma_path, e);
+            auto cand = node.tactics;
+            cand.insert(cand.end(), v.items.begin(), v.items.end());
+            if (!seen.insert(join_lines(cand)).second) {
+                rec.checker_result = "duplicate candidate (already checked)";
+                audit_append(rec);
+                res.attempts.push_back("duplicate");
+                continue;
+            }
+            pend.push_back({rec, cand, v.items});
+        }
+        std::vector<std::vector<std::string>> cands;
+        for (auto& p : pend) cands.push_back(p.cand);
+        auto cs = check_batch(cands);
+        bool proved = false;
+        for (std::size_t i = 0; i < pend.size() && !proved; ++i) {
+            auto& rec = pend[i].rec;
+            const auto& c = cs[i];
+            if (c.complete) {
+                auto why_not = gate(pend[i].cand, c);
+                if (why_not.empty()) {
+                    rec.checker_result = "accepted";
+                    rec.verdict_effect = std::string(laws::PROVED);
+                    audit_append(rec);
+                    finish(pend[i].cand, c, rec.id, "model");
+                    proved = true;
+                    break;
                 }
+                rec.checker_result = why_not.starts_with("lake build") ? "rejected: lake build failed"
+                                                                       : "rejected: axioms [" + join(c.axioms, ", ") + "]";
+                audit_append(rec);
+                node_error = why_not;
+                continue;
             }
-            return res;
-        }
-        if (c.only_unsolved && !v.items.empty()) {
-            rec.checker_result = "partial: " + std::to_string(c.goal_count) + " goal(s) left";
+            if (c.only_unsolved && !pend[i].items.empty()) {
+                rec.checker_result = "partial: " + std::to_string(c.goal_count) + " goal(s) left";
+                audit_append(rec);
+                res.attempts.push_back(rec.checker_result);
+                if (!add_child(node, pend[i].cand, c, false))
+                    res.attempts.push_back("partial: same goal state as a node already in the search");
+                continue;
+            }
+            ++res.rejected_kernel;
+            auto first = c.errors.substr(0, c.errors.find('\n'));
+            rec.checker_result = "rejected: " + (c.errors.empty() ? std::string("lean error") : first.substr(0, 200));
             audit_append(rec);
-            res.attempts.push_back(rec.checker_result);
-            ProveNode child;
-            child.tactics = cand;
-            child.goals = c.goals;
-            child.goal_count = c.goal_count;
-            child.depth = node.depth + 1;
-            frontier.push_back({child, 0});
-            continue;
+            res.attempts.push_back("rejected (kernel): " + first.substr(0, 200));
+            node_error = c.errors;
         }
-        ++res.rejected_kernel;
-        auto first = c.errors.substr(0, c.errors.find('\n'));
-        rec.checker_result = "rejected: " + (c.errors.empty() ? std::string("lean error") : first.substr(0, 200));
-        audit_append(rec);
-        res.attempts.push_back("rejected (kernel): " + first.substr(0, 200));
-        cur.node.last_error = c.errors;
+        if (proved) return res;
+        // the node's feedback for its next expansion (the frontier may have grown: find it again)
+        for (auto& e : frontier)
+            if (e.node.tactics == node.tactics) {
+                if (!node_error.empty()) e.node.last_error = node_error;
+                break;
+            }
     }
     res.status = std::string(laws::UNKNOWN);
     res.reason = "search budget exhausted (" + std::to_string(res.model_calls) + " model calls, " +
@@ -995,6 +1386,9 @@ std::pair<ProveResult, nlohmann::json> prove_one(ProveOptions opt, bool allow_ex
                      {"model", r.model},
                      {"model_calls", r.model_calls},
                      {"kernel_checks", r.kernel_checks},
+                     {"lean_runs", r.lean_runs},
+                     {"closer_checks", r.closer_checks},
+                     {"closed_by", r.closed_by},
                      {"rejected_invalid", r.rejected_invalid},
                      {"rejected_kernel", r.rejected_kernel},
                      {"rejected_axioms", r.rejected_axioms},
@@ -1073,12 +1467,16 @@ int prove_main(int argc, char** argv) {
         else if (a == "--beam") opt.beam = std::max(1, std::atoi(next().c_str()));
         else if (a == "--timeout") opt.lean_timeout = std::max(5.0, std::atof(next().c_str()));
         else if (a == "--out") opt.out = next();
+        else if (a == "--samples") opt.samples = std::max(1, std::atoi(next().c_str()));
+        else if (a == "--lean-jobs") opt.lean_jobs = std::max(1, std::atoi(next().c_str()));
+        else if (a == "--no-closers") opt.closers = false;
         else if (a == "--prover-fpk") opt.prover_fpk = next();
         else if (a == "--prover-model") opt.prover_model = next();
         else if (a == "-h" || a == "--help") {
             std::cout << "prism prove FILE.lean THEOREM [--write] [--allow-exec] [--project DIR]\n"
                          "            [--lemmas PATH] [--budget N] [--beam N] [--timeout S] [--out DIR]\n"
                          "            [--prover-fpk PATH] [--prover-model NAME] [--json]\n"
+                         "            [--samples N] [--lean-jobs N] [--no-closers]\n"
                          "prism prove FILE.lean --list      theorems with a sorry\n"
                          "prism prove --all [ROOTS...] [--list] [--allow-exec] [--write] [--budget N]\n"
                          "            every theorem with a sorry under ROOTS (default proofs,\n"
@@ -1086,7 +1484,10 @@ int prove_main(int argc, char** argv) {
                          "            <out>/prove/summary.json\n"
                          "Lean proof search (roadmap 9.2): the prover model proposes tactics, the Lean kernel\n"
                          "checks each one, #print axioms must stay within propext/Classical.choice/Quot.sound,\n"
-                         "and lake build of the module gates acceptance. --write writes the proof back and adds\n"
+                         "and lake build of the module gates acceptance. Candidates are checked in batches (one\n"
+                         "Lean run elaborates the file prefix once for many; --lean-jobs runs in parallel); core\n"
+                         "closers (omega, simp, grind, decide, ...) are tried on every node before the model\n"
+                         "(--no-closers: model only); --samples N model replies per node. --write writes the proof back and adds\n"
                          "it to the lemma library (default proofs/lemmas.jsonl). Needs --allow-exec (Law 9:\n"
                          "elaborating Lean runs code). Prover: a FORGE .fpk, PRISM_PROVER_FPK.\n"
                          "Exit 0 proved (--all: every one), 1 not proved, 3 NOTRUN (--all: every one), 2 error.\n";

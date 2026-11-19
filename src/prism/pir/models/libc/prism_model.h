@@ -62,6 +62,10 @@ void __prism_memset(void *d, int c, size_t n);
 void __prism_read_range(const void *p, size_t n);
 void __prism_havoc_bytes(void *p, size_t n);
 char *__prism_fresh_cstr(int kind);
+/* This call is answered by a library contract (models/kernel/): listed as an
+ * assumption of the caller's verdict (PROVED-ASSUMING), and the call must
+ * match the model's signature (translate.cpp). */
+void __prism_contract(const char *id);
 
 int __VERIFIER_nondet_int(void);
 long __VERIFIER_nondet_long(void);

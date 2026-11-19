@@ -228,6 +228,80 @@ APIs that take pointers without a harness; they say so on every such function
 (`NEEDS-HARNESS`), which is honest but is the main thing standing between
 PRISM and pir proofs on those entry points.
 
+## Stages after pir (November 2026)
+
+The stages after the static front half (contracts, wp, conc, harness,
+concolic, fuzz, diff, rapid, muttest) ran one function after another, and
+every pir check they make (`pir_one`: the function's file with the
+function, possibly instrumented, spliced in) was one whole pir run: the
+front end probed, the library models parsed, and every other function of
+the file checked in full (Houdini included), each time. What changed:
+
+- pir checks are batched (`pir_many`, `src/prism/stages/common.cpp`): many
+  queries, each its own unit in its own subdirectory, in one pir run of at
+  most 12 functions (so the run's shared Houdini budget never binds
+  differently; with `PRISM_HOUDINI_BUDGET` or `PRISM_FUNCTION_BUDGET` set
+  every query is a run of its own). Results are memoized per process by
+  the query's whole input. contracts, wp, harness (without a model) and
+  concolic collect their checks in a dry run first (`prefetch_pir`).
+- A concolic branch flip whose function names nothing but its parameters,
+  C keywords and the standard integer types, in a file with no macro of
+  those words, no pragma and no project header, is checked in a unit of
+  its own first; only a model of the flip or a proof is taken from it,
+  anything else is asked in the file as before.
+- Per-function work runs on `--jobs` workers (`prism::pool`), rows joined
+  in serial order: contracts, wp, harness, concolic, fuzz (each function
+  keeps its whole budget; with a model, one at a time), diff, rapid,
+  muttest; conc runs one task per unit.
+
+Wall times, `-j 2`, fresh `--solver-cache`, on a shared 4-core machine at
+load 7-9 (other agents' runs), so only large ratios mean anything:
+
+| corpus, stage | before | after | rows |
+|---|---|---|---|
+| testdata/pir concolic | 862 s | 38 s | 233 of 233 identical, extras (tried, generated, z3_seeds, args) included |
+| testdata/pir concolic (merge-gate run, load ~2) | 976 s | 15 s | 233 of 233 identical, extras included |
+| testdata/pir fuzz (merge-gate run, no `--allow-exec`) | 33 s | 16 s | statuses identical |
+| testdata concolic | killed past 25 min | 12.4 min ¹ | not compared (no baseline) |
+| testdata/pir fuzz (`--allow-exec`) | 113 s | 61 s | statuses identical; 4 budget-bound functions ran fewer interpreter iterations in the same budget |
+| testdata harness | 27.3 s | 24.6 s | identical (statuses, messages, extras but the temp path and a global verdict-cache note) |
+| testdata contracts | 7.0 s | 5.6 s | identical |
+| testdata wp | 4.2 s | 0.8 s | identical (most checks equal a contracts check) |
+| conformance/concurrency conc | 2.4 s | 1.9 s | identical |
+| testdata diff, rapid, muttest, ltl, execute (`--allow-exec`) | 2.8 s | 2.6 s | identical |
+
+¹ before the concolic window prefetch, which took testdata/pir from 51 s to 38 s.
+
+Budgets are unchanged (fuzz budget and iterations, solver timeouts). A
+budget-bound fuzz campaign runs fewer iterations when the machine has no
+free core per job. Still slow: harness on C++ units (each drafted case
+lowers its whole file, the salvage rounds included) and any concolic flip
+that needs its file: pir checks every function of the unit, with Houdini on
+property-free loops, to answer for one. A per-call function filter in
+`pir::run_pir` (pir is not changed here) would remove most of what is
+left.
+
+## Shared precompiled header for the Clang-AST lints (November 2026)
+
+Units parsed with the same flags that start with the same `#include <...>`
+lines share a precompiled header of exactly that prefix
+(`src/prism/astlint_libclang.cpp`, `PchCache`; `PRISM_ASTLINT_PCH=0` turns it
+off). Every prefix length is a key, so a unit uses the longest prefix any
+two units share. A PCH is never used for a unit that lints a file the PCH
+includes, and a parse with it that fails or reports an error is redone
+without it, so the result is the plain parse's. Measured on 4 cores:
+
+| | PCH off | PCH on |
+|---|---|---|
+| `testdata/conformance/prism/cxx`, `-j 1`: libclang parse time of 249 units | 39.7 s | 16.1 s (153 units used a PCH: 5.2 s) |
+| `testdata`, `-j 2`, inventory+classify+lints: user CPU | 122.6 s | 113.4 s |
+| lint findings on `testdata` (every field) | 2987 | 2987, 0 differences |
+
+Most `testdata` units are small C files with few or no includes, so the
+whole-tree gain is small; header-heavy C++ units parse 2.5x faster. On a
+kernel tree the headers of the scanned tree are lint targets themselves, so
+only the system-header part of a prefix can be shared.
+
 ## What is still open
 
 - **zlib pir is still slow.** On `main` (2026-09-26) the full scan finishes
@@ -242,7 +316,9 @@ PRISM and pir proofs on those entry points.
   ~1365 s (fuzz 763 s before the goal budget, optional 280 s, bmc 260 s).
 - tinyexpr `npr` (inlines `ncr` and `fac`, `double` in and out) takes most of
   its 250 s pir time in Houdini and ends `BOUNDED` ("Houdini ran out of
-  time"); pir runs the functions of one unit one after another.
+  time"). (Measured when pir ran the functions of one unit one after
+  another; since the task-graph change each function is its own task, see
+  [PIR.md](PIR.md) "Parallel checking".)
 - The concrete interpreter still has front-end gaps that surface as `ERROR`
   (by design: an unmapped parse failure is an error, not a silent skip):
   `unsigned long long` locals, unsized array initialisers `int p[] = {..}`

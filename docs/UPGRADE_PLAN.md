@@ -2,6 +2,20 @@
 
 Written 13 November 2026 from the OS-Proving experience ([feedback](feedback/OS-PROVING-FEEDBACK.md), checked against this repository in [the review](feedback/REVIEW-OF-FEEDBACK.md)) and a read-only look at the GPU question ([GPU findings](feedback/GPU-FINDINGS.md)). Nothing here has been built or measured in this repository yet; every gain is a target with a gate, and the first phase is to measure the baseline. All the laws in CLAUDE.md stay: `PROVED` and `BOUNDED` are never merged, a missing tool is `NOTRUN`, a model can never make a proof, nothing is skipped quietly.
 
+## Status (14 November 2026)
+
+| item | state | where |
+|---|---|---|
+| P1.1 function-level parallelism | done: one task per function on FORGE's work-stealing scheduler, at most `--jobs` units open | docs/PIR.md "Parallel checking" |
+| P1.2 whole-function verdict cache | done (exact match, completed verdicts only) | docs/PIR.md "Function verdict cache" |
+| P1.4 `--preset prove` | done | docs/USER_GUIDE.md |
+| Lean search (`prism prove`) | batched + parallel kernel checks, closers, metric-guided frontier | docs/AI.md |
+| Proof library over the kernel runs | planned; L0 keys and features in | docs/PROOF_LIBRARY.md |
+
+Measured on 4 cores: one unit with 100 functions 25.3 s → 13.5 s and 0.43 s
+from the verdict cache; testdata/pir (235 functions) 14.8 s → 11.8 s with
+identical verdicts.
+
 ## 1. Goals, in the owner's words
 
 1. Run faster (more functions proved per hour).

@@ -196,6 +196,7 @@ set(PRISM_SRC
   src/prism/ai/ask.cpp
   src/prism/ai/core.cpp
   src/prism/ai/forge_llm.cpp
+  src/prism/ai/remote_llm.cpp
   src/prism/ai/draft.cpp
   src/prism/ai/explain.cpp
   src/prism/ai/harness.cpp
@@ -237,6 +238,9 @@ set(PRISM_SRC
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
   src/prism/pir/fp.cpp
+  src/prism/library.cpp
+  src/prism/pir/fncache.cpp
+  src/prism/pir/idioms/idioms.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
   src/prism/pir/harness.cpp
@@ -302,6 +306,7 @@ set(PRISM_SRC
   src/prism/solver/predict.cpp
   src/prism/solver/query.cpp
   src/prism/solver/util.cpp
+  src/prism/solver/z3_ballast.cpp
 )
 
 # PIR library operational models (docs/PIR.md "Library models"): C++ sources
@@ -337,6 +342,8 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/kernel/linux_w2_d.cpp
   src/prism/pir/models/kernel/freebsd_w2_a.cpp
   src/prism/pir/models/kernel/freebsd_w2_b.cpp
+  # kernel / data-structure library contracts (docs/CONTRACTS.md), lowered and linked like libc
+  src/prism/pir/models/kernel/kernel.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
   src/prism/pir/models/cxx/vector
   src/prism/pir/models/cxx/map
@@ -502,6 +509,10 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+  # z3_ballast.cpp reads Z3's allocator (util/memory_manager.h, no C API);
+  # only that file sees Z3's internal headers.
+  set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${PRISM_ROOT}/third_party/z3/src")
 endif()
 
 # Roadmap 2.8: the Clang-AST lints parse in process through libclang's C API.
@@ -622,6 +633,7 @@ set(_prism_qa_sources
   src/tools/qa/libc_bounds.cpp
   src/tools/qa/solver_bench.cpp
   src/tools/qa/census.cpp
+  src/tools/qa/idioms_mine.cpp
   src/tools/qa/support/yaml_subset.cpp
   src/tools/qa/support/task.cpp
   src/tools/qa/support/replay.cpp
@@ -764,6 +776,7 @@ if(PRISM_TESTS)
     tests/cpp/test_env_registry.cpp
     tests/cpp/test_log.cpp
     tests/cpp/test_backends.cpp
+    tests/cpp/test_library.cpp
     tests/cpp/test_main.cpp
     tests/cpp/test_wide_int.cpp
     tests/cpp/test_interval.cpp
@@ -797,6 +810,7 @@ if(PRISM_TESTS)
     tests/cpp/test_ltl_notrun_strength.cpp
     tests/cpp/test_contracts.cpp
     tests/cpp/test_contracts_gap.cpp
+    tests/cpp/test_contracts_library.cpp
     tests/cpp/test_gap_strength.cpp
     tests/cpp/test_checkers_cxx.cpp
     tests/cpp/test_checkers_c.cpp
@@ -973,7 +987,7 @@ if(PRISM_TESTS)
   endif()
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
-      tests/cpp/test_pir_budget.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
+      tests/cpp/test_pir_budget.cpp tests/cpp/test_pir_parallel.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
       tests/cpp/test_solver_cert.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the

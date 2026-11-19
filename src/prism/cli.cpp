@@ -2,10 +2,12 @@
 // (tests/cpp/test_cli.cpp). main.cpp handles subcommands first.
 
 #include "prism/cli.hpp"
+#include "prism/complexity.hpp"
 
 #include "prism/pipeline.hpp"
 #include "prism/threads.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <optional>
@@ -230,6 +232,19 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solve-smt2") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) o.solve_smt2 = *v;
+        } else if (a == "--preset") {
+            // --preset prove: the proving path only (docs/UPGRADE_PLAN.md P1.4):
+            // inventory, classify and pir, no language model. Adds to any
+            // --stage names already given, like a repeated --stage.
+            auto v = in.take();
+            ok = v.has_value() && *v == "prove";
+            if (!ok && v) in.error = "argument --preset: unknown preset '" + v.value_or("") + "' (presets: prove)";
+            if (ok) {
+                cfg.llm = false;
+                if (!cfg.stages) cfg.stages.emplace();
+                for (const char* st : {"inventory", "classify", "pir"})
+                    if (std::find(cfg.stages->begin(), cfg.stages->end(), st) == cfg.stages->end()) cfg.stages->push_back(st);
+            }
         } else if (a == "--stage" || a == "--skip") {
             auto v = in.take();
             if ((ok = v.has_value())) {
@@ -277,6 +292,19 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--timeout") {
             auto v = in.take_float();
             if ((ok = v.has_value())) cfg.timeout = *v;
+        } else if (a == "--complexity") {
+            // Z3 rlimit units per verification-condition query (0: off, the
+            // wall clock alone); process-wide (include/prism/complexity.hpp)
+            auto v = in.take();
+            unsigned long long n = 0;
+            if (v) {
+                auto [p, ec] = std::from_chars(v->data(), v->data() + v->size(), n);
+                ok = !v->empty() && ec == std::errc() && p == v->data() + v->size();
+                if (!ok) in.error = "argument --complexity: invalid int value: '" + *v + "'";
+            } else {
+                ok = false;
+            }
+            if (ok) complexity::set_scale(n);
         } else if (a == "--fail-on") {
             auto v = in.take();
             if ((ok = v.has_value())) {
@@ -339,15 +367,16 @@ CliResult<TriageCli> parse_triage_cli(std::span<const char* const> args) {
 std::string cli_usage() {
     return
         "prism PATH [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
-        "           [--stage a,b] [--skip a,b] [--out DIR] [--resume] [--unwind N]\n"
+        "           [--stage a,b] [--skip a,b] [--preset prove] [--out DIR] [--resume] [--unwind N]\n"
         "           [--fuzz-budget S] [--fuzz-iters N] [--repair-rounds N]\n"
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
-        "           [--certified] [--solver-cache DIR] [--timeout S]\n"
+        "           [--certified] [--solver-cache DIR] [--timeout S] [--complexity N]\n"
         "           [--compile-commands FILE] [--kernel-api linux|freebsd]\n"
         "           [--assume-unknown-calls] [--ops-table FILE]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
+        "prism library import|vet|stats|lookup ... (proof library of earlier verdicts; library --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
         "Checks any codebase (PATH: file or directory, any language): deep C/C++\n"
         "analysis (lints, compiler warnings, BMC, fuzzing, contracts) plus every other\n"
@@ -364,6 +393,8 @@ std::string cli_usage() {
         "  prints the names; an empty --stage runs every stage; repeating --stage\n"
         "  adds names and keeps earlier ones; repeating --skip adds names and\n"
         "  keeps earlier ones).\n"
+        "--preset prove runs only the proving stages (inventory, classify, pir) with\n"
+        "  --no-llm; pir checks every function of every unit as its own task.\n"
         "Adapter search: --tool, then ~/.prism/tools/<name>/<commit>/bin (prism-deps tool), then PATH.\n"
         "--resume reuses ok/NOTRUN stages from --out/stages.jsonl (report.json fallback).\n"
         "--fail-on: exit 1 on defect (FAILED/CRASH/SANFAIL, except findings with\n"
@@ -405,6 +436,10 @@ std::string cli_usage() {
         "  at most 8 (more stays UNENCODED). Off by default (docs/PIR.md).\n"
         "--lock-contracts FILE: TSV of lock contracts for unmodified kernel code (function, lock\n"
         "  global:NAME|arg:N|field:TYPE.INDEX, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
+        "--complexity N: Z3 resource-limit (rlimit) units per pir query of a function of\n"
+        "  reference size (default: --timeout x 1000000, else PRISM_PIR_RLIMIT; 0 = off);\n"
+        "  the same limit on every machine, so \"not decided\" is reproducible; the\n"
+        "  --timeout clock stays as a backstop (3 x).\n"
         "Every run writes TRUSTED_BASE.md and VERDICTS.md next to the reports.\n"
         "--pbsd PATH: ParanoidBSD tree for the pbsd stage (else PRISM_PBSD; no default).\n"
         "  Importing its modules also needs --allow-exec.\n"

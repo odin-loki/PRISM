@@ -29,6 +29,7 @@
 
 #include "fp.hpp"
 #include "memory.hpp"
+#include "idioms/idioms.hpp"
 
 #include <cstdlib>
 #include <algorithm>
@@ -50,6 +51,8 @@
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
+#  include "prism/complexity.hpp"
+#  include "prism/pool.hpp"
 #  include "prism/solver.hpp"
 #  include <nlohmann/json.hpp>
 #  include <z3++.h>
@@ -57,6 +60,7 @@
 #    include <sys/resource.h>
 #    include <unistd.h>
 #  endif
+#  include <condition_variable>
 #  include <mutex>
 #  include <atomic>
 #endif
@@ -239,7 +243,13 @@ std::string format_cex(const Function& fn, const std::vector<uint64_t>& args) {
 
 bool z3_available() { return true; }
 
+// What Z3 has allocated, without the ballast (complexity.hpp)
+static uint64_t z3_alloc_bytes() {
+    const uint64_t a = Z3_get_estimated_alloc_size(), b = prism::complexity::z3_ballast_bytes();
+    return a > b ? a - b : 0;
+}
 static bool z3_over_soft_cap();  // below (memory cap): encode_node, houdini.inc
+static void z3_mem_guard();     // below: before every query
 
 namespace {
 
@@ -1098,6 +1108,101 @@ z3::expr any_of(z3::context& c, const std::vector<z3::expr>& xs) {
     return v.empty() ? c.bool_val(false) : z3::mk_or(v);
 }
 
+// ---------------------------------------------------------------------------
+// Complexity limits (include/prism/complexity.hpp, docs/TARGETED_PROVING.md W1)
+// ---------------------------------------------------------------------------
+
+namespace cxl = prism::complexity;
+
+// One function's conversion of the former time limits into Z3 rlimit units:
+// t seconds of a limit are t x u units (u = scale / timeout x the size
+// factor), and its wall clock is the backstop: kWallBackstop x the time those
+// units take at kUnitsPerSecond (never less than kWallBackstop x t).
+struct Cx {
+    double u = 0;  // units per second; 0: off (wall clock alone, as before)
+    bool on() const { return u > 0; }
+    unsigned units(double secs) const { return on() ? cxl::z3_limit(std::max(0.0, secs) * u) : 0; }
+    double wall(double secs) const {
+        return on() ? cxl::kWallBackstop * std::max(secs, secs * u / static_cast<double>(cxl::kUnitsPerSecond)) : secs;
+    }
+};
+
+std::size_t stmt_count(const Function& fn) {
+    std::size_t n = 0;
+    for (auto& b : fn.blocks) n += b.stmts.size() + b.phis.size();
+    return n;
+}
+
+Cx make_cx(const Function& fn, std::int64_t complexity, double timeout_s) {
+    Cx x;
+    const double t = std::max(1.0, timeout_s);
+    const double scale = complexity < 0 ? static_cast<double>(cxl::scale_for(t)) : static_cast<double>(complexity);
+    if (scale > 0) x.u = scale / t * cxl::size_factor(stmt_count(fn));
+    return x;
+}
+
+// The "rlimit count" statistic: the work Z3 has done in the solver's context
+// (a deterministic count; the difference across a check is what it spent).
+std::uint64_t rlimit_count(const z3::solver& s) {
+    try {
+        const z3::stats st = s.statistics();
+        for (unsigned i = 0; i < st.size(); ++i)
+            if (st.key(i) == "rlimit count")
+                return st.is_uint(i) ? st.uint_value(i) : static_cast<std::uint64_t>(st.double_value(i));
+    } catch (const z3::exception&) {
+    }
+    return 0;
+}
+
+struct Checked {
+    z3::check_result r = z3::unknown;
+    std::uint64_t units = 0;
+    bool limit_hit = false;  // unknown because the rlimit was reached
+};
+
+// One in-process check under a complexity limit (rlimit units, 0: none) and
+// a wall-clock limit (ms), charged to `m` (phase ph); a limit reached is
+// noted on the meter with `label`.
+Checked metered_check(z3::solver& s, const z3::expr_vector* as, unsigned rlimit, unsigned timeout_ms,
+                      cxl::Meter* m, cxl::Phase ph, const std::string& label) {
+    z3::params p(s.ctx());
+    p.set("timeout", std::max(1u, timeout_ms));
+    if (rlimit > 0) p.set("rlimit", rlimit);
+    s.set(p);
+    const bool meter = rlimit > 0 || m;
+    const std::uint64_t u0 = meter ? rlimit_count(s) : 0;
+    const prism::clock::Stopwatch t0;
+    Checked c;
+    c.r = as ? s.check(*as) : s.check();
+    if (meter) {
+        const std::uint64_t u1 = rlimit_count(s);
+        c.units = u1 - std::min(u0, u1);
+    }
+    if (c.r == z3::unknown && rlimit > 0) {
+        try {
+            c.limit_hit = s.reason_unknown().find("max. resource limit exceeded") != std::string::npos;
+        } catch (const z3::exception&) {
+        }
+    }
+    if (m) {
+        m->add(ph, c.units, true);
+        if (c.limit_hit) m->note_limit(label, rlimit);
+    }
+    if (cxl::trace())
+        std::fprintf(stderr, "[rlimit] %s %s units=%llu limit=%u secs=%.3f %s\n", cxl::phase_name(ph), label.c_str(),
+                     static_cast<unsigned long long>(c.units), rlimit, t0.elapsed_s(),
+                     c.r == z3::sat ? "sat" : c.r == z3::unsat ? "unsat" : c.limit_hit ? "limit" : "unknown");
+    return c;
+}
+
+// The family of candidate templates a Houdini search drew from (for
+// extra.invariant_search: an exhausted search is a statement about it only).
+std::string template_family_name(const std::vector<std::string>& kinds) {
+    std::string out = "pir-templates[";
+    for (std::size_t i = 0; i < kinds.size(); ++i) out += (i ? "," : "") + kinds[i];
+    return out + "]";
+}
+
 // Blocks after the (single) loop: reachable from its exits, outside the body.
 std::vector<char> post_loop_blocks(const CfgInfo& g, int L) {
     std::vector<char> after(static_cast<std::size_t>(g.n), 0);
@@ -1157,6 +1262,8 @@ struct StepAnswer {
     std::optional<bool> closed;  // true = step closed, false = open, nullopt = unknown
     Footprint fp;                // footprint actually havocked
     std::size_t havocked = 0;    // objects havocked
+    std::uint64_t units = 0;     // rlimit units the step query spent
+    bool limit_hit = false;      // unknown: the complexity limit was reached
 };
 
 // k-induction step for the single loop L: from an arbitrary header state
@@ -1175,10 +1282,19 @@ struct StepAnswer {
 // every object havocked (sound for any write target: a store that reports
 // no violation writes an object that exists at the header).
 StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned timeout_ms, Footprint fp,
-                           const EncodeOptions& eo) {
+                           const EncodeOptions& eo, unsigned rlimit = 0, cxl::Meter* meter = nullptr,
+                           const std::function<void(z3::context*)>& on_ctx = {}) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         z3::context c;
         membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
+        // the strategy race (check_function_mem) interrupts a step it no longer needs
+        if (on_ctx) on_ctx(&c);
+        struct Unreg {
+            const std::function<void(z3::context*)>& f;
+            ~Unreg() {
+                if (f) f(nullptr);
+            }
+        } unreg{on_ctx};
         prism::membudget::Phase phase_enc("encode: build (k-induction)");
         Encoding e(c, fn, g, k + 1, eo);
         e.step_loop = 0;
@@ -1195,7 +1311,6 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
         auto after = post_loop_blocks(g, 0);
         std::vector<z3::expr> goal;
         z3::solver s(c);
-        s.set("timeout", timeout_ms);
         add_all(s, e.assumptions);
         for (auto& p : e.props) {
             auto& nd = e.nodes.at(static_cast<std::size_t>(p.node));
@@ -1211,10 +1326,12 @@ StepAnswer kinduction_step(const Function& fn, const CfgInfo& g, int k, unsigned
         s.add(e.reach.at(static_cast<std::size_t>(hk->second)));
         s.add(any_of(c, goal));
         prism::membudget::Phase phase_ki("encode: k-induction check");
-        auto r = s.check();
-        if (r == z3::unsat) return StepAnswer{true, fp, e.step_havocked};
-        if (r == z3::sat) return StepAnswer{false, fp, e.step_havocked};
-        return StepAnswer{std::nullopt, fp, e.step_havocked};
+        const auto ck = metered_check(s, nullptr, rlimit, timeout_ms, meter, cxl::Phase::KInduction,
+                                      "k-induction@" + std::to_string(k));
+        const auto r = ck.r;
+        if (r == z3::unsat) return StepAnswer{true, fp, e.step_havocked, ck.units, false};
+        if (r == z3::sat) return StepAnswer{false, fp, e.step_havocked, ck.units, false};
+        return StepAnswer{std::nullopt, fp, e.step_havocked, ck.units, ck.limit_hit};
     }
     return StepAnswer{std::nullopt, fp, 0};
 }
@@ -1265,13 +1382,10 @@ std::string join_s(const std::vector<std::string>& v, const std::string& sep) {
 // No model (timeout): no trace, and extra["nondet_note"] says why; a
 // refutation without a trace is never replayed as one (tools/svcomp).
 void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const solver::SolveResult& r,
-                  double timeout_s, Verdict& v) {
+                  double timeout_s, Verdict& v, unsigned rlimit = 0, cxl::Meter* meter = nullptr) {
     if (e.nondets.empty()) return;
     auto& c = e.c;
     z3::solver s(c);
-    z3::params p(c);
-    p.set("timeout", static_cast<unsigned>(std::min(30.0, std::max(0.001, timeout_s)) * 1000));
-    s.set(p);
     s.add(base && hit.viol);
     auto pin = [&](const z3::expr& x) {
         auto it = r.model.find(x.decl().name().str());
@@ -1281,7 +1395,9 @@ void nondet_trace(Encoding& e, const PropInst& hit, const z3::expr& base, const 
     };
     for (auto& pe : e.params) pin(pe);
     for (auto& n : e.nondets) pin(n.v);
-    if (s.check() != z3::sat) {
+    if (metered_check(s, nullptr, rlimit, static_cast<unsigned>(std::min(30.0, std::max(0.001, timeout_s)) * 1000), meter,
+                      cxl::Phase::Vcs, "nondet-trace")
+            .r != z3::sat) {
         v.extra["nondet_note"] = "nondet values not reported: the pinned re-query found no model";
         return;
     }
@@ -1473,10 +1589,433 @@ Verdict check_function(const Function& fn, int unwind, double timeout_s, const E
 
 namespace {
 
-Verdict check_function_at(const Function& fn, const CheckOptions& opt);
-// set while the first, smaller unwind is tried: a BOUNDED answer there is
-// not refined by k-induction (the requested unwind decides it)
-thread_local bool tl_first_unwind = false;
+// What one check_function_at call shares with check_function_mem: the
+// complexity conversion (W1), the function's meter (W5) and the units budget
+// of the chain of attempts it belongs to (deterministic: one chain asks its
+// queries in order).
+struct RunCtl {
+    Cx cx;
+    cxl::Meter* meter = nullptr;
+    std::uint64_t units_total = 0;  // the units budget (0: none)
+    std::uint64_t units_spent = 0;  // what this chain's queries spent of it
+    double units_s = 0;             // that budget in seconds (messages)
+    // the first, smaller unwind is tried: a BOUNDED answer there is not
+    // refined by k-induction (the requested unwind decides it)
+    bool first_unwind = false;
+    cxl::Phase phase = cxl::Phase::Vcs;  // what the VC queries are charged to
+    // What the call does (W2: the strategies of one function as separate calls):
+    //   Full      VCs, then k-induction and Houdini on a BOUNDED answer (sequential)
+    //   VcsOnly   a deepening attempt: the VCs only (k-induction and Houdini
+    //             do not depend on the unwind; their answer stands)
+    //   NoRefine  the VCs; a BOUNDED answer says in extra "pir_refine" what
+    //             the sequential order would ask next ("kinduction",
+    //             "houdini", "houdini-unroll"), which the race supplies
+    //   RefineK   the encoding (its write footprint) and k-induction only;
+    //             "pir_refine" = "houdini" when Houdini would come next
+    //   RefineH   Houdini only
+    enum class Mode { Full, VcsOnly, NoRefine, RefineK, RefineH } mode = Mode::Full;
+    // the race no longer needs this answer: VC queries are cancelled
+    // (SolveOptions::stop), k-induction and Houdini stop at their next query
+    const std::atomic<bool>* stop = nullptr;
+    // k-induction / Houdini: their context while it exists (null after), so
+    // the race can interrupt a running check
+    std::function<void(z3::context*)> on_ctx;
+    bool units_out() const { return units_total > 0 && units_spent >= units_total; }
+    std::uint64_t units_left() const { return units_total > units_spent ? units_total - units_spent : 0; }
+};
+
+Verdict check_function_at(const Function& fn, const CheckOptions& opt, RunCtl& rc);
+
+// One task graph per --jobs for the process, on the scheduler every graph
+// with that --jobs shares; never waited on (see Strategies).
+prism::pool::TaskGraph& shared_graph(int jobs) {
+    static std::mutex m;
+    static std::map<int, prism::pool::TaskGraph*> gs;
+    std::lock_guard<std::mutex> g(m);
+    auto& p = gs[jobs];
+    if (!p) p = new prism::pool::TaskGraph(jobs);  // lives for the process
+    return *p;
+}
+
+// Room for speculative solver work (W2: VCs asked ahead, strategies started
+// before they are needed): the process is under a third of its memory
+// budget and the box is not low. Speculation only changes which thread asks
+// a query and when, never the verdict (the search takes the answers in its
+// own order), so this time-dependent test only saves memory: a speculative
+// copy must not push the function, or a neighbour, over the budget.
+bool room_to_speculate() {
+    if (membudget::system_low()) return false;
+    const uint64_t b = membudget::budget_mb();
+    return b == 0 || membudget::rss_mb() * 3 < b;
+}
+
+// Property VCs asked ahead (W2): idle workers of the run's scheduler solve
+// the queries the sequential search is about to ask, each in a context of
+// its own (z3::context is not thread-safe: the function's base, properties
+// and loop cuts are translated into a worker context on the function's own
+// thread, at its next call here, and only once a worker was free to use it:
+// a busy run holds no copies). The search itself stays sequential and takes
+// each answer in its own order (solve_vc), so the verdict, the first violated
+// property and every budget decision are the ones the sequential search
+// makes; a query is answered the same way wherever it runs (its complexity
+// limit is in Z3 units, and the Z3 ballast keeps its strategy the same).
+// Answers the search does not take are dropped and their queries stopped
+// (SolveOptions::stop).
+class VcAhead {
+public:
+    VcAhead(int jobs, z3::context& c, const z3::expr& base, const std::vector<z3::expr>& viols,
+            const std::vector<z3::expr>& cuts, const solver::SolveOptions& so)
+        : jobs_(jobs), c_(c), src_(c), st_(std::make_shared<State>()) {
+        st_->so = so;
+        st_->n_viols = viols.size();
+        st_->max_ctx = static_cast<unsigned>(std::max(1, jobs - 1));
+        // the formulas the search asks, rebuilt in each worker context from
+        // the same pieces (the same structure, so the same query)
+        src_.push_back(base);
+        for (auto& x : viols) src_.push_back(x);
+        for (auto& x : cuts) src_.push_back(x);
+    }
+    ~VcAhead() { stop_all(); }
+    VcAhead(const VcAhead&) = delete;
+    VcAhead& operator=(const VcAhead&) = delete;
+
+    // key: "p<i>" property i alone, "g<i,j,...>" their disjunction, "u" the loop cuts
+    void ask(const std::string& key, std::vector<std::size_t> props, bool cuts, unsigned rlimit, double timeout_s) {
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (st_->items.count(key) || st_->stopped) return;
+            auto it = std::make_shared<Item>();
+            it->props = std::move(props);
+            it->cuts = cuts;
+            it->rlimit = rlimit;
+            it->timeout_s = timeout_s;
+            st_->items[key] = it;
+            st_->queue.push_back(it);
+        }
+        service();
+    }
+    // On the function's thread: a worker context for a puller that found
+    // none (the first one at once), and pullers for the free contexts.
+    void service() {
+        bool make = false;
+        int spawn = 0;
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (st_->stopped || !st_->has_queued()) return;
+            make = st_->created < st_->max_ctx && (st_->created == 0 || st_->need_ctx);
+        }
+        if (make && !room_to_speculate()) make = false;  // a worker context is a copy of the function
+        std::unique_ptr<Worker> w;
+        if (make) {
+            w = std::make_unique<Worker>();
+            Z3_ast_vector tv = Z3_ast_vector_translate(c_, src_, w->c);
+            w->xs = z3::expr_vector(w->c, tv);
+        }
+        {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            if (w) {
+                st_->free.push_back(std::move(w));
+                ++st_->created;
+                st_->need_ctx = false;
+            }
+            // one puller per free context, and one more that asks for a
+            // context when it finds none (it runs only on an idle worker)
+            const int want = static_cast<int>(st_->free.size()) + (st_->created < st_->max_ctx ? 1 : 0);
+            spawn = std::max(0, std::min(want, static_cast<int>(st_->max_ctx)) - st_->pullers);
+            st_->pullers += spawn;
+        }
+        for (int i = 0; i < spawn; ++i) {
+            auto st = st_;
+            shared_graph(jobs_).spawn([st] { pull(*st); }, prism::pool::Priority::Normal);
+        }
+    }
+    // The answer asked ahead under key (waits while a worker has it), or
+    // none: not asked ahead, not started (the caller asks it now; it is not
+    // asked twice) or stopped.
+    std::optional<solver::SolveResult> take(const std::string& key) {
+        service();
+        std::unique_lock<std::mutex> lk(st_->mu);
+        auto f = st_->items.find(key);
+        if (f == st_->items.end()) return std::nullopt;
+        auto it = f->second;
+        if (it->state == Item::Queued) {
+            it->state = Item::Taken;
+            return std::nullopt;
+        }
+        st_->cv.wait(lk, [&] { return it->state == Item::Done || it->state == Item::Failed; });
+        if (it->state != Item::Done) return std::nullopt;
+        return it->r;
+    }
+    // The search will not take these any more: stop them.
+    void drop_all() {
+        std::lock_guard<std::mutex> lk(st_->mu);
+        for (auto& [k, it] : st_->items) {
+            it->stop.store(true);
+            if (it->state == Item::Queued) it->state = Item::Taken;
+        }
+    }
+    void stop_all() {
+        std::unique_lock<std::mutex> lk(st_->mu);
+        st_->stopped = true;
+        for (auto& [k, it] : st_->items) {
+            it->stop.store(true);
+            if (it->state == Item::Queued) it->state = Item::Taken;
+        }
+        // running queries see their stop within 50 ms; wait for them so no
+        // solver work of this function outlives it
+        st_->cv.wait(lk, [&] { return st_->running == 0; });
+        st_->free.clear();  // the worker contexts (a queued puller finds none)
+    }
+
+private:
+    struct Worker {
+        z3::context c;
+        z3::expr_vector xs{c};
+    };
+    struct Item {
+        enum State { Queued, Running, Done, Failed, Taken } state = Queued;
+        std::vector<std::size_t> props;
+        bool cuts = false;
+        unsigned rlimit = 0;
+        double timeout_s = 0;
+        std::atomic<bool> stop{false};
+        solver::SolveResult r;
+    };
+    struct State {
+        mutable std::mutex mu;
+        std::condition_variable cv;
+        solver::SolveOptions so;
+        std::size_t n_viols = 0;
+        unsigned max_ctx = 1;
+        unsigned created = 0;
+        bool need_ctx = false;  // a puller ran and found no context
+        std::vector<std::unique_ptr<Worker>> free;
+        std::map<std::string, std::shared_ptr<Item>> items;
+        std::deque<std::shared_ptr<Item>> queue;
+        int pullers = 0;
+        int running = 0;
+        bool stopped = false;
+        bool has_queued() const {
+            for (auto& it : queue)
+                if (it->state == Item::Queued) return true;
+            return false;
+        }
+    };
+    static void pull(State& st) {
+        for (;;) {
+            std::shared_ptr<Item> it;
+            std::unique_ptr<Worker> w;
+            {
+                std::lock_guard<std::mutex> lk(st.mu);
+                while (!st.queue.empty() && st.queue.front()->state != Item::Queued) st.queue.pop_front();
+                if (st.queue.empty() || st.free.empty() || st.stopped) {
+                    if (!st.stopped && !st.queue.empty() && st.free.empty()) st.need_ctx = true;
+                    --st.pullers;
+                    return;
+                }
+                it = st.queue.front();
+                st.queue.pop_front();
+                it->state = Item::Running;
+                w = std::move(st.free.back());
+                st.free.pop_back();
+                ++st.running;
+            }
+            bool ok = false;
+            try {
+                z3_mem_guard();
+                const z3::expr base = w->xs[0];
+                z3::expr f = base;
+                if (it->cuts) {
+                    std::vector<z3::expr> cs;
+                    for (unsigned i = static_cast<unsigned>(1 + st.n_viols); i < w->xs.size(); ++i) cs.push_back(w->xs[i]);
+                    f = base && any_of(w->c, cs);
+                } else if (it->props.size() == 1) {
+                    f = base && w->xs[static_cast<unsigned>(1 + it->props[0])];
+                } else {
+                    std::vector<z3::expr> vs;
+                    for (auto i : it->props) vs.push_back(w->xs[static_cast<unsigned>(1 + i)]);
+                    f = base && any_of(w->c, vs);
+                }
+                solver::SolveOptions o = st.so;
+                o.rlimit = it->rlimit;
+                o.timeout_s = it->timeout_s;
+                o.stop = &it->stop;
+                prism::membudget::Phase phase_vc("encode: vc solve (ahead)");
+                it->r = solver::solve(w->c, f, o);
+                ok = !it->stop.load();
+            } catch (...) {
+                ok = false;
+            }
+            {
+                std::lock_guard<std::mutex> lk(st.mu);
+                it->state = ok ? Item::Done : Item::Failed;
+                if (!st.stopped) st.free.push_back(std::move(w));
+                --st.running;
+            }
+            st.cv.notify_all();
+            // w (when stopped) is freed here, outside the lock
+        }
+    }
+
+    int jobs_;
+    z3::context& c_;
+    z3::expr_vector src_;  // in the function's context: touched on its thread only
+    std::shared_ptr<State> st_;
+};
+
+// A function's strategies as tasks on the run's shared scheduler (W2). Idle
+// workers start them; join() runs a task nobody has started on the calling
+// thread (so the order is the sequential one with --jobs 1), else waits for
+// it. A function never runs another function's task while it waits
+// (TaskGraph::wait would help with any task, so it is never called on a
+// graph with pending tasks: a finished function's graph is kept until the
+// workers have dropped its last task).
+class Strategies {
+public:
+    struct Slot {
+        std::string name;
+        std::atomic<bool> stop{false};
+        std::atomic<bool> claimed{false};
+        bool spawned = false;
+        bool done = false;  // guarded by the shared state's mutex
+        std::function<void()> fn;
+        std::exception_ptr err;
+        std::mutex ctx_mu;
+        z3::context* ctx = nullptr;
+        void set_ctx(z3::context* c) {
+            std::lock_guard<std::mutex> g(ctx_mu);
+            ctx = c;
+            if (c && stop.load()) Z3_interrupt(*c);
+        }
+        void interrupt() {
+            stop.store(true);
+            std::lock_guard<std::mutex> g(ctx_mu);
+            if (ctx) Z3_interrupt(*ctx);
+        }
+    };
+
+    explicit Strategies(int jobs) : jobs_(jobs), st_(std::make_shared<State>()) {}
+    ~Strategies() { stop_all(); }
+    Strategies(const Strategies&) = delete;
+    Strategies& operator=(const Strategies&) = delete;
+
+    Slot& slot(const std::string& name) {
+        slots_.push_back(std::make_shared<Slot>());
+        slots_.back()->name = name;
+        return *slots_.back();
+    }
+    // speculate: an idle worker may start it now; otherwise only join() runs it
+    void spawn(Slot& s, std::function<void()> fn, bool speculate = true) {
+        s.fn = std::move(fn);
+        s.spawned = true;
+        // run by join(), in the caller's order (also when memory is short)
+        if (jobs_ <= 1 || !speculate || !room_to_speculate()) return;
+        std::shared_ptr<Slot> sp;
+        for (auto& x : slots_)
+            if (x.get() == &s) sp = x;
+        auto st = st_;
+        // A queued wrapper may outlive this function (shared state and slot
+        // are its own): once join/stop has claimed the slot it does nothing.
+        graph().spawn(
+            [st, sp] {
+                if (sp && !sp->claimed.exchange(true)) run(*st, *sp);
+            },
+            prism::pool::Priority::Normal);
+    }
+    // The task's answer is needed: run it here unless a worker has it, then wait.
+    void join(Slot& s) {
+        if (!s.spawned) return;
+        if (!s.claimed.exchange(true)) {
+            run(*st_, s);
+        } else {
+            std::unique_lock<std::mutex> lk(st_->mu);
+            st_->cv.wait(lk, [&] { return s.done; });
+        }
+        if (s.err) std::rethrow_exception(std::exchange(s.err, nullptr));
+    }
+    // Not needed: stop it (a task nobody started never runs) and wait for it.
+    void stop(Slot& s) {
+        if (!s.spawned) return;
+        s.interrupt();
+        if (!s.claimed.exchange(true)) {
+            std::lock_guard<std::mutex> lk(st_->mu);
+            s.done = true;
+            s.fn = nullptr;
+            return;
+        }
+        std::unique_lock<std::mutex> lk(st_->mu);
+        st_->cv.wait(lk, [&] { return s.done; });
+    }
+    void stop_all() {
+        for (auto& s : slots_) stop(*s);
+    }
+
+private:
+    struct State {
+        std::mutex mu;
+        std::condition_variable cv;
+    };
+    static void run(State& st, Slot& s) {
+        try {
+            if (!s.stop.load() && s.fn) s.fn();
+        } catch (...) {
+            s.err = std::current_exception();
+        }
+        s.fn = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(st.mu);
+            s.done = true;
+        }
+        st.cv.notify_all();
+    }
+    prism::pool::TaskGraph& graph() { return shared_graph(jobs_); }
+    int jobs_;
+    std::shared_ptr<State> st_;
+    std::vector<std::shared_ptr<Slot>> slots_;
+};
+
+// The strategy whose answer the verdict is (extra.metrics.strategy).
+std::string winning_strategy(const Verdict& v) {
+    auto ex = [&](const char* k) {
+        auto it = v.extra.find(k);
+        return it == v.extra.end() ? std::string() : it->second;
+    };
+    const std::string ki = ex("k_induction");
+    if (v.status == std::string(laws::PROVED_UNBOUNDED) && ki == "closed") return "k-induction";
+    if (v.status == std::string(laws::PROVED_UNBOUNDED) && ki == "closed-invariants") return "houdini";
+    const std::string deep = ex("unwind_deepened_to");
+    if (!deep.empty() && deep.find(' ') == std::string::npos) return "deepening@" + deep;
+    if (v.status == std::string(laws::PROVED) || v.status == std::string(laws::PROVED_CERTIFIED) ||
+        v.status == std::string(laws::FAILED))
+        return "unwinding@" + ex("unwind");
+    return "none";
+}
+
+// extra.metrics (W5): rlimit units and queries per phase, the strategy that
+// answered, and the scale; extra.complexity_limit: the first query that
+// reached its limit (Law 7: "not decided within complexity C").
+void add_metrics(Verdict& v, const cxl::Meter& m, const RunCtl& rc) {
+    nlohmann::json units = nlohmann::json::object(), queries = nlohmann::json::object();
+    for (int i = 0; i < static_cast<int>(cxl::Phase::Count); ++i) {
+        const auto p = static_cast<cxl::Phase>(i);
+        units[cxl::phase_name(p)] = m.units[static_cast<std::size_t>(i)].load();
+        queries[cxl::phase_name(p)] = m.queries[static_cast<std::size_t>(i)].load();
+    }
+    nlohmann::json j{{"rlimit_units", units},
+                     {"queries", queries},
+                     {"rlimit_units_total", m.total()},
+                     {"queries_total", m.total_queries()},
+                     {"complexity_limit_hits", m.limit_hits.load()},
+                     {"strategy", winning_strategy(v)}};
+    if (rc.cx.on()) {
+        j["rlimit_units_per_s"] = static_cast<std::uint64_t>(rc.cx.u);
+        if (rc.units_total > 0) j["function_rlimit_units"] = rc.units_total;
+    } else {
+        j["rlimit_units_per_s"] = 0;  // complexity limits off (wall clock alone)
+    }
+    v.extra["metrics"] = j.dump();
+    if (const std::string fl = m.first_limit(); !fl.empty()) v.extra["complexity_limit"] = fl;
+}
 
 }  // namespace
 
@@ -1512,7 +2051,7 @@ static bool z3_exhausted() {
     if (g_z3_oom.load()) return true;
     const uint64_t cap = g_z3_cap_mb.load();
     // over the soft cap now (not sticky: a finished function frees its context)
-    if (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap * 95 / 100) return true;
+    if (cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap * 95 / 100) return true;
     membudget::release_free_memory();  // the last function's freed heap is not ours to count
     return membudget::over_budget();
 }
@@ -1528,17 +2067,17 @@ bool z3_hard_oom() { return g_z3_oom.load(); }
 
 static bool z3_over_soft_cap() {
     const uint64_t cap = g_z3_cap_mb.load();
-    return g_z3_oom.load() || (cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) ||
+    return g_z3_oom.load() || (cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap) ||
            membudget::over_budget_sampled(4);  // per encoded node (unordered_map_contracts: 3.4 GB kill)
 }
 
 static void z3_mem_guard() {
     const uint64_t cap = g_z3_cap_mb.load();
-    if ((cap > 0 && Z3_get_estimated_alloc_size() / (1024 * 1024) >= cap) || membudget::over_budget()) {
+    if ((cap > 0 && z3_alloc_bytes() / (1024 * 1024) >= cap) || membudget::over_budget()) {
         if (prism::settings::mem_trace().is_set())
             std::fprintf(stderr, "[memtrace] %lld guard rss=%llu z3=%llu\n",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()),
-                         static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(Z3_get_estimated_alloc_size() >> 20));
+                         static_cast<unsigned long long>(membudget::rss_mb()), static_cast<unsigned long long>(z3_alloc_bytes() >> 20));
         throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached before a query");
     }
 }
@@ -1552,8 +2091,12 @@ static void cap_z3_memory_once() {
         // its hard limit is 1.5x: at 1.0x Z3 segfaulted in its own out-of-memory path (cxx_priority_queue_true, rc 139 at 2.8 GB RSS); overshoot is bounded by the 20 ms RSS watchdog instead.
         const uint64_t mb = membudget::base_budget_mb();
         g_z3_cap_mb.store(mb * 4 / 5);  // soft: under the hard limit
-        if (mb > 0) z3::set_param("memory_max_size", static_cast<int>(std::min<uint64_t>(mb + mb / 2, 1u << 30)));
-        // No memory_high_watermark_mb: it is process-wide and sticky (on
+        // first, before any limit: Z3 counts the ballast (complexity.hpp)
+        cxl::install_z3_ballast();
+        if (mb > 0)
+            z3::set_param("memory_max_size",
+                          static_cast<int>(std::min<uint64_t>(mb + mb / 2 + (cxl::z3_ballast_bytes() >> 20), 1u << 30)));
+                // No memory_high_watermark_mb: it is process-wide and sticky (on
         // conformance/libc-models the live Z3 heap reached the mark and every
         // later check returned memout at once), so it stays off.
         // A Z3 call can ignore Z3_interrupt (a portfolio job's check on
@@ -1601,7 +2144,7 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     cap_z3_memory_once();
     if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "pir mem: %s start, z3 estimate %llu MB, cap %llu MB, rss %ld MB\n", fn.name.c_str(),
-                     static_cast<unsigned long long>(Z3_get_estimated_alloc_size() / (1024 * 1024)),
+                     static_cast<unsigned long long>(z3_alloc_bytes() / (1024 * 1024)),
                      static_cast<unsigned long long>(g_z3_cap_mb.load()), [] {
                          long pages = 0, rss = 0;
 #ifdef _WIN32
@@ -1624,36 +2167,154 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     CheckOptions opt = opt_in;
     if (opt.function_budget_s > 0 && !opt.function_budget)
         opt.function_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
-    if (opt.certified || opt.unwind <= kFirstUnwind + 1) return check_function_at(fn, opt);
+    // Complexity limits (W1) and the function's meter (W5): one meter for
+    // every attempt of the function; one units budget for its chain of
+    // attempts (first unwind, requested unwind, deepening), asked in order.
+    cxl::Meter meter;
+    RunCtl rc;
+    rc.cx = make_cx(fn, opt.complexity, opt.timeout_s);
+    rc.meter = &meter;
+    if (rc.cx.on() && opt.function_units_s > 0) {
+        rc.units_s = opt.function_units_s;
+        rc.units_total = static_cast<std::uint64_t>(std::max(1.0, opt.function_units_s * rc.cx.u));
+    }
+    auto done = [&](Verdict& r) -> Verdict {
+        add_metrics(r, meter, rc);
+        return r;
+    };
+    if (opt.certified || opt.unwind <= kFirstUnwind + 1) {
+        Verdict r = check_function_at(fn, opt, rc);
+        return done(r);
+    }
     std::size_t n_loops = 0;
     {
         auto g = analyze(fn);
-        if (!g.unencoded.empty() || g.loops.empty()) return check_function_at(fn, opt);
+        if (!g.unencoded.empty() || g.loops.empty()) {
+            Verdict r = check_function_at(fn, opt, rc);
+            return done(r);
+        }
         n_loops = g.loops.size();
     }
+    // The strategies (W2): the unwinding chain (first unwind, requested
+    // unwind, deepening), k-induction and Houdini are separate calls, asked
+    // concurrently on the run's scheduler when opt.jobs > 1 (else one after
+    // the other, in the sequential order). The verdict is the one the
+    // sequential order gives from their answers: k-induction and Houdini
+    // count only when the requested unwind is BOUNDED (k-induction's base
+    // case is that BOUNDED answer; Houdini is asked when the sequential
+    // order would ask it), and deepening only when they did not prove. Each
+    // has its own units budget (its answer does not depend on how far
+    // another one got), so the verdict is the same for every --jobs and
+    // load. A strategy whose answer is not needed any more is stopped.
+    bool allocs = false;
+    {
+        auto g = analyze(fn);
+        for (auto& L : g.loops)
+            for (std::size_t b = 0; b < L.body.size() && !allocs; ++b) {
+                if (!L.body.at(b)) continue;
+                for (auto& s : fn.blocks[b].stmts)
+                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
+                        s.kind == Stmt::Revive)
+                        allocs = true;
+            }
+    }
+    Strategies race(opt.jobs > 1 && !opt.debug_before_query ? opt.jobs : 1);
+    auto own = [&](cxl::Meter* m, RunCtl::Mode mode, Strategies::Slot& slot) {
+        RunCtl r;
+        r.cx = rc.cx;
+        r.meter = m;
+        r.units_total = rc.units_total;
+        r.units_s = rc.units_s;
+        r.mode = mode;
+        r.stop = &slot.stop;
+        r.on_ctx = [&slot](z3::context* c) { slot.set_ctx(c); };
+        return r;
+    };
+    cxl::Meter mk, mh, md;
+    Strategies::Slot& ks = race.slot("k-induction");
+    Strategies::Slot& hs = race.slot("houdini");
+    Strategies::Slot& ds = race.slot("deepening");
+    RunCtl rck = own(&mk, RunCtl::Mode::RefineK, ks);
+    RunCtl rch = own(&mh, RunCtl::Mode::RefineH, hs);
+    rch.phase = cxl::Phase::Houdini;
+    Verdict kv, hv;
+    // Each strategy's wall-clock backstop starts when the strategy starts
+    // (with complexity limits on): at --jobs 1 they run one after the other,
+    // at --jobs N side by side, and a clock shared from the function's start
+    // would cut the later ones short at --jobs 1 only. Their units decide;
+    // the clock is the backstop (kWallBackstop x the units' time).
+    const bool own_clocks = rc.cx.on() && opt.function_budget != nullptr;
+    const auto own_clock = [&](double total_s) {
+        CheckOptions o = opt;
+        if (own_clocks) o.function_budget = std::make_shared<FunctionBudget>(std::max(0.0, total_s));
+        return o;
+    };
+    const double fn_wall_s = opt.function_budget ? opt.function_budget->total_s : 0;
+    auto spawn_refine = [&] {
+        // speculative (an idle worker starts them now): needed only if the
+        // requested unwind is BOUNDED; with an allocating loop they only
+        // write why they are not attempted (on join)
+        if (n_loops == 1)
+            race.spawn(ks, [&] {
+                const CheckOptions o = own_clock(fn_wall_s);
+                kv = check_function_at(fn, o, rck);
+            }, !allocs);
+        race.spawn(hs, [&] {
+            const CheckOptions o = own_clock(fn_wall_s);
+            hv = check_function_at(fn, o, rch);
+        }, !allocs);
+    };
+    static const int deepen_env = [] {
+        const char* e = std::getenv("PRISM_PIR_DEEPEN_MAX");
+        return (e && *e) ? std::atoi(e) : 64;
+    }();
+    const int deepen_max = opt.deepen_max >= 0 ? opt.deepen_max : deepen_env;
+    std::optional<Verdict> deep;           // a deeper FAILED / closed PROVED
+    std::vector<std::string> deep_bounded;  // deeper unwinds that stayed BOUNDED
+    RunCtl rcd;
+    struct StopAll {
+        Strategies& r;
+        ~StopAll() { r.stop_all(); }  // every task stopped and finished before the locals go
+    } stop_all{race};
+    // merge a strategy's answer into the verdict: its extras (the ones the
+    // sequential order would have written), and its status when it proved
+    auto merge = [](Verdict& into, Verdict& from, bool take_status) {
+        for (auto& [k, val] : from.extra) {
+            if (k == "solver" || k == "certified_mode" || k == "unwind" || k == "loops" || k == "pir_refine") continue;
+            into.extra[k] = val;
+        }
+        if (take_status) {
+            into.status = from.status;
+            into.message = from.message;
+        }
+    };
     CheckOptions first = opt;
     first.unwind = kFirstUnwind;
-    tl_first_unwind = true;
-    Verdict v;
-    try {
-        v = check_function_at(fn, first);
-    } catch (...) {
-        tl_first_unwind = false;
-        throw;
-    }
-    tl_first_unwind = false;
+    rc.first_unwind = true;
+    Verdict v = check_function_at(fn, first, rc);
+    rc.first_unwind = false;
     auto closed = v.extra.find("unwind_closed");
     const bool proved = v.status == std::string(laws::PROVED) && closed != v.extra.end() && closed->second == "true";
     if (proved || v.status == std::string(laws::FAILED)) {
         v.extra["unwind_requested"] = std::to_string(opt.unwind);
-        return v;
+        return done(v);
     }
     if (z3_exhausted()) {
         v.status = std::string(laws::UNKNOWN);
         v.message = membudget::over_message(("at unwind " + std::to_string(kFirstUnwind)).c_str());
-        return v;
+        return done(v);
     }
-    Verdict full = check_function_at(fn, opt);
+    // the first unwind is BOUNDED: the requested unwind, with k-induction
+    // and Houdini asked beside it (most functions end at the first unwind)
+    spawn_refine();
+    rc.mode = RunCtl::Mode::NoRefine;
+    Verdict full = check_function_at(fn, opt, rc);
+    rc.mode = RunCtl::Mode::Full;
+    std::string next;
+    if (auto it = full.extra.find("pir_refine"); it != full.extra.end()) {
+        next = it->second;
+        full.extra.erase(it);
+    }
     // The budget ran out before the requested unwind answered every VC: the
     // first attempt's BOUNDED (no violation within its unwind, every VC
     // answered) stands, with the reason the requested unwind was not decided
@@ -1665,7 +2326,7 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
         v.extra["function_budget_s"] = full.extra["function_budget_s"];
         v.extra["k_induction"] = "not attempted (function budget of " + full.extra["function_budget_s"] +
                                  " s spent; PRISM_FUNCTION_BUDGET)";
-        return v;
+        return done(v);
     }
     full.extra["unwind_first_tried"] = std::to_string(kFirstUnwind) + " (" + v.status + ")";
     // Deepening: a single loop still BOUNDED at the requested unwind is
@@ -1674,35 +2335,75 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     // on the 11th iteration, past unwind 8: BOUNDED there, FAILED at 16.
     // Only a FAILED (a path that exists at any larger unwind) or a PROVED
     // with every loop closed replaces the answer; anything else keeps it.
-    static const int deepen_env = [] {
-        const char* e = std::getenv("PRISM_PIR_DEEPEN_MAX");
-        return (e && *e) ? std::atoi(e) : 64;
-    }();
-    const int deepen_max = opt.deepen_max >= 0 ? opt.deepen_max : deepen_env;
-    if (full.status == std::string(laws::BOUNDED) && n_loops == 1 && deepen_max > opt.unwind) {
-        for (int u = opt.unwind * 2; u <= deepen_max; u *= 2) {
-            if (opt.function_budget && opt.function_budget->left() < opt.timeout_s) break;
-            if (z3_exhausted()) break;
-            CheckOptions d = opt;
-            d.unwind = u;
-            Verdict dv = check_function_at(fn, d);
-            auto dc = dv.extra.find("unwind_closed");
-            const bool dproved = dv.status == std::string(laws::PROVED) && dc != dv.extra.end() && dc->second == "true";
-            if (dproved || dv.status == std::string(laws::FAILED)) {
-                dv.extra["unwind_requested"] = std::to_string(opt.unwind);
-                dv.extra["unwind_deepened_to"] = std::to_string(u);
-                return dv;
+    // A deeper attempt asks its VCs only: k-induction and Houdini do not
+    // depend on the unwind (their answer at the requested unwind stands),
+    // and a PROVED-UNBOUNDED there would end the deepening with this
+    // BOUNDED answer anyway. It starts with what the chain left of its
+    // units budget, speculatively next to k-induction and Houdini.
+    rcd = rc;
+    rcd.meter = &md;
+    rcd.mode = RunCtl::Mode::VcsOnly;
+    rcd.phase = cxl::Phase::Deepen;
+    rcd.stop = &ds.stop;
+    const bool deepen = full.status == std::string(laws::BOUNDED) && n_loops == 1 && deepen_max > opt.unwind;
+    // the chain's clock as it stands now, restarted when the deepening starts
+    // (at --jobs 1 it starts after k-induction and Houdini)
+    const double chain_wall_left = opt.function_budget ? opt.function_budget->left() : 0;
+    if (deepen)
+        race.spawn(ds, [&] {
+            const CheckOptions dopt = own_clock(chain_wall_left);
+            for (int u = opt.unwind * 2; u <= deepen_max; u *= 2) {
+                if (ds.stop.load()) break;
+                if (dopt.function_budget && dopt.function_budget->left() < opt.timeout_s) break;
+                if (rcd.units_total > 0 && rcd.units_left() < rcd.cx.units(opt.timeout_s)) break;
+                if (z3_exhausted()) break;
+                CheckOptions d = dopt;
+                d.unwind = u;
+                Verdict dv = check_function_at(fn, d, rcd);
+                auto dc = dv.extra.find("unwind_closed");
+                const bool dproved = dv.status == std::string(laws::PROVED) && dc != dv.extra.end() && dc->second == "true";
+                if (dproved || dv.status == std::string(laws::FAILED)) {
+                    dv.extra["unwind_requested"] = std::to_string(opt.unwind);
+                    dv.extra["unwind_deepened_to"] = std::to_string(u);
+                    deep = std::move(dv);
+                    return;
+                }
+                if (dv.status != std::string(laws::BOUNDED)) break;
+                deep_bounded.push_back(std::to_string(u));
             }
-            if (dv.status != std::string(laws::BOUNDED)) break;
-            full.extra["unwind_deepened_to"] = std::to_string(u) + " (BOUNDED)";
-        }
+        });
+    // k-induction, then Houdini, as the sequential order asks them
+    if (next == "kinduction") {
+        race.join(ks);
+        meter.merge(mk);
+        std::string then;
+        if (auto it = kv.extra.find("pir_refine"); it != kv.extra.end()) then = it->second;
+        const bool kproved = kv.status == std::string(laws::PROVED_UNBOUNDED);
+        merge(full, kv, kproved);
+        if (kproved) return done(full);
+        next = then;  // "houdini", or "" (k-induction ended it: a spent budget)
     }
-    return full;
+    if (next == "houdini" || next == "houdini-unroll") {
+        race.join(hs);
+        meter.merge(mh);
+        const bool hproved = hv.status == std::string(laws::PROVED_UNBOUNDED);
+        merge(full, hv, hproved);
+        if (hproved) return done(full);
+    }
+    race.stop(ks);
+    race.stop(hs);
+    if (deepen) {
+        race.join(ds);
+        meter.merge(md);
+        if (deep) return done(*deep);
+        if (!deep_bounded.empty()) full.extra["unwind_deepened_to"] = deep_bounded.back() + " (BOUNDED)";
+    }
+    return done(full);
 }
 
 namespace {
 
-Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
+Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl& rc) {
     PtrModelScope pms(fn.ptr);
     // Lean certificates are LP64-only (PrismSem Memory.lean: BitVec 64
     // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
@@ -1713,10 +2414,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
     Verdict v;
     const int unwind = std::max(1, opt.unwind);
     const double timeout_s = std::max(1.0, opt.timeout_s);
-    const auto timeout_ms = static_cast<unsigned>(timeout_s * 1000.0);
     std::shared_ptr<FunctionBudget> fn_budget = opt.function_budget;
     if (!fn_budget && opt.function_budget_s > 0) fn_budget = std::make_shared<FunctionBudget>(opt.function_budget_s);
-    const std::string fn_budget_n = fn_budget ? budget_seconds(fn_budget->total_s) : std::string();
+    // The function budget: its units (deterministic, CheckOptions::function_units_s)
+    // and its clock (fn_budget; with units, the backstop). A budget is
+    // named by its units' seconds when it has them.
+    const auto budget_out = [&] { return (fn_budget && fn_budget->exhausted()) || rc.units_out(); };
+    const std::string fn_budget_n = rc.units_total > 0 ? budget_seconds(rc.units_s)
+                                    : fn_budget           ? budget_seconds(fn_budget->total_s)
+                                                          : std::string();
     std::string fn_budget_at;  // the VC the budget stopped (before it, or during it)
     // VCs whose answer the budget cut short (their timeout was what was left
     // of it, and no answer came)
@@ -1789,7 +2495,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         }
         // Every VC is answered (the verdict is BOUNDED): a spent function
         // budget leaves it BOUNDED and says what was not tried.
-        if (fn_budget && fn_budget->exhausted()) {
+        if (budget_out()) {
             r.extra["invariants_note"] = fn_budget_note(r);
             return false;
         }
@@ -1814,13 +2520,33 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         if (opt.debug_before_query) opt.debug_before_query("houdini");
         // the function budget is a hard cap: no query of the search, its
         // final query included, runs past it (docs/PIR.md "Solving")
-        const double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
-        if (fn_budget) search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
+        // With complexity limits the hard cap is what is left of the units
+        // budget (in seconds of units) and the clock is the backstop.
+        HoudiniLimits hl;
+        hl.cx = rc.cx;
+        hl.meter = rc.meter;
+        hl.stop = rc.stop;
+        hl.on_ctx = rc.on_ctx;
+        double hard_s = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
+        if (rc.cx.on()) {
+            hl.hard_wall_s = hard_s;
+            hard_s = rc.units_total > 0 ? static_cast<double>(rc.units_left()) / rc.cx.u : -1;
+        } else if (fn_budget) {
+            search_s = search_s < 0 ? hard_s : std::min(search_s, hard_s);
+        }
         const prism::clock::Stopwatch th;
-        Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s);
+        Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s, hl);
         auto h = hd.run();
+        rc.units_spent += h.units;
+        if (rc.meter) {
+            rc.meter->add(cxl::Phase::Houdini, h.units, false);
+            rc.meter->queries[static_cast<std::size_t>(cxl::Phase::Houdini)] += static_cast<std::uint64_t>(h.queries);
+            if (h.limit_hit) rc.meter->note_limit("houdini", rc.cx.units(timeout_s));
+        }
         const double hs = th.elapsed_s();
-        if (opt.houdini_budget) opt.houdini_budget->spend(hs);
+        // a search the race stopped (its answer not used) is not charged to
+        // the run's Houdini budget: what the run spends does not depend on --jobs
+        if (opt.houdini_budget && !(rc.stop && rc.stop->load())) opt.houdini_budget->spend(hs);
         {
             char buf[32];
             std::snprintf(buf, sizeof buf, "%.2f", hs);
@@ -1828,6 +2554,8 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         }
         r.extra["houdini_rounds"] = std::to_string(h.rounds);
         r.extra["houdini_candidates"] = std::to_string(h.candidates);
+        if (!h.exhausted.empty()) r.extra["invariant_search"] = "exhausted: " + h.exhausted;
+        if (!h.idiom.empty()) r.extra["idiom"] = h.idiom;  // idioms/idioms.hpp (W3)
         if (h.final_s >= 0) {
             char fb[32];
             std::snprintf(fb, sizeof fb, "%.2f", h.final_s);
@@ -1835,9 +2563,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         }
         if (h.prechecks > 0) r.extra["houdini_prechecks"] = std::to_string(h.prechecks);
         if (!h.cache.empty()) r.extra["houdini_cache"] = h.cache;
+        if (h.concrete_runs > 0)
+            r.extra["houdini_concrete"] = std::to_string(h.concrete_dropped) + " of " + std::to_string(h.candidates) +
+                                          " candidate(s) falsified by " + std::to_string(h.concrete_runs) + " concrete run(s)";
         if (!h.proved) {
             r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
-            if (fn_budget && fn_budget->exhausted())
+            if (budget_out())
                 r.extra["invariants_note"] += " (pir function budget of " + fn_budget_n +
                                               " s spent; PRISM_FUNCTION_BUDGET)";
             std::size_t kept = 0;
@@ -1877,33 +2608,74 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
         return true;
     };
     try {
+        if (rc.mode == RunCtl::Mode::RefineH) {
+            try_invariants(v);
+            return finish(v);
+        }
         z3::context c;
         membudget::Watch mem_watch([&c] { Z3_interrupt(c); });
         // The shared options `so` are never changed: each query gets its own
         // copy, its timeout capped by what is left of the function budget
         // (certification copies `so`, so its timeouts do not depend on it).
-        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, const solver::SolveOptions& o0)
-            -> const solver::SolveResult* {
-            if (fn_budget && fn_budget->exhausted()) {
+        // W2: the property VCs asked ahead (null: --jobs 1, a test hook, or certified mode)
+        std::unique_ptr<VcAhead> ahead;
+        const auto solve_vc = [&](VcBook& bk, const std::string& label, z3::expr vc, const solver::SolveOptions& o0,
+                                  const std::string& key = std::string()) -> const solver::SolveResult* {
+            if (budget_out()) {
                 fn_budget_at = label;
                 fn_budget_during = false;
                 fn_budget_spent = true;
                 return nullptr;
             }
             solver::SolveOptions o = o0;
+            o.stop = rc.stop;
             bool capped = false;
+            // complexity limit: the VC's timeout in units, never past what
+            // is left of the units budget; its clock is the backstop
+            if (rc.cx.on()) {
+                o.rlimit = rc.cx.units(o.timeout_s);
+                if (rc.units_total > 0 && rc.units_left() < o.rlimit) {
+                    o.rlimit = static_cast<unsigned>(std::max<std::uint64_t>(1, rc.units_left()));
+                    capped = true;
+                }
+                o.timeout_s = rc.cx.wall(o.timeout_s);
+            }
             if (fn_budget) {
                 const double left = std::max(0.001, fn_budget->left());
-                capped = left < o.timeout_s;
+                capped = capped || left < o.timeout_s;
                 o.timeout_s = std::min(o.timeout_s, left);
             }
             // (after the cap: a test's delay here stands for a slow query)
             if (opt.debug_before_query) opt.debug_before_query(label);
             z3_mem_guard();
 prism::membudget::Phase phase_vc("encode: vc solve");
-const auto& r = bk.add(label, solver::solve(c, vc, o));
+const prism::clock::Stopwatch tq;
+            std::optional<solver::SolveResult> pre;
+            if (ahead && !key.empty()) pre = ahead->take(key);
+            else if (ahead) ahead->service();
+            if (pre && o.rlimit > 0 && pre->units > o.rlimit) {
+                // asked ahead with the full limit; this query's is smaller (what
+                // is left of the units budget) and it would have stopped there
+                solver::SolveResult cut;
+                cut.kind = solver::SolveResult::Unknown;
+                cut.limit_hit = true;
+                cut.units = o.rlimit;
+                cut.note = "complexity limit: z3 stopped at " + std::to_string(o.rlimit) + " rlimit units";
+                pre = std::move(cut);
+            }
+const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
+            rc.units_spent += r.units;
+            const cxl::Phase ph = rc.phase == cxl::Phase::Vcs && label == "unwind" ? cxl::Phase::Unwind : rc.phase;
+            if (rc.meter) {
+                rc.meter->add(ph, r.units, true);
+                if (r.limit_hit) rc.meter->note_limit(label, o.rlimit);
+            }
+            if (cxl::trace())
+                std::fprintf(stderr, "[rlimit] %s %s units=%llu limit=%u secs=%.3f %s%s\n", cxl::phase_name(ph),
+                             label.c_str(), static_cast<unsigned long long>(r.units), o.rlimit, tq.elapsed_s(),
+                             std::string(solver::kind_name(r.kind)).c_str(), r.limit_hit ? " (limit)" : r.cache_hit ? " (cache)" : "");
             if (capped && r.kind != solver::SolveResult::Sat && r.kind != solver::SolveResult::Unsat &&
-                fn_budget->exhausted()) {
+                budget_out()) {
                 fn_budget_cut.push_back(label);
                 v.extra["function_budget_capped"] = join_s(fn_budget_cut, ",");
                 v.extra["function_budget_s"] = fn_budget_n;
@@ -1919,12 +2691,121 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
             prism::membudget::Phase phase_b("encode: Encoding::build");
             e.build();
         }
+        if (rc.meter) {
+            // Z3's work while encoding (rewriting): the context's count so far
+            z3::solver probe(c);
+            rc.meter->add(cxl::Phase::Encode, rlimit_count(probe), false);
+        }
         if (fn.uses_memory) {
             v.extra["memory"] = eo.memory == MemEncoding::Array ? "array" : "bv";
             v.extra["objects"] = std::to_string(e.mem->objects());
         }
         v.extra["instances"] = std::to_string(e.nodes.size());
         v.extra["properties"] = std::to_string(e.props.size());
+        // After every VC is answered with a BOUNDED verdict: k-induction (one
+        // loop), then loop invariants (Houdini); in the race (RunCtl::Mode)
+        // each is its own call and "pir_refine" says which comes next.
+        auto then_houdini = [&]() -> Verdict {
+            if (rc.mode == RunCtl::Mode::NoRefine || rc.mode == RunCtl::Mode::RefineK) {
+                v.extra["pir_refine"] = "houdini";
+                return finish(v);
+            }
+            try_invariants(v);
+            return finish(v);
+        };
+        auto refine_k = [&]() -> Verdict {
+            if (g.loops.size() != 1) {
+                v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
+                return then_houdini();
+            }
+            Footprint fp;
+            if (fn.uses_memory) {
+                // The step case havocs the header phis and the loop's write
+                // footprint (docs/PIR.md "k-induction with memory"). A loop that
+                // allocates, frees or restores the stack is not attempted: the
+                // number and liveness of objects would change across iterations,
+                // which the havoc does not cover (BOUNDED stays BOUNDED, Law 2).
+                bool allocs = false;
+                const auto& body = g.loops[0].body;
+                for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
+                    if (!body.at(b)) continue;
+                    for (auto& s : fn.blocks[b].stmts)
+                        if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
+                                s.kind == Stmt::Revive) allocs = true;
+                }
+                if (allocs) {
+                    v.extra["k_induction"] = "not-attempted (allocation or free in the loop)";
+                    return finish(v);
+                }
+                fp = footprint_of(e.writes, body);
+                v.extra["k_induction_memory"] = fp.empty() ? "read-only loop" : "write footprint havocked";
+            }
+            if (rc.mode == RunCtl::Mode::NoRefine) {  // the race's k-induction task asks the rest
+                v.extra["pir_refine"] = "kinduction";
+                return finish(v);
+            }
+            // The k-induction step is not a property VC: Z3 answers it in-process,
+            // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
+            // Every VC is answered (BOUNDED): a spent function budget leaves it
+            // BOUNDED; each step query gets at most what is left of it.
+            std::vector<std::string> tried;
+            for (int k : {1, 2}) {
+                if (k > unwind) break;
+                if (rc.stop && rc.stop->load()) {
+                    v.extra["k_induction"] = "cancelled (another strategy answered)";
+                    return finish(v);
+                }
+                if (budget_out()) {
+                    v.extra["k_induction"] =
+                        (tried.empty() ? std::string() : "step-open at k=" + join_s(tried, ",") + "; k=" + std::to_string(k) + " ") +
+                        fn_budget_note(v);
+                    return finish(v);
+                }
+                tried.push_back(std::to_string(k));
+                const double step_wall = rc.cx.wall(timeout_s) * 1000.0;
+                unsigned step_ms = static_cast<unsigned>(std::min(step_wall, 4.0e9));
+                if (fn_budget)
+                    step_ms = static_cast<unsigned>(std::clamp(fn_budget->left() * 1000.0, 1.0, step_wall));
+                unsigned step_rl = rc.cx.units(timeout_s);
+                if (rc.units_total > 0)
+                    step_rl = static_cast<unsigned>(std::min<std::uint64_t>(step_rl, std::max<std::uint64_t>(1, rc.units_left())));
+                if (opt.debug_before_query) opt.debug_before_query("k-induction@" + std::to_string(k));
+                auto ans = kinduction_step(fn, g, k, step_ms, fp, eo, step_rl, rc.meter, rc.on_ctx);
+                rc.units_spent += ans.units;
+                auto& closed = ans.closed;
+                v.extra["k_induction_tried"] = join_s(tried, ",");
+                if (!ans.fp.empty()) {
+                    v.extra["k_induction_footprint"] =
+                        (ans.fp.all ? std::string("every object allocated before the loop (a store target is not "
+                                                  "resolved)")
+                                    : std::to_string(ans.fp.objs.size()) + " object(s)") +
+                        ": " + std::to_string(ans.havocked) + " havocked; initialised flags " +
+                        (ans.fp.keep_init ? "old or arbitrary" : "arbitrary");
+                }
+                if (closed && *closed) {
+                    v.status = std::string(laws::PROVED_UNBOUNDED);
+                    v.message = "k-induction step closed at k=" + std::to_string(k) + "; not a bounded-only result";
+                    v.extra["k_induction"] = "closed";
+                    v.extra["k_induction_k"] = std::to_string(k);
+                    v.extra["k_induction_solver"] = "z3 (in-process)";
+                    v.extra["unwind_closed"] = "true";
+                    if (opt.certified)
+                        v.extra["certify_note"] =
+                            "not certified: the k-induction step is answered by Z3 alone; PROVED-UNBOUNDED is not certified";
+                    return finish(v);
+                }
+                if (!closed) {
+                    v.extra["k_induction"] = ans.limit_hit ? "unknown (complexity limit)" : "unknown";
+                    if (budget_out())
+                        v.extra["k_induction"] += " (pir function budget of " + fn_budget_n + " s spent; PRISM_FUNCTION_BUDGET)";
+                    return then_houdini();
+                }
+            }
+            v.extra["k_induction"] = "step-open";
+            return then_houdini();
+        };
+        if (rc.mode == RunCtl::Mode::RefineK) return refine_k();
+
         z3::expr_vector av(c);
         for (auto& a : e.assumptions) av.push_back(a);
         const z3::expr base = av.empty() ? c.bool_val(true) : z3::mk_and(av);
@@ -1948,6 +2829,31 @@ const auto& r = bk.add(label, solver::solve(c, vc, o));
         std::vector<const PropInst*> hard;
         for (auto& p : e.props)
             if (!soft(p)) hard.push_back(&p);
+        const auto pidx = [&](const PropInst* p) { return static_cast<std::size_t>(p - e.props.data()); };
+        const auto pkey = [&](const PropInst* p) { return "p" + std::to_string(pidx(p)); };
+        const auto gkey = [&](std::size_t lo, std::size_t hi) {
+            return "g" + std::to_string(pidx(hard.at(lo))) + "," + std::to_string(pidx(hard.at(hi - 1))) + "," +
+                   std::to_string(hi - lo);
+        };
+        if (opt.jobs > 1 && !opt.debug_before_query && !opt.certified && e.props.size() >= 2) {
+            std::vector<z3::expr> viols;
+            for (auto& p : e.props) viols.push_back(p.viol);
+            ahead = std::make_unique<VcAhead>(opt.jobs, c, base, viols, e.cuts, so);
+        }
+        // what a query asked ahead gets: what solve_vc gives it with the whole
+        // units budget left (the search caps it again when it takes the answer)
+        const unsigned ahead_rl = rc.cx.units(so.timeout_s);
+        const double ahead_s = rc.cx.wall(so.timeout_s);
+        const auto ask_prop = [&](const PropInst* p) {
+            if (ahead) ahead->ask(pkey(p), {pidx(p)}, false, ahead_rl, ahead_s);
+        };
+        const auto ask_group = [&](std::size_t lo, std::size_t hi) {
+            if (!ahead || hi <= lo) return;
+            if (hi - lo == 1) return ask_prop(hard.at(lo));
+            std::vector<std::size_t> idx;
+            for (std::size_t i = lo; i < hi; ++i) idx.push_back(pidx(hard.at(i)));
+            ahead->ask(gkey(lo, hi), std::move(idx), false, ahead_rl, ahead_s);
+        };
         // Every VC of the function: each property (soft ones included) and
         // the unwinding assertion. PROVED means every one is UNSAT, and
         // PROVED-CERTIFIED means every one is covered by a checked proof.
@@ -2154,7 +3060,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             auto group_impl = [&](auto& self, std::size_t lo, std::size_t hi) -> int {
                 // 1 SAT (hit set), 0 UNSAT, -1 no answer
                 if (hi - lo == 1) {
-                    const auto* rp = solve_vc(book, vc_label(*hard.at(lo)), base && hard.at(lo)->viol, so);
+                    const auto* rp = solve_vc(book, vc_label(*hard.at(lo)), base && hard.at(lo)->viol, so, pkey(hard.at(lo)));
                     if (!rp) return -1;
                     const auto& r = *rp;
                     if (r.kind == solver::SolveResult::Sat) {
@@ -2172,8 +3078,15 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                 }
                 std::vector<z3::expr> vs;
                 for (std::size_t i = lo; i < hi; ++i) vs.push_back(hard.at(i)->viol);
+                // its halves are asked next unless it is UNSAT (or one SAT
+                // property pins it): ask them ahead
+                if (hi - lo > 16) {
+                    const std::size_t m2 = lo + (hi - lo) / 2;
+                    ask_group(lo, m2);
+                    ask_group(m2, hi);
+                }
                 const auto* rp = solve_vc(book, "properties[" + std::to_string(lo) + "," + std::to_string(hi) + "]",
-                                          base && any_of(c, vs), so);
+                                          base && any_of(c, vs), so, gkey(lo, hi));
                 if (!rp) return -1;
                 const auto& r = *rp;
                 if (r.kind == solver::SolveResult::Unsat) {
@@ -2190,7 +3103,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                     // before it are asked as one group first, so the verdict
                     // is the first violated property, as the halving finds.
                     if (auto k = pick_violated(r.model, lo, hi)) {
-                        const auto* r1p = solve_vc(book, vc_label(*hard.at(*k)), base && hard.at(*k)->viol, so);
+                        const auto* r1p = solve_vc(book, vc_label(*hard.at(*k)), base && hard.at(*k)->viol, so, pkey(hard.at(*k)));
                         if (!r1p) return -1;
                         const auto& r1 = *r1p;
                         if (r1.kind == solver::SolveResult::Sat) {
@@ -2249,9 +3162,18 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             }
             all_unsat = g == 0;
         }
+        if (ahead && !all_unsat && !(hit && hit_r.has_value())) {
+            // the properties this loop asks, then (if none is violated or
+            // unanswered) the soft ones and the unwinding assertion
+            for (auto& p : e.props)
+                if (!soft(p) && !answered.count(&p)) ask_prop(&p);
+            for (auto& p : e.props)
+                if (soft(p)) ask_prop(&p);
+            if (!e.cuts.empty()) ahead->ask("u", {}, true, ahead_rl, ahead_s);
+        }
         for (auto& p : e.props) {
             if (soft(p) || all_unsat || answered.count(&p) || (hit && hit_r.has_value())) continue;
-            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so, pkey(&p));
             if (!rp) {
                 fn_budget_timeout(v);
                 return finish(v);
@@ -2268,6 +3190,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                 if (cut_by_budget(vc_label(p))) no_answer_label = vc_label(p);
             }
         }
+        if (ahead && hit && hit_r.has_value()) ahead->drop_all();  // nothing after the violation is asked
         if (hit && hit_r.has_value()) {
             if (!hit->stmt) {
                 v.status = std::string(laws::ERROR);
@@ -2293,16 +3216,18 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
                 v.extra["earlier_properties"] =
                     "not decided (" + std::string(fn_budget_spent ? "function budget spent" : "no solver answer") +
                     "); this violation is validated, an earlier one may exist";
-            if (fn_budget_spent || (fn_budget && fn_budget->exhausted())) v.extra["function_budget_s"] = fn_budget_n;
+            if (fn_budget_spent || budget_out()) v.extra["function_budget_s"] = fn_budget_n;
             // The nondet trace re-query is solver work of this function too:
             // it gets what is left of the budget.
-            if (fn_budget && fn_budget->exhausted()) {
+            if (budget_out()) {
                 if (!e.nondets.empty())
                     v.extra["nondet_note"] = "nondet values not reported: the function budget of " + fn_budget_n +
                                              " s is spent (PRISM_FUNCTION_BUDGET)";
             } else {
-                nondet_trace(e, *hit, base, *hit_r, fn_budget ? std::min(timeout_s, fn_budget->left()) : timeout_s,
-                             v);
+                const double nt = fn_budget ? std::min(rc.cx.wall(timeout_s), fn_budget->left()) : rc.cx.wall(timeout_s);
+                unsigned nrl = rc.cx.units(timeout_s);
+                if (rc.units_total > 0) nrl = static_cast<unsigned>(std::min<std::uint64_t>(nrl, std::max<std::uint64_t>(1, rc.units_left())));
+                nondet_trace(e, *hit, base, *hit_r, nt, v, nrl, rc.meter);
             }
             return finish(v);
         }
@@ -2322,7 +3247,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         }
         for (auto& p : e.props) {
             if (!soft(p)) continue;
-            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so);
+            const auto* rp = solve_vc(book, vc_label(p), base && p.viol, so, pkey(&p));
             if (!rp) {
                 fn_budget_timeout(v);
                 return finish(v);
@@ -2349,7 +3274,8 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
             if (opt.certified) certify_proved(v);
             return finish(v);
         }
-        const auto* urp = solve_vc(book, "unwind", base && any_of(c, e.cuts), so);
+        const auto* urp = solve_vc(book, "unwind", base && any_of(c, e.cuts), so, "u");
+        if (ahead) ahead->stop_all();  // the VCs are answered
         if (!urp) {
             fn_budget_timeout(v);
             return finish(v);
@@ -2374,90 +3300,15 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         if (opt.certified)
             v.extra["certify_note"] =
                 "not certified: certified mode certifies PROVED only (every loop must close within the unwind)";
-        if (tl_first_unwind) {
+        if (rc.first_unwind) {
             v.extra["k_induction"] = "not-attempted (first unwind)";
             return finish(v);
         }
-        if (g.loops.size() != 1) {
-            v.extra["k_induction"] = g.loops.empty() ? "not-needed" : "multiple-loops";
-            try_invariants(v);
+        if (rc.mode == RunCtl::Mode::VcsOnly) {
+            v.extra["k_induction"] = "not-attempted (deepening: decided at the requested unwind)";
             return finish(v);
         }
-        Footprint fp;
-        if (fn.uses_memory) {
-            // The step case havocs the header phis and the loop's write
-            // footprint (docs/PIR.md "k-induction with memory"). A loop that
-            // allocates, frees or restores the stack is not attempted: the
-            // number and liveness of objects would change across iterations,
-            // which the havoc does not cover (BOUNDED stays BOUNDED, Law 2).
-            bool allocs = false;
-            const auto& body = g.loops[0].body;
-            for (std::size_t b = 0; b < body.size() && !allocs; ++b) {
-                if (!body.at(b)) continue;
-                for (auto& s : fn.blocks[b].stmts)
-                    if (s.kind == Stmt::Alloc || s.kind == Stmt::Free || s.kind == Stmt::StackRestore ||
-                            s.kind == Stmt::Revive) allocs = true;
-            }
-            if (allocs) {
-                v.extra["k_induction"] = "not-attempted (allocation or free in the loop)";
-                return finish(v);
-            }
-            fp = footprint_of(e.writes, body);
-            v.extra["k_induction_memory"] = fp.empty() ? "read-only loop" : "write footprint havocked";
-        }
-        // The k-induction step is not a property VC: Z3 answers it in-process,
-        // and PROVED-UNBOUNDED is never certified (docs/PIR.md "Solving").
-        // Every VC is answered (BOUNDED): a spent function budget leaves it
-        // BOUNDED; each step query gets at most what is left of it.
-        std::vector<std::string> tried;
-        for (int k : {1, 2}) {
-            if (k > unwind) break;
-            if (fn_budget && fn_budget->exhausted()) {
-                v.extra["k_induction"] =
-                    (tried.empty() ? std::string() : "step-open at k=" + join_s(tried, ",") + "; k=" + std::to_string(k) + " ") +
-                    fn_budget_note(v);
-                return finish(v);
-            }
-            tried.push_back(std::to_string(k));
-            unsigned step_ms = timeout_ms;
-            if (fn_budget)
-                step_ms = static_cast<unsigned>(
-                    std::clamp(fn_budget->left() * 1000.0, 1.0, static_cast<double>(timeout_ms)));
-            if (opt.debug_before_query) opt.debug_before_query("k-induction@" + std::to_string(k));
-            auto ans = kinduction_step(fn, g, k, step_ms, fp, eo);
-            auto& closed = ans.closed;
-            v.extra["k_induction_tried"] = join_s(tried, ",");
-            if (!ans.fp.empty()) {
-                v.extra["k_induction_footprint"] =
-                    (ans.fp.all ? std::string("every object allocated before the loop (a store target is not "
-                                              "resolved)")
-                                : std::to_string(ans.fp.objs.size()) + " object(s)") +
-                    ": " + std::to_string(ans.havocked) + " havocked; initialised flags " +
-                    (ans.fp.keep_init ? "old or arbitrary" : "arbitrary");
-            }
-            if (closed && *closed) {
-                v.status = std::string(laws::PROVED_UNBOUNDED);
-                v.message = "k-induction step closed at k=" + std::to_string(k) + "; not a bounded-only result";
-                v.extra["k_induction"] = "closed";
-                v.extra["k_induction_k"] = std::to_string(k);
-                v.extra["k_induction_solver"] = "z3 (in-process)";
-                v.extra["unwind_closed"] = "true";
-                if (opt.certified)
-                    v.extra["certify_note"] =
-                        "not certified: the k-induction step is answered by Z3 alone; PROVED-UNBOUNDED is not certified";
-                return finish(v);
-            }
-            if (!closed) {
-                v.extra["k_induction"] = "unknown";
-                if (fn_budget && fn_budget->exhausted())
-                    v.extra["k_induction"] += " (pir function budget of " + fn_budget_n + " s spent; PRISM_FUNCTION_BUDGET)";
-                try_invariants(v);
-                return finish(v);
-            }
-        }
-        v.extra["k_induction"] = "step-open";
-        try_invariants(v);
-        return finish(v);
+        return refine_k();
     } catch (const EncodeFail& f) {
         v.status = f.status;
         v.message = f.msg;
@@ -2467,6 +3318,10 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         // UNKNOWN stands.
         if (f.msg.rfind("unrolling exceeds ", 0) == 0 && !g.loops.empty()) {
             v.extra["k_induction"] = "not-attempted (unrolling exceeds the instance limit)";
+            if (rc.mode == RunCtl::Mode::NoRefine) {  // the race's Houdini task answers
+                v.extra["pir_refine"] = "houdini-unroll";
+                return v;
+            }
             bool ok = false;
             try {
                 ok = try_invariants(v);

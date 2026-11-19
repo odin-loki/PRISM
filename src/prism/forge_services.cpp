@@ -10,8 +10,13 @@
 #include <forge/cache/cache.hpp>
 #include <forge/os/process.hpp>
 #include <forge/task/pool.hpp>
+#include <forge/task/sched.hpp>
 
+#include <algorithm>
+#include <exception>
+#include <future>
 #include <map>
+#include <span>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -20,6 +25,7 @@
 #include <cstdlib>
 #include <stop_token>
 #include <thread>
+#include <variant>
 
 namespace fs = std::filesystem;
 
@@ -217,7 +223,28 @@ forge::task::pool& pool_for(int jobs) {
     const auto n = static_cast<unsigned>(clamp_jobs(jobs));
     std::lock_guard<std::mutex> lk(g_m);
     auto& p = g_pools[n];
-    if (!p) p = std::make_unique<forge::task::pool>(n);
+    if (!p) {
+        p = std::make_unique<forge::task::pool>(n);
+        // Warm-up barrier: a forge::task::pool worker reads the job ticket
+        // when its thread starts, so a parallel_for published before a new
+        // worker got that far is never joined by it and runs on the caller
+        // alone (found by tests/cpp/test_backends.cpp "one index per
+        // claim": the first loop on a fresh pool was serial). One task per
+        // worker, each waiting until all have started, puts every worker in
+        // its loop before the pool is handed out.
+        const unsigned workers = p->size() > 0 ? p->size() - 1 : 0;
+        if (workers > 0) {
+            auto started = std::make_shared<std::atomic<unsigned>>(0);
+            std::vector<std::future<void>> fs;
+            fs.reserve(workers);
+            for (unsigned i = 0; i < workers; ++i)
+                fs.push_back(p->submit([started, workers] {
+                    started->fetch_add(1);
+                    while (started->load() < workers) std::this_thread::yield();
+                }));
+            for (auto& f : fs) f.wait();
+        }
+    }
     return *p;
 }
 
@@ -226,7 +253,128 @@ forge::task::pool& pool_for(int jobs) {
 void parallel_for(int jobs, std::size_t n, std::size_t grain, const RangeFn& fn) {
     pool_for(jobs).parallel_for(n, grain, fn);
 }
+void parallel_for(int jobs, std::size_t n, std::size_t lo, std::size_t hi, const RangeFn& fn) {
+    pool_for(jobs).parallel_for(n, lo, hi, fn);
+}
 unsigned size() { return pool_for(0).size(); }
+
+// ---- TaskGraph on forge::task::scheduler ----
+// Every graph with the same worker count shares one scheduler (jobs - 1
+// workers, created on first use and kept for the process): no threads are
+// started or joined per graph, and concurrent graphs (stages that run pir from
+// several workers) share the cores instead of each bringing its own threads.
+// A graph tracks the tasks it spawned; wait() helps (runs queued tasks of any
+// graph) until all of them, and the tasks they spawned, are done. --jobs 1: no
+// scheduler, every task runs inline when it is spawned.
+namespace {
+std::mutex g_sched_m;
+std::map<unsigned, std::unique_ptr<forge::task::scheduler>> g_scheds;
+forge::task::scheduler* shared_scheduler(unsigned workers) {
+    std::lock_guard<std::mutex> lk(g_sched_m);
+    auto& s = g_scheds[workers];
+    if (!s) s = std::make_unique<forge::task::scheduler>(forge::task::scheduler::config{.threads = workers});
+    return s.get();
+}
+}  // namespace
+
+struct TaskGraph::Impl {
+    forge::task::scheduler* s = nullptr;  // shared; null: inline
+    std::mutex mu;                        // guards spawned and err
+    std::vector<forge::task::task_ref> spawned;
+    std::exception_ptr err;
+    void run_guarded(const std::function<void()>& fn) {
+        try {
+            fn();
+        } catch (...) {
+            std::lock_guard<std::mutex> lk(mu);
+            if (!err) err = std::current_exception();
+        }
+    }
+};
+
+namespace {
+forge::task::spawn_options spawn_opts(Priority p) {
+    forge::task::spawn_options o;
+    o.prio = p == Priority::High ? forge::task::priority::high
+             : p == Priority::Low ? forge::task::priority::low
+                                  : forge::task::priority::normal;
+    return o;
+}
+// Inline mode's handle: the task has run.
+struct InlineDone {};
+}  // namespace
+
+bool TaskGraph::Task::done() const {
+    if (!h_) return false;
+    if (auto* r = std::get_if<forge::task::task_ref>(static_cast<const std::variant<InlineDone, forge::task::task_ref>*>(h_.get())))
+        return r->done();
+    return true;
+}
+
+TaskGraph::TaskGraph(int jobs) : p_(std::make_unique<Impl>()) {
+    const int n = clamp_jobs(jobs);
+    if (n > 1) p_->s = shared_scheduler(static_cast<unsigned>(n - 1));
+}
+
+TaskGraph::~TaskGraph() {
+    try {
+        wait();
+    } catch (...) {
+    }
+}
+
+TaskGraph::Task TaskGraph::spawn(std::function<void()> fn, Priority p) { return spawn_after({}, std::move(fn), p); }
+
+TaskGraph::Task TaskGraph::spawn_after(const std::vector<Task>& deps, std::function<void()> fn, Priority p) {
+    using H = std::variant<InlineDone, forge::task::task_ref>;
+    Task t;
+    if (!p_->s) {
+        p_->run_guarded(fn);
+        t.h_ = std::make_shared<H>(InlineDone{});
+        return t;
+    }
+    std::vector<forge::task::task_ref> refs;
+    refs.reserve(deps.size());
+    for (const auto& d : deps)
+        if (d.h_)
+            if (auto* r = std::get_if<forge::task::task_ref>(static_cast<const H*>(d.h_.get()))) refs.push_back(*r);
+    Impl* impl = p_.get();
+    forge::task::task_ref r = p_->s->spawn_after(
+        std::span<const forge::task::task_ref>(refs), [impl, fn = std::move(fn)] { impl->run_guarded(fn); }, spawn_opts(p));
+    {
+        std::lock_guard<std::mutex> lk(p_->mu);
+        p_->spawned.push_back(r);
+    }
+    t.h_ = std::make_shared<H>(std::move(r));
+    return t;
+}
+
+void TaskGraph::wait() {
+    if (p_->s) {
+        // a task appends what it spawns before it finishes, so walking the
+        // list until its end, waiting on each, covers everything
+        for (std::size_t i = 0;; ++i) {
+            forge::task::task_ref t;
+            {
+                std::lock_guard<std::mutex> lk(p_->mu);
+                if (i >= p_->spawned.size()) {
+                    p_->spawned.clear();
+                    break;
+                }
+                t = p_->spawned[i];
+            }
+            t.wait();
+        }
+    }
+    std::exception_ptr e;
+    {
+        std::lock_guard<std::mutex> lk(p_->mu);
+        std::swap(e, p_->err);
+    }
+    if (e) std::rethrow_exception(e);
+}
+
+unsigned TaskGraph::threads() const { return p_->s ? p_->s->size() + 1 : 1; }
 
 }  // namespace prism::pool
 

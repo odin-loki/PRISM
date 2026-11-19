@@ -1,6 +1,7 @@
 // Stage harness: pointer-parameter functions materialized from an honest
 // requires and checked by PIR (run_harness).
 #include "common.hpp"
+#include "prism/pool.hpp"
 
 namespace prism {
 namespace fs = std::filesystem;
@@ -144,50 +145,75 @@ std::optional<FunctionInfo> materialize(const FunctionInfo& fn) {
 
 std::optional<FunctionInfo> materialize_harness(const FunctionInfo& fn) { return materialize(fn); }
 
-std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind) {
-    std::vector<Finding> out;
-    for (auto& fn : functions) {
-        if (fn.kind != "POINTER") continue;
-        auto harnessed = materialize(fn);
-        if (!harnessed) {
-            // Roadmap 4.2: draft the missing preconditions (template, then the
-            // model when one is bound). PROVED-ASSUMING at best, every
-            // assumption listed; no draft keeps the NEEDS-HARNESS row below.
-            std::string refused;
-            if (auto drafted = ai::drafted_harness_check(fn, unwind, &refused)) {
-                out.push_back(std::move(drafted).value());
-                continue;
-            }
-            auto f = make_find(
-                "harness", laws::NEEDS_HARNESS, fn, "",
-                "POINTER: no honest requires; an unguarded check would invent "
-                "a buffer or dress a NULL crash as a finding",
-                laws::STRENGTH_SOME);
-            f.extra["harness"] = "false";
-            f.extra["assumed"] = "false";
-            if (!refused.empty()) f.extra["harness_draft"] = "refused: " + refused;
-            out.push_back(std::move(f));
-            continue;
+namespace {
+
+// The harness row of one function (nullopt: not POINTER).
+std::optional<Finding> harness_one(const FunctionInfo& fn, int unwind) {
+    if (fn.kind != "POINTER") return std::nullopt;
+    auto harnessed = materialize(fn);
+    if (!harnessed) {
+        // Roadmap 4.2: draft the missing preconditions (template, then the
+        // model when one is bound). PROVED-ASSUMING at best, every
+        // assumption listed; no draft keeps the NEEDS-HARNESS row below.
+        std::string refused;
+        if (auto drafted = ai::drafted_harness_check(fn, unwind, &refused)) {
+            return std::move(drafted).value();
         }
-        auto spec = parse_comments(fn);
-        std::vector<std::string> reqs;
-        for (auto& r : spec.requires_) {
-            auto s = strip(r);
-            if (!s.empty()) reqs.push_back(s);
-        }
-        auto r = check_function_pir(*harnessed, unwind);
-        r.extra["assumed"] = "true";
-        r.extra["requires"] = nlohmann::json(reqs).dump();
-        r.extra["original_status"] = r.status;
-        r.extra["harness"] = "true";
-        r.stage = "harness";
-        if (r.status == laws::PROVED || r.status == laws::PROVED_UNBOUNDED) {
-            r.status = std::string(laws::PROVED_ASSUMING);
-            r.message = "encoded UB properties hold assuming (" + join_sv(reqs, " && ") +
-                        "); never an unconditional PROVED";
-        }
-        out.push_back(std::move(r));
+        auto f = make_find(
+            "harness", laws::NEEDS_HARNESS, fn, "",
+            "POINTER: no honest requires; an unguarded check would invent "
+            "a buffer or dress a NULL crash as a finding",
+            laws::STRENGTH_SOME);
+        f.extra["harness"] = "false";
+        f.extra["assumed"] = "false";
+        if (!refused.empty()) f.extra["harness_draft"] = "refused: " + refused;
+        return f;
     }
+    auto spec = parse_comments(fn);
+    std::vector<std::string> reqs;
+    for (auto& r : spec.requires_) {
+        auto s = strip(r);
+        if (!s.empty()) reqs.push_back(s);
+    }
+    auto r = check_function_pir(*harnessed, unwind);
+    r.extra["assumed"] = "true";
+    r.extra["requires"] = nlohmann::json(reqs).dump();
+    r.extra["original_status"] = r.status;
+    r.extra["harness"] = "true";
+    r.stage = "harness";
+    if (r.status == laws::PROVED || r.status == laws::PROVED_UNBOUNDED) {
+        r.status = std::string(laws::PROVED_ASSUMING);
+        r.message = "encoded UB properties hold assuming (" + join_sv(reqs, " && ") +
+                    "); never an unconditional PROVED";
+    }
+    return r;
+}
+
+}  // namespace
+
+std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind) {
+    return run_harness(functions, unwind, 1, true);
+}
+
+// jobs: functions checked at once. Without a model (llm false) every pir
+// check of the stage is first collected by a dry run and made in batched pir
+// runs (prefetch_pir); the dry run then has no other effect (no model call,
+// no audit record). With a model the stage runs one function at a time, as
+// before, and makes no dry run.
+std::vector<Finding> run_harness(const std::vector<FunctionInfo>& functions, int unwind, int jobs, bool llm) {
+    std::vector<std::optional<Finding>> rows(functions.size());
+    if (llm) {
+        for (std::size_t i = 0; i < functions.size(); ++i) rows[i] = harness_one(functions[i], unwind);
+    } else {
+        prefetch_pir(jobs, [&] {
+            for (auto& fn : functions) (void)harness_one(fn, unwind);
+        });
+        prism::pool::for_each_index(jobs, functions.size(),
+                                    [&](std::size_t i) { rows[i] = harness_one(functions[i], unwind); });
+    }
+    std::vector<Finding> out;
+    for (auto& r : rows)
+        if (r) out.push_back(std::move(*r));
     return out;
 }
 

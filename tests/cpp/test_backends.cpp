@@ -8,6 +8,10 @@
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
 #include "prism/pool.hpp"
+#include "prism/threads.hpp"
+#include <chrono>
+#include <stdexcept>
+#include <thread>
 
 #include <atomic>
 #include <filesystem>
@@ -67,6 +71,67 @@ TEST_CASE("pool: parallel_for covers [0, n) exactly once") {
     });
     for (auto& h : hits) CHECK(h.load() == 1);
     CHECK(prism::pool::size() >= 1);
+}
+
+TEST_CASE("pool: for_each_index hands out one index per claim") {
+    // a slow first item must not hold the items claimed with it
+    if (prism::clamp_jobs(4) < 2) return;  // one core: nothing runs beside it
+    std::atomic<int> done_while_slow{0};
+    std::atomic<bool> slow_running{false}, slow_done{false};
+    prism::pool::for_each_index(4, 64, [&](std::size_t i) {
+        if (i == 0) {
+            slow_running = true;
+            for (int k = 0; k < 400 && done_while_slow.load() < 63; ++k) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            slow_done = true;
+        } else if (!slow_done.load()) {
+            ++done_while_slow;
+        }
+    });
+    CHECK(done_while_slow.load() == 63);
+}
+
+TEST_CASE("pool: TaskGraph runs fan-out tasks and their joins") {
+    for (int jobs : {1, 2, 4}) {
+        INFO("jobs " << jobs);
+        prism::pool::TaskGraph g(jobs);
+        constexpr std::size_t kUnits = 20, kFns = 30;
+        std::vector<std::vector<int>> checked(kUnits, std::vector<int>(kFns, 0));
+        std::vector<int> closed(kUnits, 0);
+        std::atomic<int> bad_order{0};
+        for (std::size_t u = 0; u < kUnits; ++u)
+            g.spawn([&, u] {
+                std::vector<prism::pool::TaskGraph::Task> fns;
+                for (std::size_t f = 0; f < kFns; ++f)
+                    fns.push_back(g.spawn([&, u, f] { checked[u][f]++; }, prism::pool::Priority::High));
+                g.spawn_after(fns, [&, u] {
+                    for (int c : checked[u])
+                        if (c != 1) ++bad_order;
+                    closed[u]++;
+                }, prism::pool::Priority::High);
+            });
+        g.wait();
+        CHECK(bad_order.load() == 0);
+        for (std::size_t u = 0; u < kUnits; ++u) {
+            CHECK(closed[u] == 1);
+            for (int c : checked[u]) CHECK(c == 1);
+        }
+        CHECK(g.threads() == static_cast<unsigned>(prism::clamp_jobs(jobs)));
+    }
+}
+
+TEST_CASE("pool: TaskGraph::wait rethrows a task's exception after the others ran") {
+    prism::pool::TaskGraph g(3);
+    std::atomic<int> ran{0};
+    for (int i = 0; i < 10; ++i)
+        g.spawn([&, i] {
+            ++ran;
+            if (i == 4) throw std::runtime_error("boom");
+        });
+    CHECK_THROWS_WITH(g.wait(), "boom");
+    CHECK(ran.load() == 10);
+    g.spawn([&] { ++ran; });
+    CHECK_NOTHROW(g.wait());
+    CHECK(ran.load() == 11);
 }
 
 TEST_CASE("cache: put/get/contains/erase/prune and corruption is a miss") {

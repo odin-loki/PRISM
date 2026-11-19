@@ -236,27 +236,52 @@ with two).
 2. **Scratch copy.** The lake package is copied (nested packages and `.git`
    excluded) and `lake build <Module>` is run once so imports resolve; the
    source tree is never touched unless `--write`.
-3. **Best-first search.** A node is a tactic prefix that Lean accepts with
-   only `unsolved goals` left; the root is the theorem's goal. The node to
-   expand is the one with the best score (deeper prefixes first, then fewer
-   and shorter goals; each expansion of a node pushes it back), the frontier
-   keeps `--beam` nodes (default 4), the budget is `--budget` model calls
-   (default 24). The prompt holds the statement, the file's context, the
-   accepted prefix, the goal state, the last Lean error of that node and up
-   to 8 lemmas from the library (by word overlap), all fenced as untrusted.
-   The model returns `{"tactics": [...]}` — the rest of the proof or the
-   next step.
+3. **Metric-guided best-first search.** A node is a tactic prefix that
+   Lean accepts with only `unsolved goals` left; the root is the theorem's
+   goal. Each node's metric (lower is better) is `1000 × goals left +
+   goal-state size / 8 + 1500 × expansions − 250 × depth`: fewer and smaller
+   goals first, accepted steps count as progress, and a node that keeps
+   failing falls behind. Two prefixes that reach the same goal state
+   (whitespace-normalised) are one search state: only the first is kept.
+   The frontier keeps `--beam` nodes (default 4); the budget is `--budget`
+   model calls (default 24).
+   - **Closers first.** Before a node is shown to the model, a fixed set of
+     core tactics (`rfl`, `trivial`, `decide`, `omega`, `simp`, `simp_all`,
+     `grind`, `constructor`, ... and Mathlib's `norm_num`, `linarith`,
+     `aesop`, ... when the file imports Mathlib) and closers derived from the
+     statement itself (`cases x <;> simp_all [defs]` on its explicit binders
+     of a plain type, `simp`/`simp_all`/`grind` unfolding the file's own
+     definitions the statement names, `revert ...; decide`) are tried on it
+     in one batch. A closer that closes the goal goes through the same
+     acceptance gate as a model proof (`closed_by: "closer"`, no model call);
+     one that leaves goals is kept as a child only when it lowers the goal
+     metric. Closer passes are bounded (4 × budget). Closers go through the
+     same validator as model output. `--no-closers` turns them off.
+   - **Model.** The prompt holds the statement, the file's context, the
+     accepted prefix, the goal state, the last Lean error of that node and
+     up to 8 lemmas from the library (by word overlap), all fenced as
+     untrusted. The model returns `{"tactics": [...]}` — the rest of the
+     proof or the next step. `--samples N` takes N replies per expansion
+     and checks them in one batch (default 1, which keeps the
+     error-feedback loop one reply at a time).
 4. **Validation.** Before Lean sees anything: no `sorry`, `admit`,
    `native_decide`, `decide!`, `#` commands, `set_option`, `axiom`,
    attributes, block comments, declarations, `open`/`end`, and no token
    `IO`, `unsafe*`, `Elab`/`Meta`/`Compiler`, `run_tac`/`run_cmd`/`elab`/
    `macro`/`syntax` (tokens are split at dots, so `IO.println` and
    `Lean.Elab.Command` are caught).
-5. **Kernel check.** The candidate is spliced in place of the `sorry` with
-   `#print axioms <theorem>` after the declaration and elaborated with
-   `lake env lean` (in the bwrap jail when available, only the scratch copy
-   writable). Any error other than `unsolved goals` rejects it and is fed
-   back; `unsolved goals` alone makes it a new node.
+5. **Kernel check, batched.** Candidates are not spliced one at a time:
+   each becomes its own theorem `prism_cand_<k>_<name>` with the target's
+   statement, placed right after the target declaration in a copy of the
+   file cut off there (later declarations cannot affect the target), each
+   followed by `#print axioms`. One `lake env lean` run therefore elaborates
+   the file's prefix once for the whole batch, and a batch is split over up
+   to `--lean-jobs` processes (default half the cores) on FORGE's task graph.
+   Lean's messages are split back per candidate by line, axiom reports by
+   name; a candidate Lean never reached is not checked (never accepted).
+   Any error other than `unsolved goals` rejects a candidate and is fed
+   back; `unsolved goals` alone makes it a new node. This is only a filter:
+   acceptance is step 6, on the spliced original file.
 6. **Acceptance gate.** No error, an axiom report that is present and within
    `{propext, Classical.choice, Quot.sound}` (a proof from a user `axiom`
    or `sorryAx` is rejected, even though the kernel accepts it), **and**
@@ -283,6 +308,17 @@ a` gets `rfl` (kernel error, fed back), `sorry` (validator), then `omega`
 `constructor` (partial, two goals) then `· omega` / `· trivial` from that
 node; `(1 : Nat) = 2` with `exact bad.elim` from a user `axiom bad : False`
 is accepted by the kernel and rejected by the axiom audit.
+
+Measured (4 cores, Lean 4.34.0, `proofs/Prism/Verdict.lean`, 568 lines):
+one full-file `lake env lean` per candidate took 3.6 s, so the old search
+paid that per candidate; a batch of 16 candidates took 2 Lean runs, about
+4 s. With each of the file's 51 uniquely named theorems blanked to `sorry`
+in turn and a model that never answers, the closers alone re-proved 33
+(fixed set only: 2), every one through the axiom audit and `lake build`;
+typical proofs found: `cases v <;> simp_all [isProof, isFormal]`,
+`grind [mayRewrite, isFormal]`, `revert o v c; decide`. About 10 s per
+theorem, 4 s of it the scratch copy's first `lake build`. The 18 left
+(arithmetic over `Frac`, reachability) need the model.
 
 The repository's own proofs have no `sorry` (`proofs/check.sh` forbids it),
 so the driver has nothing to search there today; the "proofs completed by

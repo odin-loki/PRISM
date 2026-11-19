@@ -19,6 +19,7 @@
 #include "prism/shipdocs.hpp"
 #include "prism/stages.hpp"
 #include "prism/taxonomy.hpp"
+#include "prism/threads.hpp"
 #include "prism/verdict.hpp"
 
 #include <nlohmann/json.hpp>
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
+#include <exception>
 #include <format>
 #include <fstream>
 #include <iomanip>
@@ -358,11 +360,35 @@ RunReport run_pipeline(const Config& cfg) {
                                   std::string(laws::STRENGTH_FINDS), "", "", {}});
             return out;
         }
-        for (auto& p : sources) {
-            auto rel = rel_of(p, cfg.root);
+        // One read and one parse per file, on cfg.jobs workers; the rows are
+        // then built in source order as before. classify reuses `parsed`.
+        std::vector<std::string> rels(sources.size());
+        std::vector<std::vector<Finding>> gaps_of(sources.size());
+        std::vector<std::optional<std::vector<FunctionInfo>>> fns_of(sources.size());
+        std::vector<std::exception_ptr> errors(sources.size());
+        parallel_for(cfg.jobs, sources, [&](std::size_t i, const std::filesystem::path& p) {
+            try {
+                rels[i] = rel_of(p, cfg.root);
+                if (parsed.contains(p)) {
+                    gaps_of[i] = parse_gap_findings(p, rels[i]);
+                } else {
+                    auto [fns, gaps] = parse_unit(p, rels[i]);
+                    fns_of[i] = std::move(fns);
+                    gaps_of[i] = std::move(gaps);
+                }
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
+        });
+        for (auto& e : errors)
+            if (e) std::rethrow_exception(e);
+        for (std::size_t i = 0; i < sources.size(); ++i)
+            if (fns_of[i] && !parsed.contains(sources[i])) parsed.emplace(sources[i], std::move(*fns_of[i]));
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto& p = sources[i];
+            const auto& rel = rels[i];
             auto fns = functions_of(p, rel);
-            auto gaps = parse_gap_findings(p, rel);
-            out.insert(out.end(), gaps.begin(), gaps.end());
+            out.insert(out.end(), gaps_of[i].begin(), gaps_of[i].end());
             if (fns.empty()) {
                 if (is_tu_ext(p.extension().string())) {
                     out.push_back(Finding{"inventory", std::string(laws::ERROR), rel, std::nullopt,
@@ -420,7 +446,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("lints", [&] { return astlint::run_lints_ast(sources, src_root, cfg); });
     stage("taint", [&] { return run_taint(functions); });
     stage("thread", [&] { return run_thread(functions); });
-    stage("interval", [&] { return run_interval(functions); });
+    stage("interval", [&] { return run_interval(functions, cfg.jobs); });
     stage("warnings", [&] { return run_compiler(sources, cfg); });
     stage("cppcheck", [&] { return run_cppcheck(sources, cfg); });
     stage("pbsd", [&] { return run_pbsd_lints(sources, cfg); });
@@ -430,7 +456,7 @@ RunReport run_pipeline(const Config& cfg) {
     stage("esbmc", [&] { return run_esbmc(sources, cfg); });
     stage("dafny", [&] { return run_dafny(sources, cfg); });
     stage("contracts", [&] {
-        auto out = prove_contracts(functions, cfg.unwind);
+        auto out = prove_contracts(functions, cfg.unwind, cfg.jobs);
         if (cfg.llm) {
             // Model-proposed Dafny-style specs: hypotheses beside the proofs.
             std::vector<FunctionInfo> fns;
@@ -441,26 +467,26 @@ RunReport run_pipeline(const Config& cfg) {
         }
         return out;
     });
-    stage("wp", [&] { return run_wp(functions, cfg.unwind); });
+    stage("wp", [&] { return run_wp(functions, cfg.unwind, cfg.jobs); });
     auto pir_rec = stage("pir", [&] { return pir::run_pir(sources, cfg); });
     stage("conc", [&] { return conc::run_conc(sources, cfg); });
-    stage("harness", [&] { return run_harness(functions, cfg.unwind); });
+    stage("harness", [&] { return run_harness(functions, cfg.unwind, cfg.jobs, cfg.llm); });
     // Roadmap 9.2/9.3/4.2: vacuity audit, approved/drafted contracts, model
     // assumption audit, proof store and PROOF-REGRESSION (src/prism/ai/review.cpp).
     stage("review", [&] { return ai::run_review(functions, report.stages, cfg); });
-    stage("concolic", [&] { return run_concolic(functions, 32); });
+    stage("concolic", [&] { return run_concolic(functions, 32, cfg.jobs); });
     stage("fuzz", [&] {
         return exec_gate_note(
             "fuzz",
             run_fuse(functions, pir_rec.findings, src_root, cfg.fuzz_budget, cfg.fuzz_iters, cfg.llm, cfg),
             "fuzz (compiled harness, AFL++, libFuzzer)");
     });
-    stage("diff", [&] { return run_diff(functions, src_root); });
+    stage("diff", [&] { return run_diff(functions, src_root, cfg.jobs); });
     stage("rapid", [&] {
-        return exec_gate_note("rapid", run_rapid(functions, 64), "rapid (gcc fallback harness)");
+        return exec_gate_note("rapid", run_rapid(functions, 64, cfg.jobs), "rapid (gcc fallback harness)");
     });
     stage("muttest", [&] {
-        return exec_gate_note("muttest", run_muttest(functions, 32), "muttest (gcc fallback harness)");
+        return exec_gate_note("muttest", run_muttest(functions, 32, cfg.jobs), "muttest (gcc fallback harness)");
     });
     stage("ltl", [&] {
         // Unreadable directories are passed over, not a failed stage; the

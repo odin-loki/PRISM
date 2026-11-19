@@ -6,6 +6,7 @@
 #include "prism/ai_proof.hpp"
 #include "prism/ai_assist.hpp"
 #include "prism/cli.hpp"
+#include "prism/library.hpp"
 #include "prism/config.hpp"
 #include "prism/pipeline.hpp"
 #include "prism/pir.hpp"
@@ -45,6 +46,8 @@ int main(int argc, char** argv) {
         // Roadmap 6.3: PRISM as an SV-COMP verifier (docs/SVCOMP.md).
         if (sub == "svcomp") return svcomp::svcomp_main(argc - 2, argv + 2);
         if (sub == "triage") return ai::triage_main(argc - 2, argv + 2);
+        // docs/PROOF_LIBRARY.md: earlier verdicts as data (import, vet, stats, lookup)
+        if (sub == "library") return library::library_main(argc - 2, argv + 2);
     }
     auto parsed = parse_cli(std::span<const char* const>(argv + 1, argc - 1));
     if (!parsed.value) {

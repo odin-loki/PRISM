@@ -59,6 +59,15 @@ enum class Bitblaster { Auto, Lean, Z3 };
 
 struct SolveOptions {
     double timeout_s = 30.0;
+    // Complexity limit (include/prism/complexity.hpp): Z3's rlimit on the Z3
+    // member (in process or `prism z3-worker`), the same count on every
+    // machine. 0: none (timeout_s alone). Reaching it is Unknown, never
+    // Timeout, and SolveResult::limit_hit says so.
+    unsigned rlimit = 0;
+    // Set: the caller no longer needs the answer (a speculative query of the
+    // pir stage's parallel search); every member is stopped and the result is
+    // Unknown "cancelled". Polled every 50 ms.
+    const std::atomic<bool>* stop = nullptr;
     bool certified = false;     // roadmap 3.2: try to produce PROVED-CERTIFIED
     double check_timeout_s = 0; // LRAT checker budget; 0: max(60 s, 4 x timeout_s)
     // certified: seconds from the start of the query the certificate member
@@ -126,6 +135,8 @@ struct SolveResult {
     std::string bucket;                        // scheduler feature bucket
     double wall_s = 0.0;
     std::vector<std::string> watchdog;         // jobs the watchdog detached (docs/SOLVERS.md "Stalls")
+    std::uint64_t units = 0;                   // rlimit units the Z3 member spent (0: cache hit, none ran)
+    bool limit_hit = false;                    // no answer: Z3 stopped at SolveOptions::rlimit
 };
 
 std::string_view kind_name(SolveResult::Kind k);

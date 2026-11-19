@@ -52,7 +52,7 @@ void lint_discarded(const std::vector<FunctionInfo>& funcs,
         std::size_t i = 0;
         for (auto ln : fn.body | std::views::split('\n')) {
             std::string s(ln.begin(), ln.end());
-            if (re.match_line(s) || re.search(s)) {
+            if (re.search(s)) {  // a match at the start is a match
                 int line = start + static_cast<int>(i);
                 lint_add(out, rel, fn.name, line, cls, msg, lines);
             }

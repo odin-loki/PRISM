@@ -642,6 +642,12 @@ a named assumption in the verdict; `--assume-unknown-calls` is the opt-in for ca
 objects havocked, listed as an assumption). Both are off by default. Table, sources, assumptions and the
 needs-review list: [KERNEL_MODELS.md](KERNEL_MODELS.md).
 
+Kernel and data-structure callees (`src/prism/pir/models/kernel/kernel.cpp`:
+lists, bit operations, find_*_bit, ilog2, refcount/kref, kmalloc/kzalloc/kfree,
+strscpy, locks, MMIO, static keys) are linked the same way; each lists
+"callee behaves as the library contract kernel:<name>" as an assumption, so
+a proof through one is PROVED-ASSUMING ([CONTRACTS.md](CONTRACTS.md)).
+
 **Building the models.** The lowered models are built once per run, before
 any unit, with their own time limit (`max(120 s, 4 × --timeout)` per clang
 and opt call, where a unit gets `--timeout`), and a call that times out is
@@ -1514,6 +1520,58 @@ through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
 `2s == i(i-1)` is non-linear, closes through the bounded triangular
 template, admitted only by Houdini and the induction check).
 
+## Loop idioms
+
+`src/prism/pir/idioms/` (docs/TARGETED_PROVING.md W3). Each loop gets an
+abstract shape: the depth, per header phi its width and the updates the back
+edges make (`=` unchanged, `+1`, `-1`, `+c`, `+v`, `+1&m` masked, `+1%m`
+modular, `c` a constant, `>>1`, `inner` from an inner loop, `?op` other),
+the exit conditions over linear forms of the phis (`p0`, `s` a value from
+before the loop, `c`) and the memory accesses (`st1[p4]`, `ld8[(x)&m]`).
+Names and constant values are dropped. The shape is in every pir row as
+`extra.loop_shapes` (`[{"header", "line", "shape", "idioms"}]`).
+
+An idiom is a pattern over the shape with invariant templates, instantiated
+with the loop's own phis, scope values, guard constants and value ranges:
+
+| idiom | matches | templates |
+|---|---|---|
+| counter / countdown / updown-count | unit steps of one sign / both | `i >= entry(i)`, `i <= K` / `max(entry, n)` for the guards' bounds |
+| position | grows by a non-negative step (`off += 2 + l`) | `off >= entry`, `off <= len`; a counter `<= 1 * (off - entry)` |
+| masked-index / mod-index | `i = (i + c) & m` / `% m` | `i <= m` / `i < m` |
+| state | assigned constants only | `min <= s <= max` |
+| bit-scan | `x >>= c` | `x <= entry(x)` |
+| fold | signed `acc += x`, `x` in `[lo, hi]` (value ranges, incl. `if (a > K) return` guards) | `lo*(i - entry(i)) <= acc - entry(acc) <= hi*(i - entry(i))`; `acc += v`: `== v*(i - entry(i))` |
+| nested-fold | `acc` moved by an inner loop of `N` iterations (or at most `N`: `j < n` with `n <= K` from an early return) | bounds `N*lo`, `N*hi` per outer step (per unit of a position when `N` is not constant); `== N*v*(i - entry(i))` (ScaleVK) |
+| ring-counters | free-running `head`, `tail` compared by difference | `head - tail <= K` (DiffCmp, wrapping) |
+| ring-occupancy | masked `head`, `tail`, a `count` moved by +-1, `p[head]` stored and `p[tail]` loaded | `count <= cap`; `(head - tail - count) & (cap-1)` constant (ModLin); every slot `x` with `(x - tail) mod cap < count` initialised (MemRingInit) |
+| counted-fill | `p[i] = ...` with a unit counter | `forall x < i: p[x]` initialised (`== v` for a constant) |
+| slot-count | `p[k] += d` (`d` in `[lo, hi]`) on a ring index `k` (capacity `cap`), a unit counter `c` | `forall x < cap: min(lo,0)*n <= p[x] <= max(hi,0)*n`, `n = +-(c - entry(c))` the iterations so far (MemScale) |
+
+Houdini (houdini.inc) asks the matching idioms' candidates first and alone
+(a share of the search time, a quarter of the query time per goal: an
+idiom's invariant that holds is simple). Without a proof it searches the
+generic family with the idiom candidates added. Nothing is assumed: both
+rounds are the same base, step and final queries. In the idiom round the
+universal templates are also instantiated at the element indices the loops
+load and store (`p[tail & 31]`). The verdict says what happened in
+`extra.idiom`, e.g. `masked-index,ring-occupancy: closed by the idiom round
+(17 candidate(s), 1.26 s; matched: ...)` or `...: the idiom round did not
+close (...); closed by the generic search (idiom invariants kept: ...)`.
+`PRISM_PIR_IDIOMS=0` turns the library off (the generic family alone).
+
+`prism-qa idioms REPORT.json... [--acsl DIR] [--json FILE]` (src/tools/qa/idioms_mine.cpp)
+ranks the loop shapes of the pir rows of reports by count, with the idioms
+they match, how their functions ended (closed by the idiom round, by the
+generic search, violated, open) and the abstracted invariants that closed
+them. `--acsl DIR` adds the contract kinds and clause shapes of OS-Proving
+core units (contracts only; candidates for W4, never proof inputs).
+
+Doctests `pir idioms: ...` (tests/cpp/test_pir_idioms.cpp): shapes and
+matches; the idiom round proves a ring buffer's reads initialised and a
+nested fold, while the false twins (a mask past the array, a pop of an
+empty ring) are FAILED.
+
 ## Roadmap 2.3 / 2.6 coverage
 
 Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
@@ -1616,8 +1674,49 @@ the ProbSAT walker for counterexamples) and the query cache.
 each (`z3:3, cadical:1`, `(cache)` for a cache hit) and the cache hits.
 
 The stage uses `--solver-cache DIR` (default `$XDG_CACHE_HOME/prism/solver`)
-and gives each query `max(2, cores / --jobs)` solver members at once.
+and gives each query `max(2, cores / checks running now)` solver members at
+once (a run's last functions race every member on the cores that went idle).
 `--timeout S` (default 30) is the budget of **each** VC.
+
+#### Parallel checking (function-level tasks)
+
+The stage is one task graph on FORGE's work-stealing scheduler
+(`forge::task::scheduler`, through `prism::pool::TaskGraph`), with `--jobs`
+threads:
+
+| task | what it does | runs |
+|---|---|---|
+| unit | clang/opt, salvage, parse, link the library models, translate every function in source order (`prepare_unit`) | one per unit |
+| check | one function's `check_function`, the memory policy, its folded-UB demotion (`check_rec`) | one per encodable function, as soon as its unit is translated |
+| close | the rows that depend on several functions (folded UB without an instruction, caller-discharged error sinks, NOFUNC), then translation validation or a queued fresh re-run (`finalize_unit`) | after the unit's last check |
+
+Checks and closes have priority over lowering new units, so a unit's IR is
+freed soon after its checks and memory stays near what one unit per worker
+used. A unit with 100 functions now uses every worker instead of one, and a
+function in its heavy tail (Houdini, wide arithmetic) holds one worker while
+the others finish the rest. Verdicts and row order do not depend on
+`--jobs` (`tests/cpp/test_pir_parallel.cpp`): translation stays sequential
+per unit, each check sees the folded-UB markers its function's place in
+source order saw, and rows are written in source order. `--jobs 1` runs
+every task inline on the calling thread.
+
+#### Function verdict cache
+
+Before encoding, the stage looks the function up in
+`<solver cache>/pir-fn/` (`src/prism/pir/fncache.cpp`). The key is the
+BLAKE3 digest of: a complete serialisation of the PIR function (every field
+of the function, its variables, statements, phis and terminators; not the
+display text, which leaves out the pointer model and the assumptions), the
+check options that can change an answer (unwind, deepening, `--timeout`,
+function budget, portfolio, memory encoding), every `PRISM_*` environment
+variable with its value, the Z3 version, and the BLAKE3 digest of the file
+the engine was loaded from (any rebuild is a new cache). Only verdicts that
+ran to completion are stored (PROVED, PROVED-UNBOUNDED, PROVED-ASSUMING,
+BOUNDED, FAILED, NEEDS-HARNESS with no budget note); UNKNOWN, TIMEOUT and
+ERROR never are, and `--certified`, `only_props` and fault-injection runs
+bypass the cache. A hit carries `extra.verdict_cache = "hit <key prefix>"`.
+The memory policy, folded-UB checks and translation validation still run on
+a hit. `PRISM_PIR_FN_CACHE=0` turns it off.
 
 **Certified mode** (`--certified`, roadmap 3.2). Each VC is also bit-blasted
 to CNF, CaDiCaL writes an LRAT proof of its unsatisfiability, and cake_lpr
@@ -1695,6 +1794,77 @@ counted (they use the certification budget above). A value of
 `$PRISM_FUNCTION_BUDGET`, `$PRISM_HOUDINI_BUDGET` or `$PRISM_CERTIFY_BUDGET`
 that is not a number of seconds >= 0 is ignored, and every checked pir row says
 so in `extra.env_rejected`.
+
+**Complexity limits** (docs/TARGETED_PROVING.md W1; `include/prism/complexity.hpp`).
+Every pir query runs under Z3's deterministic resource limit (`rlimit`), the
+count Z3 keeps of its own work, which does not depend on the machine, its
+load or `--jobs`. The scale is `--complexity N` (rlimit units of one VC query
+of a function of reference size), else `$PRISM_PIR_RLIMIT`, else `--timeout`
+seconds of 1 000 000 units (`kUnitsPerSecond`, measured on the reference
+machine); 0 turns the limits off. Every former time limit t of a function
+(a VC's `--timeout`, a Houdini group's share, the Houdini search, a
+k-induction step, the final cut query) becomes t x N / timeout x the
+function's size factor (1 + log2(1 + statements / 4096), at most 4) units;
+the pir stage gives the function budget the same treatment
+(`CheckOptions::function_units_s`: its units are the budget, its clock is 3 x
+the budget, `kWallBackstop`). The clocks stay as backstops, three times the
+time the units stand for. A query that reaches its limit is UNKNOWN (never a
+proof, never TIMEOUT), and `extra.complexity_limit = "<C> rlimit units at
+<label>"` names the first one: "not decided within complexity C", the same on
+every machine and in every run. Two things made one query's work depend on
+the process and are fixed: Z3's QF_BV strategy runs its AIG step only while
+Z3's process-wide allocation is under 300 MB (so a query did different work
+next to another function's contexts at `--jobs 4`), so a 320 MB allocation
+Z3 counts but nothing touches keeps that choice the same for every query
+(`src/prism/solver/z3_ballast.cpp`; PRISM's memory checks subtract it); and
+under a limit the query cache is keyed by the formula as given as well (two
+formulas that normalise alike but differ in their names do different work),
+and a hit is charged the units its formula cost when it was solved (an entry
+that took more than the query's limit is UNKNOWN at the limit, as solving it
+again would be). So a function's units, and every budget decision made from
+them, do not depend on which function was cached first. Answers of the other
+portfolio members (bitwuzla, CaDiCaL, kissat, the SLS walker) still race on
+the clock: they can only add an answer (a validated model, or UNSAT), never
+take one away.
+
+**Strategies and properties in parallel** (W2). A function with loops is
+checked by separate strategies: the unwinding chain (the first unwind, the
+requested unwind, deepening), k-induction and Houdini. With `--jobs` above 1
+(`CheckOptions::jobs`) k-induction and Houdini start on idle workers of the
+run's shared scheduler once the first unwind is BOUNDED (most functions end
+there), next to the requested unwind, and deepening starts next to them once
+the requested unwind is BOUNDED; with `--jobs 1` they run one after the
+other in the sequential order. Each strategy's wall-clock backstop starts
+when the strategy starts (a clock shared from the function's start would cut
+the later strategies short at `--jobs 1` only), and a Houdini search that was
+stopped is not charged to the run's Houdini budget. The verdict is always the one the sequential
+order gives from their answers: k-induction and Houdini count only when the
+requested unwind is BOUNDED (k-induction's base case is that answer), Houdini
+only when k-induction did not close, deepening only when neither proved; a
+strategy whose answer is no longer needed is stopped (`Z3_interrupt` and a
+stop flag). Each strategy has its own units budget, so its answer does not
+depend on how far another got (a strategy that the sequential order would have
+starved can now answer: a stronger verdict, never a weaker one). A deepening
+attempt asks its VCs only: k-induction and Houdini do not depend on the
+unwind, and a PROVED-UNBOUNDED there ended the deepening with the BOUNDED
+answer anyway. Within one attempt, idle workers ask the property VCs ahead of
+the search (each in a Z3 context of its own, the formulas translated from the
+function's context on its own thread); the search stays sequential and takes
+each answer in its order, so the first violated property, the group halving
+of more than 16 properties and every budget decision are the sequential ones.
+
+**Metrics** (W5): every function row has `extra.metrics`, a JSON object:
+`rlimit_units` and `queries` per phase (`encode`, `vcs`, `unwinding`,
+`k_induction`, `houdini`, `deepening`), their totals, `complexity_limit_hits`,
+`strategy` (`unwinding@<k>`, `k-induction`, `houdini`, `deepening@<k>` or
+`none`), `rlimit_units_per_s` (0: limits off) and `function_rlimit_units`.
+Only the strategies whose answers the verdict used are counted, so the
+metrics are the same at every `--jobs`. Houdini adds
+`extra.invariant_search = "exhausted: pir-templates[<kinds>] (<n> candidates,
+fixpoint without proof)"` when its fixpoint was reached with every query
+answered (no unknown, no limit, no clock): no conjunction of those candidates
+is an inductive invariant that proves the properties. That is a statement
+about the template family only; the verdict stays BOUNDED.
 
 A certified function then carries `extra.certificate = "checked"` (what the verdict
 audit requires of a `PROVED-CERTIFIED` from this stage),

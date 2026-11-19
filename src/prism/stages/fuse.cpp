@@ -1638,8 +1638,15 @@ std::vector<Finding> run_fuse(const std::vector<FunctionInfo>& functions, const 
     // and its output directory for the audit log).
     if (llm) eng.emplace(cfg);
     LlmEngine* ep = eng.has_value() ? &eng.value() : nullptr;
-    for (auto& fn : functions)
-        out.push_back(fuse_one(fn, checker_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg));
+    // Without a model the functions are fuzzed cfg.jobs at a time: each
+    // campaign is its own (its own budget clock, seeds, havoc stream and
+    // harness build), so every function keeps its whole budget and the rows
+    // keep the serial order. With a model they run one at a time (one
+    // engine, one conversation).
+    out = map_functions(ep ? 1 : cfg.jobs, functions.size(), [&](std::size_t i) {
+        return std::vector<Finding>{
+            fuse_one(functions[i], checker_findings, src_root, slice_budget, slice_iters, rounds, ep, cfg)};
+    });
     if (ep && !ep->available() && !functions.empty()) {
         Finding f;
         f.stage = "fuse";

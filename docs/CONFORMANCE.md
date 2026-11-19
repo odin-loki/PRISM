@@ -815,6 +815,40 @@ globals (the constructors' stores are not carried into `main`); otherwise
 `testdata/pir/static_init_{throw,value,ok}.cpp`, doctest "pir soundness:
 dynamic initialisation before main (S8)" in `tests/cpp/test_main.cpp`.
 
+*Fixed (scoring), 15 November 2026; found by the merge gate.*
+**S9. A `no-uncaught` task is proved while an exception leaves the
+function.** pir follows the paths of a function and, by design, ends a path
+where an exception leaves a function other than `main` (not UB there;
+`extra.throws_not_followed` names the types, docs/PIR.md "Exceptions"). Its
+PROVED therefore says nothing about whether that exception is caught, but
+the conformance task asks exactly that:
+```cpp
+int cxx_unordered_map_false(int k) {          // property: no-uncaught, expected false
+    std::unordered_map<int, int> m; m[0] = 1;
+    return m.at(k) == 0 ? 0 : 1;              // at(k) throws std::out_of_range, uncaught
+}   /* pir PROVED, throws_not_followed: St12out_of_range,St20bad_array_new_length,St9bad_alloc */
+```
+Not a regression in the engine: the PIR is identical before and after the
+parallel pir work (same `pir_hash`); the earlier build reached the 300 s
+function budget (TIMEOUT, no answer), the faster build finishes and proves.
+Options, for the owner to choose: (a) an exception that can leave an analysed
+non-`main` function becomes a soft check (NEEDS-HARNESS when reachable),
+which costs the UB proofs of every function that may throw, `bad_alloc`
+included; (b) such an exception is CXX-UNCAUGHT when the function is an
+analysed entry, which turns those into FAILED (false alarms on library code);
+(c) the scorer is made property-aware: for `no-uncaught`, a proof that lists
+`throws_not_followed` is not an answer (its own outcome, never "proved").
+Chosen: (c), because (a) and (b) change correct verdicts on every C++
+function that may throw, while the PROVED itself is right for what pir
+checks (UB and assertions on the followed paths). For a `no-uncaught` task,
+a proof whose rows all list `throws_not_followed` is its own outcome,
+`throw-not-followed`, counted under "no answer" and listed in metrics.md
+("no-uncaught: proved only on the followed paths"); it is never "proved",
+for true and false tasks alike, and every other property scores as before
+(`src/tools/qa/support/report.cpp` `classify`; doctest "qa conformance:
+no-uncaught proofs that do not follow a throw are not answers (S9)"). Task:
+`prism/cxx/cxx_unordered_map_false`.
+
 ### Robustness (no verdict where one was possible)
 
 *Fixed:* widths are consistent by construction, and any exception is an `ERROR` for that one function.

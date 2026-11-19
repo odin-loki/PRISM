@@ -43,6 +43,7 @@ constexpr Command COMMANDS[] = {
     {"llvm-sem-vs-lli", prism::qa::llvm_sem_vs_lli_main, "formal LLVM semantics (Lean) vs lli"},
     {"libc-bounds", prism::qa::libc_bounds_main, "size-bound sweep of the libc model contract harnesses"},
     {"solver-bench", prism::qa::solver_bench_main, "portfolio vs Z3 alone on the conformance suite's pir VCs"},
+    {"idioms", prism::qa::idioms_main, "loop shapes of pir rows ranked, with what closed them (idiom library)"},
     {"assurance-check", assurance, "every artefact docs/assurance cites exists"},
     {"docs-check", prism::qa::docs_check_main, "--help flags documented, anchors resolve, stage order listed"},
     {"asm-census", prism::qa::asm_census_main, "inline-asm template census of C trees"},

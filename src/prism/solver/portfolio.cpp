@@ -25,6 +25,7 @@
 #ifdef PRISM_HAS_Z3
 
 #include "prism/solver.hpp"
+#include "prism/complexity.hpp"
 #include "prism/settings.hpp"
 #include "prism/membudget.hpp"
 #include "prism/solver_predict.hpp"
@@ -222,6 +223,10 @@ struct Msg {
     std::map<std::string, std::string> model;
     std::string detail;
     double secs = 0;
+    // in-process Z3 / z3-worker: rlimit units spent, and whether the job
+    // stopped at its rlimit (SolveOptions::rlimit)
+    std::uint64_t units = 0;
+    bool limit_hit = false;
 };
 
 class Board {
@@ -328,6 +333,10 @@ Msg smt_result(std::size_t idx, const detail::Proc& p) {
     if (p.cancelled) { m.kind = Kind::Unknown; m.detail = "cancelled"; return m; }
     if (p.timed_out) { m.kind = Kind::Timeout; m.detail = "timed out"; return m; }
     auto a = parse_smt_output(p.out);
+    // `prism z3-worker` with a limit appends "(:rlimit N)" and, for unknown, its reason
+    if (auto q = p.out.rfind("(:rlimit "); q != std::string::npos)
+        m.units = std::strtoull(p.out.c_str() + q + 9, nullptr, 10);
+    if (a.status == "unknown" && p.out.find("max. resource limit exceeded") != std::string::npos) m.limit_hit = true;
     if (a.status == "sat") { m.kind = Kind::Sat; m.model = std::move(a.model); return m; }
     if (a.status == "unsat") { m.kind = Kind::Unsat; return m; }
     m.kind = Kind::Unknown;
@@ -338,7 +347,7 @@ Msg smt_result(std::size_t idx, const detail::Proc& p) {
 // argv for a Z3 child (`prism z3-worker {input} MB`), or empty to stay in
 // process: only under a memory budget and for a query of at least
 // PRISM_Z3_CHILD_NODES nodes (default 20000; 0 = always, -1 = never).
-std::vector<std::string> z3_worker_argv(std::size_t nodes) {
+std::vector<std::string> z3_worker_argv(std::size_t nodes, unsigned rlimit) {
     const uint64_t mb = prism::membudget::budget_mb();
     if (mb == 0) return {};
     long min_nodes = 20000;
@@ -362,7 +371,7 @@ std::vector<std::string> z3_worker_argv(std::size_t nodes) {
     // caps granted to live children (the spawn's own cap bounds it further)
     const uint64_t used = prism::membudget::peak_rss_mb() + prism::membudget::granted_mb();
     const uint64_t child_mb = std::max<uint64_t>(64, mb > used ? mb - used : 0);
-    return {exe, "z3-worker", "{input}", std::to_string(child_mb)};
+    return {exe, "z3-worker", "{input}", std::to_string(child_mb), std::to_string(rlimit)};
 }
 
 // Rule-based expected seconds (lower starts first), before history.
@@ -562,9 +571,22 @@ fs::path make_work_dir(const SolveOptions& opt, const std::string& h) {
 
 namespace {
 
+// The "rlimit count" statistic: the work Z3 has done in the solver's context.
+std::uint64_t rlimit_count(const z3::solver& s) {
+    try {
+        const z3::stats st = s.statistics();
+        for (unsigned i = 0; i < st.size(); ++i)
+            if (st.key(i) == "rlimit count")
+                return st.is_uint(i) ? st.uint_value(i) : static_cast<std::uint64_t>(st.double_value(i));
+    } catch (const z3::exception&) {
+    }
+    return 0;
+}
+
 SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     SolveResult res;
     const double t0 = now_s();
+    const unsigned rlimit = opt.rlimit;
     const double deadline = t0 + std::max(0.01, opt.timeout_s);
     // Certified requests: the certificate member (CaDiCaL with LRAT) and the
     // bit-blast feeding it may run until cert_deadline. The answer itself is
@@ -630,6 +652,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         notes.push_back(std::string("normalisation failed: ") + e.msg());
         return finish(res);
     }
+    // Under a complexity limit the cache is keyed by the formula as given
+    // too (Z3's structural hash, names included): two formulas that
+    // normalise alike but differ in their names make Z3 do different work,
+    // and a hit is charged the units its own formula cost, so the units a
+    // function spends do not depend on which of them was cached first.
+    if (rlimit > 0)
+        norm += "\nexact " + std::to_string(Z3_get_ast_hash(c, formula)) + " " + std::to_string(ft.nodes);
     res.query_hash = sha256_hex(norm);
     const std::string cert_reason = not_certifiable_reason(formula);
     const bool blastable = cert_reason.empty();
@@ -692,7 +721,26 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::optional<std::string> cached_unsat_winner;
     if (want_cert && opt.known_unsat) cached_unsat_winner = "caller (plain unsat)";
     if (opt.use_cache) {
-        if (auto j = cache_load(root, res.query_hash)) {
+        auto j = cache_load(root, res.query_hash);
+        const std::uint64_t cached_units = j ? j->value("z3_units", std::uint64_t{0}) : 0;
+        // A hit costs what the query cost when it was solved (the Z3
+        // member's rlimit units, when Z3 answered it): the units a function
+        // spends do not depend on which queries another function, an earlier
+        // run or a speculative task happened to cache first. An answer that
+        // took more than this query's limit is not one this limit gives:
+        // Unknown at the limit, as solving it again would be.
+        if (j && rlimit > 0 && cached_units > rlimit && !want_cert) {
+            {
+                res.kind = Kind::Unknown;
+                res.limit_hit = true;
+                res.units = rlimit;
+                notes.push_back("cache entry not used: it took " + std::to_string(cached_units) +
+                                " rlimit units, over this query's limit");
+                notes.push_back("complexity limit: z3 stopped at " + std::to_string(rlimit) + " rlimit units");
+                return finish(res);
+            }
+        }
+        if (j) {
             const std::string kind = j->value("kind", "");
             if (kind == "sat") {
                 std::map<std::string, std::string> cached_model;
@@ -707,6 +755,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                     res.model = std::move(cached_model);
                     res.winner = j->value("winner", "");
                     res.cache_hit = true;
+                    res.units = cached_units;
                     notes.push_back("cache hit: counterexample re-validated in Z3");
                     return finish(res);
                 }
@@ -715,6 +764,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 res.kind = Kind::Unsat;
                 res.winner = j->value("winner", "");
                 res.cache_hit = true;
+                res.units = cached_units;
                 notes.push_back(std::string("cache hit: unsat") +
                                 (j->value("certified", false) ? " (cached certified; not re-checked for a plain request)"
                                                               : ""));
@@ -805,7 +855,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // query under a memory budget therefore runs Z3 in a child process
     // (`prism z3-worker`) with its own hard limit: killable, and an
     // out-of-memory there is that query's UNKNOWN, not this process's.
-    const auto z3_proc = z3_worker_argv(ft.nodes);
+    const auto z3_proc = z3_worker_argv(ft.nodes, opt.rlimit);
     if (prism::settings::mem_trace().is_set())
         std::fprintf(stderr, "[memtrace] query nodes=%zu z3=%s\n", static_cast<std::size_t>(ft.nodes),
                      z3_proc.empty() ? "in-process" : "child");
@@ -1129,7 +1179,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 slot.zctx = &zc;
                 const z3::expr* f2 = &translated(zc);
                 const double stall = opt.debug_stall_s;
-                spawn(slot.name, [J = J.get(), &zc, f2, i, left, stop, stall] {
+                spawn(slot.name, [J = J.get(), &zc, f2, i, left, stop, stall, rlimit] {
                     Msg worker_msg;
                     worker_msg.member = i;
                     const double s0 = now_s();
@@ -1140,10 +1190,14 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         z3::solver s(zc);
                         z3::params p(zc);
                         p.set("timeout", static_cast<unsigned>(std::min(left * 1000.0, 4.0e9)));
+                        if (rlimit > 0) p.set("rlimit", rlimit);
                         s.set(p);
                         s.add(*f2);
                         prism::membudget::Phase phase_job("portfolio: z3 job check");
+                        const std::uint64_t u0 = rlimit_count(s);
                         auto r = stop->load() ? z3::unknown : s.check();
+                        const std::uint64_t u1 = rlimit_count(s);
+                        worker_msg.units = u1 - std::min(u0, u1);
                         if (r == z3::sat) {
                             worker_msg.kind = Kind::Sat;
                             z3::model md = s.get_model();
@@ -1154,6 +1208,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                         } else {
                             worker_msg.kind = Kind::Unknown;
                             worker_msg.detail = s.reason_unknown();
+                            worker_msg.limit_hit =
+                                rlimit > 0 && worker_msg.detail.find("max. resource limit exceeded") != std::string::npos;
                             if (worker_msg.detail.find("timeout") != std::string::npos ||
                                 worker_msg.detail.find("canceled") != std::string::npos)
                                 worker_msg.kind = Kind::Timeout;
@@ -1255,7 +1311,12 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     std::vector<std::string> disagreements;
 
     fill_slots();
+    bool cancelled = false;
     for (;;) {
+        if (opt.stop && opt.stop->load()) {
+            cancelled = true;
+            break;
+        }
         const bool cert_pending = want_cert && cert_member.has_value() &&
                                   !members.at(cert_member.value()).finished &&
                                   cnf_state != CnfState::Failed;
@@ -1270,8 +1331,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         double wake = due;
         for (const auto& mem : members)
             if (!mem.started && !mem.finished && mem.not_before > 0) wake = std::min(wake, mem.not_before);
+        if (opt.stop) wake = std::min(wake, now_s() + 0.05);
         Msg board_msg;
         if (!board.wait(board_msg, wake)) {
+            if (opt.stop && opt.stop->load()) continue;  // the check at the top stops
             if (now_s() >= due) { timed_out = true; break; }
             if (!accepted) fill_slots();
             for (auto& mem : members)  // due now: never wait on them again
@@ -1298,6 +1361,10 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         const Msg handled = board_msg;
         Member& member = members.at(handled.member);
         member.finished = true;
+        if (member.name == "z3") {
+            res.units += handled.units;
+            res.limit_hit = res.limit_hit || handled.limit_hit;
+        }
         const bool definitive = handled.kind == Kind::Sat || handled.kind == Kind::Unsat;
         if (definitive) res.times[member.name] = handled.secs;
         if (cert_member.has_value() && handled.member == cert_member.value()) cert_msg = handled;
@@ -1342,6 +1409,8 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         if (late_msg.detail.find(kUnreaped) != std::string::npos)
             watchdog.push_back(members.at(late_msg.member).name + " (" + late_msg.detail + ")");
         if (late_msg.member == cert_member && !cert_msg) cert_msg = late_msg;
+        // a Z3 job stopped by the clock or another member's answer: its units so far
+        if (members.at(late_msg.member).name == "z3") res.units += late_msg.units;
     }
     // ---------------------------------------------------------------- verdict
     if (accepted) {
@@ -1358,8 +1427,17 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         notes.push_back(opt.known_unsat ? "no certificate: the caller's plain unsat stands"
                                         : "no answer while solving again for a certificate: the cached plain unsat stands");
     } else {
-        res.kind = timed_out || now_s() >= deadline ? Kind::Timeout : Kind::Unknown;
+        // Z3 stopped at its complexity limit: Unknown (reproducible), even
+        // when the wall clock has also run out meanwhile
+        res.kind = res.limit_hit ? Kind::Unknown : timed_out || now_s() >= deadline ? Kind::Timeout : Kind::Unknown;
+        if (cancelled) {
+            res.kind = Kind::Unknown;
+            res.limit_hit = false;
+            notes.push_back("cancelled: the caller no longer needs the answer");
+        }
     }
+    if (accepted) res.limit_hit = false;  // answered (another member, or Z3 itself)
+    if (res.limit_hit) notes.push_back("complexity limit: z3 stopped at " + std::to_string(rlimit) + " rlimit units");
     for (const auto& d : disagreements) notes.push_back("DISAGREEMENT: " + d);
 
     if (want_cert && res.kind == Kind::Unsat && cert_member) {
@@ -1401,6 +1479,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     if (opt.use_cache && (res.kind == Kind::Sat || res.kind == Kind::Unsat)) {
         json e{{"schema", 1}, {"hash", res.query_hash}, {"kind", std::string(kind_name(res.kind))},
                {"winner", res.winner}, {"certified", res.certified}, {"z3", Z3_get_full_version()}};
+        // what a hit is charged (above): Z3's units, when Z3 answered (another
+        // member's answer stopped Z3 at a time-dependent point)
+        if (res.winner == "z3" && res.units > 0) e["z3_units"] = res.units;
         if (res.kind == Kind::Sat) {
             json jm = json::object();
             std::map<std::string, std::string> back;
@@ -1485,6 +1566,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 }  // namespace
 
 SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
     try {
         return solve_impl(c, formula, opt);
     } catch (const z3::exception& e) {
@@ -1500,7 +1582,7 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
     }
 }
 
-// `prism z3-worker FILE MB`: run an SMT-LIB script with Z3 and print its
+// `prism z3-worker FILE MB [RLIMIT]`: run an SMT-LIB script with Z3 and print its
 // output (check-sat, then get-value), the format parse_smt_output reads.
 // Hard limits: Z3 memory_max_size at 80% of MB, and a 20 ms watchdog that
 // leaves (rc 137) once the resident set passes MB, because Z3 can ignore both
@@ -1508,12 +1590,18 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
 int z3_worker_main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: prism z3-worker FILE [MB]\n"); return 2; }
     const uint64_t mb = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 0;
+    const unsigned long long rl = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 0;
     std::ifstream in(argv[1]);
     std::stringstream ss;
+    // the caller's complexity limit (0: none), before the script's check-sat
+    if (rl > 0) ss << "(set-option :rlimit " << rl << ")\n";
+    // the same Z3 strategy as in process (complexity.hpp: the ballast)
+    prism::complexity::install_z3_ballast();
     ss << in.rdbuf();
     if (!in) { std::fprintf(stderr, "z3-worker: cannot read %s\n", argv[1]); return 2; }
     if (mb > 0) {
-        Z3_global_param_set("memory_max_size", std::to_string(std::max<uint64_t>(64, mb * 4 / 5)).c_str());
+        Z3_global_param_set("memory_max_size",
+                            std::to_string(std::max<uint64_t>(64, mb * 4 / 5) + (prism::complexity::z3_ballast_bytes() >> 20)).c_str());
         std::thread([mb] {
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1528,7 +1616,14 @@ int z3_worker_main(int argc, char** argv) {
     try {
         z3::context c;
         const char* out = Z3_eval_smtlib2_string(c, ss.str().c_str());
+        const bool unknown = out && std::string_view(out).starts_with("unknown");
         std::fputs(out ? out : "unknown\n", stdout);
+        if (rl > 0) {
+            // units spent and, for unknown, why (smt_result reads both)
+            if (const char* r = Z3_eval_smtlib2_string(c, "(get-info :rlimit)")) std::fputs(r, stdout);
+            if (unknown)
+                if (const char* r = Z3_eval_smtlib2_string(c, "(get-info :reason-unknown)")) std::fputs(r, stdout);
+        }
     } catch (const z3::exception& e) {
         std::printf("unknown\n(error \"%s\")\n", e.msg());
     }

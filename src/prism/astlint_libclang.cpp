@@ -32,6 +32,16 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #ifdef PRISM_HAS_LIBCLANG
 #ifdef _WIN32
@@ -88,7 +98,7 @@ namespace {
     X(clang_getCursorResultType) X(clang_getResultType) X(clang_isExpression)                   \
     X(clang_isDeclaration) X(clang_isAttribute) X(clang_getTemplateCursorKind)                  \
     X(clang_getCursorKindSpelling) X(clang_isCursorDefinition) X(clang_getCursorDefinition)      \
-    X(clang_getArrayElementType)
+    X(clang_getArrayElementType) X(clang_saveTranslationUnit) X(clang_getInclusions)
 
 struct Api {
 #define PRISM_DECL_FN(n) decltype(&::n) n = nullptr;
@@ -1171,6 +1181,97 @@ bool libclang_load(const std::optional<fs::path>& clang, std::string* why, std::
     return L.ok;
 }
 
+namespace {
+
+// ---------------------------------------------------------------- shared PCH
+// Units that start with the same block of `#include <...>` lines and are
+// parsed with the same flags share one precompiled header of exactly that
+// block (most C++ units spend nearly all their parse time in the standard
+// headers). Same result by construction:
+//   * the PCH is the unit's own prefix, nothing more: only a leading run of
+//     `#include <...>` lines (blank lines and comments between them), so
+//     including it from the PCH is what the unit does textually; anything
+//     else before or between them (#define, #if, #pragma, code) ends the
+//     prefix;
+//   * the key is every flag plus the prefix text; a PCH is built (from the
+//     second unit with a key on) with those flags and only then reused;
+//   * a PCH is never used for a unit that checks any file the PCH includes
+//     (its declarations and macro expansions must come from this parse);
+//   * a parse with the PCH that fails or reports an error is redone without
+//     it, so diagnostics and parse failures are those of a plain parse.
+// PRISM_ASTLINT_PCH=0 turns it off.
+struct PchEntry {
+    int seen = 0;
+    bool building = false, failed = false;
+    std::string pch;                    // file, "" until built
+    std::set<std::string> included;     // canonical paths of every file the PCH includes
+};
+struct PchCache {
+    std::mutex mu;
+    std::map<std::string, PchEntry> by_key;
+    std::optional<std::filesystem::path> dir;
+    ~PchCache() {
+        if (dir) {
+            std::error_code ec;
+            std::filesystem::remove_all(*dir, ec);
+        }
+    }
+};
+PchCache& pch_cache() {
+    static PchCache c;
+    return c;
+}
+
+bool pch_enabled() {
+    const char* e = std::getenv("PRISM_ASTLINT_PCH");
+    return !(e && std::string(e) == "0");
+}
+
+// The leading `#include <...>` lines of a source file (empty when it has none).
+std::vector<std::string> include_prefix(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::vector<std::string> out;
+    std::string line;
+    bool in_block = false;
+    while (std::getline(in, line)) {
+        std::string t = line;
+        if (!t.empty() && t.back() == '\r') t.pop_back();
+        std::size_t a = t.find_first_not_of(" \t");
+        std::string s = a == std::string::npos ? std::string() : t.substr(a);
+        if (in_block) {
+            auto e = s.find("*/");
+            if (e == std::string::npos) continue;
+            in_block = false;
+            s = s.substr(e + 2);
+            a = s.find_first_not_of(" \t");
+            s = a == std::string::npos ? std::string() : s.substr(a);
+        }
+        if (s.empty() || s.starts_with("//")) continue;
+        if (s.starts_with("/*")) {
+            if (s.find("*/", 2) == std::string::npos) in_block = true;
+            else if (auto rest = s.substr(s.find("*/", 2) + 2); rest.find_first_not_of(" \t") != std::string::npos)
+                break;  // code after a block comment on the same line
+            continue;
+        }
+        // `#include <x>` exactly (no macro, no trailing code but a comment)
+        if (s[0] != '#') break;
+        auto b = s.find_first_not_of(" \t", 1);
+        if (b == std::string::npos || s.compare(b, 7, "include") != 0) break;
+        auto lt = s.find_first_not_of(" \t", b + 7);
+        if (lt == std::string::npos || s[lt] != '<') break;
+        auto gt = s.find('>', lt);
+        if (gt == std::string::npos) break;
+        auto tail = s.substr(gt + 1);
+        auto ta = tail.find_first_not_of(" \t");
+        if (ta != std::string::npos && !tail.substr(ta).starts_with("//")) break;
+        out.push_back(s.substr(0, gt + 1));
+    }
+    return out;
+}
+
+}  // namespace
+
 std::optional<Unit> libclang_unit(const std::vector<std::string>& args, const std::string& src,
                                   const FileSet& files, bool cxx, std::string& err) {
     auto& L = loaded(std::nullopt);
@@ -1192,8 +1293,134 @@ std::optional<Unit> libclang_unit(const std::vector<std::string>& args, const st
     CXIndex idx = A.clang_createIndex(0, 0);
     CXTranslationUnit tu = nullptr;
     unsigned opts = CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles;
-    auto rc = A.clang_parseTranslationUnit2(idx, src.c_str(), argv.data(), static_cast<int>(argv.size()), nullptr,
-                                            0, opts, &tu);
+    // ---- shared PCH (see PchCache): find, or build from the second unit on
+    std::string pch_file;
+    if (pch_enabled()) {
+        // Every prefix length of the unit's include list is a key: a unit uses
+        // the longest prefix that has a PCH, and a prefix gets one once two
+        // units start with it. The PCH is always a literal prefix of this
+        // unit's own include lines, so including it is what the unit does.
+        const auto lines = include_prefix(src);
+        if (!lines.empty()) {
+            std::string base = std::string(cxx ? "c++" : "c") + "\n";
+            for (auto* a : argv) base += std::string(a) + '\x1f';
+            base += "\n";
+            std::vector<std::string> keys, texts;
+            std::string text;
+            for (auto& l : lines) {
+                text += l + "\n";
+                texts.push_back(text);
+                keys.push_back(base + text);
+            }
+            auto& C = pch_cache();
+            int build_k = -1;
+            std::filesystem::path dir;
+            auto usable = [&](const PchEntry& e) {
+                if (e.pch.empty()) return false;
+                for (auto& f : e.included)
+                    if (files.wanted(f)) return false;
+                return true;
+            };
+            {
+                std::lock_guard<std::mutex> lk(C.mu);
+                for (auto& k : keys) ++C.by_key[k].seen;
+                for (int k = static_cast<int>(keys.size()) - 1; k >= 0; --k) {
+                    auto& e = C.by_key[keys[static_cast<std::size_t>(k)]];
+                    if (usable(e)) {
+                        pch_file = e.pch;
+                        break;
+                    }
+                }
+                // a longer shared prefix than the one in use, not built yet: build it
+                for (int k = static_cast<int>(keys.size()) - 1; k >= 0; --k) {
+                    auto& e = C.by_key[keys[static_cast<std::size_t>(k)]];
+                    if (!e.pch.empty()) break;  // the longest built one is already in use
+                    if (e.seen >= 2 && !e.building && !e.failed) {
+                        e.building = true;
+                        build_k = k;
+                        break;
+                    }
+                }
+                if (build_k >= 0) {
+                    if (!C.dir) {
+                        std::error_code ec;
+                        auto d = std::filesystem::temp_directory_path(ec) /
+                                 ("prism-pch-" + std::to_string(static_cast<unsigned long long>(::getpid())));
+                        std::filesystem::create_directories(d, ec);
+                        if (!ec) C.dir = d;
+                    }
+                    if (C.dir) dir = *C.dir;
+                }
+            }
+            if (build_k >= 0) {
+                const auto& key = keys[static_cast<std::size_t>(build_k)];
+                const auto& prefix = texts[static_cast<std::size_t>(build_k)];
+                std::string pch;
+                std::set<std::string> inc;
+                if (!dir.empty()) {
+                    const auto h = std::to_string(std::hash<std::string>{}(key));
+                    const auto hdr = dir / ("p" + h + (cxx ? ".hpp" : ".h"));
+                    const auto out = dir / ("p" + h + ".pch");
+                    { std::ofstream(hdr, std::ios::binary) << prefix; }
+                    std::vector<const char*> hv(argv);
+                    hv.push_back("-x");
+                    hv.push_back(cxx ? "c++-header" : "c-header");
+                    CXIndex hidx = A.clang_createIndex(0, 0);
+                    CXTranslationUnit htu = nullptr;
+                    const auto hs = hdr.string();
+                    auto hrc = A.clang_parseTranslationUnit2(
+                        hidx, hs.c_str(), hv.data(), static_cast<int>(hv.size()), nullptr, 0,
+                        CXTranslationUnit_DetailedPreprocessingRecord | CXTranslationUnit_ForSerialization |
+                            CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles,
+                        &htu);
+                    if (hrc == CXError_Success && htu && first_error(A, htu).empty()) {
+                        std::pair<const Api*, std::set<std::string>*> ctx{&A, &inc};
+                        A.clang_getInclusions(
+                            htu,
+                            [](CXFile f, CXSourceLocation*, unsigned, CXClientData d) {
+                                auto* p = static_cast<std::pair<const Api*, std::set<std::string>*>*>(d);
+                                auto nm = p->first->clang_getFileName(f);
+                                if (const char* c = p->first->clang_getCString(nm)) p->second->insert(canon_path(c));
+                                p->first->clang_disposeString(nm);
+                            },
+                            &ctx);
+                        const auto os = out.string();
+                        if (A.clang_saveTranslationUnit(htu, os.c_str(), 0) == CXSaveError_None) pch = os;
+                    }
+                    if (htu) A.clang_disposeTranslationUnit(htu);
+                    A.clang_disposeIndex(hidx);
+                }
+                std::lock_guard<std::mutex> lk(C.mu);
+                auto& e = C.by_key[key];
+                e.building = false;
+                if (pch.empty()) {
+                    e.failed = true;
+                } else {
+                    e.pch = pch;
+                    e.included = std::move(inc);
+                    if (usable(e)) pch_file = pch;  // the longest built prefix for this unit
+                }
+            }
+        }
+    }
+    CXErrorCode rc = CXError_Failure;
+    if (!pch_file.empty()) {
+        std::vector<const char*> pv(argv);
+        pv.push_back("-include-pch");
+        pv.push_back(pch_file.c_str());
+        rc = A.clang_parseTranslationUnit2(idx, src.c_str(), pv.data(), static_cast<int>(pv.size()), nullptr, 0,
+                                           opts, &tu);
+        if (rc != CXError_Success || !tu || !first_error(A, tu).empty()) {
+            // not the plain parse's result: redo it without the PCH
+            if (tu) A.clang_disposeTranslationUnit(tu);
+            tu = nullptr;
+            rc = CXError_Failure;
+            pch_file.clear();
+        }
+    }
+    if (pch_file.empty())
+        rc = A.clang_parseTranslationUnit2(idx, src.c_str(), argv.data(), static_cast<int>(argv.size()), nullptr, 0,
+                                           opts, &tu);
     if (rc != CXError_Success || !tu) {
         err = rc == CXError_Crashed ? "libclang crashed while parsing" : "libclang could not parse the unit";
         if (tu) A.clang_disposeTranslationUnit(tu);

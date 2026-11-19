@@ -15,13 +15,17 @@
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
+#include "prism/complexity.hpp"
 #include "prism/pir.hpp"
 #include "prism/pir/folded_diag.hpp"
 #include "prism/pir/frontend.hpp"
 #include "prism/sandbox.hpp"
+#include "prism/pool.hpp"
 #include "prism/threads.hpp"
 
 #include "prism/sandbox.hpp"
+#include "fncache.hpp"
+#include "idioms/idioms.hpp"
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
@@ -132,6 +136,49 @@ std::vector<std::string> split_lines(const std::string& s) {
         pos = nl + 1;
     }
     if (!out.empty() && out.back().empty()) out.pop_back();
+    return out;
+}
+
+// The unit's lines indexed by the line numbers its debug locations carry: a
+// `#line N` directive without a file name renumbers the lines after it (the
+// contracts stage's spliced units, stages/common.cpp pir_unit_text, put the
+// instrumented function back at its original line). Without such a
+// directive this is the file as it is.
+std::vector<std::string> presumed_lines(std::vector<std::string> raw) {
+    static const std::regex directive(R"(^\s*#\s*line\s+(\d+)\s*$)");
+    bool any = false;
+    for (auto& l : raw)
+        if (l.find("#") != std::string::npos && l.find("line") != std::string::npos && std::regex_match(l, directive)) {
+            any = true;
+            break;
+        }
+    if (!any) return raw;
+    // Lines before the first directive (a prelude) give way to the numbered
+    // lines; after it the first line given a number keeps it (an
+    // instrumented function longer than the original is followed by the
+    // file's next lines renumbered from where the original ended).
+    std::vector<std::string> out;
+    std::vector<char> set;  // 0: free, 1: prelude, 2: numbered
+    std::size_t cur = 1;
+    bool numbered = false;
+    std::smatch m;
+    for (auto& l : raw) {
+        if (l.find("line") != std::string::npos && std::regex_match(l, m, directive)) {
+            cur = std::max<std::size_t>(1, std::stoul(m[1].str()));
+            numbered = true;
+            continue;
+        }
+        if (cur > 1'000'000) break;
+        if (out.size() < cur) {
+            out.resize(cur);
+            set.resize(cur, 0);
+        }
+        if (set[cur - 1] < 2) {
+            out[cur - 1] = l;
+            set[cur - 1] = numbered ? 2 : 1;
+        }
+        ++cur;
+    }
     return out;
 }
 
@@ -2290,6 +2337,16 @@ CheckOptions check_options(const Config& cfg, std::shared_ptr<HoudiniBudget> bud
     // other workers idle, for 10+ minutes; with 60 s the unit took 192 s.
     o.function_budget_s = default_function_budget_s(cfg);
     (void)env_seconds("PRISM_FUNCTION_BUDGET", o.function_budget_s);
+    // Complexity limits (include/prism/complexity.hpp, docs/TARGETED_PROVING.md
+    // W1): every query's limit, and the function budget, in Z3 rlimit units
+    // (--complexity, $PRISM_PIR_RLIMIT, else --timeout seconds of
+    // kUnitsPerSecond); the clocks are backstops kWallBackstop times longer.
+    o.complexity = static_cast<std::int64_t>(complexity::scale_for(cfg.timeout));
+    o.jobs = cfg.jobs;  // W2: a function's strategies share the run's scheduler
+    if (o.complexity > 0 && o.function_budget_s > 0) {
+        o.function_units_s = o.function_budget_s;
+        o.function_budget_s *= complexity::kWallBackstop;
+    }
     o.cache_dir = cfg.solver_cache.string();
     // Solver and checker binaries: --tool NAME=PATH first, then the pinned
     // build under tools_home() (not inside the scanned tree without
@@ -2460,10 +2517,25 @@ std::optional<Salvage> salvage_unit(const fs::path& src, const std::string& err,
 }
 
 
+// One function's check, prepared by prepare_unit (translation stays in
+// source order, one unit at a time) and run as its own task (check_rec).
+struct CheckJob {
+    std::size_t rec = 0;        // index into Analyzed::recs
+    TranslateOptions fopt;      // the options it was translated with (memory policy re-translates)
+    // folded-UB markers used by this function and the ones translated before
+    // it: the sequential loop's view when it reached this function
+    std::set<int> used_folded;
+};
+
 struct Analyzed {
     std::vector<FnRec> recs;
     std::unique_ptr<ir::Module> mod;  // FnRec::irf points into it
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
+    std::vector<CheckJob> jobs;       // checks still to run (run_pir: one task each)
+    std::vector<std::string> job_err; // per job: an internal error ("" none), written by its task only
+    TranslateOptions topt;            // as translated (finalize_unit: --pir-discharge)
+    std::vector<std::string> src_lines;
+    bool export_only = false;
 };
 
 
@@ -2990,8 +3062,10 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     }
 }
 
-Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
-                  const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
+// Lowered IR -> one FnRec per function, translated in source order; each
+// encodable function also gets a CheckJob. No solver work happens here.
+Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
+                      const ModelLibrary& models) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -3050,7 +3124,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     std::error_code src_ec;
     const bool pre_main = !low.cc_main.empty() && fs::is_regular_file(low.cc_main, src_ec);
     const auto unit_name = (pre_main ? low.cc_main : u.path).filename().string();
-    std::vector<std::string> src_lines = split_lines(read_file(pre_main ? low.cc_main : u.path));
+    std::vector<std::string> src_lines = presumed_lines(split_lines(read_file(pre_main ? low.cc_main : u.path)));
     pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), src_lines, std::nullopt};
     std::vector<int> starts;  // DISubprogram lines of this unit, sorted
     if (is_cxx(u.path)) {
@@ -3158,78 +3232,153 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         fn.line = sub.line;
         auto text = to_text(fn);
         f.extra["pir_hash"] = sha256_hex(text);
+        // proof library keys and features (docs/PROOF_LIBRARY.md L0)
+        f.extra["pir_fingerprint"] = fncache::exact_key(fn);
+        f.extra["pir_shape"] = fncache::shape_key(fn);
+        f.extra["features"] = fncache::features_json(fn);
+        // per-loop shapes and the idioms they match (src/prism/pir/idioms/; prism-qa idioms)
+        if (auto ls = idioms::loop_shapes_json(fn); ls != "[]") f.extra["loop_shapes"] = ls;
         if (!fn.inlined.empty()) {
             std::string s;
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
-        // one function budget for the check and the policy's re-checks of this row
-        auto copt = check_options(cfg, budget);
-        // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
-        // function gets at most N seconds; one that is still UNKNOWN at the
-        // cap is re-checked with its full budget in a fresh child
-        // (rerun_after_oom), whose memory the budget bounds and the kernel
-        // reclaims. The child (PRISM_PIR_ONLY) is never capped. A capped
-        // check only ever stops early: UNKNOWN, never PROVED.
-        static const double divert_s = [] {
-            const char* e = std::getenv("PRISM_PIR_DIVERT_S");
-            return (e && *e && !std::getenv("PRISM_PIR_ONLY")) ? std::strtod(e, nullptr) : 0.0;
-        }();
-        const bool capped = divert_s > 0 && (copt.function_budget_s <= 0 || copt.function_budget_s > divert_s);
-        if (capped) copt.function_budget_s = divert_s;
-        if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
-        const auto t_fn0 = std::chrono::steady_clock::now();
-        auto v = check_function(fn, copt);
-        const double fn_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count();
-        if (capped && v.status == laws::UNKNOWN && fn_s >= 0.9 * divert_s) {
-            f.extra["pir_rerun"] = "pending";
-            f.extra["pir_diverted_after_s"] = std::to_string(static_cast<int>(fn_s));
-        }
-        // Re-checked fresh only when this process already checked another
-        // function (its Z3 memory, or a hard out-of-memory, is what stopped
-        // this one), so the child processes always make progress.
-        static std::atomic<int> g_checked{0};
-        const bool fresh_helps = g_checked++ > 0;
-        if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
-            f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
-        pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
-        if (cfg.pir_vacuity) apply_vacuity(v, fn, copt);
-        if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
-        f.status = v.status;
-        f.message = v.message;
-        f.cls = v.cls;
-        for (auto& [k, val] : v.extra) f.extra[k] = val;
-        if (v.status == laws::NEEDS_HARNESS) f.strength = std::string(laws::STRENGTH_SOME);
-        if (v.status == laws::FAILED) {
-            rec.cex = v.cex_args;
-            f.counterexample = format_cex(fn, v.cex_args);
-            if (f.counterexample.empty()) f.counterexample = v.prop + "=sat";
-            f.extra["cex"] = f.counterexample;
-            f.extra["prop"] = v.prop;
-            if (v.line) f.line = v.line;
-        }
-        // Folded UB whose IR marker was dropped or not encoded must not stand as PROVED.
-        for (std::size_t k = 0; k < folded.size(); ++k) {
-            if (used_folded.count(static_cast<int>(k))) continue;
-            if (folded[k].line <= 0) continue;
-            if (!f.line || *f.line != folded[k].line) continue;
-            if (f.status != std::string(laws::PROVED) && f.status != std::string(laws::PROVED_UNBOUNDED) &&
-                f.status != std::string(laws::BOUNDED))
-                continue;
-            f.status = std::string(laws::FAILED);
-            f.strength = std::string(laws::STRENGTH_PROVES);
-            f.cls = folded[k].cls;
-            f.message = "clang-folded UB: " + folded[k].msg;
-            f.extra["prop"] = "folded";
-            rec.cex.clear();
-            f.counterexample.clear();
-            f.extra.erase("cex");
-            rec.fn.reset();
-            break;
-        }
         rec.fn = std::move(tr.fn);
+        res.jobs.push_back(CheckJob{recs.size(), std::move(fopt), used_folded});
         recs.push_back(std::move(rec));
     }
+    res.job_err.assign(res.jobs.size(), std::string());
+    res.topt = topt;  // for finalize_unit: the --pir-discharge pass runs after every check
+    res.src_lines = src_lines;
+    res.export_only = export_only;
+    return res;
+}
+
+// One function's solver check (a task of its own in run_pir): the verdict,
+// the memory policy, and the folded-UB demotion of its row.
+void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low,
+               const std::shared_ptr<HoudiniBudget>& budget) {
+    const auto& job = a.jobs.at(j);
+    auto& rec = a.recs.at(job.rec);
+    auto& f = rec.f;
+    auto& fn = *rec.fn;
+    const auto& mod = *a.mod;
+    const auto& irf = *rec.irf;
+    const auto& fopt = job.fopt;
+    const auto& used_folded = job.used_folded;
+    const auto& folded = low.folded;
+    // one function budget for the check and the policy's re-checks of this row
+    auto copt = check_options(cfg, budget);
+    // Solver members per query follow the checks running now, not --jobs: the
+    // last functions of a run (or a run with few functions) race every
+    // portfolio member on the cores the finished workers left idle. Members
+    // only change which solver answers first, never the answer (SOLVERS.md).
+    static std::atomic<int> g_active_checks{0};
+    struct Active {
+        int n;
+        Active() : n(++g_active_checks) {}
+        ~Active() { --g_active_checks; }
+    } active;
+    {
+        const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+        copt.max_parallel = std::max(2u, hw / static_cast<unsigned>(std::max(1, active.n)));
+    }
+    // Hybrid (PRISM_PIR_DIVERT_S=N, default off): in the main process a
+    // function gets at most N seconds; one that is still UNKNOWN at the
+    // cap is re-checked with its full budget in a fresh child
+    // (rerun_after_oom), whose memory the budget bounds and the kernel
+    // reclaims. The child (PRISM_PIR_ONLY) is never capped. A capped
+    // check only ever stops early: UNKNOWN, never PROVED.
+    static const double divert_s = [] {
+        const char* e = std::getenv("PRISM_PIR_DIVERT_S");
+        return (e && *e && !std::getenv("PRISM_PIR_ONLY")) ? std::strtod(e, nullptr) : 0.0;
+    }();
+    const bool capped = divert_s > 0 && (copt.function_budget_s <= 0 || copt.function_budget_s > divert_s);
+    if (capped) copt.function_budget_s = divert_s;
+    if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+    const auto t_fn0 = std::chrono::steady_clock::now();
+    // Whole-function verdict cache (fncache.hpp): an identical function under
+    // identical options and engine gets its completed verdict back unsolved.
+    const std::string cache_key = fncache::key(fn, copt);
+    Verdict v;
+    if (auto hit = fncache::get(copt, cache_key)) {
+        v = std::move(*hit);
+    } else {
+        v = check_function(fn, copt);
+        fncache::put(copt, cache_key, v);
+    }
+    const double fn_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count();
+    if (capped && v.status == laws::UNKNOWN && fn_s >= 0.9 * divert_s) {
+        f.extra["pir_rerun"] = "pending";
+        f.extra["pir_diverted_after_s"] = std::to_string(static_cast<int>(fn_s));
+    }
+    // Re-checked fresh only when this process already checked another
+    // function (its Z3 memory, or a hard out-of-memory, is what stopped
+    // this one), so the child processes always make progress.
+    static std::atomic<int> g_checked{0};
+    const bool fresh_helps = g_checked++ > 0;
+    if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
+        f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
+    pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
+    if (cfg.pir_vacuity) apply_vacuity(v, fn, copt);
+    if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
+    f.status = v.status;
+    f.message = v.message;
+    f.cls = v.cls;
+    for (auto& [k, val] : v.extra) f.extra[k] = val;
+    if (v.status == laws::NEEDS_HARNESS) f.strength = std::string(laws::STRENGTH_SOME);
+    if (v.status == laws::FAILED) {
+        rec.cex = v.cex_args;
+        f.counterexample = format_cex(fn, v.cex_args);
+        if (f.counterexample.empty()) f.counterexample = v.prop + "=sat";
+        f.extra["cex"] = f.counterexample;
+        f.extra["prop"] = v.prop;
+        if (v.line) f.line = v.line;
+    }
+    // Folded UB whose IR marker was dropped or not encoded must not stand as PROVED.
+    for (std::size_t k = 0; k < folded.size(); ++k) {
+        if (used_folded.count(static_cast<int>(k))) continue;
+        if (folded[k].line <= 0) continue;
+        if (!f.line || *f.line != folded[k].line) continue;
+        if (f.status != std::string(laws::PROVED) && f.status != std::string(laws::PROVED_UNBOUNDED) &&
+            f.status != std::string(laws::BOUNDED))
+            continue;
+        f.status = std::string(laws::FAILED);
+        f.strength = std::string(laws::STRENGTH_PROVES);
+        f.cls = folded[k].cls;
+        f.message = "clang-folded UB: " + folded[k].msg;
+        f.extra["prop"] = "folded";
+        rec.cex.clear();
+        f.counterexample.clear();
+        f.extra.erase("cex");
+        break;
+    }
+    // one line per function (check and memory policy), so the slow functions
+    // of a run can be named from the progress file
+    progress_note("check-done",
+                  fs::path(f.file + "::" + fn.name + " " + f.status),
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fn0).count());
+}
+
+// After every check of the unit: rows that depend on more than one function.
+void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lowered& low, const Config& cfg,
+                   const std::shared_ptr<HoudiniBudget>& budget) {
+    auto& out = res.out;
+    auto& recs = res.recs;
+    const auto& folded = low.folded;
+    for (std::size_t j = 0; j < res.jobs.size(); ++j) {
+        if (res.job_err.at(j).empty()) continue;
+        // as when the whole unit was one call: an internal error is the unit's row
+        auto f = base_finding(u);
+        f.status = std::string(laws::ERROR);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = std::string("pir internal error: ") + res.job_err.at(j);
+        recs.clear();
+        res.jobs.clear();
+        out = {f};
+        return;
+    }
+    if (!res.mod) return;  // the front end failed: the unit's row is already in out
     // Folded UB that no instruction carries: the function cannot be proved.
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)
@@ -3248,7 +3397,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                            " not attributable to an IR instruction (" + folded_msg + ")";
         owner->fn.reset();
     }
-    caller_discharged_asserts(recs, mod);
+    caller_discharged_asserts(recs, *res.mod);
     // LOCK-ORDER-INVERSION (lock_order.cpp, docs/KERNEL_CONCURRENCY.md section 14): one record per
     // lock-class pair taken in both orders, on the function that takes the second order
     if (!cfg.pir_kernel_api.empty()) {
@@ -3256,7 +3405,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
                                                               : read_lock_contracts(cfg.pir_lock_contracts);
         // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
         // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
-        const auto rep = lock_order_report(mod, contracts);
+        const auto rep = lock_order_report(*res.mod, contracts);
         if (std::getenv("PRISM_LOCK_COVERAGE")) {  // diagnostic only: one line per unit on stderr, no finding
             const auto& cv = rep.coverage;
             std::string kinds, fl;
@@ -3338,7 +3487,10 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             recs.push_back(std::move(r));
         }
     }
-    if (cfg.pir_discharge && cfg.pir_harness && !export_only) discharge_pass(recs, mod, *ir, uinfo, topt, cfg, budget);
+    if (cfg.pir_discharge && cfg.pir_harness && !res.export_only && low.ir) {
+        pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), res.src_lines, std::nullopt};
+        discharge_pass(recs, *res.mod, *low.ir, uinfo, res.topt, cfg, budget);
+    }
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);
@@ -3347,7 +3499,6 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         f.extra["frontend"] = fe.version;
         out.push_back(std::move(f));
     }
-    return res;
 }
 
 }  // namespace
@@ -3464,7 +3615,51 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         low.at(i).ir.reset();
         a = Analyzed{};
     };
-    parallel_for(cfg.jobs, batch, [&](std::size_t i, const Unit& u) {
+    // One task graph on FORGE's work-stealing scheduler (prism::pool::TaskGraph):
+    //   unit i:  lower (clang/opt) and translate every function, in source order
+    //   check:   one task per encodable function (the solver work), any order
+    //   close:   after the unit's last check, the cross-function rows, then
+    //            translation validation, or a fresh re-run queued below
+    // At most --jobs units are open (lowered, translated, not yet closed) at
+    // once, as when each worker held one unit: a unit starts when another
+    // closes. Unbounded, idle workers lowered unit after unit while a long
+    // check held the open ones, and the IR held at once grew with the corpus
+    // (sv-comp: 476 of 574 functions UNKNOWN at the memory budget). The
+    // checks of the open units still spread over every worker, so a unit
+    // with 100 functions uses every core instead of one.
+    prism::pool::TaskGraph graph(cfg.jobs);
+    std::atomic<std::size_t> next_unit{0};
+    std::function<void()> start_next;
+    std::vector<std::chrono::steady_clock::time_point> unit_t0(batch.size());
+    auto unit_error = [&](std::size_t i, const std::string& what) {
+        auto f = base_finding(batch.at(i));
+        f.status = std::string(laws::ERROR);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = std::string("pir internal error: ") + what;
+        an.at(i).recs.clear();
+        an.at(i).jobs.clear();
+        an.at(i).out = {f};
+    };
+    auto close_unit = [&](std::size_t i) {
+        const Unit& u = batch.at(i);
+        try {
+            finalize_unit(an.at(i), u, fe, low.at(i), cfg, budget);
+        } catch (const std::exception& ex) {
+            unit_error(i, ex.what());
+        }
+        progress_note("done", u.path, std::chrono::duration<double>(std::chrono::steady_clock::now() - unit_t0.at(i)).count());
+        // Functions Z3 could no longer check are re-run in fresh processes,
+        // sequentially, after the queue; every other unit finishes here.
+        bool needs_rerun = false;
+        for (auto& r : an.at(i).recs)
+            if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") needs_rerun = true;
+        if (needs_rerun) pending.at(i) = 1;
+        else finish(i);
+        prism::membudget::release_free_memory();
+        start_next();  // this unit's slot goes to the next one
+    };
+    auto unit_task = [&](std::size_t i) {
+        const Unit& u = batch.at(i);
         {
         auto& l = low.at(i);
         try {
@@ -3550,27 +3745,70 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         }
         }
         try {
-            const prism::clock::Stopwatch t0;
+            unit_t0.at(i) = std::chrono::steady_clock::now();
             progress_note("start", u.path, 0.0);
-            an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
-            progress_note("done", u.path, t0.elapsed_s());
+            an.at(i) = prepare_unit(u, fe, cfg, low.at(i), models);
         } catch (const std::exception& ex) {
-            auto f = base_finding(u);
-            f.status = std::string(laws::ERROR);
-            f.strength = std::string(laws::STRENGTH_SOME);
-            f.message = std::string("pir internal error: ") + ex.what();
-            an.at(i).recs.clear();
-            an.at(i).out = {f};
+            unit_error(i, ex.what());
         }
-        // Functions Z3 could no longer check are re-run in fresh processes,
-        // sequentially, after the queue; every other unit finishes here.
-        bool needs_rerun = false;
-        for (auto& r : an.at(i).recs)
-            if (auto it = r.f.extra.find("pir_rerun"); it != r.f.extra.end() && it->second == "pending") needs_rerun = true;
-        if (needs_rerun) pending.at(i) = 1;
-        else finish(i);
-        prism::membudget::release_free_memory();
-    });
+        const std::size_t nj = an.at(i).jobs.size();
+        if (nj == 0) {
+            close_unit(i);
+            return;
+        }
+        std::vector<prism::pool::TaskGraph::Task> checks;
+        checks.reserve(nj);
+        for (std::size_t j = 0; j < nj; ++j)
+            checks.push_back(graph.spawn(
+                [&, i, j] {
+                    std::string err;
+                    try {
+                        check_rec(an.at(i), j, cfg, low.at(i), budget);
+                    } catch (const std::exception& ex) {
+                        err = *ex.what() ? ex.what() : "exception without a message";
+                    } catch (...) {
+                        err = "non-standard exception";
+                    }
+                    an.at(i).job_err.at(j) = std::move(err);
+                },
+                prism::pool::Priority::High));
+        graph.spawn_after(checks, [&, i] { close_unit(i); }, prism::pool::Priority::High);
+    };
+    if (graph.threads() == 1) {
+        // --jobs 1: tasks run inline; a loop, not a close -> next-unit chain
+        // that would nest one stack frame set per unit
+        start_next = [] {};
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            try {
+                unit_task(i);
+            } catch (const std::exception& ex) {
+                unit_error(i, ex.what());
+                finish(i);  // the ERROR row is the unit's result (Law 7)
+            }
+        }
+    } else {
+        start_next = [&] {
+            const std::size_t i = next_unit.fetch_add(1);
+            if (i >= batch.size()) return;
+            graph.spawn([&, i] {
+                try {
+                    unit_task(i);
+                } catch (const std::exception& ex) {
+                    // its close never ran: the ERROR row is the unit's result
+                    // (Law 7), and the slot passes on
+                    unit_error(i, ex.what());
+                    try {
+                        finish(i);
+                    } catch (...) {
+                    }
+                    start_next();
+                }
+            });
+        };
+        const std::size_t open_max = static_cast<std::size_t>(std::max(1, prism::clamp_jobs(cfg.jobs)));
+        for (std::size_t k = 0; k < open_max; ++k) start_next();
+    }
+    graph.wait();
     for (std::size_t i = 0; i < batch.size(); ++i) {
         if (!pending.at(i)) continue;
         const prism::clock::Stopwatch rt0;
