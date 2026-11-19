@@ -2598,6 +2598,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
                 "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
         return true;
     };
+    std::atomic<bool> enc_fired{false};  // the encoder's budget timer interrupted Z3
     try {
         if (rc.mode == RunCtl::Mode::RefineH) {
             try_invariants(v);
@@ -2680,8 +2681,12 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         Encoding e(c, fn, g, unwind, eo);
         {
             prism::membudget::Phase phase_b("encode: Encoding::build");
-            // the function budget holds while encoding too (memory.hpp)
-            mem::EncodeBudgetScope enc_budget(fn_budget.get(), fn_budget_n);
+            // The function budget holds while encoding too (memory.hpp). Not
+            // for the k-induction and Houdini strategies: they say themselves
+            // that a spent budget left them "not attempted", and the race
+            // merges that note, not a TIMEOUT, into the verdict.
+            const bool enc_guard = rc.mode != RunCtl::Mode::RefineK && rc.mode != RunCtl::Mode::RefineH;
+            mem::EncodeBudgetScope enc_budget(enc_guard ? fn_budget.get() : nullptr, fn_budget_n);
             // One Z3 simplify of a long read-over-write chain can itself run
             // for minutes between two guard checks: once the budget is spent
             // the context is interrupted (the "canceled" exception is mapped
@@ -2694,10 +2699,11 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
                     if (t.joinable()) t.join();
                 }
             } enc_timer;
-            if (fn_budget)
-                enc_timer.t = std::thread([&c, &enc_timer, b = fn_budget] {
+            if (fn_budget && enc_guard)
+                enc_timer.t = std::thread([&c, &enc_timer, &enc_fired, b = fn_budget] {
                     while (!enc_timer.done.load()) {
                         if (b->exhausted()) {
+                            enc_fired.store(true);
                             Z3_interrupt(c);
                             return;
                         }
@@ -3356,7 +3362,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
         // the encoder's budget timer interrupted Z3 (EncTimer above)
-        if (fn_budget && fn_budget->exhausted() && m.find("cancel") != std::string::npos) {
+        if (enc_fired.load() && fn_budget && m.find("cancel") != std::string::npos) {
             v.status = std::string(laws::TIMEOUT);
             v.message = "pir function budget of " + fn_budget_n +
                         " s spent while encoding (Z3 interrupted) (PRISM_FUNCTION_BUDGET)";
