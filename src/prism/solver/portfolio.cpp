@@ -1598,17 +1598,30 @@ void maybe_dump(const z3::expr& formula, const SolveResult& r) {
     if (const char* m = std::getenv("PRISM_SOLVER_DUMP_MIN_S"); m && *m) min_s = std::atof(m);
     if (definitive(r) && r.wall_s < min_s) return;
     if (prism::membudget::over_budget()) return;
+    // $PRISM_SOLVER_DUMP_NOSMT=1: the index line only (no formula printing:
+    // for timing runs), keyed by Z3's structural hash
+    const char* nosmt = std::getenv("PRISM_SOLVER_DUMP_NOSMT");
+    const bool write_smt = !(nosmt && *nosmt && std::string(nosmt) != "0");
     try {
         const auto ft = features(formula);
-        const std::string txt = detail::external_smt2(formula, ft.logic());
-        const std::string h = sha256_hex(txt).substr(0, 24);
         const fs::path dir(d);
         std::error_code ec;
         fs::create_directories(dir, ec);
-        const fs::path f = dir / (h + ".smt2");
-        if (!fs::exists(f, ec)) detail::write_file(f, txt);
+        std::string h = "z3h" + std::to_string(formula.hash());
+        if (write_smt) {
+            const std::string txt = detail::external_smt2(formula, ft.logic());
+            h = sha256_hex(txt).substr(0, 24);
+            const fs::path f = dir / (h + ".smt2");
+            if (!fs::exists(f, ec)) detail::write_file(f, txt);
+        }
         json line{{"hash", h}, {"kind", std::string(kind_name(r.kind))}, {"wall_s", r.wall_s}, {"winner", r.winner},
                   {"nodes", ft.nodes}, {"bucket", r.bucket}};
+        if (r.cube.ran)
+            line["cube"] = {{"threads", r.cube.threads}, {"leaves", r.cube.leaves}, {"open", r.cube.open},
+                            {"closed_core", r.cube.closed_core}, {"wall_s", r.cube.wall_s},
+                            {"blast_s", r.cube.blast_s}, {"conquer_s", r.cube.conquer_s}, {"gpu_s", r.cube.gpu_s},
+                            {"gpu_calls", r.cube.gpu_calls}, {"gpu", r.cube.gpu}, {"engine", r.cube.engine},
+                            {"cnf_clauses", r.cube.cnf_clauses}};
         std::lock_guard<std::mutex> g(g_history_mu);
         std::ofstream(dir / "index.jsonl", std::ios::app) << line.dump() << "\n";
     } catch (const z3::exception&) {
