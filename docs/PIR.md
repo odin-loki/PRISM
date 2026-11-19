@@ -327,9 +327,18 @@ arbitrary initialised bytes, except when the function is `main` (program
 entry: initializers). An initializer is a zero fill (one memory entry, any
 size) plus one store per non-zero scalar; a global larger than 4096 bytes
 whose initializer needs more than 256 such stores holds arbitrary
-initialised bytes instead (an over-approximation; CONFORMANCE.md F8). A `FAILED` that disappears when the mutable globals
-hold their initializers is reported `NEEDS-HARNESS` ("the global state the
-function is called in is an unstated precondition"; `extra.globals`).
+initialised bytes instead (an over-approximation; CONFORMANCE.md F8). A `FAILED` whose violation needs other values of the mutable globals than their
+initializers is reported `NEEDS-HARNESS` ("violation needs mutable-global values (names)";
+"the global state the function is called in is an unstated precondition"). Two re-checks, both
+with the function's inputs left arbitrary and only the globals fixed to their initializers: (1) the whole
+function: no violation, or not decided, makes the verdict NEEDS-HARNESS; (2) when something else fails there,
+the violation's own check (same property and source line) alone: if it holds there, the global-dependent
+violation is dropped and the verdict is the violation that remains with the initializers (still `FAILED`, from
+the inputs and the initial state); if it fails there too, or the other check is the same one, the verdict stays
+`FAILED` ("FAILED also with the globals' initial values"), e.g. a pointer global that is NULL in its initial
+state. `extra.globals` records both runs, `extra.globals_involved` the mutable globals the function reads or
+writes (at most 8 are listed). The change only weakens a verdict (`FAILED` to `NEEDS-HARNESS`, or to another
+`FAILED`); no path produces a proof.
 `stdin`/`stdout`/`stderr` point to valid `FILE` objects.
 
 ### Encodings

@@ -467,6 +467,12 @@ uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir:
     return 0;
 }
 
+// A mutable global the function reads or writes (kept by name for the verdict: stage_mem.cpp).
+static void note_mutable_global(Function& f, const std::string& name) {
+    f.mutable_globals = true;
+    if (std::ranges::find(f.mutable_global_names, name) == f.mutable_global_names.end()) f.mutable_global_names.push_back(name);
+}
+
 void MemTr::preassign_globals(const ir::Function& f) {
     for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
         if (globals_.count(name)) continue;
@@ -479,7 +485,7 @@ void MemTr::emit_entry_globals() {
     for (auto& name : pending_) {
         auto e = *entry_global(t_.module(), lay_, name, t_.options().globals_initial);
         mark_memory();
-        if (!e.g->is_const) t_.fn().mutable_globals = true;
+        if (!e.g->is_const) note_mutable_global(t_.fn(), name);
         Stmt s;
         s.kind = Stmt::Alloc;
         s.dst = globals_[name].var;
@@ -579,7 +585,7 @@ Arg MemTr::global(const std::string& name) {
     if (stream) init = 1;
     else if (g->external) init = 2;
     else if (g->is_const || t_.options().globals_initial) init = 1;
-    if (!g->is_const) t_.fn().mutable_globals = true;
+    if (!g->is_const) note_mutable_global(t_.fn(), name);
     // Large tables with many non-zero entries: arbitrary initialised bytes (an
     // over-approximation, never a wrong proof). The zero fill itself is one
     // memory entry whatever the size, so a large all-zero (or mostly zero)

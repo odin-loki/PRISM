@@ -728,3 +728,47 @@ TEST_CASE("pir e2e: --ops-table checks an indirect call against the targets of i
     CHECK(got.at({"ops_table.c", "ops_wide_many"})->status != prism::laws::PROVED);
     CHECK(got.at({"ops_table.c", "ops_wide_many"})->message.find("too many indirect targets") != std::string::npos);
 }
+
+TEST_CASE("pir e2e: a violation that needs mutable-global values is NEEDS-HARNESS, one reachable from the inputs stays FAILED") {
+    auto cfg = prism::default_config();
+    if (skip_without_frontend(cfg)) return;
+    namespace L = prism::laws;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    cfg.root = dir;
+    const auto out = pp::run_pir({dir / "global_state.c"}, cfg);  // the rows must outlive the index
+    auto got = index(out);
+    const auto at = [&](const char* f) -> const prism::Finding& {
+        REQUIRE_MESSAGE(got.contains({"global_state.c", f}), f);
+        return *got.at({"global_state.c", f});
+    };
+    const auto globals_note = [&](const prism::Finding& r) {
+        const auto it = r.extra.find("globals");
+        return it == r.extra.end() ? std::string() : it->second;
+    };
+    // the violation needs a global value the initializer does not give: NEEDS-HARNESS, naming the globals, with both runs recorded
+    for (const char* f : {"glob_ovf", "glob_oob", "glob_two"}) {
+        const auto& r = at(f);
+        CHECK_MESSAGE(r.status == L::NEEDS_HARNESS, (std::string(f) + ": " + r.status + " " + r.message));
+        CHECK_MESSAGE(r.message.find("violation needs mutable-global values") != std::string::npos, (std::string(f) + ": " + r.message));
+        const std::string note = globals_note(r);
+        const std::string why = std::string(f) + ": [" + note + "]";
+        CHECK_MESSAGE(note.find("arbitrary: FAILED") != std::string::npos, why);
+        CHECK_MESSAGE(note.find("initial values: PROVED") != std::string::npos, why);
+    }
+    CHECK(at("glob_ovf").message.find("g_base") != std::string::npos);
+    CHECK(at("glob_oob").message.find("g_idx") != std::string::npos);
+    CHECK(at("glob_two").message.find("g_base") != std::string::npos);
+    CHECK(at("glob_two").message.find("g_idx") != std::string::npos);
+    // the violation persists with the initial values (NULL pointer), or comes from the inputs alone: stays FAILED
+    for (const char* f : {"glob_null", "in_div", "in_ovf", "two_sites"}) {
+        const auto& r = at(f);
+        CHECK_MESSAGE(r.status == L::FAILED, (std::string(f) + ": " + r.status + " " + r.message));
+    }
+    CHECK(at("in_div").cls == "INT-DIV-ZERO");
+    CHECK(at("two_sites").cls == "INT-DIV-ZERO");
+    CHECK(at("in_ovf").extra.count("globals") == 0);  // no mutable global at all
+    // an arbitrary-globals violation is never turned into a proof, and a proof is untouched
+    CHECK(at("glob_ok").status == L::PROVED);
+    for (const char* f : {"glob_ovf", "glob_oob", "glob_two", "glob_null", "in_div", "in_ovf", "two_sites"})
+        CHECK_MESSAGE((at(f).status != L::PROVED && at(f).status != L::PROVED_UNBOUNDED && at(f).status != L::PROVED_ASSUMING), f);
+}
