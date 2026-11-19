@@ -768,9 +768,43 @@ was running (`108 | 107 passed | 1 failed`, the failure is the SIGTERM); the dif
 The `pir shift rules follow the C++ standard of the unit (F7)` case prints a WARN for the known C++03 gap (ODIN_TODO), not
 a failure.
 
-**Decision.** Not measurably better, so nothing is pushed and no PR is opened; the branch stays local. What would change
+**Decision (superseded by 10.10, which pushes the branch as a PR).** Not measurably better, so nothing was pushed at the time. What would change
 the numbers is provenance for the loaded pointer or a contract for `virtqueue_get_buf` and `copy_data` (10.8), not a
 copy summary alone.
+
+### 10.10 Gates and before/after measurement, 19 Nov (the 10.9 decision is superseded: the branch is pushed as a PR)
+
+The branch `pir-memory-scaling` is built on 5228ee2, whose tree is identical to `origin/pir-device-model` (eba7eb6, the
+branch of PR #52): `git diff eba7eb6 5228ee2` is empty. The PR therefore has base `pir-device-model`. It contains the
+copy-summary investigation (10.8), the `EncodeOptions::split_compare` option (off by default), the differential test of the
+memory encodings, and the docs. **It does not contain a copy summary:** 10.8 shows `Copy` entries are 0.39% of the
+log entries the callback query walks, and a summary that is not a provenance argument would be an assumption (10.9).
+With `split_compare` off the code path is the old one (`eq_addr` returns `a == b`), so "after" is the same encoding as "before".
+
+**Gates** (build `~/pbuild/pwmem`, HEAD 0b8675e plus this section, `-j4` under nice, machine load 55 to 115):
+`-tc='*pir*' -tce='*differential*'`: 124 cases, 123 passed, 1 failed (`pir budget: BOUNDED stays BOUNDED when the budget is
+spent after every VC`, a 0.3 s function-budget case; it failed under load and passes alone: `-tc='*budget*'` 24 of 24 cases,
+222 assertions); `-tc='*differential*'`: 1 of 1 case, 1,815 assertions (240 programs, all three encodings agree);
+`-tc='*conc*'`: 64 of 64, 7,024 assertions.
+
+**Before/after** (`row all`, steps 1, `PRISM_MEM_BUDGET_MB=8000`, `PRISM_PIR_INLINE_DEPTH=24`, one run at a time;
+before = build of `pir-device-model` eba7eb6, after = this branch; the machine was shared, load 55 to 115, so wall times
+are comparable only in order and repeated where they differed):
+
+| row | verdict before / after | peak RSS before / after | wall before / after |
+|---|---|---|---|
+| callback | UNKNOWN (budget, exit 75) / same | 7.22 GB / 7.27 GB | 152 s / 178 s |
+| read_nowait | same / same | 5.42 GB / 6.14 GB; repeat 5.34 GB / 5.35 GB | 233 s / 665 s; repeat 264 s / 197 s |
+| read_wait | same / same | 5.17 GB / 5.19 GB | 268 s / 206 s |
+| cb_read | same / same | 7.14 GB / 7.09 GB | 127 s / 127 s |
+
+Every row is UNKNOWN (exit 75, memory budget) before and after: the verdicts are unchanged and nothing moved out of the budget.
+The one outlier (read_nowait after, 665 s and 6.14 GB) did not repeat (197 s and 5.35 GB); the other differences are within the
+spread of a shared machine. **Node count:** not re-measured. The in-tree build has no node counter (the `PRISM_MEMSTAT` and property-query dump
+hooks of the 10.7 to 10.9 runs were measurement-only patches, reverted); the carried figures are the callback query of 525,453
+DAG nodes, 22,966,248 bytes of SMT-LIB2 and 191,008 `let` bindings (10.8, 10.9). Those two dumps, taken from builds of the
+base and of this branch's encoding, are byte-identical (`cmp` of `work/MEMr/base/callback/vcs/0.smt2` and `m2/callback/vcs/0.smt2`).
+Assumption: the instrumented builds used for those dumps had the same encoding code as the two builds measured here.
 
 ## 11. What does not work, and what is assumed
 
