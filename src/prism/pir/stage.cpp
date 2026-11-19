@@ -24,6 +24,7 @@
 
 #include "prism/sandbox.hpp"
 #include "fncache.hpp"
+#include "idioms/idioms.hpp"
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
@@ -2570,6 +2571,8 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         f.extra["pir_fingerprint"] = fncache::exact_key(fn);
         f.extra["pir_shape"] = fncache::shape_key(fn);
         f.extra["features"] = fncache::features_json(fn);
+        // per-loop shapes and the idioms they match (src/prism/pir/idioms/; prism-qa idioms)
+        if (auto ls = idioms::loop_shapes_json(fn); ls != "[]") f.extra["loop_shapes"] = ls;
         if (!fn.inlined.empty()) {
             std::string s;
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;

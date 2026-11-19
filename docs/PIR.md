@@ -1243,6 +1243,58 @@ through a pointer loaded from memory are refuted), `testdata/pir/loops.c`
 `2s == i(i-1)` is non-linear, closes through the bounded triangular
 template, admitted only by Houdini and the induction check).
 
+## Loop idioms
+
+`src/prism/pir/idioms/` (docs/TARGETED_PROVING.md W3). Each loop gets an
+abstract shape: the depth, per header phi its width and the updates the back
+edges make (`=` unchanged, `+1`, `-1`, `+c`, `+v`, `+1&m` masked, `+1%m`
+modular, `c` a constant, `>>1`, `inner` from an inner loop, `?op` other),
+the exit conditions over linear forms of the phis (`p0`, `s` a value from
+before the loop, `c`) and the memory accesses (`st1[p4]`, `ld8[(x)&m]`).
+Names and constant values are dropped. The shape is in every pir row as
+`extra.loop_shapes` (`[{"header", "line", "shape", "idioms"}]`).
+
+An idiom is a pattern over the shape with invariant templates, instantiated
+with the loop's own phis, scope values, guard constants and value ranges:
+
+| idiom | matches | templates |
+|---|---|---|
+| counter / countdown / updown-count | unit steps of one sign / both | `i >= entry(i)`, `i <= K` / `max(entry, n)` for the guards' bounds |
+| position | grows by a non-negative step (`off += 2 + l`) | `off >= entry`, `off <= len`; a counter `<= 1 * (off - entry)` |
+| masked-index / mod-index | `i = (i + c) & m` / `% m` | `i <= m` / `i < m` |
+| state | assigned constants only | `min <= s <= max` |
+| bit-scan | `x >>= c` | `x <= entry(x)` |
+| fold | signed `acc += x`, `x` in `[lo, hi]` (value ranges, incl. `if (a > K) return` guards) | `lo*(i - entry(i)) <= acc - entry(acc) <= hi*(i - entry(i))`; `acc += v`: `== v*(i - entry(i))` |
+| nested-fold | `acc` moved by an inner loop of `N` iterations (or at most `N`: `j < n` with `n <= K` from an early return) | bounds `N*lo`, `N*hi` per outer step (per unit of a position when `N` is not constant); `== N*v*(i - entry(i))` (ScaleVK) |
+| ring-counters | free-running `head`, `tail` compared by difference | `head - tail <= K` (DiffCmp, wrapping) |
+| ring-occupancy | masked `head`, `tail`, a `count` moved by +-1, `p[head]` stored and `p[tail]` loaded | `count <= cap`; `(head - tail - count) & (cap-1)` constant (ModLin); every slot `x` with `(x - tail) mod cap < count` initialised (MemRingInit) |
+| counted-fill | `p[i] = ...` with a unit counter | `forall x < i: p[x]` initialised (`== v` for a constant) |
+| slot-count | `p[k] += d` (`d` in `[lo, hi]`) on a ring index `k` (capacity `cap`), a unit counter `c` | `forall x < cap: min(lo,0)*n <= p[x] <= max(hi,0)*n`, `n = +-(c - entry(c))` the iterations so far (MemScale) |
+
+Houdini (houdini.inc) asks the matching idioms' candidates first and alone
+(a share of the search time, a quarter of the query time per goal: an
+idiom's invariant that holds is simple). Without a proof it searches the
+generic family with the idiom candidates added. Nothing is assumed: both
+rounds are the same base, step and final queries. In the idiom round the
+universal templates are also instantiated at the element indices the loops
+load and store (`p[tail & 31]`). The verdict says what happened in
+`extra.idiom`, e.g. `masked-index,ring-occupancy: closed by the idiom round
+(17 candidate(s), 1.26 s; matched: ...)` or `...: the idiom round did not
+close (...); closed by the generic search (idiom invariants kept: ...)`.
+`PRISM_PIR_IDIOMS=0` turns the library off (the generic family alone).
+
+`prism-qa idioms REPORT.json... [--acsl DIR] [--json FILE]` (src/tools/qa/idioms_mine.cpp)
+ranks the loop shapes of the pir rows of reports by count, with the idioms
+they match, how their functions ended (closed by the idiom round, by the
+generic search, violated, open) and the abstracted invariants that closed
+them. `--acsl DIR` adds the contract kinds and clause shapes of OS-Proving
+core units (contracts only; candidates for W4, never proof inputs).
+
+Doctests `pir idioms: ...` (tests/cpp/test_pir_idioms.cpp): shapes and
+matches; the idiom round proves a ring buffer's reads initialised and a
+nested fold, while the false twins (a mask past the array, a pop of an
+empty ring) are FAILED.
+
 ## Roadmap 2.3 / 2.6 coverage
 
 Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
