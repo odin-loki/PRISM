@@ -153,6 +153,24 @@ Arg Tr::opaque_ptr(int& cur, const std::string& what, int line) {
     return assign(cur, Op::Select, ptr_w(), {is_null, Arg::c(ptr_w(), 0), p}, "uptr");
 }
 
+// --pir-icall-havoc (kernel mode): an indirect call whose target is not one of the inlined candidates (more candidates
+// than the inlining bound, or a target outside the unit's address-taken functions) is one execution of an arbitrary
+// function: every object's contents become arbitrary (Stmt::MemHavoc, as an asm memory clobber), the result is
+// arbitrary (a pointer: NULL or a fresh object), and it is assumed to return and to free nothing. Named; returns the
+// result value (width w; nothing when w is 0).
+Arg Tr::icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why) {
+    mt.havoc_all(cur);
+    Arg r = Arg::c(1, 0);
+    if (w) {
+        if (in.ty.kind == ir::Type::Ptr) r = opaque_ptr(cur, "returned by an indirect call", line);
+        else r = havoc(cur, w, false, false);
+    }
+    note_assumption("icall-havoc: " + why + " (line " + std::to_string(line) +
+                    "): the call is one execution of an arbitrary function: every object's contents become arbitrary, the "
+                    "result is arbitrary, and it is assumed to return and to free nothing");
+    return r;
+}
+
 void Tr::unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;
     std::vector<Arg> args;

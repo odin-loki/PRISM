@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <functional>
 #include <map>
 #include <memory>
@@ -435,6 +436,18 @@ struct OpsField {
     std::vector<std::string> targets;
     std::string role;
 };
+// --pir-field-invariants FILE: one value invariant of a struct field, applied to every automatic-harness object of
+// that struct type (a named assumption per row used). TSV: struct ("%struct.NAME"), byte offset, width (bytes),
+// kind, a, b, status, source. Kinds: "valid" (a pointer field points to a fresh object of `a` bytes, arbitrary
+// contents), "nonnull" (a pointer field is not NULL), "range" (an integer field, signed, a <= v <= b).
+struct FieldInvariant {
+    std::string struct_type;
+    uint64_t offset = 0;
+    unsigned width = 0;
+    std::string kind;
+    int64_t a = 0, b = 0;
+    std::string status, source;
+};
 // One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
 // unmodified code: the analysed (root) function acquires, releases or requires a lock.
 struct LockContract {
@@ -527,6 +540,11 @@ struct TranslateOptions {
     // than ops_max_targets targets stays UNENCODED ("too many indirect targets").
     std::vector<OpsField> ops_table;
     std::size_t ops_max_targets = 8;
+    // --pir-icall-havoc (kernel mode): an indirect call with more than 16 candidate targets, or to a target outside the
+    // unit's address-taken functions, is a havoc of all memory with an arbitrary result (named), not UNENCODED
+    bool icall_havoc = false;
+    // --pir-field-invariants: field value invariants applied to automatic-harness objects
+    std::vector<FieldInvariant> field_invariants;
     // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
     // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
     std::map<std::string, CalleeContract> callee_contracts;
@@ -560,6 +578,12 @@ struct TranslateOptions {
 PRISM_API std::vector<OpsField> derive_ops_table(const ir::Module& m, std::size_t max_targets = 8);
 // Adds the entries of `derived` for fields the explicit table does not list.
 PRISM_API void merge_ops_tables(std::vector<OpsField>& explicit_table, const std::vector<OpsField>& derived);
+
+// Reads a --pir-field-invariants file (format at FieldInvariant). On failure returns {} and sets error.
+PRISM_API std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& file, std::string& error);
+// PRISM_PIR_MINE_FIELDS: one JSON line per store to a struct field the module makes (field_mine.cpp): struct, offset,
+// width, kind (alloc / global / const / null / other), value or size. Input of OS-Proving tools/prism_clusters/mine_fields.py.
+PRISM_API void mine_field_stores(const ir::Module& m, const std::string& unit, std::ostream& out);
 
 // Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
 PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);

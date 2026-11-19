@@ -200,6 +200,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--callee-contracts") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.callee_contracts = fs::absolute(*v);
+        } else if (a == "--pir-field-invariants") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_field_invariants = fs::absolute(*v);
         } else if (a == "--pir-ops-auto") {
             ok = in.flag();
             cfg.pir_ops_auto = true;
@@ -224,6 +227,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-lock-wrappers") {
             ok = in.flag();
             cfg.pir_lock_wrappers = true;
+        } else if (a == "--pir-icall-havoc") {
+            ok = in.flag();
+            cfg.pir_icall_havoc = true;
         } else if (a == "--pir-harness-deep") {
             ok = in.flag();
             cfg.pir_harness_deep = true;
@@ -443,6 +449,10 @@ std::string cli_usage() {
         "  --pir-kernel-current: with --kernel-api, current (Linux) and curthread (FreeBSD) point to a valid object.\n"
         "  --pir-global-harness: with --kernel-api, mutable pointer globals (MMIO bases, bus handles) point to a valid object.\n"
         "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
+        "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
+        "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
+        "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
+        "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"
