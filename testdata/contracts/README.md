@@ -3,7 +3,8 @@
 Reference C implementations of the data structures and loops that recur in
 kernel and user-space code, each with its ACSL contract, proved by PRISM
 itself (`prism DIR --no-llm --stage inventory,classify,contracts,pir`).
-Design, results and the gap list: [docs/CONTRACTS.md](../../docs/CONTRACTS.md).
+Design and results: [docs/CONTRACTS.md](../../docs/CONTRACTS.md); what is not proved or
+not expressible, with the exact reason: [GAPS.md](GAPS.md).
 
 | directory | what |
 |---|---|
