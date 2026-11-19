@@ -89,6 +89,8 @@ struct Frame {
     // --kernel-api: the result of an inline asm with three or more direct outputs ({ i32, i32, i32, i32 } of cpuid),
     // one variable per field; only extractvalue reads it (asm_havoc writes every field)
     std::map<std::string, std::vector<int>> tuples;
+    // --pir-kernel-current: integer asm outputs that hold a pointer (Linux `current`: this_cpu_read_stable(current_task))
+    std::set<std::string> ptr_ints;
     // a scalar pair load's field-1 address, numbered between its two fields
     // (the order export_lean's `L pload` gives the Lean frame)
     std::map<std::string, int> pairq;
@@ -1908,6 +1910,7 @@ struct Tr final : pirmem::TrApi {
     bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
         if (opt.addr_values && o.v.kind == ir::Value::ConstExpr && o.v.ce_op == "ptrtoint") return true;
         if (o.v.kind != ir::Value::Local) return false;
+        if (fr.ptr_ints.count(o.v.name)) return true;
         auto it = fr.defs.find(o.v.name);
         return it != fr.defs.end() && it->second != nullptr && it->second->op == "ptrtoint";
     }

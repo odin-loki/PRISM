@@ -3059,6 +3059,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.folded = folded;
     topt.wrapv = low.wrapv;
     topt.kernel_stops = cfg.pir_kernel_stops;
+    topt.kernel_current = cfg.pir_kernel_current;
     if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
         std::string ops_err;
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);

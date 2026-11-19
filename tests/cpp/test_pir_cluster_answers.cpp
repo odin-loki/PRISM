@@ -278,3 +278,55 @@ TEST_CASE("pir cluster answers: --pir-kernel-stops ends the path at BUG() and pa
     CHECK_MESSAGE(warn.status == prism::laws::FAILED, (warn.status + " " + warn.msg));
 }
 #endif
+
+namespace {
+
+KRun current_run(const std::string& ir, const std::string& fn, bool cur, const char* api) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = api;
+    o.kernel_current = cur;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// Linux `current->field`: this_cpu_read_stable(current_task) is an integer asm output, then inttoptr
+const char* kCurrent = R"IR(@current_task = external global ptr
+@other_pcpu = external global ptr
+define i32 @cur_field() {
+entry:
+  %v = call i64 asm "movq %gs:$1, $0", "=r,i,~{dirflag},~{fpsr},~{flags}"(ptr @current_task)
+  %p = inttoptr i64 %v to ptr
+  %f = getelementptr inbounds i8, ptr %p, i64 44
+  %x = load i32, ptr %f
+  ret i32 %x
+}
+define i32 @other_field() {
+entry:
+  %v = call i64 asm "movq %gs:$1, $0", "=r,i,~{dirflag},~{fpsr},~{flags}"(ptr @other_pcpu)
+  %p = inttoptr i64 %v to ptr
+  %f = getelementptr inbounds i8, ptr %p, i64 44
+  %x = load i32, ptr %f
+  ret i32 %x
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-kernel-current makes Linux current a valid object; other per-CPU reads stay arbitrary") {
+    auto off = current_run(kCurrent, "cur_field", false, "linux");
+    CHECK(off.status != prism::laws::PROVED);
+    auto on = current_run(kCurrent, "cur_field", true, "linux");
+    CHECK_MESSAGE(on.status == prism::laws::PROVED, (on.status + " " + on.msg));
+    CHECK(has(on.assumptions, "kernel-current: the %gs read of the running thread"));
+    // a %gs read of another per-CPU variable may be NULL: never proved by this flag
+    auto other = current_run(kCurrent, "other_field", true, "linux");
+    CHECK(other.status != prism::laws::PROVED);
+}
+#endif

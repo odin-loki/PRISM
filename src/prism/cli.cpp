@@ -215,6 +215,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-kernel-stops") {
             ok = in.flag();
             cfg.pir_kernel_stops = true;
+        } else if (a == "--pir-kernel-current") {
+            ok = in.flag();
+            cfg.pir_kernel_current = true;
         } else if (a == "--pir-harness-deep") {
             ok = in.flag();
             cfg.pir_harness_deep = true;
@@ -431,6 +434,7 @@ std::string cli_usage() {
         "  is checked with that semantics: signed + - * and << wrap (not UB); every other check stays (named).\n"
         "  --pir-kernel-stops: with --kernel-api, Linux BUG() and panic() / kassert_panic() end the path\n"
         "  (a named assumption: the verdict covers the paths that do not stop there).\n"
+        "  --pir-kernel-current: with --kernel-api, current (Linux) and curthread (FreeBSD) point to a valid object.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

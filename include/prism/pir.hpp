@@ -543,6 +543,9 @@ struct TranslateOptions {
     bool wrapv = false;
     // --pir-kernel-stops (kernel mode): Linux BUG() and panic / vpanic / kassert_panic end the path (named assumption)
     bool kernel_stops = false;
+    // --pir-kernel-current (kernel mode): the running thread's object is valid: Linux `current` (a %gs read of
+    // current_task / const_current_task / pcpu_hot) and FreeBSD `curthread` (the %gs:0 pointer read of __curthread)
+    bool kernel_current = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
