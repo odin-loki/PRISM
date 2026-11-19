@@ -617,6 +617,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // the query is solved without the cache, under a key no other query has.
     const uint64_t budget = prism::membudget::budget_mb();
     const bool skip_norm = budget > 0 && prism::membudget::rss_mb() * 2 >= budget;
+    if (prism::settings::mem_trace().is_set())
+        std::fprintf(stderr, "[memtrace] query features nodes=%zu rss=%llu skip_key=%d\n", static_cast<std::size_t>(ft.nodes),
+                     static_cast<unsigned long long>(prism::membudget::rss_mb()), skip_norm ? 1 : 0);
     if (skip_norm) {
         static std::atomic<uint64_t> uniq{0};
         norm = "prism-solver-query uncached (memory budget) " + std::to_string(::getpid()) + " " +

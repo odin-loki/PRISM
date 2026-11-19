@@ -34,6 +34,7 @@ inline const auto& pir_lean_export() { static auto s = fs::define("PRISM_PIR_LEA
 inline const auto& pir_progress() { static auto s = fs::define("PRISM_PIR_PROGRESS", "", "PIR progress-note file"); return s; }
 inline const auto& pir_only() { static auto s = fs::define("PRISM_PIR_ONLY", "", "PIR: restrict to these units / skip memory headroom"); return s; }
 inline const auto& pir_batch() { static auto s = fs::define("PRISM_PIR_BATCH", "", "PIR units per batch"); return s; }
+inline const auto& pir_havoc_uf() { static auto s = fs::define("PRISM_PIR_HAVOC_UF", "", "PIR: 1/0 = havoc contents as uninterpreted functions on/off (default: EncodeOptions)"); return s; }
 inline const auto& houdini_trace() { static auto s = fs::define("PRISM_HOUDINI_TRACE", "", "trace Houdini invariant inference"); return s; }
 inline const auto& z3_worker() { static auto s = fs::define("PRISM_Z3_WORKER", "", "path of the z3 worker binary"); return s; }
 inline const auto& checker_mem() { static auto s = fs::define("PRISM_CHECKER_MEM", "", "proof-checker memory cap"); return s; }

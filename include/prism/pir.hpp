@@ -670,6 +670,14 @@ enum class MemEncoding { Array, Bv };
 
 struct EncodeOptions {
     MemEncoding memory = MemEncoding::Bv;  // QF_BV; Array is the unbounded alternative (slower on ranged copies)
+    // Bv: the arbitrary contents of a havoc entry (arbitrary initial bytes,
+    // a havocked object, an asm memory clobber) as one uninterpreted function
+    // of the address, instead of a fresh constant per read plus one pairwise
+    // constraint per earlier read (quadratic; docs/PIR.md "Havoc reads as
+    // functions"). Exact. The VCs are QF_UFBV, so check_function turns it off
+    // in certified mode and pir_vcs never uses it. $PRISM_PIR_HAVOC_UF=0/1
+    // overrides it in check_function.
+    bool havoc_uf = true;
 };
 
 PRISM_API bool z3_available();
