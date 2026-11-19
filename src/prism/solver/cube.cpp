@@ -82,6 +82,9 @@ CubeOptions resolve_cube_options(const CubeOptions& o) {
         r.gpu = (e && *e && std::string(e) != "0" && std::string(e) != "off") ? 1 : 0;
     }
     if (r.max_leaves == 0) r.max_leaves = 200000;
+    // soundness gates: every query answered by the cube engine alone
+    if (const char* e = std::getenv("PRISM_CUBE_ALONE"); e && *e && std::string(e) != "0") r.alone = true;
+    if (const char* e = std::getenv("PRISM_CUBE_DEBUG_DROP"); e && *e) r.debug_drop_leaf = std::atoll(e);
     return r;
 }
 
