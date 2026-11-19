@@ -203,3 +203,29 @@ TEST_CASE("pir model depth: a small call tree is inlined past inline_depth exact
     CHECK(msg.find("UNENCODED: call depth > 4") != std::string::npos);
 }
 #endif
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-addr-values: a constant address plus a huge constant offset points to no object") {
+    const char* ir = R"IR(define i32 @abs_read() {
+entry:
+  %x = load i32, ptr getelementptr (i8, ptr inttoptr (i64 4096 to ptr), i64 4611686018427387904)
+  ret i32 %x
+}
+)IR";
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find("abs_read");
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    auto t0 = pp::translate(keep.back(), *f, o);
+    CHECK(!t0.fn);  // without the address model: UNENCODED
+    o.addr_values = true;
+    auto t = pp::translate(keep.back(), *f, o);
+    REQUIRE(t.fn);
+    CHECK(has(t.fn->assumptions, "addr-values: a constant address plus a constant offset"));
+    // the read through an address that points to no object is a violation (NEEDS-HARNESS in the stage), never proved
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    CHECK(v.status == prism::laws::FAILED);
+}
+#endif
