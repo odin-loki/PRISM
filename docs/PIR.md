@@ -223,7 +223,9 @@ an assume. Calls to functions defined in the same unit are **inlined**
 Everything else makes the function `NEEDS-HARNESS` with
 `UNENCODED: <construct>`: floating-point formats other than
 half/float/double (`long double` = x86_fp80, `__float128`, bfloat),
-fast-math flags, fused multiply-add on half, integers wider than 64 bits,
+fast-math flags, fused multiply-add on half, integers wider than 64 bits
+(65..128 bits with `--pir-wide-int`), variadic functions (`--pir-variadic`), recursive calls
+(`--pir-recursion`), `ptr addrspace(N)` accesses (`--pir-addrspace`; "UNENCODED wave 2" below),
 external calls without a library model (`UNENCODED: call @f`), `switch` if
 lower-switch did not run, irreducible control flow (e.g. a `longjmp` from
 code the `setjmp` does not dominate), vectors and first-class aggregates
@@ -1213,6 +1215,86 @@ status of the contract is shown, never PROVED), `--pir-ops-auto` (ops tables der
 stores and initialisers, and harness function-pointer fields bound to one of their targets), `--pir-addr-values`
 (constant `ptrtoint` / `inttoptr`), `--pir-harness-deep` (depth 4, 64 objects; the bound and what it cut are recorded in the
 assumptions and the `--jsonl` record). Tests: `tests/cpp/test_pir_harness2.cpp`.
+
+### Unresolved indirect calls (`--pir-icall-havoc`, kernel mode)
+
+An indirect call with more than 16 candidates, or the path of one whose pointer is outside the candidate set, is one
+execution of an arbitrary function (`icall-havoc: ...`, translate_kernel.inc): `Stmt::MemHavoc` makes the contents of
+every object arbitrary, which includes PRISM's own hidden objects (the ghost lock state of `--kernel-api`, so held locks
+and the preempt / RCU depths become arbitrary and their checks are over-approximated) and every per-CPU object. It does
+not change object sizes, liveness or kinds: that the callee frees nothing and returns is part of the named assumption.
+
+## UNENCODED wave 2 (opt-in, each a named assumption or an over-approximation)
+
+Five flags; none changes a default. Tests: `tests/cpp/test_pir_wave2.cpp` (for each, the construct without the flag is
+UNENCODED, a safe function is proved with the assumption listed, and a real violation is FAILED).
+
+**Variadic functions (`--pir-variadic`, translate_va.inc).** A function defined with `...` is translated (its IR
+was marked `unparsed IR (variadic function)` before; a body error is still reported after `variadic function; `).
+`llvm.va_start` points the `va_list` at fresh objects of arbitrary initialised bytes: x86-64 SysV (`__va_list_tag`): a
+176-byte register save area, a stack argument area (4 GiB; on ILP32 half the largest object), `gp_offset` arbitrary in
+{0, 8, ..., 48} and `fp_offset` in {48, 64, ..., 176}; AArch64 (`__va_list`): 64-byte general and 128-byte vector save
+areas with `__gr_offs` / `__vr_offs` arbitrary in their ABI ranges; a pointer `va_list` (i386, RISC-V, PowerPC64, Arm):
+the stack area. Every `va_arg` (clang lowers it to loads and pointer arithmetic) then reads an arbitrary value, an
+over-approximation of any actual argument. `llvm.va_copy` copies the `va_list`, `llvm.va_end` has no effect. Another
+layout (s390x, PowerPC32) is `UNENCODED: ... (va_list layout of this target not modelled)`. A call of a variadic function
+of the unit evaluates all arguments (undef and poison uses checked) and inlines the callee with its fixed ones. Named:
+`variadic: the variadic arguments of @f are arbitrary values ...; its callers pass at least the variadic arguments it
+reads, of the types it reads them as (C11 7.16.1.1p2)`. A pointer read with `va_arg` is an arbitrary value, so its
+dereference is reported (not proved).
+
+**Recursion (`--pir-recursion`, translate_rec.inc).** A call of a function already on the inlining stack (not a library
+model) is not inlined again. Its arguments are evaluated (and with `--pir-discharge` the callee's harness is checked at the
+call); the call is assumed to have no violation for these arguments, and its effects are a havoc of all memory and an
+arbitrary result (a pointer: NULL or a fresh object). For the analysed function itself this is the induction hypothesis
+of a proof by induction on the recursion depth (a violation in a terminating execution occurs at a finite depth; the
+body is proved for every entry state, including the arbitrary states after its recursive calls); for another function on
+the stack it is that function's own verdict. Named: `recursive-call: @g at line N is not inlined again: it has no
+violation for its arguments (...); every object's contents become arbitrary, the result is arbitrary, and it is assumed
+to return and to free nothing` (the entry assumptions of the callee are assumed to hold at the call). A bounded unrolling
+would be BOUNDED, never a proof; this is an unbounded claim, PROVED-ASSUMING at best.
+
+**Kernel sprintf (`--pir-kernel-sprintf`, `--kernel-api linux`, translate_ksprintf.inc, libc_format.cpp
+`plan_kernel_format`).** The kernel spec of `sprintf` stops the path (`model incomplete: kernel sprintf ...`). With the
+flag and a literal format, the call writes an arbitrary number n <= B of arbitrary characters, a NUL after them (every
+byte checked against the buffer), and returns n. B is a sound bound on lib/vsprintf.c's output: literal text; `%d %i %u
+%x %X %o` at the longest value of their length modifier plus a sign or `0x` prefix, or their precision + 2; `%c` 1; `%s`
+with a precision at most that many, without one the string's length (the strlen model, which checks termination) or 8
+when the pointer is to no object (`(null)` / `(efault)`); `%p` and its extension letters (every alphanumeric character
+after `%p` is consumed, as `pointer()` does): plain, `%px`, `%pK` 18, `%pS %ps %pB %pF` 1024 (> KSYM_SYMBOL_LEN), `%pM
+%pm` 17, `%pI4 %pi4` 15, `%pI6 %pi6` 39, `%pIS %piS` 80, `%pU` 36, `%pa` 18, `%pe` 32, `%pN` 18, `%ph` 192; each
+conversion at least its field width. A `*` width or precision and every other extension (`%pV %pd %pD %pE %pOF %pfw %pb
+%pG %pC %pg %pt %pr %pR %p4cc`, unknown letters) are `UNENCODED: kernel sprintf conversion '%p..' (output length not
+bounded by the format)`. A unit that defines its own `sprintf` keeps it. Named: `linux-sprintf: kernel sprintf ... writes
+at most N characters ...`.
+
+**Address-space pointers (`--pir-addrspace`, kernel mode, translate_seg.inc).** `ptr addrspace(N)` values are pointer
+values; where one is used as an address (load, store, `getelementptr` base) it is mapped onto the one address space of
+the memory model: a pointer to no object (null plus an offset, `inttoptr` of a constant: FreeBSD's `__pc->pc_cpuid`
+through `struct pcpu __seg_gs *`) is the current CPU's per-CPU area (one object of 1 MiB arbitrary initialised bytes,
+allocated on first use) at that offset; a pointer to an object (the address of a per-CPU variable) is that object. A
+load of a segment pointer from an internal global initialised to null that no instruction of the unit writes (FreeBSD's
+`static ... __pc = NULL`) is null. An access beyond the area is reported. Named: `addrspace: an access through a segment
+pointer ... no other CPU, interrupt or migration changes the per-CPU data during the function`. `addrspacecast`, `icmp`
+and atomics on segment pointers stay UNENCODED.
+
+**Wide integers (`--pir-wide-int`).** Integer types of 65..128 bits (`__int128`, `u128`, and the i72 / i80 / i96
+containers clang loads for a group of bitfields wider than 8 bytes) are bit-vectors of their width inside a function
+body: loads, stores, arithmetic and its checks, comparisons, casts, shifts, `select`, `phi`. Literals above 64 bits are
+parsed into two 64-bit limbs (`ir::Value::hi`) and built in the prologue as `(zext hi) << 64 | zext lo`; the INT_MIN / -1
+checks use width-generic constants (encode.cpp `smin_bv` / `ones_bv`). Function parameters and results stay at most 64
+bits (`UNENCODED: parameter type i128` / `return type i128`); intrinsics other than `smax smin umax umin expect`,
+initialisers with bits above 63 and the exact inline-asm semantics are not used with them (UNENCODED, or the asm havoc
+model). Types wider than 128 bits stay UNENCODED. Translation validation skips such functions (the interpreter is
+64-bit). No assumption: this is the exact semantics.
+
+**Folded UB not carried by an instruction.** A clang UB-folding diagnostic whose expression no IR instruction carries
+(folded into a constant) is reported on the function that contains its line as `NEEDS-HARNESS` with the message
+`clang-folded UB at line N (...): no IR instruction carries it (folded into a constant), so whether the function reaches
+it is not decided` and `extra.folded_line` / `extra.folded_class` (it was `UNENCODED: clang-folded UB at line N not
+attributable to an IR instruction`). It is never PROVED and never FAILED: the expression may be on a path that is never
+taken. With `--pir-build-semantics` and a `-fwrapv` unit the signed-overflow and signed-shift diagnostics are the wrapped
+value and are dropped (#70).
 
 ## Inline assembly (roadmap 2.6)
 

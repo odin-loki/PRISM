@@ -59,7 +59,7 @@ void Tr::va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line)
     }
     // llvm.va_start
     const uint64_t big = std::min<uint64_t>(kVaStackBytes, max_obj_size() / 2);
-    Arg stack = mt.alloc(cur, Arg::c(64, big), MemKind::Extern, 2, "variadic stack arguments", line);
+    Arg area = mt.alloc(cur, Arg::c(64, big), MemKind::Extern, 2, "variadic stack arguments", line);
     auto put_ptr = [&](int64_t off, Arg v) { mt.store(cur, at(cur, ap, off, line), v, Arg::c(1, 1), tptr, pb, line); };
     auto put_i32 = [&](int64_t off, Arg v) { mt.store(cur, at(cur, ap, off, line), v, Arg::c(1, 1), ti32, 4, line); };
     auto in_range = [&](Arg v, bool sgn, uint64_t lo, uint64_t hi, uint64_t mask) {
@@ -77,7 +77,7 @@ void Tr::va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line)
         Arg regs = mt.alloc(cur, Arg::c(64, 176), MemKind::Extern, 2, "variadic register save area", line);
         put_i32(0, gp);
         put_i32(4, fp);
-        put_ptr(8, stack);
+        put_ptr(8, area);
         put_ptr(16, regs);
         abi = "x86-64 SysV: an arbitrary 176-byte register save area, gp_offset and fp_offset arbitrary in their ABI ranges";
     } else if (lay == 2) {
@@ -87,7 +87,7 @@ void Tr::va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line)
         Arg go = havoc(cur, 32, false, false), vo = havoc(cur, 32, false, false);
         in_range(go, true, static_cast<uint32_t>(-64), 0, 7);
         in_range(vo, true, static_cast<uint32_t>(-128), 0, 15);
-        put_ptr(0, stack);
+        put_ptr(0, area);
         put_ptr(8, at(cur, gr, 64, line));
         put_ptr(16, at(cur, vr, 128, line));
         put_i32(24, go);
@@ -95,7 +95,7 @@ void Tr::va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line)
         abi = "AArch64 AAPCS64: arbitrary general (64-byte) and vector (128-byte) register save areas, __gr_offs and "
               "__vr_offs arbitrary in their ABI ranges";
     } else {
-        put_ptr(0, stack);
+        put_ptr(0, area);
         abi = "va_list is a pointer to the next argument";
     }
     note_assumption("variadic: the variadic arguments of @" + (stack.empty() ? std::string("?") : stack.back()) + " are arbitrary values (va_start at line " +
