@@ -230,6 +230,21 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-icall-havoc") {
             ok = in.flag();
             cfg.pir_icall_havoc = true;
+        } else if (a == "--pir-variadic") {
+            ok = in.flag();
+            cfg.pir_variadic = true;
+        } else if (a == "--pir-recursion") {
+            ok = in.flag();
+            cfg.pir_recursion = true;
+        } else if (a == "--pir-kernel-sprintf") {
+            ok = in.flag();
+            cfg.pir_kernel_sprintf = true;
+        } else if (a == "--pir-addrspace") {
+            ok = in.flag();
+            cfg.pir_addrspace = true;
+        } else if (a == "--pir-wide-int") {
+            ok = in.flag();
+            cfg.pir_wide_int = true;
         } else if (a == "--pir-harness-deep") {
             ok = in.flag();
             cfg.pir_harness_deep = true;
@@ -451,6 +466,11 @@ std::string cli_usage() {
         "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
         "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
         "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
+        "  --pir-variadic: variadic functions are translated; their variadic arguments are arbitrary (named).\n"
+        "  --pir-recursion: a recursive call is the function's own verdict (induction) and a havoc of all memory (named).\n"
+        "  --pir-kernel-sprintf: with --kernel-api linux, sprintf with a literal format writes at most its bound (%p too).\n"
+        "  --pir-addrspace: with --kernel-api, ptr addrspace(N) accesses are ordinary pointer accesses (named).\n"
+        "  --pir-wide-int: integers of 65..128 bits (i128) are 128-bit bit-vectors.\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"

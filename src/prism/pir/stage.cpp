@@ -3088,6 +3088,11 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.addr_values = cfg.pir_addr_values;
     topt.builtin_contracts = cfg.pir_builtin_contracts;
     topt.icall_havoc = cfg.pir_icall_havoc;
+    topt.variadic = cfg.pir_variadic;
+    topt.recursion = cfg.pir_recursion;
+    topt.kernel_sprintf = cfg.pir_kernel_sprintf;
+    topt.addrspace = cfg.pir_addrspace;
+    topt.wide_int = cfg.pir_wide_int;
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.
@@ -3289,8 +3294,14 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         owner->f.status = std::string(laws::NEEDS_HARNESS);
         owner->f.strength = std::string(laws::STRENGTH_SOME);
         const std::string folded_msg = folded.at(k).msg;
-        owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +
-                           " not attributable to an IR instruction (" + folded_msg + ")";
+        // Reported at its source line with the reason it is not decided (not an UNENCODED construct): clang folded the
+        // expression into a constant, so no IR instruction carries it and whether an execution of the function reaches
+        // it is not known. Never PROVED, never FAILED (the expression may sit on a path that is never taken).
+        owner->f.message = "clang-folded UB at line " + std::to_string(line) + " (" + folded_msg +
+                           "): no IR instruction carries it (folded into a constant), so whether the function reaches it "
+                           "is not decided";
+        owner->f.extra["folded_line"] = std::to_string(line);
+        owner->f.extra["folded_class"] = folded.at(k).cls;
         owner->fn.reset();
     }
     caller_discharged_asserts(recs, mod);

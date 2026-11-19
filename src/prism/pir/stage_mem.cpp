@@ -374,6 +374,8 @@ std::string tv_exclusion(const Function& fn) {
     if (!fn.ptr_params.empty()) return "pointer parameters bound to contract objects are not replayed";
     if (fn.returns_ptr) return "returns a pointer (object ids differ from addresses)";
     if (fn.mutable_globals) return "reads or writes mutable globals (state persists across replayed calls)";
+    for (const auto& v : fn.vars)
+        if (v.width > 64) return "integers wider than 64 bits (the interpreter is 64-bit)";
     return {};
 }
 

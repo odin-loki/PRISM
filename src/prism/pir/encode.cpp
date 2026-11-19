@@ -490,6 +490,9 @@ struct Encoding {
     }
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
+    // INT_MIN and -1 at any width (the 64-bit constants of bv() only reach 64 bits; --pir-wide-int has 65..128)
+    z3::expr smin_bv(unsigned n) { return z3::shl(c.bv_val(1, n), c.bv_val(n - 1, n)); }
+    z3::expr ones_bv(unsigned n) { return ~c.bv_val(0, n); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
     z3::expr is1(const z3::expr& e) { return e == c.bv_val(1, 1); }
 
@@ -741,7 +744,7 @@ struct Encoding {
             case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a.at(0), a.at(1), false));
             case Op::SDivOvf: {
                 unsigned n = aw(0);
-                return b2bv(a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n));
+                return b2bv(a.at(0) == smin_bv(n) && a.at(1) == ones_bv(n));
             }
             case Op::ShiftOob: return b2bv(z3::uge(a.at(1), bv(aw(0), aw(1))));
             case Op::ShlSOvf: {
@@ -773,7 +776,7 @@ struct Encoding {
             }
             case Op::InexactS: {
                 unsigned n = aw(0);
-                auto ovf = a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n);
+                auto ovf = a.at(0) == smin_bv(n) && a.at(1) == ones_bv(n);
                 return b2bv(a.at(1) != bv(0, n) && !ovf && z3::srem(a.at(0), a.at(1)) != bv(0, n));
             }
             case Op::ObjSize: return M().size(a.at(0));

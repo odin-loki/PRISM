@@ -56,6 +56,7 @@ struct Value {
     Kind kind = Other;
     std::string name;          // Local/Global name without sigil
     uint64_t bits = 0;         // Int: two's complement bits (masked by user)
+    uint64_t hi = 0;           // Int of a type wider than 64 bits: bits 127..64 (two's complement, sign-extended)
     bool negative = false;     // Int literal was written negative
     std::string text;          // as written (constant expressions etc.)
     std::string bytes;         // Str: decoded bytes
@@ -543,6 +544,17 @@ struct TranslateOptions {
     // --pir-icall-havoc (kernel mode): an indirect call with more than 16 candidate targets, or to a target outside the
     // unit's address-taken functions, is a havoc of all memory with an arbitrary result (named), not UNENCODED
     bool icall_havoc = false;
+    // --pir-variadic: variadic functions are translated, va_start gives arbitrary variadic arguments (translate_va.inc, named)
+    bool variadic = false;
+    // --pir-recursion: a recursive call of a function on the inlining stack is that function's own verdict for the call's
+    // arguments (induction on the recursion depth); its effects are a havoc of all memory and an arbitrary result (named)
+    bool recursion = false;
+    // --pir-kernel-sprintf (Linux kernel mode): sprintf with a literal format writes at most the format's bound, %p extensions included
+    bool kernel_sprintf = false;
+    // --pir-addrspace (kernel mode): loads and stores through ptr addrspace(N) are ordinary pointer accesses (named)
+    bool addrspace = false;
+    // --pir-wide-int: integers of 65..128 bits are 128-bit bit-vectors (otherwise UNENCODED)
+    bool wide_int = false;
     // --pir-field-invariants: field value invariants applied to automatic-harness objects
     std::vector<FieldInvariant> field_invariants;
     // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body

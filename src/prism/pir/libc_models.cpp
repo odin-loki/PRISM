@@ -397,7 +397,7 @@ std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib, con
         defined.insert(name);
         ir::Function f = *src;
         f.is_model = true;
-        if (f.variadic && f.parse_error == "variadic function") f.parse_error.clear();  // models may take `...`
+        if (f.variadic && f.parse_error.starts_with("variadic function")) f.parse_error.clear();  // models may take `...`
         // metadata references are per module: give them fresh keys
         const std::string pre = "!prism.model." + std::to_string(uniq++) + ".";
         auto remap = [&](std::string& ref) {

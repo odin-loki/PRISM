@@ -244,3 +244,119 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
 }
 
 }  // namespace prism::pir::pirmem
+
+namespace prism::pir::pirmem {
+
+// Linux kernel sprintf (lib/vsprintf.c) with a literal format (--pir-kernel-sprintf): a sound upper bound on the number
+// of characters written (without the NUL). Every conversion contributes the most it can print at its type, or its field
+// width or precision when larger; `%p` takes the kernel's extension letters (every alphanumeric character after it is
+// consumed, as pointer() does) and contributes the longest output of that extension. `%s` without a precision
+// contributes the string's length, which the caller adds (str_args); with a precision, at most that many characters.
+// A `*` width or precision, and the extensions whose output has no fixed bound (%pV, %pd, %pD, %pE, %pOF, %pfw, %pb,
+// %pG, %pC, %pg, %pt, %pr, %pR, %p4cc, ...), are UNENCODED.
+KernelFormatPlan plan_kernel_format(const std::string& f, std::size_t first_arg) {
+    KernelFormatPlan p;
+    uint64_t len = 0;
+    std::size_t next = first_arg;
+    for (std::size_t i = 0; i < f.size(); ++i) {
+        if (f[i] != '%') {
+            ++len;
+            continue;
+        }
+        ++i;
+        if (i < f.size() && f[i] == '%') {
+            ++len;
+            continue;
+        }
+        while (i < f.size() && std::string_view("-+ #0").find(f[i]) != std::string_view::npos) ++i;
+        uint64_t width = 0, prec = 0;
+        bool has_prec = false;
+        if (i < f.size() && f[i] == '*') {
+            p.unencoded = "UNENCODED: kernel sprintf with a '*' field width (output length not bounded by the format)";
+            return p;
+        }
+        while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i])) && width < 100000000)
+            width = width * 10 + static_cast<uint64_t>(f[i++] - '0');
+        if (i < f.size() && f[i] == '.') {
+            has_prec = true;
+            ++i;
+            if (i < f.size() && f[i] == '*') {
+                p.unencoded = "UNENCODED: kernel sprintf with a '*' precision (output length not bounded by the format)";
+                return p;
+            }
+            while (i < f.size() && std::isdigit(static_cast<unsigned char>(f[i])) && prec < 100000000)
+                prec = prec * 10 + static_cast<uint64_t>(f[i++] - '0');
+        }
+        bool wide = false;
+        while (i < f.size() && std::string_view("hlLqjzt").find(f[i]) != std::string_view::npos) {
+            if (f[i] != 'h') wide = true;
+            ++i;
+        }
+        if (i >= f.size()) {
+            p.unencoded = "UNENCODED: kernel sprintf format ends inside a conversion specification";
+            return p;
+        }
+        const char c = f[i];
+        uint64_t m = 0;
+        switch (c) {
+            case 'd':
+            case 'i':
+            case 'u':
+            case 'x':
+            case 'X':
+            case 'o':
+                // sign or "0x" / "0" prefix included
+                m = (c == 'o' ? (wide ? 22 : 11) : c == 'x' || c == 'X' ? (wide ? 16 : 8) : 20) + 2;
+                if (has_prec) m = std::max(m, prec + 2);
+                ++next;
+                break;
+            case 'c':
+                m = 1;
+                ++next;
+                break;
+            case 's':
+                if (has_prec) m = prec;  // at most prec characters of the string
+                else p.str_args.push_back(next);
+                ++next;
+                break;
+            case 'p': {
+                std::string ext;
+                while (i + 1 < f.size() && std::isalnum(static_cast<unsigned char>(f[i + 1]))) ext += f[++i];
+                const char e0 = ext.empty() ? '\0' : ext[0];
+                const char e1 = ext.size() > 1 ? ext[1] : '\0';
+                switch (e0) {
+                    case 'S': case 's': case 'B': case 'F': m = 1024; break;  // symbol+off/size [module build-id] < KSYM_SYMBOL_LEN
+                    case 'M': case 'm': m = 17; break;               // MAC address
+                    case 'I': case 'i':
+                        if (e1 == '4') m = 15;
+                        else if (e1 == '6') m = 39;
+                        else if (e1 == 'S') m = 80;                  // sockaddr: [ipv6]:port/flowinfo%scope
+                        else m = 0;
+                        break;
+                    case 'U': m = 36; break;                         // UUID
+                    case 'a': m = 18; break;                         // phys_addr_t / dma_addr_t: 0x + 16 digits
+                    case 'e': m = 32; break;                         // error name, or the hashed pointer
+                    case 'N': m = 18; break;                         // netdev features 0x%016llx
+                    case 'h': m = 192; break;                        // hex dump of at most 64 bytes
+                    case 'x': case 'K': case '\0': m = 18; break;    // raw / restricted / hashed pointer, "(null)"
+                    default: m = 0; break;
+                }
+                if (!m) {
+                    p.unencoded = "UNENCODED: kernel sprintf conversion '%p" + ext + "' (output length not bounded by the format)";
+                    return p;
+                }
+                ++next;
+                break;
+            }
+            default:
+                p.unencoded = "UNENCODED: kernel sprintf conversion '%" + std::string(1, c) + "'";
+                return p;
+        }
+        len += std::max(m, width);
+    }
+    p.max_len = len;
+    p.nargs = next;
+    return p;
+}
+
+}  // namespace prism::pir::pirmem
