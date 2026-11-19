@@ -306,7 +306,7 @@ KernelFormatPlan plan_kernel_format(const std::string& f, std::size_t first_arg)
             case 'X':
             case 'o':
                 // sign or "0x" / "0" prefix included
-                m = (c == 'o' ? (wide ? 22 : 11) : c == 'x' || c == 'X' ? (wide ? 16 : 8) : 20) + 2;
+                m = (c == 'o' ? (wide ? 22 : 11) : c == 'x' || c == 'X' ? (wide ? 16 : 8) : c == 'u' ? (wide ? 20 : 10) : (wide ? 20 : 11)) + 2;
                 if (has_prec) m = std::max(m, prec + 2);
                 ++next;
                 break;

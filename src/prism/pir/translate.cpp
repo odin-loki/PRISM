@@ -655,13 +655,13 @@ struct Tr final : pirmem::TrApi {
                     }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
-                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
+                if (ty.kind == ir::Type::Ptr && (ty.text == "ptr" || seg_ptr(ty))) ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
                 bool is_fp = false;
                 if (auto fw = fp::width_of(ty)) {
                     ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
                     is_fp = true;
                 }
-                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= 64) {
+                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= pirmem::max_int_bits()) {
                     int v = newvar(fr.prefix + in.result, ty.bits);
                     out.vars[static_cast<std::size_t>(v)].fp = is_fp;
                     fr.env[in.result] = Arg::v(v, ty.bits);
