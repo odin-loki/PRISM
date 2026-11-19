@@ -498,6 +498,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_LEAN_PAD_DEBUG", "diagnostics: trace Lean export padding to stderr"},
     {"PRISM_PIR_DUMP_INVARIANTS", "diagnostics: 1 = report Houdini survivors of a search that did not prove (pir_invariants_surviving)"},
     {"PRISM_PIR_EXPORT_ONLY", "pir: with PRISM_PIR_LEAN_EXPORT, only export Lean, skip the checks"},
+    {"PRISM_LOCK_COVERAGE", "diagnostics: 1 = pir prints one lock-order coverage line per unit on stderr (no finding)"},
     {"PRISM_HOUDINI_BUDGET", "pir: run-wide Houdini loop-invariant seconds (0 = none)"},
     {"PRISM_HOUDINI_TRACE", "diagnostics: one stderr line per Houdini goal query"},
     {"PRISM_LAKE", "path of Lean's lake for proof search"},
