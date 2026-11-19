@@ -330,3 +330,53 @@ TEST_CASE("pir cluster answers: --pir-kernel-current makes Linux current a valid
     CHECK(other.status != prism::laws::PROVED);
 }
 #endif
+
+namespace {
+
+KRun global_run(const std::string& ir, const std::string& fn, bool harness) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.global_harness = harness;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// emev2_smu_write-style MMIO: a static base pointer the init code sets, then base + offset
+const char* kMmio = R"IR(@smu_base = internal global ptr null
+@count = internal global i32 0
+define void @smu_write(i32 %v) {
+entry:
+  %b = load ptr, ptr @smu_base
+  %p = getelementptr inbounds i8, ptr %b, i64 16
+  store volatile i32 %v, ptr %p
+  ret void
+}
+define i32 @count_div() {
+entry:
+  %c = load i32, ptr @count
+  %q = sdiv i32 100, %c
+  ret i32 %q
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-global-harness gives mutable pointer globals a valid object; scalars stay arbitrary") {
+    auto off = global_run(kMmio, "smu_write", false);
+    CHECK(off.status != prism::laws::PROVED);
+    auto on = global_run(kMmio, "smu_write", true);
+    CHECK_MESSAGE(on.status == prism::laws::PROVED, (on.status + " " + on.msg));
+    CHECK(has(on.assumptions, "global harness: @smu_base"));
+    // a scalar global is not harnessed: 100 / count can divide by zero
+    auto cnt = global_run(kMmio, "count_div", true);
+    CHECK(cnt.status == prism::laws::FAILED);
+    CHECK_FALSE(has(cnt.assumptions, "global harness"));
+}
+#endif

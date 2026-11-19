@@ -121,6 +121,8 @@ public:
     // allocation and initialisation (emit_entry_globals) when block 0 starts.
     void preassign_globals(const ir::Function& f);
     void emit_entry_globals();
+    // --pir-global-harness: a mutable pointer global with arbitrary entry contents points to a valid object
+    void global_harness(Arg p, const ir::Global& g, const std::string& name);
     Arg const_gep(int b, const ir::Value& ce, int line);  // constant getelementptr expression
     // --pir-addr-values: constant ptrtoint / inttoptr / bitcast expressions. A pointer is carried as its packed
     // representation, so ptrtoint is that value and `inttoptr (ptrtoint x)` is x; `inttoptr (C)` with C != 0 is the

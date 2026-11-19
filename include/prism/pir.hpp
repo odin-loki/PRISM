@@ -546,6 +546,8 @@ struct TranslateOptions {
     // --pir-kernel-current (kernel mode): the running thread's object is valid: Linux `current` (a %gs read of
     // current_task / const_current_task / pcpu_hot) and FreeBSD `curthread` (the %gs:0 pointer read of __curthread)
     bool kernel_current = false;
+    // --pir-global-harness (kernel mode): mutable pointer globals point to a valid object at entry (named, per global)
+    bool global_harness = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
