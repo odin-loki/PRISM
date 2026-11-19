@@ -85,6 +85,26 @@ bool Tr::reaches_lock_state(const ir::Module& m, const ir::Function& f) {
     return false;
 }
 
+// Which lock intrinsics the call tree of f reaches: bit 0 acquire, bit 1 release (--pir-lock-wrappers).
+int Tr::lock_effects(const ir::Module& m, const ir::Function& f) {
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> todo{&f};
+    int fx = 0;
+    while (!todo.empty()) {
+        const auto* g = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& bl : g->blocks)
+            for (auto& in : bl.insts) {
+                if ((in.op != "call" && in.op != "invoke") || in.callee.empty()) continue;
+                if (in.callee == "__prism_lock_acquire") fx |= 1;
+                if (in.callee == "__prism_lock_release") fx |= 2;
+                if (const auto* h = m.find(in.callee)) todo.push_back(h);
+            }
+    }
+    return fx;
+}
+
 void Tr::emit_lock_state() {
     const unsigned wb = ptr_w() / 8;
     lk_ = mt.alloc(-1, Arg::c(64, kWords * wb), MemKind::Static, 1, "lock state (PRISM ghost, kernel specs)", 0, lk_var_);
@@ -147,8 +167,15 @@ void Tr::lock_return_check(int b, int line) {
         for (auto& x : exits) declared = bool_or(*this, b, declared, assign(b, Op::Eq, 1, {h, x}, "lk"));
         undeclared = bool_or(*this, b, undeclared, bool_and(*this, b, nonzero(*this, b, h), bool_not(*this, b, declared)));
     }
-    check(b, undeclared, "model", "LOCK-HELD-ON-RETURN",
-          "function returns with a lock still held (taken here, not released, not declared by __prism_lock_exit)", line);
+    if (lock_wrapper_ == 1) {
+        // --pir-lock-wrappers: an acquire-only wrapper (rtnl_lock, ssb_buses_lock): returning with the lock held is
+        // what it is for; the pairing is its callers' property
+        note_assumption("lock-wrapper: @" + root_name_ + " acquires locks and releases none on any path: it returns with "
+                        "them held by design (its callers release them; LOCK-HELD-ON-RETURN is not checked here)");
+    } else {
+        check(b, undeclared, "model", "LOCK-HELD-ON-RETURN",
+              "function returns with a lock still held (taken here, not released, not declared by __prism_lock_exit)", line);
+    }
     Arg missing = Arg::c(1, 0);
     for (auto& x : exits) {
         Arg is_held = Arg::c(1, 0);
@@ -190,8 +217,14 @@ void Tr::lock_drop(int b, Arg p, Arg spin, int line) {
     }
     Arg ov = ld(b, lock_word(b, kWOver, line), W, line);
     Arg overflowed = assign(b, Op::Ne, 1, {ov, zero}, "lk");
-    check(b, bool_and(*this, b, bool_not(*this, b, found), bool_not(*this, b, overflowed)), "model",
-          "LOCK-UNHELD-UNLOCK", "lock released that this function does not hold", line);
+    if (lock_wrapper_ == 2) {
+        // --pir-lock-wrappers: a release-only wrapper (rtnl_unlock, ssb_buses_unlock) releases a lock its caller holds
+        note_assumption("lock-wrapper: @" + root_name_ + " releases locks and acquires none on any path: the caller holds "
+                        "them on entry (LOCK-UNHELD-UNLOCK is not checked here)");
+    } else {
+        check(b, bool_and(*this, b, bool_not(*this, b, found), bool_not(*this, b, overflowed)), "model",
+              "LOCK-UNHELD-UNLOCK", "lock released that this function does not hold", line);
+    }
     for (unsigned i = 0; i < kLockSlots; ++i) {
         Arg s = ld(b, lock_word(b, i, line), W, line);
         st(b, lock_word(b, i, line), assign(b, Op::Select, W, {hit[i], zero, s}, "slot"), line);

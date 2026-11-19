@@ -380,3 +380,61 @@ TEST_CASE("pir cluster answers: --pir-global-harness gives mutable pointer globa
     CHECK_FALSE(has(cnt.assumptions, "global harness"));
 }
 #endif
+
+namespace {
+
+KRun lockw_run(const std::string& ir, const std::string& fn, bool wrappers) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.lock_wrappers = wrappers;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+const char* kLockW = R"IR(@big_lock = internal global [8 x i8] zeroinitializer
+declare void @__prism_lock_acquire(ptr, i32)
+declare void @__prism_lock_release(ptr, i32)
+define void @acq_only() {
+entry:
+  call void @__prism_lock_acquire(ptr @big_lock, i32 0)
+  ret void
+}
+define void @rel_only() {
+entry:
+  call void @__prism_lock_release(ptr @big_lock, i32 0)
+  ret void
+}
+define void @acq_rel_leak(i32 %c) {
+entry:
+  call void @__prism_lock_acquire(ptr @big_lock, i32 0)
+  %z = icmp eq i32 %c, 0
+  br i1 %z, label %out, label %rel
+rel:
+  call void @__prism_lock_release(ptr @big_lock, i32 0)
+  br label %out
+out:
+  ret void
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-lock-wrappers: acquire-only / release-only roots, named; mixed functions still checked") {
+    CHECK(lockw_run(kLockW, "acq_only", false).status == prism::laws::FAILED);
+    CHECK(lockw_run(kLockW, "rel_only", false).status == prism::laws::FAILED);
+    auto a = lockw_run(kLockW, "acq_only", true);
+    CHECK_MESSAGE(a.status == prism::laws::PROVED, (a.status + " " + a.msg));
+    CHECK(has(a.assumptions, "lock-wrapper: @acq_only acquires locks"));
+    auto r = lockw_run(kLockW, "rel_only", true);
+    CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
+    // acquires and releases: not a wrapper, the leak on c == 0 is still found
+    CHECK(lockw_run(kLockW, "acq_rel_leak", true).status == prism::laws::FAILED);
+}
+#endif

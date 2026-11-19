@@ -209,6 +209,9 @@ struct Tr final : pirmem::TrApi {
     int lk_var_ = -1;                                 // lk_'s preassigned variable (object emitted in run_frame)
     bool lk_pending_ = false;
     static bool reaches_lock_state(const ir::Module& m, const ir::Function& f);
+    static int lock_effects(const ir::Module& m, const ir::Function& f);
+    int lock_wrapper_ = 0;      // --pir-lock-wrappers: 1 acquire-only root, 2 release-only root, 0 neither
+    std::string root_name_;     // the analysed function
     void lock_return_check(int b, int line);
     void emit_lock_state();
     Arg lock_word(int b, unsigned i, int line);
@@ -565,6 +568,11 @@ struct Tr final : pirmem::TrApi {
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
             // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            if (opt.lock_wrappers && !lock_contracted(f.name)) {
+                const int fx = lock_effects(m, f);
+                lock_wrapper_ = fx == 1 ? 1 : fx == 2 ? 2 : 0;
+                root_name_ = f.name;
+            }
             if (reaches_lock_state(m, f) || lock_contracted(f.name)) {
                 lk_var_ = newvar("_lock", ptr_w());
                 lk_pending_ = true;
@@ -855,11 +863,13 @@ struct Tr final : pirmem::TrApi {
                     continue;
                 }
                 if (in.op == "call" && in.is_asm && opt.kernel_stops && !opt.kernel_api.empty() &&
-                    in.asm_text.find("ud2") != std::string::npos && in.asm_text.find("__bug_table") != std::string::npos) {
-                    // --pir-kernel-stops: Linux BUG() is `asm volatile("ud2" + __bug_table entry); __builtin_unreachable()`.
-                    // Only that shape (the asm directly followed by unreachable): WARN() uses the same asm and continues.
-                    const auto k = static_cast<std::size_t>(&in - bl.insts.data());
-                    if (k + 1 < bl.insts.size() && bl.insts[k + 1].op == "unreachable") {
+                    in.asm_text.find("__bug_table") != std::string::npos) {
+                    // --pir-kernel-stops: Linux BUG() is `asm volatile(ASM_UD2 (.byte 0x0f, 0x0b) + a __bug_table entry);
+                    // __builtin_unreachable()`. Only that shape: the asm followed (after other asm statements only, such
+                    // as annotations) by unreachable. WARN() uses the same asm and continues, so it never matches.
+                    auto k = static_cast<std::size_t>(&in - bl.insts.data()) + 1;
+                    while (k < bl.insts.size() && bl.insts[k].op == "call" && bl.insts[k].is_asm && bl.insts[k].result.empty()) ++k;
+                    if (k < bl.insts.size() && bl.insts[k].op == "unreachable") {
                         note_assumption("kernel-stop: BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel thread: "
                                         "the paths that reach it end there, and the verdict is for the paths that do not");
                         out.blocks[static_cast<std::size_t>(cur)].term = Term{};

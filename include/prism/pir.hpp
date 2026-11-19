@@ -548,6 +548,9 @@ struct TranslateOptions {
     bool kernel_current = false;
     // --pir-global-harness (kernel mode): mutable pointer globals point to a valid object at entry (named, per global)
     bool global_harness = false;
+    // --pir-lock-wrappers (kernel mode): a root that only acquires (only releases) locks on every path is a lock
+    // wrapper: LOCK-HELD-ON-RETURN (LOCK-UNHELD-UNLOCK) is not checked for it, as a named assumption
+    bool lock_wrappers = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
