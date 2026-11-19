@@ -655,7 +655,7 @@ TEST_CASE("pir e2e: --pir-build-semantics takes the build's -fwrapv / -fno-stric
             const auto* r = sem.at({"build_semantics.c", f});
             CHECK_MESSAGE(r->status == L::PROVED, (std::string(flag) + " " + f + ": " + r->status + " " + r->message));
             const auto fe = r->extra.find("front_end_flags");
-            CHECK_MESSAGE(fe != r->extra.end(), f);
+            if (std::string(f) == "wrap_add") CHECK(fe != r->extra.end());  // the unit's note (one function suffices)
             if (fe != r->extra.end()) CHECK(fe->second.find("taken (--pir-build-semantics): -fwrapv") != std::string::npos);
         }
         // shift amount, division by zero and INT_MIN / -1 are undefined in the -fwrapv build too: never proved
